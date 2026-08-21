@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/url"
+	"slices"
 	"strings"
 
 	modelpkg "ccLoad/internal/model"
@@ -29,11 +30,22 @@ func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientPro
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
 // endpoints that recently proved they do not implement alpha/search.
-// Normal base URLs remain eligible because the request path is appended later.
+// Exact Codex Responses URLs stay eligible: forwarding rewrites them to the
+// sibling alpha/search path, matching CLIProxyAPI's official
+// https://chatgpt.com/backend-api/codex/alpha/search target.
+// API-key channels must declare the Codex protocol, matching CLIProxyAPI's
+// alpha-search opt-in. Normal base URLs remain eligible because the request
+// path is appended later.
 func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
-	urls := cfg.GetURLs()
-	compatible := make([]string, 0, len(urls))
-	for _, rawURL := range urls {
+	if cfg == nil {
+		return nil
+	}
+	compatible := make([]string, 0, len(cfg.URLs))
+	for _, entry := range cfg.URLs {
+		if !alphaSearchCredentialAllowsURL(cfg, entry) {
+			continue
+		}
+		rawURL := entry.RuntimeURL()
 		key := protocolCapabilityKey{
 			channelID: cfg.ID, baseURL: rawURL,
 			clientProtocol: protocol.Codex, requestFamily: protocol.RequestFamilyAlphaSearch,
@@ -47,11 +59,26 @@ func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
 		}
 
 		parsed, err := url.Parse(modelpkg.StripExactUpstreamURLMarker(rawURL))
-		if err == nil && protocol.DetectRequestFamily(parsed.Path) == protocol.RequestFamilyAlphaSearch {
+		if err != nil {
+			continue
+		}
+		family := protocol.DetectRequestFamily(parsed.Path)
+		if family == protocol.RequestFamilyAlphaSearch {
+			compatible = append(compatible, rawURL)
+			continue
+		}
+		if _, ok := protocol.RewriteResponsesPathToAlphaSearch(parsed.Path); ok {
 			compatible = append(compatible, rawURL)
 		}
 	}
 	return compatible
+}
+
+func alphaSearchCredentialAllowsURL(cfg *modelpkg.Config, entry modelpkg.ChannelURL) bool {
+	if cfg != nil && cfg.UsesCodexOAuth() {
+		return true
+	}
+	return slices.Contains(entry.Protocols, string(protocol.Codex))
 }
 
 func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {

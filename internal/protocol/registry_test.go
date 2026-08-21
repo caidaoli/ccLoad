@@ -1825,9 +1825,44 @@ func TestDetectRequestFamily_AlphaSearch(t *testing.T) {
 	if got := protocol.DetectRequestFamily("/v1/alpha/search/extra"); got != protocol.RequestFamilyAlphaSearch {
 		t.Fatalf("DetectRequestFamily with subpath = %q, want %q", got, protocol.RequestFamilyAlphaSearch)
 	}
+	for _, path := range []string{
+		"/v1/codex/alpha/search",
+		"/backend-api/codex/alpha/search",
+		"/prefix/backend-api/codex/alpha/search",
+	} {
+		if got := protocol.DetectRequestFamily(path); got != protocol.RequestFamilyAlphaSearch {
+			t.Fatalf("DetectRequestFamily(%q) = %q, want %q", path, got, protocol.RequestFamilyAlphaSearch)
+		}
+	}
 	// 子串误匹配：alpha 前缀下的无关路径不得命中
 	if got := protocol.DetectRequestFamily("/v1/alpha/searching"); got != protocol.RequestFamilyUnknown {
 		t.Fatalf("DetectRequestFamily(/v1/alpha/searching) = %q, want unknown", got)
+	}
+}
+
+func TestRewriteResponsesPathToAlphaSearch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/v1/responses", "/v1/alpha/search"},
+		{"/v1/codex/responses", "/v1/codex/alpha/search"},
+		{"/backend-api/codex/responses", "/backend-api/codex/alpha/search"},
+		{"/prefix/backend-api/codex/responses", "/prefix/backend-api/codex/alpha/search"},
+	}
+	for _, tt := range tests {
+		got, ok := protocol.RewriteResponsesPathToAlphaSearch(tt.path)
+		if !ok || got != tt.want {
+			t.Fatalf("RewriteResponsesPathToAlphaSearch(%q) = %q, %v, want %q, true", tt.path, got, ok, tt.want)
+		}
+	}
+	if _, ok := protocol.RewriteResponsesPathToAlphaSearch("/v1/chat/completions"); ok {
+		t.Fatal("chat completions must not rewrite to alpha/search")
+	}
+	if _, ok := protocol.RewriteResponsesPathToAlphaSearch("/v1/alpha/search"); ok {
+		t.Fatal("alpha/search must not be treated as a responses path")
 	}
 }
 

@@ -1384,6 +1384,43 @@ func TestSelectCandidatesByClientProtocol_DisabledChannelExcluded(t *testing.T) 
 	}
 }
 
+func TestAlphaSearchUpstreamURLs_KeepsExactCodexResponses(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{}
+	t.Run("oauth exact responses stays eligible", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ID:       1,
+			AuthType: model.AuthTypeCodexOAuth,
+			URLs: model.ChannelURLs{
+				{URL: "https://chatgpt.com/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}},
+				{URL: "https://api.example.com/v1/chat/completions", Exact: true},
+			},
+		}
+		got := server.alphaSearchUpstreamURLs(cfg)
+		want := []string{"https://chatgpt.com/backend-api/codex/responses#"}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("alphaSearchUpstreamURLs = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("api key requires declared codex protocol", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ID: 2,
+			URLs: model.ChannelURLs{
+				{URL: "https://ooioo.example"},
+				{URL: "https://codex-compat.example", Protocols: []string{"codex"}},
+			},
+		}
+		got := server.alphaSearchUpstreamURLs(cfg)
+		want := []string{"https://codex-compat.example"}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("alphaSearchUpstreamURLs = %#v, want %#v", got, want)
+		}
+	})
+}
+
 func TestFilterCostLimitExceededChannels(t *testing.T) {
 	t.Parallel()
 

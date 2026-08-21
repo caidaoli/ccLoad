@@ -5778,8 +5778,8 @@ func TestBuildTestUpstreamRequestPlanAppliesThinkingSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
 	}
-	if effort := gjson.GetBytes(plan.requestBody, "reasoning.effort").String(); effort != "xhigh" {
-		t.Fatalf("reasoning.effort=%q, want xhigh. body=%s", effort, plan.requestBody)
+	if effort := gjson.GetBytes(plan.requestBody, "reasoning.effort").String(); effort != "max" {
+		t.Fatalf("reasoning.effort=%q, want max. body=%s", effort, plan.requestBody)
 	}
 }
 

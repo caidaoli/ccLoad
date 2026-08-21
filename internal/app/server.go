@@ -1419,12 +1419,15 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	// Codex CLI 直连路由别名（chatgpt_base_url 兼容），对齐 CLIProxyAPI 的
 	// codexDirect 路由组。GET 是 Responses WebSocket 升级；POST 是 SSE
 	// fallback，两者都由 DetectRequestFamily 识别为 RequestFamilyResponses。
+	// /alpha/search 是 Codex 独立搜索端点，转发时把 Exact /responses URL
+	// 改写成 sibling /alpha/search。
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(s.authService.RequireAPIAuth())
 	codexDirect.Use(captureClientRequestMetadata())
 	{
 		codexDirect.GET("/responses", s.HandleProxyRequest)
 		codexDirect.POST("/responses", s.HandleProxyRequest)
+		codexDirect.POST("/alpha/search", s.HandleProxyRequest)
 	}
 
 	// 健康检查（公开访问，无需认证，K8s liveness/readiness probe）

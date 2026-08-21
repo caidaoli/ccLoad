@@ -29,6 +29,7 @@ const (
 	codexOAuthTimeout            = 5 * time.Minute
 	codexOAuthStatusTTL          = 10 * time.Minute
 	codexUpstreamURL             = "https://chatgpt.com/backend-api/codex/responses"
+	codexAlphaSearchURL          = "https://chatgpt.com/backend-api/codex/alpha/search"
 )
 
 // 导入凭证和模型获取必须共享这一份 Codex 模型目录，并按订阅计划过滤。

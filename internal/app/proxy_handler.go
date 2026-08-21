@@ -331,7 +331,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		all = sanitizeCodexAlphaSearchBody(all)
 	}
 
-	// 后缀改写必须发生在协议转换之前，且只做这一次：之后 all 就是一个普通的客户端请求。
+	// 先把后缀写成客户端协议字段；选定渠道后会再按实际上游模型能力收敛等级。
 	all = applyThinkingSuffix(all, clientProtocol, incoming.requestedModel)
 	thinkingEffort := thinkingEffortFromRequest(incoming.requestedModel, all)
 
@@ -449,6 +449,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	reqCtx := &proxyRequestContext{
 		originalModel:  originalModel,
+		requestedModel: incoming.requestedModel,
 		clientProtocol: clientProtocol,
 		codexClient:    isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
 		requestMethod:  requestMethod,

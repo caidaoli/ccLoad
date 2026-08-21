@@ -26,10 +26,14 @@ const maxCodexNonStreamOutputBytes = 32 << 20
 // unaffected: buildUpstreamURL skips path appending for Exact URLs.
 func normalizeCodexClientPath(path string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
-	if trimmed == "/v1/codex/responses" || trimmed == "/backend-api/codex/responses" {
+	switch trimmed {
+	case "/v1/codex/responses", "/backend-api/codex/responses":
 		return "/v1/responses"
+	case "/v1/codex/alpha/search", "/backend-api/codex/alpha/search":
+		return "/v1/alpha/search"
+	default:
+		return path
 	}
-	return path
 }
 
 func isCodexOAuthResponsesRequest(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string) bool {

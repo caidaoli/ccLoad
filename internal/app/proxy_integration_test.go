@@ -4328,7 +4328,7 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "alpha-search-failure", upstreamProtocol: util.ProtocolCodex, protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5"},
+		{name: "alpha-search-failure", upstreamProtocol: util.ProtocolCodex, models: "gpt-5"},
 	}, map[int]string{0: upstream.URL})
 
 	request := func() *httptest.ResponseRecorder {
@@ -4400,8 +4400,8 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
 	defer supported.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "alpha-search-unsupported", upstreamProtocol: util.ProtocolCodex, protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5", priority: 100},
-		{name: "alpha-search-supported", upstreamProtocol: util.ProtocolCodex, protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5", priority: 90},
+		{name: "alpha-search-unsupported", upstreamProtocol: util.ProtocolCodex, models: "gpt-5", priority: 100},
+		{name: "alpha-search-supported", upstreamProtocol: util.ProtocolCodex, models: "gpt-5", priority: 90},
 	}, map[int]string{0: unsupported.URL, 1: supported.URL})
 
 	request := func() *httptest.ResponseRecorder {
@@ -4431,7 +4431,37 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
 }
 
 func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
-	t.Run("responses exact URL cannot shadow native search", func(t *testing.T) {
+	t.Run("responses exact URL is rewritten to alpha/search", func(t *testing.T) {
+		var upstreamHits atomic.Int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstreamHits.Add(1)
+			if r.URL.Path != "/backend-api/codex/alpha/search" {
+				t.Errorf("upstream path=%q, want /backend-api/codex/alpha/search", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{{
+			name:             "codex-oauth",
+			upstreamProtocol: util.ProtocolCodex,
+			models:           "gpt-5",
+		}}, map[int]string{0: upstream.URL + "/backend-api/codex/responses#"})
+
+		w := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+		}
+		if upstreamHits.Load() != 1 {
+			t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+		}
+	})
+
+	t.Run("non-responses exact URL cannot shadow native search", func(t *testing.T) {
 		var wrongHits atomic.Int64
 		wrong := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			wrongHits.Add(1)
@@ -4452,7 +4482,7 @@ func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
 
 		env := setupProxyTestEnv(t, []testChannel{
 			{
-				name:             "responses-exact",
+				name:             "chat-exact",
 				upstreamProtocol: util.ProtocolCodex,
 				models:           "gpt-5",
 				priority:         100,
@@ -4464,7 +4494,7 @@ func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
 				priority:         90,
 			},
 		}, map[int]string{
-			0: wrong.URL + "/v1/responses#",
+			0: wrong.URL + "/v1/chat/completions#",
 			1: native.URL,
 		})
 
@@ -4499,6 +4529,36 @@ func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
 		}}, map[int]string{0: upstream.URL + "/v1/alpha/search#"})
 
 		w := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+		}
+		if upstreamHits.Load() != 1 {
+			t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+		}
+	})
+
+	t.Run("codex direct alias rewrites oauth responses url", func(t *testing.T) {
+		var upstreamHits atomic.Int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstreamHits.Add(1)
+			if r.URL.Path != "/backend-api/codex/alpha/search" {
+				t.Errorf("upstream path=%q, want /backend-api/codex/alpha/search", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{{
+			name:             "codex-oauth",
+			upstreamProtocol: util.ProtocolCodex,
+			models:           "gpt-5",
+		}}, map[int]string{0: upstream.URL + "/backend-api/codex/responses#"})
+
+		w := doProxyRequest(t, env.engine, "/backend-api/codex/alpha/search", map[string]any{
 			"query": "codegraph",
 		}, nil)
 
@@ -8358,6 +8418,86 @@ func TestProxy_GeminiTransform_UsesResolvedActualModelInUpstreamPath(t *testing.
 	}
 	if resp.Model != "alias-model" {
 		t.Fatalf("expected client-visible response model alias-model, got %s", resp.Model)
+	}
+}
+
+func TestProxy_ThinkingSuffixUsesResolvedModelCapabilities(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		configuredModel string
+		requestedModel  string
+		redirectModel   string
+		fuzzyMatch      bool
+	}{
+		{
+			name:            "redirect",
+			configuredModel: "latest",
+			requestedModel:  "latest(max)",
+			redirectModel:   "gpt-5.5",
+		},
+		{
+			name:            "fuzzy match",
+			configuredModel: "gpt-5.5",
+			requestedModel:  "5.5(max)",
+			fuzzyMatch:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "openai-ch", upstreamProtocol: "openai", models: tt.configuredModel, apiKey: "sk-oai",
+			}}, map[int]string{0: "https://openai-upstream.example.com"})
+
+			if tt.redirectModel != "" {
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatalf("ListConfigs failed: %v", err)
+				}
+				cfg := configs[0]
+				cfg.ModelEntries = []model.ModelEntry{{Model: tt.configuredModel, RedirectModel: tt.redirectModel}}
+				if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+					t.Fatalf("UpdateConfig failed: %v", err)
+				}
+				env.server.InvalidateChannelListCache()
+			}
+			env.server.modelFuzzyMatch = tt.fuzzyMatch
+
+			var gotModel, gotEffort string
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				requestBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				gotModel = gjson.GetBytes(requestBody, "model").String()
+				gotEffort = gjson.GetBytes(requestBody, "reasoning_effort").String()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"chatcmpl-thinking","object":"chat.completion","model":"gpt-5.5","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+					)),
+				}, nil
+			})}
+
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": tt.requestedModel,
+				"messages": []map[string]string{{
+					"role": "user", "content": "hi",
+				}},
+			}, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if gotModel != "gpt-5.5" {
+				t.Fatalf("upstream model = %q, want gpt-5.5", gotModel)
+			}
+			if gotEffort != "xhigh" {
+				t.Fatalf("upstream reasoning_effort = %q, want xhigh", gotEffort)
+			}
+		})
 	}
 }
 

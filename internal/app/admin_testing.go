@@ -430,7 +430,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	if err != nil {
 		return nil, err
 	}
-	body = applyThinkingSuffix(body, protocol.Protocol(clientProtocol), requestedModel)
+	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), requestedModel, testReq.Model)
 
 	plan := &channelTestRequestPlan{
 		clientProtocol:   clientProtocol,
@@ -460,7 +460,12 @@ func (s *Server) buildChannelTestRequestPlan(
 	}
 	// 跨协议 patch 会用上游测试器的 thinking/reasoning 覆盖转换结果。后缀是显式
 	// 请求选项，必须先写进上游 tester body，否则 Codex 模板默认 medium 会盖掉它。
-	upstreamBody = applyThinkingSuffix(upstreamBody, protocol.Protocol(upstreamProtocol), requestedModel)
+	upstreamBody = applyThinkingSuffixForModel(
+		upstreamBody,
+		protocol.Protocol(upstreamProtocol),
+		requestedModel,
+		testReq.Model,
+	)
 
 	transformPlan, err := protocol.BuildTransformPlan(
 		protocol.Protocol(clientProtocol),
@@ -1252,7 +1257,7 @@ func (s *Server) testCursorOAuthChannel(
 	if err != nil {
 		return fail(0, "构造测试请求失败: "+err.Error(), true)
 	}
-	body = applyThinkingSuffix(body, protocol.Protocol(clientProtocol), requestedModel)
+	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), requestedModel, attemptReq.Model)
 	result["upstream_request_body"] = string(body)
 
 	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))

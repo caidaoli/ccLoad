@@ -2214,7 +2214,17 @@ func (s *Server) forwardAttempt(
 	var nativeAttempt *nativeCodexWebsocketAttempt
 	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && upstreamProtocol == protocol.Codex &&
 		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
-		incrementalBody := replaceJSONRequestModel(reqCtx.nativeCodexBody, actualModel)
+		requestedModel := reqCtx.requestedModel
+		if requestedModel == "" {
+			requestedModel = reqCtx.originalModel
+		}
+		incrementalBody := applyThinkingSuffixForModel(
+			reqCtx.nativeCodexBody,
+			protocol.Codex,
+			requestedModel,
+			actualModel,
+		)
+		incrementalBody = replaceJSONRequestModel(incrementalBody, actualModel)
 		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
 		nativeAttempt = &nativeCodexWebsocketAttempt{
 			session:         reqCtx.nativeCodexWS,
@@ -3249,7 +3259,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
 			}
-			if learnCapability {
+			if learnCapability || requestFamily == protocol.RequestFamilyAlphaSearch {
 				s.protocolCapabilities.set(capabilityKey, protocolUnsupported)
 			}
 		}

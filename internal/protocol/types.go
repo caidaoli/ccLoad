@@ -134,12 +134,37 @@ func SupportsTransformFamily(client, upstream Protocol, family RequestFamily) bo
 }
 
 func matchesCanonicalEndpoint(path, endpoint string) bool {
-	idx := strings.Index(path, endpoint)
+	_, ok := replaceCanonicalEndpoint(path, endpoint, endpoint)
+	return ok
+}
+
+func replaceCanonicalEndpoint(path, from, to string) (string, bool) {
+	idx := strings.Index(path, from)
 	if idx < 0 {
-		return false
+		return "", false
 	}
-	after := idx + len(endpoint)
-	return after == len(path) || path[after] == '?' || path[after] == '/'
+	after := idx + len(from)
+	if after != len(path) && path[after] != '?' && path[after] != '/' {
+		return "", false
+	}
+	return path[:idx] + to + path[after:], true
+}
+
+// RewriteResponsesPathToAlphaSearch maps a Codex Responses endpoint to the
+// sibling alpha/search path. ok is false when path is not a Responses endpoint.
+func RewriteResponsesPathToAlphaSearch(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	replacements := [][2]string{
+		{"/backend-api/codex/responses", "/backend-api/codex/alpha/search"},
+		{"/v1/codex/responses", "/v1/codex/alpha/search"},
+		{"/v1/responses", "/v1/alpha/search"},
+	}
+	for _, pair := range replacements {
+		if rewritten, ok := replaceCanonicalEndpoint(path, pair[0], pair[1]); ok {
+			return rewritten, true
+		}
+	}
+	return "", false
 }
 
 // DetectRequestFamily infers the client request surface from the request path.
@@ -154,7 +179,9 @@ func DetectRequestFamily(path string) RequestFamily {
 		return RequestFamilyResponses
 	case matchesCanonicalEndpoint(path, "/v1/messages"):
 		return RequestFamilyMessages
-	case matchesCanonicalEndpoint(path, "/v1/alpha/search"):
+	case matchesCanonicalEndpoint(path, "/v1/alpha/search"),
+		matchesCanonicalEndpoint(path, "/v1/codex/alpha/search"),
+		matchesCanonicalEndpoint(path, "/backend-api/codex/alpha/search"):
 		return RequestFamilyAlphaSearch
 	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"),
 		strings.Contains(path, ":countTokens"):

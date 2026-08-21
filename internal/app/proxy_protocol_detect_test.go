@@ -21,6 +21,7 @@ func TestClientRequestMetadataDetectsClientProtocolFromPath(t *testing.T) {
 		{"Claude Count Tokens", "/v1/messages/count_tokens", protocol.Anthropic},
 		{"Codex Responses", "/v1/responses", protocol.Codex},
 		{"Codex Alpha Search", "/v1/alpha/search", protocol.Codex},
+		{"Codex Direct Alpha Search", "/backend-api/codex/alpha/search", protocol.Codex},
 		{"OpenAI Chat", "/v1/chat/completions", protocol.OpenAI},
 		{"OpenAI Completions", "/v1/completions", protocol.OpenAI},
 		{"OpenAI Embeddings", "/v1/embeddings", protocol.OpenAI},
@@ -52,6 +53,26 @@ func TestClientRequestMetadataDetectsClientProtocolFromPath(t *testing.T) {
 				t.Fatalf("requestPath = %q, want %q", gotPath, tc.path)
 			}
 		})
+	}
+}
+
+func TestNormalizeCodexClientPath_AlphaSearchAliases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/v1/alpha/search", "/v1/alpha/search"},
+		{"/v1/codex/alpha/search", "/v1/alpha/search"},
+		{"/backend-api/codex/alpha/search", "/v1/alpha/search"},
+		{"/v1/codex/responses", "/v1/responses"},
+		{"/backend-api/codex/responses", "/v1/responses"},
+	}
+	for _, tc := range tests {
+		if got := normalizeCodexClientPath(tc.path); got != tc.want {
+			t.Fatalf("normalizeCodexClientPath(%q) = %q, want %q", tc.path, got, tc.want)
+		}
 	}
 }
 

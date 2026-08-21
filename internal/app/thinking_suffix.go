@@ -5,6 +5,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 
@@ -26,15 +27,30 @@ const (
 // applyThinkingSuffix 把 requestedModel 尾部的思考后缀写成 clientProtocol 的请求字段。
 // body 必须是客户端协议的原始请求体，写出的形态要和客户端自己发这个字段完全一致。
 func applyThinkingSuffix(body []byte, clientProtocol protocol.Protocol, requestedModel string) []byte {
+	return applyThinkingSuffixForModel(
+		body,
+		clientProtocol,
+		requestedModel,
+		model.RoutingModelName(requestedModel),
+	)
+}
+
+// applyThinkingSuffixForModel 保留 requestedModel 的后缀语义，但按 resolvedModel 的能力
+// 收敛等级。模型重定向和模糊匹配发生在选路之后，因此代理链路必须在每次渠道尝试时调用它。
+func applyThinkingSuffixForModel(
+	body []byte,
+	clientProtocol protocol.Protocol,
+	requestedModel, resolvedModel string,
+) []byte {
 	_, cfg, ok := model.ParseThinkingSuffix(requestedModel)
 	if !ok || len(body) == 0 || !gjson.ValidBytes(body) {
 		return body
 	}
 	switch protocol.Protocol(util.NormalizeProtocol(string(clientProtocol))) {
 	case protocol.OpenAI:
-		return applyOpenAIStyleThinking(body, cfg, "reasoning_effort")
+		return applyOpenAIStyleThinking(body, cfg, "reasoning_effort", resolvedModel)
 	case protocol.Codex:
-		return applyOpenAIStyleThinking(body, cfg, "reasoning.effort")
+		return applyOpenAIStyleThinking(body, cfg, "reasoning.effort", resolvedModel)
 	case protocol.Anthropic:
 		return applyAnthropicThinking(body, cfg)
 	case protocol.Gemini:
@@ -72,7 +88,7 @@ func thinkingEffortFromRequest(requestedModel string, body []byte) string {
 	return extractThinkingEffortFromJSON(body)
 }
 
-func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPath string) []byte {
+func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPath, baseModel string) []byte {
 	if cfg.Mode == thinking.ModeAuto {
 		// auto 不是 OpenAI/Codex 的合法档位，删掉字段把决定权交回模型默认值。
 		out, err := sjson.DeleteBytes(body, effortPath)
@@ -81,7 +97,7 @@ func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPa
 		}
 		return out
 	}
-	effort := openAIStyleEffort(cfg)
+	effort := openAIStyleEffort(cfg, baseModel)
 	if effort == "" {
 		return body
 	}
@@ -92,14 +108,65 @@ func applyOpenAIStyleThinking(body []byte, cfg thinking.ThinkingConfig, effortPa
 	return out
 }
 
-// openAIStyleEffort 把后缀收敛成 OpenAI/Codex 线协议枚举。max 是 Claude
-// adaptive 档位，这两家只认 xhigh。
-func openAIStyleEffort(cfg thinking.ThinkingConfig) string {
-	effort := thinkingEffortLabel(cfg)
-	if effort == string(thinking.LevelMax) {
-		return string(thinking.LevelXHigh)
+// openAIStyleEffort 按 catalog 里该模型的 thinking.levels 收敛后缀，对齐
+// CLIProxyAPI ApplyThinking：模型支持 max 就保留 max，不支持则夹到最近档。
+func openAIStyleEffort(cfg thinking.ThinkingConfig, baseModel string) string {
+	return clampOpenAIStyleEffort(thinkingEffortLabel(cfg), baseModel)
+}
+
+var openAIStyleLevelOrder = []string{
+	string(thinking.LevelMinimal),
+	string(thinking.LevelLow),
+	string(thinking.LevelMedium),
+	string(thinking.LevelHigh),
+	string(thinking.LevelXHigh),
+	string(thinking.LevelMax),
+}
+
+func clampOpenAIStyleEffort(effort, baseModel string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return ""
+	}
+	info := modelregistry.LookupModelInfo(baseModel, "openai")
+	if info == nil || info.Thinking == nil || len(info.Thinking.Levels) == 0 {
+		return effort
+	}
+	if thinking.HasLevel(info.Thinking.Levels, effort) {
+		return effort
+	}
+	pos := indexOfOpenAIStyleLevel(effort)
+	if pos < 0 {
+		return effort
+	}
+	bestIdx, bestDist := -1, len(openAIStyleLevelOrder)+1
+	for _, supported := range info.Thinking.Levels {
+		idx := indexOfOpenAIStyleLevel(supported)
+		if idx < 0 {
+			continue
+		}
+		dist := idx - pos
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist || (dist == bestDist && idx < bestIdx) {
+			bestIdx, bestDist = idx, dist
+		}
+	}
+	if bestIdx >= 0 {
+		return openAIStyleLevelOrder[bestIdx]
 	}
 	return effort
+}
+
+func indexOfOpenAIStyleLevel(level string) int {
+	level = strings.ToLower(strings.TrimSpace(level))
+	for i, name := range openAIStyleLevelOrder {
+		if name == level {
+			return i
+		}
+	}
+	return -1
 }
 
 // applyAnthropicThinking 只写客户端协议字段。等级走 adaptive + MapToClaudeEffort，

@@ -152,6 +152,7 @@ type ForwardObserver struct {
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
 	originalModel              string
+	requestedModel             string
 	clientProtocol             protocol.Protocol
 	codexClient                bool
 	upstreamProtocol           protocol.Protocol
@@ -242,22 +243,36 @@ func isStreamingRequest(path string, body []byte) bool {
 // buildUpstreamURL 构建上游完整URL（KISS）
 func buildUpstreamURL(baseURL string, requestPath, rawQuery string) string {
 	upstreamURL := model.StripExactUpstreamURLMarker(baseURL)
-	if !model.HasExactUpstreamURLMarker(baseURL) {
+	if model.HasExactUpstreamURLMarker(baseURL) {
+		if protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyAlphaSearch {
+			if parsed, err := neturl.Parse(upstreamURL); err == nil {
+				if rewritten, ok := protocol.RewriteResponsesPathToAlphaSearch(parsed.Path); ok {
+					parsed.Path = rewritten
+					parsed.RawPath = ""
+					upstreamURL = parsed.String()
+				}
+			}
+		}
+	} else {
 		upstreamURL = strings.TrimRight(upstreamURL, "/") + requestPath
 	}
 
-	// 移除 key 参数（Gemini API 认证格式），避免泄露到上游
-	if rawQuery != "" {
-		if values, err := neturl.ParseQuery(rawQuery); err == nil {
-			values.Del("key")
-			rawQuery = values.Encode()
-		}
+	parsed, err := neturl.Parse(upstreamURL)
+	if err != nil || rawQuery == "" {
+		return upstreamURL
 	}
 
-	if rawQuery != "" {
-		upstreamURL += "?" + rawQuery
+	// 请求查询参数必须与 Exact URL 自带的查询串合并，不能在已序列化 URL 后再拼第二个 '?'。
+	// ParseQuery 会在返回错误时保留其余合法参数。丢弃坏片段，不能让畸形转义绕过 key 剔除。
+	requestQuery, _ := neturl.ParseQuery(rawQuery)
+	// 移除客户端的 Gemini key 参数，避免把下游凭证泄露到上游；Exact URL 自带参数不受影响。
+	requestQuery.Del("key")
+	mergedQuery := parsed.Query()
+	for key, values := range requestQuery {
+		mergedQuery[key] = append(mergedQuery[key], values...)
 	}
-	return upstreamURL
+	parsed.RawQuery = mergedQuery.Encode()
+	return parsed.String()
 }
 
 // buildUpstreamRequest 创建带上下文的HTTP请求
@@ -674,6 +689,12 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
+	requestedModel := reqCtx.requestedModel
+	if requestedModel == "" {
+		requestedModel = reqCtx.originalModel
+	}
+	// 后缀来自客户端字面模型名，能力却属于重定向/模糊匹配后的实际上游模型。
+	bodyToSend = applyThinkingSuffixForModel(bodyToSend, reqCtx.clientProtocol, requestedModel, actualModel)
 	// billing/CCH 块是真 Claude Code 请求的身份与签名载体。只有跨协议
 	// 转换时才能删除；Anthropic -> Anthropic 必须保留，供 OAuth finalizer
 	// 识别并保留原生 Claude Code prompt。

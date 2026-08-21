@@ -465,6 +465,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	header.Set("Content-Type", "application/json")
 	reqCtx := &proxyRequestContext{
 		originalModel:              modelName,
+		requestedModel:             requestedModel,
 		clientProtocol:             protocol.Codex,
 		codexClient:                isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
 		requestMethod:              http.MethodPost,

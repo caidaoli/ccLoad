@@ -315,10 +315,17 @@ func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
 		wantAbsent     []string
 	}{
 		{
-			name:           "openai max 收敛到 xhigh",
+			name:           "openai sol max 按 catalog 保留 max",
 			clientProtocol: protocol.OpenAI,
-			requestedModel: "gpt-5.6-luna(max)",
-			body:           `{"model":"gpt-5.6-luna","reasoning_effort":"low"}`,
+			requestedModel: "gpt-5.6-sol(max)",
+			body:           `{"model":"gpt-5.6-sol","reasoning_effort":"low"}`,
+			wantStrings:    map[string]string{"reasoning_effort": "max"},
+		},
+		{
+			name:           "openai 无 max 的模型夹到 xhigh",
+			clientProtocol: protocol.OpenAI,
+			requestedModel: "gpt-5.5(max)",
+			body:           `{"model":"gpt-5.5","reasoning_effort":"low"}`,
 			wantStrings:    map[string]string{"reasoning_effort": "xhigh"},
 		},
 		{
@@ -336,10 +343,24 @@ func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
 			wantStrings:    map[string]string{"reasoning.effort": "medium"},
 		},
 		{
-			name:           "codex max 收敛到 xhigh",
+			name:           "codex sol max 按 catalog 保留 max",
+			clientProtocol: protocol.Codex,
+			requestedModel: "gpt-5.6-sol(max)",
+			body:           `{"model":"gpt-5.6-sol","reasoning":{"effort":"low"}}`,
+			wantStrings:    map[string]string{"reasoning.effort": "max"},
+		},
+		{
+			name:           "codex luna max 按 catalog 保留 max",
 			clientProtocol: protocol.Codex,
 			requestedModel: "gpt-5.6-luna(max)",
 			body:           `{"model":"gpt-5.6-luna","reasoning":{"effort":"low"}}`,
+			wantStrings:    map[string]string{"reasoning.effort": "max"},
+		},
+		{
+			name:           "codex 无 max 的模型夹到 xhigh",
+			clientProtocol: protocol.Codex,
+			requestedModel: "gpt-5.5(max)",
+			body:           `{"model":"gpt-5.5","reasoning":{"effort":"low"}}`,
 			wantStrings:    map[string]string{"reasoning.effort": "xhigh"},
 		},
 		{
@@ -496,6 +517,77 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	want = util.CalculateCostDetailed("qwen3.5-plus", 300_000, 1_000_000, 0, 0, 0)
 	if !floatEquals(got, want) {
 		t.Fatalf("qwen priority cost=%.6f, want service_tier ignored cost %.6f", got, want)
+	}
+}
+
+func TestBuildUpstreamURL_RewritesExactCodexResponsesForAlphaSearch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		baseURL     string
+		requestPath string
+		rawQuery    string
+		want        string
+	}{
+		{
+			name:        "official oauth responses",
+			baseURL:     codexUpstreamURL + "#",
+			requestPath: "/v1/alpha/search",
+			want:        codexAlphaSearchURL,
+		},
+		{
+			name:        "v1 responses",
+			baseURL:     "https://proxy.example/v1/responses#",
+			requestPath: "/v1/alpha/search",
+			want:        "https://proxy.example/v1/alpha/search",
+		},
+		{
+			name:        "v1 codex responses",
+			baseURL:     "https://proxy.example/v1/codex/responses#",
+			requestPath: "/v1/alpha/search",
+			want:        "https://proxy.example/v1/codex/alpha/search",
+		},
+		{
+			name:        "already search exact",
+			baseURL:     "https://proxy.example/v1/alpha/search#",
+			requestPath: "/v1/alpha/search",
+			want:        "https://proxy.example/v1/alpha/search",
+		},
+		{
+			name:        "exact responses merges configured and request queries",
+			baseURL:     "https://proxy.example/v1/responses?api-version=1#",
+			requestPath: "/v1/alpha/search",
+			rawQuery:    "limit=10&tag=a%2Bb&tag=c&key=downstream-secret",
+			want:        "https://proxy.example/v1/alpha/search?api-version=1&limit=10&tag=a%2Bb&tag=c",
+		},
+		{
+			name:        "malformed downstream key cannot bypass filtering",
+			baseURL:     "https://proxy.example/v1/responses?api-version=1#",
+			requestPath: "/v1/alpha/search",
+			rawQuery:    "key=downstream-secret%ZZ&limit=10",
+			want:        "https://proxy.example/v1/alpha/search?api-version=1&limit=10",
+		},
+		{
+			name:        "responses request keeps exact responses",
+			baseURL:     codexUpstreamURL + "#",
+			requestPath: "/v1/responses",
+			want:        codexUpstreamURL,
+		},
+		{
+			name:        "non-exact appends path",
+			baseURL:     "https://proxy.example",
+			requestPath: "/v1/alpha/search",
+			want:        "https://proxy.example/v1/alpha/search",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := buildUpstreamURL(tt.baseURL, tt.requestPath, tt.rawQuery); got != tt.want {
+				t.Fatalf("buildUpstreamURL = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
