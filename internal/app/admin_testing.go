@@ -643,7 +643,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		keySelection.keyIndex, keySelection.updatePersistedCooldown,
 	)
 	statusCode, _ := getResultInt(testResult["status_code"])
-	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized {
+	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized && canRemintOAuthChannelTest(cfg) {
 		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
 			c.Request.Context(), cfg, oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection),
 		)
@@ -681,6 +681,14 @@ func channelTestActualModel(result map[string]any, fallback string) string {
 		return model.RoutingModelName(actualModel)
 	}
 	return model.RoutingModelName(fallback)
+}
+
+func canRemintOAuthChannelTest(cfg *model.Config) bool {
+	if cfg == nil || !cfg.UsesCursorOAuth() {
+		return true
+	}
+	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+	return err == nil && credential != nil && strings.TrimSpace(credential.APIKey) != ""
 }
 
 type channelTestKeySelection struct {
@@ -972,6 +980,9 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 		result["cooldown_action"] = "concurrency_limited_no_cooldown"
 		return result
 	}
+	if existing, ok := result["cooldown_action"].(string); ok && existing != "" {
+		return result
+	}
 
 	if !updatePersistedCooldown {
 		result["cooldown_action"] = "request_key_no_cooldown"
@@ -1085,6 +1096,9 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = configuredChannelTestContent(s.configService)
 	}
+	if cfg != nil && cfg.UsesCursorOAuth() {
+		return s.testCursorOAuthChannel(reqCtx, cfg, apiKey, testReq)
+	}
 
 	clientProtocol := resolveClientProtocol(testReq)
 
@@ -1179,6 +1193,152 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		return lastResult
 	}
 	return map[string]any{"success": false, "error": "渠道测试失败: 未找到可用URL"}
+}
+
+func (s *Server) testCursorOAuthChannel(
+	reqCtx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+) map[string]any {
+	start := time.Now()
+	clientProtocol := resolveClientProtocol(testReq)
+	if clientProtocol == "" {
+		clientProtocol = util.ProtocolAnthropic
+	}
+	result := map[string]any{
+		"client_protocol":      clientProtocol,
+		"upstream_protocol":    "cursor-agent",
+		"is_streaming":         testReq.Stream,
+		"upstream_request_url": "cursor-agent",
+		"transport":            "cursor-agent",
+		"actual_model":         testReq.Model,
+	}
+	fail := func(status int, errMsg string, skipCooldown bool) map[string]any {
+		result["success"] = false
+		result["error"] = errMsg
+		result["status_code"] = status
+		result["duration_ms"] = time.Since(start).Milliseconds()
+		if skipCooldown {
+			result["cooldown_action"] = "client_error_no_cooldown"
+		}
+		return result
+	}
+
+	if testReq.ImageGeneration != nil {
+		return fail(http.StatusBadRequest, "Cursor OAuth 不支持图片生成测试", true)
+	}
+	requestPath := channelTestClientRequestPath(clientProtocol, testReq)
+	if !cursorSupportsRequestFamily(requestPath) {
+		return fail(http.StatusBadRequest, "Cursor OAuth 仅支持 Anthropic messages 与 OpenAI chat completions", true)
+	}
+
+	requestedModel := testReq.Model
+	attemptReq := *testReq
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, requestedModel, clientProtocol)
+	result["actual_model"] = attemptReq.Model
+
+	if testReq.WaitForCapacity {
+		release, err := s.waitForUpstreamRequest(reqCtx, cfg)
+		if err != nil {
+			return fail(0, err.Error(), true)
+		}
+		defer release()
+	}
+
+	clientTester := newChannelTester(clientProtocol)
+	cfgForBuild := cfg.Clone()
+	_, _, body, err := clientTester.Build(cfgForBuild, apiKey, &attemptReq)
+	if err != nil {
+		return fail(0, "构造测试请求失败: "+err.Error(), true)
+	}
+	body = applyThinkingSuffix(body, protocol.Protocol(clientProtocol), requestedModel)
+	result["upstream_request_body"] = string(body)
+
+	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		message := "Cursor CLI 凭证不可用"
+		if err != nil {
+			message = "加载 Cursor CLI 凭证失败: " + err.Error()
+		}
+		return fail(http.StatusUnauthorized, message, true)
+	}
+
+	rec := httptest.NewRecorder()
+	proxyReq := &proxyRequestContext{
+		originalModel:  attemptReq.Model,
+		clientProtocol: protocol.Protocol(clientProtocol),
+		requestPath:    requestPath,
+		body:           body,
+		isStreaming:    testReq.Stream,
+	}
+	proxyRes, err := s.forwardCursorAgent(reqCtx, cfg, credential, proxyReq, rec)
+	if err != nil {
+		return fail(http.StatusBadGateway, err.Error(), false)
+	}
+	if proxyRes == nil {
+		return fail(http.StatusBadGateway, "Cursor CLI 未返回结果", false)
+	}
+	status := proxyRes.status
+	bodyBytes := proxyRes.body
+	if rec.Body.Len() > 0 {
+		bodyBytes = rec.Body.Bytes()
+		if rec.Code > 0 {
+			status = rec.Code
+		}
+	}
+	result["status_code"] = status
+	result["duration_ms"] = time.Since(start).Milliseconds()
+	if proxyRes.nextAction == cooldown.ActionReturnClient && !proxyRes.succeeded {
+		result["cooldown_action"] = "client_error_no_cooldown"
+	}
+
+	if proxyRes.succeeded && status >= 200 && status < 300 {
+		result["success"] = true
+		result["message"] = "API测试成功"
+		if testReq.Stream {
+			result["response_text"] = string(proxyRes.body)
+			result["raw_response"] = rec.Body.String()
+			result["upstream_response_body"] = rec.Body.String()
+			return result
+		}
+		parsed := clientTester.Parse(status, bodyBytes)
+		for k, v := range parsed {
+			result[k] = v
+		}
+		if _, ok := result["api_response"]; !ok {
+			result["success"] = false
+			result["error"] = summarizeUnexpectedTestResponse("application/json", bodyBytes)
+			result["raw_response"] = string(bodyBytes)
+			return result
+		}
+		if success, ok := result["success"].(bool); ok && !success {
+			result["upstream_response_body"] = string(bodyBytes)
+			return result
+		}
+		result["success"] = true
+		result["message"] = "API测试成功"
+		result["upstream_response_body"] = string(bodyBytes)
+		return result
+	}
+
+	result["success"] = false
+	result["upstream_response_body"] = string(bodyBytes)
+	var apiError map[string]any
+	if unmarshalErr := sonic.Unmarshal(bodyBytes, &apiError); unmarshalErr == nil {
+		if errorMsg := extractTestAPIErrorMessage(apiError); errorMsg != "" {
+			result["error"] = errorMsg
+			result["api_error"] = apiError
+			return result
+		}
+		result["api_error"] = apiError
+	} else {
+		result["raw_response"] = string(bodyBytes)
+	}
+	if _, ok := result["error"]; !ok {
+		result["error"] = fmt.Sprintf("API返回错误状态: %d", status)
+	}
+	return result
 }
 
 func (s *Server) testChannelAPIWithURLForProtocol(

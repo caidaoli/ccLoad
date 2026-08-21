@@ -195,8 +195,11 @@ type oauthUsageSummary struct {
 	Windows               []oauthUsageWindow      `json:"windows"`
 	RateLimitResetCredits *codexQuotaResetCredits `json:"rate_limit_reset_credits,omitempty"`
 	Warnings              []string                `json:"warnings,omitempty"`
-	XAIBilling            *xaiBillingSummary      `json:"xai_billing,omitempty"`
-	QuotaCostUsage        *oauthcost.Usage        `json:"quota_cost_usage,omitempty"`
+	// DisplayMessage 是上游账单状态文案（例如 Cursor 的额度用尽提示），
+	// 不是采样失败。前端单独渲染，不得塞进 Warnings。
+	DisplayMessage string             `json:"display_message,omitempty"`
+	XAIBilling     *xaiBillingSummary `json:"xai_billing,omitempty"`
+	QuotaCostUsage *oauthcost.Usage   `json:"quota_cost_usage,omitempty"`
 }
 
 type persistedOAuthUsageSnapshot struct {
@@ -1407,7 +1410,10 @@ func (s *Server) persistOAuthUsage(
 			return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
 		}
 
-		nextQuotaCostUsage := reconcileOAuthQuotaCostUsage(state.quotaCostUsage, summary, sampledAt)
+		var nextQuotaCostUsage *oauthcost.Usage
+		if state.tracksQuotaCost {
+			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(state.quotaCostUsage, summary, sampledAt)
+		}
 		storedSummary := *summary
 		storedSummary.QuotaCostUsage = nil
 		snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
@@ -1668,12 +1674,10 @@ func normalizeCursorUsage(usage *cursorauth.PeriodUsage) (*oauthUsageSummary, er
 		return nil, errors.New("usage: Cursor response has no quota windows")
 	}
 	summary := &oauthUsageSummary{
-		Provider: cursorauth.ChannelType,
-		PlanType: usage.PlanType,
-		Windows:  make([]oauthUsageWindow, 0, len(usage.Windows)),
-	}
-	if message := strings.TrimSpace(usage.DisplayMessage); message != "" {
-		summary.Warnings = []string{message}
+		Provider:       cursorauth.ChannelType,
+		PlanType:       usage.PlanType,
+		DisplayMessage: strings.TrimSpace(usage.DisplayMessage),
+		Windows:        make([]oauthUsageWindow, 0, len(usage.Windows)),
 	}
 	for _, window := range usage.Windows {
 		summary.Windows = append(summary.Windows, oauthUsageWindow{

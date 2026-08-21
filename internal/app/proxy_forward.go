@@ -68,6 +68,9 @@ func (rc *onceCloseReadCloser) Close() error {
 func disableResponseWriteTimeout(w http.ResponseWriter, requestKind string) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			return
+		}
 		log.Printf("[WARN] 无法禁用%s请求的 WriteTimeout: %v", requestKind, err)
 	}
 }

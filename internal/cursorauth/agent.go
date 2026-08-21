@@ -73,18 +73,14 @@ func (r *CLIRunner) Run(ctx context.Context, credential *Credential, model, prom
 		return nil, fmt.Errorf("create cursor-agent home: %w", err)
 	}
 	configDir := filepath.Join(home, "xdg-config")
-	if err := os.MkdirAll(filepath.Join(configDir, "cursor"), 0o700); err != nil {
-		_ = os.RemoveAll(home)
-		return nil, fmt.Errorf("create cursor-agent config: %w", err)
-	}
 	authJSON, err := credential.AuthFileJSON()
 	if err != nil {
 		_ = os.RemoveAll(home)
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "cursor", "auth.json"), authJSON, 0o600); err != nil {
+	if err := writeCursorAgentAuthFiles(home, configDir, authJSON); err != nil {
 		_ = os.RemoveAll(home)
-		return nil, fmt.Errorf("write cursor-agent auth.json: %w", err)
+		return nil, err
 	}
 
 	timeout := r.Timeout
@@ -98,11 +94,7 @@ func (r *CLIRunner) Run(ctx context.Context, credential *Credential, model, prom
 	}
 	cmd := commandFn(runCtx, binary, "--print", "--trust", "--mode", "ask", "--model", model, "--output-format", "stream-json", prompt)
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(),
-		"HOME="+home,
-		"XDG_CONFIG_HOME="+configDir,
-		"CURSOR_ACCESS_TOKEN="+strings.TrimSpace(credential.AccessToken),
-	)
+	cmd.Env = cursorAgentEnviron(home, configDir, credential)
 	cmd.Stdin = nil
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -146,6 +138,66 @@ func (r *CLIRunner) Run(ctx context.Context, credential *Credential, model, prom
 		events <- Event{Text: text, Done: true}
 	}()
 	return events, nil
+}
+
+func writeCursorAgentAuthFiles(home, configDir string, authJSON []byte) error {
+	targets := []string{
+		filepath.Join(home, ".cursor"),
+		filepath.Join(configDir, "cursor"),
+	}
+	for _, dir := range targets {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create cursor-agent config: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), authJSON, 0o600); err != nil {
+			return fmt.Errorf("write cursor-agent auth.json: %w", err)
+		}
+	}
+	return nil
+}
+
+func cursorAgentEnviron(home, configDir string, credential *Credential) []string {
+	drop := map[string]struct{}{
+		"HOME": {}, "XDG_CONFIG_HOME": {},
+		"AGENT_CLI_CREDENTIAL_STORE": {},
+		"CURSOR_AUTH_TOKEN":          {},
+		"CURSOR_API_KEY":             {},
+		"CURSOR_ACCESS_TOKEN":        {},
+		"NODE_COMPILE_CACHE":         {},
+	}
+	env := make([]string, 0, len(os.Environ())+7)
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if _, skip := drop[key]; skip {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+configDir,
+		"AGENT_CLI_CREDENTIAL_STORE=file",
+		"NODE_COMPILE_CACHE="+cursorAgentCompileCacheDir(),
+	)
+	if credential == nil {
+		return env
+	}
+	if apiKey := strings.TrimSpace(credential.APIKey); apiKey != "" {
+		return append(env, "CURSOR_API_KEY="+apiKey)
+	}
+	if token := strings.TrimSpace(credential.AccessToken); token != "" {
+		return append(env, "CURSOR_AUTH_TOKEN="+token)
+	}
+	return env
+}
+
+func cursorAgentCompileCacheDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		if dir = strings.TrimSpace(dir); dir != "" {
+			return filepath.Join(dir, "cursor-compile-cache")
+		}
+	}
+	return filepath.Join(os.TempDir(), "ccload-cursor-compile-cache")
 }
 
 func (r *CLIRunner) lookPath() (string, error) {

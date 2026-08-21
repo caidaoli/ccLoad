@@ -18,11 +18,12 @@ import (
 )
 
 type oauthUsageCredentialState struct {
-	provider       string
-	authType       string
-	oauthUsage     json.RawMessage
-	quotaCostUsage *oauthcost.Usage
-	encode         func(json.RawMessage, *oauthcost.Usage) (string, error)
+	provider        string
+	authType        string
+	oauthUsage      json.RawMessage
+	quotaCostUsage  *oauthcost.Usage
+	tracksQuotaCost bool
+	encode          func(json.RawMessage, *oauthcost.Usage) (string, error)
 }
 
 func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialState, error) {
@@ -38,6 +39,7 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: codexauth.ChannelType, authType: model.AuthTypeCodexOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
+			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -52,6 +54,7 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: anthropicauth.ChannelType, authType: model.AuthTypeAnthropicOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
+			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -66,6 +69,7 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: antigravityauth.ChannelType, authType: model.AuthTypeAntigravityOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
+			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -80,6 +84,7 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: xaiauth.ChannelType, authType: model.AuthTypeXAIOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
+			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)

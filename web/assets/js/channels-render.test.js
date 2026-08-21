@@ -379,3 +379,50 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
     global.isTokenChannelsReadOnly = previousReadOnly;
   }
 });
+
+test('Cursor 额度用尽提示不当成数据不可用，也不渲染假的 $0.0', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageMonthly': '月限额',
+        'channels.oauth.usageLabel': `${values.name}${values.duration}`,
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageWarnings': '部分额度数据不可用',
+        'channels.cursor.usageIncluded': '包含额度',
+        'channels.cursor.usageAPI': 'API',
+        'channels.cursor.usageAuto': 'Auto'
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'cursor',
+      display_message: "You've hit your usage limit <safe>",
+      windows: [
+        { limit_name: 'included', kind: 'spend', remaining_percent: 0, limit_window_seconds: 2678400, reset_at: 1789181874 },
+        { limit_name: 'api', kind: 'spend', remaining_percent: 0, limit_window_seconds: 2678400 },
+        { limit_name: 'auto', kind: 'spend', remaining_percent: 9.5, limit_window_seconds: 2678400 }
+      ]
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 1481, auth_type: 'cursor_oauth' });
+    assert.match(html, /包含额度月限额/);
+    assert.match(html, /API月限额/);
+    assert.match(html, /Auto月限额/);
+    assert.match(html, /ch-oauth-usage__notice[^>]*>You&#39;ve hit your usage limit &lt;safe&gt;/);
+    assert.doesNotMatch(html, /部分额度数据不可用/);
+    assert.doesNotMatch(html, /You've hit your usage limit <safe>/);
+    assert.doesNotMatch(html, /\$0\.0/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});

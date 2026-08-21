@@ -24,6 +24,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -155,6 +156,27 @@ func createAnthropicOAuthChannelForAdminTest(t testing.TB, srv *Server, upstream
 		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolAnthropic}}},
 		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
 		ModelEntries:          []model.ModelEntry{{Model: "claude-sonnet-4-5"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func createCursorOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
+	t.Helper()
+	payload, err := (&cursorauth.Credential{AccessToken: "tok", Email: "user@example.com"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name:                  "cursor-oauth-admin-test",
+		AuthType:              model.AuthTypeCursorOAuth,
+		OAuthCredential:       payload,
+		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolAnthropic, util.ProtocolOpenAI}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "cursor-grok-4.6-high"}, {Model: "cursor-grok-4.6-xhigh"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5904,5 +5926,96 @@ func TestAdminTestNativeAnthropicDoesNotDoubleAppendHeaderRules(t *testing.T) {
 	}
 	if strings.Count(betas, "context-1m-2025-08-07") != 1 {
 		t.Fatalf("anthropic-beta = %q, append rule must not run twice on the native admin-test path", betas)
+	}
+}
+
+func TestAdminTestCursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
+	t.Parallel()
+	upstreamHits := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"Not Found","message":"Route POST:`+r.URL.Path+` not found","statusCode":404}`)
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createCursorOAuthChannelForAdminTest(t, srv, upstream.URL)
+	runner := &fakeCursorRunner{text: "ok from cli"}
+	srv.cursorRunner = runner
+
+	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
+		Model: "cursor-grok-4.6-xhigh", ClientProtocol: util.ProtocolAnthropic, Content: "2025 年 1 月 20 日发生了什么大事？",
+	}, true)
+	if success, _ := result["success"].(bool); !success {
+		t.Fatalf("cursor admin test result=%+v", result)
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("Cursor OAuth admin test must not HTTP-forward, hits=%d", upstreamHits)
+	}
+	if got, _ := result["upstream_protocol"].(string); got != "cursor-agent" {
+		t.Fatalf("upstream_protocol=%q", got)
+	}
+	if got, _ := result["response_text"].(string); got != "ok from cli" {
+		t.Fatalf("response_text=%q result=%+v", got, result)
+	}
+	if !strings.Contains(runner.prompt, "2025 年 1 月 20 日发生了什么大事？") {
+		t.Fatalf("prompt=%q", runner.prompt)
+	}
+	if body, _ := result["upstream_request_body"].(string); !strings.Contains(body, `"messages"`) || strings.Contains(body, "chat/completions") {
+		t.Fatalf("client body must stay Anthropic messages, got %s", body)
+	}
+}
+
+func TestAdminTestCursorOAuthReportsMissingCLI(t *testing.T) {
+	t.Parallel()
+	upstreamHits := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createCursorOAuthChannelForAdminTest(t, srv, upstream.URL)
+	srv.cursorRunner = &fakeCursorRunner{err: cursorauth.ErrAgentMissing}
+
+	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
+		Model: "cursor-grok-4.6-high", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
+	}, true)
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("missing CLI must fail, result=%+v", result)
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("missing CLI must not HTTP-forward, hits=%d", upstreamHits)
+	}
+	if status, _ := result["status_code"].(int); status != http.StatusServiceUnavailable {
+		t.Fatalf("status_code=%v result=%+v", result["status_code"], result)
+	}
+	if action, _ := result["cooldown_action"].(string); action != "client_error_no_cooldown" {
+		t.Fatalf("cooldown_action=%q result=%+v", action, result)
+	}
+	if errMsg, _ := result["error"].(string); !strings.Contains(errMsg, "cursor-agent is not installed") {
+		t.Fatalf("error=%q", errMsg)
+	}
+}
+
+func TestHandleChannelTest_CursorSessionDoesNotRemintWithoutAPIKey(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://example.invalid")
+	srv.cursorRunner = &fakeCursorRunner{eventErr: errors.New("cursor CLI is not authenticated")}
+	channelID := fmt.Sprintf("%d", cfg.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "cursor-grok-4.6-high", "client_protocol": "anthropic", "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	errMsg, _ := resp.Data["error"].(string)
+	if strings.Contains(errMsg, "刷新 OAuth 凭证失败") || strings.Contains(errMsg, "cannot be re-minted") {
+		t.Fatalf("session-only Cursor must not try to remint: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "not authenticated") {
+		t.Fatalf("error=%q data=%+v", errMsg, resp.Data)
 	}
 }

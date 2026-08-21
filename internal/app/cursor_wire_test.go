@@ -14,10 +14,11 @@ import (
 )
 
 type fakeCursorRunner struct {
-	model  string
-	prompt string
-	text   string
-	err    error
+	model    string
+	prompt   string
+	text     string
+	err      error
+	eventErr error
 }
 
 func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, model, prompt string) (<-chan cursorauth.Event, error) {
@@ -27,6 +28,11 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, mode
 		return nil, r.err
 	}
 	events := make(chan cursorauth.Event, 2)
+	if r.eventErr != nil {
+		events <- cursorauth.Event{Text: r.text, Done: true, Err: r.eventErr}
+		close(events)
+		return events, nil
+	}
 	events <- cursorauth.Event{Delta: r.text, Text: r.text}
 	events <- cursorauth.Event{Text: r.text, Done: true}
 	close(events)
@@ -104,7 +110,7 @@ func TestCursorUsageSnapshotPersistsOnCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseOAuthUsageCredentialState() error = %v", err)
 	}
-	if state.provider != cursorauth.ChannelType || state.authType != model.AuthTypeCursorOAuth {
+	if state.provider != cursorauth.ChannelType || state.authType != model.AuthTypeCursorOAuth || state.tracksQuotaCost {
 		t.Fatalf("state = %+v", state)
 	}
 	snapshot := []byte(`{"requested_at":"2026-08-18T00:00:00Z","sampled_at":"2026-08-18T00:00:01Z",` +
@@ -121,6 +127,27 @@ func TestCursorUsageSnapshotPersistsOnCredential(t *testing.T) {
 	usage, _, _ := persistedOAuthUsage(stored.OAuthUsage, cursorauth.ChannelType)
 	if usage == nil || len(usage.Windows) != 1 || usage.Windows[0].LimitName != "included" {
 		t.Fatalf("persisted usage = %+v", usage)
+	}
+}
+
+func TestNormalizeCursorUsageKeepsLimitMessageOffWarnings(t *testing.T) {
+	t.Parallel()
+	summary, err := normalizeCursorUsage(&cursorauth.PeriodUsage{
+		PlanType:       "user",
+		DisplayMessage: "You've hit your usage limit",
+		Windows: []cursorauth.QuotaWindow{{
+			Name: "api", Kind: "spend", UsedPercent: 100, RemainingPercent: 0,
+			LimitWindowSeconds: 2678400, ResetAt: 1789181874,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("normalizeCursorUsage() error = %v", err)
+	}
+	if summary.DisplayMessage != "You've hit your usage limit" || len(summary.Warnings) != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.Windows[0].StandardCostMicroUSD != nil {
+		t.Fatalf("cursor windows must not carry standard cost: %+v", summary.Windows[0])
 	}
 }
 

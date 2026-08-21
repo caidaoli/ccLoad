@@ -857,6 +857,7 @@ function buildOAuthUsageStatusHtml(channel) {
       </div>
     </div>`;
   });
+  const notice = String(state.data?.display_message || '').trim();
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
@@ -864,6 +865,7 @@ function buildOAuthUsageStatusHtml(channel) {
     <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id, false, state.reset_status === 'loading')}</div>
     ${rows.join('')}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
+    ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;
 }

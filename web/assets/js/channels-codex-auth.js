@@ -157,7 +157,9 @@ function applyChannelAuthEditorMode(
   const codexPersonalAccessToken = codexOAuth && credential?.auth_mode === 'personalAccessToken';
   const xaiOAuth = authType === 'xai_oauth';
   const anthropicOAuth = authType === 'anthropic_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth;
+  const zaiOAuth = authType === 'zai_oauth';
+  const cursorOAuth = authType === 'cursor_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth;
   const oauth = credentialVisible;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -201,7 +203,7 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
-  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth || codexPersonalAccessToken;
+  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth || zaiOAuth || cursorOAuth || codexPersonalAccessToken;
   renderOAuthCredential(
     credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,

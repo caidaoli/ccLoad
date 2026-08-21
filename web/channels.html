@@ -130,7 +130,7 @@
                 </div>
                 <div id="codexPersonalAccessTokenField" class="oauth-field" hidden>
                   <label for="codexPersonalAccessToken" data-i18n="channels.codex.personalAccessTokenLabel">Codex Personal Access Token</label>
-                  <input id="codexPersonalAccessToken" name="codex_personal_access_token" type="password"
+                  <input id="codexPersonalAccessToken" name="codex_personal_access_token" type="text"
                     class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
                     placeholder="at-..."
                     aria-describedby="codexPersonalAccessTokenHint oauthLoginDialogStatus">
@@ -205,7 +205,7 @@
                 </div>
                 <div id="zaiAPIKeyField" class="oauth-field" hidden>
                   <label for="zaiCodingPlanKey" data-i18n="channels.zai.apiKeyLabel">Coding Plan API Key</label>
-                  <input id="zaiCodingPlanKey" name="zai_coding_plan_key" type="password"
+                  <input id="zaiCodingPlanKey" name="zai_coding_plan_key" type="text"
                     class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
                     aria-describedby="zaiAPIKeyHint oauthLoginDialogStatus">
                   <p id="zaiAPIKeyHint" class="oauth-field-hint"
@@ -223,7 +223,7 @@
                 </div>
                 <div id="cursorAPIKeyField" class="oauth-field" hidden>
                   <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
-                  <input id="cursorUserAPIKey" name="cursor_user_api_key" type="password"
+                  <input id="cursorUserAPIKey" name="cursor_user_api_key" type="text"
                     class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
                     aria-describedby="cursorAPIKeyHint oauthLoginDialogStatus">
                   <p id="cursorAPIKeyHint" class="oauth-field-hint"
@@ -231,11 +231,11 @@
                 </div>
                 <div id="cursorSessionField" class="oauth-field" hidden>
                   <label for="cursorSessionToken" data-i18n="channels.cursor.sessionLabel">accessToken</label>
-                  <input id="cursorSessionToken" name="cursor_session_token" type="password"
+                  <input id="cursorSessionToken" name="cursor_session_token" type="text"
                     class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
                     aria-describedby="cursorSessionHint oauthLoginDialogStatus">
                   <p id="cursorSessionHint" class="oauth-field-hint"
-                    data-i18n="channels.cursor.sessionHint">粘贴 Cursor CLI auth.json 里的 accessToken。提交后输入会立即从页面清除。</p>
+                    data-i18n="channels.cursor.sessionHint">macOS 用 security find-generic-password -s cursor-access-token -a cursor-user -w 取出。Linux 看 ~/.config/cursor/auth.json。提交后输入会立即从页面清除。</p>
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">

@@ -65,6 +65,97 @@ func TestClassifyAgentErrorDetectsAuth(t *testing.T) {
 	}
 }
 
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func TestCursorAgentEnvironUsesAuthTokenForSession(t *testing.T) {
+	t.Setenv("CURSOR_AUTH_TOKEN", "stale")
+	t.Setenv("CURSOR_API_KEY", "leaked")
+	t.Setenv("CURSOR_ACCESS_TOKEN", "wrong-name")
+	env := envMap(cursorAgentEnviron("/tmp/home", "/tmp/xdg", &Credential{AccessToken: "tok"}))
+	if env["CURSOR_AUTH_TOKEN"] != "tok" {
+		t.Fatalf("CURSOR_AUTH_TOKEN = %q", env["CURSOR_AUTH_TOKEN"])
+	}
+	if env["AGENT_CLI_CREDENTIAL_STORE"] != "file" {
+		t.Fatalf("AGENT_CLI_CREDENTIAL_STORE = %q", env["AGENT_CLI_CREDENTIAL_STORE"])
+	}
+	if env["HOME"] != "/tmp/home" || env["XDG_CONFIG_HOME"] != "/tmp/xdg" {
+		t.Fatalf("home env = %q xdg = %q", env["HOME"], env["XDG_CONFIG_HOME"])
+	}
+	if _, ok := env["CURSOR_API_KEY"]; ok {
+		t.Fatal("session tokens must not be sent as CURSOR_API_KEY")
+	}
+	if _, ok := env["CURSOR_ACCESS_TOKEN"]; ok {
+		t.Fatal("cursor-agent reads CURSOR_AUTH_TOKEN, not CURSOR_ACCESS_TOKEN")
+	}
+}
+
+func TestCursorAgentEnvironPinsCompileCacheOutsideTempHome(t *testing.T) {
+	t.Setenv("NODE_COMPILE_CACHE", "/tmp/home/stale-cache")
+	env := envMap(cursorAgentEnviron("/tmp/home", "/tmp/xdg", &Credential{AccessToken: "tok"}))
+	cache := env["NODE_COMPILE_CACHE"]
+	if cache == "" {
+		t.Fatal("NODE_COMPILE_CACHE must be set")
+	}
+	if strings.HasPrefix(cache, "/tmp/home") || cache == "/tmp/home/stale-cache" {
+		t.Fatalf("compile cache must outlive the isolated HOME: %q", cache)
+	}
+	if cache != cursorAgentCompileCacheDir() {
+		t.Fatalf("NODE_COMPILE_CACHE = %q, want %q", cache, cursorAgentCompileCacheDir())
+	}
+}
+
+func TestCursorAgentEnvironPrefersAPIKey(t *testing.T) {
+	t.Parallel()
+	env := envMap(cursorAgentEnviron("/tmp/home", "/tmp/xdg", &Credential{AccessToken: "tok", APIKey: "key"}))
+	if env["CURSOR_API_KEY"] != "key" {
+		t.Fatalf("CURSOR_API_KEY = %q", env["CURSOR_API_KEY"])
+	}
+	if _, ok := env["CURSOR_AUTH_TOKEN"]; ok {
+		t.Fatal("API key channels must not pin a stale session via CURSOR_AUTH_TOKEN")
+	}
+}
+
+func TestCLIRunnerWritesPlatformAuthFiles(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "cursor-agent")
+	source := "#!/bin/sh\n" +
+		"test -f \"$HOME/.cursor/auth.json\" || { echo missing-darwin >&2; exit 1; }\n" +
+		"test -f \"$XDG_CONFIG_HOME/cursor/auth.json\" || { echo missing-xdg >&2; exit 1; }\n" +
+		"test \"$AGENT_CLI_CREDENTIAL_STORE\" = file || { echo bad-store >&2; exit 1; }\n" +
+		"test \"$CURSOR_AUTH_TOKEN\" = tok || { echo bad-token >&2; exit 1; }\n" +
+		"echo '{\"type\":\"result\",\"result\":\"ok\"}'\n"
+	if err := os.WriteFile(script, []byte(source), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+	t.Setenv("CURSOR_AGENT_PATH", script)
+	runner := NewCLIRunner()
+	events, err := runner.Run(context.Background(), &Credential{AccessToken: "tok"}, "claude-sonnet-5", "hi")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var final Event
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("event error = %v", event.Err)
+		}
+		if event.Done {
+			final = event
+		}
+	}
+	if final.Text != "ok" {
+		t.Fatalf("final = %+v", final)
+	}
+}
+
 func TestCLIRunnerCommandUsesAskMode(t *testing.T) {
 	t.Setenv("CURSOR_AGENT_PATH", "")
 	var gotArgs []string
