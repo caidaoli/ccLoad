@@ -124,10 +124,45 @@ func TestCursorUsageSnapshotPersistsOnCredential(t *testing.T) {
 	}
 }
 
-func TestExtractPromptDoesNotForwardTools(t *testing.T) {
+func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"list files"},{"type":"tool_use","name":"bash"}]}]}`)
-	if got := cursorauth.ExtractPrompt(body); got != "user: list files" {
-		t.Fatalf("prompt = %q", got)
+	runner := &fakeCursorRunner{text: "one sec\n<cc_tool_call>\n{\"name\":\"bash\",\"arguments\":{\"cmd\":\"ls\"}}\n</cc_tool_call>\n"}
+	srv := newInMemoryServer(t)
+	srv.cursorRunner = runner
+	cfg := &model.Config{ID: 9, AuthType: model.AuthTypeCursorOAuth}
+	reqCtx := &proxyRequestContext{
+		originalModel: "claude-sonnet-5", clientProtocol: protocol.Anthropic,
+		requestPath: "/v1/messages",
+		body: []byte(`{
+			"model":"claude-sonnet-5",
+			"tools":[{"name":"bash","input_schema":{"type":"object"}}],
+			"messages":[{"role":"user","content":"list files"}],
+			"thinking":{"type":"disabled"}
+		}`),
+	}
+	rec := httptest.NewRecorder()
+	result, err := srv.forwardCursorAgent(context.Background(), cfg, &cursorauth.Credential{AccessToken: "tok"}, reqCtx, rec)
+	if err != nil || result == nil || !result.succeeded {
+		t.Fatalf("result = %+v err = %v", result, err)
+	}
+	if !strings.Contains(runner.prompt, "<cc_tool_call>") || !strings.Contains(runner.prompt, "bash") {
+		t.Fatalf("prompt missing tool catalog: %q", runner.prompt)
+	}
+	var payload struct {
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &payload) != nil {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if payload.StopReason != "tool_use" || len(payload.Content) != 2 ||
+		payload.Content[0].Type != "text" || payload.Content[0].Text != "one sec" ||
+		payload.Content[1].Type != "tool_use" || payload.Content[1].Name != "bash" {
+		t.Fatalf("payload = %+v body = %s", payload, rec.Body.String())
 	}
 }

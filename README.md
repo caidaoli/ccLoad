@@ -733,7 +733,7 @@ ccLoad loads the Coding Plan model catalog from the account when creating or ref
 
 In the channel manager, choose **Cursor** and complete the browser CLI login (`loginDeepControl`), import a Cursor user API key, or paste the `accessToken` from Cursor CLI `auth.json`. Login, identity, model discovery, and quota refresh talk to `api2.cursor.sh` over HTTP. Chat still runs `cursor-agent` on the ccLoad host (`--print --trust --mode ask`), so install the Cursor CLI (`https://cursor.com/install`) and keep `cursor-agent` on `PATH` (or set `CURSOR_AGENT_PATH`).
 
-This matches [cursor2Oauth](https://github.com/ChenYCL/cursor2Oauth): last-turn text in, text out. Client `tools` / `tool_use` are not forwarded, and responses never contain tool calls. Official Cursor `AgentService/RunSSE` is a moving protobuf target; this channel does not implement that loop.
+Chat still uses `cursor-agent --mode ask` so Cursor does not run shell or file tools on the ccLoad host. Client `tools`, `tool_use`, `function_call`, and `tool_result` are mapped through the prompt: the model emits `<cc_tool_call>` blocks, which ccLoad translates to Anthropic `tool_use` or OpenAI `tool_calls`. The client executes those tools and sends the results back on the next turn. This is not Cursor `AgentService/RunSSE`.
 
 The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
 

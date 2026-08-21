@@ -31,8 +31,9 @@ type Runner interface {
 
 // CLIRunner spawns cursor-agent --print --trust --mode ask.
 //
-// Tool calling is intentionally absent: the CLI ask mode is text-only, which
-// is also how cursor2Oauth works. Client `tools` arrays are not forwarded.
+// Ask mode is read-only so Cursor does not run shell/file tools on the ccLoad
+// host. Client tools are described in the prompt and mapped back from
+// <cc_tool_call> blocks in the model text.
 type CLIRunner struct {
 	LookPath func(string) (string, error)
 	Command  func(ctx context.Context, name string, args ...string) *exec.Cmd
