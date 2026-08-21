@@ -584,6 +584,12 @@ function formatOAuthUsageLimitName(limitName) {
   if (!normalized || normalized === 'codex') return '';
   if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
   if (normalized === 'gemini models') return 'Gemini';
+  // Z.ai 的 token 窗口只有时长有信息量，时长已单独渲染，避免出现「five_hour 5小时」。
+  if (normalized === 'five_hour' || normalized === 'weekly') return '';
+  if (normalized === 'mcp_limit') return 'MCP';
+  if (normalized === 'included') return window.t('channels.cursor.usageIncluded');
+  if (normalized === 'api') return window.t('channels.cursor.usageAPI');
+  if (normalized === 'auto') return window.t('channels.cursor.usageAuto');
   if (normalized === 'claude and gpt models') return 'Claude';
   return String(limitName).trim();
 }
@@ -799,7 +805,7 @@ function buildXAIUsageRows(data) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }

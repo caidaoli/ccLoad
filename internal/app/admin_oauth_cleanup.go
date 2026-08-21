@@ -441,7 +441,8 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	authType := model.NormalizeAuthType(value)
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
-		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth:
+		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth:
 		return authType
 	default:
 		return ""
@@ -984,7 +985,7 @@ func oauthCredentialTestAccessToken(
 		return runtimeCfg.CodexAccessToken
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
-	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth():
+	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth():
 		return selection.requestCredential
 	}
 	return ""

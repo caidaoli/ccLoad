@@ -68,7 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/模型/渠道统一指数退避，优先尊重上游精确恢复时间 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计+进程指标(CPU/RSS/GC) | 一眼看清用量与运行状态 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI/Z.ai Coding Plan(ZCode) OAuth 凭证 + Codex 个人访问令牌(PAT) | 自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
+| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor CLI 浏览器登录 / User API Key / accessToken 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
 | 📅 **OAuth 额度成本** | 按凭证累计周/月标准成本，对齐上游额度窗口 | 有重置额度时可手动重置 Codex 配额 |
 | 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
@@ -740,6 +740,20 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **并发限制说明**：`max_concurrency` 是渠道级同时在飞请求上限；`0` 表示不限制。槽位从发起上游请求前占用，到响应体关闭后释放，流式请求会占用到流结束；达到上限后该渠道会被跳过，不触发冷却。计数保存在当前进程内，多实例部署时各实例独立统计。
 
+#### Z.ai Coding Plan（ZCode）
+
+在渠道管理中选择 **Z.ai Coding Plan**，可完成浏览器授权，或直接导入已有的 Coding Plan API Key。提供商浏览器 OAuth 暂时不可用时，仍可通过 API Key 导入接入。
+
+ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目录，失败后回退到 models.dev，最后才使用内置列表。渠道卡片也可刷新并展示 Coding Plan 的额度窗口。
+
+#### Cursor CLI
+
+在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`），需要安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
+
+行为对齐 [cursor2Oauth](https://github.com/ChenYCL/cursor2Oauth)：只吃文本、只回文本。客户端 `tools` / `tool_use` 不会转发给 Cursor，响应里也不会出现工具调用。官方 `AgentService/RunSSE` 的 protobuf 仍在变动，本渠道不实现那条工具循环。
+
+渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
+
 ### 自定义请求规则（高级）
 
 渠道编辑弹窗底部「高级」按钮可打开二级模态，按渠道粒度改写转发给上游的 **HTTP 请求头** 与 **JSON 请求体**，常用于 `User-Agent` 覆写、强制版本头、微调 `thinking` / `max_tokens` 等字段。规则按配置顺序生效，保存后对该渠道后续所有请求立即生效。
@@ -1022,6 +1036,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
 | `max_concurrency` | `1000` | 最大并发请求数，限制同时处理的代理请求数量 |
+| `http_read_timeout_seconds` | `0` | 下游请求读取超时（秒）；`0` 使用内建 120 秒。覆盖请求头和请求体的完整读取，超时返回 408，与请求体大小限制独立。 |
 | `max_body_bytes` | `10485760` | 请求体最大字节数，默认 10MB |
 | `max_image_body_bytes` | `20971520` | Images API 请求体最大字节数，默认 20MB |
 | `cooldown_auth_seconds` | `300` | 认证错误（401/402/403）初始冷却时间（秒） |
@@ -1137,7 +1152,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 - 限制容器 inspect、编排平台控制台和部署配置的访问权限
 
 **令牌高级功能**：
-- **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
+- **费用限额**：通过 `cost_limit_usd`、`cost_daily_limit_usd`、`cost_monthly_limit_usd` 分别设置总、日、月费用上限（美元）；`0` 表示不限制。任一已启用限额达到上限即返回 429；设置费用限额时还必须将 `max_concurrency` 设为正数。
 - **模型限制**：限制令牌可访问的模型列表，增强访问控制
 - **渠道限制**：`allowed_channel_ids` 配合 `channel_restriction_mode`——`allow` 为白名单，`deny` 为黑名单；两种模式下空列表均表示不限制
 - **并发限制**：`max_concurrency` 限制单令牌同时在飞的请求数（`0`=不限制）

@@ -14,6 +14,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -450,6 +451,22 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			oauthUsage:        attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
 		}
 	}
+	if cfg.UsesZAIOAuth() {
+		credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
+	if cfg.UsesCursorOAuth() {
+		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, cursorauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
 	}
@@ -747,6 +764,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 			return nil, err
 		}
 		accessToken, note = credential.APIKey, "Z.ai Coding Plan Key"
+	case cfg.UsesCursorOAuth():
+		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Cursor CLI session"
 	}
 
 	return []*model.APIKey{{
@@ -949,6 +972,48 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 	RespondJSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
+func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, id int64, modelName string, disabled bool) {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "model cannot be empty")
+		return
+	}
+
+	ctx := c.Request.Context()
+	cfg, err := s.store.GetConfig(ctx, id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	found := -1
+	for i := range cfg.ModelEntries {
+		if strings.EqualFold(cfg.ModelEntries[i].Model, modelName) {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		RespondErrorMsg(c, http.StatusNotFound, "model not found")
+		return
+	}
+
+	if cfg.ModelEntries[found].Disabled == disabled {
+		RespondJSON(c, http.StatusOK, cfg)
+		return
+	}
+
+	cfg.ModelEntries[found].Disabled = disabled
+	upd, err := s.store.UpdateConfig(ctx, id, cfg)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, upd)
+}
+
 // 更新渠道
 func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 解析请求为通用map以支持部分更新
@@ -979,6 +1044,15 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
 			s.InvalidateChannelListCache()
 			RespondJSON(c, http.StatusOK, upd)
+			return
+		}
+	}
+
+	if len(rawReq) == 2 {
+		modelName, hasModel := rawReq["model"].(string)
+		disabled, hasDisabled := rawReq["disabled"].(bool)
+		if hasModel && hasDisabled {
+			s.handleUpdateChannelModelDisabled(c, id, modelName, disabled)
 			return
 		}
 	}
