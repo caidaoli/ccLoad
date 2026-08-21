@@ -1472,6 +1472,78 @@ func TestHandleUpdateChannel_EnableClearsAllCooldownsImmediately(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateChannel_TogglesModelDisabledWithoutChangingChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "model-toggle",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
+		ModelEntries: []model.ModelEntry{
+			{Model: "keep-on", RedirectModel: "keep-on"},
+			{Model: "toggle-me", RedirectModel: "toggle-me"},
+		},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	channelPath := "/admin/channels/" + strconv.FormatInt(created.ID, 10)
+	disableCtx, disableWriter := newTestContext(t, newJSONRequest(t, http.MethodPut, channelPath, map[string]any{
+		"model":    "toggle-me",
+		"disabled": true,
+	}))
+	server.handleUpdateChannel(disableCtx, created.ID)
+	if disableWriter.Code != http.StatusOK {
+		t.Fatalf("禁用模型失败: %d body=%s", disableWriter.Code, disableWriter.Body.String())
+	}
+
+	stored, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询渠道失败: %v", err)
+	}
+	if !stored.Enabled {
+		t.Fatal("禁用模型不应关闭渠道")
+	}
+	disabledByName := map[string]bool{}
+	for _, entry := range stored.ModelEntries {
+		disabledByName[entry.Model] = entry.Disabled
+	}
+	if disabledByName["toggle-me"] != true || disabledByName["keep-on"] {
+		t.Fatalf("模型禁用状态=%v, want toggle-me=true keep-on=false", disabledByName)
+	}
+
+	enableCtx, enableWriter := newTestContext(t, newJSONRequest(t, http.MethodPut, channelPath, map[string]any{
+		"model":    "TOGGLE-ME",
+		"disabled": false,
+	}))
+	server.handleUpdateChannel(enableCtx, created.ID)
+	if enableWriter.Code != http.StatusOK {
+		t.Fatalf("启用模型失败: %d body=%s", enableWriter.Code, enableWriter.Body.String())
+	}
+	stored, err = store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("再次查询渠道失败: %v", err)
+	}
+	for _, entry := range stored.ModelEntries {
+		if entry.Disabled {
+			t.Fatalf("预期模型已全部启用，实际 %+v", stored.ModelEntries)
+		}
+	}
+
+	missingCtx, missingWriter := newTestContext(t, newJSONRequest(t, http.MethodPut, channelPath, map[string]any{
+		"model":    "not-on-channel",
+		"disabled": true,
+	}))
+	server.handleUpdateChannel(missingCtx, created.ID)
+	if missingWriter.Code != http.StatusNotFound {
+		t.Fatalf("缺失模型期望 404，实际 %d body=%s", missingWriter.Code, missingWriter.Body.String())
+	}
+}
+
 func TestHandleAPIKeyToggleRejectsMissingOrNegativeKeyIndex(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

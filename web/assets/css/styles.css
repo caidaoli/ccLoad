@@ -3455,6 +3455,17 @@ body {
   display: inline;
 }
 
+.model-test-table .model-test-row--muted {
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--color-text-secondary);
+}
+
+.model-test-table .model-test-row--muted .channel-link,
+.model-test-table .model-test-row--muted .channel-link:hover,
+.model-test-table .model-test-row--muted .ch-priority-input {
+  color: var(--color-text-secondary);
+}
+
 .model-test-table .ch-priority-input {
   background: transparent;
 }
@@ -5077,6 +5088,13 @@ html[data-theme="system"][data-resolved-theme="dark"] .model-test-table .channel
 html[data-theme="dark"] .logs-table .channel-link:hover,
 html[data-theme="system"][data-resolved-theme="dark"] .logs-table .channel-link:hover {
   color: var(--primary-200);
+}
+
+html[data-theme="dark"] .model-test-table .model-test-row--muted .channel-link,
+html[data-theme="system"][data-resolved-theme="dark"] .model-test-table .model-test-row--muted .channel-link,
+html[data-theme="dark"] .model-test-table .model-test-row--muted .channel-link:hover,
+html[data-theme="system"][data-resolved-theme="dark"] .model-test-table .model-test-row--muted .channel-link:hover {
+  color: var(--color-text-secondary);
 }
 
 /* ===== 日志和统计页面样式 ===== */
@@ -6990,6 +7008,10 @@ body.web-role-api-token .filter-group--auth-token {
     background: var(--surface-bg-strong);
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     position: relative;
+  }
+
+  .mobile-card-table tbody .mobile-card-row.model-test-row--muted {
+    background: rgba(148, 163, 184, 0.18);
   }
 
   .mobile-card-table tbody tr:not(.mobile-card-row) {

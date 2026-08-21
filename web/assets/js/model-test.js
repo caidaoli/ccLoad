@@ -649,43 +649,89 @@ function flushModelTestPrioritySave(input) {
   return saveModelTestInlinePriority(input);
 }
 
-function updateLocalModelTestChannelEnabled(channelId, enabled) {
-  if (!Array.isArray(channelsList)) return;
-  channelsList.forEach((ch) => {
-    if (Number(ch.id) === channelId) ch.enabled = enabled;
-  });
+function findChannelModelEntry(channel, modelName) {
+  const target = String(modelName || '').trim().toLowerCase();
+  if (!channel || !target || !Array.isArray(channel.models)) return null;
+  return channel.models.find(entry => String(getModelName(entry) || '').trim().toLowerCase() === target) || null;
 }
 
-function applyModelTestRowEnabledStyle(row, enabled) {
+function isChannelModelEnabled(channel, modelName) {
+  const entry = findChannelModelEntry(channel, modelName);
+  return !entry || entry.disabled !== true;
+}
+
+function updateLocalModelTestModelDisabled(channelId, modelName, disabled) {
+  const channel = Array.isArray(channelsList)
+    ? channelsList.find(ch => Number(ch.id) === channelId)
+    : null;
+  const entry = findChannelModelEntry(channel, modelName);
+  if (!entry) return null;
+  const previous = entry.disabled === true;
+  entry.disabled = disabled === true;
+  return () => {
+    entry.disabled = previous;
+  };
+}
+
+function isModelTestChannelEnabled(channel) {
+  return channel?.enabled !== false;
+}
+
+function formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled) {
+  const tags = [];
+  if (!channelEnabled) tags.push(i18nText('channels.statusDisabled', '已禁用'));
+  if (!modelEnabled) tags.push(i18nText('channels.modelStatusDisabled', '已停用'));
+  if (tags.length === 0) return baseName;
+  return `${baseName} [${tags.join('] [')}]`;
+}
+
+function applyModelTestRowMuted(row, muted) {
   if (!row) return;
+  row.classList.toggle('model-test-row--muted', Boolean(muted));
+}
+
+function applyModelTestRowEnabledStyle(row, modelEnabled) {
+  if (!row) return;
+  const channelEnabled = row.dataset.channelEnabled !== 'false';
   const btn = row.querySelector('.channel-enable-switch');
   if (btn) {
-    btn.dataset.enabled = String(enabled);
-    btn.setAttribute('aria-checked', String(enabled));
-    btn.classList.toggle('channel-enable-switch--on', enabled);
-    btn.classList.toggle('channel-enable-switch--off', !enabled);
-    btn.title = enabled ? i18nText('channels.toggleDisable', '禁用') : i18nText('channels.toggleEnable', '启用');
+    btn.dataset.enabled = String(modelEnabled);
+    btn.setAttribute('aria-checked', String(modelEnabled));
+    btn.classList.toggle('channel-enable-switch--on', modelEnabled);
+    btn.classList.toggle('channel-enable-switch--off', !modelEnabled);
+    btn.title = modelEnabled ? i18nText('modelTest.toggleDisable', '禁用模型') : i18nText('modelTest.toggleEnable', '启用模型');
     btn.setAttribute('aria-label', btn.title);
   }
-  row.style.background = enabled ? '' : 'rgba(148, 163, 184, 0.14)';
-  row.style.color = enabled ? '' : 'var(--color-text-secondary)';
+  const link = row.querySelector('.channel-link');
+  const baseName = row.dataset.channelBaseName || '';
+  if (link && baseName) {
+    const displayName = formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled);
+    link.textContent = displayName;
+    link.title = displayName;
+  }
+  applyModelTestRowMuted(row, !channelEnabled || !modelEnabled);
 }
 
-async function toggleModelTestChannelEnabled(row, channelId, newEnabled) {
-  updateLocalModelTestChannelEnabled(channelId, newEnabled);
+async function toggleModelTestModelEnabled(row, channelId, modelName, newEnabled) {
+  const rollback = updateLocalModelTestModelDisabled(channelId, modelName, !newEnabled);
+  if (!rollback) {
+    showError(i18nText('modelTest.modelNotInChannel', '该渠道没有独立的该模型条目'));
+    return;
+  }
   applyModelTestRowEnabledStyle(row, newEnabled);
 
   try {
     const resp = await fetchAPIWithAuth(`/admin/channels/${channelId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: newEnabled })
+      body: JSON.stringify({ model: modelName, disabled: !newEnabled })
     });
     if (!resp.success) throw new Error(resp.error || 'failed');
   } catch (e) {
-    console.error('Toggle channel enabled failed:', e);
-    updateLocalModelTestChannelEnabled(channelId, !newEnabled);
+    console.error('Toggle model enabled failed:', e);
+    rollback();
     applyModelTestRowEnabledStyle(row, !newEnabled);
+    showError(i18nText('modelTest.toggleModelFailed', '切换模型启用状态失败'));
   }
 }
 
@@ -1514,9 +1560,11 @@ function renderChannelModeRows() {
   }
 
   const fragment = document.createDocumentFragment();
+  const channelEnabled = isModelTestChannelEnabled(selectedChannel);
   models.forEach(entry => {
     const modelName = getModelName(entry);
     if (!modelName) return;
+    const modelEnabled = entry?.disabled !== true;
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
@@ -1524,7 +1572,10 @@ function renderChannelModeRows() {
       costMultiplier: normalizeModelTestCostMultiplier(selectedChannel.cost_multiplier),
       ...getResultRowMobileLabels('common.model', '模型')
     });
-    if (row) fragment.appendChild(row);
+    if (row) {
+      applyModelTestRowMuted(row, !channelEnabled || !modelEnabled);
+      fragment.appendChild(row);
+    }
   });
 
   tbody.innerHTML = '';
@@ -1590,20 +1641,22 @@ function renderModelModeRows() {
 
   const fragment = document.createDocumentFragment();
   pairs.forEach(({ channel: ch, model }) => {
-    const isEnabled = ch.enabled !== false;
+    const modelEnabled = isChannelModelEnabled(ch, model);
+    const channelEnabled = isModelTestChannelEnabled(ch);
+    const available = channelEnabled && modelEnabled;
     const baseName = isExact ? ch.name : `${ch.name} · ${model}`;
-    const channelName = isEnabled
-      ? baseName
-      : `${baseName} [${i18nText('common.disabled', '已禁用')}]`;
+    const channelName = formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled);
     const priorityValue = (ch.priority !== null && ch.priority !== undefined && Number.isFinite(Number(ch.priority))) ? Number(ch.priority) : 0;
 
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
+      channelBaseName: baseName,
+      channelEnabled: String(channelEnabled),
       channelPriority: String(priorityValue),
-      channelEnabled: String(isEnabled),
-      toggleSwitchClass: isEnabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
-      toggleTitle: isEnabled ? i18nText('channels.toggleDisable', '禁用') : i18nText('channels.toggleEnable', '启用'),
+      modelEnabled: String(modelEnabled),
+      toggleSwitchClass: modelEnabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
+      toggleTitle: modelEnabled ? i18nText('modelTest.toggleDisable', '禁用模型') : i18nText('modelTest.toggleEnable', '启用模型'),
       costMultiplier: normalizeModelTestCostMultiplier(ch.cost_multiplier),
       model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
@@ -1612,13 +1665,9 @@ function renderModelModeRows() {
     if (row) {
       const checkbox = row.querySelector('.channel-checkbox');
       if (checkbox) {
-        restoreRowSelectionState(row, previousSelectionState, isEnabled);
+        restoreRowSelectionState(row, previousSelectionState, available);
       }
-
-      if (!isEnabled) {
-        row.style.background = 'rgba(148, 163, 184, 0.14)';
-        row.style.color = 'var(--color-text-secondary)';
-      }
+      applyModelTestRowEnabledStyle(row, modelEnabled);
     }
 
     if (row) fragment.appendChild(row);
@@ -3058,9 +3107,10 @@ function bindEvents() {
     if (enableSwitch) {
       const row = enableSwitch.closest('tr');
       const channelId = parseInt(enableSwitch.dataset.channelId, 10);
-      if (Number.isFinite(channelId) && channelId > 0 && row) {
+      const modelName = String(row?.dataset?.model || '').trim();
+      if (Number.isFinite(channelId) && channelId > 0 && row && modelName) {
         const currentEnabled = enableSwitch.dataset.enabled === 'true';
-        toggleModelTestChannelEnabled(row, channelId, !currentEnabled);
+        toggleModelTestModelEnabled(row, channelId, modelName, !currentEnabled);
       }
       return;
     }
