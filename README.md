@@ -65,7 +65,7 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
-- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; and Z.ai Coding Plan (ZCode) browser authorization or API-key import, with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; Z.ai Coding Plan (ZCode) browser authorization or API-key import; and Cursor CLI browser login, user API key, or session-token import, with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
 - 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
@@ -728,6 +728,14 @@ curl -X POST http://localhost:8080/admin/channels \
 In the channel manager, choose **Z.ai Coding Plan** and either complete the browser authorization flow or import an existing Coding Plan API key. API-key import remains available when the provider's browser OAuth flow is unavailable.
 
 ccLoad loads the Coding Plan model catalog from the account when creating or refreshing the channel, falls back to models.dev, then uses its built-in list only as a last resort. The channel card can also refresh and show the Coding Plan quota windows.
+
+#### Cursor CLI
+
+In the channel manager, choose **Cursor** and complete the browser CLI login (`loginDeepControl`), import a Cursor user API key, or paste the `accessToken` from Cursor CLI `auth.json`. Login, identity, model discovery, and quota refresh talk to `api2.cursor.sh` over HTTP. Chat still runs `cursor-agent` on the ccLoad host (`--print --trust --mode ask`), so install the Cursor CLI (`https://cursor.com/install`) and keep `cursor-agent` on `PATH` (or set `CURSOR_AGENT_PATH`).
+
+Chat still uses `cursor-agent --mode ask` so Cursor does not run shell or file tools on the ccLoad host. Client `tools`, `tool_use`, `function_call`, and `tool_result` are mapped through the prompt: the model emits `<cc_tool_call>` blocks, which ccLoad translates to Anthropic `tool_use` or OpenAI `tool_calls`. Sibling names from Grok Build (`run_terminal_command`, `read_file`, `search_replace`), OpenCode (`bash`, `read`, `edit`, `apply_patch`), Codex CLI (`shell`, `apply_patch`), and Claude Code/Cursor (`Bash`, `Shell`, `ReadFile`) are rewritten to the names the connected client advertised, including argument keys (`cmd`→`command`, `path`→`file_path`/`target_file`/`filePath`). The client executes those tools and sends the results back on the next turn. This is not Cursor `AgentService/RunSSE`.
+
+The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
 
 ### Custom Request Rules (Advanced)
 

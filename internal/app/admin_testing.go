@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
@@ -870,6 +871,28 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", err)
 		}
 		return runtimeCfg, selection, true, nil
+	case cfg.UsesCursorOAuth():
+		var credential *cursorauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.cursorCredentials.credential(ctx, cfg, true)
+		default:
+			credential, err = s.cursorCredentials.credential(ctx, cfg, false)
+		}
+		if credential == nil {
+			if err == nil {
+				err = errors.New("cursor CLI credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Cursor CLI 凭证失败: %w", err)
+		}
+		selection.requestCredential = credential.AccessToken
+		if err != nil {
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 Cursor CLI 凭证失败: %w", err)
+		}
+		return cfg.Clone(), selection, true, nil
 	default:
 		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
 	}

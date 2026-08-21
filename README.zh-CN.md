@@ -68,7 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/模型/渠道统一指数退避，优先尊重上游精确恢复时间 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计+进程指标(CPU/RSS/GC) | 一眼看清用量与运行状态 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
+| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor CLI 浏览器登录 / User API Key / accessToken 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
 | 📅 **OAuth 额度成本** | 按凭证累计周/月标准成本，对齐上游额度窗口 | 有重置额度时可手动重置 Codex 配额 |
 | 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
@@ -745,6 +745,14 @@ curl -X POST http://localhost:8080/admin/channels \
 在渠道管理中选择 **Z.ai Coding Plan**，可完成浏览器授权，或直接导入已有的 Coding Plan API Key。提供商浏览器 OAuth 暂时不可用时，仍可通过 API Key 导入接入。
 
 ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目录，失败后回退到 models.dev，最后才使用内置列表。渠道卡片也可刷新并展示 Coding Plan 的额度窗口。
+
+#### Cursor CLI
+
+在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`），需要安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
+
+对话仍用 `cursor-agent --mode ask`，避免 Cursor 在网关本机跑 shell 或写文件。客户端 `tools`、`tool_use`、`function_call`、`tool_result` 走 prompt 映射：模型输出 `<cc_tool_call>` 块，ccLoad 再译成 Anthropic `tool_use` 或 OpenAI `tool_calls`。Grok Build（`run_terminal_command`/`read_file`/`search_replace`）、OpenCode（`bash`/`read`/`edit`/`apply_patch`）、Codex CLI（`shell`/`apply_patch`）以及 Claude Code/Cursor 的别名会改写成当前客户端广告的工具名，参数键一并对齐。工具由客户端执行，下一轮把结果送回来。这不是 Cursor `AgentService/RunSSE`。
+
+渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
 
 ### 自定义请求规则（高级）
 

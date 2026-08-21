@@ -3393,6 +3393,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesZAIOAuth() {
 		return s.tryZAIOAuthChannel(ctx, cfg, reqCtx, w)
 	}
+	if cfg.UsesCursorOAuth() {
+		return s.tryCursorOAuthChannel(ctx, cfg, reqCtx, w)
+	}
 
 	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
 	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)

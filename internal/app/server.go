@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
@@ -97,6 +98,10 @@ type Server struct {
 	zaiService                    *zaiauth.Service
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	cursorService                 *cursorauth.Service
+	cursorCredentials             *cursorCredentialManager
+	cursorOAuth                   *cursorOAuthManager
+	cursorRunner                  cursorauth.Runner
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -344,6 +349,23 @@ func NewServer(store storage.Store) *Server {
 		},
 		func(ctx context.Context, credential *zaiauth.Credential) (int64, string, error) {
 			cfg, _, err := s.commitZAICredential(ctx, credential)
+			if err != nil {
+				return 0, "", err
+			}
+			return cfg.ID, cfg.Name, nil
+		},
+	)
+	s.cursorService = cursorauth.NewService(s.client)
+	s.cursorCredentials = newCursorCredentialManager(store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.cursorCredentials.refreshTracker = s.oauthCredentialRefreshes
+	s.cursorRunner = cursorauth.NewCLIRunner()
+	s.cursorOAuth = newCursorOAuthManager(
+		s.baseCtx,
+		s.cursorService,
+		func(ctx context.Context, credential *cursorauth.Credential) (int64, string, error) {
+			cfg, _, err := s.commitCursorCredential(ctx, credential)
 			if err != nil {
 				return 0, "", err
 			}
@@ -1473,6 +1495,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
+		admin.POST("/cursor/oauth/start", s.HandleStartCursorOAuth)
+		admin.GET("/cursor/oauth/status", s.HandleCursorOAuthStatus)
+		admin.POST("/cursor/oauth/cancel", s.HandleCancelCursorOAuth)
+		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1719,6 +1745,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
+	}
+	if s.cursorOAuth != nil {
+		s.cursorOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

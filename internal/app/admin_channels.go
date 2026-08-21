@@ -14,6 +14,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -458,6 +459,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
 	}
+	if cfg.UsesCursorOAuth() {
+		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, cursorauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
 	}
@@ -755,6 +764,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 			return nil, err
 		}
 		accessToken, note = credential.APIKey, "Z.ai Coding Plan Key"
+	case cfg.UsesCursorOAuth():
+		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Cursor CLI session"
 	}
 
 	return []*model.APIKey{{

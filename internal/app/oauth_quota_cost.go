@@ -10,6 +10,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
@@ -94,6 +95,21 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		// snapshot but tracks no standard-cost windows for it.
 		return &oauthUsageCredentialState{
 			provider: zaiauth.ChannelType, authType: model.AuthTypeZAIOAuth,
+			oauthUsage: credential.OAuthUsage,
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
+				return credential.JSON()
+			},
+		}, nil
+	case cfg.UsesCursorOAuth():
+		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// Cursor meters included spend itself; ccLoad stores the snapshot but
+		// tracks no standard-cost windows for it.
+		return &oauthUsageCredentialState{
+			provider: cursorauth.ChannelType, authType: model.AuthTypeCursorOAuth,
 			oauthUsage: credential.OAuthUsage,
 			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)

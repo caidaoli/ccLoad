@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
@@ -324,6 +325,9 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	if cfg.UsesZAIOAuth() {
 		return s.fetchZAIOAuthModels(ctx, cfg, overrideProtocol)
 	}
+	if cfg.UsesCursorOAuth() {
+		return s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol)
+	}
 	if cfg.UsesAntigravityOAuth() {
 		return s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol)
 	}
@@ -409,6 +413,55 @@ func (s *Server) zaiCodingPlanModels(ctx context.Context, apiKey string) ([]stri
 		return nil, accountErr
 	}
 	return nil, err
+}
+
+func (s *Server) fetchCursorOAuthModels(
+	ctx context.Context,
+	cfg *model.Config,
+	overrideProtocol string,
+) (*FetchModelsResponse, error) {
+	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
+	if overrideProtocol != "" {
+		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
+		}
+		normalized := util.NormalizeProtocol(overrideProtocol)
+		if normalized != util.ProtocolAnthropic && normalized != util.ProtocolOpenAI {
+			return nil, fmt.Errorf("模型发现: Cursor OAuth 仅支持 anthropic 或 openai 协议")
+		}
+	}
+
+	names, source := cursorauth.DefaultModels, "predefined"
+	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		return nil, fmt.Errorf("模型发现: 解析 Cursor 凭证失败: %w", err)
+	}
+	if s.cursorService != nil {
+		if live, listErr := s.cursorService.ListModels(ctx, credential.AccessToken); listErr != nil {
+			log.Printf("[WARN] Cursor 模型目录不可用，回退内置列表 (channel=%d): %v", cfg.ID, listErr)
+		} else if len(live) > 0 {
+			names, source = live, "api"
+		}
+	}
+	models := make([]model.ModelEntry, len(names))
+	for i, name := range names {
+		models[i] = model.ModelEntry{Model: name}
+	}
+	channelURL := ""
+	if len(cfg.URLs) > 0 {
+		channelURL = cfg.URLs[0].RuntimeURL()
+	}
+	discoveredProtocol := util.ProtocolAnthropic
+	if util.NormalizeProtocol(overrideProtocol) == util.ProtocolOpenAI {
+		discoveredProtocol = util.ProtocolOpenAI
+	}
+	return &FetchModelsResponse{
+		Models: models, Protocol: discoveredProtocol, Source: source,
+		Debug: &FetchModelsDebug{
+			NormalizedProtocol: discoveredProtocol,
+			Fetcher:            "cursor_cli_catalog", ChannelURL: channelURL,
+		},
+	}, nil
 }
 
 func fetchAnthropicOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
