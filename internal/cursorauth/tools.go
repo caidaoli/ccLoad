@@ -203,7 +203,8 @@ func parseToolChoice(choice any, legacy any) string {
 func formatToolCatalog(tools []Tool, choice string) string {
 	var b strings.Builder
 	b.WriteString("You can call client tools. They run on the user's machine, not on this host. ")
-	b.WriteString("Do not use Cursor's own shell or file tools.\n")
+	b.WriteString("The client is a coding CLI (Grok Build, OpenCode, Codex CLI, or Claude Code). ")
+	b.WriteString("Use the EXACT tool names listed below. Do not invent Cursor-native names such as Shell, ReadFile, or edit_file.\n")
 	switch {
 	case choice == "none":
 		b.WriteString("Do not call tools on this turn.\n")
@@ -222,6 +223,11 @@ func formatToolCatalog(tools []Tool, choice string) string {
 	for _, tool := range tools {
 		b.WriteString("- ")
 		b.WriteString(tool.Name)
+		if hint := clientToolHint(tool.Name); hint != "" {
+			b.WriteString(" (")
+			b.WriteString(hint)
+			b.WriteString(")")
+		}
 		if tool.Description != "" {
 			b.WriteString(": ")
 			b.WriteString(tool.Description)
@@ -452,26 +458,6 @@ func normalizeArguments(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return encoded
-}
-
-func FilterToolCalls(calls []ToolCall, tools []Tool) []ToolCall {
-	if len(calls) == 0 {
-		return calls
-	}
-	if len(tools) == 0 {
-		return calls
-	}
-	allowed := make(map[string]struct{}, len(tools))
-	for _, tool := range tools {
-		allowed[tool.Name] = struct{}{}
-	}
-	filtered := make([]ToolCall, 0, len(calls))
-	for _, call := range calls {
-		if _, ok := allowed[call.Name]; ok {
-			filtered = append(filtered, call)
-		}
-	}
-	return filtered
 }
 
 func newToolCallID() string {
