@@ -984,14 +984,17 @@ func (s *Server) handleSuccessResponse(
 			if deferredWriter == nil || deferredWriter.Committed() {
 				return nil
 			}
-			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
-				markFirstStreamResponse(reqCtx, readStats, observer)
+			if shouldMarkUpstreamFirstByte(parser) {
+				markFirstStreamResponse(reqCtx, readStats)
 			}
 			if parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
 			if parser.HasStreamOutput() {
-				return deferredWriter.Commit()
+				if err := deferredWriter.Commit(); err != nil {
+					return err
+				}
+				notifyClientFirstByte(observer)
 			}
 			return nil
 		},
@@ -1207,14 +1210,17 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if err := parser.Feed(parserEvent); err != nil {
 				return err
 			}
-			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
-				markFirstStreamResponse(reqCtx, readStats, observer)
+			if shouldMarkUpstreamFirstByte(parser) {
+				markFirstStreamResponse(reqCtx, readStats)
 			}
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
 			if !deferredWriter.Committed() && parser.HasStreamOutput() {
-				return deferredWriter.Commit()
+				if err := deferredWriter.Commit(); err != nil {
+					return err
+				}
+				notifyClientFirstByte(observer)
 			}
 			return nil
 		},
@@ -1404,7 +1410,10 @@ func attachFirstByteDetector(
 	}
 }
 
-func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats, observer *ForwardObserver) {
+// markFirstStreamResponse 记录上游首个有效响应事件的时间。
+// Responses 元数据也属于上游已返回数据，可以结束上游首字节计时；但此处
+// 不通知客户端，因为 deferredResponseWriter 可能仍在缓冲，客户端尚未收到任何字节。
+func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats) {
 	if !reqCtx.isStreaming || readStats.firstByteSec > 0 {
 		return
 	}
@@ -1414,9 +1423,17 @@ func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats,
 	if readStats.firstByteSec == 0 {
 		readStats.firstByteSec = time.Nanosecond.Seconds()
 	}
+}
+
+func notifyClientFirstByte(observer *ForwardObserver) {
 	if observer != nil && observer.OnFirstByteRead != nil {
 		observer.OnFirstByteRead()
 	}
+}
+
+func shouldMarkUpstreamFirstByte(parser usageParser) bool {
+	return parser.GetLastError() != nil || parser.HasStreamOutput() ||
+		parser.IsStreamComplete() || parser.HasResponsesMetadata()
 }
 
 func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamProtocol string) bool {

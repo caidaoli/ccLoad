@@ -10035,6 +10035,130 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 }
 
+func TestProxy_ResponsesMetadataCountsAsFirstByteWithoutCommitting(t *testing.T) {
+	t.Parallel()
+
+	semanticDelay := 300 * time.Millisecond
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.created\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-first-byte","status":"in_progress"}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(semanticDelay)
+		_, _ = fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"hi"}`+"\n\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-first-byte","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "metadata-first-byte", upstreamProtocol: "codex", models: "gpt-first-byte", apiKey: "sk-first-byte",
+	}}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-first-byte", "stream": true, "input": "hi",
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "resp-first-byte") || !strings.Contains(body, `"hi"`) {
+		t.Fatalf("expected created+delta, got: %s", body)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-first-byte")
+	if entry.FirstByteTime <= 0 || entry.FirstByteTime >= semanticDelay.Seconds() {
+		t.Fatalf("first_byte_time=%.3f should be upstream created, not semantic delay %.3f; duration=%.3f",
+			entry.FirstByteTime, semanticDelay.Seconds(), entry.Duration)
+	}
+	if entry.Duration < semanticDelay.Seconds() {
+		t.Fatalf("duration=%.3f shorter than semantic delay, test setup invalid", entry.Duration)
+	}
+}
+
+func TestProxy_ResponsesMetadataDoesNotSetClientFirstByteBeforeCommit(t *testing.T) {
+	t.Parallel()
+
+	metadataSent := make(chan struct{})
+	releaseSemantic := make(chan struct{})
+	var releaseOnce sync.Once
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-client-byte","status":"in_progress"}}`+"\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(metadataSent)
+		<-releaseSemantic
+		_, _ = fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"hi"}`+"\n\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-client-byte","status":"completed","output":[]}}`+"\n\n")
+	}))
+	release := func() {
+		releaseOnce.Do(func() { close(releaseSemantic) })
+	}
+	defer release()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "metadata-client-byte", upstreamProtocol: "codex", models: "gpt-client-byte", apiKey: "sk-client-byte",
+	}}, map[int]string{0: upstream.URL})
+
+	body, err := json.Marshal(map[string]any{
+		"model": "gpt-client-byte", "stream": true, "input": "hi",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		env.engine.ServeHTTP(response, req)
+		close(done)
+	}()
+
+	select {
+	case <-metadataSent:
+	case <-time.After(time.Second):
+		t.Fatal("upstream metadata was not sent")
+	}
+
+	var active *ActiveRequest
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		requests := env.server.activeRequests.List()
+		if len(requests) == 1 && requests[0].BytesReceived > 0 {
+			active = requests[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if active == nil {
+		t.Fatal("active request did not receive metadata bytes")
+	}
+	if active.ClientFirstByteTime != 0 {
+		t.Fatalf("client_first_byte_time=%.6f before deferred response commit, want 0", active.ClientFirstByteTime)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy request did not finish after semantic output")
+	}
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"delta":"hi"`) {
+		t.Fatalf("unexpected response status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestProxy_ResponsesMissingRequiredParameterRetriesWithPrunedInput(t *testing.T) {
 	t.Parallel()
 

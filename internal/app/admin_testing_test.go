@@ -1891,6 +1891,51 @@ func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testi
 	}
 }
 
+func TestTestChannelAPI_ResponsesMetadataDoesNotStopFirstContentTimeout(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"status":"in_progress"}}`+"\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+			_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"late"}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.firstByteTimeout = 30 * time.Millisecond
+	result := srv.testChannelAPI(context.Background(), &model.Config{
+		ID:           9533,
+		Name:         "responses-metadata-first-content-timeout-test",
+		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"codex"}}},
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6-sol"}},
+		Enabled:      true,
+	}, "sk-test", &testutil.TestChannelRequest{
+		Model:          "gpt-5.6-sol",
+		ClientProtocol: "codex",
+		Content:        "hello",
+		Stream:         true,
+	})
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("Responses metadata must not count as valid content, result=%+v", result)
+	}
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
+	}
+	if _, ok := result["first_byte_duration_ms"]; ok {
+		t.Fatalf("Responses metadata must not set first_byte_duration_ms, result=%+v", result)
+	}
+}
+
 func TestTestChannelAPI_StreamFirstValidContentTimeoutEOFReturns598(t *testing.T) {
 	srv := newInMemoryServer(t)
 	srv.firstByteTimeout = 10 * time.Millisecond

@@ -1398,16 +1398,17 @@ func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T)
 		name          string
 		payloadType   string
 		wantStreamOut bool
+		wantMetadata  bool
 	}{
-		{"response.created", "response.created", false},
-		{"response.queued", "response.queued", false},
-		{"response.in_progress", "response.in_progress", false},
-		{"codex.rate_limits", "codex.rate_limits", false},
-		{"codex.response.metadata", "codex.response.metadata", false},
-		{"response.output_item.added", "response.output_item.added", true},
-		{"response.output_text.delta", "response.output_text.delta", true},
-		{"response.content_part.added", "response.content_part.added", true},
-		{"message_start", "message_start", true},
+		{"response.created", "response.created", false, true},
+		{"response.queued", "response.queued", false, true},
+		{"response.in_progress", "response.in_progress", false, true},
+		{"codex.rate_limits", "codex.rate_limits", false, true},
+		{"codex.response.metadata", "codex.response.metadata", false, true},
+		{"response.output_item.added", "response.output_item.added", true, false},
+		{"response.output_text.delta", "response.output_text.delta", true, false},
+		{"response.content_part.added", "response.content_part.added", true, false},
+		{"message_start", "message_start", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1420,6 +1421,10 @@ func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T)
 			if parser.HasStreamOutput() != tt.wantStreamOut {
 				t.Errorf("HasStreamOutput() = %v after %q, want %v",
 					parser.HasStreamOutput(), tt.payloadType, tt.wantStreamOut)
+			}
+			if parser.HasResponsesMetadata() != tt.wantMetadata {
+				t.Errorf("HasResponsesMetadata() = %v after %q, want %v",
+					parser.HasResponsesMetadata(), tt.payloadType, tt.wantMetadata)
 			}
 		})
 	}
@@ -1437,6 +1442,9 @@ func TestSSEUsageParser_ErrorAfterMetadataAllowsRetry(t *testing.T) {
 	}
 	if parser.HasStreamOutput() {
 		t.Fatal("HasStreamOutput() should be false after response.created")
+	}
+	if !parser.HasResponsesMetadata() {
+		t.Fatal("HasResponsesMetadata() should be true after response.created")
 	}
 
 	errEvent := `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"overloaded"}}` + "\n\n"
@@ -1460,6 +1468,9 @@ func TestSSEUsageParser_ResponsesMetadataEventLineWithoutPayloadType(t *testing.
 	}
 	if parser.HasStreamOutput() {
 		t.Fatal("HasStreamOutput() should be false when only the SSE event line names response.created")
+	}
+	if !parser.HasResponsesMetadata() {
+		t.Fatal("HasResponsesMetadata() should be true when only the SSE event line names response.created")
 	}
 
 	delta := `data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n"
