@@ -17,6 +17,8 @@ const (
 	// ClientVersion is the cursor-agent build ccLoad reports upstream.
 	// Control-plane JSON RPCs accept this CLI fingerprint; chat still
 	// requires the matching binary on PATH when inference is enabled.
+	// Official Docker images pin the same version via CURSOR_AGENT_VERSION
+	// in docker/Dockerfile.release and Dockerfile.
 	ClientVersion = "2026.08.11-e8db854"
 	// ClientType is Cursor's CLI client-type header.
 	ClientType = "cli"

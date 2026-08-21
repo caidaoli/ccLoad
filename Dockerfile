@@ -8,7 +8,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS base
 
 # 安装交叉编译工具链（这层很少变，缓存命中率高）
-COPY --from=tonistiigi/xx:1.6.1 / /
+COPY --from=tonistiigi/xx:1.9.0 / /
 RUN apk add --no-cache git ca-certificates tzdata clang lld
 
 WORKDIR /app
@@ -61,21 +61,37 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     xx-verify ccload
 
 # ============================================
-# 阶段4: 运行时镜像 (最小化)
+# 阶段4: 运行时镜像
+# Cursor OAuth 推理要 spawn cursor-agent（glibc Node + linux-*-gnu addons），
+# Alpine/musl 跑不了，所以运行时用 Debian。构建阶段仍是 Alpine 静态编译。
 # ============================================
-FROM alpine:3.21
+FROM debian:bookworm-slim
 
-# 安装运行时依赖
-RUN apk --no-cache add ca-certificates tzdata
+ARG TARGETARCH
+# Keep in sync with internal/cursorauth.ClientVersion.
+ARG CURSOR_AGENT_VERSION=2026.08.11-e8db854
 
-# 创建非root用户
-RUN addgroup -g 1001 -S ccload && \
-    adduser -u 1001 -S ccload -G ccload
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        libgcc-s1 \
+        libstdc++6 \
+        tzdata \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1001 ccload && \
+    useradd --uid 1001 --gid ccload --home-dir /app --no-create-home --shell /usr/sbin/nologin ccload
+
+COPY docker/install-cursor-agent.sh /tmp/install-cursor-agent.sh
+RUN chmod +x /tmp/install-cursor-agent.sh && \
+    TARGETARCH="${TARGETARCH}" CURSOR_AGENT_VERSION="${CURSOR_AGENT_VERSION}" /tmp/install-cursor-agent.sh && \
+    rm /tmp/install-cursor-agent.sh
 
 WORKDIR /app
 
 # 从构建阶段复制（web资源已嵌入二进制）
-COPY --from=builder /app/ccload .
+COPY --from=builder --chown=1001:1001 /app/ccload .
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \
@@ -85,12 +101,15 @@ USER ccload
 
 EXPOSE 8080
 
-ENV PORT=8080 \
+ENV PATH="/opt/cursor-agent/bin:${PATH}" \
+    CURSOR_AGENT_PATH=/opt/cursor-agent/bin/cursor-agent \
+    PORT=8080 \
     SQLITE_PATH=/app/data/ccload.db \
     GIN_MODE=release \
     CCLOAD_CONTAINER=1
 
+# GNU wget --spider sends HEAD; /health only accepts GET.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 -O /dev/null http://localhost:8080/health || exit 1
 
 CMD ["./ccload"]

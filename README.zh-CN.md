@@ -748,7 +748,9 @@ ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目
 
 #### Cursor CLI
 
-在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`），需要安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
+在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`）。
+
+官方 Docker 镜像已内置 `cursor-agent`（`/opt/cursor-agent/bin/cursor-agent`，`CURSOR_AGENT_PATH`）。拉取新镜像并重建容器即可，不用再装 sidecar 或在宿主机装 CLI。二进制 / 本机源码安装仍需自行安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
 
 对话仍用 `cursor-agent --mode ask`，避免 Cursor 在网关本机跑 shell 或写文件。客户端 `tools`、`tool_use`、`function_call`、`tool_result` 走 prompt 映射：模型输出 `<cc_tool_call>` 块，ccLoad 再译成 Anthropic `tool_use` 或 OpenAI `tool_calls`。Grok Build（`run_terminal_command`/`read_file`/`search_replace`）、OpenCode（`bash`/`read`/`edit`/`apply_patch`）、Codex CLI（`shell`/`apply_patch`）以及 Claude Code/Cursor 的别名会改写成当前客户端广告的工具名，参数键一并对齐。工具由客户端执行，下一轮把结果送回来。这不是 Cursor `AgentService/RunSSE`。
 
@@ -1178,7 +1180,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
   - `v2.44.1` - 精确稳定版本，和 GitHub Release Tag 保持一致
   - `vX.Y.Z-beta.N` - 精确 Beta 版本，和 GitHub Prerelease Tag 保持一致
 
-官方 GHCR 镜像基于 Alpine，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器不检查发布版本，也不在进程内替换二进制；拉取精确版本 Tag 或所需滚动别名后重建容器即可更新。
+官方 GHCR 镜像基于 Debian bookworm，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像，并内置 `cursor-agent`，Docker 用户无需再在宿主机安装 Cursor CLI。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器不检查发布版本，也不在进程内替换二进制；拉取精确版本 Tag 或所需滚动别名后重建容器即可更新。
 
 ### 镜像标签说明
 

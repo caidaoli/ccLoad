@@ -731,7 +731,9 @@ ccLoad loads the Coding Plan model catalog from the account when creating or ref
 
 #### Cursor CLI
 
-In the channel manager, choose **Cursor** and complete the browser CLI login (`loginDeepControl`), import a Cursor user API key, or paste the `accessToken` from Cursor CLI `auth.json`. Login, identity, model discovery, and quota refresh talk to `api2.cursor.sh` over HTTP. Chat still runs `cursor-agent` on the ccLoad host (`--print --trust --mode ask`), so install the Cursor CLI (`https://cursor.com/install`) and keep `cursor-agent` on `PATH` (or set `CURSOR_AGENT_PATH`).
+In the channel manager, choose **Cursor** and complete the browser CLI login (`loginDeepControl`), import a Cursor user API key, or paste the `accessToken` from Cursor CLI `auth.json`. Login, identity, model discovery, and quota refresh talk to `api2.cursor.sh` over HTTP. Chat still runs `cursor-agent` on the ccLoad host (`--print --trust --mode ask`).
+
+Official Docker images already bundle `cursor-agent` at `/opt/cursor-agent/bin/cursor-agent` (`CURSOR_AGENT_PATH`). Pull the new image and recreate the container — no extra sidecar or host CLI install. Binary and source-on-host installs still need the Cursor CLI (`https://cursor.com/install`) on `PATH` (or `CURSOR_AGENT_PATH`).
 
 Chat still uses `cursor-agent --mode ask` so Cursor does not run shell or file tools on the ccLoad host. Client `tools`, `tool_use`, `function_call`, and `tool_result` are mapped through the prompt: the model emits `<cc_tool_call>` blocks, which ccLoad translates to Anthropic `tool_use` or OpenAI `tool_calls`. Sibling names from Grok Build (`run_terminal_command`, `read_file`, `search_replace`), OpenCode (`bash`, `read`, `edit`, `apply_patch`), Codex CLI (`shell`, `apply_patch`), and Claude Code/Cursor (`Bash`, `Shell`, `ReadFile`) are rewritten to the names the connected client advertised, including argument keys (`cmd`→`command`, `path`→`file_path`/`target_file`/`filePath`). The client executes those tools and sends the results back on the next turn. This is not Cursor `AgentService/RunSSE`.
 
@@ -1145,7 +1147,7 @@ Project supports multi-arch Docker images:
   - `v2.44.1` - Exact stable version, matching the GitHub Release tag
   - `vX.Y.Z-beta.N` - Exact Beta version, matching the GitHub prerelease tag
 
-The official GHCR runtime image is Alpine-based and immutable: every release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Exact version Tags are immutable release references; `latest` and `beta` are rolling aliases for the newest stable and Beta images. Containers do not check for releases or replace their binary in process; pull an exact Tag or the desired rolling alias and recreate the container.
+The official GHCR runtime image is Debian bookworm and immutable: every release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image, and bundles `cursor-agent` so Cursor OAuth chat works without a host CLI. Exact version Tags are immutable release references; `latest` and `beta` are rolling aliases for the newest stable and Beta images. Containers do not check for releases or replace their binary in process; pull an exact Tag or the desired rolling alias and recreate the container.
 
 ### Image Tag Guide
 

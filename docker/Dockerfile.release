@@ -1,20 +1,32 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM alpine:3.21 AS runtime-files
-
-RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -g 1001 -S ccload && \
-    adduser -u 1001 -S ccload -G ccload && \
-    mkdir -p /app/data
-
-FROM alpine:3.21
+#
+# Official GHCR runtime. The ccload binary is static, but Cursor OAuth chat
+# spawns cursor-agent, which is a glibc Node CLI plus linux-*-gnu addons.
+# Alpine/musl cannot run it, so the runtime is Debian.
+FROM debian:bookworm-slim
 
 ARG TARGETARCH
+# Keep in sync with internal/cursorauth.ClientVersion.
+ARG CURSOR_AGENT_VERSION=2026.08.11-e8db854
 
-COPY --from=runtime-files /etc/ssl/certs /etc/ssl/certs
-COPY --from=runtime-files /usr/share/zoneinfo /usr/share/zoneinfo
-COPY --from=runtime-files /etc/passwd /etc/passwd
-COPY --from=runtime-files /etc/group /etc/group
-COPY --from=runtime-files --chown=1001:1001 /app/data /app/data
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        libgcc-s1 \
+        libstdc++6 \
+        tzdata \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1001 ccload && \
+    useradd --uid 1001 --gid ccload --home-dir /app --no-create-home --shell /usr/sbin/nologin ccload && \
+    mkdir -p /app/data && \
+    chown -R ccload:ccload /app
+
+COPY docker/install-cursor-agent.sh /tmp/install-cursor-agent.sh
+RUN chmod +x /tmp/install-cursor-agent.sh && \
+    TARGETARCH="${TARGETARCH}" CURSOR_AGENT_VERSION="${CURSOR_AGENT_VERSION}" /tmp/install-cursor-agent.sh && \
+    rm /tmp/install-cursor-agent.sh
 
 WORKDIR /app
 
@@ -24,12 +36,15 @@ USER ccload
 
 EXPOSE 8080
 
-ENV PORT=8080 \
+ENV PATH="/opt/cursor-agent/bin:${PATH}" \
+    CURSOR_AGENT_PATH=/opt/cursor-agent/bin/cursor-agent \
+    PORT=8080 \
     SQLITE_PATH=/app/data/ccload.db \
     GIN_MODE=release \
     CCLOAD_CONTAINER=1
 
+# GNU wget --spider sends HEAD; /health only accepts GET.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 -O /dev/null http://localhost:8080/health || exit 1
 
 CMD ["./ccload"]
