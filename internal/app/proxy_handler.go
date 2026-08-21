@@ -78,10 +78,13 @@ func (s *Server) acquireConcurrencySlotForContext(ctx context.Context) (func(), 
 // ============================================================================
 
 type incomingRequest struct {
+	// originalModel 是去掉思考后缀的基名，用于选路、鉴权、冷却与日志。
 	originalModel string
-	body          []byte
-	isStreaming   bool
-	hasModel      bool
+	// requestedModel 是客户端字面写的模型名，可能带思考后缀。
+	requestedModel string
+	body           []byte
+	isStreaming    bool
+	hasModel       bool
 }
 
 func (r incomingRequest) authorizationModel() string {
@@ -158,12 +161,12 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 			return incomingRequest{}, fmt.Errorf("invalid JSON or missing model")
 		}
 	}
-
 	return incomingRequest{
-		originalModel: originalModel,
-		body:          all,
-		isStreaming:   isStreaming,
-		hasModel:      hasModel,
+		originalModel:  model.RoutingModelName(originalModel),
+		requestedModel: originalModel,
+		body:           all,
+		isStreaming:    isStreaming,
+		hasModel:       hasModel,
 	}, nil
 }
 
@@ -328,7 +331,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		all = sanitizeCodexAlphaSearchBody(all)
 	}
 
-	thinkingEffort := extractThinkingEffortFromJSON(all)
+	// 后缀改写必须发生在协议转换之前，且只做这一次：之后 all 就是一个普通的客户端请求。
+	all = applyThinkingSuffix(all, clientProtocol, incoming.requestedModel)
+	thinkingEffort := thinkingEffortFromRequest(incoming.requestedModel, all)
 
 	tokenHashStr := ""
 	if v, ok := c.Get("token_hash"); ok {

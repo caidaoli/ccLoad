@@ -1290,6 +1290,50 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
+	t.Run("replace mode preserves disabled state by routing model name", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6-luna"}]}`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "routing-identity-channel",
+			URLs:         model.ChannelURLs{{URL: upstream.URL}},
+			ModelEntries: []model.ModelEntry{{Model: "gpt-5.6-luna(max)", Disabled: true}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+			ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential,
+		}}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "gpt-5.6-luna" || !got.ModelEntries[0].Disabled {
+			t.Fatalf("disabled routing identity was lost after replace: %#v", got.ModelEntries)
+		}
+	})
+
 	t.Run("replace mode lowercases aliases and preserves upstream model names", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {

@@ -11,6 +11,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
@@ -269,6 +271,195 @@ func TestExtractThinkingEffortReadsCodexReasoningEffort(t *testing.T) {
 	}`))
 	if got != "xhigh" {
 		t.Fatalf("thinking_effort=%q, want xhigh", got)
+	}
+}
+
+func TestThinkingEffortFromRequestPrefersModelSuffix(t *testing.T) {
+	t.Parallel()
+
+	got := thinkingEffortFromRequest("gpt-5.6-luna(max)", []byte(`{
+		"model": "gpt-5.6-luna",
+		"reasoning": {"effort": "low"}
+	}`))
+	if got != "max" {
+		t.Fatalf("thinking_effort=%q, want max", got)
+	}
+
+	// (none)/(auto) 在部分协议上以删除字段表达，只能从后缀读回来。
+	got = thinkingEffortFromRequest("gpt-5.6-luna(none)", []byte(`{"model":"gpt-5.6-luna"}`))
+	if got != "none" {
+		t.Fatalf("thinking_effort=%q, want none", got)
+	}
+
+	got = thinkingEffortFromRequest("gpt-5.6-luna", []byte(`{
+		"model": "gpt-5.6-luna",
+		"reasoning": {"effort": "low"}
+	}`))
+	if got != "low" {
+		t.Fatalf("thinking_effort=%q, want low", got)
+	}
+}
+
+// 后缀改写的产物必须是一个合法的客户端协议请求体：Anthropic/Gemini 只接受各自枚举
+// 里的档位，auto 在 OpenAI/Codex 上根本不是合法值。
+func TestApplyThinkingSuffixWritesClientProtocolFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		clientProtocol protocol.Protocol
+		requestedModel string
+		body           string
+		wantStrings    map[string]string
+		wantInts       map[string]int64
+		wantAbsent     []string
+	}{
+		{
+			name:           "openai max 收敛到 xhigh",
+			clientProtocol: protocol.OpenAI,
+			requestedModel: "gpt-5.6-luna(max)",
+			body:           `{"model":"gpt-5.6-luna","reasoning_effort":"low"}`,
+			wantStrings:    map[string]string{"reasoning_effort": "xhigh"},
+		},
+		{
+			name:           "openai auto 删除字段而不是发非法枚举",
+			clientProtocol: protocol.OpenAI,
+			requestedModel: "gpt-5.6-luna(auto)",
+			body:           `{"model":"gpt-5.6-luna","reasoning_effort":"low"}`,
+			wantAbsent:     []string{"reasoning_effort"},
+		},
+		{
+			name:           "codex 等级写在 reasoning.effort",
+			clientProtocol: protocol.Codex,
+			requestedModel: "gpt-5.6-luna(medium)",
+			body:           `{"model":"gpt-5.6-luna","reasoning":{"effort":"low"}}`,
+			wantStrings:    map[string]string{"reasoning.effort": "medium"},
+		},
+		{
+			name:           "codex max 收敛到 xhigh",
+			clientProtocol: protocol.Codex,
+			requestedModel: "gpt-5.6-luna(max)",
+			body:           `{"model":"gpt-5.6-luna","reasoning":{"effort":"low"}}`,
+			wantStrings:    map[string]string{"reasoning.effort": "xhigh"},
+		},
+		{
+			name:           "anthropic minimal 收敛到 low",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-opus-4-6(minimal)",
+			body:           `{"model":"claude-opus-4-6","messages":[]}`,
+			wantStrings: map[string]string{
+				"thinking.type":        "adaptive",
+				"output_config.effort": "low",
+			},
+		},
+		{
+			name:           "anthropic xhigh 收敛到 max",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-opus-4-6(xhigh)",
+			body:           `{"model":"claude-opus-4-6","messages":[]}`,
+			wantStrings: map[string]string{
+				"thinking.type":        "adaptive",
+				"output_config.effort": "max",
+			},
+		},
+		{
+			name:           "anthropic none 归零为无 thinking 字段",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-opus-4-6(none)",
+			body:           `{"model":"claude-opus-4-6","thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`,
+			wantAbsent:     []string{"thinking", "output_config"},
+		},
+		{
+			name:           "anthropic auto 写 adaptive 不写 effort",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-opus-4-6(auto)",
+			body:           `{"model":"claude-opus-4-6","messages":[]}`,
+			wantStrings:    map[string]string{"thinking.type": "adaptive"},
+			wantAbsent:     []string{"output_config", "thinking.budget_tokens"},
+		},
+		{
+			name:           "anthropic 预算走 enabled",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-opus-4-6(8192)",
+			body:           `{"model":"claude-opus-4-6","messages":[]}`,
+			wantStrings:    map[string]string{"thinking.type": "enabled"},
+			wantInts:       map[string]int64{"thinking.budget_tokens": 8192},
+		},
+		{
+			name:           "anthropic 日期 ID 同样写 adaptive 不查 catalog",
+			clientProtocol: protocol.Anthropic,
+			requestedModel: "claude-sonnet-4-5-20250929(high)",
+			body:           `{"model":"claude-sonnet-4-5-20250929","messages":[]}`,
+			wantStrings: map[string]string{
+				"thinking.type":        "adaptive",
+				"output_config.effort": "high",
+			},
+		},
+		{
+			name:           "gemini xhigh 收敛到 high",
+			clientProtocol: protocol.Gemini,
+			requestedModel: "gemini-2.5-pro(xhigh)",
+			body:           `{"contents":[]}`,
+			wantStrings:    map[string]string{geminiThinkingLevelPath: "high"},
+		},
+		{
+			name:           "gemini none 用预算 0 关闭",
+			clientProtocol: protocol.Gemini,
+			requestedModel: "gemini-2.5-pro(none)",
+			body:           `{"contents":[],"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`,
+			wantInts:       map[string]int64{geminiThinkingBudgetPath: 0},
+			wantAbsent:     []string{geminiThinkingLevelPath},
+		},
+		{
+			name:           "未识别后缀不改写",
+			clientProtocol: protocol.OpenAI,
+			requestedModel: "gpt-5.6-luna(foo)",
+			body:           `{"model":"gpt-5.6-luna(foo)"}`,
+			wantAbsent:     []string{"reasoning_effort"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := applyThinkingSuffix([]byte(tt.body), tt.clientProtocol, tt.requestedModel)
+			for path, want := range tt.wantStrings {
+				if actual := gjson.GetBytes(got, path).String(); actual != want {
+					t.Fatalf("%s=%q, want %q. body=%s", path, actual, want, got)
+				}
+			}
+			for path, want := range tt.wantInts {
+				value := gjson.GetBytes(got, path)
+				if !value.Exists() || value.Int() != want {
+					t.Fatalf("%s=%s, want %d. body=%s", path, value.Raw, want, got)
+				}
+			}
+			for _, path := range tt.wantAbsent {
+				if gjson.GetBytes(got, path).Exists() {
+					t.Fatalf("%s should be absent. body=%s", path, got)
+				}
+			}
+		})
+	}
+}
+
+// Antigravity 把请求包进 {"project","request":{...}} 信封。后缀写在客户端 body 上，
+// 转换器负责放进信封；写在信封外层会被 prepareAntigravityRequestBody 整段丢弃。
+func TestApplyThinkingSuffixSurvivesAntigravityEnvelope(t *testing.T) {
+	t.Parallel()
+
+	body := applyThinkingSuffix(
+		[]byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+		protocol.Gemini,
+		"gemini-3-pro(high)",
+	)
+	envelope, err := translateAntigravityRequest(protocol.Gemini, "gemini-3-pro", body, false)
+	if err != nil {
+		t.Fatalf("translateAntigravityRequest() error = %v", err)
+	}
+	got := gjson.GetBytes(envelope, "request."+geminiThinkingLevelPath).String()
+	if got != "high" {
+		t.Fatalf("request.%s=%q, want high. envelope=%s", geminiThinkingLevelPath, got, envelope)
 	}
 }
 
@@ -579,6 +770,15 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 			requestBody:     `{"model":"gpt-4","messages":[]}`,
 			wantModel:       "gpt-4",
 			wantBodyModel:   "gpt-4",
+		},
+		{
+			name:            "思考后缀-body 模型名剥离后按基名转发",
+			modelFuzzyMatch: false,
+			configModels:    []model.ModelEntry{{Model: "gpt-5.6-luna"}},
+			originalModel:   "gpt-5.6-luna",
+			requestBody:     `{"model":"gpt-5.6-luna(max)","messages":[]}`,
+			wantModel:       "gpt-5.6-luna",
+			wantBodyModel:   "gpt-5.6-luna",
 		},
 		{
 			name:            "模糊匹配_替换为实际模型名",
@@ -905,6 +1105,13 @@ func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
 			actualModel:   "gpt-4-turbo",
 			wantPath:      "/v1/chat/completions",
 		},
+		{
+			name:          "思考后缀-路径模型段替换为基名",
+			originalPath:  "/v1beta/models/gemini-2.5-pro(high):generateContent",
+			originalModel: "gemini-2.5-pro(high)",
+			actualModel:   "gemini-2.5-pro",
+			wantPath:      "/v1beta/models/gemini-2.5-pro:generateContent",
+		},
 	}
 
 	for _, tt := range tests {
@@ -915,6 +1122,30 @@ func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
 				t.Errorf("requestPath = %q, want %q", requestPath, tt.wantPath)
 			}
 		})
+	}
+}
+
+// Gemini 请求体没有 model 字段，模型在 URL 路径里。改写模型名不能顺手注入一个 model 键。
+func TestReplaceJSONRequestModel_LeavesBodyWithoutModelUntouched(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	got := replaceJSONRequestModel(body, "gemini-2.5-flash")
+	if gjson.GetBytes(got, "model").Exists() {
+		t.Fatalf("model must not be injected into a Gemini body: %s", got)
+	}
+}
+
+func TestRewriteUpstreamRequestPath_StripsThinkingSuffix(t *testing.T) {
+	t.Parallel()
+
+	got := rewriteUpstreamRequestPath(
+		"/v1beta/models/gemini-2.5-pro(high):generateContent",
+		"gemini-2.5-pro",
+	)
+	want := "/v1beta/models/gemini-2.5-pro:generateContent"
+	if got != want {
+		t.Fatalf("rewriteUpstreamRequestPath()=%q, want %q", got, want)
 	}
 }
 

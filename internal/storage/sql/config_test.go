@@ -1104,6 +1104,39 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	}
 }
 
+func TestConfig_GetEnabledChannelsByModelUsesRoutingModelName(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "routing_model_query.db")
+	ctx := context.Background()
+
+	for _, entry := range []struct {
+		name  string
+		model string
+	}{
+		{name: "thinking-suffix", model: "gpt-5.6-luna(max)"},
+		{name: "unknown-suffix", model: "gpt-5.6-luna(custom)"},
+		{name: "same-prefix", model: "gpt-5.6-luna-other"},
+	} {
+		if _, err := store.CreateConfig(ctx, &model.Config{
+			Name:         entry.name,
+			URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+			Enabled:      true,
+			ModelEntries: []model.ModelEntry{{Model: entry.model}},
+		}); err != nil {
+			t.Fatalf("create %s: %v", entry.name, err)
+		}
+	}
+
+	configs, err := store.GetEnabledChannelsByModel(ctx, "gpt-5.6-luna")
+	if err != nil {
+		t.Fatalf("GetEnabledChannelsByModel(base): %v", err)
+	}
+	if len(configs) != 1 || configs[0].Name != "thinking-suffix" {
+		t.Fatalf("channels for routing base = %#v, want only thinking-suffix", configs)
+	}
+}
+
 func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 	t.Parallel()
 

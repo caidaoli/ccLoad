@@ -399,10 +399,16 @@ func (s *Server) executeResponsesWebsocketTurn(
 	allowLocalPrewarm bool,
 ) (responsesWebsocketTurnResult, error) {
 	nativeCodexWS := executionSession.upstream
-	modelName := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
-	if modelName == "" {
+	requestedModel := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	if requestedModel == "" {
 		return responsesWebsocketTurnResult{}, errors.New("missing model in normalized websocket request")
 	}
+	// 完整 transcript 与增量回合都是 Codex 协议原始体，后缀改写必须同时落到两者上，
+	// 否则重放和增量提交会带着不同的思考参数。
+	requestBody = applyThinkingSuffix(requestBody, protocol.Codex, requestedModel)
+	nativeRequestBody = applyThinkingSuffix(nativeRequestBody, protocol.Codex, requestedModel)
+	thinkingEffort := thinkingEffortFromRequest(requestedModel, requestBody)
+	modelName := model.RoutingModelName(requestedModel)
 
 	release, err := s.acquireConcurrencySlotForContext(ctx)
 	if err != nil {
@@ -455,8 +461,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 	startTime := time.Now()
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
-	thinkingEffort := extractThinkingEffortFromJSON(requestBody)
-
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
 	header.Set("Content-Type", "application/json")
 	reqCtx := &proxyRequestContext{

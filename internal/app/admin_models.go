@@ -976,6 +976,31 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 	oldSet := make(map[string]struct{}, len(oldEntries))
 	disabledAliases := make(map[string]struct{}, len(oldEntries))
 	newSet := make(map[string]struct{}, len(fetched))
+	modelIdentities := func(name string) []string {
+		if name == "" {
+			return nil
+		}
+		normalized, _ := normalizeModelAlias(name, options)
+		return []string{
+			strings.ToLower(name),
+			strings.ToLower(normalized),
+			strings.ToLower(model.RoutingModelName(name)),
+			strings.ToLower(model.RoutingModelName(normalized)),
+		}
+	}
+	rememberDisabled := func(name string) {
+		for _, identity := range modelIdentities(name) {
+			disabledAliases[identity] = struct{}{}
+		}
+	}
+	isDisabled := func(name string) bool {
+		for _, identity := range modelIdentities(name) {
+			if _, exists := disabledAliases[identity]; exists {
+				return true
+			}
+		}
+		return false
+	}
 
 	for _, entry := range oldEntries {
 		key := strings.ToLower(entry.Model)
@@ -983,20 +1008,13 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 		if !entry.Disabled {
 			continue
 		}
-		disabledAliases[key] = struct{}{}
-		normalizedModel, _ := normalizeModelAlias(entry.Model, options)
-		disabledAliases[strings.ToLower(normalizedModel)] = struct{}{}
-		if entry.RedirectModel != "" {
-			disabledAliases[strings.ToLower(entry.RedirectModel)] = struct{}{}
-		}
+		rememberDisabled(entry.Model)
+		rememberDisabled(entry.RedirectModel)
 	}
 	for i := range fetched {
 		key := strings.ToLower(fetched[i].Model)
 		newSet[key] = struct{}{}
-		_, disabled := disabledAliases[key]
-		if !disabled && fetched[i].RedirectModel != "" {
-			_, disabled = disabledAliases[strings.ToLower(fetched[i].RedirectModel)]
-		}
+		disabled := isDisabled(fetched[i].Model) || isDisabled(fetched[i].RedirectModel)
 		fetched[i].Disabled = fetched[i].Disabled || disabled
 	}
 	for key := range oldSet {

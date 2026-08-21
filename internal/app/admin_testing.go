@@ -414,10 +414,13 @@ func patchUpstreamTestFields(translatedBody, upstreamBody []byte, upstreamProtoc
 	return result
 }
 
+// requestedModel 是用户在测试表单里写的模型名，可能带思考后缀；testReq.Model 已经被
+// 解析成实际上游模型。后缀改写要落在客户端 body 上，和代理链路保持同一套上游契约。
 func (s *Server) buildChannelTestRequestPlan(
 	cfgForBuild *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
+	requestedModel string,
 	clientProtocol, upstreamProtocol string,
 ) (*channelTestRequestPlan, error) {
 	clientTester := newChannelTester(clientProtocol)
@@ -426,6 +429,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	if err != nil {
 		return nil, err
 	}
+	body = applyThinkingSuffix(body, protocol.Protocol(clientProtocol), requestedModel)
 
 	plan := &channelTestRequestPlan{
 		clientProtocol:   clientProtocol,
@@ -453,6 +457,9 @@ func (s *Server) buildChannelTestRequestPlan(
 	if err != nil {
 		return nil, err
 	}
+	// 跨协议 patch 会用上游测试器的 thinking/reasoning 覆盖转换结果。后缀是显式
+	// 请求选项，必须先写进上游 tester body，否则 Codex 模板默认 medium 会盖掉它。
+	upstreamBody = applyThinkingSuffix(upstreamBody, protocol.Protocol(upstreamProtocol), requestedModel)
 
 	transformPlan, err := protocol.BuildTransformPlan(
 		protocol.Protocol(clientProtocol),
@@ -600,7 +607,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		}
 		testReq.BaseURL = normalizedBaseURL
 	}
-	if !cfg.SupportsModel(testReq.Model) {
+	if !cfg.SupportsModel(model.RoutingModelName(testReq.Model)) {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":          false,
 			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
@@ -629,6 +636,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
+	logModel, logThinking := channelTestLogIdentity(requestedModel, testReq.ThinkingEffort)
 	testResult := s.testChannelAPIWithCooldownTarget(
 		c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq,
 		keySelection.keyIndex, keySelection.updatePersistedCooldown,
@@ -660,7 +668,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		c.Request.Context(), runtimeCfg, keySelection.keyIndex, &testReq,
 		keySelection.updatePersistedCooldown, testResult,
 	)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, logModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), logThinking, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
@@ -669,9 +677,9 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 func channelTestActualModel(result map[string]any, fallback string) string {
 	if actualModel, _ := result["actual_model"].(string); strings.TrimSpace(actualModel) != "" {
-		return actualModel
+		return model.RoutingModelName(actualModel)
 	}
-	return fallback
+	return model.RoutingModelName(fallback)
 }
 
 type channelTestKeySelection struct {
@@ -1157,9 +1165,10 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, upstreamProtocol, selectedURL string,
 ) (result map[string]any) {
+	requestedModel := testReq.Model
 	attemptReq := *testReq
-	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, testReq.Model, upstreamProtocol)
-	if attemptReq.Model != testReq.Model {
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, requestedModel, upstreamProtocol)
+	if attemptReq.Model != requestedModel {
 		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, attemptReq.Model)
 	}
 	testReq = &attemptReq
@@ -1184,7 +1193,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	if testReq.WaitForCapacity {
 		var cfgForBuild *model.Config
 		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(
-			cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+			cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL,
 		)
 		if err == nil {
 			capacityRelease, err = s.waitForUpstreamRequest(reqCtx, cfg)
@@ -1197,7 +1206,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		}
 	} else {
 		req, requestPlan, cancel, err = s.buildTestUpstreamRequestForProtocol(
-			reqCtx, cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+			reqCtx, cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL,
 		)
 	}
 	if err != nil {
@@ -1573,6 +1582,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
+	requestedModel string,
 	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*model.Config, *channelTestRequestPlan, error) {
 	cfgForBuild := cfg.Clone()
@@ -1581,7 +1591,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		Exact: model.HasExactUpstreamURLMarker(selectedURL),
 	}}
 
-	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol, upstreamProtocol)
+	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol)
 	if err != nil {
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
@@ -1714,9 +1724,10 @@ func (s *Server) buildTestUpstreamRequestForProtocol(
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
+	requestedModel string,
 	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
-	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL)
+	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -2053,7 +2064,7 @@ func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil
 	cache5m, cache1h, _ := parser.GetCacheBreakdown()
 	if billableInput+output+cacheRead > 0 {
 		result["cost_usd"] = util.CalculateCostDetailed(
-			testReq.Model,
+			model.RoutingModelName(testReq.Model),
 			billableInput,
 			output,
 			cacheRead,
@@ -2075,6 +2086,17 @@ func testRequestThinkingEffort(testReq *testutil.TestChannelRequest, requestPlan
 		return ""
 	}
 	return normalizeThinkingEffort(testReq.ThinkingEffort)
+}
+
+// channelTestLogIdentity 把检测日志的模型名和思考等级收成与代理链路同一口径：
+// 模型用基名，等级优先取后缀声明（none/auto 在部分协议上会删字段，body 里读不回来）。
+func channelTestLogIdentity(requestedModel, fallbackThinking string) (logModel, thinkingEffort string) {
+	logModel = model.RoutingModelName(requestedModel)
+	thinkingEffort = thinkingEffortFromRequest(requestedModel, nil)
+	if thinkingEffort == "" {
+		thinkingEffort = fallbackThinking
+	}
+	return logModel, thinkingEffort
 }
 
 // parseTestNativeSSEResponse 处理客户端协议与上游协议一致时的原生 SSE 解析。

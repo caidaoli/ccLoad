@@ -58,7 +58,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 
-	if !cfg.SupportsModel(testReq.Model) {
+	if !cfg.SupportsModel(model.RoutingModelName(testReq.Model)) {
 		writeChatErrorEvent(c, "模型 "+testReq.Model+" 不在此渠道的支持列表中")
 		return
 	}
@@ -179,7 +179,8 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				keySelection.updatePersistedCooldown, lastResult,
 			)
 		}
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(persistedCfg, model.LogSourceManualChat, originalModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
+		logModel, logThinking := channelTestLogIdentity(originalModel, testReq.ThinkingEffort)
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(persistedCfg, model.LogSourceManualChat, logModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), logThinking, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -240,7 +241,7 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
 		if input+output+cacheRead > 0 {
 			cost := util.CalculateCostDetailed(
-				testReq.Model,
+				model.RoutingModelName(testReq.Model),
 				input, output, cacheRead,
 				cache5m, cache1h,
 			) + sr.usageParser.GetToolCostUSD()
@@ -279,7 +280,7 @@ func (s *Server) streamChatWithURLForProtocol(
 	}()
 
 	req, requestPlan, cancel, err := s.buildTestUpstreamRequestForProtocol(
-		c.Request.Context(), cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+		c.Request.Context(), cfg, apiKey, testReq, originalModel, clientProtocol, upstreamProtocol, selectedURL,
 	)
 	if err != nil {
 		if isAutomaticProtocolTranslationFailure(cfg, err) {
@@ -521,7 +522,8 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), requestThinking, result))
+	logModel, logThinking := channelTestLogIdentity(originalModel, requestThinking)
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, testReq.Model, apiKey, c.ClientIP(), logThinking, result))
 	return succeeded
 }
 
@@ -641,7 +643,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 			}
 		}
 		if input+output+cacheRead > 0 {
-			result["cost_usd"] = util.CalculateCostDetailed(testReq.Model, input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
+			result["cost_usd"] = util.CalculateCostDetailed(model.RoutingModelName(testReq.Model), input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
 		}
 		if effort := sr.usageParser.GetThinkingEffort(); effort != "" {
 			result["thinking_effort"] = effort
@@ -650,7 +652,8 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	if sr.debugData != nil {
 		result["debug_data"] = sr.debugData
 	}
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), sr.requestThinking, result))
+	logModel, logThinking := channelTestLogIdentity(originalModel, sr.requestThinking)
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, model.RoutingModelName(testReq.Model), apiKey, c.ClientIP(), logThinking, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。

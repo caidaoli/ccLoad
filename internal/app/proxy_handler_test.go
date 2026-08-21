@@ -130,6 +130,30 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			expectStream: false,
 			expectError:  false,
 		},
+		{
+			name:         "思考后缀-从模型名剥离等级",
+			body:         `{"model":"gpt-5.6-luna(max)","messages":[]}`,
+			path:         "/v1/chat/completions",
+			expectModel:  "gpt-5.6-luna",
+			expectStream: false,
+			expectError:  false,
+		},
+		{
+			name:         "思考后缀-未识别括号保留原名",
+			body:         `{"model":"gpt-5.6-luna(foo)","messages":[]}`,
+			path:         "/v1/chat/completions",
+			expectModel:  "gpt-5.6-luna(foo)",
+			expectStream: false,
+			expectError:  false,
+		},
+		{
+			name:         "思考后缀-从 Gemini 路径剥离",
+			body:         `{"contents":[]}`,
+			path:         "/v1beta/models/gemini-2.5-pro(high):generateContent",
+			expectModel:  "gemini-2.5-pro",
+			expectStream: false,
+			expectError:  false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -2179,7 +2179,7 @@ func (s *Server) forwardAttempt(
 	reqCtx.baseURL = baseURL
 	reqCtx.upstreamProtocol = upstreamProtocol
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
-	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
+	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
 	if upstreamProtocol == protocol.Codex {
 		requestPath = normalizeCodexClientPath(requestPath)
 	}
@@ -2211,7 +2211,7 @@ func (s *Server) forwardAttempt(
 	var nativeAttempt *nativeCodexWebsocketAttempt
 	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && upstreamProtocol == protocol.Codex &&
 		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
-		incrementalBody := replaceJSONRequestModel(reqCtx.nativeCodexBody, reqCtx.originalModel, actualModel)
+		incrementalBody := replaceJSONRequestModel(reqCtx.nativeCodexBody, actualModel)
 		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
 		nativeAttempt = &nativeCodexWebsocketAttempt{
 			session:         reqCtx.nativeCodexWS,

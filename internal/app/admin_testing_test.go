@@ -5737,6 +5737,66 @@ func TestDownstreamEndpointPath(t *testing.T) {
 	}
 }
 
+// 管理测试与代理链路必须发出同一套上游契约，思考后缀在两边都要落进请求体。
+func TestBuildTestUpstreamRequestPlanAppliesThinkingSuffix(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 11, Name: "codex-test", AuthType: model.AuthTypeAPIKey,
+		URLs:         model.ChannelURLs{{URL: "https://upstream.example.com", Protocols: []string{util.ProtocolCodex}}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6-luna"}},
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model: "gpt-5.6-luna", Content: "hello", ClientProtocol: util.ProtocolCodex,
+	}
+
+	_, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "sk-test", testReq, "gpt-5.6-luna(max)",
+		util.ProtocolCodex, util.ProtocolCodex, "https://upstream.example.com",
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	if effort := gjson.GetBytes(plan.requestBody, "reasoning.effort").String(); effort != "xhigh" {
+		t.Fatalf("reasoning.effort=%q, want xhigh. body=%s", effort, plan.requestBody)
+	}
+}
+
+// 跨协议转到 Codex 时，patch 不能用模板默认 medium 盖掉后缀。
+func TestBuildTestUpstreamRequestPlanKeepsThinkingSuffixAcrossCodexTransform(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 12, Name: "codex-transform-test", AuthType: model.AuthTypeAPIKey,
+		URLs:         model.ChannelURLs{{URL: "https://upstream.example.com", Protocols: []string{util.ProtocolCodex}}},
+		ModelEntries: []model.ModelEntry{{Model: "claude-opus-4-6"}},
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model: "claude-opus-4-6", Content: "hello", ClientProtocol: util.ProtocolAnthropic,
+	}
+
+	_, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "sk-test", testReq, "claude-opus-4-6(high)",
+		util.ProtocolAnthropic, util.ProtocolCodex, "https://upstream.example.com",
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	if effort := gjson.GetBytes(plan.requestBody, "reasoning.effort").String(); effort != "high" {
+		t.Fatalf("reasoning.effort=%q, want high. body=%s", effort, plan.requestBody)
+	}
+}
+
+func TestChannelTestLogIdentityStripsThinkingSuffix(t *testing.T) {
+	t.Parallel()
+
+	logModel, effort := channelTestLogIdentity("gpt-5.6-luna(max)", "low")
+	if logModel != "gpt-5.6-luna" {
+		t.Fatalf("log model=%q, want gpt-5.6-luna", logModel)
+	}
+	if effort != "max" {
+		t.Fatalf("thinking effort=%q, want max from suffix not fallback", effort)
+	}
+}
+
 func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cfg := newZAITestChannel()
@@ -5746,7 +5806,7 @@ func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	}
 
 	cfgForBuild, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "key-id.secret", testReq, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
+		cfg, "key-id.secret", testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
 	)
 	if err != nil {
 		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)

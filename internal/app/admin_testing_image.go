@@ -256,7 +256,7 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 	result["total_keys"] = len(apiKeys)
 	result["generation_api"] = imageReq.GenerationAPI
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(
-		cfg, model.LogSourceManualTest, imageReq.Model,
+		cfg, model.LogSourceManualTest, model.RoutingModelName(imageReq.Model),
 		channelTestActualModel(result, imageReq.Model), keySelection.apiKey,
 		c.ClientIP(), "", result,
 	))

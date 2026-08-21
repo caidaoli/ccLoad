@@ -597,6 +597,12 @@ func replaceModelInPath(path string, originalModel string, actualModel string) s
 	return path[:idx+len(modelPrefix)] + actualModel + path[end:]
 }
 
+// rewriteUpstreamRequestPath 把路径里的模型段换成实际上游模型。以路径自身携带的
+// 模型名为准，客户端写的是 gemini-2.5-pro(high) 时同样能替换掉。
+func rewriteUpstreamRequestPath(path, actualModel string) string {
+	return replaceModelInPath(path, extractModelFromPath(path), actualModel)
+}
+
 func buildGeminiGeneratePath(model string, isStreaming bool) string {
 	if isStreaming {
 		return "/v1beta/models/" + model + ":streamGenerateContent"
@@ -624,17 +630,18 @@ func buildCodexResponsesPath() string {
 // 2. 模糊匹配（启用 model_fuzzy_match 时）
 // 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
 func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
-	actualModel := originalModel
+	routedModel := model.RoutingModelName(originalModel)
+	actualModel := routedModel
 	// 1. 检查模型重定向（精确匹配优先）
-	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
+	if redirectModel, ok := cfg.GetRedirectModel(routedModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
 
 	// 2. 模糊匹配回退（仅当未触发重定向时）
-	if actualModel == originalModel && s.modelFuzzyMatch {
+	if actualModel == routedModel && s.modelFuzzyMatch {
 		// 先检查精确匹配，避免不必要的模糊匹配
-		if !cfg.SupportsModel(originalModel) {
-			if matched, ok := cfg.FuzzyMatchModel(originalModel); ok {
+		if !cfg.SupportsModel(routedModel) {
+			if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
 				actualModel = matched
 			}
 		}
@@ -643,12 +650,13 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
 	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
 	// 仅当模型已变更且变更后的模型有重定向配置时触发
-	if actualModel != originalModel {
+	if actualModel != routedModel {
 		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
 			actualModel = redirectModel
 		}
 	}
-	return actualModel
+	// 渠道条目或重定向目标可能字面带思考后缀，但后缀绝不能出现在发往上游的模型名里。
+	return model.RoutingModelName(actualModel)
 }
 
 // resolveFinalUpstreamModel 返回真正发送给上游的模型身份。
@@ -672,17 +680,27 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	if reqCtx.clientProtocol == protocol.Anthropic && upstreamProtocol != protocol.Anthropic {
 		bodyToSend = stripAnthropicBillingHeaders(bodyToSend)
 	}
-	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)
+	bodyToSend = replaceJSONRequestModel(bodyToSend, actualModel)
 
 	return actualModel, bodyToSend
 }
 
-func replaceJSONRequestModel(body []byte, originalModel, actualModel string) []byte {
-	if len(body) == 0 || actualModel == "" || actualModel == originalModel {
+// replaceJSONRequestModel 以请求体里现有的 model 值为准做替换：客户端写的可能是
+// 带思考后缀的名字，也可能和路由用的基名不一致。没有 model 字段的请求体（Gemini
+// 把模型放在 URL 里）保持原样，不能顺手注入一个字段。
+func replaceJSONRequestModel(body []byte, actualModel string) []byte {
+	if len(body) == 0 || actualModel == "" {
 		return body
 	}
 	var reqData map[string]json.RawMessage
 	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+	var current string
+	if raw, ok := reqData["model"]; ok {
+		_ = sonic.Unmarshal(raw, &current)
+	}
+	if strings.TrimSpace(current) == "" || current == actualModel {
 		return body
 	}
 	modelRaw, err := sonic.Marshal(actualModel)
