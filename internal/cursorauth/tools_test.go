@@ -1,6 +1,7 @@
 package cursorauth
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -92,5 +93,45 @@ func TestFilterToolCallsDropsUnknownNames(t *testing.T) {
 	calls := FilterToolCalls([]ToolCall{{Name: "bash"}, {Name: "rm"}}, []Tool{{Name: "bash"}})
 	if len(calls) != 1 || calls[0].Name != "bash" {
 		t.Fatalf("calls = %+v", calls)
+	}
+}
+
+func TestResolveClientToolCallsMapsGrokOpenCodeCodexAliases(t *testing.T) {
+	t.Parallel()
+	grok := []Tool{{
+		Name:       "run_terminal_command",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"working_directory":{"type":"string"}}}`),
+	}}
+	calls := ResolveClientToolCalls([]ToolCall{{
+		Name: "Shell", Arguments: json.RawMessage(`{"cmd":"ls","cwd":"/tmp"}`),
+	}}, grok)
+	if len(calls) != 1 || calls[0].Name != "run_terminal_command" {
+		t.Fatalf("grok = %+v", calls)
+	}
+	if string(calls[0].Arguments) != `{"command":"ls","working_directory":"/tmp"}` &&
+		string(calls[0].Arguments) != `{"working_directory":"/tmp","command":"ls"}` {
+		t.Fatalf("grok args = %s", calls[0].Arguments)
+	}
+
+	opencode := []Tool{{
+		Name:       "read",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"filePath":{"type":"string"}}}`),
+	}}
+	calls = ResolveClientToolCalls([]ToolCall{{
+		Name: "ReadFile", Arguments: json.RawMessage(`{"path":"main.go"}`),
+	}}, opencode)
+	if len(calls) != 1 || calls[0].Name != "read" || string(calls[0].Arguments) != `{"filePath":"main.go"}` {
+		t.Fatalf("opencode = %+v args=%s", calls, calls[0].Arguments)
+	}
+
+	codex := []Tool{{
+		Name:       "apply_patch",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}}}`),
+	}}
+	calls = ResolveClientToolCalls([]ToolCall{{
+		Name: "ApplyPatch", Arguments: json.RawMessage(`{"patchText":"*** Begin Patch"}`),
+	}}, codex)
+	if len(calls) != 1 || calls[0].Name != "apply_patch" || string(calls[0].Arguments) != `{"patch":"*** Begin Patch"}` {
+		t.Fatalf("codex = %+v args=%s", calls, calls[0].Arguments)
 	}
 }
