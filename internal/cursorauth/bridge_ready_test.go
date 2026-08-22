@@ -2,7 +2,9 @@ package cursorauth
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -100,6 +102,24 @@ func TestBridgePathAbsolutizesRelativeOverride(t *testing.T) {
 	}
 }
 
+func TestBridgeSpawnPreservesExecutableStartError(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "cursor-sdk-bridge")
+	if err := os.WriteFile(binary, []byte("bridge"), 0o755); err != nil {
+		t.Fatalf("write bridge binary: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing-cursor-sdk-bridge")
+	bridge := newBridge(binary)
+	defer bridge.lifeStop()
+	bridge.command = func(string, ...string) *exec.Cmd {
+		return exec.Command(missing)
+	}
+
+	_, err := bridge.spawn()
+	if !errors.Is(err, ErrAgentMissing) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("spawn() error = %v, want ErrAgentMissing wrapping os.ErrNotExist", err)
+	}
+}
+
 func TestBridgeStateRootFallsBackWhenCacheCannotBeCreated(t *testing.T) {
 	blocked := filepath.Join(t.TempDir(), "cache-file")
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
@@ -124,6 +144,35 @@ func TestBridgeStateRootFallsBackWhenCacheCannotBeCreated(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("fallback state root mode = %v, want 0700", info.Mode())
+	}
+}
+
+func TestBridgeStateRootFallsBackToTempWhenPersistentRootsCannotBeCreated(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("create blocked persistent root: %v", err)
+	}
+	t.Setenv("SQLITE_PATH", filepath.Join(blocked, "data", "ccload.db"))
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("LocalAppData", filepath.Join(blocked, "cache"))
+	case "darwin":
+		t.Setenv("HOME", blocked)
+	default:
+		t.Setenv("XDG_CACHE_HOME", filepath.Join(blocked, "cache"))
+	}
+	temporary := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("TMP", temporary)
+		t.Setenv("TEMP", temporary)
+	} else {
+		t.Setenv("TMPDIR", temporary)
+	}
+
+	got := bridgeStateRoot()
+	want := filepath.Join(temporary, "ccload", "cursor-sdk")
+	if got != want {
+		t.Fatalf("bridgeStateRoot() = %q, want temporary fallback %q", got, want)
 	}
 }
 

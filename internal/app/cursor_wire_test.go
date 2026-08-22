@@ -14,6 +14,7 @@ import (
 	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 )
 
 type fakeCursorRunner struct {
@@ -35,6 +36,17 @@ type failingCursorResponseWriter struct {
 type blockingCursorRunner struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type synchronousBlockingCursorRunner struct{}
+
+func (synchronousBlockingCursorRunner) Run(
+	ctx context.Context,
+	_ *cursorauth.Credential,
+	_, _ string,
+) (<-chan cursorauth.Event, error) {
+	<-ctx.Done()
+	return nil, context.Cause(ctx)
 }
 
 func (r *blockingCursorRunner) Run(
@@ -223,6 +235,86 @@ func TestForwardCursorAgentAppearsInActiveRequestsEndpoint(t *testing.T) {
 	mustUnmarshalJSON(t, finishedWriter.Body.Bytes(), &finishedResponse)
 	if finishedResponse.Count != 0 || len(finishedResponse.Data) != 0 {
 		t.Fatalf("finished Cursor request leaked from active endpoint: %+v", finishedResponse)
+	}
+}
+
+func TestForwardCursorAgentHonorsConfiguredTimeouts(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	tests := []struct {
+		name        string
+		streaming   bool
+		synchronous bool
+		firstByte   time.Duration
+		streamTotal time.Duration
+		nonStream   time.Duration
+		wantStatus  int
+		wantError   string
+	}{
+		{
+			name: "stream first byte", streaming: true, firstByte: timeout,
+			wantStatus: util.StatusFirstByteTimeout, wantError: "upstream first byte timeout",
+		},
+		{
+			name: "stream first byte during synchronous runner", streaming: true, synchronous: true,
+			firstByte: timeout, wantStatus: util.StatusFirstByteTimeout, wantError: "upstream first byte timeout",
+		},
+		{
+			name: "stream total", streaming: true, streamTotal: timeout,
+			wantStatus: util.StatusStreamIncomplete, wantError: "upstream stream timeout",
+		},
+		{
+			name: "non-stream total", nonStream: timeout,
+			wantStatus: http.StatusGatewayTimeout, wantError: "upstream timeout",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var runner cursorauth.Runner = &blockingCursorRunner{
+				started: make(chan struct{}), release: make(chan struct{}),
+			}
+			if test.synchronous {
+				runner = synchronousBlockingCursorRunner{}
+			}
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = runner
+			srv.firstByteTimeout = test.firstByte
+			srv.streamTimeout = test.streamTotal
+			srv.nonStreamTimeout = test.nonStream
+			body := []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}]}`)
+			if test.streaming {
+				body = []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+			}
+			reqCtx := &proxyRequestContext{
+				originalModel: "composer-2.5", clientProtocol: protocol.OpenAI,
+				requestPath: "/v1/chat/completions", body: body,
+				isStreaming: test.streaming, skipProxyLog: true,
+			}
+
+			started := time.Now()
+			result, err := srv.forwardCursorAgent(
+				context.Background(),
+				&model.Config{ID: 21, Name: "Cursor-timeout", AuthType: model.AuthTypeCursorOAuth},
+				&cursorauth.Credential{APIKey: "cursor-user-api-key"},
+				reqCtx,
+				httptest.NewRecorder(),
+			)
+			elapsed := time.Since(started)
+			if err != nil {
+				t.Fatalf("forwardCursorAgent() error = %v", err)
+			}
+			if result == nil || result.succeeded || result.status != test.wantStatus {
+				t.Fatalf("result = %+v, want failed status %d", result, test.wantStatus)
+			}
+			if !strings.Contains(string(result.body), test.wantError) {
+				t.Fatalf("body = %s, want %q", result.body, test.wantError)
+			}
+			if elapsed >= time.Second || result.duration <= 0 || result.duration >= 1 {
+				t.Fatalf("elapsed = %v result.duration = %.3f, timeout was not enforced", elapsed, result.duration)
+			}
+			if result.firstByteTime != 0 {
+				t.Fatalf("firstByteTime = %.3f, failed request produced no client byte", result.firstByteTime)
+			}
+		})
 	}
 }
 

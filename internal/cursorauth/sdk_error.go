@@ -1,8 +1,11 @@
 package cursorauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -114,6 +117,72 @@ func classifyBridgeError(err error) error {
 		break
 	}
 	return bridgeErr
+}
+
+func classifyBridgeOperationError(
+	operation string,
+	operationCtx context.Context,
+	timeout time.Duration,
+	started time.Time,
+	err error,
+) error {
+	classified := classifyBridgeError(err)
+	var connectErr *connect.Error
+	deadlineExceeded := errors.Is(err, context.DeadlineExceeded) ||
+		(errors.As(err, &connectErr) && connectErr.Code() == connect.CodeDeadlineExceeded)
+	if !deadlineExceeded {
+		return classified
+	}
+
+	elapsed := time.Since(started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	summary := fmt.Sprintf("cursor SDK %s returned deadline_exceeded after %s", operation, elapsed.Round(time.Millisecond))
+	if operationCtx != nil && errors.Is(context.Cause(operationCtx), context.DeadlineExceeded) {
+		summary = fmt.Sprintf("cursor SDK %s exceeded its local deadline after %s", operation, elapsed.Round(time.Millisecond))
+		if timeout > 0 {
+			summary += fmt.Sprintf(" (operation limit=%s)", timeout)
+		}
+	}
+	if bridgeDeadlineHasDiagnostic(classified) {
+		return fmt.Errorf("%s: %w", summary, classified)
+	}
+
+	diagnostic := "cursor-sdk-bridge returned no detail beyond deadline_exceeded"
+	if bridgeProxyEnvironmentConfigured() {
+		diagnostic = "cursor-sdk-bridge inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and returned no detail beyond deadline_exceeded"
+	}
+	return fmt.Errorf("%s; %s: %w", summary, diagnostic, classified)
+}
+
+func bridgeDeadlineHasDiagnostic(err error) bool {
+	var bridgeErr *BridgeError
+	if !errors.As(err, &bridgeErr) {
+		return false
+	}
+	if bridgeErr.SDKCode != sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNSPECIFIED ||
+		bridgeErr.RequestID != "" || bridgeErr.HelpURL != "" || bridgeErr.Provider != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(bridgeErr.Message)) {
+	case "", "deadline exceeded", "context deadline exceeded":
+		return false
+	default:
+		return true
+	}
+}
+
+func bridgeProxyEnvironmentConfigured() bool {
+	for _, key := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "all_proxy",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func isBridgeTransportFailure(err error) bool {

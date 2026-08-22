@@ -61,6 +61,7 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 	}
 	defer r.active.Done()
 
+	started := time.Now()
 	requestCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 	client, err := r.bridge.client(requestCtx)
@@ -78,7 +79,7 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 		}
 	}
 	if err != nil {
-		return nil, classifyBridgeError(err)
+		return nil, classifyBridgeOperationError("ListModels", requestCtx, RequestTimeout, started, err)
 	}
 
 	models := make([]string, 0, len(response.Msg.GetItems()))
@@ -145,6 +146,7 @@ func (r *SDKRunner) Run(
 		return nil, err
 	}
 	apiKey := strings.TrimSpace(credential.APIKey)
+	createStarted := time.Now()
 	createCtx, createCancel := context.WithTimeout(ctx, RequestTimeout)
 	created, err := client.agent.CreateAgent(createCtx, connect.NewRequest(&sdkv1.CreateAgentRequest{
 		Options: &sdkv1.AgentOptions{
@@ -154,10 +156,12 @@ func (r *SDKRunner) Run(
 			Tools:  &sdkv1.ToolList{Names: []string{}},
 		},
 	}))
-	createCancel()
 	if err != nil {
-		return nil, classifyBridgeError(err)
+		classifiedErr := classifyBridgeOperationError("CreateAgent", createCtx, RequestTimeout, createStarted, err)
+		createCancel()
+		return nil, classifiedErr
 	}
+	createCancel()
 	agentID := strings.TrimSpace(created.Msg.GetAgentId())
 	if agentID == "" {
 		return nil, errors.New("cursor-sdk-bridge CreateAgent returned an empty agent_id")
@@ -167,7 +171,10 @@ func (r *SDKRunner) Run(
 	if runTimeout <= 0 {
 		runTimeout = AgentTimeout
 	}
-	runCtx, stopRun := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
+	// The caller owns the run. Preserve its cancellation/deadline so a client
+	// disconnect or gateway timeout interrupts a blocked Send stream immediately.
+	runStarted := time.Now()
+	runCtx, stopRun := context.WithTimeout(ctx, runTimeout)
 	stream, err := client.agent.Send(runCtx, connect.NewRequest(&sdkv1.SendRequest{
 		AgentId: agentID,
 		Message: &sdkv1.UserMessage{Text: prompt},
@@ -177,14 +184,21 @@ func (r *SDKRunner) Run(
 		},
 	}))
 	if err != nil {
+		classifiedErr := classifyBridgeOperationError("Send", runCtx, runTimeout, runStarted, err)
 		stopRun()
-		r.deleteAgent(client.agent, agentID, client.workdir, apiKey)
-		return nil, classifyBridgeError(err)
+		// Transfer the active-run reference to cleanup. A failed Send must return
+		// immediately; DeleteAgent/CloseAgent have their own independent deadlines.
+		finish = false
+		go func() {
+			defer r.active.Done()
+			r.deleteAgent(client.agent, agentID, client.workdir, apiKey)
+		}()
+		return nil, classifiedErr
 	}
 
 	events := make(chan Event, 16)
 	finish = false
-	go r.consumeRun(ctx, runCtx, stopRun, client.agent, stream, agentID, client.workdir, apiKey, events)
+	go r.consumeRun(ctx, runCtx, stopRun, client.agent, stream, agentID, client.workdir, apiKey, runTimeout, runStarted, events)
 	return events, nil
 }
 
@@ -205,10 +219,11 @@ func (r *SDKRunner) consumeRun(
 	client sdkv1connect.SdkAgentServiceClient,
 	stream *connect.ServerStreamForClient[sdkv1.RunStreamMessage],
 	agentID, workdir, apiKey string,
+	runTimeout time.Duration,
+	runStarted time.Time,
 	events chan<- Event,
 ) {
 	defer r.active.Done()
-	defer close(events)
 	canceller := newRunCanceller(client, agentID)
 	state := &sdkRunState{
 		agentID:    agentID,
@@ -265,6 +280,9 @@ func (r *SDKRunner) consumeRun(
 	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED && callerCtx.Err() != nil {
 		consumeErr = context.Cause(callerCtx)
 	}
+	if consumeErr != nil && callerCtx.Err() == nil && errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+		consumeErr = classifyBridgeOperationError("Agent run", runCtx, runTimeout, runStarted, consumeErr)
+	}
 	if consumeErr != nil {
 		canceller.Request()
 	}
@@ -280,13 +298,11 @@ func (r *SDKRunner) consumeRun(
 	} else {
 		<-runCallbackDone
 	}
-	canceller.Wait()
-	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED && !hasTokenUsage(state.usage) {
-		if usage := loadRunUsage(client, state.runID, agentID, workdir, apiKey); hasTokenUsage(usage) {
+	if callerCtx.Err() == nil && state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED && !hasTokenUsage(state.usage) {
+		if usage := loadRunUsage(callerCtx, client, state.runID, agentID, workdir, apiKey); hasTokenUsage(usage) {
 			state.usage = usage
 		}
 	}
-	r.deleteAgent(client, agentID, workdir, apiKey)
 	finalEvent := Event{Text: state.text, Done: true, Err: consumeErr, Usage: state.usage}
 	if callerCtx.Err() == nil {
 		events <- finalEvent
@@ -296,9 +312,17 @@ func (r *SDKRunner) consumeRun(
 		default:
 		}
 	}
+	close(events)
+
+	// Cancellation and durable Agent deletion are cleanup, not response work.
+	// Keep them tracked by r.active for orderly shutdown, but never make the
+	// client or request-duration metric wait behind their independent deadlines.
+	canceller.Wait()
+	r.deleteAgent(client, agentID, workdir, apiKey)
 }
 
 func loadRunUsage(
+	parentCtx context.Context,
 	client sdkv1connect.SdkAgentServiceClient,
 	runID, agentID, workdir, apiKey string,
 ) *Usage {
@@ -306,7 +330,7 @@ func loadRunUsage(
 	if runID == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), BridgeCleanupTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, BridgeCleanupTimeout)
 	defer cancel()
 	response, err := client.GetRun(ctx, connect.NewRequest(&sdkv1.GetRunRequest{
 		RunId: runID,

@@ -1738,7 +1738,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.usageMonthlyCredits': '月度积分',
   'channels.oauth.usageReset': '重置 {time}',
   'channels.oauth.resetCredits': '可重置 {count} 次',
-  'channels.oauth.resetCreditExpiresEarliest': '改期 {time}',
+  'channels.oauth.resetCreditExpiresEarliest': '过期 {time}',
   'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
   'channels.oauth.resetCreditExpiresAll': '查看全部 {count} 个过期时间',
   'channels.oauth.resetQuota': '重置额度',

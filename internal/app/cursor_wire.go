@@ -140,7 +140,24 @@ func (s *Server) forwardCursorAgent(
 		return result, nil
 	}
 
-	runBaseCtx := ctx
+	streaming := reqCtx.isStreaming
+	timeoutCtx := newRequestContextForStreaming(ctx, streaming, protocolTimeoutConfig{
+		FirstByteTimeout: s.firstByteTimeout,
+		StreamTimeout:    s.streamTimeout,
+		NonStreamTimeout: s.nonStreamTimeout,
+	})
+	defer timeoutCtx.cleanup()
+	classifyTimeout := func(runErr error) (int, error, bool) {
+		timedOut := timeoutCtx.firstByteTimeoutTriggered() || timeoutCtx.streamTimeoutTriggered() ||
+			(!streaming && timeoutCtx.ctx.Err() != nil &&
+				errors.Is(context.Cause(timeoutCtx.ctx), context.DeadlineExceeded))
+		if !timedOut {
+			return 0, runErr, false
+		}
+		failed, _, timeoutErr := s.handleRequestError(timeoutCtx, cfg, runErr)
+		return failed.Status, timeoutErr, true
+	}
+	runBaseCtx := timeoutCtx.ctx
 	if debugCapture != nil {
 		runBaseCtx = cursorauth.WithRawResponseCapture(runBaseCtx)
 	}
@@ -150,7 +167,13 @@ func (s *Server) forwardCursorAgent(
 	if err != nil {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
-		if errors.Is(err, cursorauth.ErrAgentMissing) {
+		if timeoutStatus, timeoutErr, timedOut := classifyTimeout(err); timedOut {
+			status = timeoutStatus
+			err = timeoutErr
+		} else if isClientDisconnectError(err) {
+			status = StatusClientClosedRequest
+			action = cooldown.ActionReturnClient
+		} else if errors.Is(err, cursorauth.ErrAgentMissing) {
 			status = http.StatusServiceUnavailable
 			action = cooldown.ActionReturnClient
 		} else if errors.Is(err, cursorauth.ErrMissingAPIKey) {
@@ -161,6 +184,9 @@ func (s *Server) forwardCursorAgent(
 			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
 		}
 		result := cursorErrorResult(cfg, status, err.Error(), action)
+		result.duration = time.Since(started).Seconds()
+		result.isClientCanceled = status == StatusClientClosedRequest
+		result.proxyLogWritten = !reqCtx.skipProxyLog
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
 		if !reqCtx.skipProxyLog {
 			failed := &fwResult{
@@ -168,13 +194,14 @@ func (s *Server) forwardCursorAgent(
 			}
 			duration := time.Since(started).Seconds()
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
-			s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+			if status != StatusClientClosedRequest {
+				s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+			}
 		}
 		return result, nil
 	}
 
 	format := cursorResponseFormat(reqCtx)
-	streaming := reqCtx.isStreaming
 	mapTools := request.AllowsTools()
 	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	var responseTransformState any
@@ -233,8 +260,9 @@ func (s *Server) forwardCursorAgent(
 			_, _ = debugCapture.respBuf.Write(event.RawResponse)
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
 		}
-		if firstByte == 0 && (event.Delta != "" || event.Done || event.Text != "") {
+		if firstByte == 0 && (event.Delta != "" || event.Text != "" || (event.Done && event.Err == nil)) {
 			firstByte = time.Since(started)
+			timeoutCtx.stopFirstByteTimer()
 			if s.activeRequests != nil {
 				s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByte)
 			}
@@ -278,7 +306,12 @@ func (s *Server) forwardCursorAgent(
 	finishRunFailure := func(runErr error) (*proxyResult, error) {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
-		clientDisconnected := isClientDisconnectError(runErr)
+		timeoutStatus, timeoutErr, timedOut := classifyTimeout(runErr)
+		if timedOut {
+			status = timeoutStatus
+			runErr = timeoutErr
+		}
+		clientDisconnected := !timedOut && isClientDisconnectError(runErr)
 		if clientDisconnected {
 			status = StatusClientClosedRequest
 			action = cooldown.ActionReturnClient
@@ -295,6 +328,8 @@ func (s *Server) forwardCursorAgent(
 			flush()
 		}
 		result := cursorErrorResult(cfg, status, runErr.Error(), action)
+		result.duration = duration
+		result.firstByteTime = firstByte.Seconds()
 		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, runErr)
 		if !reqCtx.skipProxyLog {
 			failed := &fwResult{
@@ -318,6 +353,9 @@ func (s *Server) forwardCursorAgent(
 	}
 	if responseTransformErr != nil {
 		runErr = responseTransformErr
+	}
+	if runErr == nil && timeoutCtx.ctx.Err() != nil {
+		runErr = context.Cause(timeoutCtx.ctx)
 	}
 	if runErr != nil {
 		return finishRunFailure(runErr)

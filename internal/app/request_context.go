@@ -52,7 +52,10 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 }
 
 func (s *Server) newRequestContextWithTimeouts(parentCtx context.Context, requestPath string, body []byte, timeouts protocolTimeoutConfig) *requestContext {
-	isStreaming := isStreamingRequest(requestPath, body)
+	return newRequestContextForStreaming(parentCtx, isStreamingRequest(requestPath, body), timeouts)
+}
+
+func newRequestContextForStreaming(parentCtx context.Context, isStreaming bool, timeouts protocolTimeoutConfig) *requestContext {
 
 	// [INFO] 关键改动：总是使用 WithCancel 包裹（即使无超时配置也能正常取消）
 	ctx, cancel := context.WithCancel(parentCtx)

@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
@@ -68,6 +70,47 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 		t.Fatalf("logged usage = in:%d out:%d cache_read:%d cache_write:%d cache_5m:%d reasoning:%d",
 			entry.InputTokens, entry.OutputTokens, entry.CacheReadInputTokens,
 			entry.CacheCreationInputTokens, entry.Cache5mInputTokens, entry.ReasoningTokens)
+	}
+}
+
+func TestProxy_CursorOAuthFirstByteTimeoutPersistsActualDuration(t *testing.T) {
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-timeout", upstreamProtocol: "openai", models: "composer-2.5",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.firstByteTimeout = 20 * time.Millisecond
+	env.server.streamTimeout = 0
+	env.server.cursorRunner = &blockingCursorRunner{started: make(chan struct{}), release: make(chan struct{})}
+
+	started := time.Now()
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "composer-2.5", "messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"stream": true,
+	}, nil)
+	elapsed := time.Since(started)
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	entry := waitForProxyLog(t, env, "composer-2.5")
+	if entry.StatusCode != util.StatusFirstByteTimeout || !entry.IsStreaming {
+		t.Fatalf("log status = %d streaming = %v", entry.StatusCode, entry.IsStreaming)
+	}
+	if entry.FirstByteTime != 0 {
+		t.Fatalf("first byte = %.3f, timeout emitted no client content", entry.FirstByteTime)
+	}
+	if elapsed >= time.Second || entry.Duration <= 0 || entry.Duration >= 1 {
+		t.Fatalf("elapsed = %v logged duration = %.3f", elapsed, entry.Duration)
+	}
+	if !strings.Contains(entry.Message, "upstream first byte timeout") {
+		t.Fatalf("log message = %q", entry.Message)
 	}
 }
 

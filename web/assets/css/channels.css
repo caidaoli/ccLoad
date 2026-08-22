@@ -1872,7 +1872,7 @@
 
     .ch-oauth-usage__toolbar {
       display: flex;
-      justify-content: flex-end;
+      justify-content: center;
     }
 
     .ch-oauth-usage__refresh,

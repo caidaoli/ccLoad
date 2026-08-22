@@ -61,6 +61,9 @@ func EnsureBridge(ctx context.Context) (string, error) {
 	defer bridge.lifeStop()
 	path, locateErr := bridge.bridgePath()
 	forceInstall := false
+	temporaryRoot := temporaryBridgeStateRoot()
+	temporaryPath := managedBridgeBinaryPathAt(temporaryRoot, runtime.GOOS)
+	temporaryBroken := false
 	if locateErr == nil {
 		if probeErr := probeBridgeBinary(ctx, path); probeErr == nil {
 			return path, nil
@@ -77,30 +80,94 @@ func EnsureBridge(ctx context.Context) (string, error) {
 	} else if strings.TrimSpace(os.Getenv("CURSOR_SDK_BRIDGE_BIN")) != "" {
 		return "", locateErr
 	}
+	if temporaryPath != path && isUsableBridgeFile(temporaryPath, runtime.GOOS) {
+		if probeErr := probeBridgeBinary(ctx, temporaryPath); probeErr == nil {
+			return temporaryPath, nil
+		}
+		temporaryBroken = true
+	}
 
 	manifest, manifestErr := parseBridgeReleaseManifest(cursorbridge.LockFile())
 	if manifestErr != nil {
 		return "", fmt.Errorf("load cursor-sdk-bridge release lock: %w", manifestErr)
 	}
-	stateRoot := bridgeStateRoot()
-	installer := bridgeInstaller{
-		goos:       runtime.GOOS,
-		goarch:     runtime.GOARCH,
-		stateRoot:  stateRoot,
-		installDir: filepath.Join(stateRoot, "bin", manifest.version),
-		baseURL:    bridgeReleaseBaseURL,
-		client:     &http.Client{},
-		manifest:   manifest,
-		license:    []byte(cursorbridge.LicenseFile()),
+	locations := []bridgeInstallLocation{{stateRoot: bridgeStateRoot(), force: forceInstall}}
+	if locations[0].stateRoot != temporaryRoot {
+		locations = append(locations, bridgeInstallLocation{stateRoot: temporaryRoot, force: temporaryBroken})
 	}
-	path, err := installer.ensure(ctx, forceInstall)
-	if err != nil {
-		return "", err
+	client := &http.Client{}
+	install := func(ctx context.Context, stateRoot string, force bool) (string, error) {
+		installer := bridgeInstaller{
+			goos:       runtime.GOOS,
+			goarch:     runtime.GOARCH,
+			stateRoot:  stateRoot,
+			installDir: filepath.Join(stateRoot, "bin", manifest.version),
+			baseURL:    bridgeReleaseBaseURL,
+			client:     client,
+			manifest:   manifest,
+			license:    []byte(cursorbridge.LicenseFile()),
+		}
+		return installer.ensure(ctx, force)
 	}
-	if err := probeBridgeBinary(ctx, path); err != nil {
-		return "", fmt.Errorf("validate installed cursor-sdk-bridge %q: %w", path, err)
+	return ensureBridgeInStateRoots(ctx, locations, install, probeBridgeBinary)
+}
+
+type bridgeInstallLocation struct {
+	stateRoot string
+	force     bool
+}
+
+func ensureBridgeInStateRoots(
+	ctx context.Context,
+	locations []bridgeInstallLocation,
+	install func(context.Context, string, bool) (string, error),
+	probe func(context.Context, string) error,
+) (string, error) {
+	if len(locations) == 0 {
+		return "", errors.New("cursor-sdk-bridge install state root is unavailable")
 	}
-	return path, nil
+	var previousErr error
+	for index, location := range locations {
+		path, err := install(ctx, location.stateRoot, location.force)
+		if err != nil {
+			installErr := fmt.Errorf("install cursor-sdk-bridge in %q: %w", location.stateRoot, err)
+			if index+1 < len(locations) && isBridgeStorageError(err) {
+				previousErr = errors.Join(previousErr, installErr)
+				continue
+			}
+			return "", errors.Join(previousErr, installErr)
+		}
+		if err := probe(ctx, path); err == nil {
+			return path, nil
+		} else {
+			validationErr := fmt.Errorf("validate installed cursor-sdk-bridge %q: %w", path, err)
+			if index+1 >= len(locations) || !isBridgeExecutablePathError(err) {
+				return "", errors.Join(previousErr, validationErr)
+			}
+			previousErr = errors.Join(previousErr, validationErr)
+		}
+	}
+	return "", previousErr
+}
+
+func isBridgeStorageError(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var linkErr *os.LinkError
+	return errors.As(err, &linkErr)
+}
+
+func isBridgeExecutablePathError(err error) bool {
+	if !errors.Is(err, ErrAgentMissing) {
+		return false
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		return false
+	}
+	return errors.Is(pathErr.Err, os.ErrNotExist) || errors.Is(pathErr.Err, os.ErrPermission)
 }
 
 func (i bridgeInstaller) ensure(ctx context.Context, force bool) (string, error) {
@@ -401,11 +468,15 @@ func parseBridgeReleaseManifest(raw string) (bridgeReleaseManifest, error) {
 }
 
 func managedBridgeBinaryPath(goos string) string {
+	return managedBridgeBinaryPathAt(bridgeStateRoot(), goos)
+}
+
+func managedBridgeBinaryPathAt(stateRoot, goos string) string {
 	name := "cursor-sdk-bridge"
 	if goos == "windows" {
 		name += ".exe"
 	}
-	return filepath.Join(bridgeStateRoot(), "bin", BridgeVersion, name)
+	return filepath.Join(stateRoot, "bin", BridgeVersion, name)
 }
 
 func isUsableBridgeFile(path, goos string) bool {

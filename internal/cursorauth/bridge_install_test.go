@@ -7,10 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,6 +188,120 @@ func TestBridgeInstallerForceReplacesBrokenManagedBinary(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(got, binary) {
 		t.Fatalf("replacement bridge = %q, err = %v, want %q", got, err, binary)
+	}
+}
+
+func TestEnsureBridgeInStateRootsFallsBackAfterExecutableStartFailure(t *testing.T) {
+	t.Parallel()
+
+	cacheRoot := filepath.Join("cache", "cursor-sdk")
+	temporaryRoot := filepath.Join("tmp", "ccload", "cursor-sdk")
+	cachePath := filepath.Join(cacheRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
+	var installs []string
+	path, err := ensureBridgeInStateRoots(
+		context.Background(),
+		[]bridgeInstallLocation{
+			{stateRoot: cacheRoot, force: true},
+			{stateRoot: temporaryRoot},
+		},
+		func(_ context.Context, stateRoot string, force bool) (string, error) {
+			installs = append(installs, stateRoot)
+			if stateRoot == temporaryRoot && force {
+				t.Fatal("existing temporary fallback was needlessly replaced")
+			}
+			return filepath.Join(stateRoot, "bin", BridgeVersion, "cursor-sdk-bridge"), nil
+		},
+		func(_ context.Context, path string) error {
+			if path == cachePath {
+				startErr := exec.Command(path).Start()
+				if startErr == nil {
+					t.Fatalf("starting missing bridge %q unexpectedly succeeded", path)
+				}
+				return fmt.Errorf("%w: start %s: %w", ErrAgentMissing, path, startErr)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("ensureBridgeInStateRoots() error = %v", err)
+	}
+	wantPath := filepath.Join(temporaryRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
+	if path != wantPath {
+		t.Fatalf("ensureBridgeInStateRoots() path = %q, want %q", path, wantPath)
+	}
+	if !slices.Equal(installs, []string{cacheRoot, temporaryRoot}) {
+		t.Fatalf("install roots = %v, want cache then temporary fallback", installs)
+	}
+}
+
+func TestEnsureBridgeInStateRootsDoesNotMaskNonExecutableErrors(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("bridge protocol mismatch")
+	var installs int
+	_, err := ensureBridgeInStateRoots(
+		context.Background(),
+		[]bridgeInstallLocation{{stateRoot: "cache"}, {stateRoot: "tmp"}},
+		func(_ context.Context, stateRoot string, _ bool) (string, error) {
+			installs++
+			return filepath.Join(stateRoot, "cursor-sdk-bridge"), nil
+		},
+		func(context.Context, string) error { return wantErr },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ensureBridgeInStateRoots() error = %v, want %v", err, wantErr)
+	}
+	if installs != 1 {
+		t.Fatalf("install attempts = %d, want 1", installs)
+	}
+}
+
+func TestEnsureBridgeInStateRootsFallsBackAfterPersistentInstallWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	persistentRoot := filepath.Join("persistent", "cursor-sdk")
+	temporaryRoot := filepath.Join("tmp", "ccload", "cursor-sdk")
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "create install directory",
+			err:  &os.PathError{Op: "mkdir", Path: persistentRoot, Err: os.ErrPermission},
+		},
+		{
+			name: "publish installed binary",
+			err: &os.LinkError{
+				Op:  "rename",
+				Old: filepath.Join(persistentRoot, ".cursor-sdk-bridge.tmp"),
+				New: filepath.Join(persistentRoot, "cursor-sdk-bridge"),
+				Err: os.ErrPermission,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			path, err := ensureBridgeInStateRoots(
+				context.Background(),
+				[]bridgeInstallLocation{{stateRoot: persistentRoot}, {stateRoot: temporaryRoot}},
+				func(_ context.Context, stateRoot string, _ bool) (string, error) {
+					if stateRoot == persistentRoot {
+						return "", test.err
+					}
+					return filepath.Join(stateRoot, "bin", BridgeVersion, "cursor-sdk-bridge"), nil
+				},
+				func(context.Context, string) error { return nil },
+			)
+			if err != nil {
+				t.Fatalf("ensureBridgeInStateRoots() error = %v", err)
+			}
+			want := filepath.Join(temporaryRoot, "bin", BridgeVersion, "cursor-sdk-bridge")
+			if path != want {
+				t.Fatalf("ensureBridgeInStateRoots() path = %q, want %q", path, want)
+			}
+		})
 	}
 }
 

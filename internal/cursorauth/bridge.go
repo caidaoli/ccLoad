@@ -396,7 +396,7 @@ func (b *bridge) spawn() (*bridgeProcess, error) {
 		return fail(fmt.Errorf("open cursor-sdk-bridge stderr: %w", err))
 	}
 	if err := cmd.Start(); err != nil {
-		return fail(fmt.Errorf("%w: start %s: %v", ErrAgentMissing, binary, err))
+		return fail(fmt.Errorf("%w: start %s: %w", ErrAgentMissing, binary, err))
 	}
 
 	process := &bridgeProcess{cmd: cmd, root: root, exited: make(chan struct{})}
@@ -600,16 +600,20 @@ func bridgeEnvironment() []string {
 }
 
 func bridgeStateRoot() string {
+	candidates := make([]string, 0, 3)
 	if database := strings.TrimSpace(os.Getenv("SQLITE_PATH")); database != "" {
-		return absoluteBridgeStateRoot(filepath.Join(filepath.Dir(database), "cursor-sdk"))
+		candidates = append(candidates, filepath.Join(filepath.Dir(database), "cursor-sdk"))
 	}
 
-	candidates := make([]string, 0, 2)
 	if cache, err := os.UserCacheDir(); err == nil && strings.TrimSpace(cache) != "" {
 		candidates = append(candidates, filepath.Join(cache, "ccload", "cursor-sdk"))
 	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "ccload", "cursor-sdk"))
+	candidates = append(candidates, temporaryBridgeStateRoot())
 	return firstWritableBridgeStateRoot(candidates)
+}
+
+func temporaryBridgeStateRoot() string {
+	return absoluteBridgeStateRoot(filepath.Join(os.TempDir(), "ccload", "cursor-sdk"))
 }
 
 func firstWritableBridgeStateRoot(candidates []string) string {

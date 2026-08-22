@@ -23,16 +23,22 @@ import (
 type testAgentHandler struct {
 	sdkv1connect.UnimplementedSdkAgentServiceHandler
 
-	mu           sync.Mutex
-	create       *sdkv1.CreateAgentRequest
-	send         *sdkv1.SendRequest
-	getRun       *sdkv1.GetRunRequest
-	runSnapshot  *sdkv1.RunSnapshot
-	deleted      *sdkv1.DeleteAgentRequest
-	cancelled    *sdkv1.CancelRunRequest
-	sendFn       func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage]) error
-	sendCalls    int
-	cancelCalled chan struct{}
+	mu            sync.Mutex
+	create        *sdkv1.CreateAgentRequest
+	createErr     error
+	createFn      func(context.Context) error
+	send          *sdkv1.SendRequest
+	getRun        *sdkv1.GetRunRequest
+	runSnapshot   *sdkv1.RunSnapshot
+	deleted       *sdkv1.DeleteAgentRequest
+	cancelled     *sdkv1.CancelRunRequest
+	sendFn        func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage]) error
+	sendCalls     int
+	cancelCalled  chan struct{}
+	deleteStarted chan struct{}
+	deleteRelease chan struct{}
+	getRunStarted chan struct{}
+	getRunRelease chan struct{}
 }
 
 type testCursorHandler struct {
@@ -44,6 +50,33 @@ type testCursorHandler struct {
 type shutdownErrorControlClient struct {
 	sdkv1connect.SdkBridgeControlServiceClient
 	err error
+}
+
+type sendFailureAgentClient struct {
+	sdkv1connect.SdkAgentServiceClient
+	err           error
+	deleteStarted chan struct{}
+	deleteRelease chan struct{}
+}
+
+func (c *sendFailureAgentClient) Send(
+	context.Context,
+	*connect.Request[sdkv1.SendRequest],
+) (*connect.ServerStreamForClient[sdkv1.RunStreamMessage], error) {
+	return nil, c.err
+}
+
+func (c *sendFailureAgentClient) DeleteAgent(
+	ctx context.Context,
+	_ *connect.Request[sdkv1.DeleteAgentRequest],
+) (*connect.Response[sdkv1.DeleteAgentResponse], error) {
+	close(c.deleteStarted)
+	select {
+	case <-c.deleteRelease:
+		return connect.NewResponse(&sdkv1.DeleteAgentResponse{}), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (c *shutdownErrorControlClient) Shutdown(
@@ -67,12 +100,22 @@ func (h *testCursorHandler) ListModels(
 }
 
 func (h *testAgentHandler) CreateAgent(
-	_ context.Context,
+	ctx context.Context,
 	request *connect.Request[sdkv1.CreateAgentRequest],
 ) (*connect.Response[sdkv1.CreateAgentResponse], error) {
 	h.mu.Lock()
 	h.create = request.Msg
+	createErr := h.createErr
+	createFn := h.createFn
 	h.mu.Unlock()
+	if createFn != nil {
+		if err := createFn(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if createErr != nil {
+		return nil, createErr
+	}
 	return connect.NewResponse(&sdkv1.CreateAgentResponse{AgentId: "agent-1"}), nil
 }
 
@@ -119,16 +162,30 @@ func (h *testAgentHandler) CancelRun(
 }
 
 func (h *testAgentHandler) GetRun(
-	_ context.Context,
+	ctx context.Context,
 	request *connect.Request[sdkv1.GetRunRequest],
 ) (*connect.Response[sdkv1.GetRunResponse], error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.getRun = request.Msg
-	if h.deleted != nil {
+	deleted := h.deleted != nil
+	snapshot := h.runSnapshot
+	started := h.getRunStarted
+	release := h.getRunRelease
+	h.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if deleted {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("agent was deleted"))
 	}
-	return connect.NewResponse(&sdkv1.GetRunResponse{Run: h.runSnapshot}), nil
+	return connect.NewResponse(&sdkv1.GetRunResponse{Run: snapshot}), nil
 }
 
 func (h *testAgentHandler) DeleteAgent(
@@ -137,7 +194,15 @@ func (h *testAgentHandler) DeleteAgent(
 ) (*connect.Response[sdkv1.DeleteAgentResponse], error) {
 	h.mu.Lock()
 	h.deleted = request.Msg
+	started := h.deleteStarted
+	release := h.deleteRelease
 	h.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
 	return connect.NewResponse(&sdkv1.DeleteAgentResponse{}), nil
 }
 
@@ -158,6 +223,36 @@ func TestSDKRunnerStartMakesBridgeReadyWithoutModelRequest(t *testing.T) {
 	runner := newTestSDKRunner(t, &testAgentHandler{})
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
+	}
+}
+
+func TestSDKRunnerCreateAgentLocalDeadlineNamesOperationAndProxyDiagnostic(t *testing.T) {
+	for _, key := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "all_proxy",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTP_PROXY", "http://user:secret@proxy.example:7890")
+	handler := &testAgentHandler{
+		createFn: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	runner := newTestSDKRunner(t, handler)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	if err == nil || !strings.Contains(err.Error(), "CreateAgent exceeded its local deadline after") ||
+		!strings.Contains(err.Error(), "operation limit=30s") ||
+		!strings.Contains(err.Error(), "inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY") ||
+		!strings.Contains(err.Error(), "returned no detail beyond deadline_exceeded") {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Contains(err.Error(), "user:secret") || strings.Contains(err.Error(), "proxy.example") {
+		t.Fatalf("Run() leaked proxy value: %v", err)
 	}
 }
 
@@ -399,6 +494,55 @@ func TestSDKRunnerListModelsUsesExactSDKIDsWithoutExpandingVariants(t *testing.T
 	}
 }
 
+func TestSDKRunnerListModelsRemoteDeadlineDoesNotClaimLocalLimit(t *testing.T) {
+	for _, key := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "all_proxy",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:7890")
+	handler := &testCursorHandlerFunc{listModels: func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, context.DeadlineExceeded)
+	}}
+	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
+	server := httptest.NewServer(httpHandler)
+	t.Cleanup(server.Close)
+	client := newBridgeClient(server.URL, "bridge-token")
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+
+	_, err := runner.ListModels(context.Background(), "user-api-key")
+	if err == nil || !strings.Contains(err.Error(), "ListModels returned deadline_exceeded after") ||
+		!strings.Contains(err.Error(), "inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY") ||
+		!strings.Contains(err.Error(), "returned no detail beyond deadline_exceeded") ||
+		strings.Contains(err.Error(), "operation limit=") {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+}
+
+func TestSDKRunnerListModelsPreservesRemoteDeadlineDiagnostic(t *testing.T) {
+	handler := &testCursorHandlerFunc{listModels: func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("proxy CONNECT failed"))
+	}}
+	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
+	server := httptest.NewServer(httpHandler)
+	t.Cleanup(server.Close)
+	client := newBridgeClient(server.URL, "bridge-token")
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+
+	_, err := runner.ListModels(context.Background(), "user-api-key")
+	if err == nil || !strings.Contains(err.Error(), "proxy CONNECT failed") ||
+		strings.Contains(err.Error(), "returned no detail beyond deadline_exceeded") {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+}
+
 func TestSDKRunnerListModelsRetriesOnceAfterBridgeCrash(t *testing.T) {
 	firstExited := make(chan struct{})
 	secondExited := make(chan struct{})
@@ -521,7 +665,7 @@ func TestSDKRunnerListModelsKeepsConcurrentChannelAPIKeysIsolated(t *testing.T) 
 }
 
 func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
-	handler := &testAgentHandler{}
+	handler := &testAgentHandler{deleteStarted: make(chan struct{})}
 	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
 		assistant := sdkMessage(t, "assistant", map[string]any{
 			"agent_id": "agent-1",
@@ -571,6 +715,11 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 		TotalTokens: 26, ReasoningTokens: 2,
 	}) {
 		t.Fatalf("final usage = %+v", final.Usage)
+	}
+	select {
+	case <-handler.deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("DeleteAgent cleanup did not start")
 	}
 
 	handler.mu.Lock()
@@ -707,32 +856,87 @@ func TestSDKRunnerKeepsInterimAssistantAndLoadsMissingUsageFromSnapshot(t *testi
 	}
 }
 
-func TestSDKRunnerCancelsAfterLateRunID(t *testing.T) {
-	releaseRunID := make(chan struct{})
-	handler := &testAgentHandler{cancelCalled: make(chan struct{})}
+func TestSDKRunnerSendFailureReturnsBeforeAgentCleanup(t *testing.T) {
+	deleteStarted := make(chan struct{})
+	deleteRelease := make(chan struct{})
+	runner := newTestSDKRunner(t, &testAgentHandler{})
+	client := runner.bridge.process.client
+	client.agent = &sendFailureAgentClient{
+		SdkAgentServiceClient: client.agent,
+		err:                   connect.NewError(connect.CodeUnavailable, errors.New("send handshake failed")),
+		deleteStarted:         deleteStarted,
+		deleteRelease:         deleteRelease,
+	}
+	t.Cleanup(func() { close(deleteRelease) })
+
+	returned := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, "model-1", "hello")
+		returned <- err
+	}()
+	select {
+	case <-deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("DeleteAgent cleanup did not start")
+	}
+	select {
+	case err := <-returned:
+		if err == nil || !strings.Contains(err.Error(), "send handshake failed") {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DeleteAgent cleanup delayed the synchronous Send failure")
+	}
+}
+
+func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
+	getRunStarted := make(chan struct{})
+	getRunRelease := make(chan struct{})
+	handler := &testAgentHandler{getRunStarted: getRunStarted, getRunRelease: getRunRelease}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "done")); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	select {
+	case <-getRunStarted:
+	case <-time.After(time.Second):
+		t.Fatal("missing-usage GetRun fallback did not start")
+	}
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		for range events {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("GetRun fallback ignored caller cancellation")
+	}
+}
+
+func TestSDKRunnerCallerCancellationStopsSendWithoutRunID(t *testing.T) {
+	sendStopped := make(chan struct{})
+	deleteStarted := make(chan struct{})
+	deleteRelease := make(chan struct{})
+	defer close(deleteRelease)
+	handler := &testAgentHandler{deleteStarted: deleteStarted, deleteRelease: deleteRelease}
 	handler.sendFn = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
 		if err := stream.Send(&sdkv1.RunStreamMessage{}); err != nil {
 			return err
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-releaseRunID:
-		}
-		if err := stream.Send(sdkMessage(t, "system", map[string]any{
-			"agent_id": "agent-1", "run_id": "run-late", "subtype": "init",
-		})); err != nil {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-handler.cancelCalled:
-		}
-		if err := stream.Send(runResult("agent-1", "run-late", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED, "")); err != nil {
-			return err
-		}
-		return stream.Send(runDone("agent-1", "run-late"))
+		<-ctx.Done()
+		close(sendStopped)
+		return ctx.Err()
 	}
 	runner := newTestSDKRunner(t, handler)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -741,20 +945,42 @@ func TestSDKRunnerCancelsAfterLateRunID(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	cancel()
-	close(releaseRunID)
-	var final Event
-	for event := range events {
-		if event.Done {
-			final = event
+	select {
+	case <-sendStopped:
+	case <-time.After(time.Second):
+		t.Fatal("caller cancellation did not stop the Send stream")
+	}
+	finalDone := make(chan Event, 1)
+	go func() {
+		var final Event
+		for event := range events {
+			if event.Done {
+				final = event
+			}
 		}
+		finalDone <- final
+	}()
+	var final Event
+	select {
+	case final = <-finalDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup delayed the final event")
 	}
 	if !errors.Is(final.Err, context.Canceled) {
 		t.Fatalf("final error = %v, want context.Canceled", final.Err)
 	}
+	select {
+	case <-deleteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("DeleteAgent cleanup did not start")
+	}
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
-	if handler.cancelled.GetRunId() != "run-late" || handler.cancelled.GetAgentId() != "agent-1" {
-		t.Fatalf("CancelRun request = %+v", handler.cancelled)
+	if handler.cancelled != nil {
+		t.Fatalf("CancelRun request without a run ID = %+v", handler.cancelled)
+	}
+	if handler.deleted == nil || handler.deleted.GetAgentId() != "agent-1" {
+		t.Fatalf("DeleteAgent request = %+v", handler.deleted)
 	}
 }
 
