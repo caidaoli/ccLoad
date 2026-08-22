@@ -115,3 +115,19 @@ func classifyBridgeError(err error) error {
 	}
 	return bridgeErr
 }
+
+func isBridgeTransportFailure(err error) bool {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) || connectErr.Code() != connect.CodeUnavailable {
+		return false
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr == nil {
+			if _, ok := value.(*sdkv1.SdkErrorDetails); ok {
+				return false
+			}
+		}
+	}
+	return true
+}

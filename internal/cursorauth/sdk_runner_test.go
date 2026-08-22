@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ type testAgentHandler struct {
 	deleted      *sdkv1.DeleteAgentRequest
 	cancelled    *sdkv1.CancelRunRequest
 	sendFn       func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage]) error
+	sendCalls    int
 	cancelCalled chan struct{}
 }
 
@@ -81,8 +83,25 @@ func (h *testAgentHandler) Send(
 ) error {
 	h.mu.Lock()
 	h.send = request.Msg
+	h.sendCalls++
 	h.mu.Unlock()
 	return h.sendFn(ctx, stream)
+}
+
+type testCursorHandlerFunc struct {
+	sdkv1connect.UnimplementedSdkCursorServiceHandler
+	listModels func(*sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error)
+}
+
+func (h *testCursorHandlerFunc) ListModels(
+	_ context.Context,
+	request *connect.Request[sdkv1.ListModelsRequest],
+) (*connect.Response[sdkv1.ListModelsResponse], error) {
+	response, err := h.listModels(request.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(response), nil
 }
 
 func (h *testAgentHandler) CancelRun(
@@ -142,6 +161,187 @@ func TestSDKRunnerStartMakesBridgeReadyWithoutModelRequest(t *testing.T) {
 	}
 }
 
+func TestBridgeCrashRestartsOnceForConcurrentCallers(t *testing.T) {
+	firstClient := &bridgeClient{}
+	secondClient := &bridgeClient{}
+	firstExited := make(chan struct{})
+	secondExited := make(chan struct{})
+	var spawnCount atomic.Int32
+
+	bridge := newBridge()
+	bridge.spawnProcess = func() (*bridgeProcess, error) {
+		switch spawnCount.Add(1) {
+		case 1:
+			return &bridgeProcess{client: firstClient, exited: firstExited}, nil
+		case 2:
+			return &bridgeProcess{client: secondClient, exited: secondExited}, nil
+		default:
+			return nil, errors.New("unexpected extra bridge restart")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := bridge.client(ctx)
+	if err != nil || client != firstClient {
+		t.Fatalf("first client = (%p, %v), want (%p, nil)", client, err, firstClient)
+	}
+	close(firstExited)
+
+	const callers = 16
+	clients := make(chan *bridgeClient, callers)
+	errorsCh := make(chan error, callers)
+	var callersDone sync.WaitGroup
+	callersDone.Add(callers)
+	for range callers {
+		go func() {
+			defer callersDone.Done()
+			got, clientErr := bridge.client(ctx)
+			clients <- got
+			errorsCh <- clientErr
+		}()
+	}
+	callersDone.Wait()
+	close(clients)
+	close(errorsCh)
+	for clientErr := range errorsCh {
+		if clientErr != nil {
+			t.Fatalf("replacement client error = %v", clientErr)
+		}
+	}
+	for got := range clients {
+		if got != secondClient {
+			t.Fatalf("replacement client = %p, want %p", got, secondClient)
+		}
+	}
+	if got := spawnCount.Load(); got != 2 {
+		t.Fatalf("bridge starts = %d, want 2", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.state = bridgeClosing
+	bridge.lifeStop()
+	bridge.mu.Unlock()
+	close(secondExited)
+}
+
+func TestBridgeAutomaticRestartRetriesStartFailuresUntilRecovery(t *testing.T) {
+	firstClient := &bridgeClient{}
+	recoveredClient := &bridgeClient{}
+	firstExited := make(chan struct{})
+	recoveredExited := make(chan struct{})
+	var spawnCount atomic.Int32
+
+	bridge := newBridge()
+	bridge.spawnProcess = func() (*bridgeProcess, error) {
+		switch spawnCount.Add(1) {
+		case 1:
+			return &bridgeProcess{client: firstClient, exited: firstExited}, nil
+		case 2, 3:
+			return nil, errors.New("restart probe failed")
+		case 4:
+			return &bridgeProcess{client: recoveredClient, exited: recoveredExited}, nil
+		default:
+			return nil, errors.New("unexpected extra bridge restart")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := bridge.client(ctx)
+	if err != nil || client != firstClient {
+		t.Fatalf("first client = (%p, %v), want (%p, nil)", client, err, firstClient)
+	}
+	close(firstExited)
+
+	for spawnCount.Load() < 4 {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("automatic restart did not recover: starts=%d", spawnCount.Load())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	client, err = bridge.client(ctx)
+	if err != nil || client != recoveredClient {
+		t.Fatalf("recovered client = (%p, %v), want (%p, nil)", client, err, recoveredClient)
+	}
+	if got := spawnCount.Load(); got != 4 {
+		t.Fatalf("bridge starts = %d, want 4", got)
+	}
+
+	bridge.mu.Lock()
+	bridge.state = bridgeClosing
+	bridge.lifeStop()
+	bridge.mu.Unlock()
+	close(recoveredExited)
+}
+
+func TestBridgeCloseStopsPendingAutomaticRestarts(t *testing.T) {
+	firstClient := &bridgeClient{}
+	firstExited := make(chan struct{})
+	var spawnCount atomic.Int32
+
+	bridge := newBridge()
+	bridge.spawnProcess = func() (*bridgeProcess, error) {
+		if spawnCount.Add(1) == 1 {
+			return &bridgeProcess{client: firstClient, exited: firstExited}, nil
+		}
+		return nil, errors.New("restart probe failed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := bridge.client(ctx)
+	if err != nil || client != firstClient {
+		t.Fatalf("first client = (%p, %v), want (%p, nil)", client, err, firstClient)
+	}
+	close(firstExited)
+	for spawnCount.Load() < 2 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("automatic restart did not start")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if err := bridge.close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	startsAfterClose := spawnCount.Load()
+	time.Sleep(2 * bridgeRestartBaseDelay)
+	if got := spawnCount.Load(); got != startsAfterClose {
+		t.Fatalf("bridge restarted after Close(): starts=%d, want %d", got, startsAfterClose)
+	}
+}
+
+func TestBridgeCloseCancelsQueuedImmediateRestartBeforeSpawn(t *testing.T) {
+	bridge := newBridge()
+	var spawnCount atomic.Int32
+	bridge.spawnProcess = func() (*bridgeProcess, error) {
+		spawnCount.Add(1)
+		return nil, errors.New("spawn must not run after Close")
+	}
+
+	bridge.mu.Lock()
+	attempt := bridge.beginStartLocked(true, 0)
+	bridge.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- bridge.close(ctx) }()
+	<-bridge.lifeCtx.Done()
+	bridge.startProcess(attempt)
+	if err := <-closeErr; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := spawnCount.Load(); got != 0 {
+		t.Fatalf("bridge starts after Close = %d, want 0", got)
+	}
+	if !errors.Is(attempt.err, ErrBridgeClosed) {
+		t.Fatalf("start error = %v, want ErrBridgeClosed", attempt.err)
+	}
+}
+
 func TestSDKRunnerCloseUsesProcessExitAsShutdownResult(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -196,6 +396,127 @@ func TestSDKRunnerListModelsUsesExactSDKIDsWithoutExpandingVariants(t *testing.T
 	}
 	if got := handler.request.GetOptions().GetApiKey(); got != "user-api-key" {
 		t.Fatalf("ListModels API key = %q", got)
+	}
+}
+
+func TestSDKRunnerListModelsRetriesOnceAfterBridgeCrash(t *testing.T) {
+	firstExited := make(chan struct{})
+	secondExited := make(chan struct{})
+	var firstCalls atomic.Int32
+	var secondCalls atomic.Int32
+
+	firstHandler := &testCursorHandlerFunc{listModels: func(request *sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		firstCalls.Add(1)
+		if got := request.GetOptions().GetApiKey(); got != "account-a" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("wrong API key"))
+		}
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			close(firstExited)
+		}()
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("bridge crashed"))
+	}}
+	_, firstHTTPHandler := sdkv1connect.NewSdkCursorServiceHandler(firstHandler)
+	firstServer := httptest.NewServer(firstHTTPHandler)
+	defer firstServer.Close()
+
+	secondHandler := &testCursorHandlerFunc{listModels: func(request *sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		secondCalls.Add(1)
+		if got := request.GetOptions().GetApiKey(); got != "account-a" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("wrong API key"))
+		}
+		return &sdkv1.ListModelsResponse{Items: []*sdkv1.SdkModel{{Id: "model-a"}}}, nil
+	}}
+	_, secondHTTPHandler := sdkv1connect.NewSdkCursorServiceHandler(secondHandler)
+	secondServer := httptest.NewServer(secondHTTPHandler)
+	defer secondServer.Close()
+
+	firstClient := newBridgeClient(firstServer.URL, "bridge-token-1")
+	secondClient := newBridgeClient(secondServer.URL, "bridge-token-2")
+	var spawnCount atomic.Int32
+	bridge := newBridge()
+	bridge.spawnProcess = func() (*bridgeProcess, error) {
+		switch spawnCount.Add(1) {
+		case 1:
+			return &bridgeProcess{client: firstClient, exited: firstExited}, nil
+		case 2:
+			return &bridgeProcess{client: secondClient, exited: secondExited}, nil
+		default:
+			return nil, errors.New("unexpected extra bridge restart")
+		}
+	}
+	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+
+	models, err := runner.ListModels(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if !reflect.DeepEqual(models, []string{"model-a"}) {
+		t.Fatalf("ListModels() = %#v, want [model-a]", models)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 || spawnCount.Load() != 2 {
+		t.Fatalf(
+			"calls = (first:%d second:%d starts:%d), want (1, 1, 2)",
+			firstCalls.Load(), secondCalls.Load(), spawnCount.Load(),
+		)
+	}
+
+	bridge.mu.Lock()
+	bridge.state = bridgeClosing
+	bridge.lifeStop()
+	bridge.mu.Unlock()
+	close(secondExited)
+}
+
+func TestSDKRunnerListModelsKeepsConcurrentChannelAPIKeysIsolated(t *testing.T) {
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	handler := &testCursorHandlerFunc{listModels: func(request *sdkv1.ListModelsRequest) (*sdkv1.ListModelsResponse, error) {
+		apiKey := request.GetOptions().GetApiKey()
+		mu.Lock()
+		seen[apiKey]++
+		mu.Unlock()
+		return &sdkv1.ListModelsResponse{Items: []*sdkv1.SdkModel{{Id: "model-" + apiKey}}}, nil
+	}}
+	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	client := newBridgeClient(server.URL, "bridge-token")
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+
+	type result struct {
+		models []string
+		err    error
+	}
+	results := make(chan result, 2)
+	for _, apiKey := range []string{"account-a", "account-b"} {
+		go func() {
+			models, err := runner.ListModels(context.Background(), apiKey)
+			results <- result{models: models, err: err}
+		}()
+	}
+	gotModels := make(map[string]bool)
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("ListModels() error = %v", got.err)
+		}
+		if len(got.models) != 1 {
+			t.Fatalf("ListModels() = %#v", got.models)
+		}
+		gotModels[got.models[0]] = true
+	}
+	if !gotModels["model-account-a"] || !gotModels["model-account-b"] {
+		t.Fatalf("models = %#v", gotModels)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["account-a"] != 1 || seen["account-b"] != 1 {
+		t.Fatalf("API keys observed = %#v", seen)
 	}
 }
 
@@ -264,6 +585,38 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 	if handler.deleted.GetAgentId() != "agent-1" || handler.deleted.GetOptions().GetApiKey() != "key-1" ||
 		handler.deleted.GetOptions().GetCwd() == "" {
 		t.Fatalf("DeleteAgent request = %+v", handler.deleted)
+	}
+}
+
+func TestSDKRunnerDoesNotReplaySendAfterStreamTransportFailure(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = func(_ context.Context, _ *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		return connect.NewError(connect.CodeUnavailable, errors.New("bridge stream lost"))
+	}
+	runner := newTestSDKRunner(t, handler)
+
+	events, runErr := runner.Run(
+		context.Background(),
+		&Credential{APIKey: "key-1"},
+		"model-1",
+		"hello",
+	)
+	if runErr == nil {
+		var final Event
+		for event := range events {
+			if event.Done {
+				final = event
+			}
+		}
+		runErr = final.Err
+	}
+	if runErr == nil {
+		t.Fatal("Run() succeeded after stream transport failure")
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.sendCalls != 1 {
+		t.Fatalf("Send calls = %d, want 1", handler.sendCalls)
 	}
 }
 
@@ -483,6 +836,26 @@ func TestClassifyBridgeErrorPreservesDetailsAndRejectsOnlyUnauthorized(t *testin
 	bare := classifyBridgeError(connect.NewError(connect.CodeUnauthenticated, errors.New("Unauthorized")))
 	if IsCredentialRejected(bare) {
 		t.Fatal("bare bridge bearer error must not reject the channel credential")
+	}
+}
+
+func TestBridgeTransportFailureExcludesStructuredSDKErrors(t *testing.T) {
+	transportErr := connect.NewError(connect.CodeUnavailable, errors.New("connection reset"))
+	if !isBridgeTransportFailure(transportErr) {
+		t.Fatal("plain unavailable transport error was not classified as a bridge failure")
+	}
+
+	detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{
+		SdkErrorCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UPSTREAM_ERROR,
+		Message:      "provider unavailable",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerErr := connect.NewError(connect.CodeUnavailable, errors.New("provider unavailable"))
+	providerErr.AddDetail(detail)
+	if isBridgeTransportFailure(providerErr) {
+		t.Fatal("structured provider error was treated as a bridge transport failure")
 	}
 }
 

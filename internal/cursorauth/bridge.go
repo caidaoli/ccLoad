@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +34,13 @@ const (
 	bridgeClosed
 )
 
+const (
+	bridgeRestartBaseDelay    = 100 * time.Millisecond
+	bridgeRestartMaxDelay     = 5 * time.Second
+	bridgeRestartStableWindow = 30 * time.Second
+	bridgeExitObservationTime = 250 * time.Millisecond
+)
+
 type bridgeClient struct {
 	agent   sdkv1connect.SdkAgentServiceClient
 	cursor  sdkv1connect.SdkCursorServiceClient
@@ -44,6 +52,8 @@ type bridgeStart struct {
 	done    chan struct{}
 	process *bridgeProcess
 	err     error
+	restart bool
+	delay   time.Duration
 }
 
 type bridgeProcess struct {
@@ -52,6 +62,7 @@ type bridgeProcess struct {
 	root      string
 	exited    chan struct{}
 	waitErr   error
+	startedAt time.Time
 	cleanOnce sync.Once
 }
 
@@ -74,9 +85,11 @@ type bridge struct {
 	closeDone chan struct{}
 	closeErr  error
 	binary    string
+	restarts  int
 
-	lookPath func(string) (string, error)
-	command  func(string, ...string) *exec.Cmd
+	lookPath     func(string) (string, error)
+	command      func(string, ...string) *exec.Cmd
+	spawnProcess func() (*bridgeProcess, error)
 }
 
 func newBridge(binaryPath ...string) *bridge {
@@ -85,7 +98,7 @@ func newBridge(binaryPath ...string) *bridge {
 	if len(binaryPath) > 0 {
 		binary = strings.TrimSpace(binaryPath[0])
 	}
-	return &bridge{
+	bridge := &bridge{
 		state:     bridgeIdle,
 		lifeCtx:   lifeCtx,
 		lifeStop:  lifeStop,
@@ -94,6 +107,8 @@ func newBridge(binaryPath ...string) *bridge {
 		lookPath:  exec.LookPath,
 		command:   exec.Command,
 	}
+	bridge.spawnProcess = bridge.spawn
+	return bridge
 }
 
 func (b *bridge) client(ctx context.Context) (*bridgeClient, error) {
@@ -104,9 +119,7 @@ func (b *bridge) client(ctx context.Context) (*bridgeClient, error) {
 		b.mu.Lock()
 		switch b.state {
 		case bridgeIdle:
-			attempt := &bridgeStart{done: make(chan struct{})}
-			b.start = attempt
-			b.state = bridgeStarting
+			attempt := b.beginStartLocked(false, 0)
 			go b.startProcess(attempt)
 			b.mu.Unlock()
 			if err := waitBridgeStart(ctx, attempt); err != nil {
@@ -122,10 +135,15 @@ func (b *bridge) client(ctx context.Context) (*bridgeClient, error) {
 			process := b.process
 			select {
 			case <-process.exited:
-				b.process = nil
-				b.state = bridgeIdle
+				attempt := b.restartExitedProcessLocked(process)
 				b.mu.Unlock()
 				process.cleanup()
+				if attempt != nil {
+					go b.startProcess(attempt)
+					if err := waitBridgeStart(ctx, attempt); err != nil {
+						return nil, err
+					}
+				}
 				continue
 			default:
 				client := process.client
@@ -142,6 +160,47 @@ func (b *bridge) client(ctx context.Context) (*bridgeClient, error) {
 	}
 }
 
+func (b *bridge) beginStartLocked(restart bool, delay time.Duration) *bridgeStart {
+	attempt := &bridgeStart{
+		done:    make(chan struct{}),
+		restart: restart,
+		delay:   delay,
+	}
+	b.start = attempt
+	b.state = bridgeStarting
+	return attempt
+}
+
+func (b *bridge) restartExitedProcessLocked(process *bridgeProcess) *bridgeStart {
+	if b.state != bridgeRunning || b.process != process {
+		return nil
+	}
+	b.process = nil
+	if b.lifeCtx.Err() != nil {
+		b.state = bridgeIdle
+		return nil
+	}
+	if !process.startedAt.IsZero() && time.Since(process.startedAt) >= bridgeRestartStableWindow {
+		b.restarts = 0
+	}
+	b.restarts++
+	return b.beginStartLocked(true, bridgeRestartDelay(b.restarts))
+}
+
+func bridgeRestartDelay(restarts int) time.Duration {
+	if restarts <= 1 {
+		return 0
+	}
+	delay := bridgeRestartBaseDelay
+	for attempt := 2; attempt < restarts && delay < bridgeRestartMaxDelay; attempt++ {
+		delay *= 2
+	}
+	if delay > bridgeRestartMaxDelay {
+		return bridgeRestartMaxDelay
+	}
+	return delay
+}
+
 func waitBridgeStart(ctx context.Context, attempt *bridgeStart) error {
 	if attempt == nil {
 		return errors.New("cursor-sdk-bridge start state is missing")
@@ -155,34 +214,148 @@ func waitBridgeStart(ctx context.Context, attempt *bridgeStart) error {
 }
 
 func (b *bridge) startProcess(attempt *bridgeStart) {
-	process, err := b.spawn()
-	if err != nil {
-		attempt.err = err
-		b.mu.Lock()
-		if b.state == bridgeStarting && b.start == attempt {
-			b.state = bridgeIdle
+	if attempt.delay > 0 {
+		timer := time.NewTimer(attempt.delay)
+		select {
+		case <-timer.C:
+		case <-b.lifeCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			attempt.err = ErrBridgeClosed
+			close(attempt.done)
+			return
 		}
-		b.mu.Unlock()
+	}
+
+	// A zero-delay restart can be queued immediately before Close cancels the
+	// bridge lifecycle. Gate every start, not only delayed ones, so that queued
+	// work cannot spawn a child after shutdown has already taken ownership.
+	b.mu.Lock()
+	canStart := b.state == bridgeStarting && b.start == attempt && b.lifeCtx.Err() == nil
+	b.mu.Unlock()
+	if !canStart {
+		attempt.err = ErrBridgeClosed
 		close(attempt.done)
 		return
 	}
 
+	process, err := b.spawnProcess()
+	if err != nil {
+		attempt.err = err
+		var retry *bridgeStart
+		b.mu.Lock()
+		if b.state == bridgeStarting && b.start == attempt {
+			if attempt.restart && b.lifeCtx.Err() == nil {
+				b.restarts++
+				retry = b.beginStartLocked(true, bridgeRestartDelay(b.restarts))
+			} else {
+				b.state = bridgeIdle
+			}
+		}
+		b.mu.Unlock()
+		close(attempt.done)
+		if attempt.restart {
+			if retry != nil {
+				log.Printf(
+					"[WARN] cursor-sdk-bridge automatic restart failed: %v; retrying in %s",
+					err,
+					retry.delay,
+				)
+				go b.startProcess(retry)
+			} else if b.lifeCtx.Err() == nil {
+				log.Printf("[WARN] cursor-sdk-bridge automatic restart failed: %v", err)
+			}
+		}
+		return
+	}
+	if process.startedAt.IsZero() {
+		process.startedAt = time.Now()
+	}
+
 	attempt.process = process
+	published := false
 	b.mu.Lock()
 	if b.state == bridgeStarting && b.start == attempt {
 		b.process = process
 		b.state = bridgeRunning
+		published = true
 	} else {
 		attempt.err = ErrBridgeClosed
 	}
 	b.mu.Unlock()
 	close(attempt.done)
 
-	if attempt.err != nil {
+	if !published {
 		_ = process.cmd.Process.Kill()
 		<-process.exited
 		process.cleanup()
+		return
 	}
+	go b.watchProcess(process)
+}
+
+func (b *bridge) watchProcess(process *bridgeProcess) {
+	<-process.exited
+	b.mu.Lock()
+	attempt := b.restartExitedProcessLocked(process)
+	b.mu.Unlock()
+	process.cleanup()
+	if attempt == nil {
+		return
+	}
+	if process.waitErr != nil {
+		log.Printf(
+			"[WARN] cursor-sdk-bridge exited unexpectedly: %v; restarting in %s",
+			process.waitErr,
+			attempt.delay,
+		)
+	} else {
+		log.Printf("[WARN] cursor-sdk-bridge exited unexpectedly; restarting in %s", attempt.delay)
+	}
+	go b.startProcess(attempt)
+}
+
+// replacementClient returns a new client only after the failed client has
+// been detached from the managed process. It never kills a live bridge merely
+// because one RPC failed.
+func (b *bridge) replacementClient(
+	ctx context.Context,
+	failed *bridgeClient,
+) (*bridgeClient, bool, error) {
+	if b == nil || failed == nil {
+		return nil, false, nil
+	}
+	b.mu.Lock()
+	if b.state == bridgeClosing || b.state == bridgeClosed {
+		b.mu.Unlock()
+		return nil, false, ErrBridgeClosed
+	}
+	process := b.process
+	waitForExit := b.state == bridgeRunning && process != nil && process.client == failed
+	b.mu.Unlock()
+	if waitForExit {
+		timer := time.NewTimer(bridgeExitObservationTime)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, false, context.Cause(ctx)
+		case <-process.exited:
+		case <-timer.C:
+			b.mu.Lock()
+			stillCurrent := b.state == bridgeRunning && b.process == process
+			b.mu.Unlock()
+			if stillCurrent {
+				return nil, false, nil
+			}
+		}
+	}
+
+	client, err := b.client(ctx)
+	return client, true, err
 }
 
 func (b *bridge) spawn() (*bridgeProcess, error) {
@@ -523,21 +696,11 @@ func (b *bridge) closeProcess() {
 	b.mu.Unlock()
 
 	if process == nil && attempt != nil {
-		remaining := time.Until(deadline)
-		if remaining > 0 {
-			timer := time.NewTimer(remaining)
-			select {
-			case <-attempt.done:
-				process = attempt.process
-			case <-timer.C:
-			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}
+		// Cancellation makes production starts bounded, but the owner must still
+		// wait for the in-flight attempt. Declaring the bridge closed while that
+		// goroutine can later publish or kill a child is a false shutdown result.
+		<-attempt.done
+		process = attempt.process
 	}
 
 	var closeErr error

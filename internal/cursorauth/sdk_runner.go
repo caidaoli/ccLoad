@@ -61,15 +61,22 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 	}
 	defer r.active.Done()
 
-	client, err := r.bridge.client(ctx)
+	requestCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	defer cancel()
+	client, err := r.bridge.client(requestCtx)
 	if err != nil {
 		return nil, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
-	response, err := client.cursor.ListModels(requestCtx, connect.NewRequest(&sdkv1.ListModelsRequest{
-		Options: &sdkv1.CursorRequestOptions{ApiKey: apiKey},
-	}))
-	cancel()
+	response, err := listCursorModels(requestCtx, client, apiKey)
+	if err != nil && isBridgeTransportFailure(err) {
+		replacement, replaced, replacementErr := r.bridge.replacementClient(requestCtx, client)
+		if replacementErr != nil {
+			return nil, replacementErr
+		}
+		if replaced {
+			response, err = listCursorModels(requestCtx, replacement, apiKey)
+		}
+	}
 	if err != nil {
 		return nil, classifyBridgeError(err)
 	}
@@ -91,6 +98,16 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 		return nil, errors.New("cursor SDK returned an empty model catalog")
 	}
 	return models, nil
+}
+
+func listCursorModels(
+	ctx context.Context,
+	client *bridgeClient,
+	apiKey string,
+) (*connect.Response[sdkv1.ListModelsResponse], error) {
+	return client.cursor.ListModels(ctx, connect.NewRequest(&sdkv1.ListModelsRequest{
+		Options: &sdkv1.CursorRequestOptions{ApiKey: apiKey},
+	}))
 }
 
 // Run creates one isolated SDK Agent and streams its assistant output.
