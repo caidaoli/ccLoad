@@ -126,16 +126,19 @@ jobs:
               -X ccLoad/internal/version.BuiltBy=github-actions" \
             -o "dist/$OUTPUT" .
 
-      - name: Fetch pinned Cursor SDK Bridge for container image
-        if: matrix.goos == 'linux'
+      # v4.7.3-beta.1 的旧更新器要求目标 ccLoad Release 同时包含 Bridge。
+      # 新更新器不会消费这些兼容资产，而是独立从 Cursor 官方 Release 安装。
+      - name: Fetch pinned Cursor SDK Bridge compatibility asset
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
+          suffix=""
+          if [[ "$GOOS" == windows ]]; then suffix=".exe"; fi
           scripts/fetch-cursor-sdk-bridge.sh "$GOOS" "$GOARCH" \
-            "dist/cursor-sdk-bridge-${GOOS}-${GOARCH}"
+            "dist/cursor-sdk-bridge-${GOOS}-${GOARCH}${suffix}"
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
@@ -171,7 +174,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum ccload-* | sort -k2 > checksums.txt
+          bridge_version=$(sed -n 's/^version=//p' ../third_party/cursor-sdk-bridge/bridge.lock)
+          [[ -n "$bridge_version" ]]
+          cp "../third_party/cursor-sdk-bridge/${bridge_version}/LICENSE" \
+            cursor-sdk-bridge-LICENSE.txt
+          sha256sum ccload-* cursor-sdk-bridge-* | sort -k2 > checksums.txt
           cat checksums.txt
 
       - name: Generate release notes
@@ -192,6 +199,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/ccload-*
+            dist/cursor-sdk-bridge-*
             dist/checksums.txt
 
   docker:
