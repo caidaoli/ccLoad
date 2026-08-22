@@ -199,7 +199,11 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
-  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth || zaiOAuth || cursorOAuth || codexPersonalAccessToken;
+  if (credentialRefreshButton) {
+    credentialRefreshButton.hidden = !oauthCredentialRefreshTarget(authType) || Boolean(
+      codexPersonalAccessToken || (zaiOAuth && !String(credential?.access_token || '').trim())
+    );
+  }
   renderOAuthCredential(
     credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,
@@ -1889,15 +1893,35 @@ async function cancelOAuthCredentialCleanup(
   }
 }
 
-async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
-  const numericID = Number(channelID);
-  const antigravity = authType === 'antigravity_oauth';
-  const anthropic = authType === 'anthropic_oauth';
-  if (!Number.isInteger(numericID) || numericID <= 0) {
-    throw new Error(`A saved ${anthropic ? 'Anthropic' : (antigravity ? 'Antigravity' : 'Codex')} channel is required`);
+function oauthCredentialRefreshTarget(authType) {
+  switch (authType) {
+    case 'antigravity_oauth':
+      return { resource: 'antigravity-credential', label: 'Antigravity', i18n: 'channels.antigravity', keyNote: 'Antigravity OAuth AT' };
+    case 'anthropic_oauth':
+      return { resource: 'anthropic-credential', label: 'Anthropic', i18n: 'channels.anthropic', keyNote: 'Anthropic OAuth AT' };
+    case 'cursor_oauth':
+      return { resource: 'cursor-credential', label: 'Cursor', i18n: 'channels.cursor', keyNote: 'Cursor OAuth AT' };
+    case 'xai_oauth':
+      return { resource: 'xai-credential', label: 'xAI', i18n: 'channels.xai', keyNote: 'xAI OAuth AT' };
+    case 'zai_oauth':
+      return { resource: 'zai-credential', label: 'Z.ai', i18n: 'channels.zai', keyNote: 'Z.ai Coding Plan Key', tokenField: 'api_key' };
+    case 'codex_oauth':
+      return { resource: 'codex-credential', label: 'Codex', i18n: 'channels.codex', keyNote: 'Codex OAuth AT' };
+    default:
+      return null;
   }
-  const resource = anthropic ? 'anthropic-credential' : (antigravity ? 'antigravity-credential' : 'codex-credential');
-  return fetcher(`/admin/channels/${numericID}/${resource}/refresh`, { method: 'POST' });
+}
+
+async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
+  const target = oauthCredentialRefreshTarget(authType);
+  if (!target) {
+    throw new Error('This channel does not support credential refresh');
+  }
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error(`A saved ${target.label} channel is required`);
+  }
+  return fetcher(`/admin/channels/${numericID}/${target.resource}/refresh`, { method: 'POST' });
 }
 
 async function updateCodexQuotaOverdraft(channelID, enabled, fetcher = fetchDataWithAuth) {
@@ -2754,36 +2778,33 @@ function setupOAuthActions() {
   if (credentialRefreshButton && !credentialRefreshButton.dataset.bound) {
     credentialRefreshButton.addEventListener('click', async () => {
       const previousView = currentOAuthCredentialView;
+      const target = oauthCredentialRefreshTarget(editingChannelAuthType);
       try {
         credentialRefreshButton.disabled = true;
-        const authType = ['antigravity_oauth', 'anthropic_oauth'].includes(editingChannelAuthType)
-          ? editingChannelAuthType : 'codex_oauth';
-        const antigravity = authType === 'antigravity_oauth';
-        const anthropic = authType === 'anthropic_oauth';
-        const credentialI18n = anthropic ? 'channels.anthropic' : (antigravity ? 'channels.antigravity' : 'channels.codex');
-        const result = await refreshOAuthCredential(editingChannelId, fetchDataWithAuth, authType);
+        if (!target) throw new Error(window.t('channels.oauth.credentialRefreshUnsupported'));
+        const result = await refreshOAuthCredential(editingChannelId, fetchDataWithAuth, editingChannelAuthType);
         const credential = result?.oauth_credential;
-        if (!credential?.access_token) throw new Error(window.t(`${credentialI18n}.credentialRefreshInvalid`));
+        const token = String(credential?.[target.tokenField || 'access_token'] || '').trim();
+        if (!token) throw new Error(window.t(`${target.i18n}.credentialRefreshInvalid`));
 
         if (typeof setInlineKeyTableDataFromAPI === 'function' && typeof renderInlineKeyTable === 'function') {
           setInlineKeyTableDataFromAPI([{
             channel_id: editingChannelId,
             key_index: 0,
-            api_key: credential.access_token,
-            note: anthropic ? 'Anthropic OAuth AT' : (antigravity ? 'Antigravity OAuth AT' : 'Codex OAuth AT'),
+            api_key: token,
+            note: target.keyNote,
             key_strategy: 'sequential'
           }]);
           inlineKeyVisible = true;
           renderInlineKeyTable();
         }
-        applyChannelAuthEditorMode(authType, credential, result, result.oauth_credential_info, previousView);
+        applyChannelAuthEditorMode(editingChannelAuthType, credential, result, result.oauth_credential_info, previousView);
         await reloadChannelsList();
-        if (window.showSuccess) window.showSuccess(window.t(`${credentialI18n}.credentialRefreshed`));
+        if (window.showSuccess) window.showSuccess(window.t(`${target.i18n}.credentialRefreshed`));
       } catch (error) {
-        const credentialI18n = editingChannelAuthType === 'anthropic_oauth'
-          ? 'channels.anthropic'
-          : (editingChannelAuthType === 'antigravity_oauth' ? 'channels.antigravity' : 'channels.codex');
-        const message = error?.message || window.t(`${credentialI18n}.credentialRefreshFailed`);
+        const message = error?.message || (target
+          ? window.t(`${target.i18n}.credentialRefreshFailed`)
+          : window.t('channels.oauth.credentialRefreshUnsupported'));
         if (window.showError) window.showError(message);
       } finally {
         credentialRefreshButton.disabled = false;

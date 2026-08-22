@@ -14,6 +14,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/xaiauth"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestXAICredentialManagerRefreshesAndPersistsCompleteCredential(t *testing.T) {
@@ -622,6 +624,89 @@ func TestXAICredentialManagerCoalescesConcurrentRefresh(t *testing.T) {
 	}
 	if got := refreshes.Load(); got != 1 {
 		t.Fatalf("refreshes=%d, want 1", got)
+	}
+}
+
+func TestHandleRefreshXAICredentialRefreshesAndPersists(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, err := store.CreateConfig(context.Background(), newXAIOAuthChannel(
+		"xai",
+		mustXAICredentialJSON(t, &xaiauth.Credential{
+			Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "old-access", RefreshToken: "old-refresh",
+			Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Email: "old@example.com", Subject: "subject",
+		}),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != xaiauth.TokenURL {
+			t.Fatalf("refresh URL = %s", req.URL)
+		}
+		body, _ := io.ReadAll(req.Body)
+		if !strings.Contains(string(body), "refresh_token=old-refresh") {
+			t.Fatalf("refresh body = %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600,"token_type":"Bearer"}`,
+			)),
+			Request: req,
+		}, nil
+	})}
+	server.xaiCredentials = newXAICredentialManager(store, server.getClientForChannel, func(int64) {})
+
+	path := fmt.Sprintf("/admin/channels/%d/xai-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshXAICredential(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[struct {
+		OAuthCredential xaiauth.Credential `json:"oauth_credential"`
+	}](t, w.Body.Bytes())
+	if resp.Data.OAuthCredential.AccessToken != "new-access" ||
+		resp.Data.OAuthCredential.RefreshToken != "rotated-refresh" ||
+		resp.Data.OAuthCredential.Email != "old@example.com" {
+		t.Fatalf("refresh response credential = %#v", resp.Data.OAuthCredential)
+	}
+
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := xaiauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || parsed.AccessToken != "new-access" || parsed.RefreshToken != "rotated-refresh" {
+		t.Fatalf("persisted credential = (%#v, %v)", parsed, err)
+	}
+}
+
+func TestHandleRefreshXAICredentialRejectsNonXAIChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "api-key", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://example.invalid"}}, ModelEntries: []model.ModelEntry{{Model: "x"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/xai-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshXAICredential(c)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "channel does not use xAI OAuth") {
+		t.Fatalf("body=%s", w.Body.String())
 	}
 }
 

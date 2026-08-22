@@ -473,31 +473,9 @@ function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
   return window.t('channels.lastSuccess.daysAgo', { count: days });
 }
 
-function buildChannelLastSuccessHtml(stats) {
-  if (!stats) {
-    return '';
-  }
-
-  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
-  const lastRequestAt = Number(stats.lastRequestAt || 0);
-  const status = Number(stats.lastRequestStatus);
-  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
-
-  if (lastSuccessAt > 0) {
-    return `<div class="ch-last-status ch-last-status--ok">${escapeChannelRefreshText(formatChannelRelativeTime(lastSuccessAt))}</div>`;
-  }
-
-  if (hasRequest) {
-    return `<div class="ch-last-status ch-last-status--empty">${escapeChannelRefreshText(window.t('channels.lastSuccess.never'))}</div>`;
-  }
-
-  return '';
-}
-
 function buildChannelLastRequestFailureHtml(stats) {
   if (!stats) return '';
 
-  const lastSuccessAt = Number(stats.lastSuccessAt || 0);
   const lastRequestAt = Number(stats.lastRequestAt || 0);
   const status = Number(stats.lastRequestStatus);
   const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
@@ -892,7 +870,7 @@ function buildOAuthUsageStatusHtml(channel) {
   </div>`;
 }
 
-function buildChannelRuntimeStatusHtml(channel, stats) {
+function buildChannelRuntimeStatusHtml(channel) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
   if (channelCooldownMS > 0) {
@@ -923,12 +901,6 @@ function buildChannelRuntimeStatusHtml(channel, stats) {
       time: formatCooldownRecoveryTime(nextRecoveryMS)
     });
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
-  }
-
-  const oauthUsageState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
-  if (statuses.length === 0 && oauthUsageState?.status !== 'ready') {
-    const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
-    if (lastSuccessHtml) statuses.push(lastSuccessHtml);
   }
 
   const oauthUsageHtml = buildOAuthUsageStatusHtml(channel);
@@ -972,7 +944,7 @@ function createChannelCard(channel) {
     : '';
 
   const durationHtml = buildChannelTimingHtml(stats);
-  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel, stats);
+  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
   const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
 
   // 消耗HTML：仅保留 token 相关消耗项
@@ -1048,7 +1020,7 @@ function createChannelCard(channel) {
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
     mobileLabelCost: window.t('channels.stats.cost'),
-    mobileLabelLastSuccess: window.t('channels.table.statusAndLastSuccess'),
+    mobileLabelLastSuccess: window.t('common.status'),
     mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
   };
@@ -1237,7 +1209,7 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
       <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
-      <th class="ch-col-last-success">${window.t('channels.table.statusAndLastSuccess')}</th>
+      <th class="ch-col-last-success">${window.t('common.status')}</th>
       <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
     </tr>

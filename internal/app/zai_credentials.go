@@ -17,9 +17,9 @@ import (
 
 // zaiCredentialManager owns the Coding Plan key of every Z.ai channel.
 //
-// Coding Plan keys do not expire, so there is no scheduled refresh: the only
-// re-resolution happens after the upstream rejects a key, and it replays the
-// ZCode key derivation with the stored account access token.
+// Coding Plan keys do not expire, so there is no scheduled refresh. Re-resolution
+// replays the ZCode key derivation with the stored account access token after an
+// upstream 401 or an admin force-refresh.
 type zaiCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*zaiauth.Credential

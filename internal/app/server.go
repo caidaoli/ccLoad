@@ -1576,6 +1576,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/xai/oauth/callback", s.HandleSubmitXAIOAuthCallback)
 		admin.POST("/xai/credentials/import/stream", s.HandleImportXAICredentialsStream)
 		admin.POST("/xai/credentials/import/jobs", s.HandleStartXAICredentialImportJob)
+		admin.POST("/channels/:id/xai-credential/refresh", s.HandleRefreshXAICredential)
 		admin.POST("/anthropic/oauth/start", s.HandleStartAnthropicOAuth)
 		admin.GET("/anthropic/oauth/status", s.HandleAnthropicOAuthStatus)
 		admin.POST("/anthropic/oauth/cancel", s.HandleCancelAnthropicOAuth)
@@ -1586,7 +1587,9 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
+		admin.POST("/channels/:id/zai-credential/refresh", s.HandleRefreshZAICredential)
 		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
+		admin.POST("/channels/:id/cursor-credential/refresh", s.HandleRefreshCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道

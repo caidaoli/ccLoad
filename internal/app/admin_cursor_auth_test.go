@@ -202,3 +202,87 @@ func TestHandleOAuthUsageReturnsCursorQuotaWithoutFakeUnavailableWarning(t *test
 		t.Fatalf("persisted usage = %#v", persisted)
 	}
 }
+
+func TestHandleRefreshCursorCredentialRemintsFromAPIKey(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	raw, err := (&cursorauth.Credential{
+		Type: cursorauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+		APIKey: "user-api-key", Email: "refresh@example.com", UserID: "auth-1",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newCursorOAuthChannel(
+		"Cursor-refresh@example.com", raw, []string{"default"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != cursorauth.ExchangeAPIKeyPath {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer user-api-key" {
+			t.Errorf("Authorization = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"accessToken":"at-new","refreshToken":"rt-new"}`)),
+			Request:    request,
+		}, nil
+	})}
+	server.cursorCredentials = newCursorCredentialManager(store, server.getClientForChannel, func(int64) {})
+
+	path := fmt.Sprintf("/admin/channels/%d/cursor-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshCursorCredential(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[struct {
+		OAuthCredential cursorauth.Credential `json:"oauth_credential"`
+	}](t, w.Body.Bytes())
+	if resp.Data.OAuthCredential.AccessToken != "at-new" ||
+		resp.Data.OAuthCredential.RefreshToken != "rt-new" ||
+		resp.Data.OAuthCredential.APIKey != "user-api-key" ||
+		resp.Data.OAuthCredential.Email != "refresh@example.com" {
+		t.Fatalf("refresh response credential = %#v", resp.Data.OAuthCredential)
+	}
+
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := cursorauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.AccessToken != "at-new" || persistedCredential.RefreshToken != "rt-new" {
+		t.Fatalf("persisted credential = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestHandleRefreshCursorCredentialRejectsNonCursorChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "api-key", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://example.invalid"}}, ModelEntries: []model.ModelEntry{{Model: "x"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/cursor-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshCursorCredential(c)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "channel does not use Cursor OAuth") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}

@@ -2,12 +2,17 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/zaiauth"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestNewZAIOAuthChannelUsesZCodeRoutedEndpoint(t *testing.T) {
@@ -153,4 +158,137 @@ func TestZAICredentialImportRequestValidation(t *testing.T) {
 	if valid.APIKey != "key.secret" {
 		t.Fatalf("api key = %q", valid.APIKey)
 	}
+}
+
+func TestHandleRefreshZAICredentialReResolvesAPIKey(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	raw, err := (&zaiauth.Credential{
+		Type: zaiauth.ChannelType, APIKey: "old-id.old-secret",
+		AccessToken: "zai-access", Email: "user@example.com", UserID: "u-1",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newZAIOAuthChannel(
+		"Z.ai-user@example.com", raw, "", []string{"glm-5.3"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.Path == "/api/auth/z/login":
+			body, _ := io.ReadAll(request.Body)
+			if !strings.Contains(string(body), `"token":"zai-access"`) {
+				t.Errorf("login body = %s", body)
+			}
+			return jsonResponse(request, `{"code":0,"data":{"access_token":"biz-token"}}`)
+		case request.URL.Path == "/api/biz/customer/getCustomerInfo":
+			if request.Header.Get("Authorization") != "Bearer biz-token" {
+				t.Errorf("customer info authorization = %q", request.Header.Get("Authorization"))
+			}
+			return jsonResponse(request, `{"code":0,"data":{"userId":"u-1","email":"user@example.com","organizations":[{"organizationId":"org-1","organizationName":"默认机构","projects":[{"projectId":"p-1","projectName":"默认项目"}]}]}}`)
+		case request.URL.Path == "/api/biz/v1/organization/org-1/projects/p-1/api_keys" && request.Method == http.MethodGet:
+			return jsonResponse(request, `{"code":0,"data":[{"name":"zcode-api-key","apiKey":"key-id"}]}`)
+		case request.URL.Path == "/api/biz/v1/organization/org-1/projects/p-1/api_keys/copy/key-id":
+			return jsonResponse(request, `{"code":0,"data":{"secretKey":"secret"}}`)
+		default:
+			t.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+			return jsonResponseStatus(request, http.StatusNotFound, `{"code":1,"msg":"not found"}`)
+		}
+	})}
+	server.zaiCredentials = newZAICredentialManager(store, server.getClientForChannel, func(int64) {})
+
+	path := fmt.Sprintf("/admin/channels/%d/zai-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshZAICredential(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[struct {
+		OAuthCredential zaiauth.Credential `json:"oauth_credential"`
+	}](t, w.Body.Bytes())
+	if resp.Data.OAuthCredential.APIKey != "key-id.secret" ||
+		resp.Data.OAuthCredential.AccessToken != "zai-access" ||
+		resp.Data.OAuthCredential.Email != "user@example.com" {
+		t.Fatalf("refresh response credential = %#v", resp.Data.OAuthCredential)
+	}
+
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := zaiauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || parsed.APIKey != "key-id.secret" || parsed.AccessToken != "zai-access" {
+		t.Fatalf("persisted credential = (%#v, %v)", parsed, err)
+	}
+}
+
+func TestHandleRefreshZAICredentialRejectsKeyOnlyImport(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	raw, err := (&zaiauth.Credential{
+		Type: zaiauth.ChannelType, APIKey: "key.secret", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newZAIOAuthChannel(
+		"Z.ai-key-only", raw, "", []string{"glm-5.3"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/zai-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshZAICredential(c)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cannot be re-resolved without an account authorization") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func TestHandleRefreshZAICredentialRejectsNonZAIChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "api-key", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://example.invalid"}}, ModelEntries: []model.ModelEntry{{Model: "x"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/zai-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshZAICredential(c)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "channel does not use Z.ai OAuth") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+func jsonResponse(request *http.Request, body string) (*http.Response, error) {
+	return jsonResponseStatus(request, http.StatusOK, body)
+}
+
+func jsonResponseStatus(request *http.Request, status int, body string) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    request,
+	}, nil
 }

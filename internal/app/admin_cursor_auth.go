@@ -71,6 +71,35 @@ func (s *Server) HandleImportCursorCredential(c *gin.Context) {
 	})
 }
 
+// HandleRefreshCursorCredential remints the session from the stored user API key.
+func (s *Server) HandleRefreshCursorCredential(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	if !cfg.UsesCursorOAuth() {
+		RespondErrorMsg(c, http.StatusConflict, "channel does not use Cursor OAuth")
+		return
+	}
+	if s.cursorCredentials == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "Cursor credential refresh is unavailable")
+		return
+	}
+	credential, err := s.cursorCredentials.credential(c.Request.Context(), cfg, true)
+	if err != nil {
+		RespondError(c, http.StatusBadGateway, err)
+		return
+	}
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{"oauth_credential": credential})
+}
+
 func (s *Server) buildCursorCredential(
 	ctx context.Context,
 	request cursorCredentialImportRequest,

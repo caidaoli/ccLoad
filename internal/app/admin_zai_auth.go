@@ -94,6 +94,45 @@ func (s *Server) HandleImportZAICredential(c *gin.Context) {
 	})
 }
 
+// HandleRefreshZAICredential re-resolves the Coding Plan key from the stored
+// ZCode account authorization. Key-only imports cannot be refreshed.
+func (s *Server) HandleRefreshZAICredential(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	if !cfg.UsesZAIOAuth() {
+		RespondErrorMsg(c, http.StatusConflict, "channel does not use Z.ai OAuth")
+		return
+	}
+	stored, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if stored.AccessToken == "" {
+		RespondErrorMsg(c, http.StatusConflict, "z.ai Coding Plan key cannot be re-resolved without an account authorization")
+		return
+	}
+	if s.zaiCredentials == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "Z.ai credential refresh is unavailable")
+		return
+	}
+	credential, err := s.zaiCredentials.credential(c.Request.Context(), cfg, true)
+	if err != nil {
+		RespondError(c, http.StatusBadGateway, err)
+		return
+	}
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{"oauth_credential": credential})
+}
+
 // buildZAICredential turns admin input into a validated credential. A supplied
 // access token always wins: it can re-mint the Coding Plan key later.
 func (s *Server) buildZAICredential(
