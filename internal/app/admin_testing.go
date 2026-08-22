@@ -897,13 +897,13 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		}
 		if credential == nil {
 			if err == nil {
-				err = errors.New("cursor CLI credential is unavailable")
+				err = errors.New("cursor credential is unavailable")
 			}
-			return nil, selection, true, fmt.Errorf("加载 Cursor CLI 凭证失败: %w", err)
+			return nil, selection, true, fmt.Errorf("加载 Cursor 凭证失败: %w", err)
 		}
 		selection.requestCredential = credential.AccessToken
 		if err != nil {
-			return cfg.Clone(), selection, true, fmt.Errorf("加载 Cursor CLI 凭证失败: %w", err)
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 Cursor 凭证失败: %w", err)
 		}
 		return cfg.Clone(), selection, true, nil
 	default:
@@ -1213,10 +1213,10 @@ func (s *Server) testCursorOAuthChannel(
 	}
 	result := map[string]any{
 		"client_protocol":      clientProtocol,
-		"upstream_protocol":    "cursor-agent",
+		"upstream_protocol":    "cursor-sdk-bridge",
 		"is_streaming":         testReq.Stream,
-		"upstream_request_url": "cursor-agent",
-		"transport":            "cursor-agent",
+		"upstream_request_url": "cursor-sdk-bridge",
+		"transport":            "cursor-sdk-bridge",
 		"actual_model":         testReq.Model,
 	}
 	fail := func(status int, errMsg string, skipCooldown bool) map[string]any {
@@ -1262,11 +1262,14 @@ func (s *Server) testCursorOAuthChannel(
 
 	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
-		message := "Cursor CLI 凭证不可用"
+		message := "Cursor 凭证不可用"
 		if err != nil {
-			message = "加载 Cursor CLI 凭证失败: " + err.Error()
+			message = "加载 Cursor 凭证失败: " + err.Error()
 		}
 		return fail(http.StatusUnauthorized, message, true)
+	}
+	if strings.TrimSpace(credential.APIKey) == "" {
+		return fail(http.StatusUnauthorized, "Cursor 推理需要导入 User API Key", true)
 	}
 
 	rec := httptest.NewRecorder()
@@ -1276,13 +1279,17 @@ func (s *Server) testCursorOAuthChannel(
 		requestPath:    requestPath,
 		body:           body,
 		isStreaming:    testReq.Stream,
+		skipProxyLog:   true,
 	}
 	proxyRes, err := s.forwardCursorAgent(reqCtx, cfg, credential, proxyReq, rec)
+	if proxyReq.debugData != nil {
+		result["debug_data"] = proxyReq.debugData
+	}
 	if err != nil {
 		return fail(http.StatusBadGateway, err.Error(), false)
 	}
 	if proxyRes == nil {
-		return fail(http.StatusBadGateway, "Cursor CLI 未返回结果", false)
+		return fail(http.StatusBadGateway, "Cursor SDK Bridge 未返回结果", false)
 	}
 	status := proxyRes.status
 	bodyBytes := proxyRes.body

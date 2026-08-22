@@ -147,15 +147,3 @@ func (c *Credential) JSON() (string, error) {
 	}
 	return string(raw), nil
 }
-
-// AuthFileJSON is the CLI auth.json shape written for cursor-agent.
-func (c *Credential) AuthFileJSON() ([]byte, error) {
-	if c == nil || strings.TrimSpace(c.AccessToken) == "" {
-		return nil, errors.New("cursor credential is missing access_token")
-	}
-	payload := map[string]string{"accessToken": strings.TrimSpace(c.AccessToken)}
-	if refresh := strings.TrimSpace(c.RefreshToken); refresh != "" {
-		payload["refreshToken"] = refresh
-	}
-	return json.Marshal(payload)
-}

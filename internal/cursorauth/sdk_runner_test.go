@@ -1,0 +1,521 @@
+package cursorauth
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
+	"ccLoad/internal/cursorauth/sdkgen/sdk/v1/sdkv1connect"
+)
+
+type testAgentHandler struct {
+	sdkv1connect.UnimplementedSdkAgentServiceHandler
+
+	mu           sync.Mutex
+	create       *sdkv1.CreateAgentRequest
+	send         *sdkv1.SendRequest
+	getRun       *sdkv1.GetRunRequest
+	runSnapshot  *sdkv1.RunSnapshot
+	deleted      *sdkv1.DeleteAgentRequest
+	cancelled    *sdkv1.CancelRunRequest
+	sendFn       func(context.Context, *connect.ServerStream[sdkv1.RunStreamMessage]) error
+	cancelCalled chan struct{}
+}
+
+type testCursorHandler struct {
+	sdkv1connect.UnimplementedSdkCursorServiceHandler
+
+	request *sdkv1.ListModelsRequest
+}
+
+type shutdownErrorControlClient struct {
+	sdkv1connect.SdkBridgeControlServiceClient
+	err error
+}
+
+func (c *shutdownErrorControlClient) Shutdown(
+	_ context.Context,
+	_ *connect.Request[sdkv1.ShutdownRequest],
+) (*connect.Response[sdkv1.ShutdownResponse], error) {
+	return nil, c.err
+}
+
+func (h *testCursorHandler) ListModels(
+	_ context.Context,
+	request *connect.Request[sdkv1.ListModelsRequest],
+) (*connect.Response[sdkv1.ListModelsResponse], error) {
+	h.request = request.Msg
+	return connect.NewResponse(&sdkv1.ListModelsResponse{Items: []*sdkv1.SdkModel{
+		{Id: "grok-4.6", Variants: []*sdkv1.ModelVariant{{DisplayName: "High"}}},
+		{Id: "composer-2.5"},
+		{Id: "grok-4.6"},
+		{Id: "  "},
+	}}), nil
+}
+
+func (h *testAgentHandler) CreateAgent(
+	_ context.Context,
+	request *connect.Request[sdkv1.CreateAgentRequest],
+) (*connect.Response[sdkv1.CreateAgentResponse], error) {
+	h.mu.Lock()
+	h.create = request.Msg
+	h.mu.Unlock()
+	return connect.NewResponse(&sdkv1.CreateAgentResponse{AgentId: "agent-1"}), nil
+}
+
+func (h *testAgentHandler) Send(
+	ctx context.Context,
+	request *connect.Request[sdkv1.SendRequest],
+	stream *connect.ServerStream[sdkv1.RunStreamMessage],
+) error {
+	h.mu.Lock()
+	h.send = request.Msg
+	h.mu.Unlock()
+	return h.sendFn(ctx, stream)
+}
+
+func (h *testAgentHandler) CancelRun(
+	_ context.Context,
+	request *connect.Request[sdkv1.CancelRunRequest],
+) (*connect.Response[sdkv1.CancelRunResponse], error) {
+	h.mu.Lock()
+	h.cancelled = request.Msg
+	called := h.cancelCalled
+	h.mu.Unlock()
+	if called != nil {
+		close(called)
+	}
+	return connect.NewResponse(&sdkv1.CancelRunResponse{}), nil
+}
+
+func (h *testAgentHandler) GetRun(
+	_ context.Context,
+	request *connect.Request[sdkv1.GetRunRequest],
+) (*connect.Response[sdkv1.GetRunResponse], error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.getRun = request.Msg
+	if h.deleted != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("agent was deleted"))
+	}
+	return connect.NewResponse(&sdkv1.GetRunResponse{Run: h.runSnapshot}), nil
+}
+
+func (h *testAgentHandler) DeleteAgent(
+	_ context.Context,
+	request *connect.Request[sdkv1.DeleteAgentRequest],
+) (*connect.Response[sdkv1.DeleteAgentResponse], error) {
+	h.mu.Lock()
+	h.deleted = request.Msg
+	h.mu.Unlock()
+	return connect.NewResponse(&sdkv1.DeleteAgentResponse{}), nil
+}
+
+func newTestSDKRunner(t *testing.T, handler *testAgentHandler) *SDKRunner {
+	t.Helper()
+	_, httpHandler := sdkv1connect.NewSdkAgentServiceHandler(handler)
+	server := httptest.NewServer(httpHandler)
+	t.Cleanup(server.Close)
+	client := newBridgeClient(server.URL, "bridge-token")
+	client.workdir = t.TempDir()
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	return &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+}
+
+func TestSDKRunnerStartMakesBridgeReadyWithoutModelRequest(t *testing.T) {
+	runner := newTestSDKRunner(t, &testAgentHandler{})
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+}
+
+func TestSDKRunnerCloseUsesProcessExitAsShutdownResult(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		waitErr error
+		wantErr bool
+	}{
+		{name: "clean exit suppresses reset"},
+		{name: "failed exit keeps reset", waitErr: errors.New("exit status 1"), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			exited := make(chan struct{})
+			close(exited)
+			bridge := newBridge()
+			bridge.state = bridgeRunning
+			bridge.process = &bridgeProcess{
+				client: &bridgeClient{control: &shutdownErrorControlClient{
+					err: errors.New("unavailable: read tcp: connection reset by peer"),
+				}},
+				exited:  exited,
+				waitErr: test.waitErr,
+			}
+			runner := &SDKRunner{bridge: bridge}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := runner.Close(ctx)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Close() error = %v, wantErr = %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestSDKRunnerListModelsUsesExactSDKIDsWithoutExpandingVariants(t *testing.T) {
+	handler := &testCursorHandler{}
+	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
+	server := httptest.NewServer(httpHandler)
+	t.Cleanup(server.Close)
+	client := newBridgeClient(server.URL, "bridge-token")
+	bridge := newBridge()
+	bridge.state = bridgeRunning
+	bridge.process = &bridgeProcess{client: client, exited: make(chan struct{})}
+	runner := &SDKRunner{bridge: bridge, timeout: 3 * time.Second}
+
+	models, err := runner.ListModels(context.Background(), "user-api-key")
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	want := []string{"grok-4.6", "composer-2.5"}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("ListModels() = %#v, want %#v", models, want)
+	}
+	if got := handler.request.GetOptions().GetApiKey(); got != "user-api-key" {
+		t.Fatalf("ListModels API key = %q", got)
+	}
+}
+
+func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		assistant := sdkMessage(t, "assistant", map[string]any{
+			"agent_id": "agent-1",
+			"run_id":   "run-1",
+			"message": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "He"},
+				map[string]any{"type": "tool_use", "name": "ignored"},
+				map[string]any{"type": "text", "text": "llo"},
+			}},
+		})
+		if err := stream.Send(assistant); err != nil {
+			return err
+		}
+		result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Hello!")
+		result.GetResult().GetResult().Usage = &sdkv1.TokenUsage{
+			InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5, CacheWriteTokens: 3,
+			TotalTokens: 26, ReasoningTokens: int64Pointer(2),
+		}
+		if err := stream.Send(result); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, "model-1", "hello")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var deltas []string
+	var final Event
+	for event := range events {
+		if event.Delta != "" {
+			deltas = append(deltas, event.Delta)
+		}
+		if event.Done {
+			final = event
+		}
+	}
+	if !reflect.DeepEqual(deltas, []string{"He", "llo", "!"}) {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+	if final.Err != nil || final.Text != "Hello!" || !final.Done {
+		t.Fatalf("final = %+v", final)
+	}
+	if final.Usage == nil || *final.Usage != (Usage{
+		InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5, CacheWriteTokens: 3,
+		TotalTokens: 26, ReasoningTokens: 2,
+	}) {
+		t.Fatalf("final usage = %+v", final.Usage)
+	}
+
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.create.GetOptions().GetApiKey() != "key-1" || handler.create.GetOptions().GetTools() == nil ||
+		len(handler.create.GetOptions().GetTools().GetNames()) != 0 {
+		t.Fatalf("CreateAgent request = %+v", handler.create)
+	}
+	if handler.send.GetOptions().GetEnableDeltas() || handler.send.GetOptions().GetEnableSteps() {
+		t.Fatalf("Send options = %+v", handler.send.GetOptions())
+	}
+	if handler.deleted.GetAgentId() != "agent-1" || handler.deleted.GetOptions().GetApiKey() != "key-1" ||
+		handler.deleted.GetOptions().GetCwd() == "" {
+		t.Fatalf("DeleteAgent request = %+v", handler.deleted)
+	}
+}
+
+func TestSDKRunnerKeepsInterimAssistantAndLoadsMissingUsageFromSnapshot(t *testing.T) {
+	handler := &testAgentHandler{runSnapshot: &sdkv1.RunSnapshot{
+		AgentId: "agent-1",
+		RunId:   "run-1",
+		Status:  sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED,
+		Usage: &sdkv1.TokenUsage{
+			InputTokens: 13, OutputTokens: 8, CacheReadTokens: 5, CacheWriteTokens: 3,
+			TotalTokens: 29, ReasoningTokens: int64Pointer(2),
+		},
+	}}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		for _, message := range []*sdkv1.RunStreamMessage{
+			sdkMessage(t, "assistant", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1",
+				"message": map[string]any{"content": []any{
+					map[string]any{"type": "text", "text": "Checking.\n"},
+				}},
+			}),
+			sdkMessage(t, "assistant", map[string]any{
+				"agent_id": "agent-1", "run_id": "run-1",
+				"message": map[string]any{"content": []any{
+					map[string]any{"type": "text", "text": "Final answer."},
+				}},
+			}),
+			runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Final answer."),
+			runDone("agent-1", "run-1"),
+		} {
+			if err := stream.Send(message); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	runner := newTestSDKRunner(t, handler)
+	ctx := WithRawResponseCapture(context.Background())
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var deltas []string
+	var rawEnvelopes []map[string]any
+	var final Event
+	for event := range events {
+		if len(event.RawResponse) > 0 {
+			var envelope map[string]any
+			if err := json.Unmarshal(event.RawResponse, &envelope); err != nil {
+				t.Fatalf("decode raw response: %v body=%s", err, event.RawResponse)
+			}
+			rawEnvelopes = append(rawEnvelopes, envelope)
+		}
+		if event.Delta != "" {
+			deltas = append(deltas, event.Delta)
+		}
+		if event.Done {
+			final = event
+		}
+	}
+	if !reflect.DeepEqual(deltas, []string{"Checking.\n", "Final answer."}) {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+	if len(rawEnvelopes) != 4 || rawEnvelopes[0]["sdk_message"] == nil ||
+		rawEnvelopes[1]["sdk_message"] == nil || rawEnvelopes[2]["result"] == nil ||
+		rawEnvelopes[3]["done"] == nil {
+		t.Fatalf("raw envelopes = %#v", rawEnvelopes)
+	}
+	if final.Err != nil || final.Text != "Checking.\nFinal answer." || !final.Done {
+		t.Fatalf("final = %+v", final)
+	}
+	if final.Usage == nil || *final.Usage != (Usage{
+		InputTokens: 13, OutputTokens: 8, CacheReadTokens: 5, CacheWriteTokens: 3,
+		TotalTokens: 29, ReasoningTokens: 2,
+	}) {
+		t.Fatalf("final usage = %+v", final.Usage)
+	}
+
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.getRun.GetRunId() != "run-1" ||
+		handler.getRun.GetOptions().GetRuntime() != sdkv1.Runtime_RUNTIME_LOCAL ||
+		handler.getRun.GetOptions().GetAgentId() != "agent-1" ||
+		handler.getRun.GetOptions().GetApiKey() != "key-1" ||
+		handler.getRun.GetOptions().GetCwd() == "" {
+		t.Fatalf("GetRun request = %+v", handler.getRun)
+	}
+}
+
+func TestSDKRunnerCancelsAfterLateRunID(t *testing.T) {
+	releaseRunID := make(chan struct{})
+	handler := &testAgentHandler{cancelCalled: make(chan struct{})}
+	handler.sendFn = func(ctx context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(&sdkv1.RunStreamMessage{}); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-releaseRunID:
+		}
+		if err := stream.Send(sdkMessage(t, "system", map[string]any{
+			"agent_id": "agent-1", "run_id": "run-late", "subtype": "init",
+		})); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-handler.cancelCalled:
+		}
+		if err := stream.Send(runResult("agent-1", "run-late", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_CANCELLED, "")); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-late"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	cancel()
+	close(releaseRunID)
+	var final Event
+	for event := range events {
+		if event.Done {
+			final = event
+		}
+	}
+	if !errors.Is(final.Err, context.Canceled) {
+		t.Fatalf("final error = %v, want context.Canceled", final.Err)
+	}
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.cancelled.GetRunId() != "run-late" || handler.cancelled.GetAgentId() != "agent-1" {
+		t.Fatalf("CancelRun request = %+v", handler.cancelled)
+	}
+}
+
+func TestSDKRunStateRequiresTerminalSequenceAndRejectsDivergence(t *testing.T) {
+	state := &sdkRunState{agentID: "agent-1"}
+	if _, err := state.consume(sdkMessage(t, "assistant", map[string]any{
+		"agent_id": "agent-1", "run_id": "run-1",
+		"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "Hi"}}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "before result") {
+		t.Fatalf("missing result error = %v", err)
+	}
+	if _, err := state.consume(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "Hello")); err == nil || !strings.Contains(err.Error(), "diverged") {
+		t.Fatalf("divergent result error = %v", err)
+	}
+
+	state = &sdkRunState{agentID: "agent-1"}
+	if _, err := state.consume(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "before done") {
+		t.Fatalf("missing done error = %v", err)
+	}
+}
+
+func TestSDKRunStateUsesStatusFailureMessage(t *testing.T) {
+	state := &sdkRunState{agentID: "agent-1"}
+	if _, err := state.consume(sdkMessage(t, "status", map[string]any{
+		"agent_id": "agent-1", "run_id": "run-1", "message": "human readable failure",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	result := runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "")
+	code := "MACHINE_CODE"
+	result.GetResult().ErrorCode = &code
+	if _, err := state.consume(result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.consume(runDone("agent-1", "run-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.finalError(nil); err == nil || !strings.Contains(err.Error(), "human readable failure") ||
+		strings.Contains(err.Error(), code) {
+		t.Fatalf("final error = %v", err)
+	}
+}
+
+func TestClassifyBridgeErrorPreservesDetailsAndRejectsOnlyUnauthorized(t *testing.T) {
+	requestID, helpURL, provider := "req-full", "https://help.example", "provider-a"
+	limit, remaining, reset := uint64(10), uint64(0), uint64(123)
+	detail, err := connect.NewErrorDetail(&sdkv1.SdkErrorDetails{
+		RequestId:    &requestID,
+		SdkErrorCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED,
+		Message:      "bad key",
+		HelpUrl:      &helpURL,
+		Provider:     &provider,
+		RetryAfter:   durationpb.New(1500 * time.Millisecond),
+		RateLimit: &sdkv1.RateLimitInfo{
+			Limit: &limit, Remaining: &remaining, ResetEpochSeconds: &reset,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpcErr := connect.NewError(connect.CodeUnauthenticated, errors.New("ignored"))
+	rpcErr.AddDetail(detail)
+	classified := classifyBridgeError(rpcErr)
+	var bridgeErr *BridgeError
+	if !errors.As(classified, &bridgeErr) {
+		t.Fatalf("classified error = %T", classified)
+	}
+	if bridgeErr.RequestID != requestID || bridgeErr.Provider != provider || bridgeErr.HelpURL != helpURL ||
+		bridgeErr.RetryAfter != 1500*time.Millisecond || bridgeErr.RateLimit.Remaining == nil ||
+		*bridgeErr.RateLimit.Remaining != 0 || !IsCredentialRejected(classified) {
+		t.Fatalf("BridgeError = %+v", bridgeErr)
+	}
+	bare := classifyBridgeError(connect.NewError(connect.CodeUnauthenticated, errors.New("Unauthorized")))
+	if IsCredentialRejected(bare) {
+		t.Fatal("bare bridge bearer error must not reject the channel credential")
+	}
+}
+
+func sdkMessage(t *testing.T, kind string, payload map[string]any) *sdkv1.RunStreamMessage {
+	t.Helper()
+	value, err := structpb.NewStruct(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_SdkMessage{
+		SdkMessage: &sdkv1.SdkMessage{Type: kind, Message: value},
+	}}
+}
+
+func runResult(agentID, runID string, status sdkv1.RunLifecycleStatus, text string) *sdkv1.RunStreamMessage {
+	return &sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Result{
+		Result: &sdkv1.RunStreamResult{
+			AgentId: agentID,
+			RunId:   runID,
+			Status:  status,
+			Result: &sdkv1.RunResult{
+				AgentId: agentID, RunId: runID, Status: status, Result: text,
+			},
+		},
+	}}
+}
+
+func runDone(agentID, runID string) *sdkv1.RunStreamMessage {
+	return &sdkv1.RunStreamMessage{Envelope: &sdkv1.RunStreamMessage_Done{
+		Done: &sdkv1.RunStreamDone{AgentId: agentID, RunId: runID},
+	}}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
+}

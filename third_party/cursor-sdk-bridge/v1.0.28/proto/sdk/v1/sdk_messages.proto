@@ -1,0 +1,501 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Shared messages, enums, and stream envelopes for the Cursor SDK Bridge.
+//
+// Imported by the service protos in this package. Keep this file free of
+// service RPCs so language SDKs can depend on types independently of services.
+
+// Runtime selector for APIs that can route to local or cloud agents.
+enum Runtime {
+  RUNTIME_UNSPECIFIED = 0;
+  // Let the bridge choose based on agent options and context.
+  RUNTIME_AUTO = 1;
+  RUNTIME_LOCAL = 2;
+  RUNTIME_CLOUD = 3;
+}
+
+// Lifecycle status used for run snapshots and stream status messages.
+enum RunLifecycleStatus {
+  RUN_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  RUN_LIFECYCLE_STATUS_CREATING = 1;
+  RUN_LIFECYCLE_STATUS_RUNNING = 2;
+  RUN_LIFECYCLE_STATUS_FINISHED = 3;
+  RUN_LIFECYCLE_STATUS_ERROR = 4;
+  RUN_LIFECYCLE_STATUS_CANCELLED = 5;
+  RUN_LIFECYCLE_STATUS_EXPIRED = 6;
+}
+
+// Agent lifecycle status returned by list/get agent calls.
+enum AgentInfoStatus {
+  AGENT_INFO_STATUS_UNSPECIFIED = 0;
+  AGENT_INFO_STATUS_RUNNING = 1;
+  AGENT_INFO_STATUS_FINISHED = 2;
+  AGENT_INFO_STATUS_ERROR = 3;
+}
+
+// Cursor setting sources accepted by local agent options.
+enum SettingSource {
+  SETTING_SOURCE_UNSPECIFIED = 0;
+  SETTING_SOURCE_PROJECT = 1;
+  SETTING_SOURCE_USER = 2;
+  SETTING_SOURCE_TEAM = 3;
+  SETTING_SOURCE_MDM = 4;
+  SETTING_SOURCE_PLUGINS = 5;
+  // Include every available setting source.
+  SETTING_SOURCE_ALL = 6;
+}
+
+// Cloud execution environment type.
+enum CloudEnvironmentType {
+  CLOUD_ENVIRONMENT_TYPE_UNSPECIFIED = 0;
+  // Cursor-managed cloud VM.
+  CLOUD_ENVIRONMENT_TYPE_CLOUD = 1;
+  // Team self-hosted worker pool.
+  CLOUD_ENVIRONMENT_TYPE_POOL = 2;
+  // A specific self-hosted machine ("My Machine").
+  CLOUD_ENVIRONMENT_TYPE_MACHINE = 3;
+}
+
+// MCP transport used for HTTP-style MCP servers.
+enum HttpMcpTransportType {
+  HTTP_MCP_TRANSPORT_TYPE_UNSPECIFIED = 0;
+  HTTP_MCP_TRANSPORT_TYPE_HTTP = 1;
+  HTTP_MCP_TRANSPORT_TYPE_SSE = 2;
+}
+
+// Conversation mode for agent creation and per-send overrides.
+enum AgentModeOption {
+  AGENT_MODE_OPTION_UNSPECIFIED = 0;
+  // Standard agent mode.
+  AGENT_MODE_OPTION_AGENT = 1;
+  // Plan mode: produce a plan before (or instead of) making edits.
+  AGENT_MODE_OPTION_PLAN = 2;
+}
+
+message ModelSelection {
+  // Model identifier (for example "composer-2").
+  string id = 1;
+  repeated ModelParameterValue params = 2;
+}
+
+message ModelParameterValue {
+  string id = 1;
+  string value = 2;
+}
+
+message ModelParameterDefinition {
+  string id = 1;
+  string display_name = 2;
+  repeated ModelParameterDefinitionValue values = 3;
+}
+
+message ModelParameterDefinitionValue {
+  string value = 1;
+  string display_name = 2;
+}
+
+message ModelVariant {
+  repeated ModelParameterValue params = 1;
+  string display_name = 2;
+  string description = 3;
+  bool is_default = 4;
+}
+
+message SdkModel {
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+  repeated ModelParameterDefinition parameters = 4;
+  repeated ModelVariant variants = 5;
+}
+
+message SdkUser {
+  string api_key_name = 1;
+  uint64 user_id = 2;
+  string user_email = 3;
+  string user_first_name = 4;
+  string user_last_name = 5;
+  // Account creation time as returned by Cursor Cloud (string form).
+  string created_at = 6;
+}
+
+// Repository available for cloud agents.
+message SdkRepository {
+  string url = 1;
+}
+
+message UserMessage {
+  string text = 1;
+  repeated SdkImage images = 2;
+}
+
+message SdkImage {
+  oneof source {
+    SdkImageUrl url = 1;
+    SdkImageData data = 2;
+  }
+  SdkImageDimension dimension = 3;
+}
+
+// Remote image URL. Accepted only by cloud-routed agents in v1.
+message SdkImageUrl {
+  string url = 1;
+}
+
+message SdkImageData {
+  // Base64-encoded image bytes.
+  string data = 1;
+  string mime_type = 2;
+}
+
+message SdkImageDimension {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+// A tool-name list whose presence is meaningful: wrapping the repeated field
+// in a message keeps an empty list distinguishable from the field being unset.
+message ToolList {
+  repeated string names = 1;
+}
+
+message AgentOptions {
+  ModelSelection model = 1;
+  string api_key = 2;
+  string name = 3;
+  // Set for local agents. Mutually exclusive with cloud in normal use.
+  LocalAgentOptions local = 4;
+  // Set for cloud agents. Mutually exclusive with local in normal use.
+  CloudAgentOptions cloud = 5;
+  map<string, McpServerConfig> mcp_servers = 6;
+  // Named sub-agent definitions available to this agent.
+  map<string, AgentDefinition> agents = 7;
+  // Optional explicit agent ID (for example when resuming with a known ID).
+  string agent_id = 8;
+  // Initial conversation mode for the agent.
+  AgentModeOption mode = 9;
+  // Only offer the listed built-in tools to the model. Unset means the
+  // default toolset; an empty list means no built-in tools. Names use the
+  // SDK's public tool vocabulary (also capability groups and raw agent proto
+  // tool names); unknown names fail CreateAgent/ResumeAgent. Local agents
+  // only for now.
+  ToolList tools = 10;
+  // Remove the listed built-in tools from the model's toolset. Same
+  // vocabulary as `tools`; deny wins when both are set. An empty list is a
+  // no-op. Local agents only for now.
+  repeated string disallowed_tools = 11;
+}
+
+message SendOptions {
+  ModelSelection model = 1;
+  map<string, McpServerConfig> mcp_servers = 2;
+  LocalSendOptions local = 3;
+  // When true, the bridge forwards raw interaction-update callbacks as
+  // RunStreamMessage.interaction_update events.
+  bool enable_deltas = 4;
+  // When true, the bridge forwards completed conversation-step callbacks as
+  // RunStreamMessage.step events.
+  bool enable_steps = 5;
+  // Per-send conversation mode override.
+  AgentModeOption mode = 6;
+  // Cloud-only per-send options.
+  CloudSendOptions cloud = 7;
+}
+
+message LocalSendOptions {
+  // Local-only force send; cloud-routed agents reject this field.
+  optional bool force = 1;
+  reserved 2;
+  reserved "custom_tools";
+}
+
+message CloudSendOptions {
+  // Run-scoped environment variables. Applied only while this send's run
+  // executes.
+  map<string, string> env_vars = 1;
+}
+
+message LocalAgentStoreConfig {
+  // Store topology: "sqlite" (bridge-owned SQLite; also the default when unset),
+  // "jsonl" (bridge-owned JSONL files), or "custom" (fully host-owned via
+  // SdkStoreCallbackService).
+  string type = 1;
+  // Required for "jsonl".
+  string root_dir = 2;
+}
+
+message CustomToolDefinition {
+  optional string description = 1;
+  // JSON Schema object describing the tool's input parameters.
+  google.protobuf.Struct input_schema = 2;
+}
+
+message LocalAgentOptions {
+  // Primary working directory. Wire format is repeated for historical reasons;
+  // callers should send at most one entry. Use `dirs` for multi-root.
+  repeated string cwd = 1;
+  repeated SettingSource setting_sources = 2;
+  SandboxOptions sandbox_options = 3;
+  LocalAgentStoreConfig store = 4;
+  // When true, local runs use classifier-backed automatic review for tool
+  // calls (Smart Auto Review).
+  optional bool auto_review = 5;
+  // Agent-level custom tools (metadata only). Execution is host-owned via
+  // SdkCustomToolCallbackService.
+  map<string, CustomToolDefinition> custom_tools = 6;
+  // Explicit multi-root workspace folders. When set, project skills/rules and
+  // request-context workspace metadata cover every entry.
+  repeated string dirs = 7;
+}
+
+message SandboxOptions {
+  optional bool enabled = 1;
+}
+
+message CloudAgentOptions {
+  CloudEnvironment env = 1;
+  repeated CloudRepository repos = 2;
+  optional bool work_on_current_branch = 3;
+  optional bool auto_create_pr = 4;
+  optional bool skip_reviewer_request = 5;
+  // Environment variables available for the lifetime of the cloud agent.
+  map<string, string> env_vars = 6;
+  // Caller-owned string tags persisted on the cloud agent for its lifetime.
+  // Read back on `CloudAgentInfo.metadata` via GetAgent / ListAgents.
+  map<string, string> metadata = 7;
+  // When true, open PRs as the Cursor GitHub App instead of the API-key
+  // owner. Defaults to true for service-account keys and false for user keys.
+  optional bool open_as_cursor_github_app = 8;
+}
+
+message CloudEnvironment {
+  CloudEnvironmentType type = 1;
+  string name = 2;
+}
+
+message CloudRepository {
+  string url = 1;
+  // Git ref to start from (branch, tag, or commit SHA).
+  string starting_ref = 2;
+  // Optional pull-request URL to associate with this repository.
+  string pr_url = 3;
+}
+
+message McpServerConfig {
+  oneof config {
+    StdioMcpServerConfig stdio = 1;
+    HttpMcpServerConfig http = 2;
+  }
+}
+
+message StdioMcpServerConfig {
+  string command = 1;
+  repeated string args = 2;
+  map<string, string> env = 3;
+  string cwd = 4;
+}
+
+message HttpMcpServerConfig {
+  HttpMcpTransportType type = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  McpAuthConfig auth = 4;
+}
+
+message McpAuthConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  repeated string scopes = 3;
+}
+
+message AgentDefinition {
+  string description = 1;
+  string prompt = 2;
+  ModelSelection model = 3;
+  // When true, inherit the parent agent's model instead of using model.
+  optional bool inherit_model = 4;
+  repeated AgentDefinitionMcpServer mcp_servers = 5;
+}
+
+message AgentDefinitionMcpServer {
+  oneof value {
+    // Name of an MCP server already configured on the parent agent.
+    string name = 1;
+    McpServerConfig inline_config = 2;
+  }
+}
+
+message SdkAgentInfo {
+  string agent_id = 1;
+  string name = 2;
+  string summary = 3;
+  google.protobuf.Timestamp last_modified = 4;
+  AgentInfoStatus status = 5;
+  google.protobuf.Timestamp created_at = 6;
+  bool archived = 7;
+  oneof runtime_info {
+    LocalAgentInfo local = 8;
+    CloudAgentInfo cloud = 9;
+  }
+}
+
+message LocalAgentInfo {
+  string cwd = 1;
+}
+
+message CloudAgentInfo {
+  CloudEnvironment env = 1;
+  repeated string repos = 2;
+  // Caller-owned string tags set at creation via
+  // `CloudAgentOptions.metadata`.
+  map<string, string> metadata = 3;
+}
+
+// Per-turn or cumulative token counts.
+//
+// total_tokens excludes reasoning_tokens, which is a visibility-only subset of
+// output tokens.
+message TokenUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 cache_read_tokens = 3;
+  int64 cache_write_tokens = 4;
+  int64 total_tokens = 5;
+  optional int64 reasoning_tokens = 6;
+}
+
+// Dollar cost of billed usage in float cents. Server-derived and eventually
+// consistent after a run ends.
+message UsageCost {
+  // Undiscounted model token cost. Zero for request-priced usage.
+  double raw_cost_cents = 1;
+  // Amount actually charged (discounts and Cursor Token Fee included; zero for
+  // plan-included, BYOK, and credit-grant usage).
+  double charged_cents = 2;
+}
+
+// Token usage and cost for one run.
+message RunUsage {
+  string run_id = 1;
+  TokenUsage usage = 2;
+  // Unset when the backend does not report cost.
+  optional UsageCost cost = 3;
+}
+
+// Usage and cost for an agent: totals plus a per-run breakdown.
+message AgentUsage {
+  TokenUsage usage = 1;
+  // Unset when the backend does not report cost.
+  optional UsageCost cost = 2;
+  repeated RunUsage runs = 3;
+}
+
+message RunSnapshot {
+  string run_id = 1;
+  string agent_id = 2;
+  RunLifecycleStatus status = 3;
+  // Final assistant text (or empty when not yet available).
+  string result = 4;
+  ModelSelection model = 5;
+  uint64 duration_ms = 6;
+  RunGitInfo git = 7;
+  google.protobuf.Timestamp created_at = 8;
+  optional TokenUsage usage = 9;
+}
+
+message RunResult {
+  string run_id = 1;
+  string agent_id = 2;
+  RunLifecycleStatus status = 3;
+  // Final assistant text for a completed run.
+  string result = 4;
+  ModelSelection model = 5;
+  uint64 duration_ms = 6;
+  RunGitInfo git = 7;
+  google.protobuf.Timestamp created_at = 8;
+  optional TokenUsage usage = 9;
+}
+
+message RunGitInfo {
+  repeated RunGitBranchInfo branches = 1;
+}
+
+message RunGitBranchInfo {
+  string repo_url = 1;
+  string branch = 2;
+  string pr_url = 3;
+}
+
+// Stream message envelope for live Send and durable ObserveRun streams.
+message RunStreamMessage {
+  oneof envelope {
+    SdkMessage sdk_message = 1;
+    RunStreamResult result = 2;
+    RunStreamDone done = 3;
+    InteractionUpdate interaction_update = 5;
+    ConversationStep step = 6;
+  }
+  // Opaque exclusive resume token, scoped to a single run.
+  optional string offset = 4;
+}
+
+message RunStreamResult {
+  string agent_id = 1;
+  string run_id = 2;
+  RunLifecycleStatus status = 3;
+  optional string error_code = 4;
+  RunResult result = 5;
+}
+
+message RunStreamDone {
+  string agent_id = 1;
+  string run_id = 2;
+}
+
+message InteractionUpdate {
+  // Discriminator for the update payload (for example text-delta types).
+  string type = 1;
+  google.protobuf.Struct update = 2;
+}
+
+message ConversationStep {
+  // Discriminator for the step payload.
+  string type = 1;
+  google.protobuf.Struct step = 2;
+}
+
+message SdkMessage {
+  // Discriminator for the message payload.
+  string type = 1;
+  google.protobuf.Struct message = 2;
+}
+
+message AgentMessage {
+  string type = 1;
+  string uuid = 2;
+  string agent_id = 3;
+  google.protobuf.Struct message = 4;
+}
+
+message SdkArtifact {
+  string path = 1;
+  uint64 size_bytes = 2;
+  // Last-modified time as returned by the artifact store (string form).
+  string updated_at = 3;
+}
+
+message DownloadArtifactChunk {
+  bytes data = 1;
+}

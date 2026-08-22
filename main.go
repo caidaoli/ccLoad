@@ -106,6 +106,7 @@ func main() {
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)
+	srv.StartCursorSDKBridge()
 	antigravityVersionCtx, cancelAntigravityVersion := context.WithTimeout(context.Background(), 10*time.Second)
 	antigravityUserAgent, antigravityVersionErr := srv.RefreshAntigravityUserAgent(antigravityVersionCtx)
 	cancelAntigravityVersion()

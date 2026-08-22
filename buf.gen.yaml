@@ -1,0 +1,15 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: ccLoad/internal/cursorauth/sdkgen
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12"]
+    out: internal/cursorauth/sdkgen
+    opt: paths=source_relative
+  - local: ["go", "run", "connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0"]
+    out: internal/cursorauth/sdkgen
+    opt: paths=source_relative
+inputs:
+  - directory: third_party/cursor-sdk-bridge/v1.0.28/proto

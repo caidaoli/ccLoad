@@ -624,7 +624,7 @@ func (c *Config) UsesZAIOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeZAIOAuth
 }
 
-// UsesCursorOAuth reports whether this channel is backed by a Cursor CLI credential.
+// UsesCursorOAuth reports whether this channel is backed by a Cursor credential.
 func (c *Config) UsesCursorOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCursorOAuth
 }

@@ -52,10 +52,6 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   zai: Object.freeze({
     provider: 'zai', label: 'Z.ai', i18n: 'channels.zai',
     callbackPlaceholder: '', pollOnly: true
-  }),
-  cursor: Object.freeze({
-    provider: 'cursor', label: 'Cursor', i18n: 'channels.cursor',
-    callbackPlaceholder: '', pollOnly: true
   })
 });
 
@@ -510,15 +506,13 @@ function syncOAuthProviderFields() {
   const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
   const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
   const zaiMethod = document.getElementById('zaiOAuthMethod')?.value || 'oauth';
-  const cursorMethod = document.getElementById('cursorOAuthMethod')?.value || 'oauth';
   const xai = provider === 'xai';
   const anthropic = provider === 'anthropic';
   const codex = provider === 'codex';
   const zai = provider === 'zai';
   const cursor = provider === 'cursor';
   const zaiAPIKey = zai && zaiMethod === 'api_key';
-  const cursorAPIKey = cursor && cursorMethod === 'api_key';
-  const cursorSession = cursor && cursorMethod === 'session';
+  const cursorAPIKey = cursor;
   const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
   const anthropicCookie = anthropic && anthropicMethod === 'cookie';
   const controls = document.getElementById('xaiOAuthControls');
@@ -533,8 +527,6 @@ function syncOAuthProviderFields() {
   const cursorControls = document.getElementById('cursorOAuthControls');
   const cursorAPIKeyField = document.getElementById('cursorAPIKeyField');
   const cursorAPIKeyInput = document.getElementById('cursorUserAPIKey');
-  const cursorSessionField = document.getElementById('cursorSessionField');
-  const cursorSessionInput = document.getElementById('cursorSessionToken');
   const codexControls = document.getElementById('codexOAuthControls');
   const codexPersonalAccessTokenField = document.getElementById('codexPersonalAccessTokenField');
   const codexPersonalAccessTokenInput = document.getElementById('codexPersonalAccessToken');
@@ -557,12 +549,7 @@ function syncOAuthProviderFields() {
     cursorAPIKeyInput.required = cursorAPIKey;
     if (!cursorAPIKey) clearCursorSecret(cursorAPIKeyInput);
   }
-  if (cursorSessionField) cursorSessionField.hidden = !cursorSession;
-  if (cursorSessionInput) {
-    cursorSessionInput.required = cursorSession;
-    if (!cursorSession) clearCursorSecret(cursorSessionInput);
-  }
-  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey || cursorSession)) sessionFields.hidden = true;
+  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -583,7 +570,7 @@ function syncOAuthProviderFields() {
     const descriptionKey = codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
       : cursor
-      ? (cursorAPIKey ? 'channels.cursor.apiKeyDescription' : (cursorSession ? 'channels.cursor.sessionDescriptionImport' : 'channels.cursor.oauthDescription'))
+      ? 'channels.cursor.apiKeyDescription'
       : zai
       ? (zaiAPIKey ? 'channels.zai.apiKeyDescription' : 'channels.zai.oauthDescription')
       : xai
@@ -598,7 +585,7 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = codex ? codexMethod : (xai ? xaiMethod : (cursor ? cursorMethod : (zai ? zaiMethod : anthropicMethod)));
+    const method = codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
@@ -606,7 +593,7 @@ function syncOAuthProviderFields() {
 function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
   if (!button) return;
   const key = provider === 'cursor'
-    ? (method === 'api_key' ? 'channels.cursor.apiKeySubmit' : (method === 'session' ? 'channels.cursor.sessionSubmit' : 'channels.oauth.startAuthorization'))
+    ? 'channels.cursor.apiKeySubmit'
     : provider === 'zai'
     ? (method === 'api_key' ? 'channels.zai.apiKeySubmit' : 'channels.oauth.startAuthorization')
     : provider === 'xai'
@@ -874,15 +861,14 @@ function clearCursorSecret(input) {
   input.removeAttribute?.('aria-invalid');
 }
 
-async function submitCursorCredential(kind, input, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitCursorCredential(input, fetcher = fetchDataWithAuth, signal = undefined) {
   let secret = String(input?.value || '').trim();
   if (!secret) {
     input?.setAttribute?.('aria-invalid', 'true');
     input?.focus?.();
-    throw new Error(window.t(kind === 'session' ? 'channels.cursor.sessionRequired' : 'channels.cursor.apiKeyRequired'));
+    throw new Error(window.t('channels.cursor.apiKeyRequired'));
   }
-  const payload = kind === 'session' ? { access_token: secret } : { api_key: secret };
-  let body = JSON.stringify(payload);
+  let body = JSON.stringify({ api_key: secret });
   secret = '';
   clearCursorSecret(input);
   try {
@@ -1123,8 +1109,6 @@ function stopActiveCursorImport() {
     }
   }
   clearCursorSecret(flow?.input);
-  const method = document.getElementById('cursorOAuthMethod');
-  if (method) method.disabled = false;
 }
 
 function stopActiveZAIKeyImport() {
@@ -2229,9 +2213,7 @@ function setupOAuthActions() {
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const zaiMethod = document.getElementById('zaiOAuthMethod');
   const zaiCodingPlanKey = document.getElementById('zaiCodingPlanKey');
-  const cursorMethod = document.getElementById('cursorOAuthMethod');
   const cursorUserAPIKey = document.getElementById('cursorUserAPIKey');
-  const cursorSessionToken = document.getElementById('cursorSessionToken');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
@@ -2280,10 +2262,6 @@ function setupOAuthActions() {
   if (zaiMethod && !zaiMethod.dataset.bound) {
     zaiMethod.addEventListener('change', syncOAuthProviderFields);
     zaiMethod.dataset.bound = '1';
-  }
-  if (cursorMethod && !cursorMethod.dataset.bound) {
-    cursorMethod.addEventListener('change', syncOAuthProviderFields);
-    cursorMethod.dataset.bound = '1';
   }
   if (loginForm && providerSelect && authorizeButton && !loginForm.dataset.bound) {
     loginForm.addEventListener('submit', async event => {
@@ -2357,18 +2335,16 @@ function setupOAuthActions() {
             if (activeXAIImportFlow === flow) activeXAIImportFlow = null;
           }
         }
-      } else if (providerSelect.value === 'cursor' && (cursorMethod?.value === 'api_key' || cursorMethod?.value === 'session')) {
-        const kind = cursorMethod.value === 'session' ? 'session' : 'api_key';
-        const input = kind === 'session' ? cursorSessionToken : cursorUserAPIKey;
+      } else if (providerSelect.value === 'cursor') {
+        const input = cursorUserAPIKey;
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         const flow = { button: authorizeButton, input, cancelling: false, controller };
         activeCursorImportFlow = flow;
-        cursorMethod.disabled = true;
         authorizeButton.disabled = true;
         authorizeButton.setAttribute?.('aria-busy', 'true');
         try {
-          setCodexOAuthDialogStatus(window.t(kind === 'session' ? 'channels.cursor.sessionValidating' : 'channels.cursor.apiKeyValidating'));
-          const result = await submitCursorCredential(kind, input, fetchDataWithAuth, controller?.signal);
+          setCodexOAuthDialogStatus(window.t('channels.cursor.apiKeyValidating'));
+          const result = await submitCursorCredential(input, fetchDataWithAuth, controller?.signal);
           if (flow.cancelling || activeCursorImportFlow !== flow) return;
           closeOAuthLoginDialogElement();
           const message = window.t('channels.cursor.importComplete', { channel: result?.channel_name || '' });
@@ -2384,7 +2360,6 @@ function setupOAuthActions() {
           if (window.showError) window.showError(message);
         } finally {
           if (activeCursorImportFlow === flow) activeCursorImportFlow = null;
-          cursorMethod.disabled = false;
           authorizeButton.disabled = false;
           authorizeButton.removeAttribute?.('aria-busy');
         }
@@ -2856,6 +2831,7 @@ if (typeof module !== 'undefined' && module.exports) {
     submitAnthropicCookieAuth,
     submitAnthropicOAuthCode,
     submitCodexPersonalAccessToken,
+    submitCursorCredential,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,
     submitXAICredentialBatch,

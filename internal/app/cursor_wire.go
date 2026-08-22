@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -18,9 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// tryCursorOAuthChannel runs inference through cursor-agent instead of HTTP
-// forwarding. StreamChat is deprecated and AgentService/RunSSE is a moving
-// protobuf target; ask mode keeps Cursor from executing host shell/file tools.
+const cursorSDKBridgeRequestURL = "http://cursor-sdk-bridge/sdk.v1.SdkAgentService/CreateAgent+Send"
+
+// tryCursorOAuthChannel runs inference through the managed Cursor SDK bridge.
+// The bridge receives an empty built-in tool set, so the gateway host never
+// executes shell or file tools.
 //
 // Client tools are mapped through the prompt: the model emits <cc_tool_call>
 // blocks which are translated to Anthropic tool_use or OpenAI tool_calls. The
@@ -31,12 +34,37 @@ func (s *Server) tryCursorOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	family := protocol.RequestFamilyUnknown
+	if reqCtx != nil {
+		family = protocol.DetectRequestFamily(reqCtx.requestPath)
+	}
 	if reqCtx != nil && !cursorSupportsRequestFamily(reqCtx.requestPath) {
 		return &proxyResult{
 			status: http.StatusBadRequest, channelID: &cfg.ID, succeeded: false,
 			protocolCapabilityMissing: true, nextAction: cooldown.ActionRetryChannel,
-			body: []byte(`{"error":{"message":"Cursor OAuth supports Anthropic messages and OpenAI chat completions","type":"invalid_request_error"}}`),
+			body: []byte(`{"error":{"message":"Cursor OAuth supports Anthropic messages, OpenAI chat completions, and OpenAI responses","type":"invalid_request_error"}}`),
 		}, nil
+	}
+	if family == protocol.RequestFamilyResponses {
+		if s.protocolRegistry == nil {
+			return cursorErrorResult(
+				cfg,
+				http.StatusServiceUnavailable,
+				"protocol registry is unavailable for Cursor responses",
+				cooldown.ActionReturnClient,
+			), nil
+		}
+		translatedBody, err := s.protocolRegistry.TranslateRequest(
+			protocol.Codex,
+			protocol.OpenAI,
+			reqCtx.originalModel,
+			reqCtx.body,
+			reqCtx.isStreaming,
+		)
+		if err != nil {
+			return cursorClientErrorResult(cfg, http.StatusBadRequest, err.Error()), nil
+		}
+		reqCtx.translatedBody = translatedBody
 	}
 	if s.cursorCredentials == nil {
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
@@ -62,6 +90,7 @@ func (s *Server) forwardCursorAgent(
 	if len(reqCtx.translatedBody) > 0 {
 		body = reqCtx.translatedBody
 	}
+	originalResponseBody := reqCtx.body
 	request := cursorauth.ParseRequest(body)
 	if request.Prompt == "" {
 		return cursorClientErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required"), nil
@@ -70,25 +99,77 @@ func (s *Server) forwardCursorAgent(
 	if requested == "" {
 		requested = reqCtx.originalModel
 	}
-	modelID := cursorauth.ResolveModel(requested, cursorauth.ParseClientThinking(body))
-	runner := s.cursorRunner
+	modelID := s.resolveFinalUpstreamModel(cfg, requested, string(reqCtx.clientProtocol))
+	started := time.Now()
+	reqCtx.attemptStartTime = started
+	if s.activeRequests != nil {
+		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
+			StartTime:        started,
+			Model:            reqCtx.originalModel,
+			ClientIP:         reqCtx.clientIP,
+			Streaming:        reqCtx.isStreaming,
+			ChannelID:        cfg.ID,
+			ChannelName:      cfg.Name,
+			ClientProtocol:   string(reqCtx.clientProtocol),
+			UpstreamProtocol: "cursor-sdk-bridge",
+			APIKey:           credential.APIKey,
+			TokenID:          reqCtx.tokenID,
+			BaseURL:          cursorSDKBridgeRequestURL,
+			CostMultiplier:   cfg.CostMultiplier,
+			ThinkingEffort:   reqCtx.thinkingEffort,
+		})
+		activeReqID := reqCtx.activeReqID
+		defer s.activeRequests.Remove(activeReqID)
+	}
+	debugCapture := s.captureCursorSDKRequest(reqCtx, modelID, request.Prompt)
+	if debugCapture != nil {
+		w = debugCapture.wrapTranslatedResponseWriter(w)
+	}
+	if s.activeRequests != nil {
+		s.activeRequests.SetDebugCapture(reqCtx.activeReqID, debugCapture)
+	}
+	runner := s.cursorRunnerSnapshot()
 	if runner == nil {
-		runner = cursorauth.NewCLIRunner()
+		result := cursorErrorResult(
+			cfg,
+			http.StatusServiceUnavailable,
+			"cursor SDK runner is unavailable",
+			cooldown.ActionReturnClient,
+		)
+		finishCursorSDKDebug(reqCtx, debugCapture, result.status, result.body, errors.New("cursor SDK runner is unavailable"))
+		return result, nil
 	}
 
-	started := time.Now()
-	events, err := runner.Run(ctx, credential, modelID, request.Prompt)
+	runBaseCtx := ctx
+	if debugCapture != nil {
+		runBaseCtx = cursorauth.WithRawResponseCapture(runBaseCtx)
+	}
+	runCtx, cancelRun := context.WithCancel(runBaseCtx)
+	defer cancelRun()
+	events, err := runner.Run(runCtx, credential, modelID, request.Prompt)
 	if err != nil {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
 		if errors.Is(err, cursorauth.ErrAgentMissing) {
 			status = http.StatusServiceUnavailable
 			action = cooldown.ActionReturnClient
+		} else if errors.Is(err, cursorauth.ErrMissingAPIKey) {
+			status = http.StatusUnauthorized
+			action = cooldown.ActionReturnClient
+		} else if cursorauth.IsCredentialRejected(err) {
+			status = http.StatusUnauthorized
+			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
 		}
 		result := cursorErrorResult(cfg, status, err.Error(), action)
-		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, time.Since(started).Seconds(), &fwResult{
-			Status: status, Body: result.body,
-		}, err.Error())
+		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, err)
+		if !reqCtx.skipProxyLog {
+			failed := &fwResult{
+				Status: status, Body: result.body,
+			}
+			duration := time.Since(started).Seconds()
+			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
+			s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+		}
 		return result, nil
 	}
 
@@ -96,6 +177,8 @@ func (s *Server) forwardCursorAgent(
 	streaming := reqCtx.isStreaming
 	mapTools := request.AllowsTools()
 	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	var responseTransformState any
+	var responseTransformErr error
 	var out bytes.Buffer
 	full := ""
 	firstByte := time.Duration(0)
@@ -110,7 +193,7 @@ func (s *Server) forwardCursorAgent(
 		if !streaming || wroteHeader {
 			return
 		}
-		disableResponseWriteTimeout(w, "Cursor CLI stream")
+		disableResponseWriteTimeout(w, "Cursor SDK stream")
 		header := w.Header()
 		header.Set("Content-Type", "text/event-stream")
 		header.Set("Cache-Control", "no-cache")
@@ -122,31 +205,59 @@ func (s *Server) forwardCursorAgent(
 		}
 	}
 	writeStream := func(chunk string) {
-		if !streaming || chunk == "" {
+		if !streaming || chunk == "" || responseTransformErr != nil {
 			return
 		}
 		ensureStream()
+		payload := cursorOpenAIChunk(msgID, modelID, chunk, "", nil)
 		if format == "anthropic" {
-			_, _ = w.Write(cursorAnthropicDelta(chunk))
+			payload = cursorAnthropicDelta(chunk)
+		}
+		if format == "responses" {
+			responseTransformErr = writeCursorResponsesStream(
+				ctx, s.protocolRegistry, w, modelID, originalResponseBody, body, payload, &responseTransformState,
+			)
+			if responseTransformErr != nil {
+				cancelRun()
+			}
 		} else {
-			_, _ = w.Write(cursorOpenAIChunk(msgID, modelID, chunk, ""))
+			_, _ = w.Write(payload)
 		}
 		flush()
 	}
 
 	var runErr error
+	var usage *cursorauth.Usage
 	for event := range events {
+		if debugCapture != nil && debugCapture.respBuf != nil && len(event.RawResponse) > 0 {
+			_, _ = debugCapture.respBuf.Write(event.RawResponse)
+			_, _ = debugCapture.respBuf.Write([]byte("\n"))
+		}
 		if firstByte == 0 && (event.Delta != "" || event.Done || event.Text != "") {
 			firstByte = time.Since(started)
+			if s.activeRequests != nil {
+				s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByte)
+			}
 		}
+		previousFull := full
 		if event.Text != "" {
 			full = event.Text
 		} else if event.Delta != "" {
 			out.WriteString(event.Delta)
 			full = out.String()
 		}
+		if s.activeRequests != nil {
+			received := len(event.Delta)
+			if received == 0 && event.Text != "" && strings.HasPrefix(event.Text, previousFull) {
+				received = len(event.Text) - len(previousFull)
+			}
+			s.activeRequests.AddBytes(reqCtx.activeReqID, int64(received))
+		}
 		if event.Err != nil {
 			runErr = event.Err
+		}
+		if event.Usage != nil {
+			usage = event.Usage
 		}
 		if streaming && !mapTools && event.Delta != "" {
 			writeStream(event.Delta)
@@ -159,31 +270,57 @@ func (s *Server) forwardCursorAgent(
 				streamedPlain = len(plain)
 			}
 		}
+		if responseTransformErr != nil {
+			break
+		}
 	}
 	duration := time.Since(started).Seconds()
-	if runErr != nil {
+	finishRunFailure := func(runErr error) (*proxyResult, error) {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
-		if strings.Contains(strings.ToLower(runErr.Error()), "not authenticated") {
+		clientDisconnected := isClientDisconnectError(runErr)
+		if clientDisconnected {
+			status = StatusClientClosedRequest
+			action = cooldown.ActionReturnClient
+		} else if cursorauth.IsCredentialRejected(runErr) {
 			status = http.StatusUnauthorized
 			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
 		}
-		if streaming && wroteHeader {
-			_, _ = w.Write([]byte("data: {\"error\":{\"message\":" + jsonString(runErr.Error()) + "}}\n\n"))
+		if streaming && wroteHeader && !clientDisconnected {
+			if format == "responses" {
+				_, _ = w.Write(cursorResponsesStreamError(runErr))
+			} else {
+				_, _ = w.Write([]byte("data: {\"error\":{\"message\":" + jsonString(runErr.Error()) + "}}\n\n"))
+			}
 			flush()
 		}
 		result := cursorErrorResult(cfg, status, runErr.Error(), action)
-		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, &fwResult{
-			Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
-		}, runErr.Error())
-		if streaming && wroteHeader {
+		finishCursorSDKDebug(reqCtx, debugCapture, status, result.body, runErr)
+		if !reqCtx.skipProxyLog {
+			failed := &fwResult{
+				Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
+			}
+			applyCursorUsage(failed, usage)
+			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
+			if status != StatusClientClosedRequest {
+				s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+			}
+		}
+		result.proxyLogWritten = !reqCtx.skipProxyLog
+		result.isClientCanceled = clientDisconnected
+		if streaming && wroteHeader && !clientDisconnected {
 			// The SSE envelope is already on the wire; the attempt loop must not
 			// write a second JSON body.
 			result.succeeded = true
 			result.nextAction = cooldown.ActionReturnClient
-			return result, nil
 		}
 		return result, nil
+	}
+	if responseTransformErr != nil {
+		runErr = responseTransformErr
+	}
+	if runErr != nil {
+		return finishRunFailure(runErr)
 	}
 
 	plain := full
@@ -209,23 +346,47 @@ func (s *Server) forwardCursorAgent(
 			if streamedPlain == 0 && plain != "" {
 				writeStream(plain)
 			}
-			_, _ = w.Write(cursorAnthropicStreamFinish(calls))
+			_, _ = w.Write(cursorAnthropicStreamFinish(calls, usage))
 		} else {
 			ensureStream()
 			if streamedPlain == 0 && plain != "" && len(calls) == 0 {
 				writeStream(plain)
 			}
-			_, _ = w.Write(cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0))
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			finish := cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0, usage)
+			if format == "responses" {
+				responseTransformErr = writeCursorResponsesStream(
+					ctx, s.protocolRegistry, w, modelID, originalResponseBody, body, finish, &responseTransformState,
+				)
+				if responseTransformErr == nil {
+					responseTransformErr = writeCursorResponsesStream(
+						ctx, s.protocolRegistry, w, modelID, originalResponseBody, body,
+						[]byte("data: [DONE]\n\n"), &responseTransformState,
+					)
+				}
+			} else {
+				_, _ = w.Write(finish)
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}
+		}
+		if responseTransformErr != nil {
+			return finishRunFailure(responseTransformErr)
 		}
 		flush()
 		responseBody = []byte(plain)
 		header = w.Header()
 	} else {
 		if format == "anthropic" {
-			responseBody = cursorAnthropicMessage(msgID, modelID, plain, calls)
+			responseBody = cursorAnthropicMessage(msgID, modelID, plain, calls, usage)
 		} else {
-			responseBody = cursorOpenAIMessage(msgID, modelID, plain, calls)
+			responseBody = cursorOpenAIMessage(msgID, modelID, plain, calls, usage)
+		}
+		if format == "responses" {
+			responseBody, responseTransformErr = s.protocolRegistry.TranslateResponseNonStream(
+				ctx, protocol.OpenAI, protocol.Codex, modelID, originalResponseBody, body, responseBody,
+			)
+		}
+		if responseTransformErr != nil {
+			return finishRunFailure(responseTransformErr)
 		}
 		header = make(http.Header)
 		header.Set("Content-Type", "application/json")
@@ -233,19 +394,85 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	channelID := cfg.ID
-	s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, &fwResult{
+	finishCursorSDKDebug(reqCtx, debugCapture, http.StatusOK, responseBody, nil)
+	forwarded := &fwResult{
 		Status: http.StatusOK, Header: header, Body: responseBody, FirstByteTime: firstByte.Seconds(),
-	}, "")
+	}
+	applyCursorUsage(forwarded, usage)
+	if !reqCtx.skipProxyLog {
+		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
+		s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, forwarded, modelID)
+	}
 	return &proxyResult{
 		status: http.StatusOK, header: header, body: responseBody, channelID: &channelID,
 		duration: duration, firstByteTime: firstByte.Seconds(), succeeded: true,
-		nextAction: cooldown.ActionReturnClient,
+		nextAction: cooldown.ActionReturnClient, proxyLogWritten: !reqCtx.skipProxyLog,
 	}, nil
+}
+
+func (s *Server) captureCursorSDKRequest(
+	reqCtx *proxyRequestContext,
+	modelID, prompt string,
+) *debugCapture {
+	if s == nil || s.configService == nil || reqCtx == nil {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"create_agent": map[string]any{
+			"model": map[string]any{"id": modelID},
+			"tools": map[string]any{"names": []string{}},
+		},
+		"send": map[string]any{"message": map[string]any{"text": prompt}},
+	})
+	request, err := http.NewRequest(
+		http.MethodPost,
+		cursorSDKBridgeRequestURL,
+		nil,
+	)
+	if err != nil {
+		return nil
+	}
+	request.Header.Set("Content-Type", "application/json")
+	capture := s.captureDebugRequest(request, payload)
+	if capture == nil {
+		return nil
+	}
+	capture.markProtocolTransform(reqCtx.requestPath, reqCtx.header, reqCtx.body)
+	return capture
+}
+
+func finishCursorSDKDebug(
+	reqCtx *proxyRequestContext,
+	capture *debugCapture,
+	status int,
+	translatedBody []byte,
+	runErr error,
+) {
+	if reqCtx == nil || capture == nil {
+		return
+	}
+	responseHeader := make(http.Header)
+	responseHeader.Set("Content-Type", "application/x-ndjson")
+	response := &http.Response{StatusCode: status, Header: responseHeader}
+	capture.captureResponseMeta(response)
+	if runErr != nil {
+		capture.captureUpstreamError(runErr)
+	}
+	if capture.translatedResponseBuf != nil && len(capture.translatedResponseBuf.Snapshot()) == 0 {
+		translatedHeader := make(http.Header)
+		translatedHeader.Set("Content-Type", "application/json")
+		capture.captureTranslatedResponseMeta(status, translatedHeader)
+		capture.captureTranslatedResponse(translatedBody)
+	}
+	reqCtx.debugData = capture.buildEntry(response)
 }
 
 func cursorResponseFormat(reqCtx *proxyRequestContext) string {
 	if reqCtx == nil {
 		return "openai"
+	}
+	if protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyResponses {
+		return "responses"
 	}
 	if util.NormalizeProtocol(string(reqCtx.clientProtocol)) == util.ProtocolAnthropic ||
 		strings.Contains(reqCtx.requestPath, "/messages") {
@@ -296,7 +523,7 @@ func cursorAnthropicDelta(text string) []byte {
 	return []byte("event: content_block_delta\ndata: " + string(payload) + "\n\n")
 }
 
-func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall) []byte {
+func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	var b bytes.Buffer
 	stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": 0})
 	b.WriteString("event: content_block_stop\ndata: " + string(stop) + "\n\n")
@@ -326,13 +553,15 @@ func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall) []byte {
 	messageDelta, _ := json.Marshal(map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": reason, "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": 0, "input_tokens": 0},
+		"usage": cursorAnthropicUsage(usage),
 	})
 	b.WriteString("event: message_delta\ndata: " + string(messageDelta) + "\n\n")
+	messageStop, _ := json.Marshal(map[string]any{"type": "message_stop"})
+	b.WriteString("event: message_stop\ndata: " + string(messageStop) + "\n\n")
 	return b.Bytes()
 }
 
-func cursorAnthropicMessage(id, modelID, text string, calls []cursorauth.ToolCall) []byte {
+func cursorAnthropicMessage(id, modelID, text string, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	content := make([]any, 0, 1+len(calls))
 	if text != "" || len(calls) == 0 {
 		content = append(content, map[string]any{"type": "text", "text": text})
@@ -353,12 +582,12 @@ func cursorAnthropicMessage(id, modelID, text string, calls []cursorauth.ToolCal
 	body, _ := json.Marshal(map[string]any{
 		"id": id, "type": "message", "role": "assistant",
 		"content": content, "model": modelID, "stop_reason": reason, "stop_sequence": nil,
-		"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+		"usage": cursorAnthropicUsage(usage),
 	})
 	return body
 }
 
-func cursorOpenAIChunk(id, modelID, content, finish string) []byte {
+func cursorOpenAIChunk(id, modelID, content, finish string, usage *cursorauth.Usage) []byte {
 	delta := map[string]any{}
 	var finishReason any
 	if content != "" {
@@ -367,18 +596,22 @@ func cursorOpenAIChunk(id, modelID, content, finish string) []byte {
 	if finish != "" {
 		finishReason = finish
 	}
-	payload, _ := json.Marshal(map[string]any{
+	payloadObject := map[string]any{
 		"id": "chatcmpl-" + id, "object": "chat.completion.chunk",
 		"created": time.Now().Unix(), "model": modelID,
 		"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finishReason}},
-	})
+	}
+	if usage != nil {
+		payloadObject["usage"] = cursorOpenAIUsage(usage)
+	}
+	payload, _ := json.Marshal(payloadObject)
 	return []byte("data: " + string(payload) + "\n\n")
 }
 
-func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, textAlreadyStreamed bool) []byte {
+func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, textAlreadyStreamed bool, usage *cursorauth.Usage) []byte {
 	var b bytes.Buffer
 	if !textAlreadyStreamed && text != "" && len(calls) == 0 {
-		b.Write(cursorOpenAIChunk(id, modelID, text, ""))
+		b.Write(cursorOpenAIChunk(id, modelID, text, "", nil))
 	}
 	for i, call := range calls {
 		args := "{}"
@@ -402,11 +635,11 @@ func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, t
 	if len(calls) > 0 {
 		finish = "tool_calls"
 	}
-	b.Write(cursorOpenAIChunk(id, modelID, "", finish))
+	b.Write(cursorOpenAIChunk(id, modelID, "", finish, usage))
 	return b.Bytes()
 }
 
-func cursorOpenAIMessage(id, modelID, text string, calls []cursorauth.ToolCall) []byte {
+func cursorOpenAIMessage(id, modelID, text string, calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	message := map[string]any{"role": "assistant", "content": text}
 	finish := "stop"
 	if len(calls) > 0 {
@@ -431,9 +664,60 @@ func cursorOpenAIMessage(id, modelID, text string, calls []cursorauth.ToolCall) 
 		"id": "chatcmpl-" + id, "object": "chat.completion",
 		"created": time.Now().Unix(), "model": modelID,
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
-		"usage":   map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+		"usage":   cursorOpenAIUsage(usage),
 	})
 	return body
+}
+
+func cursorAnthropicUsage(usage *cursorauth.Usage) map[string]any {
+	if usage == nil {
+		usage = &cursorauth.Usage{}
+	}
+	result := map[string]any{
+		"input_tokens":                usage.InputTokens,
+		"output_tokens":               usage.OutputTokens,
+		"cache_read_input_tokens":     usage.CacheReadTokens,
+		"cache_creation_input_tokens": usage.CacheWriteTokens,
+	}
+	if usage.ReasoningTokens > 0 {
+		result["reasoning_tokens"] = usage.ReasoningTokens
+	}
+	return result
+}
+
+func cursorOpenAIUsage(usage *cursorauth.Usage) map[string]any {
+	if usage == nil {
+		usage = &cursorauth.Usage{}
+	}
+	promptTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
+	result := map[string]any{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": usage.OutputTokens,
+		"total_tokens":      promptTokens + usage.OutputTokens,
+		"prompt_tokens_details": map[string]any{
+			"cached_tokens":          usage.CacheReadTokens,
+			"cached_creation_tokens": usage.CacheWriteTokens,
+		},
+	}
+	if usage.ReasoningTokens > 0 {
+		result["completion_tokens_details"] = map[string]any{"reasoning_tokens": usage.ReasoningTokens}
+	}
+	return result
+}
+
+func applyCursorUsage(result *fwResult, usage *cursorauth.Usage) {
+	if result == nil || usage == nil {
+		return
+	}
+	result.InputTokens = usage.InputTokens
+	result.OutputTokens = usage.OutputTokens
+	result.ReasoningTokens = usage.ReasoningTokens
+	result.CacheReadInputTokens = usage.CacheReadTokens
+	result.CacheCreationInputTokens = usage.CacheWriteTokens
+	// Cursor exposes one aggregate cache-write counter. ccLoad prices aggregate
+	// cache creation at the standard 5-minute write rate, matching other
+	// providers that do not report a TTL breakdown.
+	result.Cache5mInputTokens = usage.CacheWriteTokens
 }
 
 func openaiToolCallID(id string) string {
@@ -454,7 +738,65 @@ func jsonString(value string) string {
 	return string(raw)
 }
 
+func writeCursorResponsesStream(
+	ctx context.Context,
+	registry *protocol.Registry,
+	w http.ResponseWriter,
+	modelID string,
+	originalRequest, translatedRequest, raw []byte,
+	state *any,
+) error {
+	if registry == nil {
+		return errors.New("protocol registry is unavailable for Cursor responses")
+	}
+	for len(raw) > 0 {
+		end := bytes.Index(raw, []byte("\n\n"))
+		if end < 0 {
+			if len(bytes.TrimSpace(raw)) == 0 {
+				return nil
+			}
+			return errors.New("incomplete Cursor chat completions SSE event")
+		}
+		end += 2
+		event := raw[:end]
+		raw = raw[end:]
+		chunks, err := registry.TranslateResponseStream(
+			ctx,
+			protocol.OpenAI,
+			protocol.Codex,
+			modelID,
+			originalRequest,
+			translatedRequest,
+			event,
+			state,
+		)
+		if err != nil {
+			return err
+		}
+		for _, chunk := range chunks {
+			if len(chunk) == 0 {
+				continue
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return fmt.Errorf("client disconnected: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func cursorResponsesStreamError(err error) []byte {
+	payload, _ := json.Marshal(map[string]any{
+		"type":    "error",
+		"code":    "server_error",
+		"message": err.Error(),
+	})
+	return []byte("event: error\ndata: " + string(payload) + "\n\n")
+}
+
 func cursorSupportsRequestFamily(path string) bool {
 	family := protocol.DetectRequestFamily(path)
-	return family == protocol.RequestFamilyMessages || family == protocol.RequestFamilyChatCompletions
+	return family == protocol.RequestFamilyMessages ||
+		family == protocol.RequestFamilyChatCompletions ||
+		family == protocol.RequestFamilyResponses
 }

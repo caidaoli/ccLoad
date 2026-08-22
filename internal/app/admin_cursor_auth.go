@@ -22,20 +22,15 @@ const maxCursorCredentialImportBytes = 1 << 16
 var cursorChannelCreateMu sync.Mutex
 
 type cursorCredentialImportRequest struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	APIKey       string `json:"api_key"`
+	APIKey string `json:"api_key"`
 }
 
 func (r *cursorCredentialImportRequest) Validate() error {
-	r.AccessToken = strings.TrimSpace(r.AccessToken)
-	r.RefreshToken = strings.TrimSpace(r.RefreshToken)
 	r.APIKey = strings.TrimSpace(r.APIKey)
-	if r.AccessToken == "" && r.APIKey == "" {
-		return errors.New("access_token or api_key is required")
+	if r.APIKey == "" {
+		return errors.New("api_key is required")
 	}
-	if strings.ContainsAny(r.AccessToken, " \r\n\t") || strings.ContainsAny(r.RefreshToken, " \r\n\t") ||
-		strings.ContainsAny(r.APIKey, " \r\n\t") {
+	if strings.ContainsAny(r.APIKey, " \r\n\t") {
 		return errors.New("credential contains invalid characters")
 	}
 	return nil
@@ -48,8 +43,7 @@ type cursorCredentialImportResponse struct {
 	Email       string `json:"email,omitempty"`
 }
 
-// HandleImportCursorCredential provisions a Cursor channel from a session
-// token pair or a Cursor user API key.
+// HandleImportCursorCredential provisions a Cursor channel from a user API key.
 func (s *Server) HandleImportCursorCredential(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCursorCredentialImportBytes)
 	var request cursorCredentialImportRequest
@@ -84,18 +78,13 @@ func (s *Server) buildCursorCredential(
 	credential := &cursorauth.Credential{
 		Type: cursorauth.ChannelType, LastRefresh: time.Now().UTC().Format(time.RFC3339),
 	}
-	if request.APIKey != "" {
-		pair, err := s.cursorService.ExchangeAPIKey(ctx, request.APIKey)
-		if err != nil {
-			return nil, err
-		}
-		credential.APIKey = request.APIKey
-		credential.AccessToken = pair.AccessToken
-		credential.RefreshToken = pair.RefreshToken
-	} else {
-		credential.AccessToken = request.AccessToken
-		credential.RefreshToken = request.RefreshToken
+	pair, err := s.cursorService.ExchangeAPIKey(ctx, request.APIKey)
+	if err != nil {
+		return nil, err
 	}
+	credential.APIKey = request.APIKey
+	credential.AccessToken = pair.AccessToken
+	credential.RefreshToken = pair.RefreshToken
 	identity, name, err := s.cursorService.FetchIdentity(ctx, credential.AccessToken)
 	if err != nil {
 		return nil, err
@@ -112,7 +101,7 @@ func (s *Server) commitCursorCredential(
 	credential *cursorauth.Credential,
 ) (*model.Config, bool, error) {
 	cfg, created, err := createOrUpdateCursorChannel(
-		ctx, s.store, credential, s.cursorChannelModels(ctx, credential.AccessToken),
+		ctx, s.store, credential, s.cursorChannelModels(ctx, credential),
 	)
 	if err != nil {
 		return nil, false, err
@@ -120,21 +109,34 @@ func (s *Server) commitCursorCredential(
 	s.cursorCredentials.invalidate(cfg.ID)
 	s.invalidateChannelRelatedCache(cfg.ID)
 	s.InvalidateChannelListCache()
+	s.cursorBridgeRequired.Store(true)
+	s.StartCursorSDKBridge()
 	return cfg, created, nil
 }
 
-func (s *Server) cursorChannelModels(ctx context.Context, accessToken string) []string {
-	if s == nil || s.cursorService == nil {
-		return cursorauth.DefaultModels
-	}
-	models, err := s.cursorService.ListModels(ctx, accessToken)
+func (s *Server) cursorChannelModels(ctx context.Context, credential *cursorauth.Credential) []string {
+	models, err := s.listCursorSDKModels(ctx, credential)
 	if err != nil || len(models) == 0 {
 		if err != nil {
-			log.Printf("[WARN] Cursor 模型目录不可用，新渠道使用内置列表: %v", err)
+			log.Printf("[WARN] Cursor SDK 模型目录不可用，新渠道使用 default: %v", err)
 		}
 		return cursorauth.DefaultModels
 	}
 	return models
+}
+
+func (s *Server) listCursorSDKModels(
+	ctx context.Context,
+	credential *cursorauth.Credential,
+) ([]string, error) {
+	if credential == nil || strings.TrimSpace(credential.APIKey) == "" {
+		return nil, cursorauth.ErrMissingAPIKey
+	}
+	lister, ok := s.cursorRunnerSnapshot().(cursorauth.ModelLister)
+	if !ok || lister == nil {
+		return nil, errors.New("cursor SDK model catalog is unavailable")
+	}
+	return lister.ListModels(ctx, credential.APIKey)
 }
 
 func createOrUpdateCursorChannel(

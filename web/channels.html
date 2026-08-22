@@ -213,14 +213,6 @@
                 </div>
               </div>
               <div id="cursorOAuthControls" hidden>
-                <div class="oauth-field">
-                  <label for="cursorOAuthMethod" data-i18n="channels.cursor.methodLabel">Cursor 授权方式</label>
-                  <select id="cursorOAuthMethod" name="cursor_oauth_method" class="form-input">
-                    <option value="oauth" data-i18n="channels.cursor.methodOAuth">浏览器授权（Cursor CLI 登录）</option>
-                    <option value="api_key" data-i18n="channels.cursor.methodAPIKey">Cursor User API Key</option>
-                    <option value="session" data-i18n="channels.cursor.methodSession">粘贴 accessToken</option>
-                  </select>
-                </div>
                 <div id="cursorAPIKeyField" class="oauth-field" hidden>
                   <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
                   <input id="cursorUserAPIKey" name="cursor_user_api_key" type="text"
@@ -228,14 +220,6 @@
                     aria-describedby="cursorAPIKeyHint oauthLoginDialogStatus">
                   <p id="cursorAPIKeyHint" class="oauth-field-hint"
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
-                </div>
-                <div id="cursorSessionField" class="oauth-field" hidden>
-                  <label for="cursorSessionToken" data-i18n="channels.cursor.sessionLabel">accessToken</label>
-                  <input id="cursorSessionToken" name="cursor_session_token" type="text"
-                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
-                    aria-describedby="cursorSessionHint oauthLoginDialogStatus">
-                  <p id="cursorSessionHint" class="oauth-field-hint"
-                    data-i18n="channels.cursor.sessionHint">macOS 用 security find-generic-password -s cursor-access-token -a cursor-user -w 取出。Linux 看 ~/.config/cursor/auth.json。提交后输入会立即从页面清除。</p>
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">

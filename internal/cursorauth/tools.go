@@ -27,7 +27,7 @@ type ToolCall struct {
 	Arguments json.RawMessage
 }
 
-// Request is the cursor-agent prompt plus any client tools to map.
+// Request is the Cursor SDK prompt plus any client tools to map.
 type Request struct {
 	Model      string
 	Prompt     string
@@ -41,7 +41,7 @@ func (r Request) AllowsTools() bool {
 }
 
 // ParseRequest reads an Anthropic Messages or OpenAI chat body into a
-// cursor-agent prompt. Client tools stay on the client: they are described in
+// Cursor SDK prompt. Client tools stay on the client: they are described in
 // the prompt and round-tripped as <cc_tool_call> blocks, never executed on the
 // ccLoad host.
 func ParseRequest(body []byte) Request {
@@ -74,7 +74,7 @@ func ParseRequest(body []byte) Request {
 	return request
 }
 
-// ExtractPrompt is the text cursor-agent receives, including tool history.
+// ExtractPrompt is the text the Cursor SDK Agent receives, including tool history.
 func ExtractPrompt(body []byte) string {
 	return ParseRequest(body).Prompt
 }

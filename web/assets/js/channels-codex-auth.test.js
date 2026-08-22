@@ -36,8 +36,32 @@ const {
   submitAnthropicOAuthCode,
   submitCodexOAuthCallback,
   submitCodexPersonalAccessToken,
+  submitCursorCredential,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('Cursor credential import accepts only a user API key', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const input = {
+    value: '  cursor-user-key  ',
+    removeAttribute() {},
+    setAttribute() {},
+    focus() {}
+  };
+  try {
+    let request;
+    await submitCursorCredential(input, async (url, options) => {
+      request = { url, options };
+      return { channel_name: 'Cursor-user@example.com' };
+    });
+    assert.equal(request.url, '/admin/cursor/credentials/import');
+    assert.deepEqual(JSON.parse(request.options.body), { api_key: 'cursor-user-key' });
+    assert.equal(input.value, '');
+  } finally {
+    global.window = previousWindow;
+  }
+});
 
 test('OAuth credential cleanup resumes its SSE stream without restarting the destructive job', async () => {
   const previousWindow = global.window;

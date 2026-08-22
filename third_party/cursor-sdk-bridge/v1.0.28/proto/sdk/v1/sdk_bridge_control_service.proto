@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Bridge-local health, version, and lifecycle APIs.
+//
+// These RPCs manage the bridge process itself. They are not agent or run
+// operations; use SdkAgentService and SdkCursorService for those.
+service SdkBridgeControlService {
+  // Liveness check. Returns a fixed message when the bridge is accepting RPCs.
+  rpc Ping(PingRequest) returns (PingResponse);
+  // Request a graceful shutdown of the bridge process.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  // Bridge build version, protocol version, and advertised capabilities.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+  // Point the bridge at a host-process custom-tool callback server after
+  // startup. Lets clients that attach to an already-running bridge register
+  // host execute handlers. Same-host (loopback) only.
+  rpc SetToolCallback(SetToolCallbackRequest) returns (SetToolCallbackResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string message = 1;
+}
+
+message ShutdownRequest {
+  // Seconds to wait for in-flight RPCs before forcing exit. Zero means
+  // immediate shutdown.
+  uint32 grace_seconds = 1;
+}
+
+message ShutdownResponse {}
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  // Semver (or equivalent) of the bridge binary.
+  string bridge_version = 1;
+  // Version of this sdk.v1 protocol contract the bridge implements.
+  string protocol_version = 2;
+  // Feature strings the bridge supports (for client capability negotiation).
+  repeated string capabilities = 3;
+}
+
+message SetToolCallbackRequest {
+  // Connect base URL of the host custom-tool callback server. Empty clears the
+  // currently configured callback.
+  string url = 1;
+  // Bearer token the bridge presents on CallCustomTool RPCs.
+  string auth_token = 2;
+}
+
+message SetToolCallbackResponse {}

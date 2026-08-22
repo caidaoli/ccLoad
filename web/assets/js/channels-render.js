@@ -587,9 +587,9 @@ function formatOAuthUsageLimitName(limitName) {
   // Z.ai 的 token 窗口只有时长有信息量，时长已单独渲染，避免出现「five_hour 5小时」。
   if (normalized === 'five_hour' || normalized === 'weekly') return '';
   if (normalized === 'mcp_limit') return 'MCP';
-  if (normalized === 'included') return window.t('channels.cursor.usageIncluded');
-  if (normalized === 'api') return window.t('channels.cursor.usageAPI');
-  if (normalized === 'auto') return window.t('channels.cursor.usageAuto');
+  if (normalized === 'included') return window.t('channels.cursor.usageMonthlyLimit');
+  if (normalized === 'api') return window.t('channels.cursor.usageOtherModels');
+  if (normalized === 'auto') return window.t('channels.cursor.usageCursorModels');
   if (normalized === 'claude and gpt models') return 'Claude';
   return String(limitName).trim();
 }
@@ -622,6 +622,23 @@ function oauthUsageLevel(remainingPercent) {
   if (remainingPercent >= 30) return 'medium';
   if (remainingPercent > 0) return 'low';
   return 'empty';
+}
+
+function orderCursorUsageWindows(windows) {
+  const order = { auto: 0, api: 1, included: 2 };
+  return [...windows].sort((left, right) => {
+    const leftOrder = order[String(left?.limit_name || '').trim().toLowerCase()] ?? 3;
+    const rightOrder = order[String(right?.limit_name || '').trim().toLowerCase()] ?? 3;
+    return leftOrder - rightOrder;
+  });
+}
+
+function formatCursorUsageNotice(value) {
+  const message = String(value || '').trim();
+  if (message.toLowerCase() === "you've hit your usage limit") {
+    return '';
+  }
+  return message;
 }
 
 function buildOAuthUsageRefreshButton(channelID, loading = false, disabled = false) {
@@ -829,10 +846,13 @@ function buildOAuthUsageStatusHtml(channel) {
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
   const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
   const isCodex = channel?.auth_type === 'codex_oauth';
-  const rows = isXAI ? buildXAIUsageRows(state.data) : windows.map(windowInfo => {
+  const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
+  const displayedWindows = isCursor ? orderCursorUsageWindows(windows) : windows;
+  const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
-    const duration = formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
+    const percentWithSymbol = `${percent}%`;
+    const duration = isCursor ? '' : formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
     const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
     // 名称与时长的连接方式交给语言包：中文直接相连，英文才需要空格。
     const label = limitName
@@ -848,7 +868,7 @@ function buildOAuthUsageStatusHtml(channel) {
           ${accumulatedCost ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(accumulatedCost)}</span>` : ''}
         </span>
         <span class="ch-oauth-usage__details">
-          <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+          <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percentWithSymbol)}</span>
           ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
         </span>
       </div>
@@ -857,7 +877,9 @@ function buildOAuthUsageStatusHtml(channel) {
       </div>
     </div>`;
   });
-  const notice = String(state.data?.display_message || '').trim();
+  const notice = isCursor
+    ? formatCursorUsageNotice(state.data?.display_message)
+    : String(state.data?.display_message || '').trim();
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';

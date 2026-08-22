@@ -769,7 +769,7 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 		if err != nil {
 			return nil, err
 		}
-		accessToken, note = credential.AccessToken, "Cursor CLI session"
+		accessToken, note = credential.AccessToken, "Cursor session"
 	}
 
 	return []*model.APIKey{{

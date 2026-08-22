@@ -81,7 +81,7 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
         'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
-        'channels.oauth.resetCreditExpiresEarliest': `最早过期 ${values.time}`,
+        'channels.oauth.resetCreditExpiresEarliest': `改期 ${values.time}`,
         'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
         'channels.oauth.resetCreditExpiresAll': `查看全部 ${values.count} 个过期时间`,
         'channels.oauth.resetQuota': '重置额度',
@@ -118,7 +118,7 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
     assert.match(html, /可重置 2 次/);
     assert.match(html, /\$12\.0/);
     assert.match(html, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?\$12\.0[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
-    assert.match(html, /最早过期 01\/03/);
+    assert.match(html, /改期 01\/03/);
     assert.match(html, /查看全部 2 个过期时间/);
     assert.match(html, /data-action="reset-codex-quota" data-channel-id="92"/);
     assert.doesNotMatch(html, /data-action="reset-codex-quota"[^>]*disabled/);
@@ -380,7 +380,7 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
   }
 });
 
-test('Cursor 额度用尽提示不当成数据不可用，也不渲染假的 $0.0', () => {
+test('Cursor 额度按官网顺序显示可用比例和按量月限额', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;
   const previousReadOnly = global.isTokenChannelsReadOnly;
@@ -388,13 +388,12 @@ test('Cursor 额度用尽提示不当成数据不可用，也不渲染假的 $0.
     t(key, values = {}) {
       return ({
         'channels.oauth.usageRefresh': '刷新额度',
-        'channels.oauth.usageMonthly': '月限额',
         'channels.oauth.usageLabel': `${values.name}${values.duration}`,
         'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
         'channels.oauth.usageWarnings': '部分额度数据不可用',
-        'channels.cursor.usageIncluded': '包含额度',
-        'channels.cursor.usageAPI': 'API',
-        'channels.cursor.usageAuto': 'Auto'
+        'channels.cursor.usageMonthlyLimit': '按量月限额',
+        'channels.cursor.usageOtherModels': 'Other Models',
+        'channels.cursor.usageCursorModels': 'Cursor Models'
       })[key] || key;
     }
   };
@@ -402,23 +401,28 @@ test('Cursor 额度用尽提示不当成数据不可用，也不渲染假的 $0.
     status: 'ready',
     data: {
       provider: 'cursor',
-      display_message: "You've hit your usage limit <safe>",
+      display_message: "You've hit your usage limit",
       windows: [
-        { limit_name: 'included', kind: 'spend', remaining_percent: 0, limit_window_seconds: 2678400, reset_at: 1789181874 },
-        { limit_name: 'api', kind: 'spend', remaining_percent: 0, limit_window_seconds: 2678400 },
-        { limit_name: 'auto', kind: 'spend', remaining_percent: 9.5, limit_window_seconds: 2678400 }
+        { limit_name: 'included', kind: 'spend', used_percent: 100, remaining_percent: 0, limit_window_seconds: 2678400, reset_at: 1789181874 },
+        { limit_name: 'api', kind: 'spend', used_percent: 29.6, remaining_percent: 70.4, limit_window_seconds: 2678400 },
+        { limit_name: 'auto', kind: 'spend', used_percent: 18, remaining_percent: 82, limit_window_seconds: 2678400 }
       ]
     }
   });
   global.isTokenChannelsReadOnly = () => false;
   try {
     const html = buildOAuthUsageStatusHtml({ id: 1481, auth_type: 'cursor_oauth' });
-    assert.match(html, /包含额度月限额/);
-    assert.match(html, /API月限额/);
-    assert.match(html, /Auto月限额/);
-    assert.match(html, /ch-oauth-usage__notice[^>]*>You&#39;ve hit your usage limit &lt;safe&gt;/);
+    const cursorModels = html.indexOf('Cursor Models');
+    const otherModels = html.indexOf('Other Models');
+    const monthlyLimit = html.indexOf('按量月限额');
+    assert.ok(cursorModels >= 0 && cursorModels < otherModels && otherModels < monthlyLimit);
+    assert.match(html, /Cursor Models剩余 82%/);
+    assert.match(html, /Other Models剩余 70\.4%/);
+    assert.match(html, /按量月限额剩余 0%/);
+    assert.doesNotMatch(html, /ch-oauth-usage__notice/);
+    assert.doesNotMatch(html, /包含额度|API月限额|Auto月限额/);
+    assert.doesNotMatch(html, /You&#39;ve hit your usage limit/);
     assert.doesNotMatch(html, /部分额度数据不可用/);
-    assert.doesNotMatch(html, /You've hit your usage limit <safe>/);
     assert.doesNotMatch(html, /\$0\.0/);
   } finally {
     global.window = previousWindow;

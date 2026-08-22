@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
@@ -58,6 +60,89 @@ func TestDisableResponseWriteTimeoutClearsDeadline(t *testing.T) {
 	}
 	if !w.writeDeadline.IsZero() {
 		t.Fatalf("writeDeadline=%v, want zero time", w.writeDeadline)
+	}
+}
+
+func TestStartCursorSDKBridgeIsNonBlockingAndAutomaticallyPublishesRunner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	installStarted := make(chan struct{})
+	releaseInstall := make(chan struct{})
+	runnerStarted := make(chan struct{})
+	runnerPath := make(chan string, 1)
+	var calls atomic.Int32
+	readyRunner := &fakeCursorRunner{models: []string{"grok-4.6"}}
+	server := &Server{
+		baseCtx: ctx,
+		ensureCursorBridge: func(ctx context.Context) (string, error) {
+			calls.Add(1)
+			close(installStarted)
+			select {
+			case <-ctx.Done():
+				return "", context.Cause(ctx)
+			case <-releaseInstall:
+			}
+			return "/managed/cursor-sdk-bridge", nil
+		},
+		startCursorBridge: func(_ context.Context, path string) (cursorauth.Runner, error) {
+			runnerPath <- path
+			close(runnerStarted)
+			return readyRunner, nil
+		},
+	}
+	server.StartCursorSDKBridge()
+	if calls.Load() != 0 {
+		t.Fatalf("installer calls without Cursor channel = %d, want 0", calls.Load())
+	}
+
+	server.cursorBridgeRequired.Store(true)
+	returned := make(chan struct{})
+	go func() {
+		server.StartCursorSDKBridge()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("StartCursorSDKBridge blocked on installation")
+	}
+	select {
+	case <-installStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background bridge installation did not start")
+	}
+	if server.cursorRunnerSnapshot() != nil {
+		t.Fatal("runner was published before bridge startup completed")
+	}
+	close(releaseInstall)
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge runner did not start after installation")
+	}
+	if path := <-runnerPath; path != "/managed/cursor-sdk-bridge" {
+		t.Fatalf("bridge path = %q", path)
+	}
+	server.wg.Wait()
+	if server.cursorRunnerSnapshot() != readyRunner {
+		t.Fatal("ready runner was not published")
+	}
+	server.StartCursorSDKBridge()
+	if calls.Load() != 1 {
+		t.Fatalf("installer calls with Cursor channel = %d, want 1", calls.Load())
+	}
+}
+
+func TestHasCursorChannel(t *testing.T) {
+	channels := []*model.Config{
+		{Enabled: true, AuthType: model.AuthTypeAPIKey},
+	}
+	if hasCursorChannel(channels) {
+		t.Fatal("non-Cursor channel triggered bridge installation")
+	}
+	channels = append(channels, &model.Config{Enabled: false, AuthType: model.AuthTypeCursorOAuth})
+	if !hasCursorChannel(channels) {
+		t.Fatal("Cursor channel did not trigger bridge installation")
 	}
 }
 

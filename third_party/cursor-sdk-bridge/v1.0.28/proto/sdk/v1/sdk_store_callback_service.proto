@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+import "google/protobuf/struct.proto";
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Local agent-store callbacks from the bridge to a host process.
+//
+// When LocalAgentStoreConfig.type is "custom", the bridge forwards store
+// operations to the host over a single CallStore RPC. Substores mirror the
+// local agent store topology: agents, runs, runEvents, and checkpoints.
+// Inputs and outputs are structured JSON so the full surface can be forwarded
+// without a typed message per operation.
+service SdkStoreCallbackService {
+  rpc CallStore(CallStoreRequest) returns (CallStoreResponse);
+}
+
+// Generic local agent-store operation forwarded to a host-owned substore.
+message CallStoreRequest {
+  // Substore being addressed: "agents", "runs", "runEvents", or "checkpoints".
+  string substore = 1;
+  // Operation on the substore: "get", "create", "update", "delete", "list", or
+  // "append" (runEvents only).
+  string method = 2;
+  // Operation input object. Checkpoint blob bytes are base64-encoded strings.
+  google.protobuf.Struct input = 3;
+}
+
+message CallStoreResponse {
+  // Operation output object, or unset for a null result (for example a get
+  // miss or a delete). Checkpoint blob bytes are base64-encoded strings.
+  google.protobuf.Struct output = 1;
+}

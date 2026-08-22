@@ -1,24 +1,21 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM alpine:3.24.1 AS runtime-files
-
-RUN apk add --no-cache ca-certificates tzdata && \
-    addgroup -g 1001 -S ccload && \
-    adduser -u 1001 -S ccload -G ccload && \
-    mkdir -p /app/data
-
-FROM alpine:3.24.1
+FROM debian:bookworm-slim
 
 ARG TARGETARCH
 
-COPY --from=runtime-files /etc/ssl/certs /etc/ssl/certs
-COPY --from=runtime-files /usr/share/zoneinfo /usr/share/zoneinfo
-COPY --from=runtime-files /etc/passwd /etc/passwd
-COPY --from=runtime-files /etc/group /etc/group
-COPY --from=runtime-files --chown=1001:1001 /app/data /app/data
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata wget && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 1001 ccload && \
+    useradd --uid 1001 --gid ccload --no-create-home --shell /usr/sbin/nologin ccload && \
+    mkdir -p /app/data && \
+    chown -R ccload:ccload /app
 
 WORKDIR /app
 
 COPY --chown=1001:1001 --chmod=0755 dist/ccload-linux-${TARGETARCH} /app/ccload
+COPY --chown=1001:1001 --chmod=0755 dist/cursor-sdk-bridge-linux-${TARGETARCH} /app/cursor-sdk-bridge
+COPY --chown=1001:1001 third_party/cursor-sdk-bridge/v1.0.28/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
 
 USER ccload
 

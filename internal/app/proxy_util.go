@@ -173,6 +173,7 @@ type proxyRequestContext struct {
 	attemptStartTime           time.Time            // 渠道内单次 Key/URL 尝试开始时间
 	baseURL                    string               // 当前尝试使用的上游URL（多URL场景）
 	debugData                  *model.DebugLogEntry // Debug日志数据（debug开启时填充）
+	skipProxyLog               bool                 // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort             string
 	routingSession             *responsesExecutionSession // 当前 Responses execution session 的首选渠道
 	nativeCodexWS              *codexUpstreamWebsocketSession

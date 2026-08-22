@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,6 +15,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestHandleImportCursorCredentialRejectsSessionToken(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	c, w := newTestContext(t, newRequest(
+		http.MethodPost,
+		"/admin/cursor/credentials/import",
+		bytes.NewBufferString(`{"access_token":"unsupported-session"}`),
+	))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	server.HandleImportCursorCredential(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "api_key is required") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
 
 func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	t.Parallel()
@@ -32,6 +53,40 @@ func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	}
 	if len(channel.ModelEntries) != len(cursorauth.DefaultModels) {
 		t.Fatalf("models = %+v", channel.ModelEntries)
+	}
+}
+
+func TestFetchCursorOAuthModelsUsesExactSDKCatalog(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	runner := &fakeCursorRunner{models: []string{"default", "grok-4.6", "composer-2.5"}}
+	server.cursorRunner = runner
+	raw, err := (&cursorauth.Credential{
+		Type: cursorauth.ChannelType, AccessToken: "access-token", APIKey: "user-api-key",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := newCursorOAuthChannel("Cursor-test", raw, []string{"stale-thinking-high"})
+
+	response, err := server.fetchCursorOAuthModels(context.Background(), cfg, "")
+	if err != nil {
+		t.Fatalf("fetchCursorOAuthModels() error = %v", err)
+	}
+	want := []string{"default", "grok-4.6", "composer-2.5"}
+	if len(response.Models) != len(want) {
+		t.Fatalf("models = %+v, want %v", response.Models, want)
+	}
+	for index, entry := range response.Models {
+		if entry.Model != want[index] || entry.RedirectModel != "" {
+			t.Fatalf("models[%d] = %+v, want exact ID %q", index, entry, want[index])
+		}
+	}
+	if response.Source != "api" || response.Debug == nil || response.Debug.Fetcher != "cursor_sdk_catalog" {
+		t.Fatalf("response metadata = %+v", response)
+	}
+	if runner.apiKey != "user-api-key" {
+		t.Fatalf("SDK catalog API key = %q", runner.apiKey)
 	}
 }
 
