@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+import "google/protobuf/struct.proto";
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Custom-tool callbacks from the bridge to a host process.
+//
+// When a local agent defines custom tools, the bridge forwards each tool
+// execution to the host over CallCustomTool. Tool metadata travels with
+// CreateAgent / Send options; only execution round-trips to the host.
+//
+// Hosts implement this service and register it with the bridge via
+// SdkBridgeControlService.SetToolCallback (or an equivalent launch-time
+// configuration).
+service SdkCustomToolCallbackService {
+  rpc CallCustomTool(CallCustomToolRequest) returns (CallCustomToolResponse);
+}
+
+message CallCustomToolRequest {
+  string tool_name = 1;
+  // Tool arguments as a JSON object.
+  google.protobuf.Struct args = 2;
+  // Optional ID for correlating this invocation with stream events.
+  optional string tool_call_id = 3;
+  // Agent that owns the tool definition (from CreateAgent / ResumeAgent
+  // local.custom_tools).
+  string agent_id = 4;
+}
+
+message CallCustomToolResponse {
+  // Tool result as a JSON object. Common shapes include a plain string value,
+  // a structured object, or a content envelope recognized by the SDK.
+  google.protobuf.Struct result = 1;
+}

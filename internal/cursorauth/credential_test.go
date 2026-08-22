@@ -2,7 +2,6 @@ package cursorauth
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -76,18 +75,6 @@ func TestCredentialJSONRoundTrip(t *testing.T) {
 	}
 	if parsed.LastRefresh != "2026-01-01T19:04:05Z" || parsed.AccessToken != "tok" {
 		t.Fatalf("parsed = %+v", parsed)
-	}
-}
-
-func TestAuthFileJSONMatchesCLIShape(t *testing.T) {
-	t.Parallel()
-	credential := &Credential{AccessToken: "tok", RefreshToken: "ref"}
-	raw, err := credential.AuthFileJSON()
-	if err != nil {
-		t.Fatalf("AuthFileJSON() error = %v", err)
-	}
-	if !strings.Contains(string(raw), `"accessToken":"tok"`) || !strings.Contains(string(raw), `"refreshToken":"ref"`) {
-		t.Fatalf("auth.json = %s", raw)
 	}
 }
 

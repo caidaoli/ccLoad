@@ -436,12 +436,10 @@ func (s *Server) fetchCursorOAuthModels(
 	if err != nil {
 		return nil, fmt.Errorf("模型发现: 解析 Cursor 凭证失败: %w", err)
 	}
-	if s.cursorService != nil {
-		if live, listErr := s.cursorService.ListModels(ctx, credential.AccessToken); listErr != nil {
-			log.Printf("[WARN] Cursor 模型目录不可用，回退内置列表 (channel=%d): %v", cfg.ID, listErr)
-		} else if len(live) > 0 {
-			names, source = live, "api"
-		}
+	if live, listErr := s.listCursorSDKModels(ctx, credential); listErr != nil {
+		log.Printf("[WARN] Cursor SDK 模型目录不可用，回退 default (channel=%d): %v", cfg.ID, listErr)
+	} else if len(live) > 0 {
+		names, source = live, "api"
 	}
 	models := make([]model.ModelEntry, len(names))
 	for i, name := range names {
@@ -459,7 +457,7 @@ func (s *Server) fetchCursorOAuthModels(
 		Models: models, Protocol: discoveredProtocol, Source: source,
 		Debug: &FetchModelsDebug{
 			NormalizedProtocol: discoveredProtocol,
-			Fetcher:            "cursor_cli_catalog", ChannelURL: channelURL,
+			Fetcher:            "cursor_sdk_catalog", ChannelURL: channelURL,
 		},
 	}, nil
 }

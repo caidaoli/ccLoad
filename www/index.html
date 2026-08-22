@@ -351,7 +351,10 @@ make build
 
 # Linux/macOS example
 wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
-chmod +x ccload-linux-amd64
+wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-linux-amd64
+wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-LICENSE.txt
+mv cursor-sdk-bridge-linux-amd64 cursor-sdk-bridge
+chmod +x ccload-linux-amd64 cursor-sdk-bridge
 
 # Set environment variables and run
 export CCLOAD_PASS=your_admin_password

@@ -68,7 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/模型/渠道统一指数退避，优先尊重上游精确恢复时间 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计+进程指标(CPU/RSS/GC) | 一眼看清用量与运行状态 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor CLI 浏览器登录 / User API Key / accessToken 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
+| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor User API Key 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
 | 📅 **OAuth 额度成本** | 按凭证累计周/月标准成本，对齐上游额度窗口 | 有重置额度时可手动重置 Codex 配额 |
 | 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
@@ -225,6 +225,8 @@ wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-am
 chmod +x ccload-linux-amd64
 ./ccload-linux-amd64
 ```
+
+存在 Cursor 渠道时，ccLoad 会自动下载锁定版本的 SDK Bridge，校验内置 SHA-256，并原子安装到托管状态目录。离线环境仍可把匹配的 `cursor-sdk-bridge` 放到 ccLoad 同目录，或设置 `CURSOR_SDK_BRIDGE_BIN`。
 
 ### 方式四：Hugging Face Spaces 部署
 
@@ -746,11 +748,11 @@ curl -X POST http://localhost:8080/admin/channels \
 
 ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目录，失败后回退到 models.dev，最后才使用内置列表。渠道卡片也可刷新并展示 Coding Plan 的额度窗口。
 
-#### Cursor CLI
+#### Cursor
 
-在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`），需要安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
+在渠道管理中选择 **Cursor** 并导入 Cursor User API Key。ccLoad 会用它换取控制面会话；不提供无法用于推理的浏览器登录和 `accessToken` 导入。身份和额度刷新走 `api2.cursor.sh`；模型目录直接读取 SDK Bridge 的 `ListModels`，只保存 Cursor 返回的原始模型 ID，不生成思考等级变体。启动时只要存在 Cursor 渠道，ccLoad 就会在后台查找并探活已有 `cursor-sdk-bridge`；没有可用 Bridge 时下载官方锁定版本、校验内置 SHA-256，并原子安装到 `cursor-sdk/bin/<version>`：设置 `SQLITE_PATH` 时位于数据库旁，否则使用操作系统用户缓存，最后才回退系统临时目录。该过程不阻塞 HTTP 服务启动，不需要安装 Cursor CLI。
 
-对话仍用 `cursor-agent --mode ask`，避免 Cursor 在网关本机跑 shell 或写文件。客户端 `tools`、`tool_use`、`function_call`、`tool_result` 走 prompt 映射：模型输出 `<cc_tool_call>` 块，ccLoad 再译成 Anthropic `tool_use` 或 OpenAI `tool_calls`。Grok Build（`run_terminal_command`/`read_file`/`search_replace`）、OpenCode（`bash`/`read`/`edit`/`apply_patch`）、Codex CLI（`shell`/`apply_patch`）以及 Claude Code/Cursor 的别名会改写成当前客户端广告的工具名，参数键一并对齐。工具由客户端执行，下一轮把结果送回来。这不是 Cursor `AgentService/RunSSE`。
+SDK Agent 会收到显式的空内建工具列表，因此 Cursor 不会在网关本机执行 shell 或写文件。客户端工具仍走 prompt 映射：模型输出 `<cc_tool_call>`，ccLoad 再译成 Anthropic `tool_use` 或 OpenAI `tool_calls`；工具由客户端执行，下一轮把结果送回来。
 
 渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
 
@@ -990,6 +992,7 @@ ccLoad 使用的核心技术栈：
 | `GIN_LOG` | `true` | Gin 访问日志开关（`false`/`0`/`no`/`off` 关闭） |
 | `TRUSTED_PROXIES` | 私有网段 + Loopback + `100.64.0.0/10` | 可信代理 CIDR 列表（逗号分隔）；`none`=不信任任何代理 |
 | `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（纯 SQLite 与混合模式） |
+| `CURSOR_SDK_BRIDGE_BIN` | 自动发现 | 显式指定 Cursor SDK Bridge 可执行文件；存在 Cursor 渠道时，无效覆盖会导致启动失败 |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
 
@@ -1088,7 +1091,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 非容器部署由单一更新管理器负责版本检查、前端版本提示和可选的进程内自动更新。默认启动时检查一次，此后每 12 小时检查一次。`auto_update_channel=stable` 只接收稳定版；`preview` 同时考虑稳定版和测试版，按 SemVer 选择最高有效版本，不会把当前版本或待重启版本降级。两个设置都可以在 Web 管理后台修改；将 `auto_update_interval_hours` 设为 `0` 可关闭全部版本检查。
 
-稳定版元数据通过配置的发布源解析。测试版发现读取 GitHub Releases Atom feed，其中包含稳定版和测试版，无需使用受速率限制的 REST API。解析出精确 Tag 后，ccLoad 会从配置的下载源获取该 Tag 的二进制及校验文件；默认顺序是 `gh.monlor.com`、`fastgit.cc`、`ghfast.top` 和 GitHub，SHA256 匹配后才替换。
+稳定版元数据通过配置的发布源解析。测试版发现读取 GitHub Releases Atom feed，其中包含稳定版和测试版，无需使用受速率限制的 REST API。解析出精确 Tag 后，ccLoad 会从配置的下载源获取应用、固定版本 Cursor SDK Bridge companion、许可证和校验文件；默认顺序是 `gh.monlor.com`、`fastgit.cc`、`ghfast.top` 和 GitHub。所有 SHA256 校验通过后才发布文件，先安装 companion，最后替换应用可执行文件。
 
 官方容器不运行版本检查或进程内更新循环。每个稳定版和 Beta 镜像都直接包含对应 GitHub Release 生成的同版本二进制。稳定版发布精确版本 Tag 和 `latest`，Beta 发布精确测试版 Tag 和滚动 `beta` 别名。修改 Compose 中的镜像标签后，重新拉取并启动容器即可切换版本。
 
@@ -1178,7 +1181,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
   - `v2.44.1` - 精确稳定版本，和 GitHub Release Tag 保持一致
   - `vX.Y.Z-beta.N` - 精确 Beta 版本，和 GitHub Prerelease Tag 保持一致
 
-官方 GHCR 镜像基于 Alpine，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器不检查发布版本，也不在进程内替换二进制；拉取精确版本 Tag 或所需滚动别名后重建容器即可更新。
+官方 GHCR 镜像基于 Debian/glibc，并保持不可变；上游 Cursor SDK Bridge standalone 是 glibc 动态链接程序，不能放进 Alpine/musl 运行。镜像使用与 GitHub Release 相同且已校验的 ccLoad 和 bridge 资产。容器不做进程内更新；拉取精确版本 Tag 或滚动别名后重建容器即可。
 
 ### 镜像标签说明
 

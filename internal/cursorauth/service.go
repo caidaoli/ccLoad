@@ -3,19 +3,13 @@ package cursorauth
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Service talks to Cursor's CLI control plane. It never persists anything and
@@ -23,7 +17,6 @@ import (
 type Service struct {
 	Client     *http.Client
 	APIBaseURL string
-	WebsiteURL string
 	Now        func() time.Time
 }
 
@@ -33,108 +26,14 @@ func NewService(client *http.Client) *Service {
 		client = http.DefaultClient
 	}
 	return &Service{
-		Client: client, APIBaseURL: APIBaseURL, WebsiteURL: WebsiteURL, Now: time.Now,
+		Client: client, APIBaseURL: APIBaseURL, Now: time.Now,
 	}
-}
-
-// Flow is one pending CLI authorization generated locally. The verifier never
-// leaves the server: only uuid+challenge are placed on the login URL.
-type Flow struct {
-	UUID         string
-	Verifier     string
-	AuthorizeURL string
-}
-
-// PollStatus is the state of a pending authorization.
-type PollStatus string
-
-const (
-	// PollPending means the user has not finished authorizing yet.
-	PollPending PollStatus = "pending"
-	// PollReady means the authorization produced session tokens.
-	PollReady PollStatus = "ready"
-	// PollFailed means the authorization was rejected or abandoned upstream.
-	PollFailed PollStatus = "failed"
-)
-
-// PollResult is one CLI poll response.
-type PollResult struct {
-	Status       PollStatus
-	AccessToken  string
-	RefreshToken string
 }
 
 // TokenPair is the session JWT pair stored by the CLI.
 type TokenPair struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
-}
-
-// InitFlow starts one hosted CLI authorization. No upstream call is required:
-// the CLI builds the same PKCE material locally.
-func (s *Service) InitFlow() (*Flow, error) {
-	if err := s.validate(); err != nil {
-		return nil, err
-	}
-	raw := make([]byte, verifierBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, fmt.Errorf("generate cursor PKCE verifier: %w", err)
-	}
-	verifier := base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(verifier))
-	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return nil, fmt.Errorf("generate cursor login uuid: %w", err)
-	}
-	login, err := url.Parse(strings.TrimRight(s.WebsiteURL, "/") + "/loginDeepControl")
-	if err != nil {
-		return nil, errors.New("cursor website URL is invalid")
-	}
-	query := login.Query()
-	query.Set("challenge", challenge)
-	query.Set("uuid", id.String())
-	query.Set("mode", "login")
-	query.Set("redirectTarget", "cli")
-	login.RawQuery = query.Encode()
-	return &Flow{UUID: id.String(), Verifier: verifier, AuthorizeURL: login.String()}, nil
-}
-
-// Poll reads the current state of one pending authorization.
-func (s *Service) Poll(ctx context.Context, flowUUID, verifier string) (*PollResult, error) {
-	if err := s.validate(); err != nil {
-		return nil, err
-	}
-	flowUUID = strings.TrimSpace(flowUUID)
-	verifier = strings.TrimSpace(verifier)
-	if flowUUID == "" || verifier == "" {
-		return nil, errors.New("cursor poll uuid and verifier are required")
-	}
-	target := strings.TrimRight(s.APIBaseURL, "/") + AuthPollPath +
-		"?uuid=" + url.QueryEscape(flowUUID) + "&verifier=" + url.QueryEscape(verifier)
-	body, status, err := s.do(ctx, http.MethodGet, target, "", nil, "OAuth poll")
-	if err != nil {
-		return nil, err
-	}
-	switch status {
-	case http.StatusNotFound:
-		return &PollResult{Status: PollPending}, nil
-	case http.StatusForbidden:
-		return &PollResult{Status: PollFailed}, nil
-	}
-	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("cursor OAuth poll returned HTTP %d", status)
-	}
-	var pair TokenPair
-	if err := json.Unmarshal(body, &pair); err != nil {
-		return nil, fmt.Errorf("decode cursor OAuth poll response: %w", err)
-	}
-	pair.AccessToken = strings.TrimSpace(pair.AccessToken)
-	pair.RefreshToken = strings.TrimSpace(pair.RefreshToken)
-	if pair.AccessToken == "" || pair.RefreshToken == "" {
-		return &PollResult{Status: PollFailed}, nil
-	}
-	return &PollResult{Status: PollReady, AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken}, nil
 }
 
 // ExchangeAPIKey swaps a Cursor user API key for a session token pair, matching
@@ -190,53 +89,6 @@ func (s *Service) FetchIdentity(ctx context.Context, accessToken string) (Identi
 		return Identity{}, "", errors.New("cursor identity response is incomplete")
 	}
 	return identity, name, nil
-}
-
-// ListModels returns the public model ids the account can call.
-func (s *Service) ListModels(ctx context.Context, accessToken string) ([]string, error) {
-	var payload struct {
-		Models []struct {
-			ModelID        string   `json:"modelId"`
-			DisplayModelID string   `json:"displayModelId"`
-			Aliases        []string `json:"aliases"`
-		} `json:"models"`
-	}
-	if err := s.connectJSON(ctx, ModelsRPC, accessToken, map[string]any{}, &payload, "model list"); err != nil {
-		return nil, err
-	}
-	models := make([]string, 0, len(payload.Models))
-	seen := make(map[string]struct{}, len(payload.Models))
-	add := func(id string) {
-		id = PublicModelID(id)
-		if id == "" {
-			return
-		}
-		if _, exists := seen[id]; exists {
-			return
-		}
-		seen[id] = struct{}{}
-		models = append(models, id)
-	}
-	for _, entry := range payload.Models {
-		for _, alias := range entry.Aliases {
-			if strings.EqualFold(strings.TrimSpace(alias), "auto") {
-				add("auto")
-			}
-		}
-		if strings.EqualFold(strings.TrimSpace(entry.DisplayModelID), "auto") {
-			add("auto")
-			continue
-		}
-		if id := strings.TrimSpace(entry.DisplayModelID); id != "" {
-			add(id)
-			continue
-		}
-		add(entry.ModelID)
-	}
-	if len(models) == 0 {
-		return nil, errors.New("cursor model catalog is empty")
-	}
-	return models, nil
 }
 
 func (s *Service) connectJSON(ctx context.Context, rpc, accessToken string, payload, dest any, operation string) error {
@@ -308,7 +160,7 @@ func (s *Service) do(
 }
 
 func (s *Service) validate() error {
-	if s == nil || s.Client == nil || strings.TrimSpace(s.APIBaseURL) == "" || strings.TrimSpace(s.WebsiteURL) == "" {
+	if s == nil || s.Client == nil || strings.TrimSpace(s.APIBaseURL) == "" {
 		return errors.New("cursor service is unavailable")
 	}
 	return nil

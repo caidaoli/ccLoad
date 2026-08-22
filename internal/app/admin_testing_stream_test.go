@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -449,6 +450,120 @@ func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *te
 	}
 	if !strings.Contains(string(debugLog.RespBody), "logged answer") {
 		t.Fatalf("debug response body missing upstream stream: %q", string(debugLog.RespBody))
+	}
+}
+
+func TestHandleChannelChatCursorUsesSDKBridgeAndPersistsUsage(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"Not Found"}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": "true"})
+	created := createCursorOAuthChannelForAdminTest(t, srv, upstream.URL)
+	runner := &fakeCursorRunner{
+		text: "sdk answer",
+		usage: &cursorauth.Usage{
+			InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5, CacheWriteTokens: 3,
+			TotalTokens: 26, ReasoningTokens: 2,
+		},
+	}
+	srv.cursorRunner = runner
+
+	started := time.Now()
+	request := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/chat", created.ID), map[string]any{
+		"model":           "grok-4.6",
+		"client_protocol": "anthropic",
+		"key_index":       0,
+		"session_id":      "89222d35-6a26-4266-b0e6-35ad747ea30d",
+		"stream":          true,
+		"thinking_effort": "",
+		"builtin_search":  false,
+		"messages": []map[string]string{{
+			"role": "user", "content": "一个冷白皮的绝美日本女人在池塘边玩水",
+		}},
+	})
+	c, response := newTestContext(t, request)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelChat(c)
+
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("Cursor admin chat HTTP-forwarded %d requests", upstreamHits.Load())
+	}
+	if runner.model != "grok-4.6" || !strings.Contains(runner.prompt, "在池塘边玩水") {
+		t.Fatalf("SDK request model=%q prompt=%q", runner.model, runner.prompt)
+	}
+
+	var gotDelta string
+	var summary map[string]any
+	done := false
+	for _, block := range strings.Split(response.Body.String(), "\n\n") {
+		payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(block), "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			done = true
+			continue
+		}
+		var event map[string]any
+		if err := sonic.UnmarshalString(payload, &event); err != nil {
+			t.Fatalf("decode frontend SSE event %q: %v", payload, err)
+		}
+		if delta, _ := event["delta"].(string); delta != "" {
+			gotDelta += delta
+		}
+		if value, ok := event["summary"].(map[string]any); ok {
+			summary = value
+		}
+		if errMessage, _ := event["error"].(string); errMessage != "" {
+			t.Fatalf("unexpected chat error %q; body=%s", errMessage, response.Body.String())
+		}
+	}
+	if gotDelta != "sdk answer" || !done {
+		t.Fatalf("frontend stream delta=%q done=%v body=%s", gotDelta, done, response.Body.String())
+	}
+	for field, want := range map[string]int{
+		"input_tokens": 11, "output_tokens": 7, "reasoning_tokens": 2,
+		"cache_read": 5, "cache_create": 3,
+	} {
+		got, ok := getResultInt(summary[field])
+		if !ok || got != want {
+			t.Fatalf("summary[%q]=%v, want %d; summary=%v", field, summary[field], want, summary)
+		}
+	}
+
+	logs, err := srv.store.ListLogsRange(
+		context.Background(), started.Add(-time.Second), time.Now().Add(time.Second), 10, 0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("logs=%+v, want one manual chat log", logs)
+	}
+	entry := logs[0]
+	if entry.LogSource != model.LogSourceManualChat || entry.StatusCode != http.StatusOK ||
+		entry.UpstreamProtocol != "cursor-sdk-bridge" || entry.InputTokens != 11 ||
+		entry.OutputTokens != 7 || entry.ReasoningTokens != 2 || entry.CacheReadInputTokens != 5 ||
+		entry.CacheCreationInputTokens != 3 || entry.Cache5mInputTokens != 3 {
+		t.Fatalf("manual chat log=%+v", entry)
+	}
+	debugLog, err := srv.store.GetDebugLogByLogID(context.Background(), entry.ID)
+	if err != nil || debugLog == nil {
+		t.Fatalf("debug log=%+v err=%v", debugLog, err)
+	}
+	if !strings.Contains(debugLog.ReqURL, "SdkAgentService/CreateAgent+Send") ||
+		!strings.Contains(string(debugLog.ReqBody), `"id":"grok-4.6"`) ||
+		!strings.Contains(string(debugLog.RespBody), "sdk answer") ||
+		!strings.Contains(string(debugLog.TranslatedRespBody), "sdk answer") {
+		t.Fatalf("debug log=%+v", debugLog)
 	}
 }
 

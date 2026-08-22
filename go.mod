@@ -3,6 +3,7 @@ module ccLoad
 go 1.26.0
 
 require (
+	connectrpc.com/connect v1.20.0
 	github.com/andybalholm/brotli v1.2.2
 	github.com/bytedance/sonic v1.15.2
 	github.com/gin-gonic/gin v1.12.0

@@ -165,7 +165,9 @@ func createAnthropicOAuthChannelForAdminTest(t testing.TB, srv *Server, upstream
 
 func createCursorOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
 	t.Helper()
-	payload, err := (&cursorauth.Credential{AccessToken: "tok", Email: "user@example.com"}).JSON()
+	payload, err := (&cursorauth.Credential{
+		AccessToken: "tok", APIKey: "cursor-user-key", Email: "user@example.com",
+	}).JSON()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +177,7 @@ func createCursorOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL
 		OAuthCredential:       payload,
 		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolAnthropic, util.ProtocolOpenAI}}},
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		ModelEntries:          []model.ModelEntry{{Model: "cursor-grok-4.6-high"}, {Model: "cursor-grok-4.6-xhigh"}},
+		ModelEntries:          []model.ModelEntry{{Model: "grok-4.6"}, {Model: "composer-2.5"}},
 		Enabled:               true,
 	})
 	if err != nil {
@@ -5929,7 +5931,7 @@ func TestAdminTestNativeAnthropicDoesNotDoubleAppendHeaderRules(t *testing.T) {
 	}
 }
 
-func TestAdminTestCursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
+func TestAdminTestCursorOAuthUsesSDKBridgeInsteadOfHTTP(t *testing.T) {
 	t.Parallel()
 	upstreamHits := 0
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5940,11 +5942,11 @@ func TestAdminTestCursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	}))
 	srv := newInMemoryServer(t)
 	cfg := createCursorOAuthChannelForAdminTest(t, srv, upstream.URL)
-	runner := &fakeCursorRunner{text: "ok from cli"}
+	runner := &fakeCursorRunner{text: "ok from sdk bridge"}
 	srv.cursorRunner = runner
 
 	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
-		Model: "cursor-grok-4.6-xhigh", ClientProtocol: util.ProtocolAnthropic, Content: "2025 年 1 月 20 日发生了什么大事？",
+		Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "2025 年 1 月 20 日发生了什么大事？",
 	}, true)
 	if success, _ := result["success"].(bool); !success {
 		t.Fatalf("cursor admin test result=%+v", result)
@@ -5952,11 +5954,14 @@ func TestAdminTestCursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	if upstreamHits != 0 {
 		t.Fatalf("Cursor OAuth admin test must not HTTP-forward, hits=%d", upstreamHits)
 	}
-	if got, _ := result["upstream_protocol"].(string); got != "cursor-agent" {
+	if got, _ := result["upstream_protocol"].(string); got != "cursor-sdk-bridge" {
 		t.Fatalf("upstream_protocol=%q", got)
 	}
-	if got, _ := result["response_text"].(string); got != "ok from cli" {
+	if got, _ := result["response_text"].(string); got != "ok from sdk bridge" {
 		t.Fatalf("response_text=%q result=%+v", got, result)
+	}
+	if runner.model != "grok-4.6" {
+		t.Fatalf("SDK model=%q, want exact catalog ID", runner.model)
 	}
 	if !strings.Contains(runner.prompt, "2025 年 1 月 20 日发生了什么大事？") {
 		t.Fatalf("prompt=%q", runner.prompt)
@@ -5966,7 +5971,49 @@ func TestAdminTestCursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	}
 }
 
-func TestAdminTestCursorOAuthReportsMissingCLI(t *testing.T) {
+func TestHandleChannelTestCursorWritesOneManualLogWithDebug(t *testing.T) {
+	srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": "true"})
+	cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
+	srv.cursorRunner = &fakeCursorRunner{text: "ok from sdk bridge"}
+	request := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", cfg.ID), map[string]any{
+		"model":           "grok-4.6",
+		"client_protocol": "anthropic",
+		"content":         "hello",
+	})
+	c, recorder := newTestContext(t, request)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	srv.HandleChannelTest(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	response := mustParseAPIResponse[map[string]any](t, recorder.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("response=%v", response.Data)
+	}
+	// 等待异步代理日志的完整刷新周期，确保没有迟到的重复记录。
+	time.Sleep(config.LogBatchTimeout + 250*time.Millisecond)
+	logs, err := srv.store.ListLogs(context.Background(), time.Time{}, 10, 0, &model.LogFilter{LogSource: model.LogSourceAll})
+	if err != nil {
+		t.Fatalf("ListLogs() error = %v", err)
+	}
+	if len(logs) != 1 || logs[0].LogSource != model.LogSourceManualTest {
+		t.Fatalf("logs=%+v, want one manual-test log", logs)
+	}
+	debug, err := srv.store.GetDebugLogByLogID(context.Background(), logs[0].ID)
+	if err != nil || debug == nil {
+		t.Fatalf("debug=%+v err=%v", debug, err)
+	}
+	if !strings.Contains(debug.ReqURL, "SdkAgentService/CreateAgent+Send") ||
+		!strings.Contains(string(debug.ReqBody), `"id":"grok-4.6"`) ||
+		strings.Contains(string(debug.ReqBody), "cursor-user-key") ||
+		!strings.Contains(string(debug.RespBody), "ok from sdk bridge") ||
+		!strings.Contains(string(debug.TranslatedRespBody), "ok from sdk bridge") {
+		t.Fatalf("debug=%+v", debug)
+	}
+}
+
+func TestAdminTestCursorOAuthReportsMissingBridge(t *testing.T) {
 	t.Parallel()
 	upstreamHits := 0
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -5978,13 +6025,13 @@ func TestAdminTestCursorOAuthReportsMissingCLI(t *testing.T) {
 	srv.cursorRunner = &fakeCursorRunner{err: cursorauth.ErrAgentMissing}
 
 	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
-		Model: "cursor-grok-4.6-high", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
+		Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
 	}, true)
 	if success, _ := result["success"].(bool); success {
-		t.Fatalf("missing CLI must fail, result=%+v", result)
+		t.Fatalf("missing bridge must fail, result=%+v", result)
 	}
 	if upstreamHits != 0 {
-		t.Fatalf("missing CLI must not HTTP-forward, hits=%d", upstreamHits)
+		t.Fatalf("missing bridge must not HTTP-forward, hits=%d", upstreamHits)
 	}
 	if status, _ := result["status_code"].(int); status != http.StatusServiceUnavailable {
 		t.Fatalf("status_code=%v result=%+v", result["status_code"], result)
@@ -5992,30 +6039,26 @@ func TestAdminTestCursorOAuthReportsMissingCLI(t *testing.T) {
 	if action, _ := result["cooldown_action"].(string); action != "client_error_no_cooldown" {
 		t.Fatalf("cooldown_action=%q result=%+v", action, result)
 	}
-	if errMsg, _ := result["error"].(string); !strings.Contains(errMsg, "cursor-agent is not installed") {
+	if errMsg, _ := result["error"].(string); !strings.Contains(errMsg, "cursor-sdk-bridge is not installed") {
 		t.Fatalf("error=%q", errMsg)
 	}
 }
 
-func TestHandleChannelTest_CursorSessionDoesNotRemintWithoutAPIKey(t *testing.T) {
+func TestAdminTestCursorRequiresUserAPIKey(t *testing.T) {
 	srv := newInMemoryServer(t)
 	cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://example.invalid")
-	srv.cursorRunner = &fakeCursorRunner{eventErr: errors.New("cursor CLI is not authenticated")}
-	channelID := fmt.Sprintf("%d", cfg.ID)
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
-		"model": "cursor-grok-4.6-high", "client_protocol": "anthropic", "content": "hello",
-	}))
-	c.Params = gin.Params{{Key: "id", Value: channelID}}
-	srv.HandleChannelTest(c)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	payload, err := (&cursorauth.Credential{AccessToken: "tok", Email: "user@example.com"}).JSON()
+	if err != nil {
+		t.Fatal(err)
 	}
-	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
-	errMsg, _ := resp.Data["error"].(string)
-	if strings.Contains(errMsg, "刷新 OAuth 凭证失败") || strings.Contains(errMsg, "cannot be re-minted") {
-		t.Fatalf("session-only Cursor must not try to remint: %q", errMsg)
+	cfg.OAuthCredential = payload
+	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
+		Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
+	}, true)
+	if status, _ := result["status_code"].(int); status != http.StatusUnauthorized {
+		t.Fatalf("status_code=%v result=%+v", result["status_code"], result)
 	}
-	if !strings.Contains(errMsg, "not authenticated") {
-		t.Fatalf("error=%q data=%+v", errMsg, resp.Data)
+	if errMsg, _ := result["error"].(string); !strings.Contains(errMsg, "User API Key") {
+		t.Fatalf("error=%q data=%+v", errMsg, result)
 	}
 }

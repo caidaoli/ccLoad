@@ -60,22 +60,35 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o ccload . && \
     xx-verify ccload
 
+FROM base AS cursor-bridge
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN apk add --no-cache curl
+COPY scripts/fetch-cursor-sdk-bridge.sh /app/scripts/fetch-cursor-sdk-bridge.sh
+COPY third_party/cursor-sdk-bridge/bridge.lock /app/third_party/cursor-sdk-bridge/bridge.lock
+RUN /app/scripts/fetch-cursor-sdk-bridge.sh "${TARGETOS}" "${TARGETARCH}" /app/cursor-sdk-bridge
+
 # ============================================
 # 阶段4: 运行时镜像 (最小化)
 # ============================================
-FROM alpine:3.24.1
+FROM debian:bookworm-slim
 
 # 安装运行时依赖
-RUN apk --no-cache add ca-certificates tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata wget && \
+    rm -rf /var/lib/apt/lists/*
 
 # 创建非root用户
-RUN addgroup -g 1001 -S ccload && \
-    adduser -u 1001 -S ccload -G ccload
+RUN groupadd --gid 1001 ccload && \
+    useradd --uid 1001 --gid ccload --no-create-home --shell /usr/sbin/nologin ccload
 
 WORKDIR /app
 
 # 从构建阶段复制（web资源已嵌入二进制）
 COPY --from=builder /app/ccload .
+COPY --from=cursor-bridge /app/cursor-sdk-bridge .
+COPY third_party/cursor-sdk-bridge/v1.0.28/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
@@ -94,6 +95,11 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 	disableResponseWriteTimeout(c.Writer, "聊天流式")
+
+	if cfg.UsesCursorOAuth() {
+		s.streamCursorChannelChat(c, persistedCfg, cfg, keySelection, &testReq, originalModel, clientProtocol)
+		return
+	}
 
 	var lastResult map[string]any
 	var urlPolicy channelURLAttemptPolicy
@@ -239,9 +245,13 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 
 		// Calculate cost
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
-		if input+output+cacheRead > 0 {
+		if input+output+cacheRead+cacheCreation > 0 {
+			pricingModel := sr.model
+			if pricingModel == "" {
+				pricingModel = testReq.Model
+			}
 			cost := util.CalculateCostDetailed(
-				model.RoutingModelName(testReq.Model),
+				model.RoutingModelName(pricingModel),
 				input, output, cacheRead,
 				cache5m, cache1h,
 			) + sr.usageParser.GetToolCostUSD()
@@ -256,6 +266,189 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 		return nil
 	}
 	return []byte("data: " + string(jsonBytes) + "\n\n")
+}
+
+// streamCursorChannelChat keeps the admin chat endpoint on the same SDK path
+// as normal Cursor proxy requests. Cursor's configured URL is a control-plane
+// address, not an OpenAI/Anthropic chat endpoint, so HTTP forwarding it can
+// only produce a misleading 404.
+func (s *Server) streamCursorChannelChat(
+	c *gin.Context,
+	persistedCfg, cfg *model.Config,
+	keySelection channelTestKeySelection,
+	testReq *testutil.TestChannelRequest,
+	originalModel, clientProtocol string,
+) {
+	start := time.Now()
+	attemptReq := *testReq
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, originalModel, clientProtocol)
+	// The admin endpoint always speaks SSE to the browser. The SDK itself also
+	// streams, so emitting a native streaming envelope avoids buffering a
+	// nominally non-streaming test before it is normalized for the frontend.
+	attemptReq.Stream = true
+
+	sr := &chatStreamResult{
+		start:            start,
+		usageParser:      newSSEUsageParser(clientProtocol),
+		model:            attemptReq.Model,
+		clientProtocol:   clientProtocol,
+		upstreamProtocol: "cursor-sdk-bridge",
+		statusCode:       http.StatusOK,
+		requestThinking:  testReq.ThinkingEffort,
+	}
+
+	fail := func(status int, message string) {
+		sr.statusCode = status
+		sr.errorResult = map[string]any{
+			"success":           false,
+			"status_code":       status,
+			"is_streaming":      true,
+			"duration_ms":       time.Since(start).Milliseconds(),
+			"error":             message,
+			"client_protocol":   clientProtocol,
+			"upstream_protocol": "cursor-sdk-bridge",
+		}
+		writeChatErrorEvent(c, message)
+		if summary := chatSummaryEventChunk(sr, &attemptReq); len(summary) > 0 {
+			writeChatFrontendChunks(c, summary)
+		}
+		s.writeChatStreamLog(c, persistedCfg, &attemptReq, keySelection.apiKey, sr, originalModel)
+	}
+
+	requestPath := channelTestClientRequestPath(clientProtocol, &attemptReq)
+	if !cursorSupportsRequestFamily(requestPath) {
+		fail(http.StatusBadRequest, "Cursor OAuth 仅支持 Anthropic messages 与 OpenAI chat completions")
+		return
+	}
+
+	clientTester := newChannelTester(clientProtocol)
+	_, headers, body, err := clientTester.Build(cfg.Clone(), keySelection.requestCredential, &attemptReq)
+	if err != nil {
+		fail(http.StatusBadRequest, "构造测试请求失败: "+err.Error())
+		return
+	}
+	body = applyThinkingSuffix(body, protocol.Protocol(clientProtocol), originalModel)
+
+	credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil || credential == nil {
+		message := "Cursor 凭证不可用"
+		if err != nil {
+			message = "加载 Cursor 凭证失败: " + err.Error()
+		}
+		fail(http.StatusUnauthorized, message)
+		return
+	}
+	if strings.TrimSpace(credential.APIKey) == "" {
+		fail(http.StatusUnauthorized, "Cursor 推理需要导入 User API Key")
+		return
+	}
+
+	if testReq.WaitForCapacity {
+		release, waitErr := s.waitForUpstreamRequest(c.Request.Context(), cfg)
+		if waitErr != nil {
+			fail(http.StatusServiceUnavailable, waitErr.Error())
+			return
+		}
+		defer release()
+	}
+
+	writer := &cursorChatResponseWriter{
+		c:     c,
+		usage: sr.usageParser,
+		state: &chatFrontendStreamState{},
+		onOutput: func() {
+			if sr.firstContentTime.IsZero() {
+				sr.firstContentTime = time.Now()
+			}
+		},
+	}
+	proxyReq := &proxyRequestContext{
+		originalModel:  originalModel,
+		clientProtocol: protocol.Protocol(clientProtocol),
+		requestPath:    requestPath,
+		header:         headers,
+		body:           body,
+		isStreaming:    true,
+		skipProxyLog:   true,
+	}
+	result, forwardErr := s.forwardCursorAgent(c.Request.Context(), cfg, credential, proxyReq, writer)
+	sr.debugData = proxyReq.debugData
+	if forwardErr != nil {
+		fail(http.StatusBadGateway, forwardErr.Error())
+		return
+	}
+	if result == nil {
+		fail(http.StatusBadGateway, "Cursor SDK Bridge 未返回结果")
+		return
+	}
+	sr.statusCode = result.status
+	if result.status < http.StatusOK || result.status >= http.StatusMultipleChoices || !result.succeeded {
+		message := extractChatUpstreamError(result.status, result.body)
+		sr.errorResult = map[string]any{
+			"success":                false,
+			"status_code":            result.status,
+			"is_streaming":           true,
+			"duration_ms":            time.Since(start).Milliseconds(),
+			"error":                  message,
+			"raw_response":           string(result.body),
+			"upstream_response_body": string(result.body),
+		}
+		// A failure after streaming began was already converted by writer.
+		if len(sr.usageParser.GetLastError()) == 0 {
+			writeChatErrorEvent(c, message)
+		}
+	}
+
+	if summary := chatSummaryEventChunk(sr, &attemptReq); len(summary) > 0 {
+		writeChatFrontendChunks(c, summary)
+	}
+	s.writeChatStreamLog(c, persistedCfg, &attemptReq, keySelection.apiKey, sr, originalModel)
+}
+
+// cursorChatResponseWriter converts the client-protocol SSE produced by
+// forwardCursorAgent into the small event contract consumed by model-test.js.
+type cursorChatResponseWriter struct {
+	c        *gin.Context
+	usage    *sseUsageParser
+	state    *chatFrontendStreamState
+	onOutput func()
+}
+
+func (w *cursorChatResponseWriter) Header() http.Header {
+	return w.c.Writer.Header()
+}
+
+func (w *cursorChatResponseWriter) WriteHeader(_ int) {
+	// HandleChannelChat has already committed the endpoint's invariant HTTP 200
+	// SSE status. Upstream failures are represented as data.error events.
+}
+
+func (w *cursorChatResponseWriter) Write(p []byte) (int, error) {
+	if w.usage != nil {
+		_ = w.usage.Feed(p)
+	}
+	chunks := chatFrontendChunksFromSSEEventWithState(p, w.state)
+	if chatFrontendChunksHaveVisibleContent(chunks) && w.onOutput != nil {
+		w.onOutput()
+	}
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		if _, err := w.c.Writer.Write(chunk); err != nil {
+			return 0, err
+		}
+		w.c.Writer.Flush()
+	}
+	return len(p), nil
+}
+
+func (w *cursorChatResponseWriter) Flush() {
+	w.c.Writer.Flush()
+}
+
+func (w *cursorChatResponseWriter) Unwrap() http.ResponseWriter {
+	return w.c.Writer
 }
 
 func (s *Server) streamChatWithURLForProtocol(
@@ -640,10 +833,15 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 				"input_tokens": input, "output_tokens": output,
 				"reasoning_tokens":        reasoningTokens,
 				"cache_read_input_tokens": cacheRead, "cache_creation_input_tokens": cacheCreation,
+				"cache_5m_input_tokens": cache5m, "cache_1h_input_tokens": cache1h,
 			}
 		}
-		if input+output+cacheRead > 0 {
-			result["cost_usd"] = util.CalculateCostDetailed(model.RoutingModelName(testReq.Model), input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
+		if input+output+cacheRead+cacheCreation > 0 {
+			pricingModel := sr.model
+			if pricingModel == "" {
+				pricingModel = testReq.Model
+			}
+			result["cost_usd"] = util.CalculateCostDetailed(model.RoutingModelName(pricingModel), input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
 		}
 		if effort := sr.usageParser.GetThinkingEffort(); effort != "" {
 			result["thinking_effort"] = effort
@@ -653,7 +851,11 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		result["debug_data"] = sr.debugData
 	}
 	logModel, logThinking := channelTestLogIdentity(originalModel, sr.requestThinking)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, model.RoutingModelName(testReq.Model), apiKey, c.ClientIP(), logThinking, result))
+	actualModel := sr.model
+	if actualModel == "" {
+		actualModel = testReq.Model
+	}
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, model.RoutingModelName(actualModel), apiKey, c.ClientIP(), logThinking, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。

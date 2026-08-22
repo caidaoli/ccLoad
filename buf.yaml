@@ -1,0 +1,3 @@
+version: v2
+modules:
+  - path: third_party/cursor-sdk-bridge/v1.0.28/proto

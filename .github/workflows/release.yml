@@ -126,11 +126,25 @@ jobs:
               -X ccLoad/internal/version.BuiltBy=github-actions" \
             -o "dist/$OUTPUT" .
 
+      - name: Fetch pinned Cursor SDK Bridge
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [[ "$GOOS" == windows ]]; then suffix=".exe"; fi
+          scripts/fetch-cursor-sdk-bridge.sh "$GOOS" "$GOARCH" \
+            "dist/cursor-sdk-bridge-${GOOS}-${GOARCH}${suffix}"
+
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.output }}
-          path: dist/${{ matrix.output }}
+          path: |
+            dist/${{ matrix.output }}
+            dist/cursor-sdk-bridge-${{ matrix.goos }}-${{ matrix.goarch }}*
           if-no-files-found: error
           retention-days: 1
 
@@ -158,7 +172,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum ccload-* | sort -k2 > checksums.txt
+          cp ../third_party/cursor-sdk-bridge/v1.0.28/LICENSE cursor-sdk-bridge-LICENSE.txt
+          sha256sum ccload-* cursor-sdk-bridge-* | sort -k2 > checksums.txt
           cat checksums.txt
 
       - name: Generate release notes
@@ -179,6 +194,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/ccload-*
+            dist/cursor-sdk-bridge-*
             dist/checksums.txt
 
   docker:

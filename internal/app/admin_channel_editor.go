@@ -128,7 +128,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}
 		apiKeys = []*model.APIKey{{
 			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
-			Note: "Cursor CLI session", KeyStrategy: model.KeyStrategySequential,
+			Note: "Cursor session", KeyStrategy: model.KeyStrategySequential,
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}

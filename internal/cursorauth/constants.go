@@ -1,6 +1,6 @@
-// Package cursorauth implements the Cursor CLI credential contract:
-// the loginDeepControl PKCE flow, Connect JSON control-plane RPCs
-// (identity, models, usage), and optional cursor-agent inference.
+// Package cursorauth implements the Cursor credential contract:
+// User API Key exchange, Connect JSON control-plane RPCs
+// (identity, models, usage), and cursor-sdk-bridge inference.
 package cursorauth
 
 import "time"
@@ -11,12 +11,7 @@ const (
 
 	// APIBaseURL is the Cursor control-plane origin used by the CLI.
 	APIBaseURL = "https://api2.cursor.sh"
-	// WebsiteURL is the Cursor site that hosts loginDeepControl.
-	WebsiteURL = "https://cursor.com"
-
-	// ClientVersion is the cursor-agent build ccLoad reports upstream.
-	// Control-plane JSON RPCs accept this CLI fingerprint; chat still
-	// requires the matching binary on PATH when inference is enabled.
+	// ClientVersion is the CLI fingerprint accepted by control-plane JSON RPCs.
 	ClientVersion = "2026.08.11-e8db854"
 	// ClientType is Cursor's CLI client-type header.
 	ClientType = "cli"
@@ -27,38 +22,37 @@ const (
 	GetMeRPC = "/aiserver.v1.DashboardService/GetMe"
 	// UsageRPC is DashboardService.GetCurrentPeriodUsage.
 	UsageRPC = "/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
-	// ModelsRPC is AgentService.GetUsableModels.
-	ModelsRPC = "/agent.v1.AgentService/GetUsableModels"
-	// AuthPollPath is the CLI login poll endpoint.
-	AuthPollPath = "/auth/poll"
 	// ExchangeAPIKeyPath swaps a Cursor user API key for session tokens.
 	ExchangeAPIKeyPath = "/auth/exchange_user_api_key"
 
 	// RequestTimeout bounds one Cursor control-plane request.
 	RequestTimeout = 30 * time.Second
-	// PollInterval is the CLI's initial login poll cadence.
-	PollInterval = time.Second
-	// PollTimeout bounds one browser authorization.
-	PollTimeout = 5 * time.Minute
-	// AgentTimeout bounds one cursor-agent inference.
+	// AgentTimeout bounds one Cursor SDK Agent inference.
 	AgentTimeout = 180 * time.Second
+	// BridgeVersion pins the standalone companion shipped with ccLoad.
+	BridgeVersion = "v1.0.28"
+	// BridgeProtocol is the only wire contract this build accepts.
+	BridgeProtocol = "sdk.v1"
+	// BridgeStartupTimeout bounds spawn, discovery, Ping, and capability checks.
+	BridgeStartupTimeout = 30 * time.Second
+	// BridgeShutdownGrace is the bridge's total graceful shutdown budget.
+	BridgeShutdownGrace = 5 * time.Second
+	// BridgeCleanupTimeout bounds cancellation and durable Agent deletion.
+	BridgeCleanupTimeout = 5 * time.Second
 
 	maxResponseSize   = 4 << 20
 	maxCredentialSize = 1 << 20
-	verifierBytes     = 32
 )
 
-// DefaultModels is the last-resort lineup used only when GetUsableModels is
-// unreachable. Public names omit Cursor's -thinking-* infix; thinking is
-// mapped at inference time from the client request.
+var requiredBridgeCapabilities = []string{
+	"agent.create",
+	"agent.send",
+	"run.cancel",
+	"agent.management",
+}
+
+// DefaultModels is the last-resort SDK selector used only when the live model
+// catalog is unavailable. Do not invent model variants here.
 var DefaultModels = []string{
-	"auto",
-	"claude-sonnet-5",
-	"claude-opus-5",
-	"claude-fable-5",
-	"gpt-5.3-codex",
-	"gpt-5.2",
-	"composer-2.5",
-	"gemini-3.1-pro",
-	"cursor-grok-4.6-high",
+	"default",
 }

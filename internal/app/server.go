@@ -100,8 +100,12 @@ type Server struct {
 	zaiOAuth                      *zaiOAuthManager
 	cursorService                 *cursorauth.Service
 	cursorCredentials             *cursorCredentialManager
-	cursorOAuth                   *cursorOAuthManager
+	cursorRunnerMu                sync.RWMutex
 	cursorRunner                  cursorauth.Runner
+	cursorBridgeRequired          atomic.Bool
+	cursorBridgeStartOnce         sync.Once
+	ensureCursorBridge            func(context.Context) (string, error)
+	startCursorBridge             func(context.Context, string) (cursorauth.Runner, error)
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -250,6 +254,8 @@ func NewServer(store storage.Store) *Server {
 		shutdownCh:               make(chan struct{}),
 		shutdownDone:             make(chan struct{}),
 		oauthCredentialRefreshes: newOAuthCredentialRefreshTracker(),
+		ensureCursorBridge:       cursorauth.EnsureBridge,
+		startCursorBridge:        startCursorSDKRunner,
 
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh:        make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
@@ -285,6 +291,7 @@ func NewServer(store storage.Store) *Server {
 		log.Fatalf("[FATAL] 加载渠道配置失败: %v", err)
 	}
 	log.Printf("[INFO] 已加载渠道配置（%d项）", len(channels))
+	s.cursorBridgeRequired.Store(hasCursorChannel(channels))
 
 	codexOAuthService := codexauth.NewService(s.client)
 	s.codexService = codexOAuthService
@@ -360,18 +367,6 @@ func NewServer(store storage.Store) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.cursorCredentials.refreshTracker = s.oauthCredentialRefreshes
-	s.cursorRunner = cursorauth.NewCLIRunner()
-	s.cursorOAuth = newCursorOAuthManager(
-		s.baseCtx,
-		s.cursorService,
-		func(ctx context.Context, credential *cursorauth.Credential) (int64, string, error) {
-			cfg, _, err := s.commitCursorCredential(ctx, credential)
-			if err != nil {
-				return 0, "", err
-			}
-			return cfg.ID, cfg.Name, nil
-		},
-	)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -448,6 +443,99 @@ func NewServer(store storage.Store) *Server {
 
 	return s
 
+}
+
+func hasCursorChannel(channels []*model.Config) bool {
+	for _, channel := range channels {
+		if channel != nil && channel.UsesCursorOAuth() {
+			return true
+		}
+	}
+	return false
+}
+
+const cursorBridgeInitializationTimeout = 5 * time.Minute
+
+// StartCursorSDKBridge initializes the pinned companion in the background.
+// Non-Cursor deployments never perform installation or process startup work.
+func (s *Server) StartCursorSDKBridge() {
+	if s == nil || !s.cursorBridgeRequired.Load() || s.isShuttingDown.Load() {
+		return
+	}
+	s.cursorBridgeStartOnce.Do(func() {
+		if s.ensureCursorBridge == nil || s.startCursorBridge == nil {
+			log.Print("[WARN] Cursor SDK Bridge 后台初始化不可用")
+			return
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ctx, cancel := context.WithTimeout(s.baseCtx, cursorBridgeInitializationTimeout)
+			defer cancel()
+			if err := s.initializeCursorSDKBridge(ctx); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("[WARN] Cursor SDK Bridge 后台初始化失败: %v", err)
+				}
+			}
+		}()
+	})
+}
+
+func (s *Server) initializeCursorSDKBridge(ctx context.Context) error {
+	path, err := s.ensureCursorBridge(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure cursor-sdk-bridge: %w", err)
+	}
+	runner, err := s.startCursorBridge(ctx, path)
+	if err != nil {
+		return fmt.Errorf("start cursor-sdk-bridge: %w", err)
+	}
+	if s.isShuttingDown.Load() {
+		closeCursorRunner(runner)
+		return context.Canceled
+	}
+	previous := s.swapCursorRunner(runner)
+	closeCursorRunner(previous)
+	log.Printf("[INFO] Cursor SDK Bridge 已就绪: %s", path)
+	return nil
+}
+
+func startCursorSDKRunner(ctx context.Context, path string) (cursorauth.Runner, error) {
+	runner := cursorauth.NewSDKRunner(path)
+	if err := runner.Start(ctx); err != nil {
+		closeCursorRunner(runner)
+		return nil, err
+	}
+	return runner, nil
+}
+
+func (s *Server) cursorRunnerSnapshot() cursorauth.Runner {
+	if s == nil {
+		return nil
+	}
+	s.cursorRunnerMu.RLock()
+	defer s.cursorRunnerMu.RUnlock()
+	return s.cursorRunner
+}
+
+func (s *Server) swapCursorRunner(next cursorauth.Runner) cursorauth.Runner {
+	s.cursorRunnerMu.Lock()
+	previous := s.cursorRunner
+	s.cursorRunner = next
+	s.cursorRunnerMu.Unlock()
+	return previous
+}
+
+func closeCursorRunner(runner cursorauth.Runner) {
+	closer, ok := runner.(interface{ Close(context.Context) error })
+	if !ok || closer == nil {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 2*cursorauth.BridgeShutdownGrace)
+	if err := closer.Close(closeCtx); err != nil {
+		log.Printf("[WARN] 关闭 Cursor SDK Bridge Runner 失败: %v", err)
+	}
+	cancel()
 }
 
 // RefreshAntigravityUserAgent resolves the Antigravity Hub version before the
@@ -1495,9 +1583,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
-		admin.POST("/cursor/oauth/start", s.HandleStartCursorOAuth)
-		admin.GET("/cursor/oauth/status", s.HandleCursorOAuthStatus)
-		admin.POST("/cursor/oauth/cancel", s.HandleCancelCursorOAuth)
 		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
@@ -1746,9 +1831,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
 	}
-	if s.cursorOAuth != nil {
-		s.cursorOAuth.close()
-	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()
 	}
@@ -1809,6 +1891,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		log.Print("[WARN]  Server关闭超时，部分后台任务可能未完成")
 		if err == nil {
 			err = ctx.Err()
+		}
+	}
+	if closer, ok := s.cursorRunnerSnapshot().(interface{ Close(context.Context) error }); ok {
+		if closeErr := closer.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
 		}
 	}
 

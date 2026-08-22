@@ -1,0 +1,262 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+import "sdk/v1/sdk_messages.proto";
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Agent lifecycle, run streaming, cancellation, and artifact APIs.
+service SdkAgentService {
+  // Create a new local or cloud agent.
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  // Re-attach to an existing agent and apply updated options.
+  rpc ResumeAgent(ResumeAgentRequest) returns (ResumeAgentResponse);
+  // Reload an agent's durable state from its store without sending a message.
+  rpc ReloadAgent(ReloadAgentRequest) returns (ReloadAgentResponse);
+  // Release local resources for an agent. Does not delete durable cloud state.
+  rpc CloseAgent(CloseAgentRequest) returns (CloseAgentResponse);
+  // Send a user message and stream run events until the run completes.
+  rpc Send(SendRequest) returns (stream RunStreamMessage);
+  // Block until a live run reaches a terminal status and return its result.
+  rpc WaitLiveRun(WaitLiveRunRequest) returns (WaitLiveRunResponse);
+  // Fetch a point-in-time snapshot of a run.
+  rpc GetRun(GetRunRequest) returns (GetRunResponse);
+  // List runs for an agent, newest first unless otherwise noted by the bridge.
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+  // Fetch the conversation JSON associated with a run.
+  rpc GetRunConversation(GetRunConversationRequest) returns (GetRunConversationResponse);
+  // Subscribe to durable run events, optionally resuming after a prior offset.
+  rpc ObserveRun(ObserveRunRequest) returns (stream RunStreamMessage);
+  // Request cancellation of an in-flight run.
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+  // Fetch metadata for a single agent.
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+  // List agents visible to the caller.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  // Archive an agent so it no longer appears in default listings.
+  rpc ArchiveAgent(ArchiveAgentRequest) returns (ArchiveAgentResponse);
+  // Restore an archived agent.
+  rpc UnarchiveAgent(UnarchiveAgentRequest) returns (UnarchiveAgentResponse);
+  // Permanently delete an agent and its durable data.
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
+  // List messages recorded for an agent.
+  rpc ListAgentMessages(ListAgentMessagesRequest) returns (ListAgentMessagesResponse);
+  // List artifacts produced by a cloud agent.
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
+  // Download an artifact as a stream of bytes.
+  rpc DownloadArtifact(DownloadArtifactRequest) returns (stream DownloadArtifactChunk);
+  // Billed token usage and dollar cost for an agent's runs.
+  // Cloud agents only; local agents fail with a cloud-only / unavailable error.
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+}
+
+message CreateAgentRequest {
+  AgentOptions options = 1;
+  // Optional key that makes CreateAgent retries safe for cloud agents.
+  optional string idempotency_key = 2;
+}
+
+message CreateAgentResponse {
+  string agent_id = 1;
+  ModelSelection model = 2;
+}
+
+message ResumeAgentRequest {
+  string agent_id = 1;
+  AgentOptions options = 2;
+}
+
+message ResumeAgentResponse {
+  string agent_id = 1;
+  ModelSelection model = 2;
+}
+
+message ReloadAgentRequest {
+  string agent_id = 1;
+}
+
+message ReloadAgentResponse {}
+
+message CloseAgentRequest {
+  string agent_id = 1;
+}
+
+message CloseAgentResponse {}
+
+message SendRequest {
+  string agent_id = 1;
+  UserMessage message = 2;
+  SendOptions options = 3;
+  // Optional key that makes Send retries safe for cloud agents.
+  optional string idempotency_key = 4;
+}
+
+message WaitLiveRunRequest {
+  string run_id = 1;
+}
+
+message WaitLiveRunResponse {
+  RunResult result = 1;
+}
+
+message GetRunRequest {
+  string run_id = 1;
+  GetRunOptions options = 2;
+}
+
+message GetRunResponse {
+  RunSnapshot run = 1;
+}
+
+message ListRunsRequest {
+  string agent_id = 1;
+  ListRunsOptions options = 2;
+}
+
+message ListRunsResponse {
+  repeated RunSnapshot items = 1;
+  // Opaque pagination cursor. Empty when there are no further pages.
+  string next_cursor = 2;
+}
+
+message GetRunConversationRequest {
+  string run_id = 1;
+}
+
+message GetRunConversationResponse {
+  // Opaque conversation document encoded as JSON.
+  string conversation_json = 1;
+}
+
+message ObserveRunRequest {
+  string run_id = 1;
+  // Resume after this exclusive offset from a prior ObserveRun / Send stream.
+  // When unset, the stream starts from the beginning of durable events.
+  optional string after_offset = 2;
+}
+
+message CancelRunRequest {
+  string run_id = 1;
+  // Optional agent hint used by some bridge deployments for routing.
+  optional string agent_id = 2;
+}
+
+message CancelRunResponse {}
+
+message GetAgentRequest {
+  string agent_id = 1;
+  AgentOperationOptions options = 2;
+}
+
+message GetAgentResponse {
+  SdkAgentInfo agent = 1;
+}
+
+message ListAgentsRequest {
+  ListAgentsOptions options = 1;
+}
+
+message ListAgentsResponse {
+  repeated SdkAgentInfo items = 1;
+  // Opaque pagination cursor. Empty when there are no further pages.
+  string next_cursor = 2;
+}
+
+message ArchiveAgentRequest {
+  string agent_id = 1;
+  AgentOperationOptions options = 2;
+}
+
+message ArchiveAgentResponse {}
+
+message UnarchiveAgentRequest {
+  string agent_id = 1;
+  AgentOperationOptions options = 2;
+}
+
+message UnarchiveAgentResponse {}
+
+message DeleteAgentRequest {
+  string agent_id = 1;
+  AgentOperationOptions options = 2;
+}
+
+message DeleteAgentResponse {}
+
+message ListAgentMessagesRequest {
+  string agent_id = 1;
+  GetAgentMessagesOptions options = 2;
+}
+
+message ListAgentMessagesResponse {
+  repeated AgentMessage messages = 1;
+}
+
+message ListArtifactsRequest {
+  string agent_id = 1;
+}
+
+message ListArtifactsResponse {
+  repeated SdkArtifact artifacts = 1;
+}
+
+message DownloadArtifactRequest {
+  string agent_id = 1;
+  // Artifact path as returned by ListArtifacts.
+  string path = 2;
+}
+
+message GetUsageRequest {
+  string agent_id = 1;
+  // Restrict the result to a single run.
+  optional string run_id = 2;
+}
+
+message GetUsageResponse {
+  AgentUsage usage = 1;
+}
+
+message ListAgentsOptions {
+  uint32 limit = 1;
+  string cursor = 2;
+  Runtime runtime = 3;
+  string cwd = 4;
+  // Filter cloud agents associated with this pull-request URL.
+  string pr_url = 5;
+  optional bool include_archived = 6;
+  string api_key = 7;
+}
+
+message ListRunsOptions {
+  uint32 limit = 1;
+  string cursor = 2;
+  Runtime runtime = 3;
+  string cwd = 4;
+  string api_key = 5;
+}
+
+message GetRunOptions {
+  Runtime runtime = 1;
+  string cwd = 2;
+  string agent_id = 3;
+  string api_key = 4;
+}
+
+message AgentOperationOptions {
+  string cwd = 1;
+  string api_key = 2;
+}
+
+message GetAgentMessagesOptions {
+  uint32 limit = 1;
+  uint32 offset = 2;
+  Runtime runtime = 3;
+  string cwd = 4;
+  string api_key = 5;
+}

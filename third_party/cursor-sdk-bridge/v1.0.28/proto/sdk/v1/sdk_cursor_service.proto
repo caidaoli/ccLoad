@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package sdk.v1;
+
+import "sdk/v1/sdk_messages.proto";
+
+option csharp_namespace = "Cursor.Sdk.V1";
+option go_package = "github.com/anysphere/everysphere/anygo/proto/sdk/v1";
+option java_multiple_files = true;
+option java_package = "com.cursor.sdk.v1";
+option ruby_package = "Cursor::Sdk::V1";
+option swift_prefix = "CursorSdkV1";
+
+// Cloud account and catalog APIs.
+//
+// These RPCs talk to Cursor Cloud using the caller's API key. They do not
+// require a local agent runtime.
+service SdkCursorService {
+  // Authenticated account identity for the supplied API key.
+  rpc Me(MeRequest) returns (MeResponse);
+  // Models available to the authenticated account.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  // Repositories the authenticated account can use with cloud agents.
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+}
+
+message CursorRequestOptions {
+  // Cursor API key. When empty, the bridge may fall back to process env
+  // (e.g. CURSOR_API_KEY) depending on how it was launched.
+  string api_key = 1;
+}
+
+message MeRequest {
+  CursorRequestOptions options = 1;
+}
+
+message MeResponse {
+  SdkUser user = 1;
+}
+
+message ListModelsRequest {
+  CursorRequestOptions options = 1;
+}
+
+message ListModelsResponse {
+  repeated SdkModel items = 1;
+}
+
+message ListRepositoriesRequest {
+  CursorRequestOptions options = 1;
+}
+
+message ListRepositoriesResponse {
+  repeated SdkRepository items = 1;
+}

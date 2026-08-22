@@ -1656,7 +1656,6 @@ func (s *Server) cursorUsageService(cfg *model.Config) *cursorauth.Service {
 	service := cursorauth.NewService(s.getClientForChannel(cfg))
 	if s.cursorService != nil {
 		service.APIBaseURL = s.cursorService.APIBaseURL
-		service.WebsiteURL = s.cursorService.WebsiteURL
 	}
 	return service
 }
