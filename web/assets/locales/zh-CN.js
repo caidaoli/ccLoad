@@ -374,6 +374,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.providerCursor': 'Cursor',
   'channels.cursor.apiKeyDescription': '粘贴 Cursor User API Key，ccLoad 会换取控制面会话，并通过随包发布的 SDK Bridge 推理。',
   'channels.cursor.apiKeyLabel': 'Cursor User API Key',
+  'channels.cursor.apiKeyGetHint': '前往 Cursor Dashboard 的 Integrations → User API Keys，创建并复制密钥。',
+  'channels.cursor.openDashboard': '打开 Cursor Dashboard',
   'channels.cursor.apiKeyHint': '提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。',
   'channels.cursor.apiKeyRequired': '请填写 Cursor User API Key。',
   'channels.cursor.apiKeySubmit': '导入 API Key',

@@ -374,6 +374,8 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.providerCursor': 'Cursor',
   'channels.cursor.apiKeyDescription': 'Paste a Cursor User API Key. ccLoad exchanges it for a control-plane session and uses the bundled SDK Bridge for inference.',
   'channels.cursor.apiKeyLabel': 'Cursor user API key',
+  'channels.cursor.apiKeyGetHint': 'In the Cursor Dashboard, go to Integrations → User API Keys, then create and copy a key.',
+  'channels.cursor.openDashboard': 'Open Cursor Dashboard',
   'channels.cursor.apiKeyHint': 'The input is cleared from the page on submit. ccLoad exchanges it for a CLI session token.',
   'channels.cursor.apiKeyRequired': 'Enter a Cursor user API key.',
   'channels.cursor.apiKeySubmit': 'Import API key',

@@ -217,7 +217,12 @@
                   <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
                   <input id="cursorUserAPIKey" name="cursor_user_api_key" type="text"
                     class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
-                    aria-describedby="cursorAPIKeyHint oauthLoginDialogStatus">
+                    aria-describedby="cursorAPIKeyGetHint cursorAPIKeyHint oauthLoginDialogStatus">
+                  <p id="cursorAPIKeyGetHint" class="oauth-field-hint">
+                    <span data-i18n="channels.cursor.apiKeyGetHint">前往 Cursor Dashboard 的 Integrations → User API Keys，创建并复制密钥。</span>
+                    <a href="https://cursor.com/dashboard" target="_blank" rel="noopener noreferrer"
+                      data-i18n="channels.cursor.openDashboard">打开 Cursor Dashboard</a>
+                  </p>
                   <p id="cursorAPIKeyHint" class="oauth-field-hint"
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
                 </div>
