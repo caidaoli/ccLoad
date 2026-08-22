@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"log"
 	"os"
 	"time"
@@ -85,11 +84,6 @@ func (s *Server) startUpdateManager(interval time.Duration, channel version.Rele
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		repairCtx, repairCancel := context.WithTimeout(s.baseCtx, 5*time.Minute)
-		if err := manager.EnsureCurrentCompanions(repairCtx); err != nil {
-			log.Printf("[WARN] 修复当前版本 Cursor SDK Bridge companion 失败: %v", err)
-		}
-		repairCancel()
 		manager.Run(s.baseCtx)
 	}()
 	log.Printf("[INFO] 更新管理器已启用，渠道: %s，检测间隔: %v，自动应用: %t", channel, interval, restart != nil)

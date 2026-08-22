@@ -351,10 +351,10 @@ make build
 
 # Linux/macOS example
 wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
-wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-linux-amd64
-wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-LICENSE.txt
-mv cursor-sdk-bridge-linux-amd64 cursor-sdk-bridge
-chmod +x ccload-linux-amd64 cursor-sdk-bridge
+chmod +x ccload-linux-amd64
+
+# Cursor SDK Bridge is installed automatically when needed.
+# Offline downloads: https://github.com/cursor/sdk-bridge/releases
 
 # Set environment variables and run
 export CCLOAD_PASS=your_admin_password

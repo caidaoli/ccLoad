@@ -68,7 +68,7 @@ ccLoad handles those cases with:
 - 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; Z.ai Coding Plan (ZCode) browser authorization or API-key import; and Cursor user API-key import, with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
 - 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
-- 📦 **Simple Deployment** - Embedded SQLite; release installs include the pinned Cursor SDK Bridge companion
+- 📦 **Simple Deployment** - Embedded SQLite; the Cursor SDK Bridge is managed automatically when needed
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
 - 🏷️ **Build Tags** - GOTAGS support, high-performance JSON library enabled by default
 - 🐳 **Docker Support** - Multi-arch images (amd64/arm64), automated CI/CD
@@ -218,7 +218,7 @@ chmod +x ccload-linux-amd64
 ./ccload-linux-amd64
 ```
 
-When a Cursor channel exists, ccLoad automatically downloads its pinned SDK Bridge, verifies the embedded SHA-256, and installs it atomically under its managed state directory. Offline installations can still place the matching `cursor-sdk-bridge` beside ccLoad or set `CURSOR_SDK_BRIDGE_BIN`.
+When a Cursor channel exists, ccLoad automatically downloads its pinned SDK Bridge, verifies the embedded SHA-256, and installs it atomically under its managed state directory. For offline installations, download the matching archive from the [official Cursor SDK Bridge releases](https://github.com/cursor/sdk-bridge/releases), place its `cursor-sdk-bridge` executable beside ccLoad, or set `CURSOR_SDK_BRIDGE_BIN`.
 
 ### Method 4: Hugging Face Spaces Deployment
 
@@ -733,7 +733,7 @@ ccLoad loads the Coding Plan model catalog from the account when creating or ref
 
 #### Cursor
 
-In the channel manager, choose **Cursor** and import a Cursor user API key. ccLoad exchanges it for a control-plane session; browser login and session `accessToken` import are intentionally unavailable because they cannot authenticate inference. Identity and quota refresh use `api2.cursor.sh`; model discovery calls the SDK Bridge's `ListModels` and stores only the exact IDs returned by Cursor, without synthetic reasoning variants. At startup, a Cursor channel makes ccLoad locate and probe an existing `cursor-sdk-bridge` in the background; if none works, it downloads the pinned official archive, verifies its embedded SHA-256, and atomically installs it under `cursor-sdk/bin/<version>` beside `SQLITE_PATH`, or in the OS user cache when `SQLITE_PATH` is unset (system temp is the final fallback). This does not block HTTP startup, and no Cursor CLI installation is required.
+In the channel manager, choose **Cursor** and import a Cursor user API key. ccLoad exchanges it for a control-plane session; browser login and session `accessToken` import are intentionally unavailable because they cannot authenticate inference. Identity and quota refresh use `api2.cursor.sh`; model discovery calls the SDK Bridge's `ListModels` and stores only the exact IDs returned by Cursor, without synthetic reasoning variants. At startup, a Cursor channel makes ccLoad locate and probe an existing `cursor-sdk-bridge` in the background; if none works, it downloads the pinned official archive, verifies its embedded SHA-256, and atomically installs it under `cursor-sdk/bin/<version>` beside `SQLITE_PATH`, or in the OS user cache when `SQLITE_PATH` is unset (system temp is the final fallback). This does not block HTTP startup, and no Cursor CLI installation is required. Manual and offline downloads are available from the [official Cursor SDK Bridge release page](https://github.com/cursor/sdk-bridge/releases).
 
 The SDK Agent receives an explicitly empty built-in tool list, so Cursor does not run shell or file tools on the gateway host. Client tools are still mapped through the prompt: the model emits `<cc_tool_call>` blocks, which ccLoad translates to Anthropic `tool_use` or OpenAI `tool_calls`; the client executes them and sends results on the next turn.
 
@@ -1070,7 +1070,7 @@ Per-protocol timeouts apply to the runtime upstream protocol: if a transformed r
 
 For non-container deployments, one update manager owns release checks, version notifications, and optional in-process updates. It checks once at startup and every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers stable and prerelease versions and selects the highest valid SemVer without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable all release checks.
 
-Stable metadata is resolved through the configured release sources. Preview discovery reads GitHub's Releases Atom feed, which includes stable and prerelease entries without using the rate-limited REST API. After resolving an exact Tag, ccLoad downloads the application, the pinned Cursor SDK Bridge companion, its license, and the checksum file from the configured sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub. Every SHA256 must match before anything is published; the companion is installed first and the application executable last.
+Stable metadata is resolved through the configured release sources. Preview discovery reads GitHub's Releases Atom feed, which includes stable and prerelease entries without using the rate-limited REST API. After resolving an exact Tag, ccLoad downloads the application and checksum file from the configured sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub—and replaces the executable only after SHA256 verification. Cursor SDK Bridge installation is independent and always uses the pinned official Cursor release.
 
 Official containers do not run the release check or in-process update loop. Every stable and Beta image contains the exact binary produced by the matching GitHub Release. Stable releases publish an exact version Tag plus `latest`; Beta releases publish an exact prerelease Tag plus the rolling `beta` alias. Switch the image Tag in Compose, then pull and recreate the container.
 
@@ -1148,7 +1148,7 @@ Project supports multi-arch Docker images:
   - `v2.44.1` - Exact stable version, matching the GitHub Release tag
   - `vX.Y.Z-beta.N` - Exact Beta version, matching the GitHub prerelease tag
 
-The official GHCR runtime image is Debian/glibc-based and immutable because the upstream Cursor SDK Bridge standalone binary is dynamically linked against glibc. Every release packages the same verified ccLoad and bridge assets used by GitHub Releases. Exact version Tags are immutable; `latest` and `beta` are rolling aliases. Containers do not update in process; pull the desired Tag and recreate the container.
+The official GHCR runtime image is Debian/glibc-based and immutable because the upstream Cursor SDK Bridge standalone binary is dynamically linked against glibc. Image builds fetch and verify the pinned bridge directly from its official Cursor release; GitHub Releases contain only ccLoad binaries. Exact version Tags are immutable; `latest` and `beta` are rolling aliases. Containers do not update in process; pull the desired Tag and recreate the container.
 
 ### Image Tag Guide
 

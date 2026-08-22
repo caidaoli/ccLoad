@@ -21,26 +21,9 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-var (
-	testBridgeBinary  = []byte("cursor sdk bridge")
-	testBridgeLicense = []byte("bridge license")
-)
-
 func testReleaseChecksums(application []byte) string {
-	entries := []struct {
-		name string
-		body []byte
-	}{
-		{name: "ccload-linux-amd64", body: application},
-		{name: "cursor-sdk-bridge-linux-amd64", body: testBridgeBinary},
-		{name: bridgeLicenseAsset, body: testBridgeLicense},
-	}
-	var out strings.Builder
-	for _, entry := range entries {
-		sum := sha256.Sum256(entry.body)
-		_, _ = fmt.Fprintf(&out, "%s  %s\n", hex.EncodeToString(sum[:]), entry.name)
-	}
-	return out.String()
+	sum := sha256.Sum256(application)
+	return fmt.Sprintf("%s  ccload-linux-amd64\n", hex.EncodeToString(sum[:]))
 }
 
 func TestCompareSemanticVersions(t *testing.T) {
@@ -97,11 +80,6 @@ func TestReleaseAssetNameAndDownloadURL(t *testing.T) {
 
 	if _, ok := releaseAssetName("windows", "arm64"); ok {
 		t.Fatalf("windows/arm64 must be unsupported")
-	}
-	assets, ok := releaseAssetNames("darwin", "arm64")
-	if !ok || assets.Application != "ccload-darwin-arm64" ||
-		assets.Bridge != "cursor-sdk-bridge-darwin-arm64" || assets.BridgeFile != "cursor-sdk-bridge" {
-		t.Fatalf("releaseAssetNames(darwin, arm64) = %+v, %v", assets, ok)
 	}
 }
 
@@ -251,10 +229,6 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 			_, _ = fmt.Fprint(w, checksum)
 		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
 			_, _ = w.Write(binary)
-		case "/download/v1.1.0-beta.2/cursor-sdk-bridge-linux-amd64":
-			_, _ = w.Write(testBridgeBinary)
-		case "/download/v1.1.0-beta.2/" + bridgeLicenseAsset:
-			_, _ = w.Write(testBridgeLicense)
 		default:
 			http.NotFound(w, r)
 		}
@@ -311,69 +285,16 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 	if string(got) != string(binary) {
 		t.Fatalf("executable content = %q, want preview binary", got)
 	}
-	bridgeBytes, err := os.ReadFile(filepath.Join(filepath.Dir(exePath), "cursor-sdk-bridge"))
-	if err != nil || string(bridgeBytes) != string(testBridgeBinary) {
-		t.Fatalf("bridge content = %q, err=%v", bridgeBytes, err)
-	}
-	licenseBytes, err := os.ReadFile(filepath.Join(filepath.Dir(exePath), bridgeLicenseAsset))
-	if err != nil || string(licenseBytes) != string(testBridgeLicense) {
-		t.Fatalf("license content = %q, err=%v", licenseBytes, err)
-	}
 }
 
-func TestUpdateManagerRepairsMissingCurrentBridge(t *testing.T) {
-	origVersion := Version
-	t.Cleanup(func() { Version = origVersion })
-	Version = "v1.2.3"
-	checksum := testReleaseChecksums([]byte("unused app"))
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/download/v1.2.3/checksums.txt":
-			_, _ = fmt.Fprint(w, checksum)
-		case "/download/v1.2.3/cursor-sdk-bridge-linux-amd64":
-			_, _ = w.Write(testBridgeBinary)
-		case "/download/v1.2.3/" + bridgeLicenseAsset:
-			_, _ = w.Write(testBridgeLicense)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	dir := t.TempDir()
-	exePath := filepath.Join(dir, "ccload")
-	if err := os.WriteFile(exePath, []byte("current app"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	updater, err := NewUpdateManager(UpdateManagerOptions{
-		Interval: time.Hour, ApplyUpdates: true,
-		ReleaseSources: []ReleaseSource{{Name: "test", DownloadBaseURL: server.URL + "/download"}},
-		ExecutablePath: exePath, Client: server.Client(), GOOS: "linux", GOARCH: "amd64", Restart: func() {},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := updater.EnsureCurrentCompanions(context.Background()); err != nil {
-		t.Fatalf("EnsureCurrentCompanions() error = %v", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(dir, "cursor-sdk-bridge")); err != nil || string(got) != string(testBridgeBinary) {
-		t.Fatalf("bridge = %q, err=%v", got, err)
-	}
-	if marker, err := os.ReadFile(filepath.Join(dir, companionMarker)); err != nil || !strings.HasPrefix(string(marker), Version+"\n") {
-		t.Fatalf("marker = %q, err=%v", marker, err)
-	}
-	if app, _ := os.ReadFile(exePath); string(app) != "current app" {
-		t.Fatalf("repair replaced application: %q", app)
-	}
-}
-
-func TestUpdateManagerBridgeChecksumFailureLeavesExecutableUntouched(t *testing.T) {
+func TestUpdateManagerChecksumFailureLeavesExecutableUntouched(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })
 	Version = "v1.0.0"
 	application := []byte("new app")
 	checksum := testReleaseChecksums(application)
-	bridgeSum := sha256.Sum256(testBridgeBinary)
-	checksum = strings.Replace(checksum, hex.EncodeToString(bridgeSum[:]), strings.Repeat("0", 64), 1)
+	applicationSum := sha256.Sum256(application)
+	checksum = strings.Replace(checksum, hex.EncodeToString(applicationSum[:]), strings.Repeat("0", 64), 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/latest":
@@ -384,8 +305,6 @@ func TestUpdateManagerBridgeChecksumFailureLeavesExecutableUntouched(t *testing.
 			_, _ = fmt.Fprint(w, checksum)
 		case strings.HasSuffix(r.URL.Path, "/ccload-linux-amd64"):
 			_, _ = w.Write(application)
-		case strings.HasSuffix(r.URL.Path, "/cursor-sdk-bridge-linux-amd64"):
-			_, _ = w.Write(testBridgeBinary)
 		default:
 			http.NotFound(w, r)
 		}
@@ -408,10 +327,7 @@ func TestUpdateManagerBridgeChecksumFailureLeavesExecutableUntouched(t *testing.
 		t.Fatalf("updateOnce() error = %v", err)
 	}
 	if app, _ := os.ReadFile(exePath); string(app) != "old app" {
-		t.Fatalf("application changed after bridge checksum failure: %q", app)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "cursor-sdk-bridge")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("bridge was published before all checks passed: %v", err)
+		t.Fatalf("application changed after checksum failure: %q", app)
 	}
 }
 
@@ -439,10 +355,6 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 			_, _ = fmt.Fprint(w, checksum)
 		case "/download/v1.1.0-beta.1/ccload-linux-amd64":
 			_, _ = w.Write(binary)
-		case "/download/v1.1.0-beta.1/cursor-sdk-bridge-linux-amd64":
-			_, _ = w.Write(testBridgeBinary)
-		case "/download/v1.1.0-beta.1/" + bridgeLicenseAsset:
-			_, _ = w.Write(testBridgeLicense)
 		default:
 			http.NotFound(w, r)
 		}
@@ -733,10 +645,6 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 		case "/caidaoli/ccLoad/releases/download/v1.0.1/ccload-linux-amd64", "/caidaoli/ccLoad/releases/download/v1.0.2/ccload-linux-amd64":
 			tag := filepath.Base(filepath.Dir(r.URL.Path))
 			_, _ = w.Write(binaries[tag])
-		case "/caidaoli/ccLoad/releases/download/v1.0.1/cursor-sdk-bridge-linux-amd64", "/caidaoli/ccLoad/releases/download/v1.0.2/cursor-sdk-bridge-linux-amd64":
-			_, _ = w.Write(testBridgeBinary)
-		case "/caidaoli/ccLoad/releases/download/v1.0.1/" + bridgeLicenseAsset, "/caidaoli/ccLoad/releases/download/v1.0.2/" + bridgeLicenseAsset:
-			_, _ = w.Write(testBridgeLicense)
 		case "/caidaoli/ccLoad/releases/download/v1.0.1/checksums.txt", "/caidaoli/ccLoad/releases/download/v1.0.2/checksums.txt":
 			tag := filepath.Base(filepath.Dir(r.URL.Path))
 			_, _ = fmt.Fprint(w, testReleaseChecksums(binaries[tag]))
@@ -841,10 +749,6 @@ func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 						return
 					}
 					_, _ = w.Write(binary)
-				case strings.HasSuffix(r.URL.Path, "/cursor-sdk-bridge-linux-amd64"):
-					_, _ = w.Write(testBridgeBinary)
-				case strings.HasSuffix(r.URL.Path, "/"+bridgeLicenseAsset):
-					_, _ = w.Write(testBridgeLicense)
 				default:
 					http.NotFound(w, r)
 				}

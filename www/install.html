@@ -205,7 +205,7 @@ make build
           <article class="www-doc-card">
             <span class="www-doc-icon">📦</span>
             <h3>Binary runtime</h3>
-            <p>Download the artifact for your platform from Releases, make it executable and run it. Pinning a version is easier to roll back than tracking <code>latest</code>.</p>
+            <p>Download the ccLoad artifact for your platform from Releases, make it executable and run it. Cursor SDK Bridge is installed automatically when needed; offline archives are available from its official release page.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -213,10 +213,10 @@ make build
               </div>
               <div class="www-code-content">
                 <pre><code>wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
-wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-linux-amd64
-wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/cursor-sdk-bridge-LICENSE.txt
-mv cursor-sdk-bridge-linux-amd64 cursor-sdk-bridge
-chmod +x ccload-linux-amd64 cursor-sdk-bridge
+chmod +x ccload-linux-amd64
+
+# Cursor SDK Bridge is installed automatically when needed.
+# Offline downloads: https://github.com/cursor/sdk-bridge/releases
 
 export CCLOAD_PASS=your_admin_password
 ./ccload-linux-amd64</code></pre>

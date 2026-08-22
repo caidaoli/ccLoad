@@ -297,7 +297,7 @@ func (u *UpdateManager) updateOnce(ctx context.Context) error {
 	if !u.applyUpdates || compareSemanticVersions(release.TagName, u.baselineVersion()) <= 0 {
 		return nil
 	}
-	assets, ok := releaseAssetNames(u.goos, u.goarch)
+	asset, ok := releaseAssetName(u.goos, u.goarch)
 	if !ok {
 		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
 	}
@@ -305,7 +305,7 @@ func (u *UpdateManager) updateOnce(ctx context.Context) error {
 	var sourceErrors []error
 	for _, source := range u.releaseSources {
 		u.setUpdating(true)
-		err = u.downloadVerifyAndReplace(ctx, source, release.TagName, assets)
+		err = u.downloadVerifyAndReplace(ctx, source, release.TagName, asset)
 		u.setUpdating(false)
 		if err != nil {
 			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
@@ -322,7 +322,7 @@ func (u *UpdateManager) downloadVerifyAndReplace(
 	ctx context.Context,
 	source ReleaseSource,
 	tag string,
-	assets releaseAssets,
+	asset string,
 ) error {
 	checksumURL, err := releaseDownloadURL(source, tag, "checksums.txt")
 	if err != nil {
@@ -337,34 +337,11 @@ func (u *UpdateManager) downloadVerifyAndReplace(
 		return fmt.Errorf("parse checksums: %w", err)
 	}
 
-	dir := filepath.Dir(u.executablePath)
-	appTemp, err := u.downloadVerifiedTemp(ctx, source, tag, assets.Application, checksums, 0o755)
+	appTemp, err := u.downloadVerifiedTemp(ctx, source, tag, asset, checksums, 0o755)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(appTemp) }()
-	bridgeTemp, err := u.downloadVerifiedTemp(ctx, source, tag, assets.Bridge, checksums, 0o755)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(bridgeTemp) }()
-	licenseTemp, err := u.downloadVerifiedTemp(ctx, source, tag, bridgeLicenseAsset, checksums, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(licenseTemp) }()
-
-	bridgeTarget := filepath.Join(dir, assets.BridgeFile)
-	licenseTarget := filepath.Join(dir, bridgeLicenseAsset)
-	if err := os.Rename(bridgeTemp, bridgeTarget); err != nil {
-		return fmt.Errorf("replace cursor-sdk-bridge: %w", err)
-	}
-	if err := os.Rename(licenseTemp, licenseTarget); err != nil {
-		return fmt.Errorf("replace cursor-sdk-bridge license: %w", err)
-	}
-	if err := writeCompanionMarker(dir, tag, checksums[assets.Bridge]); err != nil {
-		return err
-	}
 	if err := os.Rename(appTemp, u.executablePath); err != nil {
 		return fmt.Errorf("replace executable: %w", err)
 	}
@@ -411,115 +388,6 @@ func (u *UpdateManager) downloadVerifiedTemp(
 		return "", err
 	}
 	return path, nil
-}
-
-const (
-	bridgeLicenseAsset = "cursor-sdk-bridge-LICENSE.txt"
-	companionMarker    = ".ccload-companions"
-)
-
-type releaseAssets struct {
-	Application string
-	Bridge      string
-	BridgeFile  string
-}
-
-func releaseAssetNames(goos, goarch string) (releaseAssets, bool) {
-	application, ok := releaseAssetName(goos, goarch)
-	if !ok {
-		return releaseAssets{}, false
-	}
-	bridge := "cursor-sdk-bridge-" + goos + "-" + goarch
-	bridgeFile := "cursor-sdk-bridge"
-	if goos == "windows" {
-		bridge += ".exe"
-		bridgeFile += ".exe"
-	}
-	return releaseAssets{Application: application, Bridge: bridge, BridgeFile: bridgeFile}, true
-}
-
-func writeCompanionMarker(dir, tag, bridgeHash string) error {
-	tmp, err := os.CreateTemp(dir, ".ccload-companions-*")
-	if err != nil {
-		return fmt.Errorf("create companion marker: %w", err)
-	}
-	path := tmp.Name()
-	defer func() { _ = os.Remove(path) }()
-	if _, err := fmt.Fprintf(tmp, "%s\n%s\n", tag, bridgeHash); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write companion marker: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync companion marker: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close companion marker: %w", err)
-	}
-	if err := os.Rename(path, filepath.Join(dir, companionMarker)); err != nil {
-		return fmt.Errorf("replace companion marker: %w", err)
-	}
-	return nil
-}
-
-// EnsureCurrentCompanions repairs an installation upgraded by an older
-// updater that replaced only the ccLoad executable.
-func (u *UpdateManager) EnsureCurrentCompanions(ctx context.Context) error {
-	if u == nil || !u.applyUpdates || strings.TrimSpace(Version) == "" || strings.EqualFold(Version, "dev") {
-		return nil
-	}
-	assets, ok := releaseAssetNames(u.goos, u.goarch)
-	if !ok {
-		return nil
-	}
-	dir := filepath.Dir(u.executablePath)
-	markerBytes, markerErr := os.ReadFile(filepath.Join(dir, companionMarker))
-	if markerErr == nil && strings.SplitN(string(markerBytes), "\n", 2)[0] == Version {
-		if info, err := os.Stat(filepath.Join(dir, assets.BridgeFile)); err == nil && !info.IsDir() {
-			return nil
-		}
-	}
-
-	var sourceErrors []error
-	for _, source := range u.releaseSources {
-		checksumURL, err := releaseDownloadURL(source, Version, "checksums.txt")
-		if err != nil {
-			sourceErrors = append(sourceErrors, err)
-			continue
-		}
-		checksumBytes, err := u.downloadBytes(ctx, checksumURL)
-		if err != nil {
-			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-			continue
-		}
-		checksums, err := parseChecksums(checksumBytes)
-		if err != nil {
-			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-			continue
-		}
-		bridgeTemp, err := u.downloadVerifiedTemp(ctx, source, Version, assets.Bridge, checksums, 0o755)
-		if err != nil {
-			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-			continue
-		}
-		licenseTemp, err := u.downloadVerifiedTemp(ctx, source, Version, bridgeLicenseAsset, checksums, 0o644)
-		if err != nil {
-			_ = os.Remove(bridgeTemp)
-			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-			continue
-		}
-		if err := os.Rename(bridgeTemp, filepath.Join(dir, assets.BridgeFile)); err != nil {
-			_ = os.Remove(bridgeTemp)
-			_ = os.Remove(licenseTemp)
-			return fmt.Errorf("repair cursor-sdk-bridge: %w", err)
-		}
-		if err := os.Rename(licenseTemp, filepath.Join(dir, bridgeLicenseAsset)); err != nil {
-			_ = os.Remove(licenseTemp)
-			return fmt.Errorf("repair cursor-sdk-bridge license: %w", err)
-		}
-		return writeCompanionMarker(dir, Version, checksums[assets.Bridge])
-	}
-	return fmt.Errorf("repair release %s companions from all sources: %w", Version, errors.Join(sourceErrors...))
 }
 
 func (u *UpdateManager) downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
