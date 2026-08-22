@@ -489,7 +489,11 @@ func (s *Server) prepareOAuthCredentialImportFile(
 				return prepared
 			}
 		}
-		credential, err = s.completeImportedCodexCredential(ctx, credential)
+		service := s.codexService
+		if service == nil && s.client != nil {
+			service = codexauth.NewService(s.client)
+		}
+		credential, err = completeImportedCodexCredential(ctx, service, credential)
 		if err != nil {
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
 			return prepared
@@ -731,13 +735,13 @@ func writeSSEEvent(c *gin.Context, eventName string, payload any) error {
 	return nil
 }
 
-func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
+func completeImportedCodexCredential(
+	ctx context.Context,
+	service *codexauth.Service,
+	credential *codexauth.Credential,
+) (*codexauth.Credential, error) {
 	if credential == nil {
 		return nil, errors.New("codex credential is nil")
-	}
-	service := s.codexService
-	if service == nil && s.client != nil {
-		service = codexauth.NewService(s.client)
 	}
 	if service == nil || service.Client == nil {
 		return nil, errors.New("codex credential validation is unavailable")

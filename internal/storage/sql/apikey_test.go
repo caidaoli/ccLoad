@@ -422,43 +422,54 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 	}
 }
 
-func TestAPIKey_ImportChannelBatchPreservesExistingOAuthCredential(t *testing.T) {
-	store := newTestStore(t, "import-preserve-oauth-credential.db")
+func TestAPIKey_ImportChannelBatchUpdatesExistingOAuthChannel(t *testing.T) {
+	store := newTestStore(t, "import-update-oauth-channel.db")
 	ctx := context.Background()
-	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	original := `{"type":"codex","access_token":"at-original","refresh_token":"rt-original","expired":"2031-01-01T00:00:00Z"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name: "codex-import-cas", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: winner,
+		Name: "codex-import-update", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: original,
 		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
 		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-old"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := `{"type":"codex","access_token":"at-stale","refresh_token":"rt-stale","expired":"2032-01-01T00:00:00Z"}`
-	for _, imported := range []*model.Config{
+	credentials := []string{
+		`{"type":"codex","access_token":"at-by-name","refresh_token":"rt-by-name","expired":"2032-01-01T00:00:00Z"}`,
+		`{"type":"codex","access_token":"at-by-id","refresh_token":"rt-by-id","expired":"2033-01-01T00:00:00Z"}`,
+	}
+	for index, imported := range []*model.Config{
 		{
-			Name: created.Name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: stale,
+			Name: created.Name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentials[0],
 			URLs:    model.ChannelURLs{{URL: "https://by-name.example.com", Protocols: []string{"codex"}}},
 			Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-by-name"}},
 		},
 		{
-			ID: created.ID, Name: created.Name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: stale,
+			ID: created.ID, Name: created.Name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentials[1],
 			URLs:    model.ChannelURLs{{URL: "https://by-id.example.com", Protocols: []string{"codex"}}},
 			Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-by-id"}},
 		},
 	} {
-		if _, _, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: imported}}); err == nil {
-			t.Fatal("ImportChannelBatch() updated an existing OAuth channel")
+		createdCount, updatedCount, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: imported}})
+		if err != nil {
+			t.Fatalf("ImportChannelBatch() error = %v", err)
+		}
+		if createdCount != 0 || updatedCount != 1 {
+			t.Fatalf("ImportChannelBatch() counts = (%d, %d), want (0, 1)", createdCount, updatedCount)
 		}
 		persisted, err := store.GetConfig(ctx, created.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if persisted.OAuthCredential != winner {
-			t.Fatalf("OAuth credential = %q, want CAS winner", persisted.OAuthCredential)
+		if persisted.OAuthCredential != credentials[index] {
+			t.Fatalf("OAuth credential was not updated")
 		}
-		if !persisted.SupportsModel("gpt-old") || persisted.SupportsModel("gpt-by-name") || persisted.SupportsModel("gpt-by-id") {
-			t.Fatalf("OAuth models changed after rejected import: %v", persisted.GetModels())
+		wantModel := []string{"gpt-by-name", "gpt-by-id"}[index]
+		if !persisted.SupportsModel(wantModel) {
+			t.Fatalf("OAuth models = %v, want %s", persisted.GetModels(), wantModel)
+		}
+		if got := persisted.GetURLs()[0]; got != imported.GetURLs()[0] {
+			t.Fatalf("OAuth URL = %q, want %q", got, imported.GetURLs()[0])
 		}
 	}
 }

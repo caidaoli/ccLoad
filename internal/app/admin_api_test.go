@@ -395,6 +395,110 @@ func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
 	}
 }
 
+func TestAdminAPI_ImportChannelsCSVValidatesExistingOAuthBeforeUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		client     func() *http.Client
+		wantStatus int
+		wantToken  string
+		wantModel  string
+	}{
+		{
+			name: "accepted credential updates channel", client: newAcceptedCodexImportClient,
+			wantStatus: http.StatusOK, wantToken: "at-imported", wantModel: "gpt-imported",
+		},
+		{
+			name: "rejected credential preserves channel",
+			client: func() *http.Client {
+				return &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusUnauthorized,
+						Body:       io.NopCloser(strings.NewReader(`{"error":"rejected"}`)),
+						Request:    request,
+					}, nil
+				})}
+			},
+			wantStatus: http.StatusBadRequest, wantToken: "at-original", wantModel: "gpt-original",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newInMemoryServer(t)
+			ctx := context.Background()
+			originalCredential := `{"type":"codex","access_token":"at-original","refresh_token":"rt-original","expired":"2030-01-01T00:00:00Z"}`
+			created, err := server.store.CreateConfig(ctx, &model.Config{
+				Name: "Codex CSV Update", AuthType: model.AuthTypeCodexOAuth,
+				OAuthCredential: originalCredential,
+				URLs:            model.ChannelURLs{{URL: "https://original.example.com", Protocols: []string{"codex"}}},
+				Enabled:         true,
+				ModelEntries:    []model.ModelEntry{{Model: "gpt-original"}},
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig() error = %v", err)
+			}
+
+			client := tc.client()
+			server.client = client
+			server.codexService = codexauth.NewService(client)
+			importedCredential := `{"type":"codex","access_token":"at-imported","refresh_token":"rt-imported","expired":"2031-01-01T00:00:00Z"}`
+			var csvBody bytes.Buffer
+			csvWriter := csv.NewWriter(&csvBody)
+			if err := csvWriter.Write([]string{"name", "urls", "models", "auth_type", "oauth_credential", "enabled"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := csvWriter.Write([]string{
+				created.Name,
+				`[{"url":"https://imported.example.com","protocols":["codex"]}]`,
+				"gpt-imported", model.AuthTypeCodexOAuth, importedCredential, "true",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			csvWriter.Flush()
+			if err := csvWriter.Error(); err != nil {
+				t.Fatal(err)
+			}
+
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", "oauth-update.csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(csvBody.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			request := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			c, response := newTestContext(t, request)
+			server.HandleImportChannelsCSV(c)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("import status=%d, want %d; body=%s", response.Code, tc.wantStatus, response.Body.String())
+			}
+
+			persisted, err := server.store.GetConfig(ctx, created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.AccessToken != tc.wantToken {
+				t.Fatalf("persisted access token was not the expected winner")
+			}
+			if !persisted.SupportsModel(tc.wantModel) {
+				t.Fatalf("persisted models=%v, want %s", persisted.GetModels(), tc.wantModel)
+			}
+			if strings.Contains(response.Body.String(), "at-imported") || strings.Contains(response.Body.String(), "rt-imported") {
+				t.Fatal("import response leaked the rejected credential")
+			}
+		})
+	}
+}
+
 func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	// 创建测试环境
 	server := newInMemoryServer(t)

@@ -2,7 +2,9 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -301,6 +303,11 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 
 	// 批量导入所有有效记录(单事务 + 预编译语句)
 	if len(validChannels) > 0 {
+		if err := s.prepareExistingOAuthChannelUpdates(c.Request.Context(), validChannels); err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
+			RespondErrorWithData(c, http.StatusBadRequest, err.Error(), summary)
+			return
+		}
 		created, updated, err := s.store.ImportChannelBatch(c.Request.Context(), validChannels)
 		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
@@ -327,6 +334,11 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 				s.urlSelector.PruneChannel(channelID, cfg.GetURLs())
 				// 同步清理数据库中已移除URL的禁用状态记录
 				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
+			}
+		}
+		for _, channel := range validChannels {
+			if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+				s.invalidateOAuthCredential(channel.Config.ID, channel.Config.GetAuthType())
 			}
 		}
 	}
@@ -655,6 +667,216 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported auth_type %q", authType)
 	}
+}
+
+// prepareExistingOAuthChannelUpdates validates every credential that would
+// overwrite an existing OAuth channel. Network I/O deliberately happens before
+// ImportChannelBatch opens its transaction; a failed or indeterminate probe
+// leaves the complete batch untouched.
+func (s *Server) prepareExistingOAuthChannelUpdates(
+	ctx context.Context,
+	channels []*model.ChannelWithKeys,
+) error {
+	hasOAuth := false
+	for _, channel := range channels {
+		if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+			hasOAuth = true
+			break
+		}
+	}
+	if !hasOAuth {
+		return nil
+	}
+
+	existingConfigs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("query existing channels before OAuth validation: %w", err)
+	}
+	existingByName := make(map[string]*model.Config, len(existingConfigs))
+	for _, cfg := range existingConfigs {
+		if cfg != nil {
+			existingByName[cfg.Name] = cfg
+		}
+	}
+
+	for _, channel := range channels {
+		if channel == nil || channel.Config == nil || !channel.Config.UsesOAuth() {
+			continue
+		}
+		imported := channel.Config
+		existing := existingByName[imported.Name]
+		if existing == nil || existing.GetAuthType() != imported.GetAuthType() {
+			continue
+		}
+		credential, err := s.validateCSVImportOAuthCredential(ctx, existing, imported)
+		if err != nil {
+			return fmt.Errorf("validate imported OAuth credential for channel %s: %w", imported.Name, err)
+		}
+		imported.OAuthCredential = credential
+	}
+	return nil
+}
+
+func (s *Server) validateCSVImportOAuthCredential(
+	ctx context.Context,
+	existing *model.Config,
+	imported *model.Config,
+) (string, error) {
+	client := s.getClientForChannel(existing)
+	switch imported.GetAuthType() {
+	case model.AuthTypeCodexOAuth:
+		credential, err := codexauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.codexService
+		if service == nil {
+			service = codexauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		completed, err := completeImportedCodexCredential(ctx, service, credential)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeAntigravityOAuth:
+		credential, err := antigravityauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.antigravityService
+		if service == nil {
+			service = antigravityauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		completed, err := service.CompleteCredential(ctx, credential)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeXAIOAuth:
+		credential, err := xaiauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		baseURL := xaiauth.CLIBaseURL
+		if urls := imported.GetURLs(); len(urls) > 0 {
+			baseURL = urls[0]
+		}
+		completed, err := completeXAICredential(ctx, xaiauth.NewService(client), client, credential, baseURL)
+		if err != nil {
+			return "", err
+		}
+		return completed.JSON()
+
+	case model.AuthTypeAnthropicOAuth:
+		credential, err := anthropicauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.anthropicService
+		if service == nil {
+			service = anthropicauth.NewService(client)
+		} else {
+			clone := *service
+			clone.Client = client
+			service = &clone
+		}
+		refreshed := false
+		needsRefresh, err := credential.NeedsRefresh(time.Now(), anthropicauth.CredentialRefreshLead)
+		if err != nil {
+			return "", err
+		}
+		if needsRefresh {
+			credential, err = refreshCSVImportAnthropicCredential(ctx, service, credential)
+			if err != nil {
+				return "", err
+			}
+			refreshed = true
+		}
+		baseURL := anthropicauth.DefaultUpstreamURL
+		if urls := imported.GetURLs(); len(urls) > 0 {
+			baseURL = urls[0]
+		}
+		_, _, probeErr := requestAnthropicUsage(ctx, client, credential, baseURL)
+		if probeErr != nil && !refreshed && oauthUsageCredentialRejected(probeErr) {
+			credential, err = refreshCSVImportAnthropicCredential(ctx, service, credential)
+			if err != nil {
+				return "", err
+			}
+			_, _, probeErr = requestAnthropicUsage(ctx, client, credential, baseURL)
+		}
+		if probeErr != nil {
+			return "", probeErr
+		}
+		return credential.JSON()
+
+	case model.AuthTypeZAIOAuth:
+		credential, err := zaiauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if _, err := requestZAIUsage(ctx, s.zaiUsageService(existing), credential.APIKey); err != nil {
+			return "", err
+		}
+		return credential.JSON()
+
+	case model.AuthTypeCursorOAuth:
+		credential, err := cursorauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		service := s.cursorUsageService(existing)
+		if _, err := requestCursorUsage(ctx, service, credential.AccessToken); err != nil {
+			if credential.APIKey == "" {
+				return "", err
+			}
+			pair, exchangeErr := service.ExchangeAPIKey(ctx, credential.APIKey)
+			if exchangeErr != nil {
+				return "", exchangeErr
+			}
+			credential, exchangeErr = credential.MergeRefresh(&cursorauth.Credential{
+				AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken,
+				LastRefresh: time.Now().UTC().Format(time.RFC3339),
+			})
+			if exchangeErr != nil {
+				return "", exchangeErr
+			}
+			if _, probeErr := requestCursorUsage(ctx, service, credential.AccessToken); probeErr != nil {
+				return "", probeErr
+			}
+		}
+		return credential.JSON()
+
+	default:
+		return "", fmt.Errorf("unsupported auth_type %q", imported.GetAuthType())
+	}
+}
+
+func refreshCSVImportAnthropicCredential(
+	ctx context.Context,
+	service *anthropicauth.Service,
+	credential *anthropicauth.Credential,
+) (*anthropicauth.Credential, error) {
+	refreshed, err := service.Refresh(ctx, credential.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
+	return credential.MergeRefresh(refreshed)
+}
+
+func oauthUsageCredentialRejected(err error) bool {
+	var statusErr *oauthUsageHTTPStatusError
+	return errors.As(err, &statusErr) &&
+		(statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden)
 }
 
 // ==================== CSV辅助函数 ====================
