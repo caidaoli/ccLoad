@@ -2,12 +2,122 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/xaiauth"
+
+	"github.com/tidwall/gjson"
 )
+
+func TestBuildXAIImagesResponsesRequestValidatesConsumedFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		body            string
+		wantUnsupported bool
+	}{
+		{name: "stream type", body: `{"model":"grok-4.6","prompt":"cat","stream":"true"}`},
+		{name: "response format type", body: `{"model":"grok-4.6","prompt":"cat","response_format":123}`},
+		{name: "invalid n", body: `{"model":"grok-4.6","prompt":"cat","n":0}`},
+		{name: "bridge n limit", body: `{"model":"grok-4.6","prompt":"cat","n":2}`, wantUnsupported: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := buildXAIImagesResponsesRequest([]byte(test.body), "grok-4.6")
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if got := errors.Is(err, errXAIImagesBridgeUnsupported); got != test.wantUnsupported {
+				t.Fatalf("unsupported error = %v, want %v: %v", got, test.wantUnsupported, err)
+			}
+		})
+	}
+}
+
+func TestBuildXAIImagesResponsesRequestAcceptsStreaming(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildXAIImagesResponsesRequest(
+		[]byte(`{"model":"grok-4.6","prompt":"cat","stream":true,"partial_images":2}`),
+		"grok-4.6",
+	)
+	if err != nil {
+		t.Fatalf("buildXAIImagesResponsesRequest() error = %v", err)
+	}
+	if !gjson.GetBytes(got, "stream").Bool() || gjson.GetBytes(got, "tools.0.partial_images").Int() != 2 {
+		t.Fatalf("streaming Images request mismatch: %s", got)
+	}
+	if gjson.GetBytes(got, "tool_choice").String() != "required" {
+		t.Fatalf("streaming Images request must require its sole xAI tool: %s", got)
+	}
+}
+
+func TestTranslateXAIImagesResponsesStreamEventSupportsURLFormat(t *testing.T) {
+	t.Parallel()
+
+	partial, terminal, err := translateXAIImagesResponsesStreamEvent(
+		[]byte(`event: response.image_generation_call.partial_image
+data: {"type":"response.image_generation_call.partial_image","partial_image_index":1,"partial_image_b64":"cGFydGlhbA==","output_format":"webp"}
+
+`),
+		[]byte(`{"response_format":"url"}`),
+	)
+	if err != nil || terminal || len(partial) != 1 ||
+		!strings.Contains(string(partial[0]), `"url":"data:image/webp;base64,cGFydGlhbA=="`) {
+		t.Fatalf("partial URL event = %q, terminal=%v, err=%v", partial, terminal, err)
+	}
+
+	completed, terminal, err := translateXAIImagesResponsesStreamEvent(
+		[]byte(`data: {"type":"response.completed","response":{"output":[{"type":"image_generation_call","result":"ZmluYWw=","output_format":"jpeg"}],"tool_usage":{"image_gen":{"total_tokens":9}}}}
+
+`),
+		[]byte(`{"response_format":"url"}`),
+	)
+	if err != nil || !terminal || len(completed) != 1 ||
+		!strings.Contains(string(completed[0]), `"url":"data:image/jpeg;base64,ZmluYWw="`) ||
+		!strings.Contains(string(completed[0]), `"usage":{"total_tokens":9}`) {
+		t.Fatalf("completed URL event = %q, terminal=%v, err=%v", completed, terminal, err)
+	}
+}
+
+func TestMergeXAIImageOutputsAppendsOutputItemDoneImage(t *testing.T) {
+	t.Parallel()
+
+	got := mergeXAIImageOutputs(
+		[]xaiImageGenerationOutput{{Type: "message"}},
+		[]xaiImageGenerationOutput{{Type: "image_generation_call", Result: "aW1hZ2U="}},
+	)
+	if len(got) != 2 || got[1].Type != "image_generation_call" || got[1].Result != "aW1hZ2U=" {
+		t.Fatalf("merged output = %#v", got)
+	}
+}
+
+func TestTranslateXAIImagesResponsesStreamEventAcceptsCompletedBeforeOutputItem(t *testing.T) {
+	t.Parallel()
+
+	state := &xaiImagesStreamState{}
+	completed, terminal, err := translateXAIImagesResponsesStreamEventWithState(
+		[]byte(`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n"),
+		[]byte(`{"response_format":"b64_json"}`), state,
+	)
+	if err != nil || terminal || len(completed) != 0 || state.completed == nil {
+		t.Fatalf("completed-before-item result=%q terminal=%v err=%v state=%#v", completed, terminal, err, state)
+	}
+	completed, terminal, err = translateXAIImagesResponsesStreamEventWithState(
+		[]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"aW1hZ2U=","output_format":"png"}}`+"\n\n"),
+		[]byte(`{"response_format":"b64_json"}`), state,
+	)
+	if err != nil || !terminal || len(completed) != 1 || !strings.Contains(string(completed[0]), `"b64_json":"aW1hZ2U="`) {
+		t.Fatalf("output-item-after-completed result=%q terminal=%v err=%v", completed, terminal, err)
+	}
+}
 
 func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	t.Parallel()
@@ -165,6 +275,154 @@ func TestFinalizeXAIResponsesBodyPreservesExplicitTools(t *testing.T) {
 	}
 }
 
+func TestFinalizeXAIResponsesBodyNormalizesImageGenerationByModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		model     string
+		wantImage bool
+		wantCount int
+	}{
+		{name: "grok 4.5 strips", model: "grok-4.5", wantCount: 1},
+		{name: "grok 4.20 stays on old product line", model: "grok-4.20-0309-reasoning", wantCount: 1},
+		{name: "grok 4.20 with unknown suffix stays old", model: "grok-4.20(foo)", wantCount: 1},
+		{name: "grok 4.6 keeps", model: "grok-4.6", wantImage: true, wantCount: 2},
+		{name: "provider prefix and thinking suffix", model: "xai/grok-4.6(high)", wantImage: true, wantCount: 2},
+		{name: "future major keeps", model: "grok-5", wantImage: true, wantCount: 2},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := finalizeXAIResponsesBody([]byte(`{
+				"tools":[
+					{"type":"image_generation","action":"generate"},
+					{"type":"function","name":"lookup"}
+				],
+				"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"image_generation"},{"type":"function","name":"lookup"}]}
+			}`), test.model, "conv")
+			if err != nil {
+				t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(got, &payload); err != nil {
+				t.Fatal(err)
+			}
+			tools := payload["tools"].([]any)
+			if gotCount := len(tools); gotCount != test.wantCount {
+				t.Fatalf("tools length = %d, want %d; body=%s", gotCount, test.wantCount, got)
+			}
+			if test.wantImage {
+				imageTool := tools[0].(map[string]any)
+				if imageTool["type"] != "image_generation" || imageTool["action"] != "generate" {
+					t.Fatalf("image_generation tool changed: %#v", imageTool)
+				}
+			}
+			choice := payload["tool_choice"].(map[string]any)
+			allowed := choice["tools"].([]any)
+			if gotCount := len(allowed); gotCount != test.wantCount {
+				t.Fatalf("allowed tools length = %d, want %d; body=%s", gotCount, test.wantCount, got)
+			}
+		})
+	}
+}
+
+func TestFinalizeXAIResponsesBodyPromotesAdditionalImageGenerationTools(t *testing.T) {
+	t.Parallel()
+
+	got, err := finalizeXAIResponsesBody([]byte(`{
+		"input":[
+			{"role":"user","content":"draw a cat"},
+			{"type":"additional_tools","tools":[{"type":"image_generation","action":"generate"}]}
+		],
+		"tool_choice":{"type":"image_generation"}
+	}`), "grok-4.6", "conv")
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want additional_tools removed", input)
+	}
+	tools := payload["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "image_generation" {
+		t.Fatalf("tools = %#v, want promoted image_generation", tools)
+	}
+	choice := payload["tool_choice"].(map[string]any)
+	if choice["type"] != "allowed_tools" || choice["mode"] != "required" {
+		t.Fatalf("tool_choice = %#v, want required allowed_tools", choice)
+	}
+
+	got, err = finalizeXAIResponsesBody([]byte(`{
+		"input":[
+			{"role":"user","content":"draw a cat"},
+			{"type":"additional_tools","tools":[{"type":"image_generation"}]}
+		],
+		"tool_choice":{"type":"image_generation"}
+	}`), "grok-4.5", "conv")
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() old model error = %v", err)
+	}
+	payload = nil
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["tools"]; exists {
+		t.Fatalf("unsupported promoted tools survived: %s", got)
+	}
+	if _, exists := payload["tool_choice"]; exists {
+		t.Fatalf("unsupported promoted tool_choice survived: %s", got)
+	}
+}
+
+func TestFinalizeXAIResponsesBodyPrunesOrphanedAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	got, err := finalizeXAIResponsesBody([]byte(`{
+		"tools":[{"type":"function","name":"lookup"},{"type":"image_generation"}],
+		"tool_choice":{"type":"allowed_tools","tools":[{"type":"image_generation"},{"type":"function","name":"missing"}]}
+	}`), "grok-4.5", "conv")
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["tool_choice"]; exists {
+		t.Fatalf("orphaned tool_choice survived: %s", got)
+	}
+}
+
+func TestFinalizeXAIResponsesBodyRewritesForcedImageGenerationChoice(t *testing.T) {
+	t.Parallel()
+
+	got, err := finalizeXAIResponsesBody([]byte(`{
+		"tools":[{"type":"image_generation","action":"generate"}],
+		"tool_choice":{"type":"image_generation"}
+	}`), "grok-4.6", "conv")
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	choice := payload["tool_choice"].(map[string]any)
+	if choice["type"] != "allowed_tools" || choice["mode"] != "required" {
+		t.Fatalf("tool_choice = %#v, want required allowed_tools", choice)
+	}
+	allowed := choice["tools"].([]any)
+	if len(allowed) != 1 || allowed[0].(map[string]any)["type"] != "image_generation" {
+		t.Fatalf("tool_choice.tools = %#v, want image_generation", allowed)
+	}
+}
+
 func TestFinalizeXAIResponsesBodyDropsUnsupportedReasoning(t *testing.T) {
 	t.Parallel()
 
@@ -221,15 +479,17 @@ func TestInjectXAIResponsesHeadersRebuildsIdentityAfterRules(t *testing.T) {
 	injectXAIResponsesHeaders(req, "access-token", "conv-derived")
 
 	want := map[string]string{
-		"Authorization":                "Bearer access-token",
-		"Content-Type":                 "application/json",
-		"Accept":                       "application/json, text/event-stream",
-		xaiauth.CLITokenAuthHeader:     xaiauth.CLITokenAuthValue,
-		xaiauth.CLIClientVersionHeader: "0.2.114",
-		"User-Agent":                   xaiauth.CLIUserAgent,
-		xaiauth.CLIClientModeHeader:    xaiauth.CLIClientMode,
-		"x-grok-conv-id":               "conv-derived",
-		"X-Unrelated-Custom-Header":    "preserved",
+		"Authorization":                       "Bearer access-token",
+		"Content-Type":                        "application/json",
+		"Accept":                              "application/json, text/event-stream",
+		xaiauth.CLITokenAuthHeader:            xaiauth.CLITokenAuthValue,
+		xaiauth.CLIClientVersionHeader:        xaiauth.CLIClientVersion,
+		xaiauth.CLIClientIdentifierHeader:     xaiauth.CLIClientIdentifierValue,
+		xaiauth.CLIAuthenticateResponseHeader: xaiauth.CLIAuthenticateResponseValue,
+		"User-Agent":                          xaiauth.CLIUserAgent,
+		xaiauth.CLIClientModeHeader:           xaiauth.CLIClientMode,
+		"x-grok-conv-id":                      "conv-derived",
+		"X-Unrelated-Custom-Header":           "preserved",
 	}
 	for name, value := range want {
 		if got := req.Header.Get(name); got != value {
@@ -238,7 +498,6 @@ func TestInjectXAIResponsesHeadersRebuildsIdentityAfterRules(t *testing.T) {
 	}
 	for _, name := range []string{
 		"X-Api-Key", "x-goog-api-key", "Session-Id", "Session_id", "Originator", "ChatGPT-Account-ID",
-		"X-Grok-Client-Identifier", "X-Authenticateresponse",
 	} {
 		if got := req.Header.Get(name); got != "" {
 			t.Errorf("conflicting header %s survived with %q", name, got)

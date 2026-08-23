@@ -480,8 +480,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		OnBytesRead: func(n int64) {
 			s.activeRequests.AddBytes(reqCtx.activeReqID, n)
 		},
-		OnFirstByteRead: func() {
-			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, time.Since(reqCtx.attemptStartTime))
+		OnFirstByteRead: func(firstByteTime time.Duration) {
+			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, firstByteTime)
 		},
 		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
 			s.activeRequests.SetUpstreamWebsocket(reqCtx.activeReqID, upstreamWebsocket)

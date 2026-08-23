@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -156,11 +156,12 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 	}
 	if imageReq.GenerationAPI == imageGenerationAPIImages {
 		if cfg.UsesXAIOAuth() {
-			if !validChatImageGenerationSize(imageReq.Size) {
+			responsesImage := xaiSupportsImageGeneration(s.resolveFinalUpstreamModel(cfg, imageReq.Model, util.ProtocolOpenAI))
+			if !responsesImage && !validChatImageGenerationSize(imageReq.Size) {
 				RespondErrorMsg(c, http.StatusBadRequest, "xAI Images API size must use an aspect-ratio and 1K/2K value")
 				return
 			}
-			if !oneOf(imageReq.Quality, "", "auto") || !oneOf(imageReq.Background, "", "auto") || !oneOf(imageReq.OutputFormat, "", "auto") {
+			if !responsesImage && (!oneOf(imageReq.Quality, "", "auto") || !oneOf(imageReq.Background, "", "auto") || !oneOf(imageReq.OutputFormat, "", "auto")) {
 				RespondErrorMsg(c, http.StatusBadRequest, "xAI Images API does not support quality, background, or output_format")
 				return
 			}
@@ -182,14 +183,18 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 	if imageReq.GenerationAPI == imageGenerationAPIImages && (cfg.UsesXAIOAuth() || cfg.UsesCodexOAuth()) {
 		actualModel := s.resolveFinalUpstreamModel(cfg, modelLookup, util.ProtocolOpenAI)
 		if cfg.UsesXAIOAuth() {
-			if _, supported := canonicalXAIImageModel(actualModel); !supported {
-				RespondJSON(c, http.StatusOK, gin.H{
-					"success":      false,
-					"error":        xaiImageUnsupportedModelError(actualModel).Error(),
-					"model":        imageReq.Model,
-					"actual_model": actualModel,
-				})
-				return
+			if !xaiSupportsImageGeneration(actualModel) {
+				if _, supported := canonicalXAIImageModel(actualModel); supported {
+					// xAI 原生 Images 模型继续走 /images/generations。
+				} else {
+					RespondJSON(c, http.StatusOK, gin.H{
+						"success":      false,
+						"error":        xaiImageUnsupportedModelError(actualModel).Error(),
+						"model":        imageReq.Model,
+						"actual_model": actualModel,
+					})
+					return
+				}
 			}
 		} else if _, supported := canonicalCodexImageModel(actualModel); !supported {
 			RespondJSON(c, http.StatusOK, gin.H{
@@ -466,14 +471,11 @@ func (s *Server) withXAIImageGenerationRuntime(cfg *model.Config) *model.Config 
 	if cfg == nil || !cfg.UsesXAIOAuth() {
 		return cfg
 	}
-	baseURL := xaiauth.APIBaseURL
-	if s != nil && s.configService != nil {
-		if configured := strings.TrimSpace(s.configService.GetString(config.XAIBaseURLSettingKey, "")); configured != "" {
-			baseURL = configured
-		}
-	}
 	runtimeCfg := cfg.Clone()
-	runtimeCfg.URLs = model.ChannelURLs{{URL: baseURL, Protocols: []string{util.ProtocolOpenAI}}}
+	// CLIProxyAPI routes xAI media and hosted image tools to the public API.
+	// The CLI chat endpoint is only for ordinary OAuth chat and drops
+	// image_generation before request validation.
+	runtimeCfg.URLs = model.ChannelURLs{{URL: xaiauth.APIBaseURL, Protocols: []string{util.ProtocolOpenAI}}}
 	runtimeCfg.ProtocolTransformMode = model.ProtocolTransformModeUpstream
 	return runtimeCfg
 }
@@ -592,6 +594,9 @@ func (s *Server) testChannelImageGenerationWithURL(
 			return annotateImageGenerationResult(result, actualModel)
 		}
 		actualModel = canonicalModel
+	}
+	if cfg.UsesXAIOAuth() && xaiSupportsImageGeneration(actualModel) {
+		return s.testXAIResponsesImageGeneration(parent, cfg, apiKey, imageReq, selectedURL, actualModel)
 	}
 	body, err := imageGenerationRequestBody(cfg, actualModel, imageReq)
 	if err != nil {
@@ -737,6 +742,100 @@ func imageGenerationRequestBody(cfg *model.Config, actualModel string, imageReq 
 		payload["output_format"] = imageReq.OutputFormat
 	}
 	return sonic.Marshal(payload)
+}
+
+func (s *Server) testXAIResponsesImageGeneration(
+	parent context.Context,
+	cfg *model.Config,
+	apiKey string,
+	imageReq *imageGenerationTestRequest,
+	selectedURL string,
+	actualModel string,
+) map[string]any {
+	start := time.Now()
+	source := map[string]any{"model": actualModel, "prompt": imageReq.Prompt, "stream": true}
+	for key, value := range map[string]string{
+		"size": imageReq.Size, "quality": imageReq.Quality,
+		"background": imageReq.Background, "output_format": imageReq.OutputFormat,
+	} {
+		if value != "" && value != "auto" {
+			source[key] = value
+		}
+	}
+	raw, err := sonic.Marshal(source)
+	if err != nil {
+		return annotateImageGenerationResult(imageGenerationErrorResult(start, err), actualModel)
+	}
+	body, err := buildXAIImagesResponsesRequest(raw, actualModel)
+	if err != nil {
+		result := imageGenerationErrorResult(start, err)
+		result["error"] = err.Error()
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(parent, false, s.resolveProtocolTimeouts(protocol.TransformPlan{
+		UpstreamProtocol: protocol.Codex,
+	}))
+	defer timeout.cancelAll()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildUpstreamURL(selectedURL, "/responses", ""), bytes.NewReader(body))
+	if err != nil {
+		return annotateImageGenerationResult(imageGenerationErrorResult(start, err), actualModel)
+	}
+	injectXAIAPIResponsesHeaders(req, apiKey)
+	req.Header.Set("Accept-Encoding", "identity")
+	resp, err := s.doUpstreamRequest(cfg, req)
+	if err != nil {
+		result := imageGenerationErrorResult(start, err)
+		result["error"] = err.Error()
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	if resp == nil || resp.Body == nil {
+		return annotateImageGenerationResult(imageGenerationErrorResult(start, errors.New("上游返回空响应")), actualModel)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	result := map[string]any{
+		"success": false, "status_code": resp.StatusCode,
+		"duration_ms": time.Since(start).Milliseconds(), "first_byte_duration_ms": time.Since(start).Milliseconds(),
+		"is_streaming": false, "client_protocol": util.ProtocolOpenAI, "upstream_protocol": util.ProtocolCodex,
+		"response_headers": flattenHeader(resp.Header),
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := readLimitedImageGenerationResponse(resp.Body, s.bodyLimits.maxForPath(imageGenerationPath))
+		if readErr != nil {
+			result["error"] = readErr.Error()
+		} else {
+			parseImageGenerationResponse(result, resp, responseBody, imageReq.OutputFormat)
+		}
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	collector := newCodexNonStreamCollector(newSSEUsageParser(string(protocol.Codex)))
+	streamErr := streamTransformSSEEventsUntil(ctx, resp.Body, discardHTTPResponseWriter{}, collector.consume,
+		func([]byte) ([][]byte, error) { return nil, nil }, collector.doneForXAIImages)
+	if collector.err != nil {
+		streamErr = collector.err
+	}
+	if streamErr != nil {
+		result["error"] = streamErr.Error()
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	terminal := collector.patchedTerminal()
+	if gjson.GetBytes(terminal, "type").String() != "response.completed" {
+		result["error"] = "xAI Responses image generation did not complete"
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	responseBody := gjson.GetBytes(terminal, "response")
+	if !responseBody.Exists() {
+		result["error"] = "xAI Responses completed event missing response"
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	imagesBody, err := buildOpenAIImagesResponseFromXAIResponses([]byte(responseBody.Raw), raw)
+	if err != nil {
+		result["error"] = err.Error()
+		return annotateImageGenerationResult(result, actualModel)
+	}
+	parseImageGenerationResponse(result, &http.Response{StatusCode: http.StatusOK, Status: "200 OK"}, imagesBody, imageReq.OutputFormat)
+	result["duration_ms"] = time.Since(start).Milliseconds()
+	result["first_byte_duration_ms"] = result["duration_ms"]
+	return annotateImageGenerationResult(result, actualModel)
 }
 
 func canonicalCodexImageModel(raw string) (string, bool) {

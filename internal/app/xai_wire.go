@@ -11,6 +11,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 )
@@ -69,6 +70,7 @@ func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]b
 	}
 	normalizeXAIReasoning(payload, actualModel)
 	normalizeXAIInputReasoningItems(payload)
+	normalizeXAIImageGenerationTools(payload, actualModel)
 	normalizeXAIOrphanedToolControls(payload)
 
 	encoded, err := json.Marshal(payload)
@@ -161,6 +163,172 @@ func xaiReasoningEfforts(modelName string) map[string]struct{} {
 	return allowed
 }
 
+const (
+	xaiImageGenerationToolType = "image_generation"
+	xaiImageGenerationMinMajor = 4
+	xaiImageGenerationMinMinor = 6
+)
+
+type xaiGrokVersion struct {
+	major int
+	minor int
+}
+
+// xaiSupportsImageGeneration reports whether a Grok conversation model accepts
+// xAI's native Responses image_generation tool. grok-4.20 is an older product
+// line whose dotted suffix is not comparable with grok-4.6.
+func xaiSupportsImageGeneration(modelName string) bool {
+	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName))
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		name = name[slash+1:]
+	}
+	if !strings.HasPrefix(name, "grok-") {
+		return false
+	}
+	rest := strings.TrimPrefix(name, "grok-")
+	if rest == "4.20" || strings.HasPrefix(rest, "4.20-") {
+		return false
+	}
+	version, ok := parseXAIGrokVersion(rest)
+	return ok && (version.major > xaiImageGenerationMinMajor ||
+		version.major == xaiImageGenerationMinMajor && version.minor >= xaiImageGenerationMinMinor)
+}
+
+func parseXAIGrokVersion(value string) (xaiGrokVersion, bool) {
+	majorEnd := 0
+	for majorEnd < len(value) && value[majorEnd] >= '0' && value[majorEnd] <= '9' {
+		majorEnd++
+	}
+	if majorEnd == 0 {
+		return xaiGrokVersion{}, false
+	}
+	major, err := strconv.Atoi(value[:majorEnd])
+	if err != nil {
+		return xaiGrokVersion{}, false
+	}
+	if majorEnd == len(value) || value[majorEnd] != '.' {
+		return xaiGrokVersion{major: major, minor: -1}, true
+	}
+	minorEnd := majorEnd + 1
+	for minorEnd < len(value) && value[minorEnd] >= '0' && value[minorEnd] <= '9' {
+		minorEnd++
+	}
+	if minorEnd == majorEnd+1 {
+		return xaiGrokVersion{major: major, minor: -1}, true
+	}
+	minor, err := strconv.Atoi(value[majorEnd+1 : minorEnd])
+	if err != nil {
+		return xaiGrokVersion{}, false
+	}
+	return xaiGrokVersion{major: major, minor: minor}, true
+}
+
+func normalizeXAIImageGenerationTools(payload map[string]any, modelName string) {
+	tools := promoteXAIAdditionalTools(payload)
+	supported := xaiSupportsImageGeneration(modelName)
+	filtered := make([]any, 0, len(tools))
+	for _, rawTool := range tools {
+		tool, isObject := rawTool.(map[string]any)
+		isImageGeneration := isObject && strings.TrimSpace(xaiStringValue(tool["type"])) == xaiImageGenerationToolType
+		if isImageGeneration && !supported {
+			continue
+		}
+		filtered = append(filtered, rawTool)
+	}
+	payload["tools"] = filtered
+	normalizeXAIToolChoice(payload, filtered)
+}
+
+func promoteXAIAdditionalTools(payload map[string]any) []any {
+	tools, _ := payload["tools"].([]any)
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return tools
+	}
+	promoted := append([]any(nil), tools...)
+	remaining := make([]any, 0, len(input))
+	for _, rawItem := range input {
+		item, isObject := rawItem.(map[string]any)
+		if !isObject || strings.TrimSpace(xaiStringValue(item["type"])) != "additional_tools" {
+			remaining = append(remaining, rawItem)
+			continue
+		}
+		additional, _ := item["tools"].([]any)
+		promoted = append(promoted, additional...)
+	}
+	if len(remaining) != len(input) {
+		payload["input"] = remaining
+	}
+	return promoted
+}
+
+func normalizeXAIToolChoice(payload map[string]any, tools []any) {
+	choice, ok := payload["tool_choice"].(map[string]any)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(xaiStringValue(choice["type"])) == xaiImageGenerationToolType {
+		if !xaiToolChoiceMatches(choice, tools) {
+			delete(payload, "tool_choice")
+			return
+		}
+		payload["tool_choice"] = map[string]any{
+			"type":  "allowed_tools",
+			"mode":  "required",
+			"tools": []any{choice},
+		}
+		choice = payload["tool_choice"].(map[string]any)
+	}
+	if strings.TrimSpace(xaiStringValue(choice["type"])) != "allowed_tools" {
+		if !xaiToolChoiceMatches(choice, tools) {
+			delete(payload, "tool_choice")
+		}
+		return
+	}
+	allowed, ok := choice["tools"].([]any)
+	if !ok {
+		delete(payload, "tool_choice")
+		return
+	}
+	filtered := make([]any, 0, len(allowed))
+	for _, rawTool := range allowed {
+		tool, isObject := rawTool.(map[string]any)
+		if !isObject || !xaiToolChoiceMatches(tool, tools) {
+			continue
+		}
+		filtered = append(filtered, rawTool)
+	}
+	if len(filtered) == 0 {
+		delete(payload, "tool_choice")
+		return
+	}
+	choice["tools"] = filtered
+}
+
+func xaiToolChoiceMatches(choice map[string]any, tools []any) bool {
+	choiceType := strings.TrimSpace(xaiStringValue(choice["type"]))
+	if choiceType == "" || choiceType == "allowed_tools" {
+		return false
+	}
+	choiceName := strings.TrimSpace(xaiStringValue(choice["name"]))
+	for _, rawTool := range tools {
+		tool, isObject := rawTool.(map[string]any)
+		if !isObject || strings.TrimSpace(xaiStringValue(tool["type"])) != choiceType {
+			continue
+		}
+		named := choiceType == "function" || choiceType == "custom"
+		if !named || choiceName != "" && choiceName == strings.TrimSpace(xaiStringValue(tool["name"])) {
+			return true
+		}
+	}
+	return false
+}
+
+func xaiStringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
 func normalizeXAIOrphanedToolControls(payload map[string]any) {
 	tools, ok := payload["tools"].([]any)
 	if ok && len(tools) > 0 {
@@ -191,9 +359,33 @@ func injectXAIResponsesHeaders(req *http.Request, accessToken, conversationID st
 	req.Header.Set(xaiauth.CLIClientVersionHeader, xaiauth.CLIClientVersion)
 	req.Header.Set("User-Agent", xaiauth.CLIUserAgent)
 	req.Header.Set(xaiauth.CLIClientModeHeader, xaiauth.CLIClientMode)
+	req.Header.Set(xaiauth.CLIClientIdentifierHeader, xaiauth.CLIClientIdentifierValue)
+	req.Header.Set(xaiauth.CLIAuthenticateResponseHeader, xaiauth.CLIAuthenticateResponseValue)
 	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
 		req.Header.Set("x-grok-conv-id", conversationID)
 	}
+}
+
+// injectXAIAPIResponsesHeaders builds the standard public API identity used by
+// api.x.ai. Hosted tools such as image_generation are unavailable on the Grok
+// CLI chat proxy, so its CLI-only headers must not leak onto this request.
+func injectXAIAPIResponsesHeaders(req *http.Request, accessToken string) {
+	if req == nil {
+		return
+	}
+	for _, name := range []string{
+		"Authorization", "X-Api-Key", "x-goog-api-key",
+		xaiauth.CLITokenAuthHeader, xaiauth.CLIClientVersionHeader,
+		xaiauth.CLIClientModeHeader, xaiauth.CLIClientIdentifierHeader,
+		xaiauth.CLIAuthenticateResponseHeader, "x-grok-conv-id",
+		"Session-Id", "Session_id", "Originator", "ChatGPT-Account-ID",
+	} {
+		req.Header.Del(name)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("User-Agent", xaiauth.CLIUserAgent)
 }
 
 func deriveXAIExecutionID(subject string, headers http.Header) string {

@@ -2718,22 +2718,30 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 		if gotConversationID == "" || gjson.GetBytes(wireBody, "prompt_cache_key").String() != gotConversationID {
 			t.Errorf("conversation identity mismatch header=%q body=%s", gotConversationID, wireBody)
 		}
-		if !gjson.GetBytes(wireBody, "stream").Bool() || gjson.GetBytes(wireBody, "model").String() != "grok-4.5" {
+		wireModel := gjson.GetBytes(wireBody, "model").String()
+		if !gjson.GetBytes(wireBody, "stream").Bool() || wireModel != "grok-4.5" && wireModel != "grok-4.6" {
 			t.Errorf("xAI required body fields missing: %s", wireBody)
 		}
 		tools := gjson.GetBytes(wireBody, "tools").Array()
-		switch gjson.GetBytes(wireBody, "tool_choice").String() {
-		case "":
+		choice := gjson.GetBytes(wireBody, "tool_choice")
+		switch {
+		case !choice.Exists():
 			if len(tools) != 0 {
 				t.Errorf("xAI CLI tools = %s, want no implicit tools", gjson.GetBytes(wireBody, "tools").Raw)
 			}
-		case "auto":
+		case choice.String() == "auto":
 			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" ||
 				tools[0].Get("search_context_size").String() != "low" {
 				t.Errorf("explicit xAI search tool was not preserved: %s", gjson.GetBytes(wireBody, "tools").Raw)
 			}
+		case choice.Get("type").String() == "allowed_tools":
+			if wireModel != "grok-4.6" || choice.Get("mode").String() != "required" ||
+				choice.Get("tools.0.type").String() != "image_generation" || len(tools) != 1 ||
+				tools[0].Get("type").String() != "image_generation" || tools[0].Get("action").String() != "generate" {
+				t.Errorf("xAI image_generation wire contract mismatch: %s", wireBody)
+			}
 		default:
-			t.Errorf("xAI tool_choice = %q, want absent or preserved auto", gjson.GetBytes(wireBody, "tool_choice").String())
+			t.Errorf("unexpected xAI tool_choice: %s", choice.Raw)
 		}
 		for _, field := range []string{"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options"} {
 			if gjson.GetBytes(wireBody, field).Exists() {
@@ -2764,7 +2772,7 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 		},
 	}
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "xai-oauth-http", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
+		name: "xai-oauth-http", upstreamProtocol: "codex", models: "grok-4.5,grok-4.6", priority: 100,
 		authType: model.AuthTypeXAIOAuth, oauthCredential: credential, customRequestRules: rules,
 	}}, map[int]string{0: xaiauth.CLIBaseURL})
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -2791,6 +2799,14 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	if explicitSearchResponse.Code != http.StatusOK || gjson.Get(explicitSearchResponse.Body.String(), "id").String() != "resp-xai" {
 		t.Fatalf("explicit search status=%d body=%s", explicitSearchResponse.Code, explicitSearchResponse.Body.String())
 	}
+	imageResponse := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "grok-4.6", "stream": false, "input": "draw a red circle",
+		"tools":       []any{map[string]any{"type": "image_generation", "action": "generate"}},
+		"tool_choice": map[string]any{"type": "image_generation"},
+	}, map[string]string{"Session-Id": "session", "Thread-Id": "parent"})
+	if imageResponse.Code != http.StatusOK || gjson.Get(imageResponse.Body.String(), "id").String() != "resp-xai" {
+		t.Fatalf("image generation status=%d body=%s", imageResponse.Code, imageResponse.Body.String())
+	}
 	if gotConversationID == "" {
 		t.Fatal("xAI conversation identity was not sent")
 	}
@@ -2801,6 +2817,323 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	keys, err := env.store.GetAPIKeys(context.Background(), configs[0].ID)
 	if err != nil || len(keys) != 0 {
 		t.Fatalf("xAI OAuth channel keys = %#v, %v", keys, err)
+	}
+}
+
+func TestProxy_XAIOAuthBridgesImagesGenerationsToGrok46Responses(t *testing.T) {
+	t.Parallel()
+
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer xai-image-access" {
+			t.Errorf("Authorization = %q", got)
+		}
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read xAI image wire body: %v", err)
+		}
+		if got := gjson.GetBytes(wireBody, "model").String(); got != "grok-4.6" {
+			t.Errorf("wire model = %q, body=%s", got, wireBody)
+		}
+		prompt := gjson.GetBytes(wireBody, "input.0.content.0.text").String()
+		if !gjson.GetBytes(wireBody, "stream").Bool() || prompt != "draw a white cat" && prompt != "incomplete image" {
+			t.Errorf("wire input contract mismatch: %s", wireBody)
+		}
+		tool := gjson.GetBytes(wireBody, "tools.0")
+		if tool.Get("type").String() != "image_generation" ||
+			tool.Get("action").String() != "generate" {
+			t.Errorf("wire image tool mismatch: %s", wireBody)
+		}
+		if prompt == "draw a white cat" && !tool.Get("partial_images").Exists() &&
+			(tool.Get("size").String() != "1024x1536" ||
+				tool.Get("quality").String() != "high" ||
+				tool.Get("output_format").String() != "webp") {
+			t.Errorf("wire image options mismatch: %s", wireBody)
+		}
+		choice := gjson.GetBytes(wireBody, "tool_choice")
+		if choice.String() != "required" {
+			t.Errorf("xAI Images bridge tool_choice = %s, want required: %s", choice.Raw, wireBody)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		if gjson.GetBytes(wireBody, "input.0.content.0.text").String() == "incomplete image" {
+			_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ig-incomplete","type":"image_generation_call","result":"cGFydGlhbA==","output_format":"png","size":"1024x1024","quality":"high"}}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"type":"response.incomplete","response":{"id":"resp-incomplete","status":"incomplete","output":[]}}`+"\n\n")
+			return
+		}
+		if tool.Get("partial_images").Int() > 0 {
+			_, _ = io.WriteString(w, `event: response.image_generation_call.partial_image`+"\n"+
+				`data: {"type":"response.image_generation_call.partial_image","partial_image_index":0,"partial_image_b64":"cGFydGlhbA==","output_format":"webp"}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ig-1","type":"image_generation_call","result":"aW1hZ2U=","revised_prompt":"A white cat","output_format":"webp","size":"1024x1536","quality":"high","background":"opaque"}}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-image","created_at":1770000000,"status":"completed","output":[],"tool_usage":{"image_gen":{"input_tokens":7,"output_tokens":11,"total_tokens":18}}}}`+"\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-image","created_at":1770000000,"status":"completed","output":[{"id":"ig-1","type":"image_generation_call","result":"aW1hZ2U=","revised_prompt":"A white cat","output_format":"webp","size":"1024x1536","quality":"high","background":"opaque"}],"tool_usage":{"image_gen":{"input_tokens":7,"output_tokens":11,"total_tokens":18}}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-image-access", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-images-bridge", upstreamProtocol: "codex", models: "grok-4.6", priority: 100,
+		authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.x.ai" {
+			t.Errorf("xAI image Responses host=%q, want api.x.ai", req.URL.Host)
+		}
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
+	env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
+
+	response := doProxyRequest(t, env.engine, "/v1/images/generations", map[string]any{
+		"model": "grok-4.6", "prompt": "draw a white cat",
+		"size": "1024x1536", "quality": "high", "output_format": "webp",
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "created").Int(); got != 1770000000 {
+		t.Errorf("created = %d", got)
+	}
+	if got := gjson.Get(response.Body.String(), "data.0.b64_json").String(); got != "aW1hZ2U=" {
+		t.Errorf("b64_json = %q, body=%s", got, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "data.0.revised_prompt").String(); got != "A white cat" {
+		t.Errorf("revised_prompt = %q", got)
+	}
+	if gjson.Get(response.Body.String(), "output_format").String() != "webp" ||
+		gjson.Get(response.Body.String(), "usage.total_tokens").Int() != 18 {
+		t.Errorf("metadata/usage mismatch: %s", response.Body.String())
+	}
+
+	streamResponse := doProxyRequest(t, env.engine, "/v1/images/generations", map[string]any{
+		"model": "grok-4.6", "prompt": "draw a white cat", "stream": true,
+		"partial_images": 1, "output_format": "webp",
+	}, nil)
+	if streamResponse.Code != http.StatusOK || upstreamCalls.Load() != 2 {
+		t.Fatalf("stream request status=%d calls=%d body=%s", streamResponse.Code, upstreamCalls.Load(), streamResponse.Body.String())
+	}
+	streamBody := streamResponse.Body.String()
+	if !strings.Contains(streamBody, "event: image_generation.partial_image") ||
+		!strings.Contains(streamBody, `"type":"image_generation.partial_image"`) ||
+		!strings.Contains(streamBody, `"b64_json":"cGFydGlhbA=="`) ||
+		!strings.Contains(streamBody, "event: image_generation.completed") ||
+		!strings.Contains(streamBody, `"type":"image_generation.completed"`) ||
+		!strings.Contains(streamBody, `"usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18}`) ||
+		strings.Contains(streamBody, "response.image_generation_call") || strings.Contains(streamBody, "response.completed") {
+		t.Fatalf("translated Images stream mismatch: %s", streamBody)
+	}
+
+	incompleteResponse := doProxyRequest(t, env.engine, "/v1/images/generations", map[string]any{
+		"model": "grok-4.6", "prompt": "incomplete image",
+	}, nil)
+	if incompleteResponse.Code != http.StatusBadGateway || upstreamCalls.Load() != 3 {
+		t.Fatalf("incomplete response status=%d calls=%d body=%s, want 502", incompleteResponse.Code, upstreamCalls.Load(), incompleteResponse.Body.String())
+	}
+}
+
+func TestProxy_XAIImagesStreamEmitsErrorAfterPartialOutput(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		prompt := gjson.GetBytes(wireBody, "input.0.content.0.text").String()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.image_generation_call.partial_image","partial_image_index":0,"partial_image_b64":"cGFydGlhbA==","output_format":"png"}`+"\n\n")
+		if prompt == "partial then EOF" {
+			return
+		}
+		if prompt == "partial then read error" {
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			panic(http.ErrAbortHandler)
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.incomplete","response":{"id":"resp-incomplete","status":"incomplete","output":[]}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-stream-access", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-stream-incomplete", upstreamProtocol: "codex", models: "grok-4.6", priority: 100,
+		authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.x.ai" {
+			t.Errorf("xAI image Responses host=%q, want api.x.ai", req.URL.Host)
+		}
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
+	env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
+
+	response := doProxyRequest(t, env.engine, openAIImagesGenerationsPath, map[string]any{
+		"model": "grok-4.6", "prompt": "partial then fail", "stream": true, "partial_images": 1,
+	}, nil)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, "event: image_generation.partial_image") ||
+		!strings.Contains(body, `"b64_json":"cGFydGlhbA=="`) ||
+		!strings.Contains(body, "event: error") ||
+		!strings.Contains(body, "did not complete") ||
+		strings.Contains(body, "image_generation.completed") || strings.Contains(body, "response.incomplete") {
+		t.Fatalf("streaming incomplete response status=%d body=%s", response.Code, body)
+	}
+
+	eofResponse := doProxyRequest(t, env.engine, openAIImagesGenerationsPath, map[string]any{
+		"model": "grok-4.6", "prompt": "partial then EOF", "stream": true, "partial_images": 1,
+	}, nil)
+	eofBody := eofResponse.Body.String()
+	if eofResponse.Code != http.StatusOK ||
+		!strings.Contains(eofBody, "event: image_generation.partial_image") ||
+		!strings.Contains(eofBody, "event: error") ||
+		!strings.Contains(eofBody, "ended before completion") ||
+		strings.Contains(eofBody, "image_generation.completed") {
+		t.Fatalf("truncated stream response status=%d body=%s", eofResponse.Code, eofBody)
+	}
+
+	readErrorResponse := doProxyRequest(t, env.engine, openAIImagesGenerationsPath, map[string]any{
+		"model": "grok-4.6", "prompt": "partial then read error", "stream": true, "partial_images": 1,
+	}, nil)
+	readErrorBody := readErrorResponse.Body.String()
+	if readErrorResponse.Code != http.StatusOK ||
+		!strings.Contains(readErrorBody, "event: image_generation.partial_image") ||
+		!strings.Contains(readErrorBody, "event: error") ||
+		!strings.Contains(readErrorBody, "stream interrupted") ||
+		strings.Contains(readErrorBody, "image_generation.completed") {
+		t.Fatalf("read-error stream response status=%d body=%s", readErrorResponse.Code, readErrorBody)
+	}
+}
+
+func TestProxy_XAIImagesBridgeFallsBackWithoutViolatingChannelPolicy(t *testing.T) {
+	tests := []struct {
+		name          string
+		transformMode string
+		request       map[string]any
+		xaiError      bool
+	}{
+		{
+			name:    "unsupported n falls back",
+			request: map[string]any{"model": "grok-4.6", "prompt": "two cats", "n": 2},
+		},
+		{
+			name:          "upstream mode disables bridge",
+			transformMode: model.ProtocolTransformModeUpstream,
+			request:       map[string]any{"model": "grok-4.6", "prompt": "one cat"},
+		},
+		{
+			name:     "pre-output SSE error falls back",
+			request:  map[string]any{"model": "grok-4.6", "prompt": "stream cat", "stream": true, "partial_images": 1},
+			xaiError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var xaiCalls atomic.Int32
+			xaiUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				xaiCalls.Add(1)
+				if test.xaiError {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, `event: error`+"\n"+
+						`data: {"type":"error","error":{"type":"rate_limit_error","message":"try another channel"}}`+"\n\n")
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer xaiUpstream.Close()
+
+			var nativeCalls atomic.Int32
+			nativeUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nativeCalls.Add(1)
+				if r.URL.Path != openAIImagesGenerationsPath {
+					t.Errorf("native Images path = %q", r.URL.Path)
+				}
+				requestBody, _ := io.ReadAll(r.Body)
+				if gjson.GetBytes(requestBody, "stream").Bool() {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, `event: image_generation.completed`+"\n"+
+						`data: {"type":"image_generation.completed","b64_json":"bmF0aXZl"}`+"\n\n"+
+						`data: [DONE]`+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"created":1770000001,"data":[{"b64_json":"bmF0aXZl"}]}`)
+			}))
+			defer nativeUpstream.Close()
+
+			credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+				Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-fallback-access", RefreshToken: "xai-refresh",
+				Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+			env := setupProxyTestEnv(t, []testChannel{
+				{
+					name: "xai-first", upstreamProtocol: "codex",
+					models: "grok-4.6", priority: 100, authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+				},
+				{name: "native-images", upstreamProtocol: "openai", models: "grok-4.6", priority: 50},
+			}, map[int]string{0: xaiUpstream.URL + "/v1", 1: nativeUpstream.URL})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host != "api.x.ai" {
+					return dispatchTestHTTPRequest(req)
+				}
+				clone := req.Clone(req.Context())
+				clone.URL.Scheme = "http"
+				clone.URL.Host = xaiUpstream.host
+				return dispatchTestHTTPRequest(clone)
+			})}
+			env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
+			if test.transformMode != "" {
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatalf("ListConfigs: %v", err)
+				}
+				for _, cfg := range configs {
+					if !cfg.UsesXAIOAuth() {
+						continue
+					}
+					updated := cfg.Clone()
+					updated.ProtocolTransformMode = test.transformMode
+					if _, err = env.store.UpdateConfig(context.Background(), cfg.ID, updated); err != nil {
+						t.Fatalf("UpdateConfig: %v", err)
+					}
+				}
+				env.server.InvalidateChannelListCache()
+			}
+
+			response := doProxyRequest(t, env.engine, openAIImagesGenerationsPath, test.request, nil)
+			responseHasImage := gjson.Get(response.Body.String(), "data.0.b64_json").String() == "bmF0aXZl" ||
+				strings.Contains(response.Body.String(), `"b64_json":"bmF0aXZl"`)
+			if response.Code != http.StatusOK || !responseHasImage {
+				t.Fatalf("fallback response status=%d body=%s", response.Code, response.Body.String())
+			}
+			wantXAICalls := int32(0)
+			if test.xaiError {
+				wantXAICalls = 1
+			}
+			if xaiCalls.Load() != wantXAICalls || nativeCalls.Load() != 1 {
+				t.Fatalf("upstream calls: xAI=%d native=%d, want %d/1", xaiCalls.Load(), nativeCalls.Load(), wantXAICalls)
+			}
+		})
 	}
 }
 
@@ -10175,7 +10508,49 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 }
 
-func TestProxy_ResponsesMetadataCountsAsFirstByteWithoutCommitting(t *testing.T) {
+func TestProxy_TranslatedEmptyChunkDoesNotCommitBeforeFailure(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int32
+	first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg-empty","role":"assistant","content":[]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"resp-failed","status":"failed","output":[],"error":{"code":"server_error","message":"first channel failed"}}}`+"\n\n")
+	}))
+	defer first.Close()
+
+	var secondCalls atomic.Int32
+	second := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"fallback ok"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-ok","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer second.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "empty-translation-then-failure", upstreamProtocol: "codex", models: "gpt-transform", apiKey: "sk-1", priority: 100},
+		{name: "translated-fallback", upstreamProtocol: "codex", models: "gpt-transform", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: first.URL, 1: second.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-transform", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	}, nil)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "fallback ok") {
+		t.Fatalf("fallback response status=%d body=%s", response.Code, body)
+	}
+	if strings.Contains(body, "msg-empty") || strings.Contains(body, "first channel failed") {
+		t.Fatalf("empty translated event or failure leaked to client: %s", body)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("upstream calls first=%d second=%d, want 1/1", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+func TestProxy_ResponsesMetadataDoesNotBecomeLoggedFirstByte(t *testing.T) {
 	t.Parallel()
 
 	semanticDelay := 300 * time.Millisecond
@@ -10213,8 +10588,8 @@ func TestProxy_ResponsesMetadataCountsAsFirstByteWithoutCommitting(t *testing.T)
 	}
 
 	entry := waitForProxyLog(t, env, "gpt-first-byte")
-	if entry.FirstByteTime <= 0 || entry.FirstByteTime >= semanticDelay.Seconds() {
-		t.Fatalf("first_byte_time=%.3f should be upstream created, not semantic delay %.3f; duration=%.3f",
+	if entry.FirstByteTime < semanticDelay.Seconds() {
+		t.Fatalf("first_byte_time=%.3f should be client-visible content after semantic delay %.3f; duration=%.3f",
 			entry.FirstByteTime, semanticDelay.Seconds(), entry.Duration)
 	}
 	if entry.Duration < semanticDelay.Seconds() {
@@ -10227,7 +10602,10 @@ func TestProxy_ResponsesMetadataDoesNotSetClientFirstByteBeforeCommit(t *testing
 
 	metadataSent := make(chan struct{})
 	releaseSemantic := make(chan struct{})
-	var releaseOnce sync.Once
+	semanticSent := make(chan struct{})
+	releaseComplete := make(chan struct{})
+	var releaseSemanticOnce sync.Once
+	var releaseCompleteOnce sync.Once
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -10238,12 +10616,21 @@ func TestProxy_ResponsesMetadataDoesNotSetClientFirstByteBeforeCommit(t *testing
 		close(metadataSent)
 		<-releaseSemantic
 		_, _ = fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"hi"}`+"\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(semanticSent)
+		<-releaseComplete
 		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-client-byte","status":"completed","output":[]}}`+"\n\n")
 	}))
-	release := func() {
-		releaseOnce.Do(func() { close(releaseSemantic) })
+	releaseSemanticOutput := func() {
+		releaseSemanticOnce.Do(func() { close(releaseSemantic) })
 	}
-	defer release()
+	finishResponse := func() {
+		releaseCompleteOnce.Do(func() { close(releaseComplete) })
+	}
+	defer releaseSemanticOutput()
+	defer finishResponse()
 
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "metadata-client-byte", upstreamProtocol: "codex", models: "gpt-client-byte", apiKey: "sk-client-byte",
@@ -10288,7 +10675,28 @@ func TestProxy_ResponsesMetadataDoesNotSetClientFirstByteBeforeCommit(t *testing
 		t.Fatalf("client_first_byte_time=%.6f before deferred response commit, want 0", active.ClientFirstByteTime)
 	}
 
-	release()
+	releaseSemanticOutput()
+	select {
+	case <-semanticSent:
+	case <-time.After(time.Second):
+		t.Fatal("upstream semantic output was not sent")
+	}
+
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		requests := env.server.activeRequests.List()
+		if len(requests) == 1 && requests[0].ClientFirstByteTime > 0 {
+			active = requests[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if active == nil || active.ClientFirstByteTime <= 0 {
+		t.Fatal("active request did not record client-visible first byte")
+	}
+	liveFirstByte := active.ClientFirstByteTime
+
+	finishResponse()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -10296,6 +10704,11 @@ func TestProxy_ResponsesMetadataDoesNotSetClientFirstByteBeforeCommit(t *testing
 	}
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"delta":"hi"`) {
 		t.Fatalf("unexpected response status=%d body=%s", response.Code, response.Body.String())
+	}
+	entry := waitForProxyLog(t, env, "gpt-client-byte")
+	difference := entry.FirstByteTime - liveFirstByte
+	if difference < -0.002 || difference > 0.002 {
+		t.Fatalf("live first byte %.6f differs from logged first byte %.6f", liveFirstByte, entry.FirstByteTime)
 	}
 }
 

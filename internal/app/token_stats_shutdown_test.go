@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -55,13 +56,15 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 	}
 
 	// 模拟：shutdown开始后，一个在途请求完成并尝试写入计费/用量统计
-	srv.updateTokenStatsAsync(tokenHash, 1.0, true, 1.23, false, &fwResult{
+	result := &fwResult{
 		FirstByteTime:            0.2,
 		InputTokens:              10,
 		OutputTokens:             20,
 		CacheReadInputTokens:     5,
 		CacheCreationInputTokens: 3,
-	}, "gpt-5.1-codex")
+		ToolCostUSD:              0.125,
+	}
+	srv.updateTokenStatsAsync(tokenHash, 1.0, true, 1.23, false, result, "gpt-5.1-codex")
 
 	got, err := store.GetAuthTokenByValue(ctx, tokenHash)
 	if err != nil {
@@ -82,7 +85,8 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 	if got.CacheCreationTokensTotal != 3 {
 		t.Fatalf("CacheCreationTokensTotal = %d, want %d", got.CacheCreationTokensTotal, 3)
 	}
-	if got.TotalCostUSD <= 0 {
-		t.Fatalf("TotalCostUSD = %f, want > 0", got.TotalCostUSD)
+	wantCost := computeRequestCost("gpt-5.1-codex", result.ServiceTier, result)
+	if math.Abs(got.TotalCostUSD-wantCost) > 0.000001 {
+		t.Fatalf("TotalCostUSD = %f, want %f including tool cost", got.TotalCostUSD, wantCost)
 	}
 }

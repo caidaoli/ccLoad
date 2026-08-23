@@ -143,9 +143,9 @@ type fwResult struct {
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
 type ForwardObserver struct {
-	OnBytesRead         func(int64) // 字节读取回调（可选）
-	OnFirstByteRead     func()      // 首字节读取回调（可选）
-	OnUpstreamWebsocket func(bool)  // 实际上游传输变化回调（可选）
+	OnBytesRead         func(int64)         // 字节读取回调（可选）
+	OnFirstByteRead     func(time.Duration) // 客户端首字节耗时回调（可选）
+	OnUpstreamWebsocket func(bool)          // 实际上游传输变化回调（可选）
 	OnDebugCapture      func(*debugCapture)
 }
 
@@ -1072,7 +1072,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
 			// alpha/search 固定按 search_call 计费。
-			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res)
 		}
 	} else {
 		entry.Message = "unknown"
@@ -1102,7 +1102,7 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
 }
 
-// computeRequestCost 集中两处计费分支（buildLogEntry / logFailedAttempt 旁路）。
+// computeRequestCost 是请求总成本的唯一口径：标准 token 成本加 Responses 工具成本。
 // fast 模式专用模型走 CalculateFastModeCost（已含 fast 倍率）。
 // OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
 // 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
@@ -1118,7 +1118,7 @@ func computeRequestCost(model string, serviceTier string, res *fwResult) float64
 		res.CacheReadInputTokens,
 		res.Cache5mInputTokens,
 		res.Cache1hInputTokens,
-	).Total
+	).Total + res.ToolCostUSD
 }
 
 // truncateErr 截断错误信息到512字符（防止日志过长）

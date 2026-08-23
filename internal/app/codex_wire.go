@@ -129,13 +129,17 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 			return collector.consume(restoreCodexMultiAgentV2SSEEvent(rawEvent, true))
 		}
 	}
+	stopAfterEvent := collector.done
+	if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
+		stopAfterEvent = collector.doneForXAIImages
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
 		resp.Body,
 		discardHTTPResponseWriter{},
 		consume,
 		func([]byte) ([][]byte, error) { return nil, nil },
-		collector.done,
+		stopAfterEvent,
 	)
 	readStats.totalBytes = collector.bytesRead
 	if collector.bytesRead > 0 {
@@ -149,7 +153,7 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 		Status:            resp.StatusCode,
 		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     readStats.firstByteSec,
+		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:     readStats.totalBytes,
 		ResponseCommitted: false,
 	}
@@ -170,6 +174,13 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	}
 
 	terminal := collector.patchedTerminal()
+	if isXAIImagesResponsesPlan(reqCtx.transformPlan) &&
+		gjson.GetBytes(terminal, "type").String() != "response.completed" {
+		err := errors.New("xAI Responses image generation did not complete")
+		result.Body = terminal
+		result.StreamDiagMsg = err.Error()
+		return result, reqCtx.Duration().Seconds(), err
+	}
 	response := gjson.GetBytes(terminal, "response")
 	if !response.Exists() || response.Type != gjson.JSON {
 		return result, reqCtx.Duration().Seconds(), fmt.Errorf("responses terminal event is missing response")
@@ -178,7 +189,18 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	if reqCtx.codexMultiAgentV2Optimized {
 		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
 	}
-	if reqCtx.transformPlan.NeedsTransform {
+	if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
+		translatedBody, err := buildOpenAIImagesResponseFromXAIResponses(
+			responseBody,
+			reqCtx.transformPlan.OriginalBody,
+		)
+		if err != nil {
+			result.Body = responseBody
+			result.StreamDiagMsg = err.Error()
+			return result, reqCtx.Duration().Seconds(), err
+		}
+		responseBody = translatedBody
+	} else if reqCtx.transformPlan.NeedsTransform {
 		if s.protocolRegistry == nil {
 			return result, reqCtx.Duration().Seconds(), errors.New("protocol registry unavailable for Responses non-stream response transform")
 		}
@@ -294,24 +316,61 @@ func (c *codexNonStreamCollector) done() bool {
 	return c.err != nil || c.parser.GetLastError() != nil || len(c.terminal) > 0
 }
 
+func (c *codexNonStreamCollector) doneForXAIImages() bool {
+	if c.err != nil || c.parser.GetLastError() != nil || len(c.terminal) == 0 {
+		return false
+	}
+	if gjson.GetBytes(c.terminal, "type").String() != "response.completed" {
+		return true
+	}
+	terminal := c.patchedTerminal()
+	for _, item := range gjson.GetBytes(terminal, "response.output").Array() {
+		if item.Get("type").String() == "image_generation_call" && strings.TrimSpace(item.Get("result").String()) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *codexNonStreamCollector) patchedTerminal() []byte {
 	if len(c.terminal) == 0 || len(c.indexedItems)+len(c.fallback) == 0 {
 		return c.terminal
 	}
 	current := gjson.GetBytes(c.terminal, "response.output")
-	if current.IsArray() && len(current.Array()) > 0 {
-		return c.terminal
+	currentItems := current.Array()
+	existingIDs := make(map[string]struct{}, len(currentItems))
+	for _, item := range currentItems {
+		if id := strings.TrimSpace(item.Get("id").String()); id != "" {
+			existingIDs[id] = struct{}{}
+		}
 	}
 	indices := make([]int64, 0, len(c.indexedItems))
 	for index := range c.indexedItems {
 		indices = append(indices, index)
 	}
 	sort.Slice(indices, func(i, j int) bool { return indices[i] < indices[j] })
-	items := make([]json.RawMessage, 0, len(indices)+len(c.fallback))
-	for _, index := range indices {
-		items = append(items, c.indexedItems[index])
+	items := make([]json.RawMessage, 0, len(currentItems)+len(indices)+len(c.fallback))
+	for _, item := range currentItems {
+		items = append(items, json.RawMessage(bytes.Clone([]byte(item.Raw))))
 	}
-	items = append(items, c.fallback...)
+	appendIfMissing := func(item json.RawMessage) {
+		if id := strings.TrimSpace(gjson.GetBytes(item, "id").String()); id != "" {
+			if _, exists := existingIDs[id]; exists {
+				return
+			}
+			existingIDs[id] = struct{}{}
+		}
+		items = append(items, item)
+	}
+	for _, index := range indices {
+		appendIfMissing(c.indexedItems[index])
+	}
+	for _, item := range c.fallback {
+		appendIfMissing(item)
+	}
+	if len(items) == len(currentItems) {
+		return c.terminal
+	}
 	encoded, err := json.Marshal(items)
 	if err != nil {
 		return c.terminal

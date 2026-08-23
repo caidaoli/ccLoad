@@ -356,7 +356,7 @@ func TestBillingHelpersAndClassifications(t *testing.T) {
 	}
 	req, _ := http.NewRequest(http.MethodGet, weekly, nil)
 	xaiauth.ApplyBillingHeaders(req, "access")
-	if req.Header.Get("Authorization") != "Bearer access" || req.Header.Get(xaiauth.CLITokenAuthHeader) != xaiauth.CLITokenAuthValue || req.Header.Get(xaiauth.CLIClientVersionHeader) != "0.2.114" || req.UserAgent() != "grok-pager/0.2.114 grok-shell/0.2.114 (macos; aarch64)" {
+	if req.Header.Get("Authorization") != "Bearer access" || req.Header.Get(xaiauth.CLITokenAuthHeader) != xaiauth.CLITokenAuthValue || req.Header.Get(xaiauth.CLIClientVersionHeader) != xaiauth.CLIClientVersion || req.UserAgent() != xaiauth.CLIBillingUserAgent {
 		t.Fatalf("headers=%v", req.Header)
 	}
 	cases := []struct {

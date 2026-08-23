@@ -5379,10 +5379,16 @@ func TestHandleChannelImageGeneration_XAIOAuthUsesNativeImagesAPI(t *testing.T) 
 	}))
 	defer upstream.Close()
 
-	srv := newInMemoryServerWithSettings(t, map[string]string{
-		config.XAIBaseURLSettingKey: upstream.URL + "/v1",
-	})
-	srv.client = upstream.Client()
+	srv := newInMemoryServer(t)
+	srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.x.ai" {
+			t.Errorf("xAI Images host=%q, want api.x.ai", req.URL.Host)
+		}
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
 	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
 		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-image-token", RefreshToken: "refresh",
 		TokenType: "Bearer", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
@@ -5460,6 +5466,84 @@ func TestHandleChannelImageGeneration_XAIOAuthUsesNativeImagesAPI(t *testing.T) 
 	}
 }
 
+func TestHandleChannelImageGeneration_XAIOAuthGrok46UsesResponsesImageTool(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode xAI Responses request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"created_at":1770000000,"output":[],"tool_usage":{"image_gen":{"total_tokens":9}}}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"aW1hZ2U=","output_format":"png"}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.x.ai" {
+			t.Errorf("xAI Responses host=%q, want api.x.ai", req.URL.Host)
+		}
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-grok-access", RefreshToken: "refresh",
+		TokenType: "Bearer", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		TokenEndpoint: xaiauth.TokenURL, BaseURL: xaiauth.CLIBaseURL,
+	})
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "xai-grok46-admin-test", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: credential,
+		URLs:                  model.ChannelURLs{{URL: xaiauth.CLIBaseURL, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "grok-4.6"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages, "model": "grok-4.6", "prompt": "画一个可爱的小狗", "key_index": 0,
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK || gotPath != "/v1/responses" {
+		t.Fatalf("status=%d path=%q body=%s", w.Code, gotPath, w.Body.String())
+	}
+	input, _ := gotBody["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("Responses input=%v", gotBody["input"])
+	}
+	message, _ := input[0].(map[string]any)
+	content, _ := message["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("Responses content=%v", message["content"])
+	}
+	inputText, _ := content[0].(map[string]any)
+	if gotBody["model"] != "grok-4.6" || gotBody["stream"] != true || inputText["text"] != "画一个可爱的小狗" {
+		t.Fatalf("Responses body=%v", gotBody)
+	}
+	tools, _ := gotBody["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "image_generation" {
+		t.Fatalf("Responses tools=%v", gotBody["tools"])
+	}
+	if gotBody["tool_choice"] != "required" {
+		t.Fatalf("xAI Responses image tool_choice=%v, want required", gotBody["tool_choice"])
+	}
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("grok-4.6 image generation failed: %v", response.Data)
+	}
+	images, _ := response.Data["images"].([]any)
+	if len(images) != 1 || images[0].(map[string]any)["b64_json"] != "aW1hZ2U=" {
+		t.Fatalf("normalized images=%v", response.Data["images"])
+	}
+}
+
 func TestHandleChannelImageGeneration_XAIOAuthRefreshesRejectedTokenOnce(t *testing.T) {
 	var orderMu sync.Mutex
 	order := make([]string, 0, 3)
@@ -5487,10 +5571,16 @@ func TestHandleChannelImageGeneration_XAIOAuthRefreshesRejectedTokenOnce(t *test
 	}))
 	defer upstream.Close()
 
-	srv := newInMemoryServerWithSettings(t, map[string]string{
-		config.XAIBaseURLSettingKey: upstream.URL + "/v1",
-	})
-	srv.client = upstream.Client()
+	srv := newInMemoryServer(t)
+	srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.x.ai" {
+			t.Errorf("xAI Images host=%q, want api.x.ai", req.URL.Host)
+		}
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
 	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
 		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "rejected-image-token", RefreshToken: "refresh-image-token",
 		TokenType: "Bearer", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),

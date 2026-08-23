@@ -2,8 +2,11 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +15,22 @@ import (
 // errorReader 模拟返回特定错误的 Reader
 type errorReader struct {
 	err error
+}
+
+type repeatedByteReader struct {
+	remaining int
+}
+
+func (r *repeatedByteReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), r.remaining)
+	for i := range n {
+		p[i] = 'x'
+	}
+	r.remaining -= n
+	return n, nil
 }
 
 func (r *errorReader) Read(_ []byte) (int, error) {
@@ -187,5 +206,81 @@ func TestStreamCopy_ClosesWrappedUnderlyingCloserOnContextCancel(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		_ = underlying.Close()
 		t.Fatal("streamCopy did not close wrapped underlying reader after context cancellation")
+	}
+}
+
+func TestStreamTransformSSEEventsUntil_ReassemblesLongLinesAndMultipleEvents(t *testing.T) {
+	longValue := strings.Repeat("x", SSEBufferSize*2)
+	input := "data: " + longValue + "\n\ndata: second\n\n"
+	var events [][]byte
+	recorder := newRecorder()
+
+	err := streamTransformSSEEventsUntil(
+		context.Background(),
+		strings.NewReader(input),
+		recorder,
+		func(rawEvent []byte) error {
+			events = append(events, bytes.Clone(rawEvent))
+			return nil
+		},
+		func(rawEvent []byte) ([][]byte, error) {
+			return [][]byte{bytes.ToUpper(rawEvent)}, nil
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("reassembled event count=%d, want 2", len(events))
+	}
+	if string(events[0]) != "data: "+longValue+"\n\n" || string(events[1]) != "data: second\n\n" {
+		t.Fatalf("reassembled events mismatch: first=%d bytes second=%q", len(events[0]), events[1])
+	}
+	if got, want := recorder.Body.String(), strings.ToUpper(input); got != want {
+		t.Fatalf("translated output length=%d, want %d", len(got), len(want))
+	}
+}
+
+func TestStreamTransformSSEEventsUntil_RejectsOversizedEvent(t *testing.T) {
+	reader := io.MultiReader(
+		&repeatedByteReader{remaining: maxSSEEventBytes},
+		strings.NewReader("\n\n"),
+	)
+	err := streamTransformSSEEventsUntil(
+		context.Background(), reader, newRecorder(), nil,
+		func([]byte) ([][]byte, error) { return nil, nil }, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "SSE event exceeds") {
+		t.Fatalf("oversized event error = %v", err)
+	}
+}
+
+func TestStreamTransformSSEEventsUntil_ClosesReaderOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := newBlockingReadCloser()
+	done := make(chan error, 1)
+	go func() {
+		done <- streamTransformSSEEventsUntil(
+			ctx, reader, newRecorder(), nil,
+			func([]byte) ([][]byte, error) { return nil, nil }, nil,
+		)
+	}()
+
+	select {
+	case <-reader.entered:
+	case <-time.After(200 * time.Millisecond):
+		_ = reader.Close()
+		t.Fatal("stream transform did not enter Read")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stream transform err=%v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		_ = reader.Close()
+		t.Fatal("stream transform did not unblock Read after context cancellation")
 	}
 }

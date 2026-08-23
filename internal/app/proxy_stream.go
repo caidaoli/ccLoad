@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 )
+
+const maxSSEEventBytes = 50 * 1024 * 1024
 
 var (
 	errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
@@ -32,9 +35,10 @@ func (e *stopStreamAfterWriteError) Unwrap() error {
 
 // streamReadStats 流式传输统计信息
 type streamReadStats struct {
-	readCount    int
-	totalBytes   int64
-	firstByteSec float64 // 首字节读取耗时（秒），attachFirstByteDetector 写入
+	readCount          int
+	totalBytes         int64
+	firstByteSec       float64 // 上游首个有效事件耗时（秒），用于首字超时控制
+	clientFirstByteSec float64 // 首个客户端可见事件耗时（秒），用于实时状态和日志
 }
 
 // firstByteDetector 检测首字节读取时间和传输统计的Reader包装器
@@ -253,7 +257,7 @@ func streamTransformSSEEventsUntil(
 	stopCloseOnCancel := closeReaderOnContextCancel(ctx, src)
 	defer stopCloseOnCancel()
 
-	reader := bufio.NewReader(src)
+	reader := bufio.NewReaderSize(src, SSEBufferSize)
 	var eventBuf bytes.Buffer
 
 	for {
@@ -263,11 +267,14 @@ func streamTransformSSEEventsUntil(
 		default:
 		}
 
-		line, err := reader.ReadBytes('\n')
+		line, err := reader.ReadSlice('\n')
 		if len(line) > 0 {
+			if len(line) > maxSSEEventBytes-eventBuf.Len() {
+				return fmt.Errorf("SSE event exceeds %d bytes", maxSSEEventBytes)
+			}
 			eventBuf.Write(line)
-			if bytes.Equal(bytes.TrimRight(line, "\r\n"), []byte{}) {
-				rawEvent := append([]byte(nil), eventBuf.Bytes()...)
+			if !errors.Is(err, bufio.ErrBufferFull) && bytes.Equal(bytes.TrimRight(line, "\r\n"), []byte{}) {
+				rawEvent := eventBuf.Bytes()
 				if len(rawEvent) > 0 {
 					if onRawEvent != nil {
 						if hookErr := onRawEvent(rawEvent); hookErr != nil {
@@ -302,6 +309,9 @@ func streamTransformSSEEventsUntil(
 			}
 		}
 
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		if err != nil {
 			return normalizeStreamReadError(ctx, err)
 		}

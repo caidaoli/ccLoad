@@ -23,6 +23,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
@@ -225,7 +226,11 @@ func (s *Server) buildProxyRequest(
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	wireRebuilt := false
 	if cfg.UsesXAIOAuth() {
-		injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
+		if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
+			injectXAIAPIResponsesHeaders(req, apiKey)
+		} else {
+			injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
+		}
 	} else if upstreamProtocol == protocol.Codex {
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
@@ -455,7 +460,7 @@ func (s *Server) handleErrorResponse(
 		UpstreamStatus: resp.StatusCode,
 		Header:         hdrClone,
 		Body:           rb,
-		FirstByteTime:  readStats.firstByteSec,
+		FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		StreamDiagMsg:  diagMsg,
 		ThinkingEffort: extractThinkingEffortFromJSON(rb),
 	}, duration, nil
@@ -908,6 +913,9 @@ func (s *Server) handleSuccessResponse(
 	if reqCtx.responsesSSEUpstreamNonStream && responseIsSSE(resp, true) {
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
+	if reqCtx.transformPlan.Streaming && isXAIImagesResponsesPlan(reqCtx.transformPlan) {
+		return s.handleXAIImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer)
+	}
 	if reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
@@ -918,7 +926,7 @@ func (s *Server) handleSuccessResponse(
 				Status:         resp.StatusCode,
 				UpstreamStatus: resp.StatusCode,
 				Header:         hdrClone,
-				FirstByteTime:  readStats.firstByteSec,
+				FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 				BytesReceived:  readStats.totalBytes,
 			}, reqCtx.Duration().Seconds(), err
 		}
@@ -937,7 +945,7 @@ func (s *Server) handleSuccessResponse(
 				Status:         resp.StatusCode,
 				UpstreamStatus: resp.StatusCode,
 				Header:         hdrClone,
-				FirstByteTime:  readStats.firstByteSec,
+				FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 				BytesReceived:  readStats.totalBytes,
 			}, reqCtx.Duration().Seconds(), err
 		}
@@ -997,7 +1005,7 @@ func (s *Server) handleSuccessResponse(
 				if err := deferredWriter.Commit(); err != nil {
 					return err
 				}
-				notifyClientFirstByte(observer)
+				markClientFirstByte(reqCtx, readStats, observer)
 			}
 			return nil
 		},
@@ -1020,7 +1028,7 @@ func (s *Server) handleSuccessResponse(
 		Status:            resp.StatusCode,
 		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     readStats.firstByteSec,
+		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:     readStats.totalBytes, // 记录已接收字节数，用于499诊断
 		ResponseCommitted: deferredWriter == nil || deferredWriter.Committed(),
 	}
@@ -1080,7 +1088,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			UpstreamStatus: resp.StatusCode,
 			Header:         hdrClone,
 			Body:           []byte(err.Error()),
-			FirstByteTime:  readStats.firstByteSec,
+			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -1111,7 +1119,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			UpstreamStatus: resp.StatusCode,
 			Header:         hdrClone,
 			Body:           rawBody,
-			FirstByteTime:  readStats.firstByteSec,
+			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -1142,7 +1150,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			UpstreamStatus: resp.StatusCode,
 			Header:         hdrClone,
 			Body:           rawBody,
-			FirstByteTime:  readStats.firstByteSec,
+			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -1161,7 +1169,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		Status:            resp.StatusCode,
 		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     readStats.firstByteSec,
+		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:     readStats.totalBytes,
 		ResponseCommitted: true,
 	}
@@ -1194,6 +1202,22 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	parser := newSSEUsageParser(upstreamProtocol)
 	var translatedComplete bool
 	var state any
+	commitTranslatedOutput := func(chunks [][]byte) error {
+		if deferredWriter.Committed() {
+			return nil
+		}
+		for _, chunk := range chunks {
+			if len(chunk) == 0 {
+				continue
+			}
+			if err := deferredWriter.Commit(); err != nil {
+				return err
+			}
+			markClientFirstByte(reqCtx, readStats, observer)
+			return nil
+		}
+		return nil
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
 		resp.Body,
@@ -1218,12 +1242,6 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			}
 			if !deferredWriter.Committed() && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
-			}
-			if !deferredWriter.Committed() && parser.HasStreamOutput() {
-				if err := deferredWriter.Commit(); err != nil {
-					return err
-				}
-				notifyClientFirstByte(observer)
 			}
 			return nil
 		},
@@ -1256,6 +1274,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
 					translatedComplete = true
 				}
+				if err := commitTranslatedOutput(chunks); err != nil {
+					return nil, err
+				}
 				return chunks, nil
 			}
 			chunks, err := s.protocolRegistry.TranslateResponseStream(
@@ -1274,6 +1295,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
 				translatedComplete = true
 			}
+			if err := commitTranslatedOutput(chunks); err != nil {
+				return nil, err
+			}
 			return chunks, nil
 		},
 		func() bool {
@@ -1286,13 +1310,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
 		streamErr = nil
-	} else if !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+	} else if !deferredWriter.Committed() {
 		if streamErr == nil {
 			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
-		}
-	} else if !deferredWriter.Committed() {
-		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
-			streamErr = commitErr
 		}
 	}
 
@@ -1300,7 +1320,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		Status:            resp.StatusCode,
 		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
-		FirstByteTime:     readStats.firstByteSec,
+		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:     readStats.totalBytes,
 		ResponseCommitted: deferredWriter.Committed(),
 	}
@@ -1396,13 +1416,12 @@ func attachFirstByteDetector(
 				reqCtx.stopFirstByteTimer()
 			}
 			if readStats.firstByteSec == 0 {
-				readStats.firstByteSec = reqCtx.Duration().Seconds()
-				if readStats.firstByteSec == 0 {
-					readStats.firstByteSec = time.Nanosecond.Seconds()
+				firstByteTime := positiveDuration(reqCtx.Duration())
+				readStats.firstByteSec = firstByteTime.Seconds()
+				readStats.clientFirstByteSec = readStats.firstByteSec
+				if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
+					observer.OnFirstByteRead(firstByteTime)
 				}
-			}
-			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
-				observer.OnFirstByteRead()
 			}
 		},
 		onBytesRead: func(n int64) {
@@ -1422,16 +1441,35 @@ func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats)
 	}
 
 	reqCtx.stopFirstByteTimer()
-	readStats.firstByteSec = reqCtx.Duration().Seconds()
-	if readStats.firstByteSec == 0 {
-		readStats.firstByteSec = time.Nanosecond.Seconds()
+	readStats.firstByteSec = positiveDuration(reqCtx.Duration()).Seconds()
+}
+
+func markClientFirstByte(reqCtx *requestContext, readStats *streamReadStats, observer *ForwardObserver) {
+	if reqCtx == nil || readStats == nil || !reqCtx.isStreaming || readStats.clientFirstByteSec > 0 {
+		return
+	}
+	firstByteTime := positiveDuration(reqCtx.Duration())
+	readStats.clientFirstByteSec = firstByteTime.Seconds()
+	if observer != nil && observer.OnFirstByteRead != nil {
+		observer.OnFirstByteRead(firstByteTime)
 	}
 }
 
-func notifyClientFirstByte(observer *ForwardObserver) {
-	if observer != nil && observer.OnFirstByteRead != nil {
-		observer.OnFirstByteRead()
+func responseFirstByteSec(reqCtx *requestContext, readStats *streamReadStats) float64 {
+	if readStats == nil {
+		return 0
 	}
+	if reqCtx != nil && reqCtx.isStreaming {
+		return readStats.clientFirstByteSec
+	}
+	return readStats.firstByteSec
+}
+
+func positiveDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Nanosecond
+	}
+	return d
 }
 
 func shouldMarkUpstreamFirstByte(parser usageParser) bool {
@@ -1595,7 +1633,7 @@ func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone
 		UpstreamStatus: resp.StatusCode,
 		Header:         hdrClone,
 		Body:           []byte(err.Error()),
-		FirstByteTime:  readStats.firstByteSec,
+		FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 	}, duration, err
 }
 
@@ -1662,7 +1700,7 @@ func invalidHTMLSuccessResponseResult(
 		UpstreamStatus: resp.StatusCode,
 		Header:         hdrClone,
 		Body:           body,
-		FirstByteTime:  readStats.firstByteSec,
+		FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:  readStats.totalBytes,
 	}, reqCtx.Duration().Seconds(), err
 }
@@ -2183,6 +2221,34 @@ func (s *Server) forwardAttempt(
 	reqCtx.upstreamProtocol = upstreamProtocol
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
+	var translatedRequestOverride []byte
+	if bridgeModel, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge && upstreamProtocol == protocol.Codex {
+		actualModel = bridgeModel
+		var err error
+		translatedRequestOverride, err = buildXAIImagesResponsesRequest(reqCtx.body, actualModel)
+		if err != nil {
+			channelID := cfg.ID
+			if errors.Is(err, errXAIImagesBridgeUnsupported) {
+				return &proxyResult{
+					status:                    http.StatusBadRequest,
+					body:                      []byte(err.Error()),
+					channelID:                 &channelID,
+					succeeded:                 false,
+					nextAction:                cooldown.ActionRetryChannel,
+					protocolCapabilityMissing: true,
+				}, cooldown.ActionRetryChannel, nil
+			}
+			return &proxyResult{
+				status:     http.StatusBadRequest,
+				body:       []byte(err.Error()),
+				channelID:  &channelID,
+				succeeded:  false,
+				nextAction: cooldown.ActionReturnClient,
+			}, cooldown.ActionReturnClient, nil
+		}
+		bodyToSend = translatedRequestOverride
+		requestPath = buildCodexResponsesPath()
+	}
 	if upstreamProtocol == protocol.Codex {
 		requestPath = normalizeCodexClientPath(requestPath)
 	}
@@ -2190,17 +2256,35 @@ func (s *Server) forwardAttempt(
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
 	bodyToSend = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, bodyToSend)
-	plan, err := protocol.BuildTransformPlan(
-		reqCtx.clientProtocol,
-		upstreamProtocol,
-		reqCtx.requestPath,
-		requestPath,
-		reqCtx.body,
-		bodyToSend,
-		reqCtx.originalModel,
-		actualModel,
-		reqCtx.isStreaming,
-	)
+	var plan protocol.TransformPlan
+	var err error
+	if translatedRequestOverride != nil {
+		plan = protocol.TransformPlan{
+			ClientProtocol:   reqCtx.clientProtocol,
+			UpstreamProtocol: upstreamProtocol,
+			RequestFamily:    protocol.RequestFamilyImages,
+			OriginalPath:     reqCtx.requestPath,
+			UpstreamPath:     requestPath,
+			OriginalBody:     reqCtx.body,
+			TranslatedBody:   bodyToSend,
+			OriginalModel:    reqCtx.originalModel,
+			ActualModel:      actualModel,
+			Streaming:        reqCtx.isStreaming,
+			NeedsTransform:   true,
+		}
+	} else {
+		plan, err = protocol.BuildTransformPlan(
+			reqCtx.clientProtocol,
+			upstreamProtocol,
+			reqCtx.requestPath,
+			requestPath,
+			reqCtx.body,
+			bodyToSend,
+			reqCtx.originalModel,
+			actualModel,
+			reqCtx.isStreaming,
+		)
+	}
 	if err != nil {
 		channelID := cfg.ID
 		return &proxyResult{
@@ -2240,7 +2324,8 @@ func (s *Server) forwardAttempt(
 	executionIdentity := deriveXAIExecutionIDForRequest(reqCtx)
 	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
-		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, nil,
+		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
+		translatedRequestOverride,
 	)
 
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
@@ -3186,6 +3271,13 @@ func (s *Server) attemptKeyAcrossURLs(
 			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
 
+		attemptBaseURL := urlEntry.url
+		if _, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge {
+			// The Grok CLI chat proxy silently removes hosted image_generation
+			// tools. xAI exposes that tool only on the public Responses API.
+			attemptBaseURL = xaiauth.APIBaseURL
+		}
+
 		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
 			StartTime:        time.Now(),
 			Model:            reqCtx.originalModel,
@@ -3197,14 +3289,14 @@ func (s *Server) attemptKeyAcrossURLs(
 			UpstreamProtocol: "",
 			APIKey:           selectedKey,
 			TokenID:          reqCtx.tokenID,
-			BaseURL:          urlEntry.url,
+			BaseURL:          attemptBaseURL,
 			CostMultiplier:   cfg.CostMultiplier,
 			ThinkingEffort:   reqCtx.thinkingEffort,
 		})
 
 		shouldDeferChannelCooldown := urlIdx < len(sortedURLs)-1
 		capabilityKey := protocolCapabilityKey{
-			channelID: cfg.ID, baseURL: urlEntry.url,
+			channelID: cfg.ID, baseURL: attemptBaseURL,
 			clientProtocol: clientProtocol, requestFamily: requestFamily,
 		}
 		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
@@ -3213,6 +3305,14 @@ func (s *Server) attemptKeyAcrossURLs(
 		protocolCandidates, declared := protocolCandidatesForURL(
 			cfg.URLs[urlEntry.idx], transformMode, clientProtocol, requestFamily, localProtocolOrder,
 		)
+		if _, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge &&
+			cfg.URLs[urlEntry.idx].SupportsProtocol(string(protocol.Codex)) {
+			// Images is not a general OpenAI -> Codex transform. xAI OAuth is the
+			// one provider that deliberately maps this endpoint to a Responses
+			// image_generation tool, so keep the capability exception local here.
+			protocolCandidates = []protocol.Protocol{protocol.Codex}
+			declared = true
+		}
 		learnCapability := transformMode == model.ProtocolTransformModeAuto && !declared
 		if learnCapability {
 			if cachedProtocol, known := s.protocolCapabilities.get(capabilityKey); known {
@@ -3244,7 +3344,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
-				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w,
+				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, attemptBaseURL, w,
 				shouldDeferChannelCooldown, urlPolicy.antigravityCapacityRetries)
 			if attemptErr != nil {
 				return nil, nil, attemptErr

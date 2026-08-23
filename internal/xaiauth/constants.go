@@ -36,9 +36,17 @@ const (
 	// CLIClientVersionHeader names the xAI CLI version header.
 	CLIClientVersionHeader = "x-grok-client-version"
 	// CLIClientVersion is the emulated xAI CLI protocol version.
-	CLIClientVersion = "0.2.114"
+	CLIClientVersion = "0.2.120"
 	// CLIUserAgent is the fixed xAI model-request user agent.
 	CLIUserAgent = "xai-grok-workspace/" + CLIClientVersion
+	// CLIClientIdentifierHeader identifies Grok CLI requests to chat-proxy.
+	CLIClientIdentifierHeader = "x-grok-client-identifier"
+	// CLIClientIdentifierValue is the current Grok CLI client identity.
+	CLIClientIdentifierValue = "grok-shell"
+	// CLIAuthenticateResponseHeader requests chat-proxy response authentication metadata.
+	CLIAuthenticateResponseHeader = "x-authenticateresponse"
+	// CLIAuthenticateResponseValue enables chat-proxy response authentication metadata.
+	CLIAuthenticateResponseValue = "authenticate-response"
 	// CLIBillingUserAgent is the fixed xAI CLI billing client identity.
 	CLIBillingUserAgent = "grok-pager/" + CLIClientVersion + " grok-shell/" + CLIClientVersion + " (macos; aarch64)"
 	// CLIClientModeHeader names the xAI CLI interaction mode header.
