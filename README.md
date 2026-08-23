@@ -77,6 +77,7 @@ ccLoad handles those cases with:
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
 - 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
+- 🗝️ **Per-Key Model Allowlists** - Restrict which channel models each Key serves; empty means unrestricted, and channels whose Keys all decline the model are skipped
 - 🕒 **Channel Time Windows** - Optional HH:MM availability window per channel (server local time, cross-midnight supported); channels outside their window are fully excluded from routing
 - 🔐 **Token Restrictions** - Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
@@ -719,6 +720,8 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **Model Entry Note**: each `models` element is `{model, redirect_model, disabled}`. `redirect_model` rewrites the model name sent upstream while clients keep requesting the original name. `disabled: true` removes that model from the channel entirely — it stops being advertised, matched (exact or fuzzy), and cooled down, without deleting the entry. When you refresh the model list in `replace` mode, existing disabled flags are carried over to the newly fetched entries by original name, normalized alias, and redirect target, so a refresh does not silently re-enable models you turned off.
 
+> **Per-key model allowlist**: each `api_keys` entry may carry an `allowed_models` string array restricting which models that Key serves. Omitting it, leaving it empty, or passing `"*"` means unrestricted, preserving the previous behavior. Every listed model must already exist in the channel's `models` (unless the channel declares a wildcard model), otherwise the save is rejected; on save the names are normalized to the channel's canonical casing, deduplicated, and capped at 2000 encoded bytes. Matching runs on the **channel-side logical model**: fuzzy matching happens first, the allowlist is checked next, and `redirect_model` rewriting happens afterwards, so list channel model names rather than upstream ones. Keys are filtered by model before the key-retry loop; when no Key in a channel serves the requested model, that channel is skipped without cooldown and without recording a failure. In the web UI use **Model Scope** on the Key row, and **Detect This Key** to probe the upstream models and match them against the channel models. This fits relays where different Keys carry different model entitlements.
+
 > **Independent-key relay fallback**: In the channel editor, open **Advanced → Other** and enable **Try another key on failure** only when the channel's Keys reach independent upstream providers behind the same relay. For retryable model- or channel-level upstream failures (such as 5xx, connection errors, and first-byte timeouts), ccLoad then cools the current Key and tries another Key in that channel before moving to another channel. The option is off by default, preserving the normal model/channel cooldown behavior.
 
 > **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
@@ -1207,7 +1210,7 @@ storage/
 
 **Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
 - `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with multi-protocol handling config, scheduled check config, RPM/concurrency limit config)
-- `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
+- `api_keys` - API keys (key-level cooldown inline, multi-key strategies, `allowed_models` allowlist)
 - `channel_model_cooldowns` - Model-level runtime cooldown keyed by channel and actual upstream model
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
@@ -1236,6 +1239,7 @@ storage/
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 - ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped
 - ✅ **Channel concurrency limits**: Per-channel in-flight request caps, `0` means unlimited, over-limit channels are skipped
+- ✅ **Per-key model allowlists**: `api_keys.allowed_models` restricts which channel models each Key serves; empty means unrestricted, and a channel is skipped when none of its Keys serve the requested model
 
 **Backward Compatible Migration**:
 - Auto-detects and fixes duplicate channel names
