@@ -78,6 +78,7 @@ ccLoad handles those cases with:
 - 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
 - 🗝️ **Per-Key Model Allowlists** - Restrict which channel models each Key serves; empty means unrestricted, and channels whose Keys all decline the model are skipped
+- 🧠 **Model Thinking Suffix** - Append `(minimal/low/medium/high/xhigh/max)`, `(none)`, `(auto)`, or a numeric budget to any model name; ccLoad maps it to the upstream protocol's thinking parameters while routing on the base name
 - 🕒 **Channel Time Windows** - Optional HH:MM availability window per channel (server local time, cross-midnight supported); channels outside their window are fully excluded from routing
 - 🔐 **Token Restrictions** - Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
@@ -407,7 +408,7 @@ git push
 **Version Pinning** (Optional):
 To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v2.44.1  # Specify version
+FROM ghcr.io/caidaoli/ccload:v4.7.0  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -572,9 +573,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+**Image Generation (Images API)**:
+
+`POST /v1/images/generations` is OpenAI Images-compatible, with its own body-size limit controlled by `max_image_body_bytes`. When the channel model is an xAI conversational model at `grok-4.6` or later, ccLoad bridges the request into an xAI Responses `image_generation` tool call: non-streaming requests aggregate into standard Images JSON, and streaming requests emit `partial_image` / `completed` SSE events.
+
 **Codex Responses WebSocket**:
 
-The downstream and upstream WebSockets are independent. Authenticated clients can always upgrade `GET /v1/responses` or the Codex direct-route alias `GET /backend-api/codex/responses`; a channel's `websockets` field only controls whether ccLoad tries a native Codex upstream WebSocket. Channels without that field still participate through the HTTP/SSE bridge and remain eligible for failover.
+The downstream and upstream WebSockets are independent. Authenticated clients can always upgrade `GET /v1/responses` or the Codex direct-route aliases `GET /v1/codex/responses` and `GET /backend-api/codex/responses`; a channel's `websockets` field only controls whether ccLoad tries a native Codex upstream WebSocket. Channels without that field still participate through the HTTP/SSE bridge and remain eligible for failover.
 
 In `/web/channels.html`, select a channel with a Codex-capable URL, enable **Native WebSocket**, and run **Probe**. For the Admin API, the relevant fields are shown below. Keep the URL as an `http://` or `https://` URL; ccLoad converts the scheme to `ws://` or `wss://` for native upstream WebSocket requests:
 
@@ -638,6 +643,17 @@ curl -X POST http://localhost:8080/v1/alpha/search \
 ```
 
 For a regular channel base URL, ccLoad appends `/v1/alpha/search`. For an exact URL, set `exact: true` and make `url` point to the complete endpoint, for example `{"url":"https://upstream.example.com/v1/alpha/search","exact":true,"protocols":["codex"]}`. Responses-only fields `prompt_cache_key` and `prompt_cache_retention` are removed before forwarding.
+
+### Model Thinking Suffix
+
+Every protocol entry point accepts a thinking suffix appended to the model name, such as `claude-sonnet-4-6(high)`, `gpt-5.2(xhigh)`, or `gemini-3.1-pro(8192)`. ccLoad strips the suffix for routing, then writes the level into the request body's thinking parameters for the protocol actually forwarded upstream (Anthropic `thinking`, OpenAI/Codex `reasoning.effort`, Gemini `thinkingBudget`):
+
+- **Levels**: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`; a level beyond the upstream model's capability clamps to the nearest supported tier
+- **Disable**: `(none)` or `(0)` turns thinking off
+- **Auto**: `(auto)` defers to the upstream default thinking behavior
+- **Numeric budget**: a non-negative integer such as `(16384)` is forwarded as a token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`)
+
+The suffix is not a model identity: routing, auth, cooldown, logging, and the upstream model name always use the base name, so channel model lists do not need suffixed entries. The HTTP proxy, Responses WebSocket, and admin channel testing all honor the suffix; channel custom request rules run later and can override the fields it writes. A parenthesized model name whose suffix is not a known level or non-negative integer (an upstream really named `foo(bar)`) passes through unchanged.
 
 ### Local Token Counting
 
@@ -858,7 +874,7 @@ Check out the awesome admin dashboard 👇
 |-----------|---------|---------|----------------------|
 | **Go** | 1.26.0+ | Runtime | Native concurrency, modern toolchain |
 | **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
-| **modernc/sqlite** | v1.54.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **modernc/sqlite** | v1.57.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
 | **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
 | **PostgreSQL (pgx)** | v5.10.0 | RDBMS | Optional, supports URL and libpq DSNs |
 | **Sonic** | v1.15.2 | JSON Library | 2-3x faster than stdlib |
@@ -1066,8 +1082,14 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `responses_ws_max_transcript_bytes` | `268435456` | Process-wide retained transcript payload budget (256 MiB); `0` uses the built-in default |
 | `debug_log_enabled` | `false` | Capture upstream request/response debug logs |
 | `debug_log_retention_minutes` | `2` | Debug log retention in minutes |
+| `CODEX_BASE_URL` | Empty | Global upstream address for Codex OAuth channels (complete Responses URL; official default `https://chatgpt.com/backend-api/codex/responses`) |
+| `ANTHROPIC_BASE_URL` | Empty | Global API root for Anthropic OAuth channels (official default `https://api.anthropic.com`) |
+| `XAI_BASE_URL` | Empty | Global API root for xAI OAuth channels (usually ends with `/v1`; official default `https://cli-chat-proxy.grok.com/v1`) |
+| `ANTIGRAVITY_URL` | Empty | Global upstream address for Antigravity OAuth channels (official default `https://daily-cloudcode-pa.googleapis.com`, backup `https://cloudcode-pa.googleapis.com`) |
 
 Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
+
+The four global OAuth upstream addresses default to empty, meaning each provider's official address is used. When set, the matching OAuth channels use only that global address for data requests, model discovery, channel tests, and quota queries, ignoring the channel URL; OAuth authorization and token exchange/refresh still use the provider's official endpoints, and API-key channels are unaffected.
 
 #### Auto Updates
 
@@ -1148,7 +1170,7 @@ Project supports multi-arch Docker images:
 - **Available Tags**:
   - `latest` - Latest stable version
   - `beta` - Latest Beta version
-  - `v2.44.1` - Exact stable version, matching the GitHub Release tag
+  - `v4.7.0` - Exact stable version, matching the GitHub Release tag
   - `vX.Y.Z-beta.N` - Exact Beta version, matching the GitHub prerelease tag
 
 The official GHCR runtime image is Debian/glibc-based and immutable because the upstream Cursor SDK Bridge standalone binary is dynamically linked against glibc. Image builds fetch and verify the pinned bridge directly from its official Cursor release; GitHub Releases contain only ccLoad binaries. Exact version Tags are immutable; `latest` and `beta` are rolling aliases. Containers do not update in process; pull the desired Tag and recreate the container.
@@ -1160,7 +1182,7 @@ The official GHCR runtime image is Debian/glibc-based and immutable because the 
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
-docker pull ghcr.io/caidaoli/ccload:v2.44.1
+docker pull ghcr.io/caidaoli/ccload:v4.7.0
 
 # Pull latest Beta; replace beta with a published vX.Y.Z-beta.N Tag to pin it
 docker pull ghcr.io/caidaoli/ccload:beta

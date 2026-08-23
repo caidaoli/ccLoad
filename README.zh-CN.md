@@ -78,6 +78,7 @@ ccLoad 直接处理这些问题：
 | 🚦 **渠道RPM限制** | 每渠道滚动60秒请求上限 | 0=不限，超限自动跳过 |
 | 🚧 **渠道并发限制** | 每渠道同时在飞请求上限 | 0=不限，超限自动跳过 |
 | 🗝️ **Key 模型白名单** | 每个渠道 Key 限定可服务的模型 | 空=不限制；全部 Key 都不匹配则跳过该渠道 |
+| 🧠 **模型思考后缀** | `model(high)` / `model(16384)` 语法糖 | 跨协议映射思考参数，基名路由不受影响 |
 | 🕒 **渠道可用时段** | HH:MM 起止时间，服务器本地时区，支持跨午夜 | 时段外渠道完全不参与路由 |
 | 🔐 **令牌限额** | 费用上限+模型/渠道限制+并发上限 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
@@ -418,7 +419,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:v2.44.1  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:v4.7.0  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -589,9 +590,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+**图像生成（Images API）**：
+
+`POST /v1/images/generations` 兼容 OpenAI Images 接口，请求体上限独立由 `max_image_body_bytes` 控制。渠道模型是 `grok-4.6` 及之后的 xAI 对话模型时，ccLoad 会把请求自动桥接成 xAI Responses 的 `image_generation` 工具调用：非流请求聚合为标准 Images JSON，流式请求输出 `partial_image` / `completed` SSE 事件。
+
 **Codex Responses WebSocket**：
 
-下游 WebSocket 和上游 WebSocket 是两个独立开关：认证后的客户端始终可以升级 `GET /v1/responses`，也可以使用 Codex 直连别名 `GET /backend-api/codex/responses`；渠道的 `websockets` 只决定 ccLoad 是否尝试连接原生 Codex 上游 WebSocket。未启用该字段的渠道仍可通过 HTTP/SSE 桥接参与候选和故障切换。
+下游 WebSocket 和上游 WebSocket 是两个独立开关：认证后的客户端始终可以升级 `GET /v1/responses`，也可以使用 Codex 直连别名 `GET /v1/codex/responses` 或 `GET /backend-api/codex/responses`；渠道的 `websockets` 只决定 ccLoad 是否尝试连接原生 Codex 上游 WebSocket。未启用该字段的渠道仍可通过 HTTP/SSE 桥接参与候选和故障切换。
 
 在 `/web/channels.html` 中选择包含 Codex 能力 URL 的渠道，勾选“原生 WebSocket”并点击“检测”即可启用。使用 Admin API 时对应的关键字段如下；URL 仍填写 `http://` 或 `https://` 地址，ccLoad 会在原生 WS 请求时转换为 `ws://` 或 `wss://`：
 
@@ -653,6 +658,17 @@ curl -X POST http://localhost:8080/v1/alpha/search \
 ```
 
 普通渠道 URL 会自动追加 `/v1/alpha/search`。精确 URL 需要设置 `exact: true`，且 `url` 已指向完整端点，例如 `{"url":"https://upstream.example.com/v1/alpha/search","exact":true,"protocols":["codex"]}`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
+
+### 模型思考后缀
+
+任意协议入口都支持在模型名尾部追加思考后缀，例如 `claude-sonnet-4-6(high)`、`gpt-5.2(xhigh)`、`gemini-3.1-pro(8192)`。ccLoad 先剥离后缀完成路由，再按实际转发的上游协议把等级写进请求体的思考参数（Anthropic `thinking`、OpenAI/Codex `reasoning.effort`、Gemini `thinkingBudget`）：
+
+- **等级**：`minimal` / `low` / `medium` / `high` / `xhigh` / `max`；超出上游模型能力时收敛到最近可用档
+- **关闭**：`(none)` 或 `(0)` 关闭思考
+- **自动**：`(auto)` 交由上游默认思考策略
+- **数字预算**：`(16384)` 等非负整数按 token 预算下发（Anthropic `budget_tokens`、Gemini `thinkingBudget`）
+
+后缀不是模型身份：选路、鉴权、冷却、日志和发往上游的模型名一律使用基名，渠道模型列表无需登记带后缀的条目。HTTP 代理、Responses WebSocket 和管理后台的渠道测试都支持该后缀；渠道自定义请求规则晚于后缀生效，可覆盖它写入的字段。括号内容不是已知等级或非负整数的模型名（如上游真的叫 `foo(bar)`）原样透传。
 
 ### 本地 Token 计数
 
@@ -875,7 +891,7 @@ ccLoad 使用的核心技术栈：
 |------|------|------|----------|
 | **Go** | 1.26.0+ | 运行时环境 | 原生并发支持，现代工具链 |
 | **Gin** | v1.12.0 | Web框架 | 高性能HTTP路由 |
-| **modernc/sqlite** | v1.54.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
+| **modernc/sqlite** | v1.57.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
 | **MySQL** | v1.10.0 | 关系型数据库 | 可选，适合高并发生产环境 |
 | **PostgreSQL (pgx)** | v5.10.0 | 关系型数据库 | 可选，支持 URL 和 libpq DSN |
 | **Sonic** | v1.15.2 | JSON库 | 比标准库快2-3倍 |
@@ -1087,8 +1103,14 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `responses_ws_max_transcript_bytes` | `268435456` | 整个进程保留的 transcript 有效载荷总预算（256 MiB）；`0` 使用内建默认值 |
 | `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
 | `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
+| `CODEX_BASE_URL` | 空 | Codex OAuth 渠道的全局上游地址（完整 Responses URL；官方默认 `https://chatgpt.com/backend-api/codex/responses`） |
+| `ANTHROPIC_BASE_URL` | 空 | Anthropic OAuth 渠道的全局 API 根地址（官方默认 `https://api.anthropic.com`） |
+| `XAI_BASE_URL` | 空 | xAI OAuth 渠道的全局 API 根地址（通常以 `/v1` 结尾；官方默认 `https://cli-chat-proxy.grok.com/v1`） |
+| `ANTIGRAVITY_URL` | 空 | Antigravity OAuth 渠道的全局上游地址（官方默认 `https://daily-cloudcode-pa.googleapis.com`，备用 `https://cloudcode-pa.googleapis.com`） |
 
 分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
+
+四个 OAuth 全局上游地址默认为空，表示使用各提供商官方地址。设置后，对应 OAuth 渠道的数据请求、模型发现、渠道测试和额度查询只使用该全局地址并忽略渠道 URL；OAuth 授权和 Token 交换/刷新仍走提供商官方地址，API Key 渠道不受影响。
 
 #### 自动更新
 
@@ -1181,7 +1203,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 - **可用标签**：
   - `latest` - 最新稳定版本
   - `beta` - 最新 Beta 版本
-  - `v2.44.1` - 精确稳定版本，和 GitHub Release Tag 保持一致
+  - `v4.7.0` - 精确稳定版本，和 GitHub Release Tag 保持一致
   - `vX.Y.Z-beta.N` - 精确 Beta 版本，和 GitHub Prerelease Tag 保持一致
 
 官方 GHCR 镜像基于 Debian/glibc，并保持不可变；上游 Cursor SDK Bridge standalone 是 glibc 动态链接程序，不能放进 Alpine/musl 运行。镜像构建会直接从 Cursor 官方发布页拉取并校验锁定版本的 Bridge；GitHub Release 只发布 ccLoad 二进制。容器不做进程内更新；拉取精确版本 Tag 或滚动别名后重建容器即可。
@@ -1193,7 +1215,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:v2.44.1
+docker pull ghcr.io/caidaoli/ccload:v4.7.0
 
 # 拉取最新 Beta；要锁定版本时将 beta 替换为已发布的 vX.Y.Z-beta.N Tag
 docker pull ghcr.io/caidaoli/ccload:beta
