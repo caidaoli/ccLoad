@@ -9,14 +9,14 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
-  <script src="assets/js/theme-init.js?v=20260615-13"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
+  <script src="assets/js/theme-init.js?v=20260823-1"></script>
+  <link rel="stylesheet" href="assets/css/www.css?v=20260823-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
-  <script defer src="assets/locales/en.js?v=20260801-1"></script>
-  <script defer src="assets/js/i18n.js?v=20260615-13"></script>
-  <script defer src="assets/js/nav.js?v=20260729-1"></script>
-  <script defer src="assets/js/www.js?v=20260615-13"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260823-1"></script>
+  <script defer src="assets/locales/en.js?v=20260823-1"></script>
+  <script defer src="assets/js/i18n.js?v=20260823-1"></script>
+  <script defer src="assets/js/nav.js?v=20260823-1"></script>
+  <script defer src="assets/js/www.js?v=20260823-1"></script>
 </head>
 <body class="www-page www-config">
   <header class="www-page-hero">
@@ -30,6 +30,7 @@
         <span class="www-badge">Environment</span>
         <span class="www-badge">Storage</span>
         <span class="www-badge">Channel Policy</span>
+        <span class="www-badge">OAuth Addresses</span>
         <span class="www-badge">Cost Limits</span>
       </div>
     </div>
@@ -54,6 +55,12 @@
               </tr>
             </thead>
             <tbody>
+              <tr>
+                <td><code>PORT</code></td>
+                <td><code>8080</code></td>
+                <td>HTTP listen port.</td>
+                <td>Hugging Face Spaces must use <code>7860</code>.</td>
+              </tr>
               <tr>
                 <td><code>CCLOAD_PASS</code></td>
                 <td>None</td>
@@ -113,6 +120,18 @@
                 <td><code>7</code></td>
                 <td>Initial log window imported from primary when hybrid SQLite has no logs.</td>
                 <td><code>-1</code> imports all logs; <code>0</code> disables startup log imports. Other values make later startups import only logs newer than SQLite's latest timestamp.</td>
+              </tr>
+              <tr>
+                <td><code>CURSOR_SDK_BRIDGE_BIN</code></td>
+                <td>Auto-discovered</td>
+                <td>Explicit path to the Cursor SDK Bridge executable.</td>
+                <td>Leave unset unless you pin a local binary. An invalid override fails startup when a Cursor channel exists.</td>
+              </tr>
+              <tr>
+                <td><code>TRUSTED_PROXIES</code></td>
+                <td>Private ranges + loopback + <code>100.64.0.0/10</code></td>
+                <td>Trusted proxy CIDRs for client IP detection and login rate limiting.</td>
+                <td>Set explicitly behind a reverse proxy. <code>none</code> trusts no proxies.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ALLOW_INSECURE_TLS</code></td>
@@ -184,7 +203,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Channel Configuration</h2>
-          <p>Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits.</p>
+          <p>Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits. First-party providers use <code>auth_type</code> (<code>codex_oauth</code>, <code>anthropic_oauth</code>, <code>antigravity_oauth</code>, <code>xai_oauth</code>, <code>zai_oauth</code>, <code>cursor_oauth</code>) instead of a static API key.</p>
         </div>
 
         <div class="www-doc-grid">
@@ -194,7 +213,7 @@
               <li><code>name</code>: readable channel name used by logs and statistics.</li>
               <li><code>protocol_transform_mode</code>: <code>auto</code> starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying it; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> translates to URL-declared protocols.</li>
               <li><code>urls</code>: an ordered list of URLs with optional <code>protocols</code>. Local mode prioritizes declared URLs; if all are undeclared it tries Anthropic → Codex → OpenAI → Gemini. <code>exact: true</code> disables automatic path joining.</li>
-              <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
+              <li><code>api_key</code>: supports one or multiple keys. Each key may set <code>allowed_models</code> to restrict which channel models it serves; empty or <code>*</code> means unrestricted. Matching uses the channel logical model (after fuzzy match, before <code>redirect_model</code>).</li>
               <li><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
@@ -222,6 +241,9 @@
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
         </div>
         <div class="www-callout www-mt-4">
+          <strong>Thinking suffixes are client syntax, not model identity.</strong> Request <code>claude-sonnet-4-6(high)</code> or <code>gpt-5.2(xhigh)</code>; ccLoad strips the suffix for routing and writes the level into the upstream protocol's thinking fields. Channel model lists do not need suffixed entries. Custom request rules run later and can override those fields.
+        </div>
+        <div class="www-callout www-mt-4">
           <strong>An explicit channel-wide fixed-window quota is treated as a real channel cooldown.</strong> When the upstream provides a concrete channel reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
         </div>
         <div class="www-callout www-mt-4">
@@ -244,7 +266,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
             <h3>Retries and cooldown</h3>
-            <p>Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, upstream HTTP 5xx, key-level 429 rate limits, and model-unavailable 404 — cool only the actual upstream model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
+            <p>Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, upstream HTTP 5xx, key-level 429 rate limits, model-unavailable 404, and explicit model-retirement 410 — cool only the actual upstream model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped. <code>cooldown_fallback_enabled</code> (default true) picks the earliest-recovering channel when every candidate is cooling.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
@@ -279,12 +301,12 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🚦</span>
             <h3>Concurrency and body limits</h3>
-            <p><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. All three take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
+            <p><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout — independent of the body-size limits. All take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🔗</span>
             <h3>WebSocket sessions</h3>
-            <p><code>responses_ws_max_sessions</code> caps process-wide execution sessions; <code>0</code> uses the default of 32. <code>responses_ws_session_ttl_minutes</code> controls idle transcript retention. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
+            <p>New installs cap downstream WebSocket connections at 128 globally and 64 per token, retain 256 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📚</span>
@@ -295,6 +317,11 @@
             <span class="www-doc-icon">⬆️</span>
             <h3>Auto updates</h3>
             <p>For non-container deployments, one update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and all release asset downloads. Container deployments switch versions with the <code>latest</code> and <code>beta</code> image Tags instead.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🌍</span>
+            <h3>OAuth upstream addresses</h3>
+            <p><code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code> and <code>ANTIGRAVITY_URL</code> default empty and use each provider's official address. When set, matching OAuth channels use only that global address for data requests, model discovery, tests and quota queries, ignoring the channel URL. Authorization and token refresh still use official endpoints; API-key channels are unaffected. Saving a change restarts the process.</p>
           </article>
         </div>
 

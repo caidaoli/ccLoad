@@ -384,6 +384,15 @@ html[data-theme="dark"] {
   color: var(--color-text-primary);
 }
 
+.www-section-lead {
+  max-width: 720px;
+  margin: calc(var(--space-12) * -1) auto var(--space-12);
+  padding-top: var(--space-4);
+  text-align: center;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}
+
 .www-feature-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -400,6 +409,10 @@ html[data-theme="dark"] {
 @media (min-width: 1024px) {
   .www-feature-grid {
     grid-template-columns: repeat(4, 1fr);
+  }
+
+  .www-feature-grid.www-provider-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 

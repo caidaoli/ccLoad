@@ -89,31 +89,34 @@ cp -r www /path/to/webroot/
 ## 已完成功能
 
 ### ✅ 首页（index.html）
-- Hero 区域
-- 核心特性卡片
+- Hero 区域（对齐正式版 README 标语）
+- 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
+- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / Z.ai / Cursor
 - 管理后台预览截图
-- 4 种部署方式卡片
+- 4 种部署方式卡片（Go 1.26+，官方 latest 二进制）
 - 快速开始 Tab 切换
 - 代码复制功能
 
 ### ✅ 安装指南（install.html）
-- Docker Compose 部署
+- Docker Compose 部署（GHCR latest / beta / 精确版本）
 - Hugging Face Spaces 部署
-- 源码编译与二进制运行
+- 源码编译与二进制运行（含 Cursor SDK Bridge）
 - 部署后验证命令
 
 ### ✅ 配置手册（config.html）
-- 启动环境变量表
+- 启动环境变量表（含 PORT、CURSOR_SDK_BRIDGE_BIN、TRUSTED_PROXIES）
 - SQLite / MySQL / PostgreSQL / Hybrid 存储模式对比
-- 渠道配置、单模型启停、原生 WebSocket 检测和供应商冷却探测规则
-- 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制
+- 渠道配置、OAuth auth_type、Key 模型白名单、单模型启停、可用时段
+- 思考后缀、全局 OAuth 上游地址、冷却兜底
+- 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制（256 会话 / 256 MiB）
 - 批量模型名小写与来源前缀清理
 - API Token 模型、渠道白名单/黑名单、费用和并发限制
 - 管理后台热配置说明
 - 安全上线检查
 
 ### ✅ API 使用（usage.html）
-- Anthropic / OpenAI / Gemini / Codex / Token 统计示例
+- Anthropic / OpenAI / Gemini / Codex / Images / Token 统计示例
+- 思考后缀、第一方账号渠道、Images API
 - HTTP 与 Responses WebSocket 端点速查表、会话隔离、连接轮换和故障切换边界
 - 多协议内置搜索映射说明
 - 管理后台的客户端协议统计、7 天服务健康度与模型测试说明

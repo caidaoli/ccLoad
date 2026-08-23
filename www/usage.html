@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title data-i18n="www.usage.title">API Usage - ccLoad</title>
-  <meta name="description" data-i18n-content="www.usage.meta.description" content="Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including Responses WebSocket and native Codex Alpha Search passthrough.">
+  <meta name="description" data-i18n-content="www.usage.meta.description" content="Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including Responses WebSocket, thinking suffixes, and the Images API.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
-  <script src="assets/js/theme-init.js?v=20260615-13"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
+  <script src="assets/js/theme-init.js?v=20260823-1"></script>
+  <link rel="stylesheet" href="assets/css/www.css?v=20260823-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
-  <script defer src="assets/locales/en.js?v=20260801-1"></script>
-  <script defer src="assets/js/i18n.js?v=20260615-13"></script>
-  <script defer src="assets/js/nav.js?v=20260729-1"></script>
-  <script defer src="assets/js/www.js?v=20260615-13"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260823-1"></script>
+  <script defer src="assets/locales/en.js?v=20260823-1"></script>
+  <script defer src="assets/js/i18n.js?v=20260823-1"></script>
+  <script defer src="assets/js/nav.js?v=20260823-1"></script>
+  <script defer src="assets/js/www.js?v=20260823-1"></script>
 </head>
 <body class="www-page www-usage">
   <header class="www-page-hero">
@@ -24,13 +24,14 @@
       <span class="www-eyebrow">API Usage</span>
       <h1 class="www-page-title" data-i18n="www.usage.title">API Usage</h1>
       <p class="www-page-subtitle" data-i18n="www.usage.subtitle">
-        ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including Responses WebSocket and native Codex Alpha Search passthrough. Clients only need a new base URL and token.
+        ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including Responses WebSocket, thinking suffixes, and the Images API. Clients only need a new base URL and token.
       </p>
       <div class="www-badge-row" aria-label="Compatible protocols">
         <span class="www-badge">Anthropic Messages</span>
         <span class="www-badge">OpenAI Chat</span>
         <span class="www-badge">Gemini v1beta</span>
         <span class="www-badge">Codex</span>
+        <span class="www-badge">Images API</span>
       </div>
     </div>
   </header>
@@ -101,12 +102,17 @@
               <tr>
                 <td>Codex WebSocket clients</td>
                 <td><code>GET /v1/responses</code></td>
-                <td>Authenticated Responses WebSocket; the direct-route alias is <code>GET /backend-api/codex/responses</code>.</td>
+                <td>Authenticated Responses WebSocket; aliases are <code>GET /v1/codex/responses</code> and <code>GET /backend-api/codex/responses</code>.</td>
               </tr>
               <tr>
                 <td>Codex Alpha Search</td>
                 <td><code>POST /v1/alpha/search</code></td>
                 <td>Native Codex search passthrough. Only resolved Codex upstreams are eligible.</td>
+              </tr>
+              <tr>
+                <td>Images API</td>
+                <td><code>POST /v1/images/generations</code></td>
+                <td>OpenAI Images-compatible. xAI conversational models at <code>grok-4.6</code> and later are bridged to the Responses <code>image_generation</code> tool.</td>
               </tr>
               <tr>
                 <td>Gemini clients</td>
@@ -132,6 +138,70 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
+          <h2>Model thinking suffix</h2>
+          <p>Append a thinking level to any model name. ccLoad strips it for routing, then writes the matching thinking fields for the protocol actually forwarded upstream.</p>
+        </div>
+
+        <div class="www-doc-grid">
+          <article class="www-info-card">
+            <h3>Accepted suffixes</h3>
+            <ul class="www-check-list">
+              <li>Levels: <code>(minimal)</code> <code>(low)</code> <code>(medium)</code> <code>(high)</code> <code>(xhigh)</code> <code>(max)</code>. A level beyond the upstream model clamps to the nearest supported tier.</li>
+              <li>Disable: <code>(none)</code> or <code>(0)</code>.</li>
+              <li>Auto: <code>(auto)</code> defers to the upstream default.</li>
+              <li>Numeric budget: <code>(16384)</code> becomes Anthropic <code>budget_tokens</code> or Gemini <code>thinkingBudget</code>.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3>Not a model identity</h3>
+            <ul class="www-check-list">
+              <li>Request <code>claude-sonnet-4-6(high)</code>, <code>gpt-5.2(xhigh)</code>, or <code>gemini-3.1-pro(8192)</code>.</li>
+              <li>Routing, auth, cooldown, logging, and the upstream model name always use the base name. Channel model lists do not need suffixed entries.</li>
+              <li>HTTP proxy, Responses WebSocket, and admin channel tests all honor the suffix. Channel custom request rules run later and can override the fields it writes.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" id="oauth-channels" style="background: var(--color-bg-elevated);">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>First-party account channels</h2>
+          <p>Import credentials in the admin console. Clients only hold ccLoad tokens. OAuth authorization and token refresh still use the provider's official endpoints.</p>
+        </div>
+        <div class="www-doc-grid www-doc-grid-3">
+          <article class="www-info-card">
+            <h3>Codex / Anthropic / Antigravity / xAI</h3>
+            <ul class="www-check-list">
+              <li>Import OAuth credentials, or a Codex PAT that starts with <code>at-</code>.</li>
+              <li>Batch-refresh quota windows from the channel card. Permanently rejected refreshes disable the channel without cooling it.</li>
+              <li>Optional system settings <code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code>, and <code>ANTIGRAVITY_URL</code> override data-plane addresses only.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3>Z.ai Coding Plan</h3>
+            <ul class="www-check-list">
+              <li>Complete the browser authorization flow, or import a Coding Plan API key when the provider OAuth poll endpoint is unavailable.</li>
+              <li>The model catalog is loaded from the account, then models.dev, then the built-in list.</li>
+              <li>Quota windows are shown on the channel card and are not billed as standard cost.</li>
+            </ul>
+          </article>
+          <article class="www-info-card">
+            <h3>Cursor</h3>
+            <ul class="www-check-list">
+              <li>Import a Cursor user API key. Browser login and session <code>accessToken</code> import are not supported.</li>
+              <li>ccLoad locates or installs the pinned official SDK Bridge in the background. Inference does not use HTTP forwarding.</li>
+              <li>The SDK Agent receives an empty built-in tool list. Client tools stay in the prompt as <code>&lt;cc_tool_call&gt;</code> and are translated back to Anthropic or OpenAI tool calls.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
           <h2>Codex Responses WebSocket</h2>
           <p>The downstream client keeps one authenticated WebSocket while each selected upstream candidate may use native Codex WebSocket or the existing HTTP/SSE bridge.</p>
         </div>
@@ -140,9 +210,10 @@
           <article class="www-info-card">
             <h3>Channel and session setup</h3>
             <ul class="www-check-list">
-              <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
+              <li>Upgrade <code>GET /v1/responses</code>, <code>GET /v1/codex/responses</code>, or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
               <li>Enable <code>websockets</code> only on channels whose upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
               <li>Keep the API token and <code>Session-Id</code> header stable across reconnects. When <code>Thread-Id</code> is present, ccLoad combines it with <code>Session-Id</code> so concurrent agent transcripts and turn locks stay isolated. Request-body cache hints never identify an execution session.</li>
+              <li>New installs retain 256 execution sessions with a 256 MiB transcript budget and a 15-minute idle TTL. Downstream connections default to 128 globally and 64 per token.</li>
               <li><code>upstream_connection_reuse_limit_seconds</code> can rotate old upstream HTTP and WebSocket connections. Active turns drain first; a new native WebSocket reconnects on demand and replays the retained transcript.</li>
             </ul>
           </article>
@@ -224,6 +295,7 @@
             <button class="www-tab-button">OpenAI</button>
             <button class="www-tab-button">Codex</button>
             <button class="www-tab-button">Gemini</button>
+            <button class="www-tab-button">Images</button>
             <button class="www-tab-button">Token Count</button>
           </div>
 
@@ -239,7 +311,7 @@
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-sonnet-4-6",
+    "model": "claude-sonnet-4-6(high)",
     "max_tokens": 1024,
     "messages": [
       {"role": "user", "content": "Hello from ccLoad"}
@@ -353,6 +425,28 @@
                 <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grok-4.6",
+    "prompt": "A red fox in snow",
+    "size": "1024x1024"
+  }'</code></pre>
+              </div>
+            </div>
+            <div class="www-callout www-mt-4">
+              <strong>This is the OpenAI Images API, not xAI's native grok-imagine media API.</strong> For conversational models at <code>grok-4.6</code> and later, ccLoad bridges the request into an xAI Responses <code>image_generation</code> tool call. Non-streaming requests aggregate into standard Images JSON; streaming requests emit <code>partial_image</code> / <code>completed</code> SSE. Body size is capped by <code>max_image_body_bytes</code>.
+            </div>
+          </div>
+
+          <div class="www-tab-panel">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
                 <pre><code>curl -X POST http://localhost:8080/v1/messages/count_tokens \
   -H "Authorization: Bearer your_ccload_token" \
   -H "Content-Type: application/json" \
@@ -378,13 +472,13 @@
               <p>The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li>Channels: create, edit, delete and test upstream channels; pause individual models without deleting their configuration; detect native WebSocket support; configure provider-specific cooldown rules; import or export CSV.</li>
+              <li>Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai credentials; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules; import or export CSV.</li>
               <li>Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li>Logs: filter requests by status code, channel, model and token to locate failures.</li>
               <li>Overview: compare traffic by client protocol and inspect seven-day service health.</li>
               <li>Stats: inspect requests, tokens, cost, first-byte latency and channel health.</li>
               <li>Trends: observe RPM, cost and latency by time range.</li>
-              <li>Model test: run chat-style requests or test models by channel through the real proxy path.</li>
+              <li>Model test: run chat-style requests or test models by channel through the real proxy path, including thinking suffixes, built-in search, and image generation.</li>
             </ul>
           </div>
           <figure class="www-media-frame">

@@ -9,14 +9,14 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
-  <script src="assets/js/theme-init.js?v=20260615-13"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
+  <script src="assets/js/theme-init.js?v=20260823-1"></script>
+  <link rel="stylesheet" href="assets/css/www.css?v=20260823-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
-  <script defer src="assets/locales/en.js?v=20260801-1"></script>
-  <script defer src="assets/js/i18n.js?v=20260615-13"></script>
-  <script defer src="assets/js/nav.js?v=20260729-1"></script>
-  <script defer src="assets/js/www.js?v=20260615-13"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260823-1"></script>
+  <script defer src="assets/locales/en.js?v=20260823-1"></script>
+  <script defer src="assets/js/i18n.js?v=20260823-1"></script>
+  <script defer src="assets/js/nav.js?v=20260823-1"></script>
+  <script defer src="assets/js/www.js?v=20260823-1"></script>
 </head>
 <body class="www-page www-install">
   <header class="www-page-hero">
@@ -29,7 +29,7 @@
       <div class="www-badge-row" aria-label="Deployment options">
         <span class="www-badge">Docker</span>
         <span class="www-badge">Hugging Face Spaces</span>
-        <span class="www-badge">Go 1.25+</span>
+        <span class="www-badge">Go 1.26+</span>
         <span class="www-badge">Linux / macOS / Windows</span>
       </div>
     </div>
@@ -124,7 +124,7 @@ docker-compose logs -f ccload</code></pre>
         </div>
 
         <div class="www-callout www-mt-4">
-          <strong>The official GHCR image uses a Debian/glibc runtime for the Cursor SDK Bridge companion.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not update in process. Set the Compose image Tag, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>.
+          <strong>The official GHCR image uses a Debian/glibc runtime for the Cursor SDK Bridge companion.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not update in process. Set the Compose image Tag, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>. Pin a release with <code>ghcr.io/caidaoli/ccload:v4.7.0</code>.
         </div>
       </div>
     </section>
@@ -168,7 +168,10 @@ docker-compose logs -f ccload</code></pre>
 
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
-EXPOSE 7860</code></pre>
+EXPOSE 7860
+
+# Pin a stable release instead of latest:
+# FROM ghcr.io/caidaoli/ccload:v4.7.0</code></pre>
           </div>
         </div>
       </div>
@@ -212,11 +215,12 @@ make build
                 <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
-                <pre><code>wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
+                <pre><code>wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
 chmod +x ccload-linux-amd64
 
-# Cursor SDK Bridge is installed automatically when needed.
-# Offline downloads: https://github.com/cursor/sdk-bridge/releases
+# Cursor SDK Bridge is installed automatically when a Cursor channel exists.
+# Offline: place cursor-sdk-bridge beside ccLoad, or set CURSOR_SDK_BRIDGE_BIN.
+# Archives: https://github.com/cursor/sdk-bridge/releases
 
 export CCLOAD_PASS=your_admin_password
 ./ccload-linux-amd64</code></pre>
@@ -249,6 +253,8 @@ curl -s http://localhost:8080/public/summary
 # API proxy endpoint examples
 # POST http://localhost:8080/v1/messages
 # POST http://localhost:8080/v1/chat/completions
+# POST http://localhost:8080/v1/responses
+# POST http://localhost:8080/v1/images/generations
 # POST http://localhost:8080/v1beta/models/{model}:generateContent</code></pre>
           </div>
         </div>
