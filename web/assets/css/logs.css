@@ -143,6 +143,30 @@
       transform: none;
     }
 
+    .logs-abort-btn {
+      padding: 1px 6px;
+      border: 1px solid var(--error-300, #fca5a5);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--error-600);
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: nowrap;
+      transition: background 0.2s ease;
+    }
+
+    .logs-abort-btn:hover:not(:disabled) {
+      background: var(--error-100, #fee2e2);
+    }
+
+    .logs-abort-btn:disabled {
+      cursor: default;
+      opacity: 0.6;
+      border-color: var(--neutral-300);
+      color: var(--neutral-500);
+    }
+
     .logs-table .channel-link {
       padding: 0;
       border: none;

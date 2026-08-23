@@ -856,6 +856,20 @@ function handleActiveRequestsData(rawActiveRequests) {
   renderActiveRequests(activeRequests);
 }
 
+// 已触发中断但尚未看到上游换轮的请求：id -> 触发时的 start_time（毫秒）。
+// 中断生效后代理会切换渠道并重置 start_time，届时按钮恢复可点。
+const abortingActiveRequests = new Map();
+
+function buildActiveRequestAbortHtml(req, id, startMs) {
+  if (!req.abortable) return '';
+  const pending = abortingActiveRequests.has(id);
+  const label = pending
+    ? (typeof t === 'function' ? t('logs.aborting') : '中断中')
+    : (typeof t === 'function' ? t('logs.abort') : '中断');
+  return `<button type="button" class="logs-abort-btn" data-abort-request-id="${escapeHtml(id)}"`
+    + ` data-abort-start="${startMs || 0}"${pending ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+}
+
 // 渲染进行中的请求（按 ID diff 更新，避免无意义的 DOM churn）
 function renderActiveRequests(activeRequests) {
   const tbody = document.getElementById('tbody');
@@ -871,6 +885,10 @@ function renderActiveRequests(activeRequests) {
     activeIds.add(id);
 
     const startMs = toUnixMs(req.start_time);
+    // 中断已生效（上游换了一轮）就撤掉「中断中」，让操作员能中断新的尝试
+    if (abortingActiveRequests.has(id) && abortingActiveRequests.get(id) !== startMs) {
+      abortingActiveRequests.delete(id);
+    }
     const elapsedRaw = startMs ? Math.max(0, (Date.now() - startMs) / 1000) : null;
     const elapsed = elapsedRaw !== null ? elapsedRaw.toFixed(1) : '-';
     const streamFlag = getStreamFlagHtml(req.is_streaming);
@@ -882,6 +900,8 @@ function renderActiveRequests(activeRequests) {
     const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
+    const abortDisplay = buildActiveRequestAbortHtml(req, id, startMs);
+    const speedCellClass = `logs-col-speed${abortDisplay ? '' : ' mobile-empty-cell'}`;
 
     // Key显示
     let keyDisplay = '<span style="color: var(--neutral-500);">-</span>';
@@ -905,6 +925,15 @@ function renderActiveRequests(activeRequests) {
       if (compactStatus && !statusCell) compactStatus.textContent = activeRequestStatusLabel(req);
       const msgCell = existingRow.querySelector('.logs-col-message');
       if (msgCell) msgCell.innerHTML = infoContent;
+      // 中断入口随渠道切换与中断状态变化，必须每轮重画
+      const speedCell = existingRow.querySelector('.logs-col-speed');
+      if (speedCell) {
+        speedCell.innerHTML = abortDisplay;
+        speedCell.classList.toggle('mobile-empty-cell', !abortDisplay);
+      } else {
+        const compactAbort = existingRow.querySelector('.active-abort-slot');
+        if (compactAbort) compactAbort.innerHTML = abortDisplay;
+      }
     } else {
       // 创建新行
       const row = document.createElement('tr');
@@ -919,6 +948,7 @@ function renderActiveRequests(activeRequests) {
               <span style="margin-left: 8px;">${modelDisplay}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px;">${infoContent}</span>
+              <span class="active-abort-slot" style="margin-left: 8px;">${abortDisplay}</span>
             </td>
           `;
       } else {
@@ -931,7 +961,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
             <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}">${statusDisplay}</td>
             <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${durationDisplay} ${streamFlag}</td>
-            <td class="logs-col-speed mobile-empty-cell" data-mobile-label="${logMobileLabels.speed}" style="text-align: right; white-space: nowrap;"></td>
+            <td class="${speedCellClass}" data-mobile-label="${logMobileLabels.speed}" style="text-align: right; white-space: nowrap;">${abortDisplay}</td>
             <td class="logs-col-input mobile-empty-cell" data-mobile-label="${logMobileLabels.input}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-output mobile-empty-cell" data-mobile-label="${logMobileLabels.output}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-cache-read mobile-empty-cell" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;"></td>
@@ -951,6 +981,32 @@ function renderActiveRequests(activeRequests) {
       row.remove();
     }
   });
+  // 请求结束后清理中断标记，避免 Map 无限增长
+  for (const id of abortingActiveRequests.keys()) {
+    if (!activeIds.has(id)) abortingActiveRequests.delete(id);
+  }
+}
+
+// 中断运行中请求的当前上游尝试（服务端按上游连接重置处理，随后正常故障切换）
+async function abortActiveRequest(button) {
+  const id = button.dataset.abortRequestId;
+  if (!id || abortingActiveRequests.has(id)) return;
+
+  const confirmMsg = (typeof t === 'function' ? t('logs.abortConfirm') : '') || '确定中断这个进行中的请求吗？将按上游网络故障处理。';
+  if (!confirm(confirmMsg)) return;
+
+  abortingActiveRequests.set(id, Number(button.dataset.abortStart) || 0);
+  button.disabled = true;
+  button.textContent = (typeof t === 'function' ? t('logs.aborting') : '中断中') || '中断中';
+
+  try {
+    const { payload } = await fetchAPIWithAuthRaw(`/admin/active-requests/${encodeURIComponent(id)}/abort`, { method: 'POST' });
+    if (!payload.success) throw new Error(payload.error || '中断失败');
+  } catch (e) {
+    // 中断没打出去就恢复按钮，否则这一行会永远卡在「中断中」
+    abortingActiveRequests.delete(id);
+    alert(e.message || '中断失败');
+  }
 }
 
 // ✅ 动态计算列数（避免硬编码维护成本）
@@ -1884,6 +1940,13 @@ window.initPageBootstrap({
   const tbody = document.getElementById('tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      // 运行中请求手动中断
+      const abortBtn = e.target.closest('.logs-abort-btn[data-abort-request-id]');
+      if (abortBtn) {
+        abortActiveRequest(abortBtn);
+        return;
+      }
+
       // 运行中请求 Debug log 查看
       const activeDebugLink = e.target.closest('.debug-log-link[data-active-request-id]');
       if (activeDebugLink) {

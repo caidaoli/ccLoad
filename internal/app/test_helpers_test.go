@@ -182,9 +182,12 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 		ready:  make(chan struct{}),
 	}
 
+	// 与真实 net/http 一致：请求 context 被 WithCancelCause 取消时，传输层向调用方
+	// 暴露的是 cause 本身而不是 context.Canceled。管理端手动中断依赖这条语义走网络故障
+	// 分类，harness 若在这里退化成 ctx.Err() 就会把中断测成客户端取消。
 	go func() {
 		<-req.Context().Done()
-		rw.abort(req.Context().Err())
+		rw.abort(context.Cause(req.Context()))
 	}()
 
 	go func() {
@@ -212,8 +215,9 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 	case <-rw.ready:
 		return rw.response(req, pr), nil
 	case <-req.Context().Done():
-		_ = pw.CloseWithError(req.Context().Err())
-		return nil, req.Context().Err()
+		cause := context.Cause(req.Context())
+		_ = pw.CloseWithError(cause)
+		return nil, cause
 	}
 }
 

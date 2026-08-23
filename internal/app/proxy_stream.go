@@ -83,7 +83,11 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			// context.Cause 而不是 ctx.Err()：取消原因决定后续分类。管理端手动中断以
+			// WithCancelCause 注入「上游断链」语义，退化成 ctx.Err() 会一律变成
+			// context.Canceled，被 isClientDisconnectError 误判为客户端取消（499、
+			// 不冷却）。无 cause 的普通取消/超时下两者返回值相同。
+			return context.Cause(ctx)
 		default:
 		}
 
@@ -127,9 +131,10 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 
 // normalizeStreamReadError 保留 Read 的真实终止原因。
 // context 取消会主动 Close 源，底层可能因此返回 EOF；此时取消/超时必须优先。
+// 用 context.Cause 而不是 ctx.Err()：手动中断的「上游断链」语义只存在于 cause 里。
 func normalizeStreamReadError(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
 	}
 	if err == io.EOF {
 		return nil
@@ -279,7 +284,8 @@ func streamTransformSSEEventsUntil(
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			// 同 streamCopyWithBufferSize：必须返回 cause，否则手动中断退化成 context.Canceled。
+			return context.Cause(ctx)
 		default:
 		}
 

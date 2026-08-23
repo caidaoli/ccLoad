@@ -9998,6 +9998,215 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	}
 }
 
+// 管理员手动中断必须走「上游断链」而不是「客户端取消」：上游还没提交响应时
+// 应当模型级冷却当前渠道并切到下一个渠道，绝不能变成 499（不冷却、不重试）。
+func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	var startOnce sync.Once
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startOnce.Do(func() { close(upstreamStarted) })
+		select {
+		case <-r.Context().Done(): // 被中断：不提交任何响应
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer primary.Close()
+
+	var backupHits atomic.Int64
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backupHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer backup.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "abort-primary", models: "gpt-abort", apiKey: "sk-1", priority: 100},
+		{name: "abort-backup", models: "gpt-abort", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: primary.URL, 1: backup.URL})
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "gpt-abort",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.engine.ServeHTTP(w, req)
+	}()
+
+	select {
+	case <-upstreamStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never received the request")
+	}
+
+	// 等到中断句柄登记后再触发，否则中断会打空
+	var aborted bool
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		for _, active := range env.server.activeRequests.List() {
+			if active.Abortable && env.server.activeRequests.Abort(active.ID) {
+				aborted = true
+				break
+			}
+		}
+		if aborted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !aborted {
+		t.Fatal("no abortable active request appeared")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("proxy request did not finish after abort")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (failover to backup); body=%s", w.Code, w.Body.String())
+	}
+	if w.Code == StatusClientClosedRequest {
+		t.Fatal("operator abort must not be classified as client cancellation")
+	}
+	if got := backupHits.Load(); got != 1 {
+		t.Fatalf("backup channel hits=%d, want 1", got)
+	}
+
+	channels, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	var primaryID int64
+	for _, ch := range channels {
+		if ch.Name == "abort-primary" {
+			primaryID = ch.ID
+		}
+	}
+	if primaryID == 0 {
+		t.Fatal("primary channel not found")
+	}
+
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	until, ok := cooldowns[primaryID]["gpt-abort"]
+	if !ok || !until.After(time.Now()) {
+		t.Fatalf("aborted channel must get a model cooldown, got %v (ok=%v)", until, ok)
+	}
+}
+
+// 响应已提交给客户端后再中断：按契约禁止网关内部切换或重放，正确收场是 599
+// （流式中断）+ 模型级冷却，绝不能变成 499，也不能偷偷换渠道重发一遍。
+func TestProxy_OperatorAbort_AfterCommitDoesNotSwitchChannel(t *testing.T) {
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		// 只发一半就挂住，等中断把连接掐掉——流没有终止事件
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer primary.Close()
+
+	var backupHits atomic.Int64
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backupHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backup.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "abort-committed-primary", models: "gpt-abort-stream", apiKey: "sk-1", priority: 100},
+		{name: "abort-committed-backup", models: "gpt-abort-stream", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: primary.URL, 1: backup.URL})
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    "gpt-abort-stream",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.engine.ServeHTTP(w, req)
+	}()
+
+	// ClientFirstByteTime > 0 = 首个客户端可见事件已写出，此刻响应对下游已提交
+	var aborted bool
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		for _, active := range env.server.activeRequests.List() {
+			if active.ClientFirstByteTime > 0 && active.Abortable && env.server.activeRequests.Abort(active.ID) {
+				aborted = true
+				break
+			}
+		}
+		if aborted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !aborted {
+		t.Fatal("no committed abortable active request appeared")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("proxy request did not finish after abort")
+	}
+
+	if got := backupHits.Load(); got != 0 {
+		t.Fatalf("backup channel hits=%d, want 0: a committed stream must not be replayed", got)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-abort-stream")
+	if entry.StatusCode != util.StatusStreamIncomplete {
+		t.Fatalf("log status=%d, want %d (stream interrupted); message=%s",
+			entry.StatusCode, util.StatusStreamIncomplete, entry.Message)
+	}
+
+	channels, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	var primaryID int64
+	for _, ch := range channels {
+		if ch.Name == "abort-committed-primary" {
+			primaryID = ch.ID
+		}
+	}
+	if primaryID == 0 {
+		t.Fatal("primary channel not found")
+	}
+
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	if until, ok := cooldowns[primaryID]["gpt-abort-stream"]; !ok || !until.After(time.Now()) {
+		t.Fatalf("aborted channel must get a model cooldown, got %v (ok=%v)", until, ok)
+	}
+}
+
 func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	t.Parallel()
 

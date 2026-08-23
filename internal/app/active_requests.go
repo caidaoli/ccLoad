@@ -2,6 +2,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,18 @@ const (
 	activeRequestStatusReceiving  = "receiving"
 	activeRequestStatusRetrying   = "retrying"
 )
+
+// errOperatorAbort 是管理员从日志页手动中断上游尝试时注入的 cancel cause。
+//
+// 文案刻意与真实的上游连接重置一致，这是本机制的核心：Go 的 context.WithCancelCause
+// 会让 HTTP 传输层和响应体读取直接返回 cause 本身（而不是 context.Canceled），
+// 于是 util.ClassifyError、util.IsModelScopedNetworkError 和 buildStreamDiagnostics
+// 全都无需针对手动中断加特判，中断自动走完与真实断链完全相同的分类、冷却和故障切换
+// 路径——未提交时 502 模型级冷却并切下一渠道，已提交时 599 流中断。
+//
+// 别改成 context.Canceled 或不含 "connection reset by peer" 的文案：前者会被判成
+// 客户端取消（499、不冷却、不重试），后者会掉进通用 502 分支而丢掉模型级作用域。
+var errOperatorAbort = errors.New("read: connection reset by peer (aborted by operator)")
 
 // ActiveRequest 表示一个进行中的请求
 type ActiveRequest struct {
@@ -38,6 +52,7 @@ type ActiveRequest struct {
 	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
 	ThinkingEffort      string  `json:"thinking_effort,omitempty"`
 	UpstreamStatus      string  `json:"upstream_status"`
+	Abortable           bool    `json:"abortable,omitempty"` // 当前上游尝试是否登记了可中断句柄
 }
 
 type activeRequest struct {
@@ -59,6 +74,9 @@ type activeRequest struct {
 	ThinkingEffort    string
 	UpstreamStatus    string
 	debugCapture      *debugCapture
+	// abort 取消当前这次上游尝试（不是整条请求链路），由 BeginAttempt 登记。
+	// 同渠道同 URL 内的内部重试共用它，因此 Retry 不得清空。
+	abort context.CancelCauseFunc
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
@@ -78,6 +96,8 @@ type activeRequestAttempt struct {
 	BaseURL          string
 	CostMultiplier   float64
 	ThinkingEffort   string
+	// Abort 取消这次上游尝试。为 nil 时该尝试不可中断（前端不显示中断入口）。
+	Abort context.CancelCauseFunc
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
@@ -123,6 +143,7 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	req.UpstreamWebsocket = false
 	req.ThinkingEffort = normalizeThinkingEffort(attempt.ThinkingEffort)
 	req.debugCapture = nil
+	req.abort = attempt.Abort
 	req.clientFirstByteTimeUsec.Store(0)
 	req.bytesCounter.Store(0)
 	return id
@@ -183,6 +204,28 @@ func (m *activeRequestManager) GetDebugLogSnapshot(id int64) (*model.DebugLogEnt
 		return nil, false
 	}
 	return dc.buildEntry(nil), true
+}
+
+// Abort 以「上游连接被重置」的语义中断指定请求当前正在进行的上游尝试。
+// 中断只作用于这一次尝试：后续的故障切换、冷却与重试全部交给既有的网络故障
+// 处置链路，因此中断的可见结果取决于时机——上游尚未提交响应时会切换到下一个
+// 渠道，已经在向客户端输出时只能按流中断收尾。
+//
+// 命中返回 true；请求已结束或当前尝试未登记中断句柄时返回 false。
+func (m *activeRequestManager) Abort(id int64) bool {
+	m.mu.RLock()
+	var abort context.CancelCauseFunc
+	if req := m.requests[id]; req != nil {
+		abort = req.abort
+	}
+	m.mu.RUnlock()
+
+	if abort == nil {
+		return false
+	}
+	// 在锁外触发：取消会唤醒正在转发的 goroutine，它可能立刻回头更新本管理器。
+	abort(errOperatorAbort)
+	return true
 }
 
 // Remove 移除一个活跃请求
@@ -257,6 +300,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			DebugLogAvailable: req.debugCapture != nil,
 			ThinkingEffort:    req.ThinkingEffort,
 			UpstreamStatus:    req.UpstreamStatus,
+			Abortable:         req.abort != nil,
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
 			view.ClientFirstByteTime = float64(usec) / 1e6

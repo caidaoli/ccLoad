@@ -1,9 +1,14 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestHandleActiveRequests(t *testing.T) {
@@ -82,6 +87,64 @@ func TestHandleActiveRequestsExposesTitleSetting(t *testing.T) {
 	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 	if !resp.ActiveRequestTitleEnabled {
 		t.Fatal("active_request_title_enabled=false, want true")
+	}
+}
+
+func TestHandleAbortActiveRequest(t *testing.T) {
+	t.Parallel()
+
+	m := newActiveRequestManager()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	id := m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4",
+		ChannelID: 10, ChannelName: "ch", APIKey: "sk-test",
+		BaseURL: "https://upstream.example.com", CostMultiplier: 1, Abort: cancel,
+	})
+	notAbortable := beginTestActiveRequest(m, time.Now(), "m2", "1.2.3.4", false)
+
+	s := &Server{activeRequests: m}
+
+	abort := func(param string) int {
+		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/active-requests/"+param+"/abort", nil))
+		c.Params = gin.Params{{Key: "request_id", Value: param}}
+		s.HandleAbortActiveRequest(c)
+		return w.Code
+	}
+
+	if code := abort("abc"); code != http.StatusBadRequest {
+		t.Fatalf("abort with non-numeric id: status=%d, want %d", code, http.StatusBadRequest)
+	}
+	if code := abort("0"); code != http.StatusBadRequest {
+		t.Fatalf("abort with id=0: status=%d, want %d", code, http.StatusBadRequest)
+	}
+	if code := abort(strconv.FormatInt(id+9999, 10)); code != http.StatusNotFound {
+		t.Fatalf("abort with unknown id: status=%d, want %d", code, http.StatusNotFound)
+	}
+	if code := abort(strconv.FormatInt(notAbortable, 10)); code != http.StatusNotFound {
+		t.Fatalf("abort without a registered handle: status=%d, want %d", code, http.StatusNotFound)
+	}
+
+	if code := abort(strconv.FormatInt(id, 10)); code != http.StatusOK {
+		t.Fatalf("abort: status=%d, want %d", code, http.StatusOK)
+	}
+	<-ctx.Done()
+	if !errors.Is(context.Cause(ctx), errOperatorAbort) {
+		t.Fatalf("cancel cause=%v, want errOperatorAbort", context.Cause(ctx))
+	}
+}
+
+func TestHandleAbortActiveRequestWithoutManager(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/active-requests/1/abort", nil))
+	c.Params = gin.Params{{Key: "request_id", Value: "1"}}
+
+	s.HandleAbortActiveRequest(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
 	}
 }
 

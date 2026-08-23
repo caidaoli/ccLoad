@@ -2088,8 +2088,10 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		// Cancellation closes the response body to unblock a pending read. Depending
 		// on scheduling, that read may report io.ErrClosedPipe/net.ErrClosed before
 		// the transport returns ctx.Err(). Preserve the cause that controls retries.
-		if ctxErr := reqCtx.ctx.Err(); ctxErr != nil {
-			err = ctxErr
+		// 必须用 context.Cause 而不是 ctx.Err()：管理端手动中断把「上游断链」语义放在
+		// cause 里，退化成 context.Canceled 会被判成客户端取消（499、不冷却、不切渠道）。
+		if cause := context.Cause(reqCtx.ctx); cause != nil {
+			err = cause
 		}
 	}
 
@@ -3290,7 +3292,14 @@ func (s *Server) attemptKeyAcrossURLs(
 	urlsCount := len(sortedURLs)
 	var urlPolicy channelURLAttemptPolicy
 	var deferredFallbackLog *model.LogEntry
+	// 每个 URL 尝试持有独立的可取消 ctx，供管理端「中断」注入连接重置语义。
+	// 循环体有大量 continue/break/return，所以释放只在两个地方做：下一轮开头释放
+	// 上一轮，函数退出时由 defer 释放最后一轮。别改成在循环体内就地 defer。
+	var abortAttempt context.CancelCauseFunc
 	defer func() {
+		if abortAttempt != nil {
+			abortAttempt(nil)
+		}
 		if deferredFallbackLog != nil {
 			s.AddLogAsync(deferredFallbackLog)
 		}
@@ -3299,6 +3308,11 @@ func (s *Server) attemptKeyAcrossURLs(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
+		if abortAttempt != nil {
+			abortAttempt(nil)
+		}
+		attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
+		abortAttempt = cancelAttempt
 
 		attemptBaseURL := urlEntry.url
 		if _, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge {
@@ -3321,6 +3335,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			BaseURL:          attemptBaseURL,
 			CostMultiplier:   cfg.CostMultiplier,
 			ThinkingEffort:   reqCtx.thinkingEffort,
+			Abort:            cancelAttempt,
 		})
 
 		shouldDeferChannelCooldown := urlIdx < len(sortedURLs)-1
@@ -3373,7 +3388,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
-				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, attemptBaseURL, w,
+				attemptCtx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, attemptBaseURL, w,
 				shouldDeferChannelCooldown, urlPolicy.antigravityCapacityRetries)
 			if attemptErr != nil {
 				return nil, nil, attemptErr

@@ -1,10 +1,15 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 func beginTestActiveRequest(m *activeRequestManager, start time.Time, model, clientIP string, streaming bool) int64 {
@@ -110,5 +115,85 @@ func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
 	}
 	if math.Abs(got[0].ClientFirstByteTime-0.75) > 1e-6 {
 		t.Fatalf("expected client_first_byte_time≈0.75, got %f", got[0].ClientFirstByteTime)
+	}
+}
+
+func TestActiveRequestManager_AbortCancelsAttemptWithNetworkFailureCause(t *testing.T) {
+	m := newActiveRequestManager()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	id := m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: time.UnixMilli(100), Model: "m", ClientIP: "1.1.1.1",
+		ChannelID: 1, ChannelName: "ch", APIKey: "sk-test", BaseURL: "https://upstream.example.com",
+		CostMultiplier: 1, Abort: cancel,
+	})
+
+	if !m.List()[0].Abortable {
+		t.Fatal("attempt registered with an abort handle must be reported as abortable")
+	}
+	if !m.Abort(id) {
+		t.Fatal("Abort must report a hit for a registered attempt")
+	}
+
+	<-ctx.Done()
+	cause := context.Cause(ctx)
+	// 中断必须以「上游断链」形态冒泡：分类器只认错误文本，认成 context.Canceled 就会
+	// 变成 499（不冷却、不切渠道），与需求相反。
+	if !errors.Is(cause, errOperatorAbort) {
+		t.Fatalf("cancel cause=%v, want errOperatorAbort", cause)
+	}
+	if errors.Is(cause, context.Canceled) {
+		t.Fatal("abort cause must not be classifiable as client cancellation")
+	}
+	if code, _, _ := util.ClassifyError(cause); code != http.StatusBadGateway {
+		t.Fatalf("ClassifyError(abort cause)=%d, want %d", code, http.StatusBadGateway)
+	}
+	if !util.IsModelScopedNetworkError(cause) {
+		t.Fatal("abort cause must be a model-scoped network error")
+	}
+}
+
+func TestActiveRequestManager_AbortSurvivesInternalRetry(t *testing.T) {
+	m := newActiveRequestManager()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	id := m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: time.UnixMilli(100), Model: "m", ClientIP: "1.1.1.1",
+		ChannelID: 1, ChannelName: "ch", APIKey: "sk-test", BaseURL: "https://upstream.example.com",
+		CostMultiplier: 1, Abort: cancel,
+	})
+
+	// 同渠道同 URL 的内部重试复用同一个 attempt context，中断句柄不能被清掉
+	m.Retry(id)
+	if !m.List()[0].Abortable {
+		t.Fatal("internal retry must keep the attempt abortable")
+	}
+	if !m.Abort(id) {
+		t.Fatal("Abort must still hit after an internal retry")
+	}
+	<-ctx.Done()
+}
+
+func TestActiveRequestManager_AbortMisses(t *testing.T) {
+	m := newActiveRequestManager()
+
+	if m.Abort(404) {
+		t.Fatal("Abort must miss for an unknown request id")
+	}
+
+	// 未登记中断句柄的路径（如 Cursor Bridge）不可中断，前端也不显示入口
+	id := beginTestActiveRequest(m, time.UnixMilli(100), "m", "1.1.1.1", false)
+	if m.List()[0].Abortable {
+		t.Fatal("attempt without an abort handle must not be reported as abortable")
+	}
+	if m.Abort(id) {
+		t.Fatal("Abort must miss when the attempt registered no handle")
+	}
+
+	m.Remove(id)
+	if m.Abort(id) {
+		t.Fatal("Abort must miss after the request is removed")
 	}
 }
