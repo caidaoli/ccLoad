@@ -1597,7 +1597,21 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Cursor credential refresh failed")
 		}
-		return requestCursorUsage(ctx, s.cursorUsageService(cfg), credential.AccessToken)
+		service := s.cursorUsageService(cfg)
+		for attempt := 0; attempt < 2; attempt++ {
+			summary, usageErr := requestCursorUsage(ctx, service, credential.AccessToken)
+			if !errors.Is(usageErr, cursorauth.ErrSessionRejected) {
+				return summary, usageErr
+			}
+			if attempt == 1 {
+				return nil, usageErr
+			}
+			credential, err = s.cursorCredentials.credentialAfterUnauthorized(ctx, cfg, credential.AccessToken)
+			if err != nil {
+				return nil, oauthUsageCredentialRefreshError(err, "usage: Cursor credential refresh failed")
+			}
+		}
+		return nil, errors.New("usage: Cursor session token was rejected")
 	default:
 		return nil, errOAuthUsageUnsupported
 	}

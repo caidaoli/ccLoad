@@ -891,7 +891,7 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		case oauthCredentialUseCurrent:
 			credential, err = cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 		case oauthCredentialForceRefresh:
-			credential, err = s.cursorCredentials.credential(ctx, cfg, true)
+			credential, err = s.cursorCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
 		default:
 			credential, err = s.cursorCredentials.credential(ctx, cfg, false)
 		}

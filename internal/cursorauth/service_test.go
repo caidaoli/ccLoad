@@ -2,6 +2,7 @@ package cursorauth
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func TestConnectJSONRejectsUnauthorized(t *testing.T) {
 	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	if _, _, err := service.FetchIdentity(context.Background(), "tok"); err == nil {
-		t.Fatal("unauthorized identity must fail")
+	if _, _, err := service.FetchIdentity(context.Background(), "tok"); !errors.Is(err, ErrSessionRejected) {
+		t.Fatalf("unauthorized identity err = %v", err)
 	}
 }

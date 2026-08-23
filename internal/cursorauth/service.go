@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// ErrSessionRejected reports that Cursor control-plane rejected the session JWT.
+var ErrSessionRejected = errors.New("cursor rejected the session token")
+
 // Service talks to Cursor's CLI control plane. It never persists anything and
 // never returns a secret inside an error.
 type Service struct {
@@ -108,7 +111,7 @@ func (s *Service) connectJSON(ctx context.Context, rpc, accessToken string, payl
 		return err
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return errors.New("cursor rejected the session token")
+		return ErrSessionRejected
 	}
 	if status < 200 || status >= 300 {
 		return fmt.Errorf("cursor %s returned HTTP %d", operation, status)

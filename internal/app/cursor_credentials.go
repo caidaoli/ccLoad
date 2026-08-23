@@ -47,6 +47,26 @@ func (m *cursorCredentialManager) credential(
 	cfg *model.Config,
 	forceRefresh bool,
 ) (*cursorauth.Credential, error) {
+	return m.credentialForRejectedAccessToken(ctx, cfg, forceRefresh, "")
+}
+
+func (m *cursorCredentialManager) credentialAfterUnauthorized(
+	ctx context.Context,
+	cfg *model.Config,
+	rejectedAccessToken string,
+) (*cursorauth.Credential, error) {
+	if rejectedAccessToken == "" {
+		return nil, errors.New("cursor rejected access token is required")
+	}
+	return m.credentialForRejectedAccessToken(ctx, cfg, true, rejectedAccessToken)
+}
+
+func (m *cursorCredentialManager) credentialForRejectedAccessToken(
+	ctx context.Context,
+	cfg *model.Config,
+	forceRefresh bool,
+	rejectedAccessToken string,
+) (*cursorauth.Credential, error) {
 	if m == nil || m.store == nil || cfg == nil || !cfg.UsesCursorOAuth() {
 		return nil, errors.New("cursor credential manager is unavailable")
 	}
@@ -60,13 +80,16 @@ func (m *cursorCredentialManager) credential(
 	if !forceRefresh {
 		return cloneCursorCredential(credential), nil
 	}
-	if credential.APIKey == "" {
+	if rejectedAccessToken == "" && credential.APIKey == "" {
 		return cloneCursorCredential(credential), errors.New(
 			"cursor session was rejected and cannot be re-minted without a stored API key",
 		)
 	}
-	rejectedToken := credential.AccessToken
-	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, rejectedToken, true), func() (any, error) {
+	forcedAccessToken := credential.AccessToken
+	if rejectedAccessToken != "" {
+		forcedAccessToken = rejectedAccessToken
+	}
+	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
 		refreshCtx := context.Background()
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
@@ -86,7 +109,7 @@ func (m *cursorCredentialManager) credential(
 		if parseErr != nil {
 			return nil, fmt.Errorf("parse cursor credential for channel %d: %w", currentCfg.ID, parseErr)
 		}
-		if current.AccessToken != rejectedToken {
+		if current.AccessToken != forcedAccessToken {
 			m.cache(currentCfg.ID, current)
 			return oauthCredentialRefreshRedirect{}, nil
 		}
