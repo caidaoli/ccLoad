@@ -319,6 +319,67 @@ func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
 	})
 }
 
+// 上游给出 finish_reason 就是 OpenAI 的语义终态，[DONE] 只是可选尾巴。
+// 客户端常在这一刻断开，此时数据已完整，必须记 200 并计费，而不是 499。
+func TestOpenAIStreamCompleteWithoutDoneMarkerSurvivesClientCancel(t *testing.T) {
+	t.Parallel()
+
+	chunk := func(payload string) string { return "data: " + payload + "\n\n" }
+	partial := chunk(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`)
+	complete := partial +
+		chunk(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +
+		chunk(`{"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":84932,"completion_tokens":2347,"total_tokens":87279,"prompt_tokens_details":{"cached_tokens":83968}}}`)
+
+	// 上游数据读完后客户端断开：读取以 context.Canceled 收尾，且始终没有 [DONE]。
+	newBody := func(sse string) io.ReadCloser {
+		return io.NopCloser(io.MultiReader(
+			strings.NewReader(sse),
+			iotest.ErrReader(context.Canceled),
+		))
+	}
+
+	t.Run("finish_reason without done marker", func(t *testing.T) {
+		t.Parallel()
+		reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       newBody(complete),
+		}
+		result, _, err := (&Server{}).handleSuccessResponse(
+			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.OpenAI), &streamReadStats{}, nil,
+		)
+		if err != nil {
+			t.Fatalf("上游已给出 finish_reason，客户端取消不得判为失败: %v", err)
+		}
+		if result.Status != http.StatusOK {
+			t.Fatalf("status = %d, want %d", result.Status, http.StatusOK)
+		}
+		if result.OutputTokens != 2347 {
+			t.Fatalf("usage 未计入: %#v", result)
+		}
+		if result.StreamDiagMsg != "" {
+			t.Fatalf("流已完整不得写诊断（会被判为 599）: %q", result.StreamDiagMsg)
+		}
+	})
+
+	t.Run("cancel before finish_reason", func(t *testing.T) {
+		t.Parallel()
+		reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       newBody(partial),
+		}
+		_, _, err := (&Server{}).handleSuccessResponse(
+			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.OpenAI), &streamReadStats{}, nil,
+		)
+		if err == nil {
+			t.Fatal("未见终态就取消必须保留失败语义，交给 499 路径")
+		}
+	})
+}
+
 // 598 语义比 599 更精确（冷却时长不同），流诊断不得把它降级覆盖。
 func TestMarkIncompleteStreamForwardResultKeepsFirstByteTimeout(t *testing.T) {
 	res := &fwResult{Status: util.StatusFirstByteTimeout, StreamDiagMsg: "流传输中断"}
@@ -1161,6 +1222,82 @@ func TestHandleTranslatedStreamSuccessResponse_TreatsTranslatedStopAsComplete(t 
 	body := rec.Body.String()
 	if !strings.Contains(body, "event: message_stop") {
 		t.Fatalf("expected translated output to include message_stop, got %s", body)
+	}
+}
+
+// openai→anthropic 转换器只在 [DONE] 时吐终止事件。部分 OpenAI 兼容上游给完
+// finish_reason 就断流，客户端会一直等不到 message_stop——上游语义已完整时
+// 必须由网关补出完整终止序列，且不能在上游自带 [DONE] 时补重。
+func TestHandleTranslatedStreamSuccessResponse_SynthesizesTerminatorWhenUpstreamOmitsDone(t *testing.T) {
+	t.Parallel()
+
+	const (
+		finishChunk = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"tool_calls\"}]}\n\n"
+		usageChunk  = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+		doneChunk   = "data: [DONE]\n\n"
+	)
+
+	cases := []struct {
+		name string
+		sse  string
+	}{
+		{name: "finish_reason only", sse: finishChunk},
+		{name: "finish_reason then usage", sse: finishChunk + usageChunk},
+		{name: "upstream sends done", sse: finishChunk + usageChunk + doneChunk},
+	}
+
+	clients := []struct {
+		protocol protocol.Protocol
+		model    string
+		terminal string
+	}{
+		{protocol: protocol.Anthropic, model: "claude-3-5-sonnet", terminal: "event: message_stop"},
+		{protocol: protocol.Codex, model: "gpt-5-codex", terminal: "event: response.completed"},
+	}
+
+	for _, client := range clients {
+		for _, tc := range cases {
+			t.Run(string(client.protocol)+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				reg := protocol.NewRegistry()
+				builtin.Register(reg)
+				s := &Server{protocolRegistry: reg}
+				reqCtx := &requestContext{
+					ctx:         context.Background(),
+					startTime:   time.Now(),
+					isStreaming: true,
+					transformPlan: protocol.TransformPlan{
+						ClientProtocol:   client.protocol,
+						UpstreamProtocol: protocol.OpenAI,
+						OriginalModel:    client.model,
+						ActualModel:      "gpt-4o",
+						NeedsTransform:   true,
+					},
+				}
+				resp := &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(tc.sse)),
+				}
+
+				rec := newRecorder()
+				res, _, err := s.handleTranslatedStreamSuccessResponse(
+					reqCtx, resp, resp.Header.Clone(), rec, string(protocol.OpenAI), &streamReadStats{}, nil,
+				)
+				if err != nil {
+					t.Fatalf("上游语义完整不得报错: %v", err)
+				}
+				if res.StreamDiagMsg != "" {
+					t.Fatalf("流已完整不得写诊断（会被判为 599）: %q", res.StreamDiagMsg)
+				}
+
+				body := rec.Body.String()
+				if got := strings.Count(body, client.terminal); got != 1 {
+					t.Fatalf("%q 出现 %d 次，want 1；body=%s", client.terminal, got, body)
+				}
+			})
+		}
 	}
 }
 

@@ -236,6 +236,22 @@ func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, 
 	return streamCopyWithBufferSize(ctx, src, dst, onData, SSEBufferSize)
 }
 
+// writeSSEChunks 把已成帧的 SSE chunk 依次写给客户端并立即 flush。
+func writeSSEChunks(dst http.ResponseWriter, chunks [][]byte) error {
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		if _, err := dst.Write(chunk); err != nil {
+			return err
+		}
+		if flusher, ok := dst.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+	return nil
+}
+
 func streamTransformSSEEvents(
 	ctx context.Context,
 	src io.Reader,
@@ -289,16 +305,8 @@ func streamTransformSSEEventsUntil(
 						if transformErr != nil {
 							return transformErr
 						}
-						for _, chunk := range chunks {
-							if len(chunk) == 0 {
-								continue
-							}
-							if _, writeErr := dst.Write(chunk); writeErr != nil {
-								return writeErr
-							}
-							if flusher, ok := dst.(http.Flusher); ok {
-								flusher.Flush()
-							}
+						if writeErr := writeSSEChunks(dst, chunks); writeErr != nil {
+							return writeErr
 						}
 					}
 					if stopAfterEvent != nil && stopAfterEvent() {

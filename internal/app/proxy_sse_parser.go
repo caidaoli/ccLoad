@@ -523,6 +523,12 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if isAnthropicTerminal || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
 		p.streamComplete = true
 	}
+	// OpenAI Chat Completions 与 Gemini 在 finish_reason 处就已给出语义终态，
+	// 之后的 usage 分片和 [DONE] 都是可选尾巴。客户端常在读到 finish_reason 时
+	// 立刻断开，此处不认终态会把完整响应误判成 499（客户端取消）或 599（流不完整）。
+	if openAIStreamPayloadComplete(event) || geminiStreamPayloadComplete(event) {
+		p.streamComplete = true
+	}
 	if isSuccessfulResponsesTerminal(payloadType) {
 		if response, ok := event["response"].(map[string]any); ok {
 			output, _ := json.Marshal(response["output"])
@@ -641,6 +647,43 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// openAIStreamPayloadComplete 判断 Chat Completions 分片是否给出终态。
+// 非空 finish_reason 代表该 choice 已结束；空串是部分中转的占位写法，不算终态。
+func openAIStreamPayloadComplete(payload map[string]any) bool {
+	choices, _ := payload["choices"].([]any)
+	for _, item := range choices {
+		choice, _ := item.(map[string]any)
+		if choice == nil {
+			continue
+		}
+		finishReason, ok := choice["finish_reason"]
+		if !ok || finishReason == nil {
+			continue
+		}
+		if reason, isString := finishReason.(string); isString && strings.TrimSpace(reason) == "" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// geminiStreamPayloadComplete 判断 Gemini 流分片是否给出终态。
+// Gemini SSE 没有 [DONE]，非空 finishReason 是唯一的完成信号。
+func geminiStreamPayloadComplete(payload map[string]any) bool {
+	candidates, _ := payload["candidates"].([]any)
+	for _, item := range candidates {
+		candidate, _ := item.(map[string]any)
+		if candidate == nil {
+			continue
+		}
+		if reason, _ := candidate["finishReason"].(string); strings.TrimSpace(reason) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func isHeartbeatEvent(eventType, data string) bool {

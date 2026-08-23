@@ -89,6 +89,7 @@ www/                 独立介绍站(`make www-setup` 复制共享资源后可�
 - **597** SSE error(HTTP 200+错误体)→ `classifySSEError` 按 error.type 动态判级
 - **598** 首字节超时 → 模型级;**599** 流式中断 → 模型级
 - **`fwResult.StreamDiagMsg` 是 599 的判定开关,不只是日志字段**:非空即被 `forwardAttempt` 判为流不完整,置 599 并走模型级冷却。所以只有真实上游故障才允许写入,客户端断开必须先过 `isClientDisconnectError`(`buildStreamDiagnostics` 与 Codex 非流式收集器 `codex_wire.go` 各有一处),漏一处就会把 499 误升成 599。`markIncompleteStreamForwardResult` 不覆盖已经是 598 的状态码——两者冷却初值不同
+- **流终态有两套判据,判完整就必须给下游完整终止序列**(`proxy_sse_parser.go:parseEvent`+`proxy_forward.go`):除 `[DONE]`/`message_stop`/`response.completed` 外,OpenAI Chat 的非空 `finish_reason` 与 Gemini 的非空 `finishReason` 同样是终态——不少 OpenAI 兼容上游给完 `finish_reason` 就断流,只认 `[DONE]` 会把完整响应误记成 499/599。判据只有 `openAIStreamPayloadComplete`/`geminiStreamPayloadComplete` 一份,直通与跨协议两条路径共用,别再各写一份。而 `openai→{anthropic,codex,gemini}` 转换器的终止事件只挂在 `[DONE]` 上,所以上游省略它时由 `needsSynthesizedStreamTerminator` 在流结束后补喂一份合成 `data: [DONE]` 走同一个转换闭包收尾——不手搓终止帧,因为 open content block/stop_reason/usage 都在转换器内部状态里;同协议直通不补,避免改动透传字节。「上游没发 [DONE] 但客户端收到 message_stop」是预期行为
 - **429** 统计页/健康时间线计入 ErrorCount 与成功率,`rate_limited` 是 ErrorCount 子集;健康度排序(`GetChannelSuccessRates`/effective priority)排除 429,真实渠道级限流交给冷却过滤。全局设置 `codex_map_429_to_503` 默认关闭;开启后只把所有候选耗尽时返回给官方 Codex 客户端的最终 429 改为 503,内部冷却/统计、其他 Responses 客户端和 ccLoad 自身限额仍保留真实状态
 
 ## 关键机制(要点,细节读对应文件)

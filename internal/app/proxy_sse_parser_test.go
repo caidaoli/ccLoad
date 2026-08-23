@@ -723,6 +723,35 @@ func TestSSEUsageParser_StreamComplete(t *testing.T) {
 			sseData:          "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
 			want:             true,
 		},
+		{
+			// 上游给出 finish_reason 即语义终结，[DONE] 只是可选尾巴；
+			// 客户端常在此刻断开，不认终态会把完整响应记成 499。
+			name:             "OpenAI Chat finish_reason without [DONE]",
+			upstreamProtocol: "openai",
+			sseData:          "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+			want:             true,
+		},
+		{
+			name:             "OpenAI Chat finish_reason null",
+			upstreamProtocol: "openai",
+			sseData:          "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+		},
+		{
+			name:             "OpenAI Chat empty finish_reason",
+			upstreamProtocol: "openai",
+			sseData:          "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\"}]}\n\n",
+		},
+		{
+			name:             "Gemini finishReason",
+			upstreamProtocol: "gemini",
+			sseData:          "data: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}]}\n\n",
+			want:             true,
+		},
+		{
+			name:             "Gemini without finishReason",
+			upstreamProtocol: "gemini",
+			sseData:          "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n",
+		},
 	}
 
 	for _, tt := range tests {

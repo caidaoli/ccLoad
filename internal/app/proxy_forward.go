@@ -614,34 +614,35 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 		if !ok {
 			return false
 		}
-		choices, _ := payload["choices"].([]any)
-		if len(choices) == 0 {
-			return false
-		}
-		choice, _ := choices[0].(map[string]any)
-		if choice == nil {
-			return false
-		}
-		finishReason, hasFinishReason := choice["finish_reason"]
-		return hasFinishReason && finishReason != nil
+		return openAIStreamPayloadComplete(payload)
 	case protocol.Gemini:
 		payload, ok := decodeSSEPayload(data)
 		if !ok {
 			return false
 		}
-		candidates, _ := payload["candidates"].([]any)
-		if len(candidates) == 0 {
-			return false
-		}
-		candidate, _ := candidates[0].(map[string]any)
-		if candidate == nil {
-			return false
-		}
-		finishReason, _ := candidate["finishReason"].(string)
-		return strings.TrimSpace(finishReason) != ""
+		return geminiStreamPayloadComplete(payload)
 	default:
 		return false
 	}
+}
+
+// sseSynthesizedDoneEvent 是网关补喂给转换器的 Chat Completions 终止哨兵。
+var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
+
+// needsSynthesizedStreamTerminator 判断跨协议转换是否要补一个终止序列。
+//
+// OpenAI Chat Completions 的终止哨兵是 [DONE]，openai→{anthropic,codex,gemini}
+// 三个转换器都只在收到它时才吐出终止事件（Anthropic 的 message_delta+message_stop、
+// Codex 的 response.completed）。而部分 OpenAI 兼容上游给完 finish_reason 就断流，
+// 客户端会一直等不到终止事件。上游语义既然已判完整，就必须给下游一个完整的终止序列。
+//
+// 补的是 [DONE] 而不是手搓终止帧：open content block、stop_reason、usage 都在
+// 转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
+func needsSynthesizedStreamTerminator(upstream, client protocol.Protocol, upstreamComplete, translatedComplete, committed bool) bool {
+	if !committed || !upstreamComplete || translatedComplete {
+		return false
+	}
+	return upstream == protocol.OpenAI && client != protocol.OpenAI
 }
 
 // parseSSEEventChunk 在 []byte 视图上解析 SSE 事件块，避免 string(chunk) 与 []byte(data) 来回拷贝。
@@ -1218,6 +1219,61 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		}
 		return nil
 	}
+	translateEvent := func(rawEvent []byte) ([][]byte, error) {
+		if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
+			rawEvent = restoreCodexMultiAgentV2SSEEvent(rawEvent, true)
+		}
+		translatedRequestBody := reqCtx.transformPlan.TranslatedBody
+		if reqCtx.antigravityOAuth {
+			providerEvent, err := antigravitySSEData(rawEvent)
+			if err != nil {
+				return nil, err
+			}
+			translatedRequestBody, err = unwrapAntigravityRequest(reqCtx.transformPlan.TranslatedBody)
+			if err != nil {
+				return nil, err
+			}
+			chunks, translateErr := translateAntigravityResponseStream(
+				reqCtx.ctx,
+				reqCtx.transformPlan.ClientProtocol,
+				reqCtx.transformPlan.ResponseModel(),
+				reqCtx.transformPlan.OriginalBody,
+				translatedRequestBody,
+				providerEvent,
+				&state,
+			)
+			if translateErr != nil {
+				return nil, translateErr
+			}
+			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+				translatedComplete = true
+			}
+			if err := commitTranslatedOutput(chunks); err != nil {
+				return nil, err
+			}
+			return chunks, nil
+		}
+		chunks, err := s.protocolRegistry.TranslateResponseStream(
+			reqCtx.ctx,
+			reqCtx.transformPlan.UpstreamProtocol,
+			reqCtx.transformPlan.ClientProtocol,
+			reqCtx.transformPlan.ResponseModel(),
+			reqCtx.transformPlan.OriginalBody,
+			translatedRequestBody,
+			rawEvent,
+			&state,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+			translatedComplete = true
+		}
+		if err := commitTranslatedOutput(chunks); err != nil {
+			return nil, err
+		}
+		return chunks, nil
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
 		resp.Body,
@@ -1245,67 +1301,27 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			}
 			return nil
 		},
-		func(rawEvent []byte) ([][]byte, error) {
-			if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
-				rawEvent = restoreCodexMultiAgentV2SSEEvent(rawEvent, true)
-			}
-			translatedRequestBody := reqCtx.transformPlan.TranslatedBody
-			if reqCtx.antigravityOAuth {
-				providerEvent, err := antigravitySSEData(rawEvent)
-				if err != nil {
-					return nil, err
-				}
-				translatedRequestBody, err = unwrapAntigravityRequest(reqCtx.transformPlan.TranslatedBody)
-				if err != nil {
-					return nil, err
-				}
-				chunks, translateErr := translateAntigravityResponseStream(
-					reqCtx.ctx,
-					reqCtx.transformPlan.ClientProtocol,
-					reqCtx.transformPlan.ResponseModel(),
-					reqCtx.transformPlan.OriginalBody,
-					translatedRequestBody,
-					providerEvent,
-					&state,
-				)
-				if translateErr != nil {
-					return nil, translateErr
-				}
-				if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
-					translatedComplete = true
-				}
-				if err := commitTranslatedOutput(chunks); err != nil {
-					return nil, err
-				}
-				return chunks, nil
-			}
-			chunks, err := s.protocolRegistry.TranslateResponseStream(
-				reqCtx.ctx,
-				reqCtx.transformPlan.UpstreamProtocol,
-				reqCtx.transformPlan.ClientProtocol,
-				reqCtx.transformPlan.ResponseModel(),
-				reqCtx.transformPlan.OriginalBody,
-				translatedRequestBody,
-				rawEvent,
-				&state,
-			)
-			if err != nil {
-				return nil, err
-			}
-			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
-				translatedComplete = true
-			}
-			if err := commitTranslatedOutput(chunks); err != nil {
-				return nil, err
-			}
-			return chunks, nil
-		},
+		translateEvent,
 		func() bool {
 			terminalProtocol := reqCtx.transformPlan.UpstreamProtocol == protocol.Codex ||
 				reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
 			return terminalProtocol && parser.IsStreamComplete() && translatedComplete
 		},
 	)
+
+	if needsSynthesizedStreamTerminator(
+		reqCtx.transformPlan.UpstreamProtocol,
+		reqCtx.transformPlan.ClientProtocol,
+		parser.IsStreamComplete(),
+		translatedComplete,
+		deferredWriter.Committed(),
+	) {
+		if chunks, doneErr := translateEvent(sseSynthesizedDoneEvent); doneErr != nil {
+			log.Printf("[WARN] 上游省略 [DONE]，补发终止事件失败: %v", doneErr)
+		} else if writeErr := writeSSEChunks(deferredWriter, chunks); writeErr != nil && streamErr == nil {
+			streamErr = writeErr
+		}
+	}
 
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
