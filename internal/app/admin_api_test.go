@@ -62,10 +62,11 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 
 		// 创建API Key
 		apiKey := &model.APIKey{
-			ChannelID:   created.ID,
-			KeyIndex:    0,
-			APIKey:      "sk-test-key-" + created.Name,
-			KeyStrategy: model.KeyStrategySequential,
+			ChannelID:     created.ID,
+			KeyIndex:      0,
+			APIKey:        "sk-test-key-" + created.Name,
+			AllowedModels: []string{cfg.ModelEntries[0].Model},
+			KeyStrategy:   model.KeyStrategySequential,
 		}
 		if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{apiKey}); err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
@@ -112,7 +113,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "websockets"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "websockets"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -123,11 +124,16 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	if len(records[1]) < 16 {
-		t.Errorf("数据行字段不足，期望至少16个字段，实际: %d", len(records[1]))
+	if len(records[1]) < len(expectedHeaders) {
+		t.Errorf("数据行字段不足，期望至少%d个字段，实际: %d", len(expectedHeaders), len(records[1]))
 	}
-	if len(records[1]) >= 16 && records[1][15] != "true" {
-		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][15])
+	retryIndex := slices.Index(header, "retry_other_keys_on_failure")
+	if retryIndex < 0 || records[1][retryIndex] != "true" {
+		t.Errorf("retry_other_keys_on_failure 导出值错误: row=%v", records[1])
+	}
+	allowedModelsIndex := slices.Index(header, "api_key_allowed_models")
+	if allowedModelsIndex < 0 || records[1][allowedModelsIndex] != `[["model-1"]]` {
+		t.Errorf("api_key_allowed_models 导出值错误: row=%v", records[1])
 	}
 	websocketsIndex := slices.Index(header, "websockets")
 	if websocketsIndex < 0 || records[1][websocketsIndex] != "true" {
@@ -504,9 +510,9 @@ func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	server := newInMemoryServer(t)
 
 	// 创建测试CSV文件（注意：列名是api_key而不是api_keys）
-	csvContent := `name,urls,priority,rpm_limit,max_concurrency,websockets,models,model_redirects,protocol_transform_mode,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model
-Import-Test-1,"[{""url"":""https://import1.example.com"",""protocols"" : [""anthropic"",""openai""]}]",10,0,3,true,test-model-1,{},local,openai,true,sk-import-key-1,sequential,test-model-1
-Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0,false,"test-model-2,test-model-3","{""old"":""new""}",upstream,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3
+	csvContent := `name,urls,priority,rpm_limit,max_concurrency,websockets,models,model_redirects,protocol_transform_mode,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model,api_key_allowed_models
+Import-Test-1,"[{""url"":""https://import1.example.com"",""protocols"" : [""anthropic"",""openai""]}]",10,0,3,true,test-model-1,{},local,openai,true,sk-import-key-1,sequential,test-model-1,"[[""test-model-1""]]"
+Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0,false,"test-model-2,test-model-3","{""old"":""new""}",upstream,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3,"[[""test-model-3""]]"
 `
 
 	// 创建multipart表单
@@ -588,6 +594,15 @@ Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0
 
 		if len(keys) != 1 {
 			t.Errorf("渠道 %s 应有1个API Key，实际: %d", cfg.Name, len(keys))
+		}
+		if len(keys) == 1 {
+			wantModel := "test-model-1"
+			if cfg.Name == "Import-Test-2" {
+				wantModel = "test-model-3"
+			}
+			if !slices.Equal(keys[0].AllowedModels, []string{wantModel}) {
+				t.Errorf("渠道 %s Key 模型范围=%v, want [%s]", cfg.Name, keys[0].AllowedModels, wantModel)
+			}
 		}
 		if cfg.Name == "Import-Test-1" && cfg.ScheduledCheckModel != "test-model-1" {
 			t.Errorf("渠道 %s scheduled_check_model = %q", cfg.Name, cfg.ScheduledCheckModel)
@@ -805,16 +820,17 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		t.Fatalf("创建现有渠道失败: %v", err)
 	}
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID:   created.ID,
-		KeyIndex:    0,
-		APIKey:      "sk-old-key",
-		KeyStrategy: model.KeyStrategySequential,
+		ChannelID:     created.ID,
+		KeyIndex:      0,
+		APIKey:        "sk-old-key",
+		AllowedModels: []string{"old-model"},
+		KeyStrategy:   model.KeyStrategySequential,
 	}}); err != nil {
 		t.Fatalf("创建现有 key 失败: %v", err)
 	}
 
 	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
-Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-model,new-model",{},true,sk-new-key,sequential
+Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-model,new-model",{},true,sk-old-key,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -875,8 +891,8 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	if err != nil {
 		t.Fatalf("查询更新后的 key 失败: %v", err)
 	}
-	if len(keys) != 1 || keys[0].APIKey != "sk-new-key" {
-		t.Fatalf("期望 key 已更新，实际为 %+v", keys)
+	if len(keys) != 1 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) {
+		t.Fatalf("旧 CSV 缺少 api_key_allowed_models 列时应保留范围，实际为 %+v", keys)
 	}
 }
 

@@ -40,7 +40,7 @@ type imageGenerationTestRequest struct {
 	Quality       string `json:"quality,omitempty"`
 	Background    string `json:"background,omitempty"`
 	OutputFormat  string `json:"output_format,omitempty"`
-	KeyIndex      int    `json:"key_index,omitempty"`
+	KeyIndex      *int   `json:"key_index,omitempty"`
 }
 
 func (r *imageGenerationTestRequest) Validate() error {
@@ -213,7 +213,7 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 		return
 	}
 	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, imageReq.KeyIndex, "", oauthCredentialUseCurrent,
+		c.Request.Context(), cfg, apiKeys, imageReq.Model, imageReq.KeyIndex, "", oauthCredentialUseCurrent,
 	)
 	if err != nil {
 		RespondJSON(c, http.StatusOK, gin.H{

@@ -1031,6 +1031,33 @@ func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	}
 }
 
+func TestEnsureAPIKeysAllowedModels_SQLite(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE api_keys (
+			id INTEGER PRIMARY KEY,
+			api_key TEXT NOT NULL
+		);
+		INSERT INTO api_keys (id, api_key) VALUES (1, 'legacy-key')
+	`); err != nil {
+		t.Fatalf("create legacy api_keys: %v", err)
+	}
+
+	if err := ensureAPIKeysAllowedModels(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensureAPIKeysAllowedModels: %v", err)
+	}
+
+	var allowedModels string
+	if err := db.QueryRowContext(ctx, `SELECT allowed_models FROM api_keys WHERE id = 1`).Scan(&allowedModels); err != nil {
+		t.Fatalf("query migrated allowed_models: %v", err)
+	}
+	if allowedModels != "" {
+		t.Fatalf("legacy allowed_models=%q, want unrestricted", allowedModels)
+	}
+}
+
 func TestMigrateSQLite_AddsChannelModelsDisabled(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

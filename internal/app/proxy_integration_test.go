@@ -9738,6 +9738,110 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	}
 }
 
+func TestProxy_APIKeyModelAllowlistRoutesToMatchingKey(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth atomic.Value
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "key-model-scope", URLs: model.ChannelURLs{{URL: upstream.URL}}, Priority: 100, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5"}, {Model: "qwen3"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gpt", AllowedModels: []string{"gpt-5"}},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-qwen", AllowedModels: []string{"qwen3"}},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
+		"model": "qwen3", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if auth, _ := gotAuth.Load().(string); !strings.Contains(auth, "sk-qwen") {
+		t.Fatalf("request used %q, want qwen-scoped key", auth)
+	}
+}
+
+func TestProxy_NoKeyForModelSkipsChannelWithoutCooldown(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int64
+	firstUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer firstUpstream.Close()
+	secondUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer secondUpstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	first, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "no-matching-key", URLs: model.ChannelURLs{{URL: firstUpstream.URL}}, Priority: 200, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig(first): %v", err)
+	}
+	second, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "fallback", URLs: model.ChannelURLs{{URL: secondUpstream.URL}}, Priority: 100, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig(second): %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: first.ID, KeyIndex: 0, APIKey: "sk-qwen", AllowedModels: []string{"qwen3"}},
+		{ChannelID: second.ID, KeyIndex: 0, APIKey: "sk-fallback"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-5", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected fallback 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if firstCalls.Load() != 0 {
+		t.Fatalf("incompatible key reached upstream %d times", firstCalls.Load())
+	}
+	cooldowns, err := srv.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if until, ok := cooldowns[first.ID]; ok && until.After(time.Now()) {
+		t.Fatalf("model-scoped miss cooled the whole channel until %s", until)
+	}
+}
+
 func TestProxy_AllChannelsExhausted(t *testing.T) {
 	t.Parallel()
 

@@ -1271,6 +1271,47 @@
     </div>
   </div>
 
+  <!-- API Key 模型范围 -->
+  <div id="keyModelScopeModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="keyModelScopeModalTitle" aria-describedby="keyModelScopeDescription" aria-hidden="true">
+    <div class="modal-content modal-content--sm key-model-scope-modal-content">
+      <div class="modal-header">
+        <h2 id="keyModelScopeModalTitle" class="modal-title">Key 模型范围</h2>
+        <button type="button" class="close-btn" data-action="close-key-model-scope"
+          data-i18n-aria-label="common.close" aria-label="关闭">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+      <p id="keyModelScopeDescription" class="common-models-description"
+        data-i18n="channels.keyModelsDialogDescription">限制此 Key 只处理选中的渠道模型。默认不限制，现有行为保持不变。</p>
+      <label class="key-model-scope-all">
+        <input type="checkbox" id="keyModelScopeAll" checked>
+        <span data-i18n="channels.keyModelsAllowAll">允许全部渠道模型</span>
+      </label>
+      <div class="key-model-scope-toolbar">
+        <input type="search" id="keyModelScopeSearch" class="form-input"
+          data-i18n-placeholder="channels.keyModelsSearch" placeholder="搜索模型">
+        <button type="button" id="detectKeyModelScopeBtn" class="btn btn-secondary btn-sm">
+          <span data-i18n="channels.keyModelsDetect">探测此 Key</span>
+        </button>
+      </div>
+      <fieldset class="key-model-scope-fieldset">
+        <legend data-i18n="channels.keyModelsLegend">可用渠道模型</legend>
+        <div id="keyModelScopeList" class="key-model-scope-list" aria-disabled="true"></div>
+      </fieldset>
+      <p id="keyModelScopeStatus" class="key-model-scope-status" role="status" aria-live="polite"></p>
+      <div class="form-actions common-models-actions">
+        <button type="button" class="btn btn-secondary" data-action="close-key-model-scope"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="confirm-key-model-scope"
+          data-i18n="common.confirm">确认</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 删除确认模态框 -->
   <div id="deleteModal" class="modal">
     <div class="modal-content confirm-modal">
@@ -1866,9 +1907,19 @@
           style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;">
       </td>
       <td class="inline-key-col-note" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelNote}}">
-        <input type="text" value="{{note}}" class="inline-key-note-input modal-inline-input" data-index="{{index}}"
-          placeholder="{{notePlaceholder}}"
-          style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: all 0.2s;">
+        <div class="inline-key-note-scope">
+          <input type="text" value="{{note}}" class="inline-key-note-input modal-inline-input" data-index="{{index}}"
+            placeholder="{{notePlaceholder}}"
+            style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: border-color 0.2s, box-shadow 0.2s;">
+          <button type="button" class="key-action-btn key-model-scope-btn" data-action="models" data-index="{{index}}"
+            title="{{modelScopeTitle}}" aria-label="{{modelScopeTitle}}">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+              <path d="M2.5 4.5H13.5M2.5 8H13.5M2.5 11.5H9.5" stroke="currentColor" stroke-width="1.3"
+                stroke-linecap="round" />
+            </svg>
+            <span>{{modelScopeLabel}}</span>
+          </button>
+        </div>
       </td>
       <td class="inline-key-col-status" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelStatus}}">{{{cooldownHtml}}}</td>
       <td class="inline-key-col-actions" style="padding: 4px 8px; text-align: center;" data-mobile-label="{{mobileLabelActions}}">{{{actionsHtml}}}</td>

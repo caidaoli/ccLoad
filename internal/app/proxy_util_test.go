@@ -1011,6 +1011,32 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestAPIKeyModelScopeUsesLogicalModelBeforeRedirect(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{modelFuzzyMatch: true}
+	cfg := &model.Config{ModelEntries: []model.ModelEntry{
+		{Model: "gemini-3-flash-preview", RedirectModel: "alias"},
+		{Model: "alias", RedirectModel: "upstream"},
+	}}
+	keys := []*model.APIKey{
+		{APIKey: "sk-logical", AllowedModels: []string{"gemini-3-flash-preview"}},
+		{APIKey: "sk-upstream", AllowedModels: []string{"alias"}},
+	}
+
+	logicalModel := s.resolveChannelRoutingModel(cfg, "gemini-3-flash")
+	if logicalModel != "gemini-3-flash-preview" {
+		t.Fatalf("logical model=%q, want gemini-3-flash-preview", logicalModel)
+	}
+	if actualModel := s.resolveActualModel(cfg, "gemini-3-flash"); actualModel != "alias" {
+		t.Fatalf("actual model=%q, want historical single redirect to alias", actualModel)
+	}
+	filtered, scoped := filterAPIKeysForModel(keys, logicalModel)
+	if !scoped || len(filtered) != 1 || filtered[0].APIKey != "sk-logical" {
+		t.Fatalf("filtered keys=%v scoped=%v, want only logical-model key", filtered, scoped)
+	}
+}
+
 func TestPrepareRequestBody_PreservesLargeIntegersOnModelRewrite(t *testing.T) {
 	t.Parallel()
 

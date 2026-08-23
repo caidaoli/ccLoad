@@ -122,9 +122,10 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context) error {
 		}
 
 		apiKeys := apiKeysByChannel[cfg.ID]
+		apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
 		if len(apiKeys) == 0 {
-			log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：未配置可用 Key", cfg.ID, cfg.Name)
-			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, "未配置可用 Key"))
+			log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：模型 %s 未配置可用 Key", cfg.ID, cfg.Name, modelName)
+			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, "该模型未配置可用 Key"))
 			continue
 		}
 

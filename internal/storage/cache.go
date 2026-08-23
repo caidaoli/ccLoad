@@ -218,6 +218,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 		result := make([]*modelpkg.APIKey, len(keys))
 		for i, key := range keys {
 			keyCopy := *key // 拷贝对象本身
+			keyCopy.AllowedModels = append([]string(nil), key.AllowedModels...)
 			result[i] = &keyCopy
 		}
 		return result, nil
@@ -243,6 +244,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 	result := make([]*modelpkg.APIKey, len(keys))
 	for i, key := range keys {
 		keyCopy := *key // 拷贝对象本身
+		keyCopy.AllowedModels = append([]string(nil), key.AllowedModels...)
 		result[i] = &keyCopy
 	}
 	return result, nil

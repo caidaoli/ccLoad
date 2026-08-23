@@ -39,6 +39,10 @@ var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
 // ErrAllKeysExhausted 表示所有密钥都已耗尽
 var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
+// ErrNoAPIKeyForModel means this channel has keys, but none may serve the requested model.
+// It must not be promoted to a channel cooldown: another model can still use the channel.
+var ErrNoAPIKeyForModel = errors.New("no API key available for model")
+
 // ErrChannelRPMExceeded 表示渠道RPM限制已达到
 var ErrChannelRPMExceeded = errors.New("channel rpm limit exceeded")
 
@@ -618,6 +622,10 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	sawAlphaSearchUnsupported := false
 	for index, cfg := range cands {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+		if err != nil && errors.Is(err, ErrNoAPIKeyForModel) {
+			log.Printf("[INFO] 渠道 %s (ID=%d) 没有可用于模型 %s 的 Key，跳过该渠道", cfg.Name, cfg.ID, reqCtx.originalModel)
+			continue
+		}
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）

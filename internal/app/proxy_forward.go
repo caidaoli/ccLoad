@@ -3205,6 +3205,19 @@ func selectPinnedCodexWebsocketKey(
 	return 0, "", false
 }
 
+func filterAPIKeysForModel(apiKeys []*model.APIKey, modelName string) ([]*model.APIKey, bool) {
+	if modelName == "" || modelName == "*" {
+		return apiKeys, false
+	}
+	filtered := make([]*model.APIKey, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		if apiKey != nil && apiKey.AllowsModel(modelName) {
+			filtered = append(filtered, apiKey)
+		}
+	}
+	return filtered, len(filtered) != len(apiKeys)
+}
+
 // recordSuccessTTFBToSelector 在2xx响应里把TTFB回报给URLSelector。
 // 非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
 func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlStr string, result *proxyResult) {
@@ -3515,13 +3528,17 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API keys: %w", err)
 	}
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
+	}
+	channelModel := s.resolveChannelRoutingModel(cfg, reqCtx.originalModel)
+	apiKeys, modelScoped := filterAPIKeysForModel(apiKeys, channelModel)
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, channelModel)
+	}
 
 	// 计算实际重试次数
 	actualKeyCount := len(apiKeys)
-	if actualKeyCount == 0 {
-		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
-	}
-
 	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
 	if cfg.RetryOtherKeysOnFailure {
 		maxKeyRetries = actualKeyCount
@@ -3555,6 +3572,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
 		}
 		if selectErr != nil {
+			if modelScoped && errors.Is(selectErr, ErrAllKeysUnavailable) {
+				return nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, channelModel)
+			}
 			return nil, selectErr
 		}
 

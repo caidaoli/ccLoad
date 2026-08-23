@@ -109,6 +109,49 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+	t.Run("per-key discovery returns union and scoped results without secrets", func(t *testing.T) {
+		perKeyUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer sk-a":
+				_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"common"}]}`))
+			case "Bearer sk-b":
+				_, _ = w.Write([]byte(`{"data":[{"id":"model-b"},{"id":"common"}]}`))
+			default:
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+			}
+		}))
+		t.Cleanup(perKeyUpstream.Close)
+
+		payload := map[string]any{
+			"protocol": "openai",
+			"urls":     []map[string]any{{"url": perKeyUpstream.URL, "protocols": []string{"openai"}}},
+			"api_keys": []string{"sk-a", "sk-bad", "sk-b"},
+			"per_key":  true,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200 body=%s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "sk-a") || strings.Contains(w.Body.String(), "sk-b") {
+			t.Fatalf("response leaked API key: %s", w.Body.String())
+		}
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if !resp.Success || len(resp.Data.Models) != 3 || len(resp.Data.KeyModels) != 3 {
+			t.Fatalf("unexpected per-key response: %s", w.Body.String())
+		}
+		if resp.Data.KeyModels[0].KeyIndex != 0 || len(resp.Data.KeyModels[0].Models) != 2 {
+			t.Fatalf("key 0 result=%+v", resp.Data.KeyModels[0])
+		}
+		if resp.Data.KeyModels[1].KeyIndex != 1 || resp.Data.KeyModels[1].Error == "" {
+			t.Fatalf("key 1 failure=%+v", resp.Data.KeyModels[1])
+		}
+		if resp.Data.KeyModels[2].KeyIndex != 2 || len(resp.Data.KeyModels[2].Models) != 2 {
+			t.Fatalf("key 2 result=%+v", resp.Data.KeyModels[2])
+		}
+	})
+
 	t.Run("normalization options preserve upstream model names", func(t *testing.T) {
 		normalizationUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {

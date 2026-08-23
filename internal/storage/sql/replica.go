@@ -148,11 +148,15 @@ func (s *SQLStore) replaceAPIKeysReplicaTx(ctx context.Context, tx *sql.Tx, chan
 		if strategy == "" {
 			strategy = model.KeyStrategySequential
 		}
+		allowedModelsJSON, err := marshalAllowedModels(key.AllowedModels)
+		if err != nil {
+			return fmt.Errorf("marshal API key replica allowed models: %w", err)
+		}
 		if _, err := s.execTx(ctx, tx, `
-			INSERT INTO api_keys(channel_id, key_index, api_key, note, key_strategy,
+			INSERT INTO api_keys(channel_id, key_index, api_key, note, allowed_models, key_strategy,
 				cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, channelID, key.KeyIndex, key.APIKey, key.Note, strategy,
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, channelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, strategy,
 			key.CooldownUntil, key.CooldownDurationMs, key.Disabled, now, now); err != nil {
 			return fmt.Errorf("insert API key replica: %w", err)
 		}

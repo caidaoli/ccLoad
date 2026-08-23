@@ -629,7 +629,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+		c.Request.Context(), cfg, apiKeys, testReq.Model, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
 		oauthCredentialUseCurrent,
 	)
 	if err != nil {
@@ -715,7 +715,8 @@ func (s *Server) prepareChannelTestAuth(
 	ctx context.Context,
 	cfg *model.Config,
 	apiKeys []*model.APIKey,
-	requestedKeyIndex int,
+	requestedModel string,
+	requestedKeyIndex *int,
 	requestAPIKey string,
 	oauthMode oauthCredentialLoadMode,
 ) (*model.Config, channelTestKeySelection, error) {
@@ -724,11 +725,25 @@ func (s *Server) prepareChannelTestAuth(
 	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, oauthMode); handled {
 		return runtimeCfg, selection, err
 	}
-
 	if len(apiKeys) == 0 && requestAPIKey == "" {
 		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
 	}
-	selection, err := s.selectChannelTestKey(apiKeys, requestedKeyIndex, requestAPIKey)
+	channelModel := s.resolveChannelRoutingModel(cfg, requestedModel)
+	if requestAPIKey != "" {
+		if requestedKeyIndex != nil {
+			if persisted, ok := findAPIKeyByIndex(apiKeys, *requestedKeyIndex); ok &&
+				persisted.APIKey == requestAPIKey && !persisted.AllowsModel(channelModel) {
+				return nil, channelTestKeySelection{}, fmt.Errorf("key #%d 不允许模型 %s", *requestedKeyIndex, requestedModel)
+			}
+		}
+	} else {
+		apiKeys, _ = filterAPIKeysForModel(apiKeys, channelModel)
+		if len(apiKeys) == 0 {
+			return nil, channelTestKeySelection{}, fmt.Errorf("模型 %s 没有可用的 API Key", requestedModel)
+		}
+	}
+
+	selection, err := s.selectChannelTestKey(cfg, apiKeys, requestedKeyIndex, requestAPIKey)
 	return cfg, selection, err
 }
 
@@ -911,23 +926,44 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 	}
 }
 
-func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
+func (s *Server) selectChannelTestKey(
+	cfg *model.Config,
+	apiKeys []*model.APIKey,
+	requestedKeyIndex *int,
+	requestAPIKey string,
+) (channelTestKeySelection, error) {
 	if requestAPIKey != "" {
-		matchedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
+		keyIndex := cooldown.NoKeyIndex
+		if requestedKeyIndex != nil {
+			keyIndex = *requestedKeyIndex
+		}
+		matchedKey, ok := findAPIKeyByIndex(apiKeys, keyIndex)
 		return channelTestKeySelection{
-			keyIndex:                requestedKeyIndex,
+			keyIndex:                keyIndex,
 			apiKey:                  requestAPIKey,
 			requestCredential:       requestAPIKey,
 			updatePersistedCooldown: ok && matchedKey.APIKey == requestAPIKey,
+		}, nil
+	}
+	if requestedKeyIndex == nil {
+		keyIndex, apiKey, err := s.selectKeyWithFallback(cfg, apiKeys, nil)
+		if err != nil {
+			return channelTestKeySelection{}, err
+		}
+		return channelTestKeySelection{
+			keyIndex:                keyIndex,
+			apiKey:                  apiKey,
+			requestCredential:       apiKey,
+			updatePersistedCooldown: true,
 		}, nil
 	}
 
 	// 显式优于隐式：调用方指定了 key_index 就严格使用该 Key（无视冷却状态）。
 	// 既往的"冷却时静默回退到其他可用 Key"会导致 tested_key_index 与请求不一致，
 	// 让用户困惑（点了 key 0 却测了 key 4）。要测全部冷却中的渠道，请显式指定 key_index 或调用方自行选择。
-	requestedKey, ok := findAPIKeyByIndex(apiKeys, requestedKeyIndex)
+	requestedKey, ok := findAPIKeyByIndex(apiKeys, *requestedKeyIndex)
 	if !ok {
-		return channelTestKeySelection{}, fmt.Errorf("未找到 Key #%d", requestedKeyIndex)
+		return channelTestKeySelection{}, fmt.Errorf("未找到 Key #%d", *requestedKeyIndex)
 	}
 	return channelTestKeySelection{
 		keyIndex:                requestedKey.KeyIndex,

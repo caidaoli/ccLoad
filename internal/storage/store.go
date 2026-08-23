@@ -45,6 +45,7 @@ type Store interface {
 	CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error
 	UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error
 	UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error
+	UpdateAPIKeyAllowedModels(ctx context.Context, channelID int64, modelsByIndex map[int][]string) error
 	SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error
 	DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error
 	CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error

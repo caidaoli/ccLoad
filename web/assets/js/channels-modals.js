@@ -815,7 +815,11 @@ async function saveChannel(event) {
     auth_type: isOAuth ? editingChannelAuthType : 'api_key',
     urls: validURLConfigs,
     api_key: validKeys.join(','),
-    api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
+    api_keys: validKeyRows.map(row => ({
+      api_key: row.api_key,
+      note: row.note || '',
+      allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : []
+    })),
     protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,

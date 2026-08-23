@@ -15,21 +15,36 @@ function isChannelKeyEditorReadOnly() {
     ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth'].includes(editingChannelAuthType);
 }
 
+function normalizeKeyAllowedModels(models) {
+  const seen = new Set();
+  const normalized = [];
+  for (const value of Array.isArray(models) ? models : []) {
+    const modelName = String(value || '').trim();
+    const key = modelName.toLowerCase();
+    if (!modelName || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(modelName);
+  }
+  return normalized;
+}
+
 function normalizeInlineKeyRow(row) {
   if (row && typeof row === 'object') {
     return {
       api_key: String(row.api_key || '').trim(),
-      note: String(row.note || '').trim()
+      note: String(row.note || '').trim(),
+      allowed_models: normalizeKeyAllowedModels(row.allowed_models)
     };
   }
   return {
     api_key: String(row || '').trim(),
-    note: ''
+    note: '',
+    allowed_models: []
   };
 }
 
-function makeInlineKeyRow(apiKey = '', note = '') {
-  return normalizeInlineKeyRow({ api_key: apiKey, note });
+function makeInlineKeyRow(apiKey = '', note = '', allowedModels = []) {
+  return normalizeInlineKeyRow({ api_key: apiKey, note, allowed_models: allowedModels });
 }
 
 function normalizeInlineKeyTableData() {
@@ -94,6 +109,21 @@ function selectFirstEnabledInlineKey(rows, states) {
   return selectAvailableInlineKeys(rows, states)[0] || '';
 }
 
+function selectModelsForInlineKeyTest(row, modelRows) {
+  const keyRow = normalizeInlineKeyRow(row);
+  const allowedModels = new Set(keyRow.allowed_models.map(name => name.toLowerCase()));
+  const configuredModels = (Array.isArray(modelRows) ? modelRows : [])
+    .filter(modelRow => modelRow && !modelRow.disabled)
+    .map(modelRow => String(modelRow.model || '').trim())
+    .filter(Boolean);
+  if (allowedModels.size > 0 && configuredModels.includes('*')) {
+    return [...keyRow.allowed_models];
+  }
+  return configuredModels.filter(modelName =>
+    allowedModels.size === 0 || allowedModels.has(modelName.toLowerCase())
+  );
+}
+
 function updateInlineKeyHiddenInput() {
   const hiddenInput = document.getElementById('channelApiKey');
   if (hiddenInput) {
@@ -104,13 +134,288 @@ function updateInlineKeyHiddenInput() {
 function setInlineKeyTableDataFromAPI(apiKeys) {
   inlineKeyTableData = (apiKeys || []).map(item => {
     if (item && typeof item === 'object') {
-      return makeInlineKeyRow(item.api_key || '', item.note || '');
+      return makeInlineKeyRow(item.api_key || '', item.note || '', item.allowed_models || []);
     }
     return makeInlineKeyRow(item || '', '');
   });
   if (inlineKeyTableData.length === 0) {
     inlineKeyTableData = [makeInlineKeyRow()];
   }
+}
+
+let keyModelScopeEditingIndex = -1;
+let keyModelScopeTrigger = null;
+let keyModelScopeDetectionGeneration = 0;
+let keyModelScopeExtraModels = [];
+
+function configuredKeyModelScopeOptions() {
+  const options = [];
+  const seen = new Set();
+  const rows = typeof redirectTableData !== 'undefined' && Array.isArray(redirectTableData)
+    ? redirectTableData
+    : [];
+  for (const row of rows) {
+    const modelName = String(row?.model || '').trim();
+    const key = modelName.toLowerCase();
+    if (!modelName || modelName === '*' || seen.has(key)) continue;
+    seen.add(key);
+    options.push({
+      model: modelName,
+      upstreamModel: String(row?.redirect_model || modelName).trim(),
+      disabled: Boolean(row?.disabled)
+    });
+  }
+  for (const modelName of normalizeKeyAllowedModels(keyModelScopeExtraModels)) {
+    const key = modelName.toLowerCase();
+    if (modelName === '*' || seen.has(key)) continue;
+    seen.add(key);
+    options.push({ model: modelName, upstreamModel: modelName, disabled: false });
+  }
+  return options;
+}
+
+function channelUsesWildcardModel() {
+  return typeof redirectTableData !== 'undefined' && Array.isArray(redirectTableData) &&
+    redirectTableData.some(row => String(row?.model || '').trim() === '*');
+}
+
+function setKeyModelScopeStatus(message = '', isError = false) {
+  const status = document.getElementById('keyModelScopeStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('key-model-scope-status--error', Boolean(message && isError));
+}
+
+function getKeyModelScopeCheckboxes() {
+  return Array.from(document.querySelectorAll('#keyModelScopeList input[name="keyAllowedModel"]'));
+}
+
+function syncKeyModelScopeControls() {
+  const allowAll = document.getElementById('keyModelScopeAll')?.checked !== false;
+  const list = document.getElementById('keyModelScopeList');
+  getKeyModelScopeCheckboxes().forEach(checkbox => {
+    checkbox.disabled = allowAll;
+  });
+  list?.setAttribute('aria-disabled', String(allowAll));
+}
+
+function renderKeyModelScopeOptions(allowedModels) {
+  const list = document.getElementById('keyModelScopeList');
+  if (!list) return;
+  list.replaceChildren();
+
+  const allowed = new Set(normalizeKeyAllowedModels(allowedModels).map(name => name.toLowerCase()));
+  const unrestricted = allowed.size === 0;
+  for (const option of configuredKeyModelScopeOptions()) {
+    const label = document.createElement('label');
+    label.className = 'key-model-scope-option';
+    label.dataset.searchText = `${option.model} ${option.upstreamModel}`.toLowerCase();
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.name = 'keyAllowedModel';
+    checkbox.value = option.model;
+    checkbox.dataset.upstreamModel = option.upstreamModel;
+    checkbox.checked = unrestricted || allowed.has(option.model.toLowerCase());
+
+    const name = document.createElement('span');
+    name.className = 'key-model-scope-option__name';
+    name.textContent = option.model;
+    label.append(checkbox, name);
+    if (option.disabled) {
+      const state = document.createElement('span');
+      state.className = 'key-model-scope-option__state';
+      state.textContent = window.t('channels.keyModelDisabled');
+      label.append(state);
+    }
+    list.appendChild(label);
+  }
+}
+
+function openKeyModelScopeModal(index, trigger) {
+  if (isChannelKeyEditorReadOnly()) return false;
+  const modal = document.getElementById('keyModelScopeModal');
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  if (!modal || !row) return false;
+
+  keyModelScopeEditingIndex = index;
+  keyModelScopeDetectionGeneration++;
+  keyModelScopeExtraModels = normalizeKeyAllowedModels(row.allowed_models);
+  keyModelScopeTrigger = trigger || document.activeElement;
+  renderKeyModelScopeOptions(row.allowed_models);
+  const allowAll = document.getElementById('keyModelScopeAll');
+  if (allowAll) allowAll.checked = row.allowed_models.length === 0;
+  const search = document.getElementById('keyModelScopeSearch');
+  if (search) search.value = '';
+  const title = document.getElementById('keyModelScopeModalTitle');
+  if (title) title.textContent = window.t('channels.keyModelsDialogTitle', { index: index + 1 });
+  setKeyModelScopeStatus();
+  syncKeyModelScopeControls();
+  const detectButton = document.getElementById('detectKeyModelScopeBtn');
+  if (detectButton) {
+    detectButton.disabled = false;
+    detectButton.removeAttribute('aria-busy');
+  }
+
+  document.getElementById('channelModal')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  allowAll?.focus();
+  return true;
+}
+
+function closeKeyModelScopeModal(restoreFocus = true) {
+  const modal = document.getElementById('keyModelScopeModal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('channelModal')?.removeAttribute('inert');
+  if (restoreFocus && keyModelScopeTrigger && typeof keyModelScopeTrigger.focus === 'function') {
+    keyModelScopeTrigger.focus();
+  }
+  keyModelScopeEditingIndex = -1;
+  keyModelScopeDetectionGeneration++;
+  keyModelScopeExtraModels = [];
+  keyModelScopeTrigger = null;
+}
+
+function confirmKeyModelScope() {
+  if (keyModelScopeEditingIndex < 0) return false;
+  const allowAll = document.getElementById('keyModelScopeAll')?.checked !== false;
+  const allowedModels = allowAll
+    ? []
+    : getKeyModelScopeCheckboxes().filter(checkbox => checkbox.checked).map(checkbox => checkbox.value);
+  if (!allowAll && allowedModels.length === 0) {
+    setKeyModelScopeStatus(window.t('channels.keyModelsSelectAtLeastOne'), true);
+    getKeyModelScopeCheckboxes()[0]?.focus();
+    return false;
+  }
+
+  const index = keyModelScopeEditingIndex;
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  row.allowed_models = normalizeKeyAllowedModels(allowedModels);
+  inlineKeyTableData[index] = row;
+  markChannelFormDirty();
+  closeKeyModelScopeModal(false);
+  renderInlineKeyTable();
+  requestAnimationFrame(() => {
+    document.querySelector(`.key-model-scope-btn[data-index="${index}"]`)?.focus();
+  });
+  return true;
+}
+
+function filterKeyModelScopeOptions(query) {
+  const normalized = String(query || '').trim().toLowerCase();
+  document.querySelectorAll('#keyModelScopeList .key-model-scope-option').forEach(option => {
+    option.hidden = Boolean(normalized && !String(option.dataset.searchText || '').includes(normalized));
+  });
+}
+
+async function detectKeyModelScope() {
+  if (keyModelScopeEditingIndex < 0) return;
+  const detectionIndex = keyModelScopeEditingIndex;
+  const detectionGeneration = ++keyModelScopeDetectionGeneration;
+  const isCurrentDetection = () => keyModelScopeEditingIndex === detectionIndex &&
+    keyModelScopeDetectionGeneration === detectionGeneration;
+  const row = normalizeInlineKeyRow(inlineKeyTableData[detectionIndex]);
+  const urls = getValidInlineURLConfigs();
+  if (!row.api_key || urls.length === 0) {
+    setKeyModelScopeStatus(window.t('channels.keyModelsDetectNeedsConfig'), true);
+    return;
+  }
+
+  const button = document.getElementById('detectKeyModelScopeBtn');
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  setKeyModelScopeStatus(window.t('channels.keyModelsDetecting'));
+  try {
+    const response = await fetchAPIWithAuth('/admin/channels/models/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls, api_keys: [row.api_key], per_key: true })
+    });
+    if (!isCurrentDetection()) return;
+    if (!response.success) throw new Error(response.error || window.t('channels.fetchModelsFailed', { error: '' }));
+    const data = response.data || {};
+    const keyResult = Array.isArray(data.key_models) ? data.key_models[0] : null;
+    if (keyResult?.error) throw new Error(keyResult.error);
+    const fetchedEntries = Array.isArray(keyResult?.models) ? keyResult.models : data.models || [];
+    const fetched = new Set(fetchedEntries
+      .flatMap(entry => [entry?.model, entry?.redirect_model])
+      .map(name => String(name || '').trim().toLowerCase())
+      .filter(Boolean));
+
+    let matched = 0;
+    if (channelUsesWildcardModel()) {
+      const detectedModels = normalizeKeyAllowedModels(fetchedEntries.map(entry => entry?.model || entry?.redirect_model));
+      if (detectedModels.length === 0) throw new Error(window.t('channels.keyModelsDetectNoMatch'));
+      keyModelScopeExtraModels = normalizeKeyAllowedModels([...keyModelScopeExtraModels, ...detectedModels]);
+      renderKeyModelScopeOptions(detectedModels);
+      matched = detectedModels.length;
+    } else {
+      for (const checkbox of getKeyModelScopeCheckboxes()) {
+        const logical = checkbox.value.toLowerCase();
+        const upstream = String(checkbox.dataset.upstreamModel || '').toLowerCase();
+        checkbox.checked = fetched.has(logical) || fetched.has(upstream);
+        if (checkbox.checked) matched++;
+      }
+    }
+    if (matched === 0) throw new Error(window.t('channels.keyModelsDetectNoMatch'));
+    const allowAll = document.getElementById('keyModelScopeAll');
+    if (allowAll) allowAll.checked = false;
+    syncKeyModelScopeControls();
+    setKeyModelScopeStatus(window.t('channels.keyModelsDetected', { count: matched }));
+  } catch (error) {
+    if (isCurrentDetection()) {
+      setKeyModelScopeStatus(window.t('channels.keyModelsDetectFailed', { error: error.message }), true);
+    }
+  } finally {
+    if (button && isCurrentDetection()) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
+}
+
+function initKeyModelScopeModalEvents() {
+  const modal = document.getElementById('keyModelScopeModal');
+  if (!modal || modal.dataset.bound) return;
+  modal.querySelectorAll('[data-action="close-key-model-scope"]').forEach(button => {
+    button.addEventListener('click', () => closeKeyModelScopeModal());
+  });
+  modal.querySelector('[data-action="confirm-key-model-scope"]')?.addEventListener('click', confirmKeyModelScope);
+  document.getElementById('detectKeyModelScopeBtn')?.addEventListener('click', detectKeyModelScope);
+  document.getElementById('keyModelScopeAll')?.addEventListener('change', syncKeyModelScopeControls);
+  document.getElementById('keyModelScopeSearch')?.addEventListener('input', event => {
+    filterKeyModelScopeOptions(event.target.value);
+  });
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeKeyModelScopeModal();
+  });
+  modal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeKeyModelScopeModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled])'))
+      .filter(element => !element.closest('[hidden]'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  modal.dataset.bound = '1';
 }
 
 function getKeyTableContainer() {
@@ -339,6 +644,12 @@ function createKeyRow(index) {
     displayIndex: index + 1,
     key: keyRow.api_key || '',
     note: keyRow.note || '',
+    modelScopeLabel: keyRow.allowed_models.length === 0
+      ? window.t('channels.keyModelsAllShort')
+      : window.t('channels.keyModelsCountShort', { count: keyRow.allowed_models.length }),
+    modelScopeTitle: keyRow.allowed_models.length === 0
+      ? window.t('channels.keyModelsAllTitle')
+      : window.t('channels.keyModelsRestrictedTitle', { count: keyRow.allowed_models.length }),
     inputType: inlineKeyVisible ? 'text' : 'password',
     cooldownHtml: buildCooldownHtml(index),
     actionsHtml: buildActionsHtml(index),
@@ -368,7 +679,7 @@ function createKeyRow(index) {
     if (keyInput) keyInput.readOnly = true;
     if (noteInput) noteInput.readOnly = true;
     if (checkbox) checkbox.disabled = true;
-    row.querySelectorAll('[data-action="delete"], [data-action="toggle-disabled"]').forEach(button => {
+    row.querySelectorAll('[data-action="delete"], [data-action="toggle-disabled"], [data-action="models"]').forEach(button => {
       button.hidden = false;
       button.disabled = true;
     });
@@ -554,6 +865,7 @@ function initKeyTableEventDelegation() {
       else if (action === 'copy') copyKeyToClipboard(index);
       else if (action === 'delete') deleteInlineKey(index);
       else if (action === 'toggle-disabled') toggleKeyDisabled(index);
+      else if (action === 'models') openKeyModelScopeModal(index, actionBtn);
       return;
     }
 
@@ -645,6 +957,7 @@ function renderInlineKeyTable() {
 
   // 初始化事件委托
   initKeyTableEventDelegation();
+  initKeyModelScopeModalEvents();
 
   if (inlineKeyTableData.length === 0) {
     const emptyRow = TemplateEngine.render('tpl-key-empty', {
@@ -784,10 +1097,7 @@ async function testSingleKey(keyIndex, testButton) {
   }
 
   // 从 redirectTableData 获取模型列表（定义在 channels-state.js）
-  const models = redirectTableData
-    .filter(r => r && !r.disabled)
-    .map(r => r.model)
-    .filter(m => m && m.trim());
+  const models = selectModelsForInlineKeyTest(inlineKeyTableData[keyIndex], redirectTableData);
   if (models.length === 0) {
     alert(window.t('channels.configModelsFirst'));
     return;
@@ -1275,5 +1585,15 @@ async function toggleKeyDisabled(index) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { selectAvailableInlineKeys, selectModelFetchKeys, selectFirstEnabledInlineKey };
+  module.exports = {
+    normalizeInlineKeyRow,
+    normalizeKeyAllowedModels,
+    selectAvailableInlineKeys,
+    selectModelFetchKeys,
+    selectFirstEnabledInlineKey,
+    selectModelsForInlineKeyTest,
+    openKeyModelScopeModal,
+    closeKeyModelScopeModal,
+    detectKeyModelScope
+  };
 }

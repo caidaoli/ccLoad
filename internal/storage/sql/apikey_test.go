@@ -19,7 +19,7 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	// 批量创建 API Keys
 	keys := []*model.APIKey{
 		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key-0", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", AllowedModels: []string{"gpt-5", "gpt-4.1"}, KeyStrategy: model.KeyStrategySequential},
 		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key-2", KeyStrategy: model.KeyStrategySequential},
 	}
 	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
@@ -37,6 +37,9 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	if key.KeyIndex != 1 {
 		t.Errorf("key index: got %d, want %d", key.KeyIndex, 1)
 	}
+	if len(key.AllowedModels) != 2 || key.AllowedModels[0] != "gpt-5" || key.AllowedModels[1] != "gpt-4.1" {
+		t.Errorf("allowed models: got %v, want [gpt-5 gpt-4.1]", key.AllowedModels)
+	}
 
 	// 获取渠道所有 API Keys
 	allKeys, err := store.GetAPIKeys(ctx, channelID)
@@ -45,6 +48,50 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	}
 	if len(allKeys) != 3 {
 		t.Errorf("expected 3 keys, got %d", len(allKeys))
+	}
+}
+
+func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "allowed_models.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "allowed-models-channel")
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key", Note: "primary",
+		KeyStrategy: model.KeyStrategyRoundRobin, Disabled: true,
+		CooldownUntil: 1234, CooldownDurationMs: 5678,
+	}}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if err := store.UpdateAPIKeyAllowedModels(ctx, channelID, map[int][]string{
+		0: {"gpt-5", "gpt-4.1"},
+	}); err != nil {
+		t.Fatalf("update allowed models: %v", err)
+	}
+
+	got, err := store.GetAPIKey(ctx, channelID, 0)
+	if err != nil {
+		t.Fatalf("get api key: %v", err)
+	}
+	if len(got.AllowedModels) != 2 || got.AllowedModels[0] != "gpt-5" || got.AllowedModels[1] != "gpt-4.1" {
+		t.Fatalf("allowed models = %v, want [gpt-5 gpt-4.1]", got.AllowedModels)
+	}
+	if got.Note != "primary" || got.KeyStrategy != model.KeyStrategyRoundRobin || !got.Disabled ||
+		got.CooldownUntil != 1234 || got.CooldownDurationMs != 5678 {
+		t.Fatalf("runtime state changed after metadata update: %+v", got)
+	}
+
+	if err := store.UpdateAPIKeyAllowedModels(ctx, channelID, map[int][]string{0: nil}); err != nil {
+		t.Fatalf("clear allowed models: %v", err)
+	}
+	got, err = store.GetAPIKey(ctx, channelID, 0)
+	if err != nil {
+		t.Fatalf("get unrestricted api key: %v", err)
+	}
+	if len(got.AllowedModels) != 0 {
+		t.Fatalf("allowed models after clear = %v, want unrestricted", got.AllowedModels)
 	}
 }
 

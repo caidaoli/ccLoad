@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"slices"
@@ -18,6 +19,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type failAPIKeyAllowedModelsStore struct {
+	storage.Store
+}
+
+func (s *failAPIKeyAllowedModelsStore) UpdateAPIKeyAllowedModels(context.Context, int64, map[int][]string) error {
+	return errors.New("forced API key model scope update failure")
+}
 
 // setupAdminTestServer 创建测试服务器
 func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
@@ -1718,7 +1727,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 		Name: "key-notes",
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
-			{APIKey: "sk-primary", Note: "primary"},
+			{APIKey: "sk-primary", Note: "primary", AllowedModels: []string{"model-1"}},
 			{APIKey: "sk-backup", Note: "backup"},
 		},
 		Priority: 10,
@@ -1746,6 +1755,9 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	if len(readResp.Data) != 2 || readResp.Data[0].Note != "primary" || readResp.Data[1].Note != "backup" {
 		t.Fatalf("created key notes = %#v, want primary/backup", readResp.Data)
 	}
+	if !slices.Equal(readResp.Data[0].AllowedModels, []string{"model-1"}) || len(readResp.Data[1].AllowedModels) != 0 {
+		t.Fatalf("created key model scopes = %#v, want [model-1]/unrestricted", readResp.Data)
+	}
 
 	cooldownUntil := time.Now().Add(15 * time.Minute).Truncate(time.Second)
 	if err := store.SetKeyCooldown(ctx, channelID, 1, cooldownUntil); err != nil {
@@ -1757,7 +1769,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
 			{APIKey: "sk-primary", Note: "primary-renamed"},
-			{APIKey: "sk-backup", Note: "backup-renamed"},
+			{APIKey: "sk-backup", Note: "backup-renamed", AllowedModels: []string{"model-1"}},
 		},
 		Priority: 10,
 		Models:   []model.ModelEntry{{Model: "model-1"}},
@@ -1783,8 +1795,105 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	if keys[1].APIKey != "sk-backup" || keys[1].Note != "backup-renamed" {
 		t.Fatalf("keys[1]=%+v, want sk-backup with updated note", keys[1])
 	}
+	if !slices.Equal(keys[0].AllowedModels, []string{"model-1"}) || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
+		t.Fatalf("key model scopes after omitted/explicit update = [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
+	}
 	if keys[1].CooldownUntil != cooldownUntil.Unix() {
 		t.Fatalf("key cooldown after note-only update=%d, want %d", keys[1].CooldownUntil, cooldownUntil.Unix())
+	}
+
+	legacyUpdate := ChannelRequest{
+		Name:     "key-notes",
+		APIKey:   "sk-primary,sk-backup",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
+		Models:   []model.ModelEntry{{Model: "model-1"}},
+		Enabled:  true,
+	}
+	legacyCtx, legacyW := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(channelID, 10), legacyUpdate))
+	legacyCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channelID, 10)}}
+	server.handleUpdateChannel(legacyCtx, channelID)
+	if legacyW.Code != http.StatusOK {
+		t.Fatalf("legacy update status=%d body=%s", legacyW.Code, legacyW.Body.String())
+	}
+	keys, err = store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		t.Fatalf("get keys after legacy update: %v", err)
+	}
+	if !slices.Equal(keys[0].AllowedModels, []string{"model-1"}) || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
+		t.Fatalf("legacy update cleared model scopes: [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
+	}
+
+	clearPayload := map[string]any{
+		"name": "key-notes",
+		"api_keys": []map[string]any{
+			{"api_key": "sk-primary", "allowed_models": []string{}},
+			{"api_key": "sk-backup"},
+		},
+		"urls":     model.ChannelURLs{{URL: "https://api.example.com"}},
+		"priority": 10,
+		"models":   []model.ModelEntry{{Model: "model-1"}},
+		"enabled":  true,
+	}
+	clearCtx, clearW := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(channelID, 10), clearPayload))
+	clearCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channelID, 10)}}
+	server.handleUpdateChannel(clearCtx, channelID)
+	if clearW.Code != http.StatusOK {
+		t.Fatalf("explicit clear status=%d body=%s", clearW.Code, clearW.Body.String())
+	}
+	keys, err = store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		t.Fatalf("get keys after explicit clear: %v", err)
+	}
+	if len(keys[0].AllowedModels) != 0 || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
+		t.Fatalf("explicit clear result = [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
+	}
+}
+
+func TestHandleUpdateChannel_APIKeyAllowedModelsFailureIsReturned(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "scope-update-failure",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1"}, {Model: "model-2"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-primary", AllowedModels: []string{"model-1"},
+	}}); err != nil {
+		t.Fatalf("create API key: %v", err)
+	}
+	server.store = &failAPIKeyAllowedModelsStore{Store: store}
+
+	payload := map[string]any{
+		"name": "scope-update-failure",
+		"api_keys": []map[string]any{{
+			"api_key": "sk-primary", "allowed_models": []string{"model-2"},
+		}},
+		"urls":     model.ChannelURLs{{URL: "https://api.example.com"}},
+		"priority": 10,
+		"models":   []model.ModelEntry{{Model: "model-1"}, {Model: "model-2"}},
+		"enabled":  true,
+	}
+	updateCtx, updateW := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), payload))
+	updateCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(updateCtx, created.ID)
+	if updateW.Code != http.StatusInternalServerError {
+		t.Fatalf("update status=%d body=%s, want 500", updateW.Code, updateW.Body.String())
+	}
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get keys: %v", err)
+	}
+	if len(keys) != 1 || !slices.Equal(keys[0].AllowedModels, []string{"model-1"}) {
+		t.Fatalf("persisted model scope after failed update=%v, want [model-1]", keys)
 	}
 }
 

@@ -1,7 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectAvailableInlineKeys, selectModelFetchKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
+const {
+  normalizeInlineKeyRow,
+  selectAvailableInlineKeys,
+  selectModelFetchKeys,
+  selectFirstEnabledInlineKey,
+  selectModelsForInlineKeyTest,
+  openKeyModelScopeModal,
+  closeKeyModelScopeModal,
+  detectKeyModelScope
+} = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
@@ -47,6 +56,129 @@ function loadChannelsModals() {
 function loadFetchModelsFromAPI() {
   return loadChannelsModals().fetchModelsFromAPI;
 }
+
+test('inline Key rows preserve and normalize model scopes', () => {
+  assert.deepEqual(normalizeInlineKeyRow({
+    api_key: ' sk-test ',
+    note: ' primary ',
+    allowed_models: [' GPT-5 ', 'gpt-5', '', 'Claude-4']
+  }), {
+    api_key: 'sk-test',
+    note: 'primary',
+    allowed_models: ['GPT-5', 'Claude-4']
+  });
+  assert.deepEqual(normalizeInlineKeyRow('legacy-key').allowed_models, []);
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
+    [{ model: '*', disabled: false }]
+  ), ['gpt-5']);
+});
+
+test('per-Key model detection ignores stale sessions and populates wildcard channel candidates', async () => {
+  const checkboxes = [];
+  const makeClassList = () => ({
+    add() {},
+    remove() {},
+    toggle() {}
+  });
+  const list = {
+    replaceChildren() { checkboxes.length = 0; },
+    appendChild(label) { checkboxes.push(label.children[0]); },
+    setAttribute() {}
+  };
+  const modal = { classList: makeClassList(), setAttribute() {} };
+  const allowAll = { checked: true, focus() {} };
+  const detectButton = {
+    disabled: false,
+    attributes: new Map(),
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    removeAttribute(name) { this.attributes.delete(name); }
+  };
+  const status = { textContent: '', classList: makeClassList() };
+  const elements = {
+    keyModelScopeModal: modal,
+    keyModelScopeList: list,
+    keyModelScopeAll: allowAll,
+    keyModelScopeSearch: { value: '' },
+    keyModelScopeModalTitle: { textContent: '' },
+    keyModelScopeStatus: status,
+    detectKeyModelScopeBtn: detectButton,
+    channelModal: { setAttribute() {}, removeAttribute() {} }
+  };
+  const pending = [];
+  const globals = {
+    window: { t: key => key },
+    document: {
+      activeElement: { focus() {} },
+      getElementById: id => elements[id] || null,
+      querySelectorAll: selector => selector === '#keyModelScopeList input[name="keyAllowedModel"]' ? checkboxes : [],
+      createElement: tagName => ({
+        tagName,
+        children: [],
+        dataset: {},
+        append(...children) { this.children.push(...children); }
+      })
+    },
+    editingChannelAuthType: 'api_key',
+    inlineKeyTableData: [{ api_key: 'sk-test', note: '', allowed_models: [] }],
+    redirectTableData: [
+      { model: 'model-old', redirect_model: '', disabled: false },
+      { model: 'model-new', redirect_model: '', disabled: false }
+    ],
+    getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: [] }],
+    fetchAPIWithAuth: () => new Promise(resolve => pending.push(resolve))
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+
+  try {
+    assert.equal(openKeyModelScopeModal(0), true);
+    const staleDetection = detectKeyModelScope();
+    closeKeyModelScopeModal(false);
+    assert.equal(openKeyModelScopeModal(0), true);
+    const currentDetection = detectKeyModelScope();
+
+    pending[0]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'model-old' }] }] }
+    });
+    await staleDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true]);
+    assert.equal(detectButton.disabled, true);
+
+    pending[1]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'model-new' }] }] }
+    });
+    await currentDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [false, true]);
+    assert.equal(allowAll.checked, false);
+    assert.equal(detectButton.disabled, false);
+
+    closeKeyModelScopeModal(false);
+    global.redirectTableData = [{ model: '*', redirect_model: '', disabled: false }];
+    assert.equal(openKeyModelScopeModal(0), true);
+    assert.deepEqual(checkboxes, []);
+    const wildcardDetection = detectKeyModelScope();
+    pending[2]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'gpt-wildcard' }] }] }
+    });
+    await wildcardDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['gpt-wildcard']);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true]);
+    assert.equal(allowAll.checked, false);
+  } finally {
+    closeKeyModelScopeModal(false);
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
 
 function installBatchProtocolModeGlobals(response) {
   const requests = [];
@@ -719,6 +851,58 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
     assert.equal(submitted.access_token, undefined);
     assert.equal(submitted.refresh_token, undefined);
     assert.equal(submitted.id_token, undefined);
+  } finally {
+    for (const [key, descriptor] of extraGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+    fixture.restore();
+  }
+});
+
+test('saving an API Key channel submits per-Key model scopes', async () => {
+  const channel = {
+    id: 78,
+    name: 'scoped-key-save',
+    auth_type: 'api_key',
+    urls: [{ url: 'https://api.example.com', exact: false, protocols: ['openai'] }],
+    models: [],
+    enabled: true,
+    protocol_transform_mode: 'auto'
+  };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  const extraGlobals = new Map();
+  const setGlobal = (key, value) => {
+    extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  let submitted;
+
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    global.redirectTableData.push({ model: 'gpt-5', redirect_model: '' });
+    fixture.getElement('channelName').value = channel.name;
+    fixture.getElement('channelApiKey').value = 'sk-scoped';
+    fixture.getElement('protocolTransformModeValue').value = 'auto';
+    fixture.getElement('channelEnabled').checked = true;
+    for (const id of [
+      'channelPriority', 'channelRPMLimit', 'channelMaxConcurrency', 'channelDailyCostLimit',
+      'channelCostMultiplier', 'channelScheduledCheckModel', 'channelProxyURL'
+    ]) fixture.getElement(id).value = '0';
+    setGlobal('getValidInlineURLConfigs', () => channel.urls);
+    setGlobal('getValidInlineKeyRows', () => [{
+      api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5']
+    }]);
+    setGlobal('fetchAPIWithAuth', async (_url, options) => {
+      submitted = JSON.parse(options.body);
+      return { success: false, error: 'captured' };
+    });
+
+    await saveChannel({ preventDefault() {} });
+    assert.deepEqual(submitted.api_keys, [{
+      api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5']
+    }]);
   } finally {
     for (const [key, descriptor] of extraGlobals) {
       if (descriptor === undefined) delete global[key];

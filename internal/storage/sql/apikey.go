@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,7 +19,7 @@ import (
 func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, allowed_models, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
@@ -34,6 +35,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 		key := &model.APIKey{}
 		var createdAt, updatedAt int64
 		var disabled int
+		var allowedModelsJSON string
 
 		err := rows.Scan(
 			&key.ID,
@@ -42,6 +44,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 			&key.APIKey,
 			&key.KeyStrategy,
 			&key.Note,
+			&allowedModelsJSON,
 			&key.CooldownUntil,
 			&key.CooldownDurationMs,
 			&disabled,
@@ -50,6 +53,9 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		if err := unmarshalAPIKeyAllowedModels(allowedModelsJSON, key); err != nil {
+			return nil, err
 		}
 
 		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
@@ -72,7 +78,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, allowed_models, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
@@ -81,6 +87,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 	key := &model.APIKey{}
 	var createdAt, updatedAt int64
 	var disabled int
+	var allowedModelsJSON string
 
 	err := row.Scan(
 		&key.ID,
@@ -89,6 +96,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 		&key.APIKey,
 		&key.KeyStrategy,
 		&key.Note,
+		&allowedModelsJSON,
 		&key.CooldownUntil,
 		&key.CooldownDurationMs,
 		&disabled,
@@ -100,6 +108,9 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 			return nil, errors.New("api key not found")
 		}
 		return nil, fmt.Errorf("query api key: %w", err)
+	}
+	if err := unmarshalAPIKeyAllowedModels(allowedModelsJSON, key); err != nil {
+		return nil, err
 	}
 
 	key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
@@ -148,21 +159,25 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 
 		// 构建 VALUES 部分
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
+		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, key_strategy,
 		                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at) VALUES `)
 
-		args := make([]any, 0, len(batch)*10)
+		args := make([]any, 0, len(batch)*11)
 		for j, key := range batch {
 			if j > 0 {
 				sb.WriteString(",")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 			strategy := key.KeyStrategy
 			if strategy == "" {
 				strategy = model.KeyStrategySequential
 			}
-			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, strategy,
+			allowedModelsJSON, err := marshalAllowedModels(key.AllowedModels)
+			if err != nil {
+				return fmt.Errorf("api key index %d: %w", key.KeyIndex, err)
+			}
+			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, strategy,
 				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 		}
 
@@ -236,6 +251,52 @@ func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notes
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit update api key notes: %w", err)
+	}
+	return nil
+}
+
+// UpdateAPIKeyAllowedModels updates model restrictions without rebuilding keys or losing runtime state.
+func (s *SQLStore) UpdateAPIKeyAllowedModels(
+	ctx context.Context,
+	channelID int64,
+	modelsByIndex map[int][]string,
+) error {
+	if len(modelsByIndex) == 0 {
+		return nil
+	}
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+
+	tx, err := s.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin update api key allowed models transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := s.prepareTx(ctx, tx, `
+		UPDATE api_keys
+		SET allowed_models = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare update api key allowed models: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	updatedAtUnix := timeToUnix(time.Now())
+	for keyIndex, allowedModels := range modelsByIndex {
+		allowedModelsJSON, err := marshalAllowedModels(allowedModels)
+		if err != nil {
+			return fmt.Errorf("api key index %d: %w", keyIndex, err)
+		}
+		if _, err := stmt.ExecContext(ctx, allowedModelsJSON, updatedAtUnix, channelID, keyIndex); err != nil {
+			return fmt.Errorf("update api key allowed models index %d: %w", keyIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit update api key allowed models: %w", err)
 	}
 	return nil
 }
@@ -438,9 +499,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 
 		// 预编译API Key插入语句
 		keyStmt, err := s.prepareTx(ctx, tx, `
-			INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
+			INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, key_strategy,
 			                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return fmt.Errorf("prepare api key statement: %w", err)
@@ -535,8 +596,12 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			for i := range cwk.APIKeys {
 				cwk.APIKeys[i].ChannelID = channelID
 				key := cwk.APIKeys[i]
-				_, err := keyStmt.ExecContext(ctx,
-					channelID, key.KeyIndex, key.APIKey, key.Note, key.KeyStrategy,
+				allowedModelsJSON, err := marshalAllowedModels(key.AllowedModels)
+				if err != nil {
+					return fmt.Errorf("api key %d for channel %d: %w", key.KeyIndex, channelID, err)
+				}
+				_, err = keyStmt.ExecContext(ctx,
+					channelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, key.KeyStrategy,
 					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
@@ -579,7 +644,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
+		       note, allowed_models, cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`
@@ -594,6 +659,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 		key := &model.APIKey{}
 		var createdAt, updatedAt int64
 		var disabled int
+		var allowedModelsJSON string
 
 		err := rows.Scan(
 			&key.ID,
@@ -602,6 +668,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 			&key.APIKey,
 			&key.KeyStrategy,
 			&key.Note,
+			&allowedModelsJSON,
 			&key.CooldownUntil,
 			&key.CooldownDurationMs,
 			&disabled,
@@ -610,6 +677,9 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		if err := unmarshalAPIKeyAllowedModels(allowedModelsJSON, key); err != nil {
+			return nil, err
 		}
 
 		key.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
@@ -624,6 +694,17 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 	}
 
 	return result, nil
+}
+
+func unmarshalAPIKeyAllowedModels(raw string, key *model.APIKey) error {
+	if raw == "" {
+		key.AllowedModels = nil
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &key.AllowedModels); err != nil {
+		return fmt.Errorf("invalid api key allowed_models json: %w", err)
+	}
+	return nil
 }
 
 // SetAPIKeyDisabled 设置指定 API Key 的禁用状态

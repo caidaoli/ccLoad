@@ -290,6 +290,26 @@ func TestAPIKey_IsCoolingDown(t *testing.T) {
 	}
 }
 
+func TestAPIKey_AllowsModel(t *testing.T) {
+	t.Parallel()
+
+	unrestricted := &APIKey{}
+	if !unrestricted.AllowsModel("gpt-5") {
+		t.Fatal("empty allowlist must preserve unrestricted behavior")
+	}
+
+	restricted := &APIKey{AllowedModels: []string{"GPT-5", "claude-sonnet-4(max)"}}
+	if !restricted.AllowsModel("gpt-5") {
+		t.Fatal("model matching should be case-insensitive")
+	}
+	if !restricted.AllowsModel("claude-sonnet-4") {
+		t.Fatal("thinking suffix must not change model identity")
+	}
+	if restricted.AllowsModel("qwen3") {
+		t.Fatal("unlisted model must be rejected")
+	}
+}
+
 func TestDefaultHealthScoreConfig(t *testing.T) {
 	t.Parallel()
 

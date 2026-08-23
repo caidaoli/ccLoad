@@ -607,13 +607,14 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	keysToCreate := make([]*model.APIKey, 0, len(apiKeyEntries))
 	for i, entry := range apiKeyEntries {
 		keysToCreate = append(keysToCreate, &model.APIKey{
-			ChannelID:   created.ID,
-			KeyIndex:    i,
-			APIKey:      entry.APIKey,
-			Note:        entry.Note,
-			KeyStrategy: keyStrategy,
-			CreatedAt:   model.JSONTime{Time: now},
-			UpdatedAt:   model.JSONTime{Time: now},
+			ChannelID:     created.ID,
+			KeyIndex:      i,
+			APIKey:        entry.APIKey,
+			Note:          entry.Note,
+			AllowedModels: append([]string(nil), entry.AllowedModels...),
+			KeyStrategy:   keyStrategy,
+			CreatedAt:     model.JSONTime{Time: now},
+			UpdatedAt:     model.JSONTime{Time: now},
 		})
 	}
 	if len(keysToCreate) > 0 {
@@ -1109,17 +1110,25 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		req.Models = filterCodexOAuthModelEntries(req.Models, credential.PlanType)
 	}
 
+	var oldKeys []*model.APIKey
+	if !existing.UsesOAuth() {
+		oldKeys, err = s.getAPIKeys(c.Request.Context(), id)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		submittedKeys := req.normalizeAPIKeys()
+		preserveOmittedAPIKeyAllowedModels(submittedKeys, oldKeys)
+		req.APIKeys = submittedKeys
+		req.APIKey = strings.Join(apiKeyStrings(submittedKeys), ",")
+	}
+
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// 检测api_key是否变化（需要重建API Keys）
-	oldKeys, err := s.getAPIKeys(c.Request.Context(), id)
-	if err != nil {
-		log.Printf("[WARN] 查询旧API Keys失败: %v", err)
-		oldKeys = []*model.APIKey{}
-	}
 	if existing.UsesOAuth() {
 		oldKeys = nil
 	}
@@ -1142,14 +1151,19 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	notesByIndex := make(map[int]string)
+	modelsByIndex := make(map[int][]string)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
 			if oldKey.Note != newKeys[i].Note {
 				notesByIndex[oldKey.KeyIndex] = newKeys[i].Note
 			}
+			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) {
+				modelsByIndex[oldKey.KeyIndex] = append([]string(nil), newKeys[i].AllowedModels...)
+			}
 		}
 	}
 	noteChanged := len(notesByIndex) > 0
+	modelsChanged := len(modelsByIndex) > 0
 
 	// [INFO] 修复 (2025-10-11): 检测策略变化
 	strategyChanged := false
@@ -1190,14 +1204,15 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		apiKeys := make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
 			apiKeys = append(apiKeys, &model.APIKey{
-				ChannelID:   id,
-				KeyIndex:    i,
-				APIKey:      key.APIKey,
-				Note:        key.Note,
-				KeyStrategy: keyStrategy,
-				Disabled:    disabledByAPIKey[key.APIKey],
-				CreatedAt:   model.JSONTime{Time: now},
-				UpdatedAt:   model.JSONTime{Time: now},
+				ChannelID:     id,
+				KeyIndex:      i,
+				APIKey:        key.APIKey,
+				Note:          key.Note,
+				AllowedModels: append([]string(nil), key.AllowedModels...),
+				KeyStrategy:   keyStrategy,
+				Disabled:      disabledByAPIKey[key.APIKey],
+				CreatedAt:     model.JSONTime{Time: now},
+				UpdatedAt:     model.JSONTime{Time: now},
 			})
 		}
 		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), apiKeys); err != nil {
@@ -1213,6 +1228,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		if noteChanged {
 			if err := s.store.UpdateAPIKeyNotes(c.Request.Context(), id, notesByIndex); err != nil {
 				log.Printf("[WARN] 批量更新API Key备注失败 (channel=%d): %v", id, err)
+			}
+		}
+		if modelsChanged {
+			if err := s.store.UpdateAPIKeyAllowedModels(c.Request.Context(), id, modelsByIndex); err != nil {
+				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key model scopes: %w", err))
+				return
 			}
 		}
 	}
@@ -1231,6 +1252,29 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	s.cleanupOrphanedURLStates(c.Request.Context(), id, upd.GetURLs())
 
 	RespondJSON(c, http.StatusOK, upd)
+}
+
+func preserveOmittedAPIKeyAllowedModels(submitted []ChannelAPIKeyRequest, existing []*model.APIKey) {
+	byValue := make(map[string]*model.APIKey, len(existing))
+	for _, key := range existing {
+		if key != nil {
+			if _, seen := byValue[key.APIKey]; !seen {
+				byValue[key.APIKey] = key
+			}
+		}
+	}
+	for i := range submitted {
+		if submitted[i].allowedModelsSet {
+			continue
+		}
+		oldKey := byValue[submitted[i].APIKey]
+		if i < len(existing) && existing[i] != nil && existing[i].APIKey == submitted[i].APIKey {
+			oldKey = existing[i]
+		}
+		if oldKey != nil {
+			submitted[i].AllowedModels = append([]string(nil), oldKey.AllowedModels...)
+		}
+	}
 }
 
 // resetAllChannelCooldowns 清除渠道、Key、模型和 URL 冷却，并立即失效相关缓存。

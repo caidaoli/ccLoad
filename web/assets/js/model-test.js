@@ -1798,8 +1798,7 @@ function getSelectedTargets() {
           row,
           model: row.dataset.model || selectedModelName,
           channelId: channel.id,
-          clientProtocol: selectedProtocol,
-          keyIndex: normalizeModelTestKeyIndex(getPreferredModelTestKey(channelKeysById.get(channel.id))?.key_index)
+          clientProtocol: selectedProtocol
         };
       }
 
@@ -1813,20 +1812,6 @@ function getSelectedTargets() {
       };
     })
     .filter(Boolean);
-}
-
-async function attachModelModeKeySelection(targets) {
-  if (testMode !== TEST_MODE_MODEL || !Array.isArray(targets) || targets.length === 0) {
-    return targets;
-  }
-
-  const channelIDs = [...new Set(targets.map(target => target.channelId).filter(Number.isFinite))];
-  await Promise.all(channelIDs.map(channelId => getModelTestChannelKeys(channelId)));
-
-  return targets.map(target => ({
-    ...target,
-    keyIndex: normalizeModelTestKeyIndex(getPreferredModelTestKey(channelKeysById.get(target.channelId))?.key_index)
-  }));
 }
 
 function resetRowStatus(row) {
@@ -2091,7 +2076,7 @@ async function runModelTests() {
     return;
   }
 
-  let targets = getSelectedTargets();
+  const targets = getSelectedTargets();
   if (targets.length === 0) {
     showError(i18nText('modelTest.selectAtLeastOne', '请至少选择一条记录'));
     return;
@@ -2101,7 +2086,6 @@ async function runModelTests() {
   clearProgress();
   setRunTestButtonDisabled(true);
   try {
-    targets = await attachModelModeKeySelection(targets);
     await runBatchTests(targets);
   } catch (error) {
     console.error('runModelTests failed:', error);

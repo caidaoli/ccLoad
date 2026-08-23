@@ -151,6 +151,48 @@ func TestChannelRequestToConfigPreservesRetryOtherKeysOnFailure(t *testing.T) {
 	}
 }
 
+func TestChannelRequestValidate_NormalizesAPIKeyAllowedModels(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name: "scoped-keys",
+		APIKeys: []ChannelAPIKeyRequest{{
+			APIKey: " sk-test ", AllowedModels: []string{" GPT-5 ", "gpt-5", "claude-sonnet-4(max)"},
+		}},
+		URLs: model.ChannelURLs{{URL: "https://example.com"}},
+		Models: []model.ModelEntry{
+			{Model: "gpt-5"},
+			{Model: "gpt-5(max)"},
+			{Model: "claude-sonnet-4"},
+		},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	got := req.APIKeys[0].AllowedModels
+	if len(got) != 2 || got[0] != "gpt-5" || got[1] != "claude-sonnet-4" {
+		t.Fatalf("allowed_models=%v, want canonical channel models", got)
+	}
+
+	req.APIKeys[0].AllowedModels = []string{"unknown"}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "must exist in channel models") {
+		t.Fatalf("Validate() error=%v, want unknown model rejection", err)
+	}
+
+	wildcard := ChannelRequest{
+		Name:    "wildcard-scoped-key",
+		APIKeys: []ChannelAPIKeyRequest{{APIKey: "sk-test", AllowedModels: []string{"discovered-model"}}},
+		URLs:    model.ChannelURLs{{URL: "https://example.com"}},
+		Models:  []model.ModelEntry{{Model: "*"}},
+	}
+	if err := wildcard.Validate(); err != nil {
+		t.Fatalf("wildcard Validate() error = %v", err)
+	}
+	if got := wildcard.APIKeys[0].AllowedModels; len(got) != 1 || got[0] != "discovered-model" {
+		t.Fatalf("wildcard allowed_models=%v, want discovered-model", got)
+	}
+}
+
 func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 	t.Parallel()
 

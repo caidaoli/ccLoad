@@ -31,16 +31,27 @@ type FetchModelsRequest struct {
 	URLs                   model.ChannelURLs `json:"urls" binding:"required,min=1"`
 	Protocol               string            `json:"protocol,omitempty"`
 	APIKeys                []string          `json:"api_keys" binding:"required,min=1"`
+	PerKey                 bool              `json:"per_key,omitempty"`
 	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
 	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
 }
 
 // FetchModelsResponse 获取模型列表响应
 type FetchModelsResponse struct {
-	Models   []model.ModelEntry `json:"models"`          // 模型列表（包含redirect_model便于编辑）
-	Protocol string             `json:"protocol"`        // 成功请求使用的实际上游协议
-	Source   string             `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
-	Debug    *FetchModelsDebug  `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	Models    []model.ModelEntry   `json:"models"`          // 模型列表（包含redirect_model便于编辑）
+	Protocol  string               `json:"protocol"`        // 成功请求使用的实际上游协议
+	Source    string               `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
+	Debug     *FetchModelsDebug    `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	KeyModels []FetchKeyModelsItem `json:"key_models,omitempty"`
+}
+
+// FetchKeyModelsItem identifies keys by stable row index and never exposes the credential.
+type FetchKeyModelsItem struct {
+	KeyIndex int                `json:"key_index"`
+	Models   []model.ModelEntry `json:"models"`
+	Protocol string             `json:"protocol,omitempty"`
+	Source   string             `json:"source,omitempty"`
+	Error    string             `json:"error,omitempty"`
 }
 
 // FetchModelsDebug 调试信息结构
@@ -94,7 +105,15 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 		return
 	}
 
-	response, err := s.fetchModelsForChannel(c.Request.Context(), channel, c.Query("protocol"))
+	perKey := false
+	if rawPerKey := strings.TrimSpace(c.Query("per_key")); rawPerKey != "" {
+		perKey, err = strconv.ParseBool(rawPerKey)
+		if err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, "per_key 参数无效")
+			return
+		}
+	}
+	response, err := s.fetchModelsForChannel(c.Request.Context(), channel, c.Query("protocol"), perKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -114,8 +133,18 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 	}
 
 	req.Protocol = strings.TrimSpace(req.Protocol)
-	req.APIKeys = normalizeModelFetchKeys(req.APIKeys)
-	if len(req.APIKeys) == 0 {
+	var perKeyAPIKeys []*model.APIKey
+	if req.PerKey {
+		perKeyAPIKeys = make([]*model.APIKey, 0, len(req.APIKeys))
+		for i, apiKey := range req.APIKeys {
+			if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+				perKeyAPIKeys = append(perKeyAPIKeys, &model.APIKey{KeyIndex: i, APIKey: apiKey})
+			}
+		}
+	} else {
+		req.APIKeys = normalizeModelFetchKeys(req.APIKeys)
+	}
+	if (!req.PerKey && len(req.APIKeys) == 0) || (req.PerKey && len(perKeyAPIKeys) == 0) {
 		RespondErrorMsg(c, http.StatusBadRequest, "urls、api_keys为必填字段")
 		return
 	}
@@ -127,17 +156,26 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys)
+	var response *FetchModelsResponse
+	if req.PerKey {
+		response, err = s.fetchModelsPerKeyWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, perKeyAPIKeys)
+	} else {
+		response, err = s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys)
+	}
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
 	}
 	if req.LowercaseModels || req.StripModelSourcePrefix {
-		response.Models = normalizeModelEntriesForSave(response.Models, modelNormalizationOptions{
+		options := modelNormalizationOptions{
 			lowercaseModels:        req.LowercaseModels,
 			stripModelSourcePrefix: req.StripModelSourcePrefix,
-		})
+		}
+		response.Models = normalizeModelEntriesForSave(response.Models, options)
+		for i := range response.KeyModels {
+			response.KeyModels[i].Models = normalizeModelEntriesForSave(response.KeyModels[i].Models, options)
+		}
 	}
 	RespondJSON(c, http.StatusOK, response)
 }
@@ -192,7 +230,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		}
 		item.ChannelName = cfg.Name
 
-		resp, err := s.fetchModelsForChannel(ctx, cfg, overrideProtocol)
+		resp, err := s.fetchModelsForChannel(ctx, cfg, overrideProtocol, false)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -267,8 +305,8 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 	})
 }
 
-func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
-	apiKeys := make([]string, 0, len(keys))
+func availableModelFetchAPIKeys(keys []*model.APIKey, now time.Time) []*model.APIKey {
+	available := make([]*model.APIKey, 0, len(keys))
 	var cooldownFallback *model.APIKey
 	for _, key := range keys {
 		if key == nil || key.Disabled || strings.TrimSpace(key.APIKey) == "" {
@@ -282,16 +320,24 @@ func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
 			}
 			continue
 		}
-		apiKeys = append(apiKeys, key.APIKey)
+		available = append(available, key)
 	}
-	apiKeys = normalizeModelFetchKeys(apiKeys)
-	if len(apiKeys) > 0 {
-		return apiKeys
+	if len(available) > 0 {
+		return available
 	}
 	if cooldownFallback != nil {
-		return []string{strings.TrimSpace(cooldownFallback.APIKey)}
+		return []*model.APIKey{cooldownFallback}
 	}
-	return apiKeys
+	return available
+}
+
+func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
+	available := availableModelFetchAPIKeys(keys, now)
+	apiKeys := make([]string, 0, len(available))
+	for _, key := range available {
+		apiKeys = append(apiKeys, key.APIKey)
+	}
+	return normalizeModelFetchKeys(apiKeys)
 }
 
 func normalizeModelFetchKeys(apiKeys []string) []string {
@@ -311,7 +357,12 @@ func normalizeModelFetchKeys(apiKeys []string) []string {
 	return normalized
 }
 
-func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+func (s *Server) fetchModelsForChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	overrideProtocol string,
+	perKey bool,
+) (*FetchModelsResponse, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
@@ -338,6 +389,13 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	keys, err := s.store.GetAPIKeys(ctx, cfg.ID)
 	if err != nil {
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
+	}
+	if perKey {
+		availableKeys := availableModelFetchAPIKeys(keys, time.Now())
+		if len(availableKeys) == 0 {
+			return nil, fmt.Errorf("该渠道没有可用的API Key")
+		}
+		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, availableKeys)
 	}
 	apiKeys := availableModelFetchKeys(keys, time.Now())
 	if len(apiKeys) == 0 {
@@ -747,6 +805,56 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
+}
+
+func (s *Server) fetchModelsPerKeyWithURLFallback(
+	ctx context.Context,
+	channelID int64,
+	configuredURLs model.ChannelURLs,
+	overrideProtocol string,
+	apiKeys []*model.APIKey,
+) (*FetchModelsResponse, error) {
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("API Key为空")
+	}
+
+	response := &FetchModelsResponse{
+		Models:    make([]model.ModelEntry, 0),
+		KeyModels: make([]FetchKeyModelsItem, 0, len(apiKeys)),
+	}
+	seenModels := make(map[string]struct{})
+	for _, apiKey := range apiKeys {
+		if apiKey == nil || strings.TrimSpace(apiKey.APIKey) == "" {
+			continue
+		}
+		item := FetchKeyModelsItem{KeyIndex: apiKey.KeyIndex, Models: make([]model.ModelEntry, 0)}
+		fetched, err := s.fetchModelsWithURLFallback(
+			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey},
+		)
+		if err != nil {
+			item.Error = err.Error()
+			response.KeyModels = append(response.KeyModels, item)
+			continue
+		}
+		item.Models = append(item.Models, fetched.Models...)
+		item.Protocol = fetched.Protocol
+		item.Source = fetched.Source
+		response.KeyModels = append(response.KeyModels, item)
+		if response.Protocol == "" {
+			response.Protocol = fetched.Protocol
+			response.Source = fetched.Source
+			response.Debug = fetched.Debug
+		}
+		for _, entry := range fetched.Models {
+			key := strings.ToLower(model.RoutingModelName(entry.Model))
+			if _, exists := seenModels[key]; exists {
+				continue
+			}
+			seenModels[key] = struct{}{}
+			response.Models = append(response.Models, entry)
+		}
+	}
+	return response, nil
 }
 
 func shouldTryNextKeyOnFetchModelsError(err error) bool {

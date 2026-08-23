@@ -638,34 +638,35 @@ func buildCodexResponsesPath() string {
 	return "/v1/responses"
 }
 
-// prepareRequestBody 准备请求体（处理模型重定向和模糊匹配）
-// 遵循SRP原则：单一职责 - 负责模型名解析和请求体准备
-//
-// 模型名解析优先级：
-// 1. 精确匹配的重定向（redirect_model 配置）
-// 2. 模糊匹配（启用 model_fuzzy_match 时）
-// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
+// resolveChannelRoutingModel returns the logical model configured on the channel,
+// before redirecting it to an upstream model. API Key scopes use this identity.
+func (s *Server) resolveChannelRoutingModel(cfg *model.Config, originalModel string) string {
+	routedModel := model.RoutingModelName(originalModel)
+	if !cfg.SupportsModel(routedModel) && s.modelFuzzyMatch {
+		if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
+			return model.RoutingModelName(matched)
+		}
+	}
+	return routedModel
+}
+
+// resolveActualModel preserves the historical redirect/fuzzy-match order used for upstream requests.
 func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
 	routedModel := model.RoutingModelName(originalModel)
 	actualModel := routedModel
-	// 1. 检查模型重定向（精确匹配优先）
+	// 1. 精确匹配的重定向优先。
 	if redirectModel, ok := cfg.GetRedirectModel(routedModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
 
-	// 2. 模糊匹配回退（仅当未触发重定向时）
-	if actualModel == routedModel && s.modelFuzzyMatch {
-		// 先检查精确匹配，避免不必要的模糊匹配
-		if !cfg.SupportsModel(routedModel) {
-			if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
-				actualModel = matched
-			}
+	// 2. 仅在未触发精确重定向时做模糊匹配。
+	if actualModel == routedModel && s.modelFuzzyMatch && !cfg.SupportsModel(routedModel) {
+		if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
+			actualModel = matched
 		}
 	}
 
-	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
-	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
-	// 仅当模型已变更且变更后的模型有重定向配置时触发
+	// 3. 历史行为只对上一步得到的模型再解析一次重定向。
 	if actualModel != routedModel {
 		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
 			actualModel = redirectModel
