@@ -9,7 +9,8 @@ const {
   selectModelsForInlineKeyTest,
   openKeyModelScopeModal,
   closeKeyModelScopeModal,
-  detectKeyModelScope
+  detectKeyModelScope,
+  initKeyModelScopeModalEvents
 } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
@@ -72,6 +73,66 @@ test('inline Key rows preserve and normalize model scopes', () => {
     { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
     [{ model: '*', disabled: false }]
   ), ['gpt-5']);
+});
+
+test('Escape closes only the topmost Key model scope modal', () => {
+  const makeClassList = initial => {
+    const classes = new Set(initial);
+    return {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name)
+    };
+  };
+  const keyModelScopeModal = {
+    dataset: {},
+    classList: makeClassList(['show']),
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    addEventListener() {},
+    setAttribute() {}
+  };
+  const channelModal = {
+    classList: makeClassList(['show']),
+    removeAttribute() {}
+  };
+  let keydownHandler;
+  const previousDocument = Object.getOwnPropertyDescriptor(global, 'document');
+  Object.defineProperty(global, 'document', {
+    configurable: true,
+    writable: true,
+    value: {
+      activeElement: null,
+      getElementById: id => ({ keyModelScopeModal, channelModal })[id] || null,
+      querySelectorAll: () => [],
+      addEventListener(type, handler, capture) {
+        if (type === 'keydown') {
+          assert.equal(capture, true);
+          keydownHandler = handler;
+        }
+      }
+    }
+  });
+
+  try {
+    initKeyModelScopeModalEvents();
+    assert.equal(typeof keydownHandler, 'function');
+    let prevented = false;
+    let stopped = false;
+    keydownHandler({
+      key: 'Escape',
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; }
+    });
+
+    assert.equal(keyModelScopeModal.classList.contains('show'), false);
+    assert.equal(channelModal.classList.contains('show'), true);
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+  } finally {
+    if (previousDocument) Object.defineProperty(global, 'document', previousDocument);
+    else delete global.document;
+  }
 });
 
 test('per-Key model detection ignores stale sessions and populates wildcard channel candidates', async () => {

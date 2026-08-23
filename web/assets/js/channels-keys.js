@@ -394,7 +394,8 @@ function initKeyModelScopeModalEvents() {
   modal.addEventListener('click', event => {
     if (event.target === modal) closeKeyModelScopeModal();
   });
-  modal.addEventListener('keydown', event => {
+  document.addEventListener('keydown', event => {
+    if (!modal.classList.contains('show')) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -414,7 +415,7 @@ function initKeyModelScopeModalEvents() {
       event.preventDefault();
       first.focus();
     }
-  });
+  }, true);
   modal.dataset.bound = '1';
 }
 
@@ -1594,6 +1595,7 @@ if (typeof module !== 'undefined' && module.exports) {
     selectModelsForInlineKeyTest,
     openKeyModelScopeModal,
     closeKeyModelScopeModal,
-    detectKeyModelScope
+    detectKeyModelScope,
+    initKeyModelScopeModalEvents
   };
 }
