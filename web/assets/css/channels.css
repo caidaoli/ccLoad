@@ -1261,6 +1261,10 @@
       cursor: pointer;
     }
 
+    .key-model-scope-option[hidden] {
+      display: none;
+    }
+
     .key-model-scope-all {
       margin-bottom: 10px;
       font-weight: 600;
