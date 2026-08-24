@@ -29,7 +29,7 @@ type zedWirePlan struct {
 	translatedRequest []byte
 }
 
-func finalizeZedResponsesBody(registry *protocol.Registry, body []byte) ([]byte, *zedWirePlan, error) {
+func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthropicRequest []byte) ([]byte, *zedWirePlan, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var providerRequest map[string]any
@@ -73,7 +73,7 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body []byte) ([]byte,
 		if err == nil {
 			switch provider {
 			case zedauth.ProviderAnthropic:
-				translatedRequest, err = finalizeZedAnthropicProviderRequest(translatedRequest, originalRequest)
+				translatedRequest, err = finalizeZedAnthropicProviderRequest(translatedRequest, originalRequest, originalAnthropicRequest)
 			case zedauth.ProviderGoogle:
 				translatedRequest, err = finalizeZedGoogleProviderRequest(translatedRequest, modelName)
 			}
@@ -281,7 +281,7 @@ func finalizeZedGoogleProviderRequest(body []byte, modelName string) ([]byte, er
 	return json.Marshal(request)
 }
 
-func finalizeZedAnthropicProviderRequest(body, originalRequest []byte) ([]byte, error) {
+func finalizeZedAnthropicProviderRequest(body, originalRequest, originalAnthropicRequest []byte) ([]byte, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil || request == nil {
 		return nil, errors.New("decode translated Anthropic request")
@@ -289,6 +289,8 @@ func finalizeZedAnthropicProviderRequest(body, originalRequest []byte) ([]byte, 
 	// Zed owns the /completions stream. Its native Anthropic provider_request
 	// does not carry the Anthropic HTTP transport's stream flag.
 	delete(request, "stream")
+	normalizeZedAnthropicContentBlocks(request)
+	restoreZedAnthropicCacheControls(request, originalAnthropicRequest)
 	var original map[string]any
 	if json.Unmarshal(originalRequest, &original) == nil && zedOutputBudget(original) == 0 {
 		// The shared converter defaults to 32000, but Zed's native request and
@@ -296,6 +298,82 @@ func finalizeZedAnthropicProviderRequest(body, originalRequest []byte) ([]byte, 
 		request["max_tokens"] = 8192
 	}
 	return json.Marshal(request)
+}
+
+func restoreZedAnthropicCacheControls(request map[string]any, originalRequest []byte) {
+	var original map[string]any
+	if len(originalRequest) == 0 || json.Unmarshal(originalRequest, &original) != nil {
+		return
+	}
+	copyCacheControl := func(target, source map[string]any) {
+		if cacheControl, exists := source["cache_control"]; exists {
+			target["cache_control"] = cacheControl
+		}
+	}
+	copyCacheControl(request, original)
+
+	originalSystem, _ := original["system"].([]any)
+	system, _ := request["system"].([]any)
+	for i := 0; i < len(originalSystem) && i < len(system); i++ {
+		source, sourceOK := originalSystem[i].(map[string]any)
+		target, targetOK := system[i].(map[string]any)
+		if sourceOK && targetOK {
+			copyCacheControl(target, source)
+		}
+	}
+
+	originalTools, _ := original["tools"].([]any)
+	toolCacheControls := make(map[string]any, len(originalTools))
+	for _, rawTool := range originalTools {
+		tool, ok := rawTool.(map[string]any)
+		name, _ := tool["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+		if cacheControl, exists := tool["cache_control"]; exists {
+			toolCacheControls[name] = cacheControl
+		}
+	}
+	tools, _ := request["tools"].([]any)
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		name, _ := tool["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+		if cacheControl, exists := toolCacheControls[name]; exists {
+			tool["cache_control"] = cacheControl
+		}
+	}
+}
+
+func normalizeZedAnthropicContentBlocks(request map[string]any) {
+	textBlocks := func(text string) []any {
+		return []any{map[string]any{"type": "text", "text": text}}
+	}
+	if system, ok := request["system"].(string); ok {
+		request["system"] = textBlocks(system)
+	}
+	messages, _ := request["messages"].([]any)
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, ok := message["content"].(string); ok {
+			message["content"] = textBlocks(content)
+		}
+		content, _ := message["content"].([]any)
+		for _, rawBlock := range content {
+			block, ok := rawBlock.(map[string]any)
+			if !ok || block["type"] != "tool_result" {
+				continue
+			}
+			if _, exists := block["is_error"]; !exists {
+				block["is_error"] = false
+			}
+		}
+	}
 }
 
 func zedMessage(role, text string) map[string]any {

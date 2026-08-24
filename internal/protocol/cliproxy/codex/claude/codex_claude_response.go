@@ -162,11 +162,14 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		output = append(output, stopCodexTextBlock(params)...)
 		template, _ = sjson.SetBytes(template, "delta.stop_reason", mapCodexStopReasonToClaude(codexStopReason(responseData), params.HasEmittedToolUse))
 		template = setClaudeStopSequence(template, "delta.stop_sequence", responseData)
-		inputTokens, outputTokens, cachedTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
+		inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
 		template, _ = sjson.SetBytes(template, "usage.input_tokens", inputTokens)
 		template, _ = sjson.SetBytes(template, "usage.output_tokens", outputTokens)
 		if cachedTokens > 0 {
 			template, _ = sjson.SetBytes(template, "usage.cache_read_input_tokens", cachedTokens)
+		}
+		if cacheCreationTokens > 0 {
+			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokens)
 		}
 		if reasoningTokens > 0 {
 			template, _ = sjson.SetBytes(template, "usage.thinking_tokens", reasoningTokens)
@@ -404,11 +407,14 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", responseData.Get("id").String())
 	out, _ = sjson.SetBytes(out, "model", responseData.Get("model").String())
-	inputTokens, outputTokens, cachedTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
+	inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
 	out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
 	out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
 	if cachedTokens > 0 {
 		out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", cachedTokens)
+	}
+	if cacheCreationTokens > 0 {
+		out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", cacheCreationTokens)
 	}
 	if reasoningTokens > 0 {
 		out, _ = sjson.SetBytes(out, "usage.thinking_tokens", reasoningTokens)
@@ -840,14 +846,19 @@ func resolveCodexClaudeToolUseName(originalRequestRawJSON []byte, name string) s
 	return name
 }
 
-func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cachedTokens, reasoningTokens int64) {
+func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens int64) {
 	if !usage.Exists() || usage.Type == gjson.Null {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, 0
 	}
 
 	inputTokens = usage.Get("input_tokens").Int()
 	outputTokens = usage.Get("output_tokens").Int()
 	cachedTokens = usage.Get("input_tokens_details.cached_tokens").Int()
+	cacheCreation := usage.Get("cache_creation_input_tokens")
+	if !cacheCreation.Exists() {
+		cacheCreation = usage.Get("input_tokens_details.cache_write_tokens")
+	}
+	cacheCreationTokens = cacheCreation.Int()
 	// Responses-style (xAI/Codex): output_tokens_details.reasoning_tokens.
 	// Chat Completions-style fallback: completion_tokens_details.reasoning_tokens.
 	reasoningTokens = usage.Get("output_tokens_details.reasoning_tokens").Int()
@@ -855,15 +866,16 @@ func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cache
 		reasoningTokens = usage.Get("completion_tokens_details.reasoning_tokens").Int()
 	}
 
-	if cachedTokens > 0 {
-		if inputTokens >= cachedTokens {
-			inputTokens -= cachedTokens
+	includedCacheTokens := cachedTokens + cacheCreationTokens
+	if includedCacheTokens > 0 {
+		if inputTokens >= includedCacheTokens {
+			inputTokens -= includedCacheTokens
 		} else {
 			inputTokens = 0
 		}
 	}
 
-	return inputTokens, outputTokens, cachedTokens, reasoningTokens
+	return inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens
 }
 
 // buildReverseMapFromClaudeOriginalShortToOriginal builds a map[short]original from original Claude request tools.

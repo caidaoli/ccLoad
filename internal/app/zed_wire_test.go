@@ -19,7 +19,7 @@ func newZedWireTestRegistry() *protocol.Registry {
 }
 
 func TestFinalizeZedResponsesBodyWrapsProviderRequest(t *testing.T) {
-	body, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), []byte(`{"model":"gpt-5.6-sol","input":"hello","stream":false}`))
+	body, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), []byte(`{"model":"gpt-5.6-sol","input":"hello","stream":false}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestFinalizeZedResponsesBodyWrapsProviderRequest(t *testing.T) {
 
 func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"custom","name":"exec"},{"type":"namespace","name":"collaboration"}]},{"role":"developer","content":"rules"},{"type":"reasoning","content":null}],"tools":[{"type":"function","name":"wait"}],"tool_choice":{"type":"function","name":"wait"}}`)
-	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +87,11 @@ func TestFinalizeZedResponsesBodySelectsNativeProvider(t *testing.T) {
 				if len(messages) != 1 {
 					t.Fatalf("Anthropic messages = %v", messages)
 				}
+				message, _ := messages[0].(map[string]any)
+				content, _ := message["content"].([]any)
+				if len(content) != 1 || content[0].(map[string]any)["type"] != "text" || content[0].(map[string]any)["text"] != "hello" {
+					t.Fatalf("Anthropic message content = %#v", message["content"])
+				}
 			},
 		},
 		{
@@ -109,6 +114,7 @@ func TestFinalizeZedResponsesBodySelectsNativeProvider(t *testing.T) {
 			body, plan, err := finalizeZedResponsesBody(
 				newZedWireTestRegistry(),
 				[]byte(`{"model":"`+test.model+`","input":"hello","stream":false}`),
+				nil,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -129,9 +135,48 @@ func TestFinalizeZedResponsesBodySelectsNativeProvider(t *testing.T) {
 	}
 }
 
+func TestFinalizeZedAnthropicProviderRequestNormalizesNativeFields(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","system":"rules","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"kept"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"},{"type":"tool_result","tool_use_id":"toolu_2","content":"failed","is_error":true}]}],"tools":[{"name":"lookup","description":"look up"}],"stream":true}`)
+	originalAnthropicRequest := []byte(`{"cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"rules","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"lookup","cache_control":{"type":"ephemeral","ttl":"1h"}}]}`)
+	finalized, err := finalizeZedAnthropicProviderRequest(body, []byte(`{"model":"claude-sonnet-4-6","max_output_tokens":64}`), originalAnthropicRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(finalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request["stream"] != nil {
+		t.Fatalf("stream must be removed: %#v", request["stream"])
+	}
+	system, _ := request["system"].([]any)
+	if len(system) != 1 || system[0].(map[string]any)["type"] != "text" || system[0].(map[string]any)["text"] != "rules" {
+		t.Fatalf("system = %#v", request["system"])
+	}
+	messages, _ := request["messages"].([]any)
+	firstContent, _ := messages[0].(map[string]any)["content"].([]any)
+	secondContent, _ := messages[1].(map[string]any)["content"].([]any)
+	if len(firstContent) != 1 || firstContent[0].(map[string]any)["text"] != "hello" ||
+		len(secondContent) != 1 || secondContent[0].(map[string]any)["text"] != "kept" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	toolResults, _ := messages[2].(map[string]any)["content"].([]any)
+	if len(toolResults) != 2 || toolResults[0].(map[string]any)["is_error"] != false || toolResults[1].(map[string]any)["is_error"] != true {
+		t.Fatalf("tool results = %#v", toolResults)
+	}
+	if request["cache_control"].(map[string]any)["type"] != "ephemeral" ||
+		system[0].(map[string]any)["cache_control"].(map[string]any)["ttl"] != "1h" {
+		t.Fatalf("request cache controls = %#v", request)
+	}
+	tools, _ := request["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["cache_control"].(map[string]any)["ttl"] != "1h" {
+		t.Fatalf("tool cache controls = %#v", tools)
+	}
+}
+
 func TestZedAnthropicWirePreservesProviderError(t *testing.T) {
 	registry := newZedWireTestRegistry()
-	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"claude-sonnet-5","input":"hello"}`))
+	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"claude-sonnet-5","input":"hello"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +204,7 @@ func TestZedAnthropicWirePreservesProviderError(t *testing.T) {
 
 func TestZedResponsesWireRebuildsHeadersAndUnwrapsEvents(t *testing.T) {
 	registry := newZedWireTestRegistry()
-	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"gpt-5.6-sol","input":"hello"}`))
+	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"gpt-5.6-sol","input":"hello"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +279,7 @@ func TestZedResponsesWireTranslatesNativeProviderEvents(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			registry := newZedWireTestRegistry()
-			_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"`+test.model+`","input":"hello"}`))
+			_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"`+test.model+`","input":"hello"}`), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

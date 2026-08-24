@@ -197,7 +197,11 @@ func (s *Server) buildProxyRequest(
 		}
 	}
 	if isZedResponsesRequest(cfg, upstreamProtocol) {
-		body, reqCtx.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, body)
+		var originalAnthropicRequest []byte
+		if reqCtx.clientProtocol == protocol.Anthropic {
+			originalAnthropicRequest = reqCtx.originalBody
+		}
+		body, reqCtx.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, body, originalAnthropicRequest)
 		if err != nil {
 			return nil, err
 		}

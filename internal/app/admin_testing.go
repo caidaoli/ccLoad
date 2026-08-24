@@ -1905,7 +1905,11 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		ensureCodexSessionHeader(requestPlan.headers, sessionID)
 	}
 	if cfgForBuild.UsesZedOAuth() {
-		requestPlan.requestBody, requestPlan.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, requestPlan.requestBody)
+		var originalAnthropicRequest []byte
+		if protocol.Protocol(requestPlan.clientProtocol) == protocol.Anthropic {
+			originalAnthropicRequest = requestPlan.clientBody
+		}
+		requestPlan.requestBody, requestPlan.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, requestPlan.requestBody, originalAnthropicRequest)
 		if err != nil {
 			return nil, nil, fmt.Errorf("finalize Zed test request body: %w", err)
 		}

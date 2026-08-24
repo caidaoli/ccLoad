@@ -98,6 +98,10 @@ documented adaptations:
   `prompt_tokens_details.cached_creation_tokens` in both streaming and
   non-streaming responses, and does not expose Codex encrypted reasoning
   carriers; readable reasoning summaries remain available as `reasoning_content`.
+- Codex-to-Claude maps both top-level `cache_creation_input_tokens` and
+  `input_tokens_details.cache_write_tokens` to Anthropic
+  `cache_creation_input_tokens`, and subtracts cache reads and writes from the
+  reported uncached input count.
 - Codex-to-Gemini requests keep the caller's `stream` flag and do not force
   `reasoning.summary`.
 - OpenAI Chat Completions-to-Responses keeps ccLoad's custom-tool namespace and

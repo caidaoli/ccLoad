@@ -561,6 +561,7 @@ func TestConvertCodexResponseToClaudeNonStream_UsageMapsReasoningTokensToThinkin
 			"usage":{
 				"input_tokens":17273,
 				"input_tokens_details":{"cached_tokens":3456},
+				"cache_creation_input_tokens":789,
 				"output_tokens":2391,
 				"output_tokens_details":{"reasoning_tokens":1119},
 				"total_tokens":19664
@@ -571,14 +572,17 @@ func TestConvertCodexResponseToClaudeNonStream_UsageMapsReasoningTokensToThinkin
 
 	out := ConvertCodexResponseToClaudeNonStream(context.Background(), "", []byte(`{"messages":[]}`), nil, response, nil)
 	usage := gjson.GetBytes(out, "usage")
-	if got := usage.Get("input_tokens").Int(); got != 17273-3456 {
-		t.Fatalf("input_tokens = %d, want %d (total minus cached)", got, 17273-3456)
+	if got := usage.Get("input_tokens").Int(); got != 17273-3456-789 {
+		t.Fatalf("input_tokens = %d, want %d (total minus cached and cache creation)", got, 17273-3456-789)
 	}
 	if got := usage.Get("output_tokens").Int(); got != 2391 {
 		t.Fatalf("output_tokens = %d, want 2391", got)
 	}
 	if got := usage.Get("cache_read_input_tokens").Int(); got != 3456 {
 		t.Fatalf("cache_read_input_tokens = %d, want 3456", got)
+	}
+	if got := usage.Get("cache_creation_input_tokens").Int(); got != 789 {
+		t.Fatalf("cache_creation_input_tokens = %d, want 789", got)
 	}
 	if got := usage.Get("thinking_tokens").Int(); got != 1119 {
 		t.Fatalf("thinking_tokens = %d, want 1119; usage=%s", got, usage.Raw)
@@ -591,7 +595,7 @@ func TestConvertCodexResponseToClaude_StreamUsageMapsReasoningTokensToThinkingTo
 	chunks := [][]byte{
 		[]byte(`data: {"type":"response.created","response":{"id":"resp_xai","model":"grok-4.5"}}`),
 		[]byte(`data: {"type":"response.output_text.delta","delta":"hi"}`),
-		[]byte(`data: {"type":"response.completed","response":{"id":"resp_xai","model":"grok-4.5","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":20},"output_tokens":50,"output_tokens_details":{"reasoning_tokens":30},"total_tokens":150}}}`),
+		[]byte(`data: {"type":"response.completed","response":{"id":"resp_xai","model":"grok-4.5","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"output_tokens":50,"output_tokens_details":{"reasoning_tokens":30},"total_tokens":150}}}`),
 	}
 
 	var outputs [][]byte
@@ -604,14 +608,17 @@ func TestConvertCodexResponseToClaude_StreamUsageMapsReasoningTokensToThinkingTo
 		t.Fatal("expected message_delta with usage")
 	}
 	usage := delta.Get("usage")
-	if got := usage.Get("input_tokens").Int(); got != 80 {
-		t.Fatalf("input_tokens = %d, want 80", got)
+	if got := usage.Get("input_tokens").Int(); got != 70 {
+		t.Fatalf("input_tokens = %d, want 70", got)
 	}
 	if got := usage.Get("output_tokens").Int(); got != 50 {
 		t.Fatalf("output_tokens = %d, want 50", got)
 	}
 	if got := usage.Get("cache_read_input_tokens").Int(); got != 20 {
 		t.Fatalf("cache_read_input_tokens = %d, want 20", got)
+	}
+	if got := usage.Get("cache_creation_input_tokens").Int(); got != 10 {
+		t.Fatalf("cache_creation_input_tokens = %d, want 10", got)
 	}
 	if got := usage.Get("thinking_tokens").Int(); got != 30 {
 		t.Fatalf("thinking_tokens = %d, want 30; usage=%s", got, usage.Raw)
