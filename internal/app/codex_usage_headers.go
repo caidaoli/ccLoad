@@ -234,7 +234,7 @@ func appendCodexPassiveEventWindow(
 	scope, limitName, kind string,
 	sampledAt time.Time,
 ) []codexauth.PassiveUsageWindow {
-	if window == nil || window.UsedPercent == nil {
+	if window == nil || window.UsedPercent == nil || !validOAuthUsedPercent(*window.UsedPercent) {
 		return windows
 	}
 	windowSeconds := window.WindowMinutes * 60
@@ -255,7 +255,7 @@ func appendCodexPassiveEventWindow(
 		Scope:              strings.ToLower(strings.TrimSpace(scope)),
 		LimitName:          strings.TrimSpace(limitName),
 		Kind:               kind,
-		UsedPercent:        min(max(*window.UsedPercent, 0), 100),
+		UsedPercent:        *window.UsedPercent,
 		LimitWindowSeconds: windowSeconds,
 		ResetAt:            max(resetAt, 0),
 		SampledAt:          sampledAt.UTC().Format(time.RFC3339Nano),
@@ -324,7 +324,7 @@ func appendCodexPassiveHeaderWindow(
 ) []codexauth.PassiveUsageWindow {
 	prefix := base + "-" + kind + "-"
 	usedPercent, ok := parseCodexHeaderFloat(headers.Get(prefix + "used-percent"))
-	if !ok {
+	if !ok || !validOAuthUsedPercent(usedPercent) {
 		return windows
 	}
 	windowMinutes, _ := parseCodexHeaderInt(headers.Get(prefix + "window-minutes"))
@@ -344,7 +344,7 @@ func appendCodexPassiveHeaderWindow(
 		Scope:              strings.ToLower(strings.TrimSpace(scope)),
 		LimitName:          strings.TrimSpace(limitName),
 		Kind:               kind,
-		UsedPercent:        min(max(usedPercent, 0), 100),
+		UsedPercent:        usedPercent,
 		LimitWindowSeconds: windowMinutes * 60,
 		ResetAt:            max(resetAt, 0),
 		SampledAt:          sampledAt.UTC().Format(time.RFC3339Nano),
@@ -388,7 +388,11 @@ func codexPassiveUsageSummary(credential *codexauth.Credential) *oauthUsageSumma
 		Windows:  make([]oauthUsageWindow, 0, len(credential.PassiveUsage.Windows)),
 	}
 	for _, window := range credential.PassiveUsage.Windows {
-		usedPercent := min(max(window.UsedPercent, 0), 100)
+		if !validOAuthUsedPercent(window.UsedPercent) {
+			continue
+		}
+		sampledAt, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(window.SampledAt))
+		usedPercent := window.UsedPercent
 		summary.Windows = append(summary.Windows, oauthUsageWindow{
 			LimitName:          window.LimitName,
 			Kind:               window.Kind,
@@ -396,7 +400,11 @@ func codexPassiveUsageSummary(credential *codexauth.Credential) *oauthUsageSumma
 			RemainingPercent:   100 - usedPercent,
 			LimitWindowSeconds: window.LimitWindowSeconds,
 			ResetAt:            window.ResetAt,
+			SampledAt:          sampledAt,
 		})
+	}
+	if len(summary.Windows) == 0 {
+		return nil
 	}
 	return summary
 }

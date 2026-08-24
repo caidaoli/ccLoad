@@ -355,35 +355,34 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 			return false, fmt.Errorf("parse Anthropic passive usage: %w", err)
 		}
 		updateSampledAt, updateSampledAtErr := time.Parse(time.RFC3339, update.SampledAt)
-		if current.PassiveUsage != nil && current.PassiveUsage.SampledAt != "" {
-			currentSampledAt, currentErr := time.Parse(time.RFC3339, current.PassiveUsage.SampledAt)
-			if currentErr == nil && updateSampledAtErr == nil && !updateSampledAt.After(currentSampledAt) {
-				m.cache(currentCfg.ID, current)
-				return false, nil
-			}
-		}
+		stampAnthropicPassiveWindow(update.FiveHour, update.SampledAt)
+		stampAnthropicPassiveWindow(update.SevenDay, update.SampledAt)
+		stampAnthropicPassiveWindow(update.SevenDayOverageIncluded, update.SampledAt)
 		updatedCredential := *current
 		usage := anthropicauth.ClonePassiveUsage(current.PassiveUsage)
 		if usage == nil {
 			usage = &anthropicauth.PassiveUsage{}
 		}
-		if update.FiveHour != nil && update.FiveHour.ResetAt != nil && usage.FiveHour != nil &&
-			usage.FiveHour.ResetAt != nil && *update.FiveHour.ResetAt != *usage.FiveHour.ResetAt {
-			currentResetAt := time.Unix(*usage.FiveHour.ResetAt, 0)
-			if updateSampledAtErr == nil && !currentResetAt.After(updateSampledAt) {
-				usage = &anthropicauth.PassiveUsage{}
+		migrateAnthropicPassiveWindowSampleTimes(usage)
+		currentSampledAt := usage.SampledAt
+		var changed bool
+		usage.FiveHour, changed = mergeAnthropicPassiveWindow(usage.FiveHour, update.FiveHour, currentSampledAt)
+		usageChanged := changed
+		usage.SevenDay, changed = mergeAnthropicPassiveWindow(usage.SevenDay, update.SevenDay, currentSampledAt)
+		usageChanged = usageChanged || changed
+		usage.SevenDayOverageIncluded, changed = mergeAnthropicPassiveWindow(
+			usage.SevenDayOverageIncluded, update.SevenDayOverageIncluded, currentSampledAt,
+		)
+		usageChanged = usageChanged || changed
+		if !usageChanged {
+			m.cache(currentCfg.ID, current)
+			return false, nil
+		}
+		if updateSampledAtErr == nil {
+			if currentAt, err := time.Parse(time.RFC3339, currentSampledAt); err != nil || updateSampledAt.After(currentAt) {
+				usage.SampledAt = updateSampledAt.UTC().Format(time.RFC3339Nano)
 			}
 		}
-		if update.FiveHour != nil {
-			usage.FiveHour = mergeAnthropicPassiveWindow(usage.FiveHour, update.FiveHour)
-		}
-		if update.SevenDay != nil {
-			usage.SevenDay = mergeAnthropicPassiveWindow(usage.SevenDay, update.SevenDay)
-		}
-		if update.SevenDayOverageIncluded != nil {
-			usage.SevenDayOverageIncluded = mergeAnthropicPassiveWindow(usage.SevenDayOverageIncluded, update.SevenDayOverageIncluded)
-		}
-		usage.SampledAt = strings.TrimSpace(update.SampledAt)
 		updatedCredential.PassiveUsage = usage
 		updatedCredential.QuotaCostUsage = reconcileOAuthQuotaCostUsage(
 			current.QuotaCostUsage, anthropicPassiveUsageSummary(&updatedCredential), updateSampledAt,
@@ -409,7 +408,30 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 	}
 }
 
-func mergeAnthropicPassiveWindow(current, update *anthropicauth.PassiveUsageWindow) *anthropicauth.PassiveUsageWindow {
+func mergeAnthropicPassiveWindow(
+	current, update *anthropicauth.PassiveUsageWindow,
+	currentFallbackSampledAt string,
+) (*anthropicauth.PassiveUsageWindow, bool) {
+	if update == nil {
+		return current, false
+	}
+	updateSampledAt, updateSampledAtErr := time.Parse(time.RFC3339, strings.TrimSpace(update.SampledAt))
+	currentSampledAt := ""
+	if current != nil {
+		currentSampledAt = strings.TrimSpace(current.SampledAt)
+	}
+	if currentSampledAt == "" {
+		currentSampledAt = strings.TrimSpace(currentFallbackSampledAt)
+	}
+	if sampledAt, err := time.Parse(time.RFC3339, currentSampledAt); err == nil &&
+		(updateSampledAtErr != nil || !updateSampledAt.After(sampledAt)) {
+		return current, false
+	}
+	if current != nil && update.ResetAt != nil && current.ResetAt != nil && *update.ResetAt != *current.ResetAt &&
+		updateSampledAtErr == nil && !time.Unix(*current.ResetAt, 0).After(updateSampledAt) {
+		// 这个槽位已自然进入新周期，只丢它自己的旧利用率，不能清掉其他周期窗口。
+		current = nil
+	}
 	merged := &anthropicauth.PassiveUsageWindow{}
 	if current != nil {
 		*merged = *current
@@ -422,5 +444,30 @@ func mergeAnthropicPassiveWindow(current, update *anthropicauth.PassiveUsageWind
 		value := *update.ResetAt
 		merged.ResetAt = &value
 	}
-	return merged
+	if update.Utilization != nil {
+		merged.SampledAt = strings.TrimSpace(update.SampledAt)
+		merged.UtilizationStale = false
+	} else {
+		// reset-only 样本可以更新边界，但没有资格把保留的旧利用率伪装成新样本。
+		merged.SampledAt = ""
+		merged.UtilizationStale = true
+	}
+	return merged, true
+}
+
+func migrateAnthropicPassiveWindowSampleTimes(usage *anthropicauth.PassiveUsage) {
+	if usage == nil {
+		return
+	}
+	fallback := strings.TrimSpace(usage.SampledAt)
+	if fallback == "" {
+		return
+	}
+	for _, window := range []*anthropicauth.PassiveUsageWindow{
+		usage.FiveHour, usage.SevenDay, usage.SevenDayOverageIncluded,
+	} {
+		if window != nil && !window.UtilizationStale && strings.TrimSpace(window.SampledAt) == "" {
+			window.SampledAt = fallback
+		}
+	}
 }

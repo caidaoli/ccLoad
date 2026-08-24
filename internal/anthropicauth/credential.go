@@ -57,8 +57,10 @@ type PassiveUsage struct {
 
 // PassiveUsageWindow contains one rate-limit window sampled from response headers.
 type PassiveUsageWindow struct {
-	Utilization *float64 `json:"utilization,omitempty"`
-	ResetAt     *int64   `json:"reset_at,omitempty"`
+	Utilization      *float64 `json:"utilization,omitempty"`
+	ResetAt          *int64   `json:"reset_at,omitempty"`
+	SampledAt        string   `json:"sampled_at,omitempty"`
+	UtilizationStale bool     `json:"utilization_stale,omitempty"`
 }
 
 // ParseCredential accepts both ccLoad's canonical shape and sub2api's mixed

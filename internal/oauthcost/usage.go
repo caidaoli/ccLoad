@@ -39,22 +39,26 @@ type Usage struct {
 
 // Window is one persisted quota period and its accumulated standard cost.
 type Window struct {
-	Key                  string `json:"key"`
-	Family               string `json:"family,omitempty"`
-	WindowSeconds        int64  `json:"window_seconds"`
-	StartedAt            int64  `json:"started_at"`
-	ResetAt              int64  `json:"reset_at"`
-	CountFromAt          int64  `json:"count_from_at,omitempty"`
-	ResetDay             int    `json:"reset_day,omitempty"`
-	StandardCostMicroUSD int64  `json:"standard_cost_microusd"`
+	Key                        string   `json:"key"`
+	Family                     string   `json:"family,omitempty"`
+	WindowSeconds              int64    `json:"window_seconds"`
+	StartedAt                  int64    `json:"started_at"`
+	ResetAt                    int64    `json:"reset_at"`
+	CountFromAt                int64    `json:"count_from_at,omitempty"`
+	ResetDay                   int      `json:"reset_day,omitempty"`
+	SampledUpstreamUsedPercent *float64 `json:"sampled_upstream_used_percent,omitempty"`
+	SampledUpstreamAtUnixNano  int64    `json:"sampled_upstream_at_unix_nano,omitempty"`
+	StandardCostMicroUSD       int64    `json:"standard_cost_microusd"`
 }
 
-// Sample 是一次上游额度采样中的单个窗口边界。
+// Sample 是一次上游额度采样中的单个窗口状态。
 type Sample struct {
 	Key           string
 	Family        string
 	WindowSeconds int64
 	ResetAt       time.Time
+	UsedPercent   *float64
+	SampledAt     time.Time
 }
 
 // Key 规范化上游窗口标识，限定为 "limit_name|kind" 形式。
@@ -140,6 +144,15 @@ func cloneWindow(window *Window) *Window {
 		return nil
 	}
 	clone := *window
+	clone.SampledUpstreamUsedPercent = cloneFloat64(window.SampledUpstreamUsedPercent)
+	return &clone
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
 	return &clone
 }
 
@@ -166,8 +179,13 @@ func Validate(usage *Usage) error {
 		if window.StartedAt <= 0 || window.ResetAt <= window.StartedAt {
 			return errors.New("OAuth quota cost window is invalid")
 		}
-		if window.CountFromAt < 0 || window.ResetDay < 0 || window.ResetDay > 31 {
+		if window.CountFromAt < 0 || window.ResetDay < 0 || window.ResetDay > 31 ||
+			window.SampledUpstreamAtUnixNano < 0 {
 			return errors.New("OAuth quota cost window boundary is invalid")
+		}
+		if usedPercent := window.SampledUpstreamUsedPercent; usedPercent != nil &&
+			(math.IsNaN(*usedPercent) || math.IsInf(*usedPercent, 0) || *usedPercent < 0 || *usedPercent > 100) {
+			return errors.New("OAuth quota sampled usage is invalid")
 		}
 		if window.StandardCostMicroUSD < 0 {
 			return errors.New("OAuth quota standard cost cannot be negative")
@@ -193,6 +211,12 @@ func Find(usage *Usage, key string) *Window {
 // boundaries. A changed boundary starts at zero unless a manual count cutoff
 // still belongs to the sampled period. 采样里不再出现的窗口直接丢弃。
 func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
+	accountResetAt := sampledUpstreamResetAt(current, samples, observedAt)
+	if !accountResetAt.IsZero() {
+		// 支持使用率采样的 OAuth 上游把 reset 作为账户级事件：任一额度窗口确认
+		// 回退时，账户全部窗口必须从同一个采样点重新累计。
+		current = resetUpstreamAccount(current, accountResetAt)
+	}
 	next := &Usage{}
 	seen := make(map[string]struct{}, len(samples))
 	for _, sample := range samples {
@@ -208,8 +232,21 @@ func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 		}
 		seen[key] = struct{}{}
 		sample.Key = key
-		if window := reconcileWindow(Find(current, key), sample, observedAt); window != nil {
+		sample.UsedPercent = normalizedUsedPercent(sample.UsedPercent)
+		if window := reconcileWindow(Find(current, key), sample, observedAt, accountResetAt); window != nil {
 			next.Windows = append(next.Windows, window)
+		}
+	}
+	if !accountResetAt.IsZero() {
+		// 重置批次可能只更新一个窗口。没出现在本批样本里的槽位仍属于这个账户，
+		// 必须保留它的已清零状态，不能把槽位本身删掉。
+		for _, window := range current.Windows {
+			if window == nil {
+				continue
+			}
+			if _, ok := seen[window.Key]; !ok {
+				next.Windows = append(next.Windows, cloneWindow(window))
+			}
 		}
 	}
 	// 采样里一个有效窗口都没有时不销毁已累计数据——拿不到边界是缺信息，
@@ -220,24 +257,91 @@ func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 	return next
 }
 
-func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Window {
+func sampledUpstreamResetAt(current *Usage, samples []Sample, observedAt time.Time) time.Time {
+	seen := make(map[string]struct{}, len(samples))
+	resetAt := time.Time{}
+	for _, sample := range samples {
+		key := strings.TrimSpace(sample.Key)
+		if key == "" || sample.WindowSeconds <= 0 || sample.ResetAt.IsZero() || !validFamily(sample.Family) {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		usedPercent := normalizedUsedPercent(sample.UsedPercent)
+		window := cloneWindow(Find(current, key))
+		if usedPercent == nil || window == nil || window.WindowSeconds != sample.WindowSeconds {
+			continue
+		}
+		advanceWindow(window, observedAt)
+		sampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
+		sampledAtUnixNano := sampleTimeUnixNano(sampledAt)
+		if window.SampledUpstreamAtUnixNano > 0 && sampledAtUnixNano <= window.SampledUpstreamAtUnixNano {
+			continue
+		}
+		if upstreamUsageRolledBack(window.SampledUpstreamUsedPercent, usedPercent) &&
+			(resetAt.IsZero() || sampledAt.Before(resetAt)) {
+			resetAt = sampledAt
+		}
+	}
+	return resetAt
+}
+
+func reconcileWindow(current *Window, sample Sample, observedAt, accountResetAt time.Time) *Window {
 	resetAt := sample.ResetAt.UTC()
 	next := newWindow(sample, observedAt, 0)
 	if isMonthlyWindow(sample.WindowSeconds) && current != nil && current.ResetDay > resetAt.Day() &&
 		resetAt.Day() == daysInMonth(resetAt.Year(), resetAt.Month(), resetAt.Location()) {
 		next = newWindow(sample, observedAt, current.ResetDay)
 	}
-	if next == nil || current == nil || current.WindowSeconds != sample.WindowSeconds {
+	if next == nil {
+		return nil
+	}
+	usageSampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
+	if !accountResetAt.IsZero() {
+		if usageSampledAt.Before(accountResetAt) {
+			// 同一批合并结果可能夹带另一个槽位的旧样本。账号已在 accountResetAt
+			// 清零，旧样本既不能恢复旧边界，也不能重新建立旧百分比基线。
+			return cloneWindow(current)
+		}
+		// resetUpstreamAccount 已统一清空所有槽位；新样本只负责落定各自边界。
+		next.CountFromAt = accountResetAt.Unix()
+		return next
+	}
+	if current == nil || current.WindowSeconds != sample.WindowSeconds {
 		return next
 	}
 	current = cloneWindow(current)
 	advanceWindow(current, observedAt)
+	sampledAtUnixNano := sampleTimeUnixNano(usageSampledAt)
+	usageSampleIsNewer := sample.UsedPercent != nil &&
+		(current.SampledUpstreamAtUnixNano == 0 || sampledAtUnixNano > current.SampledUpstreamAtUnixNano ||
+			(current.SampledUpstreamUsedPercent == nil && sampledAtUnixNano == current.SampledUpstreamAtUnixNano))
+	usageSampleIsStale := sample.UsedPercent != nil && current.SampledUpstreamAtUnixNano > 0 &&
+		(sampledAtUnixNano < current.SampledUpstreamAtUnixNano ||
+			(sampledAtUnixNano == current.SampledUpstreamAtUnixNano && current.SampledUpstreamUsedPercent != nil))
+	if usageSampleIsStale {
+		// 主动刷新与被动队列会并发更新同一槽位。旧百分比样本的 reset_at 同样是旧的，
+		// 必须整条丢弃；只忽略百分比仍可能让旧边界清空新周期成本。
+		return current
+	}
+	if usageSampleIsNewer && upstreamUsageRolledBack(current.SampledUpstreamUsedPercent, sample.UsedPercent) {
+		// 上游可以在原 reset_at 到期前直接恢复额度。使用率在同一额度周期内只会
+		// 单调增加；一旦回退，立即按本次采样切断旧成本，不能再用 reset_at 的位移猜测。
+		next.CountFromAt = usageSampledAt.Unix()
+		return next
+	}
 	if sameQuotaPeriod(current, next) {
 		// 边界一经确立就锚住，只更新采样权威的模型族：上游同一个周期会用两种精度
 		// 表达 reset 时间（Codex 响应头给绝对 reset-at，SSE rate_limits 事件只给
 		// resets_in_seconds，换算成 sampledAt+n 每次都不同），逐秒比较必然把同一
 		// 周期判成新周期并清空已累计成本。
 		current.Family = next.Family
+		if usageSampleIsNewer {
+			current.SampledUpstreamUsedPercent = cloneFloat64(sample.UsedPercent)
+			current.SampledUpstreamAtUnixNano = sampledAtUnixNano
+		}
 		return current
 	}
 	if current.CountFromAt > 0 && current.CountFromAt < next.ResetAt && observedAt.Before(time.Unix(next.ResetAt, 0)) {
@@ -245,6 +349,25 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		next.CountFromAt = current.CountFromAt
 	}
 	return next
+}
+
+func normalizedUsedPercent(usedPercent *float64) *float64 {
+	if usedPercent == nil || math.IsNaN(*usedPercent) || math.IsInf(*usedPercent, 0) ||
+		*usedPercent < 0 || *usedPercent > 100 {
+		return nil
+	}
+	return cloneFloat64(usedPercent)
+}
+
+func upstreamUsageRolledBack(previous, current *float64) bool {
+	return previous != nil && current != nil && *current < *previous
+}
+
+func sampleTimeUnixNano(sampledAt time.Time) int64 {
+	if sampledAt.IsZero() {
+		return 0
+	}
+	return sampledAt.UnixNano()
 }
 
 // sameQuotaPeriod 判断两次采样是否落在同一个上游额度周期。真正的周期滚动会把
@@ -264,10 +387,12 @@ func newWindow(sample Sample, observedAt time.Time, resetDay int) *Window {
 	}
 	resetAt := sample.ResetAt.UTC()
 	window := &Window{
-		Key:           sample.Key,
-		Family:        sample.Family,
-		WindowSeconds: sample.WindowSeconds,
-		ResetAt:       resetAt.Unix(),
+		Key:                        sample.Key,
+		Family:                     sample.Family,
+		WindowSeconds:              sample.WindowSeconds,
+		ResetAt:                    resetAt.Unix(),
+		SampledUpstreamUsedPercent: cloneFloat64(sample.UsedPercent),
+		SampledUpstreamAtUnixNano:  sampleTimeUnixNano(firstNonZeroTime(sample.SampledAt, observedAt)),
 	}
 	if isMonthlyWindow(window.WindowSeconds) {
 		if resetDay <= 0 {
@@ -278,6 +403,13 @@ func newWindow(sample Sample, observedAt time.Time, resetDay int) *Window {
 	window.StartedAt = periodStart(window, resetAt).Unix()
 	advanceWindow(window, observedAt)
 	return window
+}
+
+func firstNonZeroTime(primary, fallback time.Time) time.Time {
+	if !primary.IsZero() {
+		return primary
+	}
+	return fallback
 }
 
 // Reset starts new local counters immediately after an upstream manual reset.
@@ -295,7 +427,22 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		}
 		advanceWindow(window, resetAt)
 		window.CountFromAt = resetAt.Unix()
+		window.SampledUpstreamUsedPercent = nil
+		window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(resetAt)
 		window.StandardCostMicroUSD = costByFamily[window.Family]
+	}
+	return next
+}
+
+func resetUpstreamAccount(current *Usage, resetAt time.Time) *Usage {
+	next := Reset(current, resetAt, nil)
+	resetAt = resetAt.UTC()
+	for _, window := range next.Windows {
+		if window == nil {
+			continue
+		}
+		window.StartedAt = resetAt.Unix()
+		window.ResetAt = resetAt.Add(time.Duration(window.WindowSeconds) * time.Second).Unix()
 	}
 	return next
 }
@@ -353,6 +500,8 @@ func advanceWindow(window *Window, at time.Time) {
 	if window.CountFromAt < window.StartedAt {
 		window.CountFromAt = 0
 	}
+	window.SampledUpstreamUsedPercent = nil
+	window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(time.Unix(window.StartedAt, 0).UTC())
 	window.StandardCostMicroUSD = 0
 }
 

@@ -22,20 +22,26 @@ const (
 	weeklyWindowSeconds     = 7 * 24 * 60 * 60
 )
 
-// SnapshotWindow 是持久化额度采样里的单个上游窗口。
+// SnapshotWindow 是持久化额度采样里的单个上游窗口。UsedPercent 用于识别
+// 不依赖 reset_at 的上游提前重置；旧快照缺失该字段时只建立边界，不猜重置。
 type SnapshotWindow struct {
-	LimitName          string `json:"limit_name"`
-	Kind               string `json:"kind"`
-	LimitWindowSeconds int64  `json:"limit_window_seconds"`
-	ResetAt            int64  `json:"reset_at"`
+	LimitName          string    `json:"limit_name"`
+	Kind               string    `json:"kind"`
+	UsedPercent        *float64  `json:"used_percent,omitempty"`
+	LimitWindowSeconds int64     `json:"limit_window_seconds"`
+	ResetAt            int64     `json:"reset_at"`
+	SampledAt          time.Time `json:"-"`
 }
 
 // SnapshotBilling 承载 xAI 独有的周/月额度边界。
 type SnapshotBilling struct {
-	WeeklyPresent  bool   `json:"weekly_present"`
-	WeeklyResetAt  string `json:"weekly_reset_at,omitempty"`
-	MonthlyPresent bool   `json:"monthly_present"`
-	MonthlyResetAt string `json:"monthly_reset_at,omitempty"`
+	WeeklyPresent     bool     `json:"weekly_present"`
+	WeeklyUsedPercent *float64 `json:"weekly_usage_percent,omitempty"`
+	WeeklyResetAt     string   `json:"weekly_reset_at,omitempty"`
+	MonthlyPresent    bool     `json:"monthly_present"`
+	MonthlyLimitCents *float64 `json:"monthly_limit_cents,omitempty"`
+	MonthlyUsedCents  *float64 `json:"included_used_cents,omitempty"`
+	MonthlyResetAt    string   `json:"monthly_reset_at,omitempty"`
 }
 
 // SnapshotSummary 是重建窗口边界所需的采样字段子集。
@@ -64,12 +70,17 @@ func (s *SnapshotSummary) Samples() []Sample {
 		if key == "" || window.ResetAt <= 0 || window.LimitWindowSeconds <= 0 {
 			continue
 		}
-		samples = append(samples, Sample{
+		sample := Sample{
 			Key:           key,
 			Family:        WindowFamily(s.Provider, window.LimitName, window.Kind),
 			WindowSeconds: window.LimitWindowSeconds,
 			ResetAt:       time.Unix(window.ResetAt, 0).UTC(),
-		})
+		}
+		if supportsSampledUpstreamReset(s.Provider) {
+			sample.UsedPercent = cloneFloat64(window.UsedPercent)
+			sample.SampledAt = window.SampledAt
+		}
+		samples = append(samples, sample)
 	}
 	if s.XAIBilling == nil {
 		return samples
@@ -80,6 +91,7 @@ func (s *SnapshotSummary) Samples() []Sample {
 				Key:           Key(xaiWindowLimitName, "weekly"),
 				WindowSeconds: weeklyWindowSeconds,
 				ResetAt:       resetAt,
+				UsedPercent:   cloneFloat64(s.XAIBilling.WeeklyUsedPercent),
 			})
 		}
 	}
@@ -89,10 +101,28 @@ func (s *SnapshotSummary) Samples() []Sample {
 				Key:           Key(xaiWindowLimitName, "monthly"),
 				WindowSeconds: xaiMonthlyWindowSeconds,
 				ResetAt:       resetAt,
+				UsedPercent:   percentOf(s.XAIBilling.MonthlyUsedCents, s.XAIBilling.MonthlyLimitCents),
 			})
 		}
 	}
 	return samples
+}
+
+func supportsSampledUpstreamReset(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case ProviderCodex, ProviderAnthropic, ProviderAntigravity, ProviderXAI:
+		return true
+	default:
+		return false
+	}
+}
+
+func percentOf(used, limit *float64) *float64 {
+	if used == nil || limit == nil || *limit <= 0 {
+		return nil
+	}
+	value := *used * 100 / *limit
+	return &value
 }
 
 // WindowFamily 把 provider 的窗口标识映射到模型族：只覆盖部分模型的

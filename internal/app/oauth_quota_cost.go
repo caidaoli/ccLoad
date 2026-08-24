@@ -159,26 +159,35 @@ func oauthQuotaSamples(summary *oauthUsageSummary) []oauthcost.Sample {
 }
 
 // oauthQuotaSnapshotSummary 把内存里的采样摘要投影成 oauthcost 的快照形状，
-// 只保留重建窗口边界所需的字段。
+// 只保留重建窗口和识别上游提前重置所需的字段。
 func oauthQuotaSnapshotSummary(summary *oauthUsageSummary) oauthcost.SnapshotSummary {
 	snapshot := oauthcost.SnapshotSummary{Provider: summary.Provider}
 	if len(summary.Windows) > 0 {
 		snapshot.Windows = make([]oauthcost.SnapshotWindow, 0, len(summary.Windows))
 		for _, window := range summary.Windows {
-			snapshot.Windows = append(snapshot.Windows, oauthcost.SnapshotWindow{
+			snapshotWindow := oauthcost.SnapshotWindow{
 				LimitName:          window.LimitName,
 				Kind:               window.Kind,
 				LimitWindowSeconds: window.LimitWindowSeconds,
 				ResetAt:            window.ResetAt,
-			})
+			}
+			if !window.SampledAt.IsZero() {
+				usedPercent := window.UsedPercent
+				snapshotWindow.UsedPercent = &usedPercent
+				snapshotWindow.SampledAt = window.SampledAt
+			}
+			snapshot.Windows = append(snapshot.Windows, snapshotWindow)
 		}
 	}
 	if summary.XAIBilling != nil {
 		snapshot.XAIBilling = &oauthcost.SnapshotBilling{
-			WeeklyPresent:  summary.XAIBilling.WeeklyPresent,
-			WeeklyResetAt:  summary.XAIBilling.WeeklyResetAt,
-			MonthlyPresent: summary.XAIBilling.MonthlyPresent,
-			MonthlyResetAt: summary.XAIBilling.MonthlyResetAt,
+			WeeklyPresent:     summary.XAIBilling.WeeklyPresent,
+			WeeklyUsedPercent: summary.XAIBilling.WeeklyUsagePercent,
+			WeeklyResetAt:     summary.XAIBilling.WeeklyResetAt,
+			MonthlyPresent:    summary.XAIBilling.MonthlyPresent,
+			MonthlyLimitCents: summary.XAIBilling.MonthlyLimitCents,
+			MonthlyUsedCents:  summary.XAIBilling.IncludedUsedCents,
+			MonthlyResetAt:    summary.XAIBilling.MonthlyResetAt,
 		}
 	}
 	return snapshot

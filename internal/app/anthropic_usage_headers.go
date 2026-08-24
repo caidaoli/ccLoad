@@ -55,13 +55,23 @@ func sampleAnthropicPassiveUsage(headers http.Header, sampledAt time.Time) (anth
 		return anthropicPassiveUsageUpdate{}, false
 	}
 	update.SampledAt = sampledAt.UTC().Format(time.RFC3339Nano)
+	stampAnthropicPassiveWindow(update.FiveHour, update.SampledAt)
+	stampAnthropicPassiveWindow(update.SevenDay, update.SampledAt)
+	stampAnthropicPassiveWindow(update.SevenDayOverageIncluded, update.SampledAt)
 	return update, true
+}
+
+func stampAnthropicPassiveWindow(window *anthropicauth.PassiveUsageWindow, sampledAt string) {
+	if window != nil {
+		window.SampledAt = strings.TrimSpace(sampledAt)
+	}
 }
 
 func sampleAnthropicPassiveWindow(headers http.Header, utilizationHeader, resetHeader string) *anthropicauth.PassiveUsageWindow {
 	window := &anthropicauth.PassiveUsageWindow{}
 	if raw := strings.TrimSpace(headers.Get(utilizationHeader)); raw != "" {
-		if value, err := strconv.ParseFloat(raw, 64); err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) {
+		if value, err := strconv.ParseFloat(raw, 64); err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) &&
+			value >= 0 && value <= 1 {
 			window.Utilization = &value
 		}
 	}
@@ -109,13 +119,20 @@ func appendAnthropicPassiveWindow(
 	if window == nil || window.Utilization == nil {
 		return windows
 	}
-	usedPercent := min(max(*window.Utilization*100, 0), 100)
+	usedPercent := *window.Utilization * 100
+	if !validOAuthUsedPercent(usedPercent) {
+		return windows
+	}
 	resetAt := int64(0)
 	if window.ResetAt != nil {
 		resetAt = *window.ResetAt
 	}
+	sampledAt := time.Time{}
+	if !window.UtilizationStale {
+		sampledAt, _ = time.Parse(time.RFC3339Nano, strings.TrimSpace(window.SampledAt))
+	}
 	return append(windows, oauthUsageWindow{
 		LimitName: limitName, Kind: kind, UsedPercent: usedPercent, RemainingPercent: 100 - usedPercent,
-		LimitWindowSeconds: windowSeconds, ResetAt: resetAt,
+		LimitWindowSeconds: windowSeconds, ResetAt: resetAt, SampledAt: sampledAt,
 	})
 }

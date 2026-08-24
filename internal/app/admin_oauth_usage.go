@@ -179,12 +179,13 @@ type antigravityUsagePayload struct {
 }
 
 type oauthUsageWindow struct {
-	LimitName          string  `json:"limit_name"`
-	Kind               string  `json:"kind"`
-	UsedPercent        float64 `json:"used_percent"`
-	RemainingPercent   float64 `json:"remaining_percent"`
-	LimitWindowSeconds int64   `json:"limit_window_seconds"`
-	ResetAt            int64   `json:"reset_at"`
+	LimitName          string    `json:"limit_name"`
+	Kind               string    `json:"kind"`
+	UsedPercent        float64   `json:"used_percent"`
+	RemainingPercent   float64   `json:"remaining_percent"`
+	LimitWindowSeconds int64     `json:"limit_window_seconds"`
+	ResetAt            int64     `json:"reset_at"`
+	SampledAt          time.Time `json:"-"`
 	// StandardCostMicroUSD 是该窗口自身的累计标准成本，仅在响应中内联，不入持久化快照。
 	StandardCostMicroUSD *int64 `json:"standard_cost_microusd,omitempty"`
 }
@@ -405,11 +406,15 @@ func (e *oauthUsageHTTPStatusError) Error() string {
 	return fmt.Sprintf("usage: %s request returned HTTP %d", e.provider, e.statusCode)
 }
 
+func validOAuthUsedPercent(usedPercent float64) bool {
+	return !math.IsNaN(usedPercent) && !math.IsInf(usedPercent, 0) && usedPercent >= 0 && usedPercent <= 100
+}
+
 func appendCodexUsageWindow(windows []oauthUsageWindow, limitName, kind string, raw *codexUsageRawWindow) []oauthUsageWindow {
-	if raw == nil || raw.UsedPercent == nil {
+	if raw == nil || raw.UsedPercent == nil || !validOAuthUsedPercent(*raw.UsedPercent) {
 		return windows
 	}
-	usedPercent := min(max(*raw.UsedPercent, 0), 100)
+	usedPercent := *raw.UsedPercent
 	return append(windows, oauthUsageWindow{
 		LimitName:          limitName,
 		Kind:               kind,
@@ -472,7 +477,10 @@ func appendAnthropicUsageWindow(
 	if raw == nil || raw.Utilization == nil {
 		return windows
 	}
-	usedPercent := min(max(*raw.Utilization, 0), 100)
+	usedPercent := *raw.Utilization
+	if !validOAuthUsedPercent(usedPercent) {
+		return windows
+	}
 	resetAt := int64(0)
 	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw.ResetsAt)); err == nil {
 		resetAt = parsed.Unix()
@@ -609,11 +617,15 @@ func normalizeAntigravityUsage(payload *antigravityUsagePayload) (*oauthUsageSum
 			if bucket.RemainingFraction == nil {
 				continue
 			}
-			remainingPercent := min(max(*bucket.RemainingFraction*100, 0), 100)
+			remainingPercent := *bucket.RemainingFraction * 100
+			usedPercent := 100 - remainingPercent
+			if !validOAuthUsedPercent(usedPercent) {
+				continue
+			}
 			summary.Windows = append(summary.Windows, oauthUsageWindow{
 				LimitName:          limitName,
 				Kind:               antigravityUsageBucketKind(bucket),
-				UsedPercent:        100 - remainingPercent,
+				UsedPercent:        usedPercent,
 				RemainingPercent:   remainingPercent,
 				LimitWindowSeconds: antigravityUsageWindowSeconds(bucket.Window),
 				ResetAt:            antigravityUsageResetAt(bucket.ResetTime),
@@ -673,6 +685,10 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 	summary, err := normalizeCodexUsage(&payload, credential.PlanType)
 	if err != nil {
 		return nil, err
+	}
+	usageSampledAt := time.Now().UTC()
+	for i := range summary.Windows {
+		summary.Windows[i].SampledAt = usageSampledAt
 	}
 	resetCredits, resetErr := requestCodexResetCredits(ctx, client, credential, time.Now())
 	if resetErr != nil {
@@ -746,6 +762,10 @@ func requestAnthropicUsage(
 	summary, err := normalizeAnthropicUsage(&usagePayload)
 	if err != nil {
 		return nil, anthropicCredentialMetadata{}, err
+	}
+	usageSampledAt := time.Now().UTC()
+	for i := range summary.Windows {
+		summary.Windows[i].SampledAt = usageSampledAt
 	}
 	summary.PlanType = strings.TrimSpace(credential.PlanType)
 
@@ -1017,7 +1037,10 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 		return oauthUsageWindow{}, false
 	}
 	if config.CreditUsagePercent != nil {
-		used := min(max(*config.CreditUsagePercent, 0), 100)
+		used := *config.CreditUsagePercent
+		if !validOAuthUsedPercent(used) {
+			return oauthUsageWindow{}, false
+		}
 		periodType := ""
 		periodStart, periodEnd := "", ""
 		if config.MonthlyLimit == nil && config.Used == nil {
@@ -1052,7 +1075,10 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 		if !ok {
 			return oauthUsageWindow{}, false
 		}
-		used := min(max(*config.OnDemandUsed.Val*100 / *config.OnDemandCap.Val, 0), 100)
+		used, ok := usagePercentOf(*config.OnDemandUsed.Val, *config.OnDemandCap.Val)
+		if !ok {
+			return oauthUsageWindow{}, false
+		}
 		return oauthUsageWindow{
 			LimitName: label, Kind: normalizedXAIUsagePeriodKind(periodType, label),
 			UsedPercent: used, RemainingPercent: 100 - used,
@@ -1064,13 +1090,24 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 		if !ok {
 			return oauthUsageWindow{}, false
 		}
-		used := min(max(*config.Used.Val*100 / *config.MonthlyLimit.Val, 0), 100)
+		used, ok := usagePercentOf(*config.Used.Val, *config.MonthlyLimit.Val)
+		if !ok {
+			return oauthUsageWindow{}, false
+		}
 		return oauthUsageWindow{
 			LimitName: label, Kind: "monthly", UsedPercent: used, RemainingPercent: 100 - used,
 			LimitWindowSeconds: windowSeconds, ResetAt: resetAt,
 		}, true
 	}
 	return oauthUsageWindow{}, false
+}
+
+func usagePercentOf(used, limit float64) (float64, bool) {
+	if math.IsNaN(used) || math.IsInf(used, 0) || math.IsNaN(limit) || math.IsInf(limit, 0) ||
+		used < 0 || limit <= 0 {
+		return 0, false
+	}
+	return min(used*100/limit, 100), true
 }
 
 func xaiBillingSummaryFromConfig(config *xaiUsageConfig) *xaiBillingSummary {
@@ -1308,6 +1345,11 @@ func (s *Server) refreshOAuthUsage(ctx context.Context, id int64) (*oauthUsageSu
 		return nil, err
 	}
 	sampledAt := time.Now().UTC()
+	for i := range summary.Windows {
+		if summary.Windows[i].SampledAt.IsZero() {
+			summary.Windows[i].SampledAt = sampledAt
+		}
+	}
 	summary, err = s.persistOAuthUsage(ctx, cfg, summary, requestedAt, sampledAt)
 	if err != nil {
 		return nil, errOAuthUsagePersistFailed
