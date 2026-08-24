@@ -619,6 +619,19 @@ function formatCursorUsageNotice(value) {
   return message;
 }
 
+function formatZedUsageNotice(data) {
+  switch (String(data?.entitlement_status || '').trim().toLowerCase()) {
+    case 'unmetered':
+      return window.t('channels.zed.usageUnmetered');
+    case 'restricted':
+      return window.t('channels.zed.usageRestricted');
+    case 'exhausted':
+      return window.t('channels.zed.usageExhausted');
+    default:
+      return '';
+  }
+}
+
 function buildOAuthUsageRefreshButton(channelID, loading = false, disabled = false) {
   const text = loading
     ? window.t('channels.oauth.usageRefreshing')
@@ -800,7 +813,7 @@ function buildXAIUsageRows(data) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
@@ -825,6 +838,7 @@ function buildOAuthUsageStatusHtml(channel) {
   const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
+  const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
   const displayedWindows = isCursor ? orderCursorUsageWindows(windows) : windows;
   const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
@@ -857,7 +871,9 @@ function buildOAuthUsageStatusHtml(channel) {
   });
   const notice = isCursor
     ? formatCursorUsageNotice(state.data?.display_message)
-    : String(state.data?.display_message || '').trim();
+    : isZed
+      ? formatZedUsageNotice(state.data)
+      : String(state.data?.display_message || '').trim();
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';

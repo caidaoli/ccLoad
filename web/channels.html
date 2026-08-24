@@ -118,6 +118,7 @@
                   <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
                   <option value="zai" data-i18n="channels.oauth.providerZAI">Z.ai</option>
                   <option value="cursor" data-i18n="channels.oauth.providerCursor">Cursor</option>
+                  <option value="zed" data-i18n="channels.oauth.providerZed">Zed</option>
                 </select>
               </div>
               <div id="codexOAuthControls">
@@ -225,6 +226,17 @@
                   </p>
                   <p id="cursorAPIKeyHint" class="oauth-field-hint"
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
+                </div>
+              </div>
+              <div id="zedOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="zedSystemID" data-i18n="channels.zed.systemIDLabel">Zed system ID（可选）</label>
+                  <input id="zedSystemID" name="zed_system_id" type="text"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    placeholder="9d4b8c17-12ae-4091-96bc-1a79ce2de601"
+                    aria-describedby="zedSystemIDHint oauthLoginDialogStatus">
+                  <p id="zedSystemIDHint" class="oauth-field-hint"
+                    data-i18n="channels.zed.systemIDHint">本机运行 ccLoad 时会自动读取 Zed；远程或容器部署需要填写本机 Zed 数据库中的 system_id。</p>
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">
@@ -373,6 +385,7 @@
                   <option value="anthropic_oauth">Anthropic</option>
                   <option value="zai_oauth">Z.ai</option>
                   <option value="cursor_oauth">Cursor</option>
+                  <option value="zed_oauth">Zed</option>
                 </select>
               </div>
               <div class="oauth-field">

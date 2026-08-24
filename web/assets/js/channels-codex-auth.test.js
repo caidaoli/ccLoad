@@ -25,6 +25,7 @@ const {
   renderOAuthCredential,
   saveCodexQuotaOverdraftFromAdvancedSettings,
   updateCodexQuotaOverdraft,
+  zedOAuthStartOptions,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
   setOAuthCredentialView,
@@ -39,6 +40,19 @@ const {
   submitCursorCredential,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('Zed login submits the registered installation identity', () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  try {
+    const options = zedOAuthStartOptions(' 9d4b8c17-12ae-4091-96bc-1a79ce2de601 ');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), { system_id: '9d4b8c17-12ae-4091-96bc-1a79ce2de601' });
+    assert.throws(() => zedOAuthStartOptions('not-a-uuid'), /channels\.zed\.systemIDInvalid/);
+  } finally {
+    global.window = previousWindow;
+  }
+});
 
 test('Cursor credential import accepts only a user API key', async () => {
   const previousWindow = global.window;
@@ -1773,6 +1787,22 @@ test('manual Z.ai credential refresh targets the saved channel', async () => {
     options: { method: 'POST' }
   });
   await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'zai_oauth'), /saved Z.ai channel/);
+});
+
+test('manual Zed credential refresh targets the saved channel', async () => {
+  let captured;
+  const response = { oauth_credential: { access_token: 'zed-jwt' } };
+  const result = await refreshOAuthCredential(42, async (url, options) => {
+    captured = { url, options };
+    return response;
+  }, 'zed_oauth');
+
+  assert.equal(result, response);
+  assert.deepEqual(captured, {
+    url: '/admin/channels/42/zed-credential/refresh',
+    options: { method: 'POST' }
+  });
+  await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'zed_oauth'), /saved Zed channel/);
 });
 
 test('manual credential refresh rejects unsupported auth types', async () => {

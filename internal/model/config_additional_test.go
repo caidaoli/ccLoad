@@ -394,3 +394,11 @@ func TestConfig_CursorOAuthAuthType(t *testing.T) {
 		t.Fatalf("Cursor OAuth auth type was not isolated: %+v", cfg)
 	}
 }
+
+func TestConfig_ZedOAuthAuthType(t *testing.T) {
+	cfg := &Config{AuthType: AuthTypeZedOAuth}
+	if NormalizeAuthType(AuthTypeZedOAuth) != AuthTypeZedOAuth ||
+		!cfg.UsesZedOAuth() || !cfg.UsesOAuth() || cfg.UsesCodexOAuth() {
+		t.Fatalf("Zed OAuth auth type was not isolated: %+v", cfg)
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
+	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,6 +47,7 @@ var (
 	errOAuthUsageUnsupported         = errors.New("usage: channel does not use a supported OAuth provider")
 	errZAIUsageManagerUnavailable    = errors.New("usage: Z.ai credential manager is unavailable")
 	errCursorUsageManagerUnavailable = errors.New("usage: Cursor credential manager is unavailable")
+	errZedUsageManagerUnavailable    = errors.New("usage: Zed credential manager is unavailable")
 	errCodexUsageManagerUnavailable  = errors.New("usage: Codex credential manager is unavailable")
 	errAnthropicManagerUnavailable   = errors.New("usage: Anthropic credential manager is unavailable")
 	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
@@ -1324,7 +1326,8 @@ func oauthUsageHTTPStatus(err error) int {
 		errors.Is(err, errAntigravityManagerUnavailable),
 		errors.Is(err, errXAIUsageManagerUnavailable),
 		errors.Is(err, errZAIUsageManagerUnavailable),
-		errors.Is(err, errCursorUsageManagerUnavailable):
+		errors.Is(err, errCursorUsageManagerUnavailable),
+		errors.Is(err, errZedUsageManagerUnavailable):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, errOAuthUsagePersistFailed):
 		return http.StatusInternalServerError
@@ -1464,6 +1467,10 @@ func (s *Server) invalidateOAuthCredential(channelID int64, provider string) {
 	case cursorauth.ChannelType:
 		if s.cursorCredentials != nil {
 			s.cursorCredentials.invalidate(channelID)
+		}
+	case zedauth.ChannelType:
+		if s.zedCredentials != nil {
+			s.zedCredentials.invalidate(channelID)
 		}
 	}
 }
@@ -1612,6 +1619,25 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			}
 		}
 		return nil, errors.New("usage: Cursor session token was rejected")
+	case cfg.UsesZedOAuth():
+		if s.zedCredentials == nil {
+			return nil, errZedUsageManagerUnavailable
+		}
+		credential, err := s.zedCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, oauthUsageCredentialRefreshError(err, "usage: Zed credential refresh failed")
+		}
+		service := zedauth.NewService(s.getClientForChannel(cfg))
+		if s.zedService != nil {
+			service.CurrentUserURL = s.zedService.CurrentUserURL
+			service.LLMTokensURL = s.zedService.LLMTokensURL
+			service.ModelsURL = s.zedService.ModelsURL
+		}
+		usage, err := service.FetchUsage(ctx, credential)
+		if err != nil {
+			return nil, fmt.Errorf("usage: Zed quota request failed: %w", err)
+		}
+		return normalizeZedUsage(usage), nil
 	default:
 		return nil, errOAuthUsageUnsupported
 	}
@@ -1703,4 +1729,46 @@ func normalizeCursorUsage(usage *cursorauth.PeriodUsage) (*oauthUsageSummary, er
 		})
 	}
 	return summary, nil
+}
+
+func normalizeZedUsage(usage *zedauth.Usage) *oauthUsageSummary {
+	summary := &oauthUsageSummary{
+		Provider: zedauth.ChannelType, PlanType: "unknown",
+		Windows: make([]oauthUsageWindow, 0, 1),
+	}
+	if usage == nil {
+		return summary
+	}
+	if planType := strings.TrimSpace(usage.PlanType); planType != "" {
+		summary.PlanType = planType
+	}
+	if usage.AccountTooYoung {
+		summary.EntitlementStatus = "restricted"
+	} else if usage.Limit != nil && *usage.Limit > 0 {
+		used := int64(0)
+		if usage.Used != nil && *usage.Used > 0 {
+			used = *usage.Used
+		}
+		usedPercent := min(float64(used)*100/float64(*usage.Limit), 100)
+		resetAt := int64(0)
+		if reset, err := time.Parse(time.RFC3339, usage.SubscriptionEnd); err == nil {
+			resetAt = reset.Unix()
+		}
+		summary.Windows = append(summary.Windows, oauthUsageWindow{
+			LimitName: "model_requests", Kind: "requests", UsedPercent: usedPercent,
+			RemainingPercent: 100 - usedPercent, ResetAt: resetAt,
+		})
+		if used >= *usage.Limit {
+			summary.EntitlementStatus = "exhausted"
+		}
+	} else {
+		summary.EntitlementStatus = "unmetered"
+	}
+	if usage.Overdue {
+		summary.Warnings = append(summary.Warnings, "Zed account has overdue invoices")
+	}
+	if usage.UsageBasedBilling {
+		summary.Warnings = append(summary.Warnings, "Zed usage-based billing is enabled")
+	}
+	return summary
 }

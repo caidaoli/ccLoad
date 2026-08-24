@@ -8,6 +8,18 @@ import (
 	"ccLoad/internal/model"
 )
 
+func TestChannelRequestValidateRejectsZedWebsocket(t *testing.T) {
+	t.Parallel()
+	req := ChannelRequest{
+		Name: "Zed", AuthType: model.AuthTypeZedOAuth, Websockets: true,
+		URLs:   model.ChannelURLs{{URL: "https://cloud.zed.dev/completions", Exact: true, Protocols: []string{"codex"}}},
+		Models: []model.ModelEntry{{Model: "gpt-5.6-sol"}},
+	}
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "do not support WebSocket") {
+		t.Fatalf("Validate() error=%v, want Zed WebSocket rejection", err)
+	}
+}
+
 func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 	t.Parallel()
 

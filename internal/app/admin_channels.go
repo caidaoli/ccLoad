@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
+	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -467,6 +468,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, cursorauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
 	}
+	if cfg.UsesZedOAuth() {
+		credential, err := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zedauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
 	}
@@ -771,6 +780,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 			return nil, err
 		}
 		accessToken, note = credential.AccessToken, "Cursor session"
+	case cfg.UsesZedOAuth():
+		credential, err := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Zed LLM JWT"
 	}
 
 	return []*model.APIKey{{
@@ -1907,5 +1922,8 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	}
 	if s.anthropicCredentials != nil {
 		s.anthropicCredentials.invalidate(id)
+	}
+	if s.zedCredentials != nil {
+		s.zedCredentials.invalidate(id)
 	}
 }

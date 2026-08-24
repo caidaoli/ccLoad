@@ -38,7 +38,7 @@ type ErrorInput struct {
 	UpstreamStatusCode int // 原始上游 HTTP 状态码；0 表示与 StatusCode 相同
 	ErrorBody          []byte
 	IsNetworkError     bool
-	ModelScoped        bool // 网络错误是否只影响当前实际模型
+	ModelScoped        bool // 调用方已确认该错误只影响当前实际模型
 	Headers            map[string][]string
 
 	// CooldownDetectionRules belongs to the selected channel and is evaluated
@@ -94,12 +94,16 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		action: ActionReturnClient,
 	}
 
-	// A channel-local configured rule has priority over the built-in classifier.
+	// A channel-local configured rule has priority over the built-in classifier,
+	// but it cannot widen an error that the caller has already confirmed is
+	// model-scoped. A model-scoped rule may still refine the cooldown deadline.
 	// Network errors intentionally bypass this branch because they do not have a
 	// trustworthy upstream response body to match.
 	if !in.IsNetworkError {
 		if configured, ok := configuredCooldownDecision(in, time.Now()); ok {
-			return configured
+			if !in.ModelScoped || configured.modelScoped {
+				return configured
+			}
 		}
 	}
 
@@ -159,6 +163,10 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			if decision.model != "" {
 				decision.modelScoped = true
 			}
+		}
+		if in.ModelScoped && strings.TrimSpace(in.Model) != "" {
+			decision.model = strings.TrimSpace(in.Model)
+			decision.modelScoped = true
 		}
 	}
 

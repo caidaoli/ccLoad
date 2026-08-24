@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
+	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -129,6 +130,17 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		apiKeys = []*model.APIKey{{
 			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
 			Note: "Cursor session", KeyStrategy: model.KeyStrategySequential,
+		}}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesZedOAuth() {
+		credential, parseErr := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		apiKeys = []*model.APIKey{{
+			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
+			Note: "Zed LLM JWT", KeyStrategy: model.KeyStrategySequential,
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}

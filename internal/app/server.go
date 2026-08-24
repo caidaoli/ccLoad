@@ -36,6 +36,7 @@ import (
 	"ccLoad/internal/version"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
+	"ccLoad/internal/zedauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -98,6 +99,9 @@ type Server struct {
 	zaiService                    *zaiauth.Service
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	zedService                    *zedauth.Service
+	zedCredentials                *zedCredentialManager
+	zedOAuth                      *codexOAuthManager
 	cursorService                 *cursorauth.Service
 	cursorCredentials             *cursorCredentialManager
 	cursorRunnerMu                sync.RWMutex
@@ -362,6 +366,15 @@ func NewServer(store storage.Store) *Server {
 			return cfg.ID, cfg.Name, nil
 		},
 	)
+	s.zedService = zedauth.NewService(s.client)
+	s.zedCredentials = newZedCredentialManager(s.zedService, store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.zedCredentials.refreshTracker = s.oauthCredentialRefreshes
+	s.zedOAuth = newZedOAuthManager(s.zedService, store, func(channelID int64) {
+		s.zedCredentials.invalidate(channelID)
+		s.InvalidateChannelListCache()
+	})
 	s.cursorService = cursorauth.NewService(s.client)
 	s.cursorCredentials = newCursorCredentialManager(store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
@@ -1588,6 +1601,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
 		admin.POST("/channels/:id/zai-credential/refresh", s.HandleRefreshZAICredential)
+		admin.POST("/zed/oauth/start", s.HandleStartZedOAuth)
+		admin.GET("/zed/oauth/status", s.HandleZedOAuthStatus)
+		admin.POST("/zed/oauth/cancel", s.HandleCancelZedOAuth)
+		admin.POST("/zed/oauth/callback", s.HandleSubmitZedOAuthCallback)
+		admin.POST("/channels/:id/zed-credential/refresh", s.HandleRefreshZedCredential)
 		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
 		admin.POST("/channels/:id/cursor-credential/refresh", s.HandleRefreshCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
@@ -1837,6 +1855,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
+	}
+	if s.zedOAuth != nil {
+		s.zedOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

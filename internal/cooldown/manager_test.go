@@ -117,6 +117,24 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	}
 }
 
+func TestHandleErrorCallerConfirmedModelScopedHTTP(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	cfg := createTestChannel(t, store, "test-provider-model-scope")
+	action := manager.DecideAction(context.Background(), ErrorInput{
+		ChannelID: cfg.ID, KeyIndex: NoKeyIndex, Model: "test-model",
+		StatusCode: 403, ErrorBody: []byte(`{"error":"model is not in plan"}`), ModelScoped: true,
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "generic forbidden", Priority: 0, StatusCodes: []int{403},
+			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
+		}}},
+	})
+	if action != ActionRetryModel {
+		t.Fatalf("action = %v, want ActionRetryModel", action)
+	}
+}
+
 // TestHandleError_ChannelLevelError 测试渠道级错误处理
 func TestHandleError_ChannelLevelError(t *testing.T) {
 	store, cleanup := setupTestStore(t)

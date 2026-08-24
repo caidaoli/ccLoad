@@ -21,6 +21,7 @@ const (
 	AuthTypeAnthropicOAuth   = "anthropic_oauth"
 	AuthTypeZAIOAuth         = "zai_oauth"
 	AuthTypeCursorOAuth      = "cursor_oauth"
+	AuthTypeZedOAuth         = "zed_oauth"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -51,6 +52,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeZAIOAuth
 	case AuthTypeCursorOAuth:
 		return AuthTypeCursorOAuth
+	case AuthTypeZedOAuth:
+		return AuthTypeZedOAuth
 	default:
 		return ""
 	}
@@ -627,6 +630,11 @@ func (c *Config) UsesZAIOAuth() bool {
 // UsesCursorOAuth reports whether this channel is backed by a Cursor credential.
 func (c *Config) UsesCursorOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCursorOAuth
+}
+
+// UsesZedOAuth reports whether this channel is backed by a Zed credential.
+func (c *Config) UsesZedOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeZedOAuth
 }
 
 // UsesOAuth reports whether API keys are replaced by a private OAuth credential.

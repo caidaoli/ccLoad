@@ -28,6 +28,7 @@ type requestContext struct {
 	responsesSSEUpstreamNonStream bool
 	antigravityOAuth              bool
 	anthropicClaudeCodeWire       bool
+	zedWire                       *zedWirePlan
 	// codexMultiAgentV2Optimized records that this attempt renamed the
 	// collaboration namespace and therefore needs response restoration.
 	codexMultiAgentV2Optimized bool

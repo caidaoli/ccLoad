@@ -28,6 +28,7 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
+	"ccLoad/internal/zedauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -158,6 +159,7 @@ type channelTestRequestPlan struct {
 	upstreamHeaders  http.Header
 	requestBody      []byte
 	clientBody       []byte
+	zedWire          *zedWirePlan
 	timeout          *channelTestTimeout
 	debugCapture     *debugCapture
 	antigravityOAuth bool
@@ -921,6 +923,28 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return cfg.Clone(), selection, true, fmt.Errorf("加载 Cursor 凭证失败: %w", err)
 		}
 		return cfg.Clone(), selection, true, nil
+	case cfg.UsesZedOAuth():
+		var credential *zedauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = zedauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.zedCredentials.credential(ctx, cfg, true)
+		default:
+			credential, err = s.zedCredentials.credential(ctx, cfg, false)
+		}
+		if credential == nil {
+			if err == nil {
+				err = errors.New("zed credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Zed 凭证失败: %w", err)
+		}
+		selection.requestCredential = credential.AccessToken
+		if err != nil {
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 Zed 凭证失败: %w", err)
+		}
+		return cfg.Clone(), selection, true, nil
 	default:
 		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
 	}
@@ -1453,7 +1477,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	defer cancel()
 	ctx := req.Context()
-	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && testReq.Stream &&
+	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && !cfg.UsesZedOAuth() && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
 	if useNativeCodexWebsocket {
 		copyCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders)
@@ -1542,6 +1566,15 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	s.persistCodexPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
+	if cfg.UsesZedOAuth() {
+		if zedErr := prepareZedResponsesResponse(resp, requestPlan.zedWire, s.protocolRegistry); zedErr != nil {
+			return attachTestDebugData(requestPlan, resp, map[string]any{
+				"success": false, "error": "解包 Zed 测试响应失败: " + zedErr.Error(),
+				"duration_ms": time.Since(start).Milliseconds(), "status_code": resp.StatusCode,
+				"is_streaming": testReq.Stream,
+			})
+		}
+	}
 	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), requestPlan.endpointPath) {
 		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
 			return attachTestDebugData(requestPlan, resp, map[string]any{
@@ -1871,6 +1904,13 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
 		ensureCodexSessionHeader(requestPlan.headers, sessionID)
 	}
+	if cfgForBuild.UsesZedOAuth() {
+		requestPlan.requestBody, requestPlan.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, requestPlan.requestBody)
+		if err != nil {
+			return nil, nil, fmt.Errorf("finalize Zed test request body: %w", err)
+		}
+		requestPlan.upstreamStreaming = true
+	}
 	requestPlan.endpointPath = requestPath
 	return cfgForBuild, requestPlan, nil
 }
@@ -1908,7 +1948,10 @@ func (s *Server) newTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	wireRebuilt := false
-	if requestPlan.xaiOAuth {
+	if cfgForBuild.UsesZedOAuth() {
+		injectZedResponsesHeaders(req, requestPlan.apiKey)
+		wireRebuilt = true
+	} else if requestPlan.xaiOAuth {
 		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
 	} else if requestProtocol == protocol.Codex {
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
@@ -1939,7 +1982,7 @@ func (s *Server) newTestUpstreamRequest(
 	// Admin tests need the wire body for diagnostics, so never negotiate compression.
 	req.Header.Set("Accept-Encoding", "identity")
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
-	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)
 		for key, value := range testReq.Headers {
 			originalHeaders.Set(key, value)

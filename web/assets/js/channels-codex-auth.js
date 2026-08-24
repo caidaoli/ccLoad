@@ -52,6 +52,10 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   zai: Object.freeze({
     provider: 'zai', label: 'Z.ai', i18n: 'channels.zai',
     callbackPlaceholder: '', pollOnly: true
+  }),
+  zed: Object.freeze({
+    provider: 'zed', label: 'Zed', i18n: 'channels.zed',
+    callbackPlaceholder: 'http://localhost:PORT/?user_id=...&access_token=...'
   })
 });
 
@@ -155,7 +159,8 @@ function applyChannelAuthEditorMode(
   const anthropicOAuth = authType === 'anthropic_oauth';
   const zaiOAuth = authType === 'zai_oauth';
   const cursorOAuth = authType === 'cursor_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth;
+  const zedOAuth = authType === 'zed_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth;
   const oauth = credentialVisible;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -515,6 +520,7 @@ function syncOAuthProviderFields() {
   const codex = provider === 'codex';
   const zai = provider === 'zai';
   const cursor = provider === 'cursor';
+  const zed = provider === 'zed';
   const zaiAPIKey = zai && zaiMethod === 'api_key';
   const cursorAPIKey = cursor;
   const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
@@ -531,6 +537,8 @@ function syncOAuthProviderFields() {
   const cursorControls = document.getElementById('cursorOAuthControls');
   const cursorAPIKeyField = document.getElementById('cursorAPIKeyField');
   const cursorAPIKeyInput = document.getElementById('cursorUserAPIKey');
+  const zedControls = document.getElementById('zedOAuthControls');
+  const zedSystemID = document.getElementById('zedSystemID');
   const codexControls = document.getElementById('codexOAuthControls');
   const codexPersonalAccessTokenField = document.getElementById('codexPersonalAccessTokenField');
   const codexPersonalAccessTokenInput = document.getElementById('codexPersonalAccessToken');
@@ -543,6 +551,8 @@ function syncOAuthProviderFields() {
   if (anthropicControls) anthropicControls.hidden = !anthropic;
   if (zaiControls) zaiControls.hidden = !zai;
   if (cursorControls) cursorControls.hidden = !cursor;
+  if (zedControls) zedControls.hidden = !zed;
+  if (zedSystemID && !zed) zedSystemID.removeAttribute?.('aria-invalid');
   if (zaiAPIKeyField) zaiAPIKeyField.hidden = !zaiAPIKey;
   if (zaiAPIKeyInput) {
     zaiAPIKeyInput.required = zaiAPIKey;
@@ -573,6 +583,8 @@ function syncOAuthProviderFields() {
   if (description) {
     const descriptionKey = codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
+      : zed
+      ? 'channels.zed.oauthDescription'
       : cursor
       ? 'channels.cursor.apiKeyDescription'
       : zai
@@ -1018,7 +1030,19 @@ async function startOAuth(provider, button) {
   try {
     if (button) button.disabled = true;
     setCodexAuthStatus(window.t(`${config.i18n}.oauthStarting`));
-    const session = await fetchDataWithAuth(`/admin/${config.provider}/oauth/start`, { method: 'POST' });
+    let startOptions = { method: 'POST' };
+    if (config.provider === 'zed') {
+      const systemIDInput = document.getElementById('zedSystemID');
+      try {
+        startOptions = zedOAuthStartOptions(systemIDInput?.value);
+        systemIDInput?.removeAttribute?.('aria-invalid');
+      } catch (error) {
+        systemIDInput?.setAttribute?.('aria-invalid', 'true');
+        systemIDInput?.focus?.();
+        throw error;
+      }
+    }
+    const session = await fetchDataWithAuth(`/admin/${config.provider}/oauth/start`, startOptions);
     if (!session?.url || !session?.state) throw new Error(window.t(`${config.i18n}.oauthFailed`));
     flow.state = session.state;
     flow.readySettled = true;
@@ -1054,6 +1078,19 @@ async function startOAuth(provider, button) {
       if (button) button.disabled = false;
     }
   }
+}
+
+function zedOAuthStartOptions(rawSystemID) {
+  const systemID = String(rawSystemID || '').trim();
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (systemID && (!uuidPattern.test(systemID) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(systemID))) {
+    throw new Error(window.t('channels.zed.systemIDInvalid'));
+  }
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ system_id: systemID })
+  };
 }
 
 async function stopActiveXAIImport(options = {}) {
@@ -1492,7 +1529,8 @@ function oauthCredentialCleanupProviderLabel(authType) {
     xai_oauth: 'xAI',
     anthropic_oauth: 'Anthropic',
     zai_oauth: 'Z.ai',
-    cursor_oauth: 'Cursor'
+    cursor_oauth: 'Cursor',
+    zed_oauth: 'Zed'
   })[authType] || authType;
 }
 
@@ -1901,6 +1939,8 @@ function oauthCredentialRefreshTarget(authType) {
       return { resource: 'anthropic-credential', label: 'Anthropic', i18n: 'channels.anthropic', keyNote: 'Anthropic OAuth AT' };
     case 'cursor_oauth':
       return { resource: 'cursor-credential', label: 'Cursor', i18n: 'channels.cursor', keyNote: 'Cursor OAuth AT' };
+    case 'zed_oauth':
+      return { resource: 'zed-credential', label: 'Zed', i18n: 'channels.zed', keyNote: 'Zed LLM JWT' };
     case 'xai_oauth':
       return { resource: 'xai-credential', label: 'xAI', i18n: 'channels.xai', keyNote: 'xAI OAuth AT' };
     case 'zai_oauth':
@@ -2160,7 +2200,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -2845,6 +2885,7 @@ if (typeof module !== 'undefined' && module.exports) {
     resetCodexQuotaOverdraftDraft,
     saveCodexQuotaOverdraftFromAdvancedSettings,
     updateCodexQuotaOverdraft,
+    zedOAuthStartOptions,
     setOAuthCredentialView,
     setupOAuthActions,
     showOAuthSession,
