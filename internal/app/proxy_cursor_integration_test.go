@@ -223,3 +223,77 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
+	t.Parallel()
+
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-responses-tools", upstreamProtocol: "openai", models: "composer-2.5",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = &fakeCursorRunner{
+		text: "Checking.",
+		toolCalls: []cursorauth.ToolCall{
+			{ID: "call_readme", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`)},
+			{ID: "call_claude", Name: "read", Arguments: json.RawMessage(`{"path":"CLAUDE.md"}`)},
+		},
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "composer-2.5",
+		"input": []any{map[string]any{"role": "user", "content": "read the project overview"}},
+		"tools": []any{map[string]any{
+			"type": "function", "name": "read", "description": "read a file",
+			"parameters": map[string]any{
+				"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
+				"required": []any{"path"},
+			},
+		}},
+		"tool_choice": "auto", "stream": true,
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var outputText strings.Builder
+	var functionNames, functionArguments []string
+	for _, block := range bytes.Split(response.Body.Bytes(), []byte("\n\n")) {
+		eventType, data := parseSSEEventChunk(block)
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			continue
+		}
+		switch eventType {
+		case "response.output_text.delta":
+			delta, _ := payload["delta"].(string)
+			outputText.WriteString(delta)
+		case "response.output_item.done":
+			item, _ := payload["item"].(map[string]any)
+			if item["type"] == "function_call" {
+				name, _ := item["name"].(string)
+				arguments, _ := item["arguments"].(string)
+				functionNames = append(functionNames, name)
+				functionArguments = append(functionArguments, arguments)
+			}
+		}
+	}
+	if outputText.String() != "Checking." {
+		t.Fatalf("output text leaked tool framing: %q", outputText.String())
+	}
+	if len(functionNames) != 2 || len(functionArguments) != 2 {
+		t.Fatalf("function calls = %q %q", functionNames, functionArguments)
+	}
+	for i, wantPath := range []string{"README.md", "CLAUDE.md"} {
+		var arguments map[string]any
+		if functionNames[i] != "read" || json.Unmarshal([]byte(functionArguments[i]), &arguments) != nil ||
+			arguments["path"] != wantPath {
+			t.Fatalf("function call %d = %q %q", i, functionNames[i], functionArguments[i])
+		}
+	}
+}

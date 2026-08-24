@@ -192,7 +192,7 @@
             <ul class="www-check-list">
               <li>Import a Cursor user API key. Browser login and session <code>accessToken</code> import are not supported.</li>
               <li>ccLoad locates or installs the pinned official SDK Bridge in the background. Inference does not use HTTP forwarding.</li>
-              <li>The SDK Agent receives an empty built-in tool list. Client tools stay in the prompt as <code>&lt;cc_tool_call&gt;</code> and are translated back to Anthropic or OpenAI tool calls.</li>
+              <li>The SDK Agent allows only Cursor's <code>mcp</code> capability group, which exposes SDK custom tools through the synthetic <code>custom-user-tools</code> server while keeping shell, file, and other built-ins disabled. Native callbacks remain isolated by Agent and call ID.</li>
             </ul>
           </article>
         </div>

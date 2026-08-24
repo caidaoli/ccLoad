@@ -18,15 +18,17 @@ import (
 )
 
 type fakeCursorRunner struct {
-	model    string
-	prompt   string
-	text     string
-	err      error
-	eventErr error
-	models   []string
-	apiKey   string
-	usage    *cursorauth.Usage
-	raw      [][]byte
+	model     string
+	prompt    string
+	text      string
+	toolCalls []cursorauth.ToolCall
+	err       error
+	eventErr  error
+	models    []string
+	apiKey    string
+	usage     *cursorauth.Usage
+	raw       [][]byte
+	request   cursorauth.Request
 }
 
 type failingCursorResponseWriter struct {
@@ -43,7 +45,7 @@ type synchronousBlockingCursorRunner struct{}
 func (synchronousBlockingCursorRunner) Run(
 	ctx context.Context,
 	_ *cursorauth.Credential,
-	_, _ string,
+	_ cursorauth.Request,
 ) (<-chan cursorauth.Event, error) {
 	<-ctx.Done()
 	return nil, context.Cause(ctx)
@@ -52,7 +54,7 @@ func (synchronousBlockingCursorRunner) Run(
 func (r *blockingCursorRunner) Run(
 	ctx context.Context,
 	_ *cursorauth.Credential,
-	_, _ string,
+	_ cursorauth.Request,
 ) (<-chan cursorauth.Event, error) {
 	close(r.started)
 	events := make(chan cursorauth.Event, 2)
@@ -82,9 +84,10 @@ func (*failingCursorResponseWriter) Write([]byte) (int, error) {
 	return 0, errors.New("broken pipe")
 }
 
-func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, model, prompt string) (<-chan cursorauth.Event, error) {
-	r.model = model
-	r.prompt = prompt
+func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, request cursorauth.Request) (<-chan cursorauth.Event, error) {
+	r.request = request
+	r.model = request.Model
+	r.prompt = request.Prompt
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -97,7 +100,7 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, mode
 		})
 		raw = [][]byte{payload}
 	}
-	events := make(chan cursorauth.Event, len(raw)+2)
+	events := make(chan cursorauth.Event, len(raw)+len(r.toolCalls)+2)
 	for _, payload := range raw {
 		events <- cursorauth.Event{RawResponse: append([]byte(nil), payload...)}
 	}
@@ -106,7 +109,13 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, mode
 		close(events)
 		return events, nil
 	}
-	events <- cursorauth.Event{Delta: r.text, Text: r.text}
+	if r.text != "" {
+		events <- cursorauth.Event{Delta: r.text, Text: r.text}
+	}
+	for i := range r.toolCalls {
+		call := r.toolCalls[i]
+		events <- cursorauth.Event{Text: r.text, ToolCall: &call}
+	}
 	events <- cursorauth.Event{Text: r.text, Done: true, Usage: r.usage}
 	close(events)
 	return events, nil
@@ -598,7 +607,12 @@ func TestNormalizeCursorUsageKeepsLimitMessageOffWarnings(t *testing.T) {
 
 func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 	t.Parallel()
-	runner := &fakeCursorRunner{text: "one sec\n<cc_tool_call>\n{\"name\":\"bash\",\"arguments\":{\"cmd\":\"ls\"}}\n</cc_tool_call>\n"}
+	runner := &fakeCursorRunner{
+		text: "one sec",
+		toolCalls: []cursorauth.ToolCall{{
+			ID: "call_bash", Name: "bash", Arguments: json.RawMessage(`{"cmd":"ls"}`),
+		}},
+	}
 	srv := newInMemoryServer(t)
 	srv.cursorRunner = runner
 	cfg := &model.Config{ID: 9, AuthType: model.AuthTypeCursorOAuth}
@@ -617,8 +631,9 @@ func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 	if err != nil || result == nil || !result.succeeded {
 		t.Fatalf("result = %+v err = %v", result, err)
 	}
-	if !strings.Contains(runner.prompt, "<cc_tool_call>") || !strings.Contains(runner.prompt, "bash") {
-		t.Fatalf("prompt missing tool catalog: %q", runner.prompt)
+	if runner.prompt != "user: list files" || len(runner.request.Tools) != 1 ||
+		runner.request.Tools[0].Name != "bash" {
+		t.Fatalf("tools were not kept structured: request=%+v", runner.request)
 	}
 	var payload struct {
 		StopReason string `json:"stop_reason"`

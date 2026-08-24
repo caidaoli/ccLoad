@@ -22,12 +22,9 @@ import (
 const cursorSDKBridgeRequestURL = "http://cursor-sdk-bridge/sdk.v1.SdkAgentService/CreateAgent+Send"
 
 // tryCursorOAuthChannel runs inference through the managed Cursor SDK bridge.
-// The bridge receives an empty built-in tool set, so the gateway host never
-// executes shell or file tools.
-//
-// Client tools are mapped through the prompt: the model emits <cc_tool_call>
-// blocks which are translated to Anthropic tool_use or OpenAI tool_calls. The
-// client executes them and sends tool_result / role=tool on the next turn.
+// Built-in tools stay disabled. Client tools are registered as native Cursor
+// custom tools; their callbacks suspend inside ccLoad until the client returns
+// tool_result / role=tool on the next turn.
 func (s *Server) tryCursorOAuthChannel(
 	ctx context.Context,
 	cfg *model.Config,
@@ -92,7 +89,7 @@ func (s *Server) forwardCursorAgent(
 	}
 	originalResponseBody := reqCtx.body
 	request := cursorauth.ParseRequest(body)
-	if request.Prompt == "" {
+	if request.Prompt == "" && len(request.ToolResults) == 0 {
 		return cursorClientErrorResult(cfg, http.StatusBadRequest, "cursor prompt is required"), nil
 	}
 	requested := request.Model
@@ -163,7 +160,8 @@ func (s *Server) forwardCursorAgent(
 	}
 	runCtx, cancelRun := context.WithCancel(runBaseCtx)
 	defer cancelRun()
-	events, err := runner.Run(runCtx, credential, modelID, request.Prompt)
+	request.Model = modelID
+	events, err := runner.Run(runCtx, credential, request)
 	if err != nil {
 		status := http.StatusBadGateway
 		action := cooldown.ActionRetryChannel
@@ -202,7 +200,6 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	format := cursorResponseFormat(reqCtx)
-	mapTools := request.AllowsTools()
 	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	var responseTransformState any
 	var responseTransformErr error
@@ -211,6 +208,7 @@ func (s *Server) forwardCursorAgent(
 	firstByte := time.Duration(0)
 	wroteHeader := false
 	streamedPlain := 0
+	var calls []cursorauth.ToolCall
 	flush := func() {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -260,7 +258,7 @@ func (s *Server) forwardCursorAgent(
 			_, _ = debugCapture.respBuf.Write(event.RawResponse)
 			_, _ = debugCapture.respBuf.Write([]byte("\n"))
 		}
-		if firstByte == 0 && (event.Delta != "" || event.Text != "" || (event.Done && event.Err == nil)) {
+		if firstByte == 0 && (event.Delta != "" || event.Text != "" || event.ToolCall != nil || (event.Done && event.Err == nil)) {
 			firstByte = time.Since(started)
 			timeoutCtx.stopFirstByteTimer()
 			if s.activeRequests != nil {
@@ -287,16 +285,12 @@ func (s *Server) forwardCursorAgent(
 		if event.Usage != nil {
 			usage = event.Usage
 		}
-		if streaming && !mapTools && event.Delta != "" {
+		if event.ToolCall != nil {
+			calls = append(calls, *event.ToolCall)
+		}
+		if streaming && event.Delta != "" {
 			writeStream(event.Delta)
 			streamedPlain += len(event.Delta)
-		}
-		if streaming && mapTools && full != "" {
-			plain, _, incomplete := cursorauth.SplitToolOutput(full)
-			if !incomplete && len(plain) > streamedPlain {
-				writeStream(plain[streamedPlain:])
-				streamedPlain = len(plain)
-			}
 		}
 		if responseTransformErr != nil {
 			break
@@ -362,19 +356,6 @@ func (s *Server) forwardCursorAgent(
 	}
 
 	plain := full
-	var calls []cursorauth.ToolCall
-	if mapTools {
-		var incomplete bool
-		plain, calls, incomplete = cursorauth.SplitToolOutput(full)
-		if incomplete {
-			plain = full
-			calls = nil
-		}
-		calls = cursorauth.FilterToolCalls(calls, request.Tools)
-		if choice := request.ToolChoice; choice != "" && choice != "auto" && choice != "required" && choice != "none" {
-			calls = cursorauth.FilterToolCalls(calls, []cursorauth.Tool{{Name: choice}})
-		}
-	}
 
 	var responseBody []byte
 	var header http.Header
@@ -387,8 +368,9 @@ func (s *Server) forwardCursorAgent(
 			_, _ = w.Write(cursorAnthropicStreamFinish(calls, usage))
 		} else {
 			ensureStream()
-			if streamedPlain == 0 && plain != "" && len(calls) == 0 {
-				writeStream(plain)
+			if len(plain) > streamedPlain {
+				writeStream(plain[streamedPlain:])
+				streamedPlain = len(plain)
 			}
 			finish := cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0, usage)
 			if format == "responses" {

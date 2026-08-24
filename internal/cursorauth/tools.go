@@ -1,16 +1,8 @@
 package cursorauth
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
-)
-
-const (
-	toolCallOpen  = "<cc_tool_call>"
-	toolCallClose = "</cc_tool_call>"
 )
 
 // Tool is one client-advertised function (Anthropic tools[] or OpenAI tools[]).
@@ -27,39 +19,44 @@ type ToolCall struct {
 	Arguments json.RawMessage
 }
 
-// Request is the Cursor SDK prompt plus any client tools to map.
-type Request struct {
-	Model      string
-	Prompt     string
-	Tools      []Tool
-	ToolChoice string
+// ToolResult is one client-executed result for a suspended native Cursor
+// custom-tool callback.
+type ToolResult struct {
+	CallID  string
+	Output  string
+	IsError bool
 }
 
-// AllowsTools reports whether this turn should parse and emit client tool calls.
+// Request is one client turn normalized for the Cursor SDK runner.
+type Request struct {
+	Model       string
+	Prompt      string
+	Tools       []Tool
+	ToolChoice  string
+	ToolResults []ToolResult
+}
+
+// AllowsTools reports whether this turn exposes native custom tools.
 func (r Request) AllowsTools() bool {
 	return r.ToolChoice != "none" && len(r.Tools) > 0
 }
 
-// ParseRequest reads an Anthropic Messages or OpenAI chat body into a
-// Cursor SDK prompt. Client tools stay on the client: they are described in
-// the prompt and round-tripped as <cc_tool_call> blocks, never executed on the
-// ccLoad host.
+// ParseRequest reads an Anthropic Messages or OpenAI chat body into one native
+// Cursor SDK turn. Tool definitions and results remain structured.
 func ParseRequest(body []byte) Request {
 	var raw map[string]any
 	if json.Unmarshal(body, &raw) != nil {
 		return Request{}
 	}
 	request := Request{
-		Model:      strings.TrimSpace(asString(raw["model"])),
-		Tools:      parseClientTools(raw),
-		ToolChoice: parseToolChoice(raw["tool_choice"], raw["function_call"]),
+		Model:       strings.TrimSpace(asString(raw["model"])),
+		Tools:       parseClientTools(raw),
+		ToolChoice:  parseToolChoice(raw["tool_choice"], raw["function_call"]),
+		ToolResults: parseToolResults(raw),
 	}
 	var parts []string
 	if system := stringifyContent(raw["system"]); system != "" {
 		parts = append(parts, system)
-	}
-	if request.AllowsTools() {
-		parts = append(parts, formatToolCatalog(request.Tools, request.ToolChoice))
 	}
 	for _, rawMessage := range requestMessages(raw) {
 		message, _ := rawMessage.(map[string]any)
@@ -200,47 +197,6 @@ func parseToolChoice(choice any, legacy any) string {
 	return "auto"
 }
 
-func formatToolCatalog(tools []Tool, choice string) string {
-	var b strings.Builder
-	b.WriteString("You can call client tools. They run on the user's machine, not on this host. ")
-	b.WriteString("The client is a coding CLI (Grok Build, OpenCode, Codex CLI, or Claude Code). ")
-	b.WriteString("Use the EXACT tool names listed below. Do not invent Cursor-native names such as Shell, ReadFile, or edit_file.\n")
-	switch {
-	case choice == "none":
-		b.WriteString("Do not call tools on this turn.\n")
-	case choice == "required":
-		b.WriteString("You MUST call at least one tool before answering.\n")
-	case choice != "" && choice != "auto":
-		b.WriteString("You MUST call the tool named " + choice + ".\n")
-	default:
-		b.WriteString("Call a tool only when it is needed; otherwise answer in plain text.\n")
-	}
-	b.WriteString("To call a tool, output one or more blocks in this exact shape and nothing after the last block:\n")
-	b.WriteString(toolCallOpen + "\n")
-	b.WriteString(`{"name":"TOOL_NAME","arguments":{}}` + "\n")
-	b.WriteString(toolCallClose + "\n")
-	b.WriteString("Available tools:\n")
-	for _, tool := range tools {
-		b.WriteString("- ")
-		b.WriteString(tool.Name)
-		if hint := clientToolHint(tool.Name); hint != "" {
-			b.WriteString(" (")
-			b.WriteString(hint)
-			b.WriteString(")")
-		}
-		if tool.Description != "" {
-			b.WriteString(": ")
-			b.WriteString(tool.Description)
-		}
-		if len(bytesTrimSpace(tool.Parameters)) > 0 {
-			b.WriteString("\n  parameters: ")
-			b.Write(tool.Parameters)
-		}
-		b.WriteByte('\n')
-	}
-	return strings.TrimSpace(b.String())
-}
-
 func formatMessage(message map[string]any) string {
 	role := strings.ToLower(strings.TrimSpace(asString(message["role"])))
 	var chunks []string
@@ -284,6 +240,91 @@ func formatMessage(message map[string]any) string {
 		return text
 	}
 	return role + ": " + text
+}
+
+func parseToolResults(raw map[string]any) []ToolResult {
+	messages := requestMessages(raw)
+	var trailing []ToolResult
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, _ := messages[index].(map[string]any)
+		batch := toolResultsFromMessage(message)
+		if len(batch) == 0 {
+			break
+		}
+		trailing = append(batch, trailing...)
+	}
+
+	seen := make(map[string]struct{})
+	var results []ToolResult
+	for _, result := range trailing {
+		result.CallID = strings.TrimSpace(result.CallID)
+		if result.CallID == "" {
+			continue
+		}
+		if _, exists := seen[result.CallID]; exists {
+			continue
+		}
+		seen[result.CallID] = struct{}{}
+		results = append(results, result)
+	}
+	return results
+}
+
+func toolResultsFromMessage(message map[string]any) []ToolResult {
+	if message == nil {
+		return nil
+	}
+	var results []ToolResult
+	role := strings.ToLower(strings.TrimSpace(asString(message["role"])))
+	typeName := strings.ToLower(strings.TrimSpace(asString(message["type"])))
+	if role == "tool" || role == "function" || typeName == "function_call_output" {
+		results = append(results, ToolResult{
+			CallID:  firstNonEmpty(asString(message["tool_call_id"]), asString(message["call_id"]), asString(message["id"])),
+			Output:  stringifyToolOutput(firstNonNil(message["content"], message["output"])),
+			IsError: asBool(message["is_error"]),
+		})
+	}
+	content, _ := message["content"].([]any)
+	for _, rawBlock := range content {
+		block, _ := rawBlock.(map[string]any)
+		if block == nil || !strings.EqualFold(asString(block["type"]), "tool_result") {
+			continue
+		}
+		results = append(results, ToolResult{
+			CallID:  firstNonEmpty(asString(block["tool_use_id"]), asString(block["call_id"])),
+			Output:  stringifyToolOutput(block["content"]),
+			IsError: asBool(block["is_error"]),
+		})
+	}
+	return results
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func asBool(value any) bool {
+	result, _ := value.(bool)
+	return result
+}
+
+func stringifyToolOutput(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if value == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return stringifyContent(value)
+	}
+	return string(encoded)
 }
 
 func stringifyContent(value any) string {
@@ -355,133 +396,6 @@ func formatToolResultLine(id, name, content string) string {
 		line += " " + content
 	}
 	return line
-}
-
-// SplitToolOutput pulls <cc_tool_call> blocks out of model text. plain is the
-// remaining assistant text. incomplete is true when a start tag has no close.
-func SplitToolOutput(text string) (plain string, calls []ToolCall, incomplete bool) {
-	remaining := text
-	var builder strings.Builder
-	for {
-		start := strings.Index(remaining, toolCallOpen)
-		if start < 0 {
-			builder.WriteString(remaining)
-			break
-		}
-		builder.WriteString(remaining[:start])
-		rest := remaining[start+len(toolCallOpen):]
-		end := strings.Index(rest, toolCallClose)
-		if end < 0 {
-			incomplete = true
-			break
-		}
-		payload := strings.TrimSpace(stripFence(rest[:end]))
-		remaining = rest[end+len(toolCallClose):]
-		if call, ok := parseToolCallPayload(payload); ok {
-			calls = append(calls, call)
-		} else {
-			builder.WriteString(strings.TrimSpace(payload))
-		}
-	}
-	return strings.TrimSpace(builder.String()), calls, incomplete
-}
-
-func parseToolCallPayload(payload string) (ToolCall, bool) {
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		return ToolCall{}, false
-	}
-	var object map[string]any
-	if json.Unmarshal([]byte(payload), &object) != nil {
-		return ToolCall{}, false
-	}
-	name := strings.TrimSpace(asString(object["name"]))
-	if name == "" {
-		if function, _ := object["function"].(map[string]any); function != nil {
-			name = strings.TrimSpace(asString(function["name"]))
-			if args := toolArguments(function["arguments"], function["parameters"], function["input"]); len(args) > 0 {
-				object["arguments"] = json.RawMessage(args)
-			}
-		}
-	}
-	if name == "" {
-		return ToolCall{}, false
-	}
-	args := toolArguments(object["arguments"], object["parameters"], object["input"])
-	if len(args) == 0 {
-		args = json.RawMessage(`{}`)
-	}
-	return ToolCall{ID: newToolCallID(), Name: name, Arguments: args}, true
-}
-
-func toolArguments(values ...any) json.RawMessage {
-	for _, value := range values {
-		switch typed := value.(type) {
-		case json.RawMessage:
-			if len(bytesTrimSpace(typed)) > 0 {
-				return normalizeArguments(typed)
-			}
-		case string:
-			if strings.TrimSpace(typed) != "" {
-				return normalizeArguments([]byte(typed))
-			}
-		case map[string]any:
-			raw, err := json.Marshal(typed)
-			if err == nil {
-				return raw
-			}
-		}
-	}
-	return nil
-}
-
-func normalizeArguments(raw json.RawMessage) json.RawMessage {
-	trimmed := bytesTrimSpace(raw)
-	if len(trimmed) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	if trimmed[0] == '"' {
-		var inner string
-		if json.Unmarshal(trimmed, &inner) == nil {
-			inner = strings.TrimSpace(inner)
-			if inner == "" {
-				return json.RawMessage(`{}`)
-			}
-			trimmed = []byte(inner)
-		}
-	}
-	if json.Valid(trimmed) && trimmed[0] == '{' {
-		return json.RawMessage(trimmed)
-	}
-	encoded, err := json.Marshal(map[string]any{"value": string(trimmed)})
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
-	return encoded
-}
-
-func newToolCallID() string {
-	raw := make([]byte, 8)
-	if _, err := rand.Read(raw); err != nil {
-		return fmt.Sprintf("toolu_%d", len(raw))
-	}
-	return "toolu_" + hex.EncodeToString(raw)
-}
-
-func stripFence(value string) string {
-	value = strings.TrimSpace(value)
-	if !strings.HasPrefix(value, "```") {
-		return value
-	}
-	value = strings.TrimPrefix(value, "```")
-	if newline := strings.IndexByte(value, '\n'); newline >= 0 {
-		lang := strings.TrimSpace(value[:newline])
-		if lang == "json" || lang == "jsonc" || lang == "" {
-			value = value[newline+1:]
-		}
-	}
-	value = strings.TrimSuffix(value, "```")
-	return strings.TrimSpace(value)
 }
 
 func rawJSON(value any) json.RawMessage {

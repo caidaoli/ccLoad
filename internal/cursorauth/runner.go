@@ -24,6 +24,7 @@ type Usage struct {
 type Event struct {
 	Delta       string
 	Text        string
+	ToolCall    *ToolCall
 	Done        bool
 	Err         error
 	Usage       *Usage
@@ -45,7 +46,7 @@ func rawResponseCaptureEnabled(ctx context.Context) bool {
 
 // Runner runs one Cursor inference.
 type Runner interface {
-	Run(ctx context.Context, credential *Credential, model, prompt string) (<-chan Event, error)
+	Run(ctx context.Context, credential *Credential, request Request) (<-chan Event, error)
 }
 
 // ModelLister returns the exact model IDs accepted by the Cursor SDK.
@@ -60,4 +61,7 @@ var (
 	ErrMissingAPIKey = errors.New("cursor credential is missing api_key")
 	// ErrBridgeClosed reports use after the process owner began shutting down.
 	ErrBridgeClosed = errors.New("cursor-sdk-bridge is closed")
+	// ErrToolSessionNotFound reports a result for a suspended run that is no
+	// longer owned by this ccLoad process.
+	ErrToolSessionNotFound = errors.New("cursor tool session was not found")
 )

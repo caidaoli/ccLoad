@@ -244,7 +244,7 @@ func TestSDKRunnerCreateAgentLocalDeadlineNamesOperationAndProxyDiagnostic(t *te
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	_, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "CreateAgent exceeded its local deadline after") ||
 		!strings.Contains(err.Error(), "operation limit=30s") ||
 		!strings.Contains(err.Error(), "inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY") ||
@@ -690,7 +690,7 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 		return stream.Send(runDone("agent-1", "run-1"))
 	}
 	runner := newTestSDKRunner(t, handler)
-	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, "model-1", "hello")
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -747,8 +747,7 @@ func TestSDKRunnerDoesNotReplaySendAfterStreamTransportFailure(t *testing.T) {
 	events, runErr := runner.Run(
 		context.Background(),
 		&Credential{APIKey: "key-1"},
-		"model-1",
-		"hello",
+		Request{Model: "model-1", Prompt: "hello"},
 	)
 	if runErr == nil {
 		var final Event
@@ -805,7 +804,7 @@ func TestSDKRunnerKeepsInterimAssistantAndLoadsMissingUsageFromSnapshot(t *testi
 
 	runner := newTestSDKRunner(t, handler)
 	ctx := WithRawResponseCapture(context.Background())
-	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -871,7 +870,7 @@ func TestSDKRunnerSendFailureReturnsBeforeAgentCleanup(t *testing.T) {
 
 	returned := make(chan error, 1)
 	go func() {
-		_, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, "model-1", "hello")
+		_, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 		returned <- err
 	}()
 	select {
@@ -901,7 +900,7 @@ func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
 	}
 	runner := newTestSDKRunner(t, handler)
 	ctx, cancel := context.WithCancel(context.Background())
-	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -940,7 +939,7 @@ func TestSDKRunnerCallerCancellationStopsSendWithoutRunID(t *testing.T) {
 	}
 	runner := newTestSDKRunner(t, handler)
 	ctx, cancel := context.WithCancel(context.Background())
-	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, "model-1", "hello")
+	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
