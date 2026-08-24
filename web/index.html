@@ -253,6 +253,173 @@
             </div>
           </div>
         </section>
+
+        <!-- 按渠道认证类型统计 -->
+        <section class="mb-6">
+          <div class="grid grid-cols-2 animate-slide-up animate-delay-1 gap-space-3">
+            <!-- Z.ai -->
+            <div class="channel-card" id="type-zai-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon channel-icon--zai">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M6 6h12L6 18h12"/>
+                    </svg>
+                  </div>
+                  <span>Z.ai</span>
+                </div>
+                <div class="channel-cost">
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
+                  <span class="cost-value" id="type-zai-cost">$0.00</span>
+                </div>
+              </div>
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-zai-requests">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-zai-success">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-zai-error">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-zai-rate">0.0%</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
+                </div>
+              </div>
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.input">输入</span>
+                  <span class="token-value" id="type-zai-input">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.output">输出</span>
+                  <span class="token-value" id="type-zai-output">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
+                  <span class="token-value token-cache" id="type-zai-cache-read">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
+                  <span class="token-value token-cache" id="type-zai-cache-create">0</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Cursor -->
+            <div class="channel-card" id="type-cursor-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon channel-icon--cursor">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M5 3.2 20.8 13l-7.1 1.4 4.4 7.8-2.9 1.6-4.4-7.9-5.8 4z"/>
+                    </svg>
+                  </div>
+                  <span>Cursor</span>
+                </div>
+                <div class="channel-cost">
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
+                  <span class="cost-value" id="type-cursor-cost">$0.00</span>
+                </div>
+              </div>
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-cursor-requests">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-cursor-success">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-cursor-error">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-cursor-rate">0.0%</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
+                </div>
+              </div>
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.input">输入</span>
+                  <span class="token-value" id="type-cursor-input">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.output">输出</span>
+                  <span class="token-value" id="type-cursor-output">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
+                  <span class="token-value token-cache" id="type-cursor-cache-read">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
+                  <span class="token-value token-cache" id="type-cursor-cache-create">0</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Grok -->
+            <div class="channel-card" id="type-grok-card">
+              <div class="channel-card-header">
+                <div class="channel-card-title">
+                  <div class="channel-icon channel-icon--grok">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2.2 13.7 10 21.8 12 13.7 14 12 21.8 10.3 14 2.2 12 10.3 10z"/>
+                    </svg>
+                  </div>
+                  <span>Grok</span>
+                </div>
+                <div class="channel-cost">
+                  <span class="cost-label" data-i18n="common.cost">成本</span>
+                  <span class="cost-value" id="type-grok-cost">$0.00</span>
+                </div>
+              </div>
+              <div class="channel-metrics">
+                <div class="metric-item">
+                  <div class="metric-value metric-total" id="type-grok-requests">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-success" id="type-grok-success">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-error" id="type-grok-error">0</div>
+                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
+                </div>
+                <div class="metric-item">
+                  <div class="metric-value metric-rate" id="type-grok-rate">0.0%</div>
+                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
+                </div>
+              </div>
+              <div class="token-stats">
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.input">输入</span>
+                  <span class="token-value" id="type-grok-input">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.output">输出</span>
+                  <span class="token-value" id="type-grok-output">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
+                  <span class="token-value token-cache" id="type-grok-cache-read">0</span>
+                </div>
+                <div class="token-item">
+                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
+                  <span class="token-value token-cache" id="type-grok-cache-create">0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <!-- 服务健康监测 -->
         <section class="mb-6">
           <div class="glass-card service-health-card animate-slide-up animate-delay-2" aria-labelledby="service-health-title">

@@ -669,6 +669,78 @@ func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTim
 	return stats, nil
 }
 
+func overviewAuthTypeValues() []any {
+	types := model.OverviewChannelAuthTypes()
+	values := make([]any, 0, len(types))
+	for _, authType := range types {
+		values = append(values, authType)
+	}
+	return values
+}
+
+// GetAuthTypeStats 按渠道认证类型聚合首页统计。
+func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
+	baseQuery := `
+		SELECT
+			COALESCE(channels.auth_type, '') AS auth_type,
+			SUM(CASE WHEN logs.status_code >= 200 AND logs.status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN (logs.status_code < 200 OR logs.status_code >= 300) AND logs.status_code != 499 THEN 1 ELSE 0 END) AS error,
+			SUM(COALESCE(logs.input_tokens, 0)) AS total_input_tokens,
+			SUM(COALESCE(logs.output_tokens, 0)) AS total_output_tokens,
+			SUM(COALESCE(logs.cache_read_input_tokens, 0)) AS total_cache_read_tokens,
+			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) AS total_cache_creation_tokens,
+			SUM(COALESCE(logs.cost, 0.0)) AS total_cost,
+			SUM(COALESCE(logs.cost, 0.0) * COALESCE(logs.cost_multiplier, 1)) AS effective_cost
+		FROM logs
+		INNER JOIN channels ON channels.id = logs.channel_id`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("logs.time >= ?", startTime.UnixMilli()).
+		Where("logs.time <= ?", endTime.UnixMilli()).
+		Where("logs.channel_id > 0")
+	qb.WhereIn("channels.auth_type", overviewAuthTypeValues())
+
+	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return nil, err
+	}
+	if isEmpty {
+		return []model.AuthTypeStats{}, nil
+	}
+	qb.ApplyFilter(filter)
+
+	query, args := qb.BuildWithSuffix("GROUP BY channels.auth_type ORDER BY channels.auth_type ASC")
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	stats := make([]model.AuthTypeStats, 0)
+	for rows.Next() {
+		var entry model.AuthTypeStats
+		if err := rows.Scan(
+			&entry.AuthType,
+			&entry.SuccessRequests,
+			&entry.ErrorRequests,
+			&entry.TotalInputTokens,
+			&entry.TotalOutputTokens,
+			&entry.TotalCacheReadTokens,
+			&entry.TotalCacheCreationTokens,
+			&entry.TotalCost,
+			&entry.EffectiveCost,
+		); err != nil {
+			return nil, err
+		}
+		entry.TotalRequests = entry.SuccessRequests + entry.ErrorRequests
+		stats = append(stats, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
 // isToday参数控制是否计算最近一分钟数据（仅本日有意义）
 // [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计

@@ -1025,6 +1025,18 @@ body {
   background: linear-gradient(135deg, #4285f4, #1a73e8);
 }
 
+.channel-icon--zai {
+  background: linear-gradient(135deg, #0f766e, #14b8a6);
+}
+
+.channel-icon--cursor {
+  background: linear-gradient(135deg, #18181b, #3f3f46);
+}
+
+.channel-icon--grok {
+  background: linear-gradient(135deg, #ca8a04, #eab308);
+}
+
 .channel-cost {
   text-align: right;
 }
