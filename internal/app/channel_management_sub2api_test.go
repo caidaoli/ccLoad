@@ -147,6 +147,137 @@ func TestSub2APIBalanceSummaryFallbacksOnceToActive(t *testing.T) {
 	}
 }
 
+func TestSub2APIBalanceKeepsAuthBalanceWhenSubscriptionsFail(t *testing.T) {
+	t.Parallel()
+	summaryTarget := "https://sub2.example.com/api/v1/subscriptions/summary"
+	activeTarget := "https://sub2.example.com/api/v1/subscriptions/active"
+	tests := []struct {
+		name string
+		tail []sub2APIStep
+	}{
+		{
+			name: "summary transport error",
+			tail: []sub2APIStep{{
+				method: http.MethodGet, target: summaryTarget, err: errors.New("raw-upstream-secret"),
+			}},
+		},
+		{
+			name: "summary HTTP error does not probe active",
+			tail: []sub2APIStep{{
+				method: http.MethodGet, target: summaryTarget, status: http.StatusBadGateway,
+				body: `{"code":0,"message":"raw-upstream-secret","data":{"subscriptions":[]}}`,
+			}},
+		},
+		{
+			name: "summary malformed does not probe active",
+			tail: []sub2APIStep{{
+				method: http.MethodGet, target: summaryTarget, status: http.StatusOK, body: `raw-upstream-secret`,
+			}},
+		},
+		{
+			name: "summary structure invalid does not probe active",
+			tail: []sub2APIStep{{
+				method: http.MethodGet, target: summaryTarget, status: http.StatusOK,
+				body: `{"code":0,"message":"raw-upstream-secret","data":{"active_count":1}}`,
+			}},
+		},
+		{
+			name: "summary and active HTTP unavailable",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusNotFound,
+					body: `{"code":404,"message":"raw-upstream-secret","data":null}`,
+				},
+				{
+					method: http.MethodGet, target: activeTarget, status: http.StatusBadGateway,
+					body: `{"code":502,"message":"raw-upstream-secret","data":null}`,
+				},
+			},
+		},
+		{
+			name: "active transport error",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusMethodNotAllowed,
+					body: `{"code":405,"message":"raw-upstream-secret","data":null}`,
+				},
+				{method: http.MethodGet, target: activeTarget, err: errors.New("raw-upstream-secret")},
+			},
+		},
+		{
+			name: "active business failure",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusOK,
+					body: `{"code":17,"message":"raw-upstream-secret","data":null}`,
+				},
+				{
+					method: http.MethodGet, target: activeTarget, status: http.StatusOK,
+					body: `{"code":18,"message":"raw-upstream-secret","data":null}`,
+				},
+			},
+		},
+		{
+			name: "active malformed",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusNotFound,
+					body: `{"code":404,"message":"raw-upstream-secret","data":null}`,
+				},
+				{method: http.MethodGet, target: activeTarget, status: http.StatusOK, body: `raw-upstream-secret`},
+			},
+		},
+		{
+			name: "active structure invalid",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusNotFound,
+					body: `{"code":404,"message":"raw-upstream-secret","data":null}`,
+				},
+				{
+					method: http.MethodGet, target: activeTarget, status: http.StatusOK,
+					body: `{"code":0,"message":"raw-upstream-secret","data":null}`,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			steps := append([]sub2APIStep{{
+				method: http.MethodGet, target: "https://sub2.example.com/api/v1/auth/me",
+				status: http.StatusOK, body: `{"code":0,"message":"","data":{"balance":6.25}}`,
+			}}, tt.tail...)
+			script := &sub2APIScript{t: t, steps: steps}
+			service := newChannelManagementService(nil, func(*model.Config) *http.Client {
+				return &http.Client{Transport: script}
+			})
+			snapshot, status, err := service.refreshSub2APIBalance(
+				context.Background(), &model.Config{ID: 1, AuthType: model.AuthTypeAPIKey},
+				sub2APITestEnvelope(model.ChannelManagementProfileSub2API),
+			)
+			if err != nil || status != http.StatusOK || snapshot == nil || snapshot.BalanceUSD == nil ||
+				*snapshot.BalanceUSD != 6.25 || len(snapshot.Subscriptions) != 0 {
+				t.Fatalf("degraded balance = (%#v, %d, %v)", snapshot, status, err)
+			}
+			requests := script.finishedRequests()
+			if len(requests) != len(steps) {
+				t.Fatalf("subscription failure request count = %d, want %d", len(requests), len(steps))
+			}
+			active := 0
+			for _, request := range requests {
+				if request.target == activeTarget {
+					active++
+				}
+			}
+			if active > 1 {
+				t.Fatalf("active fallback repeated: %#v", requests)
+			}
+		})
+	}
+}
+
 func TestSub2APISubscriptionPercentageRequiresFinitePair(t *testing.T) {
 	t.Parallel()
 	items := []sub2APISummaryItem{
@@ -252,6 +383,95 @@ func TestChannelManagementServiceSub2APIRefreshBalancePersistsSnapshot(t *testin
 		envelope.State.LastBalance == nil || envelope.State.LastBalance.BalanceUSD == nil ||
 		*envelope.State.LastBalance.BalanceUSD != 7.5 || envelope.State.LastBalance.SampledAt != fixedNow {
 		t.Fatalf("stored balance = %#v", envelope)
+	}
+}
+
+func TestChannelManagementServiceSub2APIBalanceDegradationPersistsAuthBalance(t *testing.T) {
+	t.Parallel()
+	summaryTarget := "https://sub2.example.com/api/v1/subscriptions/summary"
+	activeTarget := "https://sub2.example.com/api/v1/subscriptions/active"
+	tests := []struct {
+		name string
+		tail []sub2APIStep
+	}{
+		{
+			name: "summary and active unavailable",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusNotFound,
+					body: `{"code":404,"message":"raw-upstream-secret","data":null}`,
+				},
+				{
+					method: http.MethodGet, target: activeTarget, status: http.StatusBadGateway,
+					body: `{"code":502,"message":"raw-upstream-secret","data":null}`,
+				},
+			},
+		},
+		{
+			name: "summary malformed",
+			tail: []sub2APIStep{{
+				method: http.MethodGet, target: summaryTarget, status: http.StatusOK, body: `raw-upstream-secret`,
+			}},
+		},
+		{
+			name: "active malformed",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusMethodNotAllowed,
+					body: `{"code":405,"message":"raw-upstream-secret","data":null}`,
+				},
+				{method: http.MethodGet, target: activeTarget, status: http.StatusOK, body: `raw-upstream-secret`},
+			},
+		},
+		{
+			name: "active transport error",
+			tail: []sub2APIStep{
+				{
+					method: http.MethodGet, target: summaryTarget, status: http.StatusOK,
+					body: `{"code":17,"message":"raw-upstream-secret","data":null}`,
+				},
+				{method: http.MethodGet, target: activeTarget, err: errors.New("raw-upstream-secret")},
+			},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newInMemoryServer(t)
+			cfg := createChannelManagementTestConfig(t, server.store, "sub2-degraded-"+strings.ReplaceAll(tt.name, " ", "-"))
+			cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, sub2APITestEnvelope(model.ChannelManagementProfileSub2API))
+			steps := append([]sub2APIStep{{
+				method: http.MethodGet, target: "https://sub2.example.com/api/v1/auth/me",
+				status: http.StatusOK, body: `{"code":0,"message":"","data":{"balance":8.75}}`,
+			}}, tt.tail...)
+			script := &sub2APIScript{t: t, steps: steps}
+			service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+				return &http.Client{Transport: script}
+			})
+			fixedNow := time.Date(2026, time.August, 25, 10, 0, 0, 0, time.UTC)
+			service.now = func() time.Time { return fixedNow }
+
+			view, err := service.RefreshBalance(context.Background(), cfg.ID)
+			if err != nil || view == nil || view.Balance == nil || view.Balance.Remaining != 8.75 ||
+				len(view.Balance.Subscriptions) != 0 || view.Balance.SampledAt != fixedNow {
+				t.Fatalf("degraded RefreshBalance = (%#v, %v)", view, err)
+			}
+			script.finishedRequests()
+			stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+			if err != nil {
+				t.Fatalf("parse stored envelope: %v", err)
+			}
+			if envelope.State.LastBalance == nil || envelope.State.LastBalance.BalanceUSD == nil ||
+				*envelope.State.LastBalance.BalanceUSD != 8.75 ||
+				len(envelope.State.LastBalance.Subscriptions) != 0 || envelope.State.LastBalance.SampledAt != fixedNow {
+				t.Fatalf("degraded balance was not persisted: %#v", envelope.State.LastBalance)
+			}
+		})
 	}
 }
 
@@ -388,7 +608,7 @@ func TestSub2APIProCheckinStateMachine(t *testing.T) {
 				status: http.StatusForbidden, wrote: true,
 				body: `{"code":403,"message":"translated secret","reason":"DAILY_CHECKIN_ROLE_FORBIDDEN","data":null}`,
 			}},
-			wantStatus: newAPICheckinUnsupported, wantStatusCode: http.StatusForbidden,
+			wantStatus: "credential_forbidden", wantStatusCode: http.StatusForbidden,
 			wantCheckedAt: fixedNow, wantPosts: 1,
 		},
 		{
@@ -409,6 +629,26 @@ func TestSub2APIProCheckinStateMachine(t *testing.T) {
 				body:   `{"code":401,"message":"private-token","reason":"DAILY_CHECKIN_ROLE_FORBIDDEN","data":null}`,
 			}},
 			wantStatus: newAPICheckinCredentialError, wantStatusCode: http.StatusUnauthorized, wantCheckedAt: fixedNow,
+		},
+		{
+			name: "written bad gateway with unknown reason checked readback wins",
+			steps: append([]sub2APIStep{statusUnchecked, {
+				method: http.MethodPost, target: "https://sub2.example.com/api/v1/redeem/checkin",
+				status: http.StatusBadGateway, wrote: true,
+				body: `{"code":502,"message":"raw-upstream-secret","reason":"UPSTREAM_UNAVAILABLE","data":null}`,
+			}, statusChecked}, balance...),
+			wantStatus: newAPICheckinAlreadyChecked, wantStatusCode: http.StatusBadGateway,
+			wantCheckedAt: fixedNow, wantBalance: true, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "written rate limit with unknown reason unchecked is uncertain",
+			steps: []sub2APIStep{statusUnchecked, {
+				method: http.MethodPost, target: "https://sub2.example.com/api/v1/redeem/checkin",
+				status: http.StatusTooManyRequests, wrote: true,
+				body: `{"code":429,"message":"raw-upstream-secret","reason":"RATE_LIMITED","data":null}`,
+			}, statusUnchecked},
+			wantStatus: newAPICheckinUncertain, wantStatusCode: http.StatusTooManyRequests,
+			wantCheckedAt: fixedNow, wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "written transport failure checked readback wins",

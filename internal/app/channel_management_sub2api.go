@@ -21,6 +21,7 @@ const (
 	sub2APIReasonCheckinDisabled      = "DAILY_CHECKIN_DISABLED"
 	sub2APIReasonCheckinRoleForbidden = "DAILY_CHECKIN_ROLE_FORBIDDEN"
 	sub2APIReasonCheckinAlreadyDone   = "DAILY_CHECKIN_ALREADY_DONE"
+	sub2APICheckinCredentialForbidden = "credential_forbidden"
 )
 
 type sub2APIResponse[T any] struct {
@@ -143,12 +144,25 @@ func (s *channelManagementService) checkInSub2APIPro(
 			}
 			return result, nil, nil
 		}
-		return nil, nil, errManagementRequestFailed
+		if !postResult.WroteRequest {
+			return nil, nil, errManagementRequestFailed
+		}
+		return s.resolveAmbiguousSub2APIProCheckin(ctx, cfg, envelope, baseURL, postResult, checkedAt)
 	}
 	if postResult == nil || !postResult.WroteRequest {
 		return nil, nil, postErr
 	}
+	return s.resolveAmbiguousSub2APIProCheckin(ctx, cfg, envelope, baseURL, postResult, checkedAt)
+}
 
+func (s *channelManagementService) resolveAmbiguousSub2APIProCheckin(
+	ctx context.Context,
+	cfg *model.Config,
+	envelope *model.ChannelManagementEnvelope,
+	baseURL string,
+	postResult *managementHTTPResult,
+	checkedAt time.Time,
+) (*channelCheckinResult, *model.ChannelManagementBalanceSnapshot, error) {
 	readback, _, readbackErr := s.getSub2APIProCheckinStatus(ctx, cfg, envelope, baseURL)
 	if readbackErr == nil && *readback.Data.CheckedInToday {
 		result := newAPICheckinResult(newAPICheckinAlreadyChecked, managementStatusCode(postResult), checkedAt)
@@ -221,7 +235,7 @@ func classifySub2APIProCheckinFailure(statusCode int, reason string) string {
 	case sub2APIReasonCheckinDisabled:
 		return newAPICheckinSkippedDisabled
 	case sub2APIReasonCheckinRoleForbidden:
-		return newAPICheckinUnsupported
+		return sub2APICheckinCredentialForbidden
 	case sub2APIReasonCheckinAlreadyDone:
 		return newAPICheckinAlreadyChecked
 	}
@@ -267,16 +281,13 @@ func (s *channelManagementService) refreshSub2APIBalance(
 		return nil, authResult.StatusCode, errInvalidManagementResponse
 	}
 
-	subscriptions, status, err := s.fetchSub2APISubscriptions(ctx, cfg, envelope, baseURL)
-	if err != nil {
-		return nil, status, err
-	}
+	subscriptions, _, _ := s.fetchSub2APISubscriptions(ctx, cfg, envelope, baseURL)
 	balance := *authResponse.Data.Balance
 	return &model.ChannelManagementBalanceSnapshot{
 		BalanceUSD:    &balance,
 		Subscriptions: subscriptions,
 		SampledAt:     s.now(),
-	}, status, nil
+	}, authResult.StatusCode, nil
 }
 
 func (s *channelManagementService) fetchSub2APISubscriptions(
