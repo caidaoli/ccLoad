@@ -4,13 +4,15 @@ const assert = require('node:assert/strict');
 const {
   normalizeInlineKeyRow,
   selectAvailableInlineKeys,
-  selectModelFetchKeys,
+  selectModelFetchKeyEntries,
+  countConfiguredInlineKeys,
   selectFirstEnabledInlineKey,
   selectModelsForInlineKeyTest,
   openKeyModelScopeModal,
   closeKeyModelScopeModal,
   detectKeyModelScope,
-  initKeyModelScopeModalEvents
+  initKeyModelScopeModalEvents,
+  setVisibleKeyModelScopeSelection
 } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
@@ -29,7 +31,8 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, 
     editingChannelId: channelId,
     editingChannelAuthType: authType,
     selectAvailableInlineKeys,
-    selectModelFetchKeys,
+    selectModelFetchKeyEntries,
+    countConfiguredInlineKeys,
     selectFirstEnabledInlineKey,
     fetchAPIWithAuth: onFetch,
     alert: onError,
@@ -73,6 +76,66 @@ test('inline Key rows preserve and normalize model scopes', () => {
     { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
     [{ model: '*', disabled: false }]
   ), ['gpt-5']);
+});
+
+test('model discovery preserves duplicate Key rows for exact scope mapping', () => {
+  assert.deepEqual(selectModelFetchKeyEntries([
+    { api_key: 'same-key' },
+    { api_key: 'same-key' }
+  ], []), [
+    { keyIndex: 0, apiKey: 'same-key' },
+    { keyIndex: 1, apiKey: 'same-key' }
+  ]);
+  assert.equal(countConfiguredInlineKeys([{ api_key: 'same-key' }, { api_key: 'same-key' }]), 2);
+});
+
+test('Key model scope bulk actions affect only visible models', () => {
+  const allowAll = { checked: true };
+  const count = { textContent: '' };
+  const status = { textContent: '', classList: { toggle() {} } };
+  const list = { setAttribute() {} };
+  const labels = [{ hidden: false }, { hidden: true }, { hidden: false }];
+  const checkboxes = labels.map((label, index) => ({
+    checked: index !== 2,
+    disabled: true,
+    closest: () => label
+  }));
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  const previousDocument = Object.getOwnPropertyDescriptor(global, 'document');
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    writable: true,
+    value: { t: (_key, values) => `${values.selected}/${values.total}` }
+  });
+  Object.defineProperty(global, 'document', {
+    configurable: true,
+    writable: true,
+    value: {
+      getElementById: id => ({
+        keyModelScopeAll: allowAll,
+        keyModelScopeSelectionCount: count,
+        keyModelScopeStatus: status,
+        keyModelScopeList: list
+      })[id] || null,
+      querySelectorAll: selector => selector.includes('input[name="keyAllowedModel"]') ? checkboxes : []
+    }
+  });
+
+  try {
+    assert.equal(setVisibleKeyModelScopeSelection('clear'), true);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [false, true, false]);
+    assert.equal(allowAll.checked, false);
+    assert.equal(count.textContent, '1/3');
+
+    assert.equal(setVisibleKeyModelScopeSelection('invert'), true);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true, true]);
+    assert.equal(count.textContent, '3/3');
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+    if (previousDocument) Object.defineProperty(global, 'document', previousDocument);
+    else delete global.document;
+  }
 });
 
 test('Escape closes only the topmost Key model scope modal', () => {
@@ -1183,6 +1246,7 @@ test('fetchModelsFromAPI sends every available API key', async () => {
 
   assert.deepEqual(requestBody.api_keys, ['enabled-key-1', 'enabled-key-2']);
   assert.equal(requestBody.api_key, undefined);
+  assert.equal(requestBody.per_key, true);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
 });
 
@@ -1215,7 +1279,82 @@ test('fetchModelsFromAPI uses the earliest recovery key when all enabled keys ar
   }
 
   assert.deepEqual(requestBody.api_keys, ['cooling-soon']);
+  assert.equal(requestBody.per_key, true);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
+});
+
+test('per-Key discovery proposals map out-of-order results back to original Key rows', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'sk-a', note: '', allowed_models: [] },
+    { api_key: 'sk-b', note: '', allowed_models: [] }
+  ], [
+    { model: 'logical-a', redirect_model: 'upstream-a' },
+    { model: 'common', redirect_model: '' },
+    { model: 'logical-b', redirect_model: 'upstream-b' }
+  ], [
+    { key_index: 1, models: [{ model: 'upstream-b' }, { model: 'common' }] },
+    { key_index: 0, models: [{ model: 'upstream-a' }, { model: 'common' }] }
+  ], [
+    { keyIndex: 0, apiKey: 'sk-a' },
+    { keyIndex: 1, apiKey: 'sk-b' }
+  ]);
+
+  assert.equal(result.changedCount, 2);
+  assert.equal(result.matchedCount, 2);
+  assert.equal(result.unmatchedCount, 0);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.rows.map(row => row.allowed_models), [
+    ['logical-a', 'common'],
+    ['common', 'logical-b']
+  ]);
+});
+
+test('per-Key discovery proposals remain atomic when one Key fails', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
+    { api_key: 'sk-a', note: '', allowed_models: [] },
+    { api_key: 'sk-cooling', note: '', allowed_models: ['keep-cooling'] },
+    { api_key: 'sk-b', note: '', allowed_models: [] }
+  ], [
+    { model: 'logical-a', redirect_model: 'upstream-a' },
+    { model: 'common', redirect_model: '' },
+    { model: 'logical-b', redirect_model: 'upstream-b' }
+  ], [
+    { key_index: 1, error: 'invalid api key', models: [] },
+    { key_index: 0, models: [{ model: 'upstream-a' }, { model: 'common' }] }
+  ], [
+    { keyIndex: 1, apiKey: 'sk-a' },
+    { keyIndex: 3, apiKey: 'sk-b' }
+  ]);
+
+  assert.equal(result.changedCount, 0);
+  assert.equal(result.matchedCount, 1);
+  assert.equal(result.unmatchedCount, 0);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.rows.map(row => row.allowed_models), [
+    ['keep-disabled'],
+    [],
+    ['keep-cooling'],
+    []
+  ]);
+});
+
+test('per-Key discovery proposals preserve scopes when detected models do not match', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes(
+    [{ api_key: 'sk-a', note: '', allowed_models: ['keep-me'] }],
+    [{ model: 'configured-model', redirect_model: '' }],
+    [{ key_index: 0, models: [{ model: 'unknown-upstream-model' }] }],
+    [{ keyIndex: 0, apiKey: 'sk-a' }]
+  );
+
+  assert.equal(result.changedCount, 0);
+  assert.equal(result.matchedCount, 0);
+  assert.equal(result.unmatchedCount, 1);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.rows[0].allowed_models, ['keep-me']);
 });
 
 test('fetchModelsFromAPI uses the saved Antigravity channel without submitting its OAuth token', async () => {

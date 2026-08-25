@@ -2,6 +2,9 @@ package app
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,10 +17,15 @@ import (
 //
 // 说明：使用 RWMutex + map 取代 sync.Map，原因是读多写少且保持类型安全。
 type KeySelector struct {
-	// 轮询计数器：channelID -> *rrCounter
+	// 轮询计数器按渠道和候选 Key 集合隔离，避免不同模型组互相推进游标。
 	// 渠道删除时需要清理对应计数器，避免rrCounters无界增长。
-	rrCounters map[int64]*rrCounter
+	rrCounters map[rrCounterScope]*rrCounter
 	rrMutex    sync.RWMutex
+}
+
+type rrCounterScope struct {
+	channelID int64
+	keySetID  string
 }
 
 // rrCounter 轮询计数器（简化版）
@@ -29,7 +37,7 @@ type rrCounter struct {
 // NewKeySelector 创建Key选择器
 func NewKeySelector() *KeySelector {
 	return &KeySelector{
-		rrCounters: make(map[int64]*rrCounter),
+		rrCounters: make(map[rrCounterScope]*rrCounter),
 	}
 }
 
@@ -138,10 +146,33 @@ func (ks *KeySelector) selectSequential(apiKeys []*model.APIKey, excludeKeys map
 	return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 }
 
-// getOrCreateCounter 获取或创建渠道的轮询计数器（双重检查锁定）
-func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
+func newRRCounterScope(channelID int64, apiKeys []*model.APIKey) rrCounterScope {
+	keyIndices := make([]int, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		if apiKey != nil {
+			keyIndices = append(keyIndices, apiKey.KeyIndex)
+		}
+	}
+	sort.Ints(keyIndices)
+	var keySet strings.Builder
+	previous := 0
+	hasPrevious := false
+	for _, keyIndex := range keyIndices {
+		if hasPrevious && keyIndex == previous {
+			continue
+		}
+		keySet.WriteString(strconv.Itoa(keyIndex))
+		keySet.WriteByte(',')
+		previous = keyIndex
+		hasPrevious = true
+	}
+	return rrCounterScope{channelID: channelID, keySetID: keySet.String()}
+}
+
+// getOrCreateCounter 获取或创建候选 Key 集合的轮询计数器（双重检查锁定）。
+func (ks *KeySelector) getOrCreateCounter(scope rrCounterScope) *rrCounter {
 	ks.rrMutex.RLock()
-	counter, ok := ks.rrCounters[channelID]
+	counter, ok := ks.rrCounters[scope]
 	ks.rrMutex.RUnlock()
 
 	if ok {
@@ -152,10 +183,10 @@ func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 	defer ks.rrMutex.Unlock()
 
 	// 再次检查，避免多个goroutine同时创建
-	if counter, ok = ks.rrCounters[channelID]; !ok {
+	if counter, ok = ks.rrCounters[scope]; !ok {
 		counter = &rrCounter{}
 		counter.lastAccess.Store(time.Now().UnixNano())
-		ks.rrCounters[channelID] = counter
+		ks.rrCounters[scope] = counter
 	}
 	return counter
 }
@@ -164,7 +195,11 @@ func (ks *KeySelector) getOrCreateCounter(channelID int64) *rrCounter {
 // 在渠道被删除时调用，避免rrCounters长期积累。
 func (ks *KeySelector) RemoveChannelCounter(channelID int64) {
 	ks.rrMutex.Lock()
-	delete(ks.rrCounters, channelID)
+	for scope := range ks.rrCounters {
+		if scope.channelID == channelID {
+			delete(ks.rrCounters, scope)
+		}
+	}
 	ks.rrMutex.Unlock()
 }
 
@@ -179,13 +214,13 @@ func (ks *KeySelector) CleanupInactiveCounters(maxIdleTime time.Duration) {
 	cutoff := time.Now().Add(-maxIdleTime).UnixNano()
 
 	ks.rrMutex.Lock()
-	for channelID, counter := range ks.rrCounters {
+	for scope, counter := range ks.rrCounters {
 		if counter == nil {
-			delete(ks.rrCounters, channelID)
+			delete(ks.rrCounters, scope)
 			continue
 		}
 		if counter.lastAccess.Load() < cutoff {
-			delete(ks.rrCounters, channelID)
+			delete(ks.rrCounters, scope)
 		}
 	}
 	ks.rrMutex.Unlock()
@@ -197,7 +232,7 @@ func (ks *KeySelector) selectRoundRobin(channelID int64, apiKeys []*model.APIKey
 	keyCount := len(apiKeys)
 	now := time.Now()
 
-	counter := ks.getOrCreateCounter(channelID)
+	counter := ks.getOrCreateCounter(newRRCounterScope(channelID, apiKeys))
 	counter.lastAccess.Store(now.UnixNano())
 	startIdx := int(counter.counter.Add(1) % uint32(keyCount)) //nolint:gosec // G115: keyCount 来自 API Keys 切片长度，不可能溢出
 

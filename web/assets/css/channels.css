@@ -1282,7 +1282,27 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .key-model-scope-bulk-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       margin-bottom: 12px;
+    }
+
+    .key-model-scope-bulk-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .key-model-scope-selection-count {
+      flex: 0 0 auto;
+      color: var(--neutral-500);
+      font-size: 12px;
     }
 
     .key-model-scope-fieldset {
@@ -1349,6 +1369,11 @@
     @media (max-width: 640px) {
       .key-model-scope-toolbar {
         grid-template-columns: 1fr;
+      }
+
+      .key-model-scope-bulk-actions {
+        align-items: flex-start;
+        flex-direction: column;
       }
     }
 

@@ -2947,6 +2947,84 @@ function areModelRowsEqual(left, right) {
   });
 }
 
+function normalizeDetectedModelNames(entries) {
+  const seen = new Set();
+  const names = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    for (const value of [entry?.model, entry?.redirect_model]) {
+      const name = String(value || '').trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function detectedChannelModels(modelRows, entries) {
+  const detectedNames = normalizeDetectedModelNames(entries);
+  const detected = new Set(detectedNames.map(name => name.toLowerCase()));
+  const matched = [];
+  const seen = new Set();
+  for (const row of Array.isArray(modelRows) ? modelRows : []) {
+    const logicalModel = String(row?.model || '').trim();
+    if (!logicalModel || logicalModel === '*') continue;
+    const upstreamModel = String(row?.redirect_model || logicalModel).trim();
+    if (!detected.has(logicalModel.toLowerCase()) && !detected.has(upstreamModel.toLowerCase())) continue;
+    const key = logicalModel.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    matched.push(logicalModel);
+  }
+  const wildcard = (Array.isArray(modelRows) ? modelRows : [])
+    .some(row => String(row?.model || '').trim() === '*');
+  return matched.length > 0 || !wildcard ? matched : detectedNames;
+}
+
+function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntries) {
+  const originalRows = (Array.isArray(keyRows) ? keyRows : []).map(row => ({
+    ...row,
+    allowed_models: Array.isArray(row?.allowed_models) ? [...row.allowed_models] : []
+  }));
+  const rows = originalRows.map(row => ({ ...row, allowed_models: [...row.allowed_models] }));
+  const results = new Map(
+    (Array.isArray(keyModels) ? keyModels : [])
+      .filter(Boolean)
+      .map(result => [Number(result.key_index), result])
+  );
+  let changedCount = 0;
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+  for (const [requestIndex, requestEntry] of (Array.isArray(requestEntries) ? requestEntries : []).entries()) {
+    const result = results.get(requestIndex);
+    if (!result || result.error || !Array.isArray(result.models) || result.models.length === 0) continue;
+    const rowIndex = Number(requestEntry?.keyIndex);
+    const row = rows[rowIndex];
+    if (!row || String(row.api_key || '').trim() !== String(requestEntry?.apiKey || '').trim()) continue;
+    const allowedModels = detectedChannelModels(modelRows, result.models);
+    if (allowedModels.length === 0) {
+      unmatchedCount++;
+      continue;
+    }
+    matchedCount++;
+    const current = (row.allowed_models || []).map(name => String(name).toLowerCase());
+    const next = allowedModels.map(name => name.toLowerCase());
+    if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
+      row.allowed_models = allowedModels;
+      changedCount++;
+    }
+  }
+  const complete = matchedCount === (Array.isArray(requestEntries) ? requestEntries.length : 0);
+  return {
+    rows: complete ? rows : originalRows,
+    changedCount: complete ? changedCount : 0,
+    matchedCount,
+    unmatchedCount,
+    complete
+  };
+}
+
 function quickAddFieldKind(name) {
   const normalized = String(name || '').trim().toLowerCase();
   const compact = normalized.replace(/[^a-z0-9密钥]/g, '');
@@ -3279,6 +3357,8 @@ function initQuickAddChannelModalEvents() {
 async function fetchModelsFromAPI() {
   let endpoint;
   let fetchOptions;
+  let modelFetchEntries = [];
+  let skippedKeyCount = 0;
   if (['antigravity_oauth', 'codex_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType)) {
     if (!editingChannelId) {
       if (window.showError) window.showError(window.t('channels.saveBeforeModelTest'));
@@ -3289,7 +3369,13 @@ async function fetchModelsFromAPI() {
   } else {
     const urls = getValidInlineURLConfigs();
     const channelUrl = urls[0]?.url || '';
-    const availableKeys = selectModelFetchKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
+    const keyRows = getInlineKeyRows();
+    modelFetchEntries = selectModelFetchKeyEntries(keyRows, currentChannelKeyCooldowns);
+    const availableKeys = modelFetchEntries.map(entry => entry.apiKey);
+    skippedKeyCount = Math.max(
+      0,
+      countConfiguredInlineKeys(keyRows) - modelFetchEntries.length
+    );
 
     if (!channelUrl) {
       if (window.showError) {
@@ -3315,7 +3401,8 @@ async function fetchModelsFromAPI() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         urls,
-        api_keys: availableKeys
+        api_keys: availableKeys,
+        per_key: true
       })
     };
   }
@@ -3324,9 +3411,13 @@ async function fetchModelsFromAPI() {
     const response = await fetchAPIWithAuth(endpoint, fetchOptions);
     if (!response.success) throw new Error(response.error || window.t('channels.fetchModelsFailed', { error: '' }));
     const data = response.data || {};
+    const keyModels = Array.isArray(data.key_models) ? data.key_models : [];
+    const failedKeyCount = keyModels.filter(result => result?.error).length;
+    let unmatchedKeyCount = 0;
 
     if (!data.models || data.models.length === 0) {
-      throw new Error(window.t('channels.noModelsFromApi'));
+      const firstKeyError = keyModels.find(result => result?.error)?.error;
+      throw new Error(firstKeyError || window.t('channels.noModelsFromApi'));
     }
 
     const previousRows = redirectTableData.map(row => ({
@@ -3346,11 +3437,51 @@ async function fetchModelsFromAPI() {
     renderRedirectTable();
     if (!areModelRowsEqual(previousRows, redirectTableData)) markChannelFormDirty();
 
+    if (modelFetchEntries.length > 0 && keyModels.length > 0) {
+      const scopeProposal = proposeFetchedKeyModelScopes(
+        getInlineKeyRows(),
+        redirectTableData,
+        keyModels,
+        modelFetchEntries
+      );
+      const completeScopeDetection = skippedKeyCount === 0 &&
+        failedKeyCount === 0 &&
+        keyModels.length === modelFetchEntries.length &&
+        scopeProposal.complete;
+      const shouldApply = completeScopeDetection && scopeProposal.changedCount > 0 &&
+        typeof window.confirm === 'function' &&
+        window.confirm(window.t('channels.applyFetchedKeyModelsConfirm', { count: scopeProposal.changedCount }));
+      if (shouldApply && scopeProposal.changedCount > 0) {
+        inlineKeyTableData = scopeProposal.rows;
+        renderInlineKeyTable();
+        markChannelFormDirty();
+        if (window.showSuccess) {
+          window.showSuccess(window.t('channels.appliedFetchedKeyModels', { count: scopeProposal.changedCount }));
+        }
+      }
+      unmatchedKeyCount = scopeProposal.unmatchedCount;
+    }
+
     const source = data.source === 'api' ? window.t('channels.fetchModelsSource.api') : window.t('channels.fetchModelsSource.predefined');
     if (window.showSuccess) {
       window.showSuccess(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, added: replacement.added }));
     } else {
       alert(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, added: replacement.added }));
+    }
+
+    const warnings = [];
+    if (failedKeyCount > 0) {
+      warnings.push(window.t('channels.fetchModelsPartialFailed', { failed: failedKeyCount }));
+    }
+    if (skippedKeyCount > 0) {
+      warnings.push(window.t('channels.fetchModelsSkippedKeys', { count: skippedKeyCount }));
+    }
+    if (unmatchedKeyCount > 0) {
+      warnings.push(window.t('channels.fetchModelsUnmatchedKeys', { count: unmatchedKeyCount }));
+    }
+    if (warnings.length > 0) {
+      if (window.showWarning) window.showWarning(warnings.join(' '));
+      else alert(warnings.join(' '));
     }
 
   } catch (error) {
@@ -3638,6 +3769,7 @@ if (typeof module !== 'undefined' && module.exports) {
     mergeModelRowsWithFetchedModels,
     openBatchModelImportModal,
     parseQuickAddChannelInfo,
+    proposeFetchedKeyModelScopes,
     saveChannel,
     testRedirectModel,
     toggleModelDisabledState

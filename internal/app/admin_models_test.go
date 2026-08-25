@@ -118,7 +118,7 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 			case "Bearer sk-b":
 				_, _ = w.Write([]byte(`{"data":[{"id":"model-b"},{"id":"common"}]}`))
 			default:
-				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				http.Error(w, "invalid api key sk-bad", http.StatusUnauthorized)
 			}
 		}))
 		t.Cleanup(perKeyUpstream.Close)
@@ -149,6 +149,33 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 		if resp.Data.KeyModels[2].KeyIndex != 2 || len(resp.Data.KeyModels[2].Models) != 2 {
 			t.Fatalf("key 2 result=%+v", resp.Data.KeyModels[2])
+		}
+	})
+
+	t.Run("per-key discovery fails when every key fails", func(t *testing.T) {
+		failedUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid api key sk-secret", http.StatusUnauthorized)
+		}))
+		t.Cleanup(failedUpstream.Close)
+
+		payload := map[string]any{
+			"protocol": "openai",
+			"urls":     []map[string]any{{"url": failedUpstream.URL, "protocols": []string{"openai"}}},
+			"api_keys": []string{"sk-bad-a", "sk-bad-b"},
+			"per_key":  true,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200 body=%s", w.Code, w.Body.String())
+		}
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if resp.Success || !strings.Contains(resp.Error, "所有 API Key 模型探测均失败") {
+			t.Fatalf("unexpected response: %s", w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "sk-secret") {
+			t.Fatalf("response leaked upstream error body: %s", w.Body.String())
 		}
 	})
 

@@ -868,6 +868,8 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 		KeyModels: make([]FetchKeyModelsItem, 0, len(apiKeys)),
 	}
 	seenModels := make(map[string]struct{})
+	successfulKeys := 0
+	var firstKeyErr error
 	for _, apiKey := range apiKeys {
 		if apiKey == nil || strings.TrimSpace(apiKey.APIKey) == "" {
 			continue
@@ -877,10 +879,22 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey},
 		)
 		if err != nil {
-			item.Error = err.Error()
+			item.Error = publicFetchModelsError(err)
 			response.KeyModels = append(response.KeyModels, item)
+			if firstKeyErr == nil {
+				firstKeyErr = errors.New(item.Error)
+			}
 			continue
 		}
+		if len(fetched.Models) == 0 {
+			item.Error = "上游未返回任何模型"
+			response.KeyModels = append(response.KeyModels, item)
+			if firstKeyErr == nil {
+				firstKeyErr = errors.New(item.Error)
+			}
+			continue
+		}
+		successfulKeys++
 		item.Models = append(item.Models, fetched.Models...)
 		item.Protocol = fetched.Protocol
 		item.Source = fetched.Source
@@ -899,7 +913,26 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 			response.Models = append(response.Models, entry)
 		}
 	}
+	if successfulKeys == 0 {
+		if firstKeyErr != nil {
+			return nil, fmt.Errorf("所有 API Key 模型探测均失败: %w", firstKeyErr)
+		}
+		return nil, errors.New("所有 API Key 模型探测均失败")
+	}
 	return response, nil
+}
+
+func publicFetchModelsError(err error) string {
+	if err == nil {
+		return "模型探测失败"
+	}
+	if statusCode, _, ok := parseFetchModelsStatus(err.Error()); ok {
+		return fmt.Sprintf("模型探测失败: 上游返回 HTTP %d", statusCode)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		return "模型探测失败: 请求超时"
+	}
+	return "模型探测失败"
 }
 
 func shouldTryNextKeyOnFetchModelsError(err error) bool {

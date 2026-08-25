@@ -69,40 +69,41 @@ function getValidInlineKeyRows() {
 }
 
 function selectAvailableInlineKeys(rows, states) {
-  const unavailableIndices = new Set(
-    (Array.isArray(states) ? states : [])
-      .filter(state => state && (state.disabled || Number(state.cooldown_remaining_ms || 0) > 0))
-      .map(state => Number(state.key_index))
-  );
-
-  const keys = [];
-  for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
-    const apiKey = normalizeInlineKeyRow(row).api_key;
-    if (apiKey && !unavailableIndices.has(index)) keys.push(apiKey);
-  }
-  return [...new Set(keys)];
+  return [...new Set(selectModelFetchKeyEntries(rows, states, false).map(entry => entry.apiKey))];
 }
 
-function selectModelFetchKeys(rows, states) {
-  const availableKeys = selectAvailableInlineKeys(rows, states);
-  if (availableKeys.length > 0) return availableKeys;
-
+function selectModelFetchKeyEntries(rows, states, allowCooldownFallback = true) {
   const statesByIndex = new Map(
     (Array.isArray(states) ? states : [])
       .filter(Boolean)
       .map(state => [Number(state.key_index), state])
   );
+  const available = [];
   let fallback = null;
   for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const apiKey = normalizeInlineKeyRow(row).api_key;
     const state = statesByIndex.get(index);
     const cooldownRemaining = Number(state?.cooldown_remaining_ms || 0);
-    if (!apiKey || state?.disabled || cooldownRemaining <= 0) continue;
+    if (!apiKey || state?.disabled) continue;
+    if (cooldownRemaining <= 0) {
+      available.push({ keyIndex: index, apiKey });
+      continue;
+    }
     if (!fallback || cooldownRemaining < fallback.cooldownRemaining) {
-      fallback = { apiKey, cooldownRemaining };
+      fallback = { keyIndex: index, apiKey, cooldownRemaining };
     }
   }
-  return fallback ? [fallback.apiKey] : [];
+  if (available.length > 0 || !allowCooldownFallback || !fallback) return available;
+  return [{ keyIndex: fallback.keyIndex, apiKey: fallback.apiKey }];
+}
+
+function countConfiguredInlineKeys(rows) {
+  let count = 0;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const apiKey = normalizeInlineKeyRow(row).api_key;
+    if (apiKey) count++;
+  }
+  return count;
 }
 
 function selectFirstEnabledInlineKey(rows, states) {
@@ -190,6 +191,34 @@ function getKeyModelScopeCheckboxes() {
   return Array.from(document.querySelectorAll('#keyModelScopeList input[name="keyAllowedModel"]'));
 }
 
+function getVisibleKeyModelScopeCheckboxes() {
+  return getKeyModelScopeCheckboxes().filter(checkbox => !checkbox.closest?.('.key-model-scope-option')?.hidden);
+}
+
+function updateKeyModelScopeSelectionCount() {
+  const count = document.getElementById('keyModelScopeSelectionCount');
+  if (!count) return;
+  const checkboxes = getKeyModelScopeCheckboxes();
+  const selected = checkboxes.filter(checkbox => checkbox.checked).length;
+  count.textContent = window.t('channels.keyModelsSelectionCount', { selected, total: checkboxes.length });
+}
+
+function setVisibleKeyModelScopeSelection(mode) {
+  if (!['select', 'clear', 'invert'].includes(mode)) return false;
+  const visible = getVisibleKeyModelScopeCheckboxes();
+  if (visible.length === 0) return false;
+  const allowAll = document.getElementById('keyModelScopeAll');
+  if (allowAll) allowAll.checked = false;
+  for (const checkbox of visible) {
+    if (mode === 'select') checkbox.checked = true;
+    else if (mode === 'clear') checkbox.checked = false;
+    else checkbox.checked = !checkbox.checked;
+  }
+  syncKeyModelScopeControls();
+  setKeyModelScopeStatus();
+  return true;
+}
+
 function syncKeyModelScopeControls() {
   const allowAll = document.getElementById('keyModelScopeAll')?.checked !== false;
   const list = document.getElementById('keyModelScopeList');
@@ -197,6 +226,7 @@ function syncKeyModelScopeControls() {
     checkbox.disabled = allowAll;
   });
   list?.setAttribute('aria-disabled', String(allowAll));
+  updateKeyModelScopeSelectionCount();
 }
 
 function renderKeyModelScopeOptions(allowedModels) {
@@ -230,6 +260,7 @@ function renderKeyModelScopeOptions(allowedModels) {
     }
     list.appendChild(label);
   }
+  updateKeyModelScopeSelectionCount();
 }
 
 function openKeyModelScopeModal(index, trigger) {
@@ -388,6 +419,16 @@ function initKeyModelScopeModalEvents() {
   modal.querySelector('[data-action="confirm-key-model-scope"]')?.addEventListener('click', confirmKeyModelScope);
   document.getElementById('detectKeyModelScopeBtn')?.addEventListener('click', detectKeyModelScope);
   document.getElementById('keyModelScopeAll')?.addEventListener('change', syncKeyModelScopeControls);
+  modal.querySelector('[data-action="select-key-model-scope"]')?.addEventListener('click', () => {
+    setVisibleKeyModelScopeSelection('select');
+  });
+  modal.querySelector('[data-action="clear-key-model-scope"]')?.addEventListener('click', () => {
+    setVisibleKeyModelScopeSelection('clear');
+  });
+  modal.querySelector('[data-action="invert-key-model-scope"]')?.addEventListener('click', () => {
+    setVisibleKeyModelScopeSelection('invert');
+  });
+  document.getElementById('keyModelScopeList')?.addEventListener('change', updateKeyModelScopeSelectionCount);
   document.getElementById('keyModelScopeSearch')?.addEventListener('input', event => {
     filterKeyModelScopeOptions(event.target.value);
   });
@@ -1590,12 +1631,15 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeInlineKeyRow,
     normalizeKeyAllowedModels,
     selectAvailableInlineKeys,
-    selectModelFetchKeys,
+    selectModelFetchKeyEntries,
+    countConfiguredInlineKeys,
     selectFirstEnabledInlineKey,
     selectModelsForInlineKeyTest,
     openKeyModelScopeModal,
     closeKeyModelScopeModal,
     detectKeyModelScope,
-    initKeyModelScopeModalEvents
+    initKeyModelScopeModalEvents,
+    setVisibleKeyModelScopeSelection,
+    updateKeyModelScopeSelectionCount
   };
 }

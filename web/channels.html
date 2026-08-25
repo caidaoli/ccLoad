@@ -1311,6 +1311,17 @@
           <span data-i18n="channels.keyModelsDetect">探测此 Key</span>
         </button>
       </div>
+      <div class="key-model-scope-bulk-actions">
+        <div class="key-model-scope-bulk-buttons">
+          <button type="button" class="btn btn-secondary btn-sm" data-action="select-key-model-scope"
+            data-i18n="channels.keyModelsSelectAll">全选</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="clear-key-model-scope"
+            data-i18n="channels.keyModelsClearAll">取消全选</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="invert-key-model-scope"
+            data-i18n="channels.keyModelsInvert">反选</button>
+        </div>
+        <span id="keyModelScopeSelectionCount" class="key-model-scope-selection-count" aria-live="polite"></span>
+      </div>
       <fieldset class="key-model-scope-fieldset">
         <legend data-i18n="channels.keyModelsLegend">可用渠道模型</legend>
         <div id="keyModelScopeList" class="key-model-scope-list" aria-disabled="true"></div>

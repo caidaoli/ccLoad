@@ -322,6 +322,37 @@ func TestSelectAvailableKey_RoundRobin(t *testing.T) {
 	})
 }
 
+func TestSelectAvailableKey_RoundRobinIsolatedByCandidatePool(t *testing.T) {
+	t.Parallel()
+
+	selector := NewKeySelector()
+	firstPool := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "sk-a-0", KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 1, APIKey: "sk-a-1", KeyStrategy: model.KeyStrategyRoundRobin},
+	}
+	secondPool := []*model.APIKey{
+		{KeyIndex: 2, APIKey: "sk-b-0", KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 3, APIKey: "sk-b-1", KeyStrategy: model.KeyStrategyRoundRobin},
+	}
+	seenFirst := make(map[int]bool)
+	seenSecond := make(map[int]bool)
+	for range 2 {
+		firstIndex, _, err := selector.SelectAvailableKey(123, firstPool, nil)
+		if err != nil {
+			t.Fatalf("select first pool: %v", err)
+		}
+		secondIndex, _, err := selector.SelectAvailableKey(123, secondPool, nil)
+		if err != nil {
+			t.Fatalf("select second pool: %v", err)
+		}
+		seenFirst[firstIndex] = true
+		seenSecond[secondIndex] = true
+	}
+	if len(seenFirst) != 2 || len(seenSecond) != 2 {
+		t.Fatalf("candidate pools did not rotate independently: first=%v second=%v", seenFirst, seenSecond)
+	}
+}
+
 // TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex 验证RR不依赖KeyIndex连续性
 // [REGRESSION] 这个测试防止回归到"假设KeyIndex=0..N-1连续"的错误实现
 func TestSelectAvailableKey_RoundRobin_NonContiguousKeyIndex(t *testing.T) {
@@ -753,32 +784,35 @@ func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
 func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 	ks := NewKeySelector()
 
-	keys := []*model.APIKey{
+	expiredKeys := []*model.APIKey{
 		{KeyIndex: 10, APIKey: "k10", KeyStrategy: model.KeyStrategyRoundRobin},
 		{KeyIndex: 11, APIKey: "k11", KeyStrategy: model.KeyStrategyRoundRobin},
 	}
-
-	// 创建两个渠道计数器
-	if _, _, err := ks.SelectAvailableKey(100, keys, nil); err != nil {
-		t.Fatalf("SelectAvailableKey(channel=100) failed: %v", err)
-	}
-	if _, _, err := ks.SelectAvailableKey(200, keys, nil); err != nil {
-		t.Fatalf("SelectAvailableKey(channel=200) failed: %v", err)
+	activeKeys := []*model.APIKey{
+		{KeyIndex: 20, APIKey: "k20", KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 21, APIKey: "k21", KeyStrategy: model.KeyStrategyRoundRobin},
 	}
 
-	// 将 channel=100 标记为“很久没用”
-	expired := ks.getOrCreateCounter(100)
+	// 同一渠道的不同候选池必须独立过期。
+	if _, _, err := ks.SelectAvailableKey(100, expiredKeys, nil); err != nil {
+		t.Fatalf("SelectAvailableKey(expired pool) failed: %v", err)
+	}
+	if _, _, err := ks.SelectAvailableKey(100, activeKeys, nil); err != nil {
+		t.Fatalf("SelectAvailableKey(active pool) failed: %v", err)
+	}
+
+	expiredScope := newRRCounterScope(100, expiredKeys)
+	activeScope := newRRCounterScope(100, activeKeys)
+	expired := ks.getOrCreateCounter(expiredScope)
 	expired.lastAccess.Store(time.Now().Add(-48 * time.Hour).UnixNano())
-
-	// 保持 channel=200 活跃
-	active := ks.getOrCreateCounter(200)
+	active := ks.getOrCreateCounter(activeScope)
 	active.lastAccess.Store(time.Now().UnixNano())
 
 	ks.CleanupInactiveCounters(24 * time.Hour)
 
 	ks.rrMutex.RLock()
-	_, okExpired := ks.rrCounters[100]
-	_, okActive := ks.rrCounters[200]
+	_, okExpired := ks.rrCounters[expiredScope]
+	_, okActive := ks.rrCounters[activeScope]
 	ks.rrMutex.RUnlock()
 
 	if okExpired {
