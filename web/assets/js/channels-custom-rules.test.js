@@ -203,3 +203,124 @@ test('高级设置确定会等待超额设置保存，失败时保持对话框�
     global.window = previousWindow;
   }
 });
+
+test('高级设置确定会校验并提交管理账户草稿，校验失败时停留在“其他”页', async () => {
+  const modulePath = require.resolve('./channels-custom-rules.js');
+  const cachedModule = require.cache[modulePath];
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  let modalClosed = 0;
+  let committed = 0;
+  let managementValid = false;
+  const confirmButton = {
+    disabled: false,
+    setAttribute() {},
+    removeAttribute() {}
+  };
+  const modal = { classList: { remove() { modalClosed++; } } };
+  const otherPanel = {
+    classList: {
+      hidden: true,
+      toggle(name, force) { if (name === 'hidden') this.hidden = Boolean(force); },
+      contains(name) { return name === 'hidden' && this.hidden; }
+    }
+  };
+
+  delete require.cache[modulePath];
+  global.document = {
+    readyState: 'complete',
+    getElementById: id => {
+      if (id === 'customRulesModal') return modal;
+      if (id === 'advancedSettingsPanelOther') return otherPanel;
+      return null;
+    },
+    querySelector: selector => selector === '[data-action="apply-advanced-settings"]' ? confirmButton : null,
+    querySelectorAll: () => []
+  };
+  global.window = {
+    t: key => key,
+    validateManagementAccountDraft: () => managementValid,
+    commitManagementAccountDraft: () => {
+      if (!managementValid) return false;
+      committed++;
+      return true;
+    }
+  };
+  try {
+    const browserModule = require('./channels-custom-rules.js');
+
+    assert.equal(await browserModule.applyAdvancedSettingsFromForm(), false);
+    assert.equal(modalClosed, 0, '管理账户草稿非法时对话框保持打开');
+    assert.equal(committed, 0);
+    assert.equal(otherPanel.classList.hidden, false, '切换到“其他”页展示错误');
+
+    managementValid = true;
+    assert.equal(await browserModule.applyAdvancedSettingsFromForm(), true);
+    assert.equal(committed, 1);
+    assert.equal(modalClosed, 1);
+  } finally {
+    delete require.cache[modulePath];
+    if (cachedModule) require.cache[modulePath] = cachedModule;
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+});
+
+
+test('关闭高级设置会把焦点交还给打开它的按钮', () => {
+  const modulePath = require.resolve('./channels-custom-rules.js');
+  const cachedModule = require.cache[modulePath];
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const classNames = new Set();
+  const modal = {
+    classList: {
+      add(name) { classNames.add(name); },
+      remove(name) { classNames.delete(name); },
+      contains(name) { return classNames.has(name); }
+    }
+  };
+  const body = { tagName: 'BODY' };
+  let openerFocused = 0;
+  const opener = { isConnected: true, focus() { openerFocused++; } };
+  const insideModal = { isConnected: true, focus() {} };
+
+  delete require.cache[modulePath];
+  global.document = {
+    readyState: 'complete',
+    body,
+    activeElement: opener,
+    getElementById: id => (id === 'customRulesModal' ? modal : null),
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  global.window = { t: key => key };
+  try {
+    require('./channels-custom-rules.js');
+    const { openCustomRulesModal, closeCustomRulesModal } = global.window;
+
+    openCustomRulesModal();
+    assert.equal(modal.classList.contains('show'), true);
+
+    // 焦点在弹窗内部时关闭，必须回到触发按钮而不是留在 <body>。
+    global.document.activeElement = insideModal;
+    closeCustomRulesModal();
+    assert.equal(modal.classList.contains('show'), false);
+    assert.equal(openerFocused, 1);
+
+    // 再次关闭不应重复抢焦点。
+    closeCustomRulesModal();
+    assert.equal(openerFocused, 1);
+
+    // 无有效触发元素(焦点在 body)时关闭不得抛错、不得把焦点丢给 body。
+    global.document.activeElement = body;
+    openCustomRulesModal();
+    closeCustomRulesModal();
+    assert.equal(openerFocused, 1);
+  } finally {
+    delete require.cache[modulePath];
+    if (cachedModule) require.cache[modulePath] = cachedModule;
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+});

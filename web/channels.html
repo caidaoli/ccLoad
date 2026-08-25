@@ -40,6 +40,7 @@
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-management.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
@@ -1549,6 +1550,56 @@
               </div>
             </div>
           </div>
+          <fieldset id="channelManagementGroup" class="advanced-settings-management" hidden>
+            <legend class="advanced-settings-management-legend" data-i18n="channels.management.legend">管理账户</legend>
+            <div class="advanced-settings-other-field">
+              <label class="form-label" for="channelManagementProfile" data-i18n="channels.management.profile">管理类型</label>
+              <select id="channelManagementProfile" class="form-input" aria-describedby="channelManagementProfileHelp">
+                <option value="" data-i18n="channels.management.profileOff">不启用</option>
+                <option value="new_api" data-i18n="channels.management.profileNewAPI">New API</option>
+                <option value="sub2api" data-i18n="channels.management.profileSub2API">标准 Sub2API</option>
+                <option value="sub2api_pro" data-i18n="channels.management.profileSub2APIPro">Sub2API Pro</option>
+              </select>
+              <small id="channelManagementProfileHelp" class="advanced-settings-field-help" data-i18n="channels.management.profileHelp">选择上游面板类型后可刷新额度，New API 与 Sub2API Pro 还支持签到。</small>
+            </div>
+            <p id="channelManagementNotice" class="advanced-settings-management-notice" role="note" hidden></p>
+            <div id="channelManagementBaseURLField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementBaseURL" data-i18n="channels.management.baseURL">面板地址</label>
+              <input type="url" id="channelManagementBaseURL" class="form-input" autocomplete="off" spellcheck="false"
+                aria-describedby="channelManagementBaseURLHelp channelManagementBaseURLError">
+              <small id="channelManagementBaseURLHelp" class="advanced-settings-field-help" data-i18n="channels.management.baseURLHelp">面板根地址，例如 https://panel.example.com,不要包含路径或查询参数。</small>
+              <small id="channelManagementBaseURLError" class="advanced-settings-management-error" role="status" hidden></small>
+            </div>
+            <div id="channelManagementTokenField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementToken" data-i18n="channels.management.token">管理凭据</label>
+              <input type="password" id="channelManagementToken" class="form-input" autocomplete="off" spellcheck="false"
+                aria-describedby="channelManagementTokenHelp channelManagementTokenHint channelManagementTokenError">
+              <small id="channelManagementTokenHelp" class="advanced-settings-field-help"></small>
+              <small id="channelManagementTokenHint" class="advanced-settings-field-help" data-i18n="channels.management.tokenKeepHint" hidden>已配置凭据,留空表示保留现有凭据。</small>
+              <small id="channelManagementTokenError" class="advanced-settings-management-error" role="status" hidden></small>
+            </div>
+            <div id="channelManagementUserIDField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementUserID" data-i18n="channels.management.userID">用户 ID</label>
+              <input type="text" id="channelManagementUserID" class="form-input" inputmode="numeric" autocomplete="off"
+                aria-describedby="channelManagementUserIDHelp channelManagementUserIDError">
+              <small id="channelManagementUserIDHelp" class="advanced-settings-field-help" data-i18n="channels.management.userIDHelp">可选,仅 New API 使用,填写后作为 New-API-User 请求头。</small>
+              <small id="channelManagementUserIDError" class="advanced-settings-management-error" role="status" hidden></small>
+            </div>
+            <div id="channelManagementCheckinField" class="advanced-settings-management-checkin" hidden>
+              <label class="form-label channel-editor-checkbox-label" for="channelManagementDailyCheckinEnabled">
+                <input type="checkbox" id="channelManagementDailyCheckinEnabled">
+                <span data-i18n="channels.management.dailyCheckin">每日自动签到</span>
+              </label>
+              <div class="advanced-settings-other-field">
+                <label class="form-label" for="channelManagementDailyCheckinTime" data-i18n="channels.management.dailyCheckinTime">签到时间</label>
+                <input type="text" id="channelManagementDailyCheckinTime" class="form-input" inputmode="numeric" autocomplete="off"
+                  maxlength="5" pattern="[0-9]{2}:[0-9]{2}" placeholder="HH:MM"
+                  aria-describedby="channelManagementDailyCheckinHelp channelManagementDailyCheckinTimeError">
+                <small id="channelManagementDailyCheckinHelp" class="advanced-settings-field-help" data-i18n="channels.management.dailyCheckinHelp">24 小时制 HH:MM,服务器本地时区每日执行一次签到。</small>
+                <small id="channelManagementDailyCheckinTimeError" class="advanced-settings-management-error" role="status" hidden></small>
+              </div>
+            </div>
+          </fieldset>
         </div>
       </section>
 
