@@ -165,10 +165,29 @@ func (s *channelManagementService) RefreshBalance(
 		return nil, err
 	}
 	defer release()
-	if _, _, err = s.loadChannelManagement(operationCtx, channelID); err != nil {
+	cfg, envelope, err := s.loadChannelManagement(operationCtx, channelID)
+	if err != nil {
 		return nil, err
 	}
-	return nil, errChannelManagementProviderUnavailable
+	if envelope.Profile != model.ChannelManagementProfileNewAPI {
+		return nil, errChannelManagementProviderUnavailable
+	}
+	snapshot, _, err := s.refreshNewAPIBalance(operationCtx, cfg, envelope)
+	if err != nil {
+		return nil, err
+	}
+	persisted, err := s.persistChannelManagementState(
+		operationCtx,
+		cfg,
+		envelope,
+		func(state *model.ChannelManagementState) {
+			state.LastBalance = snapshot
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return channelManagementViewFromEnvelope(persisted), nil
 }
 
 func (s *channelManagementService) CheckIn(
@@ -182,10 +201,33 @@ func (s *channelManagementService) CheckIn(
 		return nil, err
 	}
 	defer release()
-	if _, _, err = s.loadChannelManagement(operationCtx, channelID); err != nil {
+	cfg, envelope, err := s.loadChannelManagement(operationCtx, channelID)
+	if err != nil {
 		return nil, err
 	}
-	return nil, errChannelManagementProviderUnavailable
+	if envelope.Profile != model.ChannelManagementProfileNewAPI {
+		return nil, errChannelManagementProviderUnavailable
+	}
+	result, snapshot, err := s.checkInNewAPI(operationCtx, cfg, envelope)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.persistChannelManagementState(
+		operationCtx,
+		cfg,
+		envelope,
+		func(state *model.ChannelManagementState) {
+			state.LastCheckinStatus = result.Status
+			state.LastCheckinAt = result.CheckedInAt
+			if snapshot != nil {
+				state.LastBalance = snapshot
+			}
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *channelManagementService) loadChannelManagement(
@@ -207,6 +249,44 @@ func (s *channelManagementService) loadChannelManagement(
 		return nil, nil, errInvalidManagementResponse
 	}
 	return cfg, envelope, nil
+}
+func (s *channelManagementService) persistChannelManagementState(
+	ctx context.Context,
+	cfg *model.Config,
+	source *model.ChannelManagementEnvelope,
+	merge func(*model.ChannelManagementState),
+) (*model.ChannelManagementEnvelope, error) {
+	if cfg == nil || source == nil || merge == nil {
+		return nil, errInvalidManagementRequest
+	}
+	currentCfg := cfg
+	current := source
+	for {
+		if !sameChannelManagementIdentity(source, current) {
+			return nil, errInvalidManagementRequest
+		}
+		merge(&current.State)
+		nextRaw, err := current.Marshal()
+		if err != nil {
+			return nil, errInvalidManagementResponse
+		}
+		updated, err := s.store.CompareAndSwapChannelManagement(
+			ctx,
+			currentCfg.ID,
+			currentCfg.OAuthCredential,
+			nextRaw,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if updated {
+			return current, nil
+		}
+		currentCfg, current, err = s.loadChannelManagement(ctx, currentCfg.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 func (s *channelManagementService) acquireChannel(ctx context.Context, channelID int64) (func(), error) {
@@ -369,6 +449,7 @@ func (s *channelManagementService) doManagementRequest(
 	target string,
 	accessToken string,
 	body []byte,
+	extraHeaders ...http.Header,
 ) (*managementHTTPResult, error) {
 	client, err := s.managementClient(cfg)
 	if err != nil || strings.TrimSpace(accessToken) == "" {
@@ -383,6 +464,11 @@ func (s *channelManagementService) doManagementRequest(
 		request.ContentLength = int64(len(body))
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
+	for _, headers := range extraHeaders {
+		for name, values := range headers {
+			request.Header[name] = append([]string(nil), values...)
+		}
+	}
 	if strings.EqualFold(request.URL.Scheme, "https") {
 		request = withChromeUTLS(request)
 	}
