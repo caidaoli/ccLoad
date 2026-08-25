@@ -18,17 +18,20 @@ import (
 )
 
 type fakeCursorRunner struct {
-	model     string
-	prompt    string
-	text      string
-	toolCalls []cursorauth.ToolCall
-	err       error
-	eventErr  error
-	models    []string
-	apiKey    string
-	usage     *cursorauth.Usage
-	raw       [][]byte
-	request   cursorauth.Request
+	model              string
+	prompt             string
+	text               string
+	toolCalls          []cursorauth.ToolCall
+	err                error
+	eventErr           error
+	models             []string
+	apiKey             string
+	usage              *cursorauth.Usage
+	toolUsage          *cursorauth.Usage
+	toolUsageEstimated bool
+	replayed           bool
+	raw                [][]byte
+	request            cursorauth.Request
 }
 
 type failingCursorResponseWriter struct {
@@ -114,9 +117,9 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 	}
 	for i := range r.toolCalls {
 		call := r.toolCalls[i]
-		events <- cursorauth.Event{Text: r.text, ToolCall: &call}
+		events <- cursorauth.Event{Text: r.text, ToolCall: &call, Usage: r.toolUsage, UsageEstimated: r.toolUsageEstimated}
 	}
-	events <- cursorauth.Event{Text: r.text, Done: true, Usage: r.usage}
+	events <- cursorauth.Event{Text: r.text, Done: true, Usage: r.usage, Replayed: r.replayed}
 	close(events)
 	return events, nil
 }

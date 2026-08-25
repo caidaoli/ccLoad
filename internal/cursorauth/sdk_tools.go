@@ -76,7 +76,11 @@ func (s *toolCallbackService) CallCustomTool(
 	}
 	defer s.runner.unregisterToolCall(callID, pending)
 
-	event := Event{ToolCall: &ToolCall{ID: callID, Name: name, Arguments: arguments}}
+	event := Event{
+		ToolCall:       &ToolCall{ID: callID, Name: name, Arguments: arguments},
+		Usage:          session.estimatedUsage(),
+		UsageEstimated: true,
+	}
 	if !session.emit(event) {
 		return nil, connect.NewError(connect.CodeCanceled, errors.New("cursor custom tool session ended"))
 	}

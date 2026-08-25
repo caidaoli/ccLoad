@@ -34,6 +34,9 @@ type Request struct {
 	Tools       []Tool
 	ToolChoice  string
 	ToolResults []ToolResult
+	// InputTokenEstimate is used for client context accounting while a native
+	// Cursor run is suspended at a tool callback. It is never billable usage.
+	InputTokenEstimate int
 }
 
 // AllowsTools reports whether this turn exposes native custom tools.

@@ -73,6 +73,154 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	}
 }
 
+func TestProxy_CursorOAuthReplayDoesNotDuplicateUsageLog(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-replay", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = &fakeCursorRunner{
+		text: "final", replayed: true, usage: &cursorauth.Usage{InputTokens: 100, OutputTokens: 20},
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6",
+		"messages": []any{
+			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+				"id": "call_1", "type": "function",
+				"function": map[string]any{"name": "lookup", "arguments": `{}`},
+			}}},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "value"},
+		},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "final") {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	logs, err := env.store.ListLogs(
+		context.Background(), time.Now().Add(-time.Minute), 10, 0,
+		&model.LogFilter{Model: "grok-4.6", LogSource: model.LogSourceProxy},
+	)
+	if err != nil {
+		t.Fatalf("GetLogs() error = %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("replayed request wrote %d duplicate logs", len(logs))
+	}
+}
+
+func TestProxy_CursorOAuthToolTurnReturnsEstimatedUsageWithoutBilling(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-tool-usage", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	runner := &fakeCursorRunner{
+		toolCalls:          []cursorauth.ToolCall{{ID: "call_lookup", Name: "lookup", Arguments: json.RawMessage(`{}`)}},
+		toolUsage:          &cursorauth.Usage{InputTokens: 100, TotalTokens: 100},
+		toolUsageEstimated: true,
+	}
+	env.server.cursorRunner = runner
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6", "messages": []any{map[string]any{"role": "user", "content": "lookup"}},
+		"tools": []any{map[string]any{
+			"type": "function", "function": map[string]any{
+				"name": "lookup", "parameters": map[string]any{"type": "object"},
+			},
+		}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, response.Body.String())
+	}
+	if payload.Usage.PromptTokens <= 0 || payload.Usage.CompletionTokens != 0 || payload.Usage.TotalTokens != payload.Usage.PromptTokens {
+		t.Fatalf("tool response usage = %+v", payload.Usage)
+	}
+	if runner.request.InputTokenEstimate <= 0 {
+		t.Fatalf("runner request is missing the input-token estimate: %+v", runner.request)
+	}
+
+	entry := waitForProxyLog(t, env, "grok-4.6")
+	if entry.InputTokens != 0 || entry.OutputTokens != 0 || entry.CacheReadInputTokens != 0 {
+		t.Fatalf("estimated intermediate usage must not be billed: %+v", entry)
+	}
+}
+
+func TestProxy_CursorOAuthResumedTurnDoesNotExposeCumulativeRunUsage(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-resume-usage", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	env.server.cursorRunner = &fakeCursorRunner{
+		text: "final answer", usage: &cursorauth.Usage{
+			InputTokens: 900_000, OutputTokens: 5_000, CacheReadTokens: 800_000, TotalTokens: 1_705_000,
+		},
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "find it"},
+			map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+				"id": "call_1", "type": "function",
+				"function": map[string]any{"name": "lookup", "arguments": `{}`},
+			}}},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+		},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, response.Body.String())
+	}
+	if payload.Usage.PromptTokens <= 0 || payload.Usage.PromptTokens >= 900_000 ||
+		payload.Usage.CompletionTokens <= 0 || payload.Usage.TotalTokens != payload.Usage.PromptTokens+payload.Usage.CompletionTokens {
+		t.Fatalf("resumed response exposed invalid usage: %+v", payload.Usage)
+	}
+
+	entry := waitForProxyLog(t, env, "grok-4.6")
+	if entry.InputTokens != 900_000 || entry.OutputTokens != 5_000 || entry.CacheReadInputTokens != 800_000 {
+		t.Fatalf("terminal cumulative usage was not logged for billing: %+v", entry)
+	}
+}
+
 func TestProxy_CursorOAuthFirstByteTimeoutPersistsActualDuration(t *testing.T) {
 	credentialJSON, err := (&cursorauth.Credential{
 		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",

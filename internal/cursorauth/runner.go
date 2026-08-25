@@ -18,16 +18,23 @@ type Usage struct {
 }
 
 // Event is one Cursor inference update. Text is cumulative; Delta contains
-// only text newly appended by this event. Usage is present on the final event
-// when the SDK runtime reports it. RawResponse contains exactly one received
-// RunStreamMessage encoded as standard protobuf JSON when capture is enabled.
+// only text newly appended by this event. Usage may be an estimated context
+// signal on a tool-call event or the final runtime usage. RawResponse contains
+// exactly one received RunStreamMessage encoded as standard protobuf JSON when
+// capture is enabled.
 type Event struct {
-	Delta       string
-	Text        string
-	ToolCall    *ToolCall
+	Delta    string
+	Text     string
+	ToolCall *ToolCall
+	Usage    *Usage
+	// UsageEstimated marks a local context estimate. Estimated usage is exposed
+	// to the client for context management, but must not be billed or logged.
+	UsageEstimated bool
+	// Replayed marks a completed native run returned for a duplicate tool-result
+	// request. The wire layer must not charge or log that run a second time.
+	Replayed    bool
 	Done        bool
 	Err         error
-	Usage       *Usage
 	RawResponse []byte
 }
 

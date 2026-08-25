@@ -50,6 +50,8 @@ type nativeToolAgentHandler struct {
 	mu      sync.Mutex
 	creates map[string]*sdkv1.CreateAgentRequest
 	results map[string]map[string]any
+	getRuns map[string]int
+	usage   map[string]*sdkv1.TokenUsage
 }
 
 func (h *nativeToolAgentHandler) CreateAgent(
@@ -106,6 +108,27 @@ func (h *nativeToolAgentHandler) Send(
 	return stream.Send(runDone(agentID, runID))
 }
 
+func (h *nativeToolAgentHandler) GetRun(
+	_ context.Context,
+	request *connect.Request[sdkv1.GetRunRequest],
+) (*connect.Response[sdkv1.GetRunResponse], error) {
+	runID := request.Msg.GetRunId()
+	agentID := request.Msg.GetOptions().GetAgentId()
+	h.mu.Lock()
+	h.getRuns[runID]++
+	usage := h.usage[runID]
+	if usage == nil {
+		usage = &sdkv1.TokenUsage{
+			InputTokens: 100, OutputTokens: 20, CacheReadTokens: 30, TotalTokens: 150,
+		}
+	}
+	h.mu.Unlock()
+	return connect.NewResponse(&sdkv1.GetRunResponse{Run: &sdkv1.RunSnapshot{
+		RunId: runID, AgentId: agentID,
+		Usage: usage,
+	}}), nil
+}
+
 func (h *nativeToolAgentHandler) DeleteAgent(
 	_ context.Context,
 	_ *connect.Request[sdkv1.DeleteAgentRequest],
@@ -133,7 +156,7 @@ func newNativeToolTestRunner(t *testing.T) (*SDKRunner, *nativeToolAgentHandler)
 	control := &nativeToolControlHandler{}
 	agent := &nativeToolAgentHandler{
 		control: control, creates: make(map[string]*sdkv1.CreateAgentRequest),
-		results: make(map[string]map[string]any),
+		results: make(map[string]map[string]any), getRuns: make(map[string]int), usage: make(map[string]*sdkv1.TokenUsage),
 	}
 	agentPath, agentHTTP := sdkv1connect.NewSdkAgentServiceHandler(agent)
 	controlPath, controlHTTP := sdkv1connect.NewSdkBridgeControlServiceHandler(control)
@@ -150,6 +173,7 @@ func newNativeToolTestRunner(t *testing.T) (*SDKRunner, *nativeToolAgentHandler)
 	runner := &SDKRunner{
 		bridge: bridge, timeout: 3 * time.Second,
 		sessions: make(map[string]*sdkSession), calls: make(map[string]*pendingToolCall),
+		completedCalls: make(map[string]*sdkSession),
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -206,6 +230,164 @@ func TestSDKRunnerNativeToolsKeepConcurrentSessionsIsolated(t *testing.T) {
 	if handler.results["agent-1"]["value"] != "first-result" ||
 		handler.results["agent-2"]["value"] != "second-result" {
 		t.Fatalf("callback results = %+v", handler.results)
+	}
+}
+
+func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
+	runner, _ := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	events, err := runner.Run(context.Background(), credential, Request{
+		Model: "model-1", Prompt: "lookup", ToolChoice: "auto",
+		Tools: []Tool{{
+			Name: "lookup", Parameters: []byte(`{"type":"object"}`),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	call := readNativeToolCall(t, events)
+	result := ToolResult{CallID: call.ID, Output: "value"}
+
+	first := resumeNativeToolCall(t, runner, credential, call.ID, result.Output)
+	replayed, err := runner.Run(context.Background(), credential, Request{ToolResults: []ToolResult{result}})
+	if err != nil {
+		t.Fatalf("duplicate Run() error = %v", err)
+	}
+	var replayedText string
+	var replayedEvent bool
+	var replayedUsage *Usage
+	for event := range replayed {
+		if event.Err != nil {
+			t.Fatalf("duplicate turn event error = %v", event.Err)
+		}
+		if event.Text != "" {
+			replayedText = event.Text
+		}
+		replayedEvent = replayedEvent || event.Replayed
+		replayedUsage = event.Usage
+	}
+	if replayedText != first || !replayedEvent || replayedUsage != nil {
+		t.Fatalf("duplicate turn = text %q, replayed %v, usage %+v; want %q, true, nil", replayedText, replayedEvent, replayedUsage, first)
+	}
+}
+
+func TestSDKRunnerReportsUsageAtNativeToolBoundary(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "channel-key"}, Request{
+		Model: "model-1", Prompt: "lookup", ToolChoice: "auto",
+		Tools:              []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+		InputTokenEstimate: 321,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var call ToolCall
+	var usage *Usage
+	var eventUsageEstimated bool
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("tool turn event error = %v", event.Err)
+		}
+		if event.ToolCall != nil {
+			call = *event.ToolCall
+			usage = event.Usage
+			eventUsageEstimated = event.UsageEstimated
+		}
+	}
+	if call.ID == "" || usage == nil || !eventUsageEstimated || *usage != (Usage{InputTokens: 321, TotalTokens: 321}) {
+		t.Fatalf("tool boundary call=%+v usage=%+v", call, usage)
+	}
+	handler.mu.Lock()
+	getRunCalls := handler.getRuns["run-agent-1"]
+	handler.mu.Unlock()
+	if getRunCalls != 0 {
+		t.Fatalf("tool callback unexpectedly queried GetRun %d times", getRunCalls)
+	}
+	_ = resumeNativeToolCall(t, runner, &Credential{APIKey: "channel-key"}, call.ID, "value")
+}
+
+func TestSDKRunnerReplaysCompletedToolResultAfterClientCompaction(t *testing.T) {
+	runner, _ := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	events, err := runner.Run(context.Background(), credential, Request{
+		Model: "model-1", Prompt: "lookup", ToolChoice: "auto",
+		Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	call := readNativeToolCall(t, events)
+	_ = resumeNativeToolCall(t, runner, credential, call.ID, "original")
+
+	replayed, err := runner.Run(context.Background(), credential, Request{
+		ToolResults: []ToolResult{{CallID: call.ID, Output: "[compacted artifact reference]"}},
+	})
+	if err != nil {
+		t.Fatalf("compacted duplicate Run() error = %v", err)
+	}
+	var final Event
+	for event := range replayed {
+		final = event
+	}
+	if final.Err != nil || !final.Replayed || final.Text != "agent-1:original" {
+		t.Fatalf("compacted duplicate event = %+v", final)
+	}
+}
+
+func TestSDKRunnerConcurrentlyReplaysDuplicateToolResult(t *testing.T) {
+	runner, _ := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	events, err := runner.Run(context.Background(), credential, Request{
+		Model: "model-1", Prompt: "lookup", ToolChoice: "auto",
+		Tools: []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	call := readNativeToolCall(t, events)
+
+	type outcome struct {
+		text     string
+		replayed bool
+		err      error
+	}
+	start := make(chan struct{})
+	outcomes := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			<-start
+			turn, runErr := runner.Run(context.Background(), credential, Request{
+				ToolResults: []ToolResult{{CallID: call.ID, Output: "value"}},
+			})
+			result := outcome{err: runErr}
+			if runErr == nil {
+				for event := range turn {
+					if event.Err != nil {
+						result.err = event.Err
+					}
+					if event.Text != "" {
+						result.text = event.Text
+					}
+					result.replayed = result.replayed || event.Replayed
+				}
+			}
+			outcomes <- result
+		}()
+	}
+	close(start)
+
+	replays := 0
+	for range 2 {
+		result := <-outcomes
+		if result.err != nil || result.text != "agent-1:value" {
+			t.Fatalf("concurrent duplicate outcome = %+v", result)
+		}
+		if result.replayed {
+			replays++
+		}
+	}
+	if replays != 1 {
+		t.Fatalf("replayed responses = %d, want 1", replays)
 	}
 }
 

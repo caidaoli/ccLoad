@@ -25,11 +25,13 @@ type SDKRunner struct {
 	bridge  *bridge
 	timeout time.Duration
 
-	mu       sync.Mutex
-	closed   bool
-	active   sync.WaitGroup
-	sessions map[string]*sdkSession
-	calls    map[string]*pendingToolCall
+	resumeMu       sync.Mutex
+	mu             sync.Mutex
+	closed         bool
+	active         sync.WaitGroup
+	sessions       map[string]*sdkSession
+	calls          map[string]*pendingToolCall
+	completedCalls map[string]*sdkSession
 
 	callbackMu       sync.Mutex
 	callbackServer   *http.Server
@@ -40,19 +42,20 @@ type SDKRunner struct {
 }
 
 type sdkSession struct {
-	agentID    string
-	apiKey     string
-	workdir    string
-	client     sdkv1connect.SdkAgentServiceClient
-	ctx        context.Context
-	cancel     context.CancelFunc
-	events     chan Event
-	done       chan struct{}
-	tools      map[string]struct{}
-	captureRaw bool
-	eventMu    sync.Mutex
-	terminated bool
-	terminal   *Event
+	agentID            string
+	apiKey             string
+	workdir            string
+	client             sdkv1connect.SdkAgentServiceClient
+	ctx                context.Context
+	cancel             context.CancelFunc
+	events             chan Event
+	done               chan struct{}
+	tools              map[string]struct{}
+	captureRaw         bool
+	eventMu            sync.Mutex
+	inputTokenEstimate int
+	terminated         bool
+	terminal           *Event
 
 	turnMu   sync.Mutex
 	attached bool
@@ -64,6 +67,7 @@ func NewSDKRunner(binaryPath ...string) *SDKRunner {
 	return &SDKRunner{
 		bridge: newBridge(binaryPath...), timeout: AgentTimeout,
 		sessions: make(map[string]*sdkSession), calls: make(map[string]*pendingToolCall),
+		completedCalls: make(map[string]*sdkSession),
 	}
 }
 
@@ -160,7 +164,7 @@ func (r *SDKRunner) Run(
 		return nil, ErrMissingAPIKey
 	}
 	if len(request.ToolResults) > 0 {
-		return r.resumeToolRun(ctx, credential, request.ToolResults)
+		return r.resumeToolRun(ctx, credential, request.ToolResults, request.InputTokenEstimate)
 	}
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
@@ -234,8 +238,10 @@ func (r *SDKRunner) Run(
 	session := &sdkSession{
 		agentID: agentID, apiKey: apiKey, workdir: client.workdir,
 		client: client.agent, ctx: runCtx, cancel: stopRun,
-		events: make(chan Event, 64), done: make(chan struct{}), tools: make(map[string]struct{}, len(customTools)),
-		captureRaw: rawResponseCaptureEnabled(ctx),
+		events: make(chan Event, 64), done: make(chan struct{}),
+		tools:              make(map[string]struct{}, len(customTools)),
+		inputTokenEstimate: request.InputTokenEstimate,
+		captureRaw:         rawResponseCaptureEnabled(ctx),
 	}
 	for name := range customTools {
 		session.tools[name] = struct{}{}
@@ -276,19 +282,44 @@ func (r *SDKRunner) resumeToolRun(
 	ctx context.Context,
 	credential *Credential,
 	results []ToolResult,
+	inputTokenEstimate int,
 ) (<-chan Event, error) {
+	// Serialize this short state transition so concurrent retries cannot race
+	// between the pending and completed-call indexes.
+	r.resumeMu.Lock()
+	defer r.resumeMu.Unlock()
+
 	var session *sdkSession
+	pendingResults := make([]ToolResult, 0, len(results))
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return nil, ErrBridgeClosed
 	}
 	for _, result := range results {
-		pending := r.calls[strings.TrimSpace(result.CallID)]
-		if pending == nil || pending.session == nil {
-			r.mu.Unlock()
-			return nil, fmt.Errorf("%w: call_id %q", ErrToolSessionNotFound, result.CallID)
+		callID := strings.TrimSpace(result.CallID)
+		pending := r.calls[callID]
+		pendingResolved := false
+		if pending != nil {
+			pending.mu.Lock()
+			pendingResolved = pending.resolved
+			pending.mu.Unlock()
 		}
+		if pending == nil || pending.session == nil || pendingResolved {
+			completedSession := r.completedCalls[callID]
+			if completedSession == nil {
+				r.mu.Unlock()
+				return nil, fmt.Errorf("%w: call_id %q", ErrToolSessionNotFound, result.CallID)
+			}
+			if session == nil {
+				session = completedSession
+			} else if session != completedSession {
+				r.mu.Unlock()
+				return nil, errors.New("tool results from different Cursor sessions cannot share one request")
+			}
+			continue
+		}
+		pendingResults = append(pendingResults, result)
 		if session == nil {
 			session = pending.session
 		} else if session != pending.session {
@@ -303,7 +334,35 @@ func (r *SDKRunner) resumeToolRun(
 	if subtleAPIKeyMismatch(session.apiKey, credential.APIKey) {
 		return nil, ErrToolSessionNotFound
 	}
-	return session.nextTurn(ctx, func() error { return r.resolveToolResults(session, results) })
+	if len(pendingResults) == 0 {
+		session.setInputTokenEstimate(inputTokenEstimate)
+		return replayCompletedToolTurn(ctx, session), nil
+	}
+	return session.nextTurn(ctx, func() error {
+		session.setInputTokenEstimate(inputTokenEstimate)
+		return r.resolveToolResults(session, pendingResults)
+	})
+}
+
+func replayCompletedToolTurn(ctx context.Context, session *sdkSession) <-chan Event {
+	output := make(chan Event, 1)
+	go func() {
+		defer close(output)
+		select {
+		case <-session.done:
+		case <-ctx.Done():
+			output <- Event{Done: true, Err: context.Cause(ctx), Replayed: true}
+			return
+		}
+		terminal, ok := session.terminalEvent()
+		if !ok {
+			terminal = Event{Done: true, Err: ErrToolSessionNotFound}
+		}
+		terminal.Replayed = true
+		terminal.Usage = nil
+		output <- terminal
+	}()
+	return output
 }
 
 func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult) error {
@@ -353,6 +412,14 @@ func (r *SDKRunner) resolveToolResults(session *sdkSession, results []ToolResult
 	}
 	for _, item := range prepared {
 		item.pending.resolved = true
+	}
+	if r.completedCalls == nil {
+		r.completedCalls = make(map[string]*sdkSession)
+	}
+	for index, item := range prepared {
+		result := results[index]
+		result.CallID = strings.TrimSpace(result.CallID)
+		r.completedCalls[result.CallID] = item.pending.session
 	}
 	for _, item := range prepared {
 		item.pending.mu.Unlock()
@@ -489,6 +556,24 @@ func (s *sdkSession) finish(event Event) {
 	close(s.done)
 }
 
+func (s *sdkSession) setInputTokenEstimate(value int) {
+	if value <= 0 {
+		return
+	}
+	s.eventMu.Lock()
+	s.inputTokenEstimate = value
+	s.eventMu.Unlock()
+}
+
+func (s *sdkSession) estimatedUsage() *Usage {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	if s.inputTokenEstimate <= 0 {
+		return nil
+	}
+	return &Usage{InputTokens: s.inputTokenEstimate, TotalTokens: s.inputTokenEstimate}
+}
+
 func (s *sdkSession) terminalEvent() (Event, bool) {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
@@ -596,8 +681,10 @@ func (r *SDKRunner) consumeRun(
 	agentID := session.agentID
 	canceller := newRunCanceller(client, agentID)
 	state := &sdkRunState{
-		agentID:    agentID,
-		onRunID:    canceller.SetRunID,
+		agentID: agentID,
+		onRunID: func(runID string) {
+			canceller.SetRunID(runID)
+		},
 		onTerminal: canceller.Terminal,
 	}
 	runCallbackDone := make(chan struct{})
@@ -655,14 +742,35 @@ func (r *SDKRunner) consumeRun(
 		}
 	}
 	finalEvent := Event{Text: state.text, Done: true, Err: consumeErr, Usage: state.usage}
+	if !hasTokenUsage(finalEvent.Usage) {
+		finalEvent.Usage = session.estimatedUsage()
+		finalEvent.UsageEstimated = finalEvent.Usage != nil
+	}
 	session.finish(finalEvent)
 	r.unregisterSession(session)
+	r.expireCompletedToolTurns(session)
 
 	// Cancellation and durable Agent deletion are cleanup, not response work.
 	// Keep them tracked by r.active for orderly shutdown, but never make the
 	// client or request-duration metric wait behind their independent deadlines.
 	canceller.Wait()
 	r.deleteAgent(client, agentID, session.workdir, session.apiKey)
+}
+
+func (r *SDKRunner) expireCompletedToolTurns(session *sdkSession) {
+	retention := r.timeout
+	if retention <= 0 {
+		retention = AgentTimeout
+	}
+	time.AfterFunc(retention, func() {
+		r.mu.Lock()
+		for callID, completedSession := range r.completedCalls {
+			if completedSession == session {
+				delete(r.completedCalls, callID)
+			}
+		}
+		r.mu.Unlock()
+	})
 }
 
 func loadRunUsage(
