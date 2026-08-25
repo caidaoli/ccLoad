@@ -28,6 +28,8 @@ var (
 	errInvalidManagementRequest             = errors.New("invalid_request")
 	errManagementRequestFailed              = errors.New("management_request_failed")
 	errInvalidManagementResponse            = errors.New("invalid_response")
+	// 请求体已写出后拒绝重放，避免 uTLS 回退造成重复提交。
+	errManagementRequestAlreadySent = errors.New("management_request_already_sent")
 )
 
 type channelManagementInput struct {
@@ -472,9 +474,18 @@ func (s *channelManagementService) doManagementRequest(
 	if err != nil {
 		return nil, errInvalidManagementRequest
 	}
+	var wroteRequest atomic.Bool
 	if body != nil {
 		request.Body = io.NopCloser(bytes.NewReader(body))
 		request.ContentLength = int64(len(body))
+		// uTLS 首候选失败后会换传输重发：字节尚未写出时允许重放，
+		// 一旦写出就拒绝重放，避免重复签到（设计文档要求记为 uncertain）。
+		request.GetBody = func() (io.ReadCloser, error) {
+			if wroteRequest.Load() {
+				return nil, errManagementRequestAlreadySent
+			}
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	for _, headers := range extraHeaders {
@@ -486,7 +497,6 @@ func (s *channelManagementService) doManagementRequest(
 		request = withChromeUTLS(request)
 	}
 
-	var wroteRequest atomic.Bool
 	if method == http.MethodPost {
 		trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) {
 			wroteRequest.Store(true)

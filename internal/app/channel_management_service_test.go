@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -537,10 +538,15 @@ func TestManagementRequestBoundaries(t *testing.T) {
 		const token = "post-private-token"
 		const upstreamSecret = "raw-upstream-secret"
 		var calls atomic.Int32
+		var lastRequest atomic.Value
 		transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			calls.Add(1)
-			if req.GetBody != nil {
-				t.Fatal("management POST body is replayable")
+			lastRequest.Store(req)
+			if req.GetBody == nil {
+				t.Fatal("management POST body must be replayable before it is written")
+			}
+			if _, replayErr := req.GetBody(); replayErr != nil {
+				t.Fatalf("pre-write replay refused: %v", replayErr)
 			}
 			trace := httptrace.ContextClientTrace(req.Context())
 			if trace == nil || trace.WroteRequest == nil {
@@ -562,7 +568,62 @@ func TestManagementRequestBoundaries(t *testing.T) {
 		if result == nil || !result.WroteRequest || calls.Load() != 1 {
 			t.Fatalf("POST result = %#v, calls = %d", result, calls.Load())
 		}
+		// 请求已写出：任何后续重放都必须被拒绝，否则 uTLS 回退会重复签到。
+		if _, replayErr := lastRequest.Load().(*http.Request).GetBody(); replayErr == nil {
+			t.Fatal("management POST replayed after the request was already written")
+		}
 	})
+}
+
+// 真实 uTLS 传输在首候选失败后会换传输重发，必须能重放尚未写出的请求体，
+// 否则所有管理 POST（签到）在真实链路上永远发不出去。
+func TestManagementCheckinPOSTSurvivesUTLSFallback(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{ID: 1, AuthType: model.AuthTypeAPIKey}
+
+	type received struct {
+		method string
+		body   string
+	}
+	posts := make(chan received, 4)
+	// 仅 HTTP/1.1：uTLS 的 h2 首候选握手失败，强制走回退候选。
+	upstream, _ := newCapturedTLSServer(t, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		posts <- received{method: r.Method, body: string(raw)}
+		_, _ = io.WriteString(w, `{"success":true}`)
+	}))
+
+	base := buildHTTPTransport(true)
+	dialer := &net.Dialer{}
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
+	}
+	client := newUpstreamHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	service := newChannelManagementService(nil, func(*model.Config) *http.Client { return client })
+	result, err := service.doManagementRequest(
+		context.Background(), cfg, http.MethodPost,
+		"https://management.example/api/user/checkin", "private-token", []byte(`{}`),
+	)
+	if err != nil {
+		t.Fatalf("management POST over uTLS fallback: %v", err)
+	}
+	if result.StatusCode != http.StatusOK || string(result.Body) != `{"success":true}` {
+		t.Fatalf("result = %#v", result)
+	}
+
+	close(posts)
+	var got []received
+	for r := range posts {
+		got = append(got, r)
+	}
+	if len(got) != 1 {
+		t.Fatalf("upstream received %d requests, want exactly 1 (no double checkin): %#v", len(got), got)
+	}
+	if got[0].method != http.MethodPost || got[0].body != `{}` {
+		t.Fatalf("upstream request = %#v, want POST with body {}", got[0])
+	}
 }
 
 func createChannelManagementTestConfig(t *testing.T, store storage.Store, name string) *model.Config {
