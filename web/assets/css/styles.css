@@ -1025,6 +1025,22 @@ body {
   background: linear-gradient(135deg, #4285f4, #1a73e8);
 }
 
+.channel-icon--api {
+  background: linear-gradient(135deg, #64748b, #334155);
+}
+
+.channel-icon--antigravity {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5);
+}
+
+.channel-icon--xai {
+  background: linear-gradient(135deg, #111827, #374151);
+}
+
+.channel-icon--zed {
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+}
+
 .channel-icon--zai {
   background: linear-gradient(135deg, #0f766e, #14b8a6);
 }

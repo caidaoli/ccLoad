@@ -164,8 +164,12 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		if _, ok := resp.Data.ByClientProtocol["codex"]; ok {
 			t.Fatalf("scheduled checks must not enter client protocol cards: %#v", resp.Data.ByClientProtocol)
 		}
-		if len(resp.Data.ByAuthType) != 0 {
-			t.Fatalf("api_key channels must not enter auth type cards: %#v", resp.Data.ByAuthType)
+		apiKeyTS, ok := resp.Data.ByAuthType[model.AuthTypeAPIKey]
+		if !ok {
+			t.Fatalf("expected api_key in by_auth_type: %#v", resp.Data.ByAuthType)
+		}
+		if apiKeyTS.TotalRequests != 3 || apiKeyTS.SuccessRequests != 2 || apiKeyTS.ErrorRequests != 1 {
+			t.Fatalf("unexpected api_key summary: %+v", apiKeyTS)
 		}
 	})
 
@@ -391,8 +395,12 @@ func TestHandlePublicSummary_AuthTypeCards(t *testing.T) {
 		t.Fatalf("unexpected grok tokens: %+v", grokTS)
 	}
 
-	if _, ok := resp.Data.ByAuthType[model.AuthTypeAnthropicOAuth]; ok {
-		t.Fatalf("anthropic_oauth must not get an overview card: %#v", resp.Data.ByAuthType)
+	anthOAuthTS, ok := resp.Data.ByAuthType[model.AuthTypeAnthropicOAuth]
+	if !ok {
+		t.Fatalf("expected anthropic_oauth in by_auth_type: %#v", resp.Data.ByAuthType)
+	}
+	if anthOAuthTS.TotalRequests != 1 || anthOAuthTS.SuccessRequests != 1 {
+		t.Fatalf("unexpected anthropic oauth summary: %+v", anthOAuthTS)
 	}
 	if _, ok := resp.Data.ByAuthType[model.AuthTypeCursorOAuth]; ok {
 		t.Fatalf("empty cursor_oauth must not appear as a card: %#v", resp.Data.ByAuthType)

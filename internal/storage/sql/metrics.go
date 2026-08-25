@@ -669,15 +669,6 @@ func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTim
 	return stats, nil
 }
 
-func overviewAuthTypeValues() []any {
-	types := model.OverviewChannelAuthTypes()
-	values := make([]any, 0, len(types))
-	for _, authType := range types {
-		values = append(values, authType)
-	}
-	return values
-}
-
 // GetAuthTypeStats 按渠道认证类型聚合首页统计。
 func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
 	baseQuery := `
@@ -698,7 +689,7 @@ func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time
 		Where("logs.time >= ?", startTime.UnixMilli()).
 		Where("logs.time <= ?", endTime.UnixMilli()).
 		Where("logs.channel_id > 0")
-	qb.WhereIn("channels.auth_type", overviewAuthTypeValues())
+	qb.Where("channels.auth_type <> ?", "")
 
 	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
 	if err != nil {

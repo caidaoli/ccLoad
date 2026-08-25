@@ -115,11 +115,6 @@ type AuthTypeStats struct {
 	EffectiveCost            float64 `json:"effective_cost"`
 }
 
-// OverviewChannelAuthTypes is the extra homepage grouping beyond client protocols.
-func OverviewChannelAuthTypes() []string {
-	return []string{AuthTypeZAIOAuth, AuthTypeCursorOAuth, AuthTypeXAIOAuth}
-}
-
 // RPMStats 包含RPM/QPS相关的统计数据
 type RPMStats struct {
 	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）

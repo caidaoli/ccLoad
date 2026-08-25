@@ -7,6 +7,127 @@
     let serviceHealthModel = null;
     let dashboardLoadGeneration = 0;
 
+    const AUTH_TYPE_CARD_CONFIG = Object.freeze({
+      api_key: { labelKey: 'channels.authTypeAPI', iconClass: 'api', icon: '<path d="M15 7a5 5 0 1 0-9.9 1H3v4h2v2h2v2h3v-3.1A5 5 0 0 0 15 7Zm-5 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/>' },
+      codex_oauth: { labelKey: 'channels.authTypeCodex', iconClass: 'codex', icon: '<path d="M12 3a9 9 0 1 0 8.7 11.3l-2.5-.7A6.5 6.5 0 1 1 12 5.5c1.8 0 3.4.7 4.6 1.9l1.8-1.8A9 9 0 0 0 12 3Z"/>' },
+      antigravity_oauth: { labelKey: 'channels.authTypeAntigravity', iconClass: 'antigravity', icon: '<path d="m12 3 2.2 5.6L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.4L12 3Z"/>' },
+      xai_oauth: { labelKey: 'channels.authTypeXAI', iconClass: 'xai', icon: '<path d="m5 5 14 14M19 5 5 19"/>' },
+      anthropic_oauth: { labelKey: 'channels.authTypeAnthropic', iconClass: 'anthropic', icon: '<path d="M12 2 2 22h20L12 2Zm0 4.5L18.5 20h-13L12 6.5Z"/>' },
+      zai_oauth: { labelKey: 'channels.authTypeZAI', iconClass: 'zai', icon: '<path d="M5 6h14L5 18h14"/>' },
+      cursor_oauth: { labelKey: 'channels.authTypeCursor', iconClass: 'cursor', icon: '<path d="m5 3 15 10-7 1.5 4 7-2.7 1.5-4-7-5.3 3.7V3Z"/>' },
+      zed_oauth: { labelKey: 'channels.authTypeZed', iconClass: 'zed', icon: '<path d="m13 2-8 12h6l-1 8 8-12h-6l1-8Z"/>' }
+    });
+
+    const AUTH_TYPE_CARD_ORDER = Object.keys(AUTH_TYPE_CARD_CONFIG);
+
+    function createOverviewElement(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    function translatedAuthTypeLabel(authType, config) {
+      if (config && config.labelKey && typeof window.t === 'function') {
+        const translated = window.t(config.labelKey);
+        if (translated && translated !== config.labelKey) return translated;
+      }
+      return authType;
+    }
+
+    function createAuthTypeCard(authType) {
+      const config = AUTH_TYPE_CARD_CONFIG[authType] || {
+        labelKey: '',
+        iconClass: 'api',
+        icon: '<path d="M5 12h14M12 5v14"/>'
+      };
+      const card = createOverviewElement('div', 'channel-card');
+      card.id = `type-${authType}-card`;
+
+      const header = createOverviewElement('div', 'channel-card-header');
+      const title = createOverviewElement('div', 'channel-card-title');
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('width', '16');
+      icon.setAttribute('height', '16');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('stroke-width', '2.2');
+      icon.setAttribute('stroke-linecap', 'round');
+      icon.setAttribute('stroke-linejoin', 'round');
+      icon.innerHTML = config.icon;
+      const iconContainer = createOverviewElement('div', `channel-icon channel-icon--${config.iconClass}`);
+      iconContainer.appendChild(icon);
+      title.append(iconContainer, createOverviewElement('span', '', translatedAuthTypeLabel(authType, config)));
+
+      const cost = createOverviewElement('div', 'channel-cost');
+      cost.append(
+        createOverviewElement('span', 'cost-label', typeof window.t === 'function' ? window.t('common.cost') : '成本'),
+        createOverviewElement('span', 'cost-value')
+      );
+      cost.lastElementChild.id = `type-${authType}-cost`;
+      header.append(title, cost);
+      card.appendChild(header);
+
+      const metrics = createOverviewElement('div', 'channel-metrics');
+      [
+        ['requests', 'index.metrics.totalRequests', '总请求', 'metric-total'],
+        ['success', 'index.metrics.success', '成功', 'metric-success'],
+        ['error', 'index.metrics.failed', '失败', 'metric-error'],
+        ['rate', 'index.metrics.successRate', '成功率', 'metric-rate']
+      ].forEach(([name, labelKey, fallback, valueClass]) => {
+        const item = createOverviewElement('div', 'metric-item');
+        const value = createOverviewElement('div', `metric-value ${valueClass}`, name === 'rate' ? '0.0%' : '0');
+        value.id = `type-${authType}-${name}`;
+        const label = createOverviewElement('div', 'metric-label', typeof window.t === 'function' ? window.t(labelKey) : fallback);
+        label.dataset.i18n = labelKey;
+        item.append(value, label);
+        metrics.appendChild(item);
+      });
+      card.appendChild(metrics);
+
+      const tokens = createOverviewElement('div', 'token-stats');
+      [
+        ['input', 'common.input', '输入', false],
+        ['output', 'common.output', '输出', false],
+        ['cache-read', 'common.cacheRead', '缓存读', true],
+        ['cache-create', 'common.cacheCreate', '缓存创', true]
+      ].forEach(([name, labelKey, fallback, isCache]) => {
+        const item = createOverviewElement('div', 'token-item');
+        const label = createOverviewElement('span', 'token-label', typeof window.t === 'function' ? window.t(labelKey) : fallback);
+        label.dataset.i18n = labelKey;
+        const value = createOverviewElement('span', `token-value${isCache ? ' token-cache' : ''}`, '0');
+        value.id = `type-${authType}-${name}`;
+        item.append(label, value);
+        tokens.appendChild(item);
+      });
+      card.appendChild(tokens);
+      return card;
+    }
+
+    function renderAuthTypeCards(authStats) {
+      const section = document.getElementById('auth-type-section');
+      const grid = document.getElementById('auth-type-cards');
+      if (!section || !grid) return;
+
+      const entries = Object.entries(authStats || {})
+        .filter(([, stat]) => Number(stat && stat.total_requests) > 0)
+        .sort(([left], [right]) => {
+          const leftIndex = AUTH_TYPE_CARD_ORDER.indexOf(left);
+          const rightIndex = AUTH_TYPE_CARD_ORDER.indexOf(right);
+          return (leftIndex < 0 ? AUTH_TYPE_CARD_ORDER.length : leftIndex)
+            - (rightIndex < 0 ? AUTH_TYPE_CARD_ORDER.length : rightIndex);
+        });
+
+      grid.replaceChildren();
+      section.hidden = entries.length === 0;
+      entries.forEach(([authType, stat]) => {
+        const card = createAuthTypeCard(authType);
+        grid.appendChild(card);
+        updateOverviewCard(authType, stat);
+      });
+    }
+
     function buildCurrentDateRangeQuery() {
       return typeof window.buildDateRangeQuery === 'function'
         ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
@@ -226,17 +347,13 @@
       updateOverviewCard('openai', protocolStats.openai);
       updateOverviewCard('gemini', protocolStats.gemini);
 
-      const authStats = statsData.by_auth_type || {};
-      updateOverviewCard('zai', authStats.zai_oauth);
-      updateOverviewCard('cursor', authStats.cursor_oauth);
-      updateOverviewCard('grok', authStats.xai_oauth);
+      renderAuthTypeCards(statsData.by_auth_type || {});
     }
 
     // 更新单个概览卡片的统计
     function updateOverviewCard(type, data) {
-      // 始终显示所有卡片，保持界面完整性
       const card = document.getElementById(`type-${type}-card`);
-      if (card) card.style.display = 'block';
+      if (!card) return;
 
       // 如果没有数据，显示默认值
       const totalRequests = data ? (data.total_requests || 0) : 0;
@@ -302,6 +419,7 @@
 
       if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
         window.i18n.onLocaleChange(() => {
+          updateStatsDisplay();
           if (serviceHealthModel) renderServiceHealth(serviceHealthModel);
         });
       }

@@ -153,7 +153,7 @@ func TestGetAuthTypeStats(t *testing.T) {
 	if cursorTS.TotalRequests != 1 || cursorTS.SuccessRequests != 1 || cursorTS.TotalInputTokens != 4 {
 		t.Fatalf("unexpected cursor summary: %+v", cursorTS)
 	}
-	if _, ok := byType[model.AuthTypeAPIKey]; ok {
-		t.Fatalf("api_key must not appear in auth type overview: %#v", byType)
+	if _, ok := byType[model.AuthTypeAPIKey]; !ok {
+		t.Fatalf("missing api_key: %#v", byType)
 	}
 }
