@@ -983,6 +983,40 @@ func TestSDKRunnerCallerCancellationStopsSendWithoutRunID(t *testing.T) {
 	}
 }
 
+func TestSDKRunnerClassifiesTerminalAuthenticationFailure(t *testing.T) {
+	handler := &testAgentHandler{}
+	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
+		if err := stream.Send(sdkMessage(t, "status", map[string]any{
+			"agent_id": "agent-1", "run_id": "run-1",
+			"message": "Authentication error If you are logged in, try logging out and back in.",
+		})); err != nil {
+			return err
+		}
+		if err := stream.Send(runResult(
+			"agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_ERROR, "",
+		)); err != nil {
+			return err
+		}
+		return stream.Send(runDone("agent-1", "run-1"))
+	}
+	runner := newTestSDKRunner(t, handler)
+	events, err := runner.Run(
+		context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"},
+	)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var runErr error
+	for event := range events {
+		if event.Done {
+			runErr = event.Err
+		}
+	}
+	if !IsCredentialRejected(runErr) {
+		t.Fatalf("terminal error = %v, want rejected credential", runErr)
+	}
+}
+
 func TestSDKRunStateRequiresTerminalSequenceAndRejectsDivergence(t *testing.T) {
 	state := &sdkRunState{agentID: "agent-1"}
 	if _, err := state.consume(sdkMessage(t, "assistant", map[string]any{

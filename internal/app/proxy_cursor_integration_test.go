@@ -10,9 +10,39 @@ import (
 	"time"
 
 	"ccLoad/internal/cursorauth"
+	sdkv1 "ccLoad/internal/cursorauth/sdkgen/sdk/v1"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 )
+
+type cursorRefreshOnceRunner struct {
+	calls            int
+	accessTokens     []string
+	outputThenReject bool
+}
+
+func (r *cursorRefreshOnceRunner) Run(
+	_ context.Context,
+	credential *cursorauth.Credential,
+	_ cursorauth.Request,
+) (<-chan cursorauth.Event, error) {
+	r.calls++
+	r.accessTokens = append(r.accessTokens, credential.AccessToken)
+	events := make(chan cursorauth.Event, 2)
+	if r.calls == 1 {
+		if r.outputThenReject {
+			events <- cursorauth.Event{Delta: "partial", Text: "partial"}
+		}
+		events <- cursorauth.Event{Done: true, Err: &cursorauth.BridgeError{
+			SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED,
+			Message: "expired Cursor session",
+		}}
+	} else {
+		events <- cursorauth.Event{Delta: "ok after refresh", Text: "ok after refresh", Done: true}
+	}
+	close(events)
+	return events, nil
+}
 
 func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 	t.Parallel()
@@ -70,6 +100,106 @@ func TestProxy_CursorOAuthUsesCLIInsteadOfHTTP(t *testing.T) {
 		t.Fatalf("logged usage = in:%d out:%d cache_read:%d cache_write:%d cache_5m:%d reasoning:%d",
 			entry.InputTokens, entry.OutputTokens, entry.CacheReadInputTokens,
 			entry.CacheCreationInputTokens, entry.Cache5mInputTokens, entry.ReasoningTokens)
+	}
+}
+
+func TestProxy_CursorOAuthRemintsRejectedCredentialAndRetries(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-old", RefreshToken: "cursor-refresh-old",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode Cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-refresh", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	exchangeCalls := 0
+	env.server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		exchangeCalls++
+		if request.URL.Path != cursorauth.ExchangeAPIKeyPath {
+			t.Fatalf("refresh path = %s", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer cursor-user-api-key" {
+			t.Fatalf("refresh authorization = %q", got)
+		}
+		return cursorTestHTTPResponse(
+			request, http.StatusOK,
+			`{"accessToken":"cursor-access-new","refreshToken":"cursor-refresh-new"}`,
+		), nil
+	})}
+	env.server.cursorCredentials = newCursorCredentialManager(
+		env.store, env.server.getClientForChannel, env.server.invalidateChannelRelatedCache,
+	)
+	runner := &cursorRefreshOnceRunner{}
+	env.server.cursorRunner = runner
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ok after refresh") {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	if exchangeCalls != 1 || runner.calls != 2 ||
+		len(runner.accessTokens) != 2 || runner.accessTokens[0] != "cursor-access-old" ||
+		runner.accessTokens[1] != "cursor-access-new" {
+		t.Fatalf("refresh calls=%d runner calls=%d access tokens=%v", exchangeCalls, runner.calls, runner.accessTokens)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs() = (%d, %v)", len(configs), err)
+	}
+	persisted, err := cursorauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persisted.AccessToken != "cursor-access-new" || persisted.RefreshToken != "cursor-refresh-new" {
+		t.Fatalf("persisted credential = (%+v, %v)", persisted, err)
+	}
+}
+
+func TestProxy_CursorOAuthDoesNotReplayStreamAfterOutput(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&cursorauth.Credential{
+		APIKey: "cursor-user-api-key", AccessToken: "cursor-access-old",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode Cursor credential: %v", err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cursor-no-stream-replay", upstreamProtocol: "openai", models: "grok-4.6",
+		authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://unused.invalid"})
+	exchangeCalls := 0
+	env.server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		exchangeCalls++
+		return cursorTestHTTPResponse(
+			request, http.StatusOK,
+			`{"accessToken":"cursor-access-new","refreshToken":"cursor-refresh-new"}`,
+		), nil
+	})}
+	env.server.cursorCredentials = newCursorCredentialManager(
+		env.store, env.server.getClientForChannel, env.server.invalidateChannelRelatedCache,
+	)
+	runner := &cursorRefreshOnceRunner{outputThenReject: true}
+	env.server.cursorRunner = runner
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "grok-4.6", "stream": true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "partial") ||
+		!strings.Contains(response.Body.String(), "expired Cursor session") {
+		t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+	}
+	if exchangeCalls != 1 || runner.calls != 1 {
+		t.Fatalf("stream refresh/replay mismatch: refresh calls=%d runner calls=%d", exchangeCalls, runner.calls)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs() = (%d, %v)", len(configs), err)
+	}
+	persisted, err := cursorauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persisted.AccessToken != "cursor-access-new" {
+		t.Fatalf("persisted credential = (%+v, %v)", persisted, err)
 	}
 }
 

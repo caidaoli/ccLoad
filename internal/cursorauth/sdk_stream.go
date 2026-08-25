@@ -260,10 +260,31 @@ func (s *sdkRunState) finalError(streamErr error) error {
 		if message == "" {
 			message = s.status.String()
 		}
+		if cursorRunCredentialRejected(s.errorCode, message) {
+			return &BridgeError{
+				SDKCode: sdkv1.SdkErrorCode_SDK_ERROR_CODE_UNAUTHORIZED,
+				Message: message,
+			}
+		}
 		return errors.New("cursor run failed: " + message)
 	default:
 		return fmt.Errorf("cursor run ended with non-terminal status %s", s.status.String())
 	}
+}
+
+func cursorRunCredentialRejected(errorCode, message string) bool {
+	code := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(errorCode)))
+	switch code {
+	case "unauthorized", "unauthenticated", "authentication_error", "auth_error", "sdk_error_code_unauthorized":
+		return true
+	}
+	// Bridge v1.0.28 sometimes exposes a rejected Cursor session only through
+	// the terminal Run status text. Keep this exact remediation phrase scoped
+	// to Run results; bare Connect authentication errors may belong to the
+	// loopback bridge itself and must not rotate a channel credential.
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "authentication error") &&
+		strings.Contains(message, "try logging out and back in")
 }
 
 func firstString(values map[string]any, keys ...string) string {

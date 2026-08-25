@@ -73,7 +73,36 @@ func (s *Server) tryCursorOAuthChannel(
 		}
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
 	}
-	return s.forwardCursorAgent(ctx, cfg, credential, reqCtx, w)
+	for attempt := 0; attempt < 2; attempt++ {
+		result, forwardErr := s.forwardCursorAgent(ctx, cfg, credential, reqCtx, w)
+		if forwardErr != nil || result == nil {
+			return result, forwardErr
+		}
+		credentialRejected := result.status == http.StatusUnauthorized &&
+			(result.nextAction == cooldown.ActionRetryChannel || result.succeeded)
+		if !credentialRejected {
+			return result, nil
+		}
+		if attempt == 1 {
+			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
+			return result, nil
+		}
+		refreshed, refreshErr := s.cursorCredentials.credentialAfterUnauthorized(ctx, cfg, credential.AccessToken)
+		if refreshErr != nil {
+			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
+			return result, nil
+		}
+		credential = refreshed
+		if result.succeeded {
+			// The SSE error is already committed. Rotate the rejected credential
+			// for the next request, but never replay this run.
+			return result, nil
+		}
+		if s.activeRequests != nil {
+			s.activeRequests.Retry(reqCtx.activeReqID)
+		}
+	}
+	return nil, errors.New("cursor credential retry loop exhausted")
 }
 
 func (s *Server) forwardCursorAgent(
@@ -180,7 +209,6 @@ func (s *Server) forwardCursorAgent(
 			action = cooldown.ActionReturnClient
 		} else if cursorauth.IsCredentialRejected(err) {
 			status = http.StatusUnauthorized
-			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
 		}
 		result := cursorErrorResult(cfg, status, err.Error(), action)
 		result.duration = time.Since(started).Seconds()
@@ -327,7 +355,6 @@ func (s *Server) forwardCursorAgent(
 			action = cooldown.ActionReturnClient
 		} else if cursorauth.IsCredentialRejected(runErr) {
 			status = http.StatusUnauthorized
-			s.cooldownRejectedOAuthCredential(ctx, cfg, "Cursor")
 		}
 		if streaming && wroteHeader && !clientDisconnected {
 			if format == "responses" {
