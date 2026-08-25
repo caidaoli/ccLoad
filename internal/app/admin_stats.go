@@ -161,7 +161,7 @@ func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
 
 // HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?range=today
-// 按客户端入口协议分组统计。
+// 按客户端入口协议和渠道认证类型分组统计。
 //
 // [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
 // 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
@@ -179,20 +179,27 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		logFilter = &filter
 	}
 
-	// 协议摘要与 RPM 相互独立，并行查询。
+	// 协议摘要、认证类型摘要与 RPM 相互独立，并行查询。
 	var (
-		stats    []model.ClientProtocolStats
-		rpmStats *model.RPMStats
-		statsErr error
-		rpmErr   error
-		wg       sync.WaitGroup
+		stats        []model.ClientProtocolStats
+		authStats    []model.AuthTypeStats
+		rpmStats     *model.RPMStats
+		statsErr     error
+		authStatsErr error
+		rpmErr       error
+		wg           sync.WaitGroup
 	)
 
-	wg.Add(2)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
 		stats, statsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, logFilter)
+	}()
+
+	go func() {
+		defer wg.Done()
+		authStats, authStatsErr = s.statsCache.GetAuthTypeStats(ctx, startTime, endTime, logFilter)
 	}()
 
 	go func() {
@@ -204,6 +211,10 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 
 	if statsErr != nil {
 		RespondError(c, http.StatusInternalServerError, statsErr)
+		return
+	}
+	if authStatsErr != nil {
+		RespondError(c, http.StatusInternalServerError, authStatsErr)
 		return
 	}
 	if rpmErr != nil {
@@ -229,6 +240,11 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		}
 	}
 
+	byAuthType := make(map[string]model.AuthTypeStats, len(authStats))
+	for _, stat := range authStats {
+		byAuthType[stat.AuthType] = stat
+	}
+
 	response := gin.H{
 		"total_requests":     totalSuccess + totalError,
 		"success_requests":   totalSuccess,
@@ -238,6 +254,7 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		"rpm_stats":          rpmStats,
 		"is_today":           isToday,
 		"by_client_protocol": byClientProtocol,
+		"by_auth_type":       byAuthType,
 	}
 
 	RespondJSON(c, http.StatusOK, response)

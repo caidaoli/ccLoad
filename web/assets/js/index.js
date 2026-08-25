@@ -1,5 +1,5 @@
     // 统计数据管理
-    let statsData = { by_client_protocol: {} };
+    let statsData = { by_client_protocol: {}, by_auth_type: {} };
 
     // 当前选中的时间范围
     let currentTimeRange = 'today';
@@ -221,14 +221,19 @@
     function updateStatsDisplay() {
       // 更新按客户端入口协议统计
       const protocolStats = statsData.by_client_protocol || {};
-      updateClientProtocolStats('anthropic', protocolStats.anthropic);
-      updateClientProtocolStats('codex', protocolStats.codex);
-      updateClientProtocolStats('openai', protocolStats.openai);
-      updateClientProtocolStats('gemini', protocolStats.gemini);
+      updateOverviewCard('anthropic', protocolStats.anthropic);
+      updateOverviewCard('codex', protocolStats.codex);
+      updateOverviewCard('openai', protocolStats.openai);
+      updateOverviewCard('gemini', protocolStats.gemini);
+
+      const authStats = statsData.by_auth_type || {};
+      updateOverviewCard('zai', authStats.zai_oauth);
+      updateOverviewCard('cursor', authStats.cursor_oauth);
+      updateOverviewCard('grok', authStats.xai_oauth);
     }
 
-    // 更新单个客户端入口协议的统计
-    function updateClientProtocolStats(type, data) {
+    // 更新单个概览卡片的统计
+    function updateOverviewCard(type, data) {
       // 始终显示所有卡片，保持界面完整性
       const card = document.getElementById(`type-${type}-card`);
       if (card) card.style.display = 'block';
@@ -248,7 +253,6 @@
       document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
       document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
 
-      // 所有客户端协议的Token和成本统计
       const inputTokens = data ? (data.total_input_tokens || 0) : 0;
       const outputTokens = data ? (data.total_output_tokens || 0) : 0;
       const totalCost = data ? (data.total_cost || 0) : 0;
@@ -260,18 +264,14 @@
       document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
       document.getElementById(`type-${type}-cost`).innerHTML = buildCostStackHtml(totalCost, effectiveCost, { tone: 'warning', inline: true });
 
-      // Claude和Codex类型的缓存统计（缓存读+缓存创建）
-      if (type === 'anthropic' || type === 'codex') {
-        const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
-        const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
-        document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
-        document.getElementById(`type-${type}-cache-create`).textContent = formatNumber(cacheCreateTokens);
-      }
+      const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
+      const cacheReadEl = document.getElementById(`type-${type}-cache-read`);
+      if (cacheReadEl) cacheReadEl.textContent = formatNumber(cacheReadTokens);
 
-      // OpenAI和Gemini类型的缓存统计（仅缓存读）
-      if (type === 'openai' || type === 'gemini') {
-        const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
-        document.getElementById(`type-${type}-cache-read`).textContent = formatNumber(cacheReadTokens);
+      const cacheCreateEl = document.getElementById(`type-${type}-cache-create`);
+      if (cacheCreateEl) {
+        const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
+        cacheCreateEl.textContent = formatNumber(cacheCreateTokens);
       }
     }
 
