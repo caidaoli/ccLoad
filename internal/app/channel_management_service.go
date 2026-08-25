@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptrace"
@@ -212,8 +213,11 @@ func (s *channelManagementService) acquireChannel(ctx context.Context, channelID
 	if s == nil || channelID <= 0 {
 		return nil, errInvalidManagementRequest
 	}
-	newGate := make(chan struct{}, 1)
-	gateValue, _ := s.gates.LoadOrStore(channelID, newGate)
+	gateValue, ok := s.gates.Load(channelID)
+	if !ok {
+		newGate := make(chan struct{}, 1)
+		gateValue, _ = s.gates.LoadOrStore(channelID, newGate)
+	}
 	gate := gateValue.(chan struct{})
 	select {
 	case gate <- struct{}{}:
@@ -263,14 +267,47 @@ func mergeChannelManagementSettings(
 			DailyCheckinTime:    input.DailyCheckinTime,
 		},
 	}
-	if current != nil {
+	if err = next.Validate(); err != nil {
+		return nil, "", fmt.Errorf("%w: %v", errInvalidManagementRequest, err)
+	}
+	if input.UserID == nil && sameChannelManagementIdentityWithoutUserID(current, next) &&
+		current.Settings.UserID != nil {
+		userID := *current.Settings.UserID
+		next.Settings.UserID = &userID
+	}
+	if sameChannelManagementIdentity(current, next) {
 		next.State = current.State
 	}
 	nextRaw, err := next.Marshal()
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("%w: %v", errInvalidManagementRequest, err)
 	}
 	return next, nextRaw, nil
+}
+
+func sameChannelManagementIdentityWithoutUserID(
+	current *model.ChannelManagementEnvelope,
+	next *model.ChannelManagementEnvelope,
+) bool {
+	return current != nil && next != nil &&
+		current.Profile == next.Profile &&
+		current.Settings.BaseURL == next.Settings.BaseURL &&
+		current.Settings.AccessToken == next.Settings.AccessToken
+}
+
+func sameChannelManagementIdentity(
+	current *model.ChannelManagementEnvelope,
+	next *model.ChannelManagementEnvelope,
+) bool {
+	return sameChannelManagementIdentityWithoutUserID(current, next) &&
+		equalChannelManagementUserID(current.Settings.UserID, next.Settings.UserID)
+}
+
+func equalChannelManagementUserID(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func channelManagementViewFromEnvelope(envelope *model.ChannelManagementEnvelope) *channelManagementView {

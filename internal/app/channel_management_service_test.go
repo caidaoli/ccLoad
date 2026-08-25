@@ -61,7 +61,7 @@ func TestChannelManagementServiceSaveSettingsMergesAndRedacts(t *testing.T) {
 
 	view, err = service.SaveSettings(ctx, stored, &channelManagementInput{
 		Profile: model.ChannelManagementProfileSub2API,
-		BaseURL: "https://other.example.com",
+		BaseURL: "https://panel.example.com/",
 	})
 	if err != nil {
 		t.Fatalf("SaveSettings same profile without token: %v", err)
@@ -119,6 +119,155 @@ func TestChannelManagementServiceSaveSettingsMergesAndRedacts(t *testing.T) {
 	}
 }
 
+func TestChannelManagementServiceSaveSettingsPreservesHiddenUserIDForSameAccount(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "preserve-user")
+	userID := int64(42)
+	checkinAt := time.Date(2026, 8, 25, 7, 30, 0, 0, time.UTC)
+	cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, &model.ChannelManagementEnvelope{
+		Kind:    model.ChannelManagementKind,
+		Version: model.ChannelManagementVersion,
+		Profile: model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{
+			BaseURL: "https://panel.example.com", AccessToken: "same-private-token", UserID: &userID,
+		},
+		State: model.ChannelManagementState{
+			LastScheduledDay: "2026-08-25", LastCheckinStatus: "success", LastCheckinAt: &checkinAt,
+		},
+	})
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client { return server.client })
+
+	view, err := service.SaveSettings(context.Background(), cfg, &channelManagementInput{
+		Profile:             model.ChannelManagementProfileNewAPI,
+		BaseURL:             "https://panel.example.com/",
+		DailyCheckinEnabled: true,
+		DailyCheckinTime:    "09:30",
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings ordinary edit: %v", err)
+	}
+	if !view.UserIDConfigured {
+		t.Fatalf("ordinary edit cleared hidden user ID: %#v", view)
+	}
+	if view.LastCheckinStatus != "success" || view.LastCheckinAt == nil || !view.LastCheckinAt.Equal(checkinAt) {
+		t.Fatalf("daily-only edit cleared state: %#v", view)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatalf("parse envelope: %v", err)
+	}
+	if envelope.Settings.UserID == nil || *envelope.Settings.UserID != userID {
+		t.Fatalf("stored user ID = %v, want %d", envelope.Settings.UserID, userID)
+	}
+	if envelope.State.LastScheduledDay != "2026-08-25" {
+		t.Fatalf("daily-only edit cleared scheduler state: %#v", envelope.State)
+	}
+}
+
+func TestChannelManagementServiceSaveSettingsClearsStateWhenAccountIdentityChanges(t *testing.T) {
+	t.Parallel()
+	nextUserID := int64(43)
+	tests := []struct {
+		name  string
+		input channelManagementInput
+	}{
+		{
+			name: "profile",
+			input: channelManagementInput{
+				Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://panel.example.com", AccessToken: "next-private-token",
+			},
+		},
+		{
+			name: "base URL",
+			input: channelManagementInput{
+				Profile: model.ChannelManagementProfileNewAPI, BaseURL: "https://other.example.com",
+			},
+		},
+		{
+			name: "access token",
+			input: channelManagementInput{
+				Profile: model.ChannelManagementProfileNewAPI, BaseURL: "https://panel.example.com", AccessToken: "next-private-token",
+			},
+		},
+		{
+			name: "user ID",
+			input: channelManagementInput{
+				Profile: model.ChannelManagementProfileNewAPI, BaseURL: "https://panel.example.com", UserID: &nextUserID,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newInMemoryServer(t)
+			cfg := createChannelManagementTestConfig(t, server.store, "identity-"+tt.name)
+			oldUserID := int64(42)
+			checkinAt := time.Date(2026, 8, 25, 7, 30, 0, 0, time.UTC)
+			remaining := 12.5
+			cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, &model.ChannelManagementEnvelope{
+				Kind:    model.ChannelManagementKind,
+				Version: model.ChannelManagementVersion,
+				Profile: model.ChannelManagementProfileNewAPI,
+				Settings: model.ChannelManagementSettings{
+					BaseURL: "https://panel.example.com", AccessToken: "same-private-token", UserID: &oldUserID,
+				},
+				State: model.ChannelManagementState{
+					LastScheduledDay: "2026-08-25", LastCheckinStatus: "success", LastCheckinAt: &checkinAt,
+					LastBalance: &model.ChannelManagementBalanceSnapshot{BalanceUSD: &remaining, SampledAt: checkinAt},
+				},
+			})
+			service := newChannelManagementService(server.store, func(*model.Config) *http.Client { return server.client })
+
+			view, err := service.SaveSettings(context.Background(), cfg, &tt.input)
+			if err != nil {
+				t.Fatalf("SaveSettings identity change: %v", err)
+			}
+			if view.LastCheckinStatus != "" || view.LastCheckinAt != nil || view.Balance != nil {
+				t.Fatalf("identity change retained public state: %#v", view)
+			}
+			stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+			if err != nil {
+				t.Fatalf("parse envelope: %v", err)
+			}
+			if envelope.State.LastScheduledDay != "" || envelope.State.LastCheckinStatus != "" ||
+				envelope.State.LastCheckinAt != nil || envelope.State.LastBalance != nil {
+				t.Fatalf("identity change retained stored state: %#v", envelope.State)
+			}
+		})
+	}
+}
+
+func TestChannelManagementServiceSaveSettingsWrapsValidationAsInvalidRequest(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "invalid-settings")
+	const token = "validation-private-token"
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client { return server.client })
+
+	_, err := service.SaveSettings(context.Background(), cfg, &channelManagementInput{
+		Profile:     model.ChannelManagementProfileNewAPI,
+		BaseURL:     "https://panel.example.com/not-root",
+		AccessToken: token,
+	})
+	if !errors.Is(err, errInvalidManagementRequest) {
+		t.Fatalf("validation error = %v, want errors.Is(errInvalidManagementRequest)", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("validation error leaked token: %v", err)
+	}
+}
+
 type channelManagementConflictStore struct {
 	storage.Store
 	mu       sync.Mutex
@@ -147,7 +296,6 @@ func (s *channelManagementConflictStore) CompareAndSwapChannelManagement(
 	if err != nil {
 		return false, err
 	}
-	concurrent.Settings.AccessToken = "concurrent-private-token"
 	concurrent.State.LastCheckinStatus = "concurrent-success"
 	concurrentRaw, err := concurrent.Marshal()
 	if err != nil {
@@ -188,7 +336,7 @@ func TestChannelManagementServiceSaveSettingsCASConflictMergesLatestLocalEnvelop
 	service := newChannelManagementService(conflicts, func(*model.Config) *http.Client { return server.client })
 	view, err := service.SaveSettings(ctx, cfg, &channelManagementInput{
 		Profile: model.ChannelManagementProfileSub2API,
-		BaseURL: "https://new.example.com",
+		BaseURL: "https://old.example.com/",
 	})
 	if err != nil {
 		t.Fatalf("SaveSettings after CAS conflict: %v", err)
@@ -204,7 +352,7 @@ func TestChannelManagementServiceSaveSettingsCASConflictMergesLatestLocalEnvelop
 	if err != nil {
 		t.Fatalf("parse final envelope: %v", err)
 	}
-	if envelope.Settings.AccessToken != "concurrent-private-token" || envelope.Settings.BaseURL != "https://new.example.com" {
+	if envelope.Settings.AccessToken != "old-private-token" || envelope.Settings.BaseURL != "https://old.example.com" {
 		t.Fatalf("CAS retry merged envelope = %#v", envelope)
 	}
 	conflicts.mu.Lock()
@@ -426,6 +574,26 @@ func createChannelManagementTestConfig(t *testing.T, store storage.Store, name s
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	return cfg
+}
+
+func seedChannelManagementTestEnvelope(
+	t *testing.T,
+	store storage.Store,
+	cfg *model.Config,
+	envelope *model.ChannelManagementEnvelope,
+) *model.Config {
+	t.Helper()
+	raw, err := envelope.Marshal()
+	if err != nil {
+		t.Fatalf("marshal seed envelope: %v", err)
+	}
+	updated, err := store.CompareAndSwapChannelManagement(context.Background(), cfg.ID, cfg.OAuthCredential, raw)
+	if err != nil || !updated {
+		t.Fatalf("seed envelope CAS = (%v, %v)", updated, err)
+	}
+	seeded := cfg.Clone()
+	seeded.OAuthCredential = raw
+	return seeded
 }
 
 func managementTestResponse(req *http.Request, status int, body string) *http.Response {
