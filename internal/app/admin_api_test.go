@@ -190,6 +190,61 @@ func TestAdminAPI_ExportChannelsCSVSelectedIDs(t *testing.T) {
 	}
 }
 
+func TestAdminAPI_CSVExportDoesNotExposeChannelManagementEnvelope(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+	managementEnvelope := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"must-not-appear-in-csv"},"state":{}}`
+	oauthCredential := `{"type":"codex","access_token":"oauth-export-access","refresh_token":"oauth-export-refresh","expired":"2030-01-01T00:00:00Z"}`
+
+	managed, err := server.store.CreateConfig(ctx, &model.Config{
+		Name: "Managed API Key", AuthType: model.AuthTypeAPIKey,
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := server.store.CompareAndSwapChannelManagement(ctx, managed.ID, "", managementEnvelope)
+	if err != nil || !updated {
+		t.Fatalf("seed management envelope = (%v, %v)", updated, err)
+	}
+	oauth, err := server.store.CreateConfig(ctx, &model.Config{
+		Name: "OAuth Export", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: oauthCredential,
+		URLs: model.ChannelURLs{{URL: "https://oauth.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := fmt.Sprintf("/admin/channels/export?ids=%d,%d", managed.ID, oauth.ID)
+	c, w := newTestContext(t, newRequest(http.MethodGet, target, nil))
+	server.HandleExportChannelsCSV(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("export status=%d, want 200", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "must-not-appear-in-csv") || strings.Contains(w.Body.String(), "channel_management") {
+		t.Fatalf("API Key management credential leaked in CSV: %s", w.Body.String())
+	}
+	records, err := csv.NewReader(bytes.NewReader(w.Body.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse exported CSV: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("exported row count=%d, want header plus two channels", len(records))
+	}
+	headerIndex := buildCSVColumnIndex(records[0])
+	rowsByName := map[string][]string{
+		records[1][headerIndex["name"]]: records[1],
+		records[2][headerIndex["name"]]: records[2],
+	}
+	if got := rowsByName[managed.Name][headerIndex["oauth_credential"]]; got != "" {
+		t.Fatalf("API Key oauth_credential=%q, want empty", got)
+	}
+	if got := rowsByName[oauth.Name][headerIndex["oauth_credential"]]; got != oauthCredential {
+		t.Fatalf("OAuth oauth_credential=%q, want original credential", got)
+	}
+}
+
 func TestAdminAPI_CSVExportImportOAuthChannelWithFilters(t *testing.T) {
 	server := newInMemoryServer(t)
 	ctx := context.Background()
