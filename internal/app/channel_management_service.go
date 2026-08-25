@@ -497,7 +497,9 @@ func (s *channelManagementService) doManagementRequest(
 		request = withChromeUTLS(request)
 	}
 
-	if method == http.MethodPost {
+	// 条件必须与上面 GetBody 的设置条件一致：任何带请求体的方法都要跟踪写出，
+	// 否则重放守卫会静默失效。
+	if body != nil {
 		trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) {
 			wroteRequest.Store(true)
 		}}
