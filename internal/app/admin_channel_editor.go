@@ -35,6 +35,7 @@ type channelEditorFeatures struct {
 type channelEditorData struct {
 	Channel             ChannelWithCooldown     `json:"channel"`
 	Keys                []*model.APIKey         `json:"keys"`
+	ManagementAccount   *channelManagementView  `json:"management_account,omitempty"`
 	OAuthCredential     json.RawMessage         `json:"oauth_credential,omitempty"`
 	OAuthCredentialInfo *codexauth.IDTokenInfo  `json:"oauth_credential_info,omitempty"`
 	ModelStats          channelEditorModelStats `json:"model_stats"`
@@ -170,6 +171,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, channelEditorData{
 		Channel:             detail,
 		Keys:                apiKeys,
+		ManagementAccount:   detail.ManagementAccount,
 		OAuthCredential:     oauthCredential,
 		OAuthCredentialInfo: oauthCredentialInfo,
 		ModelStats:          modelStats,

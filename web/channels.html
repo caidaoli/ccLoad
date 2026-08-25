@@ -40,6 +40,7 @@
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-management.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
@@ -1498,35 +1499,31 @@
         <div class="advanced-settings-other-fields">
           <label class="advanced-settings-proxy-field" for="channelProxyURL">
             <span class="form-label" data-i18n="channels.proxyURL">代理</span>
-            <span class="advanced-settings-proxy-content">
-              <input type="text" id="channelProxyURL" class="form-input" value=""
-                data-i18n-placeholder="channels.proxyURLPlaceholder"
-                placeholder="http://… | https://… | socks5://… | socks5h://…"
-                aria-describedby="channelProxyURLHelp">
-              <small id="channelProxyURLHelp" class="advanced-settings-field-help"
-                data-i18n="channels.proxyURLHelp">例如 http://127.0.0.1:8080、https://proxy.example:8443、socks5://127.0.0.1:1080。</small>
-            </span>
+            <input type="text" id="channelProxyURL" class="form-input" value=""
+              data-i18n-placeholder="channels.proxyURLPlaceholder"
+              placeholder="http://… | https://… | socks5://… | socks5h://…"
+              aria-describedby="channelProxyURLHelp">
+            <small id="channelProxyURLHelp" class="advanced-settings-field-help"
+              data-i18n="channels.proxyURLHelp">例如 http://127.0.0.1:8080、https://proxy.example:8443、socks5://127.0.0.1:1080。</small>
           </label>
           <div class="advanced-settings-availability-row">
             <span class="form-label" data-i18n="channels.availableTime">可用时段</span>
-            <div class="advanced-settings-availability-content">
-              <div class="advanced-settings-time-fields">
-                <label class="advanced-settings-time-field" for="channelAvailableTimeStart">
-                  <input type="text" id="channelAvailableTimeStart" class="form-input" value=""
-                    inputmode="numeric" autocomplete="off" maxlength="5" pattern="[0-9]{2}:[0-9]{2}"
-                    placeholder="HH:MM" aria-label="开始时间" data-i18n-aria-label="channels.availableTimeStart"
-                    aria-describedby="channelAvailableTimeHelp">
-                </label>
-                <span aria-hidden="true">–</span>
-                <label class="advanced-settings-time-field" for="channelAvailableTimeEnd">
-                  <input type="text" id="channelAvailableTimeEnd" class="form-input" value=""
-                    inputmode="numeric" autocomplete="off" maxlength="5" pattern="[0-9]{2}:[0-9]{2}"
-                    placeholder="HH:MM" aria-label="结束时间" data-i18n-aria-label="channels.availableTimeEnd"
-                    aria-describedby="channelAvailableTimeHelp">
-                </label>
-              </div>
-              <small id="channelAvailableTimeHelp" class="advanced-settings-field-help" data-i18n="channels.availableTimeHelp">格式 HH:MM；留空表示全天可用，支持跨午夜时段，例如 22:00–08:00。</small>
+            <div class="advanced-settings-time-fields">
+              <label class="advanced-settings-time-field" for="channelAvailableTimeStart">
+                <input type="text" id="channelAvailableTimeStart" class="form-input" value=""
+                  inputmode="numeric" autocomplete="off" maxlength="5" pattern="[0-9]{2}:[0-9]{2}"
+                  placeholder="HH:MM" aria-label="开始时间" data-i18n-aria-label="channels.availableTimeStart"
+                  aria-describedby="channelAvailableTimeHelp">
+              </label>
+              <span aria-hidden="true">–</span>
+              <label class="advanced-settings-time-field" for="channelAvailableTimeEnd">
+                <input type="text" id="channelAvailableTimeEnd" class="form-input" value=""
+                  inputmode="numeric" autocomplete="off" maxlength="5" pattern="[0-9]{2}:[0-9]{2}"
+                  placeholder="HH:MM" aria-label="结束时间" data-i18n-aria-label="channels.availableTimeEnd"
+                  aria-describedby="channelAvailableTimeHelp">
+              </label>
             </div>
+            <small id="channelAvailableTimeHelp" class="advanced-settings-field-help" data-i18n="channels.availableTimeHelp">格式 HH:MM；留空表示全天可用，支持跨午夜时段，例如 22:00–08:00。</small>
           </div>
           <label class="form-label channel-editor-checkbox-label advanced-settings-retry-label" for="channelRetryOtherKeysOnFailure"
             title="渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。"
@@ -1549,6 +1546,68 @@
               </div>
             </div>
           </div>
+          <fieldset id="channelManagementGroup" class="advanced-settings-management" hidden>
+            <legend class="advanced-settings-management-legend" data-i18n="channels.management.legend">管理账户</legend>
+            <div class="advanced-settings-other-field">
+              <label class="form-label" for="channelManagementProfile" data-i18n="channels.management.profile">管理类型</label>
+              <select id="channelManagementProfile" class="form-input"
+                aria-describedby="channelManagementProfileHelp channelManagementNotice">
+                <option value="" data-i18n="channels.management.profileOff">不启用</option>
+                <option value="new_api" data-i18n="channels.management.profileNewAPI">New API</option>
+                <option value="sub2api" data-i18n="channels.management.profileSub2API">标准 Sub2API</option>
+                <option value="sub2api_pro" data-i18n="channels.management.profileSub2APIPro">Sub2API Pro</option>
+              </select>
+              <div class="advanced-settings-field-meta">
+                <small id="channelManagementProfileHelp" class="advanced-settings-field-help" data-i18n="channels.management.profileHelp">选择上游面板类型后可刷新额度，New API 与 Sub2API Pro 还支持签到。</small>
+              </div>
+            </div>
+            <p id="channelManagementNotice" class="advanced-settings-management-notice" role="status" hidden></p>
+            <div id="channelManagementBaseURLField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementBaseURL" data-i18n="channels.management.baseURL">面板地址</label>
+              <input type="url" id="channelManagementBaseURL" class="form-input" autocomplete="off" spellcheck="false"
+                aria-describedby="channelManagementBaseURLHelp channelManagementBaseURLError">
+              <div class="advanced-settings-field-meta">
+                <small id="channelManagementBaseURLHelp" class="advanced-settings-field-help" data-i18n="channels.management.baseURLHelp">面板根地址，例如 https://panel.example.com,不要包含路径或查询参数。</small>
+                <small id="channelManagementBaseURLError" class="advanced-settings-management-error" role="status" hidden></small>
+              </div>
+            </div>
+            <div id="channelManagementTokenField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementToken" data-i18n="channels.management.token">管理凭据</label>
+              <input type="password" id="channelManagementToken" class="form-input" autocomplete="off" spellcheck="false"
+                aria-describedby="channelManagementTokenHelp channelManagementTokenHint channelManagementTokenError">
+              <div class="advanced-settings-field-meta">
+                <small id="channelManagementTokenHelp" class="advanced-settings-field-help"></small>
+                <small id="channelManagementTokenHint" class="advanced-settings-field-help" data-i18n="channels.management.tokenKeepHint" hidden>已配置凭据,留空表示保留现有凭据。</small>
+                <small id="channelManagementTokenError" class="advanced-settings-management-error" role="status" hidden></small>
+              </div>
+            </div>
+            <div id="channelManagementUserIDField" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelManagementUserID" data-i18n="channels.management.userID">用户 ID</label>
+              <input type="text" id="channelManagementUserID" class="form-input" inputmode="numeric" autocomplete="off"
+                aria-describedby="channelManagementUserIDHelp channelManagementUserIDHint channelManagementUserIDError">
+              <div class="advanced-settings-field-meta">
+                <small id="channelManagementUserIDHelp" class="advanced-settings-field-help" data-i18n="channels.management.userIDHelp">可选,仅 New API 使用,填写后作为 New-API-User 请求头。</small>
+                <small id="channelManagementUserIDHint" class="advanced-settings-field-help" data-i18n="channels.management.userIDConfiguredHint" hidden>已配置用户 ID；更改管理凭据或面板地址后必须重新输入。</small>
+                <small id="channelManagementUserIDError" class="advanced-settings-management-error" role="status" hidden></small>
+              </div>
+            </div>
+            <div id="channelManagementCheckinField" class="advanced-settings-management-checkin" hidden>
+              <label class="form-label channel-editor-checkbox-label" for="channelManagementDailyCheckinEnabled">
+                <input type="checkbox" id="channelManagementDailyCheckinEnabled">
+                <span data-i18n="channels.management.dailyCheckin">每日自动签到</span>
+              </label>
+              <div class="advanced-settings-other-field">
+                <label class="form-label" for="channelManagementDailyCheckinTime" data-i18n="channels.management.dailyCheckinTime">签到时间</label>
+                <input type="text" id="channelManagementDailyCheckinTime" class="form-input" inputmode="numeric" autocomplete="off"
+                  maxlength="5" pattern="[0-9]{2}:[0-9]{2}" placeholder="HH:MM"
+                  aria-describedby="channelManagementDailyCheckinHelp channelManagementDailyCheckinTimeError">
+                <div class="advanced-settings-field-meta">
+                  <small id="channelManagementDailyCheckinHelp" class="advanced-settings-field-help" data-i18n="channels.management.dailyCheckinHelp">24 小时制 HH:MM,服务器本地时区每日执行一次签到。</small>
+                  <small id="channelManagementDailyCheckinTimeError" class="advanced-settings-management-error" role="status" hidden></small>
+                </div>
+              </div>
+            </div>
+          </fieldset>
         </div>
       </section>
 

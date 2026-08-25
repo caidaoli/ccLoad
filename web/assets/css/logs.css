@@ -533,6 +533,11 @@
       background: #d1fae5;
     }
 
+    .log-source-badge--checkin {
+      color: var(--notification-warning-fg);
+      background: var(--notification-warning-bg);
+    }
+
     .logs-filter-summary-row {
       display: flex;
       align-items: center;

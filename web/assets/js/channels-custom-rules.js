@@ -26,6 +26,7 @@
 
   let _state = { headers: [], body: [] };
   let _draft = null;
+  let _advancedSettingsOpener = null;
 
   function t(key, fallback) {
     if (hasWindow && typeof window.t === 'function') {
@@ -228,6 +229,8 @@
 
   function openCustomRulesModal() {
     if (!hasDocument) return;
+    const active = document.activeElement;
+    _advancedSettingsOpener = active && active !== document.body ? active : null;
     _draft = cloneRules(getState());
     renderRuleList('headers');
     renderRuleList('body');
@@ -239,6 +242,9 @@
     }
     if (hasWindow && typeof window.resetCodexQuotaOverdraftDraft === 'function') {
       window.resetCodexQuotaOverdraftDraft();
+    }
+    if (hasWindow && typeof window.beginManagementAccountDraft === 'function') {
+      window.beginManagementAccountDraft();
     }
     switchAdvancedSettingsTab('custom-rules');
     const modal = document.getElementById('customRulesModal');
@@ -268,6 +274,10 @@
     if (hasWindow && typeof window.discardCooldownDetectionDraft === 'function') {
       window.discardCooldownDetectionDraft();
     }
+    // 键盘用户必须回到打开高级设置的按钮，而不是被丢到 <body>。
+    const opener = _advancedSettingsOpener;
+    _advancedSettingsOpener = null;
+    if (opener && typeof opener.focus === 'function' && opener.isConnected) opener.focus();
   }
 
   function switchAdvancedSettingsTab(tab) {
@@ -508,6 +518,13 @@
       }
       return false;
     }
+    // 管理账户草稿非法：切到“其他”页后重新校验，让焦点落在可见控件上。
+    if (hasWindow && typeof window.validateManagementAccountDraft === 'function'
+        && !window.validateManagementAccountDraft()) {
+      switchAdvancedSettingsTab('other');
+      window.validateManagementAccountDraft();
+      return false;
+    }
     const confirmButton = hasDocument
       ? document.querySelector('[data-action="apply-advanced-settings"]')
       : null;
@@ -521,6 +538,10 @@
       }
       if (!commitCustomRulesDraft()) return false;
       if (hasWindow && typeof window.commitCooldownDetectionRules === 'function' && !window.commitCooldownDetectionRules()) {
+        return false;
+      }
+      if (hasWindow && typeof window.commitManagementAccountDraft === 'function'
+          && !window.commitManagementAccountDraft()) {
         return false;
       }
       closeCustomRulesModal();

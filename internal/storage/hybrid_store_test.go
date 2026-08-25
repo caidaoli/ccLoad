@@ -708,3 +708,47 @@ func TestHybridStore_MySQLWriteBehindIntegration(t *testing.T) {
 		t.Fatalf("清理 MySQL 测试渠道: %v", err)
 	}
 }
+
+func TestHybridStore_ChannelManagementCASMarksDirtyOnlyOnSuccess(t *testing.T) {
+	primary := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+	ctx := context.Background()
+
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "managed-api-key", AuthType: model.AuthTypeAPIKey,
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		cfg, cfgErr := primary.GetConfig(ctx, created.ID)
+		return cfgErr == nil && cfg.OAuthCredential == "" && hybrid.RuntimeMetrics().PrimarySyncPending == 0
+	})
+
+	envelope := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"hybrid-private-token"},"state":{}}`
+	updated, err := hybrid.CompareAndSwapChannelManagement(ctx, created.ID, "", envelope)
+	if err != nil || !updated {
+		t.Fatalf("successful CAS = (%v, %v), want (true, nil)", updated, err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		cfg, cfgErr := primary.GetConfig(ctx, created.ID)
+		return cfgErr == nil && cfg.OAuthCredential == envelope && hybrid.RuntimeMetrics().PrimarySyncPending == 0
+	})
+
+	hybrid.primarySync.mu.Lock()
+	generationBeforeStaleCAS := hybrid.primarySync.nextGen
+	hybrid.primarySync.mu.Unlock()
+	updated, err = hybrid.CompareAndSwapChannelManagement(ctx, created.ID, "", "")
+	if err != nil || updated {
+		t.Fatalf("stale CAS = (%v, %v), want (false, nil)", updated, err)
+	}
+	hybrid.primarySync.mu.Lock()
+	generationAfterStaleCAS := hybrid.primarySync.nextGen
+	hybrid.primarySync.mu.Unlock()
+	if generationAfterStaleCAS != generationBeforeStaleCAS {
+		t.Fatalf("stale CAS marked channel dirty: generation %d -> %d", generationBeforeStaleCAS, generationAfterStaleCAS)
+	}
+}

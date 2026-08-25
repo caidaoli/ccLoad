@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +16,12 @@ import (
 
 // LogsBootstrapResponse 聚合 logs 页首屏所需的所有数据，减少 RTT
 type LogsBootstrapResponse struct {
-	ChannelTestContent        string                `json:"channel_test_content"`
-	LogChannelClickAction     string                `json:"log_channel_click_action"`
-	ChannelCheckIntervalHours float64               `json:"channel_check_interval_hours"`
-	AuthTokens                []*model.AuthToken    `json:"auth_tokens"`
-	Models                    []string              `json:"models"`
-	Channels                  []model.ChannelNameID `json:"channels"`
-	StatusCodes               []int                 `json:"status_codes"`
+	ChannelTestContent    string                `json:"channel_test_content"`
+	LogChannelClickAction string                `json:"log_channel_click_action"`
+	AuthTokens            []*model.AuthToken    `json:"auth_tokens"`
+	Models                []string              `json:"models"`
+	Channels              []model.ChannelNameID `json:"channels"`
+	StatusCodes           []int                 `json:"status_codes"`
 }
 
 // HandleLogsBootstrap 聚合 logs 页首屏 5 个独立请求，并发组装后一次性返回
@@ -95,25 +93,7 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 		}
 	})
 
-	// goroutine 3: channel_check_interval_hours
-	wg.Go(func() {
-		hours := defaultChannelCheckIntervalHours
-		setting, err := s.configService.GetSettingFresh(ctx, "channel_check_interval_hours")
-		if err != nil && !errors.Is(err, model.ErrSettingNotFound) {
-			setErr(err)
-			return
-		}
-		if setting != nil {
-			if parsed, parseErr := strconv.ParseFloat(setting.Value, 64); parseErr == nil {
-				hours = normalizeChannelCheckIntervalHours(parsed)
-			}
-		}
-		mu.Lock()
-		resp.ChannelCheckIntervalHours = hours
-		mu.Unlock()
-	})
-
-	// goroutine 4: auth tokens
+	// goroutine 3: auth tokens
 	wg.Go(func() {
 		tokens, err := s.store.ListAuthTokens(ctx)
 		if err != nil {
@@ -128,7 +108,7 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 		mu.Unlock()
 	})
 
-	// goroutine 5: distinct models + channels + status codes（顺序调用，共享同一 goroutine）
+	// goroutine 4: distinct models + channels + status codes（顺序调用，共享同一 goroutine）
 	wg.Go(func() {
 		models, err := s.store.GetDistinctModels(ctx, since, until, logFilter)
 		if err != nil {

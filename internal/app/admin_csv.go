@@ -169,6 +169,11 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			return
 		}
 
+		oauthCredential := ""
+		if cfg.UsesOAuth() {
+			oauthCredential = cfg.OAuthCredential
+		}
+
 		record := []string{
 			strconv.FormatInt(cfg.ID, 10),
 			cfg.Name,
@@ -189,7 +194,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			cooldownDetectionRulesJSON,
 			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
 			cfg.GetAuthType(),
-			cfg.OAuthCredential,
+			oauthCredential,
 			strconv.FormatBool(cfg.Websockets),
 		}
 		if err := writer.Write(record); err != nil {

@@ -46,9 +46,10 @@ type Server struct {
 	// ============================================================================
 	// 服务层
 	// ============================================================================
-	authService   *AuthService   // 认证授权服务
-	logService    *LogService    // 日志管理服务
-	configService *ConfigService // 配置管理服务
+	authService       *AuthService   // 认证授权服务
+	logService        *LogService    // 日志管理服务
+	configService     *ConfigService // 配置管理服务
+	channelManagement *channelManagementService
 
 	// ============================================================================
 	// 核心字段
@@ -285,6 +286,7 @@ func NewServer(store storage.Store) *Server {
 	reg := protocol.NewRegistry()
 	protocolbuiltin.Register(reg)
 	s.protocolRegistry = reg
+	s.channelManagement = newChannelManagementService(store, s.getClientForChannel)
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
@@ -944,6 +946,8 @@ func (s *Server) startBackgroundWorkers() {
 
 	s.wg.Add(1)
 	go s.responsesExecutionSessionCleanupLoop()
+	s.wg.Add(1)
+	go s.managementCheckinLoop()
 }
 
 func (s *Server) disabledURLReloadLoop() {
@@ -1620,6 +1624,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
 		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
+		admin.POST("/channels/:id/management-account/balance", s.HandleChannelManagementBalance)
+		admin.POST("/channels/:id/management-account/checkin", s.HandleChannelManagementCheckin)
 		admin.GET("/channels/:id/model-stats", s.HandleChannelModelStats)
 		admin.GET("/channels/:id/url-stats", s.HandleChannelURLStats)
 		admin.POST("/channels/:id/url-disable", s.HandleURLDisable)

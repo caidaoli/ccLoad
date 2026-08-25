@@ -2062,6 +2062,7 @@
     }
 
     .ch-oauth-usage__refresh,
+    .ch-management__action,
     .ch-oauth-usage__reset-action {
       appearance: none;
       justify-self: center;
@@ -2082,29 +2083,34 @@
     }
 
     .ch-oauth-usage__refresh:hover:not(:disabled),
+    .ch-management__action:hover:not(:disabled),
     .ch-oauth-usage__reset-action:hover:not(:disabled) {
       background: var(--primary-50);
       color: var(--primary-700);
     }
 
     .ch-oauth-usage__refresh:active:not(:disabled),
+    .ch-management__action:active:not(:disabled),
     .ch-oauth-usage__reset-action:active:not(:disabled) {
       transform: scale(0.96);
     }
 
     .ch-oauth-usage__refresh:focus-visible,
+    .ch-management__action:focus-visible,
     .ch-oauth-usage__reset-action:focus-visible {
       outline: 2px solid var(--primary-500);
       outline-offset: 2px;
     }
 
     .ch-oauth-usage__refresh:disabled,
+    .ch-management__action:disabled,
     .ch-oauth-usage__reset-action:disabled {
       cursor: not-allowed;
       opacity: 0.6;
     }
 
     .ch-oauth-usage__refresh[aria-busy="true"],
+    .ch-management__action[aria-busy="true"],
     .ch-oauth-usage__reset-action[aria-busy="true"] {
       cursor: wait;
     }
@@ -2286,6 +2292,122 @@
       overflow: visible;
       text-overflow: clip;
       white-space: normal;
+    }
+
+    /* 管理账户（New API / Sub2API）：沿用 OAuth 用量的排版与配色语法。 */
+    .ch-management {
+      display: grid;
+      gap: 5px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ch-management__toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 2px 6px;
+    }
+
+    .ch-management__balance,
+    .ch-management__usage,
+    .ch-management__subscription {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .ch-management__meta,
+    .ch-management__usage-meta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: baseline;
+      gap: 4px;
+      min-width: 0;
+      font-size: 9px;
+      line-height: 1.2;
+    }
+
+    .ch-management__label {
+      overflow: hidden;
+      color: var(--neutral-800);
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ch-management__usage-text {
+      overflow: hidden;
+      color: var(--neutral-600);
+      font-variant-numeric: tabular-nums;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ch-management__amount,
+    .ch-management__usage-percent {
+      color: var(--neutral-900);
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .ch-management__track {
+      height: 5px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--neutral-200);
+    }
+
+    .ch-management__fill {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+    }
+
+    .ch-management__fill--high {
+      background: var(--success-500);
+    }
+
+    .ch-management__fill--medium {
+      background: var(--warning-400);
+    }
+
+    .ch-management__fill--low,
+    .ch-management__fill--empty {
+      background: var(--error-500);
+    }
+
+    .ch-management__sampled {
+      color: var(--neutral-500);
+      font-size: 9px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .ch-management__checkin {
+      color: var(--neutral-700);
+      font-size: 9px;
+      font-weight: 650;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .ch-management__notice {
+      color: var(--neutral-500);
+      font-size: 9px;
+      font-weight: 600;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .ch-management__error {
+      color: var(--error-600);
+      font-size: 9px;
+      font-weight: 650;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
     }
 
     .ch-last-status {
@@ -6265,7 +6387,7 @@
 
     .advanced-settings-availability-row {
       display: grid;
-      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
       min-width: 0;
@@ -6282,26 +6404,11 @@
       grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
       align-items: center;
       gap: 8px;
-      width: min(var(--advanced-settings-control-width), 100%);
+      width: 100%;
+      min-width: 0;
     }
 
     .advanced-settings-time-field {
-      min-width: 0;
-    }
-
-    .advanced-settings-availability-content {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      min-width: 0;
-    }
-
-    .advanced-settings-proxy-content {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
       min-width: 0;
     }
 
@@ -6365,6 +6472,86 @@
       white-space: nowrap;
     }
 
+    .advanced-settings-management {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 12px 14px 14px;
+      border: 1px solid var(--neutral-200);
+      border-radius: 8px;
+      min-width: 0;
+    }
+
+    .advanced-settings-management[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-management-legend {
+      padding: 0 6px;
+      color: var(--neutral-800);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .advanced-settings-management .advanced-settings-other-field {
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .advanced-settings-management .advanced-settings-other-field .form-label {
+      text-align: end;
+    }
+
+    .advanced-settings-management .advanced-settings-other-field .form-input {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .advanced-settings-field-meta {
+      display: grid;
+      align-content: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .advanced-settings-management .form-input[aria-invalid="true"] {
+      border-color: var(--error-500);
+    }
+
+    .advanced-settings-management-checkin {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .advanced-settings-management-checkin[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-management-notice {
+      margin: 0;
+      color: var(--warning-600);
+      font-size: var(--advanced-settings-help-font-size);
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .advanced-settings-management-notice[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-management-error {
+      min-width: 0;
+      color: var(--error-600);
+      font-size: var(--advanced-settings-help-font-size);
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .advanced-settings-management-error[hidden] {
+      display: none;
+    }
+
     .channel-editor-scheduled-model-control {
       width: 100%;
       min-width: 0;
@@ -6380,7 +6567,7 @@
 
     .advanced-settings-proxy-field {
       display: grid;
-      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
       min-width: 0;
@@ -6395,7 +6582,7 @@
     }
 
     .advanced-settings-proxy-field .form-input {
-      width: min(var(--advanced-settings-control-width), 100%);
+      width: 100%;
       min-width: 0;
     }
 
@@ -6915,6 +7102,18 @@
       .advanced-settings-proxy-field .form-label,
       .advanced-settings-availability-row > .form-label {
         text-align: start;
+      }
+
+      .advanced-settings-management .advanced-settings-other-field .form-label {
+        text-align: start;
+      }
+
+      .advanced-settings-management .advanced-settings-other-field {
+        grid-template-columns: 1fr;
+      }
+
+      .advanced-settings-field-meta {
+        grid-column: auto;
       }
 
       .advanced-settings-time-fields {

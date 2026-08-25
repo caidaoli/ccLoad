@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 
 const {
   buildOAuthPlanBadge,
-  buildOAuthUsageStatusHtml
+  buildOAuthUsageStatusHtml,
+  buildManagementAccountStatusHtml
 } = require('./channels-render.js');
 
 test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
@@ -428,5 +429,240 @@ test('Cursor 额度按官网顺序显示可用比例和按量月限额', () => {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;
     global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+
+function installManagementRenderGlobals({ balanceState = null, checkinState = null, readOnly = false } = {}) {
+  const previous = {
+    window: global.window,
+    getManagementBalanceState: global.getManagementBalanceState,
+    getManagementCheckinState: global.getManagementCheckinState,
+    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
+    managementSupportsCheckin: global.managementSupportsCheckin
+  };
+  global.window = {
+    t: (key, values) => (values
+      ? Object.entries(values).reduce((text, [name, value]) => text.replace(`{${name}}`, String(value)), key)
+      : key)
+  };
+  global.getManagementBalanceState = () => balanceState;
+  global.getManagementCheckinState = () => checkinState;
+  global.isTokenChannelsReadOnly = () => readOnly;
+  global.managementSupportsCheckin = profile => profile === 'new_api' || profile === 'sub2api_pro';
+  return () => {
+    global.window = previous.window;
+    global.getManagementBalanceState = previous.getManagementBalanceState;
+    global.getManagementCheckinState = previous.getManagementCheckinState;
+    global.isTokenChannelsReadOnly = previous.isTokenChannelsReadOnly;
+    global.managementSupportsCheckin = previous.managementSupportsCheckin;
+  };
+
+}
+
+test('管理账户只对已配置凭据的 API Key 渠道渲染动作，签到按 profile 收敛', () => {
+  const restore = installManagementRenderGlobals();
+  try {
+    assert.equal(buildManagementAccountStatusHtml({ id: 3, auth_type: 'codex_oauth' }), '');
+    assert.equal(buildManagementAccountStatusHtml({ id: 3, auth_type: 'api_key' }), '');
+    assert.equal(buildManagementAccountStatusHtml({
+      id: 3,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: false }
+    }), '');
+
+    const newAPI = buildManagementAccountStatusHtml({
+      id: 3,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    });
+    assert.match(newAPI, /data-action="refresh-management-balance" data-channel-id="3"/);
+    assert.match(newAPI, /data-action="run-management-checkin" data-channel-id="3"/);
+
+    const pro = buildManagementAccountStatusHtml({
+      id: 4,
+      auth_type: 'api_key',
+      management_account: { profile: 'sub2api_pro', credential_configured: true }
+    });
+    assert.match(pro, /data-action="run-management-checkin"/);
+
+    const standard = buildManagementAccountStatusHtml({
+      id: 5,
+      auth_type: 'api_key',
+      management_account: { profile: 'sub2api', credential_configured: true }
+    });
+    assert.match(standard, /data-action="refresh-management-balance"/);
+    assert.doesNotMatch(standard, /data-action="run-management-checkin"/);
+    assert.match(standard, /channels\.management\.checkinUnsupportedHint/);
+  } finally {
+    restore();
+  }
+});
+
+test('只有 used/total/percent 齐备才渲染进度条，缺失用量只显示剩余额度', () => {
+  const withUsage = installManagementRenderGlobals({
+    balanceState: {
+      status: 'ready',
+      data: {
+        profile: 'new_api',
+        balance: {
+          remaining: 12.5,
+          unit: 'USD',
+          used: 7.5,
+          total: 20,
+          available_percent: 62.5,
+          sampled_at: '2026-08-25T10:00:00Z'
+        }
+      }
+    }
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 6,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    });
+    assert.match(html, /role="progressbar"/);
+    assert.match(html, /aria-valuenow="62\.5"/);
+    assert.match(html, /\$12\.50/);
+  } finally {
+    withUsage();
+  }
+
+  const withoutUsage = installManagementRenderGlobals({
+    balanceState: {
+      status: 'ready',
+      data: {
+        profile: 'sub2api',
+        balance: { remaining: 3.25, unit: 'USD', sampled_at: '2026-08-25T10:00:00Z' }
+      }
+    }
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 7,
+      auth_type: 'api_key',
+      management_account: { profile: 'sub2api', credential_configured: true }
+    });
+    assert.match(html, /\$3\.25/);
+    assert.doesNotMatch(html, /role="progressbar"/);
+    assert.doesNotMatch(html, /aria-valuenow/);
+  } finally {
+    withoutUsage();
+  }
+
+  const persistedBalance = installManagementRenderGlobals();
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 71,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'sub2api',
+        credential_configured: true,
+        balance: { remaining: 8.75, unit: 'USD', sampled_at: '2026-08-25T10:00:00Z' }
+      }
+    });
+    assert.match(html, /\$8\.75/, '无 live 余额状态时必须回落到 DTO 的持久化余额');
+  } finally {
+    persistedBalance();
+  }
+});
+
+test('额度与签到的 loading 与错误互不干扰且带可读文本', () => {
+  const loading = installManagementRenderGlobals({
+    balanceState: { status: 'loading' },
+    checkinState: null
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 8,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    });
+    assert.match(html, /data-action="refresh-management-balance"[^>]*disabled[^>]*aria-busy="true"/);
+    assert.doesNotMatch(html, /data-action="run-management-checkin"[^>]*disabled/);
+  } finally {
+    loading();
+  }
+
+  const failed = installManagementRenderGlobals({
+    balanceState: { status: 'error', error: 'upstream <502>' },
+    checkinState: { status: 'loading' }
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 9,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    });
+    assert.match(html, /role="status"/);
+    assert.match(html, /upstream &lt;502&gt;/);
+    assert.doesNotMatch(html, /upstream <502>/);
+    assert.doesNotMatch(html, /data-action="refresh-management-balance"[^>]*disabled/);
+    assert.match(html, /data-action="run-management-checkin"[^>]*disabled[^>]*aria-busy="true"/);
+  } finally {
+    failed();
+  }
+});
+
+test('签到状态以文字呈现并回落到持久化结果', () => {
+  const live = installManagementRenderGlobals({
+    checkinState: { status: 'ready', data: { status: 'manual_required', status_code: 200 } }
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 10,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'new_api',
+        credential_configured: true,
+        last_checkin_status: 'success'
+      }
+    });
+    assert.match(html, /channels\.management\.status\.manual_required/);
+    assert.doesNotMatch(html, /channels\.management\.status\.success/);
+  } finally {
+    live();
+  }
+
+  const persisted = installManagementRenderGlobals();
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 11,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'new_api',
+        credential_configured: true,
+        last_checkin_status: 'credential_invalid',
+        last_checkin_at: '2026-08-25T10:00:00Z'
+      }
+    });
+    assert.match(html, /channels\.management\.status\.credential_invalid/);
+
+    const forbidden = buildManagementAccountStatusHtml({
+      id: 13,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'sub2api_pro',
+        credential_configured: true,
+        last_checkin_status: 'credential_forbidden'
+      }
+    });
+    assert.match(forbidden, /channels\.management\.status\.credential_forbidden/);
+  } finally {
+    persisted();
+  }
+});
+
+test('只读模式不渲染管理账户动作', () => {
+  const restore = installManagementRenderGlobals({ readOnly: true });
+  try {
+    assert.equal(buildManagementAccountStatusHtml({
+      id: 12,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    }), '');
+  } finally {
+    restore();
   }
 });

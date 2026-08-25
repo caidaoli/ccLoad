@@ -534,6 +534,8 @@ function renderLogSourceBadge(logSource) {
       return `<span class="log-source-badge log-source-badge--manual">${escapeHtml(t('logs.sourceManualTestBadge'))}</span>`;
     case 'manual_chat':
       return `<span class="log-source-badge log-source-badge--manual">${escapeHtml(t('logs.sourceManualChatBadge'))}</span>`;
+    case 'checkin':
+      return `<span class="log-source-badge log-source-badge--checkin">${escapeHtml(t('logs.sourceCheckinBadge'))}</span>`;
     default:
       return '';
   }
@@ -1330,7 +1332,7 @@ async function resetLogsFilters() {
 
   applyLogsFilterValues(defaults);
   await loadLogsFilterOptions(defaults.range || 'today');
-  await syncLogSourceVisibility();
+  syncLogSourceVisibility();
 
   window.persistFilterState({
     key: LOGS_FILTER_KEY,
@@ -1385,7 +1387,7 @@ function getLogSourceFilterElements() {
   return { group, select };
 }
 
-async function syncLogSourceVisibility(preloadedIntervalHours) {
+function syncLogSourceVisibility() {
   const { group, select } = getLogSourceFilterElements();
   if (!group || !select) return false;
 
@@ -1395,25 +1397,8 @@ async function syncLogSourceVisibility(preloadedIntervalHours) {
     return false;
   }
 
-  let scheduledCheckEnabledByConfig = false;
-  if (preloadedIntervalHours !== undefined) {
-    // 预加载路径：跳过 fetch，直接使用 bootstrap 数据
-    scheduledCheckEnabledByConfig = Number.isFinite(preloadedIntervalHours) && preloadedIntervalHours > 0;
-  } else {
-    try {
-      const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
-      const intervalHours = Number(setting && setting.value);
-      scheduledCheckEnabledByConfig = Number.isFinite(intervalHours) && intervalHours > 0;
-    } catch (error) {
-      console.warn('Failed to load channel check interval setting for logs filter', error);
-    }
-  }
-
-  group.hidden = !scheduledCheckEnabledByConfig;
-  if (!scheduledCheckEnabledByConfig) {
-    select.value = 'proxy';
-  }
-  return scheduledCheckEnabledByConfig;
+  group.hidden = false;
+  return true;
 }
 
 async function loadLogsFilterOptions(range) {
@@ -1578,10 +1563,8 @@ async function initFilters(restoredFilters, preloaded) {
   if (clientProtocolSelect) {
     clientProtocolSelect.addEventListener('change', applyFilter);
   }
-  // 并行化：三个独立网络请求同时发起（高 RTT 环境下节省 ~2 个往返延迟）
-  // 若有 preloaded 数据则跳过对应的网络请求
-  const [, tokens] = await Promise.all([
-    syncLogSourceVisibility(preloaded ? preloaded.channelCheckIntervalHours : undefined),
+  syncLogSourceVisibility();
+  const [tokens] = await Promise.all([
     window.initAuthTokenFilter({
       selectId: 'f_auth_token',
       value: authToken,
@@ -1904,7 +1887,6 @@ window.initPageBootstrap({
 
   // Wave 2：initFilters（有预加载则跳过内部 fetch）
   await initFilters(restoredFilters, bootstrap ? {
-    channelCheckIntervalHours: bootstrap.channel_check_interval_hours,
     authTokens: bootstrap.auth_tokens || []
   } : undefined);
 
@@ -2033,7 +2015,7 @@ window.addEventListener('pageshow', async function (event) {
       document.getElementById('f_hours').value = restoredFilters.range || 'today';
       await loadLogsFilterOptions(restoredFilters.range || 'today');
       applyLogsFilterValues(restoredFilters);
-      await syncLogSourceVisibility();
+      syncLogSourceVisibility();
 
       // 重新加载数据
       currentLogsPage = 1;

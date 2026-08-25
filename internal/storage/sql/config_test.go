@@ -1593,3 +1593,85 @@ func TestConfig_ModelRedirect(t *testing.T) {
 		t.Error("expected to find gpt-4 -> gpt-4-turbo redirect")
 	}
 }
+
+func TestConfig_ChannelManagementCompareAndSwap(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "channel-management-cas.db")
+	ctx := context.Background()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "managed-api-key", AuthType: model.AuthTypeAPIKey,
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"first-private-token"},"state":{}}`
+	second := `{"kind":"channel_management","version":1,"profile":"sub2api_pro","settings":{"base_url":"https://pro.example.com","access_token":"second-private-token","daily_checkin_enabled":true,"daily_checkin_time":"08:30"},"state":{}}`
+
+	updated, err := store.CompareAndSwapChannelManagement(ctx, created.ID, "", first)
+	if err != nil || !updated {
+		t.Fatalf("empty -> first CAS = (%v, %v), want (true, nil)", updated, err)
+	}
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil || got.OAuthCredential != first {
+		t.Fatalf("first persisted envelope = (%q, %v)", got.OAuthCredential, err)
+	}
+
+	updated, err = store.CompareAndSwapChannelManagement(ctx, created.ID, first+" ", second)
+	if err != nil || updated {
+		t.Fatalf("non-exact expected CAS = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapChannelManagement(ctx, created.ID, first, second)
+	if err != nil || !updated {
+		t.Fatalf("replace CAS = (%v, %v), want (true, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapChannelManagement(ctx, created.ID, first, "")
+	if err != nil || updated {
+		t.Fatalf("stale CAS = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapChannelManagement(ctx, created.ID, second, "")
+	if err != nil || !updated {
+		t.Fatalf("clear CAS = (%v, %v), want (true, nil)", updated, err)
+	}
+	got, err = store.GetConfig(ctx, created.ID)
+	if err != nil || got.OAuthCredential != "" {
+		t.Fatalf("cleared envelope = (%q, %v)", got.OAuthCredential, err)
+	}
+
+	db := store.(*sqlstore.SQLStore)
+	if _, err := db.ExecContext(ctx, `UPDATE channels SET auth_type = '' WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = store.CompareAndSwapChannelManagement(ctx, created.ID, "", first)
+	if err != nil || updated {
+		t.Fatalf("legacy empty auth_type CAS = (%v, %v), want (false, nil)", updated, err)
+	}
+
+	if _, err := store.CompareAndSwapChannelManagement(ctx, created.ID, "", `{"kind":"channel_management"}`); err == nil {
+		t.Fatal("CAS accepted invalid next envelope")
+	}
+}
+
+func TestConfig_ChannelManagementCompareAndSwapRejectsOAuthChannel(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "channel-management-oauth.db")
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"oauth-private-token","refresh_token":"oauth-refresh-token"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "oauth-channel", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"management-private-token"},"state":{}}`
+	updated, err := store.CompareAndSwapChannelManagement(ctx, created.ID, credential, next)
+	if err != nil || updated {
+		t.Fatalf("OAuth channel CAS = (%v, %v), want (false, nil)", updated, err)
+	}
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil || got.OAuthCredential != credential || !got.UsesCodexOAuth() {
+		t.Fatalf("OAuth channel changed = (%#v, %v)", got, err)
+	}
+}

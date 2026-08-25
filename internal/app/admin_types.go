@@ -41,6 +41,32 @@ type ChannelRequest struct {
 	AvailableTimeStart      string                        `json:"available_time_start,omitempty"`
 	AvailableTimeEnd        string                        `json:"available_time_end,omitempty"`
 	RetryOtherKeysOnFailure bool                          `json:"retry_other_keys_on_failure"`
+	ManagementAccount       *channelManagementInput       `json:"management_account,omitempty"`
+
+	managementAccountSet      bool
+	forbiddenCredentialFields bool
+}
+
+// UnmarshalJSON tracks JSON field presence for credential safety checks.
+func (cr *ChannelRequest) UnmarshalJSON(data []byte) error {
+	type plain ChannelRequest
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*cr = ChannelRequest(decoded)
+	_, cr.managementAccountSet = fields["management_account"]
+	for _, field := range []string{"oauth_credential", "credential", "access_token"} {
+		if _, present := fields[field]; present {
+			cr.forbiddenCredentialFields = true
+			break
+		}
+	}
+	return nil
 }
 
 // ChannelAPIKeyRequest describes one submitted API key and its admin-only note.
@@ -555,21 +581,22 @@ type ChannelModelStats struct {
 // ChannelWithCooldown 带冷却状态的渠道响应结构
 type ChannelWithCooldown struct {
 	*model.Config
-	CodexPlanType                string              `json:"codex_plan_type,omitempty"`
-	CodexSubscriptionActiveUntil *time.Time          `json:"codex_subscription_active_until,omitempty"`
-	AnthropicPlanType            string              `json:"anthropic_plan_type,omitempty"`
-	OAuthUsage                   *oauthUsageSummary  `json:"oauth_usage,omitempty"`
-	AntigravityPaidTier          string              `json:"antigravity_paid_tier,omitempty"`
-	XAIEmail                     string              `json:"xai_email,omitempty"`
-	XAISubscriptionTier          string              `json:"xai_subscription_tier,omitempty"`
-	XAIEntitlementStatus         string              `json:"xai_entitlement_status,omitempty"`
-	KeyStrategy                  string              `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
-	CooldownUntil                *time.Time          `json:"cooldown_until,omitempty"`
-	CooldownRemainingMS          int64               `json:"cooldown_remaining_ms,omitempty"`
-	KeyCooldowns                 []KeyCooldownInfo   `json:"key_cooldowns,omitempty"`
-	ModelCooldowns               []ModelCooldownInfo `json:"model_cooldowns,omitempty"`
-	EffectivePriority            *float64            `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
-	SuccessRate                  *float64            `json:"success_rate,omitempty"`       // 成功率(0-1)
+	CodexPlanType                string                 `json:"codex_plan_type,omitempty"`
+	CodexSubscriptionActiveUntil *time.Time             `json:"codex_subscription_active_until,omitempty"`
+	AnthropicPlanType            string                 `json:"anthropic_plan_type,omitempty"`
+	OAuthUsage                   *oauthUsageSummary     `json:"oauth_usage,omitempty"`
+	AntigravityPaidTier          string                 `json:"antigravity_paid_tier,omitempty"`
+	XAIEmail                     string                 `json:"xai_email,omitempty"`
+	XAISubscriptionTier          string                 `json:"xai_subscription_tier,omitempty"`
+	XAIEntitlementStatus         string                 `json:"xai_entitlement_status,omitempty"`
+	KeyStrategy                  string                 `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
+	CooldownUntil                *time.Time             `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS          int64                  `json:"cooldown_remaining_ms,omitempty"`
+	KeyCooldowns                 []KeyCooldownInfo      `json:"key_cooldowns,omitempty"`
+	ModelCooldowns               []ModelCooldownInfo    `json:"model_cooldowns,omitempty"`
+	EffectivePriority            *float64               `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
+	SuccessRate                  *float64               `json:"success_rate,omitempty"`       // 成功率(0-1)
+	ManagementAccount            *channelManagementView `json:"management_account,omitempty"`
 }
 
 // ChannelImportSummary 导入结果统计

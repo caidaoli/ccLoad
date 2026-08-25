@@ -2173,3 +2173,41 @@ test('quick add derives an empty channel name and applies the setup atomically',
     }
   }
 });
+
+
+test('渠道保存载荷仅在 API Key 渠道携带 management_account，且绝不携带 oauth_credential', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  let collected = null;
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    writable: true,
+    value: { collectManagementAccountForSubmit: () => collected }
+  });
+  try {
+    const { applyChannelManagementPayload } = loadChannelsModals();
+
+    const oauthPayload = applyChannelManagementPayload({ name: 'oauth', auth_type: 'codex_oauth' });
+    assert.equal('management_account' in oauthPayload, false, 'OAuth 渠道必须完全省略该键');
+
+    collected = { profile: '' };
+    const clearedPayload = applyChannelManagementPayload({ name: 'cleared', auth_type: 'api_key' });
+    assert.deepEqual(clearedPayload.management_account, { profile: '' });
+
+    collected = {
+      profile: 'new_api',
+      base_url: 'https://panel.example.com',
+      access_token: 'pat',
+      user_id: 42,
+      daily_checkin_enabled: true,
+      daily_checkin_time: '09:30'
+    };
+    const payload = applyChannelManagementPayload({ name: 'managed', auth_type: 'api_key' });
+    assert.deepEqual(payload.management_account, collected);
+    for (const forbidden of ['oauth_credential', 'credential', 'access_token']) {
+      assert.equal(forbidden in payload, false, `${forbidden} 不能出现在渠道保存载荷`);
+    }
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});

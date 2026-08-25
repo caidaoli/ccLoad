@@ -312,6 +312,15 @@ function invokeChannelEditorAction(actionName, ...args) {
   return undefined;
 }
 
+/** 管理账户只随 API Key 渠道提交；OAuth 渠道必须完全省略该键，凭据也绝不出现在顶层。 */
+function applyChannelManagementPayload(payload) {
+  const account = payload.auth_type === 'api_key'
+    ? invokeChannelEditorAction('collectManagementAccountForSubmit')
+    : null;
+  if (account) payload.management_account = account;
+  return payload;
+}
+
 function initChannelEditorActions() {
   if (typeof window.initDelegatedActions === 'function') {
     window.initDelegatedActions({
@@ -455,6 +464,7 @@ async function showAddModal() {
 
   invokeChannelEditorAction('resetCustomRulesState', null);
   invokeChannelEditorAction('resetCooldownDetectionState', null);
+  invokeChannelEditorAction('resetManagementAccountDraft', null, getValidInlineURLConfigs(), 'api_key');
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -542,6 +552,12 @@ async function editChannel(id) {
       editorData.oauth_credential_info || null
     );
   }
+  invokeChannelEditorAction(
+    'resetManagementAccountDraft',
+    editorData.management_account || null,
+    channel.urls || [],
+    editingChannelAuthType
+  );
 
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -843,6 +859,7 @@ async function saveChannel(event) {
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
   if (!isOAuth) formData.key_strategy = keyStrategy;
+  applyChannelManagementPayload(formData);
 
   if (!formData.name || formData.urls.length === 0 || (!isOAuth && !formData.api_key) || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
@@ -3753,6 +3770,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     addCommonModels,
     addCommonModelsToRows,
+    applyChannelManagementPayload,
     applyQuickAddChannelSetup,
     batchClearSelectedChannelCooldowns,
     batchSetSelectedChannelsPriority,

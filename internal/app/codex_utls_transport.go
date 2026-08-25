@@ -60,19 +60,28 @@ func newCodexUTLSRoundTripper(base *http.Transport) *codexUTLSRoundTripper {
 	}
 }
 
+type chromeUTLSContextKey struct{}
+
+func withChromeUTLS(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), chromeUTLSContextKey{}, struct{}{}))
+}
+
 func (t *codexUTLSRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if isChromeUTLSRequest(req) {
+		return t.roundTripProtected(req)
+	}
 	if isAnthropicNodeUTLSRequest(req) {
 		return t.anthropic.RoundTrip(req)
 	}
-	if !isChromeUTLSRequest(req) {
-		return t.fallback.RoundTrip(req)
-	}
-	return t.roundTripProtected(req)
+	return t.fallback.RoundTrip(req)
 }
 
 func isChromeUTLSRequest(req *http.Request) bool {
 	if req == nil || req.URL == nil || req.URL.Scheme != "https" {
 		return false
+	}
+	if req.Context().Value(chromeUTLSContextKey{}) != nil {
+		return true
 	}
 	host := req.URL.Hostname()
 	return strings.EqualFold(host, "chatgpt.com") || strings.EqualFold(host, "claude.ai") ||
