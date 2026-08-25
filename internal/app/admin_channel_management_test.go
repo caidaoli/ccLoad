@@ -156,6 +156,26 @@ func TestChannelManagementUpdateRejectsEffectiveOAuthAuthType(t *testing.T) {
 	}
 }
 
+func TestChannelManagementUpdateRejectsUnknownAuthType(t *testing.T) {
+	server := newInMemoryServer(t)
+	stored := createManagedChannelThroughHandler(t, server, "managed-auth-typo")
+	payload := validManagedChannelPayload(stored.Name)
+	payload["auth_type"] = "codex_oautn"
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, fmt.Sprintf("/admin/channels/%d", stored.ID), payload))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelByID(c)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid auth_type") {
+		t.Fatalf("unknown auth type status=%d body=%s, want 400 invalid auth_type", w.Code, w.Body.String())
+	}
+	persisted, err := server.store.GetConfig(context.Background(), stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.GetAuthType() != model.AuthTypeAPIKey || persisted.OAuthCredential == "" {
+		t.Fatalf("unknown auth type changed persisted channel: %#v", persisted)
+	}
+}
+
 func TestChannelManagementUpdatePreservesOrClearsCredentialByProfile(t *testing.T) {
 	server := newInMemoryServer(t)
 	stored := createManagedChannelThroughHandler(t, server, "managed-update")

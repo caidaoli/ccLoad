@@ -1120,10 +1120,15 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
-	if strings.TrimSpace(req.AuthType) == "" {
+	rawAuthType := strings.TrimSpace(req.AuthType)
+	if rawAuthType == "" {
 		req.AuthType = existing.GetAuthType()
 	} else {
-		req.AuthType = model.NormalizeAuthType(req.AuthType)
+		req.AuthType = model.NormalizeAuthType(rawAuthType)
+		if req.AuthType == "" {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid auth_type")
+			return
+		}
 	}
 	if req.forbiddenCredentialFields {
 		RespondErrorMsg(c, http.StatusConflict, "credential fields must be submitted through management_account")
