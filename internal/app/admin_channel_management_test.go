@@ -126,6 +126,36 @@ func TestChannelManagementOAuthCreateAndUpdateRejectManagementAccount(t *testing
 	}
 }
 
+func TestChannelManagementUpdateRejectsEffectiveOAuthAuthType(t *testing.T) {
+	server := newInMemoryServer(t)
+	stored := createManagedChannelThroughHandler(t, server, "managed-auth-transition")
+	payload := validManagedChannelPayload(stored.Name)
+	payload["auth_type"] = " CODEX_OAUTH "
+	payload["management_account"] = map[string]any{
+		"profile":      model.ChannelManagementProfileSub2API,
+		"base_url":     "https://replacement.example.com",
+		"access_token": "replacement-secret",
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, fmt.Sprintf("/admin/channels/%d", stored.ID), payload))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelByID(c)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("auth transition status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	persisted, err := server.store.GetConfig(context.Background(), stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.GetAuthType() != model.AuthTypeAPIKey || !strings.Contains(persisted.OAuthCredential, managementAccountSecret) {
+		t.Fatalf("rejected auth transition changed persisted channel: %#v", persisted)
+	}
+	for _, secret := range []string{managementAccountSecret, "replacement-secret"} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("auth transition rejection leaked %q: %s", secret, w.Body.String())
+		}
+	}
+}
+
 func TestChannelManagementUpdatePreservesOrClearsCredentialByProfile(t *testing.T) {
 	server := newInMemoryServer(t)
 	stored := createManagedChannelThroughHandler(t, server, "managed-update")
@@ -415,19 +445,25 @@ func TestChannelManagementHandlerErrorMappingIsStableAndSafe(t *testing.T) {
 	tests := []struct {
 		name       string
 		channelID  int64
+		param      string
 		wantStatus int
 		wantError  string
 	}{
-		{name: "OAuth", channelID: oauth.ID, wantStatus: http.StatusConflict, wantError: "not_configured"},
-		{name: "unmanaged API key", channelID: unmanaged.ID, wantStatus: http.StatusConflict, wantError: "not_configured"},
+		{name: "OAuth", channelID: oauth.ID, wantStatus: http.StatusConflict, wantError: "credential_invalid"},
+		{name: "unmanaged API key", channelID: unmanaged.ID, wantStatus: http.StatusConflict, wantError: "credential_invalid"},
 		{name: "invalid response", channelID: invalidResponse.ID, wantStatus: http.StatusBadGateway, wantError: "invalid_response"},
 		{name: "upstream failure", channelID: upstreamFailure.ID, wantStatus: http.StatusBadGateway, wantError: "upstream_error"},
-		{name: "missing channel", channelID: 999999, wantStatus: http.StatusNotFound, wantError: "channel_not_found"},
+		{name: "missing channel", channelID: 999999, wantStatus: http.StatusNotFound, wantError: "credential_invalid"},
+		{name: "invalid channel id", param: "invalid", wantStatus: http.StatusBadRequest, wantError: "invalid_response"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			c, w := newTestContext(t, newRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/management-account/balance", test.channelID), nil))
-			c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(test.channelID)}}
+			param := test.param
+			if param == "" {
+				param = fmt.Sprint(test.channelID)
+			}
+			c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/"+param+"/management-account/balance", nil))
+			c.Params = gin.Params{{Key: "id", Value: param}}
 			server.HandleChannelManagementBalance(c)
 			if w.Code != test.wantStatus {
 				t.Fatalf("status=%d body=%s, want %d", w.Code, w.Body.String(), test.wantStatus)
@@ -613,6 +649,10 @@ func TestChannelManagementCheckinAddLogFailureOverridesSuccess(t *testing.T) {
 	server.HandleChannelManagementCheckin(c)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d body=%s, want audit failure to override checkin result", w.Code, w.Body.String())
+	}
+	response := mustParseAPIResponse[any](t, w.Body.Bytes())
+	if response.Error != "uncertain" {
+		t.Fatalf("audit failure error=%q body=%s, want uncertain", response.Error, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "unsupported") || strings.Contains(w.Body.String(), "forced audit storage failure") {
 		t.Fatalf("handler falsely reported completion or leaked storage error: %s", w.Body.String())

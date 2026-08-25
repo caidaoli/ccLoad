@@ -58,16 +58,16 @@ func (s *Server) managementAccountView(cfg *model.Config) *channelManagementView
 func (s *Server) requireConfiguredManagementAccount(c *gin.Context) (*model.Config, bool) {
 	channelID, err := ParseInt64Param(c, "id")
 	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid_channel_id")
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid_response")
 		return nil, false
 	}
 	cfg, err := s.store.GetConfig(c.Request.Context(), channelID)
 	if err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, "channel_not_found")
+		RespondErrorMsg(c, http.StatusNotFound, "credential_invalid")
 		return nil, false
 	}
 	if cfg.AuthType != model.AuthTypeAPIKey || strings.TrimSpace(cfg.OAuthCredential) == "" {
-		RespondErrorMsg(c, http.StatusConflict, "not_configured")
+		RespondErrorMsg(c, http.StatusConflict, "credential_invalid")
 		return nil, false
 	}
 	return cfg, true
@@ -76,17 +76,17 @@ func (s *Server) requireConfiguredManagementAccount(c *gin.Context) (*model.Conf
 func channelManagementErrorCode(err error) (int, string) {
 	switch {
 	case errors.Is(err, errChannelManagementNotConfigured):
-		return http.StatusConflict, "not_configured"
+		return http.StatusConflict, "credential_invalid"
 	case errors.Is(err, errChannelManagementProviderUnavailable):
 		return http.StatusConflict, "unsupported"
 	case errors.Is(err, errInvalidManagementRequest):
-		return http.StatusBadRequest, "invalid_request"
+		return http.StatusBadRequest, "invalid_response"
 	case errors.Is(err, errInvalidManagementResponse):
 		return http.StatusBadGateway, "invalid_response"
 	case errors.Is(err, errManagementRequestFailed), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return http.StatusBadGateway, "upstream_error"
 	default:
-		return http.StatusInternalServerError, "server_error"
+		return http.StatusInternalServerError, "uncertain"
 	}
 }
 

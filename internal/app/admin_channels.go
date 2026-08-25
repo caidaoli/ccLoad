@@ -1122,12 +1122,14 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 	if strings.TrimSpace(req.AuthType) == "" {
 		req.AuthType = existing.GetAuthType()
+	} else {
+		req.AuthType = model.NormalizeAuthType(req.AuthType)
 	}
 	if req.forbiddenCredentialFields {
 		RespondErrorMsg(c, http.StatusConflict, "credential fields must be submitted through management_account")
 		return
 	}
-	if existing.UsesOAuth() && req.managementAccountSet {
+	if req.managementAccountSet && req.AuthType != model.AuthTypeAPIKey {
 		RespondErrorMsg(c, http.StatusConflict, "OAuth channels cannot use management_account")
 		return
 	}
