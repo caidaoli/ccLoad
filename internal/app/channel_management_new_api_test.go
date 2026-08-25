@@ -161,6 +161,7 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 		wantBalance    bool
 		wantError      bool
 		wantPosts      int
+		wantReadbacks  int
 	}{
 		{
 			name: "disabled",
@@ -191,7 +192,7 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				status: http.StatusOK, wrote: true,
 				body: `{"success":false,"message":"ambiguous raw-upstream-secret"}`,
 			}, monthChecked, balance},
-			wantStatus: "already_checked", wantStatusCode: http.StatusOK, wantBalance: true, wantPosts: 1,
+			wantStatus: "already_checked", wantStatusCode: http.StatusOK, wantBalance: true, wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "turnstile requires manual action",
@@ -200,7 +201,7 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				status: http.StatusOK, wrote: true,
 				body: `{"success":false,"message":"Turnstile verification required raw-upstream-secret"}`,
 			}, monthUnchecked},
-			wantStatus: "manual_required", wantStatusCode: http.StatusOK, wantPosts: 1,
+			wantStatus: "manual_required", wantStatusCode: http.StatusOK, wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "unsupported",
@@ -208,7 +209,7 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
 				status: http.StatusMethodNotAllowed, wrote: true, body: `{"message":"raw-upstream-secret"}`,
 			}, monthUnchecked},
-			wantStatus: "unsupported", wantStatusCode: http.StatusMethodNotAllowed, wantPosts: 1,
+			wantStatus: "unsupported", wantStatusCode: http.StatusMethodNotAllowed, wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "credential invalid",
@@ -216,7 +217,89 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
 				status: http.StatusForbidden, wrote: true, body: `{"message":"private-token"}`,
 			}, monthUnchecked},
-			wantStatus: "credential_invalid", wantStatusCode: http.StatusForbidden, wantPosts: 1,
+			wantStatus: "credential_invalid", wantStatusCode: http.StatusForbidden, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "credential classification survives forbidden readback",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusForbidden, wrote: true, body: `{"message":"private-token"}`,
+			}, {
+				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
+				status: http.StatusForbidden, body: `{"message":"private-token"}`,
+			}},
+			wantStatus: "credential_invalid", wantStatusCode: http.StatusForbidden, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "not found classification survives transport readback failure",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusNotFound, wrote: true, body: `{"message":"raw-upstream-secret"}`,
+			}, {
+				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
+				err: errors.New("raw-upstream-secret"),
+			}},
+			wantStatus: "unsupported", wantStatusCode: http.StatusNotFound, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "method not allowed classification survives non-2xx readback",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusMethodNotAllowed, wrote: true, body: `{"message":"raw-upstream-secret"}`,
+			}, {
+				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
+				status: http.StatusServiceUnavailable, body: `{"message":"raw-upstream-secret"}`,
+			}},
+			wantStatus: "unsupported", wantStatusCode: http.StatusMethodNotAllowed, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "turnstile classification survives transport readback failure",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusOK, wrote: true,
+				body: `{"success":false,"message":"Turnstile verification required raw-upstream-secret"}`,
+			}, {
+				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
+				err: errors.New("raw-upstream-secret"),
+			}},
+			wantStatus: "manual_required", wantStatusCode: http.StatusOK, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "turnstile classification survives non-2xx readback",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusOK, wrote: true,
+				body: `{"success":false,"message":"Turnstile verification required raw-upstream-secret"}`,
+			}, {
+				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
+				status: http.StatusServiceUnavailable, body: `{"message":"raw-upstream-secret"}`,
+			}},
+			wantStatus: "manual_required", wantStatusCode: http.StatusOK, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "checked readback overrides turnstile",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusOK, wrote: true,
+				body: `{"success":false,"message":"Turnstile verification required raw-upstream-secret"}`,
+			}, monthChecked, balance},
+			wantStatus: "already_checked", wantStatusCode: http.StatusOK, wantBalance: true, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "checked readback overrides unsupported",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusNotFound, wrote: true, body: `{"message":"raw-upstream-secret"}`,
+			}, monthChecked, balance},
+			wantStatus: "already_checked", wantStatusCode: http.StatusNotFound, wantBalance: true, wantPosts: 1, wantReadbacks: 1,
+		},
+		{
+			name: "checked readback overrides invalid credential",
+			steps: []newAPIStep{statusEnabled, monthUnchecked, {
+				method: http.MethodPost, target: "https://panel.example.com/api/user/checkin",
+				status: http.StatusForbidden, wrote: true, body: `{"message":"private-token"}`,
+			}, monthChecked, balance},
+			wantStatus: "already_checked", wantStatusCode: http.StatusForbidden, wantBalance: true, wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "written post and failed readback is uncertain",
@@ -227,7 +310,7 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				method: http.MethodGet, target: "https://panel.example.com/api/user/checkin?month=2026-08",
 				err: errors.New("raw-upstream-secret"),
 			}},
-			wantStatus: "uncertain", wantPosts: 1,
+			wantStatus: "uncertain", wantPosts: 1, wantReadbacks: 1,
 		},
 		{
 			name: "unwritten post is an ordinary safe error",
@@ -297,19 +380,28 @@ func TestNewAPICheckinStateMachine(t *testing.T) {
 				}
 			}
 			posts := 0
+			readbacks := 0
+			sawPost := false
 			for _, request := range requests {
 				if request.authorization != "Bearer private-token" || request.userID != "42" {
 					t.Fatalf("request leaked or omitted New API headers: %#v", request)
 				}
 				if request.method == http.MethodPost {
 					posts++
+					sawPost = true
 					if request.body != `{}` || request.contentType != "application/json" {
 						t.Fatalf("POST contract = %#v", request)
 					}
+				} else if sawPost && request.method == http.MethodGet &&
+					request.target == "https://panel.example.com/api/user/checkin?month=2026-08" {
+					readbacks++
 				}
 			}
-			if posts != tt.wantPosts {
-				t.Fatalf("POST count = %d, want %d; requests = %#v", posts, tt.wantPosts, requests)
+			if posts != tt.wantPosts || readbacks != tt.wantReadbacks {
+				t.Fatalf(
+					"request counts = (POST %d, readback %d), want (%d, %d); requests = %#v",
+					posts, readbacks, tt.wantPosts, tt.wantReadbacks, requests,
+				)
 			}
 		})
 	}

@@ -175,10 +175,7 @@ func (s *channelManagementService) checkInNewAPI(
 	readback, _, readbackErr := getNewAPI[newAPICheckinStatus](
 		s, ctx, cfg, envelope, monthTarget,
 	)
-	if readbackErr != nil {
-		return newAPICheckinResult(newAPICheckinUncertain, managementStatusCode(postResult), checkedAt), nil, nil
-	}
-	if readback.Data.Stats.CheckedInToday {
+	if readbackErr == nil && readback.Data.Stats.CheckedInToday {
 		result := newAPICheckinResult(newAPICheckinAlreadyChecked, managementStatusCode(postResult), checkedAt)
 		return s.finishNewAPICheckin(ctx, cfg, envelope, result)
 	}
@@ -187,6 +184,9 @@ func (s *channelManagementService) checkInNewAPI(
 	}
 	if status := classifyNewAPICheckinHTTP(managementStatusCode(postResult)); status != "" {
 		return newAPICheckinResult(status, managementStatusCode(postResult), checkedAt), nil, nil
+	}
+	if readbackErr != nil {
+		return newAPICheckinResult(newAPICheckinUncertain, managementStatusCode(postResult), checkedAt), nil, nil
 	}
 	return nil, nil, errManagementRequestFailed
 }
