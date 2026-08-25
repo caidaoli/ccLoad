@@ -169,10 +169,15 @@ func (s *channelManagementService) RefreshBalance(
 	if err != nil {
 		return nil, err
 	}
-	if envelope.Profile != model.ChannelManagementProfileNewAPI {
+	var snapshot *model.ChannelManagementBalanceSnapshot
+	switch envelope.Profile {
+	case model.ChannelManagementProfileNewAPI:
+		snapshot, _, err = s.refreshNewAPIBalance(operationCtx, cfg, envelope)
+	case model.ChannelManagementProfileSub2API, model.ChannelManagementProfileSub2APIPro:
+		snapshot, _, err = s.refreshSub2APIBalance(operationCtx, cfg, envelope)
+	default:
 		return nil, errChannelManagementProviderUnavailable
 	}
-	snapshot, _, err := s.refreshNewAPIBalance(operationCtx, cfg, envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -205,10 +210,18 @@ func (s *channelManagementService) CheckIn(
 	if err != nil {
 		return nil, err
 	}
-	if envelope.Profile != model.ChannelManagementProfileNewAPI {
+	var result *channelCheckinResult
+	var snapshot *model.ChannelManagementBalanceSnapshot
+	switch envelope.Profile {
+	case model.ChannelManagementProfileNewAPI:
+		result, snapshot, err = s.checkInNewAPI(operationCtx, cfg, envelope)
+	case model.ChannelManagementProfileSub2API:
+		result = newAPICheckinResult(newAPICheckinUnsupported, 0, s.now())
+	case model.ChannelManagementProfileSub2APIPro:
+		result, snapshot, err = s.checkInSub2APIPro(operationCtx, cfg, envelope)
+	default:
 		return nil, errChannelManagementProviderUnavailable
 	}
-	result, snapshot, err := s.checkInNewAPI(operationCtx, cfg, envelope)
 	if err != nil {
 		return nil, err
 	}

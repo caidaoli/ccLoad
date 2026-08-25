@@ -527,30 +527,6 @@ func TestChannelManagementServiceNewAPICheckinCASConflictMergesWithoutReplaying(
 	}
 }
 
-func TestChannelManagementServiceLeavesSub2APIDispatchUnavailable(t *testing.T) {
-	t.Parallel()
-	server := newInMemoryServer(t)
-	cfg := createChannelManagementTestConfig(t, server.store, "sub2-unavailable")
-	cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, &model.ChannelManagementEnvelope{
-		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
-		Profile: model.ChannelManagementProfileSub2API,
-		Settings: model.ChannelManagementSettings{
-			BaseURL: "https://sub2.example.com", AccessToken: "private-token",
-		},
-	})
-	script := &newAPIScript{t: t}
-	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
-		return &http.Client{Transport: script}
-	})
-	if _, err := service.RefreshBalance(context.Background(), cfg.ID); !errors.Is(err, errChannelManagementProviderUnavailable) {
-		t.Fatalf("Sub2API RefreshBalance error = %v", err)
-	}
-	if _, err := service.CheckIn(context.Background(), cfg.ID); !errors.Is(err, errChannelManagementProviderUnavailable) {
-		t.Fatalf("Sub2API CheckIn error = %v", err)
-	}
-	script.finishedRequests()
-}
-
 type newAPIManagementConflictStore struct {
 	storage.Store
 	mu         sync.Mutex
