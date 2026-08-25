@@ -3722,9 +3722,27 @@
     }
 
     .modal-inline-select {
-      background: var(--field-bg) !important;
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+      padding-block: 4px;
+      padding-inline-start: 8px;
+      padding-inline-end: 32px;
+      border: 1px solid var(--surface-border-strong);
+      border-radius: 6px;
+      background-color: var(--field-bg) !important;
       color: var(--neutral-900);
       -webkit-text-fill-color: var(--neutral-900);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .modal-inline-select:focus {
+      outline: none;
+      border-color: var(--primary-500);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
     }
 
     .modal-inline-select option {

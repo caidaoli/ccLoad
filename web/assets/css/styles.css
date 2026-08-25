@@ -2775,11 +2775,12 @@ body {
 
 .filter-combobox {
   width: 100%;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 14px 14px;
-  padding-right: 32px;
+  /* Select-specific background/padding shorthands must not erase the combobox affordance. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  background-size: 14px 14px !important;
+  padding-inline-end: 32px !important;
 }
 
 .filter-combobox-wrapper {
@@ -6775,8 +6776,8 @@ body.web-role-api-token .filter-group--auth-token {
   }
 
   .filter-combobox {
-    background-position: right 8px center;
-    padding-right: 26px;
+    background-position: right 8px center !important;
+    padding-inline-end: 26px !important;
   }
 
   .filter-dropdown-item {
