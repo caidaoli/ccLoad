@@ -62,9 +62,11 @@ func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) er
 
 	day := now.In(time.Local).Format("2006-01-02")
 	channelIDs := make([]int64, 0, len(configs))
+	var scanErr error
 	for _, cfg := range configs {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			scanErr = ctx.Err()
+			break
 		}
 		if cfg == nil || cfg.AuthType != model.AuthTypeAPIKey || !cfg.Enabled {
 			continue
@@ -73,26 +75,32 @@ func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) er
 		if parseErr != nil || !isManagementCheckinDue(envelope, now) {
 			continue
 		}
-		claimed, err := s.claimManagementCheckinDay(ctx, cfg, day, now)
-		if err != nil {
-			return err
+		claimed, claimErr := s.claimManagementCheckinDay(ctx, cfg, day, now)
+		if claimErr != nil {
+			if scanErr == nil {
+				scanErr = claimErr
+			}
+			log.Printf("[WARN] 管理账户每日签到渠道 claim 失败（channel=%d）: %v", cfg.ID, claimErr)
+			continue
 		}
 		if claimed {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
 	}
 	if len(channelIDs) == 0 {
-		return nil
+		return scanErr
 	}
-
-	jobs := make(chan int64)
+	jobs := make(chan int64, len(channelIDs))
+	for _, channelID := range channelIDs {
+		jobs <- channelID
+	}
 	workers := channelManagementScheduleWorkers
 	if len(channelIDs) < workers {
 		workers = len(channelIDs)
 	}
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
 			for channelID := range jobs {
@@ -100,17 +108,11 @@ func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) er
 			}
 		}()
 	}
-	for _, channelID := range channelIDs {
-		select {
-		case jobs <- channelID:
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return ctx.Err()
-		}
-	}
 	close(jobs)
 	wg.Wait()
+	if scanErr != nil {
+		return scanErr
+	}
 	return ctx.Err()
 }
 
@@ -175,10 +177,13 @@ func (s *Server) runManagementCheckinJob(ctx context.Context, channelID int64) {
 	if cfg.AuthType != model.AuthTypeAPIKey || !cfg.Enabled ||
 		(envelope.Profile != model.ChannelManagementProfileNewAPI && envelope.Profile != model.ChannelManagementProfileSub2APIPro) ||
 		!envelope.Settings.DailyCheckinEnabled {
-		s.writeManagementCheckinAudit(ctx, cfg, &channelCheckinResult{Status: "skipped_disabled"}, nil)
+		s.writeManagementCheckinAudit(ctx, cfg, &channelCheckinResult{Status: newAPICheckinSkippedDisabled}, nil)
 		return
 	}
 	result, checkinErr := s.channelManagement.CheckIn(ctx, channelID)
+	if ctx.Err() != nil {
+		return
+	}
 	s.writeManagementCheckinAudit(ctx, cfg, result, checkinErr)
 }
 
