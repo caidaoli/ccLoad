@@ -165,7 +165,6 @@ async function withLoadedLogsPage(options, assertions) {
   };
   const {
     isTokenRole = false,
-    intervalHours = '0',
     logSource = 'proxy',
     entries = []
   } = options;
@@ -238,7 +237,6 @@ async function withLoadedLogsPage(options, assertions) {
   setGlobal('calculateTokenSpeed', () => null);
   setGlobal('fetchDataWithAuth', async (url) => {
     if (url.startsWith('/dashboard/models?')) return { models: [], channels: [] };
-    if (url === '/admin/settings/channel_check_interval_hours') return { value: intervalHours };
     throw new Error(`unexpected fetchDataWithAuth call: ${url}`);
   });
   setGlobal('fetchAPIWithAuth', async (url) => {
@@ -305,7 +303,7 @@ test('checkin audit logs render a visible localized source label', async () => {
 });
 
 test('admins can select checkin logs when scheduled model detection is disabled', async () => {
-  await withLoadedLogsPage({ intervalHours: '0', logSource: 'checkin' }, ({ sourceGroup, sourceSelect }) => {
+  await withLoadedLogsPage({ logSource: 'checkin' }, ({ sourceGroup, sourceSelect }) => {
     assert.equal(sourceGroup.hidden, false);
     assert.equal(sourceSelect.value, 'checkin');
   });
@@ -319,7 +317,7 @@ test('API token sessions cannot select management log sources', async () => {
 });
 
 test('checkin log filter is sent unchanged in the dashboard request', async () => {
-  await withLoadedLogsPage({ intervalHours: '1', logSource: 'checkin' }, ({ requestedURLs }) => {
+  await withLoadedLogsPage({ logSource: 'checkin' }, ({ requestedURLs }) => {
     assert.equal(requestedURLs.length, 1);
     const requestURL = new URL(requestedURLs[0], 'http://localhost');
     assert.deepEqual(requestURL.searchParams.getAll('log_source'), ['checkin']);
