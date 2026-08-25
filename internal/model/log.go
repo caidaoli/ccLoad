@@ -12,6 +12,7 @@ const (
 	LogSourceScheduledCheck = "scheduled_check"
 	LogSourceManualTest     = "manual_test"
 	LogSourceManualChat     = "manual_chat"
+	LogSourceCheckin        = "checkin"
 
 	LogSourceDetection = "detection"
 	LogSourceAll       = "all"
@@ -28,6 +29,8 @@ func NormalizeStoredLogSource(raw string) string {
 		return LogSourceManualTest
 	case LogSourceManualChat:
 		return LogSourceManualChat
+	case LogSourceCheckin:
+		return LogSourceCheckin
 	default:
 		return LogSourceProxy
 	}

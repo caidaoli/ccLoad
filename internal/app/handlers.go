@@ -356,6 +356,8 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		lf.LogSource = model.LogSourceScheduledCheck
 	case model.LogSourceManualTest:
 		lf.LogSource = model.LogSourceManualTest
+	case model.LogSourceCheckin:
+		lf.LogSource = model.LogSourceCheckin
 	case model.LogSourceDetection:
 		lf.LogSource = model.LogSourceDetection
 	case model.LogSourceAll:

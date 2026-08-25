@@ -176,7 +176,9 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
-		out = append(out, ectx.enrichChannel(cfg))
+		channel := ectx.enrichChannel(cfg)
+		channel.ManagementAccount = s.managementAccountView(cfg)
+		out = append(out, channel)
 	}
 
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
@@ -594,8 +596,21 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
+	if req.forbiddenCredentialFields {
+		RespondErrorMsg(c, http.StatusConflict, "credential fields must be submitted through management_account")
+		return
+	}
+	if req.managementAccountSet && req.AuthType != model.AuthTypeAPIKey {
+		RespondErrorMsg(c, http.StatusConflict, "OAuth channels cannot use management_account")
+		return
+	}
 	if req.AuthType != model.AuthTypeAPIKey {
 		RespondErrorMsg(c, http.StatusBadRequest, "OAuth channels must be created by login or credential import")
+		return
+	}
+	managementRaw, err := prepareChannelManagementCreate(&req)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
 		return
 	}
 
@@ -603,6 +618,11 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.saveCreatedChannelManagement(c.Request.Context(), created, managementRaw); err != nil {
+		s.rollbackCreatedChannel(c.Request.Context(), created.ID)
+		RespondErrorMsg(c, http.StatusInternalServerError, "failed to save management account")
 		return
 	}
 
@@ -708,6 +728,7 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		XAIEmail:                     metadata.xaiEmail,
 		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
+		ManagementAccount:            s.managementAccountView(cfg),
 		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
 		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
@@ -1102,6 +1123,24 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if strings.TrimSpace(req.AuthType) == "" {
 		req.AuthType = existing.GetAuthType()
 	}
+	if req.forbiddenCredentialFields {
+		RespondErrorMsg(c, http.StatusConflict, "credential fields must be submitted through management_account")
+		return
+	}
+	if existing.UsesOAuth() && req.managementAccountSet {
+		RespondErrorMsg(c, http.StatusConflict, "OAuth channels cannot use management_account")
+		return
+	}
+	if req.managementAccountSet {
+		if req.ManagementAccount == nil {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
+			return
+		}
+		if _, _, err := mergeChannelManagementSettings(existing.OAuthCredential, req.ManagementAccount); err != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
+			return
+		}
+	}
 	if existing.UsesOAuth() {
 		if req.AuthType != existing.GetAuthType() {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel auth_type is read-only")
@@ -1282,6 +1321,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key model scopes: %w", err))
 				return
 			}
+		}
+	}
+	if req.managementAccountSet {
+		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), upd, req.ManagementAccount); err != nil {
+			RespondErrorMsg(c, http.StatusInternalServerError, "failed to save management account")
+			return
 		}
 	}
 

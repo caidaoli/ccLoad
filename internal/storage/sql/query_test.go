@@ -90,6 +90,13 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			expectArgsLen: 1,
 		},
 		{
+			name: "checkin source uses exact equality",
+			filter: &model.LogFilter{
+				LogSource: model.LogSourceCheckin,
+			},
+			expectArgsLen: 1,
+		},
+		{
 			name: "detection source expands to all detection args",
 			filter: &model.LogFilter{
 				LogSource: model.LogSourceDetection,
@@ -130,6 +137,11 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 					if args[i] != arg {
 						t.Fatalf("detection arg[%d]=%v, want %v; args=%v", i, args[i], arg, args)
 					}
+				}
+			}
+			if tt.filter != nil && tt.filter.LogSource == model.LogSourceCheckin {
+				if clause != "log_source = ?" || len(args) != 1 || args[0] != model.LogSourceCheckin {
+					t.Fatalf("checkin filter = (%q, %v), want exact equality", clause, args)
 				}
 			}
 			if tt.filter == nil && clause != "log_source = ?" {

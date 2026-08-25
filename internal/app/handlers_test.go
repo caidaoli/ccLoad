@@ -398,6 +398,15 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
+			name:  "log_source_checkin",
+			query: "log_source=checkin",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.LogSource != model.LogSourceCheckin {
+					t.Errorf("LogSource=%q, want %q", lf.LogSource, model.LogSourceCheckin)
+				}
+			},
+		},
+		{
 			name:  "invalid_channel_id_ignored",
 			query: "channel_id=invalid",
 			check: func(t *testing.T, lf model.LogFilter) {
