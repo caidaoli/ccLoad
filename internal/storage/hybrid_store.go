@@ -428,12 +428,12 @@ func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, no
 	return nil
 }
 
-func (h *HybridStore) UpdateAPIKeyAllowedModels(
+func (h *HybridStore) UpdateAPIKeyModelScopes(
 	ctx context.Context,
 	channelID int64,
-	modelsByIndex map[int][]string,
+	scopesByIndex map[int]model.APIKeyModelScope,
 ) error {
-	if err := h.sqlite.UpdateAPIKeyAllowedModels(ctx, channelID, modelsByIndex); err != nil {
+	if err := h.sqlite.UpdateAPIKeyModelScopes(ctx, channelID, scopesByIndex); err != nil {
 		return err
 	}
 

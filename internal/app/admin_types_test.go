@@ -203,6 +203,18 @@ func TestChannelRequestValidate_NormalizesAPIKeyAllowedModels(t *testing.T) {
 	if got := wildcard.APIKeys[0].AllowedModels; len(got) != 1 || got[0] != "discovered-model" {
 		t.Fatalf("wildcard allowed_models=%v, want discovered-model", got)
 	}
+
+	invalidEmptiedScope := ChannelRequest{
+		Name: "invalid-emptied-scope",
+		APIKeys: []ChannelAPIKeyRequest{{
+			APIKey: "sk-test", AllowedModels: []string{"gpt-5"}, ModelScopeEmpty: true,
+		}},
+		URLs:   model.ChannelURLs{{URL: "https://example.com"}},
+		Models: []model.ModelEntry{{Model: "gpt-5"}},
+	}
+	if err := invalidEmptiedScope.Validate(); err == nil || !strings.Contains(err.Error(), "requires empty allowed_models") {
+		t.Fatalf("invalid model_scope_empty error=%v", err)
+	}
 }
 
 func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {

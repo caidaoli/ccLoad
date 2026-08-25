@@ -43,6 +43,7 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("api_key VARCHAR(255) NOT NULL").
 		Column("note VARCHAR(512) NOT NULL DEFAULT ''").
 		Column("allowed_models VARCHAR(2000) NOT NULL DEFAULT ''").
+		Column("model_scope_empty TINYINT NOT NULL DEFAULT 0").
 		Column("key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential'").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").

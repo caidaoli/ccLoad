@@ -28,13 +28,25 @@ function normalizeKeyAllowedModels(models) {
   return normalized;
 }
 
+function routingKeyModelName(value) {
+  const modelName = String(value || '').trim();
+  const match = modelName.match(/^(.*?)\(([^()]*)\)$/);
+  if (!match) return modelName;
+  const suffix = match[2].trim().toLowerCase();
+  const knownLevel = ['none', 'auto', '-1', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(suffix);
+  if (!knownLevel && !/^\d+$/.test(suffix)) return modelName;
+  return match[1].trim() || modelName;
+}
+
 function normalizeInlineKeyRow(row) {
   if (row && typeof row === 'object') {
-    return {
+    const normalized = {
       api_key: String(row.api_key || '').trim(),
       note: String(row.note || '').trim(),
       allowed_models: normalizeKeyAllowedModels(row.allowed_models)
     };
+    if (row.model_scope_empty === true) normalized.model_scope_empty = true;
+    return normalized;
   }
   return {
     api_key: String(row || '').trim(),
@@ -43,12 +55,46 @@ function normalizeInlineKeyRow(row) {
   };
 }
 
+function pruneKeyAllowedModels(rows, configuredModels) {
+  const configured = new Set(
+    (Array.isArray(configuredModels) ? configuredModels : [])
+      .map(entry => routingKeyModelName(typeof entry === 'string' ? entry : entry?.model).toLowerCase())
+      .filter(Boolean)
+  );
+  const unrestrictedCatalog = configured.has('*');
+
+  return (Array.isArray(rows) ? rows : []).map(row => {
+    const normalized = normalizeInlineKeyRow(row);
+    if (unrestrictedCatalog) {
+      return normalized;
+    }
+    if (normalized.allowed_models.length === 0) return normalized;
+    normalized.allowed_models = normalized.allowed_models.filter(model => configured.has(model.toLowerCase()));
+    if (normalized.allowed_models.length === 0) normalized.model_scope_empty = true;
+    return normalized;
+  });
+}
+
 function makeInlineKeyRow(apiKey = '', note = '', allowedModels = []) {
   return normalizeInlineKeyRow({ api_key: apiKey, note, allowed_models: allowedModels });
 }
 
 function normalizeInlineKeyTableData() {
   inlineKeyTableData = inlineKeyTableData.map(normalizeInlineKeyRow);
+}
+
+function syncInlineKeyModelScopesWithConfiguredModels() {
+  const nextRows = pruneKeyAllowedModels(inlineKeyTableData, redirectTableData);
+  const changed = nextRows.some((row, index) => {
+    const current = normalizeInlineKeyRow(inlineKeyTableData[index]);
+    return row.allowed_models.length !== current.allowed_models.length ||
+      row.allowed_models.some((model, modelIndex) => model !== current.allowed_models[modelIndex]) ||
+      Boolean(row.model_scope_empty) !== Boolean(current.model_scope_empty);
+  });
+  if (!changed) return false;
+  inlineKeyTableData = nextRows;
+  renderInlineKeyTable();
+  return true;
 }
 
 function getInlineKeyValue(index) {
@@ -115,7 +161,7 @@ function selectModelsForInlineKeyTest(row, modelRows) {
   const allowedModels = new Set(keyRow.allowed_models.map(name => name.toLowerCase()));
   const configuredModels = (Array.isArray(modelRows) ? modelRows : [])
     .filter(modelRow => modelRow && !modelRow.disabled)
-    .map(modelRow => String(modelRow.model || '').trim())
+    .map(modelRow => routingKeyModelName(modelRow.model))
     .filter(Boolean);
   if (allowedModels.size > 0 && configuredModels.includes('*')) {
     return [...keyRow.allowed_models];
@@ -135,7 +181,12 @@ function updateInlineKeyHiddenInput() {
 function setInlineKeyTableDataFromAPI(apiKeys) {
   inlineKeyTableData = (apiKeys || []).map(item => {
     if (item && typeof item === 'object') {
-      return makeInlineKeyRow(item.api_key || '', item.note || '', item.allowed_models || []);
+      return normalizeInlineKeyRow({
+        api_key: item.api_key || '',
+        note: item.note || '',
+        allowed_models: item.allowed_models || [],
+        model_scope_empty: item.model_scope_empty === true
+      });
     }
     return makeInlineKeyRow(item || '', '');
   });
@@ -156,13 +207,13 @@ function configuredKeyModelScopeOptions() {
     ? redirectTableData
     : [];
   for (const row of rows) {
-    const modelName = String(row?.model || '').trim();
+    const modelName = routingKeyModelName(row?.model);
     const key = modelName.toLowerCase();
     if (!modelName || modelName === '*' || seen.has(key)) continue;
     seen.add(key);
     options.push({
       model: modelName,
-      upstreamModel: String(row?.redirect_model || modelName).trim(),
+      upstreamModel: routingKeyModelName(row?.redirect_model || modelName),
       disabled: Boolean(row?.disabled)
     });
   }
@@ -195,26 +246,34 @@ function getVisibleKeyModelScopeCheckboxes() {
   return getKeyModelScopeCheckboxes().filter(checkbox => !checkbox.closest?.('.key-model-scope-option')?.hidden);
 }
 
-function updateKeyModelScopeSelectionCount() {
-  const count = document.getElementById('keyModelScopeSelectionCount');
-  if (!count) return;
-  const checkboxes = getKeyModelScopeCheckboxes();
-  const selected = checkboxes.filter(checkbox => checkbox.checked).length;
-  count.textContent = window.t('channels.keyModelsSelectionCount', { selected, total: checkboxes.length });
+function syncKeyModelScopeToggleAll() {
+  const toggle = document.getElementById('keyModelScopeToggleAll');
+  if (!toggle) return;
+  const visible = getVisibleKeyModelScopeCheckboxes();
+  const selected = visible.filter(checkbox => checkbox.checked).length;
+  const allowAll = document.getElementById('keyModelScopeAll')?.checked !== false;
+  toggle.checked = visible.length > 0 && selected === visible.length;
+  toggle.indeterminate = selected > 0 && selected < visible.length;
+  toggle.disabled = allowAll || visible.length === 0;
 }
 
-function setVisibleKeyModelScopeSelection(mode) {
-  if (!['select', 'clear', 'invert'].includes(mode)) return false;
+function updateKeyModelScopeSelectionCount() {
+  const count = document.getElementById('keyModelScopeSelectionCount');
+  const checkboxes = getKeyModelScopeCheckboxes();
+  if (count) {
+    const selected = checkboxes.filter(checkbox => checkbox.checked).length;
+    count.textContent = window.t('channels.keyModelsSelectionCount', { selected, total: checkboxes.length });
+  }
+  syncKeyModelScopeToggleAll();
+}
+
+function setVisibleKeyModelScopeChecked(checked) {
   const visible = getVisibleKeyModelScopeCheckboxes();
   if (visible.length === 0) return false;
-  const allowAll = document.getElementById('keyModelScopeAll');
-  if (allowAll) allowAll.checked = false;
   for (const checkbox of visible) {
-    if (mode === 'select') checkbox.checked = true;
-    else if (mode === 'clear') checkbox.checked = false;
-    else checkbox.checked = !checkbox.checked;
+    checkbox.checked = Boolean(checked);
   }
-  syncKeyModelScopeControls();
+  updateKeyModelScopeSelectionCount();
   setKeyModelScopeStatus();
   return true;
 }
@@ -229,7 +288,7 @@ function syncKeyModelScopeControls() {
   updateKeyModelScopeSelectionCount();
 }
 
-function renderKeyModelScopeOptions(allowedModels) {
+function renderKeyModelScopeOptions(allowedModels, selectNone = false) {
   const list = document.getElementById('keyModelScopeList');
   if (!list) return;
   list.replaceChildren();
@@ -246,7 +305,7 @@ function renderKeyModelScopeOptions(allowedModels) {
     checkbox.name = 'keyAllowedModel';
     checkbox.value = option.model;
     checkbox.dataset.upstreamModel = option.upstreamModel;
-    checkbox.checked = unrestricted || allowed.has(option.model.toLowerCase());
+    checkbox.checked = !selectNone && (unrestricted || allowed.has(option.model.toLowerCase()));
 
     const name = document.createElement('span');
     name.className = 'key-model-scope-option__name';
@@ -273,9 +332,10 @@ function openKeyModelScopeModal(index, trigger) {
   keyModelScopeDetectionGeneration++;
   keyModelScopeExtraModels = normalizeKeyAllowedModels(row.allowed_models);
   keyModelScopeTrigger = trigger || document.activeElement;
-  renderKeyModelScopeOptions(row.allowed_models);
+  const scopeWasEmptied = row.model_scope_empty === true;
+  renderKeyModelScopeOptions(row.allowed_models, scopeWasEmptied);
   const allowAll = document.getElementById('keyModelScopeAll');
-  if (allowAll) allowAll.checked = row.allowed_models.length === 0;
+  if (allowAll) allowAll.checked = !scopeWasEmptied && row.allowed_models.length === 0;
   const search = document.getElementById('keyModelScopeSearch');
   if (search) search.value = '';
   const title = document.getElementById('keyModelScopeModalTitle');
@@ -325,6 +385,7 @@ function confirmKeyModelScope() {
   const index = keyModelScopeEditingIndex;
   const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
   row.allowed_models = normalizeKeyAllowedModels(allowedModels);
+  delete row.model_scope_empty;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
   closeKeyModelScopeModal(false);
@@ -340,6 +401,7 @@ function filterKeyModelScopeOptions(query) {
   document.querySelectorAll('#keyModelScopeList .key-model-scope-option').forEach(option => {
     option.hidden = Boolean(normalized && !String(option.dataset.searchText || '').includes(normalized));
   });
+  updateKeyModelScopeSelectionCount();
 }
 
 async function detectKeyModelScope() {
@@ -419,14 +481,8 @@ function initKeyModelScopeModalEvents() {
   modal.querySelector('[data-action="confirm-key-model-scope"]')?.addEventListener('click', confirmKeyModelScope);
   document.getElementById('detectKeyModelScopeBtn')?.addEventListener('click', detectKeyModelScope);
   document.getElementById('keyModelScopeAll')?.addEventListener('change', syncKeyModelScopeControls);
-  modal.querySelector('[data-action="select-key-model-scope"]')?.addEventListener('click', () => {
-    setVisibleKeyModelScopeSelection('select');
-  });
-  modal.querySelector('[data-action="clear-key-model-scope"]')?.addEventListener('click', () => {
-    setVisibleKeyModelScopeSelection('clear');
-  });
-  modal.querySelector('[data-action="invert-key-model-scope"]')?.addEventListener('click', () => {
-    setVisibleKeyModelScopeSelection('invert');
+  document.getElementById('keyModelScopeToggleAll')?.addEventListener('change', event => {
+    setVisibleKeyModelScopeChecked(event.target.checked);
   });
   document.getElementById('keyModelScopeList')?.addEventListener('change', updateKeyModelScopeSelectionCount);
   document.getElementById('keyModelScopeSearch')?.addEventListener('input', event => {
@@ -679,6 +735,7 @@ function createKeyRow(index) {
   const keyRow = normalizeInlineKeyRow(inlineKeyTableData[index]);
   inlineKeyTableData[index] = keyRow;
   const isSelected = selectedKeyIndices.has(index);
+  const scopeWasEmptied = keyRow.model_scope_empty === true;
 
   // 准备模板数据
   const rowData = {
@@ -686,10 +743,14 @@ function createKeyRow(index) {
     displayIndex: index + 1,
     key: keyRow.api_key || '',
     note: keyRow.note || '',
-    modelScopeLabel: keyRow.allowed_models.length === 0
+    modelScopeLabel: scopeWasEmptied
+      ? window.t('channels.keyModelsNoneShort')
+      : keyRow.allowed_models.length === 0
       ? window.t('channels.keyModelsAllShort')
       : window.t('channels.keyModelsCountShort', { count: keyRow.allowed_models.length }),
-    modelScopeTitle: keyRow.allowed_models.length === 0
+    modelScopeTitle: scopeWasEmptied
+      ? window.t('channels.keyModelsNoneTitle')
+      : keyRow.allowed_models.length === 0
       ? window.t('channels.keyModelsAllTitle')
       : window.t('channels.keyModelsRestrictedTitle', { count: keyRow.allowed_models.length }),
     inputType: inlineKeyVisible ? 'text' : 'password',
@@ -1630,6 +1691,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     normalizeInlineKeyRow,
     normalizeKeyAllowedModels,
+    pruneKeyAllowedModels,
     selectAvailableInlineKeys,
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
@@ -1639,7 +1701,7 @@ if (typeof module !== 'undefined' && module.exports) {
     closeKeyModelScopeModal,
     detectKeyModelScope,
     initKeyModelScopeModalEvents,
-    setVisibleKeyModelScopeSelection,
+    setVisibleKeyModelScopeChecked,
     updateKeyModelScopeSelectionCount
   };
 }

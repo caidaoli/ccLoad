@@ -277,6 +277,9 @@ func TestPostgres(t *testing.T) {
 		} {
 			checkCol("auth_tokens", col)
 		}
+		for _, col := range []string{"allowed_models", "model_scope_empty"} {
+			checkCol("api_keys", col)
+		}
 		for _, col := range []string{"daily_cost_limit", "scheduled_check_model", "cost_multiplier"} {
 			checkCol("channels", col)
 		}

@@ -1271,6 +1271,7 @@
     }
 
     .key-model-scope-all input,
+    .key-model-scope-toggle-all input,
     .key-model-scope-option input {
       width: 16px;
       height: 16px;
@@ -1282,25 +1283,38 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
-      margin-bottom: 8px;
-    }
-
-    .key-model-scope-bulk-actions {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
       margin-bottom: 12px;
     }
 
-    .key-model-scope-bulk-buttons {
+    .key-model-scope-legend {
+      width: 100%;
       display: flex;
+      align-items: center;
+      justify-content: space-between;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 8px;
+    }
+
+    .key-model-scope-toggle-all {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      gap: 9px;
+      cursor: pointer;
+    }
+
+    .key-model-scope-toggle-all input:disabled {
+      cursor: not-allowed;
+    }
+
+    .key-model-scope-toggle-all:focus-within {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
     }
 
     .key-model-scope-selection-count {
       flex: 0 0 auto;
+      margin-inline-start: auto;
       color: var(--neutral-500);
       font-size: 12px;
     }
@@ -1369,11 +1383,6 @@
     @media (max-width: 640px) {
       .key-model-scope-toolbar {
         grid-template-columns: 1fr;
-      }
-
-      .key-model-scope-bulk-actions {
-        align-items: flex-start;
-        flex-direction: column;
       }
     }
 

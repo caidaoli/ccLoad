@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   normalizeInlineKeyRow,
+  pruneKeyAllowedModels,
   selectAvailableInlineKeys,
   selectModelFetchKeyEntries,
   countConfiguredInlineKeys,
@@ -12,7 +13,8 @@ const {
   closeKeyModelScopeModal,
   detectKeyModelScope,
   initKeyModelScopeModalEvents,
-  setVisibleKeyModelScopeSelection
+  setVisibleKeyModelScopeChecked,
+  updateKeyModelScopeSelectionCount
 } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
@@ -78,6 +80,70 @@ test('inline Key rows preserve and normalize model scopes', () => {
   ), ['gpt-5']);
 });
 
+test('removing configured models prunes every restricted Key scope', () => {
+  const rows = [
+    { api_key: 'sk-primary', allowed_models: ['GPT-5', 'claude-opus'] },
+    { api_key: 'sk-unrestricted', allowed_models: [] }
+  ];
+
+  assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: 'gpt-5' }]), [
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'] },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+  ]);
+  assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: '*' }]), [
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'] },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+  ]);
+  assert.deepEqual(pruneKeyAllowedModels(
+    [{ api_key: 'sk-thinking', allowed_models: ['gpt-5'] }],
+    [{ model: 'gpt-5(max)' }]
+  ), [{ api_key: 'sk-thinking', note: '', allowed_models: ['gpt-5'] }]);
+  assert.deepEqual(pruneKeyAllowedModels(rows, []), [
+    { api_key: 'sk-primary', note: '', allowed_models: [], model_scope_empty: true },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+  ]);
+});
+
+test('single and batch model deletion use the same Key scope reconciliation', () => {
+  const globals = {
+    redirectTableData: [{ model: 'gpt-5' }, { model: 'claude-opus' }, { model: 'qwen3' }],
+    selectedModelIndices: new Set([1, 2]),
+    inlineKeyTableData: [{ api_key: 'sk-scoped', allowed_models: ['gpt-5', 'claude-opus', 'qwen3'] }]
+  };
+  globals.syncInlineKeyModelScopesWithConfiguredModels = () => {
+    globals.inlineKeyTableData = pruneKeyAllowedModels(globals.inlineKeyTableData, globals.redirectTableData);
+    global.inlineKeyTableData = globals.inlineKeyTableData;
+  };
+
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  try {
+    const { deleteRedirectModelsAtIndices } = loadChannelsModals();
+    assert.equal(deleteRedirectModelsAtIndices([1]), true);
+    assert.deepEqual(global.redirectTableData, [{ model: 'gpt-5' }, { model: 'qwen3' }]);
+    assert.deepEqual(global.inlineKeyTableData[0].allowed_models, ['gpt-5', 'qwen3']);
+    assert.deepEqual([...global.selectedModelIndices], [1]);
+
+    assert.equal(deleteRedirectModelsAtIndices([0, 1, 99]), true);
+    assert.deepEqual(global.redirectTableData, []);
+    assert.deepEqual(global.inlineKeyTableData, [{
+      api_key: 'sk-scoped',
+      note: '',
+      allowed_models: [],
+      model_scope_empty: true
+    }]);
+    assert.deepEqual([...global.selectedModelIndices], []);
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('model discovery preserves duplicate Key rows for exact scope mapping', () => {
   assert.deepEqual(selectModelFetchKeyEntries([
     { api_key: 'same-key' },
@@ -89,8 +155,9 @@ test('model discovery preserves duplicate Key rows for exact scope mapping', () 
   assert.equal(countConfiguredInlineKeys([{ api_key: 'same-key' }, { api_key: 'same-key' }]), 2);
 });
 
-test('Key model scope bulk actions affect only visible models', () => {
-  const allowAll = { checked: true };
+test('Key model scope master checkbox reflects and changes visible models', () => {
+  const allowAll = { checked: false };
+  const toggleAll = { checked: false, indeterminate: false, disabled: false };
   const count = { textContent: '' };
   const status = { textContent: '', classList: { toggle() {} } };
   const list = { setAttribute() {} };
@@ -113,6 +180,7 @@ test('Key model scope bulk actions affect only visible models', () => {
     value: {
       getElementById: id => ({
         keyModelScopeAll: allowAll,
+        keyModelScopeToggleAll: toggleAll,
         keyModelScopeSelectionCount: count,
         keyModelScopeStatus: status,
         keyModelScopeList: list
@@ -122,14 +190,27 @@ test('Key model scope bulk actions affect only visible models', () => {
   });
 
   try {
-    assert.equal(setVisibleKeyModelScopeSelection('clear'), true);
+    updateKeyModelScopeSelectionCount();
+    assert.equal(toggleAll.checked, false);
+    assert.equal(toggleAll.indeterminate, true);
+    assert.equal(toggleAll.disabled, false);
+    assert.equal(count.textContent, '2/3');
+
+    assert.equal(setVisibleKeyModelScopeChecked(false), true);
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [false, true, false]);
-    assert.equal(allowAll.checked, false);
+    assert.equal(toggleAll.checked, false);
+    assert.equal(toggleAll.indeterminate, false);
     assert.equal(count.textContent, '1/3');
 
-    assert.equal(setVisibleKeyModelScopeSelection('invert'), true);
+    assert.equal(setVisibleKeyModelScopeChecked(true), true);
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true, true]);
+    assert.equal(toggleAll.checked, true);
+    assert.equal(toggleAll.indeterminate, false);
     assert.equal(count.textContent, '3/3');
+
+    allowAll.checked = true;
+    updateKeyModelScopeSelectionCount();
+    assert.equal(toggleAll.disabled, true);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
     else delete global.window;
@@ -1015,18 +1096,20 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
       'channelCostMultiplier', 'channelScheduledCheckModel', 'channelProxyURL'
     ]) fixture.getElement(id).value = '0';
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
-    setGlobal('getValidInlineKeyRows', () => [{
-      api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5']
-    }]);
+    setGlobal('getValidInlineKeyRows', () => [
+      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'] },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true }
+    ]);
     setGlobal('fetchAPIWithAuth', async (_url, options) => {
       submitted = JSON.parse(options.body);
       return { success: false, error: 'captured' };
     });
 
     await saveChannel({ preventDefault() {} });
-    assert.deepEqual(submitted.api_keys, [{
-      api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5']
-    }]);
+	assert.deepEqual(submitted.api_keys, [
+		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true }
+    ]);
   } finally {
     for (const [key, descriptor] of extraGlobals) {
       if (descriptor === undefined) delete global[key];

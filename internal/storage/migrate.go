@@ -205,6 +205,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysAllowedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys allowed_models: %w", err)
 			}
+			if err := ensureAPIKeysModelScopeEmpty(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys model_scope_empty: %w", err)
+			}
 		}
 
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）

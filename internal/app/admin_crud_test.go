@@ -24,7 +24,7 @@ type failAPIKeyAllowedModelsStore struct {
 	storage.Store
 }
 
-func (s *failAPIKeyAllowedModelsStore) UpdateAPIKeyAllowedModels(context.Context, int64, map[int][]string) error {
+func (s *failAPIKeyAllowedModelsStore) UpdateAPIKeyModelScopes(context.Context, int64, map[int]model.APIKeyModelScope) error {
 	return errors.New("forced API key model scope update failure")
 }
 
@@ -622,6 +622,38 @@ func TestHandleCreateChannel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleCreateChannelDisablesEmptiedKeyScope(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	payload := map[string]any{
+		"name": "new-emptied-key-scope",
+		"urls": model.ChannelURLs{{URL: "https://api.example.com"}},
+		"api_keys": []map[string]any{
+			{"api_key": "sk-emptied", "allowed_models": []string{}, "model_scope_empty": true},
+			{"api_key": "sk-unrestricted", "allowed_models": []string{}},
+		},
+		"models":  []model.ModelEntry{{Model: "model-a"}},
+		"enabled": true,
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.handleCreateChannel(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+	}
+	created := mustParseAPIResponse[*model.Config](t, w.Body.Bytes()).Data
+	if created == nil {
+		t.Fatal("create response missing channel")
+	}
+	keys, err := store.GetAPIKeys(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys: %v", err)
+	}
+	if len(keys) != 2 || !keys[0].Disabled || keys[1].Disabled {
+		t.Fatalf("created keys=%+v, want emptied scope disabled and unrestricted scope enabled", keys)
 	}
 }
 
@@ -1847,6 +1879,90 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	}
 	if len(keys[0].AllowedModels) != 0 || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
 		t.Fatalf("explicit clear result = [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
+	}
+}
+
+func TestHandleUpdateChannelDisablesEmptiedScopeWhenRebuildingKeys(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "scope-rebuild", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "model-a"}, {Model: "model-b"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-scoped", AllowedModels: []string{"model-b"},
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	payload := map[string]any{
+		"name": "scope-rebuild",
+		"urls": model.ChannelURLs{{URL: "https://api.example.com"}},
+		"api_keys": []map[string]any{
+			// The editor is stale and still submits the deleted model. The
+			// backend must prune it before rebuilding the key rows.
+			{"api_key": "sk-scoped", "allowed_models": []string{"model-b"}},
+			{"api_key": "sk-new", "allowed_models": []string{}},
+		},
+		"models":  []model.ModelEntry{{Model: "model-a"}},
+		"enabled": true,
+	}
+	requestPath := "/admin/channels/" + strconv.FormatInt(created.ID, 10)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, requestPath, payload))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(c, created.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys: %v", err)
+	}
+	if len(keys) != 2 || !keys[0].Disabled || keys[1].Disabled {
+		t.Fatalf("rebuilt keys=%+v, want emptied existing scope disabled and new unrestricted key enabled", keys)
+	}
+
+	// An automatically disabled empty-scope key cannot be enabled without
+	// explicitly choosing a scope first.
+	enableCtx, enableW := newTestContext(t, newJSONRequest(t, http.MethodPost,
+		"/admin/channels/"+strconv.FormatInt(created.ID, 10)+"/key-enable",
+		map[string]any{"key_index": 0}))
+	enableCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.HandleAPIKeyEnable(enableCtx)
+	if enableW.Code != http.StatusConflict {
+		t.Fatalf("enable empty-scope key status=%d body=%s, want 409", enableW.Code, enableW.Body.String())
+	}
+
+	// Explicitly clearing the scope means unrestricted access and must restore
+	// a key that was disabled only by the automatic empty-scope transition.
+	allowAllPayload := map[string]any{
+		"name": "scope-rebuild",
+		"urls": model.ChannelURLs{{URL: "https://api.example.com"}},
+		"api_keys": []map[string]any{
+			{"api_key": "sk-scoped", "allowed_models": []string{}, "model_scope_empty": false},
+			{"api_key": "sk-new", "allowed_models": []string{}, "model_scope_empty": false},
+		},
+		"models":  []model.ModelEntry{{Model: "model-a"}},
+		"enabled": true,
+	}
+	allowAllCtx, allowAllW := newTestContext(t, newJSONRequest(t, http.MethodPut, requestPath, allowAllPayload))
+	allowAllCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(allowAllCtx, created.ID)
+	if allowAllW.Code != http.StatusOK {
+		t.Fatalf("allow-all update status=%d body=%s", allowAllW.Code, allowAllW.Body.String())
+	}
+	keys, err = store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys after allow-all: %v", err)
+	}
+	if len(keys) != 2 || keys[0].Disabled || keys[0].ModelScopeEmpty || !keys[0].AllowsModel("model-a") {
+		t.Fatalf("allow-all scope result=%+v, want first key enabled and unrestricted", keys)
 	}
 }
 

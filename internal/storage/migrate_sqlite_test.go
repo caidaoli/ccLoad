@@ -1048,13 +1048,20 @@ func TestEnsureAPIKeysAllowedModels_SQLite(t *testing.T) {
 	if err := ensureAPIKeysAllowedModels(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("ensureAPIKeysAllowedModels: %v", err)
 	}
+	if err := ensureAPIKeysModelScopeEmpty(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensureAPIKeysModelScopeEmpty: %v", err)
+	}
 
 	var allowedModels string
-	if err := db.QueryRowContext(ctx, `SELECT allowed_models FROM api_keys WHERE id = 1`).Scan(&allowedModels); err != nil {
+	var modelScopeEmpty int
+	if err := db.QueryRowContext(ctx, `SELECT allowed_models, model_scope_empty FROM api_keys WHERE id = 1`).Scan(&allowedModels, &modelScopeEmpty); err != nil {
 		t.Fatalf("query migrated allowed_models: %v", err)
 	}
 	if allowedModels != "" {
 		t.Fatalf("legacy allowed_models=%q, want unrestricted", allowedModels)
+	}
+	if modelScopeEmpty != 0 {
+		t.Fatalf("legacy model_scope_empty=%d, want unrestricted", modelScopeEmpty)
 	}
 }
 

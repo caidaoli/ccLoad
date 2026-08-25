@@ -217,6 +217,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 	unchanged := 0
 	failed := 0
 	changed := false
+	changedChannelIDs := make([]int64, 0, len(channelIDs))
 
 	for _, channelID := range channelIDs {
 		item := BatchRefreshModelsItem{ChannelID: channelID}
@@ -289,10 +290,14 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		item.Status = "updated"
 		updated++
 		changed = true
+		changedChannelIDs = append(changedChannelIDs, channelID)
 		results = append(results, item)
 	}
 
 	if changed {
+		for _, channelID := range changedChannelIDs {
+			s.InvalidateAPIKeysCache(channelID)
+		}
 		s.InvalidateChannelListCache()
 	}
 

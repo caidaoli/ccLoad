@@ -45,9 +45,10 @@ type ChannelRequest struct {
 
 // ChannelAPIKeyRequest describes one submitted API key and its admin-only note.
 type ChannelAPIKeyRequest struct {
-	APIKey        string   `json:"api_key"`
-	Note          string   `json:"note,omitempty"`
-	AllowedModels []string `json:"allowed_models,omitempty"`
+	APIKey          string   `json:"api_key"`
+	Note            string   `json:"note,omitempty"`
+	AllowedModels   []string `json:"allowed_models,omitempty"`
+	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"`
 	// allowedModelsSet distinguishes an omitted field from an explicit empty list.
 	// Updates preserve an existing scope when old clients do not send the new field.
 	allowedModelsSet bool
@@ -56,9 +57,10 @@ type ChannelAPIKeyRequest struct {
 // UnmarshalJSON records whether allowed_models was submitted so updates can preserve omitted scopes.
 func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		APIKey        string          `json:"api_key"`
-		Note          string          `json:"note,omitempty"`
-		AllowedModels json.RawMessage `json:"allowed_models"`
+		APIKey          string          `json:"api_key"`
+		Note            string          `json:"note,omitempty"`
+		AllowedModels   json.RawMessage `json:"allowed_models"`
+		ModelScopeEmpty bool            `json:"model_scope_empty,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -66,6 +68,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 
 	r.APIKey = raw.APIKey
 	r.Note = raw.Note
+	r.ModelScopeEmpty = raw.ModelScopeEmpty
 	r.AllowedModels = nil
 	r.allowedModelsSet = raw.AllowedModels != nil
 	if !r.allowedModelsSet || string(raw.AllowedModels) == "null" {
@@ -91,6 +94,7 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				APIKey:           apiKey,
 				Note:             strings.TrimSpace(item.Note),
 				AllowedModels:    append([]string(nil), item.AllowedModels...),
+				ModelScopeEmpty:  item.ModelScopeEmpty,
 				allowedModelsSet: item.allowedModelsSet,
 			})
 		}
@@ -234,6 +238,9 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		if strings.Contains(key.Note, "\x00") {
 			return fmt.Errorf("api_keys[%d].note contains illegal characters", i)
+		}
+		if key.ModelScopeEmpty && len(key.AllowedModels) != 0 {
+			return fmt.Errorf("api_keys[%d].model_scope_empty requires empty allowed_models", i)
 		}
 	}
 	if len(cr.Models) == 0 {

@@ -813,12 +813,13 @@ func IsValidKeyStrategy(s string) bool {
 
 // APIKey 表示渠道的 API 密钥配置
 type APIKey struct {
-	ID            int64    `json:"id"`
-	ChannelID     int64    `json:"channel_id"`
-	KeyIndex      int      `json:"key_index"`
-	APIKey        string   `json:"api_key"`
-	Note          string   `json:"note"`
-	AllowedModels []string `json:"allowed_models,omitempty"` // 空表示该 Key 不限制模型
+	ID              int64    `json:"id"`
+	ChannelID       int64    `json:"channel_id"`
+	KeyIndex        int      `json:"key_index"`
+	APIKey          string   `json:"api_key"`
+	Note            string   `json:"note"`
+	AllowedModels   []string `json:"allowed_models,omitempty"`    // 空表示该 Key 不限制模型
+	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"` // true 表示该 Key 当前不允许任何模型
 
 	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
 	Disabled    bool   `json:"disabled"`
@@ -831,6 +832,13 @@ type APIKey struct {
 	UpdatedAt JSONTime `json:"updated_at"`
 }
 
+// APIKeyModelScope is the persisted model authorization state for one API key.
+type APIKeyModelScope struct {
+	AllowedModels   []string
+	ModelScopeEmpty bool
+	Disabled        bool
+}
+
 // IsCoolingDown 检查密钥是否处于冷却状态
 func (k *APIKey) IsCoolingDown(now time.Time) bool {
 	return k.CooldownUntil > now.Unix()
@@ -839,6 +847,9 @@ func (k *APIKey) IsCoolingDown(now time.Time) bool {
 // AllowsModel reports whether this key may serve a logical channel model.
 // An empty allowlist preserves the legacy unrestricted behavior.
 func (k *APIKey) AllowsModel(modelName string) bool {
+	if k.ModelScopeEmpty {
+		return false
+	}
 	modelName = RoutingModelName(modelName)
 	if len(k.AllowedModels) == 0 || modelName == "" || modelName == "*" {
 		return true

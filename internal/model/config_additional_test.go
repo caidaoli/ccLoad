@@ -308,6 +308,11 @@ func TestAPIKey_AllowsModel(t *testing.T) {
 	if restricted.AllowsModel("qwen3") {
 		t.Fatal("unlisted model must be rejected")
 	}
+
+	empty := &APIKey{ModelScopeEmpty: true}
+	if empty.AllowsModel("gpt-5") || empty.AllowsModel("*") {
+		t.Fatal("explicit empty model scope must reject every model")
+	}
 }
 
 func TestDefaultHealthScoreConfig(t *testing.T) {

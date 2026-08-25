@@ -616,14 +616,16 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	keysToCreate := make([]*model.APIKey, 0, len(apiKeyEntries))
 	for i, entry := range apiKeyEntries {
 		keysToCreate = append(keysToCreate, &model.APIKey{
-			ChannelID:     created.ID,
-			KeyIndex:      i,
-			APIKey:        entry.APIKey,
-			Note:          entry.Note,
-			AllowedModels: append([]string(nil), entry.AllowedModels...),
-			KeyStrategy:   keyStrategy,
-			CreatedAt:     model.JSONTime{Time: now},
-			UpdatedAt:     model.JSONTime{Time: now},
+			ChannelID:       created.ID,
+			KeyIndex:        i,
+			APIKey:          entry.APIKey,
+			Note:            entry.Note,
+			AllowedModels:   append([]string(nil), entry.AllowedModels...),
+			ModelScopeEmpty: entry.ModelScopeEmpty,
+			KeyStrategy:     keyStrategy,
+			Disabled:        entry.ModelScopeEmpty,
+			CreatedAt:       model.JSONTime{Time: now},
+			UpdatedAt:       model.JSONTime{Time: now},
 		})
 	}
 	if len(keysToCreate) > 0 {
@@ -971,8 +973,13 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		return
 	}
 
-	if _, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex); err != nil {
+	key, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex)
+	if err != nil {
 		RespondErrorMsg(c, http.StatusNotFound, "api key not found")
+		return
+	}
+	if !disable && key.ModelScopeEmpty {
+		RespondErrorMsg(c, http.StatusConflict, "configure at least one model or allow all models before enabling this key")
 		return
 	}
 
@@ -1026,6 +1033,7 @@ func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, id int64, mode
 		return
 	}
 
+	s.InvalidateAPIKeysCache(id)
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, upd)
 }
@@ -1124,7 +1132,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 		req.Models = filterCodexOAuthModelEntries(req.Models, credential.PlanType)
 	}
-
 	var oldKeys []*model.APIKey
 	if !existing.UsesOAuth() {
 		oldKeys, err = s.getAPIKeys(c.Request.Context(), id)
@@ -1137,6 +1144,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		req.APIKeys = submittedKeys
 		req.APIKey = strings.Join(apiKeyStrings(submittedKeys), ",")
 	}
+	// Normalize submitted scopes before validation so a stale editor cannot
+	// resurrect models that were removed from the channel in the meantime.
+	req.APIKeys = req.normalizeAPIKeys()
+	normalizeAPIKeyScopesForModels(req.APIKeys, req.Models)
+	req.APIKey = strings.Join(apiKeyStrings(req.APIKeys), ",")
 
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
@@ -1149,6 +1161,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	newKeys := req.normalizeAPIKeys()
+	normalizeAPIKeyScopesForModels(newKeys, req.Models)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
 		keyStrategy = model.KeyStrategySequential
@@ -1166,19 +1179,26 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	notesByIndex := make(map[int]string)
-	modelsByIndex := make(map[int][]string)
+	scopesByIndex := make(map[int]model.APIKeyModelScope)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
 			if oldKey.Note != newKeys[i].Note {
 				notesByIndex[oldKey.KeyIndex] = newKeys[i].Note
 			}
-			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) {
-				modelsByIndex[oldKey.KeyIndex] = append([]string(nil), newKeys[i].AllowedModels...)
+			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty {
+				scopesByIndex[oldKey.KeyIndex] = model.APIKeyModelScope{
+					AllowedModels:   append([]string(nil), newKeys[i].AllowedModels...),
+					ModelScopeEmpty: newKeys[i].ModelScopeEmpty,
+					// Only preserve a manually disabled key. A key disabled because
+					// its previous scope became empty is re-enabled by an explicit
+					// scope edit.
+					Disabled: (oldKey.Disabled && !oldKey.ModelScopeEmpty) || newKeys[i].ModelScopeEmpty,
+				}
 			}
 		}
 	}
 	noteChanged := len(notesByIndex) > 0
-	modelsChanged := len(modelsByIndex) > 0
+	modelsChanged := len(scopesByIndex) > 0
 
 	// [INFO] 修复 (2025-10-11): 检测策略变化
 	strategyChanged := false
@@ -1204,34 +1224,46 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if existing.UsesOAuth() {
 		// OAuth 凭证只由登录、导入和刷新链路维护。
 	} else if keyChanged {
-		disabledByAPIKey := make(map[string]bool, len(oldKeys))
+		existingByValue := make(map[string][]*model.APIKey, len(oldKeys))
 		for _, oldKey := range oldKeys {
-			if oldKey.Disabled {
-				disabledByAPIKey[oldKey.APIKey] = true
+			if oldKey != nil {
+				existingByValue[oldKey.APIKey] = append(existingByValue[oldKey.APIKey], oldKey)
 			}
 		}
+		nextOccurrence := make(map[string]int, len(existingByValue))
 
 		// Key内容/数量变化：删除旧Key并重建
-		_ = s.store.DeleteAllAPIKeys(c.Request.Context(), id)
+		if err := s.store.DeleteAllAPIKeys(c.Request.Context(), id); err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("delete old API keys before rebuild: %w", err))
+			return
+		}
 
 		// 批量创建新的API Keys（优化：单次事务插入替代循环单条插入）
 		now := time.Now()
 		apiKeys := make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
+			var wasDisabled bool
+			occurrence := nextOccurrence[key.APIKey]
+			if matches := existingByValue[key.APIKey]; occurrence < len(matches) {
+				wasDisabled = matches[occurrence].Disabled && !matches[occurrence].ModelScopeEmpty
+				nextOccurrence[key.APIKey] = occurrence + 1
+			}
 			apiKeys = append(apiKeys, &model.APIKey{
-				ChannelID:     id,
-				KeyIndex:      i,
-				APIKey:        key.APIKey,
-				Note:          key.Note,
-				AllowedModels: append([]string(nil), key.AllowedModels...),
-				KeyStrategy:   keyStrategy,
-				Disabled:      disabledByAPIKey[key.APIKey],
-				CreatedAt:     model.JSONTime{Time: now},
-				UpdatedAt:     model.JSONTime{Time: now},
+				ChannelID:       id,
+				KeyIndex:        i,
+				APIKey:          key.APIKey,
+				Note:            key.Note,
+				AllowedModels:   append([]string(nil), key.AllowedModels...),
+				ModelScopeEmpty: key.ModelScopeEmpty,
+				KeyStrategy:     keyStrategy,
+				Disabled:        wasDisabled || key.ModelScopeEmpty,
+				CreatedAt:       model.JSONTime{Time: now},
+				UpdatedAt:       model.JSONTime{Time: now},
 			})
 		}
 		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), apiKeys); err != nil {
-			log.Printf("[WARN] 批量创建API Keys失败 (channel=%d, count=%d): %v", id, len(apiKeys), err)
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("rebuild API keys: %w", err))
+			return
 		}
 	} else {
 		// Key内容未变化：策略和备注都是独立元数据，不能重建 Key 导致禁用状态丢失。
@@ -1246,7 +1278,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			}
 		}
 		if modelsChanged {
-			if err := s.store.UpdateAPIKeyAllowedModels(c.Request.Context(), id, modelsByIndex); err != nil {
+			if err := s.store.UpdateAPIKeyModelScopes(c.Request.Context(), id, scopesByIndex); err != nil {
 				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key model scopes: %w", err))
 				return
 			}
@@ -1288,6 +1320,44 @@ func preserveOmittedAPIKeyAllowedModels(submitted []ChannelAPIKeyRequest, existi
 		}
 		if oldKey != nil {
 			submitted[i].AllowedModels = append([]string(nil), oldKey.AllowedModels...)
+			submitted[i].ModelScopeEmpty = oldKey.ModelScopeEmpty
+		}
+	}
+}
+
+// normalizeAPIKeyScopesForModels removes scopes that no longer exist in the
+// submitted model table. This is the backend safety net for stale editors: a
+// key rebuild must not reintroduce a model deleted from the channel.
+func normalizeAPIKeyScopesForModels(keys []ChannelAPIKeyRequest, entries []model.ModelEntry) {
+	configured := make(map[string]struct{}, len(entries))
+	wildcard := false
+	for _, entry := range entries {
+		name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(entry.Model)))
+		if name == "*" {
+			wildcard = true
+			continue
+		}
+		if name != "" {
+			configured[name] = struct{}{}
+		}
+	}
+	if wildcard {
+		return
+	}
+	for i := range keys {
+		if keys[i].ModelScopeEmpty || len(keys[i].AllowedModels) == 0 {
+			continue
+		}
+		kept := keys[i].AllowedModels[:0]
+		for _, allowed := range keys[i].AllowedModels {
+			name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(allowed)))
+			if _, ok := configured[name]; ok {
+				kept = append(kept, allowed)
+			}
+		}
+		keys[i].AllowedModels = kept
+		if len(kept) == 0 {
+			keys[i].ModelScopeEmpty = true
 		}
 	}
 }
@@ -1483,6 +1553,7 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 		return
 	}
 
+	s.InvalidateAPIKeysCache(channelID)
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, gin.H{"total": len(cfg.ModelEntries)})
 }
@@ -1529,6 +1600,7 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 		return
 	}
 
+	s.InvalidateAPIKeysCache(channelID)
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, gin.H{"remaining": len(remaining)})
 }
@@ -1744,6 +1816,11 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 		return
 	}
 	if result.Updated > 0 {
+		if patch.ModelImportMode != "" {
+			for _, channelID := range channelIDs {
+				s.InvalidateAPIKeysCache(channelID)
+			}
+		}
 		s.InvalidateChannelListCache()
 	}
 

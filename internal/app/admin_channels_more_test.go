@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -382,6 +383,17 @@ func TestHandleAddAndDeleteModels(t *testing.T) {
 		}
 	})
 
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-restricted", AllowedModels: []string{"m1", "M2"}},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-unrestricted"},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-only-removed", AllowedModels: []string{"m2"}},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	if cachedKeys, err := server.getAPIKeys(ctx, cfg.ID); err != nil || len(cachedKeys) != 3 {
+		t.Fatalf("prewarm API key cache = (%d, %v), want (3, nil)", len(cachedKeys), err)
+	}
+
 	t.Run("delete success", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodDelete, "/admin/channels/1/models", []byte(`{"models":["m2","absent"]}`)))
 		c.Params = gin.Params{{Key: "id", Value: "1"}}
@@ -397,6 +409,18 @@ func TestHandleAddAndDeleteModels(t *testing.T) {
 		}
 		if len(updated.ModelEntries) != 1 || updated.ModelEntries[0].Model != "m1" {
 			t.Fatalf("unexpected remaining models: %#v", updated.ModelEntries)
+		}
+		keys, err := server.getAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("getAPIKeys after model deletion failed: %v", err)
+		}
+		if len(keys) != 3 || !slices.Equal(keys[0].AllowedModels, []string{"m1"}) || len(keys[1].AllowedModels) != 0 ||
+			len(keys[2].AllowedModels) != 0 || !keys[2].ModelScopeEmpty || !keys[2].Disabled {
+			t.Fatalf("unexpected key model scopes after model deletion: %#v", keys)
+		}
+		available := availableModelFetchAPIKeys(keys, time.Now())
+		if slices.ContainsFunc(available, func(key *model.APIKey) bool { return key.KeyIndex == 2 }) {
+			t.Fatalf("key whose only allowed model was deleted remains available: %#v", available)
 		}
 	})
 }

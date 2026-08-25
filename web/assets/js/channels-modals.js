@@ -818,7 +818,8 @@ async function saveChannel(event) {
     api_keys: validKeyRows.map(row => ({
       api_key: row.api_key,
       note: row.note || '',
-      allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : []
+      allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : [],
+      model_scope_empty: row.model_scope_empty === true
     })),
     protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
@@ -2263,19 +2264,29 @@ function exportChannelModels() {
   if (window.showSuccess) window.showSuccess(window.t('channels.modelsExported', { count: models.length }));
 }
 
-function deleteRedirectRow(index) {
-  redirectTableData.splice(index, 1);
-  // 更新选中状态：删除该索引，并调整后续索引
+function deleteRedirectModelsAtIndices(indices) {
+  const deletedIndices = [...new Set(indices)]
+    .filter(index => Number.isInteger(index) && index >= 0 && index < redirectTableData.length)
+    .sort((a, b) => b - a);
+  if (deletedIndices.length === 0) return false;
+
+  const deleted = new Set(deletedIndices);
+  deletedIndices.forEach(index => redirectTableData.splice(index, 1));
+
   const newSelectedIndices = new Set();
-  selectedModelIndices.forEach(i => {
-    if (i < index) {
-      newSelectedIndices.add(i);
-    } else if (i > index) {
-      newSelectedIndices.add(i - 1);
-    }
+  selectedModelIndices.forEach(index => {
+    if (deleted.has(index)) return;
+    const shift = deletedIndices.filter(deletedIndex => deletedIndex < index).length;
+    newSelectedIndices.add(index - shift);
   });
   selectedModelIndices.clear();
-  newSelectedIndices.forEach(i => selectedModelIndices.add(i));
+  newSelectedIndices.forEach(index => selectedModelIndices.add(index));
+  syncInlineKeyModelScopesWithConfiguredModels();
+  return true;
+}
+
+function deleteRedirectRow(index) {
+  if (!deleteRedirectModelsAtIndices([index])) return;
   renderRedirectTable();
   markChannelFormDirty();
 }
@@ -2871,14 +2882,7 @@ function batchDeleteSelectedModels() {
   const tableContainer = document.querySelector('#redirectTableBody').closest('.inline-table-container');
   const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
-  // 从大到小排序，确保删除时索引不会错位
-  const indicesToDelete = Array.from(selectedModelIndices).sort((a, b) => b - a);
-
-  indicesToDelete.forEach(index => {
-    redirectTableData.splice(index, 1);
-  });
-
-  selectedModelIndices.clear();
+  deleteRedirectModelsAtIndices(Array.from(selectedModelIndices));
   updateModelBatchDeleteButton();
 
   renderRedirectTable();
@@ -3760,6 +3764,7 @@ if (typeof module !== 'undefined' && module.exports) {
     collectModelsForSubmit,
     confirmModelImport,
     detectChannelWebsocketSupport,
+    deleteRedirectModelsAtIndices,
     discoverQuickAddChannelSetup,
     editChannel,
     exportChannelModels,

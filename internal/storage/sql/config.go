@@ -352,6 +352,9 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		if err := s.saveModelEntriesTx(ctx, tx, id, upd.ModelEntries); err != nil {
 			return fmt.Errorf("save model entries: %w", err)
 		}
+		if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, id, upd.ModelEntries, updatedAtUnix); err != nil {
+			return fmt.Errorf("prune API key model scopes: %w", err)
+		}
 
 		return nil
 	})
@@ -719,18 +722,22 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				continue
 			}
 
+			updatedAtUnix := timeToUnix(time.Now())
 			if _, err := s.execTx(ctx, tx, `
 				UPDATE channels
 				SET priority = ?, cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
 					protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
 				WHERE id = ?
 			`, nextPriority, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
-				nextProtocolMode, nextScheduledCheckModel, timeToUnix(time.Now()), channelID); err != nil {
+				nextProtocolMode, nextScheduledCheckModel, updatedAtUnix, channelID); err != nil {
 				return fmt.Errorf("patch channel %d: %w", channelID, err)
 			}
 			if modelsChanged {
 				if err := s.saveModelEntriesTx(ctx, tx, channelID, nextModels); err != nil {
 					return fmt.Errorf("patch channel %d models: %w", channelID, err)
+				}
+				if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, channelID, nextModels, updatedAtUnix); err != nil {
+					return fmt.Errorf("patch channel %d API key model scopes: %w", channelID, err)
 				}
 			}
 			result.Updated++
@@ -878,6 +885,103 @@ func reconciledScheduledCheckModel(current string, entries []model.ModelEntry) s
 		}
 	}
 	return ""
+}
+
+func (s *SQLStore) pruneAPIKeyAllowedModelsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	channelID int64,
+	entries []model.ModelEntry,
+	updatedAtUnix int64,
+) error {
+	configured := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(entry.Model)))
+		if name == "*" {
+			return nil
+		}
+		if name != "" {
+			configured[name] = struct{}{}
+		}
+	}
+
+	type scopeUpdate struct {
+		keyIndex        int
+		value           string
+		modelScopeEmpty bool
+		disabled        bool
+	}
+	query := `
+		SELECT key_index, allowed_models, model_scope_empty, disabled
+		FROM api_keys
+		WHERE channel_id = ?
+		ORDER BY key_index ASC
+	`
+	if s.supportsRowLock() {
+		query += " FOR UPDATE"
+	}
+	rows, err := s.queryTx(ctx, tx, query, channelID)
+	if err != nil {
+		return fmt.Errorf("query API key model scopes: %w", err)
+	}
+
+	updates := make([]scopeUpdate, 0)
+	for rows.Next() {
+		var keyIndex int
+		var raw string
+		var modelScopeEmpty, disabled int
+		if err := rows.Scan(&keyIndex, &raw, &modelScopeEmpty, &disabled); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan API key model scope: %w", err)
+		}
+		if raw == "" {
+			continue
+		}
+
+		var allowedModels []string
+		if err := json.Unmarshal([]byte(raw), &allowedModels); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode API key index %d allowed_models: %w", keyIndex, err)
+		}
+		kept := make([]string, 0, len(allowedModels))
+		for _, allowedModel := range allowedModels {
+			if _, ok := configured[strings.ToLower(strings.TrimSpace(allowedModel))]; ok {
+				kept = append(kept, allowedModel)
+			}
+		}
+		if len(kept) == len(allowedModels) {
+			continue
+		}
+		value, err := marshalAllowedModels(kept)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("encode API key index %d allowed_models: %w", keyIndex, err)
+		}
+		updates = append(updates, scopeUpdate{
+			keyIndex:        keyIndex,
+			value:           value,
+			modelScopeEmpty: len(kept) == 0,
+			disabled:        disabled != 0 || len(kept) == 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate API key model scopes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close API key model scopes: %w", err)
+	}
+
+	for _, update := range updates {
+		if _, err := s.execTx(ctx, tx, `
+			UPDATE api_keys
+			SET allowed_models = ?, model_scope_empty = ?, disabled = ?, updated_at = ?
+			WHERE channel_id = ? AND key_index = ?
+		`, update.value, update.modelScopeEmpty, update.disabled, updatedAtUnix, channelID, update.keyIndex); err != nil {
+			return fmt.Errorf("update API key index %d model scope: %w", update.keyIndex, err)
+		}
+	}
+	return nil
 }
 
 // DeleteConfig 删除渠道配置

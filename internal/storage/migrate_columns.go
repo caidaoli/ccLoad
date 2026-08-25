@@ -869,6 +869,12 @@ func ensureAPIKeysAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect
 		"TEXT NOT NULL DEFAULT ''")
 }
 
+func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "api_keys", "model_scope_empty",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // ensureAuthTokensEffectiveCost 确保auth_tokens表有effective_cost_usd字段（2026-07新增）
 func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(ctx, db, dialect, "auth_tokens", "effective_cost_usd",
