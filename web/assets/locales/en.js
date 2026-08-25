@@ -2182,6 +2182,7 @@ window.I18N_LOCALES['en'] = {
   'channels.management.tokenKeepHint': 'A credential is saved. Leave this empty to keep it, or enter a new one to replace it.',
   'channels.management.userID': 'User ID',
   'channels.management.userIDHelp': 'Optional, New API only. Leave empty to omit the header.',
+  'channels.management.userIDConfiguredHint': 'A user ID is saved. Re-enter it after changing the management credential or panel URL.',
   'channels.management.dailyCheckin': 'Check in daily',
   'channels.management.dailyCheckinTime': 'Check-in time',
   'channels.management.dailyCheckinHelp': 'Runs in server local time, formatted HH:MM.',
@@ -2212,6 +2213,7 @@ window.I18N_LOCALES['en'] = {
   'channels.management.status.manual_required': 'Manual verification required',
   'channels.management.status.unsupported': 'Upstream does not support check-in',
   'channels.management.status.credential_invalid': 'Management credential is invalid',
+  'channels.management.status.credential_forbidden': 'The current Sub2API Pro role cannot check in',
   'channels.management.status.uncertain': 'Result not confirmed',
   'channels.management.status.skipped_disabled': 'Check-in is off'
 };

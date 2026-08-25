@@ -2182,6 +2182,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.management.tokenKeepHint': '已保存凭据。留空表示保留，填写则替换。',
   'channels.management.userID': '用户 ID',
   'channels.management.userIDHelp': '可选，仅 New API 使用；留空则不发送该请求头。',
+  'channels.management.userIDConfiguredHint': '已配置用户 ID。更改管理凭据或面板地址后必须重新输入。',
   'channels.management.dailyCheckin': '每日自动签到',
   'channels.management.dailyCheckinTime': '签到时间',
   'channels.management.dailyCheckinHelp': '按服务器本地时间执行，格式 HH:MM。',
@@ -2212,6 +2213,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.management.status.manual_required': '需手动完成验证',
   'channels.management.status.unsupported': '上游不支持签到',
   'channels.management.status.credential_invalid': '管理凭据已失效',
+  'channels.management.status.credential_forbidden': '当前 Sub2API Pro 角色无签到权限',
   'channels.management.status.uncertain': '结果未确认',
   'channels.management.status.skipped_disabled': '签到已关闭'
 };

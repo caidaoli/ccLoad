@@ -438,7 +438,8 @@ function installManagementRenderGlobals({ balanceState = null, checkinState = nu
     window: global.window,
     getManagementBalanceState: global.getManagementBalanceState,
     getManagementCheckinState: global.getManagementCheckinState,
-    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly
+    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
+    managementSupportsCheckin: global.managementSupportsCheckin
   };
   global.window = {
     t: (key, values) => (values
@@ -448,12 +449,15 @@ function installManagementRenderGlobals({ balanceState = null, checkinState = nu
   global.getManagementBalanceState = () => balanceState;
   global.getManagementCheckinState = () => checkinState;
   global.isTokenChannelsReadOnly = () => readOnly;
+  global.managementSupportsCheckin = profile => profile === 'new_api' || profile === 'sub2api_pro';
   return () => {
     global.window = previous.window;
     global.getManagementBalanceState = previous.getManagementBalanceState;
     global.getManagementCheckinState = previous.getManagementCheckinState;
     global.isTokenChannelsReadOnly = previous.isTokenChannelsReadOnly;
+    global.managementSupportsCheckin = previous.managementSupportsCheckin;
   };
+
 }
 
 test('管理账户只对已配置凭据的 API Key 渠道渲染动作，签到按 profile 收敛', () => {
@@ -546,6 +550,22 @@ test('只有 used/total/percent 齐备才渲染进度条，缺失用量只显示
   } finally {
     withoutUsage();
   }
+
+  const persistedBalance = installManagementRenderGlobals();
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 71,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'sub2api',
+        credential_configured: true,
+        balance: { remaining: 8.75, unit: 'USD', sampled_at: '2026-08-25T10:00:00Z' }
+      }
+    });
+    assert.match(html, /\$8\.75/, '无 live 余额状态时必须回落到 DTO 的持久化余额');
+  } finally {
+    persistedBalance();
+  }
 });
 
 test('额度与签到的 loading 与错误互不干扰且带可读文本', () => {
@@ -618,6 +638,17 @@ test('签到状态以文字呈现并回落到持久化结果', () => {
       }
     });
     assert.match(html, /channels\.management\.status\.credential_invalid/);
+
+    const forbidden = buildManagementAccountStatusHtml({
+      id: 13,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'sub2api_pro',
+        credential_configured: true,
+        last_checkin_status: 'credential_forbidden'
+      }
+    });
+    assert.match(forbidden, /channels\.management\.status\.credential_forbidden/);
   } finally {
     persisted();
   }

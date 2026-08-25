@@ -51,6 +51,7 @@ let managementCheckinOperationSequence = 0;
 
 let managementAccountAuthType = 'api_key';
 let managementAccountSavedProfile = '';
+let managementAccountUserIDConfigured = false;
 let managementAccountCredentialConfigured = false;
 let managementAccountState = null;
 
@@ -235,6 +236,16 @@ function renderManagementAccountFields(draft) {
     hint.hidden = !(fields.token && managementAccountCredentialConfigured && profile === managementAccountSavedProfile);
   }
 
+  // user_id 与凭据一样不回填；已配置时明确提醒身份变更需要重新输入。
+  const userIDHint = managementElement('channelManagementUserIDHint');
+  if (userIDHint) {
+    userIDHint.hidden = !(
+      fields.userID &&
+      managementAccountUserIDConfigured &&
+      profile === managementAccountSavedProfile
+    );
+  }
+
   const notice = managementElement('channelManagementNotice');
   if (notice) {
     notice.textContent = fields.notice ? managementText(fields.notice) : '';
@@ -248,6 +259,7 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
   managementAccountAuthType = String(authType || 'api_key').trim().toLowerCase() || 'api_key';
   const account = managementAccountAuthType === 'api_key' && view ? view : null;
   managementAccountSavedProfile = normalizeManagementProfile(account && account.profile);
+  managementAccountUserIDConfigured = Boolean(account && account.user_id_configured === true);
   managementAccountCredentialConfigured = Boolean(account && account.credential_configured === true);
 
   // 首个渠道 URL 只作为初始默认；已保存的显式面板地址永远优先。
@@ -333,6 +345,9 @@ function commitManagementAccountDraft() {
   }
   if (!validateManagementAccountDraft()) return false;
   managementAccountState = readManagementAccountForm();
+  if (typeof window !== 'undefined' && typeof window.markChannelFormDirty === 'function') {
+    window.markChannelFormDirty();
+  }
   return true;
 }
 

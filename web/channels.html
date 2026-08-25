@@ -1554,7 +1554,8 @@
             <legend class="advanced-settings-management-legend" data-i18n="channels.management.legend">管理账户</legend>
             <div class="advanced-settings-other-field">
               <label class="form-label" for="channelManagementProfile" data-i18n="channels.management.profile">管理类型</label>
-              <select id="channelManagementProfile" class="form-input" aria-describedby="channelManagementProfileHelp">
+              <select id="channelManagementProfile" class="form-input"
+                aria-describedby="channelManagementProfileHelp channelManagementNotice">
                 <option value="" data-i18n="channels.management.profileOff">不启用</option>
                 <option value="new_api" data-i18n="channels.management.profileNewAPI">New API</option>
                 <option value="sub2api" data-i18n="channels.management.profileSub2API">标准 Sub2API</option>
@@ -1562,7 +1563,7 @@
               </select>
               <small id="channelManagementProfileHelp" class="advanced-settings-field-help" data-i18n="channels.management.profileHelp">选择上游面板类型后可刷新额度，New API 与 Sub2API Pro 还支持签到。</small>
             </div>
-            <p id="channelManagementNotice" class="advanced-settings-management-notice" role="note" hidden></p>
+            <p id="channelManagementNotice" class="advanced-settings-management-notice" role="status" hidden></p>
             <div id="channelManagementBaseURLField" class="advanced-settings-other-field" hidden>
               <label class="form-label" for="channelManagementBaseURL" data-i18n="channels.management.baseURL">面板地址</label>
               <input type="url" id="channelManagementBaseURL" class="form-input" autocomplete="off" spellcheck="false"
@@ -1581,8 +1582,9 @@
             <div id="channelManagementUserIDField" class="advanced-settings-other-field" hidden>
               <label class="form-label" for="channelManagementUserID" data-i18n="channels.management.userID">用户 ID</label>
               <input type="text" id="channelManagementUserID" class="form-input" inputmode="numeric" autocomplete="off"
-                aria-describedby="channelManagementUserIDHelp channelManagementUserIDError">
+                aria-describedby="channelManagementUserIDHelp channelManagementUserIDHint channelManagementUserIDError">
               <small id="channelManagementUserIDHelp" class="advanced-settings-field-help" data-i18n="channels.management.userIDHelp">可选,仅 New API 使用,填写后作为 New-API-User 请求头。</small>
+              <small id="channelManagementUserIDHint" class="advanced-settings-field-help" data-i18n="channels.management.userIDConfiguredHint" hidden>已配置用户 ID；更改管理凭据或面板地址后必须重新输入。</small>
               <small id="channelManagementUserIDError" class="advanced-settings-management-error" role="status" hidden></small>
             </div>
             <div id="channelManagementCheckinField" class="advanced-settings-management-checkin" hidden>

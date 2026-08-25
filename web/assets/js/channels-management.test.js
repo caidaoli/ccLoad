@@ -12,6 +12,7 @@ const MANAGEMENT_ELEMENT_IDS = [
   'channelManagementBaseURL',
   'channelManagementBaseURLError',
   'channelManagementTokenField',
+  'channelManagementUserIDHint',
   'channelManagementToken',
   'channelManagementTokenHelp',
   'channelManagementTokenHint',
@@ -30,6 +31,7 @@ const MANAGEMENT_I18N_KEYS = [
   'channels.management.profile',
   'channels.management.profileOff',
   'channels.management.profileNewAPI',
+  'channels.management.userIDConfiguredHint',
   'channels.management.profileSub2API',
   'channels.management.profileSub2APIPro',
   'channels.management.profileHelp',
@@ -59,6 +61,7 @@ const MANAGEMENT_I18N_KEYS = [
   'channels.management.usage',
   'channels.management.available',
   'channels.management.sampledAt',
+  'channels.management.status.credential_forbidden',
   'channels.management.checkin',
   'channels.management.checkinRunning',
   'channels.management.checkinFailed',
@@ -229,6 +232,7 @@ test('管理凭据永不回填，已配置时留空表示保留，关闭 profile
   try {
     const mod = loadManagementModule();
 
+    dom.el('channelManagementUserIDHint').hidden = true;
     mod.resetManagementAccountDraft({
       profile: 'new_api',
       base_url: 'https://panel.example.com',
@@ -244,8 +248,14 @@ test('管理凭据永不回填，已配置时留空表示保留，关闭 profile
     assert.equal(dom.el('channelManagementTokenHint').hidden, false);
     assert.equal(dom.el('channelManagementDailyCheckinEnabled').checked, true);
     assert.equal(dom.el('channelManagementDailyCheckinTime').value, '09:30');
+    assert.equal(
+      dom.el('channelManagementUserIDHint').hidden,
+      false,
+      'DTO 标记已配置 user_id 时必须告知用户需要在身份变更后重填'
+    );
 
     assert.equal(mod.commitManagementAccountDraft(), true);
+    assert.equal(dom.dirtyCalls.count, 1, '提交管理草稿后必须标记渠道编辑器为未保存');
     assert.deepEqual(mod.collectManagementAccountForSubmit(), {
       profile: 'new_api',
       base_url: 'https://panel.example.com',

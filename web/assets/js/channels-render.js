@@ -886,10 +886,9 @@ function buildOAuthUsageStatusHtml(channel) {
   </div>`;
 }
 
-const MANAGEMENT_ACCOUNT_CHECKIN_PROFILES = ['new_api', 'sub2api_pro'];
 const MANAGEMENT_ACCOUNT_CHECKIN_STATUSES = [
   'success', 'already_checked', 'manual_required',
-  'unsupported', 'credential_invalid', 'uncertain', 'skipped_disabled'
+  'unsupported', 'credential_invalid', 'credential_forbidden', 'uncertain', 'skipped_disabled'
 ];
 
 function buildManagementActionButton(action, channelID, labelKey, loadingKey, loading) {
@@ -984,7 +983,10 @@ function buildManagementAccountStatusHtml(channel) {
   // 额度与签到各自读取独立状态:一个 loading 或失败不会禁用另一个。
   const balanceState = typeof getManagementBalanceState === 'function' ? getManagementBalanceState(channel.id) : null;
   const checkinState = typeof getManagementCheckinState === 'function' ? getManagementCheckinState(channel.id) : null;
-  const supportsCheckin = MANAGEMENT_ACCOUNT_CHECKIN_PROFILES.includes(profile);
+  const supportsCheckin = (
+    typeof managementSupportsCheckin === 'function' &&
+    managementSupportsCheckin(profile)
+  );
 
   const buttons = [buildManagementActionButton(
     'refresh-management-balance', channel.id,
@@ -1001,7 +1003,10 @@ function buildManagementAccountStatusHtml(channel) {
 
   const balanceError = balanceState?.status === 'error' ? String(balanceState.error || '').trim() : '';
   const checkinError = checkinState?.status === 'error' ? String(checkinState.error || '').trim() : '';
-  const balanceBody = balanceState?.status === 'ready' ? buildManagementBalanceHtml(balanceState.data?.balance) : '';
+  const balanceData = balanceState?.status === 'ready'
+    ? balanceState.data?.balance
+    : (balanceState ? null : account?.balance);
+  const balanceBody = buildManagementBalanceHtml(balanceData);
 
   // 本次签到结果优先;没有进行中的签到时回落到持久化的最近一次结果。
   const liveStatus = checkinState?.status === 'ready' ? String(checkinState.data?.status || '').trim() : '';
