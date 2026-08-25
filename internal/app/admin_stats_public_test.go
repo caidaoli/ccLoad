@@ -120,6 +120,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 				SuccessRequests  int                                  `json:"success_requests"`
 				ErrorRequests    int                                  `json:"error_requests"`
 				ByClientProtocol map[string]model.ClientProtocolStats `json:"by_client_protocol"`
+				ByAuthType       map[string]model.AuthTypeStats       `json:"by_auth_type"`
 			} `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
@@ -162,6 +163,9 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 		if _, ok := resp.Data.ByClientProtocol["codex"]; ok {
 			t.Fatalf("scheduled checks must not enter client protocol cards: %#v", resp.Data.ByClientProtocol)
+		}
+		if len(resp.Data.ByAuthType) != 0 {
+			t.Fatalf("api_key channels must not enter auth type cards: %#v", resp.Data.ByAuthType)
 		}
 	})
 
@@ -228,4 +232,172 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			t.Fatalf("version=%v, want %q", resp.Data.Version, "test-ver")
 		}
 	})
+}
+
+func TestHandlePublicSummary_AuthTypeCards(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zai, err := store.CreateConfig(ctx, &model.Config{
+		Name:            "zai-plan",
+		URLs:            model.ChannelURLs{{URL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic"}},
+		Priority:        1,
+		ModelEntries:    []model.ModelEntry{{Model: "glm-4.6"}},
+		Enabled:         true,
+		AuthType:        model.AuthTypeZAIOAuth,
+		OAuthCredential: `{"type":"zai","api_key":"id.secret"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig zai failed: %v", err)
+	}
+	xai, err := store.CreateConfig(ctx, &model.Config{
+		Name:            "grok-oauth",
+		URLs:            model.ChannelURLs{{URL: "https://api.x.ai/v1"}},
+		Priority:        1,
+		ModelEntries:    []model.ModelEntry{{Model: "grok-4"}},
+		Enabled:         true,
+		AuthType:        model.AuthTypeXAIOAuth,
+		OAuthCredential: `{"type":"xai","access_token":"at"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig xai failed: %v", err)
+	}
+	anthOAuth, err := store.CreateConfig(ctx, &model.Config{
+		Name:            "claude-oauth",
+		URLs:            model.ChannelURLs{{URL: "https://api.anthropic.com"}},
+		Priority:        1,
+		ModelEntries:    []model.ModelEntry{{Model: "claude-sonnet-4"}},
+		Enabled:         true,
+		AuthType:        model.AuthTypeAnthropicOAuth,
+		OAuthCredential: `{"type":"anthropic","access_token":"at"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig anthropic oauth failed: %v", err)
+	}
+
+	now := time.Now()
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{
+			Time:                     model.JSONTime{Time: now},
+			Model:                    "glm-4.6",
+			ChannelID:                zai.ID,
+			ClientProtocol:           "anthropic",
+			LogSource:                model.LogSourceProxy,
+			StatusCode:               200,
+			InputTokens:              11,
+			OutputTokens:             22,
+			CacheReadInputTokens:     4,
+			CacheCreationInputTokens: 5,
+			Cost:                     0.04,
+			CostMultiplier:           2,
+		},
+		{
+			Time:           model.JSONTime{Time: now},
+			Model:          "glm-4.6",
+			ChannelID:      zai.ID,
+			ClientProtocol: "anthropic",
+			LogSource:      model.LogSourceProxy,
+			StatusCode:     500,
+			InputTokens:    1,
+			OutputTokens:   1,
+			Cost:           0.01,
+			CostMultiplier: 2,
+		},
+		{
+			Time:                     model.JSONTime{Time: now},
+			Model:                    "grok-4",
+			ChannelID:                xai.ID,
+			ClientProtocol:           "openai",
+			LogSource:                model.LogSourceProxy,
+			StatusCode:               200,
+			InputTokens:              8,
+			OutputTokens:             9,
+			CacheReadInputTokens:     2,
+			CacheCreationInputTokens: 3,
+			Cost:                     0.02,
+			CostMultiplier:           1,
+		},
+		{
+			Time:           model.JSONTime{Time: now},
+			Model:          "grok-4",
+			ChannelID:      xai.ID,
+			ClientProtocol: "openai",
+			LogSource:      model.LogSourceScheduledCheck,
+			StatusCode:     200,
+			InputTokens:    100,
+			Cost:           1,
+			CostMultiplier: 1,
+		},
+		{
+			Time:           model.JSONTime{Time: now},
+			Model:          "claude-sonnet-4",
+			ChannelID:      anthOAuth.ID,
+			ClientProtocol: "anthropic",
+			LogSource:      model.LogSourceProxy,
+			StatusCode:     200,
+			InputTokens:    7,
+			OutputTokens:   7,
+			Cost:           0.07,
+			CostMultiplier: 1,
+		},
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/public/summary?range=today", nil))
+	server.HandlePublicSummary(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ByClientProtocol map[string]model.ClientProtocolStats `json:"by_client_protocol"`
+			ByAuthType       map[string]model.AuthTypeStats       `json:"by_auth_type"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.Success {
+		t.Fatalf("expected success=true, body=%s", w.Body.String())
+	}
+
+	zaiTS, ok := resp.Data.ByAuthType[model.AuthTypeZAIOAuth]
+	if !ok {
+		t.Fatalf("expected zai_oauth in by_auth_type: %#v", resp.Data.ByAuthType)
+	}
+	if zaiTS.TotalRequests != 2 || zaiTS.SuccessRequests != 1 || zaiTS.ErrorRequests != 1 {
+		t.Fatalf("unexpected zai summary: %+v", zaiTS)
+	}
+	if zaiTS.TotalInputTokens != 12 || zaiTS.TotalOutputTokens != 23 {
+		t.Fatalf("unexpected zai tokens: %+v", zaiTS)
+	}
+	if zaiTS.TotalCacheReadTokens != 4 || zaiTS.TotalCacheCreationTokens != 5 {
+		t.Fatalf("unexpected zai cache: %+v", zaiTS)
+	}
+	if zaiTS.TotalCost != 0.05 || zaiTS.EffectiveCost != 0.10 {
+		t.Fatalf("unexpected zai cost: %+v", zaiTS)
+	}
+
+	grokTS, ok := resp.Data.ByAuthType[model.AuthTypeXAIOAuth]
+	if !ok {
+		t.Fatalf("expected xai_oauth in by_auth_type: %#v", resp.Data.ByAuthType)
+	}
+	if grokTS.TotalRequests != 1 || grokTS.SuccessRequests != 1 || grokTS.ErrorRequests != 0 {
+		t.Fatalf("scheduled checks must not enter grok card: %+v", grokTS)
+	}
+	if grokTS.TotalInputTokens != 8 || grokTS.TotalCacheCreationTokens != 3 {
+		t.Fatalf("unexpected grok tokens: %+v", grokTS)
+	}
+
+	if _, ok := resp.Data.ByAuthType[model.AuthTypeAnthropicOAuth]; ok {
+		t.Fatalf("anthropic_oauth must not get an overview card: %#v", resp.Data.ByAuthType)
+	}
+	if _, ok := resp.Data.ByAuthType[model.AuthTypeCursorOAuth]; ok {
+		t.Fatalf("empty cursor_oauth must not appear as a card: %#v", resp.Data.ByAuthType)
+	}
+	if anthTS := resp.Data.ByClientProtocol["anthropic"]; anthTS.TotalRequests != 3 {
+		t.Fatalf("zai + anthropic oauth client traffic should remain on the Claude Code card: %+v", anthTS)
+	}
 }

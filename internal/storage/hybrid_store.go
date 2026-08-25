@@ -741,6 +741,12 @@ func (h *HybridStore) GetClientProtocolStats(ctx context.Context, startTime, end
 	})
 }
 
+func (h *HybridStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
+	return readAnalytics(h, "GetAuthTypeStats", func(store *sqlstore.SQLStore) ([]model.AuthTypeStats, error) {
+		return store.GetAuthTypeStats(ctx, startTime, endTime, filter)
+	})
+}
+
 func (h *HybridStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	return readAnalytics(h, "GetRPMStats", func(store *sqlstore.SQLStore) (*model.RPMStats, error) {
 		return store.GetRPMStats(ctx, startTime, endTime, filter, isToday)

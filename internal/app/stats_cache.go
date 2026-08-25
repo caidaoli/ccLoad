@@ -187,6 +187,29 @@ func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, end
 	return result, nil
 }
 
+// GetAuthTypeStats 获取按渠道认证类型聚合的首页统计（带缓存）。
+func (sc *StatsCache) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
+	key := buildCacheKey("auth_type_stats", startTime, endTime, filter)
+
+	if cached, ok := sc.cache.Load(key); ok {
+		cs := cached.(*cachedStats)
+		if time.Now().Before(cs.expiry) {
+			return cs.data.([]model.AuthTypeStats), nil
+		}
+	}
+
+	result, err := sc.store.GetAuthTypeStats(ctx, startTime, endTime, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	sc.storeCache(key, &cachedStats{
+		data:   result,
+		expiry: time.Now().Add(calculateTTL(endTime)),
+	})
+	return result, nil
+}
+
 // GetRPMStats 获取 RPM 统计（带缓存）
 func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	key := buildCacheKey("rpm", startTime, endTime, filter)
