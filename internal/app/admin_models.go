@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -374,25 +375,25 @@ func (s *Server) fetchModelsForChannel(
 	}
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	if cfg.UsesXAIOAuth() {
-		return fetchXAIOAuthModels(cfg, overrideProtocol)
+		return sortOAuthFetchModels(fetchXAIOAuthModels(cfg, overrideProtocol))
 	}
 	if cfg.UsesAnthropicOAuth() {
-		return fetchAnthropicOAuthModels(cfg, overrideProtocol)
+		return sortOAuthFetchModels(fetchAnthropicOAuthModels(cfg, overrideProtocol))
 	}
 	if cfg.UsesZAIOAuth() {
-		return s.fetchZAIOAuthModels(ctx, cfg, overrideProtocol)
+		return sortOAuthFetchModels(s.fetchZAIOAuthModels(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesCursorOAuth() {
-		return s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol)
+		return sortOAuthFetchModels(s.fetchCursorOAuthModels(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesZedOAuth() {
-		return s.fetchZedOAuthModels(ctx, cfg, overrideProtocol)
+		return sortOAuthFetchModels(s.fetchZedOAuthModels(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesAntigravityOAuth() {
-		return s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol)
+		return sortOAuthFetchModels(s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol))
 	}
 	if cfg.UsesCodexOAuth() {
-		return s.fetchCodexOAuthModels(ctx, cfg, overrideProtocol)
+		return sortOAuthFetchModels(s.fetchCodexOAuthModels(ctx, cfg, overrideProtocol))
 	}
 
 	keys, err := s.store.GetAPIKeys(ctx, cfg.ID)
@@ -411,6 +412,36 @@ func (s *Server) fetchModelsForChannel(
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
+}
+
+// OAuth 模型目录由系统生成，不能把上游或静态表的偶然顺序当成展示顺序。
+// 普通渠道仍保留用户输入顺序，不在存储层或通用模型规范化里排序。
+func sortOAuthModelEntries(entries []model.ModelEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(entries[i].Model))
+		right := strings.ToLower(strings.TrimSpace(entries[j].Model))
+		if left == right {
+			return entries[i].Model < entries[j].Model
+		}
+		return left < right
+	})
+}
+
+func oauthModelEntries(modelNames []string) []model.ModelEntry {
+	entries := make([]model.ModelEntry, len(modelNames))
+	for i, modelName := range modelNames {
+		entries[i] = model.ModelEntry{Model: modelName}
+	}
+	sortOAuthModelEntries(entries)
+	return entries
+}
+
+func sortOAuthFetchModels(response *FetchModelsResponse, err error) (*FetchModelsResponse, error) {
+	if err != nil || response == nil {
+		return response, err
+	}
+	sortOAuthModelEntries(response.Models)
+	return response, nil
 }
 
 func (s *Server) fetchZedOAuthModels(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {

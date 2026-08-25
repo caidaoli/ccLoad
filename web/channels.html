@@ -20,6 +20,7 @@
   <script defer src="/web/assets/js/highlight.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/purify.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
@@ -105,12 +106,12 @@
           <div class="oauth-dialog-body">
             <p id="oauthLoginDialogDescription" class="oauth-dialog-description"
               data-i18n="channels.oauth.loginDialogDescription">
-              选择凭证类型，然后生成授权链接。
+              选择认证类型，然后生成授权链接。
             </p>
 
             <form id="oauthLoginForm" class="oauth-dialog-section">
               <div class="oauth-field">
-                <label for="oauthProviderSelect" data-i18n="channels.oauth.credentialType">凭证类型</label>
+                <label for="oauthProviderSelect" data-i18n="channels.oauth.credentialType">认证类型</label>
                 <select id="oauthProviderSelect" name="oauth_provider" class="form-input">
                   <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
@@ -305,7 +306,7 @@
               系统会自动判断凭证类型；无法判断的文件将跳过。
             </p>
             <div class="oauth-field">
-              <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">凭证类型</label>
+              <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">认证类型</label>
               <select id="oauthImportProviderSelect" name="oauth_import_provider" class="form-input">
                 <option value="auto" data-i18n="channels.oauth.providerAuto">自动判断</option>
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>

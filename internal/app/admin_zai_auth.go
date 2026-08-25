@@ -318,10 +318,6 @@ func newZAIOAuthChannel(name, credentialJSON, baseURL string, modelNames []strin
 	if len(modelNames) == 0 {
 		modelNames = zaiauth.DefaultModels
 	}
-	models := make([]model.ModelEntry, len(modelNames))
-	for i, modelName := range modelNames {
-		models[i] = model.ModelEntry{Model: modelName}
-	}
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeZAIOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: baseURL, Protocols: []string{"anthropic"}}},
@@ -329,6 +325,6 @@ func newZAIOAuthChannel(name, credentialJSON, baseURL string, modelNames []strin
 		Priority:              0,
 		Enabled:               true,
 		CostMultiplier:        1,
-		ModelEntries:          models,
+		ModelEntries:          oauthModelEntries(modelNames),
 	}
 }

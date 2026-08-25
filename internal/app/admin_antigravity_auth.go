@@ -130,11 +130,7 @@ func antigravityOAuthDefaultURLs() model.ChannelURLs {
 }
 
 func antigravityOAuthModelEntries() []model.ModelEntry {
-	entries := make([]model.ModelEntry, len(antigravityOAuthDefaultModels))
-	for i, name := range antigravityOAuthDefaultModels {
-		entries[i] = model.ModelEntry{Model: name}
-	}
-	return entries
+	return oauthModelEntries(antigravityOAuthDefaultModels)
 }
 
 func antigravityOAuthAvailableModels(upstreamModels []string) []string {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -109,6 +110,10 @@ func TestZedOAuthManagerCompletesNativeLogin(t *testing.T) {
 				!persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("claude-sonnet-5") ||
 				!persisted.SupportsModel("gemini-3.5-flash") || len(persisted.ModelEntries) != 3 {
 				t.Fatalf("persisted Zed channel = cfg=%+v credential=%+v", persisted, credential)
+			}
+			wantModels := []string{"claude-sonnet-5", "gemini-3.5-flash", "gpt-5.6-sol"}
+			if got := persisted.GetModels(); !reflect.DeepEqual(got, wantModels) {
+				t.Fatalf("persisted models = %v, want %v", got, wantModels)
 			}
 			break
 		}

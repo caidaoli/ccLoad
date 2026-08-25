@@ -8,14 +8,55 @@
     let dashboardLoadGeneration = 0;
 
     const AUTH_TYPE_CARD_CONFIG = Object.freeze({
-      api_key: { labelKey: 'channels.authTypeAPI', iconClass: 'api', icon: '<path d="M15 7a5 5 0 1 0-9.9 1H3v4h2v2h2v2h3v-3.1A5 5 0 0 0 15 7Zm-5 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/>' },
-      codex_oauth: { labelKey: 'channels.authTypeCodex', iconClass: 'codex', icon: '<path d="M12 3a9 9 0 1 0 8.7 11.3l-2.5-.7A6.5 6.5 0 1 1 12 5.5c1.8 0 3.4.7 4.6 1.9l1.8-1.8A9 9 0 0 0 12 3Z"/>' },
-      antigravity_oauth: { labelKey: 'channels.authTypeAntigravity', iconClass: 'antigravity', icon: '<path d="m12 3 2.2 5.6L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.4L12 3Z"/>' },
-      xai_oauth: { labelKey: 'channels.authTypeXAI', iconClass: 'xai', icon: '<path d="m5 5 14 14M19 5 5 19"/>' },
-      anthropic_oauth: { labelKey: 'channels.authTypeAnthropic', iconClass: 'anthropic', icon: '<path d="M12 2 2 22h20L12 2Zm0 4.5L18.5 20h-13L12 6.5Z"/>' },
-      zai_oauth: { labelKey: 'channels.authTypeZAI', iconClass: 'zai', icon: '<path d="M5 6h14L5 18h14"/>' },
-      cursor_oauth: { labelKey: 'channels.authTypeCursor', iconClass: 'cursor', icon: '<path d="m5 3 15 10-7 1.5 4 7-2.7 1.5-4-7-5.3 3.7V3Z"/>' },
-      zed_oauth: { labelKey: 'channels.authTypeZed', iconClass: 'zed', icon: '<path d="m13 2-8 12h6l-1 8 8-12h-6l1-8Z"/>' }
+      api_key: {
+        labelKey: 'index.channels.api',
+        iconClass: 'api',
+        icon: '<path d="M15 7a5 5 0 1 0-9.9 1H3v4h2v2h2v2h3v-3.1A5 5 0 0 0 15 7Zm-5 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/>'
+      },
+      codex_oauth: {
+        labelKey: 'index.channels.codex',
+        iconClass: 'codex',
+        filled: true,
+        icon: '<path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>'
+      },
+      antigravity_oauth: {
+        labelKey: 'index.channels.antigravity',
+        iconClass: 'antigravity',
+        viewBox: '0 0 111 113',
+        filled: true,
+        icon: '<path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445 75.6992 69.7783 79.7825 18.445 55.8659 18.445S36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695 40.1159 81.445 38.9492 59.8617 55.8659 59.8617S71.6159 81.445 89.6992 93.695Z"/>'
+      },
+      xai_oauth: {
+        labelKey: 'index.channels.xai',
+        iconClass: 'xai',
+        filled: true,
+        icon: '<text x="12" y="15.5" text-anchor="middle" font-family="Arial, sans-serif" font-size="10.5" font-weight="700">xAI</text>'
+      },
+      anthropic_oauth: {
+        labelKey: 'index.channels.anthropic',
+        iconClass: 'anthropic',
+        filled: true,
+        icon: '<path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/>'
+      },
+      zai_oauth: {
+        labelKey: 'index.channels.zai',
+        iconClass: 'zai',
+        viewBox: '0 0 30 30',
+        filled: true,
+        icon: '<path d="M15.47 7.1 14.17 8.95c-.2.29-.54.47-.9.47h-7.1V7.09h9.31Zm8.83 0L13.14 22.91H5.7L16.86 7.1h7.44Zm-9.77 15.81 1.31-1.86c.2-.29.54-.47.9-.47h7.09v2.33h-9.3Z"/>'
+      },
+      cursor_oauth: {
+        labelKey: 'index.channels.cursor',
+        iconClass: 'cursor',
+        filled: true,
+        icon: '<path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"/>'
+      },
+      zed_oauth: {
+        labelKey: 'index.channels.zed',
+        iconClass: 'zed',
+        filled: true,
+        icon: '<path d="M2.25 1.5a.75.75 0 0 0-.75.75v16.5H0V2.25A2.25 2.25 0 0 1 2.25 0h20.095c1.002 0 1.504 1.212.795 1.92L10.764 14.298h3.486V12.75h1.5v1.922a1.125 1.125 0 0 1-1.125 1.125H9.264l-2.578 2.578h11.689V9h1.5v9.375a1.5 1.5 0 0 1-1.5 1.5H5.185L2.562 22.5H21.75a.75.75 0 0 0 .75-.75V5.25H24v16.5A2.25 2.25 0 0 1 21.75 24H1.655C.653 24 .151 22.788.86 22.08L13.19 9.75H9.75v1.5h-1.5V9.375A1.125 1.125 0 0 1 9.375 8.25h5.314l2.625-2.625H5.625V15h-1.5V5.625a1.5 1.5 0 0 1 1.5-1.5h13.19L21.438 1.5Z"/>'
+      }
     });
 
     const AUTH_TYPE_CARD_ORDER = Object.keys(AUTH_TYPE_CARD_CONFIG);
@@ -49,12 +90,14 @@
       const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       icon.setAttribute('width', '16');
       icon.setAttribute('height', '16');
-      icon.setAttribute('viewBox', '0 0 24 24');
-      icon.setAttribute('fill', 'none');
-      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('viewBox', config.viewBox || '0 0 24 24');
+      icon.setAttribute('fill', config.filled ? 'currentColor' : 'none');
+      icon.setAttribute('stroke', config.filled ? 'none' : 'currentColor');
       icon.setAttribute('stroke-width', '2.2');
       icon.setAttribute('stroke-linecap', 'round');
       icon.setAttribute('stroke-linejoin', 'round');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.setAttribute('focusable', 'false');
       icon.innerHTML = config.icon;
       const iconContainer = createOverviewElement('div', `channel-icon channel-icon--${config.iconClass}`);
       iconContainer.appendChild(icon);

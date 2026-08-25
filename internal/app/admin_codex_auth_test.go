@@ -3012,14 +3012,14 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		t.Fatalf("first import = (%#v, %v, %v)", created, wasCreated, err)
 	}
 	wantModels := []string{
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-		"gpt-5.5",
+		"codex-auto-review",
+		"gpt-5.3-codex-spark",
 		"gpt-5.4",
 		"gpt-5.4-mini",
-		"gpt-5.3-codex-spark",
-		"codex-auto-review",
+		"gpt-5.5",
+		"gpt-5.6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
 		"gpt-image-1.5",
 		"gpt-image-2",
 	}
@@ -3376,11 +3376,11 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 		t.Fatalf("free reimport = (%#v, %v, %v)", updated, wasCreated, err)
 	}
 	want := []string{
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-		"gpt-5.5",
-		"gpt-5.4-mini",
 		"codex-auto-review",
+		"gpt-5.4-mini",
+		"gpt-5.5",
+		"gpt-5.6-luna",
+		"gpt-5.6-terra",
 		"gpt-image-1.5",
 		"gpt-image-2",
 	}
@@ -3391,16 +3391,16 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
-		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
-		"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review",
+		"codex-auto-review", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
+		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
 		"gpt-image-1.5", "gpt-image-2",
 	}
 	teamModels := []string{
-		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
-		"gpt-5.4", "gpt-5.4-mini", "codex-auto-review", "gpt-image-1.5", "gpt-image-2",
+		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
+		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-image-1.5", "gpt-image-2",
 	}
 	freeModels := []string{
-		"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "codex-auto-review",
+		"codex-auto-review", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
 		"gpt-image-1.5", "gpt-image-2",
 	}
 	tests := []struct {

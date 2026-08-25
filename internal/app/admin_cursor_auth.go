@@ -275,10 +275,6 @@ func newCursorOAuthChannel(name, credentialJSON string, modelNames []string) *mo
 	if len(modelNames) == 0 {
 		modelNames = cursorauth.DefaultModels
 	}
-	models := make([]model.ModelEntry, len(modelNames))
-	for i, modelName := range modelNames {
-		models[i] = model.ModelEntry{Model: modelName}
-	}
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeCursorOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: cursorauth.APIBaseURL, Protocols: []string{"anthropic", "openai"}}},
@@ -286,6 +282,6 @@ func newCursorOAuthChannel(name, credentialJSON string, modelNames []string) *mo
 		Priority:              0,
 		Enabled:               true,
 		CostMultiplier:        1,
-		ModelEntries:          models,
+		ModelEntries:          oauthModelEntries(modelNames),
 	}
 }

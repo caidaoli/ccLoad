@@ -33,6 +33,7 @@ golangci-lint run ./...   # 提交前必须零警告
 - YAGNI,拒绝过度工程;Fail-Fast:配置错误 `log.Fatal()` 退出
 - Context:`defer cancel()` 无条件调用,用 `context.AfterFunc` 监听取消
 - lint 启用 errcheck/govet/staticcheck/unused/revive/bodyclose(gosec 已禁)
+- Web 单选下拉必须可搜索:禁止让原生 `<select>` 直接出现在最终 UI,统一由 `searchable-select.js` 增强并复用 `createSearchableCombobox`;原生 `<select>` 只允许作为隐藏的表单/业务值载体,禁止页面私造下拉。动态选项、禁用态、原生 `input/change`、表单提交、键盘/ARIA 与 `<dialog>` 顶层菜单都必须保留;多选控件未提供可搜索实现前禁止新增
 
 ## 架构与入口
 
@@ -166,7 +167,3 @@ www/                 独立介绍站(`make www-setup` 复制共享资源后可�
 - 混合健康:Ping 只检查权威 SQLite;`RuntimeMetrics` 暴露主库 pending/failures/dropped/last_success
 - 混合队列:按实体合并内存终态;高基数脏实体达到 10000 时折叠为一次 SQLite→主库全量状态对账,不静默丢失运行中配置任务
 - 模型冷却与 URL 禁用状态写 SQLite 后作为渠道聚合终态异步复制主库,渠道删除时级联清理
-
-## 前端(Playwright MCP)
-
-截图必须 `type:"jpeg"`,优先 `browser_snapshot`(文本),避免 `fullPage:true`。

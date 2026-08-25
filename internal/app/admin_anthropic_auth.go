@@ -158,15 +158,11 @@ func createOrUpdateAnthropicChannel(
 }
 
 func newAnthropicOAuthChannel(name, credentialJSON string) *model.Config {
-	models := make([]model.ModelEntry, 0, len(anthropicOAuthDefaultModels))
-	for _, modelName := range anthropicOAuthDefaultModels {
-		models = append(models, model.ModelEntry{Model: modelName})
-	}
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: anthropicauth.DefaultUpstreamURL, Protocols: []string{"anthropic"}}},
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		Priority:              0, Enabled: true, CostMultiplier: 1, ModelEntries: models,
+		Priority:              0, Enabled: true, CostMultiplier: 1, ModelEntries: oauthModelEntries(anthropicOAuthDefaultModels),
 	}
 }
 

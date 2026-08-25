@@ -279,6 +279,7 @@ func zedModelEntries(models []string) []model.ModelEntry {
 		seen[name] = struct{}{}
 		entries = append(entries, model.ModelEntry{Model: name})
 	}
+	sortOAuthModelEntries(entries)
 	return entries
 }
 

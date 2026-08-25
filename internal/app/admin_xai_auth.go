@@ -698,10 +698,6 @@ func uniqueXAIChannelName(configs []*model.Config, base string) string {
 }
 
 func newXAIOAuthChannel(name, credentialJSON string) *model.Config {
-	models := make([]model.ModelEntry, len(xaiOAuthDefaultModels))
-	for i, modelName := range xaiOAuthDefaultModels {
-		models[i] = model.ModelEntry{Model: modelName}
-	}
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeXAIOAuth, OAuthCredential: credentialJSON,
 		URLs:                  model.ChannelURLs{{URL: xaiauth.CLIBaseURL, Protocols: []string{"codex"}}},
@@ -709,6 +705,6 @@ func newXAIOAuthChannel(name, credentialJSON string) *model.Config {
 		Priority:              0,
 		Enabled:               true,
 		CostMultiplier:        1,
-		ModelEntries:          models,
+		ModelEntries:          oauthModelEntries(xaiOAuthDefaultModels),
 	}
 }

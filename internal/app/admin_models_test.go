@@ -591,17 +591,17 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	want := []model.ModelEntry{
 		{Model: "claude-opus-4-6-thinking", RedirectModel: "claude-opus-4-6-thinking"},
 		{Model: "claude-sonnet-4-6", RedirectModel: "claude-sonnet-4-6"},
-		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},
-		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
 		{Model: "gemini-3-flash", RedirectModel: "gemini-3-flash"},
 		{Model: "gemini-3-flash-agent", RedirectModel: "gemini-3-flash-agent"},
 		{Model: "gemini-3.1-flash-image", RedirectModel: "gemini-3.1-flash-image"},
-		{Model: "gemini-pro-agent", RedirectModel: "gemini-pro-agent"},
-		{Model: "gemini-3.1-pro-low", RedirectModel: "gemini-3.1-pro-low"},
-		{Model: "gpt-oss-120b-medium", RedirectModel: "gpt-oss-120b-medium"},
 		{Model: "gemini-3.1-flash-lite", RedirectModel: "gemini-3.1-flash-lite"},
-		{Model: "gemini-3.5-flash-low", RedirectModel: "gemini-3.5-flash-low"},
+		{Model: "gemini-3.1-pro-low", RedirectModel: "gemini-3.1-pro-low"},
 		{Model: "gemini-3.5-flash-extra-low", RedirectModel: "gemini-3.5-flash-extra-low"},
+		{Model: "gemini-3.5-flash-low", RedirectModel: "gemini-3.5-flash-low"},
+		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
+		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},
+		{Model: "gemini-pro-agent", RedirectModel: "gemini-pro-agent"},
+		{Model: "gpt-oss-120b-medium", RedirectModel: "gpt-oss-120b-medium"},
 	}
 	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "gemini" {
 		t.Fatalf("unexpected response: %s", w.Body.String())
@@ -740,11 +740,11 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 		t.Fatalf("response leaked OAuth token: %s", w.Body.String())
 	}
 	want := []model.ModelEntry{
-		{Model: "gpt-5.6-terra", RedirectModel: "gpt-5.6-terra"},
-		{Model: "gpt-5.6-luna", RedirectModel: "gpt-5.6-luna"},
-		{Model: "gpt-5.5", RedirectModel: "gpt-5.5"},
-		{Model: "gpt-5.4-mini", RedirectModel: "gpt-5.4-mini"},
 		{Model: "codex-auto-review", RedirectModel: "codex-auto-review"},
+		{Model: "gpt-5.4-mini", RedirectModel: "gpt-5.4-mini"},
+		{Model: "gpt-5.5", RedirectModel: "gpt-5.5"},
+		{Model: "gpt-5.6-luna", RedirectModel: "gpt-5.6-luna"},
+		{Model: "gpt-5.6-terra", RedirectModel: "gpt-5.6-terra"},
 		{Model: "gpt-image-1.5", RedirectModel: "gpt-image-1.5"},
 		{Model: "gpt-image-2", RedirectModel: "gpt-image-2"},
 	}
@@ -802,19 +802,19 @@ func TestAdminModels_HandleFetchModels_XAIOAuthUsesFixedCatalog(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	wantNames := []string{
-		"grok-build-0.1",
-		"grok-4.6",
-		"grok-4.5",
-		"grok-4.3",
-		"grok-4.20-0309-reasoning",
-		"grok-4.20-0309-non-reasoning",
-		"grok-4.20-multi-agent-0309",
 		"grok-3-mini",
 		"grok-3-mini-fast",
+		"grok-4.20-0309-non-reasoning",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-multi-agent-0309",
+		"grok-4.3",
+		"grok-4.5",
+		"grok-4.6",
+		"grok-build-0.1",
 		"grok-composer-2.5-fast",
 		"grok-imagine-image",
-		"grok-imagine-image-quality",
 		"grok-imagine-image-2.0",
+		"grok-imagine-image-quality",
 	}
 	response := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
 	if !response.Success || response.Data.Protocol != "codex" || response.Data.Source != "predefined" {

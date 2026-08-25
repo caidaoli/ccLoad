@@ -869,6 +869,7 @@ func codexOAuthModelEntries(planType string) []model.ModelEntry {
 			entries = append(entries, model.ModelEntry{Model: name})
 		}
 	}
+	sortOAuthModelEntries(entries)
 	return entries
 }
 

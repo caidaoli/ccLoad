@@ -41,7 +41,7 @@ func TestNewZAIOAuthChannelUsesZCodeRoutedEndpoint(t *testing.T) {
 		t.Fatalf("routed url = %q", routed.URLs[0].URL)
 	}
 	// A live catalog wins over the built-in lineup.
-	if len(routed.ModelEntries) != 2 || routed.ModelEntries[0].Model != "glm-9.9" {
+	if len(routed.ModelEntries) != 2 || routed.ModelEntries[0].Model != "glm-4.7" || routed.ModelEntries[1].Model != "glm-9.9" {
 		t.Fatalf("models = %+v", routed.ModelEntries)
 	}
 }
