@@ -6387,7 +6387,7 @@
 
     .advanced-settings-availability-row {
       display: grid;
-      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
       min-width: 0;
@@ -6404,26 +6404,11 @@
       grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
       align-items: center;
       gap: 8px;
-      width: min(var(--advanced-settings-control-width), 100%);
+      width: 100%;
+      min-width: 0;
     }
 
     .advanced-settings-time-field {
-      min-width: 0;
-    }
-
-    .advanced-settings-availability-content {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      min-width: 0;
-    }
-
-    .advanced-settings-proxy-content {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
       min-width: 0;
     }
 
@@ -6509,8 +6494,24 @@
     }
 
     .advanced-settings-management .advanced-settings-other-field {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .advanced-settings-management .advanced-settings-other-field .form-label {
+      text-align: end;
+    }
+
+    .advanced-settings-management .advanced-settings-other-field .form-input {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .advanced-settings-field-meta {
+      display: grid;
+      align-content: center;
       gap: 4px;
+      min-width: 0;
     }
 
     .advanced-settings-management .form-input[aria-invalid="true"] {
@@ -6566,7 +6567,7 @@
 
     .advanced-settings-proxy-field {
       display: grid;
-      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
       min-width: 0;
@@ -6581,7 +6582,7 @@
     }
 
     .advanced-settings-proxy-field .form-input {
-      width: min(var(--advanced-settings-control-width), 100%);
+      width: 100%;
       min-width: 0;
     }
 
@@ -7101,6 +7102,18 @@
       .advanced-settings-proxy-field .form-label,
       .advanced-settings-availability-row > .form-label {
         text-align: start;
+      }
+
+      .advanced-settings-management .advanced-settings-other-field .form-label {
+        text-align: start;
+      }
+
+      .advanced-settings-management .advanced-settings-other-field {
+        grid-template-columns: 1fr;
+      }
+
+      .advanced-settings-field-meta {
+        grid-column: auto;
       }
 
       .advanced-settings-time-fields {
