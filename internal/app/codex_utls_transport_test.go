@@ -61,6 +61,89 @@ func TestUpstreamHTTPClientUsesChromeUTLSForProtectedWebOrigins(t *testing.T) {
 	}
 }
 
+func TestChromeUTLSManagementRequestUsesChromeForArbitraryHTTPS(t *testing.T) {
+	upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	base := buildHTTPTransport(true)
+	dialer := &net.Dialer{}
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
+	}
+	client := newUpstreamHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://management.example/status", nil)
+	if err != nil {
+		t.Fatalf("build management request: %v", err)
+	}
+	resp, err := client.Do(withChromeUTLS(req))
+	if err != nil {
+		t.Fatalf("send management request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if !clientHelloHasGREASECipherSuite(captured.Bytes()) {
+		t.Fatal("marked arbitrary HTTPS management host did not use Chrome uTLS")
+	}
+}
+
+func TestChromeUTLSUnmarkedManagementHostUsesFallback(t *testing.T) {
+	upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	base := buildHTTPTransport(true)
+	dialer := &net.Dialer{}
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
+	}
+	client := newUpstreamHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://management.example/status", nil)
+	if err != nil {
+		t.Fatalf("build ordinary request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("send ordinary request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if clientHelloHasGREASECipherSuite(captured.Bytes()) {
+		t.Fatal("unmarked ordinary HTTPS host unexpectedly used Chrome uTLS")
+	}
+}
+
+func TestChromeUTLSMarkedHTTPManagementRequestDoesNotEnterTLS(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	base := buildHTTPTransport(false)
+	tlsCalls := 0
+	base.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
+		tlsCalls++
+		return nil, errors.New("TLS must not be called for HTTP")
+	}
+	client := newUpstreamHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatalf("build HTTP management request: %v", err)
+	}
+	resp, err := client.Do(withChromeUTLS(req))
+	if err != nil {
+		t.Fatalf("send HTTP management request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if tlsCalls != 0 {
+		t.Fatalf("marked HTTP request entered TLS path %d times", tlsCalls)
+	}
+}
+
 func TestUpstreamHTTPClientUsesNodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
 	protocol := make(chan int, 1)
 	upstream, captured := newCapturedTLSServer(t, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
