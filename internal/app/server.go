@@ -946,6 +946,8 @@ func (s *Server) startBackgroundWorkers() {
 
 	s.wg.Add(1)
 	go s.responsesExecutionSessionCleanupLoop()
+	s.wg.Add(1)
+	go s.managementCheckinLoop()
 }
 
 func (s *Server) disabledURLReloadLoop() {
