@@ -157,14 +157,26 @@ test('debug log copy works when the native Clipboard API is unavailable', async 
   }
 });
 
-test('model filter options contain request models but not redirected models', async () => {
+async function withLoadedLogsPage(options, assertions) {
   const previousGlobals = new Map();
   const setGlobal = (key, value) => {
     previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
     Object.defineProperty(global, key, { configurable: true, writable: true, value });
   };
-
+  const {
+    isTokenRole = false,
+    intervalHours = '0',
+    logSource = 'proxy',
+    entries = []
+  } = options;
   const windowListeners = {};
+  const requestedURLs = [];
+  const sourceGroup = { hidden: false };
+  const sourceSelect = {
+    value: logSource,
+    parentElement: sourceGroup,
+    closest: (selector) => selector === '.filter-group' ? sourceGroup : null
+  };
   const tbody = {
     innerHTML: '',
     appendChild() {},
@@ -173,41 +185,49 @@ test('model filter options contain request models but not redirected models', as
     querySelector: () => null,
     querySelectorAll: () => []
   };
-  const hoursInput = { value: 'today' };
+  const elements = {
+    tbody,
+    f_hours: { value: 'today' },
+    f_log_source: sourceSelect,
+    f_auth_token: { value: '' }
+  };
+  const restoredFilters = {
+    range: 'today',
+    authToken: '',
+    model: '',
+    channelName: '',
+    logSource,
+    status: ''
+  };
 
   setGlobal('window', {
-    t: (key) => key,
+    t: (key) => key === 'logs.sourceCheckinBadge' ? '签到' : key,
     initPageBootstrap() {},
     addEventListener: (type, handler) => {
       windowListeners[type] = handler;
     },
     FilterState: {
-      load: () => ({ range: 'today' }),
-      restore: () => ({
-        range: 'today',
-        authToken: '',
-        model: '',
-        channelName: '',
-        logSource: 'proxy',
-        status: ''
-      })
+      load: () => restoredFilters,
+      restore: () => ({ ...restoredFilters })
     },
     FilterQuery: {
-      buildRequestParams: (_values, _fields, options) => new URLSearchParams(options.baseParams)
+      buildRequestParams: (values, _fields, options) => {
+        const params = new URLSearchParams(options.baseParams);
+        params.set('log_source', values.logSource);
+        return params;
+      }
     },
     loadAuthTokensIntoSelect: async () => [],
-    applyFilterControlValues() {},
-    readFilterControlValues: () => ({ range: 'today', status: '', authToken: '' }),
+    applyFilterControlValues: (values) => {
+      sourceSelect.value = values.logSource;
+    },
+    readFilterControlValues: () => ({ range: 'today', clientProtocol: '', authToken: '' }),
     getDurationTimingColor: () => '',
-    isAPITokenRole: () => false
+    isAPITokenRole: () => isTokenRole
   });
   setGlobal('document', {
     addEventListener() {},
-    getElementById: (id) => {
-      if (id === 'tbody') return tbody;
-      if (id === 'f_hours') return hoursInput;
-      return null;
-    },
+    getElementById: (id) => elements[id] || null,
     querySelector: () => null,
     querySelectorAll: () => []
   });
@@ -218,34 +238,23 @@ test('model filter options contain request models but not redirected models', as
   setGlobal('calculateTokenSpeed', () => null);
   setGlobal('fetchDataWithAuth', async (url) => {
     if (url.startsWith('/dashboard/models?')) return { models: [], channels: [] };
+    if (url === '/admin/settings/channel_check_interval_hours') return { value: intervalHours };
     throw new Error(`unexpected fetchDataWithAuth call: ${url}`);
   });
   setGlobal('fetchAPIWithAuth', async (url) => {
     if (!url.startsWith('/dashboard/logs?')) {
       throw new Error(`unexpected fetchAPIWithAuth call: ${url}`);
     }
-    return {
-      success: true,
-      count: 1,
-      data: [{
-        time: Date.now(),
-        model: 'requested-model',
-        actual_model: 'redirected-model',
-        status_code: 200,
-        duration: 0,
-        log_source: 'proxy'
-      }]
-    };
+    requestedURLs.push(url);
+    return { success: true, count: entries.length, data: entries };
   });
 
   try {
     delete require.cache[require.resolve('./logs.js')];
     require('./logs.js');
-
     await windowListeners.pageshow({ persisted: true });
     await new Promise(resolve => setImmediate(resolve));
-
-    assert.deepEqual(global.window.availableLogsModels, ['requested-model']);
+    await assertions({ requestedURLs, sourceGroup, sourceSelect, tbody });
   } finally {
     delete require.cache[require.resolve('./logs.js')];
     for (const [key, descriptor] of previousGlobals) {
@@ -253,4 +262,81 @@ test('model filter options contain request models but not redirected models', as
       else Object.defineProperty(global, key, descriptor);
     }
   }
+}
+
+test('logs filter HTML exposes one standalone checkin source option', () => {
+  const previousWindow = global.window;
+  const previousDocument = global.document;
+  global.window = {};
+  global.document = { querySelectorAll: () => [] };
+
+  try {
+    delete require.cache[require.resolve('./page-filters.js')];
+    require('./page-filters.js');
+    const html = global.window.PageFilters.renderLayout('logs');
+    const options = [...html.matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)]
+      .map(([, value, label]) => ({ value, label: label.trim() }));
+
+    assert.deepEqual(options.filter(option => option.value === 'checkin'), [
+      { value: 'checkin', label: '签到' }
+    ]);
+  } finally {
+    delete require.cache[require.resolve('./page-filters.js')];
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+    if (previousDocument === undefined) delete global.document;
+    else global.document = previousDocument;
+  }
+});
+
+test('checkin audit logs render a visible localized source label', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: '',
+      status_code: 200,
+      duration: 0,
+      log_source: 'checkin',
+      message: 'audit result'
+    }]
+  }, ({ tbody }) => {
+    assert.match(tbody.innerHTML, />签到</);
+  });
+});
+
+test('admins can select checkin logs when scheduled model detection is disabled', async () => {
+  await withLoadedLogsPage({ intervalHours: '0', logSource: 'checkin' }, ({ sourceGroup, sourceSelect }) => {
+    assert.equal(sourceGroup.hidden, false);
+    assert.equal(sourceSelect.value, 'checkin');
+  });
+});
+
+test('API token sessions cannot select management log sources', async () => {
+  await withLoadedLogsPage({ isTokenRole: true, logSource: 'checkin' }, ({ sourceGroup, sourceSelect }) => {
+    assert.equal(sourceGroup.hidden, true);
+    assert.equal(sourceSelect.value, 'proxy');
+  });
+});
+
+test('checkin log filter is sent unchanged in the dashboard request', async () => {
+  await withLoadedLogsPage({ intervalHours: '1', logSource: 'checkin' }, ({ requestedURLs }) => {
+    assert.equal(requestedURLs.length, 1);
+    const requestURL = new URL(requestedURLs[0], 'http://localhost');
+    assert.deepEqual(requestURL.searchParams.getAll('log_source'), ['checkin']);
+  });
+});
+
+test('model filter options contain request models but not redirected models', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: 'requested-model',
+      actual_model: 'redirected-model',
+      status_code: 200,
+      duration: 0,
+      log_source: 'proxy'
+    }]
+  }, () => {
+    assert.deepEqual(global.window.availableLogsModels, ['requested-model']);
+  });
 });
