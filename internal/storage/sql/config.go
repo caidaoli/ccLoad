@@ -415,6 +415,50 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 	return matched, nil
 }
 
+// CompareAndSwapChannelManagement replaces the private management envelope of
+// an API-key channel while the complete previously persisted payload matches.
+func (s *SQLStore) CompareAndSwapChannelManagement(
+	ctx context.Context,
+	channelID int64,
+	expectedEnvelope, nextEnvelope string,
+) (bool, error) {
+	if nextEnvelope != "" {
+		envelope, err := model.ParseChannelManagementEnvelope(nextEnvelope)
+		if err != nil {
+			return false, fmt.Errorf("invalid next channel management envelope: %w", err)
+		}
+		nextEnvelope, err = envelope.Marshal()
+		if err != nil {
+			return false, fmt.Errorf("marshal next channel management envelope: %w", err)
+		}
+	}
+
+	matched := false
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		currentAuthType, currentEnvelope, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if currentAuthType != model.AuthTypeAPIKey || currentEnvelope != expectedEnvelope {
+			return nil
+		}
+		if _, updateErr := s.execTx(ctx, tx, `
+			UPDATE channels SET oauth_credential = ?, updated_at = ? WHERE id = ?
+		`, nextEnvelope, timeToUnix(time.Now()), channelID); updateErr != nil {
+			return updateErr
+		}
+		matched = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("compare and swap channel management envelope: %w", err)
+	}
+	return matched, nil
+}
+
 // DisableOAuthChannelIfCredentialMatches disables an OAuth channel only while
 // the persisted provider and complete credential still match the rejected
 // snapshot. A stale proxy request must never disable a concurrently

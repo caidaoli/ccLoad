@@ -617,3 +617,77 @@ func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
 		t.Fatalf("expected model order [z-last a-first], got %+v", got)
 	}
 }
+
+func TestAPIKey_ImportChannelBatchIsolatesChannelManagementEnvelope(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "import-channel-management-isolation.db")
+	ctx := context.Background()
+	envelope := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"csv-private-token"},"state":{}}`
+
+	_, _, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{
+		Config: &model.Config{
+			Name: "must-reject-private-envelope", AuthType: model.AuthTypeAPIKey, OAuthCredential: envelope,
+			URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "api_key channel cannot contain") {
+		t.Fatalf("ImportChannelBatch() envelope error = %v, want API Key private payload rejection", err)
+	}
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "already-managed", AuthType: model.AuthTypeAPIKey,
+		URLs: model.ChannelURLs{{URL: "https://old.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.CompareAndSwapChannelManagement(ctx, created.ID, "", envelope)
+	if err != nil || !updated {
+		t.Fatalf("seed management envelope = (%v, %v)", updated, err)
+	}
+
+	for _, imported := range []*model.Config{
+		{
+			Name: created.Name, AuthType: model.AuthTypeAPIKey,
+			URLs: model.ChannelURLs{{URL: "https://by-name.example.com"}}, Enabled: true,
+		},
+		{
+			ID: created.ID, Name: created.Name, AuthType: model.AuthTypeAPIKey,
+			URLs: model.ChannelURLs{{URL: "https://by-id.example.com"}}, Enabled: true,
+		},
+	} {
+		createdCount, updatedCount, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: imported}})
+		if err != nil {
+			t.Fatalf("ImportChannelBatch() update error = %v", err)
+		}
+		if createdCount != 0 || updatedCount != 1 {
+			t.Fatalf("ImportChannelBatch() counts = (%d, %d), want (0, 1)", createdCount, updatedCount)
+		}
+		persisted, err := store.GetConfig(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if persisted.OAuthCredential != envelope {
+			t.Fatalf("API Key management envelope changed during CSV update")
+		}
+	}
+
+	createdCount, updatedCount, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{
+		Config: &model.Config{
+			Name: "new-unmanaged", AuthType: model.AuthTypeAPIKey,
+			URLs: model.ChannelURLs{{URL: "https://new.example.com"}}, Enabled: true,
+		},
+	}})
+	if err != nil || createdCount != 1 || updatedCount != 0 {
+		t.Fatalf("new ImportChannelBatch() = (%d, %d, %v), want (1, 0, nil)", createdCount, updatedCount, err)
+	}
+	configs, err := store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name == "new-unmanaged" && cfg.OAuthCredential != "" {
+			t.Fatalf("new API Key import inherited private envelope")
+		}
+	}
+}

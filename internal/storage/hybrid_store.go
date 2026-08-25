@@ -215,6 +215,22 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	return true, nil
 }
 
+func (h *HybridStore) CompareAndSwapChannelManagement(
+	ctx context.Context,
+	channelID int64,
+	expectedEnvelope, nextEnvelope string,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	updated, err := h.sqlite.CompareAndSwapChannelManagement(ctx, channelID, expectedEnvelope, nextEnvelope)
+	if err != nil || !updated {
+		return updated, err
+	}
+	h.markChannelDirty(channelID, false)
+	return true, nil
+}
+
 func (h *HybridStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
