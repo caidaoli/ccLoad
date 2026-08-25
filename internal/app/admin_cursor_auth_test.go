@@ -60,10 +60,10 @@ func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	}
 }
 
-func TestFetchCursorOAuthModelsUsesExactSDKCatalog(t *testing.T) {
+func TestFetchCursorOAuthModelsUsesSDKCatalog(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	runner := &fakeCursorRunner{models: []string{"default", "grok-4.6", "composer-2.5"}}
+	runner := &fakeCursorRunner{models: []string{"default", "grok-4.6", "composer-2.5", "composer-2.5-fast"}}
 	server.cursorRunner = runner
 	raw, err := (&cursorauth.Credential{
 		Type: cursorauth.ChannelType, AccessToken: "access-token", APIKey: "user-api-key",
@@ -77,7 +77,7 @@ func TestFetchCursorOAuthModelsUsesExactSDKCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchCursorOAuthModels() error = %v", err)
 	}
-	want := []string{"default", "grok-4.6", "composer-2.5"}
+	want := []string{"default", "grok-4.6", "composer-2.5", "composer-2.5-fast"}
 	if len(response.Models) != len(want) {
 		t.Fatalf("models = %+v, want %v", response.Models, want)
 	}

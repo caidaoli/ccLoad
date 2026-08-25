@@ -93,7 +93,11 @@ func (h *testCursorHandler) ListModels(
 	h.request = request.Msg
 	return connect.NewResponse(&sdkv1.ListModelsResponse{Items: []*sdkv1.SdkModel{
 		{Id: "grok-4.6", Variants: []*sdkv1.ModelVariant{{DisplayName: "High"}}},
-		{Id: "composer-2.5"},
+		{Id: "composer-2.5", Variants: []*sdkv1.ModelVariant{
+			{Params: []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}, IsDefault: true},
+			{Params: []*sdkv1.ModelParameterValue{{Id: "fast", Value: "false"}}},
+		}},
+		{Id: "composer-2.5-fast"},
 		{Id: "grok-4.6"},
 		{Id: "  "},
 	}}), nil
@@ -470,7 +474,7 @@ func TestSDKRunnerCloseUsesProcessExitAsShutdownResult(t *testing.T) {
 	}
 }
 
-func TestSDKRunnerListModelsUsesExactSDKIDsWithoutExpandingVariants(t *testing.T) {
+func TestSDKRunnerListModelsAddsFastSuffix(t *testing.T) {
 	handler := &testCursorHandler{}
 	_, httpHandler := sdkv1connect.NewSdkCursorServiceHandler(handler)
 	server := httptest.NewServer(httpHandler)
@@ -485,7 +489,7 @@ func TestSDKRunnerListModelsUsesExactSDKIDsWithoutExpandingVariants(t *testing.T
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
 	}
-	want := []string{"grok-4.6", "composer-2.5"}
+	want := []string{"grok-4.6", "composer-2.5", "composer-2.5-fast"}
 	if !reflect.DeepEqual(models, want) {
 		t.Fatalf("ListModels() = %#v, want %#v", models, want)
 	}
@@ -690,7 +694,7 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 		return stream.Send(runDone("agent-1", "run-1"))
 	}
 	runner := newTestSDKRunner(t, handler)
-	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
+	events, err := runner.Run(context.Background(), &Credential{APIKey: "key-1"}, Request{Model: "model-1-fast", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -724,6 +728,11 @@ func TestSDKRunnerAssistantBlocksAreChunksAndDeletesAgent(t *testing.T) {
 
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
+	selection := handler.create.GetOptions().GetModel()
+	if selection.GetId() != "model-1" || len(selection.GetParams()) != 1 ||
+		selection.GetParams()[0].GetId() != "fast" || selection.GetParams()[0].GetValue() != "true" {
+		t.Fatalf("CreateAgent model = %+v", selection)
+	}
 	if handler.create.GetOptions().GetApiKey() != "key-1" || handler.create.GetOptions().GetTools() == nil ||
 		len(handler.create.GetOptions().GetTools().GetNames()) != 0 {
 		t.Fatalf("CreateAgent request = %+v", handler.create)

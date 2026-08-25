@@ -85,8 +85,7 @@ func (r *SDKRunner) Start(ctx context.Context) error {
 	return err
 }
 
-// ListModels returns Cursor's model IDs verbatim. SDK variants are parameter
-// choices, not synthetic model names, so they are deliberately not expanded.
+// ListModels returns Cursor's model IDs plus the -fast form accepted by the SDK.
 func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, error) {
 	if r == nil || r.bridge == nil {
 		return nil, errors.New("cursor SDK runner is unavailable")
@@ -121,23 +120,45 @@ func (r *SDKRunner) ListModels(ctx context.Context, apiKey string) ([]string, er
 		return nil, classifyBridgeOperationError("ListModels", requestCtx, RequestTimeout, started, err)
 	}
 
-	models := make([]string, 0, len(response.Msg.GetItems()))
-	seen := make(map[string]struct{}, len(response.Msg.GetItems()))
+	models := make([]string, 0, len(response.Msg.GetItems())*2)
+	seen := make(map[string]struct{}, len(response.Msg.GetItems())*2)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		models = append(models, id)
+	}
 	for _, item := range response.Msg.GetItems() {
 		id := strings.TrimSpace(item.GetId())
 		if id == "" {
 			continue
 		}
-		if _, exists := seen[id]; exists {
-			continue
+		add(id)
+		if supportsFastModelVariant(item) && !strings.HasSuffix(strings.ToLower(id), "-fast") {
+			add(id + "-fast")
 		}
-		seen[id] = struct{}{}
-		models = append(models, id)
 	}
 	if len(models) == 0 {
 		return nil, errors.New("cursor SDK returned an empty model catalog")
 	}
 	return models, nil
+}
+
+func supportsFastModelVariant(model *sdkv1.SdkModel) bool {
+	for _, variant := range model.GetVariants() {
+		for _, parameter := range variant.GetParams() {
+			if strings.EqualFold(strings.TrimSpace(parameter.GetId()), "fast") &&
+				strings.EqualFold(strings.TrimSpace(parameter.GetValue()), "true") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func listCursorModels(
@@ -208,7 +229,7 @@ func (r *SDKRunner) Run(
 	createCtx, createCancel := context.WithTimeout(ctx, RequestTimeout)
 	created, err := client.agent.CreateAgent(createCtx, connect.NewRequest(&sdkv1.CreateAgentRequest{
 		Options: &sdkv1.AgentOptions{
-			Model:  &sdkv1.ModelSelection{Id: model},
+			Model:  cursorModelSelection(model),
 			ApiKey: apiKey,
 			Local: &sdkv1.LocalAgentOptions{
 				Cwd: []string{client.workdir}, CustomTools: customTools,
@@ -276,6 +297,21 @@ func (r *SDKRunner) Run(
 	finish = false
 	go r.consumeRun(session, stream, runTimeout, runStarted)
 	return session.nextTurn(ctx, nil)
+}
+
+func cursorModelSelection(model string) *sdkv1.ModelSelection {
+	selection := &sdkv1.ModelSelection{Id: model}
+	const fastSuffix = "-fast"
+	if !strings.HasSuffix(strings.ToLower(model), fastSuffix) {
+		return selection
+	}
+	base := strings.TrimSpace(model[:len(model)-len(fastSuffix)])
+	if base == "" {
+		return selection
+	}
+	selection.Id = base
+	selection.Params = []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}
+	return selection
 }
 
 func (r *SDKRunner) resumeToolRun(

@@ -56,7 +56,7 @@ type Runner interface {
 	Run(ctx context.Context, credential *Credential, request Request) (<-chan Event, error)
 }
 
-// ModelLister returns the exact model IDs accepted by the Cursor SDK.
+// ModelLister returns the model IDs accepted by the Cursor SDK.
 type ModelLister interface {
 	ListModels(ctx context.Context, apiKey string) ([]string, error)
 }
