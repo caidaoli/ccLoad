@@ -2256,6 +2256,7 @@ func (s *Server) forwardAttempt(
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
 	reqCtx.upstreamProtocol = upstreamProtocol
+	reqCtx.debugData = nil
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
 	var translatedRequestOverride []byte
@@ -2266,12 +2267,17 @@ func (s *Server) forwardAttempt(
 		if err != nil {
 			channelID := cfg.ID
 			if errors.Is(err, errXAIImagesBridgeUnsupported) {
+				logged := s.logProtocolCapabilityFallback(
+					reqCtx, cfg, actualModel, selectedKey, http.StatusBadRequest,
+					time.Since(reqCtx.attemptStartTime).Seconds(), nil, err.Error(),
+				)
 				return &proxyResult{
 					status:                    http.StatusBadRequest,
 					body:                      []byte(err.Error()),
 					channelID:                 &channelID,
 					succeeded:                 false,
 					nextAction:                cooldown.ActionRetryChannel,
+					proxyLogWritten:           logged,
 					protocolCapabilityMissing: true,
 				}, cooldown.ActionRetryChannel, nil
 			}
@@ -2513,12 +2519,17 @@ func (s *Server) forwardAttempt(
 		var translationErr *protocol.RequestTranslationError
 		if errors.As(err, &translationErr) {
 			if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto {
+				logged := s.logProtocolCapabilityFallback(
+					reqCtx, cfg, actualModel, selectedKey, http.StatusBadRequest,
+					duration, res, err.Error(),
+				)
 				return &proxyResult{
 					status:                    http.StatusBadRequest,
 					body:                      []byte(err.Error()),
 					channelID:                 &cfg.ID,
 					succeeded:                 false,
 					nextAction:                cooldown.ActionRetryChannel,
+					proxyLogWritten:           logged,
 					protocolCapabilityMissing: true,
 				}, cooldown.ActionRetryChannel, nil
 			}
@@ -2564,6 +2575,10 @@ func (s *Server) forwardAttempt(
 
 	if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
 		isProtocolEndpointMissing(res) {
+		logged := s.logProtocolCapabilityFallback(
+			reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res,
+			fmt.Sprintf("upstream protocol %s rejected request", upstreamProtocol),
+		)
 		return &proxyResult{
 			status:                    res.Status,
 			header:                    res.Header,
@@ -2572,6 +2587,7 @@ func (s *Server) forwardAttempt(
 			duration:                  duration,
 			succeeded:                 false,
 			nextAction:                cooldown.ActionRetryChannel,
+			proxyLogWritten:           logged,
 			protocolCapabilityMissing: true,
 		}, cooldown.ActionRetryChannel, nil
 	}
@@ -3403,6 +3419,7 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		var result *proxyResult
 		var nextAction cooldown.Action
+		stableEndpointUnsupported := true
 		for protocolIdx, upstreamProtocol := range protocolCandidates {
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
@@ -3418,11 +3435,15 @@ func (s *Server) attemptKeyAcrossURLs(
 				}
 				break
 			}
+			if !shouldCacheProtocolUnsupported(result.status) {
+				stableEndpointUnsupported = false
+			}
 			if protocolIdx < len(protocolCandidates)-1 {
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
 			}
-			if learnCapability || requestFamily == protocol.RequestFamilyAlphaSearch {
+			if (learnCapability || requestFamily == protocol.RequestFamilyAlphaSearch) &&
+				stableEndpointUnsupported {
 				s.protocolCapabilities.set(capabilityKey, protocolUnsupported)
 			}
 		}

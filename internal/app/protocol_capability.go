@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -9,6 +10,13 @@ import (
 )
 
 const unsupportedProtocolCapabilityTTL = 10 * time.Minute
+
+// shouldCacheProtocolUnsupported 只缓存稳定的端点级不支持。
+// 400/403/500 与本地转换失败都可能由具体请求形态触发；把它们扩大成整个请求族
+// 不支持，会让一次 tool_result 等特殊请求错误地屏蔽后续普通请求。
+func shouldCacheProtocolUnsupported(statusCode int) bool {
+	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed
+}
 
 // protocolUnsupported 是能力缓存的哨兵值：已探测且确认该 URL 不支持当前请求族。
 // 与「无缓存条目」（尚未探测，get 返回 known=false）区分开。

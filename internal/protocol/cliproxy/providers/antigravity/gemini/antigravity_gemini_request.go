@@ -329,7 +329,9 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 	return rawJSON
 }
 
-// SanitizeAntigravityClaudeGeminiRequestSignatures removes signatures that cannot be replayed to a Claude target.
+// SanitizeAntigravityClaudeGeminiRequestSignatures preserves compatible Claude thinking signatures,
+// gives the first function call in each model turn Antigravity's validator bypass, and strips
+// signatures from parts that cannot own them. Parallel sibling calls remain unsigned.
 func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {
 	contents := util.GetGJSONBytesNoCopy(rawJSON, "request.contents")
 	if !contents.IsArray() {
@@ -348,6 +350,7 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 		}
 
 		isModelTurn := content.Get("role").String() == "model"
+		firstFunctionCallSeen := false
 		partsArray := parts.Array()
 		contentChanged := false
 		rewrittenParts := make([][]byte, 0, len(partsArray))
@@ -389,6 +392,23 @@ func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON 
 				} else {
 					rewrittenParts = append(rewrittenParts, []byte(partResult.Raw))
 				}
+				continue
+			}
+
+			if hasFunctionCallPart(part) {
+				isFirstFunctionCall := !firstFunctionCallSeen
+				firstFunctionCallSeen = true
+				changed = true
+				contentChanged = true
+				deleteAntigravityClaudeGeminiPartThoughtSignatureFields(part)
+				if isFirstFunctionCall {
+					part["thoughtSignature"] = signature.GeminiSkipThoughtSignatureValidator
+					logAntigravityClaudeGeminiSignatureSanitize(modelName, "replace_signature", "first functionCall requires Antigravity bypass signature", contentIndex, partIndex, rawSignature)
+				} else {
+					logAntigravityClaudeGeminiSignatureSanitize(modelName, "drop_signature", "parallel sibling functionCalls remain unsigned", contentIndex, partIndex, rawSignature)
+				}
+				partBytes, _ := json.Marshal(part)
+				rewrittenParts = append(rewrittenParts, partBytes)
 				continue
 			}
 
@@ -582,6 +602,14 @@ func hasFunctionResponsePart(part map[string]any) bool {
 		return true
 	}
 	_, ok := part["function_response"]
+	return ok
+}
+
+func hasFunctionCallPart(part map[string]any) bool {
+	if _, ok := part["functionCall"]; ok {
+		return true
+	}
+	_, ok := part["function_call"]
 	return ok
 }
 

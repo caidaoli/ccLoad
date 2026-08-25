@@ -96,8 +96,8 @@ func TestConvertGeminiRequestToAntigravity_SkipsUppercaseClaudeModel(t *testing.
 	output := ConvertGeminiRequestToAntigravity("Claude-Test", inputJSON, false)
 	outputStr := string(output)
 
-	if sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature"); sig.Exists() {
-		t.Fatalf("Expected no thoughtSignature for Claude model, got %s", sig.Raw)
+	if got := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("functionCall thoughtSignature=%q, want bypass sentinel", got)
 	}
 }
 
@@ -218,8 +218,8 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelStripsUnneededFunctionCall
 	if !part.Get("functionCall").Exists() {
 		t.Fatalf("functionCall should be preserved. Output: %s", output)
 	}
-	if part.Get("thoughtSignature").Exists() {
-		t.Fatalf("functionCall thoughtSignature should be stripped for Claude target. Output: %s", output)
+	if got := part.Get("thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("functionCall thoughtSignature = %q, want bypass sentinel. Output: %s", got, output)
 	}
 }
 
@@ -775,9 +775,35 @@ func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StripsFunctionCallSign
 	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-sonnet-4-6", inputJSON)
 	outputStr := string(output)
 
-	sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature")
-	if sig.Exists() {
-		t.Fatalf("expected functionCall thoughtSignature to be stripped for Claude target model, got %s", sig.Raw)
+	if got := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("functionCall thoughtSignature = %q, want bypass sentinel", got)
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_ParallelCallsOnlyFirstGetsBypass(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-opus-5",
+		"request": {
+			"contents": [{
+				"role": "model",
+				"parts": [
+					{"functionCall": {"name": "read_one", "args": {}}},
+					{"functionCall": {"name": "read_two", "args": {}}, "thoughtSignature": "stale"}
+				]
+			}]
+		}
+	}`)
+
+	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-opus-5", inputJSON)
+	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("parts=%d, want 2; output=%s", len(parts), output)
+	}
+	if got := parts[0].Get("thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("first functionCall thoughtSignature=%q, want bypass sentinel", got)
+	}
+	if parts[1].Get("thoughtSignature").Exists() {
+		t.Fatalf("parallel sibling functionCall should remain unsigned: %s", parts[1].Raw)
 	}
 }
 
@@ -885,8 +911,12 @@ func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StripsDuplicateSignatu
 
 	for i := 0; i < 8; i++ {
 		sig := gjson.Get(outputStr, fmt.Sprintf("request.contents.0.parts.%d.thoughtSignature", i))
-		if sig.Exists() {
-			t.Fatalf("part %d: expected all duplicate thoughtSignature fields to be stripped, got %s", i, sig.Raw)
+		if i == 0 {
+			if got := sig.String(); got != signature.GeminiSkipThoughtSignatureValidator {
+				t.Fatalf("part %d: thoughtSignature=%q, want canonical bypass sentinel", i, got)
+			}
+		} else if sig.Exists() {
+			t.Fatalf("part %d: expected duplicate thoughtSignature fields to be stripped, got %s", i, sig.Raw)
 		}
 		fcSig := gjson.Get(outputStr, fmt.Sprintf("request.contents.0.parts.%d.functionCall.thoughtSignature", i))
 		if fcSig.Exists() {
@@ -896,7 +926,7 @@ func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StripsDuplicateSignatu
 }
 
 func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StringValueNotTreatedAsKey(t *testing.T) {
-	// A part where "thoughtSignature" is a tool name (string value), not a key, should not trigger signature sanitization
+	// A tool name/value equal to thoughtSignature is payload, not signature metadata.
 	inputJSON := []byte(`{
 		"project": "",
 		"model": "claude-sonnet-4-6",
@@ -920,9 +950,15 @@ func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StringValueNotTreatedA
 	}`)
 
 	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-sonnet-4-6", inputJSON)
-	// Output should preserve the exact input string because no signature keys exist
-	if string(output) != string(inputJSON) {
-		t.Fatalf("expected unchanged output for non-key values, got %s", string(output))
+	part := gjson.GetBytes(output, "request.contents.0.parts.0")
+	if got := part.Get("functionCall.name").String(); got != "thoughtSignature" {
+		t.Fatalf("function name=%q, want preserved payload value", got)
+	}
+	if got := part.Get("functionCall.args.query").String(); got != "thought_signature" {
+		t.Fatalf("function argument=%q, want preserved payload value", got)
+	}
+	if got := part.Get("thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("thoughtSignature=%q, want canonical bypass sentinel", got)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/gemini/common"
+	antigravitygemini "ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/protocol/cliproxy/util"
@@ -798,8 +799,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	out = common.AttachDefaultSafetySettings(out, "request.safetySettings")
-	if sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini {
+	switch sigcompat.SignatureProviderFromModelName(modelName) {
+	case sigcompat.SignatureProviderGemini:
 		out = sigcompat.SanitizeGeminiRequestThoughtSignatures(out, "request.contents")
+	case sigcompat.SignatureProviderClaude:
+		out = antigravitygemini.SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, out)
 	}
 
 	return out

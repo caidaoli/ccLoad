@@ -133,6 +133,11 @@ documented adaptations:
 - Antigravity adapters keep only request-local conversion state. Runtime signature
   caches, dynamic model registries, and logging side effects remain outside the
   provider packages; OpenAI summary aliases are normalized locally as wire data.
+  Claude-target finalization preserves compatible Claude thinking signatures and
+  assigns Antigravity's validator-bypass signature to the first function call in
+  each model turn; parallel sibling function calls remain unsigned. All supported
+  ingress paths converge on this rule, preventing sequential tool history from
+  being rejected before execution.
   The shared Antigravity wire finalizer also performs the excluded runtime
   `ApplyThinking` effort-alias normalization (`minimal` to `low`, `xhigh`/`max`
   to `high`) for every client protocol before the request is sent.

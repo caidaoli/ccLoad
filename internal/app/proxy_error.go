@@ -193,6 +193,29 @@ func (s *Server) logProxyResult(
 	s.AddLogAsync(buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, statusCode, duration, res, errMsg))
 }
 
+// logProtocolCapabilityFallback 记录一次真实发生的协议能力探测失败。
+// 它只改变可观测性，不参与冷却；管理测试等外层统一落日志的调用路径继续跳过。
+func (s *Server) logProtocolCapabilityFallback(
+	reqCtx *proxyRequestContext,
+	cfg *model.Config,
+	actualModel string,
+	selectedKey string,
+	statusCode int,
+	duration float64,
+	res *fwResult,
+	detail string,
+) bool {
+	if reqCtx == nil || reqCtx.skipProxyLog {
+		return false
+	}
+	message := "protocol capability fallback"
+	if detail = strings.TrimSpace(detail); detail != "" {
+		message += ": " + detail
+	}
+	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, statusCode, duration, res, message)
+	return true
+}
+
 func buildProxyLogEntry(
 	reqCtx *proxyRequestContext,
 	cfg *model.Config,

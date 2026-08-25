@@ -293,14 +293,14 @@ func antigravityProxyTestCredential(t testing.TB, accessToken string) string {
 	return payload
 }
 
-func antigravityProxyClaudeThoughtSignature() string {
+func antigravityProxyClaudeThoughtSignature(modelName string) string {
 	channelBlock := []byte{}
 	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
 	channelBlock = protowire.AppendVarint(channelBlock, 12)
 	channelBlock = protowire.AppendTag(channelBlock, 2, protowire.VarintType)
 	channelBlock = protowire.AppendVarint(channelBlock, 2)
 	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
-	channelBlock = protowire.AppendString(channelBlock, "claude-sonnet-4-6")
+	channelBlock = protowire.AppendString(channelBlock, modelName)
 	container := protowire.AppendTag(nil, 1, protowire.BytesType)
 	container = protowire.AppendBytes(container, channelBlock)
 	payload := protowire.AppendTag(nil, 2, protowire.BytesType)
@@ -1308,6 +1308,85 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityClaudeSequentialToolHistoryBackfillsThoughtSignatures(t *testing.T) {
+	validThinkingSignature := antigravityProxyClaudeThoughtSignature("claude-opus-5")
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity Claude request: %v", err)
+		}
+		var functionCalls []gjson.Result
+		var thinkingParts []gjson.Result
+		for _, content := range gjson.GetBytes(wire, "request.contents").Array() {
+			for _, part := range content.Get("parts").Array() {
+				if part.Get("functionCall").Exists() {
+					functionCalls = append(functionCalls, part)
+				}
+				if part.Get("thought").Bool() {
+					thinkingParts = append(thinkingParts, part)
+				}
+			}
+		}
+		if len(functionCalls) != 2 {
+			t.Fatalf("functionCall count=%d, want 2; body=%s", len(functionCalls), wire)
+		}
+		for index, part := range functionCalls {
+			if got := part.Get("thoughtSignature").String(); got != "skip_thought_signature_validator" {
+				t.Errorf("functionCall[%d] thoughtSignature=%q, want bypass sentinel; part=%s", index, got, part.Raw)
+			}
+			if name := part.Get("functionCall.name").String(); !strings.HasSuffix(name, "_read") {
+				t.Errorf("functionCall[%d] name=%q, want _read suffix", index, name)
+			}
+		}
+		if len(thinkingParts) != 2 {
+			t.Fatalf("thinking part count=%d, want 2; body=%s", len(thinkingParts), wire)
+		}
+		for index, part := range thinkingParts {
+			if got := part.Get("thoughtSignature").String(); got == "" || got == "skip_thought_signature_validator" {
+				t.Errorf("thinking part[%d] signature=%q, want compatible Claude signature", index, got)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-claude-tool-history", upstreamProtocol: "gemini", models: "claude-opus-5", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-claude-tool-history"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-opus-5", "max_tokens": 64,
+		"messages": []any{
+			map[string]any{"role": "user", "content": "review the files"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "inspect the first file", "signature": validThinkingSignature},
+				map[string]any{"type": "tool_use", "id": "toolu_read_1", "name": "_read", "input": map[string]any{"path": "/tmp/one"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_read_1", "content": "one"},
+			}},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "inspect the second file", "signature": validThinkingSignature},
+				map[string]any{"type": "tool_use", "id": "toolu_read_2", "name": "_read", "input": map[string]any{"path": "/tmp/two"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_read_2", "content": "two"},
+			}},
+		},
+		"tools": []any{map[string]any{
+			"name": "_read", "description": "read a file",
+			"input_schema": map[string]any{
+				"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"},
+			},
+		}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestProxy_AntigravityOAuthKeepsClaudeSessionStable(t *testing.T) {
 	var sessionIDs []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1647,7 +1726,7 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthRetriesRejectedClaudeThinkingSignature(t *testing.T) {
-	validSignature := antigravityProxyClaudeThoughtSignature()
+	validSignature := antigravityProxyClaudeThoughtSignature("claude-sonnet-4-6")
 	var attempts atomic.Int32
 	var bodies [][]byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1704,7 +1783,7 @@ func TestProxy_AntigravityOAuthRetriesRejectedClaudeThinkingSignature(t *testing
 }
 
 func TestProxy_AntigravityOAuthCapacityAfterSignatureRetryCoolsModel(t *testing.T) {
-	validSignature := antigravityProxyClaudeThoughtSignature()
+	validSignature := antigravityProxyClaudeThoughtSignature("claude-sonnet-4-6")
 	var attempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1801,8 +1880,8 @@ func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *t
 	if !functionCall.Exists() {
 		t.Fatalf("signature sanitizer removed the tool call: %s", bodies[0])
 	}
-	if gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").Exists() {
-		t.Fatalf("invalid tool signature reached upstream: %s", bodies[0])
+	if got := gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").String(); got != "skip_thought_signature_validator" {
+		t.Fatalf("tool signature=%q, want canonical bypass sentinel: %s", got, bodies[0])
 	}
 }
 
@@ -6716,6 +6795,152 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 
 	if got := strings.Join(paths, ","); got != "/v1/chat/completions,/v1/messages,/v1/embeddings,/v1/messages" {
 		t.Fatalf("upstream paths=%s, want Chat cache isolated from Embeddings", got)
+	}
+}
+
+func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailures(t *testing.T) {
+	tests := []struct {
+		name                 string
+		statuses             []int
+		errorText            string
+		wantUpstreamAttempts int64
+	}{
+		{
+			name:                 "request-specific 400 is retried next request",
+			statuses:             []int{http.StatusBadRequest},
+			errorText:            "request shape rejected",
+			wantUpstreamAttempts: 8,
+		},
+		{
+			name:                 "endpoint-level 405 is cached",
+			statuses:             []int{http.StatusMethodNotAllowed},
+			errorText:            "endpoint method not allowed",
+			wantUpstreamAttempts: 4,
+		},
+		{
+			name: "mixed request and endpoint failures are not cached",
+			statuses: []int{
+				http.StatusBadRequest,
+				http.StatusMethodNotAllowed,
+				http.StatusMethodNotAllowed,
+				http.StatusMethodNotAllowed,
+			},
+			errorText:            "mixed protocol rejection",
+			wantUpstreamAttempts: 8,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts atomic.Int64
+			fallbackUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempt := attempts.Add(1)
+				status := tt.statuses[(attempt-1)%int64(len(tt.statuses))]
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"error":{"message":%q}}`, tt.errorText)
+			}))
+			defer fallbackUpstream.Close()
+
+			successUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"shared-model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			defer successUpstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{
+					name: "capability-probe", upstreamProtocol: util.ProtocolAnthropic,
+					protocolTransformMode: model.ProtocolTransformModeAuto, models: "shared-model", priority: 100,
+				},
+				{
+					name: "capability-backup", upstreamProtocol: util.ProtocolAnthropic,
+					protocolTransformMode: model.ProtocolTransformModeAuto, models: "shared-model", priority: 90,
+				},
+			}, map[int]string{0: fallbackUpstream.URL, 1: successUpstream.URL})
+			env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{
+				Key: "debug_log_enabled", Value: "true",
+			}
+
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatalf("ListConfigs: %v", err)
+			}
+			var probeChannelID int64
+			for _, cfg := range configs {
+				if cfg.Name == "capability-probe" {
+					probeChannelID = cfg.ID
+					break
+				}
+			}
+			if probeChannelID == 0 {
+				t.Fatal("capability-probe channel not found")
+			}
+
+			request := func() {
+				t.Helper()
+				response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+					"model": "shared-model", "max_tokens": 128,
+					"messages": []map[string]string{{"role": "user", "content": "hi"}},
+				}, map[string]string{"anthropic-version": "2023-06-01"})
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			request()
+			request()
+
+			if got := attempts.Load(); got != tt.wantUpstreamAttempts {
+				t.Fatalf("probe upstream attempts=%d, want %d", got, tt.wantUpstreamAttempts)
+			}
+
+			var fallbackLogs []*model.LogEntry
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				logs, listErr := env.store.ListLogs(
+					context.Background(), time.Now().Add(-time.Minute), 50, 0,
+					&model.LogFilter{LogSource: model.LogSourceProxy},
+				)
+				if listErr != nil {
+					t.Fatalf("ListLogs: %v", listErr)
+				}
+				fallbackLogs = fallbackLogs[:0]
+				for _, entry := range logs {
+					if entry.ChannelID == probeChannelID &&
+						strings.Contains(entry.Message, "protocol capability fallback") {
+						fallbackLogs = append(fallbackLogs, entry)
+					}
+				}
+				if int64(len(fallbackLogs)) == tt.wantUpstreamAttempts {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if int64(len(fallbackLogs)) != tt.wantUpstreamAttempts {
+				t.Fatalf("persisted capability fallback logs=%d, want %d", len(fallbackLogs), tt.wantUpstreamAttempts)
+			}
+
+			wantPerProtocol := tt.wantUpstreamAttempts / int64(len(protocol.AllProtocols()))
+			protocolCounts := make(map[string]int64, len(protocol.AllProtocols()))
+			for _, entry := range fallbackLogs {
+				protocolCounts[entry.UpstreamProtocol]++
+			}
+			for _, upstreamProtocol := range protocol.AllProtocols() {
+				if got := protocolCounts[string(upstreamProtocol)]; got != wantPerProtocol {
+					t.Fatalf("protocol %s fallback logs=%d, want %d; all=%v",
+						upstreamProtocol, got, wantPerProtocol, protocolCounts)
+				}
+			}
+
+			debugLog, debugErr := env.store.GetDebugLogByLogID(context.Background(), fallbackLogs[0].ID)
+			if debugErr != nil {
+				t.Fatalf("GetDebugLogByLogID: %v", debugErr)
+			}
+			if debugLog == nil || !slices.Contains(tt.statuses, debugLog.RespStatus) ||
+				!strings.Contains(string(debugLog.RespBody), tt.errorText) {
+				t.Fatalf("capability fallback debug log missing upstream response: %+v", debugLog)
+			}
+		})
 	}
 }
 
