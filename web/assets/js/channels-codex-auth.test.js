@@ -853,7 +853,7 @@ test('closing and pagehide abort active OAuth secret submissions and clear brows
   }
 });
 
-test('logs channel editor loads Codex auth before opening a Codex channel', async () => {
+test('logs channel editor loads Codex auth and management account modules before opening a channel', async () => {
   const requiredMarkupIDs = new Set([
     'channelModal',
     'commonModelsModal',
@@ -892,6 +892,7 @@ test('logs channel editor loads Codex auth before opening a Codex channel', asyn
   });
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
+  const loadedScriptPaths = [];
   let openedChannelID = null;
   const previous = new Map();
   const installGlobal = (name, value) => {
@@ -910,8 +911,12 @@ test('logs channel editor loads Codex auth before opening a Codex channel', asyn
       appendChild(script) {
         scripts.push(script);
         const path = new URL(script.src, global.window.location.origin).pathname;
+        loadedScriptPaths.push(path);
         if (path === '/web/assets/js/channels-codex-auth.js') {
           global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
+        }
+        if (path === '/web/assets/js/channels-management.js') {
+          global.window.resetManagementAccountDraft = () => 'draft-ready';
         }
         if (path === '/web/assets/js/channels-modals.js') {
           global.editChannel = async id => {
@@ -947,6 +952,11 @@ test('logs channel editor loads Codex auth before opening a Codex channel', asyn
     assert.equal(openedChannelID, 42);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
+
+    const managementIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-management.js');
+    const modalsIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-modals.js');
+    assert.ok(managementIndex > modalsIndex, 'channels-management.js must load after channels-modals.js');
+    assert.equal(typeof global.window.resetManagementAccountDraft, 'function');
   } finally {
     delete require.cache[modulePath];
     for (const [name, descriptor] of previous) {
