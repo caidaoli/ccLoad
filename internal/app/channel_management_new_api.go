@@ -77,11 +77,18 @@ func (s *channelManagementService) refreshNewAPIBalance(
 		return nil, managementStatusCode(result), err
 	}
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
-		return nil, result.StatusCode, errManagementRequestFailed
+		return nil, result.StatusCode, withManagementErrorDetail(
+			errManagementRequestFailed, result, envelope.Settings.AccessToken,
+		)
 	}
 	response, err := decodeNewAPIResponse[newAPIUserSelf](result.Body)
-	if err != nil || !response.Success {
+	if err != nil {
 		return nil, result.StatusCode, errInvalidManagementResponse
+	}
+	if !response.Success {
+		return nil, result.StatusCode, withManagementErrorDetail(
+			errInvalidManagementResponse, result, envelope.Settings.AccessToken,
+		)
 	}
 	if response.Data.Quota < 0 || response.Data.UsedQuota != nil && *response.Data.UsedQuota < 0 {
 		return nil, result.StatusCode, errInvalidManagementResponse
@@ -169,7 +176,9 @@ func (s *channelManagementService) checkInNewAPI(
 		if postErr != nil {
 			return nil, nil, postErr
 		}
-		return nil, nil, errManagementRequestFailed
+		return nil, nil, withManagementErrorDetail(
+			errManagementRequestFailed, postResult, envelope.Settings.AccessToken,
+		)
 	}
 
 	readback, _, readbackErr := getNewAPI[newAPICheckinStatus](
@@ -188,7 +197,9 @@ func (s *channelManagementService) checkInNewAPI(
 	if readbackErr != nil {
 		return newAPICheckinResult(newAPICheckinUncertain, managementStatusCode(postResult), checkedAt), nil, nil
 	}
-	return nil, nil, errManagementRequestFailed
+	return nil, nil, withManagementErrorDetail(
+		errManagementRequestFailed, postResult, envelope.Settings.AccessToken,
+	)
 }
 
 func getNewAPI[T any](
@@ -211,11 +222,18 @@ func getNewAPI[T any](
 		return nil, result, err
 	}
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
-		return nil, result, errManagementRequestFailed
+		return nil, result, withManagementErrorDetail(
+			errManagementRequestFailed, result, envelope.Settings.AccessToken,
+		)
 	}
 	response, err := decodeNewAPIResponse[T](result.Body)
-	if err != nil || !response.Success {
+	if err != nil {
 		return nil, result, errInvalidManagementResponse
+	}
+	if !response.Success {
+		return nil, result, withManagementErrorDetail(
+			errInvalidManagementResponse, result, envelope.Settings.AccessToken,
+		)
 	}
 	return response, result, nil
 }

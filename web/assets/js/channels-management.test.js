@@ -150,8 +150,11 @@ function loadManagementModule() {
 }
 
 function selectProfile(dom, mod, profile) {
-  dom.el('channelManagementProfile').value = profile;
-  mod.renderManagementAccountFields(mod.readManagementAccountForm());
+  const select = dom.el('channelManagementProfile');
+  select.value = profile;
+  const changeHandler = select.listeners.get('change');
+  if (changeHandler) changeHandler();
+  else mod.renderManagementAccountFields(mod.readManagementAccountForm());
 }
 
 function deferred() {
@@ -227,7 +230,7 @@ test('首个渠道 URL 只作为初始默认，显式面板地址不被多 URL �
   }
 });
 
-test('管理凭据永不回填，已配置时留空表示保留，关闭 profile 表示清除', () => {
+test('管理凭据和用户 ID 会回填，关闭 profile 表示清除', () => {
   const dom = installManagementDOM();
   try {
     const mod = loadManagementModule();
@@ -236,6 +239,8 @@ test('管理凭据永不回填，已配置时留空表示保留，关闭 profile
     mod.resetManagementAccountDraft({
       profile: 'new_api',
       base_url: 'https://panel.example.com',
+      access_token: 'saved-token',
+      user_id: 41,
       user_id_configured: true,
       daily_checkin_enabled: true,
       daily_checkin_time: '09:30',
@@ -243,15 +248,15 @@ test('管理凭据永不回填，已配置时留空表示保留，关闭 profile
       last_checkin_status: 'success'
     }, ['https://upstream.example.com'], 'api_key');
 
-    assert.equal(dom.el('channelManagementToken').value, '', '脱敏 token 不回填输入框');
-    assert.equal(dom.el('channelManagementUserID').value, '', '脱敏 user_id 不回填输入框');
+    assert.equal(dom.el('channelManagementToken').value, 'saved-token', '已保存 token 应回填输入框');
+    assert.equal(dom.el('channelManagementUserID').value, '41', '已保存 user_id 应回填输入框');
     assert.equal(dom.el('channelManagementTokenHint').hidden, false);
     assert.equal(dom.el('channelManagementDailyCheckinEnabled').checked, true);
     assert.equal(dom.el('channelManagementDailyCheckinTime').value, '09:30');
     assert.equal(
       dom.el('channelManagementUserIDHint').hidden,
       false,
-      'DTO 标记已配置 user_id 时必须告知用户需要在身份变更后重填'
+      'DTO 标记已配置 user_id 时应显示提示'
     );
 
     assert.equal(mod.commitManagementAccountDraft(), true);
@@ -259,6 +264,8 @@ test('管理凭据永不回填，已配置时留空表示保留，关闭 profile
     assert.deepEqual(mod.collectManagementAccountForSubmit(), {
       profile: 'new_api',
       base_url: 'https://panel.example.com',
+      access_token: 'saved-token',
+      user_id: 41,
       daily_checkin_enabled: true,
       daily_checkin_time: '09:30'
     });
@@ -350,10 +357,12 @@ test('切换到未保存的 profile 后必须重新输入凭据', () => {
     mod.resetManagementAccountDraft({
       profile: 'new_api',
       base_url: 'https://panel.example.com',
+      access_token: 'saved-token',
       credential_configured: true
     }, [], 'api_key');
 
     selectProfile(dom, mod, 'sub2api_pro');
+    assert.equal(dom.el('channelManagementToken').value, '', '切换 profile 后不得沿用原凭据');
     assert.equal(mod.validateManagementAccountDraft(), false);
     assert.equal(dom.el('channelManagementToken').getAttribute('aria-invalid'), 'true');
     assert.equal(dom.el('channelManagementTokenHint').hidden, true, '换 profile 后不再提示保留旧凭据');

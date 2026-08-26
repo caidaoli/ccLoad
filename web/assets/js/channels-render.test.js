@@ -493,7 +493,7 @@ test('管理账户只对已配置凭据的 API Key 渠道渲染动作，签到�
     });
     assert.match(standard, /data-action="refresh-management-balance"/);
     assert.doesNotMatch(standard, /data-action="run-management-checkin"/);
-    assert.match(standard, /channels\.management\.checkinUnsupportedHint/);
+    assert.doesNotMatch(standard, /channels\.management\.checkinUnsupportedHint/);
   } finally {
     restore();
   }
@@ -525,6 +525,7 @@ test('只有 used/total/percent 齐备才渲染进度条，缺失用量只显示
     assert.match(html, /role="progressbar"/);
     assert.match(html, /aria-valuenow="62\.5"/);
     assert.match(html, /\$12\.50/);
+    assert.match(html, /class="ch-management__usage-meta">[\s\S]*class="ch-management__usage-text"[\s\S]*class="ch-management__usage-percent"/);
   } finally {
     withUsage();
   }
@@ -547,6 +548,12 @@ test('只有 used/total/percent 齐备才渲染进度条，缺失用量只显示
     assert.match(html, /\$3\.25/);
     assert.doesNotMatch(html, /role="progressbar"/);
     assert.doesNotMatch(html, /aria-valuenow/);
+    assert.match(html, /class="ch-management__summary">[\s\S]*class="ch-management__sampled"[\s\S]*class="ch-management__meta ch-management__meta--remaining"/);
+    assert.match(html, /class="ch-management__meta ch-management__meta--remaining"/);
+    assert.ok(
+      html.indexOf('channels.management.sampledAt') < html.indexOf('channels.management.remaining'),
+      '采样时间应显示在剩余额度之前'
+    );
   } finally {
     withoutUsage();
   }
@@ -649,8 +656,42 @@ test('签到状态以文字呈现并回落到持久化结果', () => {
       }
     });
     assert.match(forbidden, /channels\.management\.status\.credential_forbidden/);
+
+    const disabled = buildManagementAccountStatusHtml({
+      id: 15,
+      auth_type: 'api_key',
+      management_account: {
+        profile: 'new_api',
+        credential_configured: true,
+        last_checkin_status: 'skipped_disabled'
+      }
+    });
+    assert.doesNotMatch(disabled, /channels\.management\.status\.skipped_disabled/);
   } finally {
     persisted();
+  }
+});
+
+test('已签到只显示时间，并紧跟在立即签到按钮后面', () => {
+  const restore = installManagementRenderGlobals({
+    checkinState: {
+      status: 'ready',
+      data: { status: 'already_checked', checked_in_at: '2026-08-25T10:00:00Z' }
+    }
+  });
+  try {
+    const html = buildManagementAccountStatusHtml({
+      id: 14,
+      auth_type: 'api_key',
+      management_account: { profile: 'new_api', credential_configured: true }
+    });
+    const checkinButton = html.indexOf('data-action="run-management-checkin"');
+    const checkinTime = html.indexOf('ch-management__checkin-time');
+    assert.ok(checkinButton >= 0 && checkinTime > checkinButton, '签到时间应位于签到按钮之后');
+    assert.match(html, />\d{2}\/\d{2} \d{2}:\d{2}<\/span>/);
+    assert.doesNotMatch(html, /channels\.management\.status\.already_checked/);
+  } finally {
+    restore();
   }
 });
 

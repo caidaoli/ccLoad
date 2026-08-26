@@ -113,7 +113,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "websockets"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -190,11 +190,11 @@ func TestAdminAPI_ExportChannelsCSVSelectedIDs(t *testing.T) {
 	}
 }
 
-func TestAdminAPI_CSVExportDoesNotExposeChannelManagementEnvelope(t *testing.T) {
+func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
 	ctx := context.Background()
-	managementEnvelope := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"must-not-appear-in-csv"},"state":{}}`
+	managementEnvelope := `{"kind":"channel_management","version":1,"profile":"new_api","settings":{"base_url":"https://panel.example.com","access_token":"management-export-token","daily_checkin_enabled":true,"daily_checkin_time":"09:30"},"state":{"last_scheduled_day":"2026-08-25","last_checkin_status":"success"}}`
 	oauthCredential := `{"type":"codex","access_token":"oauth-export-access","refresh_token":"oauth-export-refresh","expired":"2030-01-01T00:00:00Z"}`
 
 	managed, err := server.store.CreateConfig(ctx, &model.Config{
@@ -207,6 +207,11 @@ func TestAdminAPI_CSVExportDoesNotExposeChannelManagementEnvelope(t *testing.T) 
 	updated, err := server.store.CompareAndSwapChannelManagement(ctx, managed.ID, "", managementEnvelope)
 	if err != nil || !updated {
 		t.Fatalf("seed management envelope = (%v, %v)", updated, err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: managed.ID, KeyIndex: 0, APIKey: "sk-managed-export", KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatal(err)
 	}
 	oauth, err := server.store.CreateConfig(ctx, &model.Config{
 		Name: "OAuth Export", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: oauthCredential,
@@ -222,7 +227,7 @@ func TestAdminAPI_CSVExportDoesNotExposeChannelManagementEnvelope(t *testing.T) 
 	if w.Code != http.StatusOK {
 		t.Fatalf("export status=%d, want 200", w.Code)
 	}
-	if strings.Contains(w.Body.String(), "must-not-appear-in-csv") || strings.Contains(w.Body.String(), "channel_management") {
+	if strings.Contains(w.Body.String(), "management-export-token") || strings.Contains(w.Body.String(), "channel_management") {
 		t.Fatalf("API Key management credential leaked in CSV: %s", w.Body.String())
 	}
 	records, err := csv.NewReader(bytes.NewReader(w.Body.Bytes())).ReadAll()
@@ -240,8 +245,105 @@ func TestAdminAPI_CSVExportDoesNotExposeChannelManagementEnvelope(t *testing.T) 
 	if got := rowsByName[managed.Name][headerIndex["oauth_credential"]]; got != "" {
 		t.Fatalf("API Key oauth_credential=%q, want empty", got)
 	}
+	if got := rowsByName[managed.Name][headerIndex["management_daily_checkin_enabled"]]; got != "true" {
+		t.Fatalf("management_daily_checkin_enabled=%q, want true", got)
+	}
+	if got := rowsByName[managed.Name][headerIndex["management_daily_checkin_time"]]; got != "09:30" {
+		t.Fatalf("management_daily_checkin_time=%q, want 09:30", got)
+	}
 	if got := rowsByName[oauth.Name][headerIndex["oauth_credential"]]; got != oauthCredential {
 		t.Fatalf("OAuth oauth_credential=%q, want original credential", got)
+	}
+	if got := rowsByName[oauth.Name][headerIndex["management_daily_checkin_enabled"]]; got != "" {
+		t.Fatalf("OAuth management_daily_checkin_enabled=%q, want empty", got)
+	}
+	if got := rowsByName[oauth.Name][headerIndex["management_daily_checkin_time"]]; got != "" {
+		t.Fatalf("OAuth management_daily_checkin_time=%q, want empty", got)
+	}
+
+	importCSV := func(fileName string, header, row []string) (int, string) {
+		t.Helper()
+		var csvBody bytes.Buffer
+		csvWriter := csv.NewWriter(&csvBody)
+		if err := csvWriter.Write(header); err != nil {
+			t.Fatal(err)
+		}
+		if err := csvWriter.Write(row); err != nil {
+			t.Fatal(err)
+		}
+		csvWriter.Flush()
+		if err := csvWriter.Error(); err != nil {
+			t.Fatal(err)
+		}
+
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", fileName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(csvBody.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		request := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		importC, importW := newTestContext(t, request)
+		server.HandleImportChannelsCSV(importC)
+		return importW.Code, importW.Body.String()
+	}
+	baseHeader := []string{"name", "api_key", "urls", "models", "auth_type"}
+	baseRow := []string{managed.Name, "sk-managed-export", `[{"url":"https://api.example.com"}]`, "model-1", model.AuthTypeAPIKey}
+	if status, body := importCSV("legacy.csv", baseHeader, baseRow); status != http.StatusOK {
+		t.Fatalf("legacy import status=%d body=%s", status, body)
+	}
+	persisted, err := server.store.GetConfig(ctx, managed.ID)
+	if err != nil || persisted.OAuthCredential != managementEnvelope {
+		t.Fatalf("legacy CSV changed management account: credential=%q err=%v", persisted.OAuthCredential, err)
+	}
+	checkinHeader := append(append([]string(nil), baseHeader...), "management_daily_checkin_enabled", "management_daily_checkin_time")
+	checkinRow := append(append([]string(nil), baseRow...), "true", "10:15")
+	if status, body := importCSV("checkin.csv", checkinHeader, checkinRow); status != http.StatusOK {
+		t.Fatalf("checkin import status=%d body=%s", status, body)
+	}
+	persisted, err = server.store.GetConfig(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedManagement, err := model.ParseChannelManagementEnvelope(persisted.OAuthCredential)
+	if err != nil {
+		t.Fatalf("parse imported management account: %v", err)
+	}
+	if persistedManagement.Settings.AccessToken != "management-export-token" ||
+		!persistedManagement.Settings.DailyCheckinEnabled || persistedManagement.Settings.DailyCheckinTime != "10:15" {
+		t.Fatalf("imported management settings=%+v", persistedManagement.Settings)
+	}
+	if persistedManagement.State.LastScheduledDay != "2026-08-25" || persistedManagement.State.LastCheckinStatus != "success" {
+		t.Fatalf("imported management state changed: %+v", persistedManagement.State)
+	}
+	if status, body := importCSV(
+		"explicit-empty.csv",
+		checkinHeader,
+		append(append([]string(nil), baseRow...), "", ""),
+	); status != http.StatusOK {
+		t.Fatalf("explicit-empty import status=%d body=%s", status, body)
+	}
+	persisted, err = server.store.GetConfig(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedManagement, err = model.ParseChannelManagementEnvelope(persisted.OAuthCredential)
+	if err != nil {
+		t.Fatalf("parse cleared management account: %v", err)
+	}
+	if persistedManagement.Settings.DailyCheckinEnabled || persistedManagement.Settings.DailyCheckinTime != "" {
+		t.Fatalf("explicit empty checkin settings=%+v", persistedManagement.Settings)
+	}
+	if persistedManagement.Settings.AccessToken != "management-export-token" ||
+		persistedManagement.State.LastScheduledDay != "2026-08-25" || persistedManagement.State.LastCheckinStatus != "success" {
+		t.Fatalf("explicit empty checkin changed private management data: %+v", persistedManagement)
 	}
 }
 
@@ -1411,7 +1513,6 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	if err := server.store.CreateAPIKeysBatch(ctx, apiKeys); err != nil {
 		t.Fatalf("创建API Keys失败: %v", err)
 	}
-
 	// 步骤2：导出CSV
 	exportC, exportW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
 	server.HandleExportChannelsCSV(exportC)
@@ -1491,7 +1592,6 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 	if restoredRule.Name != "Round-trip cooldown" || restoredRule.Scope != model.CooldownScopeKey || restoredRule.CooldownSeconds != 90 {
 		t.Fatalf("恢复的冷却探测规则不匹配: %#v", restoredRule)
 	}
-
 	// 验证API Keys
 	restoredKeys, err := server.store.GetAPIKeys(ctx, restoredConfig.ID)
 	if err != nil {

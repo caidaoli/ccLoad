@@ -98,7 +98,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "websockets"}
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -173,6 +173,11 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		if cfg.UsesOAuth() {
 			oauthCredential = cfg.OAuthCredential
 		}
+		managementCheckinEnabled, managementCheckinTime, err := exportChannelManagementCheckin(cfg)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize management checkin for channel %d: %w", cfg.ID, err))
+			return
+		}
 
 		record := []string{
 			strconv.FormatInt(cfg.ID, 10),
@@ -195,6 +200,8 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
 			cfg.GetAuthType(),
 			oauthCredential,
+			managementCheckinEnabled,
+			managementCheckinTime,
 			strconv.FormatBool(cfg.Websockets),
 		}
 		if err := writer.Write(record); err != nil {
@@ -356,6 +363,14 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 		}
 		summary.Created = created
 		summary.Updated = updated
+		for _, channel := range validChannels {
+			if channel == nil || channel.Config == nil || !channel.ChannelManagementCheckinSet {
+				continue
+			}
+			if err := s.applyImportedChannelManagementCheckin(c.Request.Context(), channel); err != nil {
+				summary.Errors = append(summary.Errors, fmt.Sprintf("渠道 %s 签到设置导入失败: %v", channel.Config.Name, err))
+			}
+		}
 
 		// 导入会更新渠道URL，立即清理 URLSelector 中失效URL状态，避免旧状态长期残留。
 		if s.urlSelector != nil {
@@ -392,6 +407,50 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+func (s *Server) applyImportedChannelManagementCheckin(ctx context.Context, channel *model.ChannelWithKeys) error {
+	if channel == nil || channel.Config == nil {
+		return nil
+	}
+	for {
+		cfg, err := s.store.GetConfig(ctx, channel.Config.ID)
+		if err != nil {
+			return err
+		}
+		if cfg == nil || cfg.GetAuthType() != model.AuthTypeAPIKey {
+			return nil
+		}
+		if strings.TrimSpace(cfg.OAuthCredential) == "" {
+			if channel.ChannelManagementCheckinEnabled || channel.ChannelManagementCheckinTime != "" {
+				return errors.New("目标渠道没有可更新的管理账号")
+			}
+			return nil
+		}
+		envelope, err := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)
+		if err != nil {
+			return fmt.Errorf("管理账号无效: %w", err)
+		}
+		envelope.Settings.DailyCheckinEnabled = channel.ChannelManagementCheckinEnabled
+		envelope.Settings.DailyCheckinTime = channel.ChannelManagementCheckinTime
+		if err := envelope.Validate(); err != nil {
+			return fmt.Errorf("签到设置无效: %w", err)
+		}
+		nextRaw, err := envelope.Marshal()
+		if err != nil {
+			return err
+		}
+		updated, err := s.store.CompareAndSwapChannelManagement(ctx, cfg.ID, cfg.OAuthCredential, nextRaw)
+		if err != nil {
+			return err
+		}
+		if updated {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 }
 
 // parseChannelImportRow 解析单行 CSV 记录为渠道配置。
@@ -435,6 +494,11 @@ func (s *Server) parseChannelImportRow(
 	apiKeyModelScopeEmptyRaw := fetch("api_key_model_scope_empty")
 	rawAuthType := fetch("auth_type")
 	oauthCredential := fetch("oauth_credential")
+	rawManagementCheckinEnabled := fetch("management_daily_checkin_enabled")
+	managementCheckinTime := fetch("management_daily_checkin_time")
+	_, managementCheckinEnabledColumn := columnIndex["management_daily_checkin_enabled"]
+	_, managementCheckinTimeColumn := columnIndex["management_daily_checkin_time"]
+	managementCheckinSet := managementCheckinEnabledColumn || managementCheckinTimeColumn
 	urlsRaw := fetch("urls")
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
@@ -470,6 +534,26 @@ func (s *Server) parseChannelImportRow(
 	}
 	if authType != model.AuthTypeAPIKey && apiKey != "" {
 		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含 API Key", lineNo), true
+	}
+	managementCheckinEnabled := false
+	if rawManagementCheckinEnabled != "" {
+		var ok bool
+		managementCheckinEnabled, ok = parseImportEnabled(rawManagementCheckinEnabled)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 management_daily_checkin_enabled 格式错误: %s", lineNo, rawManagementCheckinEnabled), true
+		}
+	}
+	if managementCheckinTime != "" {
+		parsed, err := time.Parse("15:04", managementCheckinTime)
+		if err != nil || parsed.Format("15:04") != managementCheckinTime {
+			return nil, fmt.Sprintf("第%d行 management_daily_checkin_time 格式错误: %s", lineNo, managementCheckinTime), true
+		}
+	}
+	if managementCheckinEnabled && managementCheckinTime == "" {
+		return nil, fmt.Sprintf("第%d行 management_daily_checkin_time 不能为空", lineNo), true
+	}
+	if authType != model.AuthTypeAPIKey && (rawManagementCheckinEnabled != "" || managementCheckinTime != "") {
+		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含管理账号设置", lineNo), true
 	}
 	if authType != model.AuthTypeAPIKey {
 		var err error
@@ -726,9 +810,23 @@ func (s *Server) parseChannelImportRow(
 	}
 
 	return &model.ChannelWithKeys{
-		Config:  cfg,
-		APIKeys: apiKeys,
+		Config:                          cfg,
+		APIKeys:                         apiKeys,
+		ChannelManagementCheckinSet:     managementCheckinSet,
+		ChannelManagementCheckinEnabled: managementCheckinEnabled,
+		ChannelManagementCheckinTime:    managementCheckinTime,
 	}, "", false
+}
+
+func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime string, err error) {
+	if cfg == nil || cfg.GetAuthType() != model.AuthTypeAPIKey || strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return "", "", nil
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)
+	if err != nil {
+		return "", "", err
+	}
+	return strconv.FormatBool(envelope.Settings.DailyCheckinEnabled), envelope.Settings.DailyCheckinTime, nil
 }
 
 func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
@@ -1043,6 +1141,10 @@ func normalizeCSVHeader(name string) string {
 		return "scheduled_check_enabled"
 	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":
 		return "scheduled_check_model"
+	case "management-daily-checkin-enabled", "managementdailycheckinenabled", "management daily checkin enabled":
+		return "management_daily_checkin_enabled"
+	case "management-daily-checkin-time", "managementdailycheckintime", "management daily checkin time":
+		return "management_daily_checkin_time"
 	case "status":
 		return "enabled"
 	default:

@@ -2184,7 +2184,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.management.tokenKeepHint': '已保存凭据。留空表示保留，填写则替换。',
   'channels.management.userID': '用户 ID',
   'channels.management.userIDHelp': '可选，仅 New API 使用；留空则不发送该请求头。',
-  'channels.management.userIDConfiguredHint': '已配置用户 ID。更改管理凭据或面板地址后必须重新输入。',
+  'channels.management.userIDConfiguredHint': '已配置用户 ID，可直接修改。',
   'channels.management.dailyCheckin': '每日自动签到',
   'channels.management.dailyCheckinTime': '签到时间',
   'channels.management.dailyCheckinHelp': '按服务器本地时间执行，格式 HH:MM。',

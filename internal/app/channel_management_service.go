@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 const (
 	channelManagementOperationTimeout = 30 * time.Second
 	managementResponseBodyLimit       = 64 * 1024
+	managementErrorMessageLimit       = 1024
 )
 
 var (
@@ -75,6 +77,116 @@ type managementHTTPResult struct {
 	StatusCode   int
 	Body         []byte
 	WroteRequest bool
+}
+
+// managementErrorWithDetail keeps the stable internal error identity while
+// carrying a bounded, non-sensitive message for the admin response.
+type managementErrorWithDetail struct {
+	cause  error
+	detail string
+}
+
+func (e *managementErrorWithDetail) Error() string {
+	if e == nil || e.cause == nil {
+		return "management_request_failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *managementErrorWithDetail) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func managementErrorDetail(err error) string {
+	var detailed *managementErrorWithDetail
+	if !errors.As(err, &detailed) || detailed == nil {
+		return ""
+	}
+	return detailed.detail
+}
+
+func withManagementErrorDetail(cause error, result *managementHTTPResult, accessToken string) error {
+	if cause == nil {
+		return nil
+	}
+	detail := extractManagementErrorDetail(result, accessToken)
+	if detail == "" {
+		return cause
+	}
+	return &managementErrorWithDetail{cause: cause, detail: detail}
+}
+
+// extractManagementErrorDetail returns only a short message field (or safe
+// plain text). The complete upstream body is intentionally never reflected to
+// an admin client because it may contain credentials or request headers.
+func extractManagementErrorDetail(result *managementHTTPResult, accessToken string) string {
+	if result == nil || len(result.Body) == 0 {
+		return ""
+	}
+	body := bytes.TrimSpace(result.Body)
+	if len(body) == 0 {
+		return ""
+	}
+
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) == nil {
+		for _, key := range []string{"message", "error_description", "error", "reason", "detail"} {
+			if detail := managementJSONMessage(fields[key]); detail != "" {
+				if sanitized := sanitizeManagementErrorDetail(detail, accessToken); sanitized != "" {
+					return sanitized
+				}
+			}
+		}
+		return ""
+	}
+	if body[0] == '{' || body[0] == '[' || body[0] == '"' {
+		return ""
+	}
+
+	return sanitizeManagementErrorDetail(string(body), accessToken)
+}
+
+func managementJSONMessage(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var nested map[string]json.RawMessage
+	if json.Unmarshal(raw, &nested) != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "detail", "error", "reason"} {
+		if value := managementJSONMessage(nested[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func sanitizeManagementErrorDetail(value, accessToken string) string {
+	detail := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if detail == "" {
+		return ""
+	}
+	if len(detail) > managementErrorMessageLimit {
+		detail = detail[:managementErrorMessageLimit]
+	}
+	lower := strings.ToLower(detail)
+	for _, marker := range []string{"authorization", "bearer ", "access_token", "refresh_token", "api_key"} {
+		if strings.Contains(lower, marker) {
+			return ""
+		}
+	}
+	if token := strings.TrimSpace(accessToken); token != "" && strings.Contains(detail, token) {
+		return ""
+	}
+	return detail
 }
 
 type channelManagementService struct {

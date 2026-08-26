@@ -2,7 +2,7 @@
  * 渠道管理账户（New API / 标准 Sub2API / Sub2API Pro）前端交互。
  *
  * 与 OAuth 凭据体系完全隔离：编辑器只提交 `management_account`，绝不触碰
- * `oauth_credential`；服务端返回的凭据始终是脱敏视图，token 与 user_id 永不回填。
+ * `oauth_credential`；管理账户凭据只在已鉴权的编辑器接口中返回并回填。
  * 额度刷新与签到各自持有独立的 operation sequence、loading 与 error 状态，
  * 互不禁用，陈旧响应也不会覆盖新响应。
  */
@@ -175,7 +175,12 @@ function bindManagementProfileChange(select) {
   if (!select || select.dataset.managementProfileBound === '1') return;
   select.dataset.managementProfileBound = '1';
   select.addEventListener('change', () => {
-    renderManagementAccountFields(readManagementAccountForm());
+    const draft = readManagementAccountForm();
+    if (draft.profile !== managementAccountSavedProfile) {
+      // Credentials belong to the saved profile and must not carry across profiles.
+      draft.access_token = '';
+    }
+    renderManagementAccountFields(draft);
     if (typeof window !== 'undefined' && typeof window.markChannelFormDirty === 'function') {
       window.markChannelFormDirty();
     }
@@ -236,7 +241,7 @@ function renderManagementAccountFields(draft) {
     hint.hidden = !(fields.token && managementAccountCredentialConfigured && profile === managementAccountSavedProfile);
   }
 
-  // user_id 与凭据一样不回填；已配置时明确提醒身份变更需要重新输入。
+  // 编辑器接口会返回已保存的 user_id；保留配置标记用于兼容旧响应。
   const userIDHint = managementElement('channelManagementUserIDHint');
   if (userIDHint) {
     userIDHint.hidden = !(
@@ -267,8 +272,10 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
   managementAccountState = {
     profile: managementAccountSavedProfile,
     base_url: savedBaseURL || firstManagementBaseURL(channelURLs),
-    access_token: '',
-    user_id: '',
+    access_token: String((account && account.access_token) || '').trim(),
+    user_id: account && account.user_id !== null && account.user_id !== undefined
+      ? String(account.user_id)
+      : '',
     daily_checkin_enabled: Boolean(account && account.daily_checkin_enabled === true),
     daily_checkin_time: String((account && account.daily_checkin_time) || '').trim()
   };

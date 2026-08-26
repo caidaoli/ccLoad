@@ -867,6 +867,10 @@ func (k *APIKey) AllowsModel(modelName string) bool {
 type ChannelWithKeys struct {
 	Config  *Config  `json:"config"`
 	APIKeys []APIKey `json:"api_keys"` // 不使用指针避免额外分配
+	// CSV 导入暂存字段；管理账号封套本身不得进入导入导出数据。
+	ChannelManagementCheckinSet     bool   `json:"-"`
+	ChannelManagementCheckinEnabled bool   `json:"-"`
+	ChannelManagementCheckinTime    string `json:"-"`
 }
 
 // FuzzyMatchModel 模糊匹配模型名称

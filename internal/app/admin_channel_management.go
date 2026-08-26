@@ -92,6 +92,10 @@ func channelManagementErrorCode(err error) (int, string) {
 
 func respondChannelManagementError(c *gin.Context, err error) {
 	status, code := channelManagementErrorCode(err)
+	if detail := managementErrorDetail(err); detail != "" {
+		RespondErrorMsg(c, status, detail)
+		return
+	}
 	RespondErrorMsg(c, status, code)
 }
 

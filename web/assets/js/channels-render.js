@@ -964,13 +964,16 @@ function buildManagementBalanceHtml(balance) {
   });
   const subscriptions = buildManagementSubscriptionRows(balance?.subscriptions, unit);
   if (!remaining && !usageBar && !subscriptions) return '';
-  return `<div class="ch-management__balance">
-    ${remaining ? `<div class="ch-management__meta">
+  const balanceSummary = [
+    sampledAt ? `<span class="ch-management__sampled">${escapeChannelRefreshText(window.t('channels.management.sampledAt', { time: sampledAt }))}</span>` : '',
+    remaining ? `<div class="ch-management__meta ch-management__meta--remaining">
       <span class="ch-management__label">${escapeChannelRefreshText(window.t('channels.management.remaining'))}</span>
       <span class="ch-management__amount">${escapeChannelRefreshText(remaining)}</span>
-    </div>` : ''}
+    </div>` : ''
+  ].filter(Boolean).join('');
+  return `<div class="ch-management__balance">
+    ${balanceSummary ? `<div class="ch-management__summary">${balanceSummary}</div>` : ''}
     ${usageBar}${subscriptions}
-    ${sampledAt ? `<span class="ch-management__sampled">${escapeChannelRefreshText(window.t('channels.management.sampledAt', { time: sampledAt }))}</span>` : ''}
   </div>`;
 }
 
@@ -988,6 +991,20 @@ function buildManagementAccountStatusHtml(channel) {
     managementSupportsCheckin(profile)
   );
 
+  // 本次签到结果优先;没有进行中的签到时回落到持久化的最近一次结果。
+  const liveStatus = checkinState?.status === 'ready' ? String(checkinState.data?.status || '').trim() : '';
+  const savedStatus = String(account?.last_checkin_status || '').trim();
+  const checkinStatus = liveStatus || savedStatus;
+  const statusText = formatManagementCheckinStatus(checkinStatus);
+  const isCompletedCheckin = checkinStatus === 'success' || checkinStatus === 'already_checked';
+  const checkedInAt = isCompletedCheckin
+    ? formatXAIUsageReset(liveStatus ? checkinState.data?.checked_in_at : account?.last_checkin_at)
+    : '';
+  const reward = liveStatus ? Number(checkinState.data?.reward) : NaN;
+  const rewardText = Number.isFinite(reward) && reward > 0
+    ? window.t('channels.management.reward', { amount: formatManagementAmount(reward, balanceState?.data?.balance?.unit) })
+    : '';
+
   const buttons = [buildManagementActionButton(
     'refresh-management-balance', channel.id,
     'channels.management.refreshBalance', 'channels.management.refreshingBalance',
@@ -1001,6 +1018,10 @@ function buildManagementAccountStatusHtml(channel) {
     ));
   }
 
+  if (checkedInAt) {
+    buttons.push(`<span class="ch-management__checkin-time" role="status">${escapeChannelRefreshText(checkedInAt)}</span>`);
+  }
+
   const balanceError = balanceState?.status === 'error' ? String(balanceState.error || '').trim() : '';
   const checkinError = checkinState?.status === 'error' ? String(checkinState.error || '').trim() : '';
   const balanceData = balanceState?.status === 'ready'
@@ -1008,24 +1029,16 @@ function buildManagementAccountStatusHtml(channel) {
     : (balanceState ? null : account?.balance);
   const balanceBody = buildManagementBalanceHtml(balanceData);
 
-  // 本次签到结果优先;没有进行中的签到时回落到持久化的最近一次结果。
-  const liveStatus = checkinState?.status === 'ready' ? String(checkinState.data?.status || '').trim() : '';
-  const statusText = formatManagementCheckinStatus(
-    liveStatus || (checkinState ? '' : String(account?.last_checkin_status || '').trim())
-  );
-  const checkedInAt = formatXAIUsageReset(liveStatus ? checkinState.data?.checked_in_at : account?.last_checkin_at);
-  const reward = liveStatus ? Number(checkinState.data?.reward) : NaN;
-  const rewardText = Number.isFinite(reward) && reward > 0
-    ? window.t('channels.management.reward', { amount: formatManagementAmount(reward, balanceState?.data?.balance?.unit) })
-    : '';
-  const checkinSummary = [statusText, rewardText, checkedInAt].filter(Boolean).join(' · ');
+  const checkinSummary = checkinStatus === 'already_checked'
+    || checkinStatus === 'skipped_disabled'
+    ? ''
+    : [statusText, rewardText].filter(Boolean).join(' · ');
 
   return `<div class="ch-management">
     <div class="ch-management__toolbar">${buttons.join('')}</div>
-    ${supportsCheckin ? '' : `<div class="ch-management__notice" role="status">${escapeChannelRefreshText(window.t('channels.management.checkinUnsupportedHint'))}</div>`}
     ${balanceError ? `<div class="ch-management__error" role="status" title="${escapeChannelRefreshText(balanceError)}">${escapeChannelRefreshText(balanceError)}</div>` : ''}
     ${balanceBody}
-    ${statusText ? `<div class="ch-management__checkin" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
+    ${checkinSummary ? `<div class="ch-management__checkin" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
     ${checkinError ? `<div class="ch-management__error" role="status" title="${escapeChannelRefreshText(checkinError)}">${escapeChannelRefreshText(checkinError)}</div>` : ''}
   </div>`;
 }

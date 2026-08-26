@@ -2184,7 +2184,7 @@ window.I18N_LOCALES['en'] = {
   'channels.management.tokenKeepHint': 'A credential is saved. Leave this empty to keep it, or enter a new one to replace it.',
   'channels.management.userID': 'User ID',
   'channels.management.userIDHelp': 'Optional, New API only. Leave empty to omit the header.',
-  'channels.management.userIDConfiguredHint': 'A user ID is saved. Re-enter it after changing the management credential or panel URL.',
+  'channels.management.userIDConfiguredHint': 'A user ID is saved and can be edited directly.',
   'channels.management.dailyCheckin': 'Check in daily',
   'channels.management.dailyCheckinTime': 'Check-in time',
   'channels.management.dailyCheckinHelp': 'Runs in server local time, formatted HH:MM.',

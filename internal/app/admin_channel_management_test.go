@@ -236,7 +236,7 @@ func TestChannelManagementUpdateRejectsCredentialFieldsByPresence(t *testing.T) 
 	}
 }
 
-func TestChannelManagementListDetailAndEditorExposeOnlyRedactedView(t *testing.T) {
+func TestChannelManagementResponsesLimitCredentialsToEditor(t *testing.T) {
 	server := newInMemoryServer(t)
 	stored := createManagedChannelThroughHandler(t, server, "managed-views")
 
@@ -268,6 +268,12 @@ func TestChannelManagementListDetailAndEditorExposeOnlyRedactedView(t *testing.T
 			if !strings.Contains(body, `"management_account"`) || !strings.Contains(body, `"credential_configured":true`) {
 				t.Fatalf("redacted management view missing: %s", body)
 			}
+			if request.name == "editor" {
+				if !strings.Contains(body, `"access_token":"`+managementAccountSecret+`"`) {
+					t.Fatalf("editor management credential missing: %s", body)
+				}
+				return
+			}
 			for _, secret := range []string{managementAccountSecret, `"channel_management"`, `"access_token"`, `"settings"`} {
 				if strings.Contains(body, secret) {
 					t.Fatalf("%s response leaked %q: %s", request.name, secret, body)
@@ -277,15 +283,16 @@ func TestChannelManagementListDetailAndEditorExposeOnlyRedactedView(t *testing.T
 	}
 }
 
-func TestChannelManagementOAuthCredentialSurfacesRejectAPIKeyEnvelope(t *testing.T) {
+func TestChannelManagementEditorExposesCredentialsOnlyInEditor(t *testing.T) {
 	server := newInMemoryServer(t)
 	stored := createManagedChannelThroughHandler(t, server, "managed-oauth-guards")
 
 	editorCtx, editorW := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/editor", stored.ID), nil))
 	editorCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
 	server.HandleChannelEditor(editorCtx)
-	if editorW.Code != http.StatusOK || strings.Contains(editorW.Body.String(), `"oauth_credential"`) || strings.Contains(editorW.Body.String(), managementAccountSecret) {
-		t.Fatalf("editor exposed private envelope: status=%d body=%s", editorW.Code, editorW.Body.String())
+	if editorW.Code != http.StatusOK || strings.Contains(editorW.Body.String(), `"oauth_credential"`) ||
+		!strings.Contains(editorW.Body.String(), `"access_token":"`+managementAccountSecret+`"`) {
+		t.Fatalf("editor credential response invalid: status=%d body=%s", editorW.Code, editorW.Body.String())
 	}
 
 	keysCtx, keysW := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/keys", stored.ID), nil))
@@ -300,6 +307,25 @@ func TestChannelManagementOAuthCredentialSurfacesRejectAPIKeyEnvelope(t *testing
 	server.HandleRefreshCodexCredential(refreshCtx)
 	if refreshW.Code != http.StatusConflict || strings.Contains(refreshW.Body.String(), managementAccountSecret) || strings.Contains(refreshW.Body.String(), `"channel_management"`) {
 		t.Fatalf("refresh guard status=%d body=%s", refreshW.Code, refreshW.Body.String())
+	}
+}
+
+func TestChannelManagementEditorExposesSavedUserID(t *testing.T) {
+	server := newInMemoryServer(t)
+	userID := int64(42)
+	stored := seedManagementEnvelope(t, server, "managed-editor-user-id", &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
+		Profile: model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{
+			BaseURL: "https://panel.example.com", AccessToken: managementAccountSecret, UserID: &userID,
+		},
+	})
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/editor", stored.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelEditor(c)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"user_id":42`) {
+		t.Fatalf("editor user ID missing: status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -451,10 +477,29 @@ func TestChannelManagementHandlerErrorMappingIsStableAndSafe(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "upstream-body-secret Authorization: Bearer private", http.StatusServiceUnavailable)
 	}))
+	upstreamWithDetail := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"management token rejected"}`))
+	}))
+	businessFailureUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false,"message":"quota endpoint denied"}`))
+	}))
 	upstreamFailure := seedManagementEnvelope(t, server, "upstream-failure", &model.ChannelManagementEnvelope{
 		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
 		Profile:  model.ChannelManagementProfileNewAPI,
 		Settings: model.ChannelManagementSettings{BaseURL: upstream.URL, AccessToken: managementAccountSecret, UserID: &userID},
+	})
+	upstreamDetailFailure := seedManagementEnvelope(t, server, "upstream-detail-failure", &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
+		Profile:  model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{BaseURL: upstreamWithDetail.URL, AccessToken: managementAccountSecret, UserID: &userID},
+	})
+	businessFailure := seedManagementEnvelope(t, server, "business-failure", &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
+		Profile:  model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{BaseURL: businessFailureUpstream.URL, AccessToken: managementAccountSecret, UserID: &userID},
 	})
 	invalidResponse := seedManagementEnvelope(t, server, "invalid-response", &model.ChannelManagementEnvelope{
 		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
@@ -473,6 +518,8 @@ func TestChannelManagementHandlerErrorMappingIsStableAndSafe(t *testing.T) {
 		{name: "unmanaged API key", channelID: unmanaged.ID, wantStatus: http.StatusConflict, wantError: "credential_invalid"},
 		{name: "invalid response", channelID: invalidResponse.ID, wantStatus: http.StatusBadGateway, wantError: "invalid_response"},
 		{name: "upstream failure", channelID: upstreamFailure.ID, wantStatus: http.StatusBadGateway, wantError: "upstream_error"},
+		{name: "upstream detail", channelID: upstreamDetailFailure.ID, wantStatus: http.StatusBadGateway, wantError: "management token rejected"},
+		{name: "business failure detail", channelID: businessFailure.ID, wantStatus: http.StatusBadGateway, wantError: "quota endpoint denied"},
 		{name: "missing channel", channelID: 999999, wantStatus: http.StatusNotFound, wantError: "credential_invalid"},
 		{name: "invalid channel id", param: "invalid", wantStatus: http.StatusBadRequest, wantError: "invalid_response"},
 	}

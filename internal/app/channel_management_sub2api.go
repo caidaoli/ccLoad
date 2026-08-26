@@ -126,8 +126,13 @@ func (s *channelManagementService) checkInSub2APIPro(
 	if postErr == nil {
 		postResponse, decodeErr := decodeSub2APIResponse[sub2APIProCheckinSuccess](postResult.Body)
 		if postResult.StatusCode >= http.StatusOK && postResult.StatusCode < http.StatusMultipleChoices {
-			if decodeErr != nil || postResponse.Code != 0 {
+			if decodeErr != nil {
 				return nil, nil, errInvalidManagementResponse
+			}
+			if postResponse.Code != 0 {
+				return nil, nil, withManagementErrorDetail(
+					errInvalidManagementResponse, postResult, envelope.Settings.AccessToken,
+				)
 			}
 			reward, responseCheckedAt, valid := validSub2APIProCheckinSuccess(postResponse.Data)
 			if !valid {
@@ -145,7 +150,9 @@ func (s *channelManagementService) checkInSub2APIPro(
 			return result, nil, nil
 		}
 		if !postResult.WroteRequest {
-			return nil, nil, errManagementRequestFailed
+			return nil, nil, withManagementErrorDetail(
+				errManagementRequestFailed, postResult, envelope.Settings.AccessToken,
+			)
 		}
 		return s.resolveAmbiguousSub2APIProCheckin(ctx, cfg, envelope, baseURL, postResult, checkedAt)
 	}
@@ -191,11 +198,23 @@ func (s *channelManagementService) getSub2APIProCheckinStatus(
 	response, decodeErr := decodeSub2APIResponse[sub2APIProCheckinStatus](result.Body)
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
 		if decodeErr != nil {
-			return nil, result, errManagementRequestFailed
+			return nil, result, withManagementErrorDetail(
+				errManagementRequestFailed, result, envelope.Settings.AccessToken,
+			)
 		}
-		return response, result, errManagementRequestFailed
+		return response, result, withManagementErrorDetail(
+			errManagementRequestFailed, result, envelope.Settings.AccessToken,
+		)
 	}
-	if decodeErr != nil || response.Code != 0 || response.Data.Enabled == nil || response.Data.CheckedInToday == nil {
+	if decodeErr != nil {
+		return nil, result, errInvalidManagementResponse
+	}
+	if response.Code != 0 {
+		return nil, result, withManagementErrorDetail(
+			errInvalidManagementResponse, result, envelope.Settings.AccessToken,
+		)
+	}
+	if response.Data.Enabled == nil || response.Data.CheckedInToday == nil {
 		return nil, result, errInvalidManagementResponse
 	}
 	return response, result, nil
@@ -273,11 +292,20 @@ func (s *channelManagementService) refreshSub2APIBalance(
 		return nil, managementStatusCode(authResult), err
 	}
 	if authResult.StatusCode < http.StatusOK || authResult.StatusCode >= http.StatusMultipleChoices {
-		return nil, authResult.StatusCode, errManagementRequestFailed
+		return nil, authResult.StatusCode, withManagementErrorDetail(
+			errManagementRequestFailed, authResult, envelope.Settings.AccessToken,
+		)
 	}
 	authResponse, err := decodeSub2APIResponse[sub2APIAuthMe](authResult.Body)
-	if err != nil || authResponse.Code != 0 || authResponse.Data.Balance == nil ||
-		!finiteNonNegative(*authResponse.Data.Balance) {
+	if err != nil {
+		return nil, authResult.StatusCode, errInvalidManagementResponse
+	}
+	if authResponse.Code != 0 {
+		return nil, authResult.StatusCode, withManagementErrorDetail(
+			errInvalidManagementResponse, authResult, envelope.Settings.AccessToken,
+		)
+	}
+	if authResponse.Data.Balance == nil || !finiteNonNegative(*authResponse.Data.Balance) {
 		return nil, authResult.StatusCode, errInvalidManagementResponse
 	}
 
@@ -309,7 +337,9 @@ func (s *channelManagementService) fetchSub2APISubscriptions(
 		return s.fetchSub2APIActiveSubscriptions(ctx, cfg, envelope, baseURL)
 	}
 	if summaryResult.StatusCode < http.StatusOK || summaryResult.StatusCode >= http.StatusMultipleChoices {
-		return nil, summaryResult.StatusCode, errManagementRequestFailed
+		return nil, summaryResult.StatusCode, withManagementErrorDetail(
+			errManagementRequestFailed, summaryResult, envelope.Settings.AccessToken,
+		)
 	}
 	if decodeErr != nil || summaryResponse.Code != 0 || summaryResponse.Data.Subscriptions == nil ||
 		summaryResponse.Data.ActiveCount != nil && *summaryResponse.Data.ActiveCount < 0 ||
@@ -332,11 +362,18 @@ func (s *channelManagementService) fetchSub2APIActiveSubscriptions(
 		return nil, managementStatusCode(activeResult), err
 	}
 	if activeResult.StatusCode < http.StatusOK || activeResult.StatusCode >= http.StatusMultipleChoices {
-		return nil, activeResult.StatusCode, errManagementRequestFailed
+		return nil, activeResult.StatusCode, withManagementErrorDetail(
+			errManagementRequestFailed, activeResult, envelope.Settings.AccessToken,
+		)
 	}
 	activeResponse, err := decodeSub2APIResponse[[]sub2APIActiveSubscription](activeResult.Body)
-	if err != nil || activeResponse.Code != 0 {
+	if err != nil {
 		return nil, activeResult.StatusCode, errInvalidManagementResponse
+	}
+	if activeResponse.Code != 0 {
+		return nil, activeResult.StatusCode, withManagementErrorDetail(
+			errInvalidManagementResponse, activeResult, envelope.Settings.AccessToken,
+		)
 	}
 	return sub2APIActiveSubscriptions(activeResponse.Data), activeResult.StatusCode, nil
 }
