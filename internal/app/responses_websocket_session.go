@@ -118,6 +118,12 @@ func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayReq
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(s.lastRequest) > 0 {
+		// replayRequest 会作为新上游 transport 的第一次请求发送。只清理
+		// execution session 已积累的不可移植 reasoning；真正的客户端首请求
+		// 必须原样保留，握手失败后的同渠道 HTTP fallback 也依赖这个契约。
+		replayRequest = responsesReplayWithoutNonPortableReasoning(replayRequest)
+	}
 	if replacementReplay {
 		s.replacementReplayRequired = false
 		return replayRequest, bytes.Clone(replayRequest), nil
@@ -483,4 +489,40 @@ func finalizeResponsesWebsocketRequest(payload []byte, maxBodyBytes int64) ([]by
 		return nil, err
 	}
 	return enforceResponsesWebsocketTranscriptLimit(payload, maxBodyBytes)
+}
+
+// responsesReplayWithoutNonPortableReasoning removes stored reasoning
+// references that cannot survive store=false or a transport/account boundary.
+// encrypted_content is the self-contained representation for stateless replay.
+// Message and tool items are wire-visible transcript and retain their required IDs.
+func responsesReplayWithoutNonPortableReasoning(payload []byte) []byte {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return payload
+	}
+	items := input.Array()
+	filtered := make([]json.RawMessage, 0, len(items))
+	changed := false
+	for _, item := range items {
+		itemID := strings.TrimSpace(item.Get("id").String())
+		encrypted := item.Get("encrypted_content")
+		if item.Get("type").String() == "reasoning" && itemID != "" &&
+			(encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "") {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, json.RawMessage(item.Raw))
+	}
+	if !changed {
+		return payload
+	}
+	encoded, err := json.Marshal(filtered)
+	if err != nil {
+		return payload
+	}
+	updated, err := sjson.SetRawBytes(payload, "input", encoded)
+	if err != nil {
+		return payload
+	}
+	return updated
 }

@@ -835,6 +835,23 @@ func TestResponsesRetryBodyForMissingStoredInputItem_IgnoresNonMatchingErrors(t 
 			}
 		})
 	}
+
+	for _, itemType := range []string{"message", "function_call", "custom_tool_call"} {
+		t.Run("preserve "+itemType, func(t *testing.T) {
+			t.Parallel()
+			const itemID = "item_must_survive"
+			body := []byte(`{"input":[{"type":"` + itemType + `","id":"` + itemID + `"}]}`)
+			res := &fwResult{
+				Status: http.StatusNotFound,
+				Body:   []byte(`{"error":{"message":"Item with id '` + itemID + `' not found"}}`),
+			}
+			if _, _, ok := responsesRetryBodyForMissingStoredInputItem(
+				protocol.TransformPlan{TranslatedBody: body}, res,
+			); ok {
+				t.Fatalf("%s item must not be removed from a full replay", itemType)
+			}
+		})
+	}
 }
 
 func TestWriteSyntheticSSEFrameRoundTripsMultilineJSON(t *testing.T) {

@@ -106,9 +106,10 @@ func responsesBodyWithoutInputIndex(body []byte, index int) ([]byte, bool) {
 	return encoded, true
 }
 
-// responsesRetryBodyForMissingStoredInputItem 在上游按 ID 找不到 input 项时
+// responsesRetryBodyForMissingStoredInputItem 在上游按 ID 找不到 reasoning 项时
 // （store=false 的典型 404，也可能落在 SSE/WS 的 HTTP 200 错误事件里），
-// 丢掉该 id 对应的 input 项，供同渠道重试。响应已提交则不能换 body。
+// 丢掉该 id 对应的 reasoning 项，供同渠道重试。assistant message 和工具项的
+// id 是完整 replay 的 wire contract，不能删除。响应已提交则不能换 body。
 func responsesRetryBodyForMissingStoredInputItem(
 	plan protocol.TransformPlan,
 	res *fwResult,
@@ -124,7 +125,7 @@ func responsesRetryBodyForMissingStoredInputItem(
 	if !ok {
 		return nil, "", false
 	}
-	retryBody, ok := responsesBodyWithoutInputID(plan.TranslatedBody, id)
+	retryBody, ok := responsesBodyWithoutMissingReasoningID(plan.TranslatedBody, id)
 	if !ok {
 		return nil, "", false
 	}
@@ -178,7 +179,7 @@ func parseMissingStoredInputItemID(message string) (string, bool) {
 	return "", false
 }
 
-func responsesBodyWithoutInputID(body []byte, id string) ([]byte, bool) {
+func responsesBodyWithoutMissingReasoningID(body []byte, id string) ([]byte, bool) {
 	if id == "" {
 		return nil, false
 	}
@@ -199,7 +200,10 @@ func responsesBodyWithoutInputID(body []byte, id string) ([]byte, bool) {
 			continue
 		}
 		itemID, _ := obj["id"].(string)
-		if itemID == id {
+		itemType, _ := obj["type"].(string)
+		// reasoning 可以在 stateless replay 中省略；message/tool item 不能，
+		// 否则会丢上下文或制造不符合 Responses Create schema 的对象。
+		if itemID == id && itemType == "reasoning" {
 			removed = true
 			continue
 		}
@@ -221,5 +225,5 @@ func codexWebsocketMissingStoredInputRetryBody(replayBody, payload []byte) ([]by
 	if !ok {
 		return nil, false
 	}
-	return responsesBodyWithoutInputID(replayBody, id)
+	return responsesBodyWithoutMissingReasoningID(replayBody, id)
 }

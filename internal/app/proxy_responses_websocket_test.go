@@ -1549,6 +1549,31 @@ func TestBuildCodexWebsocketRequestBodySanitizesInputItemIDs(t *testing.T) {
 	}
 }
 
+func TestResponsesReplayDropsOnlyNonPortableReasoning(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","input":[` +
+		`{"type":"reasoning","id":"rs_drop","summary":[]},` +
+		`{"type":"reasoning","id":"rs_keep","encrypted_content":"opaque","summary":[]},` +
+		`{"type":"message","id":"msg_keep","role":"assistant","content":[{"type":"output_text","text":"answer"}]},` +
+		`{"type":"function_call","id":"fc_keep","call_id":"call_1","name":"lookup","arguments":"{}"},` +
+		`{"type":"function_call_output","id":"fco_keep","call_id":"call_1","output":"done"},` +
+		`{"type":"custom_tool_call","id":"ctc_keep","call_id":"custom_1","name":"shell","input":"pwd"},` +
+		`{"type":"custom_tool_call_output","id":"ctco_keep","call_id":"custom_1","output":"ok"}` +
+		`]}`)
+
+	got := responsesReplayWithoutNonPortableReasoning(body)
+	if gjson.GetBytes(got, "input.#").Int() != 6 {
+		t.Fatalf("replay input count=%d, want 6: %s", gjson.GetBytes(got, "input.#").Int(), got)
+	}
+	if gjson.GetBytes(got, `input.#(id=="rs_drop")`).Exists() {
+		t.Fatalf("non-portable reasoning survived replay: %s", got)
+	}
+	for _, id := range []string{"rs_keep", "msg_keep", "fc_keep", "fco_keep", "ctc_keep", "ctco_keep"} {
+		if !gjson.GetBytes(got, `input.#(id=="`+id+`").id`).Exists() {
+			t.Fatalf("replay lost required item id %q: %s", id, got)
+		}
+	}
+}
+
 func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
 	requests := make(chan map[string]any, 2)
 	var turn atomic.Int32
@@ -5613,7 +5638,8 @@ func TestNativeCodexWebsocketMissingStoredInputItemReconnectsWithStrippedReplay(
 			map[string]any{"type": "message", "role": "user", "content": "keep going"},
 			map[string]any{
 				"type": "reasoning", "id": missingID,
-				"summary": []any{map[string]any{"type": "summary_text", "text": "prior"}},
+				"encrypted_content": "opaque",
+				"summary":           []any{map[string]any{"type": "summary_text", "text": "prior"}},
 			},
 			map[string]any{
 				"type": "message", "id": "msg_item_keep", "role": "assistant",
@@ -6483,6 +6509,7 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 	t.Helper()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var primaryHandshakes atomic.Int32
+	primaryRecoveryBodies := make(chan []byte, 1)
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -6490,9 +6517,36 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		primaryHandshakes.Add(1)
-		if _, _, err := conn.ReadMessage(); err != nil {
+		connection := primaryHandshakes.Add(1)
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
 			t.Errorf("read %s request: %v", failureName, err)
+			return
+		}
+		if connection > 2 {
+			for _, item := range gjson.GetBytes(payload, "input").Array() {
+				if item.Get("type").String() != "reasoning" {
+					continue
+				}
+				missingID := item.Get("id").String()
+				_ = conn.WriteJSON(map[string]any{
+					"type": "error", "status": http.StatusNotFound,
+					"error": map[string]any{
+						"type": "invalid_request_error", "code": nil,
+						"message": "Item with id '" + missingID + "' not found. Items are not persisted when store is set to false.",
+						"param":   "input",
+					},
+				})
+				return
+			}
+			primaryRecoveryBodies <- bytes.Clone(payload)
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp-primary-recovered", "status": "completed", "output": []any{},
+					"usage": map[string]any{"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+				},
+			})
 			return
 		}
 		if err := conn.WriteJSON(map[string]any{
@@ -6519,7 +6573,7 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\n")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fallback\",\"status\":\"completed\",\"output\":[]}}\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-fallback","status":"completed","output":[{"type":"reasoning","id":"rs_http_fallback_1","summary":[]},{"type":"reasoning","id":"rs_http_fallback_2","summary":[]},{"type":"function_call","id":"fc_http_fallback","call_id":"call_http_fallback","name":"lookup","arguments":"{}"},{"type":"message","id":"msg_http_fallback","status":"completed","role":"assistant","content":[{"type":"output_text","text":"use the tool"}]}]}}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer fallback.Close()
@@ -6597,6 +6651,7 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 	assertNoModelCooldown()
 
 	third := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-b")
+	defer func() { _ = third.Close() }()
 	if err := third.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set fallback deadline: %v", err)
 	}
@@ -6611,6 +6666,52 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 	if gjson.GetBytes(fallbackBody, "previous_response_id").Exists() ||
 		gjson.GetBytes(fallbackBody, "input.0.content").String() != "full replay" {
 		t.Fatalf("fallback did not receive full replay: %s", fallbackBody)
+	}
+
+	tracker := env.server.responsesExecutionSessions.websocketFailures
+	tracker.mu.Lock()
+	if len(tracker.states) == 0 {
+		tracker.mu.Unlock()
+		t.Fatal("native websocket target cooldown state was not recorded")
+	}
+	for target, state := range tracker.states {
+		state.cooldownUntil = time.Now().Add(-time.Second)
+		tracker.states[target] = state
+	}
+	tracker.mu.Unlock()
+
+	if err := third.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set recovered native deadline: %v", err)
+	}
+	if err := third.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-fallback",
+		"input": []any{map[string]any{
+			"type": "function_call_output", "call_id": "call_http_fallback", "output": "done",
+		}},
+	}); err != nil {
+		t.Fatalf("write request after native cooldown expiry: %v", err)
+	}
+	completed := readWebsocketUntilType(t, third, "response.completed")
+	completedJSON, _ := json.Marshal(completed)
+	if got := gjson.GetBytes(completedJSON, "response.id").String(); got != "resp-primary-recovered" {
+		t.Fatalf("recovered native completion id=%q, want resp-primary-recovered", got)
+	}
+	if primaryHandshakes.Load() != 3 || fallbackCalls.Load() != 1 {
+		t.Fatalf("after cooldown expiry primary/fallback=%d/%d, want 3/1", primaryHandshakes.Load(), fallbackCalls.Load())
+	}
+	recoveryBody := <-primaryRecoveryBodies
+	if gjson.GetBytes(recoveryBody, "previous_response_id").Exists() ||
+		gjson.GetBytes(recoveryBody, "input.#").Int() != 4 {
+		t.Fatalf("recovered native request was not a new first request: %s", recoveryBody)
+	}
+	if got := gjson.GetBytes(recoveryBody, `input.#(type=="reasoning")`).Raw; got != "" {
+		t.Fatalf("recovered native request retained non-portable reasoning: %s", recoveryBody)
+	}
+	if got := gjson.GetBytes(recoveryBody, `input.#(id=="fc_http_fallback").id`).String(); got != "fc_http_fallback" {
+		t.Fatalf("recovered native request lost function call id: %s", recoveryBody)
+	}
+	if got := gjson.GetBytes(recoveryBody, `input.#(id=="msg_http_fallback").id`).String(); got != "msg_http_fallback" {
+		t.Fatalf("recovered native request lost assistant message id: %s", recoveryBody)
 	}
 }
 
