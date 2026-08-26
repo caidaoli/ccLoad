@@ -758,6 +758,31 @@ The SDK Agent allows only Cursor's `mcp` capability group: SDK custom tools are 
 
 The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
 
+#### Management Account (API-Key Channels)
+
+API-key channels can optionally bind an upstream management account for balance queries and daily check-ins. In the channel editor, open **Advanced → Management Account**, choose a profile, and enter the upstream credentials:
+
+| Profile | Balance | Check-in | Notes |
+|---------|---------|----------|-------|
+| **New API** | ✅ | ✅ | Optional `user_id` for multi-tenant sites |
+| **Sub2API** | ✅ | ❌ | Balance only |
+| **Sub2API Pro** | ✅ | ✅ | Subscription-based balance with daily/weekly/monthly windows |
+
+**Daily auto check-in**: Enable it in the management account panel and set a time (HH:MM, server local time). ccLoad scans every minute; a missed window is caught up on the next scan. Check-in results are recorded as `checkin` audit log entries visible on the logs page. Profiles without check-in support (Sub2API) are silently skipped.
+
+**Manual operations**: The channel card provides **Refresh Balance** and **Check-in** buttons. The same operations are available via Admin API:
+```bash
+# Refresh balance
+curl -X POST http://localhost:8080/admin/channels/:id/management-account/balance \
+  -H "Authorization: Bearer your_admin_token"
+
+# Manual check-in
+curl -X POST http://localhost:8080/admin/channels/:id/management-account/checkin \
+  -H "Authorization: Bearer your_admin_token"
+```
+
+> **CSV round-trip**: Export includes `management_daily_checkin_enabled` and `management_daily_checkin_time` columns; import can update check-in settings without touching credentials. The `oauth_credential` column carries both OAuth credentials and management envelopes for cross-instance migration.
+
 ### Custom Request Rules (Advanced)
 
 The "Advanced" button in the channel editor opens a secondary modal that lets you rewrite the **HTTP headers** and **JSON request body** forwarded upstream at channel granularity. Typical use cases include `User-Agent` override, forcing API version headers, or tweaking fields like `thinking` / `max_tokens`. Rules apply in configured order and take effect for all subsequent requests on that channel as soon as they are saved.

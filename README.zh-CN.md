@@ -775,6 +775,31 @@ SDK Agent 只开放 Cursor 的 `mcp` capability group：SDK custom tools 通过 
 
 渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
 
+#### 管理账户（API Key 渠道）
+
+API Key 渠道可以选择绑定上游管理账户，用于余额查询和每日签到。在渠道编辑器中打开 **高级设置 → 管理账户**，选择 profile 并填入上游凭据：
+
+| Profile | 余额 | 签到 | 说明 |
+|---------|------|------|------|
+| **New API** | ✅ | ✅ | 可选 `user_id`，适配多租户站点 |
+| **Sub2API** | ✅ | ❌ | 仅查询余额 |
+| **Sub2API Pro** | ✅ | ✅ | 基于订阅的余额，含日/周/月额度窗口 |
+
+**每日自动签到**：在管理账户面板中启用并设置时间（HH:MM，服务器本地时间）。ccLoad 每分钟扫描一次；错过的时间窗口会在下次扫描时补偿。签到结果以 `checkin` 日志来源记录审计日志，可在日志页面查看。不支持签到的 profile（Sub2API）会被静默跳过。
+
+**手动操作**：渠道卡片提供 **刷新余额** 和 **签到** 按钮，也可通过 Admin API 调用：
+```bash
+# 刷新余额
+curl -X POST http://localhost:8080/admin/channels/:id/management-account/balance \
+  -H "Authorization: Bearer your_admin_token"
+
+# 手动签到
+curl -X POST http://localhost:8080/admin/channels/:id/management-account/checkin \
+  -H "Authorization: Bearer your_admin_token"
+```
+
+> **CSV 往返**：导出包含 `management_daily_checkin_enabled` 和 `management_daily_checkin_time` 列；导入可以只更新签到设置而不影响凭据。`oauth_credential` 列同时承载 OAuth 凭据和管理封套，可用于跨实例迁移。
+
 ### 自定义请求规则（高级）
 
 渠道编辑弹窗底部「高级」按钮可打开二级模态，按渠道粒度改写转发给上游的 **HTTP 请求头** 与 **JSON 请求体**，常用于 `User-Agent` 覆写、强制版本头、微调 `thinking` / `max_tokens` 等字段。规则按配置顺序生效，保存后对该渠道后续所有请求立即生效。
