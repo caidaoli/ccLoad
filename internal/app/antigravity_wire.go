@@ -136,6 +136,10 @@ func translateAntigravityResponseStream(
 	case protocol.OpenAI:
 		chunks = antigravitychat.ConvertAntigravityResponseToOpenAI(ctx, modelName, originalRequest, translatedRequest, response, state)
 	case protocol.Gemini:
+		// The upstream Antigravity executor always installs this legacy context
+		// value. Its Gemini stream converter treats a missing key as no output.
+		//nolint:staticcheck // match the synchronized converter's public contract
+		ctx = context.WithValue(ctx, "alt", "")
 		chunks = antigravitygemini.ConvertAntigravityResponseToGemini(ctx, modelName, originalRequest, translatedRequest, response, state)
 	default:
 		return nil, fmt.Errorf("unsupported Antigravity client protocol %q", clientProtocol)

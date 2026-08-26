@@ -143,6 +143,8 @@ documented adaptations:
   to `high`) for every client protocol before the request is sent.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
+  The same boundary supplies the Gemini converter's legacy `ctx["alt"]` mode value;
+  without it the synchronized converter intentionally emits no stream chunks.
   The app boundary preserves the client's streaming mode when choosing
   `generateContent` versus `streamGenerateContent`; both modes share the same
   ordered provider base-URL fallback policy.

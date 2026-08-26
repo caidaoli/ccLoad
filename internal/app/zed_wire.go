@@ -13,8 +13,12 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
+	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 	"ccLoad/internal/zedauth"
+
+	"github.com/tidwall/gjson"
 )
 
 func isZedResponsesRequest(cfg *model.Config, upstream protocol.Protocol) bool {
@@ -27,6 +31,7 @@ type zedWirePlan struct {
 	providerProtocol  protocol.Protocol
 	originalRequest   []byte
 	translatedRequest []byte
+	toolIdentities    map[string]cliproxyutil.ResponsesToolIdentity
 }
 
 func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthropicRequest []byte) ([]byte, *zedWirePlan, error) {
@@ -61,7 +66,7 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthrop
 
 	translatedRequest := originalRequest
 	if provider == zedauth.ProviderOpenAI {
-		if err := normalizeZedOpenAIProviderRequest(providerRequest, modelName); err != nil {
+		if err := normalizeZedOpenAIProviderRequest(providerRequest, modelName, originalRequest); err != nil {
 			return nil, nil, err
 		}
 		translatedRequest, err = json.Marshal(providerRequest)
@@ -97,9 +102,14 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthrop
 	if err != nil {
 		return nil, nil, errors.New("finalize Zed Responses request: encode failed")
 	}
+	var toolIdentities map[string]cliproxyutil.ResponsesToolIdentity
+	if providerProtocol == protocol.Codex {
+		toolIdentities = cliproxyutil.ResponsesToolReverseIdentityMap(originalRequest)
+	}
 	return encoded, &zedWirePlan{
 		model: modelName, provider: provider, providerProtocol: providerProtocol,
 		originalRequest: originalRequest, translatedRequest: translatedRequest,
+		toolIdentities: toolIdentities,
 	}, nil
 }
 
@@ -158,51 +168,50 @@ func normalizeZedCodexInput(request map[string]any) {
 	}
 }
 
-func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string) error {
-	additionalTools := make([]any, 0)
+func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string, originalRequest []byte) error {
+	// Collect declarations before removing Responses Lite's additional_tools
+	// input items. The shared helper expands namespace children and applies the
+	// same qualified-name and first-wins rules as the normal Responses paths.
+	root := gjson.ParseBytes(originalRequest)
+	descriptors := cliproxyutil.CollectResponsesToolDescriptors(root)
+	winners := cliproxyutil.CollectResponsesToolWinners(root)
+
 	if input, ok := request["input"].([]any); ok {
 		normalized := make([]any, 0, len(input))
 		for _, rawItem := range input {
 			item, ok := rawItem.(map[string]any)
 			if ok && item["type"] == "additional_tools" {
-				if tools, toolsOK := item["tools"].([]any); toolsOK {
-					additionalTools = append(additionalTools, tools...)
-				}
 				continue
 			}
 			normalized = append(normalized, rawItem)
 		}
 		request["input"] = normalized
 	}
+	normalizeZedOpenAIToolCallHistory(request)
 
 	selectedTool := zedSelectedToolName(request["tool_choice"])
 	if selectedTool != "" {
 		request["tool_choice"] = "required"
 	}
-	tools := make([]any, 0)
-	seen := make(map[string]struct{})
-	appendTools := func(raw any) {
-		list, _ := raw.([]any)
-		for _, candidate := range list {
-			tool, ok := candidate.(map[string]any)
-			if !ok {
-				continue
-			}
-			toolType, _ := tool["type"].(string)
-			name, _ := tool["name"].(string)
-			if (toolType != "function" && toolType != "custom") || name == "" || (selectedTool != "" && name != selectedTool) {
-				continue
-			}
-			if _, duplicate := seen[name]; duplicate {
-				continue
-			}
-			seen[name] = struct{}{}
-			tools = append(tools, tool)
+	tools := make([]any, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		winner, ok := winners[descriptor.Name]
+		if !ok || winner.Order != descriptor.Order {
+			continue
 		}
+		if selectedTool != "" && descriptor.Name != selectedTool {
+			continue
+		}
+		var tool map[string]any
+		if err := json.Unmarshal([]byte(descriptor.Tool.Raw), &tool); err != nil || tool == nil {
+			continue
+		}
+		tool["type"] = descriptor.ToolType
+		tool["name"] = descriptor.Name
+		delete(tool, "namespace")
+		tools = append(tools, tool)
 	}
-	appendTools(request["tools"])
-	appendTools(additionalTools)
-	if request["tools"] != nil || len(additionalTools) > 0 {
+	if request["tools"] != nil || len(descriptors) > 0 {
 		request["tools"] = tools
 	}
 
@@ -243,6 +252,23 @@ func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string)
 		request["max_output_tokens"] = requestedBudget
 	}
 	return nil
+}
+
+func normalizeZedOpenAIToolCallHistory(request map[string]any) {
+	input, _ := request["input"].([]any)
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || (item["type"] != "function_call" && item["type"] != "custom_tool_call") {
+			continue
+		}
+		name, _ := item["name"].(string)
+		namespace, _ := item["namespace"].(string)
+		if name == "" || namespace == "" {
+			continue
+		}
+		item["name"] = cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
+		delete(item, "namespace")
+	}
 }
 
 func finalizeZedGoogleProviderRequest(body []byte, modelName string) ([]byte, error) {
@@ -389,11 +415,29 @@ func zedSelectedToolName(raw any) string {
 		return ""
 	}
 	if name, _ := choice["name"].(string); name != "" {
-		return name
+		return qualifyZedToolName(choice, name)
 	}
 	function, _ := choice["function"].(map[string]any)
 	name, _ := function["name"].(string)
-	return name
+	return qualifyZedToolName(choice, name)
+}
+
+func qualifyZedToolName(choice map[string]any, name string) string {
+	if choice == nil || name == "" {
+		return name
+	}
+	namespace, _ := choice["namespace"].(string)
+	if namespace == "" {
+		if function, ok := choice["function"].(map[string]any); ok {
+			namespace, _ = function["namespace"].(string)
+		}
+	}
+	if namespace == "" {
+		if custom, ok := choice["custom"].(map[string]any); ok {
+			namespace, _ = custom["namespace"].(string)
+		}
+	}
+	return cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
 }
 
 func zedOutputBudget(request map[string]any) int64 {
@@ -545,6 +589,7 @@ func writeZedResponsesEvent(
 	if plan.providerProtocol != protocol.Codex {
 		return false, writeZedProviderEvent(ctx, output, event, plan, registry, state)
 	}
+	event = restoreZedOpenAIToolIdentities(event, plan.toolIdentities)
 	var eventType struct {
 		Type string `json:"type"`
 	}
@@ -553,6 +598,28 @@ func writeZedResponsesEvent(
 	}
 	_, err := fmt.Fprintf(output, "event: %s\ndata: %s\n\n", eventType.Type, bytes.TrimSpace(event))
 	return false, err
+}
+
+func restoreZedOpenAIToolIdentities(event []byte, identities map[string]cliproxyutil.ResponsesToolIdentity) []byte {
+	if len(identities) == 0 {
+		return event
+	}
+	restore := func(path string) {
+		item := gjson.GetBytes(event, path)
+		if itemType := item.Get("type").String(); itemType != "function_call" && itemType != "custom_tool_call" {
+			return
+		}
+		identity, ok := identities[item.Get("name").String()]
+		if !ok || identity.Name == "" {
+			return
+		}
+		event = cliproxycommon.SetResponsesToolCallIdentity(event, identity.Name, identity.Namespace, path)
+	}
+	restore("item")
+	for index := range gjson.GetBytes(event, "response.output").Array() {
+		restore(fmt.Sprintf("response.output.%d", index))
+	}
+	return event
 }
 
 func writeZedProviderEvent(

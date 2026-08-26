@@ -69,6 +69,124 @@ func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
 	}
 }
 
+func TestFinalizeZedResponsesBodyFlattensAdditionalToolNamespaces(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[
+				{"type":"namespace","name":"functions","tools":[
+					{"type":"custom","name":"exec"},
+					{"type":"function","name":"wait","parameters":{"type":"object"}},
+					{"type":"function","name":"request_user_input"}
+				]},
+				{"type":"namespace","name":"collaboration","tools":[
+					{"type":"function","name":"followup_task"},
+					{"type":"function","name":"interrupt_agent"},
+					{"type":"function","name":"list_agents"},
+					{"type":"function","name":"send_message"},
+					{"type":"function","name":"spawn_agent"},
+					{"type":"function","name":"wait_agent"}
+				]}
+			]},
+			{"role":"user","content":"run"},
+			{"type":"function_call","call_id":"call_1","name":"wait","namespace":"functions","arguments":"{}"}
+		],
+		"tool_choice":"auto"
+	}`)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		ProviderRequest map[string]any `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := envelope.ProviderRequest["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("additional_tools input was not removed: %#v", input)
+	}
+	history, _ := input[1].(map[string]any)
+	if history["name"] != "functions__wait" || history["namespace"] != nil {
+		t.Fatalf("normalized tool call history = %#v", history)
+	}
+	tools, _ := envelope.ProviderRequest["tools"].([]any)
+	wantNames := []string{
+		"functions__exec", "functions__wait", "functions__request_user_input",
+		"collaboration__followup_task", "collaboration__interrupt_agent", "collaboration__list_agents",
+		"collaboration__send_message", "collaboration__spawn_agent", "collaboration__wait_agent",
+	}
+	if len(tools) != len(wantNames) {
+		t.Fatalf("flattened tools = %#v, want %d tools", tools, len(wantNames))
+	}
+	for index, wantName := range wantNames {
+		if got := tools[index].(map[string]any)["name"]; got != wantName {
+			t.Fatalf("flattened tool %d name = %v, want %q", index, got, wantName)
+		}
+	}
+}
+
+func TestZedResponsesWireRestoresNamespaceToolIdentity(t *testing.T) {
+	registry := newZedWireTestRegistry()
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}]}`)
+	_, plan, err := finalizeZedResponsesBody(registry, body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := strings.Join([]string{
+		`{"event":{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"call_1","name":"functions__exec","input":""}}}`,
+		`{"event":{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"call_1","name":"functions__exec","input":"pwd"}}}`,
+		`{"status":"stream_ended"}`,
+		"",
+	}, "\n")
+	response := &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(upstream)),
+	}
+	if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := strings.Split(strings.TrimSpace(string(converted)), "\n\n")
+	if len(blocks) != 2 {
+		t.Fatalf("converted event count = %d, want 2", len(blocks))
+	}
+	for _, block := range blocks {
+		_, data := parseSSEEventChunk([]byte(block + "\n\n"))
+		var event struct {
+			Item map[string]any `json:"item"`
+		}
+		if err := json.Unmarshal(data, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Item["name"] != "exec" || event.Item["namespace"] != "functions" {
+			t.Fatalf("restored tool identity = %#v", event.Item)
+		}
+	}
+}
+
+func TestFinalizeZedResponsesBodyQualifiesNamespaceToolChoice(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"wait"}]}]}],"tool_choice":{"type":"function","name":"wait","namespace":"functions"}}`)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		ProviderRequest map[string]any `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := envelope.ProviderRequest["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "functions__wait" || envelope.ProviderRequest["tool_choice"] != "required" {
+		t.Fatalf("selected namespace tool = %#v, choice=%v", tools, envelope.ProviderRequest["tool_choice"])
+	}
+}
+
 func TestFinalizeZedResponsesBodySelectsNativeProvider(t *testing.T) {
 	tests := []struct {
 		name          string
