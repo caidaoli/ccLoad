@@ -11534,3 +11534,66 @@ func TestProxy_SSEContextLengthExceededReturns400WithoutRetryOrCooldown(t *testi
 		t.Fatalf("channel cooldowns=%v, want none", channelCooldowns)
 	}
 }
+
+func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
+	upstreamModels := make(chan string, 4)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		upstreamModels <- gjson.GetBytes(body, "model").String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "multimodal-fallback-http", upstreamProtocol: "openai",
+		models: "gpt-text,gpt-vision", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.multimodalFallbackModels = map[string]string{"gpt-text": "gpt-vision"}
+
+	imageParts := []any{
+		map[string]any{"type": "text", "text": "describe this"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/a.png"}},
+	}
+
+	// 含图请求命中映射 → 按回退模型选路并改写上游 body。
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-text",
+		"messages": []any{map[string]any{"role": "user", "content": imageParts}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("image request status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := <-upstreamModels; got != "gpt-vision" {
+		t.Fatalf("upstream model=%q, want gpt-vision", got)
+	}
+
+	// 纯文本请求不触发改写。
+	textResponse := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-text",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if textResponse.Code != http.StatusOK {
+		t.Fatalf("text request status=%d body=%s", textResponse.Code, textResponse.Body.String())
+	}
+	if got := <-upstreamModels; got != "gpt-text" {
+		t.Fatalf("upstream model=%q, want gpt-text", got)
+	}
+
+	// 含图但模型不在映射里 → 模型不变。
+	unmappedResponse := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-vision",
+		"messages": []any{map[string]any{"role": "user", "content": imageParts}},
+	}, nil)
+	if unmappedResponse.Code != http.StatusOK {
+		t.Fatalf("unmapped request status=%d body=%s", unmappedResponse.Code, unmappedResponse.Body.String())
+	}
+	if got := <-upstreamModels; got != "gpt-vision" {
+		t.Fatalf("upstream model=%q, want gpt-vision", got)
+	}
+}

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/config"
@@ -87,6 +89,25 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "string_oauth_base_url_rejects_non_http", key: config.CodexBaseURLSettingKey, valueType: "string", value: "ftp://gateway.example/responses", wantErr: true},
 
 		{name: "unknown_type_reject", key: "k", valueType: "wtf", value: "x", wantErr: true},
+
+		// model_multimodal_fallback：裸 map 值，每个 key 都是模型名（没有「未知字段」，
+		// 边界是值类型错误/尾随数据/尺寸/归一化冲突）。
+		{name: "json_multimodal_fallback_ok_empty_object", key: modelMultimodalFallbackSettingKey, valueType: "json", value: "{}", wantErr: false},
+		{name: "json_multimodal_fallback_ok_null", key: modelMultimodalFallbackSettingKey, valueType: "json", value: "null", wantErr: false},
+		{name: "json_multimodal_fallback_ok_mapping", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt-5.6-luna":"gemini-3-pro"}`, wantErr: false},
+		{name: "json_multimodal_fallback_ok_suffix_key_normalized", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt-5.6-luna(max)":"gemini-3-pro"}`, wantErr: false},
+		{name: "json_multimodal_fallback_ok_value_keeps_suffix", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt-5.6-luna":"gemini-3-pro(max)"}`, wantErr: false},
+		{name: "json_multimodal_fallback_ok_trims_whitespace", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{" gpt-5.6-luna ":" gemini-3-pro "}`, wantErr: false},
+		{name: "json_multimodal_fallback_reject_malformed", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_trailing_data", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"a":"b"}{"c":"d"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_non_string_value", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt":1}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_blank_from", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"":"x"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_blank_to", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt":""}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_self", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt":"gpt"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_self_after_normalize", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"gpt(max)":"gpt"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_duplicate_normalized", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"Gpt":"a","gpt(max)":"b"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_oversized", key: modelMultimodalFallbackSettingKey, valueType: "json", value: `{"` + strings.Repeat("a", maxMultimodalFallbackBytes) + `":"x"}`, wantErr: true},
+		{name: "json_multimodal_fallback_reject_too_many_mappings", key: modelMultimodalFallbackSettingKey, valueType: "json", value: buildManyFallbackPairs(maxMultimodalFallbackMappings + 1), wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -97,4 +118,12 @@ func TestValidateSettingValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func buildManyFallbackPairs(count int) string {
+	var pairs []string
+	for i := 0; i < count; i++ {
+		pairs = append(pairs, fmt.Sprintf("%q:%q", fmt.Sprintf("model-%d", i), "fallback"))
+	}
+	return "{" + strings.Join(pairs, ",") + "}"
 }
