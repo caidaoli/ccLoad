@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -69,9 +70,10 @@ func TestParseMultimodalFallbackModels(t *testing.T) {
 func TestServerMultimodalFallbackModel(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{multimodalFallbackModels: map[string]string{
+	server := &Server{}
+	server.setMultimodalFallbackModels(map[string]string{
 		"gpt-text": "gpt-vision",
-	}}
+	})
 
 	// 命中：请求模型带大小写与思考后缀也能归一到 key。
 	if got := server.multimodalFallbackModel("GPT-Text(max)", true); got != "gpt-vision" {
@@ -88,5 +90,74 @@ func TestServerMultimodalFallbackModel(t *testing.T) {
 	// 未配置任何映射时直接短路。
 	if got := (&Server{}).multimodalFallbackModel("gpt-text", true); got != "" {
 		t.Fatalf("unconfigured multimodalFallbackModel=%q, want empty", got)
+	}
+}
+
+func TestServerMultimodalFallbackModelHotSwap(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{}
+	first := map[string]string{"gpt-text": "gpt-vision-v1"}
+	server.setMultimodalFallbackModels(first)
+	first["gpt-text"] = "mutated-after-publish"
+	if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision-v1" {
+		t.Fatalf("published snapshot changed through caller map: got %q", got)
+	}
+
+	server.setMultimodalFallbackModels(map[string]string{"gpt-text": "gpt-vision-v2"})
+	if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision-v2" {
+		t.Fatalf("hot-swapped fallback=%q, want gpt-vision-v2", got)
+	}
+
+	server.setMultimodalFallbackModels(nil)
+	if got := server.multimodalFallbackModel("gpt-text", true); got != "" {
+		t.Fatalf("cleared fallback=%q, want empty", got)
+	}
+}
+
+func TestServerMultimodalFallbackModelConcurrentHotSwap(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{}
+	server.setMultimodalFallbackModels(map[string]string{"gpt-text": "vision-a"})
+
+	const iterations = 1000
+	start := make(chan struct{})
+	unexpected := make(chan string, 1)
+	var wg sync.WaitGroup
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range iterations {
+			fallback := "vision-a"
+			if i%2 == 1 {
+				fallback = "vision-b"
+			}
+			server.setMultimodalFallbackModels(map[string]string{"gpt-text": fallback})
+		}
+	}()
+	for range 4 {
+		go func() {
+			defer wg.Done()
+			<-start
+			for range iterations {
+				got := server.multimodalFallbackModel("gpt-text", true)
+				if got != "vision-a" && got != "vision-b" {
+					select {
+					case unexpected <- got:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	select {
+	case got := <-unexpected:
+		t.Fatalf("concurrent lookup observed partial snapshot %q", got)
+	default:
 	}
 }

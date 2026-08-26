@@ -14,8 +14,8 @@ import (
 )
 
 // ConfigService 配置管理服务
-// 职责: 启动时从数据库加载配置，提供只读访问
-// 配置修改后程序会自动重启，无需热重载
+// 职责: 启动时从数据库加载配置，提供只读访问。
+// 运行期热更新由具体配置的所有者负责，不能从这份启动缓存重新读取。
 type ConfigService struct {
 	store  storage.Store
 	mu     sync.RWMutex                    // 保护 cache 并发访问
@@ -199,7 +199,7 @@ func (cs *ConfigService) GetSettingFresh(ctx context.Context, key string) (*mode
 	return cs.store.GetSetting(ctx, key)
 }
 
-// UpdateSetting 更新配置（仅写数据库，不更新缓存，因为会重启）
+// UpdateSetting 更新配置（仅写数据库，不更新启动缓存）
 func (cs *ConfigService) UpdateSetting(ctx context.Context, key, value string) error {
 	return cs.store.UpdateSetting(ctx, key, value)
 }
@@ -209,7 +209,7 @@ func (cs *ConfigService) ListAllSettings(ctx context.Context) ([]*model.SystemSe
 	return cs.store.ListAllSettings(ctx)
 }
 
-// BatchUpdateSettings 批量更新配置（仅写数据库，不更新缓存，因为会重启）
+// BatchUpdateSettings 批量更新配置（仅写数据库，不更新启动缓存）
 func (cs *ConfigService) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
 	return cs.store.BatchUpdateSettings(ctx, updates)
 }

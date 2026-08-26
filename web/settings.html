@@ -48,14 +48,14 @@
             </table>
           </div>
           <div class="settings-save-actions">
-            <button id="model-multimodal-fallback-btn" type="button" class="btn btn-secondary settings-multimodal-fallback-btn" data-i18n="settings.multimodalFallback.edit">
-              多模态回退模型
-            </button>
-            <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
-            <input type="hidden" id="model_multimodal_fallback" value="{}">
             <button id="runtime-metrics-btn" type="button" class="btn btn-secondary settings-runtime-metrics-btn" data-i18n="settings.runtimeMetrics.button">
               运行状态
             </button>
+            <button id="model-multimodal-fallback-btn" type="button" class="btn btn-secondary settings-multimodal-fallback-btn" data-i18n="settings.multimodalFallback.edit">
+              多模态回退
+            </button>
+            <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
+            <input type="hidden" id="model_multimodal_fallback" value="{}">
             <button id="save-all-btn" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
               保存所有更改
             </button>
@@ -150,7 +150,7 @@
       <div class="modal-header">
         <div>
           <h2 id="multimodalFallbackTitle" class="modal-title" data-i18n="settings.multimodalFallback.title">多模态回退模型</h2>
-          <p id="multimodalFallbackDescription" class="modal-description" data-i18n="settings.multimodalFallback.description">请求含图片、文件等非文本内容时，自动改用回退模型。保存所有更改后重启生效。</p>
+          <p id="multimodalFallbackDescription" class="modal-description" data-i18n="settings.multimodalFallback.description">请求含图片、文件等非文本内容时，自动改用回退模型。保存后立即生效。</p>
         </div>
         <button type="button" class="close-btn" data-action="close-multimodal-fallback"
           data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
@@ -171,7 +171,7 @@
         <button type="button" class="btn btn-secondary" data-action="close-multimodal-fallback"
           data-i18n="common.cancel">取消</button>
         <button type="button" class="btn btn-primary" data-action="apply-multimodal-fallback"
-          data-i18n="settings.multimodalFallback.apply">应用到设置</button>
+          data-i18n="settings.multimodalFallback.apply">保存并应用</button>
       </div>
     </div>
   </div>

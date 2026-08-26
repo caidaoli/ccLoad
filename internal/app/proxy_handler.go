@@ -82,7 +82,8 @@ func (s *Server) acquireConcurrencySlotForContext(ctx context.Context) (func(), 
 // ============================================================================
 
 type incomingRequest struct {
-	// originalModel 是去掉思考后缀的基名，用于选路、鉴权、冷却与日志。
+	// originalModel 是去掉思考后缀的基名，用于选路、鉴权与冷却；命中多模态
+	// 回退后会替换成回退模型，因此日志必须在替换前单独保留客户端模型。
 	originalModel string
 	// requestedModel 是客户端字面写的模型名，可能带思考后缀。
 	requestedModel string
@@ -338,6 +339,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// applyThinkingSuffix 与 Token 白名单之前——渠道候选过滤（SQL 按模型 JOIN）、
 	// 模型冷却过滤、Key 白名单全部按模型名做决策，事后换模型只会换来
 	// 渠道未声明的模型 + 404 + 逐渠道失败。改 incoming 字段后下游全部自动跟随。
+	clientModel := incoming.originalModel
 	if fallback := s.multimodalFallbackModel(incoming.originalModel, requestHasNonTextContent(clientProtocol, all)); fallback != "" {
 		incoming.originalModel = model.RoutingModelName(fallback)
 		incoming.requestedModel = fallback
@@ -428,7 +430,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: time.Now()},
-			Model:          originalModel,
+			Model:          clientModel,
 			LogSource:      model.LogSourceProxy,
 			AuthTokenID:    tokenIDInt64,
 			ClientProtocol: string(clientProtocol),
@@ -461,6 +463,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	reqCtx := &proxyRequestContext{
+		clientModel:    clientModel,
 		originalModel:  originalModel,
 		requestedModel: incoming.requestedModel,
 		clientProtocol: clientProtocol,
@@ -520,7 +523,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	s.writeFinalProxyResponse(c, reqCtx, originalModel, isStreaming, lastResult, len(cands))
+	s.writeFinalProxyResponse(c, reqCtx, isStreaming, lastResult, len(cands))
 }
 
 func determineFinalClientStatus(lastResult *proxyResult) int {
@@ -707,7 +710,6 @@ func writeEmptyAlphaSearchResponse(w http.ResponseWriter) {
 func (s *Server) writeFinalProxyResponse(
 	c *gin.Context,
 	reqCtx *proxyRequestContext,
-	originalModel string,
 	isStreaming bool,
 	lastResult *proxyResult,
 	candidateCount int,
@@ -737,7 +739,7 @@ func (s *Server) writeFinalProxyResponse(
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: reqCtx.startTime},
-			Model:          originalModel,
+			Model:          reqCtx.requestLogModel(),
 			LogSource:      model.LogSourceProxy,
 			ClientProtocol: string(reqCtx.clientProtocol),
 			StatusCode:     upstreamFinalStatus,

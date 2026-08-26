@@ -11554,7 +11554,7 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 		name: "multimodal-fallback-http", upstreamProtocol: "openai",
 		models: "gpt-text,gpt-vision", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	env.server.multimodalFallbackModels = map[string]string{"gpt-text": "gpt-vision"}
+	env.server.setMultimodalFallbackModels(map[string]string{"gpt-text": "gpt-vision"})
 
 	imageParts := []any{
 		map[string]any{"type": "text", "text": "describe this"},
@@ -11571,6 +11571,11 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 	}
 	if got := <-upstreamModels; got != "gpt-vision" {
 		t.Fatalf("upstream model=%q, want gpt-vision", got)
+	}
+	fallbackLog := waitForProxyLog(t, env, "gpt-text")
+	if fallbackLog.ActualModel != "gpt-vision" {
+		t.Fatalf("fallback log model=%q actual_model=%q, want gpt-text -> gpt-vision",
+			fallbackLog.Model, fallbackLog.ActualModel)
 	}
 
 	// 纯文本请求不触发改写。

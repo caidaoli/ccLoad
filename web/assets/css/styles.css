@@ -3977,7 +3977,7 @@ body {
 .settings-save-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   padding: 16px 0 0 0;
 }
@@ -3985,6 +3985,10 @@ body {
 .settings-save-btn,
 .settings-runtime-metrics-btn {
   min-width: 120px;
+}
+
+.settings-save-btn {
+  margin-inline-start: auto;
 }
 
 .global-cooldown-rules-control {

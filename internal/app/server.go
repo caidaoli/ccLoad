@@ -140,8 +140,9 @@ type Server struct {
 	codexMap429To503          bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
-	// 多模态回退映射：key 为归一化的文本模型基名，value 为管理员配置的回退模型（可能带思考后缀）。只读。
-	multimodalFallbackModels map[string]string
+	// 多模态回退映射使用不可变快照热更新；更新锁保证持久化顺序与运行态发布顺序一致。
+	multimodalFallbackModels   atomic.Pointer[multimodalFallbackSnapshot]
+	multimodalFallbackUpdateMu sync.Mutex
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -243,7 +244,6 @@ func NewServer(store storage.Store) *Server {
 		activeRequestTitleEnabled:    runtimeCfg.ActiveRequestTitleEnabled,
 		codexMap429To503:             runtimeCfg.CodexMap429To503,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
-		multimodalFallbackModels:     runtimeCfg.MultimodalFallbackModels,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
 		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
@@ -285,6 +285,7 @@ func NewServer(store storage.Store) *Server {
 		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
 		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
 	}
+	s.setMultimodalFallbackModels(runtimeCfg.MultimodalFallbackModels)
 
 	reg := protocol.NewRegistry()
 	protocolbuiltin.Register(reg)

@@ -227,7 +227,7 @@ func buildProxyLogEntry(
 	errMsg string,
 ) *model.LogEntry {
 	return buildLogEntry(logEntryParams{
-		RequestModel:     reqCtx.originalModel,
+		RequestModel:     reqCtx.requestLogModel(),
 		ActualModel:      actualModel,
 		RequestPath:      reqCtx.requestPath,
 		ChannelID:        cfg.ID,

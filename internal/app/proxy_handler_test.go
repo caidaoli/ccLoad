@@ -50,7 +50,7 @@ func TestWriteFinalProxyResponse_DisablesWriteTimeoutForJSONFallback(t *testing.
 		clientIP:  "127.0.0.1",
 	}
 
-	srv.writeFinalProxyResponse(c, reqCtx, "gpt-test", false, &proxyResult{status: 0}, 1)
+	srv.writeFinalProxyResponse(c, reqCtx, false, &proxyResult{status: 0}, 1)
 
 	if !w.deadlineCalled {
 		t.Fatal("SetWriteDeadline was not called")

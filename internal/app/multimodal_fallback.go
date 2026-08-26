@@ -15,6 +15,11 @@ const (
 	maxMultimodalFallbackMappings     = 64
 )
 
+// multimodalFallbackSnapshot 发布后不可修改；更新时整表替换，代理热路径只做一次原子读取。
+type multimodalFallbackSnapshot struct {
+	models map[string]string
+}
+
 // parseMultimodalFallbackModels 解析多模态回退映射。值形态是裸 map
 // {"文本模型":"回退模型"}，JSON key 天然去重，无顺序语义。
 //
@@ -67,12 +72,29 @@ func parseMultimodalFallbackModels(value string) (map[string]string, error) {
 	return mappings, nil
 }
 
+func (s *Server) setMultimodalFallbackModels(models map[string]string) {
+	if len(models) == 0 {
+		s.multimodalFallbackModels.Store(nil)
+		return
+	}
+
+	immutable := make(map[string]string, len(models))
+	for from, to := range models {
+		immutable[from] = to
+	}
+	s.multimodalFallbackModels.Store(&multimodalFallbackSnapshot{models: immutable})
+}
+
 // multimodalFallbackModel 返回多模态请求应切换到的回退模型名。lookup key 与
 // parseMultimodalFallbackModels 的归一规则一致（小写 + 剥思考后缀）；未命中或
 // 请求不含非文本内容时返回空串。返回值为管理员配置的原始写法，可能带思考后缀。
 func (s *Server) multimodalFallbackModel(requestModel string, hasNonText bool) string {
-	if !hasNonText || len(s.multimodalFallbackModels) == 0 {
+	if !hasNonText {
 		return ""
 	}
-	return s.multimodalFallbackModels[strings.ToLower(model.RoutingModelName(requestModel))]
+	snapshot := s.multimodalFallbackModels.Load()
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.models[strings.ToLower(model.RoutingModelName(requestModel))]
 }

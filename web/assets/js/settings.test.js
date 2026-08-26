@@ -10,6 +10,9 @@ function flushAsyncWork() {
 async function loadSettingsPage(t, settings, inputValues) {
   const clickListeners = [];
   const bodyListeners = new Map();
+  const multimodalModalListeners = new Map();
+  const multimodalModalClasses = new Set();
+  let multimodalRows = [];
   const saveButton = {
     dataset: {},
     addEventListener(type, listener) {
@@ -27,12 +30,73 @@ async function loadSettingsPage(t, settings, inputValues) {
     },
     appendChild() {}
   };
+  const multimodalApplyButton = {
+    dataset: { action: 'apply-multimodal-fallback' },
+    disabled: false,
+    attributes: new Map(),
+    click() {
+      multimodalModalListeners.get('click')?.({ target: this });
+    },
+    closest(selector) {
+      return selector === '[data-action]' ? this : null;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    },
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    }
+  };
+  const multimodalModal = {
+    dataset: {},
+    attributes: new Map(),
+    classList: {
+      add(name) {
+        multimodalModalClasses.add(name);
+      },
+      remove(name) {
+        multimodalModalClasses.delete(name);
+      },
+      contains(name) {
+        return multimodalModalClasses.has(name);
+      }
+    },
+    addEventListener(type, listener) {
+      multimodalModalListeners.set(type, listener);
+    },
+    querySelector(selector) {
+      if (selector === '[data-action="apply-multimodal-fallback"]') return multimodalApplyButton;
+      return null;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    }
+  };
+  const multimodalRowsContainer = {
+    querySelectorAll(selector) {
+      if (selector !== '.multimodal-fallback-row') return [];
+      return multimodalRows.map(({ from, to }) => ({
+        querySelector(fieldSelector) {
+          if (fieldSelector === 'select[data-field="from"]') return { value: from };
+          if (fieldSelector === 'select[data-field="to"]') return { value: to };
+          return null;
+        }
+      }));
+    }
+  };
+  const multimodalError = { textContent: '', hidden: true };
   const inputs = {};
   const rows = {};
   const radioGroups = new Map();
   const elements = new Map([
     ['save-all-btn', saveButton],
-    ['settings-tbody', settingsBody]
+    ['settings-tbody', settingsBody],
+    ['multimodalFallbackModal', multimodalModal],
+    ['multimodalFallbackRows', multimodalRowsContainer],
+    ['multimodalFallbackError', multimodalError]
   ]);
   const definitions = new Map(settings.map((setting) => [setting.key, setting]));
   for (const [key, value] of Object.entries(inputValues)) {
@@ -89,6 +153,8 @@ async function loadSettingsPage(t, settings, inputValues) {
   const requests = [];
   const renderCalls = [];
   const errors = [];
+  const successes = [];
+  let nextSaveError = null;
 
   global.window = {
     t(key, params = {}) {
@@ -127,7 +193,7 @@ async function loadSettingsPage(t, settings, inputValues) {
   };
   global.escapeHtml = (value) => String(value);
   global.showError = (error) => { errors.push(error); };
-  global.showSuccess = () => {};
+  global.showSuccess = (message) => { successes.push(message); };
   global.confirm = (message) => {
     prompts.push(message);
     return allowSave;
@@ -135,6 +201,11 @@ async function loadSettingsPage(t, settings, inputValues) {
   global.fetchDataWithAuth = async (url, options) => {
     requests.push({ url, options });
     if (!options) return settings;
+    if (nextSaveError) {
+      const error = nextSaveError;
+      nextSaveError = null;
+      throw error;
+    }
     return { message: 'saved' };
   };
 
@@ -163,11 +234,23 @@ async function loadSettingsPage(t, settings, inputValues) {
     inputs,
     radioGroups,
     errors,
+    successes,
     notifications,
     prompts,
     renderCalls,
     requests,
     saveButton,
+    multimodalApplyButton,
+    multimodalError,
+    multimodalModal,
+    applyMultimodal(rows) {
+      multimodalRows = rows;
+      multimodalModal.classList.add('show');
+      multimodalApplyButton.click();
+    },
+    failNextSave(message) {
+      nextSaveError = new Error(message);
+    },
     clickReset(key) {
       const listener = bodyListeners.get('click');
       listener?.({
@@ -411,7 +494,7 @@ test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
 });
 
-test('多模态回退映射通过设置批量保存接口原样持久化', async (t) => {
+test('多模态回退映射在对话框内直接保存，无需再点保存所有更改', async (t) => {
   const key = 'model_multimodal_fallback';
   const mappings = '{"gpt-5.6-luna":"gemini-3-pro"}';
   const page = await loadSettingsPage(t, [{
@@ -422,16 +505,46 @@ test('多模态回退映射通过设置批量保存接口原样持久化', async
   }], {
     [key]: '{}'
   });
-  page.setAllowSave(true);
 
-  // 映射编辑弹窗应用时写回 hidden input，模拟用户确认后的状态。
-  page.inputs[key].value = mappings;
-  page.saveButton.click();
+  page.applyMultimodal([{ from: 'gpt-5.6-luna', to: 'gemini-3-pro' }]);
   await flushAsyncWork();
 
   const requests = saveRequests(page);
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: mappings });
+  assert.equal(page.prompts.length, 0);
+  assert.equal(page.inputs[key].value, mappings);
+  assert.equal(page.multimodalModal.classList.contains('show'), false);
+  assert.equal(page.multimodalApplyButton.disabled, false);
+  assert.equal(page.multimodalApplyButton.getAttribute('aria-busy'), null);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+});
+
+test('多模态回退映射保存失败时保留对话框和原持久化值', async (t) => {
+  const key = 'model_multimodal_fallback';
+  const page = await loadSettingsPage(t, [{
+    key,
+    value: '{}',
+    value_type: 'json',
+    description: ''
+  }], {
+    [key]: '{}'
+  });
+  page.failNextSave('连接中断');
+
+  page.applyMultimodal([{ from: 'gpt-5.6-luna', to: 'gemini-3-pro' }]);
+  await flushAsyncWork();
+
+  assert.equal(saveRequests(page).length, 1);
+  assert.equal(page.inputs[key].value, '{}');
+  assert.equal(page.multimodalModal.classList.contains('show'), true);
+  assert.equal(page.multimodalError.hidden, false);
+  assert.match(page.multimodalError.textContent, /连接中断/);
+  assert.equal(page.multimodalApplyButton.disabled, false);
+  assert.equal(page.multimodalApplyButton.getAttribute('aria-busy'), null);
 });
 
 test('容器内禁用更新设置并显示镜像切换说明', async (t) => {

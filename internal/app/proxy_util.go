@@ -151,8 +151,9 @@ type ForwardObserver struct {
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
-	originalModel              string
-	requestedModel             string
+	clientModel                string // 客户端请求的原始模型基名；仅用于日志，避免被回退/重定向覆盖
+	originalModel              string // 当前用于选路的模型基名，可能已被多模态回退替换
+	requestedModel             string // 当前用于选路的字面模型名，可能带思考后缀
 	clientProtocol             protocol.Protocol
 	codexClient                bool
 	upstreamProtocol           protocol.Protocol
@@ -181,6 +182,16 @@ type proxyRequestContext struct {
 	quotaOverdraftTranscript   []byte
 	codexMultiAgentV2Optimized bool
 	codexMultiAgentV2Conflict  bool
+}
+
+func (r *proxyRequestContext) requestLogModel() string {
+	if r == nil {
+		return ""
+	}
+	if r.clientModel != "" {
+		return r.clientModel
+	}
+	return r.originalModel
 }
 
 // proxyResult 代理请求结果

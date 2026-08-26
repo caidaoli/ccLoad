@@ -663,7 +663,7 @@ function validateMultimodalFallbackRows(rows) {
   return null;
 }
 
-function applyMultimodalFallback() {
+async function applyMultimodalFallback() {
   const rows = collectMultimodalFallbackDraft();
   const error = validateMultimodalFallbackRows(rows);
   if (error) {
@@ -673,12 +673,39 @@ function applyMultimodalFallback() {
   const mapping = {};
   for (const row of rows) mapping[row.from] = row.to;
 
-  const input = document.getElementById(modelMultimodalFallbackSettingKey);
-  if (!input) return;
-  input.value = JSON.stringify(mapping);
-  markChanged(input);
-  updateMultimodalFallbackSummary(input.value);
-  closeMultimodalFallbackModal();
+  const value = JSON.stringify(mapping);
+  if (value === originalSettings[modelMultimodalFallbackSettingKey]) {
+    closeMultimodalFallbackModal();
+    return;
+  }
+
+  const modal = document.getElementById('multimodalFallbackModal');
+  const applyButton = modal?.querySelector('[data-action="apply-multimodal-fallback"]');
+  if (applyButton?.disabled) return;
+  if (applyButton) {
+    applyButton.disabled = true;
+    applyButton.setAttribute('aria-busy', 'true');
+  }
+  showMultimodalFallbackError(null);
+
+  try {
+    const result = await fetchDataWithAuth('/admin/settings/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [modelMultimodalFallbackSettingKey]: value })
+    });
+    syncSettingState(modelMultimodalFallbackSettingKey, value);
+    closeMultimodalFallbackModal();
+    showSuccess(result?.message || t('settings.msg.savedCount', { count: 1 }));
+  } catch (err) {
+    console.error('保存多模态回退映射异常:', err);
+    showMultimodalFallbackError(t('settings.msg.saveFailed') + ': ' + err.message);
+  } finally {
+    if (applyButton) {
+      applyButton.disabled = false;
+      applyButton.removeAttribute('aria-busy');
+    }
+  }
 }
 
 function bindMultimodalFallbackModal() {
@@ -1158,7 +1185,7 @@ function renderSettings(settings) {
       const displayValue = settingValueForDisplay(s.key, s.value);
       originalSettings[s.key] = displayValue;
       // 多模态回退映射不渲染表格行：入口按钮与摘要常驻保存按钮区，
-      // hidden input 也固定在那里，saveAllSettings 靠 id 收集。
+      // hidden input 保存当前持久化值，对话框确认时单独提交。
       if (s.key === modelMultimodalFallbackSettingKey) {
         const hidden = document.getElementById(modelMultimodalFallbackSettingKey);
         if (hidden) hidden.value = displayValue;

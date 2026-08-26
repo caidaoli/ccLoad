@@ -1221,7 +1221,7 @@ func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
 		name: "multimodal-fallback-ws", upstreamProtocol: "codex",
 		models: "gpt-text,gpt-vision", apiKey: "sk-upstream", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	env.server.multimodalFallbackModels = map[string]string{"gpt-text": "gpt-vision"}
+	env.server.setMultimodalFallbackModels(map[string]string{"gpt-text": "gpt-vision"})
 
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -1243,6 +1243,11 @@ func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
 	firstID, _ := firstResponse["id"].(string)
 	if got := <-upstreamModels; got != "gpt-vision" {
 		t.Fatalf("first upstream model=%q, want gpt-vision", got)
+	}
+	fallbackLog := waitForProxyLog(t, env, "gpt-text")
+	if fallbackLog.ActualModel != "gpt-vision" {
+		t.Fatalf("websocket fallback log model=%q actual_model=%q, want gpt-text -> gpt-vision",
+			fallbackLog.Model, fallbackLog.ActualModel)
 	}
 
 	// 第二轮纯文本：历史 transcript 里还留着上一轮的图，完整 transcript 检测

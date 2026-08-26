@@ -385,6 +385,19 @@ func TestAdminSettingsHandlers(t *testing.T) {
 
 	restartCh := make(chan struct{}, 10)
 	server.SetRestartFunc(func() { restartCh <- struct{}{} })
+	drainRestarts := func() {
+		for len(restartCh) > 0 {
+			<-restartCh
+		}
+	}
+	assertNoRestart := func(t *testing.T) {
+		t.Helper()
+		select {
+		case <-restartCh:
+			t.Fatal("unexpected restart triggered")
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 
 	t.Run("AdminGetSetting_missing_key", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/", nil))
@@ -504,6 +517,35 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminUpdateSetting_multimodal_fallback_hot_reloads_without_restart", func(t *testing.T) {
+		drainRestarts()
+		mapping := `{"gpt-text":"gpt-vision-update"}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+modelMultimodalFallbackSettingKey, map[string]string{
+			"value": mapping,
+		}))
+		c.Params = gin.Params{{Key: "key", Value: modelMultimodalFallbackSettingKey}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "重启") {
+			t.Fatalf("hot update response must not claim restart: %s", w.Body.String())
+		}
+		if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision-update" {
+			t.Fatalf("runtime fallback=%q, want gpt-vision-update", got)
+		}
+		persisted, err := store.GetSetting(context.Background(), modelMultimodalFallbackSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting failed: %v", err)
+		}
+		if persisted.Value != mapping {
+			t.Fatalf("persisted mapping=%q, want %q", persisted.Value, mapping)
+		}
+		assertNoRestart(t)
+	})
+
 	t.Run("AdminGetSetting_returns_latest_db_value_before_restart", func(t *testing.T) {
 		if err := store.UpdateSetting(context.Background(), "channel_check_interval_hours", "1"); err != nil {
 			t.Fatalf("failed to seed setting in db: %v", err)
@@ -587,6 +629,37 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminResetSetting_multimodal_fallback_hot_clears_without_restart", func(t *testing.T) {
+		drainRestarts()
+		mapping := `{"gpt-text":"gpt-vision-reset"}`
+		if err := store.UpdateSetting(context.Background(), modelMultimodalFallbackSettingKey, mapping); err != nil {
+			t.Fatalf("seed multimodal fallback: %v", err)
+		}
+		server.setMultimodalFallbackModels(map[string]string{"gpt-text": "gpt-vision-reset"})
+
+		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/settings/"+modelMultimodalFallbackSettingKey+"/reset", nil))
+		c.Params = gin.Params{{Key: "key", Value: modelMultimodalFallbackSettingKey}}
+		server.AdminResetSetting(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "重启") {
+			t.Fatalf("hot reset response must not claim restart: %s", w.Body.String())
+		}
+		if got := server.multimodalFallbackModel("gpt-text", true); got != "" {
+			t.Fatalf("runtime fallback after reset=%q, want empty", got)
+		}
+		persisted, err := store.GetSetting(context.Background(), modelMultimodalFallbackSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting failed: %v", err)
+		}
+		if persisted.Value != "{}" {
+			t.Fatalf("persisted mapping after reset=%q, want {}", persisted.Value)
+		}
+		assertNoRestart(t)
+	})
+
 	t.Run("AdminBatchUpdateSettings_empty_body_reject", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{}`)))
 
@@ -646,10 +719,8 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSetting before update failed: %v", err)
 		}
-		// 清掉前面子测试遗留的重启信号，避免把陈旧事件误判成本次触发。
-		for len(restartCh) > 0 {
-			<-restartCh
-		}
+		drainRestarts()
+		server.setMultimodalFallbackModels(map[string]string{"existing-text": "existing-vision"})
 
 		invalidMapping := `{"gpt-5.6-luna":"gpt-5.6-luna"}`
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
@@ -668,10 +739,60 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		if after.Value != before.Value {
 			t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
 		}
+		if got := server.multimodalFallbackModel("existing-text", true); got != "existing-vision" {
+			t.Fatalf("runtime fallback=%q, want unchanged existing-vision", got)
+		}
+		assertNoRestart(t)
+	})
+
+	t.Run("AdminBatchUpdateSettings_multimodal_fallback_hot_reloads_without_restart", func(t *testing.T) {
+		drainRestarts()
+		mapping := `{"gpt-text":"gpt-vision-batch"}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			modelMultimodalFallbackSettingKey: mapping,
+		}))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "重启") {
+			t.Fatalf("hot batch response must not claim restart: %s", w.Body.String())
+		}
+		if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision-batch" {
+			t.Fatalf("runtime fallback=%q, want gpt-vision-batch", got)
+		}
+		persisted, err := store.GetSetting(context.Background(), modelMultimodalFallbackSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting failed: %v", err)
+		}
+		if persisted.Value != mapping {
+			t.Fatalf("persisted mapping=%q, want %q", persisted.Value, mapping)
+		}
+		assertNoRestart(t)
+	})
+
+	t.Run("AdminBatchUpdateSettings_mixed_multimodal_update_still_restarts", func(t *testing.T) {
+		drainRestarts()
+		mapping := `{"gpt-text":"gpt-vision-mixed"}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			modelMultimodalFallbackSettingKey: mapping,
+			"log_retention_days":              "21",
+		}))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		if got := server.multimodalFallbackModel("gpt-text", true); got != "gpt-vision-mixed" {
+			t.Fatalf("runtime fallback=%q, want gpt-vision-mixed", got)
+		}
 		select {
 		case <-restartCh:
-			t.Fatal("rejected multimodal fallback mapping must not trigger restart")
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(time.Second):
+			t.Fatal("mixed settings update must trigger restart")
 		}
 	})
 
