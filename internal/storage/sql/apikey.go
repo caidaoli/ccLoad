@@ -425,7 +425,10 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = excluded.priority,
 					rpm_limit = excluded.rpm_limit,
 					max_concurrency = excluded.max_concurrency,
-					oauth_credential = CASE WHEN excluded.auth_type = 'api_key' THEN channels.oauth_credential ELSE excluded.oauth_credential END,
+				oauth_credential = CASE
+					WHEN excluded.auth_type = 'api_key' AND COALESCE(excluded.oauth_credential, '') = '' THEN channels.oauth_credential
+					ELSE excluded.oauth_credential
+				END,
 					websockets = excluded.websockets,
 					protocol_transform_mode = excluded.protocol_transform_mode,
 					enabled = excluded.enabled,
@@ -442,7 +445,10 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = excluded.priority,
 					rpm_limit = excluded.rpm_limit,
 					max_concurrency = excluded.max_concurrency,
-					oauth_credential = CASE WHEN excluded.auth_type = 'api_key' THEN channels.oauth_credential ELSE excluded.oauth_credential END,
+				oauth_credential = CASE
+					WHEN excluded.auth_type = 'api_key' AND COALESCE(excluded.oauth_credential, '') = '' THEN channels.oauth_credential
+					ELSE excluded.oauth_credential
+				END,
 					websockets = excluded.websockets,
 					protocol_transform_mode = excluded.protocol_transform_mode,
 					enabled = excluded.enabled,
@@ -461,7 +467,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = VALUES(priority),
 					rpm_limit = VALUES(rpm_limit),
 					max_concurrency = VALUES(max_concurrency),
-					oauth_credential = IF(VALUES(auth_type) = 'api_key', oauth_credential, VALUES(oauth_credential)),
+				oauth_credential = IF(VALUES(auth_type) = 'api_key' AND COALESCE(VALUES(oauth_credential), '') = '', oauth_credential, VALUES(oauth_credential)),
 					websockets = VALUES(websockets),
 					protocol_transform_mode = VALUES(protocol_transform_mode),
 					enabled = VALUES(enabled),
@@ -478,7 +484,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = VALUES(priority),
 					rpm_limit = VALUES(rpm_limit),
 					max_concurrency = VALUES(max_concurrency),
-					oauth_credential = IF(VALUES(auth_type) = 'api_key', oauth_credential, VALUES(oauth_credential)),
+				oauth_credential = IF(VALUES(auth_type) = 'api_key' AND COALESCE(VALUES(oauth_credential), '') = '', oauth_credential, VALUES(oauth_credential)),
 					websockets = VALUES(websockets),
 					protocol_transform_mode = VALUES(protocol_transform_mode),
 					enabled = VALUES(enabled),
@@ -525,8 +531,19 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			if authType != model.AuthTypeAPIKey && len(cwk.APIKeys) != 0 {
 				return fmt.Errorf("import channel %s: OAuth channel API keys are read-only", config.Name)
 			}
-			if authType == model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) != "" {
-				return fmt.Errorf("import channel %s: api_key channel cannot contain an OAuth credential", config.Name)
+			if authType == model.AuthTypeAPIKey {
+				if strings.TrimSpace(config.OAuthCredential) == "" {
+					config.OAuthCredential = ""
+				} else {
+					envelope, envelopeErr := model.ParseChannelManagementEnvelope(config.OAuthCredential)
+					if envelopeErr != nil {
+						return fmt.Errorf("import channel %s: invalid channel management envelope: %w", config.Name, envelopeErr)
+					}
+					config.OAuthCredential, envelopeErr = envelope.Marshal()
+					if envelopeErr != nil {
+						return fmt.Errorf("import channel %s: invalid channel management envelope: %w", config.Name, envelopeErr)
+					}
+				}
 			}
 			protocolTransformMode := config.GetProtocolTransformMode()
 			useExplicitID := config.ID != 0

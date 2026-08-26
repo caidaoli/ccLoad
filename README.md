@@ -832,6 +832,7 @@ Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opu
 - Smart data validation with error messages
 - Incremental import and overwrite update
 - UTF-8 encoding, Excel compatible
+- `oauth_credential` includes both OAuth credentials and API-key channel management envelopes for cross-instance migration; treat exported CSV files as sensitive and delete them after use
 
 ## 📊 Monitoring Metrics
 

@@ -169,10 +169,11 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			return
 		}
 
-		oauthCredential := ""
-		if cfg.UsesOAuth() {
-			oauthCredential = cfg.OAuthCredential
-		}
+		// OAuth credentials and API-key channel management envelopes are both
+		// private credentials required for a faithful cross-instance migration.
+		// CSV export is an authenticated admin operation, so preserve the full
+		// payload instead of silently dropping the management account.
+		oauthCredential := cfg.OAuthCredential
 		managementCheckinEnabled, managementCheckinTime, err := exportChannelManagementCheckin(cfg)
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize management checkin for channel %d: %w", cfg.ID, err))
@@ -530,7 +531,14 @@ func (s *Server) parseChannelImportRow(
 		return nil, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")), true
 	}
 	if authType == model.AuthTypeAPIKey && oauthCredential != "" {
-		return nil, fmt.Sprintf("第%d行 API Key 渠道不能包含 OAuth 凭证", lineNo), true
+		envelope, err := model.ParseChannelManagementEnvelope(oauthCredential)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 API Key 渠道管理账号无效: %v", lineNo, err), true
+		}
+		oauthCredential, err = envelope.Marshal()
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 API Key 渠道管理账号无效: %v", lineNo, err), true
+		}
 	}
 	if authType != model.AuthTypeAPIKey && apiKey != "" {
 		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含 API Key", lineNo), true

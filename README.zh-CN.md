@@ -849,6 +849,7 @@ Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opu
 - 智能数据验证和错误提示
 - 增量导入和覆盖更新
 - UTF-8编码，Excel兼容
+- `oauth_credential` 同时包含 OAuth 凭据和 API Key 渠道管理账号封套，可用于跨实例迁移；CSV 属于敏感文件，使用后应立即妥善删除
 
 ## 📊 监控指标
 

@@ -190,7 +190,7 @@ func TestAdminAPI_ExportChannelsCSVSelectedIDs(t *testing.T) {
 	}
 }
 
-func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *testing.T) {
+func TestAdminAPI_CSVExportImportsChannelManagementEnvelope(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
 	ctx := context.Background()
@@ -200,6 +200,7 @@ func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *t
 	managed, err := server.store.CreateConfig(ctx, &model.Config{
 		Name: "Managed API Key", AuthType: model.AuthTypeAPIKey,
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "model-1"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,9 +228,6 @@ func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *t
 	if w.Code != http.StatusOK {
 		t.Fatalf("export status=%d, want 200", w.Code)
 	}
-	if strings.Contains(w.Body.String(), "management-export-token") || strings.Contains(w.Body.String(), "channel_management") {
-		t.Fatalf("API Key management credential leaked in CSV: %s", w.Body.String())
-	}
 	records, err := csv.NewReader(bytes.NewReader(w.Body.Bytes())).ReadAll()
 	if err != nil {
 		t.Fatalf("parse exported CSV: %v", err)
@@ -242,8 +240,8 @@ func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *t
 		records[1][headerIndex["name"]]: records[1],
 		records[2][headerIndex["name"]]: records[2],
 	}
-	if got := rowsByName[managed.Name][headerIndex["oauth_credential"]]; got != "" {
-		t.Fatalf("API Key oauth_credential=%q, want empty", got)
+	if got := rowsByName[managed.Name][headerIndex["oauth_credential"]]; got != managementEnvelope {
+		t.Fatalf("API Key management envelope=%q, want exported envelope", got)
 	}
 	if got := rowsByName[managed.Name][headerIndex["management_daily_checkin_enabled"]]; got != "true" {
 		t.Fatalf("management_daily_checkin_enabled=%q, want true", got)
@@ -303,10 +301,12 @@ func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *t
 	if err != nil || persisted.OAuthCredential != managementEnvelope {
 		t.Fatalf("legacy CSV changed management account: credential=%q err=%v", persisted.OAuthCredential, err)
 	}
-	checkinHeader := append(append([]string(nil), baseHeader...), "management_daily_checkin_enabled", "management_daily_checkin_time")
-	checkinRow := append(append([]string(nil), baseRow...), "true", "10:15")
-	if status, body := importCSV("checkin.csv", checkinHeader, checkinRow); status != http.StatusOK {
-		t.Fatalf("checkin import status=%d body=%s", status, body)
+	if updated, err := server.store.CompareAndSwapChannelManagement(ctx, managed.ID, managementEnvelope, ""); err != nil || !updated {
+		t.Fatalf("clear target management envelope = (%v, %v)", updated, err)
+	}
+	migrationStatus, migrationBody := importCSV("migration.csv", records[0], rowsByName[managed.Name])
+	if migrationStatus != http.StatusOK {
+		t.Fatalf("migration import status=%d body=%s", migrationStatus, migrationBody)
 	}
 	persisted, err = server.store.GetConfig(ctx, managed.ID)
 	if err != nil {
@@ -314,15 +314,16 @@ func TestAdminAPI_CSVExportImportsChannelManagementCheckinWithoutCredential(t *t
 	}
 	persistedManagement, err := model.ParseChannelManagementEnvelope(persisted.OAuthCredential)
 	if err != nil {
-		t.Fatalf("parse imported management account: %v", err)
+		t.Fatalf("parse imported management account: %v response=%s", err, migrationBody)
 	}
 	if persistedManagement.Settings.AccessToken != "management-export-token" ||
-		!persistedManagement.Settings.DailyCheckinEnabled || persistedManagement.Settings.DailyCheckinTime != "10:15" {
+		!persistedManagement.Settings.DailyCheckinEnabled || persistedManagement.Settings.DailyCheckinTime != "09:30" {
 		t.Fatalf("imported management settings=%+v", persistedManagement.Settings)
 	}
 	if persistedManagement.State.LastScheduledDay != "2026-08-25" || persistedManagement.State.LastCheckinStatus != "success" {
 		t.Fatalf("imported management state changed: %+v", persistedManagement.State)
 	}
+	checkinHeader := append(append([]string(nil), baseHeader...), "management_daily_checkin_enabled", "management_daily_checkin_time")
 	if status, body := importCSV(
 		"explicit-empty.csv",
 		checkinHeader,

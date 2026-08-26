@@ -7,19 +7,19 @@ import (
 	"ccLoad/internal/model"
 )
 
-// API Key 渠道行携带任何凭据封套都必须被拒绝，绝不落库。
-func TestCSVImportRejectsAPIKeyRowCarryingCredential(t *testing.T) {
+func TestCSVImportAPIKeyManagementEnvelopeValidation(t *testing.T) {
 	const secret = "must-not-persist"
 	columns := map[string]int{
 		"name": 0, "api_key": 1, "urls": 2, "models": 3, "auth_type": 4,
 		"oauth_credential": 5,
 	}
 	for _, tc := range []struct {
-		name       string
-		credential string
+		name        string
+		credential  string
+		wantSkipped bool
 	}{
-		{"management envelope", `{"profile":"sub2api","base_url":"https://panel.example.com","access_token":"` + secret + `"}`},
-		{"oauth credential", `{"refresh_token":"` + secret + `"}`},
+		{"management envelope", `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"` + secret + `"},"state":{}}`, false},
+		{"oauth credential", `{"refresh_token":"` + secret + `"}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			channel, errMessage, skipped := (&Server{}).parseChannelImportRow(
@@ -29,14 +29,20 @@ func TestCSVImportRejectsAPIKeyRowCarryingCredential(t *testing.T) {
 				}, columns, 2, false, false, false, false, false, false, false,
 				nil, nil, nil, nil, nil, nil,
 			)
-			if !skipped || channel != nil {
-				t.Fatalf("API Key row carrying a credential was accepted: channel=%#v skipped=%v", channel, skipped)
+			if skipped != tc.wantSkipped {
+				t.Fatalf("skipped=%v, want %v (channel=%#v error=%q)", skipped, tc.wantSkipped, channel, errMessage)
 			}
-			if errMessage != "第2行 API Key 渠道不能包含 OAuth 凭证" {
-				t.Fatalf("error message = %q", errMessage)
+			if tc.wantSkipped {
+				if channel != nil || !strings.Contains(errMessage, "管理账号无效") {
+					t.Fatalf("unexpected rejected row: channel=%#v error=%q", channel, errMessage)
+				}
+				if strings.Contains(errMessage, secret) {
+					t.Fatalf("import error leaked the credential: %q", errMessage)
+				}
+				return
 			}
-			if strings.Contains(errMessage, secret) {
-				t.Fatalf("import error leaked the credential: %q", errMessage)
+			if channel == nil || errMessage != "" || channel.Config.OAuthCredential == "" {
+				t.Fatalf("management envelope was not accepted: channel=%#v error=%q", channel, errMessage)
 			}
 		})
 	}
