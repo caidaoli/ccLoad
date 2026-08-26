@@ -1196,6 +1196,86 @@ func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
+	upstreamModels := make(chan string, 3)
+	var turn int
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		upstreamModels <- gjson.GetBytes(body, "model").String()
+		turn++
+		responseID := fmt.Sprintf("resp-mm-%d", turn)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":%q}}\n\n", responseID)
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", responseID)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "multimodal-fallback-ws", upstreamProtocol: "codex",
+		models: "gpt-text,gpt-vision", apiKey: "sk-upstream", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.multimodalFallbackModels = map[string]string{"gpt-text": "gpt-vision"}
+
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set websocket read deadline: %v", err)
+	}
+
+	// 第一轮带图：命中映射，改写为回退模型。
+	if err := conn.WriteJSON(map[string]any{
+		"type":  "response.create",
+		"model": "gpt-text",
+		"input": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_image", "image_url": "https://example.com/a.png"},
+		}}},
+	}); err != nil {
+		t.Fatalf("write first websocket request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, conn, "response.completed")
+	firstResponse, _ := completed["response"].(map[string]any)
+	firstID, _ := firstResponse["id"].(string)
+	if got := <-upstreamModels; got != "gpt-vision" {
+		t.Fatalf("first upstream model=%q, want gpt-vision", got)
+	}
+
+	// 第二轮纯文本：历史 transcript 里还留着上一轮的图，完整 transcript 检测
+	// 必须保持同一个回退模型（与 HTTP 入口按单请求判定不同的 WS 契约）。
+	if err := conn.WriteJSON(map[string]any{
+		"type":                 "response.create",
+		"previous_response_id": firstID,
+		"model":                "gpt-text",
+		"input":                []any{map[string]any{"role": "user", "content": "any text"}},
+	}); err != nil {
+		t.Fatalf("write second websocket request: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	if got := <-upstreamModels; got != "gpt-vision" {
+		t.Fatalf("second upstream model=%q, want gpt-vision (full transcript keeps the image)", got)
+	}
+
+	// 带图但模型不在映射里：模型不变。
+	if err := conn.WriteJSON(map[string]any{
+		"type":  "response.create",
+		"model": "gpt-vision",
+		"input": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_image", "image_url": "https://example.com/b.png"},
+		}}},
+	}); err != nil {
+		t.Fatalf("write third websocket request: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	if got := <-upstreamModels; got != "gpt-vision" {
+		t.Fatalf("third upstream model=%q, want gpt-vision", got)
+	}
+}
+
 func TestResponsesWebsocketXAIOAuthAlwaysBridgesHTTPSSEResponse(t *testing.T) {
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32

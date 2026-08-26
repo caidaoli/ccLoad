@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -99,6 +101,104 @@ func sanitizeCodexAlphaSearchBody(body []byte) []byte {
 		return body
 	}
 	return sanitized
+}
+
+// multimodalMarkerWords 是跨协议的多模态特征词。请求体不含任何一个词时
+// 纯文本请求零 JSON 解析直接返回；命中才进入 gjson 精确判定。字节短路允许
+// 误触发（正文恰好提到 "image"、"file" 之类），但不允许漏掉任何协议的真实标记。
+var multimodalMarkerWords = [][]byte{
+	[]byte("image"),       // Anthropic image / OpenAI image_url / Codex input_image
+	[]byte("document"),    // Anthropic document
+	[]byte("video_url"),   // OpenAI video_url
+	[]byte("input_audio"), // OpenAI input_audio
+	[]byte("file"),        // OpenAI file / Codex input_file / Gemini fileData/file_data
+	[]byte("inline"),      // Gemini inlineData / inline_data
+}
+
+var (
+	anthropicNonTextTypes = map[string]bool{"image": true, "document": true}
+	openaiNonTextTypes    = map[string]bool{"image_url": true, "video_url": true, "input_audio": true, "file": true}
+	codexNonTextTypes     = map[string]bool{"input_image": true, "input_file": true}
+	// Gemini 的 part 没有 type tag，只能按字段存在性判定；camelCase 与 snake_case
+	// 两种写法都要试（协议转换器的双向来源都见过）。
+	geminiNonTextKeys = []string{"inlineData", "inline_data", "fileData", "file_data"}
+)
+
+// requestHasNonTextContent 判断请求体是否含图片/文件等非文本内容。
+// 调用方已按 clientProtocol 完成协议校验，这里按协议走各自的字段路径：
+//
+//   - Anthropic：messages[].content[] 的 type，含 tool_result 嵌套 content[]
+//     （Claude Code 截图最常见的位置）；
+//   - OpenAI：messages[].content[] 的 type，content 可以是字符串、对象或数组；
+//   - Codex：input[].content[] 的 type，input 本身也可能是纯字符串；
+//   - Gemini：contents[].parts[] 存在 inlineData/inline_data/fileData/file_data，
+//     图片/文档/音视频共用 part 形状，只能按字段存在性判定。
+func requestHasNonTextContent(clientProtocol protocol.Protocol, body []byte) bool {
+	for _, marker := range multimodalMarkerWords {
+		if bytes.Contains(body, marker) {
+			switch clientProtocol {
+			case protocol.Anthropic:
+				if hasNonTextType(body, "messages.#.content.#.type", anthropicNonTextTypes) ||
+					hasNonTextType(body, "messages.#.content.#.content.#.type", anthropicNonTextTypes) {
+					return true
+				}
+			case protocol.OpenAI:
+				if hasNonTextType(body, "messages.#.content.#.type", openaiNonTextTypes) ||
+					hasNonTextType(body, "messages.#.content.type", openaiNonTextTypes) {
+					return true
+				}
+			case protocol.Codex:
+				if hasNonTextType(body, "input.#.content.#.type", codexNonTextTypes) ||
+					hasNonTextType(body, "input.#.content.type", codexNonTextTypes) {
+					return true
+				}
+			case protocol.Gemini:
+				if hasGeminiNonTextPart(body) {
+					return true
+				}
+			}
+			// 该 marker 只是候选，某个协议分支未命中不代表整体是纯文本：body 里
+			// 可能还包含其它 marker 词，得让外层循环继续匹配下一种 marker。
+		}
+	}
+	return false
+}
+
+// forEachJSONValue 递归展开嵌套数组，对每个非数组值调用 visit；visit 返回 true
+// 表示命中，立即停止全部遍历并返回 true，全部未命中返回 false。`#` 组装的路径
+// （如 messages.#.content.#.type）会产生多层嵌套数组，gjson 的 @flatten 对这些
+// 结构不压平，必须自递归。
+func forEachJSONValue(result gjson.Result, visit func(gjson.Result) bool) bool {
+	if !result.IsArray() {
+		return visit(result)
+	}
+	found := false
+	result.ForEach(func(_, child gjson.Result) bool {
+		found = forEachJSONValue(child, visit)
+		return !found
+	})
+	return found
+}
+
+// hasNonTextType 沿 gjson 路径收集 type 值，命中目标集合立即停止遍历。
+func hasNonTextType(body []byte, path string, tags map[string]bool) bool {
+	return forEachJSONValue(gjson.GetBytes(body, path), func(value gjson.Result) bool {
+		return tags[value.String()]
+	})
+}
+
+// hasGeminiNonTextPart 逐 part 检查四个字段名。Gemini 的 part 没有 type tag，
+// 只能按字段存在性判定；对 `#` 聚合路径做 Exists() 会因 gjson 把空命中返回成
+// `[]`/`[[]]`（JSON 数组）而恒真，所以必须落到单个 part 对象上逐个查。
+func hasGeminiNonTextPart(body []byte) bool {
+	return forEachJSONValue(gjson.GetBytes(body, "contents.#.parts"), func(part gjson.Result) bool {
+		for _, key := range geminiNonTextKeys {
+			if part.Get(key).Exists() {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func looksLikeOpenAIChatCompletionsBody(body []byte) bool {

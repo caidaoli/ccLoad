@@ -140,6 +140,8 @@ type Server struct {
 	codexMap429To503          bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
+	// 多模态回退映射：key 为归一化的文本模型基名，value 为管理员配置的回退模型（可能带思考后缀）。只读。
+	multimodalFallbackModels map[string]string
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -241,6 +243,7 @@ func NewServer(store storage.Store) *Server {
 		activeRequestTitleEnabled:    runtimeCfg.ActiveRequestTitleEnabled,
 		codexMap429To503:             runtimeCfg.CodexMap429To503,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
+		multimodalFallbackModels:     runtimeCfg.MultimodalFallbackModels,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
 		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
@@ -641,6 +644,7 @@ type serverRuntimeConfig struct {
 	ActiveRequestTitleEnabled    bool
 	CodexMap429To503             bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
+	MultimodalFallbackModels     map[string]string
 	Cooldown                     util.CooldownSettings
 }
 
@@ -651,6 +655,17 @@ func loadGlobalCooldownDetectionRules(cs *ConfigService) *model.CooldownDetectio
 		return nil
 	}
 	return rules
+}
+
+// loadMultimodalFallbackModels 读取多模态回退映射。解析失败只 WARN 回退 nil
+// （等于未配置），不让一条写坏的管理员配置挡住整个进程启动。
+func loadMultimodalFallbackModels(cs *ConfigService) map[string]string {
+	mappings, err := parseMultimodalFallbackModels(cs.GetString(modelMultimodalFallbackSettingKey, "{}"))
+	if err != nil {
+		log.Printf("[WARN] 无效的 %s，已回退为未配置: %v", modelMultimodalFallbackSettingKey, err)
+		return nil
+	}
+	return mappings
 }
 
 // loadPositiveInt 读取必须为正数的配置项，非法值回退默认并告警。
@@ -764,6 +779,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		ActiveRequestTitleEnabled:    cs.GetBool(config.ActiveRequestTitleEnabledSettingKey, false),
 		CodexMap429To503:             cs.GetBool(config.CodexMap429To503SettingKey, false),
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
+		MultimodalFallbackModels:     loadMultimodalFallbackModels(cs),
 		Cooldown:                     loadCooldownSettings(cs),
 	}
 }

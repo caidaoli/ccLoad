@@ -641,6 +641,40 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminBatchUpdateSettings_invalid_multimodal_fallback_reject", func(t *testing.T) {
+		before, err := store.GetSetting(context.Background(), modelMultimodalFallbackSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting before update failed: %v", err)
+		}
+		// 清掉前面子测试遗留的重启信号，避免把陈旧事件误判成本次触发。
+		for len(restartCh) > 0 {
+			<-restartCh
+		}
+
+		invalidMapping := `{"gpt-5.6-luna":"gpt-5.6-luna"}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			modelMultimodalFallbackSettingKey: invalidMapping,
+		}))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		after, err := store.GetSetting(context.Background(), modelMultimodalFallbackSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting after update failed: %v", err)
+		}
+		if after.Value != before.Value {
+			t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+		}
+		select {
+		case <-restartCh:
+			t.Fatal("rejected multimodal fallback mapping must not trigger restart")
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
 	t.Run("AdminBatchUpdateSettings_responses_websocket_zero_uses_defaults", func(t *testing.T) {
 		updates := map[string]string{
 			responsesWebsocketMaxSessionsSetting:            "0",

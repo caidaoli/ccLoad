@@ -321,7 +321,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 		return
 	}
-	originalModel := incoming.originalModel
 	all := incoming.body
 	isStreaming := incoming.isStreaming
 	httpMetrics.observeRequest(isStreaming, len(all))
@@ -334,6 +333,16 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyAlphaSearch {
 		all = sanitizeCodexAlphaSearchBody(all)
 	}
+
+	// 多模态回退：多模态请求自动切到配置的回退模型。改写必须发生在
+	// applyThinkingSuffix 与 Token 白名单之前——渠道候选过滤（SQL 按模型 JOIN）、
+	// 模型冷却过滤、Key 白名单全部按模型名做决策，事后换模型只会换来
+	// 渠道未声明的模型 + 404 + 逐渠道失败。改 incoming 字段后下游全部自动跟随。
+	if fallback := s.multimodalFallbackModel(incoming.originalModel, requestHasNonTextContent(clientProtocol, all)); fallback != "" {
+		incoming.originalModel = model.RoutingModelName(fallback)
+		incoming.requestedModel = fallback
+	}
+	originalModel := incoming.originalModel
 
 	// 先把后缀写成客户端协议字段；选定渠道后会再按实际上游模型能力收敛等级。
 	all = applyThinkingSuffix(all, clientProtocol, incoming.requestedModel)

@@ -48,6 +48,11 @@
             </table>
           </div>
           <div class="settings-save-actions">
+            <button id="model-multimodal-fallback-btn" type="button" class="btn btn-secondary settings-multimodal-fallback-btn" data-i18n="settings.multimodalFallback.edit">
+              多模态回退模型
+            </button>
+            <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
+            <input type="hidden" id="model_multimodal_fallback" value="{}">
             <button id="runtime-metrics-btn" type="button" class="btn btn-secondary settings-runtime-metrics-btn" data-i18n="settings.runtimeMetrics.button">
               运行状态
             </button>
@@ -134,6 +139,39 @@
           <button id="refresh-runtime-metrics-btn" type="button" class="btn btn-secondary" data-i18n="settings.runtimeMetrics.refresh">刷新</button>
           <button type="button" class="btn btn-primary" data-action="close-runtime-metrics" data-i18n="common.close">关闭</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 多模态回退模型 -->
+  <div id="multimodalFallbackModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="multimodalFallbackTitle" aria-describedby="multimodalFallbackDescription" aria-hidden="true">
+    <div class="modal-content advanced-settings-modal">
+      <div class="modal-header">
+        <div>
+          <h2 id="multimodalFallbackTitle" class="modal-title" data-i18n="settings.multimodalFallback.title">多模态回退模型</h2>
+          <p id="multimodalFallbackDescription" class="modal-description" data-i18n="settings.multimodalFallback.description">请求含图片、文件等非文本内容时，自动改用回退模型。保存所有更改后重启生效。</p>
+        </div>
+        <button type="button" class="close-btn" data-action="close-multimodal-fallback"
+          data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+      </div>
+
+      <section class="advanced-settings-panel" role="region" aria-labelledby="multimodalFallbackTitle">
+        <div class="multimodal-fallback-toolbar">
+          <p class="multimodal-fallback-intro" data-i18n="settings.multimodalFallback.intro">左侧为文本模型，右侧为含非文本内容时切换到的回退模型。</p>
+          <button type="button" class="btn btn-secondary" data-action="add-multimodal-fallback-row"
+            data-i18n="settings.multimodalFallback.addRow">+ 添加映射</button>
+        </div>
+        <div id="multimodalFallbackRows" class="multimodal-fallback-rows"></div>
+        <p id="multimodalFallbackEmpty" class="multimodal-fallback-empty" data-i18n="settings.multimodalFallback.empty">尚未配置任何映射。</p>
+        <div id="multimodalFallbackError" class="custom-rules-error" role="alert" hidden></div>
+      </section>
+
+      <div class="modal-footer custom-rules-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-multimodal-fallback"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="apply-multimodal-fallback"
+          data-i18n="settings.multimodalFallback.apply">应用到设置</button>
       </div>
     </div>
   </div>

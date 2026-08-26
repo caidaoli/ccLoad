@@ -342,6 +342,10 @@ func validateSettingValue(key, valueType, value string) error {
 		_, err := parseGlobalCooldownDetectionRules(value)
 		return err
 	}
+	if key == modelMultimodalFallbackSettingKey {
+		_, err := parseMultimodalFallbackModels(value)
+		return err
+	}
 
 	switch valueType {
 	case "int":

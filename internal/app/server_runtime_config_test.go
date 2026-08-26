@@ -110,6 +110,40 @@ func TestLoadServerRuntimeConfigFallsBackOnInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadServerRuntimeConfigMultimodalFallback(t *testing.T) {
+	t.Parallel()
+
+	valid := loadServerRuntimeConfig(newStubConfigService(map[string]string{
+		modelMultimodalFallbackSettingKey: `{"gpt-5.6-luna":"gemini-3-pro"}`,
+	}))
+	if len(valid.MultimodalFallbackModels) != 1 ||
+		valid.MultimodalFallbackModels["gpt-5.6-luna"] != "gemini-3-pro" {
+		t.Fatalf("MultimodalFallbackModels=%v, want single gpt-5.6-luna→gemini-3-pro", valid.MultimodalFallbackModels)
+	}
+
+	// key 归一化：思考后缀剥离 + 小写；value 保留原始写法。
+	normalized := loadServerRuntimeConfig(newStubConfigService(map[string]string{
+		modelMultimodalFallbackSettingKey: `{"GPT-5.6-Luna(max)":"Gemini-3-Pro(max)"}`,
+	}))
+	if normalized.MultimodalFallbackModels["gpt-5.6-luna"] != "Gemini-3-Pro(max)" {
+		t.Fatalf("normalized MultimodalFallbackModels=%v, want key gpt-5.6-luna with original value", normalized.MultimodalFallbackModels)
+	}
+
+	// 非法值（自映射）回退 nil，不 Fatal。
+	invalid := loadServerRuntimeConfig(newStubConfigService(map[string]string{
+		modelMultimodalFallbackSettingKey: `{"a":"a"}`,
+	}))
+	if invalid.MultimodalFallbackModels != nil {
+		t.Fatalf("invalid MultimodalFallbackModels=%v, want nil", invalid.MultimodalFallbackModels)
+	}
+
+	// 未配置（空值/空对象）回退 nil。
+	unset := loadServerRuntimeConfig(newStubConfigService(nil))
+	if unset.MultimodalFallbackModels != nil {
+		t.Fatalf("unset MultimodalFallbackModels=%v, want nil", unset.MultimodalFallbackModels)
+	}
+}
+
 // 上下限倒挂会让指数退避被 max 钳在下限之下，语义不可用，必须整对回退默认值。
 func TestLoadServerRuntimeConfigRejectsInvertedCooldownBounds(t *testing.T) {
 	t.Parallel()
