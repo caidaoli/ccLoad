@@ -318,8 +318,8 @@ func TestRegistry_TranslateResponseStream_AnthropicToGemini_SignatureDelta(t *te
 	}
 
 	result := allOutput.String()
-	if !strings.Contains(result, `"thoughtSignature":"abc123"`) {
-		t.Fatalf("expected Gemini thought signature, got:\n%s", result)
+	if !strings.Contains(result, `"thoughtSignature":"skip_thought_signature_validator"`) {
+		t.Fatalf("expected incompatible signature to use Gemini bypass sentinel, got:\n%s", result)
 	}
 	// 必须有 finishReason（流完整关闭）
 	if !strings.Contains(result, `"finishReason":"STOP"`) {

@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `930fdc7796354afa86bfb161cf34d95f18a306dc` (`fork/v8.69.0`)
-- Synchronized at: `2026-08-19`
+- Last synchronized commit: `6325f75a08266145677341016b4e5158478ea0c5` (`fork/v8.73.0`)
+- Synchronized at: `2026-08-26`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -40,7 +40,7 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 54 `_test.go` files from the same commit as the
+The core snapshot includes 56 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -50,7 +50,7 @@ production sources:
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 6
+- `common`: 7
 - `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
 - `gemini/openai/responses`: 3
@@ -58,7 +58,7 @@ production sources:
 - `openai/gemini`: 2
 - `openai/openai/responses`: 2
 - `signature`: 8
-- `util`: 5
+- `util`: 6
 
 Tests for excluded packages are not copied. Performance-only benchmarks are
 also excluded: the translator-wide benchmark requires the excluded dynamic
@@ -173,11 +173,15 @@ documented adaptations:
   extensions for `reasoning.content`, cache-creation usage, `input_file`, and
   Responses `web_search` to `web_search_options`; these are intentional local
   contract differences and must survive future upstream syncs.
-- Claude-target request converters never synthesize process-global
-  `metadata.user_id`. Provider session identity belongs to ccLoad's request
-  boundary, where Anthropic credentials and `Session-Id` + `Thread-Id` are
-  available; keeping it out of the pure converters prevents cross-request
-  identity collisions and the upstream package-global initialization race.
+- Claude-target request converters derive a deterministic `metadata.user_id`
+  from caller-supplied identity or stable request signals (prompt cache key,
+  session/conversation ID, or the first user prompt). Explicit caller values
+  remain unchanged; no process-global mutable identity or credential state is
+  introduced.
+- Responses tool namespace discovery and sanitization live in the pure
+  `util/responses_tools.go` helper. Top-level declarations win over
+  `additional_tools`, namespace children retain qualified names, and the
+  helper carries no runtime registry or network dependency.
 - The embedded capability catalog exposes Antigravity models to Gemini wire
   conversion. `gemini-3.7-flash-high` follows the canonical entry added by
   `router-for-me/models` commit `cbe1e6c59429bc92dd8d6654873670fc0c274cad`;

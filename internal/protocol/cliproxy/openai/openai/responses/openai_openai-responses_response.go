@@ -888,6 +888,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	message := root.Get("choices.0.message")
 	rcText := message.Get("reasoning_content").String()
 	encryptedContent := ""
+	if reasoning := message.Get("reasoning"); reasoning.Exists() && !reasoning.IsArray() && rcText == "" {
+		rcText = reasoning.String()
+	}
 	if reasoning := message.Get("reasoning"); reasoning.IsArray() {
 		for _, item := range reasoning.Array() {
 			if rcText == "" {

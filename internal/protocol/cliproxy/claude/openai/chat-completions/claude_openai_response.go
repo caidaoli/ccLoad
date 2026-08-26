@@ -248,16 +248,15 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		index := int(root.Get("index").Int())
 		if (*param).(*ConvertAnthropicResponseToOpenAIParams).ReasoningAccumulator != nil {
 			if accumulator, exists := (*param).(*ConvertAnthropicResponseToOpenAIParams).ReasoningAccumulator[index]; exists {
-				var item []byte
 				if accumulator.Type == "redacted_thinking" {
-					item = []byte(`{"type":"redacted_thinking","data":""}`)
-					item, _ = sjson.SetBytes(item, "data", accumulator.Data)
-				} else {
-					item = []byte(`{"type":"thinking","text":""}`)
-					item, _ = sjson.SetBytes(item, "text", accumulator.Text.String())
-					if accumulator.Signature.Len() > 0 {
-						item, _ = sjson.SetBytes(item, "signature", accumulator.Signature.String())
-					}
+					delete((*param).(*ConvertAnthropicResponseToOpenAIParams).ReasoningAccumulator, index)
+					return [][]byte{}
+				}
+				var item []byte
+				item = []byte(`{"type":"thinking","text":""}`)
+				item, _ = sjson.SetBytes(item, "text", accumulator.Text.String())
+				if accumulator.Signature.Len() > 0 {
+					item, _ = sjson.SetBytes(item, "signature", accumulator.Signature.String())
 				}
 				template, _ = sjson.SetRawBytes(template, "choices.0.delta.reasoning", []byte(`[]`))
 				template, _ = sjson.SetRawBytes(template, "choices.0.delta.reasoning.-1", item)
@@ -371,7 +370,7 @@ func mapAnthropicStopReasonToOpenAI(anthropicReason string) string {
 //
 // Returns:
 //   - []byte: An OpenAI-compatible JSON response containing all message content and metadata
-func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
+func convertClaudeResponseToOpenAINonStreamMessage(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	_ = originalRequestRawJSON
 	_ = requestRawJSON
 
@@ -458,6 +457,180 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 		if usage.ReasoningTokens > 0 {
 			out, _ = sjson.SetBytes(out, "usage.completion_tokens_details.reasoning_tokens", usage.ReasoningTokens)
 		}
+	}
+
+	return out
+}
+
+// ConvertClaudeResponseToOpenAINonStream converts a Claude non-stream response
+// or a newline-delimited Claude event payload into an OpenAI response.
+func ConvertClaudeResponseToOpenAINonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
+	if root := gjson.ParseBytes(rawJSON); root.Get("type").String() == "message" && root.Get("content").IsArray() {
+		return convertClaudeResponseToOpenAINonStreamMessage(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, nil)
+	}
+
+	chunks := make([][]byte, 0)
+
+	lines := bytes.Split(rawJSON, []byte("\n"))
+	for _, line := range lines {
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		chunks = append(chunks, bytes.TrimSpace(line[5:]))
+	}
+
+	// Base OpenAI non-streaming response template
+	out := []byte(`{"id":"","object":"chat.completion","created":0,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+
+	var messageID string
+	var model string
+	var createdAt int64
+	var stopReason string
+	var contentParts []string
+	var reasoningParts []string
+	usageTokens := claudeUsageTokens{}
+	toolCallsAccumulator := make(map[int]*ToolCallAccumulator)
+
+	for _, chunk := range chunks {
+		root := gjson.ParseBytes(chunk)
+		eventType := root.Get("type").String()
+
+		switch eventType {
+		case "message_start":
+			// Extract initial message metadata including ID, model, and input token count
+			if message := root.Get("message"); message.Exists() {
+				messageID = message.Get("id").String()
+				model = message.Get("model").String()
+				createdAt = time.Now().Unix()
+				usageTokens.Merge(message.Get("usage"))
+			}
+
+		case "content_block_start":
+			// Handle different content block types at the beginning
+			if contentBlock := root.Get("content_block"); contentBlock.Exists() {
+				blockType := contentBlock.Get("type").String()
+				if blockType == "thinking" {
+					// Start of thinking/reasoning content - skip for now as it's handled in delta
+					continue
+				} else if blockType == "tool_use" {
+					// Initialize tool call accumulator for this index
+					index := int(root.Get("index").Int())
+					toolCallsAccumulator[index] = &ToolCallAccumulator{
+						ID:   contentBlock.Get("id").String(),
+						Name: contentBlock.Get("name").String(),
+					}
+				}
+			}
+
+		case "content_block_delta":
+			// Process incremental content updates
+			if delta := root.Get("delta"); delta.Exists() {
+				deltaType := delta.Get("type").String()
+				switch deltaType {
+				case "text_delta":
+					// Accumulate text content
+					if text := delta.Get("text"); text.Exists() {
+						contentParts = append(contentParts, text.String())
+					}
+				case "thinking_delta":
+					// Accumulate reasoning/thinking content
+					if thinking := delta.Get("thinking"); thinking.Exists() {
+						reasoningParts = append(reasoningParts, thinking.String())
+					}
+				case "input_json_delta":
+					// Accumulate tool call arguments
+					if partialJSON := delta.Get("partial_json"); partialJSON.Exists() {
+						index := int(root.Get("index").Int())
+						if accumulator, exists := toolCallsAccumulator[index]; exists {
+							accumulator.Arguments.WriteString(partialJSON.String())
+						}
+					}
+				}
+			}
+
+		case "content_block_stop":
+			// Finalize tool call arguments for this index when content block ends
+			index := int(root.Get("index").Int())
+			if accumulator, exists := toolCallsAccumulator[index]; exists {
+				if accumulator.Arguments.Len() == 0 {
+					accumulator.Arguments.WriteString("{}")
+				}
+			}
+
+		case "message_delta":
+			// Extract stop reason and output token count when message ends
+			if delta := root.Get("delta"); delta.Exists() {
+				if sr := delta.Get("stop_reason"); sr.Exists() {
+					stopReason = sr.String()
+				}
+			}
+			if usage := root.Get("usage"); usage.Exists() {
+				usageTokens.Merge(usage)
+			}
+		}
+	}
+
+	if usageTokens.HasUsage {
+		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := usageTokens.OpenAIUsage()
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens", promptTokens)
+		out, _ = sjson.SetBytes(out, "usage.completion_tokens", completionTokens)
+		out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
+	}
+
+	// Set basic response fields including message ID, creation time, and model
+	out, _ = sjson.SetBytes(out, "id", messageID)
+	out, _ = sjson.SetBytes(out, "created", createdAt)
+	out, _ = sjson.SetBytes(out, "model", model)
+
+	// Set message content by combining all text parts
+	messageContent := strings.Join(contentParts, "")
+	out, _ = sjson.SetBytes(out, "choices.0.message.content", messageContent)
+
+	// Add reasoning content if available (following OpenAI reasoning format)
+	if len(reasoningParts) > 0 {
+		reasoningContent := strings.Join(reasoningParts, "")
+		// Add reasoning as a separate field in the message
+		out, _ = sjson.SetBytes(out, "choices.0.message.reasoning_content", reasoningContent)
+	}
+
+	// Set tool calls if any were accumulated during processing
+	if len(toolCallsAccumulator) > 0 {
+		toolCallsCount := 0
+		maxIndex := -1
+		for index := range toolCallsAccumulator {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+
+		for i := 0; i <= maxIndex; i++ {
+			accumulator, exists := toolCallsAccumulator[i]
+			if !exists {
+				continue
+			}
+
+			arguments := accumulator.Arguments.String()
+
+			idPath := fmt.Sprintf("choices.0.message.tool_calls.%d.id", toolCallsCount)
+			typePath := fmt.Sprintf("choices.0.message.tool_calls.%d.type", toolCallsCount)
+			namePath := fmt.Sprintf("choices.0.message.tool_calls.%d.function.name", toolCallsCount)
+			argumentsPath := fmt.Sprintf("choices.0.message.tool_calls.%d.function.arguments", toolCallsCount)
+
+			out, _ = sjson.SetBytes(out, idPath, accumulator.ID)
+			out, _ = sjson.SetBytes(out, typePath, "function")
+			out, _ = sjson.SetBytes(out, namePath, accumulator.Name)
+			out, _ = sjson.SetBytes(out, argumentsPath, arguments)
+			toolCallsCount++
+		}
+		if toolCallsCount > 0 {
+			out, _ = sjson.SetBytes(out, "choices.0.finish_reason", "tool_calls")
+		} else if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); finishReason != "stop" {
+			out, _ = sjson.SetBytes(out, "choices.0.finish_reason", finishReason)
+		}
+	} else if finishReason := mapAnthropicStopReasonToOpenAI(stopReason); finishReason != "stop" {
+		out, _ = sjson.SetBytes(out, "choices.0.finish_reason", finishReason)
 	}
 
 	return out

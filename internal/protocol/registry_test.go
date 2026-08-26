@@ -644,7 +644,7 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	}
 }
 
-func TestRegistry_TranslateRequestToAnthropicDoesNotFabricateSharedIdentity(t *testing.T) {
+func TestRegistry_TranslateRequestToAnthropicDerivesDeterministicIdentity(t *testing.T) {
 	tests := []struct {
 		name string
 		from protocol.Protocol
@@ -693,9 +693,16 @@ func TestRegistry_TranslateRequestToAnthropicDoesNotFabricateSharedIdentity(t *t
 			for err := range errors {
 				t.Fatalf("TranslateRequest failed: %v", err)
 			}
+			var wantID string
 			for out := range results {
-				if gjson.GetBytes(out, "metadata.user_id").Exists() {
-					t.Fatalf("translator fabricated process-global identity: %s", out)
+				gotID := gjson.GetBytes(out, "metadata.user_id").String()
+				if gotID == "" || gotID == "unknown" {
+					t.Fatalf("translator did not derive a stable identity: %s", out)
+				}
+				if wantID == "" {
+					wantID = gotID
+				} else if gotID != wantID {
+					t.Fatalf("concurrent translations derived different identities: got %q, want %q", gotID, wantID)
 				}
 			}
 		})
