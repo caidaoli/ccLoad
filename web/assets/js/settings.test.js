@@ -411,6 +411,29 @@ test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
 });
 
+test('多模态回退映射通过设置批量保存接口原样持久化', async (t) => {
+  const key = 'model_multimodal_fallback';
+  const mappings = '{"gpt-5.6-luna":"gemini-3-pro"}';
+  const page = await loadSettingsPage(t, [{
+    key,
+    value: '{}',
+    value_type: 'json',
+    description: ''
+  }], {
+    [key]: '{}'
+  });
+  page.setAllowSave(true);
+
+  // 映射编辑弹窗应用时写回 hidden input，模拟用户确认后的状态。
+  page.inputs[key].value = mappings;
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  const requests = saveRequests(page);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: mappings });
+});
+
 test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   const page = await loadSettingsPage(t, [
     {

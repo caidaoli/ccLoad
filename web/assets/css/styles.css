@@ -3999,6 +3999,68 @@ body {
   font-size: 0.875rem;
 }
 
+.settings-multimodal-fallback-btn {
+  min-width: 0;
+}
+
+.settings-multimodal-fallback-summary {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+.multimodal-fallback-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.multimodal-fallback-intro {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.multimodal-fallback-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.multimodal-fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.multimodal-fallback-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.multimodal-fallback-arrow {
+  color: var(--color-text-secondary);
+  flex: 0 0 auto;
+}
+
+.multimodal-fallback-remove-btn {
+  flex: 0 0 auto;
+}
+
+.multimodal-fallback-empty {
+  border: 1px dashed var(--color-text-secondary);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+}
+
 .modal-content.runtime-metrics-modal {
   display: flex;
   flex-direction: column;
