@@ -421,6 +421,14 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			}
 			return true
 		})
+	} else if input := root.Get("input"); input.Type == gjson.String {
+		// The Responses API accepts a plain string as input. Upstream only
+		// converts array input and would silently drop the prompt; ccLoad maps
+		// it to a single user message, matching the Gemini and OpenAI target
+		// converters.
+		msg := []byte(`{"role":"user","content":""}`)
+		msg, _ = sjson.SetBytes(msg, "content", input.String())
+		appendMessage(msg)
 	}
 	flushPendingMessage()
 	// ccLoad's wire contract represents system-only input as the sole user turn;

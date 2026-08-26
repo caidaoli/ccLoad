@@ -117,6 +117,11 @@ documented adaptations:
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
   broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
   `input` array for instructions-only requests.
+- Claude-target Responses requests carry a local string-`input` branch: the
+  upstream converter only reads array `input`, so a plain string (legal in the
+  Responses API) would silently translate to an empty message list. ccLoad maps
+  it to a single user message, matching the Gemini- and OpenAI-target
+  converters; the shared ccLoad request validator likewise accepts both shapes.
 - Claude-to-Gemini preserves an absent adaptive effort and performs the
   excluded runtime `ApplyThinking` level normalization inline: exact target
   levels are retained, unsupported valid levels are clamped to the nearest

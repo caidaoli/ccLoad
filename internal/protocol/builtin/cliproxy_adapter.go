@@ -327,12 +327,25 @@ func cliproxyValidateAnthropicRequest(raw []byte) error {
 
 func cliproxyValidateCodexRequest(raw []byte) error {
 	var request struct {
-		Input []map[string]any `json:"input"`
+		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return fmt.Errorf("decode Codex request: %w", err)
 	}
-	for _, item := range request.Input {
+	if len(request.Input) == 0 {
+		return nil
+	}
+	// The Responses API accepts input as either a plain string or an array of
+	// items; a string needs no per-item validation.
+	var inputStr string
+	if err := json.Unmarshal(request.Input, &inputStr); err == nil {
+		return nil
+	}
+	var input []map[string]any
+	if err := json.Unmarshal(request.Input, &input); err != nil {
+		return fmt.Errorf("decode Codex request: %w", err)
+	}
+	for _, item := range input {
 		itemType, _ := item["type"].(string)
 		if itemType == "" {
 			if _, hasRole := item["role"]; hasRole {
