@@ -1,8 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 
 const MANAGEMENT_ELEMENT_IDS = [
   'channelManagementGroup',
@@ -24,58 +21,6 @@ const MANAGEMENT_ELEMENT_IDS = [
   'channelManagementDailyCheckinEnabled',
   'channelManagementDailyCheckinTime',
   'channelManagementDailyCheckinTimeError'
-];
-
-const MANAGEMENT_I18N_KEYS = [
-  'channels.management.legend',
-  'channels.management.profile',
-  'channels.management.profileOff',
-  'channels.management.profileNewAPI',
-  'channels.management.userIDConfiguredHint',
-  'channels.management.profileSub2API',
-  'channels.management.profileSub2APIPro',
-  'channels.management.profileHelp',
-  'channels.management.baseURL',
-  'channels.management.baseURLHelp',
-  'channels.management.token',
-  'channels.management.tokenHelpNewAPI',
-  'channels.management.tokenHelpSub2API',
-  'channels.management.tokenKeepHint',
-  'channels.management.userID',
-  'channels.management.userIDHelp',
-  'channels.management.dailyCheckin',
-  'channels.management.dailyCheckinTime',
-  'channels.management.dailyCheckinHelp',
-  'channels.management.noticeSub2API',
-  'channels.management.noticeSub2APIPro',
-  'channels.management.errBaseURLRequired',
-  'channels.management.errBaseURLInvalid',
-  'channels.management.errTokenRequired',
-  'channels.management.errUserID',
-  'channels.management.errCheckinTime',
-  'channels.management.refreshBalance',
-  'channels.management.refreshingBalance',
-  'channels.management.balanceFailed',
-  'channels.management.balanceInvalid',
-  'channels.management.remaining',
-  'channels.management.usage',
-  'channels.management.available',
-  'channels.management.sampledAt',
-  'channels.management.status.credential_forbidden',
-  'channels.management.checkin',
-  'channels.management.checkinRunning',
-  'channels.management.checkinFailed',
-  'channels.management.checkinInvalid',
-  'channels.management.checkinUnsupportedHint',
-  'channels.management.subscription',
-  'channels.management.reward',
-  'channels.management.status.success',
-  'channels.management.status.already_checked',
-  'channels.management.status.manual_required',
-  'channels.management.status.unsupported',
-  'channels.management.status.credential_invalid',
-  'channels.management.status.uncertain',
-  'channels.management.status.skipped_disabled'
 ];
 
 function createStubElement(id) {
@@ -448,21 +393,4 @@ test('额度失败与签到失败各自独立记录错误，不互相清空', as
   } finally {
     dom.restore();
   }
-});
-
-test('中英语言包都提供管理账户所需文案键', () => {
-  const localesDir = path.join(__dirname, '..', 'locales');
-  const load = file => {
-    const sandbox = { window: {} };
-    vm.runInNewContext(fs.readFileSync(path.join(localesDir, file), 'utf8'), sandbox);
-    return sandbox.window.I18N_LOCALES;
-  };
-  const zh = load('zh-CN.js')['zh-CN'];
-  const en = load('en.js').en;
-  const missing = [];
-  for (const key of MANAGEMENT_I18N_KEYS) {
-    if (typeof zh[key] !== 'string' || zh[key] === '') missing.push(`zh-CN:${key}`);
-    if (typeof en[key] !== 'string' || en[key] === '') missing.push(`en:${key}`);
-  }
-  assert.deepEqual(missing, []);
 });

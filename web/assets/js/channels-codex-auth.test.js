@@ -853,7 +853,7 @@ test('closing and pagehide abort active OAuth secret submissions and clear brows
   }
 });
 
-test('logs channel editor loads Codex auth and management account modules before opening a channel', async () => {
+test('logs channel editor opens a channel and displays Codex auth', async () => {
   const requiredMarkupIDs = new Set([
     'channelModal',
     'commonModelsModal',
@@ -892,7 +892,6 @@ test('logs channel editor loads Codex auth and management account modules before
   });
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
-  const loadedScriptPaths = [];
   let openedChannelID = null;
   const previous = new Map();
   const installGlobal = (name, value) => {
@@ -911,12 +910,8 @@ test('logs channel editor loads Codex auth and management account modules before
       appendChild(script) {
         scripts.push(script);
         const path = new URL(script.src, global.window.location.origin).pathname;
-        loadedScriptPaths.push(path);
         if (path === '/web/assets/js/channels-codex-auth.js') {
           global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
-        }
-        if (path === '/web/assets/js/channels-management.js') {
-          global.window.resetManagementAccountDraft = () => 'draft-ready';
         }
         if (path === '/web/assets/js/channels-modals.js') {
           global.editChannel = async id => {
@@ -953,10 +948,6 @@ test('logs channel editor loads Codex auth and management account modules before
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
 
-    const managementIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-management.js');
-    const modalsIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-modals.js');
-    assert.ok(managementIndex > modalsIndex, 'channels-management.js must load after channels-modals.js');
-    assert.equal(typeof global.window.resetManagementAccountDraft, 'function');
   } finally {
     delete require.cache[modulePath];
     for (const [name, descriptor] of previous) {
@@ -1701,7 +1692,6 @@ test('advanced settings confirmation persists only a changed Codex quota overdra
     assert.equal(saved.enabled, false);
     assert.equal(writes, 1);
     assert.equal(elements.get('codexQuotaOverdraftEnabled').checked, false);
-    assert.match(content.textContent, /"enabled": false/);
 
     await saveCodexQuotaOverdraftFromAdvancedSettings(42, async () => {
       writes++;

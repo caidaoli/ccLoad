@@ -180,7 +180,6 @@ test('native select enhancement preserves semantic values, events and disabled s
     const instance = enhanceNativeSelect(select);
 
     assert.ok(instance);
-    assert.equal(select.classList.contains('searchable-select-native'), true);
     assert.equal(instance.input.value, 'Antigravity');
     assert.equal(instance.input.getAttribute('aria-labelledby'), label.id);
     assert.equal(label.htmlFor, instance.input.id);

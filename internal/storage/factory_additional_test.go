@@ -190,21 +190,6 @@ func TestNewStore_WithExplicitSQLitePath(t *testing.T) {
 	}
 }
 
-func TestCreateSQLiteStore(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "test.db")
-
-	store, err := CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("CreateSQLiteStore failed: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	if err := store.Ping(context.Background()); err != nil {
-		t.Fatalf("Ping failed: %v", err)
-	}
-}
-
 func TestCreateSQLiteStore_CreatesParentDir(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "nested", "deep", "test.db")

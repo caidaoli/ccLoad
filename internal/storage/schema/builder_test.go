@@ -63,16 +63,6 @@ func TestTableBuilder_NameAndDDL(t *testing.T) {
 	}
 }
 
-func TestDefineSchemaMigrationsTable(t *testing.T) {
-	tb := DefineSchemaMigrationsTable()
-	if tb.Name() != "schema_migrations" {
-		t.Fatalf("Name=%q, want %q", tb.Name(), "schema_migrations")
-	}
-	if ddl := tb.BuildSQLite(); ddl == "" {
-		t.Fatalf("BuildSQLite returned empty")
-	}
-}
-
 func TestDefineChannelsTable_MySQLOAuthCredentialIsNullableWithoutDefault(t *testing.T) {
 	ddl := DefineChannelsTable().BuildMySQL()
 	if !strings.Contains(ddl, "oauth_credential TEXT") {

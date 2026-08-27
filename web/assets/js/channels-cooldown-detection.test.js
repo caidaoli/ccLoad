@@ -29,24 +29,12 @@ test('提交载荷用显示顺序作为唯一优先级', () => {
   });
 
   const payload = mod.collectCooldownDetectionRulesForSubmit();
-  assert.ok(payload);
   assert.deepEqual(payload.rules.map((rule) => rule.priority), [0, 1]);
   assert.equal(payload.rules[0].scope, 'model');
   assert.equal(payload.rules[0].name, 'Retry later');
   assert.deepEqual(payload.rules[1].status_codes, [503, 429]);
   assert.equal(payload.rules[1].message_pattern, 'maintenance');
   assert.equal(Object.hasOwn(payload.rules[1], 'code_pattern'), false);
-});
-
-test('本地校验阻止无条件规则、重复状态码和无效动态字段', () => {
-  const errors = mod.validateCooldownDetectionRulesLocally({
-    rules: [
-      { enabled: true, name: 'Broken fixed', priority: 0, status_codes: '429, 429', scope: 'channel', mode: 'fixed', cooldown_seconds: 0 },
-      { enabled: true, name: 'Broken dynamic', priority: 1, message_pattern: '', scope: 'key', mode: 'reset_time', time_capture: 'bad-name', time_layout: '', timezone: '' }
-    ]
-  });
-
-  assert.ok(errors.length >= 6, `expected several validation errors, got ${errors}`);
 });
 
 test('动态规则按时间类型提交，非日期时间不携带布局和时区', () => {

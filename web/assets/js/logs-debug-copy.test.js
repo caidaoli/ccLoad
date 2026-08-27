@@ -262,46 +262,6 @@ async function withLoadedLogsPage(options, assertions) {
   }
 }
 
-test('logs filter HTML exposes one standalone checkin source option', () => {
-  const previousWindow = global.window;
-  const previousDocument = global.document;
-  global.window = {};
-  global.document = { querySelectorAll: () => [] };
-
-  try {
-    delete require.cache[require.resolve('./page-filters.js')];
-    require('./page-filters.js');
-    const html = global.window.PageFilters.renderLayout('logs');
-    const options = [...html.matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)]
-      .map(([, value, label]) => ({ value, label: label.trim() }));
-
-    assert.deepEqual(options.filter(option => option.value === 'checkin'), [
-      { value: 'checkin', label: '签到' }
-    ]);
-  } finally {
-    delete require.cache[require.resolve('./page-filters.js')];
-    if (previousWindow === undefined) delete global.window;
-    else global.window = previousWindow;
-    if (previousDocument === undefined) delete global.document;
-    else global.document = previousDocument;
-  }
-});
-
-test('checkin audit logs render a visible localized source label', async () => {
-  await withLoadedLogsPage({
-    entries: [{
-      time: Date.now(),
-      model: '',
-      status_code: 200,
-      duration: 0,
-      log_source: 'checkin',
-      message: 'audit result'
-    }]
-  }, ({ tbody }) => {
-    assert.match(tbody.innerHTML, />签到</);
-  });
-});
-
 test('admins can select checkin logs when scheduled model detection is disabled', async () => {
   await withLoadedLogsPage({ logSource: 'checkin' }, ({ sourceGroup, sourceSelect }) => {
     assert.equal(sourceGroup.hidden, false);

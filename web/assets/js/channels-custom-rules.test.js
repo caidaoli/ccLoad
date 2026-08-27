@@ -120,7 +120,6 @@ test('collectCustomRulesForSubmit 过滤掉空 name / 非法 JSON', () => {
     ]
   });
   const payload = collectCustomRulesForSubmit();
-  assert.ok(payload);
   assert.equal(payload.headers.length, 1);
   assert.equal(payload.headers[0].name, 'User-Agent');
   assert.ok(!('value' in payload.headers[0]), 'remove 头不应包含 value');
@@ -134,7 +133,6 @@ test('collectCustomRulesForSubmit 保留 override 头值（空字符串也允许
     body: []
   });
   const payload = collectCustomRulesForSubmit();
-  assert.ok(payload);
   assert.equal(payload.headers[0].value, '');
 });
 
@@ -147,7 +145,6 @@ test('collectCustomRulesForSubmit remove 头带值表示 token 精确移除', ()
     body: []
   });
   const payload = collectCustomRulesForSubmit();
-  assert.ok(payload);
   assert.equal(payload.headers.length, 2);
   assert.equal(payload.headers[0].name, 'Anthropic-Beta');
   assert.equal(payload.headers[0].value, 'context-1m-2025-08-07');

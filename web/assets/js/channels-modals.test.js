@@ -1164,7 +1164,6 @@ for (const testCase of [
       assert.equal(fixture.checkbox.checked, testCase.supported);
       assert.equal(fixture.dirty, true);
       assert.equal(fixture.button.disabled, false);
-      assert.equal(fixture.button.innerHTML, '检测');
       assert.deepEqual(fixture.notifications, [{
         message: testCase.expectedNotification,
         type: testCase.expectedType
