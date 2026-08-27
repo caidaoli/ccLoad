@@ -4007,6 +4007,25 @@ body {
   min-width: 0;
 }
 
+.settings-update-channel-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-update-check-btn {
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 .settings-multimodal-fallback-summary {
   color: var(--color-text-secondary);
   font-size: 0.875rem;

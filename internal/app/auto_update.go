@@ -2,8 +2,11 @@ package app
 
 import (
 	"log"
+	"net/http"
 	"os"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"ccLoad/internal/version"
 )
@@ -40,17 +43,16 @@ func (s *Server) StartUpdateManager() {
 	autoUpdateIntervalHours := normalizeAutoUpdateIntervalHours(
 		s.configService.GetInt(autoUpdateIntervalSettingKey, defaultAutoUpdateIntervalHours),
 	)
-	if autoUpdateIntervalHours == 0 {
-		log.Print("[INFO] 版本检查和自动更新未启用（auto_update_interval_hours=0）")
-		return
-	}
-
 	restart := s.restartFuncSnapshot()
 	if restart == nil {
 		log.Print("[WARN] 重启函数为空，仅启动版本检查")
 	}
 
-	interval, _ := settingDurationFromInt64(int64(autoUpdateIntervalHours), time.Hour)
+	// interval=0 时关闭后台定时检查，但仍保留管理器供手动检测按钮触发完整更新流程。
+	var interval time.Duration
+	if autoUpdateIntervalHours > 0 {
+		interval, _ = settingDurationFromInt64(int64(autoUpdateIntervalHours), time.Hour)
+	}
 	s.startUpdateManager(
 		interval,
 		s.configuredReleaseChannel(),
@@ -81,12 +83,36 @@ func (s *Server) startUpdateManager(interval time.Duration, channel version.Rele
 		return
 	}
 	s.updateManager = manager
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		manager.Run(s.baseCtx)
-	}()
+	if interval > 0 {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			manager.Run(s.baseCtx)
+		}()
+	} else {
+		log.Printf("[INFO] 版本检查已禁用（auto_update_interval_hours=0），仅支持设置页手动检测")
+		return
+	}
 	log.Printf("[INFO] 更新管理器已启用，渠道: %s，检测间隔: %v，自动应用: %t", channel, interval, restart != nil)
+}
+
+// HandleManualUpdate 执行一次完整的更新流程：检查、下载、校验、替换并等待空闲后重启。
+// 只对当前已生效的变更渠道（auto_update_channel）生效；容器部署直接拒绝。
+func (s *Server) HandleManualUpdate(c *gin.Context) {
+	if runningInContainer() {
+		RespondErrorMsg(c, http.StatusConflict,
+			"container image updates are managed by image tags; use latest for stable or beta for preview")
+		return
+	}
+	if s.updateManager == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "update manager is not available")
+		return
+	}
+	if err := s.updateManager.CheckNow(s.baseCtx); err != nil {
+		RespondErrorMsg(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	RespondJSON(c, http.StatusOK, s.updateManager.State())
 }
 
 func (s *Server) activeRequestCount() int {

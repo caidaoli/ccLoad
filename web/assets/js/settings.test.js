@@ -22,6 +22,23 @@ async function loadSettingsPage(t, settings, inputValues) {
       for (const listener of clickListeners) listener();
     }
   };
+  const updateButton = {
+    dataset: { action: 'check-for-updates' },
+    disabled: false,
+    attributes: new Map(),
+    closest(selector) {
+      return selector === '[data-action="check-for-updates"]' ? this : null;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    },
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    }
+  };
   const settingsBody = {
     dataset: {},
     innerHTML: '',
@@ -155,6 +172,8 @@ async function loadSettingsPage(t, settings, inputValues) {
   const errors = [];
   const successes = [];
   let nextSaveError = null;
+  let nextUpdateError = null;
+  let nextUpdateResult = { has_update: false, latest_version: 'v1.0.0' };
 
   global.window = {
     t(key, params = {}) {
@@ -201,6 +220,14 @@ async function loadSettingsPage(t, settings, inputValues) {
   global.fetchDataWithAuth = async (url, options) => {
     requests.push({ url, options });
     if (!options) return settings;
+    if (url === '/admin/update/check') {
+      if (nextUpdateError) {
+        const error = nextUpdateError;
+        nextUpdateError = null;
+        throw error;
+      }
+      return nextUpdateResult;
+    }
     if (nextSaveError) {
       const error = nextSaveError;
       nextSaveError = null;
@@ -240,6 +267,16 @@ async function loadSettingsPage(t, settings, inputValues) {
     renderCalls,
     requests,
     saveButton,
+    updateButton,
+    clickUpdate() {
+      bodyListeners.get('click')?.({ target: updateButton });
+    },
+    setUpdateResult(result) {
+      nextUpdateResult = result;
+    },
+    failNextUpdate(message) {
+      nextUpdateError = new Error(message);
+    },
     multimodalApplyButton,
     multimodalError,
     multimodalModal,
@@ -547,6 +584,97 @@ test('多模态回退映射保存失败时保留对话框和原持久化值', as
   assert.equal(page.multimodalApplyButton.getAttribute('aria-busy'), null);
 });
 
+test('非容器更新渠道显示手动检测按钮并触发完整更新流程', async (t) => {
+  const page = await loadSettingsPage(t, [{
+    key: 'auto_update_channel',
+    value: 'stable',
+    value_type: 'string',
+    description: ''
+  }], {
+    auto_update_channel: 'stable'
+  });
+
+  const settingRow = page.renderCalls.find(({ template, data }) => (
+    template === 'tpl-setting-row' && data.key === 'auto_update_channel'
+  ));
+  assert.ok(settingRow);
+  assert.match(settingRow.data.inputHtml, /data-action="check-for-updates"/);
+
+  page.setUpdateResult({
+    has_update: true,
+    latest_version: 'v2.0.0',
+    pending_restart: true,
+    pending_version: 'v2.0.0'
+  });
+  page.clickUpdate();
+  assert.equal(page.updateButton.disabled, true);
+  assert.equal(page.updateButton.getAttribute('aria-busy'), 'true');
+
+  await flushAsyncWork();
+
+  const requests = page.requests.filter(({ url }) => url === '/admin/update/check');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(page.successes.length, 1);
+  assert.equal(page.successes[0], 'settings.updateCheck.pendingRestart');
+  assert.equal(page.updateButton.disabled, false);
+  assert.equal(page.updateButton.getAttribute('aria-busy'), null);
+});
+
+test('仅发现更新时不提示已开始下载', async (t) => {
+  const page = await loadSettingsPage(t, [{
+    key: 'auto_update_channel',
+    value: 'stable',
+    value_type: 'string',
+    description: ''
+  }], {
+    auto_update_channel: 'stable'
+  });
+
+  page.setUpdateResult({
+    has_update: true,
+    latest_version: 'v2.0.0',
+    pending_restart: false
+  });
+  page.clickUpdate();
+  await flushAsyncWork();
+
+  assert.equal(page.successes.length, 1);
+  assert.equal(page.successes[0], 'settings.updateCheck.found');
+
+  page.setUpdateResult({
+    has_update: false,
+    latest_version: 'v2.0.0',
+    pending_restart: false
+  });
+  page.clickUpdate();
+  await flushAsyncWork();
+
+  assert.equal(page.successes.length, 2);
+  assert.equal(page.successes[1], 'settings.updateCheck.upToDate');
+});
+
+test('手动检测更新失败时恢复按钮并显示错误', async (t) => {
+  const page = await loadSettingsPage(t, [{
+    key: 'auto_update_channel',
+    value: 'stable',
+    value_type: 'string',
+    description: ''
+  }], {
+    auto_update_channel: 'stable'
+  });
+  page.failNextUpdate('连接中断');
+
+  page.clickUpdate();
+  await flushAsyncWork();
+
+  assert.equal(page.requests.filter(({ url }) => url === '/admin/update/check').length, 1);
+  assert.equal(page.errors.length, 1);
+  assert.match(page.errors[0], /连接中断/);
+  assert.equal(page.updateButton.disabled, false);
+  assert.equal(page.updateButton.getAttribute('aria-busy'), null);
+});
+
 test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   const page = await loadSettingsPage(t, [
     {
@@ -579,4 +707,7 @@ test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
     assert.match(data.inputHtml, /\bdisabled\b/);
     assert.equal(data.resetDisabledAttributes, 'disabled');
   }
+  const channelRow = settingRows.find(({ data }) => data.key === 'auto_update_channel');
+  assert.ok(channelRow);
+  assert.doesNotMatch(channelRow.data.inputHtml, /data-action="check-for-updates"/);
 });

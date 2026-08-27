@@ -205,6 +205,102 @@ func TestUpdateManagerCheckOnlyPublishesReleaseStateWithoutDownload(t *testing.T
 	}
 }
 
+func TestUpdateManagerCheckNowAppliesReleaseWhenScheduledChecksAreDisabled(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	application := []byte("new application")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest":
+			http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/v1.1.0", http.StatusFound)
+		case "/caidaoli/ccLoad/releases/tag/v1.1.0":
+			_, _ = fmt.Fprint(w, "<html></html>")
+		case "/download/v1.1.0/checksums.txt":
+			_, _ = fmt.Fprint(w, testReleaseChecksums(application))
+		case "/download/v1.1.0/ccload-linux-amd64":
+			_, _ = w.Write(application)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	executablePath := filepath.Join(t.TempDir(), "ccload")
+	if err := os.WriteFile(executablePath, []byte("old application"), 0o755); err != nil {
+		t.Fatalf("write old executable: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	manager, err := NewUpdateManager(UpdateManagerOptions{
+		Interval:     0,
+		ApplyUpdates: true,
+		ReleaseSources: []ReleaseSource{{
+			Name:            "test",
+			LatestURL:       server.URL + "/latest",
+			DownloadBaseURL: server.URL + "/download",
+		}},
+		ExecutablePath:      executablePath,
+		GOOS:                "linux",
+		GOARCH:              "amd64",
+		Client:              server.Client(),
+		ActiveRequests:      func() int { return 1 },
+		RestartPollInterval: time.Hour,
+		Restart:             func() {},
+	})
+	if err != nil {
+		t.Fatalf("NewUpdateManager: %v", err)
+	}
+
+	if err := manager.CheckNow(ctx); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+
+	state := manager.State()
+	if state.LatestVersion != "v1.1.0" || !state.HasUpdate || !state.PendingRestart || state.PendingVersion != "v1.1.0" {
+		t.Fatalf("update state = %+v", state)
+	}
+	got, err := os.ReadFile(executablePath)
+	if err != nil {
+		t.Fatalf("read executable: %v", err)
+	}
+	if string(got) != string(application) {
+		t.Fatalf("executable content = %q, want %q", got, application)
+	}
+}
+
+func TestUpdateManagerCheckNowRejectsDevelopmentVersion(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	var requests atomic.Int64
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, errors.New("release metadata must not be requested")
+	})}
+	manager, err := NewUpdateManager(UpdateManagerOptions{
+		Interval: 0,
+		Client:   client,
+		ReleaseSources: []ReleaseSource{{
+			Name:      "test",
+			LatestURL: "https://example.test/latest",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewUpdateManager: %v", err)
+	}
+
+	if err := manager.CheckNow(context.Background()); err == nil {
+		t.Fatal("CheckNow must reject development versions")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("release metadata requests = %d, want 0", requests.Load())
+	}
+}
+
 func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })

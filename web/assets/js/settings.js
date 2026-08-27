@@ -1245,6 +1245,11 @@ function initSettingsEventDelegation() {
       openGlobalCooldownRulesModal(editGlobalRulesBtn);
       return;
     }
+    const updateCheckBtn = e.target.closest('[data-action="check-for-updates"]');
+    if (updateCheckBtn) {
+      checkForUpdates(updateCheckBtn);
+      return;
+    }
     const resetBtn = e.target.closest('.setting-reset-btn');
     if (resetBtn) {
       resetSetting(resetBtn.dataset.key);
@@ -1256,6 +1261,28 @@ function initSettingsEventDelegation() {
     const input = e.target.closest('input, select');
     if (input) markChanged(input);
   });
+}
+
+// 手动触发完整更新流程：检查、下载、校验、替换，之后由服务端等待空闲重启。
+async function checkForUpdates(button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.setAttribute?.('aria-busy', 'true');
+  try {
+    const result = await fetchDataWithAuth('/admin/update/check', { method: 'POST' });
+    if (result.pending_restart) {
+      showSuccess(t('settings.updateCheck.pendingRestart', { version: result.pending_version }));
+    } else if (result.has_update) {
+      showSuccess(t('settings.updateCheck.found', { version: result.latest_version }));
+    } else {
+      showSuccess(t('settings.updateCheck.upToDate', { version: result.latest_version }));
+    }
+  } catch (err) {
+    showError(t('settings.updateCheck.failed') + ': ' + err.message);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute?.('aria-busy');
+  }
 }
 
 function renderInput(setting) {
@@ -1286,10 +1313,21 @@ function renderInput(setting) {
     const optionsHtml = selectOptions.map(({ value, labelKey }) => (
       `<option value="${value}" ${setting.value === value ? 'selected' : ''}>${escapeHtml(t(labelKey))}</option>`
     )).join('');
-    return `
+    const selectHtml = `
       <select id="${safeKey}" class="settings-input settings-input--select" ${disabledAttributes}>
         ${optionsHtml}
       </select>`;
+    // 更新渠道旁提供手动检测按钮；容器模式（editable=false）不渲染、后端同样拒绝。
+    if (setting.key === 'auto_update_channel' && setting.editable !== false) {
+      return `
+        <div class="settings-update-channel-control">
+          ${selectHtml}
+          <button type="button" class="btn btn-secondary settings-update-check-btn" data-action="check-for-updates">
+            ${escapeHtml(t('settings.updateCheck.check'))}
+          </button>
+        </div>`;
+    }
+    return selectHtml;
   }
 
   if (byteSettingKeys.has(setting.key)) {

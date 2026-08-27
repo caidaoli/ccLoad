@@ -1690,6 +1690,9 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)
 		admin.POST("/settings/:key/reset", s.AdminResetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
+
+		// 手动触发完整更新流程（检查、下载、校验、替换、空闲后重启）
+		admin.POST("/update/check", s.HandleManualUpdate)
 	}
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。

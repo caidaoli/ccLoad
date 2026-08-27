@@ -34,14 +34,14 @@ var gitDescribeVersionPattern = regexp.MustCompile(`^(v?[0-9]+\.[0-9]+\.[0-9]+)-
 
 // UpdateState exposes release discovery and application state.
 type UpdateState struct {
-	HasUpdate      bool
-	LatestVersion  string
-	ReleaseURL     string
-	PendingRestart bool
-	PendingVersion string
-	Updating       bool
-	LastCheck      time.Time
-	LastError      string
+	HasUpdate      bool      `json:"has_update"`
+	LatestVersion  string    `json:"latest_version"`
+	ReleaseURL     string    `json:"release_url"`
+	PendingRestart bool      `json:"pending_restart"`
+	PendingVersion string    `json:"pending_version"`
+	Updating       bool      `json:"updating"`
+	LastCheck      time.Time `json:"last_check"`
+	LastError      string    `json:"last_error"`
 }
 
 // UpdateManagerOptions configures an UpdateManager.
@@ -75,6 +75,7 @@ type UpdateManager struct {
 	activeRequests      func() int
 	restart             func()
 
+	checkMu        sync.Mutex // 串行化定时检查与手动检查，避免并发下载/替换可执行文件
 	mu             sync.Mutex
 	state          UpdateState
 	waitingRestart bool
@@ -84,8 +85,8 @@ type UpdateManager struct {
 
 // NewUpdateManager creates a release manager with explicit application policy.
 func NewUpdateManager(opts UpdateManagerOptions) (*UpdateManager, error) {
-	if opts.Interval <= 0 {
-		return nil, fmt.Errorf("auto update interval must be positive")
+	if opts.Interval < 0 {
+		return nil, fmt.Errorf("auto update interval must not be negative")
 	}
 	if opts.Channel == "" {
 		opts.Channel = ReleaseChannelStable
@@ -162,11 +163,9 @@ func (u *UpdateManager) Run(ctx context.Context) {
 		log.Printf("[UpdateManager] disabled for development version %q", Version)
 		return
 	}
-	if u.applyUpdates {
-		if _, ok := releaseAssetName(u.goos, u.goarch); !ok {
-			u.applyUpdates = false
-			log.Printf("[UpdateManager] unsupported update platform %s/%s; continuing in check-only mode", u.goos, u.goarch)
-		}
+	if u.interval <= 0 {
+		log.Print("[UpdateManager] scheduled release checks are disabled")
+		return
 	}
 
 	u.runCheck(ctx)
@@ -190,23 +189,54 @@ func (u *UpdateManager) State() UpdateState {
 	return u.state
 }
 
+// CheckNow runs one complete release check, including download, verification,
+// replacement, and the existing idle-restart flow when an update is available.
+// A zero interval is supported for callers that expose only manual updates.
+func (u *UpdateManager) CheckNow(ctx context.Context) error {
+	if u == nil {
+		return errors.New("update manager is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	u.checkMu.Lock()
+	defer u.checkMu.Unlock()
+
+	if strings.EqualFold(strings.TrimSpace(Version), "dev") || strings.TrimSpace(Version) == "" {
+		return fmt.Errorf("version updates are disabled for development version %q", Version)
+	}
+	if u.applyUpdates {
+		if _, ok := releaseAssetName(u.goos, u.goarch); !ok {
+			u.applyUpdates = false
+			log.Printf("[UpdateManager] unsupported update platform %s/%s; continuing in check-only mode", u.goos, u.goarch)
+		}
+	}
+
+	return u.checkNowLocked(ctx)
+}
+
 func (u *UpdateManager) runCheck(ctx context.Context) {
+	_ = u.CheckNow(ctx)
+}
+
+func (u *UpdateManager) checkNowLocked(ctx context.Context) error {
 	err := u.updateOnce(ctx)
 	for retryIndex, delay := range u.retryDelays {
 		if err == nil {
-			return
+			return nil
 		}
 		u.recordUpdateError(err)
 		if !isRetryableUpdateError(err) || ctx.Err() != nil {
 			log.Printf("[UpdateManager] update check failed: %v", err)
-			return
+			return err
 		}
 		log.Printf(
 			"[UpdateManager] update check failed: %v; retrying in %v (%d/%d)",
 			err, delay, retryIndex+1, len(u.retryDelays),
 		)
 		if !waitForUpdateRetry(ctx, delay) {
-			return
+			return err
 		}
 		err = u.updateOnce(ctx)
 	}
@@ -214,6 +244,7 @@ func (u *UpdateManager) runCheck(ctx context.Context) {
 		u.recordUpdateError(err)
 		log.Printf("[UpdateManager] update check failed after %d retries: %v", len(u.retryDelays), err)
 	}
+	return err
 }
 
 func (u *UpdateManager) recordUpdateError(err error) {
