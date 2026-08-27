@@ -68,7 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/模型/渠道统一指数退避，优先尊重上游精确恢复时间 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计+进程指标(CPU/RSS/GC) | 一眼看清用量与运行状态 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor User API Key 导入 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
+| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) + Z.ai Coding Plan(ZCode) 浏览器授权或 API Key 导入 + Cursor User API Key 导入 + Zed 原生登录 | 支持的提供商自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道；Zed 试用权限绑定真实 Zed 安装的 system_id |
 | 📅 **OAuth 额度成本** | 按凭证累计周/月标准成本，对齐上游额度窗口 | 有重置额度时可手动重置 Codex 配额 |
 | 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
@@ -79,6 +79,7 @@ ccLoad 直接处理这些问题：
 | 🚧 **渠道并发限制** | 每渠道同时在飞请求上限 | 0=不限，超限自动跳过 |
 | 🗝️ **Key 模型白名单** | 每个渠道 Key 限定可服务的模型 | 空=不限制；全部 Key 都不匹配则跳过该渠道 |
 | 🧠 **模型思考后缀** | `model(high)` / `model(16384)` 语法糖 | 跨协议映射思考参数，基名路由不受影响 |
+| 🖼️ **多模态回退** | `model_multimodal_fallback` 非视觉模型→回退模型映射 | 含图片/文件的请求在选路前整体改用回退模型 |
 | 🕒 **渠道可用时段** | HH:MM 起止时间，服务器本地时区，支持跨午夜 | 时段外渠道完全不参与路由 |
 | 🔐 **令牌限额** | 费用上限+模型/渠道限制+并发上限 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
@@ -92,7 +93,7 @@ ccLoad 直接处理这些问题：
 | 🎨 **图片生成测试** | 独立标签页，可选 Images API 或 Chat Completions | 尺寸/质量/背景/输出格式可调，直接看到生成结果 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
-| 🔄 **更新渠道** | 默认稳定版，可选择包含测试版 | 可在设置页调整渠道和检测间隔 |
+| 🔄 **更新渠道** | 默认稳定版，可选择包含测试版 | 设置页可调整渠道和检测间隔，并支持一键手动检测 |
 | 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
 | 🎛️ **日志列自定义** | 表格列显隐可配置，设置持久化到浏览器 | 按需查看，减少信息噪音 |
 
@@ -670,6 +671,10 @@ curl -X POST http://localhost:8080/v1/alpha/search \
 
 后缀不是模型身份：选路、鉴权、冷却、日志和发往上游的模型名一律使用基名，渠道模型列表无需登记带后缀的条目。HTTP 代理、Responses WebSocket 和管理后台的渠道测试都支持该后缀；渠道自定义请求规则晚于后缀生效，可覆盖它写入的字段。括号内容不是已知等级或非负整数的模型名（如上游真的叫 `foo(bar)`）原样透传。
 
+### 多模态回退
+
+系统设置 `model_multimodal_fallback` 以 JSON 对象 `{"文本模型":"回退模型"}` 为不支持视觉的模型配置回退模型（最多 64 条映射 / 8 KB；key 按小写基名归一，value 可带思考后缀）。请求含图片、文件等非文本内容时，ccLoad 在思考后缀处理与令牌、渠道、Key 过滤**之前**把模型整体改写为回退模型——选路、冷却与日志全部跟随回退模型。HTTP 入口检测客户端协议的请求体；Responses WebSocket 回合检测**完整 transcript**，因此历史里进入过的图片会让后续每一轮都稳定落在回退模型上。在设置页打开 **多模态回退模型** 即可编辑映射。与其他所有系统设置不同，只保存该映射时立即生效；单次提交触及其他设置仍会在约 2 秒后重启进程。
+
 ### 本地 Token 计数
 
 发送请求前可用本地 Token 估算接口预估消耗，不调用上游 API：
@@ -774,6 +779,12 @@ ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目
 SDK Agent 只开放 Cursor 的 `mcp` capability group：SDK custom tools 通过 Cursor 合成的 `custom-user-tools` MCP server 暴露，网关本机的 shell、文件等其他内建工具仍被禁用。客户端函数通过 `LocalAgentOptions.custom_tools` 注册；ccLoad 在经过鉴权的 loopback 地址提供 `SdkCustomToolCallbackService`，把原生回调转换为 Anthropic `tool_use` 或 OpenAI `tool_calls`，并挂起对应 Agent，直到客户端下一轮交回匹配结果。同一 Cursor 渠道的并发请求按 `agent_id` 隔离会话、按 `call_id` 路由回调。
 
 渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
+
+#### Zed
+
+在渠道管理中选择 **Zed** 并完成原生登录。这不是 OAuth code/PKCE 流程：每次登录在随机 loopback 端口生成临时 RSA-2048 密钥，把 PKCS#1 DER 公钥以 base64url 传给 `zed.dev/native_app_signin`，再用 RSA-OAEP/SHA-256 把回调的 `access_token` 解密成长期 native credential；临时私钥绝不持久化。试用权限绑定真实 Zed 安装的 `system_id`（表单值 → `CCLOAD_ZED_SYSTEM_ID` → 本机 Zed `db/0-global/db.sqlite`）；没有可信来源就拒绝登录，同账号重授权保留已存值。
+
+数据请求先用 native credential 经 `/client/llm_tokens` 换短期 JWT（提前 60 秒单飞刷新并 CAS 持久化），再以 `Authorization: Bearer` 调 `/completions`。渠道固定 exact `/completions`、codex 协议 + local 转换、禁用 WebSocket；ccLoad 动态暴露 `/models` 中能跨 OpenAI/Anthropic/Google 提供商完成 wire 转换的模型。请求会包进 Zed `thread_id/prompt_id/intent/provider/model/provider_request` envelope；`plan` 403 只冷却当前模型并切换渠道，其他 401/403 才刷新凭证。
 
 #### 管理账户（API Key 渠道）
 
@@ -886,7 +897,7 @@ Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opu
 
 **核心功能**：
 - 📈 **24小时趋势图** - 请求量一目了然，高峰低谷清清楚楚
-- 🔴 **实时错误日志** - 渠道异常可秒级发现
+- 🔴 **实时错误日志** - 渠道异常可秒级发现；可直接从日志页中断进行中的请求——中断按上游断链分类并触发故障切换，不会被当作客户端取消
 - 📊 **渠道调用统计** - 用数据判断渠道负载和可用性
 - 💬 **模型测试工作台** - 支持按渠道、按模型和对话式模型测试：
   - 对话模式支持图片上传与粘贴，直接验证多模态请求
@@ -1040,6 +1051,7 @@ ccLoad 使用的核心技术栈：
 | `CURSOR_SDK_BRIDGE_BIN` | 自动发现 | 显式指定 Cursor SDK Bridge 可执行文件；存在 Cursor 渠道时，无效覆盖会导致启动失败 |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
+| `CCLOAD_MODEL_CATALOG_CACHE` | 无 | models.dev 模型目录缓存文件路径（默认 `data/model-catalog.json`，默认目录不可写时回退临时目录） |
 
 > 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
 > 可通过 `GET /admin/runtime-metrics` 查看 Responses WebSocket、日志队列/落库失败，以及混合存储主库待同步、失败、丢弃与最后成功时间。
@@ -1077,7 +1089,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 ### Web 管理配置（数据库存储，保存后自动重启）
 
-这些配置存在数据库中，在 Web 界面 `/web/settings.html` 修改。保存会先写库，随后约 2 秒自动重启进程——重启本身就是生效机制，因此没有热重载，进行中的请求会先跑完再退出：
+这些配置存在数据库中，在 Web 界面 `/web/settings.html` 修改。保存会先写库，随后约 2 秒自动重启进程——重启本身就是生效机制，进行中的请求会先跑完再退出。`model_multimodal_fallback` 是唯一热重载的设置——只保存该映射时原子替换内存快照、无需重启：
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -1121,6 +1133,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
 | `auto_update_interval_hours` | `12` | 非容器部署的版本检查间隔（小时，0=禁用，启用时最低 1 小时）；容器中不可用 |
 | `auto_update_channel` | `stable` | 非容器部署的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者；容器中不可用 |
+| `model_multimodal_fallback` | `{}` | JSON 映射 `{"非视觉模型":"回退模型"}`（最多 64 条 / 8 KB）；唯一保存后立即生效、无需重启的设置 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
 | `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数；`0` 使用内建默认值 |
@@ -1140,7 +1153,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 #### 自动更新
 
-非容器部署由单一更新管理器负责版本检查、前端版本提示和可选的进程内自动更新。默认启动时检查一次，此后每 12 小时检查一次。`auto_update_channel=stable` 只接收稳定版；`preview` 同时考虑稳定版和测试版，按 SemVer 选择最高有效版本，不会把当前版本或待重启版本降级。两个设置都可以在 Web 管理后台修改；将 `auto_update_interval_hours` 设为 `0` 可关闭全部版本检查。
+非容器部署由单一更新管理器负责版本检查、前端版本提示和可选的进程内自动更新。默认启动时检查一次，此后每 12 小时检查一次。`auto_update_channel=stable` 只接收稳定版；`preview` 同时考虑稳定版和测试版，按 SemVer 选择最高有效版本，不会把当前版本或待重启版本降级。两个设置都可以在 Web 管理后台修改；将 `auto_update_interval_hours` 设为 `0` 只关闭定时版本检查——设置旁的 **检测更新** 按钮（`POST /admin/update/check`）在间隔为 `0` 时仍可手动执行完整的检查/校验/替换流程。
 
 稳定版元数据通过配置的发布源解析。测试版发现读取 GitHub Releases Atom feed，其中包含稳定版和测试版，无需使用受速率限制的 REST API。解析出精确 Tag 后，ccLoad 会从配置的下载源获取应用和校验文件；默认顺序是 `gh.monlor.com`、`fastgit.cc`、`ghfast.top` 和 GitHub，SHA256 校验通过后才替换应用可执行文件。Cursor SDK Bridge 独立管理，始终使用官方锁定版本。
 

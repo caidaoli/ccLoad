@@ -65,7 +65,7 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
-- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; Z.ai Coding Plan (ZCode) browser authorization or API-key import; and Cursor user API-key import, with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; Z.ai Coding Plan (ZCode) browser authorization or API-key import; Cursor user API-key import; and Zed native sign-in (trial bound to a real Zed installation's `system_id`), with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
 - 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Simple Deployment** - Embedded SQLite; the Cursor SDK Bridge is managed automatically when needed
@@ -79,6 +79,7 @@ ccLoad handles those cases with:
 - 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
 - 🗝️ **Per-Key Model Allowlists** - Restrict which channel models each Key serves; empty means unrestricted, and channels whose Keys all decline the model are skipped
 - 🧠 **Model Thinking Suffix** - Append `(minimal/low/medium/high/xhigh/max)`, `(none)`, `(auto)`, or a numeric budget to any model name; ccLoad maps it to the upstream protocol's thinking parameters while routing on the base name
+- 🖼️ **Multimodal Fallback** - Route requests containing images/files from non-vision models to configured fallback models (`model_multimodal_fallback`), applied before thinking-suffix handling and channel/Key selection
 - 🕒 **Channel Time Windows** - Optional HH:MM availability window per channel (server local time, cross-midnight supported); channels outside their window are fully excluded from routing
 - 🔐 **Token Restrictions** - Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
@@ -92,7 +93,7 @@ ccLoad handles those cases with:
 - 🎨 **Image Generation Testing** - Dedicated tab that renders generated images through either the Images API or Chat Completions, with size/quality/background/output-format controls
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
-- 🔄 **Release Channels** - Stable updates by default, with an opt-in preview channel; check interval is configurable from the admin settings page
+- 🔄 **Release Channels** - Stable updates by default, with an opt-in preview channel; check interval is configurable from the admin settings page, plus a manual check button for on-demand checks
 - 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
 - 🎛️ **Log Column Customization** - Show/hide table columns per preference, settings persist in browser localStorage
 
@@ -655,6 +656,10 @@ Every protocol entry point accepts a thinking suffix appended to the model name,
 
 The suffix is not a model identity: routing, auth, cooldown, logging, and the upstream model name always use the base name, so channel model lists do not need suffixed entries. The HTTP proxy, Responses WebSocket, and admin channel testing all honor the suffix; channel custom request rules run later and can override the fields it writes. A parenthesized model name whose suffix is not a known level or non-negative integer (an upstream really named `foo(bar)`) passes through unchanged.
 
+### Multimodal Fallback
+
+System setting `model_multimodal_fallback` maps non-vision models to fallback models as a JSON object `{"text-model":"fallback-model"}` (max 64 mappings / 8 KB; keys are normalized to the lower-cased base name, values may carry a thinking suffix). When a request contains non-text content — images, files — ccLoad rewrites the incoming model to the fallback **before** thinking-suffix handling and token, channel, and Key filtering, so routing, cooldowns, and logs all follow the fallback model. HTTP entries inspect the client-protocol body; Responses WebSocket turns inspect the complete conversation transcript, so an image that entered the history keeps every later turn on the fallback deterministically. Open **Multimodal Fallback Models** on the settings page to edit the mapping. Unlike every other system setting, saving only this mapping takes effect immediately; a commit that touches any other setting still restarts the process about two seconds later.
+
 ### Local Token Counting
 
 Quickly estimate request token consumption (no upstream API call needed):
@@ -757,6 +762,12 @@ In the channel manager, choose **Cursor** and import a Cursor user API key. ccLo
 The SDK Agent allows only Cursor's `mcp` capability group: SDK custom tools are exposed through Cursor's synthetic `custom-user-tools` MCP server, while shell, file, and other built-in tools remain disabled on the gateway host. Client functions are registered through `LocalAgentOptions.custom_tools`. ccLoad serves the authenticated loopback `SdkCustomToolCallbackService`, returns each native callback as an Anthropic `tool_use` or OpenAI `tool_calls` item, and keeps that Agent suspended until the client sends the matching result on its next turn. Sessions are isolated by `agent_id` and callbacks by `call_id`, including concurrent requests sharing one Cursor channel.
 
 The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
+
+#### Zed
+
+In the channel manager, choose **Zed** and complete the native sign-in. This is not an OAuth code/PKCE flow: each sign-in generates a temporary RSA-2048 key on a random loopback port, passes its PKCS#1 DER public key (base64url) to `zed.dev/native_app_signin`, and decrypts the returned `access_token` with RSA-OAEP/SHA-256 into a long-lived native credential; the temporary private key is never persisted. Trial entitlement is bound to a real Zed installation's `system_id` (form value → `CCLOAD_ZED_SYSTEM_ID` → local Zed `db/0-global/db.sqlite`); sign-in is rejected when no trusted source exists, and re-authorizing an account keeps the stored value.
+
+Data requests first exchange the native credential for a short-lived JWT via `/client/llm_tokens` (refreshed 60 seconds early, single-flight, CAS-persisted), then call `/completions` with `Authorization: Bearer`. Channels use a fixed exact `/completions` URL, the Codex protocol with local conversion, and WebSockets disabled. ccLoad exposes the Zed `/models` entries it can convert across the OpenAI/Anthropic/Google providers; requests are wrapped in a Zed `thread_id/prompt_id/intent/provider/model/provider_request` envelope. A `plan` 403 cools only the current model and switches channels, while other 401/403 errors refresh the credential.
 
 #### Management Account (API-Key Channels)
 
@@ -869,7 +880,7 @@ Check out the awesome admin dashboard 👇
 
 **Core Features**:
 - 📈 **24-hour Trend Charts** - Request volumes clearly visualized with peaks and valleys
-- 🔴 **Real-time Error Logs** - Instantly detect which channel has issues
+- 🔴 **Real-time Error Logs** - Instantly detect which channel has issues; abort an in-flight request directly from the logs page — the abort is classified as an upstream disconnect, so the request fails over instead of looking like a client cancellation
 - 📊 **Channel Call Statistics** - See which channels are performing well with data-backed insights
 - 💬 **Model Testing Workbench** - Test by channel, by model, or in a chat-style model testing workflow:
   - Upload or paste images in chat mode to verify multimodal requests directly
@@ -1019,6 +1030,7 @@ Environment variables cover bootstrap configuration only — the values ccLoad n
 | `CURSOR_SDK_BRIDGE_BIN` | Auto-discovered | Explicit Cursor SDK Bridge executable; invalid overrides fail startup when a Cursor channel exists |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_HOST_OVERRIDES` | None | DNS override: pin upstream domains to fixed IPs, bypassing DNS resolution. Format: `host1=ip1,host2=ip2`, e.g. `anyrouter.top=47.246.23.200`. TLS SNI/cert/Host header unaffected |
+| `CCLOAD_MODEL_CATALOG_CACHE` | None | Explicit path for the models.dev catalog cache file (default `data/model-catalog.json`, falls back to a temp path when the default dir is not writable) |
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 > Responses WebSocket runtime usage and limits are available from `GET /admin/runtime-metrics`.
@@ -1056,7 +1068,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 ### Web Admin Configuration (Database-backed, Auto Restart)
 
-These settings live in the database and are managed from `/web/settings.html`. Saving a change writes it to the database and restarts the process about two seconds later; the restart is what applies the new value, so in-flight requests finish first and there is no hot reload:
+These settings live in the database and are managed from `/web/settings.html`. Saving a change writes it to the database and restarts the process about two seconds later; the restart is what applies the new value, so in-flight requests finish first. `model_multimodal_fallback` is the only hot-reloaded setting — saving just that mapping atomically swaps an immutable in-memory snapshot without a restart:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -1100,6 +1112,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
 | `auto_update_interval_hours` | `12` | Non-container release check interval (hours, 0=disabled, minimum enabled value is 1); unavailable in containers |
 | `auto_update_channel` | `stable` | Non-container release channel: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer; unavailable in containers |
+| `model_multimodal_fallback` | `{}` | JSON map `{"non-vision model":"fallback model"}` (max 64 mappings / 8 KB); the only setting applied immediately without a process restart |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
 | `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process; `0` uses the built-in default |
 | `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token; `0` uses the built-in default |
@@ -1119,7 +1132,7 @@ The four global OAuth upstream addresses default to empty, meaning each provider
 
 #### Auto Updates
 
-For non-container deployments, one update manager owns release checks, version notifications, and optional in-process updates. It checks once at startup and every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers stable and prerelease versions and selects the highest valid SemVer without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable all release checks.
+For non-container deployments, one update manager owns release checks, version notifications, and optional in-process updates. It checks once at startup and every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers stable and prerelease versions and selects the highest valid SemVer without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable all scheduled release checks — the **Check for updates** button next to these settings (`POST /admin/update/check`) still runs the complete discovery/verification/replace flow on demand even when the interval is `0`.
 
 Stable metadata is resolved through the configured release sources. Preview discovery reads GitHub's Releases Atom feed, which includes stable and prerelease entries without using the rate-limited REST API. After resolving an exact Tag, ccLoad downloads the application and checksum file from the configured sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub—and replaces the executable only after SHA256 verification. Cursor SDK Bridge installation is independent and always uses the pinned official Cursor release.
 
