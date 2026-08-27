@@ -10,6 +10,13 @@ import (
 const (
 	monthlyWindowMinimumSeconds = 28 * 24 * 60 * 60
 	monthlyWindowMaximumSeconds = 31 * 24 * 60 * 60
+	// upstreamUsageRollbackEpsilon 是判定上游用量「回退」所需的最小降幅
+	// （绝对百分点，开区间）。上游用量在同一个额度周期内只会单调增加，
+	// 小数级下降一律是采样噪声：Google remaining_fraction 的浮点抖动、
+	// Codex 整数百分比的取整闪烁。真实的上游提前重置下降几十个百分点，
+	// 远高于此容差。有意取舍：已用 ≤1% 时发生的真重置（如 1.0→0）会漏检，
+	// 由本地时钟越过 reset_at 后的自然滚动兜底。
+	upstreamUsageRollbackEpsilon = 1.0
 )
 
 // 模型族：上游同一采样里的不同额度窗口可能只覆盖部分模型，
@@ -214,7 +221,7 @@ func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 	accountResetAt := sampledUpstreamResetAt(current, samples, observedAt)
 	if !accountResetAt.IsZero() {
 		// 支持使用率采样的 OAuth 上游把 reset 作为账户级事件：任一额度窗口确认
-		// 回退时，账户全部窗口必须从同一个采样点重新累计。
+		// 显著回退（超过 upstreamUsageRollbackEpsilon）时，账户全部窗口必须从同一个采样点重新累计。
 		current = resetUpstreamAccount(current, accountResetAt)
 	}
 	next := &Usage{}
@@ -328,7 +335,8 @@ func reconcileWindow(current *Window, sample Sample, observedAt, accountResetAt 
 	}
 	if usageSampleIsNewer && upstreamUsageRolledBack(current.SampledUpstreamUsedPercent, sample.UsedPercent) {
 		// 上游可以在原 reset_at 到期前直接恢复额度。使用率在同一额度周期内只会
-		// 单调增加；一旦回退，立即按本次采样切断旧成本，不能再用 reset_at 的位移猜测。
+		// 单调增加；只有超过 upstreamUsageRollbackEpsilon 的显著回退才会切断旧成本，
+		// 小数级抖动按噪声保留累计，不能再用 reset_at 的位移猜测。
 		next.CountFromAt = usageSampledAt.Unix()
 		return next
 	}
@@ -360,7 +368,7 @@ func normalizedUsedPercent(usedPercent *float64) *float64 {
 }
 
 func upstreamUsageRolledBack(previous, current *float64) bool {
-	return previous != nil && current != nil && *current < *previous
+	return previous != nil && current != nil && *current < *previous-upstreamUsageRollbackEpsilon
 }
 
 func sampleTimeUnixNano(sampledAt time.Time) int64 {

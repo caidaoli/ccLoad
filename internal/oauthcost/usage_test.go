@@ -495,3 +495,127 @@ func TestReconcileZeroesCostWhenPeriodRolls(t *testing.T) {
 		t.Fatalf("expired window = %#v", window)
 	}
 }
+
+func TestReconcileIgnoresSmallUpstreamUsageRollback(t *testing.T) {
+	t.Parallel()
+	// 渠道 526 复盘：Google remaining_fraction 浮点抖动使 used% 出现 0.001
+	// 级的微回退，零容差判定曾把整周累计清空。微回退必须当噪声处理：
+	// 只刷新采样基线，不动成本、count_from_at 和窗口边界。
+	now := time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC)
+	resetAt := now.Add(6 * 24 * time.Hour)
+	usage := Reconcile(nil, []Sample{{
+		Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
+		ResetAt: resetAt, UsedPercent: float64Pointer(80.5585),
+	}}, now)
+	if changed, err := AddStandardCost(usage, now, "gemini-3.6-flash-high", 72_417_000); err != nil || !changed {
+		t.Fatalf("seed cost = (%t, %v)", changed, err)
+	}
+
+	sampledAt := now.Add(time.Minute)
+	usage = Reconcile(usage, []Sample{{
+		Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
+		ResetAt: resetAt.Add(7 * time.Second), UsedPercent: float64Pointer(80.5575), SampledAt: sampledAt,
+	}}, sampledAt.Add(time.Minute))
+	window := Find(usage, "gemini models|gemini-weekly")
+	if window.StandardCostMicroUSD != 72_417_000 || window.CountFromAt != 0 {
+		t.Fatalf("small upstream usage drop cleared cost: %#v", window)
+	}
+	if window.StartedAt != resetAt.Add(-7*24*time.Hour).Unix() || window.ResetAt != resetAt.Unix() {
+		t.Fatalf("small upstream usage drop moved boundaries: %#v", window)
+	}
+	if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 80.5575 {
+		t.Fatalf("small upstream usage drop did not refresh baseline: %#v", window)
+	}
+	if changed, err := AddStandardCost(usage, sampledAt.Add(time.Second), "gemini-3.6-flash-high", 500_000); err != nil || !changed {
+		t.Fatalf("post-noise cost = (%t, %v)", changed, err)
+	}
+	if got := Find(usage, "gemini models|gemini-weekly").StandardCostMicroUSD; got != 72_917_000 {
+		t.Fatalf("post-noise accumulated cost = %d, want 72917000", got)
+	}
+}
+
+func TestReconcileAccountResetIgnoresSmallUsageDropAcrossWindows(t *testing.T) {
+	t.Parallel()
+	// 账户级误判的爆炸半径是一次回退清空全部槽位；两个窗口同时微降时
+	// 不得触发 resetUpstreamAccount，两窗成本都要留下。
+	now := time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC)
+	fiveHourResetAt := now.Add(4 * time.Hour)
+	weeklyResetAt := now.Add(6 * 24 * time.Hour)
+	usage := Reconcile(nil, []Sample{
+		{Key: "gemini models|gemini-5h", Family: FamilyGemini, WindowSeconds: 18000,
+			ResetAt: fiveHourResetAt, UsedPercent: float64Pointer(40.0)},
+		{Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
+			ResetAt: weeklyResetAt, UsedPercent: float64Pointer(80.5585)},
+	}, now)
+	if changed, err := AddStandardCost(usage, now, "gemini-3.6-flash-high", 1_000_000); err != nil || !changed {
+		t.Fatalf("seed cost = (%t, %v)", changed, err)
+	}
+
+	sampledAt := now.Add(time.Hour)
+	usage = Reconcile(usage, []Sample{
+		{Key: "gemini models|gemini-5h", Family: FamilyGemini, WindowSeconds: 18000,
+			ResetAt: fiveHourResetAt, UsedPercent: float64Pointer(39.999), SampledAt: sampledAt},
+		{Key: "gemini models|gemini-weekly", Family: FamilyGemini, WindowSeconds: 604800,
+			ResetAt: weeklyResetAt.Add(24 * time.Hour), UsedPercent: float64Pointer(80.5575), SampledAt: sampledAt},
+	}, sampledAt.Add(time.Minute))
+	for key, wantUsed := range map[string]float64{
+		"gemini models|gemini-5h":     39.999,
+		"gemini models|gemini-weekly": 80.5575,
+	} {
+		window := Find(usage, key)
+		if window == nil || window.StandardCostMicroUSD != 1_000_000 || window.CountFromAt != 0 {
+			t.Fatalf("window %q cleared by small account-wide drop: %#v", key, window)
+		}
+		if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != wantUsed {
+			t.Fatalf("window %q did not refresh baseline: %#v", key, window)
+		}
+	}
+}
+
+func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
+	t.Parallel()
+	seed := func() *Usage {
+		now := time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC)
+		resetAt := now.Add(6 * 24 * time.Hour)
+		usage := Reconcile(nil, []Sample{{
+			Key: "codex|primary", Family: FamilyAll, WindowSeconds: 604800,
+			ResetAt: resetAt, UsedPercent: float64Pointer(80),
+		}}, now)
+		if changed, err := AddStandardCost(usage, now, "gpt-5.6-sol", 1_000_000); err != nil || !changed {
+			t.Fatalf("seed cost = (%t, %v)", changed, err)
+		}
+		return usage
+	}
+	reconcile := func(usage *Usage, usedPercent float64) (*Usage, time.Time) {
+		sampledAt := time.Date(2026, time.August, 24, 2, 30, 7, 0, time.UTC)
+		usage = Reconcile(usage, []Sample{{
+			Key: "codex|primary", Family: FamilyAll, WindowSeconds: 604800,
+			ResetAt:     time.Date(2026, time.August, 30, 2, 29, 7, 0, time.UTC),
+			UsedPercent: float64Pointer(usedPercent), SampledAt: sampledAt,
+		}}, sampledAt)
+		return usage, sampledAt
+	}
+
+	// 降幅恰好等于容差（80→79）：开区间语义，仍视为噪声，不切断成本。
+	usage, _ := reconcile(seed(), 79)
+	window := Find(usage, "codex|primary")
+	if window.StandardCostMicroUSD != 1_000_000 || window.CountFromAt != 0 {
+		t.Fatalf("drop at epsilon bound cleared cost: %#v", window)
+	}
+	if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 79 {
+		t.Fatalf("drop at epsilon bound did not refresh baseline: %#v", window)
+	}
+
+	// 降幅刚过容差（80→78.9）：判定为上游重置，从采样点重新累计。
+	usage, sampledAt := reconcile(seed(), 78.9)
+	window = Find(usage, "codex|primary")
+	if window.StandardCostMicroUSD != 0 || window.CountFromAt != sampledAt.Unix() {
+		t.Fatalf("drop beyond epsilon did not reset window: %#v", window)
+	}
+	if changed, err := AddStandardCost(usage, sampledAt.Add(time.Second), "gpt-5.6-sol", 500); err != nil || !changed {
+		t.Fatalf("post-reset cost = (%t, %v)", changed, err)
+	}
+	if got := Find(usage, "codex|primary").StandardCostMicroUSD; got != 500 {
+		t.Fatalf("post-reset cost = %d, want 500", got)
+	}
+}
