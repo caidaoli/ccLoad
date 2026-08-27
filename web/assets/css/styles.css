@@ -8081,6 +8081,11 @@ body.web-role-api-token .filter-group--auth-token {
     order: 12;
   }
 
+  /* 移动卡片沿用横向 label+输入框布局，动态优先级行仅在桌面显示 */
+  .model-test-table .model-test-col-priority .model-test-dyn-priority {
+    display: none;
+  }
+
   .model-test-table .model-test-col-speed {
     order: 13;
   }

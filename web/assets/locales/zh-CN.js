@@ -1282,6 +1282,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.channel': '渠道',
   'modelTest.channelName': '渠道',
   'modelTest.priority': '优先级',
+  'modelTest.dynamicPriority': '动态优先级',
   'modelTest.mode.channel': '按渠道测试',
   'modelTest.mode.model': '按模型测试',
   'modelTest.mode.chat': '对话',

@@ -1282,6 +1282,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.channel': 'Channel',
   'modelTest.channelName': 'Channel',
   'modelTest.priority': 'Priority',
+  'modelTest.dynamicPriority': 'Dynamic Priority',
   'modelTest.mode.channel': 'By Channel',
   'modelTest.mode.model': 'By Model',
   'modelTest.mode.chat': 'Chat',

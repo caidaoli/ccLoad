@@ -1851,6 +1851,27 @@
       line-height: 1.15;
     }
 
+    /* 模型测试页：静态优先级输入框之下的动态优先级（健康度模式）单行显示，仅桌面表格布局 */
+    @media (min-width: 769px) {
+      .model-test-table td.model-test-col-priority {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .model-test-table td.model-test-col-priority .ch-priority-row.model-test-dyn-priority {
+        justify-content: center;
+        max-width: 100%;
+        line-height: 1.15;
+      }
+
+      .model-test-table td.model-test-col-priority .model-test-dyn-priority .ch-priority-value {
+        margin-left: 0;
+        font-size: 12px;
+      }
+    }
+
     .ch-priority-editor-wrap {
       display: inline-block;
       max-width: 100%;

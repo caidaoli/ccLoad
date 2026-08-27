@@ -583,11 +583,99 @@ function normalizeModelTestPriorityValue(value, fallback) {
   return Math.max(MODEL_TEST_PRIORITY_MIN, Math.min(MODEL_TEST_PRIORITY_MAX, Math.trunc(num)));
 }
 
+function formatModelTestHealthScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  const formatted = num.toFixed(1);
+  return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted;
+}
+
+function isChannelDynamicPriorityVisible(ch) {
+  return ch && ch.effective_priority !== undefined && ch.effective_priority !== null;
+}
+
+// 按模型测试行在静态优先级下方叠加显示渠道动态优先级(P_eff = priority - 失败惩罚 - TTFB 惩罚)，
+// 与渠道页 ch-priority-stack 的健康度行同一语义：健康度模式关闭(无 effective_priority)或与静态优先级
+// 一致(无惩罚)时不显示，避免叠加一个相同的数字造成噪音。
+function getModelTestDynamicPriorityInfo(ch, basePriority) {
+  if (!isChannelDynamicPriorityVisible(ch)) return null;
+  const eff = Number(ch.effective_priority);
+  const base = Number.isFinite(Number(basePriority)) ? Number(basePriority) : 0;
+  // 与渠道页一致：动态优先级与静态值一致（无惩罚）时不显示，避免叠加一个相同的数字
+  if (!Number.isFinite(eff) || Math.abs(eff - base) < 0.1) return null;
+  const value = formatModelTestHealthScore(eff);
+  if (!value) return null;
+
+  const label = i18nText('modelTest.dynamicPriority', '动态优先级');
+  const priorityLabel = i18nText('channels.table.priority', '优先级');
+  const operationKey = eff < base ? 'bad' : 'good';
+  const title = `${priorityLabel}: ${base} | ${label}: ${value}`;
+  return { operationKey, title, value };
+}
+
+function buildModelTestDynamicPriorityHtml(ch, basePriority) {
+  const info = getModelTestDynamicPriorityInfo(ch, basePriority);
+  if (!info) return '';
+  return `<div class="ch-priority-row ch-priority-health model-test-dyn-priority" title="${info.title}"><span class="ch-priority-value ch-priority-health-${info.operationKey}">${info.value}</span></div>`;
+}
+
+function refreshModelTestDynamicPriorityTitles() {
+  if (!tbody) return;
+  tbody.querySelectorAll('.model-test-dyn-priority').forEach((element) => {
+    const row = element.closest('tr');
+    if (!row) return;
+    const channelId = Number(row?.dataset.channelId);
+    const channel = channelsList.find(ch => Number(ch.id) === channelId);
+    if (!channel) return;
+
+    const input = row.querySelector('.ch-priority-input');
+    const basePriority = input?.value || input?.dataset.originalPriority || 0;
+    const info = getModelTestDynamicPriorityInfo(channel, basePriority);
+    if (info) element.title = info.title;
+  });
+}
+
 function updateLocalModelTestChannelPriority(channelId, priority) {
   if (!Array.isArray(channelsList)) return;
   channelsList.forEach((ch) => {
-    if (Number(ch.id) === channelId) ch.priority = priority;
+    if (Number(ch.id) !== channelId) return;
+    if (ch.effective_priority !== undefined && ch.effective_priority !== null) {
+      const oldPriority = normalizeModelTestPriorityValue(ch.priority, 0);
+      const offset = Number(ch.effective_priority) - oldPriority;
+      // 动态优先级随静态优先级平移，与 channels-render.js 的 updateLocalChannelPriority 同一语义
+      if (Number.isFinite(offset)) ch.effective_priority = priority + offset;
+    }
+    ch.priority = priority;
   });
+}
+
+function syncModelTestRowDynamicPriority(input) {
+  if (!input) return;
+  const row = input.closest('tr');
+  if (!row) return;
+  const channelId = Number(input.dataset.channelId);
+  const ch = channelsList.find(c => Number(c.id) === channelId);
+  const nextPriority = normalizeModelTestPriorityValue(input.value, 0);
+  const html = ch ? buildModelTestDynamicPriorityHtml(ch, nextPriority) : '';
+  const container = row.querySelector('.model-test-col-priority');
+  if (!container) return;
+  let el = container.querySelector('.model-test-dyn-priority');
+  if (!html) {
+    if (el) el.remove();
+    return;
+  }
+  // 动态显示在行内编辑后同步：已显示则原地替换，否则插到输入框之后（与模板结构一致）
+  if (el) container.replaceChild(buildModelTestDynamicPriorityNode(html), el);
+  else {
+    const inputWrap = container.querySelector('.ch-priority-editor-wrap');
+    if (inputWrap) inputWrap.insertAdjacentHTML('afterend', html);
+  }
+}
+
+function buildModelTestDynamicPriorityNode(html) {
+  const tpl = document.createElement('td');
+  tpl.innerHTML = html;
+  return tpl.firstElementChild;
 }
 
 async function saveModelTestInlinePriority(input) {
@@ -614,6 +702,7 @@ async function saveModelTestInlinePriority(input) {
     });
     input.classList.remove('is-dirty');
     updateLocalModelTestChannelPriority(channelId, nextPriority);
+    syncModelTestRowDynamicPriority(input);
   } catch (error) {
     console.error('Update channel priority failed:', error);
     input.dataset.originalPriority = String(originalPriority);
@@ -1654,6 +1743,7 @@ function renderModelModeRows() {
       channelBaseName: baseName,
       channelEnabled: String(channelEnabled),
       channelPriority: String(priorityValue),
+      dynamicPriorityHtml: buildModelTestDynamicPriorityHtml(ch, priorityValue),
       modelEnabled: String(modelEnabled),
       toggleSwitchClass: modelEnabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
       toggleTitle: modelEnabled ? i18nText('modelTest.toggleDisable', '禁用模型') : i18nText('modelTest.toggleEnable', '启用模型'),
@@ -3018,6 +3108,7 @@ function bindEvents() {
   window.addEventListener('localechange', () => {
     syncClientProtocolCombobox();
     syncChatClientProtocolCombobox();
+    refreshModelTestDynamicPriorityTitles();
   });
   const streamEnabled = document.getElementById('streamEnabled');
   if (streamEnabled) {
