@@ -52,15 +52,6 @@ func NewRequestReader(method, target string, body io.Reader) *http.Request {
 	return httptest.NewRequest(method, target, normalizeReader(body))
 }
 
-// NewRequest 创建 HTTP 请求
-func NewRequest(method, target string, body []byte) *http.Request {
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	return NewRequestReader(method, target, reader)
-}
-
 func newJSONRequest(method, target string, v any) (*http.Request, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
