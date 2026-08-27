@@ -165,14 +165,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 	}
 
 	ectx := &channelEnrichmentContext{
-		now:                 now,
-		healthEnabled:       healthEnabled,
-		priorityMap:         priorityMap,
-		successRateMap:      successRateMap,
-		channelCooldownsMap: cooldowns.channels,
-		keyCooldownsMap:     cooldowns.keys,
-		modelCooldownsMap:   cooldowns.models,
-		apiKeysMap:          allAPIKeys,
+		now:                  now,
+		healthEnabled:        healthEnabled,
+		priorityMap:          priorityMap,
+		successRateMap:       successRateMap,
+		channelCooldownsMap:  cooldowns.channels,
+		keyCooldownsMap:      cooldowns.keys,
+		modelCooldownsMap:    cooldowns.models,
+		protocolProbeRetries: s.protocolCapabilities.unsupportedRetrySummaries(now),
+		apiKeysMap:           allAPIKeys,
 	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -332,14 +333,15 @@ func paginateChannels(cfgs []*model.Config, c *gin.Context) []*model.Config {
 
 // channelEnrichmentContext 聚合 enrichChannel 所需的批量预计算数据，避免长参数列表。
 type channelEnrichmentContext struct {
-	now                 time.Time
-	healthEnabled       bool
-	priorityMap         map[int64]float64
-	successRateMap      map[int64]float64
-	channelCooldownsMap map[int64]time.Time
-	keyCooldownsMap     map[int64]map[int]time.Time
-	modelCooldownsMap   map[int64]map[string]time.Time
-	apiKeysMap          map[int64][]*model.APIKey
+	now                  time.Time
+	healthEnabled        bool
+	priorityMap          map[int64]float64
+	successRateMap       map[int64]float64
+	channelCooldownsMap  map[int64]time.Time
+	keyCooldownsMap      map[int64]map[int]time.Time
+	modelCooldownsMap    map[int64]map[string]time.Time
+	protocolProbeRetries map[int64]protocolProbeRetrySummary
+	apiKeysMap           map[int64][]*model.APIKey
 }
 
 // enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
@@ -392,7 +394,18 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	}
 	oc.KeyCooldowns = keyCooldowns
 	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
+	applyProtocolProbeRetrySummary(&oc, ectx.protocolProbeRetries[cfg.ID], ectx.now)
 	return oc
+}
+
+func applyProtocolProbeRetrySummary(channel *ChannelWithCooldown, summary protocolProbeRetrySummary, now time.Time) {
+	if channel == nil || summary.count <= 0 || !summary.retryAt.After(now) {
+		return
+	}
+	retryAt := summary.retryAt
+	channel.ProtocolProbeRetryCount = summary.count
+	channel.ProtocolProbeRetryAt = &retryAt
+	channel.ProtocolProbeRetryRemainingMS = max(1, retryAt.Sub(now).Milliseconds())
 }
 
 type channelOAuthMetadata struct {
@@ -718,8 +731,9 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		allModelCooldowns = make(map[int64]map[string]time.Time)
 	}
 
+	now := time.Now()
 	metadata := channelOAuthMetadataFromCredential(cfg)
-	return ChannelWithCooldown{
+	detail := ChannelWithCooldown{
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
@@ -731,8 +745,10 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		ManagementAccount:            s.managementAccountView(cfg),
 		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
-		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
-	}, apiKeys, nil
+		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], now),
+	}
+	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[id], now)
+	return detail, apiKeys, nil
 }
 
 // handleGetChannelKeys 获取渠道的所有 API Keys

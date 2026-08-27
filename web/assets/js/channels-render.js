@@ -500,19 +500,37 @@ function buildChannelLastRequestFailureHtml(stats) {
   </div>`;
 }
 
-function formatCooldownRecoveryTime(remainingMS) {
+function formatRemainingStatusTime(remainingMS, secondsKey, minutesKey, hoursMinutesKey) {
   const ms = Math.max(0, Number(remainingMS) || 0);
   if (ms <= 5 * 60 * 1000) {
-    return window.t('channels.status.secondsUntilRecovery', { count: Math.ceil(ms / 1000) });
+    return window.t(secondsKey, { count: Math.ceil(ms / 1000) });
   }
   const totalMinutes = Math.ceil(ms / 60000);
   if (ms < 60 * 60 * 1000) {
-    return window.t('channels.status.minutesUntilRecovery', { count: totalMinutes });
+    return window.t(minutesKey, { count: totalMinutes });
   }
-  return window.t('channels.status.hoursMinutesUntilRecovery', {
+  return window.t(hoursMinutesKey, {
     hours: Math.floor(totalMinutes / 60),
     minutes: totalMinutes % 60
   });
+}
+
+function formatCooldownRecoveryTime(remainingMS) {
+  return formatRemainingStatusTime(
+    remainingMS,
+    'channels.status.secondsUntilRecovery',
+    'channels.status.minutesUntilRecovery',
+    'channels.status.hoursMinutesUntilRecovery'
+  );
+}
+
+function formatProtocolProbeRetryTime(remainingMS) {
+  return formatRemainingStatusTime(
+    remainingMS,
+    'channels.status.secondsUntilRetry',
+    'channels.status.minutesUntilRetry',
+    'channels.status.hoursMinutesUntilRetry'
+  );
 }
 
 function formatOAuthUsagePercent(value) {
@@ -1074,6 +1092,16 @@ function buildChannelRuntimeStatusHtml(channel) {
       time: formatCooldownRecoveryTime(nextRecoveryMS)
     });
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
+  }
+
+  const protocolProbeRetryCount = Number(channel.protocol_probe_retry_count || 0);
+  const protocolProbeRetryRemainingMS = Number(channel.protocol_probe_retry_remaining_ms || 0);
+  if (protocolProbeRetryCount > 0 && protocolProbeRetryRemainingMS > 0) {
+    const text = window.t('channels.status.protocolProbeRetries', {
+      count: protocolProbeRetryCount,
+      time: formatProtocolProbeRetryTime(protocolProbeRetryRemainingMS)
+    });
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--protocols">${escapeChannelRefreshText(text)}</div>`);
   }
 
   const oauthUsageHtml = buildOAuthUsageStatusHtml(channel);

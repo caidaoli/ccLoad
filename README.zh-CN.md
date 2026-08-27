@@ -99,75 +99,9 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-每个渠道默认接受四种客户端协议。实际上游协议由 `protocol_transform_mode` 和每个结构化 URL 的 `protocols` 声明共同决定：`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 探测并跳过已试协议，仅在响应未提交的能力错误后继续；`local` 优先使用显式声明协议的 URL，并保持每个 URL 的声明顺序。只有全部 URL 都未声明协议时，`local` 才按 Anthropic → Codex → OpenAI → Gemini 尝试。不兼容 URL 不发请求、不冷却；自动探测成功结果按 URL 和请求族缓存到进程重启或渠道配置变更，全部协议不支持时 10 分钟后重新探测。
+每个渠道默认接受四种客户端协议。实际上游协议由 `protocol_transform_mode` 和每个结构化 URL 的 `protocols` 声明共同决定：`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 探测并跳过已试协议，仅在响应未提交的能力错误后继续；`local` 优先使用显式声明协议的 URL，并保持每个 URL 的声明顺序。只有全部 URL 都未声明协议时，`local` 才按 Anthropic → Codex → OpenAI → Gemini 尝试。不兼容 URL 不发请求、不冷却。自动探测成功结果按 URL 和请求族缓存到进程重启或渠道配置变更；只有稳定的端点级非模型 404/405 才会缓存该 URL 与请求族的“全部协议不支持”结果，并在 10 分钟后重新探测。请求相关的 400/403/500 和本地转换失败会在下次请求时重新尝试。
 
-```mermaid
-graph TB
-    subgraph "客户端"
-        A[Claude Code / Codex / Gemini / OpenAI 客户端<br/>HTTP]
-        W[Codex 客户端<br/>Responses WebSocket]
-    end
-
-    subgraph "ccLoad 服务"
-        B[HTTP 代理]
-        R[Responses WS 桥接]
-        C[认证 + 路由分发]
-        D[渠道选择器<br/>成本限额 / 可用时段 / 冷却过滤<br/>优先级 / 平滑加权轮询 / 健康评分]
-        K[Key 选择器<br/>多 Key + Key 级冷却]
-        E[协议 Registry<br/>原生透传 / 本地转换]
-        F[URL 选择器<br/>探索 + 1/EWMA 加权]
-        CD[错误分类 + 冷却管理<br/>Key / 模型 / 渠道 / URL 作用域]
-        G[(存储工厂<br/>SQLite / MySQL / PostgreSQL / 混合)]
-        H[日志 + 指标 + 成本控制]
-
-        A --> B --> C --> D
-        W <--> R --> D
-
-        D --> K --> E --> F
-
-        D <--> G
-        CD <--> G
-        H <--> G
-        B --> H
-        R --> H
-    end
-
-    subgraph "上游服务"
-        U1[Anthropic]
-        U2[OpenAI 兼容服务]
-        U3[Gemini]
-        U4[Codex Responses]
-    end
-
-    F --> U1
-    F --> U2
-    F --> U3
-    F --> U4
-
-    U1 -. JSON / SSE .-> E
-    U2 -. JSON / SSE .-> E
-    U3 -. JSON / SSE .-> E
-    U4 -. JSON / SSE .-> E
-
-    E -. 客户端协议 .-> B
-    E -. 客户端协议 .-> R
-
-    U1 -. 失败 .-> CD
-    U2 -. 失败 .-> CD
-    U3 -. 失败 .-> CD
-    U4 -. 失败 .-> CD
-
-    CD -. 冷却 .-> D
-    CD -. 冷却 .-> K
-    CD -. 冷却 .-> F
-
-    style B fill:#4F46E5,stroke:#000,color:#fff
-    style R fill:#4F46E5,stroke:#000,color:#fff
-    style D fill:#059669,stroke:#000,color:#fff
-    style K fill:#059669,stroke:#000,color:#fff
-    style E fill:#0EA5E9,stroke:#000,color:#fff
-    style CD fill:#F59E0B,stroke:#000,color:#fff
-```
+![ccLoad 程序架构](images/ccload-architecture.jpg)
 
 ## 🚀 快速开始
 

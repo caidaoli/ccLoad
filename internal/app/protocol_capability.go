@@ -167,6 +167,11 @@ type protocolCapabilityCache struct {
 	entries map[protocolCapabilityKey]protocolCapabilityEntry
 }
 
+type protocolProbeRetrySummary struct {
+	count   int
+	retryAt time.Time
+}
+
 // get 返回已学习的上游协议。成功条目不过期；known=false 表示未探测，或“不支持”
 // 条目已到重试时间；known=true 且 upstream==protocolUnsupported 表示暂时确认不支持。
 func (c *protocolCapabilityCache) get(key protocolCapabilityKey) (upstream protocol.Protocol, known bool) {
@@ -203,6 +208,31 @@ func (c *protocolCapabilityCache) set(key protocolCapabilityKey, upstream protoc
 		entry.retryAfter = now.Add(unsupportedProtocolCapabilityTTL)
 	}
 	c.entries[key] = entry
+}
+
+// unsupportedRetrySummaries 返回各渠道仍在等待重探的协议能力哨兵。
+// 成功能力不属于临时状态；过期哨兵在生成快照时一并清理。
+func (c *protocolCapabilityCache) unsupportedRetrySummaries(now time.Time) map[int64]protocolProbeRetrySummary {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	summaries := make(map[int64]protocolProbeRetrySummary)
+	for key, entry := range c.entries {
+		if entry.upstream != protocolUnsupported {
+			continue
+		}
+		if !entry.retryAfter.After(now) {
+			delete(c.entries, key)
+			continue
+		}
+		summary := summaries[key.channelID]
+		summary.count++
+		if summary.retryAt.IsZero() || entry.retryAfter.Before(summary.retryAt) {
+			summary.retryAt = entry.retryAfter
+		}
+		summaries[key.channelID] = summary
+	}
+	return summaries
 }
 
 func (c *protocolCapabilityCache) clear() {

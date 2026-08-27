@@ -16,6 +16,8 @@
       --channel-runtime-status-key-fg: #92400e;
       --channel-runtime-status-model-accent: #65a30d;
       --channel-runtime-status-model-fg: #4d7c0f;
+      --channel-runtime-status-protocol-accent: var(--primary-500);
+      --channel-runtime-status-protocol-fg: var(--primary-700);
       --channel-last-request-bg: rgba(254, 242, 242, 0.94);
       --channel-last-request-border: #fecaca;
       --channel-last-request-fg: #991b1b;
@@ -75,6 +77,8 @@
       --channel-runtime-status-key-fg: #fde68a;
       --channel-runtime-status-model-accent: #a3e635;
       --channel-runtime-status-model-fg: #d9f99d;
+      --channel-runtime-status-protocol-accent: var(--primary-400);
+      --channel-runtime-status-protocol-fg: var(--primary-200);
       --channel-last-request-bg: rgba(127, 29, 29, 0.24);
       --channel-last-request-border: rgba(248, 113, 113, 0.46);
       --channel-last-request-fg: #fecaca;
@@ -106,6 +110,8 @@
       --channel-runtime-status-key-fg: #fde68a;
       --channel-runtime-status-model-accent: #a3e635;
       --channel-runtime-status-model-fg: #d9f99d;
+      --channel-runtime-status-protocol-accent: var(--primary-400);
+      --channel-runtime-status-protocol-fg: var(--primary-200);
       --channel-last-request-bg: rgba(127, 29, 29, 0.24);
       --channel-last-request-border: rgba(248, 113, 113, 0.46);
       --channel-last-request-fg: #fecaca;
@@ -2032,7 +2038,8 @@
 
     .ch-runtime-status--channel,
     .ch-runtime-status--keys,
-    .ch-runtime-status--models {
+    .ch-runtime-status--models,
+    .ch-runtime-status--protocols {
       border: 1px solid var(--channel-runtime-status-border);
       background: var(--channel-runtime-status-bg);
       color: var(--channel-runtime-status-fg);
@@ -2054,6 +2061,11 @@
     .ch-runtime-status--models {
       border-left: 3px solid var(--channel-runtime-status-model-accent);
       color: var(--channel-runtime-status-model-fg);
+    }
+
+    .ch-runtime-status--protocols {
+      border-left: 3px solid var(--channel-runtime-status-protocol-accent);
+      color: var(--channel-runtime-status-protocol-fg);
     }
 
     .ch-runtime-status--keys:hover {

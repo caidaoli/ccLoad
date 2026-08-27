@@ -15,6 +15,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -167,6 +168,58 @@ func TestHandleListChannelsIncludesActiveModelCooldowns(t *testing.T) {
 	}
 	if got.CooldownRemainingMS <= 0 {
 		t.Fatalf("cooldown_remaining_ms=%d, want > 0", got.CooldownRemainingMS)
+	}
+}
+
+func TestHandleListChannelsIncludesProtocolProbeRetry(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	created, err := store.CreateConfig(context.Background(), &model.Config{
+		Name:         "protocol-probe-retry-list",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "model-1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	server.protocolCapabilities.set(protocolCapabilityKey{
+		channelID:      created.ID,
+		baseURL:        "https://api.example.com",
+		clientProtocol: protocol.OpenAI,
+		requestFamily:  protocol.RequestFamilyChatCompletions,
+	}, protocolUnsupported)
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.handleListChannels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			ID                            int64      `json:"id"`
+			ProtocolProbeRetryCount       int        `json:"protocol_probe_retry_count"`
+			ProtocolProbeRetryAt          *time.Time `json:"protocol_probe_retry_at"`
+			ProtocolProbeRetryRemainingMS int64      `json:"protocol_probe_retry_remaining_ms"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.Success || len(resp.Data) != 1 {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	got := resp.Data[0]
+	if got.ID != created.ID || got.ProtocolProbeRetryCount != 1 {
+		t.Fatalf("protocol probe retry summary=%+v, want channel %d count 1", got, created.ID)
+	}
+	if got.ProtocolProbeRetryAt == nil || !got.ProtocolProbeRetryAt.After(time.Now()) {
+		t.Fatalf("protocol_probe_retry_at=%v, want a future time", got.ProtocolProbeRetryAt)
+	}
+	if got.ProtocolProbeRetryRemainingMS <= 0 || got.ProtocolProbeRetryRemainingMS > unsupportedProtocolCapabilityTTL.Milliseconds() {
+		t.Fatalf("protocol_probe_retry_remaining_ms=%d, want within (0, %d]", got.ProtocolProbeRetryRemainingMS, unsupportedProtocolCapabilityTTL.Milliseconds())
 	}
 }
 

@@ -2,10 +2,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildChannelRuntimeStatusHtml,
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
   buildManagementAccountStatusHtml
 } = require('./channels-render.js');
+
+test('渠道状态显示协议待重探数量和最早重试时间', () => {
+  const previousWindow = global.window;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.status.protocolProbeRetries': `协议待重探：${values.count} · ${values.time}`,
+        'channels.status.minutesUntilRetry': `${values.count}分钟后重试`
+      })[key] || key;
+    }
+  };
+
+  try {
+    const html = buildChannelRuntimeStatusHtml({
+      protocol_probe_retry_count: 2,
+      protocol_probe_retry_remaining_ms: 9 * 60 * 1000
+    });
+    assert.match(html, /ch-runtime-status--protocols/);
+    assert.match(html, /协议待重探：2 · 9分钟后重试/);
+  } finally {
+    global.window = previousWindow;
+  }
+});
 
 test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
   const previousWindow = global.window;
