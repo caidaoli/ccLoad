@@ -104,27 +104,37 @@ ccLoad 直接处理这些问题：
 ```mermaid
 graph TB
     subgraph "客户端"
-        A[Claude Code / Codex / Gemini / OpenAI 客户端]
+        A[Claude Code / Codex / Gemini / OpenAI 客户端<br/>HTTP]
+        W[Codex 客户端<br/>Responses WebSocket]
     end
 
-    subgraph "ccLoad服务"
-        B[HTTP代理]
+    subgraph "ccLoad 服务"
+        B[HTTP 代理]
+        R[Responses WS 桥接]
         C[认证 + 路由分发]
-        D[渠道选择器<br/>优先级 + 平滑加权轮询]
+        D[渠道选择器<br/>成本限额 / 可用时段 / 冷却过滤<br/>优先级 / 平滑加权轮询 / 健康评分]
+        K[Key 选择器<br/>多 Key + Key 级冷却]
         E[协议 Registry<br/>原生透传 / 本地转换]
-        F[URL选择器<br/>探索 + 1/EWMA加权]
-        G[(存储工厂<br/>SQLite / MySQL / PostgreSQL)]
+        F[URL 选择器<br/>探索 + 1/EWMA 加权]
+        CD[错误分类 + 冷却管理<br/>Key / 模型 / 渠道 / URL 作用域]
+        G[(存储工厂<br/>SQLite / MySQL / PostgreSQL / 混合)]
         H[日志 + 指标 + 成本控制]
 
-        A --> B --> C --> D --> E --> F
+        A --> B --> C --> D
+        W <--> R --> D
+
+        D --> K --> E --> F
+
         D <--> G
+        CD <--> G
         H <--> G
         B --> H
+        R --> H
     end
 
     subgraph "上游服务"
         U1[Anthropic]
-        U2[OpenAI兼容服务]
+        U2[OpenAI 兼容服务]
         U3[Gemini]
         U4[Codex Responses]
     end
@@ -133,15 +143,30 @@ graph TB
     F --> U2
     F --> U3
     F --> U4
+
     U1 -. JSON / SSE .-> E
     U2 -. JSON / SSE .-> E
     U3 -. JSON / SSE .-> E
     U4 -. JSON / SSE .-> E
+
     E -. 客户端协议 .-> B
+    E -. 客户端协议 .-> R
+
+    U1 -. 失败 .-> CD
+    U2 -. 失败 .-> CD
+    U3 -. 失败 .-> CD
+    U4 -. 失败 .-> CD
+
+    CD -. 冷却 .-> D
+    CD -. 冷却 .-> K
+    CD -. 冷却 .-> F
 
     style B fill:#4F46E5,stroke:#000,color:#fff
+    style R fill:#4F46E5,stroke:#000,color:#fff
     style D fill:#059669,stroke:#000,color:#fff
+    style K fill:#059669,stroke:#000,color:#fff
     style E fill:#0EA5E9,stroke:#000,color:#fff
+    style CD fill:#F59E0B,stroke:#000,color:#fff
 ```
 
 ## 🚀 快速开始

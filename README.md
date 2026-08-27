@@ -104,22 +104,32 @@ Every channel accepts all four client protocols. Upstream protocol selection is 
 ```mermaid
 graph TB
     subgraph "Client"
-        A[Claude Code / Codex / Gemini / OpenAI Client]
+        A[Claude Code / Codex / Gemini / OpenAI Clients<br/>over HTTP]
+        W[Codex Client<br/>Responses WebSocket]
     end
 
     subgraph "ccLoad Service"
         B[HTTP Proxy]
+        R[Responses WS Bridge]
         C[Authentication + Route Dispatch]
-        D[Channel Selector<br/>Priority + Smooth Weighted RR]
+        D[Channel Selector<br/>Quota / Time Window / Cooldown Filter<br/>Priority / Smooth Weighted RR / Health Score]
+        K[Key Selector<br/>Multi-Key + Key Cooldown]
         E[Protocol Registry<br/>Native Bypass / Local Transform]
         F[URL Selector<br/>Explore + 1/EWMA Weighting]
-        G[(Storage Factory<br/>SQLite / MySQL / PostgreSQL)]
+        CD[Error Classifier + Cooldown Manager<br/>Key / Model / Channel / URL Scope]
+        G[(Storage Factory<br/>SQLite / MySQL / PostgreSQL / Hybrid)]
         H[Logs + Metrics + Cost Control]
 
-        A --> B --> C --> D --> E --> F
+        A --> B --> C --> D
+        W <--> R --> D
+
+        D --> K --> E --> F
+
         D <--> G
+        CD <--> G
         H <--> G
         B --> H
+        R --> H
     end
 
     subgraph "Upstream Services"
@@ -133,15 +143,30 @@ graph TB
     F --> U2
     F --> U3
     F --> U4
+
     U1 -. JSON / SSE .-> E
     U2 -. JSON / SSE .-> E
     U3 -. JSON / SSE .-> E
     U4 -. JSON / SSE .-> E
+
     E -. Client Protocol .-> B
+    E -. Client Protocol .-> R
+
+    U1 -. Failures .-> CD
+    U2 -. Failures .-> CD
+    U3 -. Failures .-> CD
+    U4 -. Failures .-> CD
+
+    CD -. Cooldown .-> D
+    CD -. Cooldown .-> K
+    CD -. Cooldown .-> F
 
     style B fill:#4F46E5,stroke:#000,color:#fff
+    style R fill:#4F46E5,stroke:#000,color:#fff
     style D fill:#059669,stroke:#000,color:#fff
+    style K fill:#059669,stroke:#000,color:#fff
     style E fill:#0EA5E9,stroke:#000,color:#fff
+    style CD fill:#F59E0B,stroke:#000,color:#fff
 ```
 
 ## 🚀 Quick Start
