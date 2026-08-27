@@ -419,7 +419,7 @@ func TestMySQL(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		// 验证 logs 表的新列存在
-		expectedColumns := []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source"}
+		expectedColumns := []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "log_source"}
 		for _, col := range expectedColumns {
 			var columnName string
 			err := env.db.QueryRow(

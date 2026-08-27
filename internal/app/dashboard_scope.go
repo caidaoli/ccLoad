@@ -30,6 +30,7 @@ type tokenLogEntry struct {
 	LogSource                string                      `json:"log_source"`
 	Model                    string                      `json:"model"`
 	ActualModel              string                      `json:"actual_model,omitempty"`
+	ResponseModel            string                      `json:"response_model,omitempty"`
 	StatusCode               int                         `json:"status_code"`
 	Message                  string                      `json:"message"`
 	Duration                 float64                     `json:"duration"`
@@ -121,6 +122,7 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			LogSource:                entry.LogSource,
 			Model:                    entry.Model,
 			ActualModel:              entry.ActualModel,
+			ResponseModel:            entry.ResponseModel,
 			StatusCode:               entry.StatusCode,
 			Message:                  message,
 			Duration:                 entry.Duration,

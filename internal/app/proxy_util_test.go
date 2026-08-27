@@ -502,6 +502,28 @@ func TestBuildLogEntry_CopiesReasoningTokens(t *testing.T) {
 	}
 }
 
+func TestBuildLogEntry_ResponseModelDoesNotChangeBillingModel(t *testing.T) {
+	t.Parallel()
+
+	result := &fwResult{InputTokens: 1_000_000}
+	entry := buildLogEntry(logEntryParams{
+		RequestModel:  "client-model-alias",
+		ActualModel:   "gpt-5.4",
+		ResponseModel: "provider-reported-variant",
+		StatusCode:    http.StatusOK,
+		Result:        result,
+	})
+
+	wantCost := computeRequestCost("gpt-5.4", "", result)
+	if !floatEquals(entry.Cost, wantCost) {
+		t.Fatalf("cost=%.6f, want billing model cost %.6f", entry.Cost, wantCost)
+	}
+	if entry.ActualModel != "gpt-5.4" || entry.ResponseModel != "provider-reported-variant" {
+		t.Fatalf("actual_model=%q response_model=%q, want gpt-5.4 / provider-reported-variant",
+			entry.ActualModel, entry.ResponseModel)
+	}
+}
+
 func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *testing.T) {
 	t.Parallel()
 

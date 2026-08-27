@@ -1052,6 +1052,7 @@ func (s *Server) handleSuccessResponse(
 	// 提取usage数据和错误事件
 	var streamComplete bool
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
@@ -1190,6 +1191,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		ResponseCommitted: true,
 	}
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
@@ -1356,6 +1358,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		ResponseCommitted: deferredWriter.Committed(),
 	}
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ResponseModel = parser.GetResponseModel()
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens

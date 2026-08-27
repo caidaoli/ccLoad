@@ -7,6 +7,8 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"ccLoad/internal/util"
 )
@@ -29,6 +31,7 @@ type usageAccumulator struct {
 	ToolCostUSD              float64
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
 	ThinkingEffort           string
+	ResponseModel            string // 上游原始响应声明的模型；只用于日志观测
 	usageVersion             int
 	imageGenerationToolModel string
 	toolUsageSeen            bool
@@ -112,6 +115,7 @@ type usageParser interface {
 	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
 	GetThinkingEffort() string
 	GetReasoningTokens() int
+	GetResponseModel() string
 	GetLastError() []byte       // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool     // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 	HasStreamOutput() bool      // 语义输出，提交给客户端后不可再内部切渠道
@@ -134,6 +138,54 @@ func (u *usageAccumulator) GetThinkingEffort() string {
 
 func (u *usageAccumulator) GetReasoningTokens() int {
 	return u.ReasoningTokens
+}
+
+func (u *usageAccumulator) GetResponseModel() string {
+	return u.ResponseModel
+}
+
+func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstreamProtocol string) {
+	if payload == nil {
+		return
+	}
+
+	var candidates []string
+	switch strings.ToLower(strings.TrimSpace(upstreamProtocol)) {
+	case "openai", "codex":
+		candidates = []string{nestedResponseModel(payload, "response"), responseModelValue(payload, "model")}
+	case "anthropic":
+		candidates = []string{nestedResponseModel(payload, "message"), responseModelValue(payload, "model")}
+	case "gemini":
+		candidates = []string{responseModelValue(payload, "modelVersion"), responseModelValue(payload, "model")}
+	default:
+		return
+	}
+
+	for _, candidate := range candidates {
+		if normalized := normalizeResponseModel(candidate); normalized != "" {
+			u.ResponseModel = normalized
+			return
+		}
+	}
+}
+
+func nestedResponseModel(payload map[string]any, key string) string {
+	nested, _ := payload[key].(map[string]any)
+	return responseModelValue(nested, "model")
+}
+
+func responseModelValue(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
+}
+
+func normalizeResponseModel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 191 ||
+		strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return ""
+	}
+	return value
 }
 
 const (
@@ -483,6 +535,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
+	p.captureResponseModel(event, p.upstreamProtocol)
 	if usage := extractUsage(event); usage != nil {
 		p.applyUsage(usage, p.upstreamProtocol)
 	}
@@ -976,6 +1029,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			p.ThinkingEffort = sseParser.GetThinkingEffort()
 			p.ReasoningTokens = sseParser.GetReasoningTokens()
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
+			p.ResponseModel = sseParser.GetResponseModel()
 			return sseParser.GetUsage()
 		}
 	}
@@ -985,6 +1039,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		log.Printf("[WARN] usage JSON 解析失败: %v", err)
 		return 0, 0, 0, 0
 	}
+	p.captureResponseModel(payload, p.upstreamProtocol)
 
 	usage := extractUsage(payload)
 	// Anthropic fast mode: 从 usage.speed 推断计费层级

@@ -30,6 +30,8 @@ func TestLog_AddAndList(t *testing.T) {
 	log := &model.LogEntry{
 		Time:           newJSONTime(now),
 		Model:          "gpt-4",
+		ActualModel:    "gpt-4-sent",
+		ResponseModel:  "gpt-4-served",
 		ChannelID:      channelID,
 		ClientProtocol: "openai",
 		StatusCode:     200,
@@ -56,6 +58,9 @@ func TestLog_AddAndList(t *testing.T) {
 	}
 	if len(logs) > 0 && logs[0].ClientProtocol != "openai" {
 		t.Errorf("client_protocol: got %q, want openai", logs[0].ClientProtocol)
+	}
+	if len(logs) > 0 && (logs[0].ActualModel != "gpt-4-sent" || logs[0].ResponseModel != "gpt-4-served") {
+		t.Errorf("stored model metadata: actual=%q response=%q", logs[0].ActualModel, logs[0].ResponseModel)
 	}
 	if err := store.AddLog(ctx, &model.LogEntry{
 		Time:           newJSONTime(now.Add(time.Millisecond)),

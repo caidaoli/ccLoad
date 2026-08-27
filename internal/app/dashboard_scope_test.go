@@ -51,6 +51,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			Time:                     now,
 			Model:                    "gpt-5.6",
 			ActualModel:              "gpt-5.6-2026-07-01",
+			ResponseModel:            "gpt-5.6-served",
 			LogSource:                model.LogSourceProxy,
 			ChannelID:                secretChannel.ID,
 			ChannelName:              "secret-channel",
@@ -109,6 +110,8 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	assertJSONString(t, entry, "upstream_protocol", "openai")
 	assertJSONString(t, entry, "log_source", model.LogSourceProxy)
 	assertJSONString(t, entry, "model", "gpt-5.6")
+	assertJSONString(t, entry, "actual_model", "gpt-5.6-2026-07-01")
+	assertJSONString(t, entry, "response_model", "gpt-5.6-served")
 	var upstreamWebsocket bool
 	if err := json.Unmarshal(entry["upstream_websocket"], &upstreamWebsocket); err != nil {
 		t.Fatalf("decode upstream_websocket: %v", err)

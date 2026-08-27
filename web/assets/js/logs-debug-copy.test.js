@@ -338,3 +338,37 @@ test('model filter options contain request models but not redirected models', as
     assert.deepEqual(global.window.availableLogsModels, ['requested-model']);
   });
 });
+
+test('log model display prefers the upstream response model over the sent model', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: 'requested-model',
+      actual_model: 'sent-model',
+      response_model: 'served-model',
+      status_code: 200,
+      duration: 0,
+      log_source: 'proxy'
+    }]
+  }, ({ tbody }) => {
+    assert.match(tbody.innerHTML, /requested-model/);
+    assert.match(tbody.innerHTML, /served-model/);
+    assert.doesNotMatch(tbody.innerHTML, /sent-model/);
+  });
+});
+
+test('log model display falls back to the sent model when the response omits model', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: 'requested-model',
+      actual_model: 'sent-model',
+      status_code: 200,
+      duration: 0,
+      log_source: 'proxy'
+    }]
+  }, ({ tbody }) => {
+    assert.match(tbody.innerHTML, /requested-model/);
+    assert.match(tbody.innerHTML, /sent-model/);
+  });
+});

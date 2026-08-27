@@ -267,7 +267,7 @@ func TestPostgres(t *testing.T) {
 			t.Logf("列 %s.%s 存在", table, col)
 		}
 
-		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
+		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "response_model", "log_source", "upstream_websocket"} {
 			checkCol("logs", col)
 		}
 		for _, col := range []string{

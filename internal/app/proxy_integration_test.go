@@ -11544,9 +11544,14 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		upstreamModels <- gjson.GetBytes(body, "model").String()
+		upstreamModel := gjson.GetBytes(body, "model").String()
+		upstreamModels <- upstreamModel
+		responseModel := upstreamModel
+		if upstreamModel == "gpt-vision" {
+			responseModel = "gpt-vision-served"
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = fmt.Fprintf(w, `{"id":"chat-1","model":%q,"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, responseModel)
 	}))
 	defer upstream.Close()
 
@@ -11573,9 +11578,9 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 		t.Fatalf("upstream model=%q, want gpt-vision", got)
 	}
 	fallbackLog := waitForProxyLog(t, env, "gpt-text")
-	if fallbackLog.ActualModel != "gpt-vision" {
-		t.Fatalf("fallback log model=%q actual_model=%q, want gpt-text -> gpt-vision",
-			fallbackLog.Model, fallbackLog.ActualModel)
+	if fallbackLog.ActualModel != "gpt-vision" || fallbackLog.ResponseModel != "gpt-vision-served" {
+		t.Fatalf("fallback log model=%q actual_model=%q response_model=%q, want gpt-text / gpt-vision / gpt-vision-served",
+			fallbackLog.Model, fallbackLog.ActualModel, fallbackLog.ResponseModel)
 	}
 
 	// 纯文本请求不触发改写。

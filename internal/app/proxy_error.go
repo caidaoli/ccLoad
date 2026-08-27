@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -226,9 +227,14 @@ func buildProxyLogEntry(
 	res *fwResult,
 	errMsg string,
 ) *model.LogEntry {
+	responseModel := ""
+	if res != nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices && res.ResponseModel != "" {
+		responseModel = res.ResponseModel
+	}
 	return buildLogEntry(logEntryParams{
 		RequestModel:     reqCtx.requestLogModel(),
 		ActualModel:      actualModel,
+		ResponseModel:    responseModel,
 		RequestPath:      reqCtx.requestPath,
 		ChannelID:        cfg.ID,
 		StatusCode:       statusCode,

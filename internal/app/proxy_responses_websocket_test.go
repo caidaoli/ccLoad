@@ -1210,9 +1210,9 @@ func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
 		turn++
 		responseID := fmt.Sprintf("resp-mm-%d", turn)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":%q}}\n\n", responseID)
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":%q,\"model\":\"gpt-vision-served\"}}\n\n", responseID)
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
-		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", responseID)
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"model\":\"gpt-vision-served\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", responseID)
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer upstream.Close()
@@ -1245,9 +1245,9 @@ func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
 		t.Fatalf("first upstream model=%q, want gpt-vision", got)
 	}
 	fallbackLog := waitForProxyLog(t, env, "gpt-text")
-	if fallbackLog.ActualModel != "gpt-vision" {
-		t.Fatalf("websocket fallback log model=%q actual_model=%q, want gpt-text -> gpt-vision",
-			fallbackLog.Model, fallbackLog.ActualModel)
+	if fallbackLog.ActualModel != "gpt-vision" || fallbackLog.ResponseModel != "gpt-vision-served" {
+		t.Fatalf("websocket fallback log model=%q actual_model=%q response_model=%q, want gpt-text / gpt-vision / gpt-vision-served",
+			fallbackLog.Model, fallbackLog.ActualModel, fallbackLog.ResponseModel)
 	}
 
 	// 第二轮纯文本：历史 transcript 里还留着上一轮的图，完整 transcript 检测

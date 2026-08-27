@@ -133,6 +133,8 @@ type fwResult struct {
 
 	// ThinkingEffort 记录请求或上游响应声明的思考等级；上游响应非空时覆盖请求值。
 	ThinkingEffort string
+	// ResponseModel 是上游响应声明的模型；只用于日志，不参与路由、冷却或计费。
+	ResponseModel string
 
 	// Debug日志数据（debug开启时填充，传递到日志写入管道）
 	DebugData *model.DebugLogEntry
@@ -949,7 +951,8 @@ func stringMapValue(values map[string]any, key string) string {
 // logEntryParams 日志条目构建参数（避免多个 string 参数顺序混淆）
 type logEntryParams struct {
 	RequestModel     string // 客户端请求的原始模型名称
-	ActualModel      string // 实际转发到上游的模型名称（可能经过重定向）
+	ActualModel      string // 实际发给上游的模型名称（可能经过重定向）
+	ResponseModel    string // 成功响应声明的模型；只用于日志展示
 	RequestPath      string // 客户端请求路径（用于识别按次计费的特殊端点）
 	ChannelID        int64
 	StatusCode       int
@@ -1019,6 +1022,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 	if p.ActualModel != "" && p.ActualModel != p.RequestModel {
 		entry.ActualModel = p.ActualModel
 	}
+	entry.ResponseModel = p.ResponseModel
 
 	if p.ErrMsg != "" {
 		// [FIX] 2026-02: 错误场景下也保留诊断信息（特别是499客户端取消）

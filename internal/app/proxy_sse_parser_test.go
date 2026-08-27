@@ -103,6 +103,89 @@ func feedAndAssertUsage(t *testing.T, parser usageParser, data string, wantInput
 	}
 }
 
+func TestUsageParsersExtractResponseModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		parser    usageParser
+		payload   string
+		wantModel string
+	}{
+		{
+			name:      "OpenAI SSE 顶层 model",
+			parser:    newSSEUsageParser("openai"),
+			payload:   "data: {\"model\":\"gpt-5.4-2026-08-27\",\"choices\":[]}\n\n",
+			wantModel: "gpt-5.4-2026-08-27",
+		},
+		{
+			name:      "Anthropic SSE message.model",
+			parser:    newSSEUsageParser("anthropic"),
+			payload:   "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5-20260827\"}}\n\n",
+			wantModel: "claude-sonnet-5-20260827",
+		},
+		{
+			name:      "Gemini SSE modelVersion",
+			parser:    newSSEUsageParser("gemini"),
+			payload:   "data: {\"modelVersion\":\"gemini-3.1-pro-002\",\"candidates\":[]}\n\n",
+			wantModel: "gemini-3.1-pro-002",
+		},
+		{
+			name:      "Codex SSE response.model",
+			parser:    newSSEUsageParser("codex"),
+			payload:   "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.4-codex-served\",\"output\":[]}}\n\n",
+			wantModel: "gpt-5.4-codex-served",
+		},
+		{
+			name:      "OpenAI JSON 顶层 model",
+			parser:    newJSONUsageParser("openai"),
+			payload:   `{"model":"gpt-5.4-served","choices":[]}`,
+			wantModel: "gpt-5.4-served",
+		},
+		{
+			name:      "Anthropic JSON 顶层 model",
+			parser:    newJSONUsageParser("anthropic"),
+			payload:   `{"type":"message","model":"claude-opus-5-served","content":[]}`,
+			wantModel: "claude-opus-5-served",
+		},
+		{
+			name:      "Gemini JSON modelVersion",
+			parser:    newJSONUsageParser("gemini"),
+			payload:   `{"modelVersion":"gemini-3.1-flash-003","candidates":[]}`,
+			wantModel: "gemini-3.1-flash-003",
+		},
+		{
+			name:      "Codex JSON 顶层 model",
+			parser:    newJSONUsageParser("codex"),
+			payload:   `{"id":"resp_1","model":"gpt-5.4-codex-actual","output":[]}`,
+			wantModel: "gpt-5.4-codex-actual",
+		},
+		{
+			name:      "不读取任意嵌套 model",
+			parser:    newJSONUsageParser("openai"),
+			payload:   `{"output":[{"type":"tool_call","model":"image-tool-model"}]}`,
+			wantModel: "",
+		},
+		{
+			name:      "拒绝控制字符",
+			parser:    newJSONUsageParser("openai"),
+			payload:   `{"model":"gpt-5.4\nforged-log"}`,
+			wantModel: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.parser.Feed([]byte(tt.payload)); err != nil {
+				t.Fatalf("Feed() error = %v", err)
+			}
+			// JSON 解析器在完整响应结束后统一解析正文；SSE 解析器调用无副作用。
+			tt.parser.GetUsage()
+			if got := tt.parser.GetResponseModel(); got != tt.wantModel {
+				t.Fatalf("GetResponseModel() = %q, want %q", got, tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestHasGeminiUsageFields(t *testing.T) {
 	t.Parallel()
 
