@@ -88,6 +88,10 @@
       return enhancedSelects.get(select) || null;
     }
     if (typeof root.createSearchableCombobox !== 'function') return null;
+    // 仅增强仍在文档树中的 select:observer 回调派发时,插入方可能已同步摘除
+    // 该节点(如第三方脚本的临时探测节点),此时 attach 模式找不到 input/dropdown
+    // 且 wrapper 会挂在游离节点上;节点重新插入时的新 mutation 会再触发增强。
+    if (!select.isConnected) return null;
 
     const document = select.ownerDocument || root.document;
     if (!document?.createElement || typeof select.after !== 'function') return null;

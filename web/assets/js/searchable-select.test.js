@@ -32,6 +32,7 @@ class FakeElement {
     this.listeners = new Map();
     this.children = [];
     this.disabled = false;
+    this.isConnected = true;
   }
 
   append(...children) {
@@ -222,5 +223,51 @@ test('native select enhancement preserves semantic values, events and disabled s
     else global.createSearchableCombobox = previousCombobox;
     if (previousEvent === undefined) delete global.Event;
     else global.Event = previousEvent;
+  }
+});
+
+test('detached select is skipped and enhanced once reconnected', () => {
+  const previousCombobox = global.createSearchableCombobox;
+  const document = {
+    defaultView: null,
+    createElement(tagName) {
+      return new FakeElement(tagName, document);
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  let comboboxCalls = 0;
+  global.createSearchableCombobox = (config) => {
+    comboboxCalls += 1;
+    return {
+      setValue() {},
+      refresh() {}
+    };
+  };
+
+  const modulePath = require.resolve('./searchable-select.js');
+  delete require.cache[modulePath];
+  try {
+    const { enhanceNativeSelect } = require(modulePath);
+    const select = new FakeSelect(document, [
+      { value: 'codex', label: 'Codex', disabled: false }
+    ], 'codex');
+    select.isConnected = false;
+
+    // 游离节点直接跳过:不创建 combobox、不产生 wrapper
+    assert.equal(enhanceNativeSelect(select), null);
+    assert.equal(comboboxCalls, 0);
+    assert.equal(select.enhancedSibling, undefined);
+
+    // 重新接入文档树后可正常增强
+    select.isConnected = true;
+    const instance = enhanceNativeSelect(select);
+    assert.ok(instance);
+    assert.equal(comboboxCalls, 1);
+  } finally {
+    delete require.cache[modulePath];
+    if (previousCombobox === undefined) delete global.createSearchableCombobox;
+    else global.createSearchableCombobox = previousCombobox;
   }
 });
