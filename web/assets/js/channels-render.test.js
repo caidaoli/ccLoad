@@ -714,3 +714,39 @@ test('只读模式不渲染管理账户动作', () => {
     restore();
   }
 });
+
+test('模型冷却超过 48 小时按天+小时显示，其余时长保持小时分', () => {
+  const previousWindow = global.window;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.status.modelCooldowns': `模型冷却：${values.count} · ${values.time}`,
+        'channels.status.daysHoursUntilRecovery': `${values.days}天${values.hours}小时`,
+        'channels.status.hoursMinutesUntilRecovery': `${values.hours}小时${values.minutes}分`
+      })[key] || key;
+    }
+  };
+
+  try {
+    // 455小时25分 → 18天23小时
+    let html = buildChannelRuntimeStatusHtml({
+      model_cooldowns: [{ cooldown_remaining_ms: 455 * 60 * 60 * 1000 + 25 * 60 * 1000 }]
+    });
+    assert.match(html, /模型冷却：1 · 18天23小时/);
+
+    // 48 小时整 → 2天0小时
+    html = buildChannelRuntimeStatusHtml({
+      model_cooldowns: [{ cooldown_remaining_ms: 48 * 60 * 60 * 1000 }]
+    });
+    assert.match(html, /模型冷却：1 · 2天0小时/);
+
+    // 未达 48 小时仍按小时分显示
+    html = buildChannelRuntimeStatusHtml({
+      model_cooldowns: [{ cooldown_remaining_ms: 47 * 60 * 60 * 1000 + 59 * 60 * 1000 }]
+    });
+    assert.match(html, /模型冷却：1 · 47小时59分/);
+    assert.doesNotMatch(html, /天/);
+  } finally {
+    global.window = previousWindow;
+  }
+});

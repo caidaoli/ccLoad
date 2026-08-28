@@ -500,7 +500,7 @@ function buildChannelLastRequestFailureHtml(stats) {
   </div>`;
 }
 
-function formatRemainingStatusTime(remainingMS, secondsKey, minutesKey, hoursMinutesKey) {
+function formatRemainingStatusTime(remainingMS, secondsKey, minutesKey, hoursMinutesKey, daysHoursKey) {
   const ms = Math.max(0, Number(remainingMS) || 0);
   if (ms <= 5 * 60 * 1000) {
     return window.t(secondsKey, { count: Math.ceil(ms / 1000) });
@@ -509,18 +509,25 @@ function formatRemainingStatusTime(remainingMS, secondsKey, minutesKey, hoursMin
   if (ms < 60 * 60 * 1000) {
     return window.t(minutesKey, { count: totalMinutes });
   }
+  if (daysHoursKey && ms >= 48 * 60 * 60 * 1000) {
+    return window.t(daysHoursKey, {
+      days: Math.floor(totalMinutes / (24 * 60)),
+      hours: Math.floor((totalMinutes % (24 * 60)) / 60)
+    });
+  }
   return window.t(hoursMinutesKey, {
     hours: Math.floor(totalMinutes / 60),
     minutes: totalMinutes % 60
   });
 }
 
-function formatCooldownRecoveryTime(remainingMS) {
+function formatCooldownRecoveryTime(remainingMS, daysHoursKey) {
   return formatRemainingStatusTime(
     remainingMS,
     'channels.status.secondsUntilRecovery',
     'channels.status.minutesUntilRecovery',
-    'channels.status.hoursMinutesUntilRecovery'
+    'channels.status.hoursMinutesUntilRecovery',
+    daysHoursKey
   );
 }
 
@@ -1089,7 +1096,7 @@ function buildChannelRuntimeStatusHtml(channel) {
     const nextRecoveryMS = Math.min(...coolingModels);
     const text = window.t('channels.status.modelCooldowns', {
       count: coolingModels.length,
-      time: formatCooldownRecoveryTime(nextRecoveryMS)
+      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
     });
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
   }

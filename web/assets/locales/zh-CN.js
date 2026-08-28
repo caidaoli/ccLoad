@@ -1805,6 +1805,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.status.secondsUntilRecovery': '{count}秒后恢复',
   'channels.status.minutesUntilRecovery': '{count}分钟后恢复',
   'channels.status.hoursMinutesUntilRecovery': '{hours}小时{minutes}分后恢复',
+  'channels.status.daysHoursUntilRecovery': '{days}天{hours}小时后恢复',
   'channels.status.secondsUntilRetry': '{count}秒后重试',
   'channels.status.minutesUntilRetry': '{count}分钟后重试',
   'channels.status.hoursMinutesUntilRetry': '{hours}小时{minutes}分后重试',

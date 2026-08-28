@@ -1805,6 +1805,7 @@ window.I18N_LOCALES['en'] = {
   'channels.status.secondsUntilRecovery': 'recovers in {count}s',
   'channels.status.minutesUntilRecovery': 'recovers in {count}m',
   'channels.status.hoursMinutesUntilRecovery': 'recovers in {hours}h {minutes}m',
+  'channels.status.daysHoursUntilRecovery': 'recovers in {days}d {hours}h',
   'channels.status.secondsUntilRetry': '{count}s until retry',
   'channels.status.minutesUntilRetry': '{count}m until retry',
   'channels.status.hoursMinutesUntilRetry': '{hours}h {minutes}m until retry',
