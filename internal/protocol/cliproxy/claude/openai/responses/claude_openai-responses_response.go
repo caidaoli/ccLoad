@@ -43,8 +43,24 @@ type claudeToResponsesState struct {
 	ReasoningSignature string
 	ReasoningIndex     int
 	ReasoningItems     []claudeResponsesReasoningItem
+	// A Claude server_tool_use/result pair folds into one Responses web_search_call.
+	WebSearchByBlock  map[int]*claudeResponsesWebSearchItem
+	WebSearchByToolID map[string]*claudeResponsesWebSearchItem
+	WebSearchItems    []*claudeResponsesWebSearchItem
 	// usage aggregation
 	Usage claudeResponsesUsageTokens
+}
+
+type claudeResponsesWebSearchItem struct {
+	ToolUseID   string
+	OutputIndex int
+	InputBuf    strings.Builder
+	Results     []byte
+	Emitted     bool
+}
+
+func (item *claudeResponsesWebSearchItem) render() []byte {
+	return buildResponsesWebSearchCallItem(item.ToolUseID, claudeWebSearchQuery(item.InputBuf.String()), item.Results)
 }
 
 type claudeResponsesMessageItem struct {
@@ -228,6 +244,26 @@ func (st *claudeToResponsesState) functionOutputIndex(blockIndex int) int {
 	return index
 }
 
+func (st *claudeToResponsesState) startWebSearch(blockIndex int, toolUseID string) *claudeResponsesWebSearchItem {
+	item := &claudeResponsesWebSearchItem{ToolUseID: toolUseID, OutputIndex: st.allocateOutputIndex()}
+	st.WebSearchByBlock[blockIndex] = item
+	st.WebSearchByToolID[toolUseID] = item
+	st.WebSearchItems = append(st.WebSearchItems, item)
+	return item
+}
+
+func (st *claudeToResponsesState) finalizeWebSearch(item *claudeResponsesWebSearchItem, nextSeq func() int) [][]byte {
+	if item == nil || item.Emitted {
+		return nil
+	}
+	item.Emitted = true
+	done := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+	done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
+	done, _ = sjson.SetBytes(done, "output_index", item.OutputIndex)
+	done, _ = sjson.SetRawBytes(done, "item", item.render())
+	return [][]byte{emitEvent("response.output_item.done", done)}
+}
+
 func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [][]byte {
 	if !st.MessageOpen {
 		return nil
@@ -290,6 +326,8 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			FuncCallIDs:        make(map[int]string),
 			FuncCustom:         make(map[int]bool),
 			FuncOutputIndices:  make(map[int]int),
+			WebSearchByBlock:   make(map[int]*claudeResponsesWebSearchItem),
+			WebSearchByToolID:  make(map[string]*claudeResponsesWebSearchItem),
 		}
 	}
 	st := (*param).(*claudeToResponsesState)
@@ -336,6 +374,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.FuncCallIDs = make(map[int]string)
 			st.FuncCustom = make(map[int]bool)
 			st.FuncOutputIndices = make(map[int]int)
+			st.WebSearchByBlock = make(map[int]*claudeResponsesWebSearchItem)
+			st.WebSearchByToolID = make(map[string]*claudeResponsesWebSearchItem)
+			st.WebSearchItems = nil
 			st.Usage = claudeResponsesUsageTokens{}
 			st.Usage.Merge(msg.Get("usage"))
 			// response.created
@@ -423,6 +464,21 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			// Record function metadata for aggregation.
 			st.FuncCallIDs[idx] = st.CurrentFCID
 			st.FuncNames[idx] = name
+		case "server_tool_use":
+			out = append(out, st.finalizeAssistantMessage(nextSeq)...)
+			if cb.Get("name").String() == claudeWebSearchToolName {
+				item := st.startWebSearch(idx, cb.Get("id").String())
+				added := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"web_search_call","status":"in_progress","action":{"type":"search","query":""}}}`)
+				added, _ = sjson.SetBytes(added, "sequence_number", nextSeq())
+				added, _ = sjson.SetBytes(added, "output_index", item.OutputIndex)
+				added, _ = sjson.SetBytes(added, "item.id", responsesWebSearchCallID(item.ToolUseID))
+				out = append(out, emitEvent("response.output_item.added", added))
+			}
+		case "web_search_tool_result":
+			if item := st.WebSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
+				item.Results = claudeWebSearchResultsToResponses(cb.Get("content"))
+				out = append(out, st.finalizeWebSearch(item, nextSeq)...)
+			}
 		case "thinking", "redacted_thinking":
 			out = append(out, st.finalizeAssistantMessage(nextSeq)...)
 			// start reasoning item
@@ -464,6 +520,12 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				st.CurrentTextBuf.WriteString(t.String())
 			}
 		case "input_json_delta":
+			if item := st.WebSearchByBlock[int(root.Get("index").Int())]; item != nil {
+				if pj := d.Get("partial_json"); pj.Exists() {
+					item.InputBuf.WriteString(pj.String())
+				}
+				return [][]byte{}
+			}
 			if !st.InFuncBlock || st.CurrentFCID == "" {
 				return [][]byte{}
 			}
@@ -599,6 +661,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		return [][]byte{}
 	case "message_stop":
 		out = append(out, st.finalizeAssistantMessage(nextSeq)...)
+		for _, item := range st.WebSearchItems {
+			out = append(out, st.finalizeWebSearch(item, nextSeq)...)
+		}
 
 		completed := []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`)
 		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
@@ -692,6 +757,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				item, _ = sjson.SetBytes(item, "content.0.annotations", message.Annotations)
 			}
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", message.OutputIndex), item)
+		}
+		for _, item := range st.WebSearchItems {
+			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", item.OutputIndex), item.render())
 		}
 		// function_call items (in ascending index order for determinism)
 		if len(st.FuncArgsBuf) > 0 {
@@ -907,9 +975,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 		signature   string
 		annotations []any
 		args        strings.Builder
+		results     []byte
 	}
 
 	blockToItem := make(map[int]*nonStreamOutputItem)
+	webSearchByToolID := make(map[string]*nonStreamOutputItem)
 	outputItems := make([]*nonStreamOutputItem, 0)
 	nextOutputIndex := 0
 	messageCount := 0
@@ -975,6 +1045,23 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 					item.id = fmt.Sprintf("fc_%s", item.callID)
 				}
 				item.name = cb.Get("name").String()
+			case "server_tool_use":
+				activeMessageItem = nil
+				if cb.Get("name").String() != claudeWebSearchToolName {
+					continue
+				}
+				toolUseID := cb.Get("id").String()
+				item := newOutputItem("web_search_call", idx)
+				item.id = responsesWebSearchCallID(toolUseID)
+				item.callID = toolUseID
+				webSearchByToolID[toolUseID] = item
+				if input := cb.Get("input"); input.IsObject() && claudeWebSearchQuery(input.Raw) != "" {
+					item.args.WriteString(input.Raw)
+				}
+			case "web_search_tool_result":
+				if item := webSearchByToolID[cb.Get("tool_use_id").String()]; item != nil {
+					item.results = claudeWebSearchResultsToResponses(cb.Get("content"))
+				}
 			case "thinking", "redacted_thinking":
 				activeMessageItem = nil
 				item := newOutputItem("reasoning", idx)
@@ -998,7 +1085,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 					}
 				}
 			case "input_json_delta":
-				if item != nil && (item.itemType == "function_call" || item.itemType == "custom_tool_call") {
+				if item != nil && (item.itemType == "function_call" || item.itemType == "custom_tool_call" || item.itemType == "web_search_call") {
 					if pj := d.Get("partial_json"); pj.Exists() {
 						item.args.WriteString(pj.String())
 					}
@@ -1116,6 +1203,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			summary := []byte(`{"type":"summary_text","text":""}`)
 			summary, _ = sjson.SetBytes(summary, "text", outputItem.text.String())
 			item, _ = sjson.SetRawBytes(item, "summary", translatorcommon.JoinRawArray([][]byte{summary}))
+		case "web_search_call":
+			item = buildResponsesWebSearchCallItem(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), outputItem.results)
 		case "message":
 			item = []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 			item, _ = sjson.SetBytes(item, "id", outputItem.id)

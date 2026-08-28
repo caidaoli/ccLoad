@@ -690,3 +690,28 @@ func validCodexReasoningSignature() string {
 	raw[8] = 1
 	return base64.URLEncoding.EncodeToString(raw)
 }
+
+func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
+	payload := []byte(`{
+		"messages":[{"role":"user","content":"return JSON"}],
+		"output_config":{"format":{"type":"json_schema","name":"answer_schema","strict":false,"schema":{"type":"object","properties":{"answer":{"type":"string"}}}}}
+	}`)
+	root := gjson.ParseBytes(ConvertClaudeRequestToCodex("gpt-5.4", payload, false))
+	if got := root.Get("text.format.type").String(); got != "json_schema" {
+		t.Fatalf("text.format.type = %q", got)
+	}
+	if got := root.Get("text.format.name").String(); got != "answer_schema" {
+		t.Fatalf("text.format.name = %q", got)
+	}
+	if root.Get("text.format.strict").Bool() {
+		t.Fatal("text.format.strict = true, want false")
+	}
+	if got := root.Get("text.format.schema.properties.answer.type").String(); got != "string" {
+		t.Fatalf("schema answer type = %q", got)
+	}
+
+	withoutFormat := ConvertClaudeRequestToCodex("gpt-5.4", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), false)
+	if gjson.GetBytes(withoutFormat, "text.format").Exists() {
+		t.Fatalf("unexpected text.format: %s", withoutFormat)
+	}
+}

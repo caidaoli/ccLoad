@@ -342,3 +342,31 @@ func TestConvertClaudeResponseToOpenAI_RedactedThinkingIgnored(t *testing.T) {
 		t.Fatalf("stream content = %q, want %q", streamContent, "Visible reply.")
 	}
 }
+
+func TestConvertClaudeResponseToOpenAI_StreamToolCallIndexIsZeroBased(t *testing.T) {
+	events := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_123","usage":{"input_tokens":15}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Thinking..."}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather"}}`),
+		[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Paris\"}"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":1}`),
+		[]byte(`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"get_time"}}`),
+		[]byte(`data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Tokyo\"}"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":2}`),
+	}
+
+	var param any
+	var indices []int64
+	for _, event := range events {
+		for _, chunk := range ConvertClaudeResponseToOpenAI(context.Background(), "claude-opus-4-6", nil, nil, event, &param) {
+			if toolCall := gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0"); toolCall.Exists() {
+				indices = append(indices, toolCall.Get("index").Int())
+			}
+		}
+	}
+	if len(indices) != 2 || indices[0] != 0 || indices[1] != 1 {
+		t.Fatalf("streamed tool indices = %v, want [0 1]", indices)
+	}
+}

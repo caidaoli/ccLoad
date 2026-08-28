@@ -202,3 +202,39 @@ func TestConvertGeminiResponseToClaudeNonStream_TrailingSignatureOnlyPart(t *tes
 		t.Fatalf("unexpected text block: %s", textBlock.Raw)
 	}
 }
+
+func TestConvertGeminiResponseToClaude_UsageWithCachedContentTokenCount(t *testing.T) {
+	request := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	response := []byte(`{
+		"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}],
+		"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":7,"cachedContentTokenCount":91}
+	}`)
+	var param any
+	output := bytes.Join(ConvertGeminiResponseToClaude(context.Background(), "gemini-2.5-pro", request, request, response, &param), nil)
+	var messageDelta gjson.Result
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"message_delta"`) {
+			messageDelta = gjson.Parse(strings.TrimPrefix(line, "data: "))
+		}
+	}
+	if got := messageDelta.Get("usage.input_tokens").Int(); got != 9 {
+		t.Fatalf("input_tokens = %d, want 9", got)
+	}
+	if got := messageDelta.Get("usage.cache_read_input_tokens").Int(); got != 91 {
+		t.Fatalf("cache_read_input_tokens = %d, want 91", got)
+	}
+}
+
+func TestConvertGeminiResponseToClaudeNonStream_UsageWithCachedContentTokenCount(t *testing.T) {
+	response := []byte(`{
+		"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}],
+		"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":7,"cachedContentTokenCount":91}
+	}`)
+	out := ConvertGeminiResponseToClaudeNonStream(context.Background(), "gemini-2.5-pro", nil, nil, response, nil)
+	if got := gjson.GetBytes(out, "usage.input_tokens").Int(); got != 9 {
+		t.Fatalf("input_tokens = %d, want 9", got)
+	}
+	if got := gjson.GetBytes(out, "usage.cache_read_input_tokens").Int(); got != 91 {
+		t.Fatalf("cache_read_input_tokens = %d, want 91", got)
+	}
+}

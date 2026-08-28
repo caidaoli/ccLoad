@@ -2236,3 +2236,47 @@ func TestCleanJSONSchema_PreservesAdditionalPropertiesObjectSchema(t *testing.T)
 		}
 	}
 }
+
+func TestCleanJSONSchemaForAntigravityResponse_AnyOfRequiredOnlyBranches(t *testing.T) {
+	input := `{
+		"type":"object",
+		"anyOf":[{"required":["left"]},{"required":["right"]}],
+		"properties":{"left":{"type":"integer"},"right":{"type":"integer"}},
+		"additionalProperties":false
+	}`
+	got := CleanJSONSchemaForAntigravityResponse(input)
+	parsed := gjson.Parse(got)
+	if parsed.Get("type").String() != "object" {
+		t.Fatalf("type = %q, want object; cleaned: %s", parsed.Get("type").String(), got)
+	}
+	if !parsed.Get("properties.left").Exists() || !parsed.Get("properties.right").Exists() {
+		t.Fatalf("properties were wiped out; cleaned: %s", got)
+	}
+	if parsed.Get("anyOf").Exists() {
+		t.Fatalf("anyOf was not removed; cleaned: %s", got)
+	}
+}
+
+func TestCleanJSONSchemaForAntigravityResponse_ContainsKeywordStripped(t *testing.T) {
+	input := `{
+		"type":"object",
+		"properties":{"tags":{"type":"array","items":{"type":"string"},"contains":{"enum":["x"]}}},
+		"required":["tags"]
+	}`
+	for name, clean := range map[string]func(string) string{
+		"antigravityResponse": CleanJSONSchemaForAntigravityResponse,
+		"antigravity":         CleanJSONSchemaForAntigravity,
+		"gemini":              CleanJSONSchemaForGemini,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := clean(input)
+			parsed := gjson.Parse(got)
+			if parsed.Get("properties.tags.contains").Exists() {
+				t.Fatalf("contains was not removed: %s", got)
+			}
+			if !strings.Contains(parsed.Get("properties.tags.description").String(), "contains") {
+				t.Fatalf("contains hint missing: %s", got)
+			}
+		})
+	}
+}

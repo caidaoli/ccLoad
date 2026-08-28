@@ -1459,3 +1459,35 @@ func TestConvertOpenAIResponsesRequestToClaude_DifferentUserContentWithSameSyste
 		t.Fatalf("different user questions with same system prompt produced identical metadata.user_id: %q", idA)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToClaude_FableStripsTrailingAssistantPrefill(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress"}]}]}`)
+	messages := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false), "messages").Array()
+	if len(messages) != 1 || messages[0].Get("role").String() != "user" || messages[0].Get("content").String() != "hello" {
+		t.Fatalf("messages = %v, want one user hello turn", messages)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_FableOnlyAssistantMessageYieldsFallbackUser(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress"}]}]}`)
+	messages := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false), "messages").Array()
+	if len(messages) != 1 || messages[0].Get("role").String() != "user" {
+		t.Fatalf("messages = %v, want one fallback user turn", messages)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_NonFablePreservesAssistantPrefill(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"prefill"}]}]}`)
+	messages := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", raw, false), "messages").Array()
+	if len(messages) != 2 || messages[1].Get("role").String() != "assistant" {
+		t.Fatalf("messages = %v, want preserved assistant prefill", messages)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaudeWithCompat_FablePreservesAssistantPrefill(t *testing.T) {
+	raw := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"prefill"}]}]}`)
+	messages := gjson.GetBytes(ConvertOpenAIResponsesRequestToClaudeWithCompat("claude-fable-5", raw, false), "messages").Array()
+	if len(messages) != 2 || messages[1].Get("role").String() != "assistant" {
+		t.Fatalf("messages = %v, want preserved compat prefill", messages)
+	}
+}
