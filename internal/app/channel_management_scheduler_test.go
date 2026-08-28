@@ -108,6 +108,38 @@ func TestManagementCheckinSchedulerExecutesAuditsAndDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestManagementCheckinSchedulerExecutesInitiallyDisabledChannel(t *testing.T) {
+	var posts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"checkin_enabled":true}}`))
+		case r.URL.Path == "/api/user/checkin" && r.Method == http.MethodPost:
+			posts.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_awarded":1,"checkin_date":"2026-08-28"}}`))
+		case r.URL.Path == "/api/user/checkin":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"stats":{"checked_in_today":false}}}`))
+		case r.URL.Path == "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	server := newInMemoryServer(t)
+	cfg := seedManagementEnvelope(t, server, "scheduler-initially-disabled", newDueNewAPIEnvelope(upstream.URL))
+	cfg.Enabled = false
+	if _, err := server.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := server.runDueManagementCheckins(context.Background(), time.Now()); err != nil {
+		t.Fatalf("runDueManagementCheckins: %v", err)
+	}
+	if got := posts.Load(); got != 1 {
+		t.Fatalf("disabled channel POST count=%d, want 1", got)
+	}
+}
+
 func TestManagementCheckinSchedulerMaxFourWorkersAndSameChannelOnce(t *testing.T) {
 	var active, maximum, posts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -253,13 +285,22 @@ func TestManagementCheckinSchedulerClaimFailureKeepsEarlierClaims(t *testing.T) 
 	}
 }
 
-func TestManagementCheckinSchedulerRereadsDisabledAndSkips(t *testing.T) {
+func TestManagementCheckinSchedulerRereadsDisabledAndExecutes(t *testing.T) {
 	var posts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/user/checkin" && r.Method == http.MethodPost {
+		switch {
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"checkin_enabled":true}}`))
+		case r.URL.Path == "/api/user/checkin" && r.Method == http.MethodPost:
 			posts.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_awarded":1,"checkin_date":"2026-08-28"}}`))
+		case r.URL.Path == "/api/user/checkin":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"stats":{"checked_in_today":false}}}`))
+		case r.URL.Path == "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":1}}`))
+		default:
+			http.NotFound(w, r)
 		}
-		_, _ = w.Write([]byte(`{"success":true,"data":{"checkin_enabled":true}}`))
 	}))
 	server := newInMemoryServer(t)
 	cfg := seedManagementEnvelope(t, server, "scheduler-reread-disabled", newDueNewAPIEnvelope(upstream.URL))
@@ -269,11 +310,11 @@ func TestManagementCheckinSchedulerRereadsDisabledAndSkips(t *testing.T) {
 	if err := server.runDueManagementCheckins(context.Background(), time.Now()); err != nil {
 		t.Fatalf("runDueManagementCheckins: %v", err)
 	}
-	if posts.Load() != 0 {
-		t.Fatalf("disabled reread made upstream POST count=%d", posts.Load())
+	if got := posts.Load(); got != 1 {
+		t.Fatalf("disabled reread POST count=%d, want 1", got)
 	}
 	logs, err := server.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceCheckin, ChannelID: &cfg.ID})
-	if err != nil || len(logs) != 1 || !strings.Contains(logs[0].Message, newAPICheckinSkippedDisabled) {
+	if err != nil || len(logs) != 1 || !strings.Contains(logs[0].Message, newAPICheckinSuccess) {
 		t.Fatalf("disabled audit logs=%#v err=%v", logs, err)
 	}
 }
