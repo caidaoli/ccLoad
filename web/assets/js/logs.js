@@ -443,12 +443,32 @@ function buildThinkingEffortBadge(thinkingEffort, reasoningTokens) {
   return `<sup class="thinking-effort-badge" title="${title}">${escapeHtml(text)}</sup>`;
 }
 
+// 判断两个模型名是否只是前缀/后缀写法不同，此类差异不算模型重定向：
+// - gemini-3.6-flash-high vs gemini-3.6-flash（变体后缀）
+// - vanchin/deepseek-v4-pro-0813 vs deepseek-v4-pro-0813（渠道前缀）
+// - deepseek-v4-pro-ga-260813 vs deepseek-v4-pro-0813（共享首尾，中间展开）
+function isPrefixOrSuffixVariant(model, actualModel) {
+  if (!model || !actualModel) return false;
+  const a = String(model).toLowerCase();
+  const b = String(actualModel).toLowerCase();
+  if (a === b) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  if (long.startsWith(short) || long.endsWith(short)) return true;
+  let prefixLen = 0;
+  while (prefixLen < short.length && short[prefixLen] === long[prefixLen]) prefixLen++;
+  let suffixLen = 0;
+  while (suffixLen < short.length - prefixLen &&
+         short[short.length - 1 - suffixLen] === long[long.length - 1 - suffixLen]) suffixLen++;
+  return prefixLen > 0 && suffixLen > 0 && prefixLen + suffixLen === short.length;
+}
+
 function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningTokens) {
   if (!model) {
     return '<span style="color: var(--neutral-500);">-</span>';
   }
 
-  const redirected = actualModel && actualModel !== model;
+  const redirected = actualModel && actualModel !== model && !isPrefixOrSuffixVariant(model, actualModel);
   const effort = normalizeThinkingEffortDisplay(thinkingEffort);
   const tokens = normalizeReasoningTokens(reasoningTokens);
   const classes = ['model-tag'];
@@ -2800,4 +2820,8 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
       }).catch(() => {});
     }
   });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay };
 }
