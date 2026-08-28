@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,7 +99,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -128,6 +129,15 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		apiKeyModelScopeEmptyJSON, err := sonic.Marshal(apiKeyModelScopeEmpty)
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key empty model scopes for channel %d: %w", cfg.ID, err))
+			return
+		}
+		apiKeyCostMultipliers := make([]float64, len(apiKeys))
+		for i, key := range apiKeys {
+			apiKeyCostMultipliers[i] = key.CostMultiplier
+		}
+		apiKeyCostMultipliersJSON, err := sonic.Marshal(apiKeyCostMultipliers)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize API key cost multipliers for channel %d: %w", cfg.ID, err))
 			return
 		}
 
@@ -185,6 +195,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			cfg.Name,
 			apiKeyStr,
 			string(apiKeyAllowedModelsJSON),
+			string(apiKeyCostMultipliersJSON),
 			string(apiKeyModelScopeEmptyJSON),
 			string(urlsJSON),
 			strconv.Itoa(cfg.Priority),
@@ -268,6 +279,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasRetryOtherKeysOnFailureColumn := columnIndex["retry_other_keys_on_failure"]
 	_, hasWebsocketsColumn := columnIndex["websockets"]
 	_, hasAPIKeyAllowedModelsColumn := columnIndex["api_key_allowed_models"]
+	_, hasAPIKeyCostMultipliersColumn := columnIndex["api_key_cost_multipliers"]
 	_, hasAPIKeyModelScopeEmptyColumn := columnIndex["api_key_model_scope_empty"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
@@ -275,7 +287,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
 	existingWebsocketsByName := make(map[string]bool)
 	existingAPIKeysByName := make(map[string][]*model.APIKey)
-	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyModelScopeEmptyColumn {
+	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyModelScopeEmptyColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -288,7 +300,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
 			existingWebsocketsByName[cfg.Name] = cfg.Websockets
 		}
-		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyModelScopeEmptyColumn {
+		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyModelScopeEmptyColumn {
 			allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 			if err != nil {
 				RespondError(c, http.StatusInternalServerError, err)
@@ -329,6 +341,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			hasRetryOtherKeysOnFailureColumn,
 			hasWebsocketsColumn,
 			hasAPIKeyAllowedModelsColumn,
+			hasAPIKeyCostMultipliersColumn,
 			hasAPIKeyModelScopeEmptyColumn,
 			existingScheduledCheckByName,
 			existingScheduledCheckModelByName,
@@ -469,6 +482,7 @@ func (s *Server) parseChannelImportRow(
 	hasRetryOtherKeysOnFailureColumn bool,
 	hasWebsocketsColumn bool,
 	hasAPIKeyAllowedModelsColumn bool,
+	hasAPIKeyCostMultipliersColumn bool,
 	hasAPIKeyModelScopeEmptyColumn bool,
 	existingScheduledCheckByName map[string]bool,
 	existingScheduledCheckModelByName map[string]string,
@@ -492,6 +506,7 @@ func (s *Server) parseChannelImportRow(
 	name := fetch("name")
 	apiKey := fetch("api_key")
 	apiKeyAllowedModelsRaw := fetch("api_key_allowed_models")
+	apiKeyCostMultipliersRaw := fetch("api_key_cost_multipliers")
 	apiKeyModelScopeEmptyRaw := fetch("api_key_model_scope_empty")
 	rawAuthType := fetch("auth_type")
 	oauthCredential := fetch("oauth_credential")
@@ -786,6 +801,28 @@ func (s *Server) parseChannelImportRow(
 			return nil, fmt.Sprintf("第%d行 api_key_model_scope_empty 数量必须与 api_key 一致", lineNo), true
 		}
 	}
+	apiKeyCostMultipliers := make([]float64, len(apiKeyList))
+	if !hasAPIKeyCostMultipliersColumn {
+		existing := existingAPIKeysByName[name]
+		for i := range apiKeyCostMultipliers {
+			apiKeyCostMultipliers[i] = 1
+			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
+				apiKeyCostMultipliers[i] = existing[i].CostMultiplier
+			}
+		}
+	} else if apiKeyCostMultipliersRaw != "" {
+		if err := sonic.Unmarshal([]byte(apiKeyCostMultipliersRaw), &apiKeyCostMultipliers); err != nil {
+			return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers 无效: %v", lineNo, err), true
+		}
+		if len(apiKeyCostMultipliers) != len(apiKeyList) {
+			return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers 数量必须与 api_key 一致", lineNo), true
+		}
+		for i, multiplier := range apiKeyCostMultipliers {
+			if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier < 0 {
+				return nil, fmt.Sprintf("第%d行 api_key_cost_multipliers[%d] 无效: %v", lineNo, i, multiplier), true
+			}
+		}
+	}
 	canonicalModels := make(map[string]string, len(modelEntries))
 	for _, entry := range modelEntries {
 		canonicalModels[strings.ToLower(model.RoutingModelName(entry.Model))] = model.RoutingModelName(entry.Model)
@@ -814,6 +851,7 @@ func (s *Server) parseChannelImportRow(
 			ModelScopeEmpty: apiKeyModelScopeEmpty[i],
 			Disabled:        apiKeyModelScopeEmpty[i],
 			KeyStrategy:     keyStrategy,
+			CostMultiplier:  apiKeyCostMultipliers[i],
 		}
 	}
 

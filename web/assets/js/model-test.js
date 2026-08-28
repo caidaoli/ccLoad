@@ -849,9 +849,10 @@ function buildModelTestCostDisplay(standardCost, multiplier) {
 }
 
 function getRowCostMultiplier(row) {
-  const rowMultiplier = row?.dataset?.costMultiplier;
-  if (rowMultiplier !== undefined && rowMultiplier !== '') {
-    return normalizeModelTestCostMultiplier(rowMultiplier);
+  // 单渠道模式提交带 key_index，倍率取选中 Key 的 cost_multiplier；模型模式按整渠道回退渠道倍率。
+  if (testMode !== TEST_MODE_MODEL && Number.isInteger(selectedKeyIndex)) {
+    const key = channelKeys.find(k => normalizeModelTestKeyIndex(k?.key_index) === selectedKeyIndex);
+    if (key) return normalizeModelTestCostMultiplier(key.cost_multiplier);
   }
 
   const channelId = String(row?.dataset?.channelId || '');

@@ -213,7 +213,7 @@
               <li><code>name</code>: readable channel name used by logs and statistics.</li>
               <li><code>protocol_transform_mode</code>: <code>auto</code> starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying it; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> translates to URL-declared protocols.</li>
               <li><code>urls</code>: an ordered list of URLs with optional <code>protocols</code>. Local mode prioritizes declared URLs; if all are undeclared it tries Anthropic → Codex → OpenAI → Gemini. <code>exact: true</code> disables automatic path joining.</li>
-              <li><code>api_key</code>: supports one or multiple keys. Each key may set <code>allowed_models</code> to restrict which channel models it serves; empty or <code>*</code> means unrestricted. Matching uses the channel logical model (after fuzzy match, before <code>redirect_model</code>).</li>
+              <li><code>api_key</code>: supports one or multiple keys. Each key may set <code>allowed_models</code> to restrict which channel models it serves; empty or <code>*</code> means unrestricted. Matching uses the channel logical model (after fuzzy match, before <code>redirect_model</code>). Each key may also set <code>cost_multiplier</code> (default <code>1</code>, <code>0</code> = free) applied to that key's usage for effective-cost limits and accounting.</li>
               <li><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
@@ -228,7 +228,7 @@
               <li><code>rpm_limit</code>: rolling 60-second request cap for the channel; <code>0</code> means unlimited.</li>
               <li><code>max_concurrency</code>: maximum in-flight requests for the channel. Streaming requests release the slot only when the stream ends.</li>
               <li><code>daily_cost_limit</code>: daily channel cost limit. The channel is skipped after the limit is reached.</li>
-              <li><code>cost_multiplier</code>: channel multiplier used for effective-cost limits and accounting.</li>
+              <li><code>cost_multiplier</code>: for OAuth channels the credential is 1:1 with the channel, so the multiplier stays channel-level; for <code>api_key</code> channels it lives on each key.</li>
               <li><code>scheduled_check_enabled</code>: enables scheduled probing, usually paired with a check model.</li>
             </ul>
           </article>

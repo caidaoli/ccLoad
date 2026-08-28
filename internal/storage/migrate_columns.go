@@ -886,6 +886,13 @@ func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Diale
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+// ensureAPIKeysCostMultiplier 确保api_keys表有cost_multiplier字段（Key级成本倍率，api_key渠道的权威存储）
+func ensureAPIKeysCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "api_keys", "cost_multiplier",
+		"DOUBLE NOT NULL DEFAULT 1",
+		"REAL NOT NULL DEFAULT 1")
+}
+
 // ensureAuthTokensEffectiveCost 确保auth_tokens表有effective_cost_usd字段（2026-07新增）
 func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := ensureColumn(ctx, db, dialect, "auth_tokens", "effective_cost_usd",

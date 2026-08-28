@@ -1243,7 +1243,7 @@ function createChannelCard(channel) {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
 		name: channel.name,
-		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
+		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier_min, channel.cost_multiplier_max),
     oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),

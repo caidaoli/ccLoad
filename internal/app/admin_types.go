@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	neturl "net/url"
 	"strings"
 	"time"
@@ -34,7 +35,6 @@ type ChannelRequest struct {
 	ScheduledCheckEnabled   bool                          `json:"scheduled_check_enabled"`
 	ScheduledCheckModel     string                        `json:"scheduled_check_model"`
 	DailyCostLimit          float64                       `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
-	CostMultiplier          float64                       `json:"cost_multiplier"`  // 成本倍率（默认1，0=免费，>=0）
 	CustomRequestRules      *model.CustomRequestRules     `json:"custom_request_rules,omitempty"`
 	CooldownDetectionRules  *model.CooldownDetectionRules `json:"cooldown_detection_rules,omitempty"`
 	ProxyURL                string                        `json:"proxy_url,omitempty"` // 渠道级代理（http/https/socks5/socks5h）
@@ -75,6 +75,9 @@ type ChannelAPIKeyRequest struct {
 	Note            string   `json:"note,omitempty"`
 	AllowedModels   []string `json:"allowed_models,omitempty"`
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"`
+	// CostMultiplier 用指针区分「未提交」：nil 保留现值（Key 更新）或取默认 1（创建）；
+	// 0 是合法的「免费 Key」。OAuth 渠道的合成 Key 行也用它携带渠道倍率。
+	CostMultiplier *float64 `json:"cost_multiplier,omitempty"`
 	// allowedModelsSet distinguishes an omitted field from an explicit empty list.
 	// Updates preserve an existing scope when old clients do not send the new field.
 	allowedModelsSet bool
@@ -87,6 +90,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 		Note            string          `json:"note,omitempty"`
 		AllowedModels   json.RawMessage `json:"allowed_models"`
 		ModelScopeEmpty bool            `json:"model_scope_empty,omitempty"`
+		CostMultiplier  *float64        `json:"cost_multiplier"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -95,12 +99,21 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	r.APIKey = raw.APIKey
 	r.Note = raw.Note
 	r.ModelScopeEmpty = raw.ModelScopeEmpty
+	r.CostMultiplier = raw.CostMultiplier
 	r.AllowedModels = nil
 	r.allowedModelsSet = raw.AllowedModels != nil
 	if !r.allowedModelsSet || string(raw.AllowedModels) == "null" {
 		return nil
 	}
 	return json.Unmarshal(raw.AllowedModels, &r.AllowedModels)
+}
+
+// apiKeyCostMultiplier 解析提交的 Key 倍率：未提交默认 1（与 api_keys 列默认值一致），0 是合法的免费 Key。
+func apiKeyCostMultiplier(entry ChannelAPIKeyRequest) float64 {
+	if entry.CostMultiplier == nil {
+		return 1
+	}
+	return *entry.CostMultiplier
 }
 
 const (
@@ -121,6 +134,7 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				Note:             strings.TrimSpace(item.Note),
 				AllowedModels:    append([]string(nil), item.AllowedModels...),
 				ModelScopeEmpty:  item.ModelScopeEmpty,
+				CostMultiplier:   item.CostMultiplier,
 				allowedModelsSet: item.allowedModelsSet,
 			})
 		}
@@ -252,8 +266,9 @@ func (cr *ChannelRequest) Validate() error {
 	if authType == model.AuthTypeAPIKey && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
 	}
-	if authType != model.AuthTypeAPIKey && len(apiKeys) != 0 {
-		return fmt.Errorf("OAuth channel cannot contain API keys")
+	// OAuth 渠道最多携带一条合成 Key 行（管理页现场合成），只用来回传倍率，永不落库。
+	if authType != model.AuthTypeAPIKey && len(apiKeys) > 1 {
+		return fmt.Errorf("OAuth channel accepts at most one synthetic API key row")
 	}
 	for i, key := range apiKeys {
 		if strings.ContainsAny(key.APIKey, "\x00\r\n") {
@@ -267,6 +282,9 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		if key.ModelScopeEmpty && len(key.AllowedModels) != 0 {
 			return fmt.Errorf("api_keys[%d].model_scope_empty requires empty allowed_models", i)
+		}
+		if key.CostMultiplier != nil && (math.IsNaN(*key.CostMultiplier) || math.IsInf(*key.CostMultiplier, 0) || *key.CostMultiplier < 0) {
+			return fmt.Errorf("api_keys[%d].cost_multiplier must be finite and >= 0 (got %v)", i, *key.CostMultiplier)
 		}
 	}
 	if len(cr.Models) == 0 {
@@ -377,13 +395,6 @@ func (cr *ChannelRequest) Validate() error {
 		return fmt.Errorf("max_concurrency must be >= 0 (got %d)", cr.MaxConcurrency)
 	}
 
-	// CostMultiplier: 未传视为默认 1；0 表示免费渠道；负数拒绝
-	if cr.CostMultiplier == 0 {
-		// 0 是合法值（免费渠道），保持不变
-	} else if cr.CostMultiplier < 0 {
-		return fmt.Errorf("cost_multiplier must be >= 0 (got %v)", cr.CostMultiplier)
-	}
-
 	return nil
 }
 
@@ -430,6 +441,13 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		}
 	}
 
+	// 倍率属于凭证：OAuth 渠道从合成 Key 行取，api_key 渠道的渠道级字段固定写 1
+	// （0 在 channels.cost_multiplier 语义是「免费」，渠道级写 0 会让 api_key 渠道整体免费）。
+	costMultiplier := 1.0
+	if model.NormalizeAuthType(cr.AuthType) != model.AuthTypeAPIKey && len(cr.APIKeys) > 0 && cr.APIKeys[0].CostMultiplier != nil {
+		costMultiplier = *cr.APIKeys[0].CostMultiplier
+	}
+
 	return &model.Config{
 		Name:                    strings.TrimSpace(cr.Name),
 		AuthType:                cr.AuthType,
@@ -444,7 +462,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		ScheduledCheckEnabled:   cr.ScheduledCheckEnabled,
 		ScheduledCheckModel:     cr.ScheduledCheckModel,
 		DailyCostLimit:          cr.DailyCostLimit,
-		CostMultiplier:          cr.CostMultiplier,
+		CostMultiplier:          costMultiplier,
 		CustomRequestRules:      cr.CustomRequestRules.Clone(),
 		CooldownDetectionRules:  cr.CooldownDetectionRules.Clone(),
 		ProxyURL:                cr.ProxyURL,
@@ -600,6 +618,11 @@ type ChannelWithCooldown struct {
 	EffectivePriority             *float64               `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
 	SuccessRate                   *float64               `json:"success_rate,omitempty"`       // 成功率(0-1)
 	ManagementAccount             *channelManagementView `json:"management_account,omitempty"`
+
+	// 成本倍率区间（角标展示）：api_key 渠道按启用 Key 计算，OAuth 渠道即渠道倍率；
+	// min 与 max 都为 1 时不下发。
+	CostMultiplierMin *float64 `json:"cost_multiplier_min,omitempty"`
+	CostMultiplierMax *float64 `json:"cost_multiplier_max,omitempty"`
 }
 
 // ChannelImportSummary 导入结果统计

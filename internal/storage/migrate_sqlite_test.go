@@ -1009,6 +1009,140 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 	}
 }
 
+func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	// channels 建完整新版结构（含 cost_multiplier），模拟已升级过渠道倍率的存量库。
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(191) NOT NULL UNIQUE,
+			url TEXT NOT NULL,
+			priority INT NOT NULL DEFAULT 0,
+			rpm_limit INT NOT NULL DEFAULT 0,
+			max_concurrency INT NOT NULL DEFAULT 0,
+			channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+			auth_type VARCHAR(32) NOT NULL DEFAULT 'api_key',
+			oauth_credential TEXT,
+			websockets TINYINT NOT NULL DEFAULT 0,
+			protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
+			enabled TINYINT NOT NULL DEFAULT 1,
+			scheduled_check_enabled TINYINT NOT NULL DEFAULT 0,
+			scheduled_check_model VARCHAR(191) NOT NULL DEFAULT '',
+			cooldown_until BIGINT NOT NULL DEFAULT 0,
+			cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
+			daily_cost_limit DOUBLE NOT NULL DEFAULT 0,
+			cost_multiplier DOUBLE NOT NULL DEFAULT 1,
+			custom_request_rules TEXT,
+			cooldown_detection_rules TEXT,
+			proxy_url VARCHAR(255) NOT NULL DEFAULT '',
+			available_time_start VARCHAR(5) NOT NULL DEFAULT '',
+			available_time_end VARCHAR(5) NOT NULL DEFAULT '',
+			retry_other_keys_on_failure TINYINT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create channels: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channels (id, name, url, auth_type, cost_multiplier, created_at, updated_at)
+		VALUES (1, 'api-key-channel', 'https://up.example/v1', 'api_key', 2.5, 1, 1),
+		       (2, 'oauth-channel', 'https://oauth.example/v1', 'codex_oauth', 3.0, 1, 1)
+	`); err != nil {
+		t.Fatalf("insert channels: %v", err)
+	}
+	// api_keys 建旧版结构（无 cost_multiplier 列）。
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE api_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INT NOT NULL,
+			key_index INT NOT NULL,
+			api_key VARCHAR(255) NOT NULL,
+			note VARCHAR(512) NOT NULL DEFAULT '',
+			allowed_models VARCHAR(2000) NOT NULL DEFAULT '',
+			model_scope_empty TINYINT NOT NULL DEFAULT 0,
+			key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential',
+			cooldown_until BIGINT NOT NULL DEFAULT 0,
+			cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
+			disabled TINYINT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			UNIQUE (channel_id, key_index)
+		)
+	`); err != nil {
+		t.Fatalf("create legacy api_keys: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO api_keys (channel_id, key_index, api_key, created_at, updated_at)
+		VALUES (1, 0, 'sk-old-a', 1, 1),
+		       (1, 1, 'sk-old-b', 1, 1)
+	`); err != nil {
+		t.Fatalf("insert legacy api keys: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy api_keys: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "api_keys")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns api_keys: %v", err)
+	}
+	if !cols["cost_multiplier"] {
+		t.Fatal("cost_multiplier column not found in api_keys")
+	}
+
+	// api_key 渠道的 Key 下沉渠道倍率 2.5。
+	for _, keyIndex := range []int{0, 1} {
+		var multiplier float64
+		if err := db.QueryRowContext(ctx, `
+			SELECT cost_multiplier FROM api_keys WHERE channel_id = 1 AND key_index = ?
+		`, keyIndex).Scan(&multiplier); err != nil {
+			t.Fatalf("query api key %d multiplier: %v", keyIndex, err)
+		}
+		if multiplier != 2.5 {
+			t.Fatalf("api key %d multiplier=%v, want 2.5", keyIndex, multiplier)
+		}
+	}
+	// OAuth 渠道无 Key 行，channels.cost_multiplier 保持权威值不动。
+	var oauthMultiplier float64
+	if err := db.QueryRowContext(ctx, `
+		SELECT cost_multiplier FROM channels WHERE id = 2
+	`).Scan(&oauthMultiplier); err != nil {
+		t.Fatalf("query oauth channel multiplier: %v", err)
+	}
+	if oauthMultiplier != 3.0 {
+		t.Fatalf("oauth channel multiplier=%v, want 3.0", oauthMultiplier)
+	}
+
+	// 幂等：回填有一次性标记，渠道列后续变化不会再次下沉。
+	if _, err := db.ExecContext(ctx, `UPDATE channels SET cost_multiplier = 9.9 WHERE id = 1`); err != nil {
+		t.Fatalf("update channel multiplier: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	var multiplier float64
+	if err := db.QueryRowContext(ctx, `
+		SELECT cost_multiplier FROM api_keys WHERE channel_id = 1 AND key_index = 0
+	`).Scan(&multiplier); err != nil {
+		t.Fatalf("query api key multiplier after second migrate: %v", err)
+	}
+	if multiplier != 2.5 {
+		t.Fatalf("api key multiplier after second migrate=%v, want 2.5 (backfill must not rerun)", multiplier)
+	}
+}
+
 func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

@@ -341,7 +341,6 @@ function initChannelEditorActions() {
         'close-common-models-modal': () => closeCommonModelsModal(),
         'confirm-common-models': () => confirmCommonModelsSelection(),
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
-        'fetch-sub2api-rate': () => invokeChannelEditorAction('fetchSub2APIRate'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'export-channel-models': () => invokeChannelEditorAction('exportChannelModels'),
         'open-batch-model-import': () => invokeChannelEditorAction('openBatchModelImportModal'),
@@ -568,7 +567,6 @@ async function editChannel(id) {
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
-  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = channel.enabled;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
@@ -835,17 +833,14 @@ async function saveChannel(event) {
       api_key: row.api_key,
       note: row.note || '',
       allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : [],
-      model_scope_empty: row.model_scope_empty === true
+      model_scope_empty: row.model_scope_empty === true,
+      cost_multiplier: row.cost_multiplier
     })),
     protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
     max_concurrency: parseInt(document.getElementById('channelMaxConcurrency').value) || 0,
     daily_cost_limit: parseFloat(document.getElementById('channelDailyCostLimit').value) || 0,
-    cost_multiplier: (function () {
-      const v = parseFloat(document.getElementById('channelCostMultiplier').value);
-      return Number.isFinite(v) && v >= 0 ? v : 1;
-    })(),
     models: models,
     enabled: document.getElementById('channelEnabled').checked,
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
@@ -859,6 +854,16 @@ async function saveChannel(event) {
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
   if (!isOAuth) formData.key_strategy = keyStrategy;
+  if (isOAuth) {
+    // OAuth 凭证 1:1：倍率经合成 Key 行提交（后端 ToConfig 取 APIKeys[0].CostMultiplier 写入渠道列）。
+    // 合成行的 api_key 为掩码后的非空值，保证不被 normalizeAPIKeys 丢弃；未提交时后端保底现值。
+    const synthetic = inlineKeyTableData && inlineKeyTableData.length > 0
+      ? normalizeInlineKeyRow(inlineKeyTableData[0])
+      : null;
+    if (synthetic && synthetic.api_key) {
+      formData.api_keys = [{ api_key: synthetic.api_key, cost_multiplier: synthetic.cost_multiplier }];
+    }
+  }
   applyChannelManagementPayload(formData);
 
   if (!formData.name || formData.urls.length === 0 || (!isOAuth && !formData.api_key) || formData.models.length === 0) {
@@ -1900,7 +1905,6 @@ async function copyChannel(id, name) {
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);
   document.getElementById('channelDailyCostLimit').value = channel.daily_cost_limit || 0;
-  document.getElementById('channelCostMultiplier').value = (Number(channel.cost_multiplier) >= 0 ? Number(channel.cost_multiplier) : 1);
   document.getElementById('channelEnabled').checked = true;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
@@ -3522,14 +3526,12 @@ async function fetchModelsFromAPI() {
   }
 }
 
-function setFetchSub2APIRatePending(pending) {
-  const button = document.getElementById('fetchSub2APIRateBtn');
-  const label = document.getElementById('fetchSub2APIRateLabel');
-  if (button) {
-    button.disabled = pending;
-    if (pending) button.setAttribute('aria-busy', 'true');
-    else button.removeAttribute('aria-busy');
-  }
+function setFetchSub2APIRatePending(button, pending) {
+  if (!button) return;
+  button.disabled = pending;
+  if (pending) button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+  const label = button.querySelector('span');
   if (label) {
     label.textContent = window.t(pending ? 'channels.fetchRateLoading' : 'channels.fetchRate');
   }
@@ -3549,9 +3551,9 @@ function showSub2APIRateError(code) {
   else alert(message);
 }
 
-async function fetchSub2APIRate() {
+async function fetchSub2APIRate(keyIndex, actionBtn) {
   const baseURL = getValidInlineURLConfigs()[0]?.url || '';
-  const apiKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
+  const apiKey = getInlineKeyValue(keyIndex);
 
   if (!baseURL) {
     if (window.showError) window.showError(window.t('channels.fillApiUrlFirst'));
@@ -3564,7 +3566,7 @@ async function fetchSub2APIRate() {
     return;
   }
 
-  setFetchSub2APIRatePending(true);
+  setFetchSub2APIRatePending(actionBtn, true);
   try {
     const response = await fetchAPIWithAuth('/admin/channels/billing/fetch', {
       method: 'POST',
@@ -3582,12 +3584,11 @@ async function fetchSub2APIRate() {
       return;
     }
 
-    const input = document.getElementById('channelCostMultiplier');
-    if (!input) return;
+    // 写回触发行：输入框显示 + 表格数据同步（内部比对后按需标记表单脏）。
     const rateText = String(rate);
-    const currentRate = Number.parseFloat(input.value);
-    input.value = rateText;
-    if (!Number.isFinite(currentRate) || currentRate !== rate) markChannelFormDirty();
+    const input = document.querySelector(`.inline-key-multiplier-input[data-index="${keyIndex}"]`);
+    if (input) input.value = rateText;
+    updateInlineKeyCostMultiplier(keyIndex, rateText);
 
     const message = window.t('channels.fetchRateSuccess', { rate: rateText });
     if (window.showSuccess) window.showSuccess(message);
@@ -3596,7 +3597,7 @@ async function fetchSub2APIRate() {
     console.error('Fetch Sub2API rate failed', error);
     showSub2APIRateError('default');
   } finally {
-    setFetchSub2APIRatePending(false);
+    setFetchSub2APIRatePending(actionBtn, false);
   }
 }
 

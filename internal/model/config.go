@@ -471,6 +471,15 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 	return out
 }
 
+// ChannelInfo 渠道基础信息的批量查询投影（统计与渠道列表角标用）。
+// 成本倍率为区间：api_key 渠道取启用 Key 的 min/max，OAuth 渠道取渠道级倍率（min=max）。
+type ChannelInfo struct {
+	Name              string
+	Priority          int
+	CostMultiplierMin float64
+	CostMultiplierMax float64
+}
+
 // Config 渠道配置
 type Config struct {
 	ID                    int64       `json:"id"`
@@ -496,7 +505,8 @@ type Config struct {
 	// 每日成本限额
 	DailyCostLimit float64 `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
 
-	// 成本倍率：标准成本×倍率=实际计费成本，默认1
+	// 成本倍率：标准成本×倍率=实际计费成本，默认1。
+	// 仅 OAuth 渠道生效（凭证 1:1）；api_key 渠道的权威倍率在 api_keys.cost_multiplier。
 	CostMultiplier float64 `json:"cost_multiplier"`
 
 	// 自定义请求规则（nil 表示无改写）
@@ -823,6 +833,10 @@ type APIKey struct {
 
 	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
 	Disabled    bool   `json:"disabled"`
+
+	// 成本倍率：api_key 渠道的权威倍率存在每条 Key 上（OAuth 渠道仍用 Config.CostMultiplier）。
+	// 标准成本×倍率=实际计费成本，默认1，0=免费。
+	CostMultiplier float64 `json:"cost_multiplier"`
 
 	// Key级冷却（从key_cooldowns表迁移）
 	CooldownUntil      int64 `json:"cooldown_until"`

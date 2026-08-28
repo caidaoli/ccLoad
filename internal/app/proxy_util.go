@@ -175,6 +175,7 @@ type proxyRequestContext struct {
 	channelStartTime           time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
 	attemptStartTime           time.Time            // 渠道内单次 Key/URL 尝试开始时间
 	baseURL                    string               // 当前尝试使用的上游URL（多URL场景）
+	attemptCostMultiplier      float64              // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
 	debugData                  *model.DebugLogEntry // Debug日志数据（debug开启时填充）
 	skipProxyLog               bool                 // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort             string

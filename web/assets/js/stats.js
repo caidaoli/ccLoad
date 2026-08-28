@@ -341,7 +341,7 @@
       }
 
       const modelLink = `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>`;
-      return `<span class="stats-model-cell">${modelLink}${buildCornerMultiplierBadge(entry.cost_multiplier)}</span>`;
+      return `<span class="stats-model-cell">${modelLink}${buildCornerMultiplierBadge(entry.cost_multiplier_min, entry.cost_multiplier_max)}</span>`;
     }
 
     function buildStatsCostDisplay(standardCost, effectiveCost) {

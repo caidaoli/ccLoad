@@ -778,6 +778,35 @@ func backfillAuthTokensCostLimitMaxConcurrency(ctx context.Context, db *sql.DB, 
 	return nil
 }
 
+// apiKeysCostMultiplierBackfillVersion 标记 api_keys.cost_multiplier 的渠道倍率下沉已执行。
+const apiKeysCostMultiplierBackfillVersion = "v1_api_keys_cost_multiplier_backfill"
+
+// backfillAPIKeysCostMultiplier 把 api_key 渠道的 channels.cost_multiplier 一次性下沉到其全部 Key。
+// OAuth 渠道的权威倍率仍留在 channels.cost_multiplier（api_keys 表无对应记录），只回填 api_key 渠道。
+// 回填后不清空 channels.cost_multiplier：它对 api_key 渠道只是被忽略的死值，保留以支持版本回退。
+func backfillAPIKeysCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, apiKeysCostMultiplierBackfillVersion, dialect) {
+		return nil
+	}
+
+	res, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+		UPDATE api_keys
+		SET cost_multiplier = (SELECT channels.cost_multiplier FROM channels WHERE channels.id = api_keys.channel_id)
+		WHERE channel_id IN (SELECT id FROM channels WHERE auth_type = 'api_key')
+	`))
+	if err != nil {
+		return fmt.Errorf("backfill api_keys cost_multiplier from channels: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("backfill api_keys cost_multiplier rows affected: %w", err)
+	}
+	if affected > 0 {
+		log.Printf("[MIGRATE] 已将 %d 个 api_key 渠道的 Key 倍率下沉到 api_keys.cost_multiplier", affected)
+	}
+	return recordMigration(ctx, db, apiKeysCostMultiplierBackfillVersion, dialect)
+}
+
 // rebuildDebugLogsPrimaryKey 将 debug_logs 旧结构（id 自增主键 + log_id 列）
 // 迁移为新结构（log_id 作为主键）。因调试日志保留期极短（默认5分钟），
 // 直接 DROP 旧表由后续 CREATE TABLE IF NOT EXISTS 重建即可

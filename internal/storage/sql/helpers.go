@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -10,32 +11,31 @@ import (
 	"ccLoad/internal/model"
 )
 
-// ChannelInfo 渠道基本信息（用于批量查询）
-type ChannelInfo struct {
-	Name           string
-	Priority       int
-	CostMultiplier float64
-}
-
-// fetchChannelInfoBatch 批量查询渠道信息（名称+优先级+类型）
+// FetchChannelInfoBatch 批量查询渠道信息（名称+优先级+倍率区间）
 // 消除 N+1：一次全表查询 + 内存过滤
 // 设计原则（KISS）：渠道总数<1000时，全表扫描比动态 IN 子查询更简单
 // 输入：渠道ID集合 map[int64]bool
-// 输出：ID→渠道信息映射 map[int64]ChannelInfo
-func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]ChannelInfo, error) {
+// 输出：ID→渠道信息映射 map[int64]model.ChannelInfo
+func (s *SQLStore) FetchChannelInfoBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]model.ChannelInfo, error) {
 	if len(channelIDs) == 0 {
-		return make(map[int64]ChannelInfo), nil
+		return make(map[int64]model.ChannelInfo), nil
 	}
 
 	// 查询所有渠道（全表扫描，渠道数<1000时比IN子查询更快）
 	// 优势：固定SQL（查询计划缓存）、无动态参数绑定、代码简单
+	// 倍率按 auth_type 分流：OAuth 渠道取 channels.cost_multiplier；api_key 渠道取未禁用 Key 的 min/max（无启用 Key 回退渠道列）
 	rows, err := s.QueryContext(ctx, `
 		SELECT
-			id,
-			name,
-			priority,
-			COALESCE(cost_multiplier, 1)
-		FROM channels
+			c.id,
+			c.name,
+			c.priority,
+			c.auth_type,
+			COALESCE(c.cost_multiplier, 1),
+			MIN(CASE WHEN c.auth_type = 'api_key' AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END),
+			MAX(CASE WHEN c.auth_type = 'api_key' AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END)
+		FROM channels c
+		LEFT JOIN api_keys k ON k.channel_id = c.id
+		GROUP BY c.id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query all channel info: %w", err)
@@ -43,22 +43,31 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 	defer func() { _ = rows.Close() }()
 
 	// 解析并过滤需要的渠道（内存过滤，O(N)但N<1000）
-	channelInfos := make(map[int64]ChannelInfo, len(channelIDs))
+	channelInfos := make(map[int64]model.ChannelInfo, len(channelIDs))
 	for rows.Next() {
 		var id int64
 		var name string
 		var priority int
-		var costMultiplier float64
-		if err := rows.Scan(&id, &name, &priority, &costMultiplier); err != nil {
+		var authType string
+		var channelMultiplier float64
+		var keyMin, keyMax sql.NullFloat64
+		if err := rows.Scan(&id, &name, &priority, &authType, &channelMultiplier, &keyMin, &keyMax); err != nil {
 			log.Printf("[WARN] 扫描渠道信息失败: %v", err)
 			continue // 跳过扫描错误的行
 		}
+		multiplierMin := normalizeCostMultiplier(channelMultiplier)
+		multiplierMax := multiplierMin
+		if authType == model.AuthTypeAPIKey && keyMin.Valid && keyMax.Valid {
+			multiplierMin = normalizeCostMultiplier(keyMin.Float64)
+			multiplierMax = normalizeCostMultiplier(keyMax.Float64)
+		}
 		// 只保留需要的渠道
 		if channelIDs[id] {
-			channelInfos[id] = ChannelInfo{
-				Name:           name,
-				Priority:       priority,
-				CostMultiplier: normalizeCostMultiplier(costMultiplier),
+			channelInfos[id] = model.ChannelInfo{
+				Name:              name,
+				Priority:          priority,
+				CostMultiplierMin: multiplierMin,
+				CostMultiplierMax: multiplierMax,
 			}
 		}
 	}
@@ -73,7 +82,7 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 // 输入：渠道ID集合 map[int64]bool
 // 输出：ID→名称映射 map[int64]string
 func (s *SQLStore) fetchChannelNamesBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]string, error) {
-	infos, err := s.fetchChannelInfoBatch(ctx, channelIDs)
+	infos, err := s.FetchChannelInfoBatch(ctx, channelIDs)
 	if err != nil {
 		return nil, err
 	}

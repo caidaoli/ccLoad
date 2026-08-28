@@ -145,11 +145,11 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 	}
 
 	if len(channelIDsToFetch) > 0 {
-		channelInfos, err := s.fetchChannelInfoBatch(ctx, channelIDsToFetch)
+		channelInfos, err := s.FetchChannelInfoBatch(ctx, channelIDsToFetch)
 		if err != nil {
 			// 降级处理:查询失败不影响统计返回,仅记录错误
 			log.Printf("[WARN]  批量查询渠道信息失败: %v", err)
-			channelInfos = make(map[int64]ChannelInfo)
+			channelInfos = make(map[int64]model.ChannelInfo)
 		}
 
 		// 填充渠道名称、优先级和类型
@@ -158,9 +158,11 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
-					if info.CostMultiplier != 1 {
-						costMultiplier := info.CostMultiplier
-						stats[i].CostMultiplier = &costMultiplier
+					if info.CostMultiplierMin != 1 || info.CostMultiplierMax != 1 {
+						min := info.CostMultiplierMin
+						max := info.CostMultiplierMax
+						stats[i].CostMultiplierMin = &min
+						stats[i].CostMultiplierMax = &max
 					}
 				} else {
 					// 如果查询不到渠道信息,使用默认值

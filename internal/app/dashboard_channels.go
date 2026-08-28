@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -19,7 +20,8 @@ type dashboardChannelView struct {
 	Priority              int                `json:"priority"`
 	Enabled               bool               `json:"enabled"`
 	Models                []model.ModelEntry `json:"models"`
-	CostMultiplier        float64            `json:"cost_multiplier"`
+	CostMultiplierMin     float64            `json:"cost_multiplier_min"`
+	CostMultiplierMax     float64            `json:"cost_multiplier_max"`
 	CooldownRemainingMS   int64              `json:"cooldown_remaining_ms,omitempty"`
 }
 
@@ -75,8 +77,27 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 	configs = applyChannelListFilters(configs, c, channelCooldownSnapshot{channels: cooldowns}, now)
 	total := len(configs)
 	configs = paginateChannels(configs, c)
+
+	// 倍率区间批量查询（消除 N+1）；失败降级回渠道级倍率，不阻断列表
+	channelIDs := make(map[int64]bool, len(configs))
+	for _, cfg := range configs {
+		channelIDs[cfg.ID] = true
+	}
+	channelInfos, err := s.store.FetchChannelInfoBatch(c.Request.Context(), channelIDs)
+	if err != nil {
+		log.Printf("[WARN] 批量查询渠道倍率区间失败: %v", err)
+		channelInfos = make(map[int64]model.ChannelInfo)
+	}
+
 	out := make([]dashboardChannelView, 0, len(configs))
 	for _, cfg := range configs {
+		multiplierMin, multiplierMax := cfg.CostMultiplier, cfg.CostMultiplier
+		if multiplierMin < 0 {
+			multiplierMin, multiplierMax = 1, 1
+		}
+		if info, ok := channelInfos[cfg.ID]; ok {
+			multiplierMin, multiplierMax = info.CostMultiplierMin, info.CostMultiplierMax
+		}
 		view := dashboardChannelView{
 			ID:                    cfg.ID,
 			Name:                  cfg.Name,
@@ -85,7 +106,8 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 			Priority:              cfg.Priority,
 			Enabled:               cfg.Enabled,
 			Models:                append([]model.ModelEntry(nil), cfg.ModelEntries...),
-			CostMultiplier:        cfg.CostMultiplier,
+			CostMultiplierMin:     multiplierMin,
+			CostMultiplierMax:     multiplierMax,
 		}
 		if until, ok := cooldowns[cfg.ID]; ok && until.After(now) {
 			view.CooldownRemainingMS = until.Sub(now).Milliseconds()

@@ -129,8 +129,8 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			if e.ChannelName == "" || e.ChannelPriority == nil {
 				t.Fatalf("expected channel info filled, got %+v", e)
 			}
-			if e.CostMultiplier == nil || *e.CostMultiplier != 0.85 {
-				t.Fatalf("expected cost_multiplier=0.85 in stats entry, got %+v", e)
+			if e.CostMultiplierMin == nil || *e.CostMultiplierMin != 0.85 || e.CostMultiplierMax == nil || *e.CostMultiplierMax != 0.85 {
+				t.Fatalf("expected cost_multiplier range [0.85,0.85] in stats entry, got %+v", e)
 			}
 
 			encoded, err := json.Marshal(e)
@@ -141,8 +141,11 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			if err := json.Unmarshal(encoded, &payload); err != nil {
 				t.Fatalf("unmarshal stats entry failed: %v", err)
 			}
-			if got, ok := payload["cost_multiplier"].(float64); !ok || got != 0.85 {
-				t.Fatalf("expected cost_multiplier=0.85 in stats payload, got %+v", payload)
+			if got, ok := payload["cost_multiplier_min"].(float64); !ok || got != 0.85 {
+				t.Fatalf("expected cost_multiplier_min=0.85 in stats payload, got %+v", payload)
+			}
+			if got, ok := payload["cost_multiplier_max"].(float64); !ok || got != 0.85 {
+				t.Fatalf("expected cost_multiplier_max=0.85 in stats payload, got %+v", payload)
 			}
 		}
 	}
@@ -866,11 +869,11 @@ func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 	if len(stats) != 1 {
 		t.Fatalf("GetStats len=%d, want 1", len(stats))
 	}
-	if stats[0].CostMultiplier == nil {
-		t.Fatalf("expected cost_multiplier=0, got nil")
+	if stats[0].CostMultiplierMin == nil || stats[0].CostMultiplierMax == nil {
+		t.Fatalf("expected cost_multiplier range [0,0], got min=%v max=%v", stats[0].CostMultiplierMin, stats[0].CostMultiplierMax)
 	}
-	if *stats[0].CostMultiplier != 0 {
-		t.Fatalf("expected cost_multiplier=0, got %v", *stats[0].CostMultiplier)
+	if *stats[0].CostMultiplierMin != 0 || *stats[0].CostMultiplierMax != 0 {
+		t.Fatalf("expected cost_multiplier range [0,0], got [%v,%v]", *stats[0].CostMultiplierMin, *stats[0].CostMultiplierMax)
 	}
 	if stats[0].EffectiveCost == nil {
 		t.Fatalf("expected effective_cost=0, got nil")
