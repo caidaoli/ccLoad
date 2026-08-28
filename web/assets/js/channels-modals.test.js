@@ -2210,3 +2210,99 @@ test('渠道保存载荷仅在 API Key 渠道携带 management_account，且绝�
     else delete global.window;
   }
 });
+
+test('multi-Key channel asks for confirmation even when a single Key changed', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  const prompts = [];
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    value: {
+      t: (key, params) => `${key}:${params?.count ?? ''}`,
+      confirm: message => { prompts.push(message); return true; }
+    }
+  });
+  try {
+    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
+    assert.equal(fetchedKeyModelApplyAccepted(1), true);
+    assert.deepEqual(prompts, ['channels.applyFetchedKeyModelsConfirm:1']);
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});
+
+test('multi Key model scope detection asks for confirmation with the changed count', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  const prompts = [];
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    value: {
+      t: (key, params) => `${key}:${params?.count ?? ''}`,
+      confirm: message => { prompts.push(message); return true; }
+    }
+  });
+  try {
+    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
+    assert.equal(fetchedKeyModelApplyAccepted(2), true);
+    assert.deepEqual(prompts, ['channels.applyFetchedKeyModelsConfirm:2']);
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});
+
+test('multi Key model scope detection respects a declined confirm prompt', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    value: {
+      t: key => key,
+      confirm: () => false
+    }
+  });
+  try {
+    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
+    assert.equal(fetchedKeyModelApplyAccepted(2), false);
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});
+
+test('multi Key model scope detection never applies without a confirm function', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    value: { t: key => key }
+  });
+  try {
+    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
+    assert.equal(fetchedKeyModelApplyAccepted(2), false);
+    assert.equal(fetchedKeyModelApplyAccepted(1), false, '多 Key 渠道无 confirm 时单个 Key 变更也不应用');
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});
+
+test('single-Key channel never applies fetched Key model scopes', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  let confirmCalls = 0;
+  Object.defineProperty(global, 'window', {
+    configurable: true,
+    value: {
+      t: key => key,
+      confirm: () => { confirmCalls++; return true; }
+    }
+  });
+  try {
+    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
+    // 单 Key 渠道没有分流需求,不应把模型范围写进唯一 Key,也不弹确认框
+    assert.equal(fetchedKeyModelApplyAccepted(1, true), false);
+    assert.equal(fetchedKeyModelApplyAccepted(2, true), false);
+    assert.equal(confirmCalls, 0);
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+  }
+});

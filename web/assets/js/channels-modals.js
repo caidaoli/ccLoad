@@ -3375,6 +3375,13 @@ function initQuickAddChannelModalEvents() {
   modal.dataset.bound = '1';
 }
 
+// 单 Key 渠道不把模型范围写到 Key 上——唯一 Key 没有分流需求,限制只会误伤;多 Key 渠道一律弹确认框,确认后才应用。
+function fetchedKeyModelApplyAccepted(changedCount, isSingleKeyChannel) {
+  if (isSingleKeyChannel) return false;
+  return typeof window.confirm === 'function' &&
+    window.confirm(window.t('channels.applyFetchedKeyModelsConfirm', { count: changedCount }));
+}
+
 async function fetchModelsFromAPI() {
   let endpoint;
   let fetchOptions;
@@ -3470,8 +3477,7 @@ async function fetchModelsFromAPI() {
         keyModels.length === modelFetchEntries.length &&
         scopeProposal.complete;
       const shouldApply = completeScopeDetection && scopeProposal.changedCount > 0 &&
-        typeof window.confirm === 'function' &&
-        window.confirm(window.t('channels.applyFetchedKeyModelsConfirm', { count: scopeProposal.changedCount }));
+        fetchedKeyModelApplyAccepted(scopeProposal.changedCount, countConfiguredInlineKeys(getInlineKeyRows()) === 1);
       if (shouldApply && scopeProposal.changedCount > 0) {
         inlineKeyTableData = scopeProposal.rows;
         renderInlineKeyTable();
@@ -3769,6 +3775,7 @@ function confirmCommonModelsSelection() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     addCommonModels,
+    fetchedKeyModelApplyAccepted,
     addCommonModelsToRows,
     applyChannelManagementPayload,
     applyQuickAddChannelSetup,
