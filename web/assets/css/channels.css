@@ -1722,7 +1722,7 @@
 
     .channel-table thead th {
       height: 44px;
-      padding: 8px 10px;
+      padding: 8px 5px;
       white-space: nowrap;
       user-select: none;
       text-align: center;
@@ -1734,7 +1734,7 @@
     }
 
     .channel-table td {
-      padding: 6px 10px;
+      padding: 6px 5px;
       color: var(--neutral-800);
       border-bottom: 1px solid var(--surface-border);
     }
@@ -1748,9 +1748,9 @@
     }
 
     .channel-table .ch-col-enabled {
-      width: 76px;
-      min-width: 76px;
-      max-width: 76px;
+      width: 66px;
+      min-width: 66px;
+      max-width: 66px;
       white-space: nowrap;
       text-align: center;
     }
@@ -1784,35 +1784,35 @@
 
     /* 列宽定义 */
     .ch-col-checkbox {
-      width: 32px;
-      min-width: 32px;
-      max-width: 32px;
+      width: 22px;
+      min-width: 22px;
+      max-width: 22px;
       text-align: center;
       box-sizing: border-box;
     }
 
     .ch-col-name {
-      width: 360px;
-      min-width: 360px;
-      max-width: 360px;
+      width: 350px;
+      min-width: 350px;
+      max-width: 350px;
     }
 
     .ch-col-models {
-      width: 132px;
-      min-width: 132px;
-      max-width: 132px;
+      width: 122px;
+      min-width: 122px;
+      max-width: 122px;
     }
 
     @media (min-width: 1536px) {
       html[lang^="zh"] .channel-table .ch-col-name {
-        width: 432px;
-        min-width: 432px;
-        max-width: 432px;
+        width: 422px;
+        min-width: 422px;
+        max-width: 422px;
       }
 
       html[lang^="zh"] .channel-table .ch-col-models {
         width: auto;
-        min-width: 212px;
+        min-width: 202px;
         max-width: none;
       }
     }
@@ -1828,9 +1828,9 @@
     }
 
     .ch-col-priority {
-      width: 76px;
-      min-width: 76px;
-      max-width: 76px;
+      width: 66px;
+      min-width: 66px;
+      max-width: 66px;
       white-space: normal;
       text-align: center;
     }
@@ -1967,40 +1967,40 @@
     }
 
     .ch-col-duration {
-      width: 144px;
-      min-width: 144px;
-      max-width: 144px;
+      width: 134px;
+      min-width: 134px;
+      max-width: 134px;
       white-space: normal;
       text-align: center;
     }
 
     .ch-col-usage {
-      width: 120px;
-      min-width: 120px;
-      max-width: 120px;
+      width: 110px;
+      min-width: 110px;
+      max-width: 110px;
       line-height: 1.35;
       text-align: center;
     }
 
     .ch-col-cost {
-      width: 70px;
-      min-width: 70px;
-      max-width: 70px;
+      width: 60px;
+      min-width: 60px;
+      max-width: 60px;
       white-space: nowrap;
       text-align: center;
     }
 
     .ch-col-last-success {
-      width: 212px;
-      min-width: 212px;
-      max-width: 212px;
+      width: 302px;
+      min-width: 302px;
+      max-width: 302px;
       white-space: normal;
       text-align: center;
     }
 
     @media (min-width: 769px) {
       .channel-table td.ch-col-last-success {
-        padding-inline: 6px;
+        padding-inline: 5px;
       }
 
       .channel-table .ch-runtime-status {
@@ -2155,13 +2155,30 @@
     }
 
     .ch-oauth-usage__meta {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
+      display: flex;
       align-items: baseline;
-      gap: 4px;
+      justify-content: space-between;
+      gap: 8px;
       min-width: 0;
       font-size: 9px;
       line-height: 1.2;
+    }
+
+    .ch-oauth-usage__summary {
+      position: relative;
+      display: flex;
+      flex: 1 1 100%;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      border-radius: 3px;
+      outline: none;
+    }
+
+    .ch-oauth-usage__summary:focus-visible {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
     }
 
     .ch-oauth-usage__label {
@@ -2174,10 +2191,12 @@
 
     .ch-oauth-usage__heading {
       display: flex;
-      flex-wrap: wrap;
+      flex: 1 1 auto;
       align-items: baseline;
-      gap: 2px 4px;
+      gap: 4px;
       min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
     }
 
     .ch-oauth-usage__heading .ch-oauth-usage__label {
@@ -2195,12 +2214,12 @@
     }
 
     .ch-oauth-usage__details {
-      grid-column: 2 / -1;
       display: flex;
+      flex: 0 0 auto;
       flex-wrap: wrap;
       align-items: baseline;
       justify-content: flex-end;
-      gap: 2px;
+      gap: 8px;
       min-width: 0;
       text-align: end;
     }
@@ -2214,6 +2233,48 @@
     .ch-oauth-usage__reset {
       color: var(--neutral-500);
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .ch-oauth-usage__tooltip {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 7px);
+      right: 0;
+      display: grid;
+      gap: 4px;
+      min-width: 220px;
+      max-width: min(320px, calc(100vw - 32px));
+      padding: 8px 10px;
+      overflow: hidden;
+      border: 1px solid var(--surface-border);
+      border-radius: 7px;
+      background: var(--surface-bg-strong);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+      color: var(--neutral-800);
+      font-size: 10px;
+      line-height: 1.35;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-2px);
+      transition-property: opacity, transform;
+      transition-duration: 120ms;
+      transition-timing-function: ease-out;
+    }
+
+    .ch-oauth-usage__summary:hover .ch-oauth-usage__tooltip,
+    .ch-oauth-usage__summary:focus-visible .ch-oauth-usage__tooltip {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+
+    .ch-oauth-usage__tooltip-line:first-child {
+      color: var(--neutral-900);
+      font-weight: 700;
+    }
+
+    .ch-oauth-usage__tooltip-line {
       white-space: nowrap;
     }
 
@@ -2595,9 +2656,9 @@
     }
 
     .ch-col-actions {
-      width: 136px;
-      min-width: 136px;
-      max-width: 136px;
+      width: 126px;
+      min-width: 126px;
+      max-width: 126px;
       position: relative;
       white-space: nowrap;
       text-align: right;

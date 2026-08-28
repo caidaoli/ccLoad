@@ -552,6 +552,19 @@ function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   return `$${(microUSD / 1_000_000).toFixed(1)}`;
 }
 
+function formatOAuthEstimatedTotalCost(standardCostMicroUSD, remainingPercent) {
+  const microUSD = Number(standardCostMicroUSD);
+  const remaining = Number(remainingPercent);
+  if (!Number.isFinite(microUSD) || microUSD < 0 || !Number.isFinite(remaining) || remaining >= 100) {
+    return '';
+  }
+  const usedRatio = 1 - Math.min(100, Math.max(0, remaining)) / 100;
+  if (usedRatio <= 0) return '';
+  const estimatedMicroUSD = microUSD / usedRatio;
+  if (!Number.isFinite(estimatedMicroUSD) || estimatedMicroUSD < 0) return '';
+  return `$${(estimatedMicroUSD / 1_000_000).toFixed(1)}`;
+}
+
 // 累计成本按上游窗口标识（limit_name|kind）取用：同一时长可能对应多个互不相干的窗口。
 function oauthAccumulatedCostByKey(quotaCostUsage, key) {
   const windows = Array.isArray(quotaCostUsage?.windows) ? quotaCostUsage.windows : [];
@@ -865,7 +878,7 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
   const displayedWindows = isCursor ? orderCursorUsageWindows(windows) : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map(windowInfo => {
+  const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -877,16 +890,40 @@ function buildOAuthUsageStatusHtml(channel) {
       : duration;
     const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
     const accumulatedCost = formatOAuthAccumulatedCost(windowInfo?.standard_cost_microusd);
+    const estimatedTotalCost = formatOAuthEstimatedTotalCost(windowInfo?.standard_cost_microusd, remaining);
+    const compactAmount = accumulatedCost && estimatedTotalCost
+      ? window.t('channels.oauth.usageCompactAmount', { used: accumulatedCost, estimated: estimatedTotalCost })
+      : accumulatedCost
+        ? window.t('channels.oauth.usageCompactUsed', { used: accumulatedCost })
+        : '';
+    const compactRemaining = window.t('channels.oauth.usageCompactRemaining', { percent });
+    const detailAmount = accumulatedCost && estimatedTotalCost
+      ? window.t('channels.oauth.usageDetailAmount', { used: accumulatedCost, estimated: estimatedTotalCost })
+      : accumulatedCost
+        ? window.t('channels.oauth.usageDetailUsed', { used: accumulatedCost })
+        : '';
+    const detailLines = [
+      label,
+      detailAmount,
+      window.t('channels.oauth.usageDetailRemaining', { percent }),
+      resetAt ? window.t('channels.oauth.usageReset', { time: resetAt }) : ''
+    ].filter(Boolean);
+    const tooltipID = `ch-oauth-usage-tooltip-${String(channel.id).replace(/[^a-zA-Z0-9_-]/g, '')}-${windowIndex}`;
     const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });
     return `<div class="ch-oauth-usage__window">
       <div class="ch-oauth-usage__meta">
-        <span class="ch-oauth-usage__heading">
-          <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
-          ${accumulatedCost ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(accumulatedCost)}</span>` : ''}
-        </span>
-        <span class="ch-oauth-usage__details">
-          <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percentWithSymbol)}</span>
-          ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+        <span class="ch-oauth-usage__summary" tabindex="0" aria-describedby="${escapeChannelRefreshText(tooltipID)}">
+          <span class="ch-oauth-usage__heading">
+            <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
+            ${compactAmount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(compactAmount)}</span>` : ''}
+          </span>
+          <span class="ch-oauth-usage__details">
+            <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(compactRemaining)}</span>
+            ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+          </span>
+          <span id="${escapeChannelRefreshText(tooltipID)}" class="ch-oauth-usage__tooltip" role="tooltip">
+            ${detailLines.map(line => `<span class="ch-oauth-usage__tooltip-line">${escapeChannelRefreshText(line)}</span>`).join('')}
+          </span>
         </span>
       </div>
       <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">

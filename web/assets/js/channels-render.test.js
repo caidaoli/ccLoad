@@ -105,6 +105,12 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         'channels.oauth.usageRefresh': '刷新额度',
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageCompactAmount': `${values.used}/${values.estimated}`,
+        'channels.oauth.usageCompactUsed': `${values.used}`,
+        'channels.oauth.usageCompactRemaining': `${values.percent}%`,
+        'channels.oauth.usageDetailAmount': `已用 ${values.used} / 预估总额 ${values.estimated}`,
+        'channels.oauth.usageDetailUsed': `已用 ${values.used}`,
+        'channels.oauth.usageDetailRemaining': `剩余 ${values.percent}%`,
         'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
         'channels.oauth.resetCreditExpiresEarliest': `改期 ${values.time}`,
         'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
@@ -358,7 +364,13 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageHours': `${values.count}小时额度`,
         'channels.oauth.usageLabel': `${values.name}${values.duration}`,
-        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageCompactAmount': `${values.used}/${values.estimated}`,
+        'channels.oauth.usageCompactUsed': `${values.used}`,
+        'channels.oauth.usageCompactRemaining': `${values.percent}%`,
+        'channels.oauth.usageDetailAmount': `已用 ${values.used} / 预估总额 ${values.estimated}`,
+        'channels.oauth.usageDetailUsed': `已用 ${values.used}`,
+        'channels.oauth.usageDetailRemaining': `剩余 ${values.percent}%`
       })[key] || key;
     }
   };
@@ -394,7 +406,7 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
     assert.match(html, /Gemini5小时额度[\s\S]*?\$0\.1/);
     assert.match(html, /Claude周额度[\s\S]*?\$0\.0/);
     assert.match(html, /Claude5小时额度[\s\S]*?\$0\.0/);
-    assert.equal(html.match(/\$0\.3/g).length, 1);
+    assert.match(html, /ch-oauth-usage__tooltip-line">已用 \$0\.3 \/ 预估总额/);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;
