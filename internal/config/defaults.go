@@ -64,11 +64,13 @@ const (
 	DefaultAntigravitySensitiveWordsJSON = `["API","proxy","Claude","Anthropic"]`
 )
 
-// Responses WebSocket 资源默认值。
+// Responses WebSocket 资源默认值。连接与会话默认按 ~500 并发客户端留量：
+// 连接数对应挂着的物理 socket（Codex 客户端一人可开多条），会话数对应
+// Thread 身份并含 TTL 尾驻留，两者都只约束真实存在的资源，不预分配。
 const (
-	DefaultResponsesWebsocketMaxConnections         = 128
+	DefaultResponsesWebsocketMaxConnections         = 1024
 	DefaultResponsesWebsocketMaxConnectionsPerToken = 64
-	DefaultResponsesWebsocketMaxSessions            = 256
+	DefaultResponsesWebsocketMaxSessions            = 1024
 	DefaultResponsesWebsocketSessionTTLMinutes      = 15
 	DefaultResponsesWebsocketMaxTranscriptBytes     = 256 * 1024 * 1024 // 256 MiB
 )

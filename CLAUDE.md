@@ -61,7 +61,7 @@ www/                 独立介绍站(`make www-setup` 复制共享资源后可�
 ## Responses WebSocket 会话与资源
 
 - **执行身份**:同 Token 下以 `Session-Id` 标识顶层会话;存在 `Thread-Id` 时组合两者,隔离 Codex 主/子代理的 transcript、Response ID、turn lock;无 `Thread-Id` 回退原 `Session-Id` 契约。禁止改用请求体 `session_id`、`prompt_cache_key` 或每回合变化的 request/turn/window ID
-- **默认限制**(新安装):下游连接全局 128、单 Token 64;执行会话 256;transcript payload 总预算 256 MiB。所有 `responses_ws_*` 整数配置保存 `0` 用内建默认,负数非法;已有数据库记录不迁移
+- **默认限制**(新安装):下游连接全局 1024、单 Token 64;执行会话 1024;transcript payload 总预算 256 MiB。连接与会话默认按 ~500 并发客户端留量,限额只约束真实存在的资源、不预分配。所有 `responses_ws_*` 整数配置保存 `0` 用内建默认,负数非法;已有数据库记录不迁移
 - **生命周期**:上游每 45s 发 Ping,连续 5 min 无帧/Pong 判失活;下游全断满 5 min 后由每分钟清理器关上游物理连接(实际约 5–6 min);稳定逻辑会话与已提交 transcript 在 `responses_ws_session_ttl_minutes`(默认 15,小内存机器可设 10)到期前不因容量/预算压力被逐出
 - **超限语义**:达 `responses_ws_max_sessions` 只拒绝新会话身份;已提交 payload 超 `responses_ws_max_transcript_bytes` 后,所有新回合在触达上游前以 `429/rate_limit_error/rate_limit` 拒绝,已准入回合仍可提交,有限最坏超量 `max_sessions × max_body_bytes`
 - **连接轮换**:达到 `upstream_connection_reuse_limit_seconds` 的空闲连接立即关闭,在途 turn 完成后再关;下一轮优先原渠道/Key/URL,按需重连并重放完整 transcript——Response ID 只在原物理 WebSocket 上有效
