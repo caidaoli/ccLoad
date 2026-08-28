@@ -208,6 +208,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysModelScopeEmpty(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys model_scope_empty: %w", err)
 			}
+			if err := ensureAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys cost_multiplier: %w", err)
+			}
+			// 一次性回填：api_key 渠道的倍率从 channels.cost_multiplier 下沉到每条 Key
+			if err := backfillAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
+				return fmt.Errorf("backfill api_keys cost_multiplier: %w", err)
+			}
 		}
 
 		// 增量迁移：确保auth_tokens表有缓存token字段（2025-12新增）

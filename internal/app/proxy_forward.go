@@ -3261,6 +3261,16 @@ func selectPinnedCodexWebsocketKey(
 	return 0, "", false
 }
 
+// keyByIndex 在 Key 切片中按语义索引（APIKey.KeyIndex）定位，未找到返回 nil。
+func keyByIndex(apiKeys []*model.APIKey, keyIndex int) *model.APIKey {
+	for _, apiKey := range apiKeys {
+		if apiKey != nil && apiKey.KeyIndex == keyIndex {
+			return apiKey
+		}
+	}
+	return nil
+}
+
 func filterAPIKeysForModel(apiKeys []*model.APIKey, modelName string) ([]*model.APIKey, bool) {
 	if modelName == "" || modelName == "*" {
 		return apiKeys, false
@@ -3371,7 +3381,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			APIKey:           selectedKey,
 			TokenID:          reqCtx.tokenID,
 			BaseURL:          attemptBaseURL,
-			CostMultiplier:   cfg.CostMultiplier,
+			CostMultiplier:   reqCtx.attemptCostMultiplier,
 			ThinkingEffort:   reqCtx.thinkingEffort,
 			Abort:            cancelAttempt,
 		})
@@ -3573,6 +3583,8 @@ func prioritizePinnedCodexWebsocketURL(
 
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
+	// 倍率默认取渠道级：OAuth 凭证 1:1，渠道级即权威；api_key 渠道稍后按选中 Key 覆盖。
+	reqCtx.attemptCostMultiplier = cfg.CostMultiplier
 
 	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -3657,6 +3669,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 标记Key为已尝试
 		triedKeys[keyIndex] = true
+		// 倍率取选中 Key 的权威值，日志快照与 Token 计费随本次 attempt 走。
+		// keyIndex 是 Key 的语义索引（APIKey.KeyIndex），apiKeys 可能已被模型白名单过滤，需按索引定位。
+		if attemptKey := keyByIndex(apiKeys, keyIndex); attemptKey != nil {
+			reqCtx.attemptCostMultiplier = attemptKey.CostMultiplier
+		}
 
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(

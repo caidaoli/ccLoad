@@ -123,6 +123,74 @@ func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
 	}
 }
 
+func TestProxy_APIKeyCostMultiplierSnapshotsPerKeyInLogs(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	urls := channelURLsForTest(upstream.URL)
+	for urlIndex := range urls {
+		urls[urlIndex].Protocols = []string{util.ProtocolOpenAI}
+	}
+	cfg := &model.Config{
+		Name:                  "key-multiplier-log-snapshot",
+		AuthType:              model.AuthTypeAPIKey,
+		URLs:                  urls,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		Priority:              100,
+		Enabled:               true,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-multiplier-test"}},
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	// round_robin 让两次串行请求各命中一把 Key，各自把倍率快照进日志。
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-low", KeyStrategy: model.KeyStrategyRoundRobin, CostMultiplier: 0.5},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-high", KeyStrategy: model.KeyStrategyRoundRobin, CostMultiplier: 2.0},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	injectAPIToken(srv.authService, "test-api-key", 0, 1)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+
+	for range 2 {
+		response := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
+			"model":    "gpt-multiplier-test",
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	// 日志是批量异步落库，等待一个完整刷新周期。
+	time.Sleep(config.LogBatchTimeout + 250*time.Millisecond)
+
+	logs, err := srv.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{Model: "gpt-multiplier-test"})
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("log count=%d, want 2", len(logs))
+	}
+	got := make(map[float64]bool, len(logs))
+	for _, logEntry := range logs {
+		got[logEntry.CostMultiplier] = true
+	}
+	if !got[0.5] || !got[2.0] {
+		t.Fatalf("snapshotted multipliers=%v, want both 0.5 and 2.0", got)
+	}
+}
+
 func TestProxy_NonResponsesGenerateFieldIsPreserved(t *testing.T) {
 	requestBody := make(chan []byte, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1604,19 +1604,6 @@
       gap: 6px;
     }
 
-    .channel-editor-rate-input {
-      min-width: 0;
-    }
-
-    .channel-editor-rate-input .form-input {
-      flex: 1 1 64px;
-    }
-
-    .channel-editor-rate-fetch-btn {
-      flex: 0 0 auto;
-      white-space: nowrap;
-    }
-
     .channel-editor-footer-actions {
       margin-left: auto;
       display: flex;

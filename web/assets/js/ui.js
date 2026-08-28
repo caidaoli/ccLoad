@@ -1435,11 +1435,20 @@ window.WebAuth = window.WebAuth || {
 
   /**
    * 构建单元格右上角倍率角标
-   * @param {number} multiplier - 倍率
+   * @param {number} multiplierMin - 倍率区间下限
+   * @param {number} multiplierMax - 倍率区间上限（缺省或等于下限时按单值显示）
    * @returns {string}
    */
-  function buildCornerMultiplierBadge(multiplier) {
-    const text = formatCostMultiplier(multiplier);
+  function buildCornerMultiplierBadge(multiplierMin, multiplierMax) {
+    const lo = Number(multiplierMin);
+    if (!Number.isFinite(lo)) return '';
+    const hi = Number(multiplierMax);
+    let text;
+    if (Number.isFinite(hi) && Math.abs(hi - lo) >= 1e-9) {
+      text = `${formatCostMultiplier(lo)}–${formatCostMultiplier(hi)}`;
+    } else {
+      text = formatCostMultiplier(lo);
+    }
     if (!text) return '';
     return `<sup class="cell-multiplier-badge">${text}</sup>`;
   }

@@ -71,9 +71,13 @@ test('inline Key rows preserve and normalize model scopes', () => {
   }), {
     api_key: 'sk-test',
     note: 'primary',
-    allowed_models: ['GPT-5', 'Claude-4']
+    allowed_models: ['GPT-5', 'Claude-4'],
+    cost_multiplier: 1
   });
   assert.deepEqual(normalizeInlineKeyRow('legacy-key').allowed_models, []);
+  assert.equal(normalizeInlineKeyRow({ api_key: 'sk-free', cost_multiplier: 0 }).cost_multiplier, 0);
+  assert.equal(normalizeInlineKeyRow({ api_key: 'sk-bad', cost_multiplier: -3 }).cost_multiplier, 1);
+  assert.equal(normalizeInlineKeyRow({ api_key: 'sk-nan', cost_multiplier: 'abc' }).cost_multiplier, 1);
   assert.deepEqual(selectModelsForInlineKeyTest(
     { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
     [{ model: '*', disabled: false }]
@@ -87,20 +91,20 @@ test('removing configured models prunes every restricted Key scope', () => {
   ];
 
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: 'gpt-5' }]), [
-    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'] },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'], cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: '*' }]), [
-    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'] },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'], cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(
     [{ api_key: 'sk-thinking', allowed_models: ['gpt-5'] }],
     [{ model: 'gpt-5(max)' }]
-  ), [{ api_key: 'sk-thinking', note: '', allowed_models: ['gpt-5'] }]);
+  ), [{ api_key: 'sk-thinking', note: '', allowed_models: ['gpt-5'], cost_multiplier: 1 }]);
   assert.deepEqual(pruneKeyAllowedModels(rows, []), [
-    { api_key: 'sk-primary', note: '', allowed_models: [], model_scope_empty: true },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [] }
+    { api_key: 'sk-primary', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
   ]);
 });
 
@@ -133,7 +137,8 @@ test('single and batch model deletion use the same Key scope reconciliation', ()
       api_key: 'sk-scoped',
       note: '',
       allowed_models: [],
-      model_scope_empty: true
+      model_scope_empty: true,
+      cost_multiplier: 1
     }]);
     assert.deepEqual([...global.selectedModelIndices], []);
   } finally {
@@ -541,19 +546,20 @@ function installBatchProtocolModeGlobals(response) {
   };
 }
 
-function installFetchSub2APIRateGlobals({ response, rows, states }) {
+function installFetchSub2APIRateGlobals({ response, rows }) {
   const requests = [];
   const notifications = [];
+  const updateCalls = [];
   let dirty = false;
-  const elements = {
-    channelCostMultiplier: { value: '0.5' },
-    fetchSub2APIRateBtn: {
+  const makeButton = () => {
+    const label = { textContent: '' };
+    return {
       disabled: false,
       attributes: new Map(),
       setAttribute(name, value) { this.attributes.set(name, value); },
-      removeAttribute(name) { this.attributes.delete(name); }
-    },
-    fetchSub2APIRateLabel: { textContent: '' }
+      removeAttribute(name) { this.attributes.delete(name); },
+      querySelector: () => label
+    };
   };
   const globals = {
     window: {
@@ -562,13 +568,14 @@ function installFetchSub2APIRateGlobals({ response, rows, states }) {
       showError: message => notifications.push({ type: 'error', message })
     },
     document: {
-      getElementById: id => elements[id] || null,
       querySelector: () => null
     },
     getValidInlineURLConfigs: () => [{ url: 'https://sub2api.test/v1', exact: false, protocols: ['openai'] }],
-    getInlineKeyRows: () => rows,
-    currentChannelKeyCooldowns: states,
-    selectFirstEnabledInlineKey,
+    getInlineKeyValue: i => (rows[i]?.api_key || ''),
+    updateInlineKeyCostMultiplier: (index, value) => {
+      updateCalls.push({ index, value });
+      dirty = true;
+    },
     fetchAPIWithAuth: async (url, options) => {
       requests.push({ url, options });
       return response;
@@ -583,9 +590,10 @@ function installFetchSub2APIRateGlobals({ response, rows, states }) {
     Object.defineProperty(global, name, { configurable: true, writable: true, value });
   }
   return {
-    elements,
     notifications,
     requests,
+    updateCalls,
+    makeButton,
     get dirty() { return dirty; },
     restore() {
       for (const [name, descriptor] of previous) {
@@ -647,6 +655,7 @@ function installEditChannelGlobals(channel, {
         '#inlineUrlTableBody'
       ].includes(selector) ? null : makeElement()
     },
+    normalizeInlineKeyRow,
     channels: [],
     editingChannelId: null,
     editingChannelAuthType: 'api_key',
@@ -1037,7 +1046,7 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
     fixture.getElement('channelEnabled').checked = true;
     for (const id of [
       'channelPriority', 'channelRPMLimit', 'channelMaxConcurrency', 'channelDailyCostLimit',
-      'channelCostMultiplier', 'channelScheduledCheckModel', 'channelProxyURL'
+      'channelScheduledCheckModel', 'channelProxyURL'
     ]) fixture.getElement(id).value = '0';
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
     setGlobal('getValidInlineKeyRows', () => [{ api_key: 'must-not-submit', note: 'secret' }]);
@@ -1056,6 +1065,54 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
     assert.equal(submitted.access_token, undefined);
     assert.equal(submitted.refresh_token, undefined);
     assert.equal(submitted.id_token, undefined);
+  } finally {
+    for (const [key, descriptor] of extraGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+    fixture.restore();
+  }
+});
+
+test('saving an OAuth editor submits the multiplier through the synthetic key row', async () => {
+  const channel = {
+    id: 79,
+    name: 'anth-oauth-save',
+    auth_type: 'anthropic_oauth',
+    urls: [{ url: 'https://api.anthropic.com', exact: false, protocols: ['anthropic'] }],
+    models: [],
+    enabled: true,
+    protocol_transform_mode: 'local'
+  };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  const extraGlobals = new Map();
+  const setGlobal = (key, value) => {
+    extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  let submitted;
+
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    global.inlineKeyTableData = [{ api_key: 'sk-ant-masked-credential', cost_multiplier: 3 }];
+    global.redirectTableData.push({ model: 'claude-sonnet-5', redirect_model: '' });
+    fixture.getElement('channelName').value = channel.name;
+    fixture.getElement('channelApiKey').value = '';
+    fixture.getElement('protocolTransformModeValue').value = 'local';
+    fixture.getElement('channelEnabled').checked = true;
+    setGlobal('getValidInlineURLConfigs', () => channel.urls);
+    setGlobal('getValidInlineKeyRows', () => []);
+    setGlobal('fetchAPIWithAuth', async (_url, options) => {
+      submitted = JSON.parse(options.body);
+      return { success: false, error: 'captured' };
+    });
+
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.auth_type, 'anthropic_oauth');
+    assert.deepEqual(submitted.api_keys, [{ api_key: 'sk-ant-masked-credential', cost_multiplier: 3 }]);
+    assert.equal(submitted.cost_multiplier, undefined);
+    assert.equal(submitted.key_strategy, undefined);
   } finally {
     for (const [key, descriptor] of extraGlobals) {
       if (descriptor === undefined) delete global[key];
@@ -1093,12 +1150,12 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
     fixture.getElement('channelEnabled').checked = true;
     for (const id of [
       'channelPriority', 'channelRPMLimit', 'channelMaxConcurrency', 'channelDailyCostLimit',
-      'channelCostMultiplier', 'channelScheduledCheckModel', 'channelProxyURL'
+      'channelScheduledCheckModel', 'channelProxyURL'
     ]) fixture.getElement(id).value = '0';
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
     setGlobal('getValidInlineKeyRows', () => [
-      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'] },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true }
+      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 }
     ]);
     setGlobal('fetchAPIWithAuth', async (_url, options) => {
       submitted = JSON.parse(options.body);
@@ -1107,8 +1164,8 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
 
     await saveChannel({ preventDefault() {} });
 	assert.deepEqual(submitted.api_keys, [
-		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true }
+		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 }
     ]);
   } finally {
     for (const [key, descriptor] of extraGlobals) {
@@ -1514,19 +1571,16 @@ test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async (
   assert.equal(shownError, 'channels.addAtLeastOneEnabledKey');
 });
 
-test('fetchSub2APIRate writes the effective multiplier from the first enabled key', async () => {
+test('fetchSub2APIRate writes the effective multiplier into the triggering key row', async () => {
   const fixture = installFetchSub2APIRateGlobals({
     response: { success: true, data: { effective_rate_multiplier: 1.2 } },
-    rows: [{ api_key: 'disabled-key' }, { api_key: 'enabled-key' }],
-    states: [
-      { key_index: 0, disabled: true },
-      { key_index: 1, disabled: false }
-    ]
+    rows: [{ api_key: 'enabled-key' }]
   });
 
   try {
     const { fetchSub2APIRate } = loadChannelsModals();
-    await fetchSub2APIRate();
+    const actionBtn = fixture.makeButton();
+    await fetchSub2APIRate(0, actionBtn);
 
     assert.equal(fixture.requests.length, 1);
     assert.equal(fixture.requests[0].url, '/admin/channels/billing/fetch');
@@ -1534,8 +1588,8 @@ test('fetchSub2APIRate writes the effective multiplier from the first enabled ke
       base_url: 'https://sub2api.test/v1',
       api_key: 'enabled-key'
     });
-    assert.equal(fixture.elements.channelCostMultiplier.value, '1.2');
-    assert.equal(fixture.elements.fetchSub2APIRateBtn.disabled, false);
+    assert.deepEqual(fixture.updateCalls, [{ index: 0, value: '1.2' }]);
+    assert.equal(actionBtn.disabled, false);
     assert.equal(fixture.dirty, true);
     assert.deepEqual(fixture.notifications, [{
       type: 'success',
@@ -1546,18 +1600,18 @@ test('fetchSub2APIRate writes the effective multiplier from the first enabled ke
   }
 });
 
-test('fetchSub2APIRate preserves the input and maps authentication failures', async () => {
+test('fetchSub2APIRate maps authentication failures without touching the row', async () => {
   const fixture = installFetchSub2APIRateGlobals({
     response: { success: false, data: { code: 'authentication_error' } },
-    rows: [{ api_key: 'invalid-key' }],
-    states: [{ key_index: 0, disabled: false }]
+    rows: [{ api_key: 'invalid-key' }]
   });
 
   try {
     const { fetchSub2APIRate } = loadChannelsModals();
-    await fetchSub2APIRate();
+    const actionBtn = fixture.makeButton();
+    await fetchSub2APIRate(0, actionBtn);
 
-    assert.equal(fixture.elements.channelCostMultiplier.value, '0.5');
+    assert.equal(fixture.updateCalls.length, 0);
     assert.equal(fixture.dirty, false);
     assert.deepEqual(fixture.notifications, [{
       type: 'error',

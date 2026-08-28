@@ -250,7 +250,7 @@ func buildProxyLogEntry(
 		ErrMsg:           errMsg,
 		StartTime:        reqCtx.attemptStartTime,
 		DebugData:        reqCtx.debugData,
-		CostMultiplier:   cfg.CostMultiplier,
+		CostMultiplier:   reqCtx.attemptCostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
 }
@@ -270,7 +270,7 @@ func (s *Server) updateTokenStatsForProxy(
 		requestPath = reqCtx.requestPath
 	}
 	billingModel := resolveProxyBillingModel(requestPath, actualModel, requestModel)
-	s.updateTokenStatsAsync(reqCtx.tokenHash, cfg.CostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 
 // handleNetworkError 处理网络错误

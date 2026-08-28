@@ -790,6 +790,14 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 	c2 := createChannel("protocol-local", model.ProtocolTransformModeLocal)
 	c3 := createChannel("protocol-upstream", model.ProtocolTransformModeUpstream)
 
+	// c2 挂两个 API Key：批量倍率对 api_key 渠道必须落到 Key 级（Key 级成本倍率契约）
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: c2.ID, KeyIndex: 0, APIKey: "sk-test-batch-key-0", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: c2.ID, KeyIndex: 1, APIKey: "sk-test-batch-key-1", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch c2 failed: %v", err)
+	}
+
 	t.Run("invalid json", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-advanced", []byte(`{`)))
 
@@ -932,8 +940,9 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			if cfg.Priority != -20 {
 				t.Fatalf("channel %d priority=%d, want -20", channelID, cfg.Priority)
 			}
-			if cfg.CostMultiplier != 0.25 {
-				t.Fatalf("channel %d cost_multiplier=%v, want 0.25", channelID, cfg.CostMultiplier)
+			// api_key 渠道的批量倍率落到 Key 级，渠道列保持不变（0=未设置）
+			if cfg.CostMultiplier != 0 {
+				t.Fatalf("channel %d cost_multiplier=%v, want unchanged (0)", channelID, cfg.CostMultiplier)
 			}
 			if cfg.DailyCostLimit != 12.5 || cfg.RPMLimit != 60 || cfg.MaxConcurrency != 3 {
 				t.Fatalf("channel %d limits=(%v, %d, %d), want (12.5, 60, 3)",
@@ -941,6 +950,16 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			}
 			if len(cfg.ModelEntries) != 2 || cfg.ModelEntries[1].Model != "new-model" || cfg.ModelEntries[1].RedirectModel != "upstream-model" {
 				t.Fatalf("channel %d models=%+v", channelID, cfg.ModelEntries)
+			}
+		}
+
+		keys, err := store.GetAPIKeys(ctx, c2.ID)
+		if err != nil || len(keys) != 2 {
+			t.Fatalf("c2 keys len=%d err=%v, want 2", len(keys), err)
+		}
+		for _, key := range keys {
+			if key.CostMultiplier != 0.25 {
+				t.Fatalf("c2 key %d cost_multiplier=%v, want 0.25", key.KeyIndex, key.CostMultiplier)
 			}
 		}
 	})

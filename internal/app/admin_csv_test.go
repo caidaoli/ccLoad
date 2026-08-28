@@ -26,7 +26,7 @@ func TestCSVImportAPIKeyManagementEnvelopeValidation(t *testing.T) {
 				[]string{
 					"managed input", "sk-imported", `[{"url":"https://api.example.com"}]`, "gpt-5",
 					model.AuthTypeAPIKey, tc.credential,
-				}, columns, 2, false, false, false, false, false, false, false,
+				}, columns, 2, false, false, false, false, false, false, false, false,
 				nil, nil, nil, nil, nil, nil,
 			)
 			if skipped != tc.wantSkipped {

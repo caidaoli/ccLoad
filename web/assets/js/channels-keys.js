@@ -38,12 +38,19 @@ function routingKeyModelName(value) {
   return match[1].trim() || modelName;
 }
 
+function normalizeKeyCostMultiplier(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 1;
+  return parsed;
+}
+
 function normalizeInlineKeyRow(row) {
   if (row && typeof row === 'object') {
     const normalized = {
       api_key: String(row.api_key || '').trim(),
       note: String(row.note || '').trim(),
-      allowed_models: normalizeKeyAllowedModels(row.allowed_models)
+      allowed_models: normalizeKeyAllowedModels(row.allowed_models),
+      cost_multiplier: normalizeKeyCostMultiplier(row.cost_multiplier)
     };
     if (row.model_scope_empty === true) normalized.model_scope_empty = true;
     return normalized;
@@ -51,7 +58,8 @@ function normalizeInlineKeyRow(row) {
   return {
     api_key: String(row || '').trim(),
     note: '',
-    allowed_models: []
+    allowed_models: [],
+    cost_multiplier: 1
   };
 }
 
@@ -185,7 +193,8 @@ function setInlineKeyTableDataFromAPI(apiKeys) {
         api_key: item.api_key || '',
         note: item.note || '',
         allowed_models: item.allowed_models || [],
-        model_scope_empty: item.model_scope_empty === true
+        model_scope_empty: item.model_scope_empty === true,
+        cost_multiplier: item.cost_multiplier
       });
     }
     return makeInlineKeyRow(item || '', '');
@@ -760,6 +769,10 @@ function createKeyRow(index) {
     mobileLabelNote: window.t('channels.modal.keyNote'),
     mobileLabelStatus: window.t('common.status'),
     mobileLabelActions: window.t('common.actions'),
+    mobileLabelMultiplier: window.t('channels.costMultiplier'),
+    costMultiplier: keyRow.cost_multiplier,
+    fetchRateTitle: window.t('channels.fetchRateTitle'),
+    fetchRateLabel: window.t('channels.fetchRate'),
     notePlaceholder: window.t('channels.keyNotePlaceholder')
   };
 
@@ -778,9 +791,11 @@ function createKeyRow(index) {
     row.draggable = false;
     const keyInput = row.querySelector('.inline-key-input');
     const noteInput = row.querySelector('.inline-key-note-input');
+    const multiplierInput = row.querySelector('.inline-key-multiplier-input');
     const checkbox = row.querySelector('.key-checkbox');
     if (keyInput) keyInput.readOnly = true;
     if (noteInput) noteInput.readOnly = true;
+    if (multiplierInput) multiplierInput.readOnly = true;
     if (checkbox) checkbox.disabled = true;
     row.querySelectorAll('[data-action="delete"], [data-action="toggle-disabled"], [data-action="models"]').forEach(button => {
       button.hidden = false;
@@ -969,6 +984,7 @@ function initKeyTableEventDelegation() {
       else if (action === 'delete') deleteInlineKey(index);
       else if (action === 'toggle-disabled') toggleKeyDisabled(index);
       else if (action === 'models') openKeyModelScopeModal(index, actionBtn);
+      else if (action === 'fetch-rate') fetchSub2APIRate(index, actionBtn);
       return;
     }
 
@@ -993,12 +1009,18 @@ function initKeyTableEventDelegation() {
     if (noteInput) {
       const index = parseInt(noteInput.dataset.index);
       updateInlineKeyNote(index, noteInput.value);
+      return;
+    }
+    const multiplierInput = e.target.closest('.inline-key-multiplier-input');
+    if (multiplierInput) {
+      const index = parseInt(multiplierInput.dataset.index);
+      updateInlineKeyCostMultiplier(index, multiplierInput.value);
     }
   });
 
   // 处理输入框焦点样式
   tbody.addEventListener('focusin', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input');
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
@@ -1008,7 +1030,7 @@ function initKeyTableEventDelegation() {
   });
 
   tbody.addEventListener('focusout', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input');
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
@@ -1189,6 +1211,17 @@ function updateInlineKeyNote(index, value) {
   if (row.note === nextValue) return;
 
   row.note = nextValue;
+  inlineKeyTableData[index] = row;
+  markChannelFormDirty();
+}
+
+function updateInlineKeyCostMultiplier(index, value) {
+  if (isChannelKeyEditorReadOnly()) return;
+  const nextValue = normalizeKeyCostMultiplier(value);
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  if (row.cost_multiplier === nextValue) return;
+
+  row.cost_multiplier = nextValue;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
 }

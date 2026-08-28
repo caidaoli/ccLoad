@@ -1323,10 +1323,21 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig(%d): %v", channelID, err)
 		}
-		if got.Priority != priority || got.CostMultiplier != multiplier || got.DailyCostLimit != dailyCostLimit ||
+		if got.Priority != priority || got.DailyCostLimit != dailyCostLimit ||
 			got.RPMLimit != rpmLimit || got.MaxConcurrency != maxConcurrency || got.GetProtocolTransformMode() != mode {
 			t.Fatalf("channel %d advanced fields = (%v, %v, %d, %d, %q)", channelID,
 				got.CostMultiplier, got.DailyCostLimit, got.RPMLimit, got.MaxConcurrency, got.GetProtocolTransformMode())
+		}
+		// 倍率属于凭证：api_key 渠道批量设置落到全部 Key，渠道列保持原值。
+		if got.CostMultiplier != 1 {
+			t.Fatalf("channel %d cost_multiplier column changed to %v, want key-level 1", channelID, got.CostMultiplier)
+		}
+		keys, err := store.GetAPIKeys(ctx, channelID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys(%d): %v", channelID, err)
+		}
+		if len(keys) != 1 || keys[0].CostMultiplier != multiplier {
+			t.Fatalf("channel %d key multiplier = %+v, want one key with %v", channelID, keys, multiplier)
 		}
 		if !got.RetryOtherKeysOnFailure {
 			t.Fatalf("channel %d unrelated fields changed: %+v", channelID, got)
@@ -1353,7 +1364,7 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if firstAfterRPM.RPMLimit != 0 || firstAfterRPM.MaxConcurrency != maxConcurrency ||
-		firstAfterRPM.DailyCostLimit != dailyCostLimit || firstAfterRPM.CostMultiplier != multiplier ||
+		firstAfterRPM.DailyCostLimit != dailyCostLimit || firstAfterRPM.CostMultiplier != 1 ||
 		firstAfterRPM.Priority != priority {
 		t.Fatalf("RPM-only patch changed unrelated limits: %+v", firstAfterRPM)
 	}

@@ -723,9 +723,15 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			if patch.Priority != nil {
 				nextPriority = *patch.Priority
 			}
+			// 倍率属于凭证：api_key 渠道批量设置落到该渠道全部 Key，OAuth 渠道维持渠道级列。
 			nextCostMultiplier := state.costMultiplier
+			keyMultiplierChanged := false
 			if patch.CostMultiplier != nil {
-				nextCostMultiplier = *patch.CostMultiplier
+				if model.NormalizeAuthType(state.authType) == model.AuthTypeAPIKey {
+					keyMultiplierChanged = true
+				} else {
+					nextCostMultiplier = *patch.CostMultiplier
+				}
 			}
 			nextDailyCostLimit := state.dailyCostLimit
 			if patch.DailyCostLimit != nil {
@@ -753,28 +759,37 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				nextScheduledCheckModel = reconciledScheduledCheckModel(nextScheduledCheckModel, nextModels)
 			}
 
-			changed := state.priority != nextPriority ||
+			channelChanged := state.priority != nextPriority ||
 				state.costMultiplier != nextCostMultiplier ||
 				state.dailyCostLimit != nextDailyCostLimit ||
 				state.rpmLimit != nextRPMLimit ||
 				state.maxConcurrency != nextMaxConcurrency ||
 				state.protocolTransformMode != nextProtocolMode ||
-				state.scheduledCheckModel != nextScheduledCheckModel ||
-				modelsChanged
+				state.scheduledCheckModel != nextScheduledCheckModel
+			changed := channelChanged || keyMultiplierChanged || modelsChanged
 			if !changed {
 				result.Unchanged++
 				continue
 			}
 
 			updatedAtUnix := timeToUnix(time.Now())
-			if _, err := s.execTx(ctx, tx, `
-				UPDATE channels
-				SET priority = ?, cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
-					protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
-				WHERE id = ?
-			`, nextPriority, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
-				nextProtocolMode, nextScheduledCheckModel, updatedAtUnix, channelID); err != nil {
-				return fmt.Errorf("patch channel %d: %w", channelID, err)
+			if channelChanged || modelsChanged {
+				if _, err := s.execTx(ctx, tx, `
+					UPDATE channels
+					SET priority = ?, cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
+						protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
+					WHERE id = ?
+				`, nextPriority, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
+					nextProtocolMode, nextScheduledCheckModel, updatedAtUnix, channelID); err != nil {
+					return fmt.Errorf("patch channel %d: %w", channelID, err)
+				}
+			}
+			if keyMultiplierChanged {
+				if _, err := s.execTx(ctx, tx, `
+					UPDATE api_keys SET cost_multiplier = ?, updated_at = ? WHERE channel_id = ?
+				`, normalizeCostMultiplier(*patch.CostMultiplier), updatedAtUnix, channelID); err != nil {
+					return fmt.Errorf("patch channel %d api key cost multipliers: %w", channelID, err)
+				}
 			}
 			if modelsChanged {
 				if err := s.saveModelEntriesTx(ctx, tx, channelID, nextModels); err != nil {
@@ -802,6 +817,7 @@ type batchConfigPatchState struct {
 	maxConcurrency        int
 	protocolTransformMode string
 	scheduledCheckModel   string
+	authType              string
 	modelEntries          []model.ModelEntry
 }
 
@@ -831,7 +847,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
 	query := `SELECT id, priority, cost_multiplier, daily_cost_limit, rpm_limit, max_concurrency,
-		protocol_transform_mode, scheduled_check_model
+		protocol_transform_mode, scheduled_check_model, auth_type
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
 		query += ` FOR UPDATE`
@@ -846,7 +862,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 		state := &batchConfigPatchState{}
 		if err := rows.Scan(
 			&channelID, &state.priority, &state.costMultiplier, &state.dailyCostLimit, &state.rpmLimit, &state.maxConcurrency,
-			&state.protocolTransformMode, &state.scheduledCheckModel,
+			&state.protocolTransformMode, &state.scheduledCheckModel, &state.authType,
 		); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan channel for batch patch: %w", err)

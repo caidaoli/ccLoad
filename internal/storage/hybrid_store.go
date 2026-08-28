@@ -444,6 +444,15 @@ func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, no
 	return nil
 }
 
+func (h *HybridStore) UpdateAPIKeyCostMultipliers(ctx context.Context, channelID int64, multipliersByIndex map[int]float64) error {
+	if err := h.sqlite.UpdateAPIKeyCostMultipliers(ctx, channelID, multipliersByIndex); err != nil {
+		return err
+	}
+
+	h.markChannelDirty(channelID, false)
+	return nil
+}
+
 func (h *HybridStore) UpdateAPIKeyModelScopes(
 	ctx context.Context,
 	channelID int64,
@@ -493,6 +502,10 @@ func (h *HybridStore) ConfigureCooldown(settings util.CooldownSettings) {
 
 func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	return h.sqlite.GetAllChannelCooldowns(ctx)
+}
+
+func (h *HybridStore) FetchChannelInfoBatch(ctx context.Context, channelIDs map[int64]bool) (map[int64]model.ChannelInfo, error) {
+	return h.sqlite.FetchChannelInfoBatch(ctx, channelIDs)
 }
 
 func (h *HybridStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {

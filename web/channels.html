@@ -634,7 +634,7 @@
                     <span id="batchPriorityError" class="channel-batch-advanced__error" role="alert" hidden></span>
                   </div>
                   <div class="channel-batch-advanced__field">
-                    <label for="batchCostMultiplier" data-i18n="channels.batchCostMultiplier">倍率</label>
+                    <label for="batchCostMultiplier" data-i18n="channels.batchCostMultiplier">Key 倍率</label>
                     <div class="channel-batch-advanced__control">
                       <input id="batchCostMultiplier" class="channel-batch-input" type="number" value="1" min="0"
                         step="0.01" inputmode="decimal"
@@ -642,7 +642,7 @@
                       <button id="batchApplyCostMultiplierBtn" type="button"
                         class="btn btn-sm channel-batch-action channel-batch-action--apply"
                         data-action="batch-set-cost-multiplier" disabled>
-                        <span data-i18n="channels.batchApplyCostMultiplier">设置倍率</span>
+                        <span data-i18n="channels.batchApplyCostMultiplier">设置全部 Key 倍率</span>
                       </button>
                     </div>
                     <span id="batchCostMultiplierHint" class="channel-batch-advanced__hint"
@@ -995,6 +995,7 @@
                       <option value="disabled" data-i18n="channels.keyStatusDisabled">已禁用</option>
                     </select>
                   </th>
+                  <th style="width: 190px;" data-i18n="channels.costMultiplier">倍率</th>
                   <th style="width: 80px;"></th>
                 </tr>
               </thead>
@@ -1152,20 +1153,6 @@
                   <input type="number" id="channelDailyCostLimit" class="form-input" value="0" min="0" step="1"
                     style="width: 74px; min-width: 74px;" data-i18n-placeholder="channels.dailyCostLimitPlaceholder"
                     placeholder="0=无限制">
-                </div>
-              </div>
-              <div class="channel-editor-inline-field channel-editor-inline-field--rate">
-                <label class="form-label channel-editor-inline-label" for="channelCostMultiplier"
-                  data-i18n="channels.costMultiplier">倍率</label>
-                <div class="channel-editor-inline-field-input channel-editor-rate-input">
-                  <input type="number" id="channelCostMultiplier" class="form-input" value="1" min="0" step="0.01"
-                    style="width: 84px; min-width: 84px;" data-i18n-placeholder="channels.costMultiplierPlaceholder"
-                    placeholder="默认1">
-                  <button type="button" id="fetchSub2APIRateBtn" class="btn btn-secondary btn-sm channel-editor-rate-fetch-btn"
-                    data-action="fetch-sub2api-rate" data-i18n-title="channels.fetchRateTitle"
-                    title="从 Sub2API 获取当前有效倍率">
-                    <span id="fetchSub2APIRateLabel" data-i18n="channels.fetchRate">获取倍率</span>
-                  </button>
                 </div>
               </div>
             </div>
@@ -2002,13 +1989,24 @@
         </div>
       </td>
       <td class="inline-key-col-status" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelStatus}}">{{{cooldownHtml}}}</td>
+      <td class="inline-key-col-multiplier" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelMultiplier}}">
+        <div class="inline-key-multiplier-scope">
+          <input type="number" value="{{costMultiplier}}" class="inline-key-multiplier-input modal-inline-input"
+            data-index="{{index}}" min="0" step="0.01" inputmode="decimal"
+            style="width: 80px; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: border-color 0.2s, box-shadow 0.2s;">
+          <button type="button" class="key-action-btn key-fetch-rate-btn" data-action="fetch-rate"
+            data-index="{{index}}" title="{{fetchRateTitle}}" aria-label="{{fetchRateTitle}}">
+            <span style="font-size: 12px;">{{fetchRateLabel}}</span>
+          </button>
+        </div>
+      </td>
       <td class="inline-key-col-actions" style="padding: 4px 8px; text-align: center;" data-mobile-label="{{mobileLabelActions}}">{{{actionsHtml}}}</td>
     </tr>
   </template>
 
   <template id="tpl-key-empty">
     <tr>
-      <td colspan="5" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+      <td colspan="6" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
         {{message}}
       </td>
     </tr>

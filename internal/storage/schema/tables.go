@@ -48,6 +48,7 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
 		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("cost_multiplier DOUBLE NOT NULL DEFAULT 1").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
 		Column("UNIQUE KEY uk_channel_key (channel_id, key_index)").
