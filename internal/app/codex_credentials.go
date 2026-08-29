@@ -93,6 +93,9 @@ func newCodexCredentialRefreshError(cfg *model.Config, cause error) error {
 type codexPassiveUsageUpdate struct {
 	Windows   []codexauth.PassiveUsageWindow
 	SampledAt string
+	// ReplaceScopes marks complete upstream groups; windows missing from one
+	// such group are stale and may be removed during the merge.
+	ReplaceScopes []string
 }
 
 func newCodexCredentialManager(
@@ -567,7 +570,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	if m == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
 		return false, errors.New("codex credential manager is unavailable")
 	}
-	if len(update.Windows) == 0 {
+	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return false, nil
 	}
 	updateTime, err := time.Parse(time.RFC3339, strings.TrimSpace(update.SampledAt))
@@ -578,7 +581,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	usageLock.Lock()
 	defer usageLock.Unlock()
 	update.Windows = m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime)
-	if len(update.Windows) == 0 {
+	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return false, nil
 	}
 	for {
@@ -598,7 +601,9 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		}
 		updatedCredential := *current
 		var changed bool
-		updatedCredential.PassiveUsage, changed = mergeCodexPassiveUsage(current.PassiveUsage, update.Windows, updateTime)
+		updatedCredential.PassiveUsage, changed = mergeCodexPassiveUsageWithScopes(
+			current.PassiveUsage, update.Windows, updateTime, update.ReplaceScopes,
+		)
 		nextQuotaCostUsage := reconcileOAuthQuotaCostUsage(
 			current.QuotaCostUsage, codexPassiveUsageSummary(&updatedCredential), updateTime,
 		)
@@ -662,6 +667,15 @@ func mergeCodexPassiveUsage(
 	windows []codexauth.PassiveUsageWindow,
 	fallbackTime time.Time,
 ) (*codexauth.PassiveUsage, bool) {
+	return mergeCodexPassiveUsageWithScopes(current, windows, fallbackTime, nil)
+}
+
+func mergeCodexPassiveUsageWithScopes(
+	current *codexauth.PassiveUsage,
+	windows []codexauth.PassiveUsageWindow,
+	fallbackTime time.Time,
+	replaceScopes []string,
+) (*codexauth.PassiveUsage, bool) {
 	usage := codexauth.ClonePassiveUsage(current)
 	if usage == nil {
 		usage = &codexauth.PassiveUsage{}
@@ -674,6 +688,49 @@ func mergeCodexPassiveUsage(
 	latest := time.Time{}
 	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(usage.SampledAt)); err == nil {
 		latest = parsed
+	}
+	incomingKeys := make(map[string]struct{}, len(windows))
+	for _, window := range windows {
+		incomingKeys[codexPassiveUsageWindowKey(window)] = struct{}{}
+	}
+	if len(replaceScopes) > 0 && len(usage.Windows) > 0 {
+		scopes := make(map[string]struct{}, len(replaceScopes))
+		for _, scope := range replaceScopes {
+			scope = strings.ToLower(strings.TrimSpace(scope))
+			if scope != "" {
+				scopes[scope] = struct{}{}
+			}
+		}
+		retained := usage.Windows[:0]
+		for _, window := range usage.Windows {
+			scope := strings.ToLower(strings.TrimSpace(window.Scope))
+			if scope == "" {
+				scope = strings.ToLower(strings.TrimSpace(window.LimitName))
+			}
+			_, replace := scopes[scope]
+			if !replace {
+				retained = append(retained, window)
+				continue
+			}
+			windowTime, err := time.Parse(time.RFC3339, strings.TrimSpace(window.SampledAt))
+			if err != nil || !fallbackTime.After(windowTime) {
+				retained = append(retained, window)
+				continue
+			}
+			if _, present := incomingKeys[codexPassiveUsageWindowKey(window)]; present {
+				retained = append(retained, window)
+				continue
+			}
+			changed = true
+		}
+		usage.Windows = retained
+		indexes = make(map[string]int, len(usage.Windows))
+		for i, window := range usage.Windows {
+			indexes[codexPassiveUsageWindowKey(window)] = i
+		}
+		if fallbackTime.After(latest) {
+			latest = fallbackTime
+		}
 	}
 	for _, window := range windows {
 		windowTime, err := time.Parse(time.RFC3339, strings.TrimSpace(window.SampledAt))

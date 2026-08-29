@@ -192,9 +192,17 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 		if actual := strings.TrimSpace(actualModel); actual != "" {
 			modelName = actual
 		}
-		for _, family := range families {
-			if oauthcost.FamilyMatches(family, modelName) {
-				costUSDByFamily[family] += costUSD
+		matchedFamilies := make(map[string]struct{}, len(families))
+		for _, window := range usage.Windows {
+			if window == nil {
+				continue
+			}
+			if _, matched := matchedFamilies[window.Family]; matched {
+				continue
+			}
+			if oauthcost.WindowMatchesModel(window, modelName) {
+				costUSDByFamily[window.Family] += costUSD
+				matchedFamilies[window.Family] = struct{}{}
 			}
 		}
 	}

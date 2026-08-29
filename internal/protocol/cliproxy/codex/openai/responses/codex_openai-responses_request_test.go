@@ -285,6 +285,15 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToCodexPreservesUltrafastServiceTier(t *testing.T) {
+	inputJSON := []byte(`{"model":"gpt-5.3-codex","service_tier":"ultrafast","input":[]}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.3-codex", inputJSON, false)
+	if got := gjson.GetBytes(output, "service_tier").String(); got != "ultrafast" {
+		t.Fatalf("service_tier = %q, want ultrafast; body=%s", got, output)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToCodex_FiltersPromptCacheRetention(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gpt-5.6-terra",

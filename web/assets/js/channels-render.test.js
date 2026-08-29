@@ -170,6 +170,94 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
   }
 });
 
+test('Codex Spark 额度窗口使用简短默认标签', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageCodexSparkFiveHour': 'Spark 5h',
+        'channels.oauth.usageCodexSparkWeekly': 'Spark周限',
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageCompactRemaining': `${values.percent}%`,
+        'channels.oauth.usageDetailRemaining': `剩余 ${values.percent}%`
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'codex',
+      windows: [
+        {
+          limit_name: 'GPT-5.3-Codex-Spark', kind: 'primary', remaining_percent: 80,
+          limit_window_seconds: 5 * 60 * 60
+        },
+        {
+          limit_name: 'codex-spark', kind: 'secondary', remaining_percent: 65,
+          limit_window_seconds: 7 * 24 * 60 * 60
+        }
+      ]
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 93, auth_type: 'codex_oauth' });
+    assert.match(html, /Spark 5h/);
+    assert.match(html, /Spark周限/);
+    assert.doesNotMatch(html, /GPT-5\.3-Codex-Spark/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('Codex 官方窗口只显示两个周额度并单独标识 Spark', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周限额',
+        'channels.oauth.usageHours': `${values.count}h限额`,
+        'channels.oauth.usageCodexSparkFiveHour': 'Spark 5h',
+        'channels.oauth.usageCodexSparkWeekly': 'Spark周限',
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageCompactRemaining': `${values.percent}%`,
+        'channels.oauth.usageDetailRemaining': `剩余 ${values.percent}%`
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'codex',
+      windows: [
+        { limit_name: 'codex', kind: 'primary', remaining_percent: 85, limit_window_seconds: 604800 },
+        { limit_name: 'GPT-5.3-Codex-Spark', kind: 'primary', remaining_percent: 97, limit_window_seconds: 18000 },
+        { limit_name: 'GPT-5.3-Codex-Spark', kind: 'secondary', remaining_percent: 99, limit_window_seconds: 604800 },
+      ]
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 94, auth_type: 'codex_oauth' });
+    const labels = [...html.matchAll(/ch-oauth-usage__label">([^<]+)/g)].map(match => match[1]);
+    assert.deepEqual(labels, ['周限额', 'Spark 5h', 'Spark周限']);
+    assert.equal(labels.filter(label => label.includes('周限')).length, 2);
+    assert.doesNotMatch(html, /GPT-5\.3-Codex-Spark/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
 test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;

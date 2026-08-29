@@ -1819,6 +1819,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.usageDays': '{count}天额度',
   'channels.oauth.usageHours': '{count}h限额',
   'channels.oauth.usageQuota': '额度',
+  'channels.oauth.usageCodexSparkFiveHour': 'Spark 5h',
+  'channels.oauth.usageCodexSparkWeekly': 'Spark周限',
   'channels.oauth.usageLabel': '{name}{duration}',
   'channels.oauth.usageRemaining': '{label}剩余 {percent}%',
   'channels.oauth.usageAvailable': '可用',

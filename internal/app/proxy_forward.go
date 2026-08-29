@@ -307,10 +307,18 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	headers http.Header,
 	anthropicAlreadyFinalized bool,
 ) ([]byte, error) {
+	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
-	body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
+	// Codex OAuth 的契约归一化会删除上游不接受的字段。这类请求的自定义
+	// 规则必须最后执行，才能真正覆盖内置值。
+	if !codexOAuthResponsesRequest {
+		body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
+	}
 	body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
 	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
+	if codexOAuthResponsesRequest {
+		body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
+	}
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
 		switch {

@@ -1729,7 +1729,6 @@
     .channel-table td.ch-col-priority,
     .channel-table td.ch-col-duration,
     .channel-table td.ch-col-usage,
-    .channel-table td.ch-col-cost,
     .channel-table td.ch-col-last-success {
       text-align: center;
     }
@@ -1962,18 +1961,10 @@
     }
 
     .ch-col-usage {
-      width: 110px;
-      min-width: 110px;
-      max-width: 110px;
+      width: 170px;
+      min-width: 170px;
+      max-width: 170px;
       line-height: 1.35;
-      text-align: center;
-    }
-
-    .ch-col-cost {
-      width: 60px;
-      min-width: 60px;
-      max-width: 60px;
-      white-space: nowrap;
       text-align: center;
     }
 
@@ -2991,6 +2982,16 @@
       max-width: 100%;
       margin: 0 auto;
       gap: 2px;
+    }
+
+    /* 渠道成本沿用日志成本列的字号：标准值和倍率后值保持同一视觉层级。 */
+    .ch-usage-cost-row .cost-stack {
+      font-size: 0.9em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ch-usage-cost-row .cost-stack-standard {
+      font-size: inherit;
     }
 
     /* 模型文本 */
@@ -5615,13 +5616,8 @@
         order: 10;
       }
 
-      .channel-table .ch-col-cost {
-        order: 12;
-        grid-column: 1 / -1;
-      }
-
       .channel-table .ch-col-last-success {
-        order: 13;
+        order: 12;
         grid-column: 1 / -1;
         flex-wrap: wrap;
       }
@@ -5649,7 +5645,6 @@
       .channel-table .ch-col-priority,
       .channel-table .ch-col-duration,
       .channel-table .ch-col-usage,
-      .channel-table .ch-col-cost,
       .channel-table .ch-col-last-success,
       .channel-table .ch-col-enabled {
         background: var(--surface-bg-muted);
@@ -5659,7 +5654,6 @@
       }
 
       .channel-table .ch-col-priority,
-      .channel-table .ch-col-cost,
       .channel-table .ch-col-last-success,
       .channel-table .ch-col-enabled {
         display: flex;
@@ -5669,7 +5663,6 @@
       }
 
       .channel-table .ch-col-priority::before,
-      .channel-table .ch-col-cost::before,
       .channel-table .ch-col-last-success::before,
       .channel-table .ch-col-enabled::before {
         margin-bottom: 0;
@@ -5677,17 +5670,8 @@
       }
 
       .channel-table .ch-col-priority .ch-priority-stack,
-      .channel-table .ch-col-cost .cost-stack {
+      .channel-table .ch-col-usage .cost-stack {
         margin-left: auto;
-      }
-
-      .channel-table .ch-col-cost .cost-stack {
-        flex-direction: row;
-        flex-wrap: nowrap;
-        align-items: baseline;
-        gap: 8px;
-        white-space: nowrap;
-        text-align: right;
       }
 
       .channel-table .ch-col-priority .ch-priority-editor-wrap {

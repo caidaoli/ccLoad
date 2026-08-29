@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,6 +73,8 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
 			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
 			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "kept"},
+		}, Body: []model.CustomBodyRule{
+			{Action: model.RuleActionOverride, Path: "service_tier", Value: json.RawMessage(`"ultrafast"`)},
 		}},
 	}
 	body := []byte(`{"model":"gpt-5.4-mini","stream":false,"input":[{"role":"system","content":"rules"}],"reasoning":{"effort":"minimal"},"max_output_tokens":12,"temperature":0.2,"truncation":"auto","context_management":{"type":"compaction"},"user":"u","previous_response_id":"resp-old","generate":true,"tools":[{"type":"web_search_preview"}]}`)
@@ -153,6 +156,9 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	}
 	if got := gjson.GetBytes(wireBody, "reasoning.effort").String(); got != "low" {
 		t.Fatalf("reasoning.effort = %q, want minimal normalized to low; body=%s", got, wireBody)
+	}
+	if got := gjson.GetBytes(wireBody, "service_tier").String(); got != "ultrafast" {
+		t.Fatalf("service_tier = %q, want custom rule to survive Codex normalization; body=%s", got, wireBody)
 	}
 	if instructions := gjson.GetBytes(wireBody, "instructions").String(); !strings.HasPrefix(instructions, "You are Codex, a coding agent based on GPT-5.") {
 		t.Fatalf("Codex model instructions missing: %s", wireBody)

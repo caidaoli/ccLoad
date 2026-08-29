@@ -5015,6 +5015,172 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	}
 }
 
+func TestCodexPassiveUsageSimulationMatchesUpstreamEvent(t *testing.T) {
+	t.Parallel()
+	sampledAt := time.Date(2026, time.August, 29, 13, 34, 37, 0, time.UTC)
+	payload := []byte(`{
+		"type":"codex.rate_limits",
+		"plan_type":"pro",
+		"rate_limits":{
+			"allowed":true,
+			"limit_reached":false,
+			"primary":{"used_percent":16,"window_minutes":10080,"reset_after_seconds":492244,"reset_at":1788504406},
+			"secondary":null
+		},
+		"code_review_rate_limits":null,
+		"additional_rate_limits":{
+			"GPT-5.3-Codex-Spark":{
+				"allowed":true,
+				"limit_reached":false,
+				"primary":{"used_percent":3,"window_minutes":300,"reset_after_seconds":11794,"reset_at":1788023956},
+				"secondary":{"used_percent":2,"window_minutes":10080,"reset_after_seconds":520633,"reset_at":1788532795}
+			}
+		},
+		"credits":{"has_credits":false,"unlimited":false,"balance":"0"},
+		"promo":null
+	}`)
+	update, ok := sampleCodexPassiveUsageEvent(payload, sampledAt)
+	if !ok {
+		t.Fatal("Codex rate-limit event should produce a passive usage update")
+	}
+	if len(update.Windows) != 3 {
+		t.Fatalf("passive usage windows = %d, want 3: %#v", len(update.Windows), update.Windows)
+	}
+	want := map[string]struct {
+		windowSeconds int64
+		usedPercent   float64
+	}{
+		"codex|primary":                 {604800, 16},
+		"gpt-5.3-codex-spark|primary":   {18000, 3},
+		"gpt-5.3-codex-spark|secondary": {604800, 2},
+	}
+	for _, window := range update.Windows {
+		key := strings.ToLower(strings.TrimSpace(window.LimitName)) + "|" + strings.ToLower(strings.TrimSpace(window.Kind))
+		expect, exists := want[key]
+		if !exists {
+			t.Fatalf("unexpected passive usage window: %#v", window)
+		}
+		if window.LimitWindowSeconds != expect.windowSeconds || window.UsedPercent != expect.usedPercent {
+			t.Fatalf("passive usage window %q = %#v, want %d seconds and %.1f%%", key, window, expect.windowSeconds, expect.usedPercent)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatalf("passive usage windows missing identities: %#v", want)
+	}
+}
+
+func TestCodexPassiveUsageActiveLimitHeaderDropsDuplicateFields(t *testing.T) {
+	t.Parallel()
+	sampledAt := time.Date(2026, time.August, 29, 14, 5, 25, 0, time.UTC)
+	headers := http.Header{
+		"X-Codex-Active-Limit":                       []string{"codex_bengalfox"},
+		"X-Codex-Bengalfox-Limit-Name":               []string{"GPT-5.3-Codex-Spark"},
+		"X-Codex-Primary-Used-Percent":               []string{"3"},
+		"X-Codex-Primary-Window-Minutes":             []string{"300"},
+		"X-Codex-Primary-Reset-At":                   []string{"1788023956"},
+		"X-Codex-Secondary-Used-Percent":             []string{"2"},
+		"X-Codex-Secondary-Window-Minutes":           []string{"10080"},
+		"X-Codex-Secondary-Reset-At":                 []string{"1788532795"},
+		"X-Codex-Bengalfox-Primary-Used-Percent":     []string{"3"},
+		"X-Codex-Bengalfox-Primary-Window-Minutes":   []string{"300"},
+		"X-Codex-Bengalfox-Primary-Reset-At":         []string{"1788023956"},
+		"X-Codex-Bengalfox-Secondary-Used-Percent":   []string{"2"},
+		"X-Codex-Bengalfox-Secondary-Window-Minutes": []string{"10080"},
+		"X-Codex-Bengalfox-Secondary-Reset-At":       []string{"1788532795"},
+	}
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	if !ok || len(update.Windows) != 2 {
+		t.Fatalf("header usage = (%#v, %t), want one Spark primary and one secondary window", update, ok)
+	}
+	for _, window := range update.Windows {
+		if window.LimitName != "GPT-5.3-Codex-Spark" {
+			t.Fatalf("header usage created phantom limit group: %#v", window)
+		}
+	}
+	if len(update.ReplaceScopes) != 2 || update.ReplaceScopes[0] != "codex" || update.ReplaceScopes[1] != "bengalfox" {
+		t.Fatalf("header replacement scopes = %#v", update.ReplaceScopes)
+	}
+}
+
+func TestCodexPassiveUsageCompleteEventRemovesMissingWindow(t *testing.T) {
+	t.Parallel()
+	oldSampledAt := time.Date(2026, time.August, 29, 14, 0, 0, 0, time.UTC)
+	newSampledAt := oldSampledAt.Add(5 * time.Minute)
+	current := &codexauth.PassiveUsage{
+		SampledAt: oldSampledAt.Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{
+			{Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 15, LimitWindowSeconds: 604800, ResetAt: 1788504406, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+			{Scope: "codex", LimitName: "codex", Kind: "secondary", UsedPercent: 2, LimitWindowSeconds: 604800, ResetAt: 1788532795, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+			{Scope: "gpt-5.3-codex-spark", LimitName: "GPT-5.3-Codex-Spark", Kind: "primary", UsedPercent: 2, LimitWindowSeconds: 18000, ResetAt: 1788023956, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+			{Scope: "gpt-5.3-codex-spark", LimitName: "GPT-5.3-Codex-Spark", Kind: "secondary", UsedPercent: 1, LimitWindowSeconds: 604800, ResetAt: 1788532795, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+		},
+	}
+	update, ok := sampleCodexPassiveUsageEvent([]byte(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":16,"window_minutes":10080,"reset_at":1788504406},"secondary":null},"additional_rate_limits":{"GPT-5.3-Codex-Spark":{"primary":{"used_percent":3,"window_minutes":300,"reset_at":1788023956},"secondary":{"used_percent":2,"window_minutes":10080,"reset_at":1788532795}}}}`), newSampledAt)
+	if !ok {
+		t.Fatal("complete Codex event should produce an update")
+	}
+	merged, changed := mergeCodexPassiveUsageWithScopes(current, update.Windows, newSampledAt, update.ReplaceScopes)
+	if !changed || len(merged.Windows) != 3 {
+		t.Fatalf("merged passive usage = (changed=%t, %#v), want stale secondary removed", changed, merged)
+	}
+	for _, window := range merged.Windows {
+		if oauthcost.Key(window.LimitName, window.Kind) == "codex|secondary" {
+			t.Fatalf("stale codex secondary window survived complete event: %#v", merged.Windows)
+		}
+	}
+}
+
+func TestLatestCodexOAuthUsageIgnoresPassiveOnlyWindows(t *testing.T) {
+	t.Parallel()
+	activeSampledAt := time.Date(2026, time.August, 29, 13, 40, 0, 0, time.UTC)
+	passiveSampledAt := activeSampledAt.Add(time.Minute)
+	active := &oauthUsageSummary{
+		Provider: codexauth.ChannelType,
+		PlanType: "pro",
+		Windows: []oauthUsageWindow{
+			{LimitName: "codex", Kind: "primary", UsedPercent: 14, RemainingPercent: 86, LimitWindowSeconds: 604800, ResetAt: 1788504406},
+			{LimitName: "GPT-5.3-Codex-Spark", Kind: "primary", UsedPercent: 0, RemainingPercent: 100, LimitWindowSeconds: 18000, ResetAt: 1788023956},
+			{LimitName: "GPT-5.3-Codex-Spark", Kind: "secondary", UsedPercent: 1, RemainingPercent: 99, LimitWindowSeconds: 604800, ResetAt: 1788532795},
+		},
+	}
+	passive := &oauthUsageSummary{
+		Provider: codexauth.ChannelType,
+		Windows: []oauthUsageWindow{
+			{LimitName: "codex", Kind: "primary", UsedPercent: 15, RemainingPercent: 85, LimitWindowSeconds: 3600, ResetAt: 99},
+			{LimitName: "GPT-5.3-Codex-Spark", Kind: "primary", UsedPercent: 3, RemainingPercent: 97, LimitWindowSeconds: 18000, ResetAt: 1788023956},
+			{LimitName: "GPT-5.3-Codex-Spark", Kind: "secondary", UsedPercent: 2, RemainingPercent: 98, LimitWindowSeconds: 604800, ResetAt: 1788532795},
+			{LimitName: "codex", Kind: "secondary", UsedPercent: 2, RemainingPercent: 98, LimitWindowSeconds: 604800, ResetAt: 1788532795},
+		},
+	}
+	merged := latestOAuthUsage(active, activeSampledAt, passive, passiveSampledAt.Format(time.RFC3339Nano))
+	if merged == nil || len(merged.Windows) != 3 {
+		t.Fatalf("merged Codex windows = %#v, want the 3 official windows only", merged)
+	}
+	weekly := 0
+	want := map[string]float64{
+		"codex|primary":                 15,
+		"gpt-5.3-codex-spark|primary":   3,
+		"gpt-5.3-codex-spark|secondary": 2,
+	}
+	for _, window := range merged.Windows {
+		if window.LimitWindowSeconds == 7*24*60*60 {
+			weekly++
+		}
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		if used, ok := want[key]; !ok || window.UsedPercent != used {
+			t.Fatalf("merged Codex window %q = %#v", key, window)
+		}
+		if key == "codex|primary" && (window.LimitWindowSeconds != 604800 || window.ResetAt != 1788504406) {
+			t.Fatalf("passive sample changed official Codex window boundary: %#v", window)
+		}
+		delete(want, key)
+	}
+	if weekly != 2 || len(want) != 0 {
+		t.Fatalf("merged Codex weekly windows=%d missing=%#v", weekly, want)
+	}
+}
+
 func TestRequestCodexUsageSamplesBeforeResetCreditLookupCompletes(t *testing.T) {
 	t.Parallel()
 	creditsStarted := make(chan struct{})

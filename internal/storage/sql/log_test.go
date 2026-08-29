@@ -240,6 +240,14 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		return got
 	}
 	assertCosts(20_000_000)
+	// GPT-5.3-Codex-Spark 使用独立额度，不能污染 Codex 主周/月窗口。
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(now.Add(4 * time.Second)), Model: "gpt-5.3-codex-spark",
+		ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCosts(20_000_000)
 
 	if err := store.AddLog(ctx, &model.LogEntry{
 		Time: newJSONTime(resetAt), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 0.5,

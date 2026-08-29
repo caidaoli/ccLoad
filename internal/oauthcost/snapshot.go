@@ -147,10 +147,11 @@ func WindowFamily(provider, limitName, kind string) string {
 			return FamilyFable
 		}
 	case ProviderCodex:
-		// codex-spark 是附加额度窗口，只覆盖 Spark 模型；主 codex 窗口覆盖全部。
+		// codex-spark 是独立额度窗口，只覆盖 Spark 模型；主 codex 窗口不包含 Spark。
 		if strings.Contains(limitName, "spark") {
 			return FamilySpark
 		}
+		return FamilyCodex
 	}
 	return FamilyAll
 }

@@ -595,10 +595,39 @@ function formatOAuthUsageWindowDuration(seconds) {
   return window.t('channels.oauth.usageQuota');
 }
 
+function isCodexSparkLimitName(limitName) {
+  const normalized = String(limitName || '').trim().toLowerCase();
+  return normalized === 'codex-spark' || normalized === 'gpt-5.3-codex-spark';
+}
+
+function formatCodexSparkUsageLabel(windowInfo) {
+  const duration = Math.max(0, Number(windowInfo?.limit_window_seconds) || 0);
+  if (duration === 5 * 60 * 60) return window.t('channels.oauth.usageCodexSparkFiveHour');
+  if (duration === 7 * 24 * 60 * 60) return window.t('channels.oauth.usageCodexSparkWeekly');
+  return '';
+}
+
+function orderCodexUsageWindows(windows) {
+  const groupOrder = new Map();
+  windows.forEach((windowInfo, index) => {
+    const key = String(windowInfo?.limit_name || '').trim().toLowerCase() || 'codex';
+    if (!groupOrder.has(key)) groupOrder.set(key, index);
+  });
+  const kindOrder = { primary: 0, secondary: 1 };
+  return [...windows].sort((left, right) => {
+    const leftName = String(left?.limit_name || '').trim().toLowerCase() || 'codex';
+    const rightName = String(right?.limit_name || '').trim().toLowerCase() || 'codex';
+    const groupDelta = (groupOrder.get(leftName) ?? 0) - (groupOrder.get(rightName) ?? 0);
+    if (groupDelta !== 0) return groupDelta;
+    return (kindOrder[String(left?.kind || '').trim().toLowerCase()] ?? 2) -
+      (kindOrder[String(right?.kind || '').trim().toLowerCase()] ?? 2);
+  });
+}
+
 function formatOAuthUsageLimitName(limitName) {
   const normalized = String(limitName || '').trim().toLowerCase();
   if (!normalized || normalized === 'codex') return '';
-  if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
+  if (isCodexSparkLimitName(limitName)) return 'Spark';
   if (normalized === 'gemini models') return 'Gemini';
   // Z.ai 的 token 窗口只有时长有信息量，时长已单独渲染，避免出现「five_hour 5小时」。
   if (normalized === 'five_hour' || normalized === 'weekly') return '';
@@ -877,17 +906,24 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
-  const displayedWindows = isCursor ? orderCursorUsageWindows(windows) : windows;
+  const displayedWindows = isCursor
+    ? orderCursorUsageWindows(windows)
+    : isCodex
+      ? orderCodexUsageWindows(windows)
+      : windows;
   const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
     const duration = isCursor ? '' : formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
     const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
+    const codexSparkLabel = isCodex && isCodexSparkLimitName(windowInfo?.limit_name)
+      ? formatCodexSparkUsageLabel(windowInfo)
+      : '';
     // 名称与时长的连接方式交给语言包：中文直接相连，英文才需要空格。
-    const label = limitName
+    const label = codexSparkLabel || (limitName
       ? window.t('channels.oauth.usageLabel', { name: limitName, duration })
-      : duration;
+      : duration);
     const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
     const accumulatedCost = formatOAuthAccumulatedCost(windowInfo?.standard_cost_microusd);
     const estimatedTotalCost = formatOAuthEstimatedTotalCost(windowInfo?.standard_cost_microusd, remaining);
@@ -1182,8 +1218,7 @@ function createChannelCard(channel) {
     outputTokensText: formatMetricNumber(stats.totalOutputTokens),
     cacheReadText: formatMetricNumber(stats.totalCacheReadInputTokens),
     cacheCreationTokens: stats.totalCacheCreationInputTokens || 0,
-    cacheCreationText: formatMetricNumber(stats.totalCacheCreationInputTokens),
-    costInfo: getCostDisplayInfo(stats.totalCost, stats.effectiveCost)
+    cacheCreationText: formatMetricNumber(stats.totalCacheCreationInputTokens)
   } : null;
 
   // 模型文本
@@ -1195,7 +1230,7 @@ function createChannelCard(channel) {
   const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
   const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
 
-  // 消耗HTML：仅保留 token 相关消耗项
+  // 消耗HTML：token 与成本统一放在同一列
   let usageHtml = '';
   if (stats && statsCache) {
     const parts = [];
@@ -1208,13 +1243,15 @@ function createChannelCard(channel) {
         parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheCreate')}</span><span class="ch-usage-value" style="color: var(--primary-500);">${statsCache.cacheCreationText}</span></div>`);
       }
     }
+    const costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, {
+      tone: 'warning',
+      decimalPlaces: 2,
+      inline: true
+    });
+    if (costHtml) {
+      parts.push(`<div class="ch-usage-row ch-usage-cost-row" title="${escapeChannelRefreshText(window.t('channels.stats.cost'))}">${costHtml}</div>`);
+    }
     usageHtml = `<div class="ch-usage-list">${parts.join('')}</div>`;
-  }
-
-  // 成本HTML
-  let costHtml = '';
-  if (stats && statsCache) {
-    costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, { tone: 'success' });
   }
 
   // 健康指示器
@@ -1252,7 +1289,6 @@ function createChannelCard(channel) {
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,
-    costHtml: costHtml,
     runtimeStatusHtml: runtimeStatusHtml,
     lastRequestFailureHtml: lastRequestFailureHtml,
     healthHtml: healthHtml,
@@ -1261,13 +1297,11 @@ function createChannelCard(channel) {
     toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
-    costCellClass: costHtml ? '' : 'ch-mobile-empty',
     lastSuccessCellClass: runtimeStatusHtml ? '' : 'ch-mobile-empty',
     mobileLabelModels: window.t('channels.table.models'),
     mobileLabelPriority: window.t('channels.table.priority'),
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
-    mobileLabelCost: window.t('channels.stats.cost'),
     mobileLabelLastSuccess: window.t('common.status'),
     mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
@@ -1470,7 +1504,6 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-priority">${window.t('channels.table.priority')}</th>
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
-      <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
       <th class="ch-col-last-success">${window.t('common.status')}</th>
       <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>

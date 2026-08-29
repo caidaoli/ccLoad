@@ -1698,11 +1698,58 @@ func latestOAuthUsage(
 	}
 	passiveTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(passiveSampledAt))
 	if err == nil && passiveTime.After(activeSampledAt) {
+		if strings.EqualFold(strings.TrimSpace(active.Provider), codexauth.ChannelType) {
+			return mergeLatestCodexOAuthUsage(active, passive)
+		}
 		merged := *passive
 		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
 		return &merged
 	}
 	return active
+}
+
+// mergeLatestCodexOAuthUsage lets a newer passive sample refresh windows that
+// are already present in the official usage snapshot. The passive stream can
+// expose transient or stale quota groups (for example codex|secondary after
+// the official endpoint stopped returning it); allowing those groups to
+// replace the whole snapshot makes the admin page display phantom windows.
+// The official window identities therefore define the result set.
+func mergeLatestCodexOAuthUsage(active, passive *oauthUsageSummary) *oauthUsageSummary {
+	if active == nil {
+		return passive
+	}
+	if passive == nil {
+		return active
+	}
+	merged := *active
+	passiveByKey := make(map[string][]oauthUsageWindow, len(passive.Windows))
+	for _, window := range passive.Windows {
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		passiveByKey[key] = append(passiveByKey[key], window)
+	}
+	merged.Windows = make([]oauthUsageWindow, 0, len(active.Windows))
+	for _, window := range active.Windows {
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		candidates := passiveByKey[key]
+		if len(candidates) > 0 {
+			passiveWindow := candidates[0]
+			// The official snapshot owns the window identity, duration, and
+			// reset boundary. The passive stream contributes only fresher usage.
+			window.UsedPercent = passiveWindow.UsedPercent
+			window.RemainingPercent = passiveWindow.RemainingPercent
+			window.SampledAt = passiveWindow.SampledAt
+			merged.Windows = append(merged.Windows, window)
+			if len(candidates) == 1 {
+				delete(passiveByKey, key)
+			} else {
+				passiveByKey[key] = candidates[1:]
+			}
+			continue
+		}
+		merged.Windows = append(merged.Windows, window)
+	}
+	merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
+	return &merged
 }
 
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {

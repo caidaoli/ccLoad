@@ -1333,13 +1333,18 @@ window.WebAuth = window.WebAuth || {
   /**
    * 格式化成本（美元）
    * @param {number} cost - 成本值
+   * @param {number} [decimalPlaces=3] - 小数位数
    * @returns {string} 格式化后的字符串
    */
-  function formatCost(cost) {
+  function formatCost(cost, decimalPlaces) {
     const value = Number(cost);
     if (!Number.isFinite(value)) return '';
-    if (value === 0) return '$0';
-    return '$' + value.toFixed(3);
+    const hasExplicitDecimalPlaces = Number.isInteger(decimalPlaces);
+    const places = hasExplicitDecimalPlaces
+      ? Math.max(0, Math.min(6, decimalPlaces))
+      : 3;
+    if (value === 0) return hasExplicitDecimalPlaces && places > 0 ? '$0.' + '0'.repeat(places) : '$0';
+    return '$' + value.toFixed(places);
   }
 
   /**
@@ -1411,7 +1416,7 @@ window.WebAuth = window.WebAuth || {
    * 构建两行成本显示HTML
    * @param {number} standard - 标准成本
    * @param {number|null|undefined} effective - 倍率后成本
-   * @param {{tone?: 'warning'|'success'}} options - 样式配置
+   * @param {{tone?: 'warning'|'success', decimalPlaces?: number}} options - 样式配置
    * @returns {string}
    */
   function buildCostStackHtml(standard, effective, options = {}) {
@@ -1428,15 +1433,17 @@ window.WebAuth = window.WebAuth || {
       classes.push('cost-stack--inline');
     }
 
+    const format = cost => formatCost(cost, options.decimalPlaces);
+
     if (!info.hasMultiplier) {
-      return `<span class="${classes.join(' ')}"><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
     }
 
     if (inline) {
-      return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${formatCost(info.standardCost)}</span><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+      return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${format(info.standardCost)}</span><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
     }
 
-    return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${formatCost(info.standardCost)}</span><span class="cost-stack-effective">${formatCost(info.effectiveCost)}</span></span>`;
+    return `<span class="${classes.join(' ')}"><span class="cost-stack-standard">${format(info.standardCost)}</span><span class="cost-stack-effective">${format(info.effectiveCost)}</span></span>`;
   }
 
   /**

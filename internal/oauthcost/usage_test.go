@@ -226,6 +226,22 @@ func TestFamilyMatches(t *testing.T) {
 	}
 }
 
+func TestCodexWindowFamiliesSeparateSpark(t *testing.T) {
+	t.Parallel()
+	if got := WindowFamily(ProviderCodex, "codex", "secondary"); got != FamilyCodex {
+		t.Fatalf("Codex main window family = %q, want %q", got, FamilyCodex)
+	}
+	if got := WindowFamily(ProviderCodex, "codex-spark", "secondary"); got != FamilySpark {
+		t.Fatalf("Codex Spark window family = %q, want %q", got, FamilySpark)
+	}
+	if FamilyMatches(FamilyCodex, "gpt-5.3-codex-spark") {
+		t.Fatal("Codex main family must not match Spark")
+	}
+	if !FamilyMatches(FamilyCodex, "gpt-5.4") {
+		t.Fatal("Codex main family must match regular Codex models")
+	}
+}
+
 func TestReconcileKeepsCountersWhenSamplesCarryNoBoundary(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
@@ -261,12 +277,32 @@ func TestSparkWindowOnlyAccumulatesSparkModels(t *testing.T) {
 	if changed, err := AddStandardCost(usage, now, "gpt-5.3-codex-spark", 100_000); err != nil || !changed {
 		t.Fatalf("spark cost = (%t, %v)", changed, err)
 	}
-	// 主窗口覆盖全部模型，spark 窗口只吃 spark 的消耗。
-	if got := Find(usage, "codex|primary").StandardCostMicroUSD; got != 500_000 {
-		t.Fatalf("primary window = %d, want 500000", got)
+	// Codex 主窗口不再吞掉单独计量的 Spark 消耗；Spark 窗口单独累计。
+	if got := Find(usage, "codex|primary").StandardCostMicroUSD; got != 400_000 {
+		t.Fatalf("primary window = %d, want 400000", got)
 	}
 	if got := Find(usage, "codex-spark|primary").StandardCostMicroUSD; got != 100_000 {
 		t.Fatalf("spark window = %d, want 100000", got)
+	}
+}
+
+func TestLegacyCodexMainWindowExcludesSpark(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	usage := &Usage{Windows: []*Window{{
+		// 旧版本把 Codex 主窗口保存为 FamilyAll；key-aware matching 必须
+		// 在下一次配额刷新前也阻止 Spark 污染这个窗口。
+		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
+		StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+	}}}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.3-codex-spark", 100_000); err != nil || changed {
+		t.Fatalf("legacy Codex window accepted Spark cost = (%t, %v)", changed, err)
+	}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.4", 200_000); err != nil || !changed {
+		t.Fatalf("legacy Codex window rejected regular cost = (%t, %v)", changed, err)
+	}
+	if got := usage.Windows[0].StandardCostMicroUSD; got != 200_000 {
+		t.Fatalf("legacy Codex window cost = %d, want 200000", got)
 	}
 }
 

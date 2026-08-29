@@ -1819,6 +1819,8 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.usageDays': '{count}-day quota',
   'channels.oauth.usageHours': '{count}-hour quota',
   'channels.oauth.usageQuota': 'Quota',
+  'channels.oauth.usageCodexSparkFiveHour': 'Spark 5h',
+  'channels.oauth.usageCodexSparkWeekly': 'Spark weekly quota',
   'channels.oauth.usageLabel': '{name} {duration}',
   'channels.oauth.usageRemaining': '{label}: {percent}% remaining',
   'channels.oauth.usageAvailable': 'Available',

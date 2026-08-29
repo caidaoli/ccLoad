@@ -34,6 +34,8 @@ const (
 	FamilyFable = "fable"
 	// FamilySpark 只覆盖 Codex Spark（Codex codex-spark 附加额度窗口）。
 	FamilySpark = "spark"
+	// FamilyCodex 覆盖 Codex 主额度窗口，但不覆盖单独计量的 Spark。
+	FamilyCodex = "codex"
 )
 
 // Usage is persisted inside an OAuth credential. Costs come from positive
@@ -97,6 +99,10 @@ func FamilyMatches(family, modelName string) bool {
 		return strings.Contains(modelName, "fable")
 	case FamilySpark:
 		return strings.Contains(modelName, "spark")
+	case FamilyCodex:
+		// 保留旧日志中可能缺失模型名的累计语义；只有明确识别为 Spark
+		// 时才从主 Codex 窗口排除。
+		return !strings.Contains(modelName, "spark")
 	default:
 		return false
 	}
@@ -104,11 +110,25 @@ func FamilyMatches(family, modelName string) bool {
 
 func validFamily(family string) bool {
 	switch family {
-	case FamilyAll, FamilyGemini, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark:
+	case FamilyAll, FamilyGemini, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark, FamilyCodex:
 		return true
 	default:
 		return false
 	}
+}
+
+// WindowMatchesModel 判断一个持久化额度窗口是否应累计指定模型。
+// 旧版本把 Codex 主窗口持久化为 FamilyAll；按 key 识别并按新的 Codex
+// 族规则匹配，避免历史窗口在下一次刷新前继续吞掉 Spark 成本。
+func WindowMatchesModel(window *Window, modelName string) bool {
+	if window == nil {
+		return false
+	}
+	family := window.Family
+	if family == FamilyAll && strings.EqualFold(strings.TrimSpace(strings.SplitN(window.Key, "|", 2)[0]), ProviderCodex) {
+		family = FamilyCodex
+	}
+	return FamilyMatches(family, modelName)
 }
 
 // Families 返回持久化窗口里出现过的模型族集合。
@@ -467,7 +487,7 @@ func AddStandardCost(usage *Usage, at time.Time, modelName string, costMicroUSD 
 	}
 	changed := false
 	for _, window := range usage.Windows {
-		if window == nil || !FamilyMatches(window.Family, modelName) {
+		if window == nil || !WindowMatchesModel(window, modelName) {
 			continue
 		}
 		advanceWindow(window, at)
