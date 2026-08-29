@@ -33,7 +33,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.cost.title': 'Cost Control',
   'www.home.features.cost.desc': 'Daily channel limits, token total/daily/monthly limits, and OAuth quota windows aligned to upstream reset times, tracked in micro-dollars.',
   'www.home.features.oauth.title': 'OAuth Channels',
-  'www.home.features.oauth.desc': 'Import Codex, Anthropic, Antigravity, xAI, Z.ai Coding Plan, and Cursor credentials. Batch-refresh quotas; permanently rejected credentials disable the channel.',
+  'www.home.features.oauth.desc': 'Import Codex, Anthropic, Antigravity, xAI, Z.ai Coding Plan, Cursor, and Zed credentials. Batch-refresh quotas; permanently rejected credentials disable the channel.',
   'www.home.features.websocket.title': 'Responses WebSocket',
   'www.home.features.websocket.desc': 'Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover.',
   'www.home.features.token.title': 'Local Token Count',
@@ -64,6 +64,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.oauth.zai.desc': 'Browser authorization or a Coding Plan API key. The model catalog is loaded from the account; quota windows are not billed as standard cost.',
   'www.home.oauth.cursor.title': 'Cursor',
   'www.home.oauth.cursor.desc': 'Import a Cursor user API key. ccLoad installs the official SDK Bridge when needed and does not run Cursor built-in tools on the gateway host.',
+  'www.home.oauth.zed.title': 'Zed',
+  'www.home.oauth.zed.desc': 'Native app sign-in over an ephemeral RSA keypair; the callback token is decrypted into a long-lived credential. Trial access binds the real Zed installation system ID. A fixed /completions upstream runs Codex-protocol local transforms.',
 
   // Home - Admin preview
   'www.home.admin.title': 'Not a black-box proxy',

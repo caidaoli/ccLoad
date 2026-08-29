@@ -9,14 +9,14 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
-  <script src="assets/js/theme-init.js?v=20260823-1"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260823-1">
+  <script src="assets/js/theme-init.js?v=20260829-1"></script>
+  <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260823-1"></script>
-  <script defer src="assets/locales/en.js?v=20260823-1"></script>
-  <script defer src="assets/js/i18n.js?v=20260823-1"></script>
-  <script defer src="assets/js/nav.js?v=20260823-1"></script>
-  <script defer src="assets/js/www.js?v=20260823-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260829-1"></script>
+  <script defer src="assets/locales/en.js?v=20260829-1"></script>
+  <script defer src="assets/js/i18n.js?v=20260829-1"></script>
+  <script defer src="assets/js/nav.js?v=20260829-1"></script>
+  <script defer src="assets/js/www.js?v=20260829-1"></script>
 </head>
 <body class="www-page www-config">
   <header class="www-page-hero">
@@ -203,7 +203,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Channel Configuration</h2>
-          <p>Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits. First-party providers use <code>auth_type</code> (<code>codex_oauth</code>, <code>anthropic_oauth</code>, <code>antigravity_oauth</code>, <code>xai_oauth</code>, <code>zai_oauth</code>, <code>cursor_oauth</code>) instead of a static API key.</p>
+          <p>Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits. First-party providers use <code>auth_type</code> (<code>codex_oauth</code>, <code>anthropic_oauth</code>, <code>antigravity_oauth</code>, <code>xai_oauth</code>, <code>zai_oauth</code>, <code>cursor_oauth</code>, <code>zed_oauth</code>) instead of a static API key.</p>
         </div>
 
         <div class="www-doc-grid">
@@ -259,7 +259,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Runtime Settings in the Admin Console</h2>
-          <p>These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. There is no hot reload — in-flight requests finish before the process exits.</p>
+          <p>These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. The only hot-reloaded exception is <code>model_multimodal_fallback</code>: when it is the sole key in a commit, the mapping is published to the runtime in the same ordered operation without a restart. In-flight requests finish before the process exits.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
@@ -306,7 +306,12 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔗</span>
             <h3>WebSocket sessions</h3>
-            <p>New installs cap downstream WebSocket connections at 128 globally and 64 per token, retain 256 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
+            <p>New installs cap downstream WebSocket connections at 1024 globally and 64 per token, retain 1024 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🖼️</span>
+            <h3>Multimodal fallback</h3>
+            <p><code>model_multimodal_fallback</code> maps a text model to a fallback model for requests that carry non-text content. Keys are normalized by base name with thinking suffixes stripped; up to 64 mappings within 8 KB. It rewrites the incoming model before thinking suffixes, token allowlists, channel filtering and cooldown checks, so routing, logging and cooldown all follow the fallback model. Detection uses the full client-protocol body on HTTP and the complete transcript on Responses WebSocket. It is the only setting that applies without a restart.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📚</span>
