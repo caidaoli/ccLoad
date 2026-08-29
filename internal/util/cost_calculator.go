@@ -503,17 +503,18 @@ func isOpusModel(model string) bool {
 	return strings.Contains(lowerModel, "opus")
 }
 
-// IsFastModeModel 判断模型是否支持 Anthropic fast mode
-// 当前仅 claude-opus-4-6 支持 fast mode（2.5x输出速度，独立定价）
+// IsFastModeModel 判断模型是否支持 Anthropic fast mode。
+// 当前支持 Claude Opus 5 和 Claude Opus 4.8；Opus 4.6 已降级为标准速度。
 func IsFastModeModel(model string) bool {
 	lowerModel := strings.ToLower(model)
-	return strings.HasPrefix(lowerModel, "claude-opus-4-6")
+	return strings.HasPrefix(lowerModel, "claude-opus-5") ||
+		strings.HasPrefix(lowerModel, "claude-opus-4-8")
 }
 
 // CalculateFastModeCost 计算 Anthropic fast mode 的独立费用
 // Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
 // 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
-// 故缓存成本基于基础价 $5 而非 fast 价 $30，与标准路径 CalculateCostDetailed 一致。
+// 故缓存成本基于基础价 $5 而非 fast 价 $10，与标准路径 CalculateCostDetailed 一致。
 // 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
@@ -525,10 +526,10 @@ func calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, 
 	}
 
 	// Fast mode 固定价格（全上下文统一，无 >200K 分段）
-	const inputPrice = 30.0   // $30/MTok（仅 input/output）
-	const outputPrice = 150.0 // $150/MTok
+	const inputPrice = 10.0  // $10/MTok（仅 input/output）
+	const outputPrice = 50.0 // $50/MTok
 	// 缓存倍率常量相对「基础 input 价」定义，缓存成本须基于基础价而非 fast 价
-	const baseInputPrice = 5.0 // claude-opus-4-6 基础 input 价 $5/MTok
+	const baseInputPrice = 5.0 // Claude Opus 5/4.8 基础 input 价 $5/MTok
 
 	breakdown := StandardCostBreakdown{
 		Input:                 newCostComponent(inputTokens, inputPrice),

@@ -145,6 +145,7 @@ var basePricing = map[string]ModelPricing{
 	"claude-opus-4-6":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
 	"claude-opus-4-7":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
 	"claude-opus-4-8":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
+	"claude-opus-5":     {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
 	"claude-fable-5":    {InputPrice: 10.00, OutputPrice: 50.00}, // claude-opus-4-8 两倍
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
