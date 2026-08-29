@@ -1553,7 +1553,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.runtimeMetrics.metric.previousResponseMisses': 'Previous response 未命中',
   // 分组名称
   'settings.group.channel': '渠道与测试',
-  'settings.group.model': '模型匹配',
+
   'settings.group.upstreamConnection': '上游连接',
   'settings.group.streamTimeout': '流式请求超时',
   'settings.group.nonStreamTimeout': '非流式请求超时',
@@ -1565,7 +1565,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.group.access': '访问控制',
   'settings.group.update': '程序更新',
   'settings.group.advanced': '高级',
-  'settings.group.other': '其他',
+
   // 原有设置项
   'settings.general': '通用设置',
   'settings.security': '安全设置',

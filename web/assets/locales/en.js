@@ -1553,7 +1553,7 @@ window.I18N_LOCALES['en'] = {
   'settings.runtimeMetrics.metric.previousResponseMisses': 'Previous response misses',
   // Group names
   'settings.group.channel': 'Channel & Testing',
-  'settings.group.model': 'Model Matching',
+
   'settings.group.upstreamConnection': 'Upstream Connections',
   'settings.group.streamTimeout': 'Stream Request Timeout',
   'settings.group.nonStreamTimeout': 'Non-stream Request Timeout',
@@ -1565,7 +1565,7 @@ window.I18N_LOCALES['en'] = {
   'settings.group.access': 'Access Control',
   'settings.group.update': 'Program Updates',
   'settings.group.advanced': 'Advanced',
-  'settings.group.other': 'Other',
+
   // Original settings
   'settings.general': 'General Settings',
   'settings.security': 'Security Settings',
