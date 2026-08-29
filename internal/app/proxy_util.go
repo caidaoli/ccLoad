@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 )
 
 const anthropicBillingHeaderPrefix = "x-anthropic-billing-header:"
@@ -1136,6 +1137,80 @@ func computeRequestCost(model string, serviceTier string, res *fwResult) float64
 		res.Cache5mInputTokens,
 		res.Cache1hInputTokens,
 	).Total + res.ToolCostUSD
+}
+
+func requestedServiceTier(reqCtx *proxyRequestContext) string {
+	if reqCtx == nil {
+		return ""
+	}
+	body := reqCtx.translatedBody
+	if len(body) == 0 {
+		body = reqCtx.body
+	}
+	if len(body) == 0 {
+		return ""
+	}
+	if reqCtx.upstreamProtocol == protocol.Anthropic {
+		return normalizeBillingServiceTier(gjson.GetBytes(body, "speed").String())
+	}
+	return normalizeBillingServiceTier(gjson.GetBytes(body, "service_tier").String())
+}
+
+func normalizeObservedServiceTier(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeBillingServiceTier(value string) string {
+	switch normalizeObservedServiceTier(value) {
+	case "ultrafast", "priority", "fast", "flex", "default", "standard":
+		return normalizeObservedServiceTier(value)
+	default:
+		return ""
+	}
+}
+
+func serviceTierCostRank(value string) (int, bool) {
+	switch normalizeBillingServiceTier(value) {
+	case "flex":
+		return 0, true
+	case "default", "standard":
+		return 1, true
+	case "priority", "fast":
+		return 2, true
+	case "ultrafast":
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+// resolveBillingServiceTier merges the requested tier with the upstream tier.
+// A response can lower the bill when it explicitly reports a cheaper tier. The
+// explicit ultrafast response tier is retained because it carries a 10x charge;
+// ordinary expensive response tiers never raise an untiered request.
+func resolveBillingServiceTier(requested, observed string) string {
+	requested = normalizeBillingServiceTier(requested)
+	observed = normalizeBillingServiceTier(observed)
+	// ultrafast is an explicit upstream processing tier. It must win even when
+	// the request asked for priority; otherwise the actual 10x charge is lost.
+	if observed == "ultrafast" {
+		return observed
+	}
+	if requested == "" {
+		if rank, ok := serviceTierCostRank(observed); ok && rank <= 1 {
+			return observed
+		}
+		return ""
+	}
+	if observed == "" {
+		return requested
+	}
+	requestedRank, requestedOK := serviceTierCostRank(requested)
+	observedRank, observedOK := serviceTierCostRank(observed)
+	if !requestedOK || !observedOK || observedRank > requestedRank {
+		return requested
+	}
+	return observed
 }
 
 // truncateErr 截断错误信息到512字符（防止日志过长）

@@ -5388,6 +5388,76 @@ func TestProxy_CodexPriorityRequestBillsFastModeWithoutResponseTier(t *testing.T
 	}
 }
 
+func TestProxy_CodexPriorityRequestUsesUpstreamDefaultTier(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-standard","status":"completed","model":"gpt-5.6","service_tier":"default","output":[],"usage":{"input_tokens":1000,"output_tokens":1000,"total_tokens":2000}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-standard", models: "gpt-5.6", upstreamProtocol: util.ProtocolCodex},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":        "gpt-5.6",
+		"stream":       true,
+		"service_tier": "priority",
+		"input":        "hi",
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-5.6")
+	if entry.ServiceTier != "default" {
+		t.Fatalf("ServiceTier=%q, want default", entry.ServiceTier)
+	}
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0)
+	if !floatEquals(entry.Cost, wantCost) {
+		t.Fatalf("Cost=%v, want standard cost %v", entry.Cost, wantCost)
+	}
+}
+
+func TestProxy_CodexUltrafastResponseChargesTenfold(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-ultrafast","status":"completed","model":"gpt-5.6","service_tier":"ultrafast","output":[],"usage":{"input_tokens":1000,"output_tokens":1000,"total_tokens":2000}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ultrafast", models: "gpt-5.6", upstreamProtocol: util.ProtocolCodex},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":        "gpt-5.6",
+		"stream":       true,
+		"service_tier": "priority",
+		"input":        "hi",
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-5.6")
+	if entry.ServiceTier != "ultrafast" {
+		t.Fatalf("ServiceTier=%q, want ultrafast", entry.ServiceTier)
+	}
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 10
+	if !floatEquals(entry.Cost, wantCost) {
+		t.Fatalf("Cost=%v, want ultrafast cost %v", entry.Cost, wantCost)
+	}
+}
+
 func waitForProxyLog(t testing.TB, env *proxyTestEnv, modelName string) *model.LogEntry {
 	t.Helper()
 

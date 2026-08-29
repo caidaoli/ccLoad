@@ -542,6 +542,34 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	}
 }
 
+func TestResolveBillingServiceTier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		requested string
+		observed  string
+		want      string
+	}{
+		{name: "upstream downgrade", requested: "priority", observed: "default", want: "default"},
+		{name: "anthropic downgrade", requested: "fast", observed: "standard", want: "standard"},
+		{name: "ultrafast is retained when served", requested: "ultrafast", observed: "ultrafast", want: "ultrafast"},
+		{name: "ultrafast downgrade", requested: "ultrafast", observed: "priority", want: "priority"},
+		{name: "ultrafast response is billed at actual tier", requested: "priority", observed: "ultrafast", want: "ultrafast"},
+		{name: "ultrafast response is billed without request tier", requested: "", observed: "ultrafast", want: "ultrafast"},
+		{name: "missing response uses request", requested: "priority", observed: "", want: "priority"},
+		{name: "case and whitespace normalize", requested: " Priority ", observed: " DEFAULT ", want: "default"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveBillingServiceTier(tt.requested, tt.observed); got != tt.want {
+				t.Fatalf("resolveBillingServiceTier(%q, %q)=%q, want %q", tt.requested, tt.observed, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildUpstreamURL_RewritesExactCodexResponsesForAlphaSearch(t *testing.T) {
 	t.Parallel()
 

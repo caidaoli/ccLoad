@@ -460,6 +460,7 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		multiplier float64
 	}{
 		{"gpt-5.6", "priority", 2.5},
+		{"gpt-5.6", "ultrafast", 10.0},
 		{"gpt-5.6-sol", "priority", 2.5},
 		{"gpt-5.6-terra", "flex", 0.5},
 		{"gpt-5.6-luna-2026-06-26", "priority", 2.5},

@@ -29,7 +29,7 @@ type usageAccumulator struct {
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
 	ToolCostUSD              float64
-	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
+	ServiceTier              string // 上游实际声明的 service_tier/speed
 	ThinkingEffort           string
 	ResponseModel            string // 上游原始响应声明的模型；只用于日志观测
 	usageVersion             int
@@ -111,7 +111,7 @@ type sseLargeFieldSanitizer struct {
 type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
-	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
+	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与上游 service_tier/speed
 	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
 	GetThinkingEffort() string
 	GetReasoningTokens() int
@@ -262,9 +262,6 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
 		p.scanVersion = p.scanner.usageVersion
-	}
-	if p.scanner.ServiceTier != "" {
-		p.ServiceTier = p.scanner.ServiceTier
 	}
 	if p.scanner.ThinkingEffort != "" {
 		p.ThinkingEffort = p.scanner.ThinkingEffort
@@ -598,13 +595,10 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 	}
 
-	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
-	if tier, ok := event["service_tier"].(string); ok && tier != "" {
+	// Responses 的 response.created/queued/in_progress 通常只是请求回显，
+	// 不能当作实际上游服务档位。仅采信终止事件；无 type 的 Chat 分片仍可读取。
+	if tier := observedServiceTierFromEvent(eventType, payloadType, event); tier != "" {
 		p.ServiceTier = tier
-	} else if resp, ok := event["response"].(map[string]any); ok {
-		if tier, ok := resp["service_tier"].(string); ok && tier != "" {
-			p.ServiceTier = tier
-		}
 	}
 	if effort := extractThinkingEffortFromPayload(event); effort != "" {
 		p.ThinkingEffort = effort
@@ -616,9 +610,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
-	// Anthropic fast mode: 从 usage.speed 推断计费层级
-	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
-		p.ServiceTier = "fast"
+	// Anthropic fast mode: 以 usage.speed 记录上游实际档位，standard 也必须保留，
+	// 否则请求 fast、上游降为 standard 时无法在计费层识别降档。
+	if speed, ok := usage["speed"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(speed)) {
+		case "fast", "standard":
+			p.ServiceTier = strings.ToLower(strings.TrimSpace(speed))
+		}
 	}
 
 	return nil
@@ -700,6 +698,35 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func observedServiceTierFromEvent(eventType, payloadType string, event map[string]any) string {
+	if event == nil {
+		return ""
+	}
+	terminal := isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType)
+	if !terminal && (eventType != "" || payloadType != "") {
+		// Responses 的 typed delta 一律忽略，避免读取请求回显；没有 type
+		// 的自定义 Chat 事件仍可读取 service_tier。
+		if payloadType != "" {
+			return ""
+		}
+		switch eventType {
+		case "response.created", "response.queued", "response.in_progress",
+			"codex.rate_limits", "codex.response.metadata":
+			return ""
+		}
+	}
+
+	if tier, ok := event["service_tier"].(string); ok {
+		return normalizeBillingServiceTier(tier)
+	}
+	if response, ok := event["response"].(map[string]any); ok {
+		if tier, ok := response["service_tier"].(string); ok {
+			return normalizeBillingServiceTier(tier)
+		}
+	}
+	return ""
 }
 
 // openAIStreamPayloadComplete 判断 Chat Completions 分片是否给出终态。
@@ -978,7 +1005,9 @@ func (p *jsonUsageParser) finishJSONValueCapture() {
 		case "service_tier":
 			var tier string
 			if err := json.Unmarshal(p.scanCaptureBuf, &tier); err == nil && tier != "" {
-				p.ServiceTier = tier
+				if normalized := normalizeBillingServiceTier(tier); normalized != "" {
+					p.ServiceTier = normalized
+				}
 			}
 		}
 	}
@@ -994,8 +1023,11 @@ func (p *jsonUsageParser) applyUsageMap(usage map[string]any) {
 	if usage == nil {
 		return
 	}
-	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
-		p.ServiceTier = "fast"
+	if speed, ok := usage["speed"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(speed)) {
+		case "fast", "standard":
+			p.ServiceTier = strings.ToLower(strings.TrimSpace(speed))
+		}
 	}
 	p.applyUsage(usage, p.upstreamProtocol)
 }
@@ -1049,12 +1081,16 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		p.ThinkingEffort = effort
 	}
 
-	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
+	// 非流式 JSON 整体就是响应体，可直接读取顶层或 response 内的档位。
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {
-		p.ServiceTier = tier
+		if normalized := normalizeBillingServiceTier(tier); normalized != "" {
+			p.ServiceTier = normalized
+		}
 	} else if resp, ok := payload["response"].(map[string]any); ok {
 		if tier, ok := resp["service_tier"].(string); ok && tier != "" {
-			p.ServiceTier = tier
+			if normalized := normalizeBillingServiceTier(tier); normalized != "" {
+				p.ServiceTier = normalized
+			}
 		}
 	}
 

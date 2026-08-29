@@ -1414,6 +1414,29 @@ func TestJSONUsageParser_ServiceTierResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_ResponsesServiceTierUsesTerminalEvent(t *testing.T) {
+	t.Parallel()
+
+	parser := newSSEUsageParser("codex")
+	created := "event: response.created\n" +
+		`data: {"type":"response.created","response":{"model":"gpt-5.6","service_tier":"priority"}}` + "\n\n"
+	if err := parser.Feed([]byte(created)); err != nil {
+		t.Fatalf("Feed response.created: %v", err)
+	}
+	if parser.ServiceTier != "" {
+		t.Fatalf("response.created must not set ServiceTier, got %q", parser.ServiceTier)
+	}
+
+	completed := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.6","service_tier":"default","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+	if err := parser.Feed([]byte(completed)); err != nil {
+		t.Fatalf("Feed response.completed: %v", err)
+	}
+	if parser.ServiceTier != "default" {
+		t.Fatalf("ServiceTier=%q, want default", parser.ServiceTier)
+	}
+}
+
 func TestJSONUsageParser_DoesNotTreatEventTextAsSSE(t *testing.T) {
 	body := `{"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"jsonUsageParser.GetUsage() detects event: text in this string"}]}],"usage":{"input_tokens":20070,"input_tokens_details":{"cached_tokens":11008},"output_tokens":544,"total_tokens":20614}}`
 	parser := newJSONUsageParser("codex")
@@ -1447,7 +1470,7 @@ func TestSSEUsageParser_SpeedFast(t *testing.T) {
 }
 
 func TestSSEUsageParser_SpeedStandard(t *testing.T) {
-	// speed:"standard" 不应设置 ServiceTier
+	// speed:"standard" 是上游明确声明的实际标准档位
 	sseData := `data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"speed":"standard"}}
 
 `
@@ -1455,8 +1478,8 @@ func TestSSEUsageParser_SpeedStandard(t *testing.T) {
 	if err := parser.Feed([]byte(sseData)); err != nil {
 		t.Fatalf("Feed失败: %v", err)
 	}
-	if parser.ServiceTier != "" {
-		t.Errorf("ServiceTier = %q, 期望空字符串（standard不设置tier）", parser.ServiceTier)
+	if parser.ServiceTier != "standard" {
+		t.Errorf("ServiceTier = %q, 期望 standard", parser.ServiceTier)
 	}
 }
 
