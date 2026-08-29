@@ -28,15 +28,25 @@ func validManagedChannelPayload(name string) map[string]any {
 		"models":    []map[string]any{{"model": "gpt-test"}},
 		"enabled":   true,
 		"management_account": map[string]any{
-			"profile":      model.ChannelManagementProfileSub2API,
-			"base_url":     "https://panel.example.com/",
-			"access_token": managementAccountSecret,
+			"profile":  model.ChannelManagementProfileSub2API,
+			"base_url": "https://panel.example.com/",
+			"email":    "managed@example.com",
+			"password": "managed-password",
 		},
 	}
 }
 
 func createManagedChannelThroughHandler(t *testing.T, server *Server, name string) *model.Config {
 	t.Helper()
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.Path != "/api/v1/auth/login" {
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"code":404,"message":"not found","data":{}}`)), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"code":0,"message":"","metadata":{},"data":{"access_token":"` + managementAccountSecret + `","refresh_token":"management-refresh-token","expires_in":86400,"user":{"id":42}}}`)), Request: req}, nil
+	})}
+	server.antigravityClient = server.client
 	payload := validManagedChannelPayload(name)
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
 	server.handleCreateChannel(c)
@@ -132,9 +142,10 @@ func TestChannelManagementUpdateRejectsEffectiveOAuthAuthType(t *testing.T) {
 	payload := validManagedChannelPayload(stored.Name)
 	payload["auth_type"] = " CODEX_OAUTH "
 	payload["management_account"] = map[string]any{
-		"profile":      model.ChannelManagementProfileSub2API,
-		"base_url":     "https://replacement.example.com",
-		"access_token": "replacement-secret",
+		"profile":  model.ChannelManagementProfileSub2API,
+		"base_url": "https://replacement.example.com",
+		"email":    "replacement@example.com",
+		"password": "replacement-password",
 	}
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, fmt.Sprintf("/admin/channels/%d", stored.ID), payload))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
@@ -173,6 +184,35 @@ func TestChannelManagementUpdateRejectsUnknownAuthType(t *testing.T) {
 	}
 	if persisted.GetAuthType() != model.AuthTypeAPIKey || persisted.OAuthCredential == "" {
 		t.Fatalf("unknown auth type changed persisted channel: %#v", persisted)
+	}
+}
+
+func TestChannelManagementUpdateValidatesChannelBeforeSub2APILogin(t *testing.T) {
+	server := newInMemoryServer(t)
+	stored := createManagedChannelThroughHandler(t, server, "managed-invalid-edit")
+
+	loginRequests := 0
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		loginRequests++
+		return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"code":500,"message":"unexpected login","data":{}}`)), Request: req}, nil
+	})}
+	payload := validManagedChannelPayload("")
+	payload["management_account"] = map[string]any{
+		"profile":  model.ChannelManagementProfileSub2API,
+		"base_url": "https://replacement.example.com",
+		"email":    "replacement@example.com",
+		"password": "replacement-password",
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, fmt.Sprintf("/admin/channels/%d", stored.ID), payload))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelByID(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid update status=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+	if loginRequests != 0 {
+		t.Fatalf("invalid channel update made %d Sub2API login request(s)", loginRequests)
 	}
 }
 
@@ -269,12 +309,20 @@ func TestChannelManagementResponsesLimitCredentialsToEditor(t *testing.T) {
 				t.Fatalf("redacted management view missing: %s", body)
 			}
 			if request.name == "editor" {
-				if !strings.Contains(body, `"access_token":"`+managementAccountSecret+`"`) {
-					t.Fatalf("editor management credential missing: %s", body)
+				if strings.Contains(body, managementAccountSecret) {
+					t.Fatalf("editor leaked Sub2API access token: %s", body)
+				}
+				if !strings.Contains(body, `"refresh_token":"management-refresh-token"`) ||
+					!strings.Contains(body, `"email":"managed@example.com"`) ||
+					!strings.Contains(body, `"password":"managed-password"`) {
+					t.Fatalf("editor omitted Sub2API login credentials: %s", body)
 				}
 				return
 			}
-			for _, secret := range []string{managementAccountSecret, `"channel_management"`, `"access_token"`, `"settings"`} {
+			for _, secret := range []string{
+				managementAccountSecret, `"channel_management"`, `"access_token"`, `"settings"`,
+				"managed-password", "managed@example.com",
+			} {
 				if strings.Contains(body, secret) {
 					t.Fatalf("%s response leaked %q: %s", request.name, secret, body)
 				}
@@ -291,14 +339,19 @@ func TestChannelManagementEditorExposesCredentialsOnlyInEditor(t *testing.T) {
 	editorCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
 	server.HandleChannelEditor(editorCtx)
 	if editorW.Code != http.StatusOK || strings.Contains(editorW.Body.String(), `"oauth_credential"`) ||
-		!strings.Contains(editorW.Body.String(), `"access_token":"`+managementAccountSecret+`"`) {
+		strings.Contains(editorW.Body.String(), managementAccountSecret) ||
+		!strings.Contains(editorW.Body.String(), `"refresh_token":"management-refresh-token"`) ||
+		!strings.Contains(editorW.Body.String(), `"email":"managed@example.com"`) ||
+		!strings.Contains(editorW.Body.String(), `"password":"managed-password"`) {
 		t.Fatalf("editor credential response invalid: status=%d body=%s", editorW.Code, editorW.Body.String())
 	}
 
 	keysCtx, keysW := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/keys", stored.ID), nil))
 	keysCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
 	server.HandleChannelKeys(keysCtx)
-	if keysW.Code != http.StatusOK || strings.Contains(keysW.Body.String(), managementAccountSecret) || strings.Contains(keysW.Body.String(), `"channel_management"`) {
+	if keysW.Code != http.StatusOK || strings.Contains(keysW.Body.String(), managementAccountSecret) ||
+		strings.Contains(keysW.Body.String(), `"channel_management"`) ||
+		strings.Contains(keysW.Body.String(), "managed-password") {
 		t.Fatalf("key copy surface exposed private envelope: status=%d body=%s", keysW.Code, keysW.Body.String())
 	}
 
@@ -339,6 +392,14 @@ func (s *managementCreateCASFailureStore) CompareAndSwapChannelManagement(contex
 
 func TestChannelManagementCreateRollsBackConfigBeforeCreatingKeys(t *testing.T) {
 	server := newInMemoryServer(t)
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost && req.URL.Path == "/api/v1/auth/login" {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"code":0,"message":"","metadata":{},"data":{"access_token":"` + managementAccountSecret + `","refresh_token":"management-refresh-token","expires_in":86400,"user":{"id":42}}}`)), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"code":404,"message":"not found","data":{}}`)), Request: req}, nil
+	})}
 	failing := &managementCreateCASFailureStore{Store: server.store}
 	server.store = failing
 	server.channelManagement = newChannelManagementService(failing, server.getClientForChannel)
@@ -392,12 +453,49 @@ func TestChannelManagementRoutesRegistered(t *testing.T) {
 		routes[route.Method+" "+route.Path] = struct{}{}
 	}
 	for _, route := range []string{
+		"POST /admin/channel-management/sub2api-login",
 		"POST /admin/channels/:id/management-account/balance",
 		"POST /admin/channels/:id/management-account/checkin",
 	} {
 		if _, ok := routes[route]; !ok {
 			t.Errorf("route %q is not registered", route)
 		}
+	}
+}
+
+func TestHandleChannelManagementSub2APILoginDoesNotPersist(t *testing.T) {
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "login-preview-handler")
+	originalCredential := cfg.OAuthCredential
+	fixedNow := time.Date(2026, time.August, 25, 9, 30, 0, 0, time.UTC)
+	server.channelManagement.now = func() time.Time { return fixedNow }
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.Path != "/api/v1/auth/login" {
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"code":404,"message":"not found","data":{}}`)), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"code":0,"message":"","data":{"access_token":"preview-access","refresh_token":"preview-refresh","expires_in":3600,"user":{"id":42}}}`)), Request: req}, nil
+	})}
+	server.antigravityClient = server.client
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channel-management/sub2api-login", map[string]any{
+		"profile":  model.ChannelManagementProfileSub2API,
+		"base_url": "https://panel.example.com",
+		"email":    "managed@example.com",
+		"password": "managed-password",
+	}))
+	server.HandleChannelManagementSub2APILogin(c)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"refresh_token":"preview-refresh"`) ||
+		!strings.Contains(w.Body.String(), `"access_token":"preview-access"`) {
+		t.Fatalf("login status=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OAuthCredential != originalCredential {
+		t.Fatalf("login handler wrote channel credential: %q", stored.OAuthCredential)
 	}
 }
 
@@ -439,6 +537,7 @@ func TestChannelManagementBalanceAndCheckinHandlers(t *testing.T) {
 		Profile: model.ChannelManagementProfileSub2API,
 		Settings: model.ChannelManagementSettings{
 			BaseURL: "https://panel.example.com", AccessToken: managementAccountSecret,
+			RefreshToken: "management-refresh-token", ExpiresAt: timePointer(time.Now().Add(time.Hour)), AccountID: &userID,
 		},
 	})
 	checkinCtx, checkinW := newTestContext(t, newRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/management-account/checkin", checkinChannel.ID), nil))

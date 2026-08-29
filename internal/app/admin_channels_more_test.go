@@ -14,6 +14,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -101,8 +102,8 @@ func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 		Keys            []*model.APIKey     `json:"keys"`
 		OAuthCredential json.RawMessage     `json:"oauth_credential"`
 	}](t, editorResponse.Body.Bytes())
-	if editor.Data.Keys == nil || len(editor.Data.Keys) != 0 {
-		t.Fatalf("editor keys=%#v, want []", editor.Data.Keys)
+	if len(editor.Data.Keys) != 1 || editor.Data.Keys[0].APIKey != util.MaskAPIKey(credential.AccessToken) || editor.Data.Keys[0].CostMultiplier != created.CostMultiplier {
+		t.Fatalf("editor keys=%#v, want masked synthetic key with current multiplier", editor.Data.Keys)
 	}
 	if string(editor.Data.OAuthCredential) != credentialJSON {
 		t.Fatalf("editor oauth_credential=%s, want canonical credential %s", editor.Data.OAuthCredential, credentialJSON)

@@ -28,14 +28,14 @@ func TestChannelManagementServiceSaveSettingsMergesAndRedacts(t *testing.T) {
 	service := newChannelManagementService(server.store, func(*model.Config) *http.Client { return server.client })
 
 	view, err := service.SaveSettings(ctx, cfg, &channelManagementInput{
-		Profile:     model.ChannelManagementProfileSub2API,
+		Profile:     model.ChannelManagementProfileNewAPI,
 		BaseURL:     "https://panel.example.com/",
 		AccessToken: "first-private-token",
 	})
 	if err != nil {
 		t.Fatalf("SaveSettings create: %v", err)
 	}
-	if view.Profile != model.ChannelManagementProfileSub2API || view.BaseURL != "https://panel.example.com" || !view.CredentialConfigured {
+	if view.Profile != model.ChannelManagementProfileNewAPI || view.BaseURL != "https://panel.example.com" || !view.CredentialConfigured {
 		t.Fatalf("created view = %#v", view)
 	}
 
@@ -61,7 +61,7 @@ func TestChannelManagementServiceSaveSettingsMergesAndRedacts(t *testing.T) {
 	stored.OAuthCredential = rawWithState
 
 	view, err = service.SaveSettings(ctx, stored, &channelManagementInput{
-		Profile: model.ChannelManagementProfileSub2API,
+		Profile: model.ChannelManagementProfileNewAPI,
 		BaseURL: "https://panel.example.com/",
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestChannelManagementServiceSaveSettingsMergesAndRedacts(t *testing.T) {
 
 	fresh := createChannelManagementTestConfig(t, server.store, "fresh")
 	if _, err = service.SaveSettings(ctx, fresh, &channelManagementInput{
-		Profile: model.ChannelManagementProfileSub2API,
+		Profile: model.ChannelManagementProfileNewAPI,
 		BaseURL: "https://fresh.example.com",
 	}); err == nil {
 		t.Fatal("new management profile accepted an empty access token")
@@ -180,7 +180,11 @@ func TestChannelManagementServiceSaveSettingsClearsStateWhenAccountIdentityChang
 		{
 			name: "profile",
 			input: channelManagementInput{
-				Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://panel.example.com", AccessToken: "next-private-token",
+				Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://panel.example.com",
+				sub2APISession: &sub2APIManagementSession{
+					AccessToken: "next-private-token", RefreshToken: "next-refresh-token",
+					ExpiresAt: time.Date(2099, time.January, 1, 0, 0, 0, 0, time.UTC), AccountID: 43,
+				},
 			},
 		},
 		{

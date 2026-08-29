@@ -13,24 +13,25 @@
 
 const MANAGEMENT_PROFILE_FIELDS = Object.freeze({
   '': Object.freeze({
-    baseURL: false, token: false, userID: false, checkin: false,
+    baseURL: false, token: false, login: false, userID: false, checkin: false,
     notice: '', tokenHelp: ''
   }),
   new_api: Object.freeze({
-    baseURL: true, token: true, userID: true, checkin: true,
+    baseURL: true, token: true, login: false, userID: true, checkin: true,
     notice: '', tokenHelp: 'channels.management.tokenHelpNewAPI'
   }),
   sub2api: Object.freeze({
-    baseURL: true, token: true, userID: false, checkin: false,
-    notice: 'channels.management.noticeSub2API', tokenHelp: 'channels.management.tokenHelpSub2API'
+    baseURL: true, token: false, login: true, userID: false, checkin: false,
+    notice: 'channels.management.noticeSub2API', tokenHelp: ''
   }),
   sub2api_pro: Object.freeze({
-    baseURL: true, token: true, userID: false, checkin: true,
-    notice: 'channels.management.noticeSub2APIPro', tokenHelp: 'channels.management.tokenHelpSub2API'
+    baseURL: true, token: false, login: true, userID: false, checkin: true,
+    notice: 'channels.management.noticeSub2APIPro', tokenHelp: ''
   })
 });
 
 const MANAGEMENT_CHECKIN_PROFILES = Object.freeze(['new_api', 'sub2api_pro']);
+const MANAGEMENT_RATE_PROFILES = Object.freeze(['new_api', 'sub2api', 'sub2api_pro']);
 const MANAGEMENT_CHECKIN_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 // ============================================================
@@ -51,19 +52,34 @@ let managementCheckinOperationSequence = 0;
 
 let managementAccountAuthType = 'api_key';
 let managementAccountSavedProfile = '';
+let managementAccountSavedBaseURL = '';
 let managementAccountUserIDConfigured = false;
 let managementAccountCredentialConfigured = false;
 let managementAccountState = null;
+let managementAccountPendingSession = null;
 
 function emptyManagementAccountDraft() {
   return {
     profile: '',
     base_url: '',
     access_token: '',
+    refresh_token: '',
+    email: '',
+    password: '',
+    totp_code: '',
     user_id: '',
     daily_checkin_enabled: false,
-    daily_checkin_time: ''
+    daily_checkin_time: '',
+    session: null
   };
+}
+
+function managementBaseURLKey(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function clearManagementPendingSession() {
+  managementAccountPendingSession = null;
 }
 
 function managementElement(id) {
@@ -78,6 +94,17 @@ function managementText(key, values) {
 function normalizeManagementProfile(value) {
   const profile = String(value === null || value === undefined ? '' : value).trim();
   return Object.prototype.hasOwnProperty.call(MANAGEMENT_PROFILE_FIELDS, profile) ? profile : '';
+}
+
+function hasPendingManagementSession() {
+  const session = managementAccountPendingSession || (managementAccountState && managementAccountState.session);
+  return Boolean(session && session.refresh_token && session.access_token && session.expires_at && session.account_id);
+}
+
+function syncManagementSaveAction() {
+  if (typeof window !== 'undefined' && typeof window.syncChannelSaveButtonLabel === 'function') {
+    window.syncChannelSaveButtonLabel();
+  }
 }
 
 function managementProfileFields(profile) {
@@ -160,6 +187,26 @@ function clearManagementAccountErrors() {
     null
   );
   setManagementFieldError(
+    managementElement('channelManagementEmail'),
+    managementElement('channelManagementEmailError'),
+    null
+  );
+  setManagementFieldError(
+    managementElement('channelManagementPassword'),
+    managementElement('channelManagementPasswordError'),
+    null
+  );
+  setManagementFieldError(
+    managementElement('channelManagementTOTP'),
+    managementElement('channelManagementTOTPError'),
+    null
+  );
+  setManagementFieldError(
+    managementElement('channelManagementRefreshToken'),
+    managementElement('channelManagementRefreshTokenError'),
+    null
+  );
+  setManagementFieldError(
     managementElement('channelManagementUserID'),
     managementElement('channelManagementUserIDError'),
     null
@@ -179,6 +226,12 @@ function bindManagementProfileChange(select) {
     if (draft.profile !== managementAccountSavedProfile) {
       // Credentials belong to the saved profile and must not carry across profiles.
       draft.access_token = '';
+      draft.refresh_token = '';
+      draft.email = '';
+      draft.password = '';
+      draft.totp_code = '';
+      draft.session = null;
+      clearManagementPendingSession();
     }
     renderManagementAccountFields(draft);
     if (typeof window !== 'undefined' && typeof window.markChannelFormDirty === 'function') {
@@ -195,6 +248,10 @@ function readManagementAccountForm() {
     profile: normalizeManagementProfile(profileSelect ? profileSelect.value : ''),
     base_url: String((managementElement('channelManagementBaseURL') || {}).value || '').trim(),
     access_token: String((managementElement('channelManagementToken') || {}).value || '').trim(),
+    refresh_token: String((managementElement('channelManagementRefreshToken') || {}).value || '').trim(),
+    email: String((managementElement('channelManagementEmail') || {}).value || '').trim(),
+    password: String((managementElement('channelManagementPassword') || {}).value || ''),
+    totp_code: String((managementElement('channelManagementTOTP') || {}).value || '').trim(),
     user_id: String((managementElement('channelManagementUserID') || {}).value || '').trim(),
     daily_checkin_enabled: checkbox ? checkbox.checked === true : false,
     daily_checkin_time: String((managementElement('channelManagementDailyCheckinTime') || {}).value || '').trim()
@@ -222,11 +279,17 @@ function renderManagementAccountFields(draft) {
 
   setManagementFieldVisibility('channelManagementBaseURLField', fields.baseURL);
   setManagementFieldVisibility('channelManagementTokenField', fields.token);
+  setManagementFieldVisibility('channelManagementLoginField', fields.login);
+  setManagementFieldVisibility('channelManagementRefreshTokenField', fields.login);
   setManagementFieldVisibility('channelManagementUserIDField', fields.userID);
   setManagementFieldVisibility('channelManagementCheckinField', fields.checkin);
 
   setManagementFieldValue('channelManagementBaseURL', state.base_url);
   setManagementFieldValue('channelManagementToken', state.access_token);
+  setManagementFieldValue('channelManagementRefreshToken', state.refresh_token);
+  setManagementFieldValue('channelManagementEmail', state.email);
+  setManagementFieldValue('channelManagementPassword', state.password);
+  setManagementFieldValue('channelManagementTOTP', state.totp_code);
   setManagementFieldValue('channelManagementUserID', state.user_id);
   setManagementFieldValue('channelManagementDailyCheckinTime', state.daily_checkin_time);
   const checkbox = managementElement('channelManagementDailyCheckinEnabled');
@@ -264,8 +327,10 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
   managementAccountAuthType = String(authType || 'api_key').trim().toLowerCase() || 'api_key';
   const account = managementAccountAuthType === 'api_key' && view ? view : null;
   managementAccountSavedProfile = normalizeManagementProfile(account && account.profile);
+  managementAccountSavedBaseURL = String((account && account.base_url) || '').trim();
   managementAccountUserIDConfigured = Boolean(account && account.user_id_configured === true);
   managementAccountCredentialConfigured = Boolean(account && account.credential_configured === true);
+  clearManagementPendingSession();
 
   // 首个渠道 URL 只作为初始默认；已保存的显式面板地址永远优先。
   const savedBaseURL = String((account && account.base_url) || '').trim();
@@ -273,18 +338,25 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
     profile: managementAccountSavedProfile,
     base_url: savedBaseURL || firstManagementBaseURL(channelURLs),
     access_token: String((account && account.access_token) || '').trim(),
+    refresh_token: String((account && account.refresh_token) || '').trim(),
+    email: String((account && account.email) || '').trim(),
+    password: String((account && account.password) || ''),
+    totp_code: '',
     user_id: account && account.user_id !== null && account.user_id !== undefined
       ? String(account.user_id)
       : '',
     daily_checkin_enabled: Boolean(account && account.daily_checkin_enabled === true),
-    daily_checkin_time: String((account && account.daily_checkin_time) || '').trim()
+    daily_checkin_time: String((account && account.daily_checkin_time) || '').trim(),
+    session: null
   };
   renderManagementAccountFields(managementAccountState);
+  syncManagementSaveAction();
   return managementAccountState;
 }
 
 /** 重开高级设置时丢弃未确认的编辑，回到最近一次 commit 的草稿。 */
 function beginManagementAccountDraft() {
+  clearManagementPendingSession();
   renderManagementAccountFields(managementAccountState);
 }
 
@@ -314,6 +386,33 @@ function validateManagementAccountDraft() {
   const tokenInput = managementElement('channelManagementToken');
   setManagementFieldError(tokenInput, managementElement('channelManagementTokenError'), tokenError);
   if (tokenError && tokenInput) invalidControls.push(tokenInput);
+
+  const sessionError = managementSessionError(draft, fields);
+  const refreshTokenInput = managementElement('channelManagementRefreshToken');
+  setManagementFieldError(
+    refreshTokenInput,
+    managementElement('channelManagementRefreshTokenError'),
+    sessionError
+  );
+  if (sessionError && refreshTokenInput) invalidControls.push(refreshTokenInput);
+
+  setManagementFieldError(
+    managementElement('channelManagementEmail'),
+    managementElement('channelManagementEmailError'),
+    null
+  );
+  setManagementFieldError(
+    managementElement('channelManagementPassword'),
+    managementElement('channelManagementPasswordError'),
+    null
+  );
+
+  const totpError = fields.login && draft.totp_code && !/^\d{6}$/.test(draft.totp_code)
+    ? 'channels.management.errTOTP'
+    : null;
+  const totpInput = managementElement('channelManagementTOTP');
+  setManagementFieldError(totpInput, managementElement('channelManagementTOTPError'), totpError);
+  if (totpError && totpInput) invalidControls.push(totpInput);
 
   let userIDError = null;
   if (fields.userID && draft.user_id !== '') {
@@ -345,17 +444,124 @@ function validateManagementAccountDraft() {
   return false;
 }
 
+function matchingManagementPendingSession(draft) {
+  const session = managementAccountPendingSession || (draft && draft.session) ||
+    (managementAccountState && managementAccountState.session) || null;
+  if (!session || !draft) return null;
+  if (session.refresh_token !== draft.refresh_token) return null;
+  if (managementBaseURLKey(session.base_url) !== managementBaseURLKey(draft.base_url)) return null;
+  if (!session.access_token || !session.expires_at || !session.account_id) return null;
+  return session;
+}
+
+function managementSessionError(draft, fields) {
+  if (!fields.login) return null;
+  if (matchingManagementPendingSession(draft)) return null;
+  const savedSession = managementAccountCredentialConfigured &&
+    normalizeManagementProfile(draft.profile) === managementAccountSavedProfile &&
+    managementBaseURLKey(draft.base_url) === managementBaseURLKey(managementAccountSavedBaseURL) &&
+    Boolean(draft.refresh_token);
+  return savedSession ? null : 'channels.management.errSessionRequired';
+}
+
+function validateManagementLoginDraft() {
+  if (managementAccountAuthType !== 'api_key') return false;
+  const draft = readManagementAccountForm();
+  const fields = managementProfileFields(draft.profile);
+  const invalidControls = [];
+
+  let baseURLError = null;
+  if (!draft.base_url) baseURLError = 'channels.management.errBaseURLRequired';
+  else if (!isManagementBaseURLValid(draft.base_url)) baseURLError = 'channels.management.errBaseURLInvalid';
+  const baseURLInput = managementElement('channelManagementBaseURL');
+  setManagementFieldError(baseURLInput, managementElement('channelManagementBaseURLError'), baseURLError);
+  if (baseURLError && baseURLInput) invalidControls.push(baseURLInput);
+
+  setManagementFieldError(
+    managementElement('channelManagementRefreshToken'),
+    managementElement('channelManagementRefreshTokenError'),
+    null
+  );
+
+  const emailError = !draft.email ? 'channels.management.errEmailRequired' : null;
+  const emailInput = managementElement('channelManagementEmail');
+  setManagementFieldError(emailInput, managementElement('channelManagementEmailError'), emailError);
+  if (emailError && emailInput) invalidControls.push(emailInput);
+
+  const passwordError = !draft.password ? 'channels.management.errPasswordRequired' : null;
+  const passwordInput = managementElement('channelManagementPassword');
+  setManagementFieldError(passwordInput, managementElement('channelManagementPasswordError'), passwordError);
+  if (passwordError && passwordInput) invalidControls.push(passwordInput);
+
+  const totpError = draft.totp_code && !/^\d{6}$/.test(draft.totp_code)
+    ? 'channels.management.errTOTP'
+    : null;
+  const totpInput = managementElement('channelManagementTOTP');
+  setManagementFieldError(totpInput, managementElement('channelManagementTOTPError'), totpError);
+  if (totpError && totpInput) invalidControls.push(totpInput);
+
+  if (!fields.login) return false;
+  if (invalidControls.length === 0) return true;
+  if (typeof invalidControls[0].focus === 'function') invalidControls[0].focus();
+  return false;
+}
+
 function commitManagementAccountDraft() {
   if (managementAccountAuthType !== 'api_key') {
     managementAccountState = null;
+    syncManagementSaveAction();
     return true;
   }
   if (!validateManagementAccountDraft()) return false;
-  managementAccountState = readManagementAccountForm();
+  const draft = readManagementAccountForm();
+  const session = matchingManagementPendingSession(draft);
+  managementAccountState = session ? { ...draft, session } : { ...draft, session: null };
+  syncManagementSaveAction();
+  if (typeof renderInlineKeyTable === 'function') renderInlineKeyTable();
   if (typeof window !== 'undefined' && typeof window.markChannelFormDirty === 'function') {
     window.markChannelFormDirty();
   }
   return true;
+}
+
+/** 渠道保存成功后，一次性 TOTP 离开草稿；邮箱、密码和 refresh token 留作下次登录。 */
+function completeManagementAccountSave() {
+  if (!managementAccountState) return;
+  const fields = managementProfileFields(managementAccountState.profile);
+  if (!fields.login && !hasPendingManagementSession()) return;
+  managementAccountSavedProfile = normalizeManagementProfile(managementAccountState.profile);
+  managementAccountSavedBaseURL = String(managementAccountState.base_url || '').trim();
+  managementAccountCredentialConfigured = Boolean(managementAccountState.refresh_token) ||
+    managementAccountCredentialConfigured;
+  managementAccountState.totp_code = '';
+  managementAccountState.session = null;
+  clearManagementPendingSession();
+  renderManagementAccountFields(managementAccountState);
+  syncManagementSaveAction();
+}
+
+/**
+ * 倍率查询只认已提交到渠道编辑器草稿的管理账户配置。
+ * New API 需要管理 PAT 查询 Key 分组；Sub2API 只需要面板地址和渠道 Key。
+ */
+function getManagementAccountRateConfig() {
+  if (managementAccountAuthType !== 'api_key') return null;
+  const state = managementAccountState || emptyManagementAccountDraft();
+  const profile = normalizeManagementProfile(state.profile);
+  if (!MANAGEMENT_RATE_PROFILES.includes(profile)) return null;
+
+  const payload = {
+    profile,
+    base_url: String(state.base_url || '').trim()
+  };
+  if (profile === 'new_api') {
+    payload.access_token = String(state.access_token || '').trim();
+    if (state.user_id !== '') {
+      const userID = Number(state.user_id);
+      if (Number.isInteger(userID) && userID > 0) payload.user_id = userID;
+    }
+  }
+  return payload;
 }
 
 function collectManagementAccountForSubmit() {
@@ -367,7 +573,18 @@ function collectManagementAccountForSubmit() {
   const fields = MANAGEMENT_PROFILE_FIELDS[profile];
   const payload = { profile, base_url: state.base_url };
   // 空凭据表示保留服务端已保存的凭据。
-  if (state.access_token) payload.access_token = state.access_token;
+  if (fields.token && state.access_token) payload.access_token = state.access_token;
+  if (fields.login) {
+    if (state.email) payload.email = state.email;
+    if (state.password) payload.password = state.password;
+  }
+  const session = matchingManagementPendingSession(state);
+  if (fields.login && session) {
+    payload.access_token = session.access_token;
+    payload.refresh_token = session.refresh_token;
+    payload.expires_at = session.expires_at;
+    payload.account_id = Number(session.account_id);
+  }
   if (fields.userID && state.user_id !== '') {
     const userID = Number(state.user_id);
     if (Number.isInteger(userID) && userID > 0) payload.user_id = userID;
@@ -377,6 +594,77 @@ function collectManagementAccountForSubmit() {
     if (state.daily_checkin_time) payload.daily_checkin_time = state.daily_checkin_time;
   }
   return payload;
+}
+
+function applyManagementLoginSession(draft, session) {
+  const refreshToken = String(session.refresh_token || '').trim();
+  managementAccountPendingSession = {
+    base_url: String(draft.base_url || '').trim(),
+    access_token: String(session.access_token || '').trim(),
+    refresh_token: refreshToken,
+    expires_at: session.expires_at,
+    account_id: session.account_id
+  };
+  setManagementFieldValue('channelManagementRefreshToken', refreshToken);
+  setManagementFieldValue('channelManagementTOTP', '');
+  setManagementFieldError(
+    managementElement('channelManagementRefreshToken'),
+    managementElement('channelManagementRefreshTokenError'),
+    null
+  );
+}
+
+function isManagementTOTPRequired(error) {
+  const message = String((error && error.message) || error || '');
+  return message === 'totp_required' || message.includes('totp_required');
+}
+
+async function loginManagementAccount(fetcher) {
+  const request = fetcher || (typeof fetchDataWithAuth === 'function' ? fetchDataWithAuth : null);
+  if (!request) return false;
+  if (!validateManagementLoginDraft()) return false;
+  const draft = readManagementAccountForm();
+  const button = managementElement('channelManagementLoginBtn');
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  try {
+    const session = await request('/admin/channel-management/sub2api-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile: draft.profile,
+        base_url: draft.base_url,
+        email: draft.email,
+        password: draft.password,
+        totp_code: draft.totp_code || undefined,
+        proxy_url: String((managementElement('channelProxyURL') || {}).value || '').trim()
+      })
+    });
+    if (!session || !String(session.refresh_token || '').trim() || !String(session.access_token || '').trim() ||
+        !session.expires_at || !session.account_id) {
+      throw new Error(managementText('channels.management.loginInvalid'));
+    }
+    applyManagementLoginSession(draft, session);
+    return true;
+  } catch (error) {
+    if (isManagementTOTPRequired(error)) {
+      const totpInput = managementElement('channelManagementTOTP');
+      setManagementFieldError(totpInput, managementElement('channelManagementTOTPError'), 'channels.management.errTOTPRequired');
+      if (totpInput && typeof totpInput.focus === 'function') totpInput.focus();
+      return false;
+    }
+    if (typeof window !== 'undefined' && typeof window.showError === 'function') {
+      window.showError((error && error.message) || managementText('channels.management.loginFailed'));
+    }
+    return false;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
 }
 
 // ============================================================
@@ -499,6 +787,9 @@ if (typeof window !== 'undefined') {
   window.validateManagementAccountDraft = validateManagementAccountDraft;
   window.commitManagementAccountDraft = commitManagementAccountDraft;
   window.collectManagementAccountForSubmit = collectManagementAccountForSubmit;
+  window.loginManagementAccount = loginManagementAccount;
+  window.completeManagementAccountSave = completeManagementAccountSave;
+  window.getManagementAccountRateConfig = getManagementAccountRateConfig;
   window.refreshManagementBalance = refreshManagementBalance;
   window.runManagementCheckin = runManagementCheckin;
   window.getManagementBalanceState = getManagementBalanceState;
@@ -510,6 +801,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     MANAGEMENT_PROFILE_FIELDS,
     MANAGEMENT_CHECKIN_PROFILES,
+    MANAGEMENT_RATE_PROFILES,
     firstManagementBaseURL,
     isManagementBaseURLValid,
     managementSupportsCheckin,
@@ -520,6 +812,9 @@ if (typeof module !== 'undefined' && module.exports) {
     validateManagementAccountDraft,
     commitManagementAccountDraft,
     collectManagementAccountForSubmit,
+    loginManagementAccount,
+    completeManagementAccountSave,
+    getManagementAccountRateConfig,
     refreshManagementBalance,
     runManagementCheckin,
     getManagementBalanceState,

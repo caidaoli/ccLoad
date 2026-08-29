@@ -1641,6 +1641,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
 		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
+		admin.POST("/channel-management/sub2api-login", s.HandleChannelManagementSub2APILogin)
 		admin.POST("/channels/:id/management-account/balance", s.HandleChannelManagementBalance)
 		admin.POST("/channels/:id/management-account/checkin", s.HandleChannelManagementCheckin)
 		admin.GET("/channels/:id/model-stats", s.HandleChannelModelStats)
@@ -1650,7 +1651,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/key-disable", s.HandleAPIKeyDisable)
 		admin.POST("/channels/:id/key-enable", s.HandleAPIKeyEnable)
 		admin.POST("/channels/models/fetch", s.HandleFetchModelsPreview) // 临时渠道配置获取模型列表
-		admin.POST("/channels/billing/fetch", s.HandleFetchSub2APIBilling)
+		admin.POST("/channels/billing/fetch", s.HandleFetchKeyRate)
 		admin.POST("/channels/websocket-probe", s.HandleChannelWebsocketProbe)
 		admin.POST("/channels/models/refresh-batch", s.HandleBatchRefreshModels)
 		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels) // 获取渠道可用模型列表(新增)

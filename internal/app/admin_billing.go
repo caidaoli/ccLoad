@@ -9,8 +9,11 @@ import (
 	"math"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,13 +32,31 @@ const (
 	sub2APIBillingErrorAPI            = "api_error"
 )
 
-type fetchSub2APIBillingRequest struct {
-	BaseURL string `json:"base_url" binding:"required"`
-	APIKey  string `json:"api_key" binding:"required"`
+type fetchKeyRateRequest struct {
+	Profile     string `json:"profile" binding:"required"`
+	BaseURL     string `json:"base_url" binding:"required"`
+	APIKey      string `json:"api_key" binding:"required"`
+	AccessToken string `json:"access_token,omitempty"`
+	UserID      *int64 `json:"user_id,omitempty"`
 }
 
-type fetchSub2APIBillingResponse struct {
+type fetchKeyRateResponse struct {
 	EffectiveRateMultiplier float64 `json:"effective_rate_multiplier"`
+}
+
+type newAPIKeySearchPage struct {
+	Items []struct {
+		Group string `json:"group"`
+	} `json:"items"`
+	Total int `json:"total"`
+}
+
+type newAPIGroupRate struct {
+	Ratio json.RawMessage `json:"ratio"`
+}
+
+type newAPIKeyOwner struct {
+	Group string `json:"group"`
 }
 
 type sub2APIBillingResponse struct {
@@ -57,24 +78,22 @@ func (e *sub2APIBillingProbeError) Error() string {
 	return e.code
 }
 
-// HandleFetchSub2APIBilling probes an unsaved channel draft without persisting it.
-func (s *Server) HandleFetchSub2APIBilling(c *gin.Context) {
-	var input fetchSub2APIBillingRequest
+// HandleFetchKeyRate probes an unsaved API Key channel draft without persisting it.
+// The management profile is authoritative: New API and Sub2API have different
+// upstream contracts and must never be guessed from URL shape.
+func (s *Server) HandleFetchKeyRate(c *gin.Context) {
+	var input fetchKeyRateRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "base_url、api_key为必填字段")
+		RespondErrorMsg(c, http.StatusBadRequest, "profile、base_url、api_key为必填字段")
 		return
 	}
 
+	input.Profile = strings.ToLower(strings.TrimSpace(input.Profile))
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.APIKey = strings.TrimSpace(input.APIKey)
-	if input.BaseURL == "" || input.APIKey == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "base_url、api_key为必填字段")
-		return
-	}
-
-	endpoint, err := buildSub2APIBillingURL(input.BaseURL)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "base_url无效: "+err.Error())
+	input.AccessToken = strings.TrimSpace(input.AccessToken)
+	if input.Profile == "" || input.BaseURL == "" || input.APIKey == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "profile、base_url、api_key为必填字段")
 		return
 	}
 
@@ -85,19 +104,201 @@ func (s *Server) HandleFetchSub2APIBilling(c *gin.Context) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	result, err := requestSub2APIBilling(ctx, client, endpoint, input.APIKey)
+
+	var rate float64
+	var err error
+	switch input.Profile {
+	case model.ChannelManagementProfileNewAPI:
+		if input.AccessToken == "" {
+			RespondErrorWithData(c, http.StatusOK, keyRateErrorMessage(sub2APIBillingErrorAuthentication), gin.H{"code": sub2APIBillingErrorAuthentication})
+			return
+		}
+		if input.UserID != nil && *input.UserID <= 0 {
+			RespondErrorMsg(c, http.StatusBadRequest, "user_id必须为正整数")
+			return
+		}
+		rate, err = requestNewAPIKeyRate(
+			ctx, client, input.BaseURL, input.APIKey, input.AccessToken, input.UserID,
+		)
+	case model.ChannelManagementProfileSub2API, model.ChannelManagementProfileSub2APIPro:
+		var endpoint string
+		endpoint, err = buildSub2APIBillingURL(input.BaseURL)
+		if err == nil {
+			var result *sub2APIBillingResponse
+			result, err = requestSub2APIBilling(ctx, client, endpoint, input.APIKey)
+			if err == nil {
+				rate = *result.EffectiveRateMultiplier
+			}
+		}
+	default:
+		RespondErrorMsg(c, http.StatusBadRequest, "不支持的管理账户类型")
+		return
+	}
+	if err != nil && !isKeyRateProbeError(err) {
+		RespondErrorMsg(c, http.StatusBadRequest, "倍率查询参数无效: "+err.Error())
+		return
+	}
 	if err != nil {
 		var probeErr *sub2APIBillingProbeError
 		if !errors.As(err, &probeErr) {
 			probeErr = &sub2APIBillingProbeError{code: sub2APIBillingErrorAPI}
 		}
-		RespondErrorWithData(c, http.StatusOK, sub2APIBillingErrorMessage(probeErr.code), gin.H{"code": probeErr.code})
+		RespondErrorWithData(c, http.StatusOK, keyRateErrorMessage(probeErr.code), gin.H{"code": probeErr.code})
 		return
 	}
 
-	RespondJSON(c, http.StatusOK, fetchSub2APIBillingResponse{
-		EffectiveRateMultiplier: *result.EffectiveRateMultiplier,
+	RespondJSON(c, http.StatusOK, fetchKeyRateResponse{
+		EffectiveRateMultiplier: rate,
 	})
+}
+
+func isKeyRateProbeError(err error) bool {
+	var probeErr *sub2APIBillingProbeError
+	return errors.As(err, &probeErr)
+}
+
+func requestNewAPIKeyRate(
+	ctx context.Context,
+	client *http.Client,
+	baseURL, apiKey, accessToken string,
+	userID *int64,
+) (float64, error) {
+	searchURL, err := buildNewAPIKeySearchURL(baseURL, apiKey)
+	if err != nil {
+		return 0, err
+	}
+	searchPage, err := requestNewAPIData[newAPIKeySearchPage](ctx, client, searchURL, accessToken, userID)
+	if err != nil {
+		return 0, err
+	}
+	if searchPage.Total != 1 || len(searchPage.Items) != 1 {
+		return 0, &sub2APIBillingProbeError{code: sub2APIBillingErrorPermission}
+	}
+
+	group := strings.TrimSpace(searchPage.Items[0].Group)
+	if strings.EqualFold(group, "auto") {
+		return 0, &sub2APIBillingProbeError{code: sub2APIBillingErrorUnsupported}
+	}
+	if group == "" {
+		ownerURL, buildErr := buildNewAPIURL(baseURL, "/api/user/self", nil)
+		if buildErr != nil {
+			return 0, buildErr
+		}
+		owner, requestErr := requestNewAPIData[newAPIKeyOwner](ctx, client, ownerURL, accessToken, userID)
+		if requestErr != nil {
+			return 0, requestErr
+		}
+		group = strings.TrimSpace(owner.Group)
+		if group == "" || strings.EqualFold(group, "auto") {
+			return 0, &sub2APIBillingProbeError{code: sub2APIBillingErrorUnsupported}
+		}
+	}
+
+	groupsURL, err := buildNewAPIURL(baseURL, "/api/user/self/groups", nil)
+	if err != nil {
+		return 0, err
+	}
+	groups, err := requestNewAPIData[map[string]newAPIGroupRate](ctx, client, groupsURL, accessToken, userID)
+	if err != nil {
+		return 0, err
+	}
+	groupRate, ok := groups[group]
+	if !ok {
+		return 0, &sub2APIBillingProbeError{code: sub2APIBillingErrorPermission}
+	}
+
+	var rate *float64
+	if err := json.Unmarshal(groupRate.Ratio, &rate); err != nil ||
+		rate == nil || *rate < 0 || math.IsNaN(*rate) || math.IsInf(*rate, 0) {
+		return 0, &sub2APIBillingProbeError{code: sub2APIBillingErrorInvalid}
+	}
+	return *rate, nil
+}
+
+func buildNewAPIKeySearchURL(baseURL, apiKey string) (string, error) {
+	// New API relay auth treats everything after the first post-prefix dash as
+	// a channel selector. Token search does not, so normalize with relay auth's
+	// exact rule or valid sk-<token>-<channel_id> keys will never be found.
+	lookupToken := strings.TrimPrefix(strings.TrimSpace(apiKey), "sk-")
+	if separator := strings.IndexByte(lookupToken, '-'); separator >= 0 {
+		lookupToken = lookupToken[:separator]
+	}
+	if lookupToken == "" {
+		return "", fmt.Errorf("invalid New API key")
+	}
+	query := make(neturl.Values)
+	query.Set("token", lookupToken)
+	query.Set("p", "1")
+	query.Set("page_size", "1")
+	return buildNewAPIURL(baseURL, "/api/token/search", query)
+}
+
+func buildNewAPIURL(baseURL, path string, query neturl.Values) (string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	u, err := neturl.Parse(baseURL)
+	if err != nil || u == nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid url scheme: %q", u.Scheme)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("url must not contain user info")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("url must not contain query or fragment")
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawPath != "" {
+		return "", fmt.Errorf("url must be a root address")
+	}
+
+	u.Path = path
+	u.RawPath = ""
+	u.RawQuery = query.Encode()
+	return u.String(), nil
+}
+
+func requestNewAPIData[T any](
+	ctx context.Context,
+	client *http.Client,
+	endpoint, accessToken string,
+	userID *int64,
+) (T, error) {
+	var zero T
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return zero, &sub2APIBillingProbeError{code: sub2APIBillingErrorAPI}
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	if userID != nil {
+		if *userID <= 0 {
+			return zero, fmt.Errorf("user_id must be positive")
+		}
+		req.Header.Set("New-API-User", strconv.FormatInt(*userID, 10))
+	}
+
+	resp, err := keyRateProbeClient(client).Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return zero, &sub2APIBillingProbeError{code: sub2APIBillingErrorTimeout}
+		}
+		return zero, &sub2APIBillingProbeError{code: sub2APIBillingErrorAPI}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return zero, &sub2APIBillingProbeError{code: classifySub2APIBillingStatus(resp.StatusCode)}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSub2APIBillingBodyBytes+1))
+	if err != nil || len(body) > maxSub2APIBillingBodyBytes {
+		return zero, &sub2APIBillingProbeError{code: sub2APIBillingErrorInvalid}
+	}
+	result, err := decodeNewAPIResponse[T](body)
+	if err != nil || !result.Success {
+		return zero, &sub2APIBillingProbeError{code: sub2APIBillingErrorInvalid}
+	}
+	return result.Data, nil
 }
 
 func buildSub2APIBillingURL(baseURL string) (string, error) {
@@ -138,14 +339,7 @@ func requestSub2APIBilling(
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	probeClient := &http.Client{
-		Transport: client.Transport,
-		Timeout:   client.Timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := probeClient.Do(req)
+	resp, err := keyRateProbeClient(client).Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, &sub2APIBillingProbeError{code: sub2APIBillingErrorTimeout}
@@ -171,6 +365,16 @@ func requestSub2APIBilling(
 		return nil, &sub2APIBillingProbeError{code: sub2APIBillingErrorInvalid}
 	}
 	return &result, nil
+}
+
+func keyRateProbeClient(client *http.Client) *http.Client {
+	return &http.Client{
+		Transport: client.Transport,
+		Timeout:   client.Timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func classifySub2APIBillingStatus(statusCode int) string {
@@ -216,19 +420,19 @@ func validSub2APIMultiplier(value *float64) bool {
 	return value != nil && *value >= 0 && !math.IsNaN(*value) && !math.IsInf(*value, 0)
 }
 
-func sub2APIBillingErrorMessage(code string) string {
+func keyRateErrorMessage(code string) string {
 	switch code {
 	case sub2APIBillingErrorAuthentication:
-		return "Sub2API API Key无效"
+		return "倍率查询凭据无效"
 	case sub2APIBillingErrorPermission:
-		return "Sub2API API Key未绑定分组"
+		return "无法确定API Key所属倍率分组"
 	case sub2APIBillingErrorUnsupported:
-		return "上游不支持Sub2API倍率查询"
+		return "上游不支持固定倍率查询"
 	case sub2APIBillingErrorTimeout:
-		return "Sub2API倍率查询超时"
+		return "倍率查询超时"
 	case sub2APIBillingErrorInvalid:
-		return "Sub2API返回了无效的倍率响应"
+		return "上游返回了无效的倍率响应"
 	default:
-		return "Sub2API倍率查询失败"
+		return "倍率查询失败"
 	}
 }

@@ -666,22 +666,18 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "OAuth channels must be created by login or credential import")
 		return
 	}
-	managementRaw, err := prepareChannelManagementCreate(&req)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
-		return
-	}
-
 	// 创建渠道（不包含API Key）
 	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.saveCreatedChannelManagement(c.Request.Context(), created, managementRaw); err != nil {
-		s.rollbackCreatedChannel(c.Request.Context(), created.ID)
-		RespondErrorMsg(c, http.StatusInternalServerError, "failed to save management account")
-		return
+	if req.managementAccountSet {
+		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), created, req.ManagementAccount); err != nil {
+			s.rollbackCreatedChannel(c.Request.Context(), created.ID)
+			respondChannelManagementError(c, err)
+			return
+		}
 	}
 
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
@@ -1214,10 +1210,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
 			return
 		}
-		if _, _, err := mergeChannelManagementSettings(existing.OAuthCredential, req.ManagementAccount); err != nil {
-			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
-			return
-		}
 	}
 	if existing.UsesOAuth() {
 		if req.AuthType != existing.GetAuthType() {
@@ -1284,6 +1276,26 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.managementAccountSet {
+		// Sub2API login creates a real upstream session. Run it only after every
+		// local channel field has passed validation, so rejected edits have no
+		// remote side effects.
+		candidate := req.ToConfig()
+		candidate.ID = existing.ID
+		candidate.OAuthCredential = existing.OAuthCredential
+		resolvedManagement, resolveErr := s.channelManagement.resolveChannelManagementInput(
+			c.Request.Context(), candidate, req.ManagementAccount,
+		)
+		if resolveErr != nil {
+			respondChannelManagementError(c, resolveErr)
+			return
+		}
+		if _, _, mergeErr := mergeChannelManagementSettings(existing.OAuthCredential, resolvedManagement); mergeErr != nil {
+			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
+			return
+		}
+		req.ManagementAccount = resolvedManagement
 	}
 
 	// 检测api_key是否变化（需要重建API Keys）
@@ -1443,7 +1455,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 	if req.managementAccountSet {
 		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), upd, req.ManagementAccount); err != nil {
-			RespondErrorMsg(c, http.StatusInternalServerError, "failed to save management account")
+			respondChannelManagementError(c, err)
 			return
 		}
 	}
@@ -1979,7 +1991,7 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 		return
 	}
 	if result.Updated > 0 {
-		if patch.ModelImportMode != "" {
+		if patch.ModelImportMode != "" || patch.CostMultiplier != nil {
 			for _, channelID := range channelIDs {
 				s.InvalidateAPIKeysCache(channelID)
 			}

@@ -19,15 +19,23 @@ const (
 	ChannelManagementProfileNewAPI     = "new_api"
 	ChannelManagementProfileSub2API    = "sub2api"
 	ChannelManagementProfileSub2APIPro = "sub2api_pro"
+
+	maxChannelManagementEmailLength    = 320
+	maxChannelManagementPasswordLength = 4096
 )
 
 // ChannelManagementSettings contains the private upstream account settings.
 type ChannelManagementSettings struct {
-	BaseURL             string `json:"base_url"`
-	AccessToken         string `json:"access_token"`
-	UserID              *int64 `json:"user_id,omitempty"`
-	DailyCheckinEnabled bool   `json:"daily_checkin_enabled,omitempty"`
-	DailyCheckinTime    string `json:"daily_checkin_time,omitempty"`
+	BaseURL             string     `json:"base_url"`
+	AccessToken         string     `json:"access_token"`
+	RefreshToken        string     `json:"refresh_token,omitempty"`
+	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
+	AccountID           *int64     `json:"account_id,omitempty"`
+	Email               string     `json:"email,omitempty"`
+	Password            string     `json:"password,omitempty"`
+	UserID              *int64     `json:"user_id,omitempty"`
+	DailyCheckinEnabled bool       `json:"daily_checkin_enabled,omitempty"`
+	DailyCheckinTime    string     `json:"daily_checkin_time,omitempty"`
 }
 
 // ChannelManagementSubscriptionSnapshot records one sampled quota window.
@@ -115,6 +123,10 @@ func (e *ChannelManagementEnvelope) Validate() error {
 		if e.Settings.UserID != nil && *e.Settings.UserID <= 0 {
 			return errors.New("new_api user_id must be positive")
 		}
+		if e.Settings.RefreshToken != "" || e.Settings.ExpiresAt != nil || e.Settings.AccountID != nil ||
+			e.Settings.Email != "" || e.Settings.Password != "" {
+			return errors.New("new_api does not accept a Sub2API session")
+		}
 	case ChannelManagementProfileSub2API:
 		if e.Settings.UserID != nil {
 			return errors.New("sub2api does not accept user_id")
@@ -138,6 +150,17 @@ func (e *ChannelManagementEnvelope) Validate() error {
 	if strings.TrimSpace(e.Settings.AccessToken) == "" {
 		return errors.New("channel management access_token cannot be empty")
 	}
+	if e.Profile == ChannelManagementProfileSub2API || e.Profile == ChannelManagementProfileSub2APIPro {
+		if err := validateSub2APIManagementSession(e.Settings); err != nil {
+			return err
+		}
+		if len(e.Settings.Email) > maxChannelManagementEmailLength {
+			return errors.New("channel management email is too long")
+		}
+		if len(e.Settings.Password) > maxChannelManagementPasswordLength {
+			return errors.New("channel management password is too long")
+		}
+	}
 	if e.Settings.DailyCheckinEnabled && e.Settings.DailyCheckinTime == "" {
 		return errors.New("daily_checkin_time is required when daily checkin is enabled")
 	}
@@ -146,6 +169,28 @@ func (e *ChannelManagementEnvelope) Validate() error {
 		if err != nil || parsedTime.Format("15:04") != e.Settings.DailyCheckinTime {
 			return fmt.Errorf("invalid daily_checkin_time %q", e.Settings.DailyCheckinTime)
 		}
+	}
+	return nil
+}
+
+func validateSub2APIManagementSession(settings ChannelManagementSettings) error {
+	// Access-token-only envelopes were written by older ccLoad versions. Keep
+	// them readable so the editor can request a fresh dedicated login instead
+	// of making the whole channel configuration unparsable.
+	hasRefreshToken := strings.TrimSpace(settings.RefreshToken) != ""
+	hasExpiresAt := settings.ExpiresAt != nil
+	hasAccountID := settings.AccountID != nil
+	if !hasRefreshToken && !hasExpiresAt && !hasAccountID {
+		return nil
+	}
+	if !hasRefreshToken || !hasExpiresAt || !hasAccountID {
+		return errors.New("Sub2API session must include refresh_token, expires_at, and account_id")
+	}
+	if settings.ExpiresAt.IsZero() {
+		return errors.New("Sub2API expires_at cannot be zero")
+	}
+	if *settings.AccountID <= 0 {
+		return errors.New("Sub2API account_id must be positive")
 	}
 	return nil
 }

@@ -802,10 +802,12 @@ func (s *Server) parseChannelImportRow(
 		}
 	}
 	apiKeyCostMultipliers := make([]float64, len(apiKeyList))
+	for i := range apiKeyCostMultipliers {
+		apiKeyCostMultipliers[i] = 1
+	}
 	if !hasAPIKeyCostMultipliersColumn {
 		existing := existingAPIKeysByName[name]
 		for i := range apiKeyCostMultipliers {
-			apiKeyCostMultipliers[i] = 1
 			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
 				apiKeyCostMultipliers[i] = existing[i].CostMultiplier
 			}

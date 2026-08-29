@@ -311,6 +311,7 @@ window.initPageBootstrap({
       updateChannelAuthTypeOptions();
       updateModelOptions();
       updateChannelsPagination();
+      if (typeof syncChannelSaveButtonLabel === 'function') syncChannelSaveButtonLabel();
     });
 
     // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）

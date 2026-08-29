@@ -1170,7 +1170,7 @@
               </button>
               <button type="submit" id="channelSaveBtn" class="btn btn-primary channel-editor-footer-btn">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M5 12L10 17L19 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span data-i18n="common.save">保存</span>
+                <span id="channelSaveLabel" data-i18n="common.save">保存</span>
               </button>
             </div>
           </div>
@@ -1566,6 +1566,52 @@
                 <small id="channelManagementTokenHelp" class="advanced-settings-field-help"></small>
                 <small id="channelManagementTokenHint" class="advanced-settings-field-help" data-i18n="channels.management.tokenKeepHint" hidden>已配置凭据,留空表示保留现有凭据。</small>
                 <small id="channelManagementTokenError" class="advanced-settings-management-error" role="status" hidden></small>
+              </div>
+            </div>
+            <div id="channelManagementLoginField" class="advanced-settings-management-login" hidden>
+              <div class="advanced-settings-field-meta">
+                <small id="channelManagementLoginHelp" class="advanced-settings-field-help"
+                  data-i18n="channels.management.loginHelp">填写邮箱和密码后点击“登录”获取 refresh token。点“确定”写入渠道草稿，保存渠道后才会落库。邮箱和密码保存在管理凭证中，TOTP 不会保存。</small>
+              </div>
+              <div id="channelManagementRefreshTokenField" class="advanced-settings-other-field" hidden>
+                <label class="form-label" for="channelManagementRefreshToken" data-i18n="channels.management.refreshToken">Refresh Token</label>
+                <input type="text" id="channelManagementRefreshToken" class="form-input" autocomplete="off" spellcheck="false"
+                  readonly aria-describedby="channelManagementLoginHelp channelManagementRefreshTokenError">
+                <div class="advanced-settings-field-meta">
+                  <small id="channelManagementRefreshTokenError" class="advanced-settings-management-error" role="status" hidden></small>
+                </div>
+              </div>
+              <div class="advanced-settings-other-field">
+                <label class="form-label" for="channelManagementEmail" data-i18n="channels.management.email">登录邮箱</label>
+                <input type="email" id="channelManagementEmail" class="form-input" autocomplete="off" spellcheck="false"
+                  maxlength="320" aria-describedby="channelManagementLoginHelp channelManagementEmailError">
+                <div class="advanced-settings-field-meta">
+                  <small id="channelManagementEmailError" class="advanced-settings-management-error" role="status" hidden></small>
+                </div>
+              </div>
+              <div class="advanced-settings-other-field">
+                <label class="form-label" for="channelManagementPassword" data-i18n="channels.management.password">登录密码</label>
+                <input type="text" id="channelManagementPassword" class="form-input" autocomplete="off" spellcheck="false"
+                  maxlength="4096" autocapitalize="off" autocorrect="off"
+                  aria-describedby="channelManagementLoginHelp channelManagementPasswordError">
+                <div class="advanced-settings-field-meta">
+                  <small id="channelManagementPasswordError" class="advanced-settings-management-error" role="status" hidden></small>
+                </div>
+              </div>
+              <div class="advanced-settings-other-field">
+                <label class="form-label" for="channelManagementTOTP" data-i18n="channels.management.totp">TOTP(可选)</label>
+                <input type="text" id="channelManagementTOTP" class="form-input" inputmode="numeric" autocomplete="one-time-code"
+                  maxlength="6" pattern="[0-9]{6}" aria-describedby="channelManagementTOTPHelp channelManagementTOTPError">
+                <div class="advanced-settings-field-meta">
+                  <small id="channelManagementTOTPHelp" class="advanced-settings-field-help"
+                    data-i18n="channels.management.totpHelp">Sub2API 账户启用两步验证时填写当前 6 位验证码。</small>
+                  <small id="channelManagementTOTPError" class="advanced-settings-management-error" role="status" hidden></small>
+                </div>
+              </div>
+              <div class="advanced-settings-management-login-action">
+                <button type="button" id="channelManagementLoginBtn" class="btn btn-primary btn-sm" data-action="login-channel-management">
+                  <span data-i18n="channels.management.login">登录</span>
+                </button>
               </div>
             </div>
             <div id="channelManagementUserIDField" class="advanced-settings-other-field" hidden>
@@ -1993,7 +2039,7 @@
         <div class="inline-key-multiplier-scope">
           <input type="number" value="{{costMultiplier}}" class="inline-key-multiplier-input modal-inline-input"
             data-index="{{index}}" min="0" step="0.01" inputmode="decimal"
-            style="width: 80px; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: border-color 0.2s, box-shadow 0.2s;">
+            style="width: 58px; padding: 4px 5px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: border-color 0.2s, box-shadow 0.2s;">
           <button type="button" class="key-action-btn key-fetch-rate-btn" data-action="fetch-rate"
             data-index="{{index}}" title="{{fetchRateTitle}}" aria-label="{{fetchRateTitle}}">
             <span style="font-size: 12px;">{{fetchRateLabel}}</span>

@@ -833,6 +833,15 @@ function buildModelTestCostDisplay(standardCost, multiplier) {
   const cost = Number(standardCost);
   if (!Number.isFinite(cost) || cost <= 0) return null;
 
+  // 模型模式下可能无法知道后端自动挑选的具体 Key；此时只显示标准成本，
+  // 不能用 API Key 渠道固定为 1 的渠道倍率伪造 effective cost。
+  if (multiplier === null || multiplier === undefined) {
+    return {
+      html: formatCost(cost),
+      effectiveCost: cost
+    };
+  }
+
   const effectiveCost = cost * normalizeModelTestCostMultiplier(multiplier);
   if (typeof buildCostStackHtml === 'function') {
     return {
@@ -848,8 +857,8 @@ function buildModelTestCostDisplay(standardCost, multiplier) {
   };
 }
 
-function getRowCostMultiplier(row) {
-  // 单渠道模式提交带 key_index，倍率取选中 Key 的 cost_multiplier；模型模式按整渠道回退渠道倍率。
+function getRowCostMultiplier(row, result) {
+  // 单渠道模式提交带 key_index，倍率取选中 Key 的 cost_multiplier。
   if (testMode !== TEST_MODE_MODEL && Number.isInteger(selectedKeyIndex)) {
     const key = channelKeys.find(k => normalizeModelTestKeyIndex(k?.key_index) === selectedKeyIndex);
     if (key) return normalizeModelTestCostMultiplier(key.cost_multiplier);
@@ -857,6 +866,29 @@ function getRowCostMultiplier(row) {
 
   const channelId = String(row?.dataset?.channelId || '');
   const channel = channelsList.find(ch => String(ch.id) === channelId);
+
+  if (testMode === TEST_MODE_MODEL) {
+    const testedKeyIndex = normalizeModelTestKeyIndex(result?.tested_key_index);
+    const cachedKeys = channelKeysById.get(Number(channelId));
+    if (testedKeyIndex !== null && Array.isArray(cachedKeys)) {
+      const testedKey = cachedKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === testedKeyIndex);
+      if (testedKey) return normalizeModelTestCostMultiplier(testedKey.cost_multiplier);
+    }
+
+    // 渠道列表提供倍率区间；只有区间退化为单值时才能确定 effective cost。
+    const multiplierMin = channel?.cost_multiplier_min == null ? NaN : Number(channel.cost_multiplier_min);
+    const multiplierMax = channel?.cost_multiplier_max == null ? NaN : Number(channel.cost_multiplier_max);
+    if (Number.isFinite(multiplierMin) && Number.isFinite(multiplierMax)) {
+      if (Math.abs(multiplierMin - multiplierMax) < 1e-9) {
+        return normalizeModelTestCostMultiplier(multiplierMin);
+      }
+      return null;
+    }
+
+    // OAuth 渠道的渠道级倍率仍然是准确值；API Key 渠道缺少区间时保持未知。
+    if (String(channel?.auth_type || '').toLowerCase() === 'api_key') return null;
+  }
+
   return normalizeModelTestCostMultiplier(channel?.cost_multiplier);
 }
 
@@ -1941,7 +1973,7 @@ function applyTestResultToRow(row, data) {
     row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
     row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
     const costCell = row.querySelector('.cost');
-    const costDisplay = buildModelTestCostDisplay(data.cost_usd, getRowCostMultiplier(row));
+    const costDisplay = buildModelTestCostDisplay(data.cost_usd, getRowCostMultiplier(row, data));
     if (costDisplay) {
       costCell.innerHTML = costDisplay.html;
       if (costCell.dataset) costCell.dataset.sortValue = String(costDisplay.effectiveCost);

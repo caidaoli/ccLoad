@@ -14,6 +14,17 @@ const MANAGEMENT_ELEMENT_IDS = [
   'channelManagementTokenHelp',
   'channelManagementTokenHint',
   'channelManagementTokenError',
+  'channelManagementLoginField',
+  'channelManagementRefreshTokenField',
+  'channelManagementRefreshToken',
+  'channelManagementRefreshTokenError',
+  'channelManagementEmail',
+  'channelManagementEmailError',
+  'channelManagementPassword',
+  'channelManagementPasswordError',
+  'channelManagementTOTP',
+  'channelManagementTOTPError',
+  'channelManagementLoginBtn',
   'channelManagementUserIDField',
   'channelManagementUserID',
   'channelManagementUserIDError',
@@ -122,6 +133,8 @@ test('管理账户表单按 profile 显示字段矩阵并标注平台限制', ()
     assert.equal(dom.el('channelManagementProfile').value, '');
     assert.equal(dom.el('channelManagementBaseURLField').hidden, true);
     assert.equal(dom.el('channelManagementTokenField').hidden, true);
+    assert.equal(dom.el('channelManagementLoginField').hidden, true);
+    assert.equal(dom.el('channelManagementRefreshTokenField').hidden, true);
     assert.equal(dom.el('channelManagementUserIDField').hidden, true);
     assert.equal(dom.el('channelManagementCheckinField').hidden, true);
     assert.equal(dom.el('channelManagementNotice').hidden, true);
@@ -129,19 +142,24 @@ test('管理账户表单按 profile 显示字段矩阵并标注平台限制', ()
     selectProfile(dom, mod, 'new_api');
     assert.equal(dom.el('channelManagementBaseURLField').hidden, false);
     assert.equal(dom.el('channelManagementTokenField').hidden, false);
+    assert.equal(dom.el('channelManagementLoginField').hidden, true);
+    assert.equal(dom.el('channelManagementRefreshTokenField').hidden, true);
     assert.equal(dom.el('channelManagementUserIDField').hidden, false);
     assert.equal(dom.el('channelManagementCheckinField').hidden, false);
     assert.equal(dom.el('channelManagementNotice').hidden, true);
     assert.equal(dom.el('channelManagementTokenHelp').textContent, 'channels.management.tokenHelpNewAPI');
 
     selectProfile(dom, mod, 'sub2api');
+    assert.equal(dom.el('channelManagementTokenField').hidden, true, 'Sub2API 不再接收手工 JWT');
+    assert.equal(dom.el('channelManagementLoginField').hidden, false, 'Sub2API 使用专用登录');
+    assert.equal(dom.el('channelManagementRefreshTokenField').hidden, false, 'Sub2API 显示 refresh token');
     assert.equal(dom.el('channelManagementUserIDField').hidden, true, '标准 Sub2API 不接受 user_id');
     assert.equal(dom.el('channelManagementCheckinField').hidden, true, '标准 Sub2API 不显示签到配置');
     assert.equal(dom.el('channelManagementNotice').hidden, false);
     assert.equal(dom.el('channelManagementNotice').textContent, 'channels.management.noticeSub2API');
-    assert.equal(dom.el('channelManagementTokenHelp').textContent, 'channels.management.tokenHelpSub2API');
 
     selectProfile(dom, mod, 'sub2api_pro');
+    assert.equal(dom.el('channelManagementLoginField').hidden, false);
     assert.equal(dom.el('channelManagementUserIDField').hidden, true);
     assert.equal(dom.el('channelManagementCheckinField').hidden, false);
     assert.equal(dom.el('channelManagementNotice').textContent, 'channels.management.noticeSub2APIPro');
@@ -214,6 +232,12 @@ test('管理凭据和用户 ID 会回填，关闭 profile 表示清除', () => {
       daily_checkin_enabled: true,
       daily_checkin_time: '09:30'
     });
+    assert.deepEqual(mod.getManagementAccountRateConfig(), {
+      profile: 'new_api',
+      base_url: 'https://panel.example.com',
+      access_token: 'saved-token',
+      user_id: 41
+    });
 
     dom.el('channelManagementToken').value = ' fresh-pat ';
     dom.el('channelManagementUserID').value = '42';
@@ -228,20 +252,45 @@ test('管理凭据和用户 ID 会回填，关闭 profile 表示清除', () => {
     });
 
     selectProfile(dom, mod, 'sub2api');
-    dom.el('channelManagementToken').value = 'jwt-token';
+    assert.equal(mod.commitManagementAccountDraft(), false, '未登录不得确认 Sub2API 管理账户');
+    assert.equal(
+      dom.el('channelManagementRefreshTokenError').textContent,
+      'channels.management.errSessionRequired'
+    );
+    dom.el('channelManagementEmail').value = ' user@example.com ';
+    dom.el('channelManagementPassword').value = ' login-password ';
+    dom.el('channelManagementTOTP').value = '123456';
+    assert.equal(mod.commitManagementAccountDraft(), false, '只填邮箱密码仍须先点登录');
+
+    // 编辑已保存会话时回填 refresh token、邮箱和密码。
+    mod.resetManagementAccountDraft({
+      profile: 'sub2api',
+      base_url: 'https://panel.example.com',
+      refresh_token: 'saved-refresh-token',
+      access_token: 'internal-access-token',
+      email: 'saved@example.com',
+      password: 'saved-password',
+      credential_configured: true
+    }, [], 'api_key');
+    assert.equal(dom.el('channelManagementRefreshToken').value, 'saved-refresh-token');
+    assert.equal(dom.el('channelManagementEmail').value, 'saved@example.com');
+    assert.equal(dom.el('channelManagementPassword').value, 'saved-password');
     assert.equal(mod.commitManagementAccountDraft(), true);
     assert.deepEqual(mod.collectManagementAccountForSubmit(), {
       profile: 'sub2api',
       base_url: 'https://panel.example.com',
-      access_token: 'jwt-token'
-    }, '标准 Sub2API 不提交 user_id 与签到字段');
+      email: 'saved@example.com',
+      password: 'saved-password'
+    }, '已保存 Sub2API 会话不得提交内部 access_token');
 
     selectProfile(dom, mod, '');
     assert.equal(mod.commitManagementAccountDraft(), true);
     assert.deepEqual(mod.collectManagementAccountForSubmit(), { profile: '' }, '关闭表示清除');
+    assert.equal(mod.getManagementAccountRateConfig(), null, '未定义管理类型不能查询倍率');
 
     mod.resetManagementAccountDraft(null, [], 'codex_oauth');
     assert.equal(mod.collectManagementAccountForSubmit(), null, 'OAuth 渠道不提交 management_account');
+    assert.equal(mod.getManagementAccountRateConfig(), null, 'OAuth 渠道不能查询倍率');
   } finally {
     dom.restore();
   }
@@ -290,6 +339,20 @@ test('草稿校验为缺失与非法输入设置 aria-invalid 并展示关联错
     assert.equal(mod.validateManagementAccountDraft(), true);
     assert.equal(dom.el('channelManagementBaseURL').getAttribute('aria-invalid'), null);
     assert.equal(dom.el('channelManagementDailyCheckinTimeError').hidden, true);
+
+    selectProfile(dom, mod, 'sub2api');
+    assert.equal(mod.validateManagementAccountDraft(), false);
+    assert.equal(dom.el('channelManagementRefreshTokenError').textContent, 'channels.management.errSessionRequired');
+    assert.equal(dom.el('channelManagementEmailError').textContent, '');
+    assert.equal(dom.el('channelManagementPasswordError').textContent, '');
+    dom.el('channelManagementEmail').value = 'user@example.com';
+    dom.el('channelManagementPassword').value = 'password';
+    dom.el('channelManagementTOTP').value = '12ab56';
+    assert.equal(mod.validateManagementAccountDraft(), false);
+    assert.equal(dom.el('channelManagementRefreshTokenError').textContent, 'channels.management.errSessionRequired');
+    assert.equal(dom.el('channelManagementTOTPError').textContent, 'channels.management.errTOTP');
+    dom.el('channelManagementTOTP').value = '654321';
+    assert.equal(mod.validateManagementAccountDraft(), false, 'TOTP 合法仍须先登录');
   } finally {
     dom.restore();
   }
@@ -309,8 +372,73 @@ test('切换到未保存的 profile 后必须重新输入凭据', () => {
     selectProfile(dom, mod, 'sub2api_pro');
     assert.equal(dom.el('channelManagementToken').value, '', '切换 profile 后不得沿用原凭据');
     assert.equal(mod.validateManagementAccountDraft(), false);
-    assert.equal(dom.el('channelManagementToken').getAttribute('aria-invalid'), 'true');
+    assert.equal(
+      dom.el('channelManagementRefreshTokenError').textContent,
+      'channels.management.errSessionRequired'
+    );
     assert.equal(dom.el('channelManagementTokenHint').hidden, true, '换 profile 后不再提示保留旧凭据');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('Sub2API 登录只换 refresh token，确认后才把会话写入提交载荷', async () => {
+  const dom = installManagementDOM();
+  try {
+    const mod = loadManagementModule();
+    mod.resetManagementAccountDraft({
+      profile: 'sub2api',
+      base_url: 'https://panel.example.com',
+      refresh_token: 'old-refresh',
+      credential_configured: true
+    }, [], 'api_key');
+    dom.el('channelManagementEmail').value = 'user@example.com';
+    dom.el('channelManagementPassword').value = 'password';
+
+    const calls = [];
+    const signedIn = await mod.loginManagementAccount(async (url, options) => {
+      calls.push({ url, options });
+      return {
+        refresh_token: 'preview-refresh',
+        access_token: 'preview-access',
+        expires_at: '2026-08-25T10:30:00Z',
+        account_id: 42
+      };
+    });
+    assert.equal(signedIn, true);
+    assert.equal(calls[0].url, '/admin/channel-management/sub2api-login');
+    const body = JSON.parse(calls[0].options.body);
+    assert.equal(body.email, 'user@example.com');
+    assert.equal(body.password, 'password');
+    assert.equal(dom.el('channelManagementRefreshToken').value, 'preview-refresh');
+    assert.equal(dom.el('channelManagementPassword').value, 'password');
+    assert.deepEqual(mod.collectManagementAccountForSubmit(), {
+      profile: 'sub2api',
+      base_url: 'https://panel.example.com'
+    }, '未点确定前不得把预览会话写进渠道保存载荷');
+
+    assert.equal(mod.commitManagementAccountDraft(), true);
+    assert.deepEqual(mod.collectManagementAccountForSubmit(), {
+      profile: 'sub2api',
+      base_url: 'https://panel.example.com',
+      email: 'user@example.com',
+      password: 'password',
+      access_token: 'preview-access',
+      refresh_token: 'preview-refresh',
+      expires_at: '2026-08-25T10:30:00Z',
+      account_id: 42
+    });
+
+    mod.completeManagementAccountSave();
+    assert.deepEqual(mod.collectManagementAccountForSubmit(), {
+      profile: 'sub2api',
+      base_url: 'https://panel.example.com',
+      email: 'user@example.com',
+      password: 'password'
+    }, '渠道保存成功后后续提交只保留已保存会话与登录凭据');
+    assert.equal(dom.el('channelManagementRefreshToken').value, 'preview-refresh');
+    assert.equal(dom.el('channelManagementEmail').value, 'user@example.com');
+    assert.equal(dom.el('channelManagementPassword').value, 'password');
   } finally {
     dom.restore();
   }

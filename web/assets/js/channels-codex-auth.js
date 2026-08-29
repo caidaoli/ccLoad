@@ -194,8 +194,15 @@ function applyChannelAuthEditorMode(
     planBadge.textContent = planBadgeText;
     planBadge.hidden = !planBadgeText;
   }
-  if (keyHeader) keyHeader.hidden = xaiOAuth;
-  if (keyTable) keyTable.hidden = xaiOAuth;
+  // xAI OAuth now receives a masked synthetic Key row from the editor API so
+  // its channel-level multiplier remains editable. Keep the empty create form
+  // uncluttered until such a row exists.
+  const hasOAuthSyntheticKey = typeof inlineKeyTableData !== 'undefined' &&
+    Array.isArray(inlineKeyTableData) &&
+    inlineKeyTableData.some(row => String(row?.api_key || '').trim() !== '');
+  const hideXAIKeySurface = xaiOAuth && !hasOAuthSyntheticKey;
+  if (keyHeader) keyHeader.hidden = hideXAIKeySurface;
+  if (keyTable) keyTable.hidden = hideXAIKeySurface;
   if (hiddenKey) {
     hiddenKey.required = !oauth;
     if (oauth) hiddenKey.value = '';

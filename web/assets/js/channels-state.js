@@ -33,7 +33,7 @@ let allAvailableChannelNames = [];
 let batchRefreshResultsByChannelId = new Map();
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { normalizeChannelsPageSize };
+  module.exports = { normalizeChannelsPageSize, markChannelFormDirty, resetChannelFormDirty, syncChannelSaveButtonLabel };
 }
 
 function isTokenChannelsReadOnly() {
@@ -129,15 +129,21 @@ function maskKey(key) {
 }
 
 // Mark form as having unsaved changes
+function syncChannelSaveButtonLabel() {
+  const saveLabel = document.getElementById('channelSaveLabel');
+  if (!saveLabel) return;
+  saveLabel.setAttribute('data-i18n', 'common.save');
+  saveLabel.textContent = window.t('common.save') + (channelFormDirty ? ' *' : '');
+}
+
 function markChannelFormDirty() {
   channelFormDirty = true;
   const saveBtn = document.getElementById('channelSaveBtn');
   if (saveBtn && !saveBtn.classList.contains('btn-warning')) {
     saveBtn.classList.remove('btn-primary');
     saveBtn.classList.add('btn-warning');
-    const saveLabel = saveBtn.querySelector('[data-i18n="common.save"]');
-    if (saveLabel) saveLabel.textContent = window.t('common.save') + ' *';
   }
+  syncChannelSaveButtonLabel();
 }
 
 // Reset form dirty state
@@ -147,9 +153,8 @@ function resetChannelFormDirty() {
   if (saveBtn) {
     saveBtn.classList.remove('btn-warning');
     saveBtn.classList.add('btn-primary');
-    const saveLabel = saveBtn.querySelector('[data-i18n="common.save"]');
-    if (saveLabel) saveLabel.textContent = window.t('common.save');
   }
+  syncChannelSaveButtonLabel();
 }
 
 // 初始化表单变更追踪（覆盖输入类改动，非输入改动由调用方手动 mark）

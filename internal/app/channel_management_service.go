@@ -30,17 +30,26 @@ var (
 	errInvalidManagementRequest             = errors.New("invalid_request")
 	errManagementRequestFailed              = errors.New("management_request_failed")
 	errInvalidManagementResponse            = errors.New("invalid_response")
+	errManagementTwoFactorRequired          = errors.New("totp_required")
 	// 请求体已写出后拒绝重放，避免 uTLS 回退造成重复提交。
 	errManagementRequestAlreadySent = errors.New("management_request_already_sent")
 )
 
 type channelManagementInput struct {
-	Profile             string `json:"profile"`
-	BaseURL             string `json:"base_url"`
-	AccessToken         string `json:"access_token,omitempty"`
-	UserID              *int64 `json:"user_id,omitempty"`
-	DailyCheckinEnabled bool   `json:"daily_checkin_enabled,omitempty"`
-	DailyCheckinTime    string `json:"daily_checkin_time,omitempty"`
+	Profile             string     `json:"profile"`
+	BaseURL             string     `json:"base_url"`
+	AccessToken         string     `json:"access_token,omitempty"`
+	RefreshToken        string     `json:"refresh_token,omitempty"`
+	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
+	AccountID           *int64     `json:"account_id,omitempty"`
+	Email               string     `json:"email,omitempty"`
+	Password            string     `json:"password,omitempty"`
+	TOTPCode            string     `json:"totp_code,omitempty"`
+	UserID              *int64     `json:"user_id,omitempty"`
+	DailyCheckinEnabled bool       `json:"daily_checkin_enabled,omitempty"`
+	DailyCheckinTime    string     `json:"daily_checkin_time,omitempty"`
+
+	sub2APISession *sub2APIManagementSession
 }
 
 type channelManagementBalanceView struct {
@@ -60,6 +69,7 @@ type channelManagementView struct {
 	DailyCheckinEnabled  bool                          `json:"daily_checkin_enabled"`
 	DailyCheckinTime     string                        `json:"daily_checkin_time,omitempty"`
 	CredentialConfigured bool                          `json:"credential_configured"`
+	CredentialExpiresAt  *time.Time                    `json:"credential_expires_at,omitempty"`
 	LastCheckinStatus    string                        `json:"last_checkin_status,omitempty"`
 	LastCheckinAt        *time.Time                    `json:"last_checkin_at,omitempty"`
 	Balance              *channelManagementBalanceView `json:"balance,omitempty"`
@@ -108,11 +118,11 @@ func managementErrorDetail(err error) string {
 	return detailed.detail
 }
 
-func withManagementErrorDetail(cause error, result *managementHTTPResult, accessToken string) error {
+func withManagementErrorDetail(cause error, result *managementHTTPResult, sensitiveValues ...string) error {
 	if cause == nil {
 		return nil
 	}
-	detail := extractManagementErrorDetail(result, accessToken)
+	detail := extractManagementErrorDetail(result, sensitiveValues...)
 	if detail == "" {
 		return cause
 	}
@@ -122,7 +132,7 @@ func withManagementErrorDetail(cause error, result *managementHTTPResult, access
 // extractManagementErrorDetail returns only a short message field (or safe
 // plain text). The complete upstream body is intentionally never reflected to
 // an admin client because it may contain credentials or request headers.
-func extractManagementErrorDetail(result *managementHTTPResult, accessToken string) string {
+func extractManagementErrorDetail(result *managementHTTPResult, sensitiveValues ...string) string {
 	if result == nil || len(result.Body) == 0 {
 		return ""
 	}
@@ -135,7 +145,7 @@ func extractManagementErrorDetail(result *managementHTTPResult, accessToken stri
 	if json.Unmarshal(body, &fields) == nil {
 		for _, key := range []string{"message", "error_description", "error", "reason", "detail"} {
 			if detail := managementJSONMessage(fields[key]); detail != "" {
-				if sanitized := sanitizeManagementErrorDetail(detail, accessToken); sanitized != "" {
+				if sanitized := sanitizeManagementErrorDetail(detail, sensitiveValues...); sanitized != "" {
 					return sanitized
 				}
 			}
@@ -146,7 +156,7 @@ func extractManagementErrorDetail(result *managementHTTPResult, accessToken stri
 		return ""
 	}
 
-	return sanitizeManagementErrorDetail(string(body), accessToken)
+	return sanitizeManagementErrorDetail(string(body), sensitiveValues...)
 }
 
 func managementJSONMessage(raw json.RawMessage) string {
@@ -169,8 +179,16 @@ func managementJSONMessage(raw json.RawMessage) string {
 	return ""
 }
 
-func sanitizeManagementErrorDetail(value, accessToken string) string {
-	detail := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+func sanitizeManagementErrorDetail(value string, sensitiveValues ...string) string {
+	raw := strings.TrimSpace(value)
+	// Check secrets before whitespace normalization: passwords are opaque and
+	// may legitimately contain leading/trailing or repeated spaces.
+	for _, value := range sensitiveValues {
+		if value != "" && strings.Contains(raw, value) {
+			return ""
+		}
+	}
+	detail := strings.Join(strings.Fields(raw), " ")
 	if detail == "" {
 		return ""
 	}
@@ -183,8 +201,10 @@ func sanitizeManagementErrorDetail(value, accessToken string) string {
 			return ""
 		}
 	}
-	if token := strings.TrimSpace(accessToken); token != "" && strings.Contains(detail, token) {
-		return ""
+	for _, value := range sensitiveValues {
+		if secret := strings.TrimSpace(value); secret != "" && strings.Contains(detail, secret) {
+			return ""
+		}
 	}
 	return detail
 }
@@ -240,8 +260,12 @@ func (s *channelManagementService) SaveSettings(
 	defer release()
 
 	current := cfg.Clone()
+	resolvedInput, err := s.resolveChannelManagementInput(operationCtx, current, input)
+	if err != nil {
+		return nil, err
+	}
 	for {
-		nextEnvelope, nextRaw, mergeErr := mergeChannelManagementSettings(current.OAuthCredential, input)
+		nextEnvelope, nextRaw, mergeErr := mergeChannelManagementSettings(current.OAuthCredential, resolvedInput)
 		if mergeErr != nil {
 			return nil, mergeErr
 		}
@@ -283,6 +307,10 @@ func (s *channelManagementService) RefreshBalance(
 	if err != nil {
 		return nil, err
 	}
+	cfg, envelope, err = s.ensureSub2APIManagementSession(operationCtx, cfg, envelope)
+	if err != nil {
+		return nil, err
+	}
 	var snapshot *model.ChannelManagementBalanceSnapshot
 	switch envelope.Profile {
 	case model.ChannelManagementProfileNewAPI:
@@ -321,6 +349,10 @@ func (s *channelManagementService) CheckIn(
 	}
 	defer release()
 	cfg, envelope, err := s.loadChannelManagement(operationCtx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, envelope, err = s.ensureSub2APIManagementSession(operationCtx, cfg, envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -454,25 +486,16 @@ func mergeChannelManagementSettings(
 			return nil, "", errInvalidManagementResponse
 		}
 	}
-	accessToken := input.AccessToken
-	if strings.TrimSpace(accessToken) == "" {
-		if current == nil || current.Profile != profile {
-			return nil, "", errInvalidManagementRequest
-		}
-		accessToken = current.Settings.AccessToken
+	settings, err := mergedChannelManagementSettings(current, input, profile)
+	if err != nil {
+		return nil, "", err
 	}
 
 	next := &model.ChannelManagementEnvelope{
-		Kind:    model.ChannelManagementKind,
-		Version: model.ChannelManagementVersion,
-		Profile: profile,
-		Settings: model.ChannelManagementSettings{
-			BaseURL:             input.BaseURL,
-			AccessToken:         accessToken,
-			UserID:              input.UserID,
-			DailyCheckinEnabled: input.DailyCheckinEnabled,
-			DailyCheckinTime:    input.DailyCheckinTime,
-		},
+		Kind:     model.ChannelManagementKind,
+		Version:  model.ChannelManagementVersion,
+		Profile:  profile,
+		Settings: settings,
 	}
 	if err = next.Validate(); err != nil {
 		return nil, "", fmt.Errorf("%w: %v", errInvalidManagementRequest, err)
@@ -492,14 +515,106 @@ func mergeChannelManagementSettings(
 	return next, nextRaw, nil
 }
 
+func mergedChannelManagementSettings(
+	current *model.ChannelManagementEnvelope,
+	input *channelManagementInput,
+	profile string,
+) (model.ChannelManagementSettings, error) {
+	settings := model.ChannelManagementSettings{
+		BaseURL:             input.BaseURL,
+		AccessToken:         strings.TrimSpace(input.AccessToken),
+		UserID:              input.UserID,
+		DailyCheckinEnabled: input.DailyCheckinEnabled,
+		DailyCheckinTime:    input.DailyCheckinTime,
+	}
+	if profile == model.ChannelManagementProfileSub2API || profile == model.ChannelManagementProfileSub2APIPro {
+		settings.UserID = nil
+		settings.Email, settings.Password = mergeSub2APILoginCredentials(current, input)
+		if input.sub2APISession != nil {
+			settings.AccessToken = input.sub2APISession.AccessToken
+			settings.RefreshToken = input.sub2APISession.RefreshToken
+			settings.ExpiresAt = timePointer(input.sub2APISession.ExpiresAt)
+			settings.AccountID = int64Pointer(input.sub2APISession.AccountID)
+			return settings, nil
+		}
+		if strings.TrimSpace(input.AccessToken) != "" {
+			return settings, errInvalidManagementRequest
+		}
+		if current == nil || current.Profile != profile ||
+			!strings.EqualFold(current.Settings.BaseURL, strings.TrimSuffix(strings.TrimSpace(input.BaseURL), "/")) {
+			return settings, errInvalidManagementRequest
+		}
+		settings.AccessToken = current.Settings.AccessToken
+		settings.RefreshToken = current.Settings.RefreshToken
+		settings.ExpiresAt = cloneTimePointer(current.Settings.ExpiresAt)
+		settings.AccountID = cloneInt64Pointer(current.Settings.AccountID)
+		return settings, nil
+	}
+	if strings.TrimSpace(input.Email) != "" || strings.TrimSpace(input.Password) != "" || strings.TrimSpace(input.TOTPCode) != "" {
+		return settings, errInvalidManagementRequest
+	}
+	if settings.AccessToken == "" {
+		if current == nil || current.Profile != profile {
+			return settings, errInvalidManagementRequest
+		}
+		settings.AccessToken = current.Settings.AccessToken
+	}
+	return settings, nil
+}
+
+func mergeSub2APILoginCredentials(current *model.ChannelManagementEnvelope, input *channelManagementInput) (string, string) {
+	email := ""
+	password := ""
+	if input != nil {
+		email = strings.TrimSpace(input.Email)
+		password = input.Password
+	}
+	if current != nil {
+		if email == "" {
+			email = current.Settings.Email
+		}
+		if password == "" {
+			password = current.Settings.Password
+		}
+	}
+	return email, password
+}
+
+func timePointer(value time.Time) *time.Time {
+	copy := value
+	return &copy
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	return timePointer(*value)
+}
+
+func int64Pointer(value int64) *int64 {
+	copy := value
+	return &copy
+}
+
+func cloneInt64Pointer(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	return int64Pointer(*value)
+}
+
 func sameChannelManagementIdentityWithoutUserID(
 	current *model.ChannelManagementEnvelope,
 	next *model.ChannelManagementEnvelope,
 ) bool {
-	return current != nil && next != nil &&
-		current.Profile == next.Profile &&
-		current.Settings.BaseURL == next.Settings.BaseURL &&
-		current.Settings.AccessToken == next.Settings.AccessToken
+	if current == nil || next == nil || current.Profile != next.Profile || current.Settings.BaseURL != next.Settings.BaseURL {
+		return false
+	}
+	if current.Profile == model.ChannelManagementProfileSub2API || current.Profile == model.ChannelManagementProfileSub2APIPro {
+		return equalChannelManagementUserID(current.Settings.AccountID, next.Settings.AccountID)
+	}
+	return current.Settings.AccessToken == next.Settings.AccessToken
 }
 
 func sameChannelManagementIdentity(
@@ -527,11 +642,23 @@ func channelManagementViewFromEnvelope(envelope *model.ChannelManagementEnvelope
 		UserIDConfigured:     envelope.Settings.UserID != nil,
 		DailyCheckinEnabled:  envelope.Settings.DailyCheckinEnabled,
 		DailyCheckinTime:     envelope.Settings.DailyCheckinTime,
-		CredentialConfigured: strings.TrimSpace(envelope.Settings.AccessToken) != "",
+		CredentialConfigured: channelManagementCredentialConfigured(envelope),
+		CredentialExpiresAt:  cloneTimePointer(envelope.Settings.ExpiresAt),
 		LastCheckinStatus:    envelope.State.LastCheckinStatus,
 		LastCheckinAt:        envelope.State.LastCheckinAt,
 		Balance:              channelManagementBalanceViewFromSnapshot(envelope.State.LastBalance),
 	}
+}
+
+func channelManagementCredentialConfigured(envelope *model.ChannelManagementEnvelope) bool {
+	if envelope == nil || strings.TrimSpace(envelope.Settings.AccessToken) == "" {
+		return false
+	}
+	if envelope.Profile != model.ChannelManagementProfileSub2API && envelope.Profile != model.ChannelManagementProfileSub2APIPro {
+		return true
+	}
+	return strings.TrimSpace(envelope.Settings.RefreshToken) != "" && envelope.Settings.ExpiresAt != nil &&
+		envelope.Settings.AccountID != nil && *envelope.Settings.AccountID > 0
 }
 
 func channelManagementBalanceViewFromSnapshot(
@@ -578,8 +705,32 @@ func (s *channelManagementService) doManagementRequest(
 	body []byte,
 	extraHeaders ...http.Header,
 ) (*managementHTTPResult, error) {
+	return s.doManagementHTTPRequest(ctx, cfg, method, target, accessToken, true, body, extraHeaders...)
+}
+
+func (s *channelManagementService) doManagementPublicRequest(
+	ctx context.Context,
+	cfg *model.Config,
+	method string,
+	target string,
+	body []byte,
+	extraHeaders ...http.Header,
+) (*managementHTTPResult, error) {
+	return s.doManagementHTTPRequest(ctx, cfg, method, target, "", false, body, extraHeaders...)
+}
+
+func (s *channelManagementService) doManagementHTTPRequest(
+	ctx context.Context,
+	cfg *model.Config,
+	method string,
+	target string,
+	accessToken string,
+	requireAccessToken bool,
+	body []byte,
+	extraHeaders ...http.Header,
+) (*managementHTTPResult, error) {
 	client, err := s.managementClient(cfg)
-	if err != nil || strings.TrimSpace(accessToken) == "" {
+	if err != nil || requireAccessToken && strings.TrimSpace(accessToken) == "" {
 		return nil, errInvalidManagementRequest
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, nil)
@@ -599,7 +750,9 @@ func (s *channelManagementService) doManagementRequest(
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}
 	}
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	if token := strings.TrimSpace(accessToken); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 	for _, headers := range extraHeaders {
 		for name, values := range headers {
 			request.Header[name] = append([]string(nil), values...)

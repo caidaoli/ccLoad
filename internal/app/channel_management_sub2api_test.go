@@ -386,6 +386,253 @@ func TestChannelManagementServiceSub2APIRefreshBalancePersistsSnapshot(t *testin
 	}
 }
 
+func TestChannelManagementServiceSub2APILoginPersistsDedicatedTokenPair(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "sub2-login")
+	script := &sub2APIScript{t: t, steps: []sub2APIStep{{
+		method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/login", status: http.StatusOK,
+		body: `{"code":0,"message":"","data":{"access_token":"dedicated-access","refresh_token":"dedicated-refresh","expires_in":3600,"user":{"id":42}}}`,
+	}}}
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		return &http.Client{Transport: script}
+	})
+	fixedNow := time.Date(2026, time.August, 25, 9, 30, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixedNow }
+
+	view, err := service.SaveSettings(context.Background(), cfg, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com/",
+		Email: "managed@example.com", Password: "password with spaces",
+	})
+	if err != nil || view == nil || !view.CredentialConfigured || view.Profile != model.ChannelManagementProfileSub2API {
+		t.Fatalf("SaveSettings login = (%#v, %v)", view, err)
+	}
+	request := script.finishedRequests()[0]
+	if request.authorization != "" || !strings.Contains(request.body, `"email":"managed@example.com"`) ||
+		!strings.Contains(request.body, `"password":"password with spaces"`) {
+		t.Fatalf("login request = %#v", request)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Settings.AccessToken != "dedicated-access" || envelope.Settings.RefreshToken != "dedicated-refresh" ||
+		envelope.Settings.AccountID == nil || *envelope.Settings.AccountID != 42 || envelope.Settings.ExpiresAt == nil ||
+		!envelope.Settings.ExpiresAt.Equal(fixedNow.Add(time.Hour)) {
+		t.Fatalf("persisted dedicated session = %#v", envelope.Settings)
+	}
+	if envelope.Settings.Email != "managed@example.com" || envelope.Settings.Password != "password with spaces" {
+		t.Fatalf("persisted login credentials = %#v", envelope.Settings)
+	}
+}
+
+func TestChannelManagementServicePreviewSub2APILoginDoesNotPersist(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "sub2-preview-login")
+	originalCredential := cfg.OAuthCredential
+	script := &sub2APIScript{t: t, steps: []sub2APIStep{{
+		method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/login", status: http.StatusOK,
+		body: `{"code":0,"message":"","data":{"access_token":"preview-access","refresh_token":"preview-refresh","expires_in":3600,"user":{"id":42}}}`,
+	}}}
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		return &http.Client{Transport: script}
+	})
+	fixedNow := time.Date(2026, time.August, 25, 9, 30, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixedNow }
+
+	session, err := service.PreviewSub2APILogin(context.Background(), cfg, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com/",
+		Email: "managed@example.com", Password: "password",
+	})
+	if err != nil || session == nil || session.RefreshToken != "preview-refresh" ||
+		session.AccessToken != "preview-access" || session.AccountID != 42 ||
+		!session.ExpiresAt.Equal(fixedNow.Add(time.Hour)) {
+		t.Fatalf("PreviewSub2APILogin = (%#v, %v)", session, err)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OAuthCredential != originalCredential {
+		t.Fatalf("preview login wrote channel credential: %q", stored.OAuthCredential)
+	}
+}
+
+func TestChannelManagementServiceSub2APISaveSettingsAcceptsExplicitSession(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "sub2-explicit-session")
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		t.Fatal("explicit session must not contact Sub2API")
+		return nil
+	})
+	expiresAt := time.Date(2026, time.August, 25, 10, 30, 0, 0, time.UTC)
+	accountID := int64(42)
+
+	view, err := service.SaveSettings(context.Background(), cfg, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com/",
+		AccessToken: "explicit-access", RefreshToken: "explicit-refresh",
+		ExpiresAt: &expiresAt, AccountID: &accountID,
+		Email: "managed@example.com", Password: "explicit-password",
+	})
+	if err != nil || view == nil || !view.CredentialConfigured {
+		t.Fatalf("SaveSettings explicit session = (%#v, %v)", view, err)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Settings.AccessToken != "explicit-access" || envelope.Settings.RefreshToken != "explicit-refresh" ||
+		envelope.Settings.AccountID == nil || *envelope.Settings.AccountID != 42 || envelope.Settings.ExpiresAt == nil ||
+		!envelope.Settings.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("persisted explicit session = %#v", envelope.Settings)
+	}
+	if envelope.Settings.Email != "managed@example.com" || envelope.Settings.Password != "explicit-password" {
+		t.Fatalf("persisted explicit login credentials = %#v", envelope.Settings)
+	}
+}
+
+func TestChannelManagementServiceSub2APISaveSettingsKeepsSessionWhenUpdatingLogin(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "sub2-keep-login")
+	cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, sub2APITestEnvelope(model.ChannelManagementProfileSub2API))
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		t.Fatal("updating stored login credentials must not contact Sub2API")
+		return nil
+	})
+
+	view, err := service.SaveSettings(context.Background(), cfg, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com",
+		Email: "kept@example.com", Password: "kept-password",
+	})
+	if err != nil || view == nil || !view.CredentialConfigured {
+		t.Fatalf("SaveSettings keep login = (%#v, %v)", view, err)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Settings.AccessToken != "private-token" || envelope.Settings.RefreshToken != "refresh-token" ||
+		envelope.Settings.Email != "kept@example.com" || envelope.Settings.Password != "kept-password" {
+		t.Fatalf("kept session with updated login = %#v", envelope.Settings)
+	}
+}
+
+func TestChannelManagementServiceSub2APILoginRequiresAndCompletesTOTP(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	first := createChannelManagementTestConfig(t, server.store, "sub2-login-totp-required")
+	missingCodeScript := &sub2APIScript{t: t, steps: []sub2APIStep{{
+		method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/login", status: http.StatusOK,
+		body: `{"code":0,"message":"","data":{"requires_2fa":true,"temp_token":"temp-token"}}`,
+	}}}
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		return &http.Client{Transport: missingCodeScript}
+	})
+	_, err := service.SaveSettings(context.Background(), first, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com",
+		Email: "managed@example.com", Password: "password",
+	})
+	if !errors.Is(err, errManagementTwoFactorRequired) {
+		t.Fatalf("missing TOTP error = %v", err)
+	}
+	missingCodeScript.finishedRequests()
+
+	second := createChannelManagementTestConfig(t, server.store, "sub2-login-totp")
+	completeScript := &sub2APIScript{t: t, steps: []sub2APIStep{
+		{method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/login", status: http.StatusOK,
+			body: `{"code":0,"message":"","data":{"requires_2fa":true,"temp_token":"temp-token"}}`},
+		{method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/login/2fa", status: http.StatusOK,
+			body: `{"code":0,"message":"","data":{"access_token":"totp-access","refresh_token":"totp-refresh","expires_in":7200,"user":{"id":43}}}`},
+	}}
+	service = newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		return &http.Client{Transport: completeScript}
+	})
+	_, err = service.SaveSettings(context.Background(), second, &channelManagementInput{
+		Profile: model.ChannelManagementProfileSub2API, BaseURL: "https://sub2.example.com",
+		Email: "managed@example.com", Password: "password", TOTPCode: "654321",
+	})
+	if err != nil {
+		t.Fatalf("TOTP login: %v", err)
+	}
+	requests := completeScript.finishedRequests()
+	if len(requests) != 2 || !strings.Contains(requests[1].body, `"temp_token":"temp-token"`) ||
+		!strings.Contains(requests[1].body, `"totp_code":"654321"`) {
+		t.Fatalf("TOTP requests = %#v", requests)
+	}
+	stored, err := server.store.GetConfig(context.Background(), second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Settings.Email != "managed@example.com" || envelope.Settings.Password != "password" ||
+		strings.Contains(stored.OAuthCredential, "654321") {
+		t.Fatalf("TOTP login persisted credentials = %#v raw=%s", envelope.Settings, stored.OAuthCredential)
+	}
+}
+
+func TestChannelManagementServiceSub2APIRefreshesExpiredDedicatedSession(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	cfg := createChannelManagementTestConfig(t, server.store, "sub2-refresh")
+	envelope := sub2APITestEnvelope(model.ChannelManagementProfileSub2API)
+	expired := time.Date(2026, time.August, 25, 9, 29, 0, 0, time.UTC)
+	envelope.Settings.ExpiresAt = &expired
+	envelope.Settings.AccessToken = "expired-access"
+	envelope.Settings.RefreshToken = "old-refresh"
+	cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, envelope)
+	script := &sub2APIScript{t: t, steps: []sub2APIStep{
+		{method: http.MethodPost, target: "https://sub2.example.com/api/v1/auth/refresh", status: http.StatusOK,
+			body: `{"code":0,"message":"","data":{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}}`},
+		{method: http.MethodGet, target: "https://sub2.example.com/api/v1/auth/me", status: http.StatusOK,
+			body: `{"code":0,"message":"","data":{"balance":7.5}}`},
+		{method: http.MethodGet, target: "https://sub2.example.com/api/v1/subscriptions/summary", status: http.StatusOK,
+			body: `{"code":0,"message":"","data":{"active_count":0,"total_used_usd":0,"subscriptions":[]}}`},
+	}}
+	service := newChannelManagementService(server.store, func(*model.Config) *http.Client {
+		return &http.Client{Transport: script}
+	})
+	fixedNow := time.Date(2026, time.August, 25, 9, 30, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixedNow }
+	view, err := service.RefreshBalance(context.Background(), cfg.ID)
+	if err != nil || view == nil || view.Balance == nil || view.Balance.Remaining != 7.5 {
+		t.Fatalf("RefreshBalance after token rotation = (%#v, %v)", view, err)
+	}
+	requests := script.finishedRequests()
+	if requests[0].authorization != "" || !strings.Contains(requests[0].body, `"refresh_token":"old-refresh"`) ||
+		requests[1].authorization != "Bearer rotated-access" || requests[2].authorization != "Bearer rotated-access" {
+		t.Fatalf("refresh auth headers = %#v", requests)
+	}
+	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := model.ParseChannelManagementEnvelope(stored.OAuthCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Settings.AccessToken != "rotated-access" || rotated.Settings.RefreshToken != "rotated-refresh" {
+		t.Fatalf("rotated session not persisted: %#v", rotated.Settings)
+	}
+}
+
 func TestChannelManagementServiceSub2APIBalanceDegradationPersistsAuthBalance(t *testing.T) {
 	t.Parallel()
 	summaryTarget := "https://sub2.example.com/api/v1/subscriptions/summary"
@@ -963,9 +1210,14 @@ func (s *sub2APIScript) finishedRequests() []sub2APIRecordedRequest {
 }
 
 func sub2APITestEnvelope(profile string) *model.ChannelManagementEnvelope {
+	expiresAt := time.Date(2099, time.January, 1, 0, 0, 0, 0, time.UTC)
+	accountID := int64(42)
 	return &model.ChannelManagementEnvelope{
 		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion, Profile: profile,
-		Settings: model.ChannelManagementSettings{BaseURL: "https://sub2.example.com", AccessToken: "private-token"},
+		Settings: model.ChannelManagementSettings{
+			BaseURL: "https://sub2.example.com", AccessToken: "private-token", RefreshToken: "refresh-token",
+			ExpiresAt: &expiresAt, AccountID: &accountID,
+		},
 	}
 }
 

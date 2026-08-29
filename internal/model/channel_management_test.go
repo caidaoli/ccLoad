@@ -32,6 +32,8 @@ func TestChannelManagementEnvelopeRoundTrip(t *testing.T) {
 			profile: ChannelManagementProfileSub2API,
 			settings: ChannelManagementSettings{
 				BaseURL: "http://sub2api.example.com/", AccessToken: "sub2api-private-token",
+				RefreshToken: "sub2api-refresh-token", ExpiresAt: &lastCheckin, AccountID: &userID,
+				Email: "managed@example.com", Password: "password with spaces",
 			},
 		},
 		{
@@ -39,6 +41,7 @@ func TestChannelManagementEnvelopeRoundTrip(t *testing.T) {
 			profile: ChannelManagementProfileSub2APIPro,
 			settings: ChannelManagementSettings{
 				BaseURL: "https://sub2api-pro.example.com/", AccessToken: "sub2api-pro-private-token",
+				RefreshToken: "sub2api-pro-refresh-token", ExpiresAt: &lastCheckin, AccountID: &userID,
 				DailyCheckinEnabled: true, DailyCheckinTime: "23:59",
 			},
 		},
@@ -68,6 +71,9 @@ func TestChannelManagementEnvelopeRoundTrip(t *testing.T) {
 			}
 			if parsed.Profile != tt.profile || parsed.Settings.BaseURL != strings.TrimSuffix(tt.settings.BaseURL, "/") || parsed.Settings.AccessToken != tt.settings.AccessToken {
 				t.Fatalf("round trip envelope = %#v", parsed)
+			}
+			if parsed.Settings.Email != tt.settings.Email || parsed.Settings.Password != tt.settings.Password {
+				t.Fatalf("round trip login credentials = %#v", parsed.Settings)
 			}
 			if parsed.State.LastBalance == nil || len(parsed.State.LastBalance.Subscriptions) != 1 || parsed.State.LastBalance.Subscriptions[0].ID != 7 {
 				t.Fatalf("round trip state = %#v", parsed.State)
@@ -121,6 +127,8 @@ func TestChannelManagementEnvelopeRejectsInvalidInput(t *testing.T) {
 			e.Settings.DailyCheckinTime = "09:00"
 		}},
 		{name: "sub2api pro user ID", mutate: func(e *ChannelManagementEnvelope) { e.Profile = ChannelManagementProfileSub2APIPro }},
+		{name: "new api email", mutate: func(e *ChannelManagementEnvelope) { e.Settings.Email = "managed@example.com" }},
+		{name: "new api password", mutate: func(e *ChannelManagementEnvelope) { e.Settings.Password = "secret" }},
 	}
 	for _, tt := range tests {
 		tt := tt

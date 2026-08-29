@@ -14,7 +14,8 @@ const {
   detectKeyModelScope,
   initKeyModelScopeModalEvents,
   setVisibleKeyModelScopeChecked,
-  updateKeyModelScopeSelectionCount
+  updateKeyModelScopeSelectionCount,
+  canFetchInlineKeyRate
 } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
@@ -62,6 +63,28 @@ function loadChannelsModals() {
 function loadFetchModelsFromAPI() {
   return loadChannelsModals().fetchModelsFromAPI;
 }
+
+test('倍率获取只对定义了受支持管理类型的 API Key 渠道可见', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  const previousAuthType = Object.getOwnPropertyDescriptor(global, 'editingChannelAuthType');
+  try {
+    global.window = { getManagementAccountRateConfig: () => ({ profile: 'new_api' }) };
+    global.editingChannelAuthType = 'api_key';
+    assert.equal(canFetchInlineKeyRate(), true);
+
+    global.window.getManagementAccountRateConfig = () => null;
+    assert.equal(canFetchInlineKeyRate(), false, '未定义管理类型必须隐藏');
+
+    global.window.getManagementAccountRateConfig = () => ({ profile: 'sub2api' });
+    global.editingChannelAuthType = 'codex_oauth';
+    assert.equal(canFetchInlineKeyRate(), false, 'OAuth 渠道必须隐藏');
+  } finally {
+    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
+    else delete global.window;
+    if (previousAuthType) Object.defineProperty(global, 'editingChannelAuthType', previousAuthType);
+    else delete global.editingChannelAuthType;
+  }
+});
 
 test('inline Key rows preserve and normalize model scopes', () => {
   assert.deepEqual(normalizeInlineKeyRow({
@@ -546,7 +569,11 @@ function installBatchProtocolModeGlobals(response) {
   };
 }
 
-function installFetchSub2APIRateGlobals({ response, rows }) {
+function installFetchKeyRateGlobals({
+  response,
+  rows,
+  rateConfig = { profile: 'sub2api', base_url: 'https://sub2api.test' }
+}) {
   const requests = [];
   const notifications = [];
   const updateCalls = [];
@@ -565,7 +592,8 @@ function installFetchSub2APIRateGlobals({ response, rows }) {
     window: {
       t: (key, params) => params ? { key, params } : key,
       showSuccess: message => notifications.push({ type: 'success', message }),
-      showError: message => notifications.push({ type: 'error', message })
+      showError: message => notifications.push({ type: 'error', message }),
+      getManagementAccountRateConfig: () => rateConfig
     },
     document: {
       querySelector: () => null
@@ -1571,21 +1599,22 @@ test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async (
   assert.equal(shownError, 'channels.addAtLeastOneEnabledKey');
 });
 
-test('fetchSub2APIRate writes the effective multiplier into the triggering key row', async () => {
-  const fixture = installFetchSub2APIRateGlobals({
+test('fetchKeyRate uses the Sub2API management profile and updates the triggering key row', async () => {
+  const fixture = installFetchKeyRateGlobals({
     response: { success: true, data: { effective_rate_multiplier: 1.2 } },
     rows: [{ api_key: 'enabled-key' }]
   });
 
   try {
-    const { fetchSub2APIRate } = loadChannelsModals();
+    const { fetchKeyRate } = loadChannelsModals();
     const actionBtn = fixture.makeButton();
-    await fetchSub2APIRate(0, actionBtn);
+    await fetchKeyRate(0, actionBtn);
 
     assert.equal(fixture.requests.length, 1);
     assert.equal(fixture.requests[0].url, '/admin/channels/billing/fetch');
     assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
-      base_url: 'https://sub2api.test/v1',
+      profile: 'sub2api',
+      base_url: 'https://sub2api.test',
       api_key: 'enabled-key'
     });
     assert.deepEqual(fixture.updateCalls, [{ index: 0, value: '1.2' }]);
@@ -1600,16 +1629,45 @@ test('fetchSub2APIRate writes the effective multiplier into the triggering key r
   }
 });
 
-test('fetchSub2APIRate maps authentication failures without touching the row', async () => {
-  const fixture = installFetchSub2APIRateGlobals({
+test('fetchKeyRate sends New API management credentials for group multiplier lookup', async () => {
+  const fixture = installFetchKeyRateGlobals({
+    response: { success: true, data: { effective_rate_multiplier: 0.75 } },
+    rows: [{ api_key: 'new-api-key' }],
+    rateConfig: {
+      profile: 'new_api',
+      base_url: 'https://new-api.test',
+      access_token: 'management-pat',
+      user_id: 42
+    }
+  });
+
+  try {
+    const { fetchKeyRate } = loadChannelsModals();
+    await fetchKeyRate(0, fixture.makeButton());
+
+    assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+      profile: 'new_api',
+      base_url: 'https://new-api.test',
+      api_key: 'new-api-key',
+      access_token: 'management-pat',
+      user_id: 42
+    });
+    assert.deepEqual(fixture.updateCalls, [{ index: 0, value: '0.75' }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('fetchKeyRate maps authentication failures without touching the row', async () => {
+  const fixture = installFetchKeyRateGlobals({
     response: { success: false, data: { code: 'authentication_error' } },
     rows: [{ api_key: 'invalid-key' }]
   });
 
   try {
-    const { fetchSub2APIRate } = loadChannelsModals();
+    const { fetchKeyRate } = loadChannelsModals();
     const actionBtn = fixture.makeButton();
-    await fetchSub2APIRate(0, actionBtn);
+    await fetchKeyRate(0, actionBtn);
 
     assert.equal(fixture.updateCalls.length, 0);
     assert.equal(fixture.dirty, false);

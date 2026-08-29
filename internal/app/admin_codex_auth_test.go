@@ -1425,7 +1425,7 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 		Keys            []*model.APIKey `json:"keys"`
 		OAuthCredential json.RawMessage `json:"oauth_credential"`
 	}](t, response.Body.Bytes())
-	if len(editor.Data.Keys) != 1 || editor.Data.Keys[0].APIKey != "gravity-editor-at" || !strings.Contains(string(editor.Data.OAuthCredential), `"project_id":"editor-project"`) {
+	if len(editor.Data.Keys) != 1 || editor.Data.Keys[0].APIKey != util.MaskAPIKey("gravity-editor-at") || editor.Data.Keys[0].CostMultiplier != channel.CostMultiplier || !strings.Contains(string(editor.Data.OAuthCredential), `"project_id":"editor-project"`) {
 		t.Fatalf("editor data=%#v", editor.Data)
 	}
 
@@ -3575,8 +3575,8 @@ func TestHandleChannelEditorExposesOAuthCredentialOnlyInEditorData(t *testing.T)
 			CodexSubscriptionActiveUntil *time.Time `json:"codex_subscription_active_until"`
 		} `json:"channel"`
 	}](t, w.Body.Bytes())
-	if len(resp.Data.Keys) != 1 || resp.Data.Keys[0].APIKey != "at-editor-secret" {
-		t.Fatalf("editor keys = %#v, want read-only AT", resp.Data.Keys)
+	if len(resp.Data.Keys) != 1 || resp.Data.Keys[0].APIKey != util.MaskAPIKey("at-editor-secret") || resp.Data.Keys[0].CostMultiplier != channel.CostMultiplier {
+		t.Fatalf("editor keys = %#v, want masked AT and current multiplier", resp.Data.Keys)
 	}
 	var exposed codexauth.Credential
 	if err := json.Unmarshal(resp.Data.OAuthCredential, &exposed); err != nil {

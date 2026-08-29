@@ -15,6 +15,15 @@ function isChannelKeyEditorReadOnly() {
     ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType);
 }
 
+function canFetchInlineKeyRate() {
+  if (isChannelKeyEditorReadOnly() || typeof window === 'undefined' ||
+    typeof window.getManagementAccountRateConfig !== 'function') {
+    return false;
+  }
+  const config = window.getManagementAccountRateConfig();
+  return Boolean(config && ['new_api', 'sub2api', 'sub2api_pro'].includes(config.profile));
+}
+
 function normalizeKeyAllowedModels(models) {
   const seen = new Set();
   const normalized = [];
@@ -780,6 +789,9 @@ function createKeyRow(index) {
   const row = TemplateEngine.render('tpl-key-row', rowData);
   if (!row) return null;
 
+  const fetchRateButton = row.querySelector('[data-action="fetch-rate"]');
+  if (fetchRateButton) fetchRateButton.hidden = !canFetchInlineKeyRate();
+
   // 禁用状态：输入框只读（不设整行半透明，与 URL 表保持一致，状态通过徽章/开关颜色表达）
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
   if (keyCooldown && keyCooldown.disabled) {
@@ -791,11 +803,9 @@ function createKeyRow(index) {
     row.draggable = false;
     const keyInput = row.querySelector('.inline-key-input');
     const noteInput = row.querySelector('.inline-key-note-input');
-    const multiplierInput = row.querySelector('.inline-key-multiplier-input');
     const checkbox = row.querySelector('.key-checkbox');
     if (keyInput) keyInput.readOnly = true;
     if (noteInput) noteInput.readOnly = true;
-    if (multiplierInput) multiplierInput.readOnly = true;
     if (checkbox) checkbox.disabled = true;
     row.querySelectorAll('[data-action="delete"], [data-action="toggle-disabled"], [data-action="models"]').forEach(button => {
       button.hidden = false;
@@ -984,7 +994,7 @@ function initKeyTableEventDelegation() {
       else if (action === 'delete') deleteInlineKey(index);
       else if (action === 'toggle-disabled') toggleKeyDisabled(index);
       else if (action === 'models') openKeyModelScopeModal(index, actionBtn);
-      else if (action === 'fetch-rate') fetchSub2APIRate(index, actionBtn);
+      else if (action === 'fetch-rate') fetchKeyRate(index, actionBtn);
       return;
     }
 
@@ -998,6 +1008,12 @@ function initKeyTableEventDelegation() {
 
   // 处理输入框变更
   tbody.addEventListener('change', (e) => {
+    const multiplierInput = e.target.closest('.inline-key-multiplier-input');
+    if (multiplierInput) {
+      const index = parseInt(multiplierInput.dataset.index);
+      updateInlineKeyCostMultiplier(index, multiplierInput.value);
+      return;
+    }
     if (isChannelKeyEditorReadOnly()) return;
     const input = e.target.closest('.inline-key-input');
     if (input) {
@@ -1010,11 +1026,6 @@ function initKeyTableEventDelegation() {
       const index = parseInt(noteInput.dataset.index);
       updateInlineKeyNote(index, noteInput.value);
       return;
-    }
-    const multiplierInput = e.target.closest('.inline-key-multiplier-input');
-    if (multiplierInput) {
-      const index = parseInt(multiplierInput.dataset.index);
-      updateInlineKeyCostMultiplier(index, multiplierInput.value);
     }
   });
 
@@ -1216,7 +1227,6 @@ function updateInlineKeyNote(index, value) {
 }
 
 function updateInlineKeyCostMultiplier(index, value) {
-  if (isChannelKeyEditorReadOnly()) return;
   const nextValue = normalizeKeyCostMultiplier(value);
   const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
   if (row.cost_multiplier === nextValue) return;
@@ -1735,6 +1745,7 @@ if (typeof module !== 'undefined' && module.exports) {
     detectKeyModelScope,
     initKeyModelScopeModalEvents,
     setVisibleKeyModelScopeChecked,
-    updateKeyModelScopeSelectionCount
+    updateKeyModelScopeSelectionCount,
+    canFetchInlineKeyRate
   };
 }

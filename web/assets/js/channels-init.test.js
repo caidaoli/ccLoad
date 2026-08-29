@@ -26,6 +26,52 @@ test('channel page size accepts whole numbers from 1 to 1000 and otherwise defau
   }
 });
 
+test('dirty channel form keeps the save action as save', () => {
+  const previousGlobals = new Map();
+  const setGlobal = (name, value) => {
+    previousGlobals.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const classes = new Set(['btn-primary']);
+  const label = {
+    textContent: '',
+    setAttribute(name, value) { this[name] = value; }
+  };
+  const saveButton = {
+    classList: {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name)
+    }
+  };
+  setGlobal('localStorage', { getItem: () => null });
+  setGlobal('document', {
+    getElementById: id => ({ channelSaveBtn: saveButton, channelSaveLabel: label }[id] || null)
+  });
+  setGlobal('window', {
+    t: key => ({ 'common.save': '保存' })[key] || key
+  });
+
+  const modulePath = require.resolve('./channels-state.js');
+  delete require.cache[modulePath];
+  try {
+    const mod = require(modulePath);
+    mod.resetChannelFormDirty();
+    assert.equal(label.textContent, '保存');
+    assert.equal(label['data-i18n'], 'common.save');
+
+    mod.markChannelFormDirty();
+    assert.equal(label.textContent, '保存 *');
+    assert.equal(label['data-i18n'], 'common.save');
+  } finally {
+    delete require.cache[modulePath];
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('returning via reload or bfcache restores channel name search with the other filters', async () => {
   const previousGlobals = new Map();
   const setGlobal = (key, value) => {

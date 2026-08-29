@@ -37,8 +37,11 @@ type channelEditorFeatures struct {
 // which intentionally contains only configuration flags and runtime state.
 type channelManagementEditorView struct {
 	*channelManagementView
-	AccessToken string `json:"access_token,omitempty"`
-	UserID      *int64 `json:"user_id,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Password     string `json:"password,omitempty"`
+	UserID       *int64 `json:"user_id,omitempty"`
 }
 
 type channelEditorData struct {
@@ -79,80 +82,57 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID:   cfg.ID,
-			KeyIndex:    0,
-			APIKey:      credential.AccessToken,
-			Note:        codexCredentialKeyNote(credential),
-			KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 		oauthCredentialInfo = credential.DecodedIDToken()
 	} else if cfg.UsesAntigravityOAuth() {
-		credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		_, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID:   cfg.ID,
-			KeyIndex:    0,
-			APIKey:      credential.AccessToken,
-			Note:        "Antigravity OAuth AT",
-			KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesXAIOAuth() {
 		if _, parseErr := xaiauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = make([]*model.APIKey, 0)
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesAnthropicOAuth() {
-		credential, parseErr := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		_, parseErr := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
-			Note: "Anthropic OAuth AT", KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesZAIOAuth() {
-		credential, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		_, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.APIKey,
-			Note: "Z.ai Coding Plan Key", KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesCursorOAuth() {
-		credential, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
+		_, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
-			Note: "Cursor session", KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesZedOAuth() {
-		credential, parseErr := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
+		_, parseErr := zedauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}
-		apiKeys = []*model.APIKey{{
-			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
-			Note: "Zed LLM JWT", KeyStrategy: model.KeyStrategySequential,
-		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	}
+	if cfg.UsesOAuth() {
+		// 编辑器与普通 Key 端点共用同一份 OAuth 合成行：凭证掩码、备注和当前倍率必须一致。
+		apiKeys, err = channelKeysForAdmin(cfg, nil)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}
@@ -178,8 +158,15 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}
 		managementAccount = &channelManagementEditorView{
 			channelManagementView: detail.ManagementAccount,
-			AccessToken:           envelope.Settings.AccessToken,
-			UserID:                envelope.Settings.UserID,
+		}
+		switch envelope.Profile {
+		case model.ChannelManagementProfileNewAPI:
+			managementAccount.AccessToken = envelope.Settings.AccessToken
+			managementAccount.UserID = envelope.Settings.UserID
+		case model.ChannelManagementProfileSub2API, model.ChannelManagementProfileSub2APIPro:
+			managementAccount.RefreshToken = envelope.Settings.RefreshToken
+			managementAccount.Email = envelope.Settings.Email
+			managementAccount.Password = envelope.Settings.Password
 		}
 	}
 

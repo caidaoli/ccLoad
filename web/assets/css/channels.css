@@ -6624,6 +6624,34 @@
       min-width: 0;
     }
 
+    .advanced-settings-management-login {
+      display: grid;
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, var(--advanced-settings-control-width)) minmax(0, 1fr);
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .advanced-settings-management-login[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-management-login > .advanced-settings-field-meta {
+      grid-column: 2 / -1;
+    }
+
+    .advanced-settings-management-login > .advanced-settings-other-field {
+      grid-column: 1 / -1;
+    }
+
+    .advanced-settings-management-login-action {
+      grid-column: 2;
+      justify-self: start;
+    }
+
+    .advanced-settings-management-login-action .btn {
+      width: auto;
+    }
+
     .advanced-settings-management .form-input[aria-invalid="true"] {
       border-color: var(--error-500);
     }
@@ -7220,6 +7248,16 @@
 
       .advanced-settings-management .advanced-settings-other-field {
         grid-template-columns: 1fr;
+      }
+
+      .advanced-settings-management-login {
+        grid-template-columns: 1fr;
+      }
+
+      .advanced-settings-management-login > .advanced-settings-field-meta,
+      .advanced-settings-management-login > .advanced-settings-other-field,
+      .advanced-settings-management-login-action {
+        grid-column: 1;
       }
 
       .advanced-settings-field-meta {

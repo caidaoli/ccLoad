@@ -1399,6 +1399,30 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		}
 	}
 
+	// 重复设置相同的 Key 倍率必须保持幂等，不应再次计入 Updated。
+	sameMultiplier := multiplier
+	unchangedMultiplier, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID}, model.BatchConfigPatch{
+		CostMultiplier: &sameMultiplier,
+	})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs repeated multiplier: %v", err)
+	}
+	if unchangedMultiplier.Updated != 0 || unchangedMultiplier.Unchanged != 2 {
+		t.Fatalf("unexpected repeated multiplier result: %+v", unchangedMultiplier)
+	}
+
+	// 没有任何 Key 的 API Key 渠道没有实际受影响行，也必须报告未变化。
+	empty := create("batch-empty", model.ProtocolTransformModeAuto, "", []model.ModelEntry{{Model: "empty-model"}})
+	emptyResult, err := store.BatchPatchConfigs(ctx, []int64{empty.ID}, model.BatchConfigPatch{
+		CostMultiplier: &sameMultiplier,
+	})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs empty-key channel: %v", err)
+	}
+	if emptyResult.Updated != 0 || emptyResult.Unchanged != 1 {
+		t.Fatalf("unexpected empty-key multiplier result: %+v", emptyResult)
+	}
+
 	unchanged, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID}, model.BatchConfigPatch{
 		ModelImportMode: model.ModelImportModeReplace,
 		ModelEntries:    []model.ModelEntry{{Model: "replacement"}},

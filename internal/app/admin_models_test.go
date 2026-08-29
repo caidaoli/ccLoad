@@ -250,19 +250,20 @@ func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {
 
 	for _, baseURL := range []string{upstream.URL, upstream.URL + "/v1/"} {
 		payload := map[string]any{
+			"profile":  model.ChannelManagementProfileSub2API,
 			"base_url": baseURL,
 			"api_key":  "sk-billing-test",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
 
-		server.HandleFetchSub2APIBilling(c)
+		server.HandleFetchKeyRate(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("baseURL=%q status=%d, want %d, body=%s", baseURL, w.Code, http.StatusOK, w.Body.String())
 		}
 
 		var resp struct {
-			Success bool                        `json:"success"`
-			Data    fetchSub2APIBillingResponse `json:"data"`
+			Success bool                 `json:"success"`
+			Data    fetchKeyRateResponse `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 		if !resp.Success || resp.Data.EffectiveRateMultiplier != 1.2 {
@@ -275,6 +276,211 @@ func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {
 	}
 	if gotAccept != "application/json" {
 		t.Fatalf("Accept=%q, want application/json", gotAccept)
+	}
+}
+
+func TestAdminModels_FetchNewAPIKeyRatePreview(t *testing.T) {
+	var calls []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		if got := r.Header.Get("Authorization"); got != "Bearer management-pat" {
+			t.Errorf("Authorization=%q, want management PAT", got)
+		}
+		if got := r.Header.Get("New-API-User"); got != "42" {
+			t.Errorf("New-API-User=%q, want 42", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/token/search":
+			if got := r.URL.Query().Get("token"); got != "new" {
+				t.Errorf("token query=%q, want New API relay token prefix", got)
+			}
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"items":[{"key":"abcd**********wxyz","group":"vip"}],"total":1}
+			}`))
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"default":{"ratio":1,"desc":"Default"},"vip":{"ratio":0.75,"desc":"VIP"}}
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	userID := int64(42)
+	payload := map[string]any{
+		"profile":      model.ChannelManagementProfileNewAPI,
+		"base_url":     upstream.URL,
+		"api_key":      "sk-new-api-key",
+		"access_token": "management-pat",
+		"user_id":      userID,
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+	server.HandleFetchKeyRate(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Success bool                 `json:"success"`
+		Data    fetchKeyRateResponse `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.Success || resp.Data.EffectiveRateMultiplier != 0.75 {
+		t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
+	}
+	wantCalls := []string{"/api/token/search", "/api/user/self/groups"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("upstream calls=%v, want %v", calls, wantCalls)
+	}
+	if strings.Contains(w.Body.String(), "management-pat") || strings.Contains(w.Body.String(), "sk-new-api-key") {
+		t.Fatalf("response leaked a secret: %s", w.Body.String())
+	}
+}
+
+func TestAdminModels_FetchNewAPIKeyRateRejectsAutoGroup(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/token/search" {
+			t.Errorf("unexpected upstream path %q", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"success":true,
+			"message":"",
+			"data":{"items":[{"group":"auto"}],"total":1}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"profile":      model.ChannelManagementProfileNewAPI,
+		"base_url":     upstream.URL,
+		"api_key":      "sk-auto-key",
+		"access_token": "management-pat",
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+	server.HandleFetchKeyRate(c)
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Code string `json:"code"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if resp.Success || resp.Data.Code != sub2APIBillingErrorUnsupported {
+		t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
+	}
+}
+
+func TestAdminModels_FetchNewAPIKeyRateUsesOwnerGroupForLegacyKey(t *testing.T) {
+	var calls []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/token/search":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"items":[{"group":""}],"total":1}
+			}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"group":"default"}
+			}`))
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"default":{"ratio":1.25,"desc":"Default"}}
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"profile":      model.ChannelManagementProfileNewAPI,
+		"base_url":     upstream.URL,
+		"api_key":      "sk-legacy-key",
+		"access_token": "management-pat",
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+	server.HandleFetchKeyRate(c)
+	var resp struct {
+		Success bool                 `json:"success"`
+		Data    fetchKeyRateResponse `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.Success || resp.Data.EffectiveRateMultiplier != 1.25 {
+		t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
+	}
+	wantCalls := []string{"/api/token/search", "/api/user/self", "/api/user/self/groups"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("upstream calls=%v, want %v", calls, wantCalls)
+	}
+}
+
+func TestAdminModels_FetchNewAPIKeyRateRejectsNullRatio(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/token/search":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"items":[{"group":"vip"}],"total":1}
+			}`))
+		case "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{
+				"success":true,
+				"message":"",
+				"data":{"vip":{"ratio":null,"desc":"VIP"}}
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{
+		"profile":      model.ChannelManagementProfileNewAPI,
+		"base_url":     upstream.URL,
+		"api_key":      "sk-null-ratio",
+		"access_token": "management-pat",
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+	server.HandleFetchKeyRate(c)
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Code string `json:"code"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if resp.Success || resp.Data.Code != sub2APIBillingErrorInvalid {
+		t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
 	}
 }
 
@@ -363,10 +569,14 @@ func TestAdminModels_FetchSub2APIBillingRejectsUntrustedResponses(t *testing.T) 
 
 			server, _, cleanup := setupAdminTestServer(t)
 			defer cleanup()
-			payload := map[string]any{"base_url": upstream.URL, "api_key": "sk-request-secret"}
+			payload := map[string]any{
+				"profile":  model.ChannelManagementProfileSub2API,
+				"base_url": upstream.URL,
+				"api_key":  "sk-request-secret",
+			}
 			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
 
-			server.HandleFetchSub2APIBilling(c)
+			server.HandleFetchKeyRate(c)
 			if w.Code != http.StatusOK {
 				t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 			}
@@ -411,10 +621,14 @@ func TestAdminModels_FetchSub2APIBillingDoesNotFollowRedirects(t *testing.T) {
 
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	payload := map[string]any{"base_url": upstream.URL, "api_key": "sk-redirect-secret"}
+	payload := map[string]any{
+		"profile":  model.ChannelManagementProfileSub2API,
+		"base_url": upstream.URL,
+		"api_key":  "sk-redirect-secret",
+	}
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
 
-	server.HandleFetchSub2APIBilling(c)
+	server.HandleFetchKeyRate(c)
 	var resp struct {
 		Success bool `json:"success"`
 		Data    struct {

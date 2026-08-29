@@ -7,34 +7,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
-
-func prepareChannelManagementCreate(req *ChannelRequest) (string, error) {
-	if req == nil || !req.managementAccountSet || req.ManagementAccount == nil {
-		return "", nil
-	}
-	_, raw, err := mergeChannelManagementSettings("", req.ManagementAccount)
-	return raw, err
-}
-
-func (s *Server) saveCreatedChannelManagement(ctx context.Context, cfg *model.Config, raw string) error {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	updated, err := s.store.CompareAndSwapChannelManagement(ctx, cfg.ID, "", raw)
-	if err != nil {
-		return err
-	}
-	if !updated {
-		return errInvalidManagementRequest
-	}
-	cfg.OAuthCredential = raw
-	return nil
-}
 
 func (s *Server) rollbackCreatedChannel(ctx context.Context, channelID int64) {
 	if err := s.store.DeleteConfig(ctx, channelID); err != nil {
@@ -79,6 +57,8 @@ func channelManagementErrorCode(err error) (int, string) {
 		return http.StatusConflict, "credential_invalid"
 	case errors.Is(err, errChannelManagementProviderUnavailable):
 		return http.StatusConflict, "unsupported"
+	case errors.Is(err, errManagementTwoFactorRequired):
+		return http.StatusConflict, "totp_required"
 	case errors.Is(err, errInvalidManagementRequest):
 		return http.StatusBadRequest, "invalid_response"
 	case errors.Is(err, errInvalidManagementResponse):
@@ -182,4 +162,54 @@ func (s *Server) HandleChannelManagementCheckin(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, result)
+}
+
+type sub2APILoginRequest struct {
+	Profile  string `json:"profile"`
+	BaseURL  string `json:"base_url"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	TOTPCode string `json:"totp_code"`
+	ProxyURL string `json:"proxy_url"`
+}
+
+type sub2APILoginView struct {
+	RefreshToken string    `json:"refresh_token"`
+	AccessToken  string    `json:"access_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	AccountID    int64     `json:"account_id"`
+}
+
+// HandleChannelManagementSub2APILogin exchanges Sub2API email/password for a
+// token session without writing the channel. The editor displays the refresh
+// token and only persists it when the channel is saved.
+func (s *Server) HandleChannelManagementSub2APILogin(c *gin.Context) {
+	if s == nil || s.channelManagement == nil {
+		RespondErrorMsg(c, http.StatusInternalServerError, "uncertain")
+		return
+	}
+	var req sub2APILoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid_response")
+		return
+	}
+	session, err := s.channelManagement.PreviewSub2APILogin(c.Request.Context(), &model.Config{
+		AuthType: model.AuthTypeAPIKey,
+		ProxyURL: strings.TrimSpace(req.ProxyURL),
+	}, &channelManagementInput{
+		Profile: req.Profile, BaseURL: req.BaseURL, Email: req.Email, Password: req.Password, TOTPCode: req.TOTPCode,
+	})
+	if err != nil || session == nil {
+		if err == nil {
+			err = errInvalidManagementResponse
+		}
+		respondChannelManagementError(c, err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, sub2APILoginView{
+		RefreshToken: session.RefreshToken,
+		AccessToken:  session.AccessToken,
+		ExpiresAt:    session.ExpiresAt,
+		AccountID:    session.AccountID,
+	})
 }

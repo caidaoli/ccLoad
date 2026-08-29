@@ -707,7 +707,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 
 	result := model.BatchConfigPatchResult{}
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		states, err := s.loadBatchConfigPatchStates(ctx, tx, channelIDs, patch.ModelImportMode != "")
+		states, err := s.loadBatchConfigPatchStates(ctx, tx, channelIDs, patch.ModelImportMode != "", patch.CostMultiplier != nil)
 		if err != nil {
 			return err
 		}
@@ -728,7 +728,13 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			keyMultiplierChanged := false
 			if patch.CostMultiplier != nil {
 				if model.NormalizeAuthType(state.authType) == model.AuthTypeAPIKey {
-					keyMultiplierChanged = true
+					targetMultiplier := normalizeCostMultiplier(*patch.CostMultiplier)
+					for _, currentMultiplier := range state.keyCostMultipliers {
+						if currentMultiplier != targetMultiplier {
+							keyMultiplierChanged = true
+							break
+						}
+					}
 				} else {
 					nextCostMultiplier = *patch.CostMultiplier
 				}
@@ -819,6 +825,7 @@ type batchConfigPatchState struct {
 	scheduledCheckModel   string
 	authType              string
 	modelEntries          []model.ModelEntry
+	keyCostMultipliers    []float64
 }
 
 func normalizeBatchPatchChannelIDs(channelIDs []int64) []int64 {
@@ -837,7 +844,7 @@ func normalizeBatchPatchChannelIDs(channelIDs []int64) []int64 {
 	return result
 }
 
-func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, channelIDs []int64, withModels bool) (map[int64]*batchConfigPatchState, error) {
+func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, channelIDs []int64, withModels, withKeyMultipliers bool) (map[int64]*batchConfigPatchState, error) {
 	placeholders := make([]string, len(channelIDs))
 	args := make([]any, len(channelIDs))
 	for i, channelID := range channelIDs {
@@ -876,29 +883,63 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close channels for batch patch: %w", err)
 	}
-	if !withModels || len(states) == 0 {
+	if len(states) == 0 {
 		return states, nil
 	}
 
-	modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled
-		FROM channel_models WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
-		ORDER BY channel_id, created_at ASC, model ASC`), normalizeSQLArgs(args)...)
-	if err != nil {
-		return nil, fmt.Errorf("query models for batch patch: %w", err)
+	if withModels {
+		modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled
+			FROM channel_models WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
+			ORDER BY channel_id, created_at ASC, model ASC`), normalizeSQLArgs(args)...)
+		if err != nil {
+			return nil, fmt.Errorf("query models for batch patch: %w", err)
+		}
+		for modelRows.Next() {
+			var channelID int64
+			var entry model.ModelEntry
+			if err := modelRows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+				_ = modelRows.Close()
+				return nil, fmt.Errorf("scan model for batch patch: %w", err)
+			}
+			if state := states[channelID]; state != nil {
+				state.modelEntries = append(state.modelEntries, entry)
+			}
+		}
+		if err := modelRows.Err(); err != nil {
+			_ = modelRows.Close()
+			return nil, fmt.Errorf("iterate models for batch patch: %w", err)
+		}
+		if err := modelRows.Close(); err != nil {
+			return nil, fmt.Errorf("close models for batch patch: %w", err)
+		}
 	}
-	defer func() { _ = modelRows.Close() }()
-	for modelRows.Next() {
+	if !withKeyMultipliers {
+		return states, nil
+	}
+
+	keyRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, cost_multiplier
+		FROM api_keys WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY channel_id, key_index ASC`), normalizeSQLArgs(args)...)
+	if err != nil {
+		return nil, fmt.Errorf("query API key multipliers for batch patch: %w", err)
+	}
+	for keyRows.Next() {
 		var channelID int64
-		var entry model.ModelEntry
-		if err := modelRows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
-			return nil, fmt.Errorf("scan model for batch patch: %w", err)
+		var multiplier float64
+		if err := keyRows.Scan(&channelID, &multiplier); err != nil {
+			_ = keyRows.Close()
+			return nil, fmt.Errorf("scan API key multiplier for batch patch: %w", err)
 		}
 		if state := states[channelID]; state != nil {
-			state.modelEntries = append(state.modelEntries, entry)
+			state.keyCostMultipliers = append(state.keyCostMultipliers, multiplier)
 		}
 	}
-	if err := modelRows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate models for batch patch: %w", err)
+	if err := keyRows.Err(); err != nil {
+		_ = keyRows.Close()
+		return nil, fmt.Errorf("iterate API key multipliers for batch patch: %w", err)
+	}
+	if err := keyRows.Close(); err != nil {
+		return nil, fmt.Errorf("close API key multipliers for batch patch: %w", err)
 	}
 	return states, nil
 }

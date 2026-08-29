@@ -361,6 +361,7 @@ function initChannelEditorActions() {
         'close-custom-rules-modal': () => invokeChannelEditorAction('closeCustomRulesModal'),
         'switch-advanced-settings-tab': (actionTarget) => invokeChannelEditorAction('switchAdvancedSettingsTab', actionTarget?.dataset?.advancedSettingsTab || ''),
         'apply-advanced-settings': () => invokeChannelEditorAction('applyAdvancedSettingsFromForm'),
+        'login-channel-management': () => invokeChannelEditorAction('loginManagementAccount'),
         'add-custom-rule': (actionTarget) => invokeChannelEditorAction('addCustomRule', actionTarget?.dataset?.customRulesTarget || ''),
         'remove-custom-rule': (actionTarget) => invokeChannelEditorAction('removeCustomRule', actionTarget?.dataset?.customRulesTarget || '', Number(actionTarget?.dataset?.customRulesIndex || '-1')),
         'close-custom-rules-help': () => invokeChannelEditorAction('closeCustomRulesHelp'),
@@ -458,12 +459,12 @@ async function showAddModal() {
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
+  invokeChannelEditorAction('resetManagementAccountDraft', null, getValidInlineURLConfigs(), 'api_key');
   renderInlineKeyTable();
   if (typeof applyChannelAuthEditorMode === 'function') applyChannelAuthEditorMode(editingChannelAuthType, null);
 
   invokeChannelEditorAction('resetCustomRulesState', null);
   invokeChannelEditorAction('resetCooldownDetectionState', null);
-  invokeChannelEditorAction('resetManagementAccountDraft', null, getValidInlineURLConfigs(), 'api_key');
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -542,6 +543,12 @@ async function editChannel(id) {
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
+  invokeChannelEditorAction(
+    'resetManagementAccountDraft',
+    editorData.management_account || null,
+    channel.urls || [],
+    editingChannelAuthType
+  );
   renderInlineKeyTable();
   if (typeof applyChannelAuthEditorMode === 'function') {
     applyChannelAuthEditorMode(
@@ -551,13 +558,6 @@ async function editChannel(id) {
       editorData.oauth_credential_info || null
     );
   }
-  invokeChannelEditorAction(
-    'resetManagementAccountDraft',
-    editorData.management_account || null,
-    channel.urls || [],
-    editingChannelAuthType
-  );
-
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -895,6 +895,7 @@ async function saveChannel(event) {
     const isNewChannel = !editingChannelId;
     const savedChannelId = editingChannelId;
 
+    invokeChannelEditorAction('completeManagementAccountSave');
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
     await handleChannelSaveSuccess({ isNewChannel, savedChannelId, response: resp });
@@ -1892,6 +1893,8 @@ async function copyChannel(id, name) {
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
+  // 复制渠道不复制管理凭据；新草稿没有管理类型，因此也不显示倍率获取按钮。
+  invokeChannelEditorAction('resetManagementAccountDraft', null, channel.urls || [], channel.auth_type);
   renderInlineKeyTable();
 
   await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
@@ -3526,7 +3529,7 @@ async function fetchModelsFromAPI() {
   }
 }
 
-function setFetchSub2APIRatePending(button, pending) {
+function setFetchKeyRatePending(button, pending) {
   if (!button) return;
   button.disabled = pending;
   if (pending) button.setAttribute('aria-busy', 'true');
@@ -3537,7 +3540,7 @@ function setFetchSub2APIRatePending(button, pending) {
   }
 }
 
-function showSub2APIRateError(code) {
+function showKeyRateError(code) {
   const knownCodes = new Set([
     'authentication_error',
     'permission_error',
@@ -3551,8 +3554,16 @@ function showSub2APIRateError(code) {
   else alert(message);
 }
 
-async function fetchSub2APIRate(keyIndex, actionBtn) {
-  const baseURL = getValidInlineURLConfigs()[0]?.url || '';
+async function fetchKeyRate(keyIndex, actionBtn) {
+  const rateConfig = typeof window.getManagementAccountRateConfig === 'function'
+    ? window.getManagementAccountRateConfig()
+    : null;
+  if (!rateConfig) {
+    showKeyRateError('not_supported');
+    return;
+  }
+
+  const baseURL = String(rateConfig.base_url || '').trim();
   const apiKey = getInlineKeyValue(keyIndex);
 
   if (!baseURL) {
@@ -3565,22 +3576,37 @@ async function fetchSub2APIRate(keyIndex, actionBtn) {
     else alert(window.t('channels.addAtLeastOneEnabledKey'));
     return;
   }
+  if (rateConfig.profile === 'new_api' && !rateConfig.access_token) {
+    showKeyRateError('authentication_error');
+    return;
+  }
 
-  setFetchSub2APIRatePending(actionBtn, true);
+  setFetchKeyRatePending(actionBtn, true);
   try {
+    const payload = {
+      profile: rateConfig.profile,
+      base_url: baseURL,
+      api_key: apiKey
+    };
+    if (rateConfig.profile === 'new_api') {
+      payload.access_token = rateConfig.access_token;
+      if (Number.isInteger(rateConfig.user_id) && rateConfig.user_id > 0) {
+        payload.user_id = rateConfig.user_id;
+      }
+    }
     const response = await fetchAPIWithAuth('/admin/channels/billing/fetch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: baseURL, api_key: apiKey })
+      body: JSON.stringify(payload)
     });
     if (!response.success) {
-      showSub2APIRateError(response.data?.code);
+      showKeyRateError(response.data?.code);
       return;
     }
 
     const rate = response.data?.effective_rate_multiplier;
     if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0) {
-      showSub2APIRateError('invalid_response');
+      showKeyRateError('invalid_response');
       return;
     }
 
@@ -3594,10 +3620,10 @@ async function fetchSub2APIRate(keyIndex, actionBtn) {
     if (window.showSuccess) window.showSuccess(message);
     else alert(message);
   } catch (error) {
-    console.error('Fetch Sub2API rate failed', error);
-    showSub2APIRateError('default');
+    console.error('Fetch key rate failed', error);
+    showKeyRateError('default');
   } finally {
-    setFetchSub2APIRatePending(actionBtn, false);
+    setFetchKeyRatePending(actionBtn, false);
   }
 }
 
@@ -3795,7 +3821,7 @@ if (typeof module !== 'undefined' && module.exports) {
     editChannel,
     exportChannelModels,
     fetchModelsFromAPI,
-    fetchSub2APIRate,
+    fetchKeyRate,
     initModelNormalizationOptions,
     mergeModelRowsWithFetchedModels,
     openBatchModelImportModal,

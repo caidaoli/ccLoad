@@ -1364,7 +1364,13 @@ window.WebAuth = window.WebAuth || {
   function formatCostMultiplier(multiplier) {
     const value = Number(multiplier);
     if (!Number.isFinite(value) || value < 0 || Math.abs(value - 1) < 1e-9) return '';
-    // 0 倍率（免费渠道）显示为 "0x"
+    return formatCostMultiplierValue(value);
+  }
+
+  // 区间端点必须显式显示 1x；单值倍率为 1 时才由上层整体隐藏。
+  function formatCostMultiplierValue(multiplier) {
+    const value = Number(multiplier);
+    if (!Number.isFinite(value) || value < 0) return '';
     return `${Number(value.toFixed(2)).toString()}x`;
   }
 
@@ -1445,7 +1451,7 @@ window.WebAuth = window.WebAuth || {
     const hi = Number(multiplierMax);
     let text;
     if (Number.isFinite(hi) && Math.abs(hi - lo) >= 1e-9) {
-      text = `${formatCostMultiplier(lo)}–${formatCostMultiplier(hi)}`;
+      text = `${formatCostMultiplierValue(lo)}–${formatCostMultiplierValue(hi)}`;
     } else {
       text = formatCostMultiplier(lo);
     }
