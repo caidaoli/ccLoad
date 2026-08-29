@@ -206,7 +206,8 @@ func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, usage *oauthcost.Usag
 		copy(windows, summary.Windows)
 		for i := range windows {
 			windows[i].StandardCostMicroUSD = nil
-			if window := oauthcost.Find(usage, oauthcost.Key(windows[i].LimitName, windows[i].Kind)); window != nil {
+			if window := oauthcost.Find(usage, oauthcost.Key(windows[i].LimitName, windows[i].Kind)); window != nil &&
+				oauthQuotaCostMatchesSampledWindow(windows[i], window) {
 				cost := window.StandardCostMicroUSD
 				windows[i].StandardCostMicroUSD = &cost
 			}
@@ -214,6 +215,19 @@ func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, usage *oauthcost.Usag
 		clone.Windows = windows
 	}
 	return &clone
+}
+
+func oauthQuotaCostMatchesSampledWindow(sample oauthUsageWindow, cost *oauthcost.Window) bool {
+	if cost == nil || cost.WindowSeconds <= 0 || cost.ResetAt <= 0 || sample.ResetAt <= 0 {
+		return false
+	}
+	var delta uint64
+	if cost.ResetAt >= sample.ResetAt {
+		delta = uint64(cost.ResetAt) - uint64(sample.ResetAt)
+	} else {
+		delta = uint64(sample.ResetAt) - uint64(cost.ResetAt)
+	}
+	return delta <= uint64(cost.WindowSeconds-1)/2
 }
 
 func (s *Server) resetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {

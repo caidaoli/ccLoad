@@ -2129,11 +2129,17 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	return res, duration, err
 }
 
+// responsesBodyForHTTPTransport 收尾 HTTP 传输边界的 Codex Responses 上游 body。
+// 注意 HTTP/WS 不对称契约：status 剥离只在这里做——原生 WS 上游接受 status（WS
+// transcript 从头就不带 status），而官方 Codex HTTP 端点拒绝它。别把剥离挪进
+// prepareCodexResponsesBodyForUpstream，那会扩散到需要保留 status 的 WS 路径。
 func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPlan, body []byte) []byte {
 	body = prepareCodexOAuthHTTPBody(cfg, plan.UpstreamProtocol, plan.UpstreamPath, body)
-	if plan.ClientProtocol != protocol.Codex || plan.RequestFamily != protocol.RequestFamilyResponses {
+	if plan.ClientProtocol != protocol.Codex || plan.UpstreamProtocol != protocol.Codex ||
+		plan.RequestFamily != protocol.RequestFamilyResponses {
 		return body
 	}
+	body = stripResponsesInputItemStatus(body)
 	if !gjson.GetBytes(body, "generate").Exists() {
 		return body
 	}
@@ -2142,6 +2148,52 @@ func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPla
 		return body
 	}
 	return stripped
+}
+
+// sonicUseNumber 保真 round-trip：sonic 默认把 JSON 数字解码成 float64，大于 2^53
+// 的整数（seed、超长整型参数等）会丢精度；stripResponsesInputItemStatus 整份 body
+// 重编码，必须用 UseNumber。
+var sonicUseNumber = sonic.Config{UseNumber: true}.Froze()
+
+// stripResponsesInputItemStatus 剥离 Responses input item 的 status 字段。Codex HTTP
+// 上游不定义该字段（官方端点对 function_call 的 status 报 400 "Unknown parameter"），
+// 工具完成态由 call_id/function_call_output 配对重建，剥离不改变执行语义。
+// 单遍 Unmarshal/Marshal：status 数量随工具调用历史累积，逐项 DeleteBytes 是 O(k·n)。
+func stripResponsesInputItemStatus(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"status"`)) {
+		return body
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	var root map[string]any
+	if err := sonicUseNumber.Unmarshal(body, &root); err != nil {
+		return body
+	}
+	items, ok := root["input"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, has := obj["status"]; has {
+			delete(obj, "status")
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := sonic.Marshal(root)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
@@ -2444,10 +2496,24 @@ func (s *Server) forwardAttempt(
 		retryStrategies = append(retryStrategies, retryStrategy)
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
+		// 可复用的 WS 连接优先发 attempt.incrementalBody。status
+		// 策略必须从原增量体剥离；retryBody 可能是完整 transcript，
+		// 直接当增量体会把历史再发一遍。
+		retryAttempt := nativeAttempt
+		if nativeAttempt != nil && res.UpstreamWebsocket {
+			incrementalRetryBody := retryBody
+			if retryStrategy == stripUnknownInputParameterStrategy {
+				incrementalRetryBody = stripResponsesInputItemStatus(nativeAttempt.incrementalBody)
+			}
+			retryAttempt = &nativeCodexWebsocketAttempt{
+				session:         nativeAttempt.session,
+				incrementalBody: incrementalRetryBody,
+			}
+		}
 		s.activeRequests.Retry(reqCtx.activeReqID)
 		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
-			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
+			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, retryAttempt, executionIdentity,
 			retryBody,
 		)
 		plan = retryPlan
@@ -2816,6 +2882,9 @@ func retryBodyForRejectedRequest(
 	res *fwResult,
 ) ([]byte, string, bool) {
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, plan, res); ok {
+		return retryBody, strategy, true
+	}
+	if retryBody, strategy, ok := responsesRetryBodyForUnknownParameter(upstreamProtocol, plan, res); ok {
 		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForMissingRequiredParameter(plan, res); ok {

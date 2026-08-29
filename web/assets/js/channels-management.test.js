@@ -121,7 +121,7 @@ function deferred() {
 }
 
 test('管理账户表单按 profile 显示字段矩阵并标注平台限制', () => {
-  const dom = installManagementDOM();
+    const dom = installManagementDOM();
   try {
     const mod = loadManagementModule();
 
@@ -518,6 +518,40 @@ test('额度失败与签到失败各自独立记录错误，不互相清空', as
       /channels.management.balanceInvalid/
     );
     assert.equal(mod.getManagementBalanceState(9).error, 'channels.management.balanceInvalid');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('列表自动额度结果更新 API 渠道，但不覆盖更新的手动刷新', async () => {
+  const dom = installManagementDOM();
+  try {
+    const mod = loadManagementModule();
+    assert.equal(mod.applyManagementBalanceBatchResult(11, {
+      status: 'succeeded',
+      management: { balance: { remaining: 8.5, unit: 'USD', sampled_at: '2026-08-29T05:00:00Z' } }
+    }), true);
+    assert.equal(mod.getManagementBalanceState(11).data.balance.remaining, 8.5);
+
+    const manual = deferred();
+    const manualCall = mod.refreshManagementBalance(11, () => manual.promise, { reload: false });
+    assert.equal(mod.applyManagementBalanceBatchResult(11, {
+      status: 'succeeded',
+      management: { balance: { remaining: 999, unit: 'USD' } }
+    }), false);
+    manual.resolve({ balance: { remaining: 9.5, unit: 'USD', sampled_at: '2026-08-29T05:01:00Z' } });
+    await manualCall;
+    assert.equal(mod.getManagementBalanceState(11).data.balance.remaining, 9.5);
+
+    const operationFloor = mod.getManagementBalanceOperationSequence();
+    await mod.refreshManagementBalance(11, async () => ({
+      balance: { remaining: 10.5, unit: 'USD', sampled_at: '2026-08-29T05:02:00Z' }
+    }), { reload: false });
+    assert.equal(mod.applyManagementBalanceBatchResult(11, {
+      status: 'succeeded',
+      management: { balance: { remaining: 1, unit: 'USD' } }
+    }, operationFloor), false);
+    assert.equal(mod.getManagementBalanceState(11).data.balance.remaining, 10.5);
   } finally {
     dom.restore();
   }

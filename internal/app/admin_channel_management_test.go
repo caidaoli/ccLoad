@@ -456,10 +456,150 @@ func TestChannelManagementRoutesRegistered(t *testing.T) {
 		"POST /admin/channel-management/sub2api-login",
 		"POST /admin/channels/:id/management-account/balance",
 		"POST /admin/channels/:id/management-account/checkin",
+		"POST /admin/channels/usage/active/batch/stream",
 	} {
 		if _, ok := routes[route]; !ok {
 			t.Errorf("route %q is not registered", route)
 		}
+	}
+}
+
+func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *testing.T) {
+	server := newInMemoryServer(t)
+	userID := int64(42)
+	managed := seedManagementEnvelope(t, server, "managed-active", &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
+		Profile: model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{
+			BaseURL: "https://panel.example.com", AccessToken: managementAccountSecret, UserID: &userID,
+		},
+	})
+	inactive := seedManagementEnvelope(t, server, "managed-inactive", &model.ChannelManagementEnvelope{
+		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
+		Profile: model.ChannelManagementProfileNewAPI,
+		Settings: model.ChannelManagementSettings{
+			BaseURL: "https://panel.example.com", AccessToken: managementAccountSecret, UserID: &userID,
+		},
+	})
+	unmanaged, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "api-unmanaged", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zai, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "zai-active", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{}`, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offPage, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "zai-active-off-page", AuthType: model.AuthTypeZAIOAuth, OAuthCredential: `{}`, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	xai, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "xai-active", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: `{}`, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "codex-active", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{}`, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anthropic, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "anthropic-active", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: `{}`, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	for _, channelID := range []int64{managed.ID, unmanaged.ID, zai.ID, offPage.ID, xai.ID, codex.ID, anthropic.ID} {
+		statusCode := http.StatusOK
+		if channelID == zai.ID {
+			statusCode = 499 // 客户端取消也是已经发生的渠道调用。
+		}
+		if err := server.store.AddLog(context.Background(), &model.LogEntry{
+			Time: model.JSONTime{Time: now}, ChannelID: channelID, Model: "gpt-test",
+			StatusCode: statusCode, Message: "ok", LogSource: model.LogSourceProxy,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = inactive
+	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://panel.example.com/api/user/self" {
+			t.Fatalf("unexpected active usage request: %s", req.URL.String())
+		}
+		return newAPIHTTPResponse(req, http.StatusOK, `{"success":true,"data":{"id":42,"quota":750000,"used_quota":250000}}`), nil
+	})}
+
+	requestBody, err := json.Marshal(oauthUsageBatchRequest{ChannelIDs: []int64{
+		managed.ID, inactive.ID, unmanaged.ID, zai.ID, xai.ID, codex.ID, anthropic.ID,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, response := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/usage/active/batch/stream", requestBody))
+	server.HandleActiveChannelUsageBatchStream(c)
+	if response.Code != http.StatusOK {
+		t.Fatalf("active usage status=%d body=%s", response.Code, response.Body.String())
+	}
+	seen := make(map[int64]oauthUsageBatchResult)
+	var complete oauthUsageBatchEvent
+	for _, block := range strings.Split(response.Body.String(), "\n\n") {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		_, data := parseSSEEventChunk([]byte(block + "\n\n"))
+		var event oauthUsageBatchEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			t.Fatalf("decode active usage event: %v", err)
+		}
+		if event.Result != nil {
+			seen[event.Result.ChannelID] = *event.Result
+		}
+		if event.Event == "complete" {
+			complete = event
+		}
+	}
+	if len(seen) != 2 || seen[managed.ID].Kind != "management" || seen[managed.ID].Status != "succeeded" ||
+		seen[managed.ID].Management == nil || seen[zai.ID].Kind != "oauth" || seen[zai.ID].Status != "failed" {
+		t.Fatalf("active usage results=%#v", seen)
+	}
+	for _, skipped := range []int64{inactive.ID, unmanaged.ID, offPage.ID, xai.ID, codex.ID, anthropic.ID} {
+		if _, ok := seen[skipped]; ok {
+			t.Fatalf("ineligible channel %d was refreshed: %#v", skipped, seen[skipped])
+		}
+	}
+	if complete.Total != 2 || complete.Processed != 2 || complete.Succeeded != 1 || complete.Failed != 1 {
+		t.Fatalf("active usage complete=%#v", complete)
+	}
+}
+
+func TestActiveChannelUsageBatchRequiresDisplayedChannelIDs(t *testing.T) {
+	server := newInMemoryServer(t)
+	c, response := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/usage/active/batch/stream", nil))
+	server.HandleActiveChannelUsageBatchStream(c)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

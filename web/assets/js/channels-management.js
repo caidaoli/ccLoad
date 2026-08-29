@@ -41,6 +41,7 @@ const MANAGEMENT_CHECKIN_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const managementBalanceStateByChannelID = new Map();
 const managementCheckinStateByChannelID = new Map();
 const managementBalanceOperationByChannelID = new Map();
+const managementBalanceLastOperationByChannelID = new Map();
 const managementCheckinOperationByChannelID = new Map();
 
 let managementBalanceOperationSequence = 0;
@@ -683,6 +684,27 @@ function getManagementBalanceState(channelID) {
   return managementBalanceStateByChannelID.get(numericID) || null;
 }
 
+function getManagementBalanceOperationSequence() {
+  return managementBalanceOperationSequence;
+}
+
+function applyManagementBalanceBatchResult(channelID, result, operationFloor = managementBalanceOperationSequence) {
+  const numericID = managementChannelID(channelID);
+  if (!numericID) return false;
+  if (managementBalanceOperationByChannelID.has(numericID) ||
+      (managementBalanceLastOperationByChannelID.get(numericID) || 0) > operationFloor) return false;
+  if (result?.status === 'succeeded' && isManagementBalancePayload(result.management)) {
+    managementBalanceStateByChannelID.set(numericID, { status: 'ready', data: result.management });
+  } else {
+    managementBalanceStateByChannelID.set(numericID, {
+      status: 'error',
+      error: result?.error || managementText('channels.management.balanceFailed')
+    });
+  }
+  rerenderManagementAccounts();
+  return true;
+}
+
 function getManagementCheckinState(channelID) {
   const numericID = managementChannelID(channelID);
   if (!numericID) return null;
@@ -715,6 +737,7 @@ async function refreshManagementBalance(channelID, fetcher = fetchDataWithAuth, 
   if (!numericID) throw new Error('A saved API Key channel is required');
 
   const operationID = ++managementBalanceOperationSequence;
+  managementBalanceLastOperationByChannelID.set(numericID, operationID);
   managementBalanceOperationByChannelID.set(numericID, operationID);
   managementBalanceStateByChannelID.set(numericID, { status: 'loading' });
   rerenderManagementAccounts();
@@ -746,6 +769,7 @@ async function runManagementCheckin(channelID, fetcher = fetchDataWithAuth, opti
   const numericID = managementChannelID(channelID);
   if (!numericID) throw new Error('A saved API Key channel is required');
 
+  managementBalanceLastOperationByChannelID.set(numericID, ++managementBalanceOperationSequence);
   const operationID = ++managementCheckinOperationSequence;
   managementCheckinOperationByChannelID.set(numericID, operationID);
   managementCheckinStateByChannelID.set(numericID, { status: 'loading' });
@@ -791,6 +815,8 @@ if (typeof window !== 'undefined') {
   window.completeManagementAccountSave = completeManagementAccountSave;
   window.getManagementAccountRateConfig = getManagementAccountRateConfig;
   window.refreshManagementBalance = refreshManagementBalance;
+  window.getManagementBalanceOperationSequence = getManagementBalanceOperationSequence;
+  window.applyManagementBalanceBatchResult = applyManagementBalanceBatchResult;
   window.runManagementCheckin = runManagementCheckin;
   window.getManagementBalanceState = getManagementBalanceState;
   window.getManagementCheckinState = getManagementCheckinState;
@@ -816,6 +842,8 @@ if (typeof module !== 'undefined' && module.exports) {
     completeManagementAccountSave,
     getManagementAccountRateConfig,
     refreshManagementBalance,
+    getManagementBalanceOperationSequence,
+    applyManagementBalanceBatchResult,
     runManagementCheckin,
     getManagementBalanceState,
     getManagementCheckinState

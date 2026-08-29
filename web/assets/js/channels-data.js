@@ -45,6 +45,9 @@ async function loadChannels(options = {}) {
     if (typeof updateChannelsPagination === 'function') {
       updateChannelsPagination();
     }
+    if (typeof maybeAutoRefreshActiveChannelUsage === 'function') {
+      void maybeAutoRefreshActiveChannelUsage(channels.map(channel => channel.id));
+    }
   } catch (e) {
     console.error('Failed to load channels', e);
     if (options.throwOnError) throw e;

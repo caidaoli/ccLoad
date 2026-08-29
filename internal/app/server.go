@@ -1598,6 +1598,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/oauth-usage", s.HandleOAuthUsage)
 		admin.POST("/channels/:id/codex-quota-reset", s.HandleResetCodexQuota)
 		admin.POST("/channels/oauth-usage/batch/stream", s.HandleOAuthUsageBatchStream)
+		admin.POST("/channels/usage/active/batch/stream", s.HandleActiveChannelUsageBatchStream)
 		admin.POST("/antigravity/oauth/start", s.HandleStartAntigravityOAuth)
 		admin.GET("/antigravity/oauth/status", s.HandleAntigravityOAuthStatus)
 		admin.POST("/antigravity/oauth/cancel", s.HandleCancelAntigravityOAuth)

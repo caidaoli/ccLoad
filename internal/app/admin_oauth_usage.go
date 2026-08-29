@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,10 +63,12 @@ type oauthUsageBatchRequest struct {
 }
 
 type oauthUsageBatchResult struct {
-	ChannelID int64              `json:"channel_id"`
-	Status    string             `json:"status"`
-	Usage     *oauthUsageSummary `json:"usage,omitempty"`
-	Error     string             `json:"error,omitempty"`
+	ChannelID  int64                  `json:"channel_id"`
+	Status     string                 `json:"status"`
+	Usage      *oauthUsageSummary     `json:"usage,omitempty"`
+	Kind       string                 `json:"kind,omitempty"`
+	Management *channelManagementView `json:"management,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 type oauthUsageBatchEvent struct {
@@ -1332,6 +1335,121 @@ func (s *Server) HandleOAuthUsageBatchStream(c *gin.Context) {
 	})
 }
 
+// HandleActiveChannelUsageBatchStream refreshes eligible channels from the
+// currently displayed list page. The server still verifies today's activity
+// and channel type instead of trusting the browser's selection.
+func (s *Server) HandleActiveChannelUsageBatchStream(c *gin.Context) {
+	var request oauthUsageBatchRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	requestedIDs := normalizeBatchChannelIDs(request.ChannelIDs)
+	if len(requestedIDs) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "channel_ids must not be empty")
+		return
+	}
+	if len(requestedIDs) > maxOAuthUsageBatchChannels {
+		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("channel_ids must contain at most %d channels", maxOAuthUsageBatchChannels))
+		return
+	}
+
+	channelIDs, err := s.activeChannelUsageIDs(c.Request.Context(), requestedIDs)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	s.streamChannelUsageBatch(c, channelIDs)
+}
+
+func (s *Server) streamChannelUsageBatch(c *gin.Context, channelIDs []int64) {
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Header("X-Content-Type-Options", "nosniff")
+	disableResponseWriteTimeout(c.Writer, "channel usage batch stream")
+	c.Status(http.StatusOK)
+	total := len(channelIDs)
+	if err := writeSSEEvent(c, "start", oauthUsageBatchEvent{Event: "start", Total: total}); err != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+	processed, succeeded, failed := 0, 0, 0
+	for result := range s.runChannelUsageBatch(ctx, channelIDs) {
+		processed++
+		if result.Status == "succeeded" {
+			succeeded++
+		} else {
+			failed++
+		}
+		if err := writeSSEEvent(c, "progress", oauthUsageBatchEvent{
+			Event: "progress", Processed: processed, Total: total,
+			Succeeded: succeeded, Failed: failed, Result: &result,
+		}); err != nil {
+			return
+		}
+	}
+	if ctx.Err() == nil {
+		_ = writeSSEEvent(c, "complete", oauthUsageBatchEvent{
+			Event: "complete", Processed: processed, Total: total,
+			Succeeded: succeeded, Failed: failed,
+		})
+	}
+}
+
+func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64) ([]int64, error) {
+	requested := make(map[int64]struct{}, len(requestedIDs))
+	for _, channelID := range requestedIDs {
+		requested[channelID] = struct{}{}
+	}
+	startTime, endTime := (&PaginationParams{Range: "today"}).GetTimeRange()
+	stats, err := s.statsCache.GetStatsLite(ctx, startTime, endTime, &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[int64]struct{}, len(stats))
+	for _, entry := range stats {
+		if entry.ChannelID == nil {
+			continue
+		}
+		channelID := int64(*entry.ChannelID)
+		if _, ok := requested[channelID]; ok {
+			active[channelID] = struct{}{}
+		}
+	}
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	channelIDs := make([]int64, 0, min(len(active), len(requested)))
+	for _, cfg := range configs {
+		if cfg == nil {
+			continue
+		}
+		if _, ok := requested[cfg.ID]; !ok {
+			continue
+		}
+		if _, ok := active[cfg.ID]; !ok {
+			continue
+		}
+		if cfg.GetAuthType() == model.AuthTypeAPIKey {
+			view := s.managementAccountView(cfg)
+			if view != nil && view.CredentialConfigured {
+				channelIDs = append(channelIDs, cfg.ID)
+			}
+			continue
+		}
+		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
+			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
+			channelIDs = append(channelIDs, cfg.ID)
+		}
+	}
+	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
+	return channelIDs, nil
+}
+
 func (s *Server) refreshOAuthUsage(ctx context.Context, id int64) (*oauthUsageSummary, error) {
 	cfg, err := s.store.GetConfig(ctx, id)
 	if err != nil {
@@ -1379,6 +1497,14 @@ func oauthUsageHTTPStatus(err error) int {
 }
 
 func (s *Server) runOAuthUsageBatch(ctx context.Context, channelIDs []int64) <-chan oauthUsageBatchResult {
+	return s.runUsageBatch(ctx, channelIDs, false)
+}
+
+func (s *Server) runChannelUsageBatch(ctx context.Context, channelIDs []int64) <-chan oauthUsageBatchResult {
+	return s.runUsageBatch(ctx, channelIDs, true)
+}
+
+func (s *Server) runUsageBatch(ctx context.Context, channelIDs []int64, includeAPIManagement bool) <-chan oauthUsageBatchResult {
 	results := make(chan oauthUsageBatchResult)
 	go func() {
 		defer close(results)
@@ -1390,11 +1516,17 @@ func (s *Server) runOAuthUsageBatch(ctx context.Context, channelIDs []int64) <-c
 			go func() {
 				defer workers.Done()
 				for channelID := range jobs {
-					usage, err := s.refreshOAuthUsage(ctx, channelID)
-					result := oauthUsageBatchResult{ChannelID: channelID, Status: "succeeded", Usage: usage}
+					result := oauthUsageBatchResult{ChannelID: channelID, Status: "succeeded"}
+					var err error
+					if includeAPIManagement {
+						result.Kind, result.Usage, result.Management, err = s.refreshChannelUsage(ctx, channelID)
+					} else {
+						result.Usage, err = s.refreshOAuthUsage(ctx, channelID)
+					}
 					if err != nil {
 						result.Status = "failed"
 						result.Usage = nil
+						result.Management = nil
 						result.Error = err.Error()
 					}
 					select {
@@ -1419,6 +1551,22 @@ func (s *Server) runOAuthUsageBatch(ctx context.Context, channelIDs []int64) <-c
 		workers.Wait()
 	}()
 	return results
+}
+
+func (s *Server) refreshChannelUsage(ctx context.Context, channelID int64) (string, *oauthUsageSummary, *channelManagementView, error) {
+	cfg, err := s.store.GetConfig(ctx, channelID)
+	if err != nil {
+		return "", nil, nil, errOAuthUsageChannelNotFound
+	}
+	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+		if s.channelManagement == nil {
+			return "management", nil, nil, errChannelManagementProviderUnavailable
+		}
+		view, err := s.channelManagement.RefreshBalance(ctx, channelID)
+		return "management", nil, view, err
+	}
+	usage, err := s.refreshOAuthUsage(ctx, channelID)
+	return "oauth", usage, nil, err
 }
 
 func (s *Server) persistOAuthUsage(

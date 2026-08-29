@@ -29,7 +29,10 @@ let oauthLoginDialogTrigger = null;
 let oauthCredentialImportDialogTrigger = null;
 const oauthUsageStateByChannelID = new Map();
 const oauthUsageOperationByChannelID = new Map();
+const oauthUsageLastOperationByChannelID = new Map();
 let oauthUsageOperationSequence = 0;
+const activeChannelUsageAutoRefreshPendingIDs = new Set();
+const activeChannelUsageAutoRefreshCompletedIDs = new Set();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   codex: Object.freeze({
     provider: 'codex', label: 'Codex', i18n: 'channels.codex',
@@ -2027,12 +2030,84 @@ function rerenderOAuthUsage() {
   if (typeof filterChannels === 'function') filterChannels();
 }
 
+function resetActiveChannelUsageAutoRefreshState() {
+  activeChannelUsageAutoRefreshPendingIDs.clear();
+  activeChannelUsageAutoRefreshCompletedIDs.clear();
+}
+
+async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWithAuth) {
+  const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
+  if (readOnly) return null;
+  const pendingIDs = Array.from(new Set((Array.isArray(channelIDs) ? channelIDs : [])
+    .map(Number)
+    .filter(channelID => Number.isInteger(channelID) && channelID > 0)))
+    .filter(channelID => !activeChannelUsageAutoRefreshPendingIDs.has(channelID)
+      && !activeChannelUsageAutoRefreshCompletedIDs.has(channelID));
+  if (pendingIDs.length === 0) return null;
+  for (const channelID of pendingIDs) activeChannelUsageAutoRefreshPendingIDs.add(channelID);
+  const oauthOperationFloor = oauthUsageOperationSequence;
+  const managementOperationFloor = typeof getManagementBalanceOperationSequence === 'function'
+    ? getManagementBalanceOperationSequence()
+    : 0;
+  try {
+    const response = await fetcher('/admin/channels/usage/active/batch/stream', {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_ids: pendingIDs })
+    });
+    const complete = await readAdminSSEStream(
+      response,
+      event => {
+        if (event.event !== 'progress' || !event.result) return;
+        const result = event.result;
+        const channelID = Number(result.channel_id);
+        if (!Number.isInteger(channelID) || channelID <= 0) return;
+        if (result.kind === 'management') {
+          if (typeof applyManagementBalanceBatchResult === 'function') {
+            applyManagementBalanceBatchResult(channelID, result, managementOperationFloor);
+          }
+          return;
+        }
+        // A manual refresh started after list-open always wins over this
+        // background result.
+        if (oauthUsageOperationByChannelID.has(channelID) ||
+            (oauthUsageLastOperationByChannelID.get(channelID) || 0) > oauthOperationFloor) return;
+        if (result.status === 'succeeded' && result.usage && Array.isArray(result.usage.windows)) {
+          oauthUsageStateByChannelID.set(channelID, { status: 'ready', data: result.usage });
+        } else {
+          oauthUsageStateByChannelID.set(channelID, {
+            status: 'error', error: result.error || window.t('channels.oauth.usageFailed')
+          });
+        }
+        rerenderOAuthUsage();
+      },
+      'channels.batchOAuthUsageFailed',
+      'channels.batchOAuthUsageIncomplete'
+    );
+    const total = Number(complete.total) || 0;
+    const processed = Number(complete.processed) || 0;
+    const succeeded = Number(complete.succeeded) || 0;
+    const failed = Number(complete.failed) || 0;
+    if (processed !== total || succeeded + failed !== total) {
+      throw new Error(window.t('channels.batchOAuthUsageIncomplete'));
+    }
+    for (const channelID of pendingIDs) activeChannelUsageAutoRefreshCompletedIDs.add(channelID);
+    return { total, succeeded, failed };
+  } catch (error) {
+    console.error('Failed to auto-refresh active channel usage', error);
+    return null;
+  } finally {
+    for (const channelID of pendingIDs) activeChannelUsageAutoRefreshPendingIDs.delete(channelID);
+  }
+}
+
 async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
     throw new Error('A saved OAuth channel is required');
   }
   const operationID = ++oauthUsageOperationSequence;
+  oauthUsageLastOperationByChannelID.set(numericID, operationID);
   oauthUsageOperationByChannelID.set(numericID, operationID);
   oauthUsageStateByChannelID.set(numericID, { status: 'loading' });
   rerenderOAuthUsage();
@@ -2071,6 +2146,7 @@ async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options =
   const previous = oauthUsageStateByChannelID.get(numericID) ||
     (persistedUsage ? { status: 'ready', data: persistedUsage } : null);
   const operationID = ++oauthUsageOperationSequence;
+  oauthUsageLastOperationByChannelID.set(numericID, operationID);
   oauthUsageOperationByChannelID.set(numericID, operationID);
   oauthUsageStateByChannelID.set(numericID, {
     ...(previous || {}),
@@ -2124,7 +2200,7 @@ async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options =
   }
 }
 
-async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth) {
+async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth, options = {}) {
   const ids = Array.from(new Set((channelIDs || [])
     .map(id => Number(id))
     .filter(id => Number.isInteger(id) && id > 0)));
@@ -2134,6 +2210,7 @@ async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth) {
   const idSet = new Set(ids);
   const operationID = ++oauthUsageOperationSequence;
   ids.forEach(id => {
+    oauthUsageLastOperationByChannelID.set(id, operationID);
     oauthUsageOperationByChannelID.set(id, operationID);
     oauthUsageStateByChannelID.set(id, { status: 'loading' });
   });
@@ -2178,7 +2255,7 @@ async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth) {
       throw new Error(window.t('channels.batchOAuthUsageIncomplete'));
     }
 
-    if (typeof loadChannels === 'function') {
+    if (options.reload !== false && typeof loadChannels === 'function') {
       await loadChannels();
     } else {
       rerenderOAuthUsage();
@@ -2876,6 +2953,7 @@ if (typeof module !== 'undefined' && module.exports) {
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
     getOAuthUsageState,
+    maybeAutoRefreshActiveChannelUsage,
     importOAuthCredentials,
     loadOAuthCredentialCleanupModels,
     openOAuthCredentialImportDialog,
@@ -2887,6 +2965,7 @@ if (typeof module !== 'undefined' && module.exports) {
     refreshOAuthCredential,
     refreshOAuthUsage,
     refreshOAuthUsageBatch,
+    resetActiveChannelUsageAutoRefreshState,
     resetCodexQuota,
     renderOAuthCredential,
     resetCodexQuotaOverdraftDraft,

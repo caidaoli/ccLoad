@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 const (
 	stripMissingRequiredInputStrategy    = "strip_missing_required_input"
 	stripMissingStoredInputItemStrategy  = "strip_missing_stored_input_item"
+	stripUnknownInputParameterStrategy   = "strip_unknown_input_parameter"
 	responsesMissingStoredItemRetryLimit = 1
 )
 
@@ -36,6 +38,100 @@ func responsesRetryBodyForMissingRequiredParameter(
 		return nil, "", false
 	}
 	return retryBody, stripMissingRequiredInputStrategy, true
+}
+
+// responsesRetryBodyForUnknownParameter 在上游报 unknown/unsupported parameter 时，
+// 一次性剥离所有 input item 的 status 字段（与 HTTP 传输前置剥离同一逻辑），
+// 供同渠道同 Key 重试一次。策略串是常量，重试循环按完整串去重，天然限 1 轮。
+// 只接受明确指向 input[N].status 的错误，避免因其他参数拒绝而重放 POST。
+// thinking/reasoning 相关错误交给 strip_codex_thinking 专门策略。响应已提交则不能换 body。
+func responsesRetryBodyForUnknownParameter(
+	upstreamProtocol protocol.Protocol,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if res == nil || res.ResponseCommitted || upstreamProtocol != protocol.Codex ||
+		plan.ClientProtocol != protocol.Codex || plan.RequestFamily != protocol.RequestFamilyResponses {
+		return nil, "", false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	if status != http.StatusBadRequest {
+		return nil, "", false
+	}
+	if !matchesUnknownInputStatusError(errorBody) {
+		return nil, "", false
+	}
+	retryBody := stripResponsesInputItemStatus(plan.TranslatedBody)
+	if bytes.Equal(retryBody, plan.TranslatedBody) {
+		return nil, "", false
+	}
+	return retryBody, stripUnknownInputParameterStrategy, true
+}
+
+// matchesUnknownInputStatusError only accepts errors that identify
+// input[N].status. Retrying a POST for some other rejected parameter is not a
+// harmless fallback: it can duplicate an upstream side effect.
+func matchesUnknownInputStatusError(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	code := strings.ToLower(strings.TrimSpace(firstNonEmptyJSONString(
+		root.Get("error.code"),
+		root.Get("code"),
+	)))
+	if code != "" && code != "unknown_parameter" && code != "unsupported_parameter" {
+		return false
+	}
+	param := firstNonEmptyJSONString(root.Get("error.param"), root.Get("param"))
+	message := firstNonEmptyJSONString(
+		root.Get("error.message"),
+		root.Get("message"),
+	)
+	if code == "" {
+		lowerMessage := strings.ToLower(message)
+		if !strings.Contains(lowerMessage, "unknown parameter") &&
+			!strings.Contains(lowerMessage, "unsupported parameter") {
+			return false
+		}
+	}
+	if param != "" {
+		return isResponsesInputStatusPath(param, true)
+	}
+	return isResponsesInputStatusPath(message, false)
+}
+
+func isResponsesInputStatusPath(value string, exact bool) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	start := strings.Index(lower, "input[")
+	if start < 0 {
+		return false
+	}
+	rest := lower[start+len("input["):]
+	end := strings.IndexByte(rest, ']')
+	if end <= 0 {
+		return false
+	}
+	if _, err := strconv.Atoi(rest[:end]); err != nil {
+		return false
+	}
+	rest = rest[end+1:]
+	if !strings.HasPrefix(rest, ".status") {
+		return false
+	}
+	rest = rest[len(".status"):]
+	if rest == "" {
+		return true
+	}
+	if exact {
+		return false
+	}
+	// 嵌套路径不是 status 字段本身。引号、空格等则是错误文案边界。
+	return rest[0] != '.' && rest[0] != '[' && !isResponsesPathIdentifierByte(rest[0])
+}
+
+func isResponsesPathIdentifierByte(value byte) bool {
+	return value == '_' || value >= '0' && value <= '9' || value >= 'a' && value <= 'z'
 }
 
 func missingRequiredInputIndex(body []byte) (int, bool) {

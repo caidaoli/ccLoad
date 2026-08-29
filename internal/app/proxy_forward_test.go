@@ -748,6 +748,213 @@ func TestRetryBodyForRejectedRequest_StripsMissingRequiredInput(t *testing.T) {
 	}
 }
 
+func TestRetryBodyForRejectedRequest_StripsUnknownInputStatus(t *testing.T) {
+	t.Parallel()
+	// 两个 item 都带 status：一次性剥离全部，而不是只删上游点名的单个路径。
+	body := []byte(`{"input":[{"type":"function_call","id":"fc_0","call_id":"call_0","name":"exec","arguments":"{}","status":"completed"},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"}]}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"message":"Unknown parameter: 'input[1].status'. (request id: 202608290103048262047936468c0eZAfBH9NY)","type":"invalid_request_error","param":"input[1].status","code":"unknown_parameter"}}`),
+	}
+	plan := protocol.TransformPlan{
+		ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex,
+		RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: body,
+	}
+
+	got, strategy, ok := retryBodyForRejectedRequest(protocol.Codex, nil, plan, res)
+	if !ok {
+		t.Fatal("retryBodyForRejectedRequest returned ok=false")
+	}
+	if strategy != stripUnknownInputParameterStrategy {
+		t.Fatalf("strategy=%q, want %q", strategy, stripUnknownInputParameterStrategy)
+	}
+	if gjson.GetBytes(got, "input.#").Int() != 2 {
+		t.Fatalf("unknown-parameter retry dropped an input item: %s", got)
+	}
+	if gjson.GetBytes(got, "input.0.status").Exists() || gjson.GetBytes(got, "input.1.status").Exists() {
+		t.Fatalf("status survived retry body: %s", got)
+	}
+	if gjson.GetBytes(got, "input.0.call_id").String() != "call_0" ||
+		gjson.GetBytes(got, "input.1.call_id").String() != "call_1" {
+		t.Fatalf("function_call lost fields: %s", got)
+	}
+}
+
+func TestResponsesRetryBodyForUnknownParameter_Guards(t *testing.T) {
+	t.Parallel()
+	bodyWithStatus := []byte(`{"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"}]}`)
+	bodyWithoutStatus := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}]}`)
+	tests := []struct {
+		name      string
+		body      []byte
+		resStatus int
+		errorBody []byte
+		wantOK    bool
+	}{
+		{
+			name:      "code unknown_parameter",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].status"}}`),
+			wantOK:    true,
+		},
+		{
+			name:      "code unsupported_parameter",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unsupported_parameter","param":"input[0].status"}}`),
+			wantOK:    true,
+		},
+		{
+			name:      "message only fallback",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"message":"Unknown parameter: 'input[0].status'."}}`),
+			wantOK:    true,
+		},
+		{
+			name:      "no status in body is noop",
+			body:      bodyWithoutStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0]","message":"Unknown parameter: 'input[0]'."}}`),
+			wantOK:    false,
+		},
+		{
+			name:      "different unknown parameter does not replay",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].metadata"}}`),
+			wantOK:    false,
+		},
+		{
+			name:      "nested status path does not replay",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].status.detail"}}`),
+			wantOK:    false,
+		},
+		{
+			name:      "structured status prefix does not replay",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].status/child"}}`),
+			wantOK:    false,
+		},
+		{
+			name:      "thinking error delegated to strip_codex_thinking",
+			body:      bodyWithStatus,
+			resStatus: http.StatusBadRequest,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].reasoning","message":"Unknown parameter: 'input[0].reasoning'."}}`),
+			wantOK:    false,
+		},
+		{
+			name:      "non bad request does not retry",
+			body:      bodyWithStatus,
+			resStatus: http.StatusInternalServerError,
+			errorBody: []byte(`{"error":{"code":"unknown_parameter","param":"input[0].status"}}`),
+			wantOK:    false,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			res := &fwResult{Status: tt.resStatus, Body: tt.errorBody}
+			plan := protocol.TransformPlan{
+				ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex,
+				RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: tt.body,
+			}
+			got, strategy, ok := responsesRetryBodyForUnknownParameter(protocol.Codex, plan, res)
+			if ok != tt.wantOK {
+				t.Fatalf("ok=%v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if strategy != stripUnknownInputParameterStrategy {
+				t.Fatalf("strategy=%q", strategy)
+			}
+			if gjson.GetBytes(got, "input.0.status").Exists() {
+				t.Fatalf("status survived retry body: %s", got)
+			}
+			if gjson.GetBytes(got, "input.0.call_id").String() != "call_1" {
+				t.Fatalf("function_call lost fields: %s", got)
+			}
+		})
+	}
+}
+
+func TestResponsesRetryBodyForUnknownParameter_RequiresCodexResponsesScope(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{"type":"function_call","status":"completed"}]}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"code":"unknown_parameter","param":"input[0].status"}}`),
+	}
+	tests := []struct {
+		name     string
+		upstream protocol.Protocol
+		plan     protocol.TransformPlan
+	}{
+		{
+			name:     "non Codex upstream",
+			upstream: protocol.OpenAI,
+			plan: protocol.TransformPlan{
+				ClientProtocol: protocol.Codex, RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: body,
+			},
+		},
+		{
+			name:     "non Codex client",
+			upstream: protocol.Codex,
+			plan: protocol.TransformPlan{
+				ClientProtocol: protocol.OpenAI, RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: body,
+			},
+		},
+		{
+			name:     "non Responses request",
+			upstream: protocol.Codex,
+			plan: protocol.TransformPlan{
+				ClientProtocol: protocol.Codex, RequestFamily: protocol.RequestFamilyChatCompletions, TranslatedBody: body,
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, ok := responsesRetryBodyForUnknownParameter(tc.upstream, tc.plan, res); ok {
+				t.Fatal("out-of-scope request must not be replayed")
+			}
+		})
+	}
+}
+
+func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
+	plan := protocol.TransformPlan{
+		ClientProtocol:   protocol.Codex,
+		UpstreamProtocol: protocol.Codex,
+		RequestFamily:    protocol.RequestFamilyResponses,
+	}
+	got := responsesBodyForHTTPTransport(&model.Config{}, plan, body)
+	if gjson.GetBytes(got, "input.0.status").Exists() {
+		t.Fatalf("HTTP Codex body kept input status: %s", got)
+	}
+	if gjson.GetBytes(got, "input.0.call_id").String() != "call_1" {
+		t.Fatalf("HTTP Codex body lost function_call: %s", got)
+	}
+	if gjson.GetBytes(got, "seed").Raw != "9007199254740993" {
+		t.Fatalf("HTTP Codex body changed large integer: %s", got)
+	}
+
+	plan.UpstreamProtocol = protocol.OpenAI
+	got = responsesBodyForHTTPTransport(&model.Config{}, plan, body)
+	if !gjson.GetBytes(got, "input.0.status").Exists() {
+		t.Fatalf("non-Codex upstream body lost input status: %s", got)
+	}
+}
+
 func TestResponsesRetryBodyForMissingStoredInputItem_StripsNamedReasoning(t *testing.T) {
 	t.Parallel()
 	const missingID = "rs_item_813dd000e22bc4aa5ed48884"

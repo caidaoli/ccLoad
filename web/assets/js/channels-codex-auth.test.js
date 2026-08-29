@@ -17,8 +17,10 @@ const {
   pollAnthropicOAuthStatus,
   pollXAIOAuthStatus,
   getOAuthUsageState,
+  maybeAutoRefreshActiveChannelUsage,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
+  resetActiveChannelUsageAutoRefreshState,
   resetCodexQuota,
   batchRefreshSelectedOAuthUsage,
   refreshOAuthCredential,
@@ -2052,6 +2054,146 @@ test('newer batch OAuth usage result is not overwritten by an older single refre
     global.filterChannels = previousFilterChannels;
     if (previousLoadChannels === undefined) delete global.loadChannels;
     else global.loadChannels = previousLoadChannels;
+  }
+});
+
+test('channel list auto-refresh submits only newly displayed page channel IDs', async () => {
+  resetActiveChannelUsageAutoRefreshState();
+  const previous = {
+    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
+    filterChannels: global.filterChannels,
+    loadChannels: global.loadChannels,
+    window: global.window
+  };
+  let reloads = 0;
+  const requested = [];
+  global.isTokenChannelsReadOnly = () => false;
+  global.filterChannels = () => {};
+  global.loadChannels = async () => { reloads++; };
+  global.window = { t: key => key };
+
+  try {
+    const first = await maybeAutoRefreshActiveChannelUsage([81, 82, 83, 83, 0], async (url, options) => {
+      requested.push({ url, options });
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 2, succeeded: 0, failed: 0 },
+        {
+          event: 'progress', processed: 1, total: 2, succeeded: 1, failed: 0,
+          result: { channel_id: 81, kind: 'oauth', status: 'succeeded', usage: { windows: [{ kind: 'gemini-5h' }] } }
+        },
+        {
+          event: 'progress', processed: 2, total: 2, succeeded: 2, failed: 0,
+          result: { channel_id: 83, kind: 'oauth', status: 'succeeded', usage: { windows: [{ kind: 'spend' }] } }
+        },
+        { event: 'complete', processed: 2, total: 2, succeeded: 2, failed: 0 }
+      ]);
+    });
+    const repeated = await maybeAutoRefreshActiveChannelUsage([81, 82, 83], async () => {
+      throw new Error('displayed channels should refresh once');
+    });
+    const secondPage = await maybeAutoRefreshActiveChannelUsage([83, 85], async (url, options) => {
+      requested.push({ url, options });
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 0, succeeded: 0, failed: 0 },
+        { event: 'complete', processed: 0, total: 0, succeeded: 0, failed: 0 }
+      ]);
+    });
+    assert.deepEqual(first, { total: 2, succeeded: 2, failed: 0 });
+    assert.equal(repeated, null);
+    assert.deepEqual(secondPage, { total: 0, succeeded: 0, failed: 0 });
+    assert.equal(reloads, 0);
+    assert.equal(requested.length, 2);
+    assert.equal(requested[0].url, '/admin/channels/usage/active/batch/stream');
+    assert.equal(requested[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [81, 82, 83] });
+    assert.deepEqual(JSON.parse(requested[1].options.body), { channel_ids: [85] });
+    assert.equal(getOAuthUsageState(81).status, 'ready');
+    assert.equal(getOAuthUsageState(83).status, 'ready');
+  } finally {
+    resetActiveChannelUsageAutoRefreshState();
+    global.isTokenChannelsReadOnly = previous.isTokenChannelsReadOnly;
+    global.filterChannels = previous.filterChannels;
+    global.loadChannels = previous.loadChannels;
+    global.window = previous.window;
+  }
+});
+
+test('a completed manual quota refresh is not overwritten by an older list refresh', async () => {
+  resetActiveChannelUsageAutoRefreshState();
+  const previous = {
+    isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
+    filterChannels: global.filterChannels,
+    window: global.window
+  };
+  global.isTokenChannelsReadOnly = () => false;
+  global.filterChannels = () => {};
+  global.window = { t: key => key };
+  let releaseAuto;
+  try {
+    const automatic = maybeAutoRefreshActiveChannelUsage([84], async () => ({
+      ok: true,
+      status: 200,
+      text: () => new Promise(resolve => { releaseAuto = resolve; })
+    }));
+    await new Promise(resolve => setImmediate(resolve));
+
+    const manualUsage = { windows: [{ limit_name: 'manual-newer' }] };
+    await refreshOAuthUsage(84, async () => manualUsage, { reload: false });
+    const stale = await oauthUsageBatchSSE([
+      { event: 'start', processed: 0, total: 1, succeeded: 0, failed: 0 },
+      {
+        event: 'progress', processed: 1, total: 1, succeeded: 1, failed: 0,
+        result: {
+          channel_id: 84, kind: 'oauth', status: 'succeeded',
+          usage: { windows: [{ limit_name: 'automatic-older' }] }
+        }
+      },
+      { event: 'complete', processed: 1, total: 1, succeeded: 1, failed: 0 }
+    ]).text();
+    releaseAuto(stale);
+    await automatic;
+
+    assert.deepEqual(getOAuthUsageState(84), { status: 'ready', data: manualUsage });
+  } finally {
+    resetActiveChannelUsageAutoRefreshState();
+    global.isTokenChannelsReadOnly = previous.isTokenChannelsReadOnly;
+    global.filterChannels = previous.filterChannels;
+    global.window = previous.window;
+  }
+});
+
+test('list auto-refresh can retry after the batch stream fails', async () => {
+  resetActiveChannelUsageAutoRefreshState();
+  const previousWindow = global.window;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  const previousFilterChannels = global.filterChannels;
+  const previousConsoleError = console.error;
+  global.window = { t: key => key };
+  global.isTokenChannelsReadOnly = () => false;
+  global.filterChannels = () => {};
+  console.error = () => {};
+  let attempts = 0;
+  try {
+    const first = await maybeAutoRefreshActiveChannelUsage([91], async () => {
+      attempts++;
+      throw new Error('temporary network error');
+    });
+    const second = await maybeAutoRefreshActiveChannelUsage([91], async () => {
+      attempts++;
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 0, succeeded: 0, failed: 0 },
+        { event: 'complete', processed: 0, total: 0, succeeded: 0, failed: 0 }
+      ]);
+    });
+    assert.equal(first, null);
+    assert.deepEqual(second, { total: 0, succeeded: 0, failed: 0 });
+    assert.equal(attempts, 2);
+  } finally {
+    resetActiveChannelUsageAutoRefreshState();
+    global.window = previousWindow;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+    global.filterChannels = previousFilterChannels;
+    console.error = previousConsoleError;
   }
 });
 
