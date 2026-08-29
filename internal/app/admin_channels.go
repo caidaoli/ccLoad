@@ -1066,12 +1066,23 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		RespondErrorMsg(c, http.StatusNotFound, "api key not found")
 		return
 	}
-	if !disable && key.ModelScopeEmpty {
-		RespondErrorMsg(c, http.StatusConflict, "configure at least one model or allow all models before enabling this key")
-		return
-	}
 
-	if err := s.store.SetAPIKeyDisabled(c.Request.Context(), id, keyIndex, disable); err != nil {
+	ctx := c.Request.Context()
+	if !disable && key.ModelScopeEmpty {
+		// An empty model scope is an automatic safety disable caused by a
+		// channel model-list change. An explicit enable clears that automatic
+		// marker atomically with the disabled flag. Keep any persisted allowlist
+		// if one exists (the normal empty-scope state has none).
+		scope := model.APIKeyModelScope{
+			AllowedModels:   append([]string(nil), key.AllowedModels...),
+			ModelScopeEmpty: false,
+			Disabled:        false,
+		}
+		if err := s.store.UpdateAPIKeyModelScopes(ctx, id, map[int]model.APIKeyModelScope{keyIndex: scope}); err != nil {
+			RespondErrorMsg(c, http.StatusInternalServerError, "persist key model scope state failed")
+			return
+		}
+	} else if err := s.store.SetAPIKeyDisabled(ctx, id, keyIndex, disable); err != nil {
 		RespondErrorMsg(c, http.StatusInternalServerError, "persist key disabled state failed")
 		return
 	}

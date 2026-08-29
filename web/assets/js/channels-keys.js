@@ -135,29 +135,47 @@ function selectAvailableInlineKeys(rows, states) {
   return [...new Set(selectModelFetchKeyEntries(rows, states, false).map(entry => entry.apiKey))];
 }
 
-function selectModelFetchKeyEntries(rows, states, allowCooldownFallback = true) {
+function selectModelFetchKeyEntries(rows, states, allowCooldownFallback = true, allowScopeEmpty = false) {
   const statesByIndex = new Map(
     (Array.isArray(states) ? states : [])
       .filter(Boolean)
       .map(state => [Number(state.key_index), state])
   );
   const available = [];
+  const scopeEmpty = [];
   let fallback = null;
   for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
-    const apiKey = normalizeInlineKeyRow(row).api_key;
+    const normalizedRow = normalizeInlineKeyRow(row);
+    const apiKey = normalizedRow.api_key;
     const state = statesByIndex.get(index);
     const cooldownRemaining = Number(state?.cooldown_remaining_ms || 0);
-    if (!apiKey || state?.disabled) continue;
-    if (cooldownRemaining <= 0) {
-      available.push({ keyIndex: index, apiKey });
+    const scopeAutoDisabled = Boolean(normalizedRow.model_scope_empty);
+    if (!apiKey) continue;
+    // 手动禁用的 Key 不参与探测；作用域被裁剪空而自动禁用的 Key 凭据仍有效，
+    // 仅当调用方显式允许（allowScopeEmpty）时降级参与只读模型探测。
+    if (state?.disabled && (!allowScopeEmpty || !scopeAutoDisabled)) continue;
+    if (cooldownRemaining > 0) {
+      if (!scopeAutoDisabled && allowCooldownFallback &&
+          (!fallback || cooldownRemaining < fallback.cooldownRemaining)) {
+        fallback = { keyIndex: index, apiKey, cooldownRemaining };
+      }
       continue;
     }
-    if (!fallback || cooldownRemaining < fallback.cooldownRemaining) {
-      fallback = { keyIndex: index, apiKey, cooldownRemaining };
+    if (scopeAutoDisabled) {
+      if (!allowScopeEmpty) continue;
+      scopeEmpty.push({ keyIndex: index, apiKey });
+      continue;
     }
+    available.push({ keyIndex: index, apiKey });
   }
-  if (available.length > 0 || !allowCooldownFallback || !fallback) return available;
-  return [{ keyIndex: fallback.keyIndex, apiKey: fallback.apiKey }];
+  if (available.length > 0) {
+    return available.concat(scopeEmpty);
+  }
+  const entries = [];
+  if (allowCooldownFallback && fallback) {
+    entries.push({ keyIndex: fallback.keyIndex, apiKey: fallback.apiKey });
+  }
+  return entries.concat(scopeEmpty);
 }
 
 function countConfiguredInlineKeys(rows) {
@@ -1720,6 +1738,17 @@ async function toggleKeyDisabled(index) {
       body: JSON.stringify({ key_index: index })
     });
 
+    if (isCurrentlyDisabled) {
+      const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+      if (row.model_scope_empty) {
+        // The backend treats an explicit enable as clearing the automatic
+        // empty-scope state. Keep the editor aligned so a later save does not
+        // re-submit the stale marker.
+        delete row.model_scope_empty;
+        inlineKeyTableData[index] = row;
+      }
+    }
+
     await refreshKeyCooldownStatus();
 
     const action = isCurrentlyDisabled ? window.t('common.enabled') : window.t('common.disabled');
@@ -1746,6 +1775,7 @@ if (typeof module !== 'undefined' && module.exports) {
     initKeyModelScopeModalEvents,
     setVisibleKeyModelScopeChecked,
     updateKeyModelScopeSelectionCount,
-    canFetchInlineKeyRate
+    canFetchInlineKeyRate,
+    toggleKeyDisabled
   };
 }

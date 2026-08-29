@@ -1588,7 +1588,9 @@ function buildBatchRefreshResultForItem(channelID, name, item, mode) {
     fetched: Number(item.fetched) || 0,
     added: Number(item.added) || 0,
     removed: Number(item.removed) || 0,
-    total: Number(item.total) || 0
+    total: Number(item.total) || 0,
+    warning: item.warning ? String(item.warning) : '',
+    detail: item.warning ? String(item.warning) : ''
   };
 }
 
@@ -3040,6 +3042,7 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
     const next = allowedModels.map(name => name.toLowerCase());
     if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
       row.allowed_models = allowedModels;
+      delete row.model_scope_empty;
       changedCount++;
     }
   }
@@ -3405,7 +3408,7 @@ async function fetchModelsFromAPI() {
     const urls = getValidInlineURLConfigs();
     const channelUrl = urls[0]?.url || '';
     const keyRows = getInlineKeyRows();
-    modelFetchEntries = selectModelFetchKeyEntries(keyRows, currentChannelKeyCooldowns);
+    modelFetchEntries = selectModelFetchKeyEntries(keyRows, currentChannelKeyCooldowns, true, true);
     const availableKeys = modelFetchEntries.map(entry => entry.apiKey);
     skippedKeyCount = Math.max(
       0,

@@ -1981,15 +1981,22 @@ func TestHandleUpdateChannelDisablesEmptiedScopeWhenRebuildingKeys(t *testing.T)
 		t.Fatalf("rebuilt keys=%+v, want emptied existing scope disabled and new unrestricted key enabled", keys)
 	}
 
-	// An automatically disabled empty-scope key cannot be enabled without
-	// explicitly choosing a scope first.
+	// An automatically disabled empty-scope key can be explicitly enabled as
+	// unrestricted access without rebuilding the channel.
 	enableCtx, enableW := newTestContext(t, newJSONRequest(t, http.MethodPost,
 		"/admin/channels/"+strconv.FormatInt(created.ID, 10)+"/key-enable",
 		map[string]any{"key_index": 0}))
 	enableCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
 	server.HandleAPIKeyEnable(enableCtx)
-	if enableW.Code != http.StatusConflict {
-		t.Fatalf("enable empty-scope key status=%d body=%s, want 409", enableW.Code, enableW.Body.String())
+	if enableW.Code != http.StatusOK {
+		t.Fatalf("enable empty-scope key status=%d body=%s, want 200", enableW.Code, enableW.Body.String())
+	}
+	keys, err = store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys after direct enable: %v", err)
+	}
+	if len(keys) != 2 || keys[0].Disabled || keys[0].ModelScopeEmpty || len(keys[0].AllowedModels) != 0 || !keys[0].AllowsModel("model-a") {
+		t.Fatalf("direct enable result=%+v, want first key enabled and unrestricted", keys)
 	}
 
 	// Explicitly clearing the scope means unrestricted access and must restore

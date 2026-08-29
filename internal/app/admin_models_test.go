@@ -1843,6 +1843,159 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
+	t.Run("replace mode unions per-key models across groups", func(t *testing.T) {
+		var upstreamAuth []string
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			auth := r.Header.Get("Authorization")
+			upstreamAuth = append(upstreamAuth, auth)
+			switch auth {
+			case "Bearer group-a":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"ma-1"}]}`))
+			case "Bearer group-b":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"mb-1"}]}`))
+			default:
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "multi-group-channel",
+			URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Priority:     1,
+			ModelEntries: []model.ModelEntry{{Model: "stale-only"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		// group-a 正常可用；group-b 作用域被裁剪空而自动禁用（凭据仍有效）；
+		// manual-off 手动禁用，不得参与探测。
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "group-a", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "group-b", KeyStrategy: model.KeyStrategySequential, Disabled: true, ModelScopeEmpty: true},
+			{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "manual-off", KeyStrategy: model.KeyStrategySequential, Disabled: true},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{{Model: "ma-1"}, {Model: "mb-1"}}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
+		}
+
+		wantAuth := []string{"Bearer group-a", "Bearer group-b"}
+		if !reflect.DeepEqual(upstreamAuth, wantAuth) {
+			t.Fatalf("Authorization sequence=%v, want %v", upstreamAuth, wantAuth)
+		}
+
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if !keys[1].Disabled || !keys[1].ModelScopeEmpty {
+			t.Fatalf("scope-auto-disabled key must stay disabled after refresh: %+v", keys[1])
+		}
+		if !keys[2].Disabled {
+			t.Fatalf("manually disabled key must stay disabled: %+v", keys[2])
+		}
+	})
+
+	t.Run("replace mode continues with successful keys when one key probe fails", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			switch r.Header.Get("Authorization") {
+			case "Bearer healthy":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"model-a"}]}`))
+			case "Bearer broken":
+				http.Error(w, "temporary upstream failure", http.StatusInternalServerError)
+			default:
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "partial-probe-channel",
+			URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Priority:     1,
+			ModelEntries: []model.ModelEntry{{Model: "model-a"}, {Model: "model-b"}, {Model: "stale-model"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy", AllowedModels: []string{"model-a"}, KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: []string{"model-b"}, KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var response struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Updated int                      `json:"updated"`
+				Failed  int                      `json:"failed"`
+				Results []BatchRefreshModelsItem `json:"results"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+		if !response.Success || response.Data.Updated != 1 || response.Data.Failed != 0 ||
+			len(response.Data.Results) != 1 || response.Data.Results[0].Status != "updated" || response.Data.Results[0].Warning == "" {
+			t.Fatalf("unexpected response: %s", w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		want := []model.ModelEntry{{Model: "model-a"}}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("models=%#v, want %#v (successful model should apply despite failed key)", got.ModelEntries, want)
+		}
+	})
+
 	t.Run("invalid mode", func(t *testing.T) {
 		server, _, cleanup := setupAdminTestServer(t)
 		defer cleanup()
@@ -1853,4 +2006,39 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
 		}
 	})
+}
+
+func TestAvailableModelFetchAPIKeysScopeEmptyFallback(t *testing.T) {
+	now := time.Now()
+	keys := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "manual-off", Disabled: true},
+		{KeyIndex: 1, APIKey: "scope-empty", Disabled: true, ModelScopeEmpty: true},
+		{KeyIndex: 2, APIKey: "cooling-normal", CooldownUntil: now.Add(5 * time.Minute).Unix()},
+		{KeyIndex: 3, APIKey: "normal"},
+		{KeyIndex: 4, APIKey: "scope-empty-cooling", Disabled: true, ModelScopeEmpty: true, CooldownUntil: now.Add(5 * time.Minute).Unix()},
+	}
+	got := availableModelFetchAPIKeys(keys, now)
+	gotNames := make([]string, 0, len(got))
+	for _, key := range got {
+		gotNames = append(gotNames, key.APIKey)
+	}
+	want := []string{"normal", "scope-empty"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Fatalf("keys=%v, want %v", gotNames, want)
+	}
+
+	allCooling := []*model.APIKey{
+		{KeyIndex: 0, APIKey: "cool-late", CooldownUntil: now.Add(10 * time.Minute).Unix()},
+		{KeyIndex: 1, APIKey: "cool-soon", CooldownUntil: now.Add(3 * time.Minute).Unix()},
+		{KeyIndex: 2, APIKey: "scope-empty", Disabled: true, ModelScopeEmpty: true},
+	}
+	got = availableModelFetchAPIKeys(allCooling, now)
+	gotNames = gotNames[:0]
+	for _, key := range got {
+		gotNames = append(gotNames, key.APIKey)
+	}
+	want = []string{"cool-soon", "scope-empty"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Fatalf("all-cooling keys=%v, want %v", gotNames, want)
+	}
 }

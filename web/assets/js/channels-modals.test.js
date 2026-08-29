@@ -15,7 +15,8 @@ const {
   initKeyModelScopeModalEvents,
   setVisibleKeyModelScopeChecked,
   updateKeyModelScopeSelectionCount,
-  canFetchInlineKeyRate
+  canFetchInlineKeyRate,
+  toggleKeyDisabled
 } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
@@ -181,6 +182,102 @@ test('model discovery preserves duplicate Key rows for exact scope mapping', () 
     { keyIndex: 1, apiKey: 'same-key' }
   ]);
   assert.equal(countConfiguredInlineKeys([{ api_key: 'same-key' }, { api_key: 'same-key' }]), 2);
+});
+
+test('model fetch selection excludes scope-auto-disabled Keys unless allowed', () => {
+  const rows = [
+    { api_key: 'sk-manual-off' },
+    { api_key: 'sk-scope-empty', model_scope_empty: true },
+    { api_key: 'sk-normal' }
+  ];
+  const states = [
+    { key_index: 0, disabled: true },
+    { key_index: 1, disabled: true },
+    { key_index: 2, disabled: false }
+  ];
+  assert.deepEqual(selectModelFetchKeyEntries(rows, states, true), [
+    { keyIndex: 2, apiKey: 'sk-normal' }
+  ]);
+  assert.deepEqual(selectModelFetchKeyEntries(rows, states, true, true), [
+    { keyIndex: 2, apiKey: 'sk-normal' },
+    { keyIndex: 1, apiKey: 'sk-scope-empty' }
+  ]);
+  assert.deepEqual(selectModelFetchKeyEntries([
+    { api_key: 'sk-scope-empty', model_scope_empty: true }
+  ], [], false), []);
+  assert.deepEqual(selectModelFetchKeyEntries([
+    { api_key: 'sk-scope-empty', model_scope_empty: true }
+  ], [{ key_index: 0, disabled: false }], false), []);
+});
+
+test('directly enabling a scope-auto-disabled Key clears the stale editor marker', async () => {
+  const calls = [];
+  const notifications = [];
+  const globals = {
+    window: {
+      t: key => key,
+      showNotification: (...args) => notifications.push(args)
+    },
+    editingChannelAuthType: 'api_key',
+    editingChannelId: 42,
+    channelFormDirty: false,
+    currentChannelKeyCooldowns: [{ key_index: 0, disabled: true }],
+    inlineKeyTableData: [{ api_key: 'scope-empty-key', model_scope_empty: true }],
+    console: { ...console, error: () => {} },
+    fetchDataWithAuth: async (url, options) => {
+      calls.push({ url, options });
+      return options ? { ok: true } : [];
+    }
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+
+  try {
+    await toggleKeyDisabled(0);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, '/admin/channels/42/key-enable');
+    assert.equal(JSON.parse(calls[0].options.body).key_index, 0);
+    assert.equal(global.inlineKeyTableData[0].model_scope_empty, undefined);
+    assert.equal(notifications.at(-1)[1], 'success');
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
+test('fetchModelsFromAPI includes scope-auto-disabled keys for discovery', async () => {
+  let requestBody;
+  const restore = installFetchModelsGlobals({
+    rows: [
+      { api_key: 'scope-empty-key', model_scope_empty: true },
+      { api_key: 'manual-off-key' },
+      { api_key: 'enabled-key' }
+    ],
+    states: [
+      { key_index: 0, disabled: true },
+      { key_index: 1, disabled: true },
+      { key_index: 2, disabled: false }
+    ],
+    onFetch: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(requestBody.api_keys, ['enabled-key', 'scope-empty-key']);
+  assert.equal(requestBody.per_key, true);
 });
 
 test('Key model scope master checkbox reflects and changes visible models', () => {
@@ -1475,6 +1572,26 @@ test('per-Key discovery proposals map out-of-order results back to original Key 
     ['logical-a', 'common'],
     ['common', 'logical-b']
   ]);
+});
+
+test('per-Key discovery clears scope-empty marker when a scope is recovered', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'sk-scope-empty', allowed_models: [], model_scope_empty: true }
+  ], [
+    { model: 'logical-model', redirect_model: '' }
+  ], [
+    { key_index: 0, models: [{ model: 'logical-model' }] }
+  ], [
+    { keyIndex: 0, apiKey: 'sk-scope-empty' }
+  ]);
+
+  assert.equal(result.complete, true);
+  assert.equal(result.changedCount, 1);
+  assert.deepEqual(result.rows, [{
+    api_key: 'sk-scope-empty',
+    allowed_models: ['logical-model']
+  }]);
 });
 
 test('per-Key discovery proposals remain atomic when one Key fails', () => {
