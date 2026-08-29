@@ -59,6 +59,7 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthrop
 	}
 	providerRequest["stream"] = true
 	normalizeZedCodexInput(providerRequest)
+	stripZedEncryptedContent(providerRequest)
 	originalRequest, err := json.Marshal(providerRequest)
 	if err != nil {
 		return nil, nil, errors.New("finalize Zed Responses request: encode normalized request failed")
@@ -147,6 +148,27 @@ func normalizeZedCodexInput(request map[string]any) {
 					delete(item, key)
 				}
 			}
+			if item["type"] == "agent_message" {
+				item["type"] = "message"
+				item["role"] = "user"
+				delete(item, "author")
+				delete(item, "recipient")
+				if parts, ok := item["content"].([]any); ok {
+					for _, rawPart := range parts {
+						part, ok := rawPart.(map[string]any)
+						if !ok || part["type"] != "encrypted_content" {
+							continue
+						}
+						encrypted, ok := part["encrypted_content"].(string)
+						if !ok {
+							continue
+						}
+						part["type"] = "input_text"
+						part["text"] = encrypted
+						delete(part, "encrypted_content")
+					}
+				}
+			}
 			role, _ := item["role"].(string)
 			if role == "developer" {
 				role = "system"
@@ -166,6 +188,54 @@ func normalizeZedCodexInput(request map[string]any) {
 		}
 		request["input"] = normalized
 	}
+}
+
+func stripZedEncryptedContent(request map[string]any) {
+	if request == nil {
+		return
+	}
+	removeEncryptedContentFields(request)
+	filterCodexThinkingIncludes(request)
+	input, ok := request["input"].([]any)
+	if !ok {
+		return
+	}
+	filtered := make([]any, 0, len(input))
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			filtered = append(filtered, rawItem)
+			continue
+		}
+		switch item["type"] {
+		case "compaction":
+			continue
+		case "reasoning":
+			if !zedReasoningHasSummary(item) {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	request["input"] = filtered
+}
+
+func zedReasoningHasSummary(item map[string]any) bool {
+	summary, ok := item["summary"].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawPart := range summary {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := part["text"].(string)
+		if strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string, originalRequest []byte) error {

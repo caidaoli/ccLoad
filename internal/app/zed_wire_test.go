@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,12 +63,183 @@ func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	input, _ := envelope.ProviderRequest["input"].([]any)
-	if len(input) != 2 || input[0].(map[string]any)["role"] != "system" {
+	if len(input) != 1 || input[0].(map[string]any)["role"] != "system" {
 		t.Fatalf("normalized input = %#v", input)
 	}
 	tools, _ := envelope.ProviderRequest["tools"].([]any)
 	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "wait" || envelope.ProviderRequest["tool_choice"] != "required" {
 		t.Fatalf("normalized tools = %#v choice=%v", tools, envelope.ProviderRequest["tool_choice"])
+	}
+}
+
+func TestFinalizeZedResponsesBodyRewritesAgentMessage(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-5.6-sol","input":[
+		{"type":"agent_message","id":"amsg_1","author":"/root/previous_session_audit","recipient":"/root","content":"list"},
+		{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"worker result"}]},
+		{"type":"agent_message","id":"amsg_dump","author":"/root/audit","recipient":"/root","content":[{"type":"input_text","text":"只读核查结论"}]}
+	]}`)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		ProviderRequest struct {
+			Input []map[string]any `json:"input"`
+		} `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.ProviderRequest.Input) != 3 {
+		t.Fatalf("input = %#v", envelope.ProviderRequest.Input)
+	}
+	for index, item := range envelope.ProviderRequest.Input {
+		if item["type"] != "message" {
+			t.Fatalf("input[%d] type = %v, want message", index, item["type"])
+		}
+		if item["role"] != "user" {
+			t.Fatalf("input[%d] role = %v, want user", index, item["role"])
+		}
+		if _, ok := item["author"]; ok {
+			t.Fatalf("input[%d] kept agent author: %#v", index, item)
+		}
+		if _, ok := item["recipient"]; ok {
+			t.Fatalf("input[%d] kept agent recipient: %#v", index, item)
+		}
+		content, _ := item["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("input[%d] content = %#v", index, item["content"])
+		}
+		part, _ := content[0].(map[string]any)
+		if part["type"] != "input_text" || part["encrypted_content"] != nil {
+			t.Fatalf("input[%d] content part = %#v", index, part)
+		}
+	}
+	if envelope.ProviderRequest.Input[0]["id"] != "amsg_1" {
+		t.Fatalf("string agent_message lost id: %#v", envelope.ProviderRequest.Input[0])
+	}
+	text, _ := envelope.ProviderRequest.Input[0]["content"].([]any)[0].(map[string]any)["text"].(string)
+	if text != "list" {
+		t.Fatalf("string agent_message text = %q", text)
+	}
+	text, _ = envelope.ProviderRequest.Input[1]["content"].([]any)[0].(map[string]any)["text"].(string)
+	if text != "worker result" {
+		t.Fatalf("encrypted agent_message text = %q", text)
+	}
+	if envelope.ProviderRequest.Input[2]["id"] != "amsg_dump" {
+		t.Fatalf("array agent_message lost id: %#v", envelope.ProviderRequest.Input[2])
+	}
+	text, _ = envelope.ProviderRequest.Input[2]["content"].([]any)[0].(map[string]any)["text"].(string)
+	if text != "只读核查结论" {
+		t.Fatalf("array agent_message text = %q", text)
+	}
+}
+
+func TestFinalizeZedResponsesBodyStripsEncryptedContent(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+		"model":"gpt-5.6-sol",
+		"include":["reasoning.encrypted_content","file_search_call.results"],
+		"input":[
+			{"type":"reasoning","id":"rs_keep","summary":[{"type":"summary_text","text":"kept summary"}],"encrypted_content":"codex-blob"},
+			{"type":"reasoning","id":"rs_empty","summary":[],"encrypted_content":"codex-blob"},
+			{"type":"compaction","encrypted_content":"drop-compaction"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]
+	}`)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(finalized, []byte(`"encrypted_content"`)) {
+		t.Fatalf("Zed request kept encrypted_content: %s", finalized)
+	}
+	var envelope struct {
+		ProviderRequest struct {
+			Include []string         `json:"include"`
+			Input   []map[string]any `json:"input"`
+		} `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.ProviderRequest.Include) != 1 || envelope.ProviderRequest.Include[0] != "file_search_call.results" {
+		t.Fatalf("include = %#v", envelope.ProviderRequest.Include)
+	}
+	if len(envelope.ProviderRequest.Input) != 2 {
+		t.Fatalf("input = %#v", envelope.ProviderRequest.Input)
+	}
+	if envelope.ProviderRequest.Input[0]["type"] != "reasoning" || envelope.ProviderRequest.Input[0]["id"] != "rs_keep" {
+		t.Fatalf("kept reasoning = %#v", envelope.ProviderRequest.Input[0])
+	}
+	if envelope.ProviderRequest.Input[1]["type"] != "message" {
+		t.Fatalf("kept message = %#v", envelope.ProviderRequest.Input[1])
+	}
+}
+
+func TestFinalizeZedResponsesBodyRewritesDumpedAgentMessage(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "req1.txt"))
+	if err != nil {
+		t.Skip("dumped Codex request is not available")
+	}
+	idx := bytes.Index(raw, []byte("\n{"))
+	if idx < 0 {
+		t.Fatal("dumped request is missing a JSON body")
+	}
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), bytes.TrimSpace(raw[idx+1:]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Provider        string `json:"provider"`
+		Model           string `json:"model"`
+		ProviderRequest struct {
+			Input []map[string]any `json:"input"`
+		} `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Provider != "open_ai" || envelope.Model != "gpt-5.6-sol" {
+		t.Fatalf("envelope provider=%s model=%s", envelope.Provider, envelope.Model)
+	}
+	var converted map[string]any
+	for index, item := range envelope.ProviderRequest.Input {
+		switch item["type"] {
+		case "agent_message":
+			t.Fatalf("converted dump kept agent_message at input[%d]: %#v", index, item)
+		case "additional_tools":
+			t.Fatalf("converted dump kept additional_tools at input[%d]", index)
+		}
+		if item["id"] == "amsg_01a04b10-2d27-7262-91ff-cb5c261589a9" {
+			converted = item
+		}
+	}
+	if converted == nil {
+		t.Fatal("converted dump lost the dumped agent_message")
+	}
+	if converted["type"] != "message" || converted["role"] != "user" {
+		t.Fatalf("converted agent_message = %#v", converted)
+	}
+	if _, ok := converted["author"]; ok {
+		t.Fatalf("converted agent_message kept author: %#v", converted)
+	}
+	if _, ok := converted["recipient"]; ok {
+		t.Fatalf("converted agent_message kept recipient: %#v", converted)
+	}
+	content, _ := converted["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("converted agent_message content = %#v", converted["content"])
+	}
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if part["type"] != "input_text" || !strings.Contains(text, "只读核查结论") {
+		t.Fatalf("converted agent_message content part = %#v", part)
+	}
+	if bytes.Contains(finalized, []byte(`"encrypted_content"`)) {
+		t.Fatal("converted dump kept encrypted_content")
 	}
 }
 
