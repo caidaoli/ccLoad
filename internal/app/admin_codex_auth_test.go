@@ -4284,6 +4284,68 @@ func TestCodexPassiveUsageDoesNotResetCostFromStaleMergedWindow(t *testing.T) {
 	}
 }
 
+func TestCodexPassiveSparkRollbackDoesNotResetCodexWeeklyCost(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	base := time.Date(2030, time.January, 1, 12, 0, 0, 0, time.UTC)
+	mainUsed := 70.0
+	sparkUsed := 80.0
+	mainResetAt := base.Add(6 * 24 * time.Hour)
+	sparkResetAt := base.Add(4 * time.Hour)
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-spark-reset", RefreshToken: "rt-spark-reset",
+		Expired: base.Add(time.Hour).Format(time.RFC3339), AccountID: "account-spark-reset", PlanType: "pro",
+		PassiveUsage: &codexauth.PassiveUsage{
+			SampledAt: base.Format(time.RFC3339Nano),
+			Windows: []codexauth.PassiveUsageWindow{
+				{Scope: "codex", LimitName: "codex", Kind: "secondary", UsedPercent: mainUsed,
+					LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: mainResetAt.Unix(), SampledAt: base.Format(time.RFC3339Nano)},
+				{Scope: "bengalfox", LimitName: "GPT-5.3-Codex-Spark", Kind: "primary", UsedPercent: sparkUsed,
+					LimitWindowSeconds: 5 * 60 * 60, ResetAt: sparkResetAt.Unix(), SampledAt: base.Format(time.RFC3339Nano)},
+			},
+		},
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{
+			{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+				StartedAt: base.Add(-time.Hour).Unix(), ResetAt: mainResetAt.Unix(),
+				SampledUpstreamUsedPercent: &mainUsed, SampledUpstreamAtUnixNano: base.UnixNano(), StandardCostMicroUSD: 7_000_000},
+			{Key: "gpt-5.3-codex-spark|primary", Family: oauthcost.FamilySpark, WindowSeconds: 5 * 60 * 60,
+				StartedAt: base.Add(-time.Hour).Unix(), ResetAt: sparkResetAt.Unix(),
+				SampledUpstreamUsedPercent: &sparkUsed, SampledUpstreamAtUnixNano: base.UnixNano(), StandardCostMicroUSD: 900_000},
+		}},
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newCodexCredentialManager(codexauth.NewService(nil), store, nil, nil)
+	sampledAt := base.Add(time.Hour)
+	updated, err := manager.updatePassiveUsage(context.Background(), channel, codexPassiveUsageUpdate{
+		SampledAt: sampledAt.Format(time.RFC3339Nano), ReplaceScopes: []string{"bengalfox"},
+		Windows: []codexauth.PassiveUsageWindow{{
+			Scope: "bengalfox", LimitName: "GPT-5.3-Codex-Spark", Kind: "primary", UsedPercent: 5,
+			LimitWindowSeconds: 5 * 60 * 60, ResetAt: sampledAt.Add(3 * time.Hour).Unix(), SampledAt: sampledAt.Format(time.RFC3339Nano),
+		}},
+	})
+	if err != nil || !updated {
+		t.Fatalf("persist Spark rollback = (%t, %v)", updated, err)
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	main := oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|secondary")
+	spark := oauthcost.Find(persistedCredential.QuotaCostUsage, "gpt-5.3-codex-spark|primary")
+	if err != nil || main == nil || main.StandardCostMicroUSD != 7_000_000 ||
+		main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != mainUsed {
+		t.Fatalf("Spark rollback reset Codex weekly cost: main=%#v err=%v", main, err)
+	}
+	if spark == nil || spark.StandardCostMicroUSD != 0 || spark.CountFromAt != sampledAt.Unix() ||
+		spark.SampledUpstreamUsedPercent == nil || *spark.SampledUpstreamUsedPercent != 5 {
+		t.Fatalf("Spark quota did not reset independently: %#v", spark)
+	}
+}
+
 func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
 	t.Run("forced request reuses a newer access token", func(t *testing.T) {
 		store := newCodexAuthTestStore(t)
@@ -5098,8 +5160,23 @@ func TestCodexPassiveUsageActiveLimitHeaderDropsDuplicateFields(t *testing.T) {
 			t.Fatalf("header usage created phantom limit group: %#v", window)
 		}
 	}
-	if len(update.ReplaceScopes) != 2 || update.ReplaceScopes[0] != "codex" || update.ReplaceScopes[1] != "bengalfox" {
-		t.Fatalf("header replacement scopes = %#v", update.ReplaceScopes)
+	if len(update.ReplaceScopes) != 1 || update.ReplaceScopes[0] != "bengalfox" {
+		t.Fatalf("header replacement scopes = %#v, want only bengalfox", update.ReplaceScopes)
+	}
+	current := &codexauth.PassiveUsage{
+		SampledAt: sampledAt.Add(-time.Minute).Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{{
+			Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 21,
+			LimitWindowSeconds: 604800, ResetAt: 1788504406,
+			SampledAt: sampledAt.Add(-time.Minute).Format(time.RFC3339Nano),
+		}},
+	}
+	merged, changed := mergeCodexPassiveUsageWithScopes(current, update.Windows, sampledAt, update.ReplaceScopes)
+	if !changed || len(merged.Windows) != 3 {
+		t.Fatalf("Spark-only header removed main Codex window: (changed=%t, %#v)", changed, merged)
+	}
+	if merged.Windows[0].LimitName != "codex" || merged.Windows[0].Kind != "primary" {
+		t.Fatalf("main Codex window was not retained: %#v", merged.Windows)
 	}
 }
 

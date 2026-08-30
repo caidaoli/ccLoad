@@ -158,6 +158,82 @@ func oauthQuotaSamples(summary *oauthUsageSummary) []oauthcost.Sample {
 	return snapshot.Samples()
 }
 
+// pruneCodexPassiveQuotaCostUsage mirrors ReplaceScopes for cost windows.
+// ReconcilePartial intentionally retains omitted siblings; a marked passive
+// scope is the one exception where omitted keys in that scope are stale and
+// must be retired. Scope and limit-name matching cover both current records
+// and legacy records whose scope metadata is incomplete.
+func pruneCodexPassiveQuotaCostUsage(
+	usage *oauthcost.Usage,
+	current *codexauth.PassiveUsage,
+	update codexPassiveUsageUpdate,
+) *oauthcost.Usage {
+	if usage == nil || len(update.ReplaceScopes) == 0 {
+		return usage
+	}
+	scopes := make(map[string]struct{}, len(update.ReplaceScopes))
+	for _, scope := range update.ReplaceScopes {
+		scope = strings.ToLower(strings.TrimSpace(scope))
+		if scope != "" {
+			scopes[scope] = struct{}{}
+		}
+	}
+	if len(scopes) == 0 {
+		return usage
+	}
+	incomingKeys := make(map[string]struct{}, len(update.Windows))
+	incomingLimitNames := make(map[string]struct{}, len(update.Windows))
+	for _, window := range update.Windows {
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		if key == "" {
+			continue
+		}
+		incomingKeys[key] = struct{}{}
+		if scope := codexPassiveWindowScope(window); scope != "" {
+			if _, replace := scopes[scope]; replace {
+				if limitName := strings.ToLower(strings.TrimSpace(window.LimitName)); limitName != "" {
+					incomingLimitNames[limitName] = struct{}{}
+				}
+			}
+		}
+	}
+	currentScopes := make(map[string]string)
+	if current != nil {
+		for _, window := range current.Windows {
+			key := oauthcost.Key(window.LimitName, window.Kind)
+			if key != "" {
+				currentScopes[key] = codexPassiveWindowScope(window)
+			}
+		}
+	}
+	retained := usage.Windows[:0]
+	for _, window := range usage.Windows {
+		if window == nil {
+			retained = append(retained, window)
+			continue
+		}
+		limitName := strings.ToLower(strings.TrimSpace(strings.SplitN(window.Key, "|", 2)[0]))
+		_, replaceByScope := scopes[currentScopes[window.Key]]
+		_, replaceByLimit := incomingLimitNames[limitName]
+		if replaceByScope || replaceByLimit {
+			if _, incoming := incomingKeys[window.Key]; !incoming {
+				continue
+			}
+		}
+		retained = append(retained, window)
+	}
+	usage.Windows = retained
+	return usage
+}
+
+func codexPassiveWindowScope(window codexauth.PassiveUsageWindow) string {
+	scope := strings.ToLower(strings.TrimSpace(window.Scope))
+	if scope == "" {
+		scope = strings.ToLower(strings.TrimSpace(window.LimitName))
+	}
+	return scope
+}
+
 // oauthQuotaSnapshotSummary 把内存里的采样摘要投影成 oauthcost 的快照形状，
 // 只保留重建窗口和识别上游提前重置所需的字段。
 func oauthQuotaSnapshotSummary(summary *oauthUsageSummary) oauthcost.SnapshotSummary {

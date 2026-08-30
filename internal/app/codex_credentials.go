@@ -604,9 +604,22 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		updatedCredential.PassiveUsage, changed = mergeCodexPassiveUsageWithScopes(
 			current.PassiveUsage, update.Windows, updateTime, update.ReplaceScopes,
 		)
-		nextQuotaCostUsage := reconcileOAuthQuotaCostUsage(
-			current.QuotaCostUsage, codexPassiveUsageSummary(&updatedCredential), updateTime,
+		// Passive updates are partial even when ReplaceScopes marks one quota
+		// group as complete: a Spark reset is not an account-wide reset. The
+		// explicit scope marker is applied below only to retire stale cost keys
+		// from that group, mirroring the PassiveUsage merge.
+		partialCredential := updatedCredential
+		partialCredential.PassiveUsage = &codexauth.PassiveUsage{
+			Windows: append([]codexauth.PassiveUsageWindow(nil), update.Windows...),
+		}
+		nextQuotaCostUsage := oauthcost.ReconcilePartial(
+			current.QuotaCostUsage, oauthQuotaSamples(codexPassiveUsageSummary(&partialCredential)), updateTime,
 		)
+		if len(update.ReplaceScopes) > 0 {
+			nextQuotaCostUsage = pruneCodexPassiveQuotaCostUsage(
+				nextQuotaCostUsage, current.PassiveUsage, update,
+			)
+		}
 		quotaCostChanged := !reflect.DeepEqual(current.QuotaCostUsage, nextQuotaCostUsage)
 		updatedCredential.QuotaCostUsage = nextQuotaCostUsage
 		if !changed && !quotaCostChanged {

@@ -197,6 +197,77 @@ func TestReconcileDropsStaleWindows(t *testing.T) {
 	}
 }
 
+func TestReconcilePartialKeepsOmittedQuotaFamilies(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 30, 21, 0, 0, 0, time.UTC)
+	mainUsed := 20.0
+	sparkUsed := 40.0
+	usage := Reconcile(nil, []Sample{
+		{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+			ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: &mainUsed, SampledAt: now},
+		{Key: "gpt-5.3-codex-spark|primary", Family: FamilySpark, WindowSeconds: 5 * 60 * 60,
+			ResetAt: now.Add(4 * time.Hour), UsedPercent: &sparkUsed, SampledAt: now},
+	}, now)
+	if changed, err := AddStandardCost(usage, now, "gpt-5.4", 500_000); err != nil || !changed {
+		t.Fatalf("seed Codex cost = (%t, %v)", changed, err)
+	}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.3-codex-spark", 300_000); err != nil || !changed {
+		t.Fatalf("seed Spark cost = (%t, %v)", changed, err)
+	}
+
+	sparkUsed = 41
+	usage = ReconcilePartial(usage, []Sample{{
+		Key: "gpt-5.3-codex-spark|primary", Family: FamilySpark, WindowSeconds: 5 * 60 * 60,
+		ResetAt: now.Add(4 * time.Hour), UsedPercent: &sparkUsed, SampledAt: now.Add(time.Minute),
+	}}, now.Add(time.Minute))
+	main := Find(usage, "codex|primary")
+	spark := Find(usage, "gpt-5.3-codex-spark|primary")
+	if main == nil || main.StandardCostMicroUSD != 500_000 || main.SampledUpstreamUsedPercent == nil ||
+		*main.SampledUpstreamUsedPercent != mainUsed {
+		t.Fatalf("partial Spark sample retired main Codex window: %#v", main)
+	}
+	if spark == nil || spark.StandardCostMicroUSD != 300_000 || spark.SampledUpstreamUsedPercent == nil ||
+		*spark.SampledUpstreamUsedPercent != sparkUsed {
+		t.Fatalf("partial Spark sample did not update Spark window: %#v", spark)
+	}
+}
+
+func TestReconcilePartialRollbackResetsOnlySampledQuotaFamily(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 30, 21, 0, 0, 0, time.UTC)
+	mainUsed := 73.0
+	sparkUsed := 80.0
+	usage := Reconcile(nil, []Sample{
+		{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+			ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: &mainUsed, SampledAt: now},
+		{Key: "gpt-5.3-codex-spark|primary", Family: FamilySpark, WindowSeconds: 5 * 60 * 60,
+			ResetAt: now.Add(4 * time.Hour), UsedPercent: &sparkUsed, SampledAt: now},
+	}, now)
+	if changed, err := AddStandardCost(usage, now, "gpt-5.4", 700_000); err != nil || !changed {
+		t.Fatalf("seed Codex cost = (%t, %v)", changed, err)
+	}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.3-codex-spark", 900_000); err != nil || !changed {
+		t.Fatalf("seed Spark cost = (%t, %v)", changed, err)
+	}
+
+	sampledAt := now.Add(time.Hour)
+	sparkUsed = 5
+	usage = ReconcilePartial(usage, []Sample{{
+		Key: "gpt-5.3-codex-spark|primary", Family: FamilySpark, WindowSeconds: 5 * 60 * 60,
+		ResetAt: sampledAt.Add(3 * time.Hour), UsedPercent: &sparkUsed, SampledAt: sampledAt,
+	}}, sampledAt.Add(time.Minute))
+	main := Find(usage, "codex|primary")
+	spark := Find(usage, "gpt-5.3-codex-spark|primary")
+	if main == nil || main.StandardCostMicroUSD != 700_000 || main.SampledUpstreamUsedPercent == nil ||
+		*main.SampledUpstreamUsedPercent != mainUsed {
+		t.Fatalf("Spark rollback reset main Codex window: %#v", main)
+	}
+	if spark == nil || spark.StandardCostMicroUSD != 0 || spark.CountFromAt != sampledAt.Unix() ||
+		spark.SampledUpstreamUsedPercent == nil || *spark.SampledUpstreamUsedPercent != sparkUsed {
+		t.Fatalf("Spark rollback did not reset only Spark window: %#v", spark)
+	}
+}
+
 func TestFamilyMatches(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

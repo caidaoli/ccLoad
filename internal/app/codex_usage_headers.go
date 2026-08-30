@@ -281,7 +281,11 @@ func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPas
 	// canonical record instead of renaming and storing the alias a second time.
 	activeGroup := codexActiveHeaderGroup(headers)
 	if activeGroup != "" {
-		update.ReplaceScopes = []string{"codex", activeGroup}
+		// The generic x-codex-* fields are aliases for the active additional
+		// group in this shape.  They are not a complete snapshot of the main
+		// Codex scope, so never mark "codex" for replacement here.  Doing so
+		// deletes the weekly Codex window when a Spark-only response arrives.
+		update.ReplaceScopes = []string{activeGroup}
 	} else {
 		genericWindowCount := len(update.Windows)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "primary", sampledAt)
