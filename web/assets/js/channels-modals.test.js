@@ -250,6 +250,44 @@ test('directly enabling a scope-auto-disabled Key clears the stale editor marker
   }
 });
 
+test('manually disabling a scope-auto-disabled Key clears the stale editor marker', async () => {
+  const calls = [];
+  const notifications = [];
+  const globals = {
+    window: {
+      t: key => key,
+      showNotification: (...args) => notifications.push(args)
+    },
+    editingChannelAuthType: 'api_key',
+    editingChannelId: 42,
+    channelFormDirty: false,
+    currentChannelKeyCooldowns: [{ key_index: 0, disabled: false }],
+    inlineKeyTableData: [{ api_key: 'scope-empty-key', model_scope_empty: true }],
+    console: { ...console, error: () => {} },
+    fetchDataWithAuth: async (url, options) => {
+      calls.push({ url, options });
+      return options ? { ok: true } : [];
+    }
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+
+  try {
+    await toggleKeyDisabled(0);
+    assert.equal(calls[0].url, '/admin/channels/42/key-disable');
+    assert.equal(global.inlineKeyTableData[0].model_scope_empty, undefined);
+    assert.equal(notifications.at(-1)[1], 'success');
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('fetchModelsFromAPI includes scope-auto-disabled keys for discovery', async () => {
   let requestBody;
   const restore = installFetchModelsGlobals({

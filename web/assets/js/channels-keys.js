@@ -1738,15 +1738,13 @@ async function toggleKeyDisabled(index) {
       body: JSON.stringify({ key_index: index })
     });
 
-    if (isCurrentlyDisabled) {
-      const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
-      if (row.model_scope_empty) {
-        // The backend treats an explicit enable as clearing the automatic
-        // empty-scope state. Keep the editor aligned so a later save does not
-        // re-submit the stale marker.
-        delete row.model_scope_empty;
-        inlineKeyTableData[index] = row;
-      }
+    const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+    if (row.model_scope_empty) {
+      // The backend treats an explicit toggle as taking ownership of the
+      // disabled state. Keep the editor aligned so a later save does not
+      // re-submit the stale automatic empty-scope marker.
+      delete row.model_scope_empty;
+      inlineKeyTableData[index] = row;
     }
 
     await refreshKeyCooldownStatus();

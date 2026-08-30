@@ -1068,7 +1068,20 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 	}
 
 	ctx := c.Request.Context()
-	if !disable && key.ModelScopeEmpty {
+	if key.ModelScopeEmpty && disable {
+		// Once an operator explicitly disables an automatically emptied key,
+		// the disabled state is manual. Clear the automatic marker so model
+		// discovery will not treat this key as a usable fallback later.
+		scope := model.APIKeyModelScope{
+			AllowedModels:   append([]string(nil), key.AllowedModels...),
+			ModelScopeEmpty: false,
+			Disabled:        true,
+		}
+		if err := s.store.UpdateAPIKeyModelScopes(ctx, id, map[int]model.APIKeyModelScope{keyIndex: scope}); err != nil {
+			RespondErrorMsg(c, http.StatusInternalServerError, "persist key model scope state failed")
+			return
+		}
+	} else if !disable && key.ModelScopeEmpty {
 		// An empty model scope is an automatic safety disable caused by a
 		// channel model-list change. An explicit enable clears that automatic
 		// marker atomically with the disabled flag. Keep any persisted allowlist

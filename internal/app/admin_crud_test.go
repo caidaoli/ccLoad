@@ -1743,6 +1743,51 @@ func TestHandleAPIKeyToggleInvalidatesKeyCooldownCache(t *testing.T) {
 	}
 }
 
+func TestHandleAPIKeyDisableClearsAutomaticEmptyScope(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "manual-disable-empty-scope",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:       created.ID,
+		KeyIndex:        0,
+		APIKey:          "sk-auto-empty",
+		ModelScopeEmpty: true,
+		Disabled:        true,
+		KeyStrategy:     model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 key 失败: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/key-disable", map[string]any{"key_index": 0}))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.HandleAPIKeyDisable(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("手动禁用 key 失败: %d body=%s", w.Code, w.Body.String())
+	}
+
+	key, err := store.GetAPIKey(ctx, created.ID, 0)
+	if err != nil {
+		t.Fatalf("查询 key 失败: %v", err)
+	}
+	if !key.Disabled || key.ModelScopeEmpty {
+		t.Fatalf("手动禁用应清除自动空作用域标记: %+v", key)
+	}
+	if available := availableModelFetchAPIKeys([]*model.APIKey{key}, time.Now()); len(available) != 0 {
+		t.Fatalf("手动禁用 key 不应参与模型探测: %+v", available)
+	}
+}
+
 func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
