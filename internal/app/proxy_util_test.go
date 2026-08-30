@@ -553,6 +553,8 @@ func TestResolveBillingServiceTier(t *testing.T) {
 	}{
 		{name: "upstream downgrade", requested: "priority", observed: "default", want: "default"},
 		{name: "anthropic downgrade", requested: "fast", observed: "standard", want: "standard"},
+		{name: "codex auto is explicit fast tier", requested: "priority", observed: "auto", want: "auto"},
+		{name: "codex auto is retained without request tier", requested: "", observed: "auto", want: "auto"},
 		{name: "ultrafast is retained when served", requested: "ultrafast", observed: "ultrafast", want: "ultrafast"},
 		{name: "ultrafast downgrade", requested: "ultrafast", observed: "priority", want: "priority"},
 		{name: "ultrafast response is billed at actual tier", requested: "priority", observed: "ultrafast", want: "ultrafast"},

@@ -1162,7 +1162,7 @@ func normalizeObservedServiceTier(value string) string {
 
 func normalizeBillingServiceTier(value string) string {
 	switch normalizeObservedServiceTier(value) {
-	case "ultrafast", "priority", "fast", "flex", "default", "standard":
+	case "ultrafast", "auto", "priority", "fast", "flex", "default", "standard":
 		return normalizeObservedServiceTier(value)
 	default:
 		return ""
@@ -1175,7 +1175,7 @@ func serviceTierCostRank(value string) (int, bool) {
 		return 0, true
 	case "default", "standard":
 		return 1, true
-	case "priority", "fast":
+	case "auto", "priority", "fast":
 		return 2, true
 	case "ultrafast":
 		return 3, true
@@ -1186,14 +1186,15 @@ func serviceTierCostRank(value string) (int, bool) {
 
 // resolveBillingServiceTier merges the requested tier with the upstream tier.
 // A response can lower the bill when it explicitly reports a cheaper tier. The
-// explicit ultrafast response tier is retained because it carries a 10x charge;
-// ordinary expensive response tiers never raise an untiered request.
+// explicit auto/ultrafast response tiers are retained because they carry
+// priority/Fast (2.5x for GPT-5.6) or ultrafast (10x) charges.
 func resolveBillingServiceTier(requested, observed string) string {
 	requested = normalizeBillingServiceTier(requested)
 	observed = normalizeBillingServiceTier(observed)
-	// ultrafast is an explicit upstream processing tier. It must win even when
-	// the request asked for priority; otherwise the actual 10x charge is lost.
-	if observed == "ultrafast" {
+	// auto and ultrafast are explicit upstream processing tiers. They must win
+	// even when the request asked for a cheaper tier; otherwise the actual
+	// upstream charge is lost.
+	if observed == "auto" || observed == "ultrafast" {
 		return observed
 	}
 	if requested == "" {

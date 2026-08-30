@@ -459,8 +459,9 @@ func modelSupportsTier(model string) bool {
 }
 
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
-// Codex 的 ultrafast=10x、priority 表示 Fast 模式：GPT-5.6/5.5=2.5x，
-// GPT-5.4=2x；其他 priority 模型=2x，flex=0.5x，default/""=1x（标准）。
+// Codex 的 auto/priority 表示 Fast 模式：GPT-5.6/5.5=2.5x，
+// GPT-5.4=2x；其他 priority 模型=2x，ultrafast=10x，flex=0.5x，
+// default/standard/""=1x（标准）。
 func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
 	if serviceTier == "" || serviceTier == "default" {
@@ -472,7 +473,7 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	switch serviceTier {
 	case "ultrafast":
 		return 10.0
-	case "priority":
+	case "auto", "priority":
 		if multiplier := openAIFastModeMultiplier(model); multiplier != 1.0 {
 			return multiplier
 		}

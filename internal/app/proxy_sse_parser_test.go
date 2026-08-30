@@ -1437,6 +1437,20 @@ func TestSSEUsageParser_ResponsesServiceTierUsesTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_ResponsesServiceTierAuto(t *testing.T) {
+	t.Parallel()
+
+	parser := newSSEUsageParser("codex")
+	completed := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"auto","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+	if err := parser.Feed([]byte(completed)); err != nil {
+		t.Fatalf("Feed response.completed: %v", err)
+	}
+	if parser.ServiceTier != "auto" {
+		t.Fatalf("ServiceTier=%q, want auto", parser.ServiceTier)
+	}
+}
+
 func TestJSONUsageParser_DoesNotTreatEventTextAsSSE(t *testing.T) {
 	body := `{"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"jsonUsageParser.GetUsage() detects event: text in this string"}]}],"usage":{"input_tokens":20070,"input_tokens_details":{"cached_tokens":11008},"output_tokens":544,"total_tokens":20614}}`
 	parser := newJSONUsageParser("codex")
