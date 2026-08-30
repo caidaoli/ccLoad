@@ -283,8 +283,16 @@ func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPas
 	if activeGroup != "" {
 		update.ReplaceScopes = []string{"codex", activeGroup}
 	} else {
+		genericWindowCount := len(update.Windows)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "primary", sampledAt)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "secondary", sampledAt)
+		// Active-Limit values outside codex_<group> identify the main Codex
+		// scope. The generic header set is a complete snapshot of that scope:
+		// when a window (for example Pro secondary) is absent, remove the stale
+		// persisted window instead of keeping it in passive usage and cost state.
+		if len(update.Windows) > genericWindowCount {
+			update.ReplaceScopes = append(update.ReplaceScopes, "codex")
+		}
 	}
 
 	for _, group := range codexAdditionalQuotaGroups(headers) {

@@ -5103,6 +5103,69 @@ func TestCodexPassiveUsageActiveLimitHeaderDropsDuplicateFields(t *testing.T) {
 	}
 }
 
+func TestCodexPassiveUsagePremiumHeaderReplacesMissingSecondary(t *testing.T) {
+	t.Parallel()
+	sampledAt := time.Date(2026, time.August, 30, 5, 15, 28, 0, time.UTC)
+	headers := http.Header{
+		"X-Codex-Active-Limit":             []string{"premium"},
+		"X-Codex-Primary-Used-Percent":     []string{"3"},
+		"X-Codex-Primary-Window-Minutes":   []string{"10080"},
+		"X-Codex-Primary-Reset-At":         []string{"1788647017"},
+		"X-Codex-Secondary-Used-Percent":   []string{"0"},
+		"X-Codex-Secondary-Window-Minutes": []string{"0"},
+		"X-Codex-Secondary-Reset-At":       []string{""},
+	}
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	if !ok || len(update.Windows) != 1 || oauthcost.Key(update.Windows[0].LimitName, update.Windows[0].Kind) != "codex|primary" {
+		t.Fatalf("premium Pro header usage = (%#v, %t), want only codex primary", update, ok)
+	}
+	if len(update.ReplaceScopes) != 1 || update.ReplaceScopes[0] != "codex" {
+		t.Fatalf("premium Pro replacement scopes = %#v, want codex", update.ReplaceScopes)
+	}
+
+	oldSampledAt := sampledAt.Add(-time.Minute)
+	current := &codexauth.PassiveUsage{
+		SampledAt: oldSampledAt.Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{
+			{Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 2, LimitWindowSeconds: 604800, ResetAt: 1788647017, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+			{Scope: "codex", LimitName: "codex", Kind: "secondary", UsedPercent: 1, LimitWindowSeconds: 604800, ResetAt: 1788646885, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
+		},
+	}
+	merged, changed := mergeCodexPassiveUsageWithScopes(current, update.Windows, sampledAt, update.ReplaceScopes)
+	if !changed || len(merged.Windows) != 1 || oauthcost.Key(merged.Windows[0].LimitName, merged.Windows[0].Kind) != "codex|primary" {
+		t.Fatalf("premium Pro stale secondary merge = (changed=%t, %#v), want secondary removed", changed, merged)
+	}
+}
+
+func TestCodexPassiveUsagePremiumTeamHeaderKeepsBothMainWindows(t *testing.T) {
+	t.Parallel()
+	sampledAt := time.Date(2026, time.August, 30, 5, 16, 43, 0, time.UTC)
+	headers := http.Header{
+		"X-Codex-Active-Limit":             []string{"premium"},
+		"X-Codex-Plan-Type":                []string{"team"},
+		"X-Codex-Primary-Used-Percent":     []string{"0"},
+		"X-Codex-Primary-Window-Minutes":   []string{"300"},
+		"X-Codex-Primary-Reset-At":         []string{"1788085003"},
+		"X-Codex-Secondary-Used-Percent":   []string{"0"},
+		"X-Codex-Secondary-Window-Minutes": []string{"10080"},
+		"X-Codex-Secondary-Reset-At":       []string{"1788671803"},
+	}
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	if !ok || len(update.Windows) != 2 {
+		t.Fatalf("premium Team header usage = (%#v, %t), want two main windows", update, ok)
+	}
+	if len(update.ReplaceScopes) != 1 || update.ReplaceScopes[0] != "codex" {
+		t.Fatalf("premium Team replacement scopes = %#v, want codex", update.ReplaceScopes)
+	}
+	windows := make(map[string]codexauth.PassiveUsageWindow, len(update.Windows))
+	for _, window := range update.Windows {
+		windows[oauthcost.Key(window.LimitName, window.Kind)] = window
+	}
+	if windows["codex|primary"].LimitWindowSeconds != 18_000 || windows["codex|secondary"].LimitWindowSeconds != 604800 {
+		t.Fatalf("premium Team main windows = %#v, want 5h primary and 7d secondary", windows)
+	}
+}
+
 func TestCodexPassiveUsageCompleteEventRemovesMissingWindow(t *testing.T) {
 	t.Parallel()
 	oldSampledAt := time.Date(2026, time.August, 29, 14, 0, 0, 0, time.UTC)
