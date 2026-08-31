@@ -938,6 +938,7 @@ func TestResponsesRetryBodyForUnknownParameter_RequiresCodexResponsesScope(t *te
 func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
+	want := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
 	plan := protocol.TransformPlan{
 		ClientProtocol:   protocol.Codex,
 		UpstreamProtocol: protocol.Codex,
@@ -953,11 +954,27 @@ func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
 	if gjson.GetBytes(got, "seed").Raw != "9007199254740993" {
 		t.Fatalf("HTTP Codex body changed large integer: %s", got)
 	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("HTTP Codex body changed unrelated serialized bytes:\n got: %s\nwant: %s", got, want)
+	}
 
 	plan.UpstreamProtocol = protocol.OpenAI
 	got = responsesBodyForHTTPTransport(&model.Config{}, plan, body)
 	if !gjson.GetBytes(got, "input.0.status").Exists() {
 		t.Fatalf("non-Codex upstream body lost input status: %s", got)
+	}
+}
+
+func TestStripResponsesInputItemStatusPreservesTranscriptSerialization(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"function_call","id":"fc_0","call_id":"call_0","name":"exec","arguments":"{\"large\":9007199254740993}","status":"completed"},{"status":"completed","type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"},{"type":"metadata","status":"nested-keep"}]}],"metadata":{"status":"top-level-keep"},"seed":9007199254740993}`)
+	want := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"function_call","id":"fc_0","call_id":"call_0","name":"exec","arguments":"{\"large\":9007199254740993}"},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"},{"type":"metadata","status":"nested-keep"}]}],"metadata":{"status":"top-level-keep"},"seed":9007199254740993}`)
+
+	for range 100 {
+		got := stripResponsesInputItemStatus(body)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("status stripping changed the serialized transcript prefix:\n got: %s\nwant: %s", got, want)
+		}
 	}
 }
 

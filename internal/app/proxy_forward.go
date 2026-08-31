@@ -2158,15 +2158,11 @@ func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPla
 	return stripped
 }
 
-// sonicUseNumber 保真 round-trip：sonic 默认把 JSON 数字解码成 float64，大于 2^53
-// 的整数（seed、超长整型参数等）会丢精度；stripResponsesInputItemStatus 整份 body
-// 重编码，必须用 UseNumber。
-var sonicUseNumber = sonic.Config{UseNumber: true}.Froze()
-
 // stripResponsesInputItemStatus 剥离 Responses input item 的 status 字段。Codex HTTP
 // 上游不定义该字段（官方端点对 function_call 的 status 报 400 "Unknown parameter"），
 // 工具完成态由 call_id/function_call_output 配对重建，剥离不改变执行语义。
-// 单遍 Unmarshal/Marshal：status 数量随工具调用历史累积，逐项 DeleteBytes 是 O(k·n)。
+// 必须定点删除而不能整份 Unmarshal/Marshal：Go map 重编码会随机改变 transcript 字段
+// 顺序，破坏相邻请求共享的 prompt-cache 字节前缀。
 func stripResponsesInputItemStatus(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"status"`)) {
 		return body
@@ -2175,33 +2171,19 @@ func stripResponsesInputItemStatus(body []byte) []byte {
 	if !input.IsArray() {
 		return body
 	}
-	var root map[string]any
-	if err := sonicUseNumber.Unmarshal(body, &root); err != nil {
-		return body
-	}
-	items, ok := root["input"].([]any)
-	if !ok {
-		return body
-	}
-	changed := false
-	for _, item := range items {
-		obj, ok := item.(map[string]any)
-		if !ok {
+	items := input.Array()
+	stripped := body
+	for i := len(items) - 1; i >= 0; i-- {
+		if !items[i].IsObject() || !items[i].Get("status").Exists() {
 			continue
 		}
-		if _, has := obj["status"]; has {
-			delete(obj, "status")
-			changed = true
+		updated, err := sjson.DeleteBytes(stripped, fmt.Sprintf("input.%d.status", i))
+		if err != nil {
+			return body
 		}
+		stripped = updated
 	}
-	if !changed {
-		return body
-	}
-	out, err := sonic.Marshal(root)
-	if err != nil {
-		return body
-	}
-	return out
+	return stripped
 }
 
 func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
