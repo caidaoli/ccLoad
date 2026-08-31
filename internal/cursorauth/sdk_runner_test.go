@@ -230,7 +230,7 @@ func TestSDKRunnerStartMakesBridgeReadyWithoutModelRequest(t *testing.T) {
 	}
 }
 
-func TestSDKRunnerCreateAgentLocalDeadlineNamesOperationAndProxyDiagnostic(t *testing.T) {
+func TestSDKRunnerCreateAgentDeadlineNamesOperationAndProxyDiagnostic(t *testing.T) {
 	for _, key := range []string{
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
 		"http_proxy", "https_proxy", "all_proxy",
@@ -249,11 +249,19 @@ func TestSDKRunnerCreateAgentLocalDeadlineNamesOperationAndProxyDiagnostic(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "CreateAgent exceeded its local deadline after") ||
-		!strings.Contains(err.Error(), "operation limit=30s") ||
+	if err == nil ||
+		(!strings.Contains(err.Error(), "CreateAgent exceeded its local deadline after") &&
+			!strings.Contains(err.Error(), "CreateAgent returned deadline_exceeded after")) ||
 		!strings.Contains(err.Error(), "inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY") ||
 		!strings.Contains(err.Error(), "returned no detail beyond deadline_exceeded") {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Contains(err.Error(), "CreateAgent exceeded its local deadline after") {
+		if !strings.Contains(err.Error(), "operation limit=30s") {
+			t.Fatalf("local deadline diagnostic omitted operation limit: %v", err)
+		}
+	} else if strings.Contains(err.Error(), "operation limit=") {
+		t.Fatalf("remote deadline diagnostic claimed a local operation limit: %v", err)
 	}
 	if strings.Contains(err.Error(), "user:secret") || strings.Contains(err.Error(), "proxy.example") {
 		t.Fatalf("Run() leaked proxy value: %v", err)
