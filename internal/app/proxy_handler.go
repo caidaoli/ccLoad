@@ -284,7 +284,10 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 
 // HandleProxyRequest 通用透明代理处理器
 func (s *Server) HandleProxyRequest(c *gin.Context) {
-	if isResponsesWebsocketUpgradeRequest(c.Request) {
+	// Responses GET is reserved for the downstream WebSocket handshake. A plain
+	// GET must stop here instead of entering the generic proxy, where it has no
+	// JSON model and is otherwise routed as "*" to every eligible channel.
+	if c.Request.Method == http.MethodGet && isResponsesWebsocketPath(c.Request.URL.Path) {
 		s.HandleResponsesWebsocket(c)
 		return
 	}

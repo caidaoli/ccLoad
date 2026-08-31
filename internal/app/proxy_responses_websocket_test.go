@@ -585,6 +585,9 @@ func TestResponsesWebsocketAcceptsV1CodexPath(t *testing.T) {
 // /v1/responses path, not the alias.
 func TestCodexResponsePathsHTTPSSEFallback(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("upstream method = %q, want POST", r.Method)
+		}
 		if r.URL.Path != "/v1/responses" {
 			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
 		}
@@ -608,6 +611,33 @@ func TestCodexResponsePathsHTTPSSEFallback(t *testing.T) {
 			if !strings.Contains(body, `"type":"response.completed"`) ||
 				!strings.Contains(body, `"id":"resp-sse-codex"`) {
 				t.Fatalf("SSE fallback body=%s", body)
+			}
+		})
+	}
+}
+
+func TestResponsesGetWithoutWebsocketUpgradeDoesNotReachUpstream(t *testing.T) {
+	for _, path := range responsesWebsocketUpgradePaths {
+		t.Run(path, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "codex-plain-get", upstreamProtocol: "codex", models: "*", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			response := httptest.NewRecorder()
+			env.engine.ServeHTTP(response, req)
+
+			if response.Code != http.StatusUpgradeRequired {
+				t.Fatalf("plain GET status=%d body=%s, want %d", response.Code, response.Body.String(), http.StatusUpgradeRequired)
+			}
+			if upstreamCalls.Load() != 0 {
+				t.Fatalf("plain GET reached upstream %d time(s)", upstreamCalls.Load())
 			}
 		})
 	}

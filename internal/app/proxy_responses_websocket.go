@@ -55,8 +55,12 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 
 func isResponsesWebsocketUpgradeRequest(r *http.Request) bool {
 	return r != nil && r.Method == http.MethodGet &&
-		slices.Contains(responsesWebsocketUpgradePaths, r.URL.Path) &&
+		isResponsesWebsocketPath(r.URL.Path) &&
 		websocket.IsWebSocketUpgrade(r)
+}
+
+func isResponsesWebsocketPath(path string) bool {
+	return slices.Contains(responsesWebsocketUpgradePaths, path)
 }
 
 // responsesWebsocketTimeouts resolves the idle read deadline and ping
