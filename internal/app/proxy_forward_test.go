@@ -1130,6 +1130,49 @@ func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t
 	}
 }
 
+func TestCodexRetryBodyFor400_UsesSSEErrorStatusForEncryptedContent(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[
+			{"type":"compaction","encrypted_content":"drop-compaction"},
+			{"type":"reasoning","summary":[],"encrypted_content":"drop-reasoning"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}
+		]
+	}`)
+	res := &fwResult{
+		Status:        http.StatusOK,
+		SSEErrorEvent: []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"The encrypted content could not be verified."},"status":400}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, nil, plan, res)
+	if !ok {
+		t.Fatal("codexRetryBodyFor400 returned ok=false for an SSE 400 error")
+	}
+	if strategy != "strip_codex_encrypted_input" {
+		t.Fatalf("strategy=%q, want strip_codex_encrypted_input", strategy)
+	}
+	if items := gjson.GetBytes(got, "input").Array(); len(items) != 1 || items[0].Get("type").String() != "message" {
+		t.Fatalf("retry body should keep only the non-encrypted message, got %s", got)
+	}
+}
+
+func TestCodexRetryBodyFor400_DoesNotRetryCommittedSSEError(t *testing.T) {
+	t.Parallel()
+
+	res := &fwResult{
+		Status:            http.StatusOK,
+		ResponseCommitted: true,
+		SSEErrorEvent:     []byte(`{"type":"error","error":{"code":"invalid_encrypted_content"},"status":400}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: []byte(`{"input":[{"type":"reasoning","encrypted_content":"drop"}]}`)}
+	if _, _, ok := codexRetryBodyFor400(protocol.Codex, nil, plan, res); ok {
+		t.Fatal("committed SSE error must not be retried")
+	}
+}
+
 func TestCodexQuotaOverdraftRetryBody_AppendsCompletedToolPair(t *testing.T) {
 	original := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	before := bytes.Clone(original)

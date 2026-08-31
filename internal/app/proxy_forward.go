@@ -2685,16 +2685,20 @@ func shouldRetryCodexInvalidEncryptedContent(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) bool {
-	if upstreamProtocol != protocol.Codex || res == nil || res.Status != http.StatusBadRequest {
+	if upstreamProtocol != protocol.Codex || res == nil || res.ResponseCommitted {
+		return false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	if status != http.StatusBadRequest {
 		return false
 	}
 	if !plan.NeedsTransform {
-		return isInvalidEncryptedContentError(res.Body)
+		return isInvalidEncryptedContentError(errorBody)
 	}
 	if cfg == nil || !cfg.UsesXAIOAuth() {
 		return false
 	}
-	return isInvalidEncryptedContentError(res.Body) || codexBodyHasEncryptedInputItems(plan.TranslatedBody)
+	return isInvalidEncryptedContentError(errorBody) || codexBodyHasEncryptedInputItems(plan.TranslatedBody)
 }
 
 func isInvalidEncryptedContentError(body []byte) bool {
@@ -2732,12 +2736,13 @@ func isInvalidEncryptedContentError(body []byte) bool {
 }
 
 func shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol protocol.Protocol, cfg *model.Config, res *fwResult) bool {
-	return upstreamProtocol == protocol.Codex &&
-		cfg != nil &&
-		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") &&
-		res != nil &&
-		res.Status == http.StatusBadRequest &&
-		isInvalidResponsesRequestError(res.Body)
+	if upstreamProtocol != protocol.Codex || cfg == nil ||
+		!strings.Contains(strings.ToLower(cfg.Name), "anyrouter") ||
+		res == nil || res.ResponseCommitted {
+		return false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	return status == http.StatusBadRequest && isInvalidResponsesRequestError(errorBody)
 }
 
 func isInvalidResponsesRequestError(body []byte) bool {
@@ -2948,10 +2953,11 @@ func hasRetryStrategy(strategies []string, strategy string) bool {
 }
 
 func shouldRetryCodexUnsupportedThinking(upstreamProtocol protocol.Protocol, res *fwResult) bool {
-	return upstreamProtocol == protocol.Codex &&
-		res != nil &&
-		res.Status == http.StatusBadRequest &&
-		isUnsupportedThinkingError(res.Body)
+	if upstreamProtocol != protocol.Codex || res == nil || res.ResponseCommitted {
+		return false
+	}
+	errorBody, status := forwardResultErrorPayload(res)
+	return status == http.StatusBadRequest && isUnsupportedThinkingError(errorBody)
 }
 
 func isUnsupportedThinkingError(body []byte) bool {

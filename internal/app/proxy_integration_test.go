@@ -8452,6 +8452,69 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	}
 }
 
+func TestProxy_CodexSSEInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *testing.T) {
+	t.Parallel()
+
+	const invalidEncryptedContentEvent = `{"type":"error","error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":null,"code":"invalid_encrypted_content"},"status":400}`
+
+	var attempts atomic.Int32
+	var bodies [][]byte
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-sse-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body: io.NopCloser(bytes.NewReader([]byte(
+						"event: error\n" + "data: " + invalidEncryptedContentEvent + "\n\n",
+					))),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
+				))),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-5.5",
+		"stream": true,
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "encrypted_content": "drop-reasoning"},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if attempts.Load() != 2 || len(bodies) != 2 {
+		t.Fatalf("attempts=%d bodies=%d, want 2/2", attempts.Load(), len(bodies))
+	}
+	if !bytes.Contains(bodies[0], []byte(`"type":"reasoning"`)) {
+		t.Fatalf("first request should include reasoning item, got %s", bodies[0])
+	}
+	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) ||
+		bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) {
+		t.Fatalf("SSE 400 retry should remove encrypted thinking state, got %s", bodies[1])
+	}
+	if !bytes.Contains(bodies[1], []byte(`"type":"message"`)) ||
+		!strings.Contains(w.Body.String(), `"delta":"ok"`) {
+		t.Fatalf("retry should preserve user message and return second response, body=%s response=%s", bodies[1], w.Body.String())
+	}
+}
+
 func TestProxy_Codex400RetriesWithoutThinkingAndLogsStrategy(t *testing.T) {
 	t.Parallel()
 
