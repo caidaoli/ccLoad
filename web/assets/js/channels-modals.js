@@ -3026,32 +3026,49 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
   let changedCount = 0;
   let matchedCount = 0;
   let unmatchedCount = 0;
-  for (const [requestIndex, requestEntry] of (Array.isArray(requestEntries) ? requestEntries : []).entries()) {
-    const result = results.get(requestIndex);
-    if (!result || result.error || !Array.isArray(result.models) || result.models.length === 0) continue;
+  let failedCount = 0;
+  for (const requestEntry of (Array.isArray(requestEntries) ? requestEntries : [])) {
     const rowIndex = Number(requestEntry?.keyIndex);
     const row = rows[rowIndex];
     if (!row || String(row.api_key || '').trim() !== String(requestEntry?.apiKey || '').trim()) continue;
+
+    const result = results.get(rowIndex);
+    const setScope = (allowedModels, scopeEmpty) => {
+      const current = (row.allowed_models || []).map(name => String(name).toLowerCase());
+      const next = allowedModels.map(name => name.toLowerCase());
+      const currentEmpty = row.model_scope_empty === true;
+      if (current.length === next.length && current.every((name, index) => name === next[index]) &&
+          currentEmpty === scopeEmpty) {
+        return;
+      }
+      row.allowed_models = allowedModels;
+      if (scopeEmpty) row.model_scope_empty = true;
+      else delete row.model_scope_empty;
+      changedCount++;
+    };
+
+    if (!result || result.error || !Array.isArray(result.models) || result.models.length === 0) {
+      failedCount++;
+      setScope([], true);
+      continue;
+    }
+
     const allowedModels = detectedChannelModels(modelRows, result.models);
     if (allowedModels.length === 0) {
       unmatchedCount++;
+      setScope([], true);
       continue;
     }
     matchedCount++;
-    const current = (row.allowed_models || []).map(name => String(name).toLowerCase());
-    const next = allowedModels.map(name => name.toLowerCase());
-    if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
-      row.allowed_models = allowedModels;
-      delete row.model_scope_empty;
-      changedCount++;
-    }
+    setScope(allowedModels, false);
   }
   const complete = matchedCount === (Array.isArray(requestEntries) ? requestEntries.length : 0);
   return {
-    rows: complete ? rows : originalRows,
-    changedCount: complete ? changedCount : 0,
+    rows,
+    changedCount,
     matchedCount,
     unmatchedCount,
+    failedCount,
     complete
   };
 }
@@ -3475,18 +3492,14 @@ async function fetchModelsFromAPI() {
     renderRedirectTable();
     if (!areModelRowsEqual(previousRows, redirectTableData)) markChannelFormDirty();
 
-    if (modelFetchEntries.length > 0 && keyModels.length > 0) {
+    if (modelFetchEntries.length > 0) {
       const scopeProposal = proposeFetchedKeyModelScopes(
         getInlineKeyRows(),
         redirectTableData,
         keyModels,
         modelFetchEntries
       );
-      const completeScopeDetection = skippedKeyCount === 0 &&
-        failedKeyCount === 0 &&
-        keyModels.length === modelFetchEntries.length &&
-        scopeProposal.complete;
-      const shouldApply = completeScopeDetection && scopeProposal.changedCount > 0 &&
+      const shouldApply = scopeProposal.changedCount > 0 &&
         fetchedKeyModelApplyAccepted(scopeProposal.changedCount, countConfiguredInlineKeys(getInlineKeyRows()) === 1);
       if (shouldApply && scopeProposal.changedCount > 0) {
         inlineKeyTableData = scopeProposal.rows;

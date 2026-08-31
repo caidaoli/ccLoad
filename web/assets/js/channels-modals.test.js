@@ -1612,6 +1612,55 @@ test('per-Key discovery proposals map out-of-order results back to original Key 
   ]);
 });
 
+test('per-Key discovery applies each provider scope independently', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'micu-codex', allowed_models: [] },
+    { api_key: 'micu-claude', allowed_models: [] }
+  ], [
+    { model: 'gpt-5.4' },
+    { model: 'gpt-5.4-mini' },
+    { model: 'gpt-5.5' },
+    { model: 'gpt-5.6-sol' },
+    { model: 'gpt-5.6-terra' }
+  ], [
+    { key_index: 1, models: [
+      { model: 'claude-fable-5' },
+      { model: 'claude-haiku-4-5-20251001' },
+      { model: 'claude-opus-4-6' },
+      { model: 'claude-opus-4-8' },
+      { model: 'claude-opus-5' },
+      { model: 'claude-sonnet-4-6' },
+      { model: 'claude-sonnet-5' }
+    ] },
+    { key_index: 0, models: [
+      { model: 'codex-auto-review' },
+      { model: 'gpt-5.3-codex-spark' },
+      { model: 'gpt-5.4' },
+      { model: 'gpt-5.4-mini' },
+      { model: 'gpt-5.5' },
+      { model: 'gpt-5.6-sol' },
+      { model: 'gpt-5.6-terra' }
+    ] }
+  ], [
+    { keyIndex: 0, apiKey: 'micu-codex' },
+    { keyIndex: 1, apiKey: 'micu-claude' }
+  ]);
+
+  assert.equal(result.complete, false);
+  assert.equal(result.changedCount, 2);
+  assert.equal(result.matchedCount, 1);
+  assert.equal(result.unmatchedCount, 1);
+  assert.equal(result.failedCount, 0);
+  assert.deepEqual(result.rows, [
+    {
+      api_key: 'micu-codex',
+      allowed_models: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra']
+    },
+    { api_key: 'micu-claude', allowed_models: [], model_scope_empty: true }
+  ]);
+});
+
 test('per-Key discovery clears scope-empty marker when a scope is recovered', () => {
   const { proposeFetchedKeyModelScopes } = loadChannelsModals();
   const result = proposeFetchedKeyModelScopes([
@@ -1632,7 +1681,7 @@ test('per-Key discovery clears scope-empty marker when a scope is recovered', ()
   }]);
 });
 
-test('per-Key discovery proposals remain atomic when one Key fails', () => {
+test('per-Key discovery marks failed Keys empty while applying successful Keys', () => {
   const { proposeFetchedKeyModelScopes } = loadChannelsModals();
   const result = proposeFetchedKeyModelScopes([
     { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
@@ -1645,25 +1694,26 @@ test('per-Key discovery proposals remain atomic when one Key fails', () => {
     { model: 'logical-b', redirect_model: 'upstream-b' }
   ], [
     { key_index: 1, error: 'invalid api key', models: [] },
-    { key_index: 0, models: [{ model: 'upstream-a' }, { model: 'common' }] }
+    { key_index: 3, models: [{ model: 'upstream-b' }, { model: 'common' }] }
   ], [
     { keyIndex: 1, apiKey: 'sk-a' },
     { keyIndex: 3, apiKey: 'sk-b' }
   ]);
 
-  assert.equal(result.changedCount, 0);
+  assert.equal(result.changedCount, 2);
   assert.equal(result.matchedCount, 1);
   assert.equal(result.unmatchedCount, 0);
+  assert.equal(result.failedCount, 1);
   assert.equal(result.complete, false);
-  assert.deepEqual(result.rows.map(row => row.allowed_models), [
-    ['keep-disabled'],
-    [],
-    ['keep-cooling'],
-    []
+  assert.deepEqual(result.rows, [
+    { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
+    { api_key: 'sk-a', note: '', allowed_models: [], model_scope_empty: true },
+    { api_key: 'sk-cooling', note: '', allowed_models: ['keep-cooling'] },
+    { api_key: 'sk-b', note: '', allowed_models: ['common', 'logical-b'] }
   ]);
 });
 
-test('per-Key discovery proposals preserve scopes when detected models do not match', () => {
+test('per-Key discovery marks a successful Key with no matching model as empty', () => {
   const { proposeFetchedKeyModelScopes } = loadChannelsModals();
   const result = proposeFetchedKeyModelScopes(
     [{ api_key: 'sk-a', note: '', allowed_models: ['keep-me'] }],
@@ -1672,11 +1722,32 @@ test('per-Key discovery proposals preserve scopes when detected models do not ma
     [{ keyIndex: 0, apiKey: 'sk-a' }]
   );
 
-  assert.equal(result.changedCount, 0);
+  assert.equal(result.changedCount, 1);
   assert.equal(result.matchedCount, 0);
   assert.equal(result.unmatchedCount, 1);
   assert.equal(result.complete, false);
-  assert.deepEqual(result.rows[0].allowed_models, ['keep-me']);
+  assert.deepEqual(result.rows[0], {
+    api_key: 'sk-a', note: '', allowed_models: [], model_scope_empty: true
+  });
+});
+
+test('per-Key discovery keeps skipped manual Keys unchanged', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
+    { api_key: 'sk-a', note: '', allowed_models: [] }
+  ], [
+    { model: 'logical-a', redirect_model: 'upstream-a' }
+  ], [
+    { key_index: 1, models: [{ model: 'upstream-a' }] }
+  ], [
+    { keyIndex: 1, apiKey: 'sk-a' }
+  ]);
+
+  assert.deepEqual(result.rows.map(row => row.allowed_models), [
+    ['keep-disabled'],
+    ['logical-a']
+  ]);
 });
 
 test('fetchModelsFromAPI uses the saved Antigravity channel without submitting its OAuth token', async () => {

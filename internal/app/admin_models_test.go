@@ -1916,8 +1916,11 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetAPIKeys failed: %v", err)
 		}
-		if !keys[1].Disabled || !keys[1].ModelScopeEmpty {
-			t.Fatalf("scope-auto-disabled key must stay disabled after refresh: %+v", keys[1])
+		if !reflect.DeepEqual(keys[0].AllowedModels, []string{"ma-1"}) || keys[0].Disabled || keys[0].ModelScopeEmpty {
+			t.Fatalf("successful group-a key scope=%+v, want ma-1 and enabled", keys[0])
+		}
+		if !reflect.DeepEqual(keys[1].AllowedModels, []string{"mb-1"}) || keys[1].Disabled || keys[1].ModelScopeEmpty {
+			t.Fatalf("successful scope-auto-disabled key must recover its scope: %+v", keys[1])
 		}
 		if !keys[2].Disabled {
 			t.Fatalf("manually disabled key must stay disabled: %+v", keys[2])
@@ -1993,6 +1996,16 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		want := []model.ModelEntry{{Model: "model-a"}}
 		if !reflect.DeepEqual(got.ModelEntries, want) {
 			t.Fatalf("models=%#v, want %#v (successful model should apply despite failed key)", got.ModelEntries, want)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if !reflect.DeepEqual(keys[0].AllowedModels, []string{"model-a"}) || keys[0].ModelScopeEmpty || keys[0].Disabled {
+			t.Fatalf("healthy key scope=%+v, want model-a and enabled", keys[0])
+		}
+		if len(keys[1].AllowedModels) != 0 || !keys[1].ModelScopeEmpty || !keys[1].Disabled {
+			t.Fatalf("failed key must become an explicit empty scope: %+v", keys[1])
 		}
 	})
 
