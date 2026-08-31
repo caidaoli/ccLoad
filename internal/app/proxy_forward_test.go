@@ -938,6 +938,7 @@ func TestResponsesRetryBodyForUnknownParameter_RequiresCodexResponsesScope(t *te
 func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}","status":"completed"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
+	want := []byte(`{"model":"gpt-5.6-sol","seed":9007199254740993,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}]}`)
 	plan := protocol.TransformPlan{
 		ClientProtocol:   protocol.Codex,
 		UpstreamProtocol: protocol.Codex,
@@ -953,11 +954,69 @@ func TestResponsesBodyForHTTPTransport_StripsInputItemStatus(t *testing.T) {
 	if gjson.GetBytes(got, "seed").Raw != "9007199254740993" {
 		t.Fatalf("HTTP Codex body changed large integer: %s", got)
 	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("HTTP Codex body changed unrelated serialized bytes:\n got: %s\nwant: %s", got, want)
+	}
 
 	plan.UpstreamProtocol = protocol.OpenAI
 	got = responsesBodyForHTTPTransport(&model.Config{}, plan, body)
 	if !gjson.GetBytes(got, "input.0.status").Exists() {
 		t.Fatalf("non-Codex upstream body lost input status: %s", got)
+	}
+}
+
+func TestStripResponsesInputItemStatusPreservesTranscriptSerialization(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"function_call","id":"fc_0","call_id":"call_0","name":"exec","arguments":"{\"large\":9007199254740993}","status":"completed"},{"status":"completed","type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"function_call","status":"in_progress","id":"fc_2","call_id":"call_2","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"},{"type":"metadata","status":"nested-keep"}]}],"metadata":{"status":"top-level-keep"},"seed":9007199254740993}`)
+	want := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"function_call","id":"fc_0","call_id":"call_0","name":"exec","arguments":"{\"large\":9007199254740993}"},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"function_call","id":"fc_2","call_id":"call_2","name":"exec","arguments":"{}"},{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"},{"type":"metadata","status":"nested-keep"}]}],"metadata":{"status":"top-level-keep"},"seed":9007199254740993}`)
+
+	for range 100 {
+		got := stripResponsesInputItemStatus(body)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("status stripping changed the serialized transcript prefix:\n got: %s\nwant: %s", got, want)
+		}
+	}
+}
+
+func TestStripResponsesInputItemStatusLeavesInvalidJSONUntouched(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{"type":"function_call","status":"completed"}`)
+	if got := stripResponsesInputItemStatus(body); !bytes.Equal(got, body) {
+		t.Fatalf("invalid JSON changed: got %s", got)
+	}
+}
+
+func TestStripResponsesInputItemStatusPreservesUnrelatedWhitespace(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{ "status" : "completed" , "type" : "function_call" },{"type":"function_call" , "status" : "completed" },{"status":null}]}`)
+	want := []byte(`{"input":[{  "type" : "function_call" },{"type":"function_call"  },{}]}`)
+	if got := stripResponsesInputItemStatus(body); !bytes.Equal(got, want) {
+		t.Fatalf("status stripping changed unrelated whitespace:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func BenchmarkStripResponsesInputItemStatus(b *testing.B) {
+	for _, itemCount := range []int{1, 100, 1000} {
+		var body strings.Builder
+		body.WriteString(`{"input":[`)
+		for i := range itemCount {
+			if i > 0 {
+				body.WriteByte(',')
+			}
+			fmt.Fprintf(&body, `{"type":"function_call","id":"fc_%d","call_id":"call_%d","name":"exec","arguments":"{}","status":"completed"}`, i, i)
+		}
+		body.WriteString(`]}`)
+		payload := []byte(body.String())
+
+		b.Run(fmt.Sprintf("items_%d", itemCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				if got := stripResponsesInputItemStatus(payload); len(got) >= len(payload) {
+					b.Fatal("status fields were not removed")
+				}
+			}
+		})
 	}
 }
 
