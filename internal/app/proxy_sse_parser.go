@@ -1452,60 +1452,51 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 }
 
 // applyAnthropicOrResponsesUsage 处理Anthropic或OpenAI Responses API格式
-// 重要：Anthropic SSE流中，message_start包含input_tokens，message_delta包含cumulative output_tokens
-// 某些中间代理（如anyrouter）会在message_delta中添加input_tokens:0，需要防御性处理
+// 重要：Anthropic SSE流中，message_start/message_delta/message_stop 可能都带有累计 usage。
+// 某些中间代理会在较晚帧补全显式 0 作为占位；这些 0 不能抹掉较早的有效累计快照。
 func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) {
-	// input_tokens: 只有 > 0 时才覆盖（防止message_delta中的0覆盖message_start的正确值）
+	// scalar 均是累计快照：正值使用最新快照（即使比上一个正值小），0 仅视为占位。
 	if val, ok := usage["input_tokens"].(float64); ok && int(val) > 0 {
 		u.InputTokens = int(val)
 	}
-	// output_tokens: 直接覆盖（cumulative语义，后续值包含之前的累计）
-	if val, ok := usage["output_tokens"].(float64); ok {
+	if val, ok := usage["output_tokens"].(float64); ok && int(val) > 0 {
 		u.OutputTokens = int(val)
 	}
-
-	// Anthropic缓存字段
-	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
+	if val, ok := usage["cache_read_input_tokens"].(float64); ok && int(val) > 0 {
 		u.CacheReadInputTokens = int(val)
 	}
-	hasAggregateCacheCreation := false
-	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		hasAggregateCacheCreation = true
-		u.CacheCreationInputTokens = int(val)
-	}
 
-	// Anthropic缓存细分字段 (新增2025-12)
+	aggregateCacheCreation, hasAggregateCacheCreation := usage["cache_creation_input_tokens"].(float64)
+
+	// Anthropic 缓存细分字段是一个原子快照。只要任一 bucket 为正，
+	// 就同时应用 5m/1h（包括将另一个清零），并由两者重算 aggregate。
 	hasDetailedCacheCreation := false
+	detailedCache5m := 0
+	detailedCache1h := 0
 	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
 		hasDetailedCacheCreation = true
-		if val, ok := cacheCreation["ephemeral_5m_input_tokens"].(float64); ok {
-			u.Cache5mInputTokens = int(val)
-		}
-		if val, ok := cacheCreation["ephemeral_1h_input_tokens"].(float64); ok {
-			u.Cache1hInputTokens = int(val)
-		}
-		// 更新兼容字段
-		u.CacheCreationInputTokens = u.Cache5mInputTokens + u.Cache1hInputTokens
+		detailedCache5m = usageInt(cacheCreation, "ephemeral_5m_input_tokens")
+		detailedCache1h = usageInt(cacheCreation, "ephemeral_1h_input_tokens")
 	}
-	if hasAggregateCacheCreation && !hasDetailedCacheCreation && u.CacheCreationInputTokens > 0 {
-		u.Cache5mInputTokens = u.CacheCreationInputTokens
+	if detailedCache5m > 0 || detailedCache1h > 0 {
+		u.setCacheCreationSnapshot(detailedCache5m, detailedCache1h)
+	} else if hasAggregateCacheCreation && int(aggregateCacheCreation) > 0 {
+		// 只有 aggregate 正值、没有权威 split 时按 5m 计价，并清掉旧 1h bucket。
+		u.setCacheCreationSnapshot(int(aggregateCacheCreation), 0)
 	}
 
 	// OpenAI Responses / Codex 缓存字段:
 	// input_tokens_details.cached_tokens      → 缓存读
 	// input_tokens_details.cache_write_tokens → 缓存建（写入）
 	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
-		if val, ok := details["cached_tokens"].(float64); ok {
+		if val, ok := details["cached_tokens"].(float64); ok && int(val) > 0 {
 			u.CacheReadInputTokens = int(val)
 		}
-		// 仅在尚未拿到 Anthropic 风格 cache_creation 字段时采用 cache_write_tokens
+		// 仅在尚未拿到 Anthropic 风格 cache_creation 字段时采用 cache_write_tokens。
 		if !hasAggregateCacheCreation && !hasDetailedCacheCreation {
-			if val, ok := details["cache_write_tokens"].(float64); ok {
-				u.CacheCreationInputTokens = int(val)
-				if u.CacheCreationInputTokens > 0 {
-					// OpenAI cache write 无 5m/1h 细分，按 5m 写价（1.25x）计费
-					u.Cache5mInputTokens = u.CacheCreationInputTokens
-				}
+			if val, ok := details["cache_write_tokens"].(float64); ok && int(val) > 0 {
+				// OpenAI cache write 无 5m/1h 细分，按 5m 写价（1.25x）计费。
+				u.setCacheCreationSnapshot(int(val), 0)
 			}
 		}
 	}
@@ -1524,6 +1515,12 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	// NewAPI 等网关在 Claude 风格 usage 外包一层 billing_usage.openai_usage，
 	// 真实 reasoning_tokens 只在 completion_tokens_details 里。
 	u.applyBillingUsageOpenAIReasoning(usage)
+}
+
+func (u *usageAccumulator) setCacheCreationSnapshot(cache5m, cache1h int) {
+	u.Cache5mInputTokens = cache5m
+	u.Cache1hInputTokens = cache1h
+	u.CacheCreationInputTokens = cache5m + cache1h
 }
 
 // applyBillingUsageOpenAIReasoning 从 NewAPI 风格 billing_usage.openai_usage 补齐推理 token。

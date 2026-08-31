@@ -462,6 +462,192 @@ func TestSSEUsageParser_MessageDeltaWithZeroInputTokens(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_AnthropicPlaceholderZerosPreserveProductionUsage(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":0,"cache_read_input_tokens":169296,"cache_creation_input_tokens":2613,"cache_creation":{"ephemeral_5m_input_tokens":2613,"ephemeral_1h_input_tokens":0}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":0,"output_tokens":1378,"cache_read_input_tokens":169296,"cache_creation_input_tokens":2613,"cache_creation":{"ephemeral_5m_input_tokens":2613,"ephemeral_1h_input_tokens":0}}}
+
+event: message_stop
+data: {"type":"message_stop","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}
+
+`
+
+	parser := newSSEUsageParser("anthropic")
+	feedAndAssertUsage(t, parser, sseData, 2, 1378, 169296, 2613)
+	if parser.Cache5mInputTokens != 2613 || parser.Cache1hInputTokens != 0 {
+		t.Fatalf("cache breakdown = %d/%d, want 2613/0", parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+	}
+	if parser.CacheCreationInputTokens != parser.Cache5mInputTokens+parser.Cache1hInputTokens {
+		t.Fatalf("cache aggregate=%d, breakdown sum=%d", parser.CacheCreationInputTokens, parser.Cache5mInputTokens+parser.Cache1hInputTokens)
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("message_stop 仍应标记流完成")
+	}
+}
+
+func TestSSEUsageParser_AnthropicOutputZeroThenPositive(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":73}}
+
+`
+
+	feedAndAssertUsage(t, newSSEUsageParser("anthropic"), sseData, 10, 73, 0, 0)
+}
+
+func TestSSEUsageParser_AnthropicLaterPositiveSnapshotCanDecrease(t *testing.T) {
+	sseData := `event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":100,"cache_read_input_tokens":900}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":80,"cache_read_input_tokens":700}}
+
+`
+
+	feedAndAssertUsage(t, newSSEUsageParser("anthropic"), sseData, 0, 80, 700, 0)
+}
+
+func TestSSEUsageParser_AnthropicUsageOnlyInMessageStop(t *testing.T) {
+	sseData := `event: message_stop
+data: {"type":"message_stop","usage":{"input_tokens":12,"output_tokens":73,"cache_read_input_tokens":17558,"cache_creation_input_tokens":278}}
+
+`
+
+	parser := newSSEUsageParser("anthropic")
+	feedAndAssertUsage(t, parser, sseData, 12, 73, 17558, 278)
+	if parser.Cache5mInputTokens != 278 || parser.Cache1hInputTokens != 0 {
+		t.Fatalf("aggregate-only cache breakdown = %d/%d, want 278/0", parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("message_stop-only usage 应保留终止语义")
+	}
+}
+
+func TestSSEUsageParser_AnthropicCacheCreationSnapshots(t *testing.T) {
+	tests := []struct {
+		name          string
+		sseData       string
+		wantAggregate int
+		want5m        int
+		want1h        int
+	}{
+		{
+			name: "1h-only snapshot clears previous 5m",
+			sseData: `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":300,"ephemeral_1h_input_tokens":200}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}}
+
+`,
+			wantAggregate: 500,
+			want5m:        0,
+			want1h:        500,
+		},
+		{
+			name: "mixed 5m and 1h snapshot",
+			sseData: `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":999,"cache_creation":{"ephemeral_5m_input_tokens":300,"ephemeral_1h_input_tokens":200}}}}
+
+`,
+			wantAggregate: 500,
+			want5m:        300,
+			want1h:        200,
+		},
+		{
+			name: "all zero usage remains zero",
+			sseData: `event: message_stop
+data: {"type":"message_stop","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}
+
+`,
+			wantAggregate: 0,
+			want5m:        0,
+			want1h:        0,
+		},
+		{
+			name: "aggregate-only falls back to 5m and clears 1h",
+			sseData: `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"cache_creation_input_tokens":80}}
+
+`,
+			wantAggregate: 80,
+			want5m:        80,
+			want1h:        0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := newSSEUsageParser("anthropic")
+			if err := parser.Feed([]byte(tt.sseData)); err != nil {
+				t.Fatalf("Feed失败: %v", err)
+			}
+			if parser.CacheCreationInputTokens != tt.wantAggregate || parser.Cache5mInputTokens != tt.want5m || parser.Cache1hInputTokens != tt.want1h {
+				t.Fatalf("cache aggregate/5m/1h = %d/%d/%d, want %d/%d/%d",
+					parser.CacheCreationInputTokens, parser.Cache5mInputTokens, parser.Cache1hInputTokens,
+					tt.wantAggregate, tt.want5m, tt.want1h)
+			}
+			if parser.CacheCreationInputTokens != parser.Cache5mInputTokens+parser.Cache1hInputTokens {
+				t.Fatalf("cache aggregate=%d, breakdown sum=%d", parser.CacheCreationInputTokens, parser.Cache5mInputTokens+parser.Cache1hInputTokens)
+			}
+		})
+	}
+}
+
+func TestSSEUsageParser_AnthropicPlaceholderZerosInOversizedEvent(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	start := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":1378,"cache_read_input_tokens":169296,"cache_creation_input_tokens":2613,"cache_creation":{"ephemeral_5m_input_tokens":2613,"ephemeral_1h_input_tokens":0}}}}
+
+`
+	if err := parser.Feed([]byte(start)); err != nil {
+		t.Fatalf("Feed start 失败: %v", err)
+	}
+
+	chunks := []string{
+		"event: .\n",
+		`data: {"type":".","padding":"`,
+		strings.Repeat("a", maxSSEEventSize+1),
+		`","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}` + "\n\n",
+	}
+	for i, chunk := range chunks {
+		if err := parser.Feed([]byte(chunk)); err != nil {
+			t.Fatalf("Feed第%d块失败: %v", i+1, err)
+		}
+	}
+
+	feedAndAssertUsage(t, parser, "", 2, 1378, 169296, 2613)
+	if parser.CacheCreationInputTokens != parser.Cache5mInputTokens+parser.Cache1hInputTokens {
+		t.Fatalf("cache aggregate=%d, breakdown sum=%d", parser.CacheCreationInputTokens, parser.Cache5mInputTokens+parser.Cache1hInputTokens)
+	}
+}
+
+func TestSSEUsageParser_OpenAIResponsesPlaceholderZerosPreserveUsage(t *testing.T) {
+	sseData := `event: response.in_progress
+data: {"type":"response.in_progress","usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},"output_tokens":70}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":0}}}
+
+`
+
+	parser := newSSEUsageParser("openai")
+	feedAndAssertUsage(t, parser, sseData, 90, 70, 20, 10)
+	if parser.Cache5mInputTokens != 10 || parser.Cache1hInputTokens != 0 {
+		t.Fatalf("Responses cache breakdown = %d/%d, want 10/0", parser.Cache5mInputTokens, parser.Cache1hInputTokens)
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("response.completed 应保留终止语义")
+	}
+}
+
 // ============================================================================
 // 防御性测试：恶意输入
 // ============================================================================

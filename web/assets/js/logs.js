@@ -546,6 +546,15 @@ function buildLogTokenDescDisplay(label) {
   return `<span class="logs-token-desc-text" title="${escapeHtml(text)}">${escapeHtml(formatLogTokenDescLabel(text))}</span>`;
 }
 
+function getEffectiveCacheCreationTokens(entry) {
+  const aggregate = Number(entry?.cache_creation_input_tokens) || 0;
+  if (aggregate > 0) return aggregate;
+
+  const cache5m = Number(entry?.cache_5m_input_tokens) || 0;
+  const cache1h = Number(entry?.cache_1h_input_tokens) || 0;
+  return cache5m + cache1h;
+}
+
 function renderLogSourceBadge(logSource) {
   switch (logSource) {
     case 'scheduled_check':
@@ -1165,7 +1174,7 @@ function renderLogs(data) {
 
     // 缓存建列
     let cacheCreationDisplay = '';
-    const total = entry.cache_creation_input_tokens || 0;
+    const total = getEffectiveCacheCreationTokens(entry);
     const cache5m = entry.cache_5m_input_tokens || 0;
     const cache1h = entry.cache_1h_input_tokens || 0;
 
@@ -2823,5 +2832,5 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay };
+  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay, getEffectiveCacheCreationTokens };
 }
