@@ -195,6 +195,9 @@
     if (typeof initChannelEditorActions === 'function') {
       initChannelEditorActions();
     }
+    if (typeof setupOAuthActions === 'function') {
+      setupOAuthActions();
+    }
     if (typeof initChannelFormDirtyTracking === 'function') {
       initChannelFormDirtyTracking();
     }

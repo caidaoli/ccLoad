@@ -895,6 +895,7 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
   let openedChannelID = null;
+  let oauthSetupCalls = 0;
   const previous = new Map();
   const installGlobal = (name, value) => {
     previous.set(name, Object.getOwnPropertyDescriptor(global, name));
@@ -906,6 +907,7 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     t: key => key,
     showError() {}
   });
+  installGlobal('setupOAuthActions', () => { oauthSetupCalls++; });
   installGlobal('document', {
     scripts,
     head: {
@@ -947,6 +949,7 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     await global.window.openLogChannelEditor(42);
 
     assert.equal(openedChannelID, 42);
+    assert.equal(oauthSetupCalls, 1);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
 
@@ -2298,6 +2301,8 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     'selectAllKeys',
     'codexCredentialTab',
     'codexCredentialContent',
+    'codexCredentialViewDescription',
+    'codexCredentialViewSwitch',
     'codexCredentialRefreshButton',
     'channelCodexPlanBadge',
     'codexQuotaOverdraftSettings',
@@ -2353,6 +2358,8 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('batchDeleteKeysBtn').disabled, true);
     assert.equal(elements.get('selectAllKeys').disabled, true);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialViewDescription').hidden, false);
+    assert.equal(elements.get('codexCredentialViewSwitch').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
     assert.equal(elements.get('codexQuotaOverdraftSettings').hidden, false);
@@ -2389,6 +2396,8 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('channelApiKey').required, false);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialViewDescription').hidden, true);
+    assert.equal(elements.get('codexCredentialViewSwitch').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
     assert.equal(elements.get('codexQuotaOverdraftSettings').hidden, true);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(antigravityCredential, null, 2));
@@ -2450,6 +2459,8 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('importKeysBtn').disabled, false);
     assert.equal(elements.get('selectAllKeys').disabled, false);
     assert.equal(elements.get('codexCredentialTab').hidden, true);
+    assert.equal(elements.get('codexCredentialViewDescription').hidden, true);
+    assert.equal(elements.get('codexCredentialViewSwitch').hidden, true);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').textContent, '');

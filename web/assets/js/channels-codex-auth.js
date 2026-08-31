@@ -173,6 +173,8 @@ function applyChannelAuthEditorMode(
   const batchDeleteButton = document.getElementById('batchDeleteKeysBtn');
   const selectAll = document.getElementById('selectAllKeys');
   const credentialTab = document.getElementById('codexCredentialTab');
+  const credentialViewDescription = document.getElementById('codexCredentialViewDescription');
+  const credentialViewSwitch = document.getElementById('codexCredentialViewSwitch');
   const credentialRefreshButton = document.getElementById('codexCredentialRefreshButton');
   const planBadge = document.getElementById('channelCodexPlanBadge');
   const planType = codexOAuth
@@ -214,6 +216,8 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
+  if (credentialViewDescription) credentialViewDescription.hidden = !codexOAuth;
+  if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {
     credentialRefreshButton.hidden = !oauthCredentialRefreshTarget(authType) || Boolean(
       codexPersonalAccessToken || (zaiOAuth && !String(credential?.access_token || '').trim())
