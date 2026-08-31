@@ -2162,28 +2162,108 @@ func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPla
 // 上游不定义该字段（官方端点对 function_call 的 status 报 400 "Unknown parameter"），
 // 工具完成态由 call_id/function_call_output 配对重建，剥离不改变执行语义。
 // 必须定点删除而不能整份 Unmarshal/Marshal：Go map 重编码会随机改变 transcript 字段
-// 顺序，破坏相邻请求共享的 prompt-cache 字节前缀。
+// 顺序，破坏相邻请求共享的 prompt-cache 字节前缀。一次收集全部删除区间并压缩，
+// 避免逐字段 DeleteBytes 随历史 status 数量增长成 O(k·n)。
 func stripResponsesInputItemStatus(body []byte) []byte {
 	if !bytes.Contains(body, []byte(`"status"`)) {
 		return body
 	}
-	input := gjson.GetBytes(body, "input")
-	if !input.IsArray() {
+	if !gjson.ValidBytes(body) {
 		return body
 	}
-	items := input.Array()
-	stripped := body
-	for i := len(items) - 1; i >= 0; i-- {
-		if !items[i].IsObject() || !items[i].Get("status").Exists() {
-			continue
-		}
-		updated, err := sjson.DeleteBytes(stripped, fmt.Sprintf("input.%d.status", i))
-		if err != nil {
+	statuses := gjson.GetBytes(body, "input.#.status")
+	values := statuses.Array()
+	if len(values) == 0 || len(values) != len(statuses.Indexes) {
+		return body
+	}
+
+	type deletionRange struct {
+		start int
+		end   int
+	}
+	ranges := make([]deletionRange, 0, len(values))
+	deletedBytes := 0
+	previousEnd := 0
+	for i, value := range values {
+		start, end, ok := jsonObjectMemberDeletionRange(body, statuses.Indexes[i], len(value.Raw))
+		if !ok || start < previousEnd {
 			return body
 		}
-		stripped = updated
+		ranges = append(ranges, deletionRange{start: start, end: end})
+		deletedBytes += end - start
+		previousEnd = end
 	}
-	return stripped
+
+	stripped := make([]byte, 0, len(body)-deletedBytes)
+	previousEnd = 0
+	for _, deletion := range ranges {
+		stripped = append(stripped, body[previousEnd:deletion.start]...)
+		previousEnd = deletion.end
+	}
+	return append(stripped, body[previousEnd:]...)
+}
+
+// jsonObjectMemberDeletionRange 根据 gjson 给出的字段值位置，返回包含对象逗号的
+// 完整成员删除区间。调用方按升序一次复制未删除区间，避免反复移动整个 JSON body。
+func jsonObjectMemberDeletionRange(body []byte, valueStart, valueLength int) (int, int, bool) {
+	valueEnd := valueStart + valueLength
+	if valueStart <= 0 || valueLength <= 0 || valueEnd > len(body) {
+		return 0, 0, false
+	}
+
+	colon := skipJSONWhitespaceBackward(body, valueStart-1)
+	if colon < 0 || body[colon] != ':' {
+		return 0, 0, false
+	}
+	keyEnd := skipJSONWhitespaceBackward(body, colon-1)
+	if keyEnd < 0 || body[keyEnd] != '"' {
+		return 0, 0, false
+	}
+	const statusKey = `"status"`
+	keyStart := keyEnd + 1 - len(statusKey)
+	if keyStart < 0 || !bytes.Equal(body[keyStart:keyEnd+1], []byte(statusKey)) {
+		return 0, 0, false
+	}
+
+	afterValue := skipJSONWhitespaceForward(body, valueEnd)
+	if afterValue >= len(body) || (body[afterValue] != ',' && body[afterValue] != '}') {
+		return 0, 0, false
+	}
+	beforeKey := skipJSONWhitespaceBackward(body, keyStart-1)
+	switch {
+	case beforeKey >= 0 && body[beforeKey] == ',':
+		return beforeKey, valueEnd, true
+	case beforeKey >= 0 && body[beforeKey] == '{' && body[afterValue] == ',':
+		return keyStart, afterValue + 1, true
+	case beforeKey >= 0 && body[beforeKey] == '{' && body[afterValue] == '}':
+		return keyStart, valueEnd, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func skipJSONWhitespaceBackward(body []byte, position int) int {
+	for position >= 0 {
+		switch body[position] {
+		case ' ', '\t', '\r', '\n':
+			position--
+		default:
+			return position
+		}
+	}
+	return position
+}
+
+func skipJSONWhitespaceForward(body []byte, position int) int {
+	for position < len(body) {
+		switch body[position] {
+		case ' ', '\t', '\r', '\n':
+			position++
+		default:
+			return position
+		}
+	}
+	return position
 }
 
 func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
