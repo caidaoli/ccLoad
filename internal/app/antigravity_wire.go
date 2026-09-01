@@ -500,6 +500,27 @@ func consolidateAntigravitySchemaAliases(request []byte, canonicalPath string, a
 	return request
 }
 
+func consolidateAntigravityGenerationConfigParents(request []byte) []byte {
+	snake := gjson.GetBytes(request, "generation_config")
+	if !snake.IsObject() {
+		return request
+	}
+	canonical := gjson.GetBytes(request, "generationConfig")
+	if !canonical.IsObject() {
+		request = setJSONRaw(request, "generationConfig", snake.Raw)
+	} else {
+		snake.ForEach(func(key, value gjson.Result) bool {
+			memberPath := "generationConfig." + key.String()
+			if gjson.GetBytes(request, memberPath).Exists() {
+				return true
+			}
+			request = setJSONRaw(request, memberPath, value.Raw)
+			return true
+		})
+	}
+	return deleteJSONPath(request, "generation_config")
+}
+
 func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	useAntigravitySchema := strings.Contains(strings.ToLower(modelName), "claude") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3-pro") ||
@@ -556,7 +577,7 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 		cleaned := cleanAntigravitySchemaRaw(schemaRaw, true, true)
 		request = consolidateAntigravitySchemaAliases(request, "generationConfig.responseSchema", generationSchemaPaths, cleaned)
 	}
-	return request
+	return consolidateAntigravityGenerationConfigParents(request)
 }
 
 func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {

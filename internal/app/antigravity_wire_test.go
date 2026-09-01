@@ -156,11 +156,40 @@ func TestNormalizeAntigravitySchemasConsolidatesGenerationConfigSchemaAliases(t 
 					t.Fatalf("generationConfig.%s should be removed; output=%s", alias, got)
 				}
 			}
-			for _, alias := range []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"} {
-				if gjson.GetBytes(got, "generation_config."+alias).Exists() {
-					t.Fatalf("generation_config.%s should be removed; output=%s", alias, got)
-				}
+			if gjson.GetBytes(got, "generation_config").Exists() {
+				t.Fatalf("generation_config parent should be removed; output=%s", got)
 			}
 		})
+	}
+}
+
+func TestNormalizeAntigravitySchemasFoldsGenerationConfigMixedFields(t *testing.T) {
+	t.Parallel()
+
+	input := `{"generation_config":{
+		"temperature":0.2,
+		"response_json_schema":{"type":"object","properties":{"field":{"type":"string"}}}
+	}}`
+	got := normalizeAntigravitySchemas([]byte(input), antigravitySchemaTestModel)
+
+	if gjson.GetBytes(got, "generation_config").Exists() {
+		t.Fatalf("generation_config parent should be removed; output=%s", got)
+	}
+	if !gjson.GetBytes(got, "generationConfig").IsObject() {
+		t.Fatalf("generationConfig missing: %s", got)
+	}
+	if gotTemp := gjson.GetBytes(got, "generationConfig.temperature").Float(); gotTemp != 0.2 {
+		t.Fatalf("generationConfig.temperature = %v, want 0.2; output=%s", gotTemp, got)
+	}
+	if !gjson.GetBytes(got, "generationConfig.responseSchema").IsObject() {
+		t.Fatalf("generationConfig.responseSchema missing: %s", got)
+	}
+	if gotProp := gjson.GetBytes(got, "generationConfig.responseSchema.properties.field.type").String(); gotProp != "string" {
+		t.Fatalf("generationConfig.responseSchema.properties.field.type = %q, want string; output=%s", gotProp, got)
+	}
+	for _, alias := range []string{"responseJsonSchema", "response_schema", "response_json_schema"} {
+		if gjson.GetBytes(got, "generationConfig."+alias).Exists() {
+			t.Fatalf("generationConfig.%s should be removed; output=%s", alias, got)
+		}
 	}
 }
