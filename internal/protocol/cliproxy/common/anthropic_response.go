@@ -24,7 +24,7 @@ func NormalizeAnthropicResponse(raw []byte) ([]byte, error) {
 	}
 
 	if json.Valid(raw) {
-		message, err := decodeJSONObject(raw)
+		message, err := decodeValidatedJSONObject(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -58,6 +58,14 @@ func decodeJSONObject(raw []byte) (map[string]any, error) {
 	if !json.Valid(raw) {
 		return nil, fmt.Errorf("decode anthropic response: invalid JSON")
 	}
+	return decodeValidatedJSONObject(raw)
+}
+
+// decodeValidatedJSONObject is decodeJSONObject for callers that already ran
+// json.Valid on the same bytes. gjson.ParseBytes does not report syntax errors,
+// so the guard cannot be dropped outright — but it also must not run twice on a
+// 50 MiB response just because the caller was thorough.
+func decodeValidatedJSONObject(raw []byte) (map[string]any, error) {
 	root := gjson.ParseBytes(raw)
 	if !root.IsObject() {
 		return nil, fmt.Errorf("anthropic response must be an object")
@@ -181,7 +189,7 @@ func aggregateAnthropicSSE(payloads [][]byte) (map[string]any, error) {
 		if !json.Valid(payload) {
 			return nil, fmt.Errorf("invalid anthropic SSE data: %s", strings.TrimSpace(string(payload)))
 		}
-		event, err := decodeJSONObject(payload)
+		event, err := decodeValidatedJSONObject(payload)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"slices"
 	"strings"
 	"unicode"
@@ -725,7 +726,7 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 // 多余逗号等其余分歧点两者判定一致，典型帧上多付约 18 ns。
 func sseJSONObjectMap(raw []byte) (map[string]any, error) {
 	if !json.Valid(raw) {
-		return nil, errors.New("invalid JSON object")
+		return nil, sseJSONSyntaxError(raw)
 	}
 	root := gjson.ParseBytes(raw)
 	event, ok := root.Value().(map[string]any)
@@ -736,6 +737,22 @@ func sseJSONObjectMap(raw []byte) (map[string]any, error) {
 		return nil, errors.New("JSON object expected")
 	}
 	return event, nil
+}
+
+// sseJSONSyntaxError 只在守卫已判定失败后调用，重新解析一次换取定位信息。
+// json.Valid 是布尔的，而 sonic 的错误原本带 index——上游帧坏在哪个字节是排障的
+// 起点，不能因为换了守卫就丢掉。多扫一遍只发生在失败路径，热路径不受影响。
+func sseJSONSyntaxError(raw []byte) error {
+	var probe json.RawMessage
+	err := json.Unmarshal(raw, &probe)
+	if err == nil {
+		return errors.New("invalid JSON object")
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Errorf("invalid JSON object at offset %d: %w", syntaxErr.Offset, err)
+	}
+	return fmt.Errorf("invalid JSON object: %w", err)
 }
 
 // markSSETerminalFromRaw 用廉价字段在解析失败的帧上补认终态。只认语法完整的首个
@@ -1364,20 +1381,41 @@ func imageGenerationToolUsageFromMap(usage map[string]any) util.ImageGenerationT
 	}
 }
 
+// usageTokenCount 是 usage 数值转 token 计数的唯一入口。
+//
+// 上游 JSON 里的数字一律解成 float64，直接 int(v) 会把 NaN、±Inf、1e300 这类坏数据
+// 变成 MaxInt，随后按单价乘进成本、写进日志、参与限额判定。这里统一收敛：非有限、
+// 负数、超出 int 表示范围的值一律归零，当作「上游没给这个计数」——这正是本函数
+// default 分支已有的语义。新增 usage 字段一律走这里，不要在调用点各补一次
+// math.IsInf。
+//
+// 第二个返回值只表示「字段存在且是数字」，不表示值落在合法区间：字段存在但数值荒谬
+// 时仍然覆盖成 0，因为上游确实声明了这个计数。
+func usageTokenCount(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		if math.IsNaN(v) || v < 0 || v >= math.MaxInt {
+			return 0, true
+		}
+		return int(v), true
+	case int:
+		return max(v, 0), true
+	case int64:
+		if v < 0 {
+			return 0, true
+		}
+		return int(min(v, math.MaxInt)), true
+	default:
+		return 0, false
+	}
+}
+
 func usageInt(m map[string]any, key string) int {
 	if m == nil {
 		return 0
 	}
-	switch value := m[key].(type) {
-	case float64:
-		return int(value)
-	case int:
-		return value
-	case int64:
-		return int(value)
-	default:
-		return 0
-	}
+	val, _ := usageTokenCount(m[key])
+	return val
 }
 
 func usageFirstInt(m map[string]any, keys ...string) int {
@@ -1513,16 +1551,16 @@ func (u *usageAccumulator) applyGeminiUsage(usage map[string]any) {
 
 // applyOpenAIChatUsage 处理OpenAI Chat Completions API格式
 func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
-	if val, ok := usage["prompt_tokens"].(float64); ok {
-		u.InputTokens = int(val)
+	if val, ok := usageTokenCount(usage["prompt_tokens"]); ok {
+		u.InputTokens = val
 	}
-	if val, ok := usage["completion_tokens"].(float64); ok {
-		u.OutputTokens = int(val)
+	if val, ok := usageTokenCount(usage["completion_tokens"]); ok {
+		u.OutputTokens = val
 	}
 	// OpenAI Chat Completions缓存字段: prompt_tokens_details.cached_tokens
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		if val, ok := details["cached_tokens"].(float64); ok {
-			u.CacheReadInputTokens = int(val)
+		if val, ok := usageTokenCount(details["cached_tokens"]); ok {
+			u.CacheReadInputTokens = val
 		}
 	}
 	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
@@ -1546,33 +1584,33 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 // 某些中间代理（如anyrouter）会在message_delta中添加input_tokens:0，需要防御性处理
 func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) {
 	// input_tokens: 只有 > 0 时才覆盖（防止message_delta中的0覆盖message_start的正确值）
-	if val, ok := usage["input_tokens"].(float64); ok && int(val) > 0 {
-		u.InputTokens = int(val)
+	if val, ok := usageTokenCount(usage["input_tokens"]); ok && val > 0 {
+		u.InputTokens = val
 	}
 	// output_tokens: 直接覆盖（cumulative语义，后续值包含之前的累计）
-	if val, ok := usage["output_tokens"].(float64); ok {
-		u.OutputTokens = int(val)
+	if val, ok := usageTokenCount(usage["output_tokens"]); ok {
+		u.OutputTokens = val
 	}
 
 	// Anthropic缓存字段
-	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
-		u.CacheReadInputTokens = int(val)
+	if val, ok := usageTokenCount(usage["cache_read_input_tokens"]); ok {
+		u.CacheReadInputTokens = val
 	}
 	hasAggregateCacheCreation := false
-	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
+	if val, ok := usageTokenCount(usage["cache_creation_input_tokens"]); ok {
 		hasAggregateCacheCreation = true
-		u.CacheCreationInputTokens = int(val)
+		u.CacheCreationInputTokens = val
 	}
 
 	// Anthropic缓存细分字段 (新增2025-12)
 	hasDetailedCacheCreation := false
 	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
 		hasDetailedCacheCreation = true
-		if val, ok := cacheCreation["ephemeral_5m_input_tokens"].(float64); ok {
-			u.Cache5mInputTokens = int(val)
+		if val, ok := usageTokenCount(cacheCreation["ephemeral_5m_input_tokens"]); ok {
+			u.Cache5mInputTokens = val
 		}
-		if val, ok := cacheCreation["ephemeral_1h_input_tokens"].(float64); ok {
-			u.Cache1hInputTokens = int(val)
+		if val, ok := usageTokenCount(cacheCreation["ephemeral_1h_input_tokens"]); ok {
+			u.Cache1hInputTokens = val
 		}
 		// 更新兼容字段
 		u.CacheCreationInputTokens = u.Cache5mInputTokens + u.Cache1hInputTokens
@@ -1585,13 +1623,13 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	// input_tokens_details.cached_tokens      → 缓存读
 	// input_tokens_details.cache_write_tokens → 缓存建（写入）
 	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
-		if val, ok := details["cached_tokens"].(float64); ok {
-			u.CacheReadInputTokens = int(val)
+		if val, ok := usageTokenCount(details["cached_tokens"]); ok {
+			u.CacheReadInputTokens = val
 		}
 		// 仅在尚未拿到 Anthropic 风格 cache_creation 字段时采用 cache_write_tokens
 		if !hasAggregateCacheCreation && !hasDetailedCacheCreation {
-			if val, ok := details["cache_write_tokens"].(float64); ok {
-				u.CacheCreationInputTokens = int(val)
+			if val, ok := usageTokenCount(details["cache_write_tokens"]); ok {
+				u.CacheCreationInputTokens = val
 				if u.CacheCreationInputTokens > 0 {
 					// OpenAI cache write 无 5m/1h 细分，按 5m 写价（1.25x）计费
 					u.Cache5mInputTokens = u.CacheCreationInputTokens

@@ -1754,3 +1754,65 @@ func TestSSEJSONObjectMapDepthGuard(t *testing.T) {
 		t.Fatal("deeply nested frame must be rejected by the syntax guard")
 	}
 }
+
+// usage 计数最终要乘单价写进计费。上游给出无法用 int 表示的数值时，int(v) 会产出
+// MaxInt——一次坏帧就能把成本、日志和限额判定一起污染。契约是把这类值当作「没给
+// 这个计数」，而不是天文数字。
+func TestSSEUsageParserRejectsUnrepresentableTokenCounts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"positive infinity", "1e999"},
+		{"negative infinity", "-1e999"},
+		{"beyond int range", "1e300"},
+		{"negative count", "-5"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parser := &sseUsageParser{upstreamProtocol: "codex"}
+			frame := `{"type":"response.completed","usage":{"input_tokens":` + tc.value +
+				`,"output_tokens":` + tc.value + `,"cache_read_input_tokens":` + tc.value + `}}`
+			if err := parser.parseEvent("response.completed", frame); err != nil {
+				t.Fatalf("parseEvent() error = %v", err)
+			}
+			input, output, cacheRead, cacheCreation := parser.GetUsage()
+			if input != 0 || output != 0 || cacheRead != 0 || cacheCreation != 0 {
+				t.Fatalf("usage = (%d, %d, %d, %d), want all zero", input, output, cacheRead, cacheCreation)
+			}
+		})
+	}
+}
+
+// 合法的大计数不受收敛影响——收敛的是无法表示的值，不是「大」。
+func TestSSEUsageParserKeepsLargeRepresentableTokenCounts(t *testing.T) {
+	t.Parallel()
+	parser := &sseUsageParser{upstreamProtocol: "codex"}
+	if err := parser.parseEvent(
+		"response.completed",
+		`{"type":"response.completed","usage":{"input_tokens":12000000,"output_tokens":9000000}}`,
+	); err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	input, output, _, _ := parser.GetUsage()
+	if input != 12000000 || output != 9000000 {
+		t.Fatalf("usage = (%d, %d), want (12000000, 9000000)", input, output)
+	}
+}
+
+// 守卫失败时必须给出坏字节的位置。sonic 的错误原本带 index，换成 json.Valid 后
+// 只剩布尔——排障要知道帧坏在哪里，不是只知道它坏了。
+func TestSSEJSONObjectMapErrorCarriesOffset(t *testing.T) {
+	t.Parallel()
+	_, err := sseJSONObjectMap([]byte(`{"type":"response.completed","usage":}`))
+	if err == nil {
+		t.Fatal("malformed frame must be rejected")
+	}
+	if !strings.Contains(err.Error(), "offset 38") {
+		t.Fatalf("error = %q, want it to locate the offending byte", err)
+	}
+}
