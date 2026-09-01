@@ -3252,7 +3252,7 @@ func codexBodyWithoutEncryptedContent(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	paths := make([]string, 0)
-	collectJSONKeyPaths(gjson.ParseBytes(body), "", "encrypted_content", &paths)
+	collectJSONKeyPaths(gjson.ParseBytes(body), "", "encrypted_content", 0, &paths)
 	if len(paths) == 0 {
 		return nil, false
 	}
@@ -3269,7 +3269,10 @@ func codexBodyWithoutEncryptedContent(body []byte) ([]byte, bool) {
 	return updated, true
 }
 
-func collectJSONKeyPaths(value gjson.Result, prefix, key string, paths *[]string) {
+func collectJSONKeyPaths(value gjson.Result, prefix, key string, depth int, paths *[]string) {
+	if depth > jsonWalkMaxDepth {
+		return
+	}
 	if value.IsObject() {
 		value.ForEach(func(name, child gjson.Result) bool {
 			childPath := sjsonObjectPathJoin(prefix, name.String())
@@ -3277,7 +3280,7 @@ func collectJSONKeyPaths(value gjson.Result, prefix, key string, paths *[]string
 				*paths = append(*paths, childPath)
 				return true
 			}
-			collectJSONKeyPaths(child, childPath, key, paths)
+			collectJSONKeyPaths(child, childPath, key, depth+1, paths)
 			return true
 		})
 		return
@@ -3285,7 +3288,7 @@ func collectJSONKeyPaths(value gjson.Result, prefix, key string, paths *[]string
 	if value.IsArray() {
 		for index, child := range value.Array() {
 			childPath := sjsonPathJoin(prefix, fmt.Sprintf("%d", index))
-			collectJSONKeyPaths(child, childPath, key, paths)
+			collectJSONKeyPaths(child, childPath, key, depth+1, paths)
 		}
 	}
 }

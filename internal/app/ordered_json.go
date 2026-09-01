@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -16,17 +15,18 @@ import (
 // raw 是 string 而不是 []byte：它永远只被读，存成 string 才能直接切自 gjson 的
 // 零拷贝视图，否则每个节点都要为「原样保留」的子树复制一次字节。
 type orderedJSONNode struct {
-	raw    string
-	kind   byte
-	scalar any
-	object []orderedJSONMember
-	array  []*orderedJSONNode
-	dirty  bool
+	raw         string
+	kind        byte
+	object      []orderedJSONMember
+	objectIndex map[string]int
+	array       []*orderedJSONNode
+	dirty       bool
 }
 
 type orderedJSONMember struct {
-	key   string
-	value *orderedJSONNode
+	key    string
+	keyRaw string
+	value  *orderedJSONNode
 }
 
 // parseOrderedJSON 建保序树。语法校验必须和下面的消费者同源：gjson 对残缺输入
@@ -55,8 +55,8 @@ func parseOrderedJSON(raw []byte) (*orderedJSONNode, error) {
 }
 
 func parseOrderedJSONValue(value gjson.Result, depth int) (*orderedJSONNode, error) {
-	if depth > 1000 {
-		return nil, errors.New("JSON nesting exceeds limit")
+	if depth > jsonWalkMaxDepth {
+		return &orderedJSONNode{raw: value.Raw}, nil
 	}
 	node := &orderedJSONNode{raw: value.Raw}
 	switch value.Type {
@@ -64,6 +64,7 @@ func parseOrderedJSONValue(value gjson.Result, depth int) (*orderedJSONNode, err
 		switch {
 		case value.IsObject():
 			node.kind = '{'
+			index := make(map[string]int)
 			var err error
 			value.ForEach(func(key, child gjson.Result) bool {
 				var parsed *orderedJSONNode
@@ -75,14 +76,22 @@ func parseOrderedJSONValue(value gjson.Result, depth int) (*orderedJSONNode, err
 				// 必须收敛成单个成员：否则 overridePath 只改到第一个，渲染时
 				// 却把两个同名 key 都发给上游。标脏是必需的——原始字节里还有
 				// 两个成员，不重新渲染就等于没收敛。
-				if index, _ := node.objectMember(name); index >= 0 {
-					node.object[index].value = parsed
+				if memberIndex, ok := index[name]; ok {
+					node.object[memberIndex].value = parsed
 					node.dirty = true
 					return true
 				}
-				node.object = append(node.object, orderedJSONMember{key: name, value: parsed})
+				index[name] = len(node.object)
+				node.object = append(node.object, orderedJSONMember{
+					key:    name,
+					keyRaw: key.Raw,
+					value:  parsed,
+				})
 				return true
 			})
+			if len(index) > 0 {
+				node.objectIndex = index
+			}
 			return node, err
 		case value.IsArray():
 			node.kind = '['
@@ -101,20 +110,15 @@ func parseOrderedJSONValue(value gjson.Result, depth int) (*orderedJSONNode, err
 		}
 	case gjson.String:
 		node.kind = 's'
-		node.scalar = value.String()
 	case gjson.Number:
 		// 数字保留字面量：大整数经 float64 往返会丢精度。
 		node.kind = 's'
-		node.scalar = json.Number(value.Raw)
 	case gjson.True:
 		node.kind = 's'
-		node.scalar = true
 	case gjson.False:
 		node.kind = 's'
-		node.scalar = false
 	case gjson.Null:
 		node.kind = 's'
-		node.scalar = nil
 	default:
 		return nil, errors.New("unexpected JSON value")
 	}
@@ -166,8 +170,11 @@ func (n *orderedJSONNode) renderTo(out *bytes.Buffer) {
 			if index > 0 {
 				out.WriteByte(',')
 			}
-			key, _ := json.Marshal(member.key)
-			out.Write(key)
+			keyRaw := member.keyRaw
+			if keyRaw == "" {
+				keyRaw = jsonEscapedString(member.key)
+			}
+			out.WriteString(keyRaw)
 			out.WriteByte(':')
 			member.value.renderTo(out)
 		}
@@ -187,12 +194,30 @@ func (n *orderedJSONNode) renderTo(out *bytes.Buffer) {
 }
 
 func (n *orderedJSONNode) objectMember(key string) (int, *orderedJSONNode) {
+	if n.objectIndex != nil {
+		if index, ok := n.objectIndex[key]; ok {
+			return index, n.object[index].value
+		}
+		return -1, nil
+	}
 	for index := range n.object {
 		if n.object[index].key == key {
 			return index, n.object[index].value
 		}
 	}
 	return -1, nil
+}
+
+func (n *orderedJSONNode) rebuildObjectIndex() {
+	if n.kind != '{' || len(n.object) == 0 {
+		n.objectIndex = nil
+		return
+	}
+	index := make(map[string]int, len(n.object))
+	for i, member := range n.object {
+		index[member.key] = i
+	}
+	n.objectIndex = index
 }
 
 func orderedJSONArrayIndex(segment string) (int, bool) {
@@ -211,7 +236,12 @@ func (n *orderedJSONNode) overridePath(path []string, replacement *orderedJSONNo
 			if index, _ := n.objectMember(segment); index >= 0 {
 				n.object[index].value = replacement
 			} else {
-				n.object = append(n.object, orderedJSONMember{key: segment, value: replacement})
+				n.object = append(n.object, orderedJSONMember{
+					key:    segment,
+					keyRaw: jsonEscapedString(segment),
+					value:  replacement,
+				})
+				n.rebuildObjectIndex()
 			}
 			n.dirty = true
 			return true, false
@@ -232,7 +262,12 @@ func (n *orderedJSONNode) overridePath(path []string, replacement *orderedJSONNo
 		_, child := n.objectMember(segment)
 		if child == nil {
 			child = &orderedJSONNode{kind: '{', raw: "{}", dirty: true}
-			n.object = append(n.object, orderedJSONMember{key: segment, value: child})
+			n.object = append(n.object, orderedJSONMember{
+				key:    segment,
+				keyRaw: jsonEscapedString(segment),
+				value:  child,
+			})
+			n.rebuildObjectIndex()
 		}
 		if child.kind != '{' && child.kind != '[' {
 			return false, true
@@ -274,6 +309,7 @@ func (n *orderedJSONNode) removePath(path []string) (ok, conflict bool) {
 				return false, false
 			}
 			n.object = append(n.object[:index], n.object[index+1:]...)
+			n.rebuildObjectIndex()
 			n.dirty = true
 			return true, false
 		case '[':

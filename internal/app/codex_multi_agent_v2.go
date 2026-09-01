@@ -380,11 +380,14 @@ func restoreCodexMultiAgentV2Response(payload []byte, optimized bool) []byte {
 		value string
 	}
 	updates := make([]update, 0, 2)
-	var walk func(gjson.Result, string)
-	walk = func(value gjson.Result, prefix string) {
+	var walk func(gjson.Result, string, int)
+	walk = func(value gjson.Result, prefix string, depth int) {
+		if depth > jsonWalkMaxDepth {
+			return
+		}
 		if value.IsArray() {
 			for index, child := range value.Array() {
-				walk(child, sjsonPathJoin(prefix, fmt.Sprintf("%d", index)))
+				walk(child, sjsonPathJoin(prefix, fmt.Sprintf("%d", index)), depth+1)
 			}
 			return
 		}
@@ -421,11 +424,11 @@ func restoreCodexMultiAgentV2Response(payload []byte, optimized bool) []byte {
 			if keyName == "arguments" || keyName == "input" || (keyName == "output" && (itemType == "function_call_output" || itemType == "custom_tool_call_output")) {
 				return true
 			}
-			walk(child, sjsonObjectPathJoin(prefix, keyName))
+			walk(child, sjsonObjectPathJoin(prefix, keyName), depth+1)
 			return true
 		})
 	}
-	walk(gjson.ParseBytes(payload), "")
+	walk(gjson.ParseBytes(payload), "", 0)
 	if len(updates) == 0 {
 		return payload
 	}
