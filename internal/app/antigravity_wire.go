@@ -477,10 +477,59 @@ func normalizeAntigravityContentsRoles(request []byte) []byte {
 	return request
 }
 
+func firstAntigravityJSONObject(request []byte, paths []string) (path string, raw string, ok bool) {
+	for _, candidate := range paths {
+		if value := gjson.GetBytes(request, candidate); value.IsObject() {
+			return candidate, value.Raw, true
+		}
+	}
+	return "", "", false
+}
+
+func consolidateAntigravitySchemaAliases(request []byte, canonicalPath string, aliasPaths []string, cleaned string) []byte {
+	if cleaned == "" {
+		return request
+	}
+	request = setJSONRaw(request, canonicalPath, cleaned)
+	for _, aliasPath := range aliasPaths {
+		if aliasPath == canonicalPath {
+			continue
+		}
+		request = deleteJSONPath(request, aliasPath)
+	}
+	return request
+}
+
+func consolidateAntigravityGenerationConfigParents(request []byte) []byte {
+	snake := gjson.GetBytes(request, "generation_config")
+	if !snake.IsObject() {
+		return request
+	}
+	canonical := gjson.GetBytes(request, "generationConfig")
+	if !canonical.IsObject() {
+		request = setJSONRaw(request, "generationConfig", snake.Raw)
+	} else {
+		snake.ForEach(func(key, value gjson.Result) bool {
+			memberPath := "generationConfig." + key.String()
+			if gjson.GetBytes(request, memberPath).Exists() {
+				return true
+			}
+			request = setJSONRaw(request, memberPath, value.Raw)
+			return true
+		})
+	}
+	return deleteJSONPath(request, "generation_config")
+}
+
 func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	useAntigravitySchema := strings.Contains(strings.ToLower(modelName), "claude") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3-pro") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3.1-pro")
+	parameterKeys := []string{"parameters", "parametersJsonSchema", "parameters_json_schema"}
+	responseKeys := []string{"response", "responseJsonSchema", "response_json_schema"}
+	generationConfigKeys := []string{"generationConfig", "generation_config"}
+	generationSchemaKeys := []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"}
+
 	tools := gjson.GetBytes(request, "tools")
 	if tools.IsArray() {
 		for ti, tool := range tools.Array() {
@@ -497,40 +546,38 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 						continue
 					}
 					declPath := fmt.Sprintf("tools.%d.%s.%d", ti, key, di)
-					// parameters: try parameters, parametersJsonSchema, parameters_json_schema
-					for _, paramKey := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema"} {
-						if param := declaration.Get(paramKey); param.IsObject() {
-							cleaned := cleanAntigravitySchemaRaw(param.Raw, useAntigravitySchema, false)
-							request = setJSONRaw(request, declPath+".parameters", cleaned)
-							if paramKey != "parameters" {
-								request = deleteJSONPath(request, declPath+"."+paramKey)
-							}
-							break
-						}
+					paramPaths := make([]string, 0, len(parameterKeys))
+					for _, paramKey := range parameterKeys {
+						paramPaths = append(paramPaths, declPath+"."+paramKey)
 					}
-					for _, schemaKey := range []string{"response", "responseJsonSchema", "response_json_schema"} {
-						if schema := declaration.Get(schemaKey); schema.IsObject() {
-							cleaned := cleanAntigravitySchemaRaw(schema.Raw, useAntigravitySchema, false)
-							request = setJSONRaw(request, declPath+"."+schemaKey, cleaned)
-						}
+					if _, paramRaw, found := firstAntigravityJSONObject(request, paramPaths); found {
+						cleaned := cleanAntigravitySchemaRaw(paramRaw, useAntigravitySchema, false)
+						request = consolidateAntigravitySchemaAliases(request, declPath+".parameters", paramPaths, cleaned)
+					}
+					responsePaths := make([]string, 0, len(responseKeys))
+					for _, schemaKey := range responseKeys {
+						responsePaths = append(responsePaths, declPath+"."+schemaKey)
+					}
+					if _, responseRaw, found := firstAntigravityJSONObject(request, responsePaths); found {
+						cleaned := cleanAntigravitySchemaRaw(responseRaw, useAntigravitySchema, false)
+						request = consolidateAntigravitySchemaAliases(request, declPath+".response", responsePaths, cleaned)
 					}
 				}
 			}
 		}
 	}
-	for _, configKey := range []string{"generationConfig", "generation_config"} {
-		if !gjson.GetBytes(request, configKey).IsObject() {
-			continue
-		}
-		for _, schemaKey := range []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"} {
-			schemaPath := configKey + "." + schemaKey
-			if schema := gjson.GetBytes(request, schemaPath); schema.IsObject() {
-				cleaned := cleanAntigravitySchemaRaw(schema.Raw, true, true)
-				request = setJSONRaw(request, schemaPath, cleaned)
-			}
+
+	generationSchemaPaths := make([]string, 0, len(generationConfigKeys)*len(generationSchemaKeys))
+	for _, configKey := range generationConfigKeys {
+		for _, schemaKey := range generationSchemaKeys {
+			generationSchemaPaths = append(generationSchemaPaths, configKey+"."+schemaKey)
 		}
 	}
-	return request
+	if _, schemaRaw, found := firstAntigravityJSONObject(request, generationSchemaPaths); found {
+		cleaned := cleanAntigravitySchemaRaw(schemaRaw, true, true)
+		request = consolidateAntigravitySchemaAliases(request, "generationConfig.responseSchema", generationSchemaPaths, cleaned)
+	}
+	return consolidateAntigravityGenerationConfigParents(request)
 }
 
 func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {

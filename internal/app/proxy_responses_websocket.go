@@ -796,6 +796,9 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		if len(payload) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			continue
 		}
+		if !json.Valid(payload) {
+			return 0, errors.New("invalid JSON in upstream SSE event")
+		}
 		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 		if err := w.collectOutputItem(eventType, payload); err != nil {
 			return 0, err

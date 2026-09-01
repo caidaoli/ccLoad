@@ -8,6 +8,9 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// jsonWalkMaxDepth caps recursive JSON walkers. Deeper nodes stay untouched literals.
+const jsonWalkMaxDepth = 20
+
 // 线协议 body 的唯一表示是 []byte：gjson 读、sjson 就地写。
 //
 // 不用 map[string]any 中转不是风格偏好——map 丢键序。一旦把请求解成 map 再整体重编码，
@@ -15,8 +18,8 @@ import (
 // 这两点就得额外维护一层「原始字节 vs 目标 map」的差分渲染。就地改写让未触及的字节
 // 原样保留，键序问题从根上不存在。
 
-// setJSONRaw / setJSONValue / deleteJSONPath 是 sjson 的薄封装。路径全是代码里的字面量，
-// 唯一可能的错误来源是非法路径语法，所以失败时保留原字节而不是把错误一路传上去。
+// setJSONRaw / setJSONValue / deleteJSONPath 是 sjson 的薄封装。大多数路径是代码里的字面量；
+// 动态 JSON member name 必须先经 sjsonObjectPathJoin 转义。非法路径语法时保留原字节。
 func setJSONRaw(body []byte, path, raw string) []byte {
 	updated, err := sjson.SetRawBytes(body, path, []byte(raw))
 	if err != nil {
@@ -125,7 +128,7 @@ func (b *jsonObjectBuilder) String() string {
 // 重组走 key.Raw + ":" + value.Raw，所以未命中的部分逐字保留——键序、字符串转义形式、
 // 数字字面量都不变。这正是解成 map 再整体编码做不到的事。
 func rewriteJSONMembers(body []byte, rewrite func(key string, value gjson.Result) (string, bool)) ([]byte, bool) {
-	rewritten, changed := rewriteJSONMemberValue(gjson.ParseBytes(body), rewrite)
+	rewritten, changed := rewriteJSONMemberValue(gjson.ParseBytes(body), 0, rewrite)
 	if !changed {
 		return body, false
 	}
@@ -134,8 +137,12 @@ func rewriteJSONMembers(body []byte, rewrite func(key string, value gjson.Result
 
 func rewriteJSONMemberValue(
 	value gjson.Result,
+	depth int,
 	rewrite func(key string, value gjson.Result) (string, bool),
 ) (string, bool) {
+	if depth > jsonWalkMaxDepth {
+		return value.Raw, false
+	}
 	switch {
 	case value.IsObject():
 		builder := newJSONObjectBuilder()
@@ -148,7 +155,7 @@ func rewriteJSONMemberValue(
 				}
 				return true
 			}
-			childRaw, childChanged := rewriteJSONMemberValue(member, rewrite)
+			childRaw, childChanged := rewriteJSONMemberValue(member, depth+1, rewrite)
 			if childChanged {
 				changed = true
 			} else {
@@ -166,7 +173,7 @@ func rewriteJSONMemberValue(
 		rendered := make([]string, 0, len(items))
 		changed := false
 		for _, item := range items {
-			itemRaw, itemChanged := rewriteJSONMemberValue(item, rewrite)
+			itemRaw, itemChanged := rewriteJSONMemberValue(item, depth+1, rewrite)
 			if itemChanged {
 				changed = true
 			} else {

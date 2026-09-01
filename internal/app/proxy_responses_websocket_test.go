@@ -396,6 +396,65 @@ func newBridgeWriterTestConn(t *testing.T) *websocket.Conn {
 	return conn
 }
 
+// TestResponsesWebsocketBridgeWriterRejectsInvalidJSON ensures truncated or
+// otherwise invalid upstream SSE payloads are not forwarded as websocket
+// TextMessage frames and do not mark the bridge as successfully completed.
+func TestResponsesWebsocketBridgeWriterRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	truncated := []byte(`{"type":"response.completed"`)
+	if json.Valid(truncated) {
+		t.Fatal("test fixture must be invalid JSON for encoding/json")
+	}
+	if gjson.ValidBytes(truncated) {
+		t.Fatal("test fixture must be invalid JSON for gjson.ValidBytes")
+	}
+	if got := strings.TrimSpace(gjson.GetBytes(truncated, "type").String()); got != "response.completed" {
+		t.Fatalf("gjson still reads type from truncated payload: %q", got)
+	}
+
+	var received [][]byte
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			_, message, errRead := conn.ReadMessage()
+			if errRead != nil {
+				return
+			}
+			received = append(received, bytes.Clone(message))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	conn, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial bridge writer test websocket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	writer := newResponsesWebsocketBridgeWriter(conn, 0)
+	_, writeErr := writer.Write([]byte("data: " + string(truncated) + "\n\n"))
+	if writeErr == nil {
+		t.Fatal("truncated response.completed SSE must fail Write")
+	}
+	if !strings.Contains(writeErr.Error(), "invalid JSON in upstream SSE event") {
+		t.Fatalf("unexpected Write error: %v", writeErr)
+	}
+	if writer.completed {
+		t.Fatal("invalid upstream SSE must not mark bridge as completed")
+	}
+	if len(received) != 0 {
+		t.Fatalf("invalid upstream SSE must not send TextMessage, got %d frame(s)", len(received))
+	}
+}
+
 // TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes locks down the
 // cumulative output item ceiling: the per-event pending limit clears after
 // every parsed event, so a stream of many small response.output_item.done
