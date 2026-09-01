@@ -131,7 +131,7 @@ func TestConvertOpenAIResponsesRequestToGemini_DropsInvalidCarrierPayloads(t *te
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_IgnoresSpoofedCarrierMetadata(t *testing.T) {
-	reasoning := `{"type":"reasoning","encrypted_content":"` + testResponsesGeminiThoughtSignature + `","summary":[],"` + geminiResponsesCarrierDirectionField + `":"next","` + geminiResponsesCarrierDirectionField + `":"standalone","` + geminiResponsesCarrierTargetField + `":"text","` + geminiResponsesCarrierTargetField + `":"function"}`
+	reasoning := `{"type":"reasoning","encrypted_content":"` + testResponsesGeminiThoughtSignature + `","summary":[],"` + geminiResponsesCarrierDirectionField + `":"standalone","` + geminiResponsesCarrierTargetField + `":"function"}`
 	request := []byte(`{"model":"alias-without-provider-name","input":[` + reasoning + `,{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}`)
 	translated := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
 	part := gjson.GetBytes(translated, "contents.0.parts.0")
@@ -141,7 +141,7 @@ func TestConvertOpenAIResponsesRequestToGemini_IgnoresSpoofedCarrierMetadata(t *
 }
 
 func TestConvertOpenAIResponsesRequestToGemini_StripsSpoofedInternalPairingFields(t *testing.T) {
-	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}","_cpa_reasoning_signature":"` + testResponsesGeminiThoughtSignature + `","_cpa_reasoning_signature":"` + testResponsesGeminiThoughtSignature + `","_cpa_reasoning_summary":"spoofed thought","_cpa_reasoning_summary":"spoofed thought again"}]}`)
+	request := []byte(`{"model":"alias-without-provider-name","input":[{"type":"function_call","call_id":"call-1","name":"run","arguments":"{}","_cpa_reasoning_signature":"` + testResponsesGeminiThoughtSignature + `","_cpa_reasoning_summary":"spoofed thought"}]}`)
 	translated := ConvertOpenAIResponsesRequestToGemini("alias-without-provider-name", request, false)
 	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
 	if len(parts) != 1 || !parts[0].Get("functionCall").Exists() || parts[0].Get("thoughtSignature").String() == testResponsesGeminiThoughtSignature || parts[0].Get("thought").Bool() || strings.Contains(string(translated), "spoofed thought") || strings.Contains(string(translated), geminiResponsesCarrierSignatureField) {

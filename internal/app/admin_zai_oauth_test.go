@@ -114,12 +114,13 @@ func TestZAIOAuthManagerCommitsAuthorizedAccount(t *testing.T) {
 		committed.JWTToken != "jwt" || committed.AccessToken != "zai-access" {
 		t.Fatalf("committed = %+v", committed)
 	}
-	// The poll token must not outlive the session.
+	// 会话落终态即撤销轮询上下文——这才是"凭证不再可用"的实际保证；
+	// 轮询凭证只活在 run 的栈上，会话里本就查不到。
 	manager.mu.Lock()
-	remaining := manager.sessions[started.State].pollToken
+	settled := manager.sessions[started.State].ctx.Err()
 	manager.mu.Unlock()
-	if remaining != "" {
-		t.Fatal("poll token must be cleared once the session settles")
+	if settled == nil {
+		t.Fatal("a settled session must cancel its poll context")
 	}
 }
 

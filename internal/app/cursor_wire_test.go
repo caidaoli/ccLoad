@@ -613,7 +613,7 @@ func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 	runner := &fakeCursorRunner{
 		text: "one sec",
 		toolCalls: []cursorauth.ToolCall{{
-			ID: "call_bash", Name: "bash", Arguments: json.RawMessage(`{"cmd":"ls"}`),
+			ID: "call_bash", Name: "bash", Arguments: json.RawMessage(`{"z":1,"cmd":"ls","a":2}`),
 		}},
 	}
 	srv := newInMemoryServer(t)
@@ -654,5 +654,43 @@ func TestForwardCursorAgentMapsAnthropicToolCalls(t *testing.T) {
 		payload.Content[0].Type != "text" || payload.Content[0].Text != "one sec" ||
 		payload.Content[1].Type != "tool_use" || payload.Content[1].Name != "bash" {
 		t.Fatalf("payload = %+v body = %s", payload, rec.Body.String())
+	}
+	if got, want := string(payload.Content[1].Input), `{"z":1,"cmd":"ls","a":2}`; got != want {
+		t.Fatalf("tool input was re-encoded: got %s, want %s", got, want)
+	}
+}
+func TestCursorAnthropicStreamFinishEmitsEmptyObjectForInvalidToolArguments(t *testing.T) {
+	t.Parallel()
+	calls := []cursorauth.ToolCall{{
+		ID: "call_bash", Name: "bash", Arguments: json.RawMessage("this is not json"),
+	}}
+	raw := cursorAnthropicStreamFinish(calls, nil)
+
+	var partialJSON string
+	for _, event := range strings.Split(string(raw), "\n\n") {
+		for _, line := range strings.Split(event, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var payload struct {
+				Type  string `json:"type"`
+				Delta struct {
+					Type        string `json:"type"`
+					PartialJSON string `json:"partial_json"`
+				} `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+				t.Fatalf("unmarshal SSE data %q: %v", line, err)
+			}
+			if payload.Type == "content_block_delta" && payload.Delta.Type == "input_json_delta" {
+				partialJSON = payload.Delta.PartialJSON
+			}
+		}
+	}
+	if partialJSON == "" {
+		t.Fatal("no input_json_delta event found")
+	}
+	if got, want := partialJSON, "{}"; got != want {
+		t.Fatalf("partial_json = %q, want %q (invalid arguments must not leak)", got, want)
 	}
 }

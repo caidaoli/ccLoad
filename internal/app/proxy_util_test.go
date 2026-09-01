@@ -39,6 +39,18 @@ func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 	}
 }
 
+func TestShouldValidateStrictJSONBodyHonorsDeclaredJSONAndMultipart(t *testing.T) {
+	if !shouldValidateStrictJSONBody("application/json", []byte("true")) {
+		t.Fatal("declared JSON scalar must be validated")
+	}
+	if !shouldValidateStrictJSONBody("application/vnd.example+json; charset=utf-8", []byte("null")) {
+		t.Fatal("+json media type must be validated")
+	}
+	if shouldValidateStrictJSONBody("multipart/form-data; boundary=abc", []byte(`{"looks":"json"}`)) {
+		t.Fatal("multipart body must not be treated as JSON")
+	}
+}
+
 func TestWriteResponseWithHeaders_DefaultsToJSONContentTypeWhenBodyLooksJSON(t *testing.T) {
 	t.Parallel()
 

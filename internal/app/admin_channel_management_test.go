@@ -391,7 +391,11 @@ func (s *managementCreateCASFailureStore) CompareAndSwapChannelManagement(contex
 }
 
 func TestChannelManagementCreateRollsBackConfigBeforeCreatingKeys(t *testing.T) {
-	server := newInMemoryServer(t)
+	failing := &managementCreateCASFailureStore{}
+	server := newInMemoryServerWithCustomStore(t, func(s storage.Store) storage.Store {
+		failing.Store = s
+		return failing
+	})
 	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodPost && req.URL.Path == "/api/v1/auth/login" {
 			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
@@ -400,9 +404,6 @@ func TestChannelManagementCreateRollsBackConfigBeforeCreatingKeys(t *testing.T) 
 		return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{"code":404,"message":"not found","data":{}}`)), Request: req}, nil
 	})}
-	failing := &managementCreateCASFailureStore{Store: server.store}
-	server.store = failing
-	server.channelManagement = newChannelManagementService(failing, server.getClientForChannel)
 
 	payload := validManagedChannelPayload("managed-create-rollback")
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
@@ -941,10 +942,11 @@ func (s *checkinAddLogFailureStore) AddLog(context.Context, *model.LogEntry) err
 }
 
 func TestChannelManagementCheckinAddLogFailureOverridesSuccess(t *testing.T) {
-	server := newInMemoryServer(t)
-	failing := &checkinAddLogFailureStore{Store: server.store}
-	server.store = failing
-	server.channelManagement.store = failing
+	failing := &checkinAddLogFailureStore{}
+	server := newInMemoryServerWithCustomStore(t, func(s storage.Store) storage.Store {
+		failing.Store = s
+		return failing
+	})
 	cfg := seedManagementEnvelope(t, server, "audit-storage-failure", &model.ChannelManagementEnvelope{
 		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
 		Profile:  model.ChannelManagementProfileSub2API,

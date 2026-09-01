@@ -2,10 +2,16 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
+	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
+
+	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func antigravitySignatureRetryBody(planBody []byte, responseBody []byte, statusCode int) ([]byte, string, bool) {
@@ -17,16 +23,17 @@ func antigravitySignatureRetryBody(planBody []byte, responseBody []byte, statusC
 		return nil, "", false
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "gemini-") {
-		if !replaceAntigravityThoughtSignatures(request) {
+		updated, changed := replaceAntigravityThoughtSignatures(request)
+		if !changed {
 			return nil, "", false
 		}
-		return marshalAntigravityRetryRequest(request, "replace_antigravity_thought_signatures")
+		return updated, "replace_antigravity_thought_signatures", true
 	}
-	if stripAntigravityThinkingHistory(request) {
-		return marshalAntigravityRetryRequest(request, "strip_antigravity_thinking")
+	if updated, changed := stripAntigravityThinkingHistory(request); changed {
+		return updated, "strip_antigravity_thinking", true
 	}
-	if stripAntigravityToolHistory(request) {
-		return marshalAntigravityRetryRequest(request, "strip_antigravity_tools")
+	if updated, changed := stripAntigravityToolHistory(request); changed {
+		return updated, "strip_antigravity_tools", true
 	}
 	return nil, "", false
 }
@@ -41,123 +48,174 @@ func isAntigravitySignatureError(body []byte) bool {
 		(strings.Contains(message, "thinking") || strings.Contains(message, "redacted_thinking"))
 }
 
-func unwrapAntigravityRetryRequest(body []byte) (map[string]any, string, bool) {
-	var payload map[string]any
-	if json.Unmarshal(body, &payload) != nil || payload == nil {
+func unwrapAntigravityRetryRequest(body []byte) ([]byte, string, bool) {
+	if !sonic.Valid(body) {
 		return nil, "", false
 	}
-	modelName, _ := payload["model"].(string)
-	if request, ok := payload["request"].(map[string]any); ok {
-		return request, modelName, true
-	}
-	return payload, modelName, true
-}
-
-func marshalAntigravityRetryRequest(request map[string]any, strategy string) ([]byte, string, bool) {
-	raw, err := json.Marshal(request)
-	if err != nil {
+	payload := gjson.ParseBytes(body)
+	if !payload.IsObject() {
 		return nil, "", false
 	}
-	return raw, strategy, true
+	modelName := payload.Get("model").String()
+	if request := payload.Get("request"); request.IsObject() {
+		return []byte(request.Raw), modelName, true
+	}
+	return body, modelName, true
 }
 
-func replaceAntigravityThoughtSignatures(value any) bool {
+// replaceAntigravityThoughtSignatures 把任意深度的 thoughtSignature 换成跳过校验的
+// 哨兵值。thoughtSignature 可以出现在 parts 之外的嵌套位置，所以这里递归重写而不是
+// 按固定路径改。
+func replaceAntigravityThoughtSignatures(body []byte) ([]byte, bool) {
+	if !gjson.ValidBytes(body) {
+		return nil, false
+	}
+	sentinel := jsonEscapedString(sigcompat.GeminiSkipThoughtSignatureValidator)
+	updated, changed := rewriteJSONMembers(body, func(key string, value gjson.Result) (string, bool) {
+		if key != "thoughtSignature" || value.Raw == sentinel {
+			return "", false
+		}
+		return sentinel, true
+	})
+	if !changed {
+		return nil, false
+	}
+	return updated, true
+}
+
+func stripAntigravityThinkingHistory(body []byte) ([]byte, bool) {
+	updated := body
 	changed := false
-	switch item := value.(type) {
-	case map[string]any:
-		for key, child := range item {
-			if key == "thoughtSignature" {
-				if signature, _ := child.(string); signature != sigcompat.GeminiSkipThoughtSignatureValidator {
-					item[key] = sigcompat.GeminiSkipThoughtSignatureValidator
-					changed = true
+	if gjson.GetBytes(updated, "generationConfig.thinkingConfig").Exists() {
+		var err error
+		updated, err = sjson.DeleteBytes(updated, "generationConfig.thinkingConfig")
+		if err != nil {
+			return nil, false
+		}
+		changed = true
+	}
+	contents := gjson.GetBytes(updated, "contents")
+	if !contents.IsArray() {
+		return updated, changed
+	}
+	for contentIndex := len(contents.Array()) - 1; contentIndex >= 0; contentIndex-- {
+		partsPath := fmt.Sprintf("contents.%d.parts", contentIndex)
+		parts := gjson.GetBytes(updated, partsPath)
+		if !parts.IsArray() {
+			continue
+		}
+		rendered := make([][]byte, 0, len(parts.Array()))
+		contentChanged := false
+		for _, part := range parts.Array() {
+			if !part.IsObject() {
+				rendered = append(rendered, []byte(part.Raw))
+				continue
+			}
+			if part.Get("thought").Type == gjson.True {
+				textValue := ""
+				if rawText := part.Get("text"); rawText.Type == gjson.String {
+					textValue = rawText.String()
+				}
+				contentChanged = true
+				if textValue != "" {
+					replacement, err := sjson.SetBytes([]byte(`{}`), "text", textValue)
+					if err != nil {
+						return nil, false
+					}
+					rendered = append(rendered, replacement)
 				}
 				continue
 			}
-			changed = replaceAntigravityThoughtSignatures(child) || changed
-		}
-	case []any:
-		for _, child := range item {
-			changed = replaceAntigravityThoughtSignatures(child) || changed
-		}
-	}
-	return changed
-}
-
-func stripAntigravityThinkingHistory(request map[string]any) bool {
-	changed := false
-	if generationConfig, _ := request["generationConfig"].(map[string]any); generationConfig != nil {
-		if _, exists := generationConfig["thinkingConfig"]; exists {
-			delete(generationConfig, "thinkingConfig")
-			changed = true
-		}
-	}
-	contents, _ := request["contents"].([]any)
-	for _, rawContent := range contents {
-		content, _ := rawContent.(map[string]any)
-		parts, _ := content["parts"].([]any)
-		filtered := make([]any, 0, len(parts))
-		partsChanged := false
-		for _, rawPart := range parts {
-			part, _ := rawPart.(map[string]any)
-			if part == nil {
-				filtered = append(filtered, rawPart)
-				continue
-			}
-			thought, _ := part["thought"].(bool)
-			_, hasSignature := part["thoughtSignature"]
-			_, hasFunctionCall := part["functionCall"]
-			if thought {
-				if text, _ := part["text"].(string); text != "" {
-					filtered = append(filtered, map[string]any{"text": text})
+			if part.Get("thoughtSignature").Exists() && !part.Get("functionCall").Exists() {
+				updatedPart, err := sjson.DeleteBytes([]byte(part.Raw), "thoughtSignature")
+				if err != nil {
+					return nil, false
 				}
-				partsChanged = true
+				rendered = append(rendered, updatedPart)
+				contentChanged = true
 				continue
 			}
-			if hasSignature && !hasFunctionCall {
-				delete(part, "thoughtSignature")
-				partsChanged = true
-			}
-			filtered = append(filtered, part)
+			rendered = append(rendered, []byte(part.Raw))
 		}
-		if partsChanged {
-			content["parts"] = filtered
-			changed = true
+		if !contentChanged {
+			continue
+		}
+		changed = true
+		var err error
+		updated, err = sjson.SetRawBytes(updated, partsPath, cliproxycommon.JoinRawArray(rendered))
+		if err != nil {
+			return nil, false
 		}
 	}
-	return changed
+	return updated, changed
 }
 
-func stripAntigravityToolHistory(request map[string]any) bool {
+func stripAntigravityToolHistory(body []byte) ([]byte, bool) {
+	updated := body
 	changed := false
-	contents, _ := request["contents"].([]any)
-	for _, rawContent := range contents {
-		content, _ := rawContent.(map[string]any)
-		parts, _ := content["parts"].([]any)
-		for index, rawPart := range parts {
-			part, _ := rawPart.(map[string]any)
-			if part == nil {
+	contents := gjson.GetBytes(updated, "contents")
+	if !contents.IsArray() {
+		return updated, false
+	}
+	for contentIndex, content := range contents.Array() {
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			continue
+		}
+		rendered := make([][]byte, 0, len(parts.Array()))
+		contentChanged := false
+		for _, part := range parts.Array() {
+			if !part.IsObject() {
+				rendered = append(rendered, []byte(part.Raw))
 				continue
 			}
+			var kind string
+			var value gjson.Result
 			switch {
-			case part["functionCall"] != nil:
-				parts[index] = map[string]any{"text": antigravityToolHistoryText("tool_use", part["functionCall"])}
-				changed = true
-			case part["functionResponse"] != nil:
-				parts[index] = map[string]any{"text": antigravityToolHistoryText("tool_result", part["functionResponse"])}
-				changed = true
-			case part["thoughtSignature"] != nil:
-				delete(part, "thoughtSignature")
-				changed = true
+			case part.Get("functionCall").Type != gjson.Null && part.Get("functionCall").Exists():
+				kind, value = "tool_use", part.Get("functionCall")
+			case part.Get("functionResponse").Type != gjson.Null && part.Get("functionResponse").Exists():
+				kind, value = "tool_result", part.Get("functionResponse")
+			case part.Get("thoughtSignature").Type != gjson.Null && part.Get("thoughtSignature").Exists():
+				updatedPart, err := sjson.DeleteBytes([]byte(part.Raw), "thoughtSignature")
+				if err != nil {
+					return nil, false
+				}
+				rendered = append(rendered, updatedPart)
+				contentChanged = true
+				continue
+			default:
+				rendered = append(rendered, []byte(part.Raw))
+				continue
 			}
+			replacement, err := sjson.SetBytes([]byte(`{}`), "text", antigravityToolHistoryText(kind, value.Raw))
+			if err != nil {
+				return nil, false
+			}
+			rendered = append(rendered, replacement)
+			contentChanged = true
 		}
+		if !contentChanged {
+			continue
+		}
+		partsPath := fmt.Sprintf("contents.%d.parts", contentIndex)
+		var err error
+		updated, err = sjson.SetRawBytes(updated, partsPath, cliproxycommon.JoinRawArray(rendered))
+		if err != nil {
+			return nil, false
+		}
+		changed = true
 	}
-	return changed
+	return updated, changed
 }
 
-func antigravityToolHistoryText(kind string, value any) string {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) == 0 {
+func antigravityToolHistoryText(kind, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return "(" + kind + ")"
 	}
-	return "(" + kind + ") " + string(raw)
+	if !json.Valid([]byte(raw)) {
+		return "(" + kind + ")"
+	}
+	return "(" + kind + ") " + raw
 }

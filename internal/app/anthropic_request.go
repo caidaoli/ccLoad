@@ -1,340 +1,367 @@
 package app
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
+
+// Anthropic 线协议改写全程以 []byte 为唯一表示：gjson 读、sjson 就地写。
+//
+// 不用 map[string]any 中转不是风格偏好——map 丢键序。上游按 body 形态做 Claude Code
+// 指纹识别，一旦把请求解成 map 再整体重编码，所有网关新增的键都会按字母序落位，与
+// 原生客户端形态对不上；为了绕开这一点还要额外维护一层「原始字节 vs 目标 map」的
+// 差分渲染。就地改写让未触及的字节原样保留，键序问题从根上不存在。
 
 // normalizeAnthropicMessagesBody is the single native Claude body boundary.
 // Protocol conversion produces the shape; this function only enforces Anthropic
 // wire invariants shared by API-key and OAuth attempts.
 func normalizeAnthropicMessagesBody(body []byte) ([]byte, error) {
-	request, err := decodeAnthropicRequest(body)
-	if err != nil {
+	if !isAnthropicJSONObject(body) {
 		return nil, errors.New("normalize Anthropic request: invalid JSON body")
 	}
-	return encodeNormalizedAnthropicRequest(request)
+	return encodeNormalizedAnthropicRequest(body)
+}
+
+// isAnthropicJSONObject 是所有 sjson 就地改写的准入守卫。守卫必须与消费者同源：
+// sjson 对截断输入静默返回损坏结果且 err == nil，所以入口这一次校验是唯一防线。
+func isAnthropicJSONObject(body []byte) bool {
+	return gjson.ValidBytes(body) && gjson.ParseBytes(body).IsObject()
 }
 
 // encodeNormalizedAnthropicRequest 收尾 Anthropic Messages body 并重签 CCH。
 // CCH 无条件重签：签名值嵌在 body 自己的 billing header 里，finalizeAnthropicCCH
 // 对没有 billing header 的 body 是 no-op，所以「签不签」不需要第二个谓词——一旦
 // 有条件跳过，就会出现 body 改了而 cch 还是旧值的静默错签。
-func encodeNormalizedAnthropicRequest(request map[string]any) ([]byte, error) {
-	normalizeAnthropicMessagesRequest(request)
-	orderAnthropicCacheControlWireShape(request)
-	encoded, err := json.Marshal(request)
-	if err != nil {
-		return nil, errors.New("normalize Anthropic request: encode body")
-	}
-	encoded, _ = cliproxysignature.SanitizeClaudeMessagesForClaudeUpstream(encoded, stringValue(request["model"]))
-	encoded, err = finalizeAnthropicCCH(encoded)
+func encodeNormalizedAnthropicRequest(body []byte) ([]byte, error) {
+	body = normalizeAnthropicMessagesRequest(body)
+	body = orderAnthropicCacheControlWireShape(body)
+	body, _ = cliproxysignature.SanitizeClaudeMessagesForClaudeUpstream(
+		body, jsonStringValue(gjson.GetBytes(body, "model")),
+	)
+	body, err := finalizeAnthropicCCH(body)
 	if err != nil {
 		return nil, errors.New("normalize Anthropic request: sign Claude CCH")
 	}
-	return encoded, nil
+	return body, nil
 }
 
-func decodeAnthropicRequest(body []byte) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var request map[string]any
-	if err := decoder.Decode(&request); err != nil {
-		return nil, err
+func normalizeAnthropicMessagesRequest(body []byte) []byte {
+	body = normalizeAnthropicToolChoice(body)
+	body = normalizeAnthropicThinking(body)
+	body = normalizeAnthropicSampling(body)
+	body = sanitizeAnthropicOAuthMessages(body)
+	if countAnthropicCacheControls(body) == 0 {
+		body = ensureAnthropicCacheControls(body)
 	}
-	if request == nil {
-		return nil, errors.New("missing JSON object")
-	}
-	return request, nil
+	body = normalizeAnthropicCacheControlTTL(body)
+	return enforceAnthropicCacheControlLimit(body, 4)
 }
 
-func normalizeAnthropicMessagesRequest(request map[string]any) {
-	normalizeAnthropicToolChoice(request)
-	normalizeAnthropicThinking(request)
-	normalizeAnthropicSampling(request)
-	sanitizeAnthropicOAuthMessages(request)
-	if countAnthropicCacheControls(request) == 0 {
-		ensureAnthropicCacheControls(request)
-	}
-	normalizeAnthropicCacheControlTTL(request)
-	enforceAnthropicCacheControlLimit(request, 4)
-}
-
-func validateAnthropicLegacySystemMessages(request map[string]any) error {
-	if !anthropicUsesLegacySystemReminder(stringValue(request["model"])) {
+func validateAnthropicLegacySystemMessages(body []byte) error {
+	modelName := jsonStringValue(gjson.GetBytes(body, "model"))
+	if !anthropicUsesLegacySystemReminder(modelName) {
 		return nil
 	}
-	messages, ok := request["messages"].([]any)
-	if !ok {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
 		return nil
 	}
-	for index, raw := range messages {
-		message, ok := raw.(map[string]any)
-		if !ok {
-			continue
+	var failure error
+	index := 0
+	messages.ForEach(func(_, message gjson.Result) bool {
+		current := index
+		index++
+		if !message.IsObject() {
+			return true
 		}
-		if strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), "system") {
-			return &anthropicRequestValidationError{message: fmt.Sprintf(
-				"Anthropic model %q does not support system messages in messages[%d]", stringValue(request["model"]), index,
+		if strings.EqualFold(strings.TrimSpace(jsonStringValue(message.Get("role"))), "system") {
+			failure = &anthropicRequestValidationError{message: fmt.Sprintf(
+				"Anthropic model %q does not support system messages in messages[%d]", modelName, current,
 			)}
+			return false
 		}
-	}
-	return nil
+		return true
+	})
+	return failure
 }
 
 type anthropicRequestValidationError struct{ message string }
 
 func (e *anthropicRequestValidationError) Error() string { return e.message }
 
-func countAnthropicCacheControls(request map[string]any) int {
+func countAnthropicCacheControls(body []byte) int {
 	count := 0
-	visitAnthropicCacheBlocks(request, func(block map[string]any) {
-		if _, exists := block["cache_control"]; exists {
+	forEachAnthropicCacheBlock(body, func(_ string, block gjson.Result) bool {
+		if block.Get("cache_control").Exists() {
 			count++
 		}
+		return true
 	})
 	return count
 }
 
-func normalizeAnthropicToolChoice(request map[string]any) {
-	tools, ok := request["tools"].([]any)
-	if !ok || len(tools) == 0 {
-		delete(request, "tool_choice")
+func normalizeAnthropicToolChoice(body []byte) []byte {
+	if tools := gjson.GetBytes(body, "tools"); !tools.IsArray() || jsonMemberCount(tools) == 0 {
+		body = deleteJSONPath(body, "tool_choice")
 	}
-	choice, _ := request["tool_choice"].(map[string]any)
-	choiceType := strings.ToLower(strings.TrimSpace(stringValue(choice["type"])))
+	choiceType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "tool_choice.type"))))
 	if choiceType != "any" && choiceType != "tool" {
-		return
+		return body
 	}
-	delete(request, "thinking")
-	deleteAnthropicOutputEffort(request)
+	body = deleteJSONPath(body, "thinking")
+	return deleteAnthropicOutputEffort(body)
 }
 
-func normalizeAnthropicThinking(request map[string]any) {
-	thinking, ok := request["thinking"].(map[string]any)
-	if !ok {
-		return
+func normalizeAnthropicThinking(body []byte) []byte {
+	thinking := gjson.GetBytes(body, "thinking")
+	if !thinking.IsObject() {
+		return body
 	}
-	typ := strings.ToLower(strings.TrimSpace(stringValue(thinking["type"])))
+	typ := strings.ToLower(strings.TrimSpace(jsonStringValue(thinking.Get("type"))))
 	switch typ {
 	case "auto":
-		thinking["type"] = "adaptive"
+		body = setJSONRaw(body, "thinking.type", `"adaptive"`)
 		typ = "adaptive"
 	case "disabled", "off", "none":
-		delete(request, "thinking")
-		deleteAnthropicOutputEffort(request)
-		return
+		body = deleteJSONPath(body, "thinking")
+		return deleteAnthropicOutputEffort(body)
 	}
 	if typ != "adaptive" {
-		return
+		return body
 	}
-	if budget, ok := anthropicInteger(thinking["budget_tokens"]); ok && budget > 0 {
-		setAnthropicOutputEffort(request, anthropicBudgetToEffort(int(budget)))
+	if budget, ok := jsonIntegerValue(gjson.GetBytes(body, "thinking.budget_tokens")); ok && budget > 0 {
+		body = setAnthropicOutputEffort(body, anthropicBudgetToEffort(int(budget)))
 	}
-	delete(thinking, "budget_tokens")
+	return deleteJSONPath(body, "thinking.budget_tokens")
 }
 
-func deleteAnthropicOutputEffort(request map[string]any) {
-	outputConfig, ok := request["output_config"].(map[string]any)
-	if !ok {
-		return
+func deleteAnthropicOutputEffort(body []byte) []byte {
+	if !gjson.GetBytes(body, "output_config").IsObject() {
+		return body
 	}
-	delete(outputConfig, "effort")
-	if len(outputConfig) == 0 {
-		delete(request, "output_config")
+	body = deleteJSONPath(body, "output_config.effort")
+	if jsonMemberCount(gjson.GetBytes(body, "output_config")) == 0 {
+		body = deleteJSONPath(body, "output_config")
 	}
+	return body
 }
 
-func normalizeAnthropicSampling(request map[string]any) {
+func normalizeAnthropicSampling(body []byte) []byte {
 	// Claude Code does not forward caller sampling knobs. Keeping both temperature
 	// and top_p is invalid, and thinking requests reject top_k as well.
-	delete(request, "temperature")
-	delete(request, "top_p")
-	thinking, _ := request["thinking"].(map[string]any)
-	switch strings.ToLower(strings.TrimSpace(stringValue(thinking["type"]))) {
+	body = deleteJSONPath(body, "temperature")
+	body = deleteJSONPath(body, "top_p")
+	switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type")))) {
 	case "enabled", "adaptive", "auto":
-		delete(request, "top_k")
+		body = deleteJSONPath(body, "top_k")
 	}
+	return body
 }
 
-func ensureAnthropicCacheControls(request map[string]any) {
-	ensureAnthropicToolCacheControl(request)
-	ensureAnthropicSystemCacheControl(request)
-	ensureAnthropicMessageCacheControl(request)
+func ensureAnthropicCacheControls(body []byte) []byte {
+	body = ensureAnthropicToolCacheControl(body)
+	body = ensureAnthropicSystemCacheControl(body)
+	return ensureAnthropicMessageCacheControl(body)
 }
 
-func ensureAnthropicToolCacheControl(request map[string]any) {
-	tools, ok := request["tools"].([]any)
-	if !ok {
-		return
+func ensureAnthropicToolCacheControl(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body
 	}
-	var lastEligible map[string]any
-	for _, raw := range tools {
-		tool, ok := raw.(map[string]any)
-		if !ok {
+	lastEligible := -1
+	for index, tool := range tools.Array() {
+		if !tool.IsObject() {
 			continue
 		}
-		if _, exists := tool["cache_control"]; exists {
-			return
+		if tool.Get("cache_control").Exists() {
+			return body
 		}
-		deferred, _ := tool["defer_loading"].(bool)
-		if !deferred {
-			lastEligible = tool
+		if tool.Get("defer_loading").Type != gjson.True {
+			lastEligible = index
 		}
 	}
-	if lastEligible != nil {
-		lastEligible["cache_control"] = anthropicEphemeralCacheControl()
+	if lastEligible < 0 {
+		return body
 	}
+	return setJSONRaw(body, "tools."+strconv.Itoa(lastEligible)+".cache_control", anthropicEphemeralCacheControl())
 }
 
-func ensureAnthropicSystemCacheControl(request map[string]any) {
-	system, exists := request["system"]
-	if !exists {
-		return
-	}
-	switch value := system.(type) {
-	case string:
-		if strings.TrimSpace(value) != "" {
-			request["system"] = []any{map[string]any{
-				"type": "text", "text": value, "cache_control": anthropicEphemeralCacheControl(),
-			}}
+func ensureAnthropicSystemCacheControl(body []byte) []byte {
+	system := gjson.GetBytes(body, "system")
+	switch {
+	case !system.Exists():
+		return body
+	case system.Type == gjson.String:
+		if strings.TrimSpace(system.String()) == "" {
+			return body
 		}
-	case []any:
-		var last map[string]any
-		for _, raw := range value {
-			block, ok := raw.(map[string]any)
-			if !ok {
+		block := anthropicTextBlockRaw(system.String(), anthropicEphemeralCacheControl())
+		return setJSONRaw(body, "system", "["+block+"]")
+	case system.IsArray():
+		last := -1
+		for index, block := range system.Array() {
+			if !block.IsObject() {
 				continue
 			}
-			if _, exists := block["cache_control"]; exists {
-				return
+			if block.Get("cache_control").Exists() {
+				return body
 			}
-			last = block
+			last = index
 		}
-		if last != nil {
-			last["cache_control"] = anthropicEphemeralCacheControl()
+		if last < 0 {
+			return body
 		}
+		return setJSONRaw(body, "system."+strconv.Itoa(last)+".cache_control", anthropicEphemeralCacheControl())
+	default:
+		return body
 	}
 }
 
-func ensureAnthropicMessageCacheControl(request map[string]any) {
-	messages, ok := request["messages"].([]any)
-	if !ok {
-		return
+func ensureAnthropicMessageCacheControl(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
 	}
 	userIndexes := make([]int, 0, 2)
-	for index, raw := range messages {
-		message, ok := raw.(map[string]any)
-		if !ok {
+	for index, message := range messages.Array() {
+		if !message.IsObject() {
 			continue
 		}
-		if content, ok := message["content"].([]any); ok {
-			for _, rawBlock := range content {
-				if block, ok := rawBlock.(map[string]any); ok {
-					if _, exists := block["cache_control"]; exists {
-						return
-					}
+		if content := message.Get("content"); content.IsArray() {
+			for _, block := range content.Array() {
+				if block.IsObject() && block.Get("cache_control").Exists() {
+					return body
 				}
 			}
 		}
-		if stringValue(message["role"]) == "user" {
+		if jsonStringValue(message.Get("role")) == "user" {
 			userIndexes = append(userIndexes, index)
 		}
 	}
 	if len(userIndexes) < 2 {
-		return
+		return body
 	}
-	message, _ := messages[userIndexes[len(userIndexes)-2]].(map[string]any)
-	switch content := message["content"].(type) {
-	case string:
-		message["content"] = []any{map[string]any{
-			"type": "text", "text": content, "cache_control": anthropicEphemeralCacheControl(),
-		}}
-	case []any:
-		for index := len(content) - 1; index >= 0; index-- {
-			if block, ok := content[index].(map[string]any); ok {
-				block["cache_control"] = anthropicEphemeralCacheControl()
-				return
+	target := "messages." + strconv.Itoa(userIndexes[len(userIndexes)-2])
+	content := gjson.GetBytes(body, target+".content")
+	switch {
+	case content.Type == gjson.String:
+		block := anthropicTextBlockRaw(content.String(), anthropicEphemeralCacheControl())
+		return setJSONRaw(body, target+".content", "["+block+"]")
+	case content.IsArray():
+		blocks := content.Array()
+		for index := len(blocks) - 1; index >= 0; index-- {
+			if blocks[index].IsObject() {
+				return setJSONRaw(body, target+".content."+strconv.Itoa(index)+".cache_control",
+					anthropicEphemeralCacheControl())
 			}
 		}
 	}
+	return body
 }
 
-func anthropicEphemeralCacheControl() map[string]any {
-	return map[string]any{"type": "ephemeral"}
+// anthropicEphemeralCacheControl 是 Anthropic 线上默认（5m）缓存断点的原始 JSON。
+func anthropicEphemeralCacheControl() string { return `{"type":"ephemeral"}` }
+
+// anthropicTextBlockRaw 按原生键序拼一个 text 块：type → text → cache_control。
+// 字符串转义交给 sjson，与 encoding/json 完全一致（`<`、`>`、`&` 同样转义）。
+func anthropicTextBlockRaw(text, cacheControlRaw string) string {
+	block, err := sjson.Set(`{"type":"text"}`, "text", text)
+	if err != nil {
+		return `{"type":"text","text":""}`
+	}
+	if cacheControlRaw == "" {
+		return block
+	}
+	withCache, err := sjson.SetRaw(block, "cache_control", cacheControlRaw)
+	if err != nil {
+		return block
+	}
+	return withCache
 }
 
-func normalizeAnthropicCacheControlTTL(request map[string]any) {
+// anthropicTextMessageRaw 按原生键序拼一条纯文本消息：role → content。
+func anthropicTextMessageRaw(role, content string) string {
+	message, err := sjson.Set(`{"role":""}`, "role", role)
+	if err != nil {
+		return `{"role":"user","content":""}`
+	}
+	message, err = sjson.Set(message, "content", content)
+	if err != nil {
+		return `{"role":"user","content":""}`
+	}
+	return message
+}
+
+func normalizeAnthropicCacheControlTTL(body []byte) []byte {
 	seenFiveMinutes := false
-	process := func(block map[string]any) {
-		cache, ok := block["cache_control"].(map[string]any)
-		if !ok {
-			if _, exists := block["cache_control"]; exists {
+	var demoted []string
+	forEachAnthropicCacheBlock(body, func(path string, block gjson.Result) bool {
+		cache := block.Get("cache_control")
+		if !cache.IsObject() {
+			if cache.Exists() {
 				seenFiveMinutes = true
 			}
-			return
+			return true
 		}
-		if stringValue(cache["ttl"]) != "1h" {
+		if jsonStringValue(cache.Get("ttl")) != "1h" {
 			seenFiveMinutes = true
-			return
+			return true
 		}
 		if seenFiveMinutes {
-			delete(cache, "ttl")
+			demoted = append(demoted, path+".cache_control.ttl")
 		}
+		return true
+	})
+	for _, path := range demoted {
+		body = deleteJSONPath(body, path)
 	}
-	visitAnthropicCacheBlocks(request, process)
+	return body
 }
 
-// visitAnthropicCacheBlocks follows Anthropic's evaluation order.
-func visitAnthropicCacheBlocks(request map[string]any, visit func(map[string]any)) {
-	if tools, ok := request["tools"].([]any); ok {
-		for _, raw := range tools {
-			if block, ok := raw.(map[string]any); ok {
-				visit(block)
-			}
+// forEachAnthropicCacheBlock 按 Anthropic 的评估顺序（tools → system → messages）
+// 遍历所有可以挂 cache_control 的块，并把每个块的 sjson 路径交给 visit；visit 返回
+// false 即停止遍历。
+//
+// path 参数就是这个遍历器存在的理由：调用方拿到路径才能用 sjson 就地改写，不必把块
+// 解成 map 再整体回写——键序正是在那一步丢掉的。遍历读的是入参快照，所以 visit 只
+// 收集路径、由调用方在遍历结束后统一改写；只增删对象成员时路径始终有效。
+func forEachAnthropicCacheBlock(body []byte, visit func(path string, block gjson.Result) bool) {
+	root := gjson.ParseBytes(body)
+	visitBlocks := func(container gjson.Result, prefix string) bool {
+		if !container.IsArray() {
+			return true
 		}
-	}
-	if system, ok := request["system"].([]any); ok {
-		for _, raw := range system {
-			if block, ok := raw.(map[string]any); ok {
-				visit(block)
-			}
-		}
-	}
-	if messages, ok := request["messages"].([]any); ok {
-		for _, rawMessage := range messages {
-			message, ok := rawMessage.(map[string]any)
-			if !ok {
+		for index, block := range container.Array() {
+			if !block.IsObject() {
 				continue
 			}
-			if content, ok := message["content"].([]any); ok {
-				for _, raw := range content {
-					if block, ok := raw.(map[string]any); ok {
-						visit(block)
-					}
-				}
+			if !visit(prefix+"."+strconv.Itoa(index), block) {
+				return false
 			}
 		}
+		return true
 	}
-}
-
-func anthropicInteger(value any) (int64, bool) {
-	switch number := value.(type) {
-	case json.Number:
-		result, err := number.Int64()
-		return result, err == nil
-	case int:
-		return int64(number), true
-	case int64:
-		return number, true
-	case float64:
-		return int64(number), number == float64(int64(number))
-	default:
-		return 0, false
+	if !visitBlocks(root.Get("tools"), "tools") || !visitBlocks(root.Get("system"), "system") {
+		return
+	}
+	messages := root.Get("messages")
+	if !messages.IsArray() {
+		return
+	}
+	for index, message := range messages.Array() {
+		if !message.IsObject() {
+			continue
+		}
+		if !visitBlocks(message.Get("content"), "messages."+strconv.Itoa(index)+".content") {
+			return
+		}
 	}
 }

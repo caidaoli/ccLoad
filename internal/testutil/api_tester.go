@@ -2,8 +2,10 @@
 package testutil
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,17 +17,26 @@ import (
 	"ccLoad/internal/version"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // patchMessagesInBody 将消息列表注入到已生成的请求体 JSON 中，替换指定字段。
 // 用于多轮对话：先用模板生成基础请求体，再按协议替换 messages/contents 字段。
 func patchMessagesInBody(body []byte, key string, messages any) ([]byte, error) {
-	var obj map[string]any
-	if err := sonic.Unmarshal(body, &obj); err != nil {
+	encoded, err := sonic.Marshal(messages)
+	if err != nil {
 		return nil, err
 	}
-	obj[key] = messages
-	return sonic.ConfigStd.Marshal(obj)
+	patched, err := sjson.SetRawBytes(body, key, encoded)
+	if err != nil {
+		return nil, err
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, patched); err != nil {
+		return nil, err
+	}
+	return compact.Bytes(), nil
 }
 
 func parseDataURLImage(dataURL string) (mimeType, data string, ok bool) {
@@ -276,80 +287,41 @@ func toGeminiContents(msgs []ChatMessage) []map[string]any {
 	return out
 }
 
-func patchBodyObject(body []byte, mutate func(map[string]any)) ([]byte, error) {
-	var obj map[string]any
-	if err := sonic.Unmarshal(body, &obj); err != nil {
-		return nil, err
-	}
-	mutate(obj)
-	return sonic.ConfigStd.Marshal(obj)
-}
-
 func hasTestSamplingOptions(req *TestChannelRequest) bool {
 	return req != nil && (req.Temperature != nil || req.TopP != nil || req.MaxTokens > 0 || strings.TrimSpace(req.SystemPrompt) != "")
 }
 
-func setOpenAILikeSampling(obj map[string]any, req *TestChannelRequest, maxTokensKey string) {
-	if req.Temperature != nil {
-		obj["temperature"] = *req.Temperature
+func prependRawJSONItem(body []byte, path string, item []byte) ([]byte, error) {
+	var array bytes.Buffer
+	array.WriteByte('[')
+	array.Write(item)
+	if existing := gjson.GetBytes(body, path); existing.IsArray() {
+		for _, value := range existing.Array() {
+			array.WriteByte(',')
+			array.WriteString(value.Raw)
+		}
 	}
-	if req.TopP != nil {
-		obj["top_p"] = *req.TopP
-	}
-	if req.MaxTokens > 0 {
-		obj[maxTokensKey] = req.MaxTokens
-	}
+	array.WriteByte(']')
+	return sjson.SetRawBytes(body, path, array.Bytes())
 }
 
-func appendOpenAISystemPrompt(obj map[string]any, prompt string) {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return
-	}
-	systemMessage := map[string]any{"role": "system", "content": prompt}
-	messages, _ := obj["messages"].([]any)
-	obj["messages"] = append([]any{systemMessage}, messages...)
-}
-
-func prependCodexDeveloperPrompt(obj map[string]any, prompt string) {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return
-	}
-	developerMessage := map[string]any{"role": "developer", "content": prompt}
-	input, _ := obj["input"].([]any)
-	obj["input"] = append([]any{developerMessage}, input...)
-}
-
-func setGeminiGenerationOption(generationConfig map[string]any, key string, value any) {
-	if value != nil {
-		generationConfig[key] = value
-	}
-}
-
-func applyGeminiSamplingAndSystemPrompt(obj map[string]any, req *TestChannelRequest) {
-	if req.Temperature != nil || req.TopP != nil || req.MaxTokens > 0 {
-		generationConfig, _ := obj["generationConfig"].(map[string]any)
-		if generationConfig == nil {
-			generationConfig = map[string]any{}
+func appendRawJSONItem(body []byte, path string, item []byte) ([]byte, error) {
+	var array bytes.Buffer
+	array.WriteByte('[')
+	if existing := gjson.GetBytes(body, path); existing.IsArray() {
+		for index, value := range existing.Array() {
+			if index > 0 {
+				array.WriteByte(',')
+			}
+			array.WriteString(value.Raw)
 		}
-		if req.Temperature != nil {
-			setGeminiGenerationOption(generationConfig, "temperature", *req.Temperature)
-		}
-		if req.TopP != nil {
-			setGeminiGenerationOption(generationConfig, "topP", *req.TopP)
-		}
-		if req.MaxTokens > 0 {
-			setGeminiGenerationOption(generationConfig, "maxOutputTokens", req.MaxTokens)
-		}
-		obj["generationConfig"] = generationConfig
-	}
-
-	if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
-		obj["systemInstruction"] = map[string]any{
-			"parts": []any{map[string]any{"text": prompt}},
+		if len(existing.Array()) > 0 {
+			array.WriteByte(',')
 		}
 	}
+	array.Write(item)
+	array.WriteByte(']')
+	return sjson.SetRawBytes(body, path, array.Bytes())
 }
 
 func normalizeTestThinkingEffort(effort string) string {
@@ -427,41 +399,57 @@ func testGeminiThinkingLevel(effort string) string {
 	}
 }
 
-func appendTestTool(obj map[string]any, tool map[string]any) {
-	tools, _ := obj["tools"].([]any)
-	obj["tools"] = append(tools, tool)
-}
-
 func applyOpenAITestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
 	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) && req.ImageGeneration == nil {
 		return body, nil
 	}
-	return patchBodyObject(body, func(obj map[string]any) {
-		setOpenAILikeSampling(obj, req, "max_tokens")
-		appendOpenAISystemPrompt(obj, req.SystemPrompt)
-		if effort == "none" {
-			delete(obj, "reasoning_effort")
-		} else if effort != "" {
-			obj["reasoning_effort"] = effort
-		}
-		if req.BuiltinSearch {
-			obj["web_search_options"] = map[string]any{}
-		}
-		if req.ImageGeneration != nil {
-			obj["modalities"] = []string{"image"}
-			imageConfig := map[string]any{}
-			if aspectRatio := strings.TrimSpace(req.ImageGeneration.AspectRatio); aspectRatio != "" {
-				imageConfig["aspect_ratio"] = aspectRatio
+	updated := body
+	var err error
+	if req.Temperature != nil {
+		updated, err = sjson.SetBytes(updated, "temperature", *req.Temperature)
+	}
+	if err == nil && req.TopP != nil {
+		updated, err = sjson.SetBytes(updated, "top_p", *req.TopP)
+	}
+	if err == nil && req.MaxTokens > 0 {
+		updated, err = sjson.SetBytes(updated, "max_tokens", req.MaxTokens)
+	}
+	if err == nil {
+		if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
+			message, setErr := sjson.SetBytes([]byte(`{"role":"system"}`), "content", prompt)
+			if setErr != nil {
+				return nil, setErr
 			}
-			if imageSize := strings.TrimSpace(req.ImageGeneration.ImageSize); imageSize != "" {
-				imageConfig["image_size"] = imageSize
+			updated, err = prependRawJSONItem(updated, "messages", message)
+		}
+	}
+	if err == nil && effort == "none" {
+		updated, err = sjson.DeleteBytes(updated, "reasoning_effort")
+	} else if err == nil && effort != "" {
+		updated, err = sjson.SetBytes(updated, "reasoning_effort", effort)
+	}
+	if err == nil && req.BuiltinSearch {
+		updated, err = sjson.SetRawBytes(updated, "web_search_options", []byte(`{}`))
+	}
+	if err == nil && req.ImageGeneration != nil {
+		updated, err = sjson.SetRawBytes(updated, "modalities", []byte(`["image"]`))
+		aspectRatio := strings.TrimSpace(req.ImageGeneration.AspectRatio)
+		imageSize := strings.TrimSpace(req.ImageGeneration.ImageSize)
+		if err == nil && (aspectRatio != "" || imageSize != "") {
+			updated, err = sjson.SetRawBytes(updated, "image_config", []byte(`{}`))
+			if err == nil && aspectRatio != "" {
+				updated, err = sjson.SetBytes(updated, "image_config.aspect_ratio", aspectRatio)
 			}
-			if len(imageConfig) > 0 {
-				obj["image_config"] = imageConfig
+			if err == nil && imageSize != "" {
+				updated, err = sjson.SetBytes(updated, "image_config.image_size", imageSize)
 			}
 		}
-	})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func applyCodexTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
@@ -469,24 +457,51 @@ func applyCodexTestOptions(body []byte, req *TestChannelRequest) ([]byte, error)
 	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
-	return patchBodyObject(body, func(obj map[string]any) {
-		setOpenAILikeSampling(obj, req, "max_output_tokens")
-		prependCodexDeveloperPrompt(obj, req.SystemPrompt)
-		if effort == "none" {
-			delete(obj, "reasoning")
-			delete(obj, "include")
-		} else if effort != "" {
-			obj["reasoning"] = map[string]any{
-				"effort":  testCodexReasoningEffort(effort),
-				"summary": "auto",
+	updated := body
+	var err error
+	if req.Temperature != nil {
+		updated, err = sjson.SetBytes(updated, "temperature", *req.Temperature)
+	}
+	if err == nil && req.TopP != nil {
+		updated, err = sjson.SetBytes(updated, "top_p", *req.TopP)
+	}
+	if err == nil && req.MaxTokens > 0 {
+		updated, err = sjson.SetBytes(updated, "max_output_tokens", req.MaxTokens)
+	}
+	if err == nil {
+		if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
+			message, setErr := sjson.SetBytes([]byte(`{"role":"developer"}`), "content", prompt)
+			if setErr != nil {
+				return nil, setErr
 			}
-			obj["include"] = []any{"reasoning.encrypted_content"}
+			updated, err = prependRawJSONItem(updated, "input", message)
 		}
-		if req.BuiltinSearch {
-			appendTestTool(obj, map[string]any{"type": "web_search"})
-			obj["tool_choice"] = "auto"
+	}
+	if err == nil && effort == "none" {
+		updated, err = sjson.DeleteBytes(updated, "reasoning")
+		if err == nil {
+			updated, err = sjson.DeleteBytes(updated, "include")
 		}
-	})
+	} else if err == nil && effort != "" {
+		reasoning, setErr := sjson.SetBytes([]byte(`{"summary":"auto"}`), "effort", testCodexReasoningEffort(effort))
+		if setErr != nil {
+			return nil, setErr
+		}
+		updated, err = sjson.SetRawBytes(updated, "reasoning", reasoning)
+		if err == nil {
+			updated, err = sjson.SetRawBytes(updated, "include", []byte(`["reasoning.encrypted_content"]`))
+		}
+	}
+	if err == nil && req.BuiltinSearch {
+		updated, err = appendRawJSONItem(updated, "tools", []byte(`{"type":"web_search"}`))
+		if err == nil {
+			updated, err = sjson.SetBytes(updated, "tool_choice", "auto")
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
@@ -494,30 +509,50 @@ func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
-	return patchBodyObject(body, func(obj map[string]any) {
-		applyGeminiSamplingAndSystemPrompt(obj, req)
-		if effort != "" {
-			generationConfig, _ := obj["generationConfig"].(map[string]any)
-			if generationConfig == nil {
-				generationConfig = map[string]any{}
+	updated := body
+	var err error
+	if req.Temperature != nil {
+		updated, err = sjson.SetBytes(updated, "generationConfig.temperature", *req.Temperature)
+	}
+	if err == nil && req.TopP != nil {
+		updated, err = sjson.SetBytes(updated, "generationConfig.topP", *req.TopP)
+	}
+	if err == nil && req.MaxTokens > 0 {
+		updated, err = sjson.SetBytes(updated, "generationConfig.maxOutputTokens", req.MaxTokens)
+	}
+	if err == nil {
+		if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
+			instruction, setErr := sjson.SetBytes([]byte(`{"parts":[{}]}`), "parts.0.text", prompt)
+			if setErr != nil {
+				return nil, setErr
 			}
-			thinkingConfig := map[string]any{}
-			if testGeminiUsesThinkingLevel(req.Model) && effort != "none" {
-				thinkingConfig["thinkingLevel"] = testGeminiThinkingLevel(effort)
-				thinkingConfig["includeThoughts"] = true
-			} else {
-				thinkingConfig["thinkingBudget"] = testThinkingBudget(effort)
-				if effort != "none" {
-					thinkingConfig["includeThoughts"] = true
-				}
+			updated, err = sjson.SetRawBytes(updated, "systemInstruction", instruction)
+		}
+	}
+	if err == nil && effort != "" {
+		thinkingConfig := []byte(`{}`)
+		if testGeminiUsesThinkingLevel(req.Model) && effort != "none" {
+			thinkingConfig, err = sjson.SetBytes(thinkingConfig, "thinkingLevel", testGeminiThinkingLevel(effort))
+			if err == nil {
+				thinkingConfig, err = sjson.SetBytes(thinkingConfig, "includeThoughts", true)
 			}
-			generationConfig["thinkingConfig"] = thinkingConfig
-			obj["generationConfig"] = generationConfig
+		} else {
+			thinkingConfig, err = sjson.SetBytes(thinkingConfig, "thinkingBudget", testThinkingBudget(effort))
+			if err == nil && effort != "none" {
+				thinkingConfig, err = sjson.SetBytes(thinkingConfig, "includeThoughts", true)
+			}
 		}
-		if req.BuiltinSearch {
-			appendTestTool(obj, map[string]any{"googleSearch": map[string]any{}})
+		if err == nil {
+			updated, err = sjson.SetRawBytes(updated, "generationConfig.thinkingConfig", thinkingConfig)
 		}
-	})
+	}
+	if err == nil && req.BuiltinSearch {
+		updated, err = appendRawJSONItem(updated, "tools", []byte(`{"googleSearch":{}}`))
+	}
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {

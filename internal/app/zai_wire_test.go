@@ -60,6 +60,7 @@ func TestFinalizeZAICodingPlanBodyStampsZCodeFingerprint(t *testing.T) {
 	if decodeZAIRequestIdentity(t, repeat).SessionID != identity.SessionID {
 		t.Fatal("session id must be stable for the same conversation")
 	}
+	assertFieldOrder(t, string(finalized), `"model"`, `"messages"`, `"metadata"`)
 }
 
 // A client fingerprint (Claude Code's, for instance) must never reach z.ai.

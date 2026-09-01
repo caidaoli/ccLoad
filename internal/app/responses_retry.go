@@ -2,14 +2,15 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"ccLoad/internal/protocol"
 
-	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -183,19 +184,14 @@ func parseResponsesInputIndex(param string) (int, bool) {
 }
 
 func responsesBodyWithoutInputIndex(body []byte, index int) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
+	if !isMutableJSONObject(body) {
 		return nil, false
 	}
-	input, ok := root["input"].([]any)
-	if !ok || index < 0 || index >= len(input) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() || index < 0 || index >= len(input.Array()) {
 		return nil, false
 	}
-	filtered := make([]any, 0, len(input)-1)
-	filtered = append(filtered, input[:index]...)
-	filtered = append(filtered, input[index+1:]...)
-	root["input"] = filtered
-	encoded, err := sonic.Marshal(root)
+	encoded, err := sjson.DeleteBytes(body, fmt.Sprintf("input.%d", index))
 	if err != nil {
 		return nil, false
 	}
@@ -279,41 +275,10 @@ func responsesBodyWithoutMissingReasoningID(body []byte, id string) ([]byte, boo
 	if id == "" {
 		return nil, false
 	}
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
-		return nil, false
-	}
-	input, ok := root["input"].([]any)
-	if !ok {
-		return nil, false
-	}
-	filtered := make([]any, 0, len(input))
-	removed := false
-	for _, item := range input {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			filtered = append(filtered, item)
-			continue
-		}
-		itemID, _ := obj["id"].(string)
-		itemType, _ := obj["type"].(string)
-		// reasoning 可以在 stateless replay 中省略；message/tool item 不能，
-		// 否则会丢上下文或制造不符合 Responses Create schema 的对象。
-		if itemID == id && itemType == "reasoning" {
-			removed = true
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	if !removed {
-		return nil, false
-	}
-	root["input"] = filtered
-	encoded, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
-	}
-	return encoded, true
+	return deleteCodexInputItems(body, func(item gjson.Result) bool {
+		return item.Get("id").Type == gjson.String && item.Get("id").String() == id &&
+			item.Get("type").Type == gjson.String && item.Get("type").String() == "reasoning"
+	})
 }
 
 func codexWebsocketMissingStoredInputRetryBody(replayBody, payload []byte) ([]byte, bool) {

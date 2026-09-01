@@ -62,15 +62,7 @@ func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 }
 
 func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
-	srv := newInMemoryServer(t)
-	srv.startedAt = time.Now().Add(-2 * time.Minute)
-	srv.maxConcurrency = 3
-	srv.concurrencySem = make(chan struct{}, srv.maxConcurrency)
-	srv.concurrencySem <- struct{}{}
-	srv.logService.logDropCount.Store(4)
-	srv.logService.logFailCount.Store(5)
-	srv.store = &runtimeMetricsStore{
-		Store: srv.store,
+	metricsStore := &runtimeMetricsStore{
 		metrics: storage.HybridRuntimeMetrics{
 			SQLiteReadFailures:     2,
 			AnalyticsReadsPrimary:  true,
@@ -80,6 +72,16 @@ func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 			PrimarySyncLastSuccess: 123456,
 		},
 	}
+	srv := newInMemoryServerWithCustomStore(t, func(s storage.Store) storage.Store {
+		metricsStore.Store = s
+		return metricsStore
+	})
+	srv.startedAt = time.Now().Add(-2 * time.Minute)
+	srv.maxConcurrency = 3
+	srv.concurrencySem = make(chan struct{}, srv.maxConcurrency)
+	srv.concurrencySem <- struct{}{}
+	srv.logService.logDropCount.Store(4)
+	srv.logService.logFailCount.Store(5)
 	srv.responsesWebsocketConnections = newResponsesWebsocketConnectionLimiter(1, 1)
 	releaseConnection, limit := srv.responsesWebsocketConnections.acquire("token-a")
 	if limit != nil {

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,7 +34,7 @@ func newResponsesWebsocketSession(maxBodyBytes int64) *responsesWebsocketSession
 }
 
 func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, error) {
-	if !gjson.ValidBytes(payload) {
+	if !sonic.Valid(payload) {
 		return nil, errors.New("invalid websocket request JSON")
 	}
 	requestType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())

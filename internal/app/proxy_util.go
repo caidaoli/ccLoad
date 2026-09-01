@@ -19,6 +19,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const anthropicBillingHeaderPrefix = "x-anthropic-billing-header:"
@@ -436,7 +437,7 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 		return
 	}
 	h := req.Header
-	key, exists := existingHeaderKey(h, "anthropic-beta")
+	key, exists := mergeHeaderVariantsToKey(h, "anthropic-beta")
 	if !exists {
 		h.Set("anthropic-beta", flag)
 		return
@@ -485,35 +486,47 @@ func normalizeAnyrouterAdaptiveThinking(cfg *model.Config, upstreamProtocol, req
 	if requestPath != "/v1/messages" {
 		return body
 	}
-	var obj map[string]any
-	if err := sonic.Unmarshal(body, &obj); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return body
 	}
-	thinking, hasThinking := obj["thinking"]
-	if hasThinking {
-		thinkMap, ok := thinking.(map[string]any)
-		if !ok {
-			return body
-		}
-		typ, _ := thinkMap["type"].(string)
-		if typ != "enabled" {
-			return body
-		}
-		effort := "high"
-		if budget, ok := thinkMap["budget_tokens"].(float64); ok && budget > 0 {
-			effort = anthropicBudgetToEffort(int(budget))
-		}
-		obj["thinking"] = map[string]string{"type": "adaptive"}
-		setAnthropicOutputEffort(obj, effort)
-	} else {
-		obj["thinking"] = map[string]string{"type": "adaptive"}
-		setAnthropicOutputEffort(obj, "high")
+	thinking := gjson.GetBytes(body, "thinking")
+	if thinking.Exists() && !thinking.IsObject() {
+		return body
 	}
-	newBody, err := sonic.Marshal(obj)
+	effort := "high"
+	if thinking.Exists() {
+		if gjson.GetBytes(body, "thinking.type").String() != "enabled" {
+			return body
+		}
+		if budget := gjson.GetBytes(body, "thinking.budget_tokens"); budget.Exists() && budget.Num > 0 {
+			effort = anthropicBudgetToEffort(int(budget.Num))
+		}
+	}
+
+	updated, err := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"adaptive"}`))
 	if err != nil {
 		return body
 	}
-	return newBody
+	outputConfig := gjson.GetBytes(updated, "output_config")
+	if !outputConfig.Exists() || outputConfig.Type == gjson.Null {
+		updated, err = sjson.SetRawBytes(updated, "output_config", []byte(`{}`))
+		if err != nil {
+			return body
+		}
+		updated, err = sjson.SetBytes(updated, "output_config.effort", effort)
+	} else if outputConfig.IsObject() && !gjson.GetBytes(updated, "output_config.effort").Exists() {
+		updated, err = sjson.SetBytes(updated, "output_config.effort", effort)
+	} else if !outputConfig.IsObject() {
+		updated, err = sjson.SetRawBytes(updated, "output_config", []byte(`{}`))
+		if err != nil {
+			return body
+		}
+		updated, err = sjson.SetBytes(updated, "output_config.effort", effort)
+	}
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func isAnyrouterChannel(cfg *model.Config) bool {
@@ -524,18 +537,16 @@ func isAnyrouterChannel(cfg *model.Config) bool {
 	return strings.Contains(haystack, "anyrouter")
 }
 
-func setAnthropicOutputEffort(obj map[string]any, effort string) {
-	if effort == "" {
-		return
+// setAnthropicOutputEffort 写入 output_config.effort，已有值不覆盖。
+func setAnthropicOutputEffort(body []byte, effort string) []byte {
+	if effort == "" || gjson.GetBytes(body, "output_config.effort").Exists() {
+		return body
 	}
-	outputConfig, _ := obj["output_config"].(map[string]any)
-	if outputConfig == nil {
-		outputConfig = map[string]any{}
-		obj["output_config"] = outputConfig
+	updated, err := sjson.SetBytes(body, "output_config.effort", effort)
+	if err != nil {
+		return body
 	}
-	if _, exists := outputConfig["effort"]; !exists {
-		outputConfig["effort"] = effort
-	}
+	return updated
 }
 
 // anthropicBudgetToEffort 把旧 Anthropic budget_tokens 映射成 output_config.effort 档位。
@@ -730,23 +741,17 @@ func replaceJSONRequestModel(body []byte, actualModel string) []byte {
 	if len(body) == 0 || actualModel == "" {
 		return body
 	}
-	var reqData map[string]json.RawMessage
-	if err := sonic.Unmarshal(body, &reqData); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return body
 	}
-	var current string
-	if raw, ok := reqData["model"]; ok {
-		_ = sonic.Unmarshal(raw, &current)
-	}
-	if strings.TrimSpace(current) == "" || current == actualModel {
+	current := gjson.GetBytes(body, "model")
+	if current.Type != gjson.String {
 		return body
 	}
-	modelRaw, err := sonic.Marshal(actualModel)
-	if err != nil {
+	if strings.TrimSpace(current.String()) == "" || current.String() == actualModel {
 		return body
 	}
-	reqData["model"] = modelRaw
-	modifiedBody, err := sonic.Marshal(reqData)
+	modifiedBody, err := sjson.SetBytes(body, "model", actualModel)
 	if err != nil {
 		return body
 	}
@@ -761,49 +766,37 @@ func stripAnthropicBillingHeaders(body []byte) []byte {
 	if !bytes.Contains(body, []byte(anthropicBillingHeaderPrefix)) {
 		return body
 	}
-
-	var reqData map[string]json.RawMessage
-	if err := sonic.Unmarshal(body, &reqData); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return body
 	}
 
-	systemRaw, ok := reqData["system"]
-	if !ok {
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
 		return body
 	}
-
-	var systemArr []json.RawMessage
-	if err := sonic.Unmarshal(systemRaw, &systemArr); err != nil {
-		return body // system 是 string，不处理
-	}
-
-	filtered := make([]json.RawMessage, 0, len(systemArr))
-	changed := false
-	for _, item := range systemArr {
-		if isAnthropicBillingHeaderSystemBlock(item) {
-			changed = true
-			continue
+	indices := make([]int, 0)
+	for index, item := range system.Array() {
+		if isAnthropicBillingHeaderSystemBlock(json.RawMessage(item.Raw)) {
+			indices = append(indices, index)
 		}
-		filtered = append(filtered, item)
 	}
-
-	if !changed {
+	if len(indices) == 0 {
 		return body
 	}
-
-	if len(filtered) == 0 {
-		delete(reqData, "system")
-	} else {
-		filteredSystemRaw, err := sonic.Marshal(filtered)
+	result := body
+	for index := len(indices) - 1; index >= 0; index-- {
+		var err error
+		result, err = sjson.DeleteBytes(result, fmt.Sprintf("system.%d", indices[index]))
 		if err != nil {
 			return body
 		}
-		reqData["system"] = filteredSystemRaw
 	}
-
-	result, err := sonic.Marshal(reqData)
-	if err != nil {
-		return body
+	if !gjson.GetBytes(result, "system").IsArray() || len(gjson.GetBytes(result, "system").Array()) == 0 {
+		var err error
+		result, err = sjson.DeleteBytes(result, "system")
+		if err != nil {
+			return body
+		}
 	}
 	return result
 }
@@ -1328,4 +1321,77 @@ func formatModelDisplayName(modelID string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+func looksLikeJSONDocument(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+}
+
+// shouldValidateStrictJSONBody treats a declared JSON media type as a hard
+// contract, including scalar documents such as true, false and null. The
+// leading-byte heuristic remains only for bodies without a JSON declaration;
+// multipart payloads are framed data and must never be fed to the JSON parser.
+func shouldValidateStrictJSONBody(contentType string, raw []byte) bool {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return false
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(contentType))
+	if index := strings.IndexByte(mediaType, ';'); index >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:index])
+	}
+	if mediaType == "multipart/form-data" {
+		return false
+	}
+	return isJSONContentType(contentType) || looksLikeJSONDocument(raw)
+}
+
+// sjsonPathJoin 拼接 sjson 路径段，用于数组索引或不带 `:` 前缀的键。
+func sjsonPathJoin(prefix, segment string) string {
+	escaped := sjsonPathEscape(segment)
+	if prefix == "" {
+		return escaped
+	}
+	return prefix + "." + escaped
+}
+
+// sjsonObjectPathJoin 拼接 sjson 路径段并加 `:` 前缀，强制按对象键寻址。
+func sjsonObjectPathJoin(prefix, segment string) string {
+	escaped := ":" + sjsonPathEscape(segment)
+	if prefix == "" {
+		return escaped
+	}
+	return prefix + "." + escaped
+}
+
+var sjsonPathEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`.`, `\.`,
+	`|`, `\|`,
+	`#`, `\#`,
+	`@`, `\@`,
+	`*`, `\*`,
+	`?`, `\?`,
+	`:`, `\:`,
+)
+
+// sjsonPathEscape 转义 sjson 路径中的特殊字符。
+func sjsonPathEscape(segment string) string {
+	return sjsonPathEscaper.Replace(segment)
+}
+
+// isMutableJSONObject 判定 raw 能否安全交给 gjson/sjson 做就地改写。
+//
+// 两个条件缺一不可，这不是重复防御：
+//   - sonic.Valid 拦语法错误。gjson 对残缺输入是宽松的——`gjson.ParseBytes([]byte("{\"a\":1")).IsObject()`
+//     返回 true，而 sjson.SetBytes 对同一份字节会静默返回 `,"z":1}` 且 err == nil，
+//     等于把损坏的字节发给上游。
+//   - IsObject 拦顶层类型。数组、字符串、null 都能通过语法校验，但按对象键去 set/delete
+//     的结果没有意义。
+//
+// 注意它守的是"能被 sjson 安全改写"，不是"能被 encoding/json 解析"：sonic.Valid 接受
+// 非法 `\u` 转义（`{"a":"\u00"}`），这类字节经 sjson 是原样透传的，不产生新的损坏。
+// 需要 encoding/json 语义的调用方（如 parseOrderedJSON）必须自己用 gjson.ValidBytes。
+func isMutableJSONObject(raw []byte) bool {
+	return sonic.Valid(raw) && gjson.ParseBytes(raw).IsObject()
 }

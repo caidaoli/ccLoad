@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -127,6 +128,46 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	if int64(len(all)) > maxBody {
 		return incomingRequest{}, errBodyTooLarge
 	}
+	contentType := c.Request.Header.Get("Content-Type")
+	mediaType, mediaParams, _ := mime.ParseMediaType(contentType)
+	if shouldValidateStrictJSONBody(contentType, all) {
+		// 失败路径才走标准库解码，为的是把出错偏移量带给客户端；
+		// json.Unmarshal 同样拒绝顶层值之后的尾随数据。
+		if !sonic.Valid(all) {
+			err := json.Unmarshal(all, new(json.RawMessage))
+			if err == nil {
+				err = errors.New("expected exactly one JSON value")
+			}
+			return incomingRequest{}, fmt.Errorf("invalid JSON body: %w", err)
+		}
+	}
+	declaredMediaType := strings.ToLower(strings.TrimSpace(contentType))
+	if separator := strings.IndexByte(declaredMediaType, ';'); separator >= 0 {
+		declaredMediaType = strings.TrimSpace(declaredMediaType[:separator])
+	}
+	if mediaType == "multipart/form-data" || declaredMediaType == "multipart/form-data" {
+		boundary := strings.TrimSpace(mediaParams["boundary"])
+		if boundary == "" {
+			return incomingRequest{}, errors.New("invalid multipart body: boundary is missing")
+		}
+		reader := multipart.NewReader(bytes.NewReader(all), boundary)
+		for {
+			part, partErr := reader.NextPart()
+			if errors.Is(partErr, io.EOF) {
+				break
+			}
+			if partErr != nil {
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+			if _, partErr = io.Copy(io.Discard, part); partErr != nil {
+				_ = part.Close()
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+			if partErr = part.Close(); partErr != nil {
+				return incomingRequest{}, fmt.Errorf("invalid multipart body: %w", partErr)
+			}
+		}
+	}
 
 	var reqModel struct {
 		Model string `json:"model"`
@@ -134,14 +175,9 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	_ = sonic.Unmarshal(all, &reqModel)
 
 	// multipart/form-data 支持：当 JSON 解析无 model 时，尝试从 multipart 表单字段提取
-	if reqModel.Model == "" {
-		if ct := c.Request.Header.Get("Content-Type"); ct != "" {
-			mediaType, params, _ := mime.ParseMediaType(ct)
-			if mediaType == "multipart/form-data" {
-				if boundary := params["boundary"]; boundary != "" {
-					reqModel.Model = extractModelFromMultipart(all, boundary)
-				}
-			}
+	if reqModel.Model == "" && mediaType == "multipart/form-data" {
+		if boundary := mediaParams["boundary"]; boundary != "" {
+			reqModel.Model = extractModelFromMultipart(all, boundary)
 		}
 	}
 

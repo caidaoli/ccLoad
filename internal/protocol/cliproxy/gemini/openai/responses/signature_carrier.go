@@ -2,7 +2,6 @@ package responses
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"strings"
 
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
@@ -116,17 +115,24 @@ func hasInternalCarrierFields(item gjson.Result) bool {
 }
 
 func stripGeminiResponsesCarrierMetadata(rawJSON string) ([]byte, bool) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(rawJSON), &fields); err != nil {
+	stripped := []byte(rawJSON)
+	if !gjson.ParseBytes(stripped).IsObject() {
 		return []byte(rawJSON), false
 	}
-	delete(fields, geminiResponsesCarrierDirectionField)
-	delete(fields, geminiResponsesCarrierTargetField)
-	delete(fields, geminiResponsesCarrierSignatureField)
-	delete(fields, geminiResponsesCarrierSummaryField)
-	stripped, errMarshal := json.Marshal(fields)
-	if errMarshal != nil {
-		return []byte(rawJSON), false
+	for _, field := range []string{
+		geminiResponsesCarrierDirectionField,
+		geminiResponsesCarrierTargetField,
+		geminiResponsesCarrierSignatureField,
+		geminiResponsesCarrierSummaryField,
+	} {
+		if !gjson.GetBytes(stripped, field).Exists() {
+			continue
+		}
+		var err error
+		stripped, err = sjson.DeleteBytes(stripped, field)
+		if err != nil {
+			return []byte(rawJSON), false
+		}
 	}
 	return stripped, true
 }

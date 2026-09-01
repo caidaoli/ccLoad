@@ -32,6 +32,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ==================== 渠道测试功能 ====================
@@ -394,25 +396,30 @@ func patchUpstreamTestFields(translatedBody, upstreamBody []byte, upstreamProtoc
 		return translatedBody
 	}
 
-	var translated, upstream map[string]any
-	if err := sonic.Unmarshal(translatedBody, &translated); err != nil {
+	if !isMutableJSONObject(translatedBody) || !isMutableJSONObject(upstreamBody) {
 		return translatedBody
 	}
-	if err := sonic.Unmarshal(upstreamBody, &upstream); err != nil {
-		return translatedBody
-	}
-
+	result := translatedBody
 	for _, key := range keys {
-		if val, ok := upstream[key]; ok {
-			translated[key] = val
-		} else {
-			delete(translated, key)
+		// 读写指向同一个字面键，但两套路径语法不同：sjson 靠 `:` 前缀强制对象键，
+		// gjson 不认 `:`，只认 `\` 转义。共用一份转义结果才能保证二者定位一致。
+		escaped := sjsonPathEscape(key)
+		path := sjsonObjectPathJoin("", key)
+		if value := gjson.GetBytes(upstreamBody, escaped); value.Exists() {
+			var err error
+			result, err = sjson.SetRawBytes(result, path, []byte(value.Raw))
+			if err != nil {
+				return translatedBody
+			}
+			continue
 		}
-	}
-
-	result, err := sonic.ConfigStd.Marshal(translated)
-	if err != nil {
-		return translatedBody
+		if gjson.GetBytes(result, escaped).Exists() {
+			var err error
+			result, err = sjson.DeleteBytes(result, path)
+			if err != nil {
+				return translatedBody
+			}
+		}
 	}
 	return result
 }

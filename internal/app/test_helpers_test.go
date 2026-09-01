@@ -404,7 +404,17 @@ func newInMemoryServer(t testing.TB) *Server {
 	return newInMemoryServerWithSettings(t, nil)
 }
 
+// newInMemoryServerWithCustomStore 创建内存服务器，并在 NewServer 之前用 wrapper
+// 替换 store，避免后台 goroutine 启动后直接写 server.store 导致的 data race。
+func newInMemoryServerWithCustomStore(t testing.TB, wrap func(storage.Store) storage.Store) *Server {
+	return newInMemoryServerCore(t, nil, wrap)
+}
+
 func newInMemoryServerWithSettings(t testing.TB, settings map[string]string) *Server {
+	return newInMemoryServerCore(t, settings, nil)
+}
+
+func newInMemoryServerCore(t testing.TB, settings map[string]string, wrapStore func(storage.Store) storage.Store) *Server {
 	t.Helper()
 
 	store, err := storage.CreateSQLiteStore(":memory:")
@@ -418,7 +428,13 @@ func newInMemoryServerWithSettings(t testing.TB, settings map[string]string) *Se
 		}
 	}
 
-	srv := NewServer(store)
+	var serverStore storage.Store
+	if wrapStore != nil {
+		serverStore = wrapStore(store)
+	} else {
+		serverStore = store
+	}
+	srv := NewServer(serverStore)
 	closeUpstreamHTTPClient(srv.client)
 	closeUpstreamHTTPClient(srv.antigravityClient)
 	testClient := newTestHTTPClient()

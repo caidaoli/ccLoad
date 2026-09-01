@@ -68,6 +68,10 @@ func TestRestoreCodexMultiAgentV2ResponseRestoresToolIdentity(t *testing.T) {
 
 	payload := []byte(`{"type":"function_call","namespace":"collaboration-optimize","name":"collaboration-optimize__send_message","arguments":"{\"namespace\":\"collaboration-optimize\"}"}`)
 	got := string(restoreCodexMultiAgentV2Response(payload, true))
+	want := `{"type":"function_call","namespace":"collaboration","name":"collaboration__send_message","arguments":"{\"namespace\":\"collaboration-optimize\"}"}`
+	if got != want {
+		t.Fatalf("response was re-encoded or tool identity changed unexpectedly: got %s, want %s", got, want)
+	}
 	if !strings.Contains(got, `"namespace":"collaboration"`) || !strings.Contains(got, `"name":"collaboration__send_message"`) {
 		t.Fatalf("tool identity was not restored: %s", got)
 	}
@@ -78,6 +82,17 @@ func TestRestoreCodexMultiAgentV2ResponseRestoresToolIdentity(t *testing.T) {
 	event := restoreCodexMultiAgentV2SSEEvent([]byte("event: response.output_item.done\ndata: "+string(payload)+"\n\n"), true)
 	if !strings.Contains(string(event), `"name":"collaboration__send_message"`) {
 		t.Fatalf("SSE tool identity was not restored: %s", event)
+	}
+}
+
+func TestRestoreCodexMultiAgentV2ResponsePreservesNestedOutputOrder(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"response":{"output":[{"id":"call-1","type":"function_call","arguments":"{\"name\":\"collaboration-optimize\"}","namespace":"collaboration-optimize","name":"collaboration-optimize__spawn_agent"}]},"trace_id":"trace-1"}`)
+	got := restoreCodexMultiAgentV2Response(payload, true)
+	want := `{"response":{"output":[{"id":"call-1","type":"function_call","arguments":"{\"name\":\"collaboration-optimize\"}","namespace":"collaboration","name":"collaboration__spawn_agent"}]},"trace_id":"trace-1"}`
+	if string(got) != want {
+		t.Fatalf("nested response was re-encoded or restored incorrectly: got %s, want %s", got, want)
 	}
 }
 

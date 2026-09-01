@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -376,56 +375,69 @@ func restoreCodexMultiAgentV2Response(payload []byte, optimized bool) []byte {
 	if !optimized || len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return payload
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil || !restoreCodexCollaborationValue(value) {
-		return payload
+	type update struct {
+		path  string
+		value string
 	}
-	restored, err := json.Marshal(value)
-	if err != nil {
-		return payload
-	}
-	return restored
-}
-
-func restoreCodexCollaborationValue(value any) bool {
-	changed := false
-	switch typed := value.(type) {
-	case []any:
-		for _, item := range typed {
-			changed = restoreCodexCollaborationValue(item) || changed
+	updates := make([]update, 0, 2)
+	var walk func(gjson.Result, string)
+	walk = func(value gjson.Result, prefix string) {
+		if value.IsArray() {
+			for index, child := range value.Array() {
+				walk(child, sjsonPathJoin(prefix, fmt.Sprintf("%d", index)))
+			}
+			return
 		}
-	case map[string]any:
-		itemType := strings.TrimSpace(mapStringValue(typed, "type"))
+		if !value.IsObject() {
+			return
+		}
+
+		itemType := strings.TrimSpace(value.Get("type").String())
 		isToolCall := itemType == "function_call" || itemType == "custom_tool_call"
-		if namespace, ok := typed["namespace"].(string); ok && isToolCall && namespace == codexOptimizedCollaboration {
-			typed["namespace"] = codexCollaborationNamespace
-			changed = true
+		if namespace := value.Get("namespace"); isToolCall && namespace.Type == gjson.String && namespace.String() == codexOptimizedCollaboration {
+			updates = append(updates, update{
+				path:  sjsonObjectPathJoin(prefix, "namespace"),
+				value: codexCollaborationNamespace,
+			})
 		}
-		if name, ok := typed["name"].(string); ok {
+		if name := value.Get("name"); name.Type == gjson.String {
+			newName := ""
 			switch {
-			case itemType == "namespace" && name == codexOptimizedCollaboration:
-				typed["name"] = codexCollaborationNamespace
-				changed = true
-			case isToolCall && strings.HasPrefix(name, codexOptimizedNamePrefix):
-				typed["name"] = codexCollaborationNamespace + "__" + strings.TrimPrefix(name, codexOptimizedNamePrefix)
-				changed = true
+			case itemType == "namespace" && name.String() == codexOptimizedCollaboration:
+				newName = codexCollaborationNamespace
+			case isToolCall && strings.HasPrefix(name.String(), codexOptimizedNamePrefix):
+				newName = codexCollaborationNamespace + "__" + strings.TrimPrefix(name.String(), codexOptimizedNamePrefix)
+			}
+			if newName != "" {
+				updates = append(updates, update{
+					path:  sjsonObjectPathJoin(prefix, "name"),
+					value: newName,
+				})
 			}
 		}
-		for key, child := range typed {
-			if key == "arguments" || key == "input" || (key == "output" && (itemType == "function_call_output" || itemType == "custom_tool_call_output")) {
-				continue
+
+		value.ForEach(func(key, child gjson.Result) bool {
+			keyName := key.String()
+			if keyName == "arguments" || keyName == "input" || (keyName == "output" && (itemType == "function_call_output" || itemType == "custom_tool_call_output")) {
+				return true
 			}
-			changed = restoreCodexCollaborationValue(child) || changed
+			walk(child, sjsonObjectPathJoin(prefix, keyName))
+			return true
+		})
+	}
+	walk(gjson.ParseBytes(payload), "")
+	if len(updates) == 0 {
+		return payload
+	}
+	updated := payload
+	for _, item := range updates {
+		var err error
+		updated, err = sjson.SetBytes(updated, item.path, item.value)
+		if err != nil {
+			return payload
 		}
 	}
-	return changed
-}
-
-func mapStringValue(values map[string]any, key string) string {
-	value, _ := values[key].(string)
-	return value
+	return updated
 }
 
 // restoreCodexMultiAgentV2SSEEvent applies response restoration to the JSON

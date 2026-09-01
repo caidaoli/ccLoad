@@ -1,9 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -37,7 +37,7 @@ func applyHeaderRules(h http.Header, rules []model.CustomHeaderRule) {
 				"rule_index", idx, "action", rule.Action, "header", name)
 			continue
 		}
-		key, exists := existingHeaderKey(h, name)
+		key, exists := mergeHeaderVariantsToKey(h, name)
 		switch rule.Action {
 		case model.RuleActionRemove:
 			if !exists {
@@ -67,24 +67,41 @@ func applyHeaderRules(h http.Header, rules []model.CustomHeaderRule) {
 	}
 }
 
-// existingHeaderKey 返回请求头里与 name 大小写无关相等的真实键，供规则就地改写，
-// 避免 canonical 化产生第二个同名头。
-func existingHeaderKey(h http.Header, name string) (string, bool) {
+// mergeHeaderVariantsToKey 返回请求头里与 name 大小写无关相等的真实键，供规则就地改写。
+// 名字点出副作用：这不是纯查询——若同一逻辑头以多种大小写并存，会把多余变体的值合并进
+// 保留键并删除变体，避免双头发给上游。
+func mergeHeaderVariantsToKey(h http.Header, name string) (string, bool) {
+	keep := ""
 	if _, ok := h[name]; ok {
-		return name, true
+		keep = name
 	}
+	extras := make([]string, 0)
 	for existing := range h {
-		if strings.EqualFold(existing, name) {
-			return existing, true
+		if !strings.EqualFold(existing, name) {
+			continue
+		}
+		if keep == "" {
+			keep = existing
+			continue
+		}
+		if existing != keep {
+			extras = append(extras, existing)
 		}
 	}
-	return name, false
+	if keep == "" {
+		return name, false
+	}
+	for _, extra := range extras {
+		h[keep] = append(h[keep], h[extra]...)
+		delete(h, extra)
+	}
+	return keep, true
 }
 
 // removeHeaderToken 按逗号 token 精确移除。每条值按 "," 切分、trim 后等值剔除；
 // 若某条值所有 token 全部移除则该条值被丢弃；全部为空时整个头被删除。
 // 典型用例：从 Anthropic-Beta CSV 头中移除单个 flag，而保留其他 flag。
-// key 必须是 h 中真实存在的键（见 existingHeaderKey），内部只做 map 操作。
+// key 必须是 h 中真实存在的键（见 mergeHeaderVariantsToKey），内部只做 map 操作。
 func removeHeaderToken(h http.Header, key, target string) {
 	values := h[key]
 	if len(values) == 0 {
@@ -120,18 +137,11 @@ func applyBodyRules(contentType string, body []byte, rules []model.CustomBodyRul
 	if !isJSONContentType(contentType) {
 		return body
 	}
-	var root any
-	if err := sonic.Unmarshal(body, &root); err != nil {
-		return body
-	}
-	// 根必须为对象或数组；字面量无法寻址
-	switch root.(type) {
-	case map[string]any, []any:
-	default:
+	root, err := parseOrderedJSON(body)
+	if err != nil || (root.kind != '{' && root.kind != '[') {
 		return body
 	}
 
-	changed := false
 	for idx, rule := range rules {
 		segs := splitJSONPath(rule.Path)
 		if len(segs) == 0 {
@@ -141,44 +151,40 @@ func applyBodyRules(contentType string, body []byte, rules []model.CustomBodyRul
 		}
 		switch rule.Action {
 		case model.RuleActionRemove:
-			if next, ok := removeJSONPath(root, segs); ok {
-				root = next
-				changed = true
+			if _, conflict := root.removePath(segs); conflict {
+				slog.Warn("custom_request_rules: body remove path conflict",
+					"rule_index", idx, "path", rule.Path)
 			}
 		case model.RuleActionOverride:
-			var parsed any
 			if len(rule.Value) == 0 {
 				slog.Warn("custom_request_rules: body override missing value",
 					"rule_index", idx, "path", rule.Path)
 				continue
 			}
-			if err := sonic.Unmarshal(rule.Value, &parsed); err != nil {
+			replacement, err := parseOrderedJSON(rule.Value)
+			if err != nil {
 				slog.Warn("custom_request_rules: body override value not JSON",
-					"rule_index", idx, "path", rule.Path, "error", err.Error())
+					"rule_index", idx, "path", rule.Path)
 				continue
 			}
-			if next, ok := setJSONPath(root, segs, parsed); ok {
-				root = next
-				changed = true
-			} else {
+			if _, conflict := root.overridePath(segs, replacement); conflict {
 				slog.Warn("custom_request_rules: body override path conflict",
 					"rule_index", idx, "path", rule.Path)
+				continue
 			}
 		default:
 			slog.Warn("custom_request_rules: unknown body action",
 				"rule_index", idx, "action", rule.Action)
 		}
 	}
-	if !changed {
+	if !root.changed() {
 		return body
 	}
-	marshaled, err := sonic.Marshal(root)
-	if err != nil {
-		slog.Warn("custom_request_rules: re-marshal body failed, falling back to original",
-			"error", err.Error())
-		return body
+	updated := root.render()
+	if !bytes.Equal(updated, body) {
+		return updated
 	}
-	return marshaled
+	return body
 }
 
 // resolveModelAfterBodyRules 返回顶层 body.model 规则生效后的模型身份。
@@ -235,107 +241,4 @@ func splitJSONPath(p string) []string {
 		segs = append(segs, s)
 	}
 	return segs
-}
-
-// setJSONPath 设置嵌套路径的值；中间节点类型冲突时返回 ok=false。
-// 不存在的中间节点按对象创建（即便下一段是数字，也创建对象而非数组——避免歧义）。
-func setJSONPath(root any, segs []string, value any) (any, bool) {
-	if len(segs) == 0 {
-		return value, true
-	}
-	seg := segs[0]
-	rest := segs[1:]
-
-	switch node := root.(type) {
-	case map[string]any:
-		if len(rest) == 0 {
-			node[seg] = value
-			return node, true
-		}
-		child, exists := node[seg]
-		if !exists {
-			child = map[string]any{}
-		}
-		newChild, ok := setJSONPath(child, rest, value)
-		if !ok {
-			return root, false
-		}
-		node[seg] = newChild
-		return node, true
-	case []any:
-		idx, ok := parseArrayIndex(seg)
-		if !ok || idx < 0 || idx >= len(node) {
-			return root, false
-		}
-		if len(rest) == 0 {
-			node[idx] = value
-			return node, true
-		}
-		newChild, ok := setJSONPath(node[idx], rest, value)
-		if !ok {
-			return root, false
-		}
-		node[idx] = newChild
-		return node, true
-	default:
-		return root, false
-	}
-}
-
-// removeJSONPath 删除嵌套路径上的节点；路径不存在时 ok=false（静默忽略）。
-func removeJSONPath(root any, segs []string) (any, bool) {
-	if len(segs) == 0 {
-		return root, false
-	}
-	seg := segs[0]
-	rest := segs[1:]
-
-	switch node := root.(type) {
-	case map[string]any:
-		if len(rest) == 0 {
-			if _, exists := node[seg]; !exists {
-				return root, false
-			}
-			delete(node, seg)
-			return node, true
-		}
-		child, exists := node[seg]
-		if !exists {
-			return root, false
-		}
-		newChild, ok := removeJSONPath(child, rest)
-		if !ok {
-			return root, false
-		}
-		node[seg] = newChild
-		return node, true
-	case []any:
-		idx, ok := parseArrayIndex(seg)
-		if !ok || idx < 0 || idx >= len(node) {
-			return root, false
-		}
-		if len(rest) == 0 {
-			return append(node[:idx], node[idx+1:]...), true
-		}
-		newChild, ok := removeJSONPath(node[idx], rest)
-		if !ok {
-			return root, false
-		}
-		node[idx] = newChild
-		return node, true
-	default:
-		return root, false
-	}
-}
-
-// parseArrayIndex 解析段为非负整数。
-func parseArrayIndex(s string) (int, bool) {
-	if s == "" {
-		return 0, false
-	}
-	i, err := strconv.Atoi(s)
-	if err != nil || i < 0 {
-		return 0, false
-	}
-	return i, true
 }

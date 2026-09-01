@@ -549,8 +549,7 @@ func validateCustomRequestRules(r *model.CustomRequestRules) error {
 		if len(b.Value) > maxCustomRuleValue {
 			return fmt.Errorf("custom_request_rules.body[%d]: value too long (max %d bytes)", i, maxCustomRuleValue)
 		}
-		var parsed any
-		if err := json.Unmarshal(b.Value, &parsed); err != nil {
+		if err := json.Unmarshal(b.Value, new(json.RawMessage)); err != nil {
 			return fmt.Errorf("custom_request_rules.body[%d]: value is not valid JSON (%v)", i, err)
 		}
 	}

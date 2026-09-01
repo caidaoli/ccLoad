@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"ccLoad/internal/model"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestApplyHeaderRules_BasicActions(t *testing.T) {
@@ -147,6 +149,24 @@ func TestApplyHeaderRules_RewritesRawLowercaseHeaderKeysInPlace(t *testing.T) {
 	}
 }
 
+func TestApplyHeaderRules_CollapsesDuplicateCaseVariants(t *testing.T) {
+	h := http.Header{}
+	setRawHeader(h, "anthropic-beta", "claude-code-20250219")
+	h["Anthropic-Beta"] = []string{"oauth-2025-04-20"}
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionAppend, Name: "anthropic-beta", Value: "context-1m-2025-08-07"},
+	})
+
+	if len(rawHeaderValues(h, "Anthropic-Beta")) != 0 {
+		t.Fatalf("canonical variant survived: %v", h)
+	}
+	got := rawHeaderValues(h, "anthropic-beta")
+	if len(got) != 3 || got[0] != "claude-code-20250219" || got[1] != "oauth-2025-04-20" || got[2] != "context-1m-2025-08-07" {
+		t.Fatalf("anthropic-beta = %v", got)
+	}
+}
+
 func TestApplyHeaderRules_ProtectsRawLowercaseAuthHeaders(t *testing.T) {
 	h := http.Header{}
 	setRawHeader(h, "x-api-key", "sk-real")
@@ -248,6 +268,17 @@ func TestApplyBodyRules_OverrideTopLevel(t *testing.T) {
 	}
 }
 
+func TestApplyBodyRules_PreservesUnchangedFieldOrder(t *testing.T) {
+	body := []byte(`{"z":1,"nested":{"first":1,"second":2},"a":2}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "nested.second", Value: json.RawMessage("3")},
+	}
+
+	out := applyBodyRules("application/json", body, rules)
+	assertFieldOrder(t, string(out), `"z"`, `"nested"`, `"a"`)
+	assertFieldOrder(t, string(out), `"first"`, `"second"`)
+}
+
 func TestApplyBodyRules_OverrideNestedCreatePath(t *testing.T) {
 	body := []byte(`{"model":"x"}`)
 	rules := []model.CustomBodyRule{
@@ -265,6 +296,45 @@ func TestApplyBodyRules_OverrideNestedCreatePath(t *testing.T) {
 	}
 	if v, _ := thinking["budget_tokens"].(float64); v != 8192 {
 		t.Errorf("budget_tokens expected 8192, got %v", thinking["budget_tokens"])
+	}
+}
+
+func TestApplyBodyRules_CreatesMissingNumericSegmentsAsObjects(t *testing.T) {
+	body := []byte(`{"model":"x"}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "metadata.0.value", Value: json.RawMessage(`"kept"`)},
+	}
+
+	out := applyBodyRules("application/json", body, rules)
+	if got := gjson.GetBytes(out, `metadata.0.value`).String(); got != "kept" {
+		t.Fatalf("metadata.0.value = %q, body=%s", got, out)
+	}
+	if !gjson.GetBytes(out, "metadata").IsObject() || !gjson.GetBytes(out, "metadata.0").IsObject() {
+		t.Fatalf("missing numeric segments must be objects: %s", out)
+	}
+}
+
+func TestApplyBodyRules_PathConflictLeavesBodyUntouched(t *testing.T) {
+	body := []byte(`{"metadata":"scalar","model":"x"}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "metadata.value", Value: json.RawMessage(`"ignored"`)},
+	}
+
+	out := applyBodyRules("application/json", body, rules)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("path conflict changed body: %s", out)
+	}
+}
+
+func TestApplyBodyRules_RemovePathConflictLeavesBodyUntouched(t *testing.T) {
+	body := []byte(`{"metadata":"scalar","model":"x"}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionRemove, Path: "metadata.value"},
+	}
+
+	out := applyBodyRules("application/json", body, rules)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("remove path conflict changed body: %s", out)
 	}
 }
 
@@ -340,6 +410,32 @@ func TestApplyBodyRules_ArrayIndex(t *testing.T) {
 	first, _ := msgs[0].(map[string]any)
 	if first["role"] != "system" {
 		t.Errorf("messages[0].role expected system, got %v", first["role"])
+	}
+}
+
+func TestApplyBodyRules_UnicodeAndSpecialObjectKeys(t *testing.T) {
+	body := []byte(`{"用户":1,"pipe|key":2}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "用户", Value: json.RawMessage(`3`)},
+		{Action: model.RuleActionOverride, Path: "pipe|key", Value: json.RawMessage(`4`)},
+	}
+	out := applyBodyRules("application/json", body, rules)
+	if gjson.GetBytes(out, "用户").Int() != 3 {
+		t.Fatalf("unicode key override failed: %s", out)
+	}
+	if gjson.GetBytes(out, `pipe\|key`).Int() != 4 {
+		t.Fatalf("special key override failed: %s", out)
+	}
+}
+
+func TestApplyBodyRules_PlusArrayIndexIsRejected(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user"}]}`)
+	rules := []model.CustomBodyRule{
+		{Action: model.RuleActionOverride, Path: "messages.+1.role", Value: json.RawMessage(`"system"`)},
+	}
+	out := applyBodyRules("application/json", body, rules)
+	if !bytes.Equal(out, body) {
+		t.Fatalf("+1 array index should be rejected, got %s", out)
 	}
 }
 

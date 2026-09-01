@@ -13,6 +13,10 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type oauthQuotaCostCredentialEnvelope struct {
@@ -221,17 +225,19 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 }
 
 func replaceOAuthQuotaCostUsage(credentialJSON string, usage *oauthcost.Usage) (string, error) {
-	var credentialFields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(credentialJSON), &credentialFields); err != nil {
-		return "", err
+	raw := []byte(credentialJSON)
+	if !sonic.Valid(raw) || !gjson.ParseBytes(raw).IsObject() {
+		return "", errors.New("oauth credential must be a JSON object")
 	}
 	costJSON, err := json.Marshal(usage)
 	if err != nil {
 		return "", err
 	}
-	credentialFields["quota_cost_usage"] = costJSON
-	updatedCredential, err := json.Marshal(credentialFields)
-	return string(updatedCredential), err
+	updatedCredential, err := sjson.SetRawBytes(raw, "quota_cost_usage", costJSON)
+	if err != nil {
+		return "", err
+	}
+	return string(updatedCredential), nil
 }
 
 func isOAuthAuthType(authType string) bool {

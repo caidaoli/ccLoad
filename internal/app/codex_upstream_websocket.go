@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 
+	"github.com/bytedance/sonic"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -854,7 +855,7 @@ func isCodexWebsocketHandshakeFallbackError(err error) bool {
 }
 
 func buildCodexWebsocketRequestBody(body []byte) ([]byte, error) {
-	if !gjson.ValidBytes(body) {
+	if !sonic.Valid(body) {
 		return nil, errors.New("invalid Codex websocket request JSON")
 	}
 	body = sanitizeCodexInputItemIDs(body)

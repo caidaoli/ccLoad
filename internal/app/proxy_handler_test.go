@@ -70,6 +70,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 		name         string
 		body         string
 		path         string
+		contentType  string
 		expectModel  string
 		expectStream bool
 		expectError  bool
@@ -131,6 +132,12 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			expectError:  false,
 		},
 		{
+			name:        "尾随JSON被拒绝",
+			body:        `{"model":"gpt-4","messages":[]} []`,
+			path:        "/v1/chat/completions",
+			expectError: true,
+		},
+		{
 			name:         "思考后缀-从模型名剥离等级",
 			body:         `{"model":"gpt-5.6-luna(max)","messages":[]}`,
 			path:         "/v1/chat/completions",
@@ -163,7 +170,11 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			if tt.body == "" {
 				req.Method = http.MethodGet
 			}
-			req.Header.Set("Content-Type", "application/json")
+			contentType := tt.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			req.Header.Set("Content-Type", contentType)
 
 			c, _ := newTestContext(t, req)
 
@@ -472,6 +483,15 @@ func TestParseIncomingRequest_MultipartModel(t *testing.T) {
 	}
 	if incoming.isStreaming {
 		t.Fatal("images 请求不应为流式")
+	}
+}
+
+func TestParseIncomingRequest_RejectsMalformedMultipartFraming(t *testing.T) {
+	req := newRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString("not a multipart payload"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
+	c, _ := newTestContext(t, req)
+	if _, err := parseIncomingRequest(c, requestBodyLimits{}); err == nil {
+		t.Fatal("malformed multipart framing was accepted")
 	}
 }
 

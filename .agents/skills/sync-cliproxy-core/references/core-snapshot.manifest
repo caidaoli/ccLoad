@@ -14,7 +14,7 @@ file|source|internal/misc/mime-type.go|internal/protocol/cliproxy/misc/mime_type
 file|source|internal/registry/models/models.json|internal/protocol/cliproxy/registry/models/models.json|52b6b1ed2c8524124434b04825e569444f03a1a7|52b6b1ed2c8524124434b04825e569444f03a1a7
 
 # ccLoad-owned pure wire helpers with no direct upstream source file.
-local|source|internal/protocol/cliproxy/common/anthropic_response.go|ccload-native-anthropic-wire|c018c7ac308d69eadbb8b38193b8a57b44591fa0
+local|source|internal/protocol/cliproxy/common/anthropic_response.go|ccload-native-anthropic-wire|b07dc98a6fc60e76985ab69c2c60a98abfe2df46
 local|source|internal/protocol/cliproxy/registry/models.go|static-catalog-loader|8dc84eccf81ffa3d7a015ca7f561f3f74012b01b
 local|source|internal/protocol/cliproxy/util/function_name.go|ccload-function-name-normalization|a08a75d94b772b9fe3b79a9cd3b2e9288196f39b
 

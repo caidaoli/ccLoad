@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -198,31 +199,38 @@ func prepareAntigravityRequestBody(
 	if strings.TrimSpace(cfg.AntigravityProjectID) == "" {
 		return nil, errors.New("request: Antigravity credential is missing project_id")
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode Antigravity Gemini request: %w", err)
+	if !isMutableJSONObject(body) {
+		return nil, errors.New("decode Antigravity Gemini request: body is not an object")
 	}
-	request := payload
-	if nested, ok := payload["request"].(map[string]any); ok {
-		request = nested
+
+	// 如果 body 是 {"request":{...}} 信封，取出内层作为操作目标。
+	request := body
+	if gjson.GetBytes(body, "request").IsObject() {
+		request = []byte(gjson.GetBytes(body, "request").Raw)
 	}
-	delete(request, "model")
-	if instruction, exists := request["system_instruction"]; exists {
-		if _, camelExists := request["systemInstruction"]; !camelExists {
-			request["systemInstruction"] = instruction
+
+	request = deleteJSONPath(request, "model")
+
+	// system_instruction → systemInstruction（snake_case 到 camelCase）
+	if sysInst := gjson.GetBytes(request, "system_instruction"); sysInst.Exists() {
+		if !gjson.GetBytes(request, "systemInstruction").Exists() {
+			request = setJSONRaw(request, "systemInstruction", sysInst.Raw)
 		}
-		delete(request, "system_instruction")
+		request = deleteJSONPath(request, "system_instruction")
 	}
-	injectAntigravityIdentityPrompt(request)
-	delete(request, "safetySettings")
-	normalizeAntigravityContentsRoles(request)
-	restoreAntigravityAnthropicToolIDs(request, sourceBody)
-	normalizeAntigravitySchemas(request, modelName)
-	normalizeAntigravityThinkingLevel(request)
+
+	request = injectAntigravityIdentityPrompt(request)
+	request = deleteJSONPath(request, "safetySettings")
+	request = normalizeAntigravityContentsRoles(request)
+	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)
+	request = normalizeAntigravitySchemas(request, modelName)
+	request = normalizeAntigravityThinkingLevel(request)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
-		ensureAntigravityValidatedToolMode(request)
-	} else if generationConfig, ok := request["generationConfig"].(map[string]any); ok {
-		delete(generationConfig, "maxOutputTokens")
+		request = ensureAntigravityValidatedToolMode(request)
+	} else {
+		if gjson.GetBytes(request, "generationConfig").IsObject() {
+			request = deleteJSONPath(request, "generationConfig.maxOutputTokens")
+		}
 	}
 
 	requestType := "agent"
@@ -235,17 +243,22 @@ func prepareAntigravityRequestBody(
 		requestID = fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), util.NewUUIDv4())
 	}
 	if requestType != "image_gen" {
-		if _, exists := request["sessionId"]; !exists {
-			request["sessionId"] = antigravitySessionID(headers, sourceBody, body)
+		if !gjson.GetBytes(request, "sessionId").Exists() {
+			request = setJSONValue(request, "sessionId", antigravitySessionID(headers, sourceBody, body))
 		}
 	}
-	envelope := map[string]any{
-		"project":     cfg.AntigravityProjectID,
-		"request":     request,
-		"model":       strings.TrimSpace(modelName),
-		"userAgent":   "antigravity",
-		"requestType": requestType,
-		"requestId":   requestID,
+
+	envelope := struct {
+		Project     string          `json:"project"`
+		Request     json.RawMessage `json:"request"`
+		Model       string          `json:"model"`
+		UserAgent   string          `json:"userAgent"`
+		RequestType string          `json:"requestType"`
+		RequestID   string          `json:"requestId"`
+	}{
+		Project: cfg.AntigravityProjectID, Request: json.RawMessage(request),
+		Model: strings.TrimSpace(modelName), UserAgent: "antigravity",
+		RequestType: requestType, RequestID: requestID,
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
@@ -258,39 +271,41 @@ func prepareAntigravityRequestBody(
 // are not valid Antigravity ThinkingLevel enum values. CLIProxyAPI normally does
 // this in its excluded runtime ApplyThinking stage, so ccLoad must enforce the
 // provider wire contract at the shared finalization boundary.
-func normalizeAntigravityThinkingLevel(request map[string]any) {
+func normalizeAntigravityThinkingLevel(request []byte) []byte {
 	for _, generationConfigKey := range []string{"generationConfig", "generation_config"} {
-		generationConfig, _ := request[generationConfigKey].(map[string]any)
-		if generationConfig == nil {
+		if !gjson.GetBytes(request, generationConfigKey).IsObject() {
 			continue
 		}
 		for _, thinkingConfigKey := range []string{"thinkingConfig", "thinking_config"} {
-			thinkingConfig, _ := generationConfig[thinkingConfigKey].(map[string]any)
-			if thinkingConfig == nil {
+			configPath := generationConfigKey + "." + thinkingConfigKey
+			if !gjson.GetBytes(request, configPath).IsObject() {
 				continue
 			}
 			levelKey := "thinkingLevel"
-			level, _ := thinkingConfig[levelKey].(string)
+			levelPath := configPath + "." + levelKey
+			level := jsonStringValue(gjson.GetBytes(request, levelPath))
 			if level == "" {
 				levelKey = "thinking_level"
-				level, _ = thinkingConfig[levelKey].(string)
+				levelPath = configPath + "." + levelKey
+				level = jsonStringValue(gjson.GetBytes(request, levelPath))
 			}
 			switch normalized := strings.ToLower(strings.TrimSpace(level)); normalized {
 			case "minimal":
-				thinkingConfig[levelKey] = "low"
+				request = setJSONValue(request, levelPath, "low")
 			case "xhigh", "max":
-				thinkingConfig[levelKey] = "high"
+				request = setJSONValue(request, levelPath, "high")
 			case "low", "medium", "high":
-				thinkingConfig[levelKey] = normalized
+				request = setJSONValue(request, levelPath, normalized)
 			}
 		}
 	}
+	return request
 }
 
-func restoreAntigravityAnthropicToolIDs(request map[string]any, sourceBody []byte) {
+func restoreAntigravityAnthropicToolIDs(request []byte, sourceBody []byte) []byte {
 	messages := gjson.GetBytes(sourceBody, "messages")
 	if !messages.IsArray() {
-		return
+		return request
 	}
 
 	var callIDs, responseIDs []string
@@ -315,69 +330,84 @@ func restoreAntigravityAnthropicToolIDs(request map[string]any, sourceBody []byt
 		return true
 	})
 
-	var calls, responses []map[string]any
-	contents, _ := request["contents"].([]any)
-	for _, rawContent := range contents {
-		content, _ := rawContent.(map[string]any)
-		parts, _ := content["parts"].([]any)
-		for _, rawPart := range parts {
-			part, _ := rawPart.(map[string]any)
-			if call, ok := part["functionCall"].(map[string]any); ok {
-				calls = append(calls, call)
+	callIndex := 0
+	responseIndex := 0
+	contents := gjson.GetBytes(request, "contents")
+	if !contents.IsArray() {
+		return request
+	}
+	for ci, content := range contents.Array() {
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			continue
+		}
+		for pi, part := range parts.Array() {
+			if !part.IsObject() {
+				continue
 			}
-			if response, ok := part["functionResponse"].(map[string]any); ok {
-				responses = append(responses, response)
+			if part.Get("functionCall").IsObject() {
+				if part.Get("functionCall.id").String() == "" && callIndex < len(callIDs) {
+					request = setJSONValue(request,
+						fmt.Sprintf("contents.%d.parts.%d.functionCall.id", ci, pi),
+						callIDs[callIndex])
+				}
+				callIndex++
+			}
+			if part.Get("functionResponse").IsObject() {
+				if part.Get("functionResponse.id").String() == "" && responseIndex < len(responseIDs) {
+					request = setJSONValue(request,
+						fmt.Sprintf("contents.%d.parts.%d.functionResponse.id", ci, pi),
+						responseIDs[responseIndex])
+				}
+				responseIndex++
 			}
 		}
 	}
-
-	restoreAntigravityToolIDs(calls, callIDs)
-	restoreAntigravityToolIDs(responses, responseIDs)
+	return request
 }
 
-func restoreAntigravityToolIDs(parts []map[string]any, ids []string) {
-	if len(parts) != len(ids) {
-		return
+func injectAntigravityIdentityPrompt(request []byte) []byte {
+	if antigravitySystemInstructionContainsIdentity(request) {
+		return request
 	}
-	for i, part := range parts {
-		if id, _ := part["id"].(string); id == "" {
-			part["id"] = ids[i]
+	identityPartRaw := `{"text":` + jsonEscapedString(antigravityIdentityPrompt) + `}`
+	instruction := gjson.GetBytes(request, "systemInstruction")
+	switch {
+	case instruction.IsObject():
+		parts := instruction.Get("parts")
+		if parts.IsArray() {
+			existing := make([]string, 0, len(parts.Array())+1)
+			existing = append(existing, identityPartRaw)
+			for _, part := range parts.Array() {
+				existing = append(existing, part.Raw)
+			}
+			request = setJSONRaw(request, "systemInstruction.parts", joinJSONRaw(existing))
+		} else {
+			request = setJSONRaw(request, "systemInstruction.parts", joinJSONRaw([]string{identityPartRaw}))
 		}
-	}
-}
-
-func injectAntigravityIdentityPrompt(request map[string]any) {
-	if request == nil || antigravitySystemInstructionContainsIdentity(request["systemInstruction"]) {
-		return
-	}
-	identityPart := map[string]any{"text": antigravityIdentityPrompt}
-	switch instruction := request["systemInstruction"].(type) {
-	case map[string]any:
-		parts, _ := instruction["parts"].([]any)
-		instruction["parts"] = append([]any{identityPart}, parts...)
-	case string:
-		parts := []any{identityPart}
-		if instruction != "" {
-			parts = append(parts, map[string]any{"text": instruction})
+	case instruction.Type == gjson.String:
+		parts := []string{identityPartRaw}
+		if text := instruction.String(); text != "" {
+			parts = append(parts, `{"text":`+jsonEscapedString(text)+`}`)
 		}
-		request["systemInstruction"] = map[string]any{"parts": parts}
+		request = setJSONRaw(request, "systemInstruction", `{"parts":`+joinJSONRaw(parts)+`}`)
 	default:
-		request["systemInstruction"] = map[string]any{"parts": []any{identityPart}}
+		request = setJSONRaw(request, "systemInstruction", `{"parts":`+joinJSONRaw([]string{identityPartRaw})+`}`)
 	}
+	return request
 }
 
-func antigravitySystemInstructionContainsIdentity(instruction any) bool {
+func antigravitySystemInstructionContainsIdentity(request []byte) bool {
 	containsIdentity := func(text string) bool {
 		return strings.Contains(strings.ReplaceAll(text, zeroWidthSpace, ""), "You are Antigravity")
 	}
-	switch value := instruction.(type) {
-	case string:
-		return containsIdentity(value)
-	case map[string]any:
-		parts, _ := value["parts"].([]any)
-		for _, rawPart := range parts {
-			part, _ := rawPart.(map[string]any)
-			if text, _ := part["text"].(string); containsIdentity(text) {
+	instruction := gjson.GetBytes(request, "systemInstruction")
+	switch {
+	case instruction.Type == gjson.String:
+		return containsIdentity(instruction.String())
+	case instruction.IsObject():
+		for _, part := range instruction.Get("parts").Array() {
+			if part.Get("text").Type == gjson.String && containsIdentity(part.Get("text").String()) {
 				return true
 			}
 		}
@@ -389,31 +419,27 @@ func hasAntigravityWebSearchTool(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
-	var payload map[string]any
-	if json.Unmarshal(body, &payload) != nil {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
 		return false
 	}
-	tools, _ := payload["tools"].([]any)
-	for _, rawTool := range tools {
-		tool, _ := rawTool.(map[string]any)
-		if isAntigravityWebSearchName(tool["type"]) || isAntigravityWebSearchName(tool["name"]) {
+	for _, tool := range tools.Array() {
+		if !tool.IsObject() {
+			continue
+		}
+		if isAntigravityWebSearchName(jsonStringValue(tool.Get("type"))) ||
+			isAntigravityWebSearchName(jsonStringValue(tool.Get("name"))) {
 			return true
 		}
-		if _, ok := tool["googleSearch"]; ok {
+		if tool.Get("googleSearch").Exists() || tool.Get("google_search").Exists() {
 			return true
 		}
-		if _, ok := tool["google_search"]; ok {
-			return true
-		}
-		function, _ := tool["function"].(map[string]any)
-		if isAntigravityWebSearchName(function["name"]) {
+		if isAntigravityWebSearchName(jsonStringValue(tool.Get("function.name"))) {
 			return true
 		}
 		for _, key := range []string{"functionDeclarations", "function_declarations"} {
-			declarations, _ := tool[key].([]any)
-			for _, rawDeclaration := range declarations {
-				declaration, _ := rawDeclaration.(map[string]any)
-				if isAntigravityWebSearchName(declaration["name"]) {
+			for _, declaration := range tool.Get(key).Array() {
+				if isAntigravityWebSearchName(jsonStringValue(declaration.Get("name"))) {
 					return true
 				}
 			}
@@ -422,117 +448,119 @@ func hasAntigravityWebSearchTool(body []byte) bool {
 	return false
 }
 
-func isAntigravityWebSearchName(value any) bool {
-	name, _ := value.(string)
-	name = strings.ToLower(strings.TrimSpace(name))
+func isAntigravityWebSearchName(value string) bool {
+	name := strings.ToLower(strings.TrimSpace(value))
 	return strings.HasPrefix(name, "web_search") || name == "google_search"
 }
 
-func normalizeAntigravityContentsRoles(request map[string]any) {
-	contents, _ := request["contents"].([]any)
+func normalizeAntigravityContentsRoles(request []byte) []byte {
+	contents := gjson.GetBytes(request, "contents")
+	if !contents.IsArray() {
+		return request
+	}
 	previousRole := ""
-	for _, rawContent := range contents {
-		content, _ := rawContent.(map[string]any)
-		role, _ := content["role"].(string)
+	for index, content := range contents.Array() {
+		if !content.IsObject() {
+			continue
+		}
+		role := jsonStringValue(content.Get("role"))
 		if role != "user" && role != "model" {
 			if previousRole == "" || previousRole == "model" {
 				role = "user"
 			} else {
 				role = "model"
 			}
-			content["role"] = role
+			request = setJSONValue(request, fmt.Sprintf("contents.%d.role", index), role)
 		}
 		previousRole = role
 	}
+	return request
 }
 
-func normalizeAntigravitySchemas(request map[string]any, modelName string) {
+func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	useAntigravitySchema := strings.Contains(strings.ToLower(modelName), "claude") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3-pro") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3.1-pro")
-	tools, _ := request["tools"].([]any)
-	for _, rawTool := range tools {
-		tool, _ := rawTool.(map[string]any)
-		for _, key := range []string{"functionDeclarations", "function_declarations"} {
-			declarations, _ := tool[key].([]any)
-			for _, rawDeclaration := range declarations {
-				declaration, _ := rawDeclaration.(map[string]any)
-				parameters, exists := firstAntigravityMapValue(declaration, "parameters", "parametersJsonSchema", "parameters_json_schema")
-				if exists {
-					declaration["parameters"] = cleanAntigravitySchema(parameters, useAntigravitySchema, false)
-					delete(declaration, "parametersJsonSchema")
-					delete(declaration, "parameters_json_schema")
+	tools := gjson.GetBytes(request, "tools")
+	if tools.IsArray() {
+		for ti, tool := range tools.Array() {
+			if !tool.IsObject() {
+				continue
+			}
+			for _, key := range []string{"functionDeclarations", "function_declarations"} {
+				declarations := tool.Get(key)
+				if !declarations.IsArray() {
+					continue
 				}
-				for _, schemaKey := range []string{"response", "responseJsonSchema", "response_json_schema"} {
-					if schema, ok := declaration[schemaKey].(map[string]any); ok {
-						declaration[schemaKey] = cleanAntigravitySchema(schema, useAntigravitySchema, false)
+				for di, declaration := range declarations.Array() {
+					if !declaration.IsObject() {
+						continue
+					}
+					declPath := fmt.Sprintf("tools.%d.%s.%d", ti, key, di)
+					// parameters: try parameters, parametersJsonSchema, parameters_json_schema
+					for _, paramKey := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema"} {
+						if param := declaration.Get(paramKey); param.IsObject() {
+							cleaned := cleanAntigravitySchemaRaw(param.Raw, useAntigravitySchema, false)
+							request = setJSONRaw(request, declPath+".parameters", cleaned)
+							if paramKey != "parameters" {
+								request = deleteJSONPath(request, declPath+"."+paramKey)
+							}
+							break
+						}
+					}
+					for _, schemaKey := range []string{"response", "responseJsonSchema", "response_json_schema"} {
+						if schema := declaration.Get(schemaKey); schema.IsObject() {
+							cleaned := cleanAntigravitySchemaRaw(schema.Raw, useAntigravitySchema, false)
+							request = setJSONRaw(request, declPath+"."+schemaKey, cleaned)
+						}
 					}
 				}
 			}
 		}
 	}
 	for _, configKey := range []string{"generationConfig", "generation_config"} {
-		config, _ := request[configKey].(map[string]any)
+		if !gjson.GetBytes(request, configKey).IsObject() {
+			continue
+		}
 		for _, schemaKey := range []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"} {
-			if schema, ok := config[schemaKey].(map[string]any); ok {
-				config[schemaKey] = cleanAntigravitySchema(schema, true, true)
+			schemaPath := configKey + "." + schemaKey
+			if schema := gjson.GetBytes(request, schemaPath); schema.IsObject() {
+				cleaned := cleanAntigravitySchemaRaw(schema.Raw, true, true)
+				request = setJSONRaw(request, schemaPath, cleaned)
 			}
 		}
 	}
+	return request
 }
 
-func firstAntigravityMapValue(values map[string]any, keys ...string) (map[string]any, bool) {
-	for _, key := range keys {
-		if value, ok := values[key].(map[string]any); ok {
-			return value, true
-		}
-	}
-	return nil, false
-}
-
-func cleanAntigravitySchema(schema map[string]any, antigravity, response bool) map[string]any {
-	input := any(schema)
+func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {
+	input := raw
 	if !response {
-		input = map[string]any{"schema": schema}
-	}
-	raw, err := json.Marshal(input)
-	if err != nil {
-		return schema
+		input = `{"schema":` + raw + `}`
 	}
 	cleaned := ""
 	switch {
 	case response:
-		cleaned = cliproxyutil.CleanJSONSchemaForAntigravityResponse(string(raw))
+		cleaned = cliproxyutil.CleanJSONSchemaForAntigravityResponse(input)
 	case antigravity:
-		cleaned = cliproxyutil.CleanJSONSchemaForAntigravity(string(raw))
+		cleaned = cliproxyutil.CleanJSONSchemaForAntigravity(input)
 	default:
-		cleaned = cliproxyutil.CleanJSONSchemaForGemini(string(raw))
-	}
-	var result map[string]any
-	if json.Unmarshal([]byte(cleaned), &result) != nil {
-		return schema
+		cleaned = cliproxyutil.CleanJSONSchemaForGemini(input)
 	}
 	if !response {
-		if nested, ok := result["schema"].(map[string]any); ok {
-			return nested
+		if nested := gjson.Get(cleaned, "schema"); nested.IsObject() {
+			return nested.Raw
 		}
-		return schema
+		return raw
 	}
-	return result
+	if !gjson.Valid(cleaned) {
+		return raw
+	}
+	return cleaned
 }
 
-func ensureAntigravityValidatedToolMode(request map[string]any) {
-	toolConfig, _ := request["toolConfig"].(map[string]any)
-	if toolConfig == nil {
-		toolConfig = make(map[string]any)
-		request["toolConfig"] = toolConfig
-	}
-	functionCallingConfig, _ := toolConfig["functionCallingConfig"].(map[string]any)
-	if functionCallingConfig == nil {
-		functionCallingConfig = make(map[string]any)
-		toolConfig["functionCallingConfig"] = functionCallingConfig
-	}
-	functionCallingConfig["mode"] = "VALIDATED"
+func ensureAntigravityValidatedToolMode(request []byte) []byte {
+	return setJSONValue(request, "toolConfig.functionCallingConfig.mode", "VALIDATED")
 }
 
 func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
@@ -592,35 +620,33 @@ func antigravityNegativeSessionID(seed string) string {
 }
 
 func obfuscateAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) []byte {
-	if matcher == nil {
+	if matcher == nil || !gjson.ParseBytes(body).IsObject() {
 		return body
 	}
-	var envelope map[string]any
-	if json.Unmarshal(body, &envelope) != nil {
+	instruction := gjson.GetBytes(body, "request.systemInstruction")
+	if !instruction.Exists() {
 		return body
 	}
-	request, _ := envelope["request"].(map[string]any)
-	instruction, exists := request["systemInstruction"]
-	if !exists {
-		return body
-	}
-	switch value := instruction.(type) {
-	case string:
-		request["systemInstruction"] = obfuscateAntigravityText(value, matcher)
-	case map[string]any:
-		parts, _ := value["parts"].([]any)
-		for _, rawPart := range parts {
-			part, _ := rawPart.(map[string]any)
-			if text, ok := part["text"].(string); ok {
-				part["text"] = obfuscateAntigravityText(text, matcher)
+	updated := body
+	var err error
+	switch {
+	case instruction.Type == gjson.String:
+		updated, err = sjson.SetBytes(updated, "request.systemInstruction", obfuscateAntigravityText(instruction.String(), matcher))
+	case instruction.IsObject():
+		for index, part := range instruction.Get("parts").Array() {
+			if part.Get("text").Type != gjson.String {
+				continue
+			}
+			updated, err = sjson.SetBytes(updated, fmt.Sprintf("request.systemInstruction.parts.%d.text", index), obfuscateAntigravityText(part.Get("text").String(), matcher))
+			if err != nil {
+				return body
 			}
 		}
 	}
-	raw, err := json.Marshal(envelope)
 	if err != nil {
 		return body
 	}
-	return raw
+	return updated
 }
 
 func obfuscateAntigravityText(text string, matcher *regexp.Regexp) string {

@@ -89,8 +89,8 @@ func TestDebugLogResponse_IncludesProtocolTransformBodiesOnlyForLocalTransform(t
 	if got := transformed["original_req_url"]; got != "/v1/chat/completions" {
 		t.Fatalf("original_req_url=%v", got)
 	}
-	if got := transformed["original_req_headers"].(string); strings.Contains(got, "Bearer secret") || !strings.Contains(got, "*") {
-		t.Fatalf("original_req_headers was not masked: %s", got)
+	if got, want := transformed["original_req_headers"].(string), `{"Content-Type":"application/json","Authorization":"Bear******cret"}`; got != want {
+		t.Fatalf("original_req_headers=%s, want order-preserving masked headers %s", got, want)
 	}
 	if got := transformed["translated_resp_status"]; got != http.StatusOK {
 		t.Fatalf("translated_resp_status=%v", got)

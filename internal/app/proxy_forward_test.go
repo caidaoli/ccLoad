@@ -653,6 +653,7 @@ func TestCodexBodyWithoutThinking_RemovesReasoningControls(t *testing.T) {
 		!strings.Contains(text, `"type":"message"`) {
 		t.Fatalf("retry body should preserve unrelated include and message input, got %s", text)
 	}
+	assertFieldOrder(t, text, `"model"`, `"include"`, `"input"`)
 }
 
 func TestResponsesRetryBodyForMissingRequiredParameter_DropsInputItem(t *testing.T) {
@@ -688,6 +689,7 @@ func TestResponsesRetryBodyForMissingRequiredParameter_DropsInputItem(t *testing
 	if items[1].Get("type").String() != "agent_message" || items[1].Get("content.0.text").String() != "follow-up" {
 		t.Fatalf("follow-up item lost: %s", got)
 	}
+	assertFieldOrder(t, string(got), `"model"`, `"input"`)
 }
 
 func TestResponsesRetryBodyForMissingRequiredParameter_IgnoresNonMatchingErrors(t *testing.T) {
@@ -754,6 +756,176 @@ func TestRetryBodyForRejectedRequest_StripsMissingRequiredInput(t *testing.T) {
 	}
 }
 
+func TestAnthropicRetryBodyFor400PreservesOrderWhileDowngradingThinking(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"claude-opus-4-6","thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"keep this","cache_control":{"type":"ephemeral"}}]}],"output_config":{"effort":"high","format":{"type":"json"}},"metadata":{"keep":true}}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`),
+	}
+
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, protocol.TransformPlan{TranslatedBody: body}, res)
+	if !ok || strategy != "downgrade_anthropic_thinking" {
+		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
+	}
+	if gjson.GetBytes(got, "thinking").Exists() || gjson.GetBytes(got, "output_config.effort").Exists() {
+		t.Fatalf("thinking controls survived downgrade: %s", got)
+	}
+	if gotFormat := gjson.GetBytes(got, "output_config.format.type").String(); gotFormat != "json" {
+		t.Fatalf("output_config.format.type = %q, body=%s", gotFormat, got)
+	}
+	if blockType := gjson.GetBytes(got, "messages.0.content.0.type").String(); blockType != "text" {
+		t.Fatalf("thinking block type = %q, body=%s", blockType, got)
+	}
+	assertFieldOrder(t, string(got), `"model"`, `"messages"`, `"output_config"`, `"metadata"`)
+}
+
+func TestNormalizeAnthropicMessagesBodyPatchesOnlyChangedMembers(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"thinking":{"type":"adaptive","budget_tokens":4096},"metadata":{"z":1,"a":2}}`)
+
+	got, err := normalizeAnthropicMessagesBody(body)
+	if err != nil {
+		t.Fatalf("normalizeAnthropicMessagesBody() error = %v", err)
+	}
+	if effort := gjson.GetBytes(got, "output_config.effort").String(); effort != "medium" {
+		t.Fatalf("output_config.effort = %q, body=%s", effort, got)
+	}
+	if gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+		t.Fatalf("budget_tokens survived normalization: %s", got)
+	}
+	assertFieldOrder(t, string(got), `"model"`, `"messages"`, `"thinking"`, `"metadata"`, `"output_config"`)
+	assertFieldOrder(t, gjson.GetBytes(got, "metadata").Raw, `"z"`, `"a"`)
+}
+func TestNormalizeAnthropicMessagesBodySanitizesOpaqueThinkingSignatureOnCanonicalBody(t *testing.T) {
+	t.Parallel()
+	// body 已满足 normalizeAnthropicMessagesRequest 的全部字段条件：
+	// adaptive thinking 无 budget_tokens、cache_control 已存在、无采样字段，
+	// normalize 不会改写任何成员。但 assistant 的 thinking block 携带 Claude-compatible
+	// 上游不接受的外来 signature（opaque-deepseek-id）——canonical body 也必须被清洗。
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":4096,"thinking":{"type":"adaptive"},"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"thinking","thinking":"foreign reasoning","signature":"opaque-deepseek-id"},{"type":"text","text":"answer"}]}]}`)
+
+	got, err := normalizeAnthropicMessagesBody(body)
+	if err != nil {
+		t.Fatalf("normalizeAnthropicMessagesBody() error = %v", err)
+	}
+	// 外来 signature 不兼容 Claude 上游，thinking block 必须整体删除，
+	// 相邻的普通 text block 保持不变。
+	if strings.Contains(string(got), "opaque-deepseek-id") {
+		t.Fatalf("opaque-signature thinking block survived sanitization: %s", got)
+	}
+	blocks := gjson.GetBytes(got, "messages.1.content")
+	if len(blocks.Array()) != 1 || blocks.Get("0.type").String() != "text" || blocks.Get("0.text").String() != "answer" {
+		t.Fatalf("assistant content = %s, want single text block after sanitization", blocks.Raw)
+	}
+}
+
+// Anthropic 改写全程用 sjson 就地写字节，而 sjson 对截断/带尾随数据的输入会静默
+// 返回损坏结果且 err == nil。入口这一次语法校验是唯一防线，必须拒绝非法 body。
+func TestNormalizeAnthropicMessagesBodyRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{"model":"claude-opus-4-6"} {"unexpected":true}`,
+		`{"model":"claude-opus-4-6"`,
+		`[{"model":"claude-opus-4-6"}]`,
+		``,
+	} {
+		if _, err := normalizeAnthropicMessagesBody([]byte(body)); err == nil {
+			t.Fatalf("normalizeAnthropicMessagesBody accepted malformed body %q", body)
+		}
+	}
+}
+
+func TestAnthropicToolResultTextPreservesScalarContent(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: `{"tool_use_id":"toolu_1","content":123}`, want: "\n123"},
+		{input: `{"tool_use_id":"toolu_1","content":true}`, want: "\ntrue"},
+	} {
+		got := anthropicToolResultText(gjson.Parse(test.input))
+		if !strings.HasSuffix(got, test.want) {
+			t.Fatalf("scalar tool result lost: input=%s got=%q", test.input, got)
+		}
+	}
+}
+
+func TestRectifyAnthropicThinkingBudgetRejectsFractionalTokenCounts(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"thinking":{"type":"enabled","budget_tokens":32000.5},"max_tokens":64000.5}`)
+	if got, ok := rectifyAnthropicThinkingBudget(body); !ok || gjson.GetBytes(got, "thinking.budget_tokens").Int() != 32000 || gjson.GetBytes(got, "max_tokens").Int() != 64000 {
+		t.Fatalf("fractional token counts were not repaired exactly: ok=%v body=%s", ok, got)
+	}
+}
+
+func TestDowngradeAnthropicThinkingBlocksRemovesEmptyOutputConfig(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"claude-opus-4-6","output_config":{"effort":"high"},"messages":[]}`)
+	got, ok := downgradeAnthropicThinkingBlocks(body)
+	if !ok {
+		t.Fatal("expected thinking downgrade to apply")
+	}
+	if gjson.GetBytes(got, "output_config").Exists() {
+		t.Fatalf("empty output_config survived: %s", got)
+	}
+}
+
+func TestAntigravitySignatureRetryReturnsOrderedInnerRequest(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"project":"p","model":"claude-sonnet-4-6","request":{"generationConfig":{"thinkingConfig":{"includeThoughts":true},"keep":1},"contents":[{"role":"model","parts":[{"thought":true,"text":"keep thought","thoughtSignature":"sig"},{"text":"answer"}]}],"z":1}}`)
+
+	got, strategy, ok := antigravitySignatureRetryBody(body, []byte(`{"error":{"message":"invalid thought signature"}}`), http.StatusBadRequest)
+	if !ok || strategy != "strip_antigravity_thinking" {
+		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
+	}
+	if gjson.GetBytes(got, "request").Exists() {
+		t.Fatalf("retry body must be the inner request: %s", got)
+	}
+	if gjson.GetBytes(got, "generationConfig.thinkingConfig").Exists() {
+		t.Fatalf("thinkingConfig survived retry: %s", got)
+	}
+	if gotKeep := gjson.GetBytes(got, "generationConfig.keep").Int(); gotKeep != 1 {
+		t.Fatalf("generationConfig.keep = %d, body=%s", gotKeep, got)
+	}
+	if gotText := gjson.GetBytes(got, "contents.0.parts.0.text").String(); gotText != "keep thought" {
+		t.Fatalf("downgraded thought text = %q, body=%s", gotText, got)
+	}
+	assertFieldOrder(t, string(got), `"generationConfig"`, `"contents"`, `"z"`)
+}
+
+func TestAntigravityGeminiSignatureRetryPatchesNestedSignaturesInPlace(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"project":"p","model":"gemini-2.5-pro","request":{"contents":[{"parts":[{"text":"answer","thoughtSignature":"original"}]}],"metadata":{"z":1,"a":2}}}`)
+
+	got, strategy, ok := antigravitySignatureRetryBody(body, []byte(`{"error":{"message":"thought signature is invalid"}}`), http.StatusBadRequest)
+	if !ok || strategy != "replace_antigravity_thought_signatures" {
+		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
+	}
+	if signature := gjson.GetBytes(got, "contents.0.parts.0.thoughtSignature").String(); signature != "skip_thought_signature_validator" {
+		t.Fatalf("thoughtSignature = %q, body=%s", signature, got)
+	}
+	assertFieldOrder(t, string(got), `"contents"`, `"metadata"`)
+	assertFieldOrder(t, gjson.GetBytes(got, "metadata").Raw, `"z"`, `"a"`)
+}
+func TestReplaceAntigravityThoughtSignaturesAlreadySkipValidatorIsNoOp(t *testing.T) {
+	t.Parallel()
+	// thoughtSignature 已是 skip-validator 哨兵时不得再报告变更：
+	// 重复替换会触发无意义的 retry 循环。
+	body := []byte(`{"contents":[{"parts":[{"text":"answer","thoughtSignature":"skip_thought_signature_validator"}]}]}`)
+
+	got, changed := replaceAntigravityThoughtSignatures(body)
+	if changed {
+		t.Fatalf("already-skip-validator body reported changed: %s", got)
+	}
+	if got != nil {
+		if signature := gjson.GetBytes(got, "contents.0.parts.0.thoughtSignature").String(); signature != "skip_thought_signature_validator" {
+			t.Fatalf("sentinel must be preserved: %s", got)
+		}
+	}
+}
+
 func TestRetryBodyForRejectedRequest_StripsUnknownInputStatus(t *testing.T) {
 	t.Parallel()
 	// 两个 item 都带 status：一次性剥离全部，而不是只删上游点名的单个路径。
@@ -766,7 +938,6 @@ func TestRetryBodyForRejectedRequest_StripsUnknownInputStatus(t *testing.T) {
 		ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex,
 		RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: body,
 	}
-
 	got, strategy, ok := retryBodyForRejectedRequest(protocol.Codex, nil, plan, res)
 	if !ok {
 		t.Fatal("retryBodyForRejectedRequest returned ok=false")

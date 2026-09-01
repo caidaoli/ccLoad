@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"ccLoad/internal/model"
@@ -19,6 +20,7 @@ import (
 	"ccLoad/internal/zedauth"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func isZedResponsesRequest(cfg *model.Config, upstream protocol.Protocol) bool {
@@ -35,42 +37,40 @@ type zedWirePlan struct {
 }
 
 func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthropicRequest []byte) ([]byte, *zedWirePlan, error) {
+	if !isMutableJSONObject(body) {
+		return nil, nil, errors.New("finalize Zed Responses request: invalid JSON object")
+	}
+	// Reject trailing JSON (e.g. `{} []`). gjson.ValidBytes accepts it,
+	// so check via the stdlib decoder which stops at the first value boundary.
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	var providerRequest map[string]any
-	if err := decoder.Decode(&providerRequest); err != nil || providerRequest == nil {
+	if err := decoder.Decode(&json.RawMessage{}); err != nil {
 		return nil, nil, errors.New("finalize Zed Responses request: invalid JSON object")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, nil, errors.New("finalize Zed Responses request: trailing JSON")
 	}
-	modelName, _ := providerRequest["model"].(string)
-	modelName = strings.TrimSpace(modelName)
+
+	modelName := strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "model")))
 	if modelName == "" {
 		return nil, nil, errors.New("finalize Zed Responses request: model is required")
 	}
 	if modelName == "gpt-5.6" {
 		modelName = "gpt-5.6-sol"
-		providerRequest["model"] = modelName
+		body = setJSONValue(body, "model", modelName)
 	}
 	provider, providerProtocol, err := zedProviderProtocol(modelName)
 	if err != nil {
 		return nil, nil, err
 	}
-	providerRequest["stream"] = true
-	normalizeZedCodexInput(providerRequest)
-	stripZedEncryptedContent(providerRequest)
-	originalRequest, err := json.Marshal(providerRequest)
-	if err != nil {
-		return nil, nil, errors.New("finalize Zed Responses request: encode normalized request failed")
-	}
+	body = setJSONValue(body, "stream", true)
+	body = normalizeZedCodexInput(body)
+	body = stripZedEncryptedContent(body)
+	originalRequest := body
 
 	translatedRequest := originalRequest
 	if provider == zedauth.ProviderOpenAI {
-		if err := normalizeZedOpenAIProviderRequest(providerRequest, modelName, originalRequest); err != nil {
-			return nil, nil, err
-		}
-		translatedRequest, err = json.Marshal(providerRequest)
+		translatedRequest, err = normalizeZedOpenAIProviderRequest(originalRequest, modelName)
 	} else {
 		if registry == nil {
 			return nil, nil, errors.New("finalize Zed Responses request: protocol registry is unavailable")
@@ -131,139 +131,212 @@ func zedProviderProtocol(modelName string) (string, protocol.Protocol, error) {
 	}
 }
 
-func normalizeZedCodexInput(request map[string]any) {
-	switch input := request["input"].(type) {
-	case string:
-		request["input"] = []any{zedMessage("user", input)}
-	case []any:
-		normalized := make([]any, 0, len(input))
-		for _, rawItem := range input {
-			item, ok := rawItem.(map[string]any)
-			if !ok {
-				normalized = append(normalized, rawItem)
-				continue
-			}
-			for key, value := range item {
-				if value == nil {
-					delete(item, key)
-				}
-			}
-			if item["type"] == "agent_message" {
-				item["type"] = "message"
-				item["role"] = "user"
-				delete(item, "author")
-				delete(item, "recipient")
-				if parts, ok := item["content"].([]any); ok {
-					for _, rawPart := range parts {
-						part, ok := rawPart.(map[string]any)
-						if !ok || part["type"] != "encrypted_content" {
-							continue
-						}
-						encrypted, ok := part["encrypted_content"].(string)
-						if !ok {
-							continue
-						}
-						part["type"] = "input_text"
-						part["text"] = encrypted
-						delete(part, "encrypted_content")
-					}
-				}
-			}
-			role, _ := item["role"].(string)
-			if role == "developer" {
-				role = "system"
-				item["role"] = role
-			}
-			if role != "" && item["type"] == nil {
-				item["type"] = "message"
-			}
-			if content, ok := item["content"].(string); ok {
-				contentType := "input_text"
-				if role == "assistant" {
-					contentType = "output_text"
-				}
-				item["content"] = []any{map[string]any{"type": contentType, "text": content}}
-			}
-			normalized = append(normalized, item)
-		}
-		request["input"] = normalized
+func normalizeZedCodexInput(body []byte) []byte {
+	input := gjson.GetBytes(body, "input")
+	switch {
+	case input.Type == gjson.String:
+		return setJSONRaw(body, "input", "["+zedMessageRaw("user", input.String())+"]")
+	case !input.IsArray():
+		return body
 	}
-}
-
-func stripZedEncryptedContent(request map[string]any) {
-	if request == nil {
-		return
-	}
-	removeEncryptedContentFields(request)
-	filterCodexThinkingIncludes(request)
-	input, ok := request["input"].([]any)
-	if !ok {
-		return
-	}
-	filtered := make([]any, 0, len(input))
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			filtered = append(filtered, rawItem)
+	items := input.Array()
+	rendered := make([]string, 0, len(items))
+	changed := false
+	for _, item := range items {
+		if !item.IsObject() {
+			rendered = append(rendered, item.Raw)
 			continue
 		}
-		switch item["type"] {
+		raw := []byte(item.Raw)
+		itemChanged := false
+
+		// Delete null-valued fields.
+		item.ForEach(func(key, value gjson.Result) bool {
+			if value.Type == gjson.Null {
+				raw = deleteJSONPath(raw, key.String())
+				itemChanged = true
+			}
+			return true
+		})
+
+		itemType := jsonStringValue(gjson.ParseBytes(raw).Get("type"))
+		if itemType == "agent_message" {
+			raw = setJSONValue(raw, "type", "message")
+			raw = setJSONValue(raw, "role", "user")
+			raw = deleteJSONPath(raw, "author")
+			raw = deleteJSONPath(raw, "recipient")
+
+			content := gjson.GetBytes(raw, "content")
+			if content.IsArray() {
+				// Rewrite encrypted_content parts → input_text.
+				parts := content.Array()
+				contentItems := make([]string, 0, len(parts))
+				contentChanged := false
+				for _, part := range parts {
+					if part.IsObject() && jsonStringValue(part.Get("type")) == "encrypted_content" {
+						encrypted := jsonStringValue(part.Get("encrypted_content"))
+						if encrypted != "" {
+							replacement := setJSONValue(setJSONValue([]byte(`{}`), "type", "input_text"), "text", encrypted)
+							contentItems = append(contentItems, string(replacement))
+							contentChanged = true
+							continue
+						}
+					}
+					contentItems = append(contentItems, part.Raw)
+				}
+				if contentChanged {
+					raw = setJSONRaw(raw, "content", joinJSONRaw(contentItems))
+				}
+			} else if content.Type == gjson.String {
+				// String content → input_text content block.
+				contentType := "input_text"
+				raw = setJSONRaw(raw, "content", "["+zedInputTextBlockRaw(contentType, content.String())+"]")
+			}
+			itemChanged = true
+		}
+
+		role := jsonStringValue(gjson.ParseBytes(raw).Get("role"))
+		if role == "developer" {
+			raw = setJSONValue(raw, "role", "system")
+			role = "system"
+			itemChanged = true
+		}
+		parsed := gjson.ParseBytes(raw)
+		if role != "" && !parsed.Get("type").Exists() {
+			raw = setJSONValue(raw, "type", "message")
+			itemChanged = true
+		}
+		if parsed.Get("content").Type == gjson.String {
+			contentType := "input_text"
+			if role == "assistant" {
+				contentType = "output_text"
+			}
+			raw = setJSONRaw(raw, "content", "["+zedInputTextBlockRaw(contentType, parsed.Get("content").String())+"]")
+			itemChanged = true
+		}
+
+		if itemChanged {
+			changed = true
+		}
+		rendered = append(rendered, string(raw))
+	}
+	if !changed {
+		return body
+	}
+	return setJSONRaw(body, "input", joinJSONRaw(rendered))
+}
+
+func stripZedEncryptedContent(body []byte) []byte {
+	// Recursively remove all encrypted_content fields.
+	body, _ = rewriteJSONMembers(body, func(key string, _ gjson.Result) (string, bool) {
+		return "", key == "encrypted_content"
+	})
+	// Filter reasoning.* from include array.
+	body = filterZedThinkingIncludes(body)
+	// Drop compaction items and empty reasoning items from input.
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	items := input.Array()
+	rendered := make([]string, 0, len(items))
+	changed := false
+	for _, item := range items {
+		if !item.IsObject() {
+			rendered = append(rendered, item.Raw)
+			continue
+		}
+		itemType := jsonStringValue(item.Get("type"))
+		switch itemType {
 		case "compaction":
+			changed = true
 			continue
 		case "reasoning":
 			if !zedReasoningHasSummary(item) {
+				changed = true
 				continue
 			}
 		}
-		filtered = append(filtered, item)
+		rendered = append(rendered, item.Raw)
 	}
-	request["input"] = filtered
+	if !changed {
+		return body
+	}
+	return setJSONRaw(body, "input", joinJSONRaw(rendered))
 }
 
-func zedReasoningHasSummary(item map[string]any) bool {
-	summary, ok := item["summary"].([]any)
-	if !ok {
+func zedReasoningHasSummary(item gjson.Result) bool {
+	summary := item.Get("summary")
+	if !summary.IsArray() {
 		return false
 	}
-	for _, rawPart := range summary {
-		part, ok := rawPart.(map[string]any)
-		if !ok {
+	for _, part := range summary.Array() {
+		if !part.IsObject() {
 			continue
 		}
-		text, _ := part["text"].(string)
-		if strings.TrimSpace(text) != "" {
+		if strings.TrimSpace(jsonStringValue(part.Get("text"))) != "" {
 			return true
 		}
 	}
 	return false
 }
 
-func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string, originalRequest []byte) error {
+// filterZedThinkingIncludes removes reasoning.* entries from the include array.
+func filterZedThinkingIncludes(body []byte) []byte {
+	include := gjson.GetBytes(body, "include")
+	if !include.IsArray() {
+		return body
+	}
+	items := include.Array()
+	rendered := make([]string, 0, len(items))
+	removed := false
+	for _, item := range items {
+		if item.Type == gjson.String && strings.HasPrefix(item.String(), "reasoning.") {
+			removed = true
+			continue
+		}
+		rendered = append(rendered, item.Raw)
+	}
+	if !removed {
+		return body
+	}
+	if len(rendered) == 0 {
+		return deleteJSONPath(body, "include")
+	}
+	return setJSONRaw(body, "include", joinJSONRaw(rendered))
+}
+
+func normalizeZedOpenAIProviderRequest(body []byte, modelName string) ([]byte, error) {
 	// Collect declarations before removing Responses Lite's additional_tools
 	// input items. The shared helper expands namespace children and applies the
 	// same qualified-name and first-wins rules as the normal Responses paths.
-	root := gjson.ParseBytes(originalRequest)
+	root := gjson.ParseBytes(body)
 	descriptors := cliproxyutil.CollectResponsesToolDescriptors(root)
 	winners := cliproxyutil.CollectResponsesToolWinners(root)
 
-	if input, ok := request["input"].([]any); ok {
-		normalized := make([]any, 0, len(input))
-		for _, rawItem := range input {
-			item, ok := rawItem.(map[string]any)
-			if ok && item["type"] == "additional_tools" {
+	// Remove additional_tools input items.
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		items := input.Array()
+		rendered := make([]string, 0, len(items))
+		changed := false
+		for _, item := range items {
+			if item.IsObject() && jsonStringValue(item.Get("type")) == "additional_tools" {
+				changed = true
 				continue
 			}
-			normalized = append(normalized, rawItem)
+			rendered = append(rendered, item.Raw)
 		}
-		request["input"] = normalized
+		if changed {
+			body = setJSONRaw(body, "input", joinJSONRaw(rendered))
+		}
 	}
-	normalizeZedOpenAIToolCallHistory(request)
+	body = normalizeZedOpenAIToolCallHistory(body)
 
-	selectedTool := zedSelectedToolName(request["tool_choice"])
+	selectedTool := zedSelectedToolName(gjson.GetBytes(body, "tool_choice"))
 	if selectedTool != "" {
-		request["tool_choice"] = "required"
+		body = setJSONValue(body, "tool_choice", "required")
 	}
-	tools := make([]any, 0, len(descriptors))
+	toolsRaw := make([]string, 0, len(descriptors))
 	for _, descriptor := range descriptors {
 		winner, ok := winners[descriptor.Name]
 		if !ok || winner.Order != descriptor.Order {
@@ -272,24 +345,27 @@ func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string,
 		if selectedTool != "" && descriptor.Name != selectedTool {
 			continue
 		}
-		var tool map[string]any
-		if err := json.Unmarshal([]byte(descriptor.Tool.Raw), &tool); err != nil || tool == nil {
-			continue
+		tool := []byte(descriptor.Tool.Raw)
+		var err error
+		tool, err = sjson.SetBytes(tool, "type", descriptor.ToolType)
+		if err != nil {
+			return nil, fmt.Errorf("finalize Zed Responses request: encode tool type")
 		}
-		tool["type"] = descriptor.ToolType
-		tool["name"] = descriptor.Name
-		delete(tool, "namespace")
-		tools = append(tools, tool)
+		tool, err = sjson.SetBytes(tool, "name", descriptor.Name)
+		if err != nil {
+			return nil, fmt.Errorf("finalize Zed Responses request: encode tool name")
+		}
+		tool, err = sjson.DeleteBytes(tool, "namespace")
+		if err != nil {
+			return nil, fmt.Errorf("finalize Zed Responses request: strip tool namespace")
+		}
+		toolsRaw = append(toolsRaw, string(tool))
 	}
-	if request["tools"] != nil || len(descriptors) > 0 {
-		request["tools"] = tools
+	if gjson.GetBytes(body, "tools").Exists() || len(descriptors) > 0 {
+		body = setJSONRaw(body, "tools", joinJSONRaw(toolsRaw))
 	}
 
-	effort := ""
-	reasoning, _ := request["reasoning"].(map[string]any)
-	if reasoning != nil {
-		effort, _ = reasoning["effort"].(string)
-	}
+	effort := jsonStringValue(gjson.GetBytes(body, "reasoning.effort"))
 	if strings.HasPrefix(modelName, "gpt-5.6") {
 		if effort == "" {
 			effort = "xhigh"
@@ -297,230 +373,279 @@ func normalizeZedOpenAIProviderRequest(request map[string]any, modelName string,
 		switch effort {
 		case "none", "low", "medium", "high", "xhigh":
 		default:
-			return fmt.Errorf("finalize Zed Responses request: unsupported GPT-5.6 reasoning effort %q", effort)
+			return nil, fmt.Errorf("finalize Zed Responses request: unsupported GPT-5.6 reasoning effort %q", effort)
 		}
 	} else if strings.HasPrefix(modelName, "gpt-5.5") {
 		effort = "xhigh"
 	}
 	if effort != "" {
-		if reasoning == nil {
-			reasoning = make(map[string]any)
+		body = setJSONValue(body, "reasoning.effort", effort)
+		if effort != "none" && !gjson.GetBytes(body, "reasoning.summary").Exists() {
+			body = setJSONValue(body, "reasoning.summary", "detailed")
 		}
-		reasoning["effort"] = effort
-		if effort != "none" && reasoning["summary"] == nil {
-			reasoning["summary"] = "detailed"
-		}
-		request["reasoning"] = reasoning
 	}
-	requestedBudget := zedOutputBudget(request)
-	delete(request, "max_completion_tokens")
-	delete(request, "max_tokens")
+	requestedBudget := zedOutputBudgetBytes(body)
+	body = deleteJSONPath(body, "max_completion_tokens")
+	body = deleteJSONPath(body, "max_tokens")
 	if effort == "xhigh" && requestedBudget < 32768 {
 		requestedBudget = 32768
 	}
 	if requestedBudget > 0 {
-		request["max_output_tokens"] = requestedBudget
+		body = setJSONValue(body, "max_output_tokens", requestedBudget)
 	}
-	return nil
+	return body, nil
 }
 
-func normalizeZedOpenAIToolCallHistory(request map[string]any) {
-	input, _ := request["input"].([]any)
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok || (item["type"] != "function_call" && item["type"] != "custom_tool_call") {
+func normalizeZedOpenAIToolCallHistory(body []byte) []byte {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	var patches []struct {
+		path, value string
+	}
+	for index, item := range input.Array() {
+		if !item.IsObject() {
 			continue
 		}
-		name, _ := item["name"].(string)
-		namespace, _ := item["namespace"].(string)
+		itemType := jsonStringValue(item.Get("type"))
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			continue
+		}
+		name := jsonStringValue(item.Get("name"))
+		namespace := jsonStringValue(item.Get("namespace"))
 		if name == "" || namespace == "" {
 			continue
 		}
-		item["name"] = cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
-		delete(item, "namespace")
+		prefix := "input." + strconv.Itoa(index)
+		qualified := cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
+		patches = append(patches,
+			struct{ path, value string }{prefix + ".name", qualified},
+		)
 	}
+	for _, patch := range patches {
+		body = setJSONValue(body, patch.path, patch.value)
+		// Delete namespace after setting name.
+		namespaceIdx := strings.LastIndex(patch.path, ".name")
+		if namespaceIdx >= 0 {
+			body = deleteJSONPath(body, patch.path[:namespaceIdx]+".namespace")
+		}
+	}
+	return body
 }
 
 func finalizeZedGoogleProviderRequest(body []byte, modelName string) ([]byte, error) {
-	var request map[string]any
-	if err := json.Unmarshal(body, &request); err != nil || request == nil {
+	if !isMutableJSONObject(body) {
 		return nil, errors.New("decode translated Google request")
 	}
-	request["model"] = "models/" + modelName
-	config, _ := request["generationConfig"].(map[string]any)
-	if config == nil {
-		config = make(map[string]any)
-		request["generationConfig"] = config
+	// Reject trailing JSON.
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&json.RawMessage{}); err != nil {
+		return nil, errors.New("decode translated Google request")
 	}
-	if config["candidateCount"] == nil {
-		config["candidateCount"] = 1
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("decode translated Google request")
 	}
-	if config["stopSequences"] == nil {
-		config["stopSequences"] = []any{}
+
+	body = setJSONValue(body, "model", "models/"+modelName)
+	if !gjson.GetBytes(body, "generationConfig").IsObject() {
+		body = setJSONRaw(body, "generationConfig", `{}`)
 	}
-	if config["temperature"] == nil {
-		config["temperature"] = 1.0
+	if !gjson.GetBytes(body, "generationConfig.candidateCount").Exists() {
+		body = setJSONValue(body, "generationConfig.candidateCount", 1)
 	}
-	if tools, ok := request["tools"].([]any); ok {
-		for _, rawTool := range tools {
-			tool, _ := rawTool.(map[string]any)
-			declarations, _ := tool["functionDeclarations"].([]any)
-			for _, rawDeclaration := range declarations {
-				declaration, _ := rawDeclaration.(map[string]any)
-				if schema, exists := declaration["parametersJsonSchema"]; exists && declaration["parameters"] == nil {
-					declaration["parameters"] = schema
-					delete(declaration, "parametersJsonSchema")
+	if !gjson.GetBytes(body, "generationConfig.stopSequences").Exists() {
+		body = setJSONRaw(body, "generationConfig.stopSequences", `[]`)
+	}
+	if !gjson.GetBytes(body, "generationConfig.temperature").Exists() {
+		body = setJSONValue(body, "generationConfig.temperature", 1.0)
+	}
+	// Promote parametersJsonSchema → parameters in function declarations.
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() {
+		for toolIndex, tool := range tools.Array() {
+			decls := tool.Get("functionDeclarations")
+			if !decls.IsArray() {
+				continue
+			}
+			for declIndex, decl := range decls.Array() {
+				if decl.Get("parametersJsonSchema").Exists() && !decl.Get("parameters").Exists() {
+					path := fmt.Sprintf("tools.%d.functionDeclarations.%d", toolIndex, declIndex)
+					body = setJSONRaw(body, path+".parameters", decl.Get("parametersJsonSchema").Raw)
+					body = deleteJSONPath(body, path+".parametersJsonSchema")
 				}
 			}
 		}
 	}
-	return json.Marshal(request)
+	return body, nil
 }
 
 func finalizeZedAnthropicProviderRequest(body, originalRequest, originalAnthropicRequest []byte) ([]byte, error) {
-	var request map[string]any
-	if err := json.Unmarshal(body, &request); err != nil || request == nil {
+	if !isMutableJSONObject(body) {
 		return nil, errors.New("decode translated Anthropic request")
 	}
+	// Reject trailing JSON.
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&json.RawMessage{}); err != nil {
+		return nil, errors.New("decode translated Anthropic request")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("decode translated Anthropic request")
+	}
+
 	// Zed owns the /completions stream. Its native Anthropic provider_request
 	// does not carry the Anthropic HTTP transport's stream flag.
-	delete(request, "stream")
-	normalizeZedAnthropicContentBlocks(request)
-	restoreZedAnthropicCacheControls(request, originalAnthropicRequest)
-	var original map[string]any
-	if json.Unmarshal(originalRequest, &original) == nil && zedOutputBudget(original) == 0 {
+	body = deleteJSONPath(body, "stream")
+	body = normalizeZedAnthropicContentBlocks(body)
+	body = restoreZedAnthropicCacheControls(body, originalAnthropicRequest)
+	if zedOutputBudgetBytes(originalRequest) == 0 {
 		// The shared converter defaults to 32000, but Zed's native request and
 		// Claude Sonnet 4.5 both require the conservative 8192 default.
-		request["max_tokens"] = 8192
+		body = setJSONValue(body, "max_tokens", 8192)
 	}
-	return json.Marshal(request)
+	return body, nil
 }
 
-func restoreZedAnthropicCacheControls(request map[string]any, originalRequest []byte) {
-	var original map[string]any
-	if len(originalRequest) == 0 || json.Unmarshal(originalRequest, &original) != nil {
-		return
+func restoreZedAnthropicCacheControls(body, originalRequest []byte) []byte {
+	if len(originalRequest) == 0 || !gjson.ValidBytes(originalRequest) {
+		return body
 	}
-	copyCacheControl := func(target, source map[string]any) {
-		if cacheControl, exists := source["cache_control"]; exists {
-			target["cache_control"] = cacheControl
-		}
-	}
-	copyCacheControl(request, original)
-
-	originalSystem, _ := original["system"].([]any)
-	system, _ := request["system"].([]any)
-	for i := 0; i < len(originalSystem) && i < len(system); i++ {
-		source, sourceOK := originalSystem[i].(map[string]any)
-		target, targetOK := system[i].(map[string]any)
-		if sourceOK && targetOK {
-			copyCacheControl(target, source)
-		}
+	original := gjson.ParseBytes(originalRequest)
+	if !original.IsObject() {
+		return body
 	}
 
-	originalTools, _ := original["tools"].([]any)
-	toolCacheControls := make(map[string]any, len(originalTools))
-	for _, rawTool := range originalTools {
-		tool, ok := rawTool.(map[string]any)
-		name, _ := tool["name"].(string)
-		if !ok || name == "" {
-			continue
-		}
-		if cacheControl, exists := tool["cache_control"]; exists {
-			toolCacheControls[name] = cacheControl
-		}
+	// Top-level cache_control.
+	if cc := original.Get("cache_control"); cc.Exists() {
+		body = setJSONRaw(body, "cache_control", cc.Raw)
 	}
-	tools, _ := request["tools"].([]any)
-	for _, rawTool := range tools {
-		tool, ok := rawTool.(map[string]any)
-		name, _ := tool["name"].(string)
-		if !ok || name == "" {
-			continue
-		}
-		if cacheControl, exists := toolCacheControls[name]; exists {
-			tool["cache_control"] = cacheControl
-		}
-	}
-}
 
-func normalizeZedAnthropicContentBlocks(request map[string]any) {
-	textBlocks := func(text string) []any {
-		return []any{map[string]any{"type": "text", "text": text}}
-	}
-	if system, ok := request["system"].(string); ok {
-		request["system"] = textBlocks(system)
-	}
-	messages, _ := request["messages"].([]any)
-	for _, rawMessage := range messages {
-		message, ok := rawMessage.(map[string]any)
-		if !ok {
-			continue
+	// System blocks: restore by index.
+	origSystem := original.Get("system")
+	bodySystem := gjson.GetBytes(body, "system")
+	if origSystem.IsArray() && bodySystem.IsArray() {
+		origBlocks := origSystem.Array()
+		bodyBlocks := bodySystem.Array()
+		for i := 0; i < len(origBlocks) && i < len(bodyBlocks); i++ {
+			if cc := origBlocks[i].Get("cache_control"); cc.Exists() {
+				body = setJSONRaw(body, "system."+strconv.Itoa(i)+".cache_control", cc.Raw)
+			}
 		}
-		if content, ok := message["content"].(string); ok {
-			message["content"] = textBlocks(content)
-		}
-		content, _ := message["content"].([]any)
-		for _, rawBlock := range content {
-			block, ok := rawBlock.(map[string]any)
-			if !ok || block["type"] != "tool_result" {
+	}
+
+	// Tools: restore by name.
+	origTools := original.Get("tools")
+	if origTools.IsArray() {
+		toolCacheControls := make(map[string]string)
+		for _, tool := range origTools.Array() {
+			name := jsonStringValue(tool.Get("name"))
+			if name == "" {
 				continue
 			}
-			if _, exists := block["is_error"]; !exists {
-				block["is_error"] = false
+			if cc := tool.Get("cache_control"); cc.Exists() {
+				toolCacheControls[name] = cc.Raw
+			}
+		}
+		if len(toolCacheControls) > 0 {
+			bodyTools := gjson.GetBytes(body, "tools")
+			if bodyTools.IsArray() {
+				for index, tool := range bodyTools.Array() {
+					name := jsonStringValue(tool.Get("name"))
+					if ccRaw, ok := toolCacheControls[name]; ok {
+						body = setJSONRaw(body, "tools."+strconv.Itoa(index)+".cache_control", ccRaw)
+					}
+				}
 			}
 		}
 	}
+	return body
 }
 
-func zedMessage(role, text string) map[string]any {
-	return map[string]any{
-		"type": "message", "role": role,
-		"content": []any{map[string]any{"type": "input_text", "text": text}},
+func normalizeZedAnthropicContentBlocks(body []byte) []byte {
+	textBlockRaw := func(text string) string {
+		block, err := sjson.Set(`{"type":"text"}`, "text", text)
+		if err != nil {
+			return `{"type":"text","text":""}`
+		}
+		return block
 	}
+	// system string → array of text blocks.
+	if system := gjson.GetBytes(body, "system"); system.Type == gjson.String {
+		body = setJSONRaw(body, "system", "["+textBlockRaw(system.String())+"]")
+	}
+	// messages: string content → array, tool_result missing is_error → false.
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	for msgIndex, message := range messages.Array() {
+		if !message.IsObject() {
+			continue
+		}
+		content := message.Get("content")
+		msgPrefix := "messages." + strconv.Itoa(msgIndex)
+		if content.Type == gjson.String {
+			body = setJSONRaw(body, msgPrefix+".content", "["+textBlockRaw(content.String())+"]")
+			content = gjson.GetBytes(body, msgPrefix+".content")
+		}
+		if !content.IsArray() {
+			continue
+		}
+		for blockIndex, block := range content.Array() {
+			if !block.IsObject() || jsonStringValue(block.Get("type")) != "tool_result" {
+				continue
+			}
+			if !block.Get("is_error").Exists() {
+				body = setJSONValue(body, msgPrefix+".content."+strconv.Itoa(blockIndex)+".is_error", false)
+			}
+		}
+	}
+	return body
 }
 
-func zedSelectedToolName(raw any) string {
-	choice, _ := raw.(map[string]any)
-	if choice == nil {
+func zedMessageRaw(role, text string) string {
+	msg := setJSONValue(setJSONValue([]byte(`{"type":"message"}`), "role", role), "content", "")
+	block := setJSONValue(setJSONValue([]byte(`{}`), "type", "input_text"), "text", text)
+	msg = setJSONRaw(msg, "content", "["+string(block)+"]")
+	return string(msg)
+}
+
+func zedInputTextBlockRaw(typeName, text string) string {
+	return string(setJSONValue(setJSONValue([]byte(`{}`), "type", typeName), "text", text))
+}
+
+func zedSelectedToolName(choice gjson.Result) string {
+	if !choice.IsObject() {
 		return ""
 	}
-	if name, _ := choice["name"].(string); name != "" {
+	if name := jsonStringValue(choice.Get("name")); name != "" {
 		return qualifyZedToolName(choice, name)
 	}
-	function, _ := choice["function"].(map[string]any)
-	name, _ := function["name"].(string)
+	name := jsonStringValue(choice.Get("function.name"))
 	return qualifyZedToolName(choice, name)
 }
 
-func qualifyZedToolName(choice map[string]any, name string) string {
-	if choice == nil || name == "" {
+func qualifyZedToolName(choice gjson.Result, name string) string {
+	if name == "" {
 		return name
 	}
-	namespace, _ := choice["namespace"].(string)
+	namespace := jsonStringValue(choice.Get("namespace"))
 	if namespace == "" {
-		if function, ok := choice["function"].(map[string]any); ok {
-			namespace, _ = function["namespace"].(string)
-		}
+		namespace = jsonStringValue(choice.Get("function.namespace"))
 	}
 	if namespace == "" {
-		if custom, ok := choice["custom"].(map[string]any); ok {
-			namespace, _ = custom["namespace"].(string)
-		}
+		namespace = jsonStringValue(choice.Get("custom.namespace"))
 	}
 	return cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
 }
 
-func zedOutputBudget(request map[string]any) int64 {
+func zedOutputBudgetBytes(body []byte) int64 {
 	for _, key := range []string{"max_output_tokens", "max_completion_tokens", "max_tokens"} {
-		switch value := request[key].(type) {
-		case json.Number:
-			if number, err := value.Int64(); err == nil {
-				return number
+		value := gjson.GetBytes(body, key)
+		if value.Type == gjson.Number {
+			if n, ok := jsonIntegerValue(value); ok {
+				return n
 			}
-		case float64:
-			return int64(value)
-		case int64:
-			return value
 		}
 	}
 	return 0
@@ -801,9 +926,6 @@ func translateZedProviderEvent(
 
 func frameZedProviderEvent(providerProtocol protocol.Protocol, event []byte) ([]byte, error) {
 	event = bytes.TrimSpace(event)
-	if !json.Valid(event) {
-		return nil, errors.New("zed provider event is invalid JSON")
-	}
 	switch providerProtocol {
 	case protocol.Anthropic:
 		var payload struct {
@@ -814,6 +936,12 @@ func frameZedProviderEvent(providerProtocol protocol.Protocol, event []byte) ([]
 		}
 		return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", payload.Type, event)), nil
 	case protocol.Gemini:
+		// Gemini 分支只做字节拼接，没有后续解码兜底，所以这里是唯一一道语法防线：
+		// 不校验就会把上游的残帧原样封进 data: 发给下游。Anthropic 分支的 Unmarshal
+		// 已经等价地拒绝非法 JSON，不必再扫一遍。
+		if !json.Valid(event) {
+			return nil, errors.New("zed provider event is invalid JSON")
+		}
 		return append(append([]byte("data: "), event...), '\n', '\n'), nil
 	default:
 		return nil, fmt.Errorf("unsupported Zed response provider protocol %q", providerProtocol)

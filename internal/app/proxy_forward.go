@@ -326,14 +326,13 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			// Z.ai Coding Plan 自带 ZCode 指纹，只做 Anthropic 线协议归一。
 			body, err = normalizeAnthropicMessagesBody(body)
 		case anthropicAlreadyFinalized:
-			var request map[string]any
-			if json.Unmarshal(body, &request) == nil {
-				helperShape := nativeAnthropicHaikuHelperShape(body, request, headers)
+			if isAnthropicJSONObject(body) {
+				helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 				if helperShape == anthropicHaikuHelperMinimal {
 					return body, nil
 				}
 				if helperShape == anthropicHaikuHelperStructured ||
-					isNativeAnthropicClaudeCodeRequest(request, headers, cfg, apiKey) {
+					isNativeAnthropicClaudeCodeRequest(body, headers, cfg, apiKey) {
 					return finalizeAnthropicCCH(body)
 				}
 			}
@@ -348,12 +347,20 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	// Z.ai Coding Plan 的 ZCode 设备指纹走 body 的 metadata.user_id。必须留在这个
 	// 共享入口里：挂在代理链路的独立分支上，管理测试就会发出没有指纹的请求。
 	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
-		return finalizeZAICodingPlanBody(body, cfg)
+		var err error
+		body, err = finalizeZAICodingPlanBody(body, cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if cfg != nil && cfg.UsesAntigravityOAuth() {
-		return prepareAntigravityRequestBody(
+		var err error
+		body, err = prepareAntigravityRequestBody(
 			cfg, extractModelFromPath(requestPath), body, sourceBody, headers, s.antigravityPromptMatcher,
 		)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return body, nil
 }
@@ -1984,7 +1991,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	debugReq := req
 	debugBody := sentBody
 	var websocketDebug codexWebsocketDebugSnapshot
-	if usedNativeWebsocket && req != nil {
+	debugEnabled := s.configService.GetBool("debug_log_enabled", false)
+	if usedNativeWebsocket && req != nil && debugEnabled {
 		websocketDebug = native.session.debugSnapshot()
 		debugReq = req.Clone(req.Context())
 		if websocketDebug.RequestHeaders != nil {
@@ -3063,41 +3071,9 @@ func isUnsupportedThinkingError(body []byte) bool {
 }
 
 func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
-		return nil, false
-	}
-	input, ok := root["input"].([]any)
-	if !ok {
-		return nil, false
-	}
-
-	filtered := make([]any, 0, len(input))
-	removed := false
-	for _, item := range input {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			filtered = append(filtered, item)
-			continue
-		}
-		typ, _ := obj["type"].(string)
-		_, hasEncryptedContent := obj["encrypted_content"]
-		if typ == "reasoning" || hasEncryptedContent {
-			removed = true
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	if !removed {
-		return nil, false
-	}
-
-	root["input"] = filtered
-	retryBody, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
-	}
-	return retryBody, true
+	return deleteCodexInputItems(body, func(item gjson.Result) bool {
+		return (item.Get("type").Type == gjson.String && item.Get("type").String() == "reasoning") || item.Get("encrypted_content").Exists()
+	})
 }
 
 func codexBodyHasEncryptedInputItems(body []byte) bool {
@@ -3114,71 +3090,48 @@ func codexBodyHasEncryptedInputItems(body []byte) bool {
 }
 
 func codexBodyWithoutThinking(body []byte) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return nil, false
 	}
-
+	updated := body
 	removed := false
-	if _, ok := root["reasoning"]; ok {
-		delete(root, "reasoning")
-		removed = true
-	}
-	if filterCodexThinkingIncludes(root) {
-		removed = true
-	}
-	if input, ok := root["input"].([]any); ok {
-		filtered := make([]any, 0, len(input))
-		for _, item := range input {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				filtered = append(filtered, item)
-				continue
-			}
-			typ, _ := obj["type"].(string)
-			if typ == "reasoning" {
-				removed = true
-				continue
-			}
-			filtered = append(filtered, item)
+	if gjson.GetBytes(updated, "reasoning").Exists() {
+		var err error
+		updated, err = sjson.DeleteBytes(updated, "reasoning")
+		if err != nil {
+			return nil, false
 		}
-		root["input"] = filtered
+		removed = true
 	}
-	if !removed {
-		return nil, false
-	}
-
-	retryBody, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
-	}
-	return retryBody, true
-}
-
-func filterCodexThinkingIncludes(root map[string]any) bool {
-	include, ok := root["include"].([]any)
-	if !ok {
-		return false
-	}
-	filtered := make([]any, 0, len(include))
-	removed := false
-	for _, item := range include {
-		value, ok := item.(string)
-		if ok && strings.HasPrefix(value, "reasoning.") {
+	if include := gjson.GetBytes(updated, "include"); include.IsArray() {
+		indices := make([]int, 0)
+		for index, value := range include.Array() {
+			if value.Type == gjson.String && strings.HasPrefix(value.String(), "reasoning.") {
+				indices = append(indices, index)
+			}
+		}
+		for index := len(indices) - 1; index >= 0; index-- {
+			var err error
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("include.%d", indices[index]))
+			if err != nil {
+				return nil, false
+			}
 			removed = true
-			continue
 		}
-		filtered = append(filtered, item)
+		if len(indices) > 0 && len(gjson.GetBytes(updated, "include").Array()) == 0 {
+			updated, _ = sjson.DeleteBytes(updated, "include")
+		}
+	}
+	if filtered, ok := deleteCodexInputItems(updated, func(item gjson.Result) bool {
+		return item.Get("type").Type == gjson.String && item.Get("type").String() == "reasoning"
+	}); ok {
+		updated = filtered
+		removed = true
 	}
 	if !removed {
-		return false
+		return nil, false
 	}
-	if len(filtered) == 0 {
-		delete(root, "include")
-		return true
-	}
-	root["include"] = filtered
-	return true
+	return updated, true
 }
 
 func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string, body []byte) []byte {
@@ -3199,152 +3152,142 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 }
 
 func normalizeCodexToolSearchInputItems(body []byte) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return nil, false
 	}
-	input, ok := root["input"].([]any)
-	if !ok {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
 		return nil, false
 	}
 
 	changed := false
-	filtered := make([]any, 0, len(input))
-	for _, item := range input {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			filtered = append(filtered, item)
+	deleteIndexes := make([]int, 0)
+	updated := body
+	for index, item := range input.Array() {
+		if !item.IsObject() {
 			continue
 		}
-		typ, _ := obj["type"].(string)
+		typValue := item.Get("type")
+		if typValue.Type != gjson.String {
+			continue
+		}
+		typ := typValue.String()
 		if !strings.HasPrefix(typ, "tool_search_") {
-			filtered = append(filtered, item)
 			continue
 		}
-		rawArgs, hasArgs := obj["arguments"]
-		if !hasArgs {
-			filtered = append(filtered, item)
+		rawArgs := item.Get("arguments")
+		if !rawArgs.Exists() {
 			continue
 		}
-		if _, ok := rawArgs.(map[string]any); ok {
-			filtered = append(filtered, item)
+		if rawArgs.IsObject() {
 			continue
 		}
-		argsString, ok := rawArgs.(string)
-		if !ok {
+		if rawArgs.Type != gjson.String {
+			deleteIndexes = append(deleteIndexes, index)
 			changed = true
 			continue
 		}
-
-		var decoded any
-		if err := sonic.Unmarshal([]byte(argsString), &decoded); err != nil {
+		argsRaw := []byte(rawArgs.String())
+		if !isMutableJSONObject(argsRaw) {
+			deleteIndexes = append(deleteIndexes, index)
 			changed = true
 			continue
 		}
-		argsObject, ok := decoded.(map[string]any)
-		if !ok {
-			changed = true
-			continue
+		var err error
+		updated, err = sjson.SetRawBytes(updated, fmt.Sprintf("input.%d.arguments", index), argsRaw)
+		if err != nil {
+			return nil, false
 		}
-		obj["arguments"] = argsObject
 		changed = true
-		filtered = append(filtered, item)
 	}
 	if !changed {
 		return nil, false
 	}
-
-	root["input"] = filtered
-	normalized, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
+	for index := len(deleteIndexes) - 1; index >= 0; index-- {
+		var err error
+		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", deleteIndexes[index]))
+		if err != nil {
+			return nil, false
+		}
 	}
-	return normalized, true
+	return updated, true
 }
 
 func codexBodyWithoutToolSearchOnlyInputItems(body []byte) ([]byte, bool) {
-	return codexBodyWithoutInputItems(body, func(typ string) bool {
-		return strings.HasPrefix(typ, "tool_search_")
+	return deleteCodexInputItems(body, func(item gjson.Result) bool {
+		return strings.HasPrefix(item.Get("type").String(), "tool_search_")
 	})
 }
 
-func codexBodyWithoutInputItems(body []byte, shouldDrop func(string) bool) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
+func deleteCodexInputItems(body []byte, shouldDrop func(gjson.Result) bool) ([]byte, bool) {
+	if !gjson.ParseBytes(body).IsObject() {
 		return nil, false
 	}
-
-	input, ok := root["input"].([]any)
-	if !ok {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
 		return nil, false
 	}
-
-	filtered := make([]any, 0, len(input))
-	removed := false
-	for _, item := range input {
-		obj, ok := item.(map[string]any)
-		if !ok {
-			filtered = append(filtered, item)
-			continue
+	indices := make([]int, 0)
+	for index, item := range input.Array() {
+		if shouldDrop(item) {
+			indices = append(indices, index)
 		}
-		typ, _ := obj["type"].(string)
-		if shouldDrop(typ) {
-			removed = true
-			continue
+	}
+	if len(indices) == 0 {
+		return nil, false
+	}
+	updated := body
+	for index := len(indices) - 1; index >= 0; index-- {
+		var err error
+		updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("input.%d", indices[index]))
+		if err != nil {
+			return nil, false
 		}
-		filtered = append(filtered, item)
 	}
-	if !removed {
-		return nil, false
-	}
-
-	root["input"] = filtered
-	retryBody, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
-	}
-	return retryBody, true
+	return updated, true
 }
 
 func codexBodyWithoutEncryptedContent(body []byte) ([]byte, bool) {
-	var root map[string]any
-	if err := sonic.Unmarshal(body, &root); err != nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return nil, false
 	}
-
-	removed := removeEncryptedContentFields(root)
-	if !removed {
+	paths := make([]string, 0)
+	collectJSONKeyPaths(gjson.ParseBytes(body), "", "encrypted_content", &paths)
+	if len(paths) == 0 {
 		return nil, false
 	}
-
-	retryBody, err := sonic.Marshal(root)
-	if err != nil {
-		return nil, false
+	// 无需按长度排序：collectJSONKeyPaths 命中目标键后不再下钻，
+	// 因此不会产出互相嵌套的路径；删除对象成员也不会移动兄弟数组下标。
+	updated := body
+	for _, path := range paths {
+		var err error
+		updated, err = sjson.DeleteBytes(updated, path)
+		if err != nil {
+			return nil, false
+		}
 	}
-	return retryBody, true
+	return updated, true
 }
 
-func removeEncryptedContentFields(value any) bool {
-	removed := false
-	switch v := value.(type) {
-	case map[string]any:
-		if _, ok := v["encrypted_content"]; ok {
-			delete(v, "encrypted_content")
-			removed = true
-		}
-		for _, child := range v {
-			if removeEncryptedContentFields(child) {
-				removed = true
+func collectJSONKeyPaths(value gjson.Result, prefix, key string, paths *[]string) {
+	if value.IsObject() {
+		value.ForEach(func(name, child gjson.Result) bool {
+			childPath := sjsonObjectPathJoin(prefix, name.String())
+			if name.String() == key {
+				*paths = append(*paths, childPath)
+				return true
 			}
-		}
-	case []any:
-		for _, child := range v {
-			if removeEncryptedContentFields(child) {
-				removed = true
-			}
+			collectJSONKeyPaths(child, childPath, key, paths)
+			return true
+		})
+		return
+	}
+	if value.IsArray() {
+		for index, child := range value.Array() {
+			childPath := sjsonPathJoin(prefix, fmt.Sprintf("%d", index))
+			collectJSONKeyPaths(child, childPath, key, paths)
 		}
 	}
-	return removed
 }
 
 // ============================================================================
@@ -4175,31 +4118,33 @@ func checkSoftError(data []byte, contentType string) bool {
 	ctLower := strings.ToLower(contentType)
 	isJSONCT := strings.Contains(ctLower, "application/json")
 
-	// JSON：仅看顶层结构
+	// JSON：仅看顶层结构。软错误检测故意宽松——重复 key 按 gjson 所见字段判定，
+	// 解析失败不猜，避免把正常响应当错误。
 	if isJSONCT || trimmed[0] == '{' {
-		// 快速短路：99% 成功响应顶层不含错误标记，跳过 sonic.Unmarshal
+		// 快速短路：99% 成功响应顶层不含错误标记。
 		// 同时覆盖紧凑/带空格两种格式；"error" 带引号避免误匹配 "api_error" 等子串
 		if !maybeContainsTopLevelError(trimmed) {
 			if trimmed[0] == '{' {
 				return false // 形态确实是 JSON 对象 → 已确认无错误
 			}
 			// CT=JSON 但内容不像 JSON 对象（如纯文本错误消息）→ 走兜底
-		} else {
-			var obj map[string]any
-			if err := sonic.Unmarshal(trimmed, &obj); err == nil {
-				if v, ok := obj["error"]; ok && v != nil {
+		} else if json.Valid(trimmed) {
+			payload := gjson.ParseBytes(trimmed)
+			if payload.IsObject() {
+				errorField := payload.Get("error")
+				if errorField.Exists() && errorField.Type != gjson.Null {
 					return true
 				}
-				if t, ok := obj["type"].(string); ok && strings.EqualFold(t, "error") {
+				if t := payload.Get("type"); t.Type == gjson.String && strings.EqualFold(t.String(), "error") {
 					return true
 				}
 				return false
 			}
-			// 形态像 JSON（以 '{' 开头）但解析失败：不猜，避免误判
 			if trimmed[0] == '{' {
 				return false
 			}
-			// Content-Type 标注为 JSON 但内容不是 JSON：允许继续走 text/plain 的“前缀+短消息”兜底
+		} else if trimmed[0] == '{' {
+			return false
 		}
 	}
 

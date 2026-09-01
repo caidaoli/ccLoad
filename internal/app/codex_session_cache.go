@@ -11,6 +11,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 )
 
 // Codex Responses API 的 prompt 缓存需要 `prompt_cache_key` 请求体字段与 `Session_id` 请求头配合，
@@ -102,8 +103,8 @@ func injectCodexPromptCacheKey(body []byte, id string) []byte {
 	if readCodexPromptCacheKey(body) != "" {
 		return body
 	}
-	var payload map[string]any
-	if err := sonic.Unmarshal(body, &payload); err != nil || payload == nil {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
 		return body
 	}
 

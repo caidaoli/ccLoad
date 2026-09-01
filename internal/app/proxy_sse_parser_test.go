@@ -8,6 +8,57 @@ import (
 	"ccLoad/internal/util"
 )
 
+func TestSSEUsageParserDuplicateKeysLastWins(t *testing.T) {
+	t.Parallel()
+	parser := &sseUsageParser{upstreamProtocol: "codex"}
+	if err := parser.parseEvent(
+		"response.completed",
+		`{"type":"response.completed","usage":{"input_tokens":3},"usage":{"input_tokens":999}}`,
+	); err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("duplicate keys must still mark stream complete")
+	}
+	input, _, _, _ := parser.GetUsage()
+	if input != 999 {
+		t.Fatalf("InputTokens = %d, want last-wins 999", input)
+	}
+}
+
+func TestSSEUsageParserMarksCompleteOnTrailingJSON(t *testing.T) {
+	t.Parallel()
+	parser := &sseUsageParser{upstreamProtocol: "codex"}
+	err := parser.parseEvent(
+		"response.completed",
+		`{"type":"response.completed","response":{"id":"r","output":[]}} []`,
+	)
+	if err == nil {
+		t.Fatal("trailing JSON must fail usage parse")
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("terminal event must mark stream complete even when JSON unmarshal fails")
+	}
+}
+
+func TestSSEUsageParserMarksCompleteOnFinishReasonWithDuplicateKeys(t *testing.T) {
+	t.Parallel()
+	parser := &sseUsageParser{upstreamProtocol: "openai"}
+	if err := parser.parseEvent(
+		"",
+		`{"choices":[{"finish_reason":"stop"}],"usage":{"input_tokens":1},"usage":{"input_tokens":9}}`,
+	); err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	if !parser.IsStreamComplete() {
+		t.Fatal("non-empty finish_reason must still mark the stream complete")
+	}
+	input, _, _, _ := parser.GetUsage()
+	if input != 9 {
+		t.Fatalf("InputTokens = %d, want last-wins 9", input)
+	}
+}
+
 func TestMarkSSEErrorForwardResultPreservesWebsocketStatusAndHeaders(t *testing.T) {
 	res := &fwResult{SSEErrorEvent: []byte(`{
 		"type":"error",
@@ -1628,5 +1679,23 @@ func TestSSEUsageParser_ResponsesMetadataEventLineWithoutPayloadType(t *testing.
 	}
 	if !parser.HasStreamOutput() {
 		t.Fatal("HasStreamOutput() should be true after a semantic event following metadata")
+	}
+}
+
+func TestSSEUsageParserPreservesCompletedOutputObjectOrder(t *testing.T) {
+	t.Parallel()
+
+	parser := newSSEUsageParser("codex")
+	frame := `data: {"type":"response.completed","response":{"id":"resp-1","output":[{"z":1,"type":"message","a":2}],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+	if err := parser.Feed([]byte(frame)); err != nil {
+		t.Fatalf("Feed failed: %v", err)
+	}
+	result, ok := parser.GetResponsesTurnResult()
+	if !ok {
+		t.Fatal("GetResponsesTurnResult() should return completed response metadata")
+	}
+	want := `[{"z":1,"type":"message","a":2}]`
+	if string(result.completedOutput) != want {
+		t.Fatalf("completed output was re-encoded: got %s, want %s", result.completedOutput, want)
 	}
 }

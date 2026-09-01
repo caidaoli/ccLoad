@@ -10,9 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/zedauth"
+
+	"github.com/tidwall/gjson"
 )
 
 func newZedWireTestRegistry() *protocol.Registry {
@@ -48,10 +51,38 @@ func TestFinalizeZedResponsesBodyWrapsProviderRequest(t *testing.T) {
 	if reasoning["effort"] != "xhigh" || envelope.ProviderRequest["max_output_tokens"] != float64(32768) {
 		t.Fatalf("reasoning policy = %v", envelope.ProviderRequest)
 	}
+	providerRequest := gjson.GetBytes(body, "provider_request").Raw
+	assertFieldOrder(t, providerRequest, `"model"`, `"input"`, `"stream"`)
+}
+
+func TestPrepareAntigravityRequestBodyKeepsUnchangedNumericObjectOrder(t *testing.T) {
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	body := []byte(`{"request":{"generationConfig":{"z":1,"a":2},"systemInstruction":{"parts":[]}},"model":"gemini-2.5-flash"}`)
+
+	got, err := prepareAntigravityRequestBody(cfg, "gemini-2.5-flash", body, body, http.Header{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inner := gjson.GetBytes(got, "request").Raw; !strings.Contains(inner, `"generationConfig":{"z":1,"a":2}`) {
+		t.Fatalf("Antigravity rewrote unchanged numeric object: %s", inner)
+	}
+}
+
+func TestFinalizeZedProviderRequestsRejectTrailingJSON(t *testing.T) {
+	t.Parallel()
+	if _, err := finalizeZedGoogleProviderRequest([]byte(`{"model":"gemini"} []`), "gemini-3-pro"); err == nil {
+		t.Fatal("finalizeZedGoogleProviderRequest accepted trailing JSON")
+	}
+	if _, err := finalizeZedAnthropicProviderRequest(
+		[]byte(`{"model":"claude-opus-4-6","messages":[]} []`),
+		[]byte(`{"model":"claude-opus-4-6"}`), nil,
+	); err == nil {
+		t.Fatal("finalizeZedAnthropicProviderRequest accepted trailing JSON")
+	}
 }
 
 func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"custom","name":"exec"},{"type":"namespace","name":"collaboration"}]},{"role":"developer","content":"rules"},{"type":"reasoning","content":null}],"tools":[{"type":"function","name":"wait"}],"tool_choice":{"type":"function","name":"wait"}}`)
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"custom","name":"exec"},{"type":"namespace","name":"collaboration"}]},{"role":"developer","content":"rules"},{"type":"reasoning","content":null}],"tools":[{"description":"keep this order","type":"function","name":"wait","parameters":{"z":1,"a":2}}],"tool_choice":{"type":"function","name":"wait"}}`)
 	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +100,9 @@ func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
 	tools, _ := envelope.ProviderRequest["tools"].([]any)
 	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "wait" || envelope.ProviderRequest["tool_choice"] != "required" {
 		t.Fatalf("normalized tools = %#v choice=%v", tools, envelope.ProviderRequest["tool_choice"])
+	}
+	if got, want := gjson.GetBytes(finalized, "provider_request.tools.0").Raw, `{"description":"keep this order","type":"function","name":"wait","parameters":{"z":1,"a":2}}`; got != want {
+		t.Fatalf("tool definition was re-encoded: got %s, want %s", got, want)
 	}
 }
 

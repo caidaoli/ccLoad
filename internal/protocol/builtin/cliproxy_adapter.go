@@ -382,20 +382,16 @@ func cliproxyValidateCodexRequest(raw []byte) error {
 }
 
 func cliproxyCodexCompletedResponse(raw []byte) ([]byte, error) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, fmt.Errorf("decode codex response: %w", err)
+	if !json.Valid(raw) || !gjson.ParseBytes(raw).IsObject() {
+		return nil, fmt.Errorf("decode codex response: invalid JSON object")
 	}
-	if _, wrapped := root["response"]; wrapped {
+	if gjson.GetBytes(raw, "response").Exists() {
 		return raw, nil
 	}
-	wrapped, err := json.Marshal(map[string]json.RawMessage{
-		"type":     json.RawMessage(`"response.completed"`),
-		"response": raw,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("wrap codex response: %w", err)
-	}
+	wrapped := make([]byte, 0, len(raw)+48)
+	wrapped = append(wrapped, `{"type":"response.completed","response":`...)
+	wrapped = append(wrapped, raw...)
+	wrapped = append(wrapped, '}')
 	return wrapped, nil
 }
 
@@ -417,8 +413,8 @@ func cliproxySSEDataEvent(rawEvent []byte) ([]byte, error) {
 		return nil, nil
 	}
 	payload := bytes.Join(dataLines, []byte{'\n'})
-	if string(payload) != "[DONE]" && !json.Valid(payload) {
-		return nil, fmt.Errorf("invalid codex SSE data: %s", strings.TrimSpace(string(payload)))
+	if !bytes.Equal(payload, []byte("[DONE]")) && !json.Valid(payload) {
+		return nil, fmt.Errorf("invalid codex SSE data: %s", payload)
 	}
 	payload = cliproxyNormalizeSSEPayload(eventType, payload)
 	out := make([]byte, 0, len(payload)+6)
@@ -633,11 +629,11 @@ func cliproxyFrameStreamChunks(target cliproxyStreamProtocol, chunks [][]byte) (
 			framed = append(framed, []byte("data: [DONE]\n\n"))
 			continue
 		}
-		if !json.Valid(chunk) {
-			return nil, fmt.Errorf("translator emitted invalid stream JSON: %s", chunk)
-		}
 		switch target {
 		case cliproxyStreamOpenAI, cliproxyStreamGemini:
+			if !json.Valid(chunk) {
+				return nil, fmt.Errorf("translator emitted invalid stream JSON: %s", chunk)
+			}
 			out := make([]byte, 0, len(chunk)+8)
 			out = append(out, "data: "...)
 			out = append(out, chunk...)

@@ -1,10 +1,7 @@
 package app
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +11,8 @@ import (
 	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+
+	"github.com/tidwall/gjson"
 )
 
 func isXAIOAuthResponsesRequest(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string) bool {
@@ -35,97 +34,46 @@ func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]b
 	if actualModel == "" {
 		return nil, errors.New("xAI Responses request is missing actual model")
 	}
-
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var payload map[string]any
-	if err := decoder.Decode(&payload); err != nil {
-		return nil, errors.New("decode xAI Responses request")
-	}
-	if payload == nil {
+	if !isMutableJSONObject(body) {
 		return nil, errors.New("xAI Responses request must be a JSON object")
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, errors.New("xAI Responses request contains trailing JSON")
-	}
 
-	payload["model"] = actualModel
-	payload["stream"] = true
-	if executionID = strings.TrimSpace(executionID); executionID != "" {
-		payload["prompt_cache_key"] = executionID
+	body = setJSONValue(body, "model", actualModel)
+	body = setJSONValue(body, "stream", true)
+	if executionID = strings.TrimSpace(executionID); executionID == "" {
+		body = deleteJSONPath(body, "prompt_cache_key")
 	} else {
-		delete(payload, "prompt_cache_key")
+		body = setJSONValue(body, "prompt_cache_key", executionID)
 	}
-	for _, field := range []string{
-		"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options",
-	} {
-		delete(payload, field)
+	for _, field := range []string{"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+		body = deleteJSONPath(body, field)
 	}
-	deleteJSONKeyRecursive(payload, "external_web_access")
+	// xAI 会对未知字段整体拒绝，而 external_web_access 可能出现在 input 项的任意嵌套
+	// 位置，顶层删除兜不住。
+	body, _ = rewriteJSONMembers(body, func(key string, _ gjson.Result) (string, bool) {
+		return "", key == "external_web_access"
+	})
 
 	if strings.EqualFold(actualModel, "grok-4.5") {
-		delete(payload, "presence_penalty")
-		delete(payload, "frequency_penalty")
-		delete(payload, "stop")
+		for _, field := range []string{"presence_penalty", "frequency_penalty", "stop"} {
+			body = deleteJSONPath(body, field)
+		}
 	}
-	normalizeXAIReasoning(payload, actualModel)
-	normalizeXAIInputReasoningItems(payload)
-	normalizeXAIImageGenerationTools(payload, actualModel)
-	normalizeXAIOrphanedToolControls(payload)
-
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return nil, errors.New("encode xAI Responses request")
-	}
-	return encoded, nil
+	body = normalizeXAIReasoning(body, actualModel)
+	body = normalizeXAIInputReasoning(body)
+	return normalizeXAIImageGeneration(body, actualModel), nil
 }
 
-func normalizeXAIInputReasoningItems(payload map[string]any) {
-	input, ok := payload["input"].([]any)
-	if !ok {
-		return
-	}
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok || item["type"] != "reasoning" {
-			continue
-		}
-		if content, exists := item["content"]; exists && content == nil {
-			delete(item, "content")
-		}
-		if encryptedContent, exists := item["encrypted_content"]; exists && encryptedContent == nil {
-			delete(item, "encrypted_content")
-		}
-	}
-}
-
-func deleteJSONKeyRecursive(value any, key string) {
-	switch typed := value.(type) {
-	case map[string]any:
-		delete(typed, key)
-		for _, child := range typed {
-			deleteJSONKeyRecursive(child, key)
-		}
-	case []any:
-		for _, child := range typed {
-			deleteJSONKeyRecursive(child, key)
-		}
-	}
-}
-
-func normalizeXAIReasoning(payload map[string]any, modelName string) {
-	reasoning, ok := payload["reasoning"].(map[string]any)
-	if !ok {
-		delete(payload, "reasoning")
-		return
+func normalizeXAIReasoning(body []byte, modelName string) []byte {
+	reasoning := gjson.GetBytes(body, "reasoning")
+	if !reasoning.Exists() {
+		return body
 	}
 	allowed := xaiReasoningEfforts(modelName)
-	if len(allowed) == 0 {
-		delete(payload, "reasoning")
-		return
+	if !reasoning.IsObject() || len(allowed) == 0 {
+		return deleteJSONPath(body, "reasoning")
 	}
-	effort, _ := reasoning["effort"].(string)
-	effort = strings.ToLower(strings.TrimSpace(effort))
+	effort := strings.ToLower(strings.TrimSpace(jsonStringValue(reasoning.Get("effort"))))
 	switch effort {
 	case "minimal":
 		effort = "low"
@@ -133,13 +81,36 @@ func normalizeXAIReasoning(payload map[string]any, modelName string) {
 		effort = "high"
 	}
 	if _, valid := allowed[effort]; valid {
-		reasoning["effort"] = effort
+		body = setJSONValue(body, "reasoning.effort", effort)
 	} else {
-		delete(reasoning, "effort")
+		body = deleteJSONPath(body, "reasoning.effort")
 	}
-	if len(reasoning) == 0 {
-		delete(payload, "reasoning")
+	if jsonMemberCount(gjson.GetBytes(body, "reasoning")) == 0 {
+		body = deleteJSONPath(body, "reasoning")
 	}
+	return body
+}
+
+func normalizeXAIInputReasoning(body []byte) []byte {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	var deletions []string
+	for index, item := range input.Array() {
+		if !item.IsObject() || jsonStringValue(item.Get("type")) != "reasoning" {
+			continue
+		}
+		for _, field := range []string{"content", "encrypted_content"} {
+			if value := item.Get(field); value.Type == gjson.Null {
+				deletions = append(deletions, "input."+strconv.Itoa(index)+"."+field)
+			}
+		}
+	}
+	for _, path := range deletions {
+		body = deleteJSONPath(body, path)
+	}
+	return body
 }
 
 func xaiReasoningEfforts(modelName string) map[string]struct{} {
@@ -223,120 +194,133 @@ func parseXAIGrokVersion(value string) (xaiGrokVersion, bool) {
 	return xaiGrokVersion{major: major, minor: minor}, true
 }
 
-func normalizeXAIImageGenerationTools(payload map[string]any, modelName string) {
-	tools := promoteXAIAdditionalTools(payload)
-	supported := xaiSupportsImageGeneration(modelName)
-	filtered := make([]any, 0, len(tools))
-	for _, rawTool := range tools {
-		tool, isObject := rawTool.(map[string]any)
-		isImageGeneration := isObject && strings.TrimSpace(xaiStringValue(tool["type"])) == xaiImageGenerationToolType
-		if isImageGeneration && !supported {
-			continue
+func normalizeXAIImageGeneration(body []byte, modelName string) []byte {
+	toolsResult := gjson.GetBytes(body, "tools")
+	toolsIsArray := toolsResult.IsArray()
+	var tools []string
+	if toolsIsArray {
+		for _, tool := range toolsResult.Array() {
+			tools = append(tools, tool.Raw)
 		}
-		filtered = append(filtered, rawTool)
 	}
-	payload["tools"] = filtered
-	normalizeXAIToolChoice(payload, filtered)
+	toolsChanged := false
+
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		items := input.Array()
+		remaining := make([]string, 0, len(items))
+		for _, item := range items {
+			if item.IsObject() && strings.TrimSpace(jsonStringValue(item.Get("type"))) == "additional_tools" {
+				if additional := item.Get("tools"); additional.IsArray() {
+					for _, tool := range additional.Array() {
+						tools = append(tools, tool.Raw)
+					}
+				}
+				toolsChanged = true
+				continue
+			}
+			remaining = append(remaining, item.Raw)
+		}
+		if len(remaining) != len(items) {
+			body = setJSONRaw(body, "input", joinJSONRaw(remaining))
+		}
+	}
+
+	if !xaiSupportsImageGeneration(modelName) {
+		filtered := make([]string, 0, len(tools))
+		for _, raw := range tools {
+			tool := gjson.Parse(raw)
+			if tool.IsObject() && strings.TrimSpace(jsonStringValue(tool.Get("type"))) == xaiImageGenerationToolType {
+				toolsChanged = true
+				continue
+			}
+			filtered = append(filtered, raw)
+		}
+		tools = filtered
+	}
+
+	if len(tools) == 0 {
+		for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+			body = deleteJSONPath(body, field)
+		}
+		return body
+	}
+	if toolsChanged || !toolsIsArray {
+		body = setJSONRaw(body, "tools", joinJSONRaw(tools))
+	}
+	return normalizeXAIToolChoice(body, tools)
 }
 
-func promoteXAIAdditionalTools(payload map[string]any) []any {
-	tools, _ := payload["tools"].([]any)
-	input, ok := payload["input"].([]any)
-	if !ok {
-		return tools
+func normalizeXAIToolChoice(body []byte, tools []string) []byte {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.IsObject() {
+		return body
 	}
-	promoted := append([]any(nil), tools...)
-	remaining := make([]any, 0, len(input))
-	for _, rawItem := range input {
-		item, isObject := rawItem.(map[string]any)
-		if !isObject || strings.TrimSpace(xaiStringValue(item["type"])) != "additional_tools" {
-			remaining = append(remaining, rawItem)
-			continue
-		}
-		additional, _ := item["tools"].([]any)
-		promoted = append(promoted, additional...)
+	choiceTypeValue := choice.Get("type")
+	if choiceTypeValue.Type != gjson.String {
+		return deleteJSONPath(body, "tool_choice")
 	}
-	if len(remaining) != len(input) {
-		payload["input"] = remaining
-	}
-	return promoted
-}
-
-func normalizeXAIToolChoice(payload map[string]any, tools []any) {
-	choice, ok := payload["tool_choice"].(map[string]any)
-	if !ok {
-		return
-	}
-	if strings.TrimSpace(xaiStringValue(choice["type"])) == xaiImageGenerationToolType {
+	choiceType := strings.TrimSpace(choiceTypeValue.String())
+	if choiceType == xaiImageGenerationToolType {
 		if !xaiToolChoiceMatches(choice, tools) {
-			delete(payload, "tool_choice")
-			return
+			return deleteJSONPath(body, "tool_choice")
 		}
-		payload["tool_choice"] = map[string]any{
-			"type":  "allowed_tools",
-			"mode":  "required",
-			"tools": []any{choice},
-		}
-		choice = payload["tool_choice"].(map[string]any)
+		// 客户端强制选择 image_generation 时改写成 xAI 接受的 allowed_tools+required。
+		wrapper := newJSONObjectBuilder()
+		wrapper.Set("type", `"allowed_tools"`)
+		wrapper.Set("mode", `"required"`)
+		wrapper.Set("tools", joinJSONRaw([]string{choice.Raw}))
+		return setJSONRaw(body, "tool_choice", wrapper.String())
 	}
-	if strings.TrimSpace(xaiStringValue(choice["type"])) != "allowed_tools" {
+	if choiceType != "allowed_tools" {
 		if !xaiToolChoiceMatches(choice, tools) {
-			delete(payload, "tool_choice")
+			body = deleteJSONPath(body, "tool_choice")
 		}
-		return
+		return body
 	}
-	allowed, ok := choice["tools"].([]any)
-	if !ok {
-		delete(payload, "tool_choice")
-		return
+	allowed := choice.Get("tools")
+	if !allowed.IsArray() {
+		return deleteJSONPath(body, "tool_choice")
 	}
-	filtered := make([]any, 0, len(allowed))
-	for _, rawTool := range allowed {
-		tool, isObject := rawTool.(map[string]any)
-		if !isObject || !xaiToolChoiceMatches(tool, tools) {
-			continue
+	filtered := make([]string, 0, jsonMemberCount(allowed))
+	for _, tool := range allowed.Array() {
+		if tool.IsObject() && xaiToolChoiceMatches(tool, tools) {
+			filtered = append(filtered, tool.Raw)
 		}
-		filtered = append(filtered, rawTool)
 	}
 	if len(filtered) == 0 {
-		delete(payload, "tool_choice")
-		return
+		return deleteJSONPath(body, "tool_choice")
 	}
-	choice["tools"] = filtered
+	return setJSONRaw(body, "tool_choice.tools", joinJSONRaw(filtered))
 }
 
-func xaiToolChoiceMatches(choice map[string]any, tools []any) bool {
-	choiceType := strings.TrimSpace(xaiStringValue(choice["type"]))
+func xaiToolChoiceMatches(choice gjson.Result, tools []string) bool {
+	choiceTypeValue := choice.Get("type")
+	if choiceTypeValue.Type != gjson.String {
+		return false
+	}
+	choiceType := strings.TrimSpace(choiceTypeValue.String())
 	if choiceType == "" || choiceType == "allowed_tools" {
 		return false
 	}
-	choiceName := strings.TrimSpace(xaiStringValue(choice["name"]))
-	for _, rawTool := range tools {
-		tool, isObject := rawTool.(map[string]any)
-		if !isObject || strings.TrimSpace(xaiStringValue(tool["type"])) != choiceType {
+	choiceName := strings.TrimSpace(jsonStringValue(choice.Get("name")))
+	for _, raw := range tools {
+		tool := gjson.Parse(raw)
+		if !tool.IsObject() {
 			continue
 		}
-		named := choiceType == "function" || choiceType == "custom"
-		if !named || choiceName != "" && choiceName == strings.TrimSpace(xaiStringValue(tool["name"])) {
+		toolType := tool.Get("type")
+		if toolType.Type != gjson.String || strings.TrimSpace(toolType.String()) != choiceType {
+			continue
+		}
+		if choiceType != "function" && choiceType != "custom" {
+			return true
+		}
+		toolName := tool.Get("name")
+		if choiceName != "" && toolName.Type == gjson.String && choiceName == strings.TrimSpace(toolName.String()) {
 			return true
 		}
 	}
 	return false
-}
-
-func xaiStringValue(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-func normalizeXAIOrphanedToolControls(payload map[string]any) {
-	tools, ok := payload["tools"].([]any)
-	if ok && len(tools) > 0 {
-		return
-	}
-	delete(payload, "tools")
-	delete(payload, "tool_choice")
-	delete(payload, "parallel_tool_calls")
 }
 
 func injectXAIResponsesHeaders(req *http.Request, accessToken, conversationID string) {

@@ -11,6 +11,8 @@ import (
 	"ccLoad/internal/zaiauth"
 
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Z.ai Coding Plan wire contract.
@@ -39,8 +41,7 @@ type zaiRequestIdentity struct {
 // channel's ZCode fingerprint. A foreign client fingerprint (Claude Code's, for
 // example) must never reach the Coding Plan upstream.
 func finalizeZAICodingPlanBody(body []byte, cfg *model.Config) ([]byte, error) {
-	var request map[string]any
-	if err := json.Unmarshal(body, &request); err != nil {
+	if !isMutableJSONObject(body) {
 		return nil, errors.New("finalize z.ai Coding Plan request: invalid JSON body")
 	}
 	identity, err := json.Marshal(zaiRequestIdentity{
@@ -50,13 +51,19 @@ func finalizeZAICodingPlanBody(body []byte, cfg *model.Config) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("finalize z.ai Coding Plan request: invalid identity")
 	}
-	metadata, _ := request["metadata"].(map[string]any)
-	if metadata == nil {
-		metadata = make(map[string]any, 1)
+	identityRaw, err := json.Marshal(string(identity))
+	if err != nil {
+		return nil, errors.New("finalize z.ai Coding Plan request: encode failed")
 	}
-	metadata["user_id"] = string(identity)
-	request["metadata"] = metadata
-	finalized, err := json.Marshal(request)
+	metadata := gjson.GetBytes(body, "metadata")
+	if !metadata.Exists() || metadata.Type == gjson.Null || !metadata.IsObject() {
+		finalized, err := sjson.SetRawBytes(body, "metadata", append([]byte(`{"user_id":`), append(identityRaw, '}')...))
+		if err != nil {
+			return nil, errors.New("finalize z.ai Coding Plan request: encode failed")
+		}
+		return finalized, nil
+	}
+	finalized, err := sjson.SetRawBytes(body, "metadata.user_id", identityRaw)
 	if err != nil {
 		return nil, errors.New("finalize z.ai Coding Plan request: encode failed")
 	}
@@ -104,9 +111,7 @@ func resolveZAISessionID(body []byte, cfg *model.Config) string {
 		return sessionID
 	}
 	if deviceID := zaiDeviceID(cfg); deviceID != "" {
-		request, _ := decodeAnthropicRequest(body)
-		messages, _ := request["messages"].([]any)
-		return anthropicStableSessionID(deviceID, anthropicFirstUserText(messages))
+		return anthropicStableSessionID(deviceID, anthropicFirstUserText(gjson.GetBytes(body, "messages")))
 	}
 	return uuid.NewString()
 }

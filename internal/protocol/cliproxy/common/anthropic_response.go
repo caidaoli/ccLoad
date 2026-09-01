@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -29,7 +31,10 @@ func NormalizeAnthropicResponse(raw []byte) ([]byte, error) {
 		if err := validateAnthropicMessage(message); err != nil {
 			return nil, err
 		}
-		return json.Marshal(message)
+		// Validation must not turn the original response object into a map and
+		// marshal it again: that needlessly reorders its fields. The translators
+		// consume the validated JSON directly and preserve its raw members.
+		return raw, nil
 	}
 
 	payloads, err := anthropicSSEPayloads(raw)
@@ -46,12 +51,20 @@ func NormalizeAnthropicResponse(raw []byte) ([]byte, error) {
 	return json.Marshal(message)
 }
 
+// decodeJSONObject decodes upstream-produced JSON leniently: duplicate members
+// resolve to the last one, matching encoding/json. Strict duplicate-key
+// rejection belongs at the downstream request boundary, where refusing an
+// ambiguous document is our call; upstream quirks must not become outages.
+// Trailing data is still rejected — that is malformed framing, not a quirk.
 func decodeJSONObject(raw []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value map[string]any
 	if err := decoder.Decode(&value); err != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("decode anthropic response: trailing JSON")
 	}
 	if value == nil {
 		return nil, fmt.Errorf("anthropic response must be an object")

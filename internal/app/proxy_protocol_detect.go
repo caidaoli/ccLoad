@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -80,27 +81,22 @@ func validateClientBodyMatchesProtocol(clientProtocol protocol.Protocol, body []
 }
 
 func sanitizeCodexAlphaSearchBody(body []byte) []byte {
-	var payload map[string]json.RawMessage
-	if err := sonic.Unmarshal(body, &payload); err != nil || payload == nil {
+	if !gjson.ParseBytes(body).IsObject() {
 		return body
 	}
 
-	removed := false
+	updated := body
 	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
-		if _, exists := payload[field]; exists {
-			delete(payload, field)
-			removed = true
+		if !gjson.GetBytes(updated, field).Exists() {
+			continue
+		}
+		var err error
+		updated, err = sjson.DeleteBytes(updated, field)
+		if err != nil {
+			return body
 		}
 	}
-	if !removed {
-		return body
-	}
-
-	sanitized, err := sonic.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return sanitized
+	return updated
 }
 
 // multimodalMarkerWords 是跨协议的多模态特征词。请求体不含任何一个词时

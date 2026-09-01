@@ -53,10 +53,13 @@ func (r *zaiOAuthCancelRequest) Validate() error {
 	return nil
 }
 
+// zaiOAuthSession 只放需要跨 goroutine 共享、且受 m.mu 保护的会话状态。
+// 轮询凭证刻意不在此列：它在 start 里生成后就不再变化，只有轮询 goroutine
+// 消费，作为 run 的参数传递即可——它的生命周期就是那个 goroutine 的栈，会话
+// 落终态后 map 里本就不再持有它，比"存进来再清空"既少一个数据竞争也更短命。
 type zaiOAuthSession struct {
 	state            string
 	adminSessionHash string
-	pollToken        string
 	ctx              context.Context
 	cancel           context.CancelFunc
 	status           string
@@ -141,7 +144,7 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string) (z
 	}
 	sessionCtx, cancel := context.WithCancel(m.baseCtx)
 	session := &zaiOAuthSession{
-		state: flow.FlowID, adminSessionHash: adminSessionHash, pollToken: pollToken,
+		state: flow.FlowID, adminSessionHash: adminSessionHash,
 		ctx: sessionCtx, cancel: cancel, status: "pending", createdAt: m.now(),
 	}
 	m.sessions[session.state] = session
@@ -149,12 +152,12 @@ func (m *zaiOAuthManager) start(ctx context.Context, adminSessionHash string) (z
 	m.pollers.Add(1)
 	m.mu.Unlock()
 
-	go m.run(session, flow)
+	go m.run(session, flow, pollToken)
 	return zaiOAuthStartResponse{URL: flow.AuthorizeURL, State: session.state, Status: "pending"}, nil
 }
 
 // run owns one authorization from the browser hand-off to the committed channel.
-func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow) {
+func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow, pollToken string) {
 	defer m.pollers.Done()
 	interval := zaiauth.PollInterval
 	if flow.PollIntervalSec > 0 {
@@ -171,7 +174,7 @@ func (m *zaiOAuthManager) run(session *zaiOAuthSession, flow *zaiauth.Flow) {
 		if session.ctx.Err() != nil {
 			return
 		}
-		result, err := m.service.Poll(session.ctx, flow.FlowID, session.pollToken)
+		result, err := m.service.Poll(session.ctx, flow.FlowID, pollToken)
 		if err != nil {
 			if session.ctx.Err() != nil {
 				return
@@ -202,7 +205,6 @@ func (m *zaiOAuthManager) completeAuthorization(session *zaiOAuthSession, result
 		return
 	}
 	session.status = "committing"
-	session.pollToken = ""
 	if m.activeByID[session.adminSessionHash] == session.state {
 		delete(m.activeByID, session.adminSessionHash)
 	}
@@ -297,7 +299,6 @@ func (m *zaiOAuthManager) finishSessionLocked(
 	session.errorMsg = errorMsg
 	session.channelID = channelID
 	session.channelName = channelName
-	session.pollToken = ""
 	session.finishedAt = m.now()
 	session.cancel()
 	if m.activeByID[session.adminSessionHash] == session.state {
@@ -346,7 +347,6 @@ func (m *zaiOAuthManager) close() {
 		m.closed = true
 		cancels := make([]context.CancelFunc, 0, len(m.sessions))
 		for _, session := range m.sessions {
-			session.pollToken = ""
 			cancels = append(cancels, session.cancel)
 		}
 		m.sessions = make(map[string]*zaiOAuthSession)

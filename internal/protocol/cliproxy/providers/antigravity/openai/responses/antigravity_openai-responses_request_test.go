@@ -70,6 +70,18 @@ func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningKeepsClaudeSi
 	}
 }
 
+func TestRewriteAntigravityClaudeReasoningRequiresBooleanThought(t *testing.T) {
+	t.Parallel()
+	nativeSig := testAntigravityResponsesClaudeSignature(t)
+	input := []byte(`{"input":[{"type":"reasoning","encrypted_content":"` + nativeSig + `","summary":[{"type":"summary_text","text":"reasoning"}]}]}`)
+	gemini := []byte(`{"contents":[{"parts":[{"thought":1,"text":"reasoning","thoughtSignature":"old"}]}]}`)
+
+	got := rewriteOpenAIResponsesReasoningForAntigravityClaude("claude-opus-4-6", input, gemini)
+	if string(got) != string(gemini) {
+		t.Fatalf("non-boolean thought was rewritten: got %s", got)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToAntigravity_ClaudeReasoningDropsIncompatibleSignature(t *testing.T) {
 	raw := []byte(`{
 		"model": "claude-opus-4-6-thinking",

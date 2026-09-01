@@ -1,7 +1,7 @@
 package responses
 
 import (
-	"encoding/json"
+	"fmt"
 	"strings"
 
 	coreresponses "ccLoad/internal/protocol/cliproxy/gemini/openai/responses"
@@ -9,6 +9,7 @@ import (
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ConvertOpenAIResponsesRequestToAntigravity converts a Responses request to the Antigravity Gemini envelope.
@@ -30,43 +31,41 @@ func rewriteOpenAIResponsesReasoningForAntigravityClaude(modelName string, input
 	if sigcompat.SignatureProviderFromModelName(modelName) != sigcompat.SignatureProviderClaude {
 		return geminiJSON
 	}
+	if !gjson.ValidBytes(geminiJSON) || !gjson.ParseBytes(geminiJSON).IsObject() {
+		return geminiJSON
+	}
 
 	reasoningSignatures := antigravityClaudeReasoningSignatures(inputRawJSON)
 	if len(reasoningSignatures) == 0 {
 		return geminiJSON
 	}
 
-	var root map[string]any
-	if err := json.Unmarshal(geminiJSON, &root); err != nil {
-		return geminiJSON
-	}
-
-	contents, ok := root["contents"].([]any)
-	if !ok {
+	contents := gjson.GetBytes(geminiJSON, "contents")
+	if !contents.IsArray() {
 		return geminiJSON
 	}
 
 	reasoningIndex := 0
 	changed := false
-	rewrittenContents := make([]any, 0, len(contents))
-	for contentIndex, contentValue := range contents {
-		content, ok := contentValue.(map[string]any)
-		if !ok {
-			rewrittenContents = append(rewrittenContents, contentValue)
+	type contentRewrite struct {
+		index       int
+		deleteParts []int
+		setParts    map[int]string
+		remove      bool
+	}
+	rewrites := make([]contentRewrite, 0)
+	for contentIndex, content := range contents.Array() {
+		if !content.IsObject() {
 			continue
 		}
-
-		parts, ok := content["parts"].([]any)
-		if !ok {
-			rewrittenContents = append(rewrittenContents, content)
+		parts := content.Get("parts")
+		if !parts.IsArray() {
 			continue
 		}
-
-		rewrittenParts := make([]any, 0, len(parts))
-		for partIndex, partValue := range parts {
-			part, ok := partValue.(map[string]any)
-			if !ok || part["thought"] != true {
-				rewrittenParts = append(rewrittenParts, partValue)
+		rewrite := contentRewrite{index: contentIndex, setParts: make(map[int]string)}
+		for partIndex, part := range parts.Array() {
+			thought := part.Get("thought")
+			if !part.IsObject() || thought.Type != gjson.True {
 				continue
 			}
 
@@ -79,40 +78,61 @@ func rewriteOpenAIResponsesReasoningForAntigravityClaude(modelName string, input
 			if reasoningSig.Signature == "" {
 				changed = true
 				logDroppedOpenAIResponsesAntigravityClaudeReasoning(modelName, contentIndex, partIndex, reasoningIndex-1, reasoningSig)
+				rewrite.deleteParts = append(rewrite.deleteParts, partIndex)
 				continue
 			}
-			if text, _ := part["text"].(string); strings.TrimSpace(text) == "" {
+			if strings.TrimSpace(part.Get("text").String()) == "" {
 				changed = true
 				logDroppedOpenAIResponsesAntigravityClaudeEmptyReasoning(modelName, contentIndex, partIndex, reasoningIndex-1, reasoningSig)
+				rewrite.deleteParts = append(rewrite.deleteParts, partIndex)
 				continue
 			}
 
-			if currentSignature, _ := part["thoughtSignature"].(string); currentSignature != reasoningSig.Signature {
+			if part.Get("thoughtSignature").String() != reasoningSig.Signature {
 				changed = true
 				logNormalizedOpenAIResponsesAntigravityClaudeReasoning(modelName, contentIndex, partIndex, reasoningIndex-1, reasoningSig)
+				rewrite.setParts[partIndex] = reasoningSig.Signature
 			}
-			part["thoughtSignature"] = reasoningSig.Signature
-			rewrittenParts = append(rewrittenParts, part)
 		}
-
-		if len(rewrittenParts) == 0 {
+		if len(rewrite.deleteParts) == len(parts.Array()) {
 			changed = true
-			continue
+			rewrite.remove = true
 		}
-		content["parts"] = rewrittenParts
-		rewrittenContents = append(rewrittenContents, content)
+		if len(rewrite.deleteParts) > 0 || len(rewrite.setParts) > 0 {
+			rewrites = append(rewrites, rewrite)
+		}
 	}
 
 	if !changed {
 		return geminiJSON
 	}
 
-	root["contents"] = rewrittenContents
-	out, err := json.Marshal(root)
-	if err != nil {
-		return geminiJSON
+	updated := geminiJSON
+	for rewriteIndex := len(rewrites) - 1; rewriteIndex >= 0; rewriteIndex-- {
+		rewrite := rewrites[rewriteIndex]
+		for partIndex, signature := range rewrite.setParts {
+			var err error
+			updated, err = sjson.SetBytes(updated, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", rewrite.index, partIndex), signature)
+			if err != nil {
+				return geminiJSON
+			}
+		}
+		for partIndex := len(rewrite.deleteParts) - 1; partIndex >= 0; partIndex-- {
+			var err error
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("contents.%d.parts.%d", rewrite.index, rewrite.deleteParts[partIndex]))
+			if err != nil {
+				return geminiJSON
+			}
+		}
+		if rewrite.remove {
+			var err error
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("contents.%d", rewrite.index))
+			if err != nil {
+				return geminiJSON
+			}
+		}
 	}
-	return out
+	return updated
 }
 
 func antigravityClaudeReasoningSignatures(inputRawJSON []byte) []antigravityClaudeReasoningSignature {

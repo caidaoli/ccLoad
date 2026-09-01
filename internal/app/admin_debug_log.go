@@ -15,39 +15,64 @@ import (
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const maxMergedDebugResponseBodyBytes = 16 * 1024 * 1024
 
-// maskSensitiveHeaderJSON 对 JSON string 格式的 headers 做脱敏
+// maskedHeaderUnavailable 标记「脱敏失败，原始头未展示」，与「上游没发请求头」区分开。
+const maskedHeaderUnavailable = `{"_masked":"unavailable"}`
+
+// maskSensitiveHeaderJSON 对 JSON string 格式的 headers 做脱敏。
+// 脱敏失败时返回可辨识的占位而不是空对象：调试日志的价值就是排查故障时的证据，
+// 静默换成 "{}" 会让人以为上游真的没发请求头。
 func maskSensitiveHeaderJSON(jsonStr string) string {
 	if jsonStr == "" {
 		return jsonStr
 	}
-	var headers map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &headers); err != nil {
-		return jsonStr
+	raw := []byte(jsonStr)
+	if !isMutableJSONObject(raw) {
+		return maskedHeaderUnavailable
 	}
-	for k, v := range headers {
-		if !isSensitiveHeader(k) {
-			continue
+	// 先按原始快照收集待脱敏的键，再统一写入：ForEach 的迭代对象必须与
+	// 被反复重写的 updated 解耦，否则一旦将来改动 key 集合就会读到半成品。
+	type maskTarget struct {
+		path  string
+		value string
+	}
+	targets := make([]maskTarget, 0, 4)
+	gjson.ParseBytes(raw).ForEach(func(key, value gjson.Result) bool {
+		keyName := key.String()
+		if !isSensitiveHeader(keyName) {
+			return true
 		}
-		switch val := v.(type) {
-		case string:
-			headers[k] = maskHeaderValue(val)
-		case []any:
-			for i, item := range val {
-				if s, ok := item.(string); ok {
-					val[i] = maskHeaderValue(s)
+		path := sjsonObjectPathJoin("", keyName)
+		switch value.Type {
+		case gjson.String:
+			targets = append(targets, maskTarget{path: path, value: value.String()})
+		case gjson.JSON:
+			if !value.IsArray() {
+				return true
+			}
+			for index, item := range value.Array() {
+				if item.Type != gjson.String {
+					continue
 				}
+				targets = append(targets, maskTarget{path: sjsonPathJoin(path, strconv.Itoa(index)), value: item.String()})
 			}
 		}
+		return true
+	})
+	updated := raw
+	for _, target := range targets {
+		var err error
+		updated, err = sjson.SetBytes(updated, target.path, maskHeaderValue(target.value))
+		if err != nil {
+			return maskedHeaderUnavailable
+		}
 	}
-	out, err := json.Marshal(headers)
-	if err != nil {
-		return jsonStr
-	}
-	return string(out)
+	return string(updated)
 }
 
 type debugLogUnavailableInfo struct {

@@ -15,10 +15,9 @@ import (
 )
 
 func TestManagementCheckinDueUsesServerLocalDateAndTime(t *testing.T) {
+	t.Parallel()
+	// 时区由 now 自带，不改进程级 time.Local——那会和同包并行测试里的 time.Now() 打架。
 	loc := time.FixedZone("server", 8*60*60)
-	oldLocal := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = oldLocal })
 	base := time.Date(2026, 8, 26, 9, 0, 0, 0, loc)
 	newEnvelope := func(day string) *model.ChannelManagementEnvelope {
 		return &model.ChannelManagementEnvelope{

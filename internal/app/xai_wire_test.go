@@ -163,6 +163,7 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("reasoning = %#v, want normalized high with summary preserved", reasoning)
 	}
+	assertFieldOrder(t, string(got), `"model"`, `"stream"`, `"reasoning"`, `"input"`, `"metadata"`, `"prompt_cache_key"`)
 	tools, _ := payload["tools"].([]any)
 	if len(tools) != 0 {
 		t.Fatalf("tools = %#v, want no injected tools", tools)

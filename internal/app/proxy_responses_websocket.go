@@ -673,7 +673,7 @@ func writeResponsesWebsocketSyntheticPrewarm(
 }
 
 func isResponsesWebsocketFailurePayload(payload []byte) bool {
-	if !gjson.ValidBytes(payload) {
+	if !json.Valid(payload) {
 		return false
 	}
 	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
@@ -795,9 +795,6 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		payload := sseEventData(rawEvent)
 		if len(payload) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 			continue
-		}
-		if !gjson.ValidBytes(payload) {
-			return 0, errors.New("invalid JSON in upstream SSE event")
 		}
 		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 		if err := w.collectOutputItem(eventType, payload); err != nil {
