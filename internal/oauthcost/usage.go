@@ -237,35 +237,21 @@ func Find(usage *Usage, key string) *Window {
 // Reconcile aligns persisted counters with a complete upstream window
 // snapshot. A changed boundary starts at zero unless a manual count cutoff
 // still belongs to the sampled period. Windows missing from a complete
-// snapshot are retired.
+// snapshot are retired. A usage rollback is scoped to the sampled window,
+// so a rolling 5-hour reset cannot clear the independent weekly counter.
 func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 	return reconcile(current, samples, observedAt, false)
 }
 
 // ReconcilePartial applies a partial upstream sample. It updates only windows
-// present in samples and never retires omitted siblings. A usage rollback is
-// scoped to the sampled quota family, so an independent Codex Spark reset
-// cannot clear the main Codex weekly window.
+// present in samples and retains omitted siblings: their absence is not proof
+// of an upstream reset, so their old cost remains until their own sample or
+// local boundary. Usage rollback uses the same per-window scope as Reconcile.
 func ReconcilePartial(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 	return reconcile(current, samples, observedAt, true)
 }
 
 func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial bool) *Usage {
-	var accountResetAt time.Time
-	resetAtByFamily := map[string]time.Time(nil)
-	if partial {
-		resetAtByFamily = sampledUpstreamResetTimes(current, samples, observedAt)
-		if len(resetAtByFamily) > 0 {
-			current = resetUpstreamFamilies(current, resetAtByFamily)
-		}
-	} else {
-		// Complete snapshots retain the historical account-level rollback
-		// contract used by active OAuth refreshes.
-		accountResetAt = sampledUpstreamResetAt(current, samples, observedAt)
-		if !accountResetAt.IsZero() {
-			current = resetUpstreamAccount(current, accountResetAt)
-		}
-	}
 	next := &Usage{}
 	seen := make(map[string]struct{}, len(samples))
 	for _, sample := range samples {
@@ -282,18 +268,13 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 		seen[key] = struct{}{}
 		sample.Key = key
 		sample.UsedPercent = normalizedUsedPercent(sample.UsedPercent)
-		resetAt := accountResetAt
-		if partial {
-			family := quotaFamilyForKey(sample.Key, sample.Family)
-			resetAt = resetAtByFamily[family]
-		}
-		if window := reconcileWindow(Find(current, key), sample, observedAt, resetAt); window != nil {
+		if window := reconcileWindow(Find(current, key), sample, observedAt); window != nil {
 			next.Windows = append(next.Windows, window)
 		}
 	}
-	if (partial || !accountResetAt.IsZero()) && current != nil {
-		// Partial samples always retain omitted siblings. A complete sample
-		// retains omitted windows only when the account-level rollback reset them.
+	if partial && current != nil {
+		// Partial samples retain omitted siblings because absence is not proof
+		// that the upstream window reset.
 		for _, window := range current.Windows {
 			if window == nil {
 				continue
@@ -302,9 +283,7 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 				continue
 			}
 			retained := cloneWindow(window)
-			if partial {
-				advanceWindow(retained, observedAt)
-			}
+			advanceWindow(retained, observedAt)
 			next.Windows = append(next.Windows, retained)
 		}
 	}
@@ -316,95 +295,7 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 	return next
 }
 
-// sampledUpstreamResetAt is retained as a small compatibility helper for
-// callers/tests that only need the earliest detected reset timestamp.
-func sampledUpstreamResetAt(current *Usage, samples []Sample, observedAt time.Time) time.Time {
-	resets := sampledUpstreamResetTimes(current, samples, observedAt)
-	var earliest time.Time
-	for _, resetAt := range resets {
-		if earliest.IsZero() || resetAt.Before(earliest) {
-			earliest = resetAt
-		}
-	}
-	return earliest
-}
-
-func sampledUpstreamResetTimes(current *Usage, samples []Sample, observedAt time.Time) map[string]time.Time {
-	seen := make(map[string]struct{}, len(samples))
-	resetAtByFamily := make(map[string]time.Time)
-	for _, sample := range samples {
-		key := strings.TrimSpace(sample.Key)
-		if key == "" || sample.WindowSeconds <= 0 || sample.ResetAt.IsZero() || !validFamily(sample.Family) {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		family := quotaFamilyForKey(key, sample.Family)
-		usedPercent := normalizedUsedPercent(sample.UsedPercent)
-		window := cloneWindow(Find(current, key))
-		if usedPercent == nil || window == nil || window.WindowSeconds != sample.WindowSeconds {
-			continue
-		}
-		advanceWindow(window, observedAt)
-		sampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
-		sampledAtUnixNano := sampleTimeUnixNano(sampledAt)
-		if window.SampledUpstreamAtUnixNano > 0 && sampledAtUnixNano <= window.SampledUpstreamAtUnixNano {
-			continue
-		}
-		if upstreamUsageRolledBack(window.SampledUpstreamUsedPercent, usedPercent) &&
-			(resetAtByFamily[family].IsZero() || sampledAt.Before(resetAtByFamily[family])) {
-			resetAtByFamily[family] = sampledAt
-		}
-	}
-	return resetAtByFamily
-}
-
-func quotaFamilyForKey(key, family string) string {
-	if family != FamilyAll {
-		return family
-	}
-	limitName := strings.ToLower(strings.TrimSpace(strings.SplitN(key, "|", 2)[0]))
-	switch {
-	case strings.Contains(limitName, "spark"):
-		return FamilySpark
-	case limitName == ProviderCodex:
-		return FamilyCodex
-	default:
-		return FamilyAll
-	}
-}
-
-func quotaFamily(window *Window) string {
-	if window == nil {
-		return FamilyAll
-	}
-	return quotaFamilyForKey(window.Key, window.Family)
-}
-
-func resetUpstreamFamilies(current *Usage, resetAtByFamily map[string]time.Time) *Usage {
-	next := Clone(current)
-	if next == nil {
-		return nil
-	}
-	for _, window := range next.Windows {
-		if window == nil {
-			continue
-		}
-		resetAt, ok := resetAtByFamily[quotaFamily(window)]
-		if !ok {
-			continue
-		}
-		reset := resetUpstreamAccount(&Usage{Windows: []*Window{window}}, resetAt)
-		if reset != nil && len(reset.Windows) == 1 && reset.Windows[0] != nil {
-			*window = *reset.Windows[0]
-		}
-	}
-	return next
-}
-
-func reconcileWindow(current *Window, sample Sample, observedAt, upstreamResetAt time.Time) *Window {
+func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Window {
 	resetAt := sample.ResetAt.UTC()
 	next := newWindow(sample, observedAt, 0)
 	if isMonthlyWindow(sample.WindowSeconds) && current != nil && current.ResetDay > resetAt.Day() &&
@@ -414,22 +305,12 @@ func reconcileWindow(current *Window, sample Sample, observedAt, upstreamResetAt
 	if next == nil {
 		return nil
 	}
-	usageSampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
-	if !upstreamResetAt.IsZero() {
-		if usageSampledAt.Before(upstreamResetAt) {
-			// 同一批合并结果可能夹带另一个槽位的旧样本。该额度族已在 upstreamResetAt
-			// 清零，旧样本既不能恢复旧边界，也不能重新建立旧百分比基线。
-			return cloneWindow(current)
-		}
-		// resetUpstreamFamilies 已统一清空该额度族；新样本只负责落定各自边界。
-		next.CountFromAt = upstreamResetAt.Unix()
-		return next
-	}
 	if current == nil || current.WindowSeconds != sample.WindowSeconds {
 		return next
 	}
 	current = cloneWindow(current)
 	advanceWindow(current, observedAt)
+	usageSampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
 	sampledAtUnixNano := sampleTimeUnixNano(usageSampledAt)
 	usageSampleIsNewer := sample.UsedPercent != nil &&
 		(current.SampledUpstreamAtUnixNano == 0 || sampledAtUnixNano > current.SampledUpstreamAtUnixNano ||
@@ -450,10 +331,10 @@ func reconcileWindow(current *Window, sample Sample, observedAt, upstreamResetAt
 		return next
 	}
 	if sameQuotaPeriod(current, next) {
-		// 边界一经确立就锚住，只更新采样权威的模型族：上游同一个周期会用两种精度
+		// 边界一经确立就锚住，只更新采样基线与 Family：上游同一个周期会用两种精度
 		// 表达 reset 时间（Codex 响应头给绝对 reset-at，SSE rate_limits 事件只给
-		// resets_in_seconds，换算成 sampledAt+n 每次都不同），逐秒比较必然把同一
-		// 周期判成新周期并清空已累计成本。
+		// resets_in_seconds，换算成 sampledAt+n 每次都不同），半个窗口的容差足以
+		// 区分换算抖动和真实周期滚动。
 		current.Family = next.Family
 		if usageSampleIsNewer {
 			current.SampledUpstreamUsedPercent = cloneFloat64(sample.UsedPercent)
@@ -547,19 +428,6 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		window.SampledUpstreamUsedPercent = nil
 		window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(resetAt)
 		window.StandardCostMicroUSD = costByFamily[window.Family]
-	}
-	return next
-}
-
-func resetUpstreamAccount(current *Usage, resetAt time.Time) *Usage {
-	next := Reset(current, resetAt, nil)
-	resetAt = resetAt.UTC()
-	for _, window := range next.Windows {
-		if window == nil {
-			continue
-		}
-		window.StartedAt = resetAt.Unix()
-		window.ResetAt = resetAt.Add(time.Duration(window.WindowSeconds) * time.Second).Unix()
 	}
 	return next
 }

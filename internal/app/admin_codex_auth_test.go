@@ -5321,6 +5321,27 @@ func TestLatestCodexOAuthUsageIgnoresPassiveOnlyWindows(t *testing.T) {
 	}
 }
 
+func TestAttachOAuthQuotaCostUsageMatchesResetJitter(t *testing.T) {
+	t.Parallel()
+	displayResetAt := time.Date(2026, time.August, 31, 13, 28, 7, 0, time.UTC).Unix()
+	summary := &oauthUsageSummary{
+		Provider: codexauth.ChannelType,
+		Windows: []oauthUsageWindow{{
+			LimitName: "codex", Kind: "primary", UsedPercent: 40, RemainingPercent: 60,
+			LimitWindowSeconds: 5 * 60 * 60, ResetAt: displayResetAt,
+		}},
+	}
+	attached := attachOAuthQuotaCostUsage(summary, &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|primary", WindowSeconds: 5 * 60 * 60,
+		StartedAt: displayResetAt - 5*60*60, ResetAt: displayResetAt + 3*60,
+		StandardCostMicroUSD: 2_000_000,
+	}}})
+	if attached == nil || attached.Windows[0].StandardCostMicroUSD == nil ||
+		*attached.Windows[0].StandardCostMicroUSD != 2_000_000 {
+		t.Fatalf("cost was hidden inside half-window jitter: %#v", attached)
+	}
+}
+
 func TestRequestCodexUsageSamplesBeforeResetCreditLookupCompletes(t *testing.T) {
 	t.Parallel()
 	creditsStarted := make(chan struct{})
@@ -6871,7 +6892,7 @@ func TestMergeCodexPassiveUsageIgnoresResetJitterWithinSamePeriod(t *testing.T) 
 	}
 }
 
-func TestTrackedOAuthProvidersResetAllCostWindowsOnUsageRollback(t *testing.T) {
+func TestTrackedOAuthProvidersResetOnlyRolledBackCostWindows(t *testing.T) {
 	t.Parallel()
 	providers := []string{
 		codexauth.ChannelType,
@@ -6906,11 +6927,13 @@ func TestTrackedOAuthProvidersResetAllCostWindowsOnUsageRollback(t *testing.T) {
 					LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: weeklyResetAt.Add(24 * time.Hour).Unix(), SampledAt: resetSampledAt},
 			}}
 			usage = reconcileOAuthQuotaCostUsage(usage, reset, resetSampledAt)
-			for _, kind := range []string{"five_hour", "weekly"} {
-				window := oauthcost.Find(usage, oauthcost.Key("account", kind))
-				if window == nil || window.StandardCostMicroUSD != 0 || window.CountFromAt != resetSampledAt.Unix() {
-					t.Fatalf("window %q did not follow provider reset: %#v", kind, window)
-				}
+			fiveHour := oauthcost.Find(usage, oauthcost.Key("account", "five_hour"))
+			weekly := oauthcost.Find(usage, oauthcost.Key("account", "weekly"))
+			if fiveHour == nil || fiveHour.StandardCostMicroUSD != 1_000_000 || fiveHour.CountFromAt != 0 {
+				t.Fatalf("unrolled 5-hour window followed weekly reset: %#v", fiveHour)
+			}
+			if weekly == nil || weekly.StandardCostMicroUSD != 0 || weekly.CountFromAt != resetSampledAt.Unix() {
+				t.Fatalf("weekly window did not reset: %#v", weekly)
 			}
 		})
 	}
@@ -6938,15 +6961,17 @@ func TestXAIAccountingFallbackDetectsUsageRollback(t *testing.T) {
 	summary.XAIBilling.WeeklyUsagePercent = &weeklyUsed
 	resetSampledAt := now.Add(time.Hour)
 	usage = reconcileOAuthQuotaCostUsage(usage, summary, resetSampledAt)
-	for _, kind := range []string{"weekly", "monthly"} {
-		window := oauthcost.Find(usage, oauthcost.Key("xai", kind))
-		if window == nil || window.StandardCostMicroUSD != 0 || window.CountFromAt != resetSampledAt.Unix() {
-			t.Fatalf("xAI %s fallback did not follow provider reset: %#v", kind, window)
-		}
+	weekly := oauthcost.Find(usage, oauthcost.Key("xai", "weekly"))
+	monthly := oauthcost.Find(usage, oauthcost.Key("xai", "monthly"))
+	if weekly == nil || weekly.StandardCostMicroUSD != 0 || weekly.CountFromAt != resetSampledAt.Unix() {
+		t.Fatalf("xAI weekly fallback did not reset: %#v", weekly)
+	}
+	if monthly == nil || monthly.StandardCostMicroUSD != 1_000_000 || monthly.CountFromAt != 0 {
+		t.Fatalf("xAI monthly was reset with weekly: %#v", monthly)
 	}
 }
 
-func TestAnthropicPassiveUsageKeepsSiblingSampleTimesAcrossAccountReset(t *testing.T) {
+func TestAnthropicPassiveUsageKeepsSiblingCostAcrossWeeklyRollback(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC)
 	fiveHourResetAt := now.Add(4 * time.Hour).Unix()
@@ -6965,25 +6990,32 @@ func TestAnthropicPassiveUsageKeepsSiblingSampleTimesAcrossAccountReset(t *testi
 		t.Fatalf("seed cost = (%t, %v)", changed, err)
 	}
 
-	accountResetAt := now.Add(time.Hour)
-	credential.PassiveUsage.SevenDay = window(0.05, accountResetAt.Add(7*24*time.Hour).Unix(), accountResetAt)
-	usage = reconcileOAuthQuotaCostUsage(usage, anthropicPassiveUsageSummary(credential), accountResetAt)
+	weeklyRolledAt := now.Add(time.Hour)
+	credential.PassiveUsage.SevenDay = window(0.05, weeklyRolledAt.Add(7*24*time.Hour).Unix(), weeklyRolledAt)
+	usage = reconcileOAuthQuotaCostUsage(usage, anthropicPassiveUsageSummary(credential), weeklyRolledAt)
 	fiveHour := oauthcost.Find(usage, oauthcost.Key("", "five_hour"))
-	if fiveHour == nil || fiveHour.SampledUpstreamUsedPercent != nil ||
-		fiveHour.SampledUpstreamAtUnixNano != accountResetAt.UnixNano() {
-		t.Fatalf("stale Anthropic sibling established an old baseline: %#v", fiveHour)
+	weekly := oauthcost.Find(usage, oauthcost.Key("", "seven_day"))
+	if fiveHour == nil || fiveHour.StandardCostMicroUSD != 1_000_000 ||
+		fiveHour.SampledUpstreamUsedPercent == nil || *fiveHour.SampledUpstreamUsedPercent != 80 {
+		t.Fatalf("unrolled Anthropic 5-hour window followed weekly reset: %#v", fiveHour)
 	}
-	if changed, err := oauthcost.AddStandardCost(usage, accountResetAt.Add(time.Second), "claude-opus-4-6", 500_000); err != nil || !changed {
+	if weekly == nil || weekly.StandardCostMicroUSD != 0 || weekly.CountFromAt != weeklyRolledAt.Unix() {
+		t.Fatalf("Anthropic weekly rollback did not reset weekly: %#v", weekly)
+	}
+	if changed, err := oauthcost.AddStandardCost(usage, weeklyRolledAt.Add(time.Second), "claude-opus-4-6", 500_000); err != nil || !changed {
 		t.Fatalf("post-reset cost = (%t, %v)", changed, err)
 	}
 
-	credential.PassiveUsage.FiveHour = window(0.05, accountResetAt.Add(5*time.Hour).Unix(), accountResetAt.Add(time.Minute))
-	usage = reconcileOAuthQuotaCostUsage(usage, anthropicPassiveUsageSummary(credential), accountResetAt.Add(time.Minute))
-	for _, kind := range []string{"five_hour", "seven_day"} {
-		window := oauthcost.Find(usage, oauthcost.Key("", kind))
-		if window == nil || window.StandardCostMicroUSD != 500_000 {
-			t.Fatalf("fresh Anthropic %s sample triggered a second reset: %#v", kind, window)
-		}
+	credential.PassiveUsage.FiveHour = window(0.05, weeklyRolledAt.Add(5*time.Hour).Unix(), weeklyRolledAt.Add(time.Minute))
+	usage = reconcileOAuthQuotaCostUsage(usage, anthropicPassiveUsageSummary(credential), weeklyRolledAt.Add(time.Minute))
+	fiveHour = oauthcost.Find(usage, oauthcost.Key("", "five_hour"))
+	weekly = oauthcost.Find(usage, oauthcost.Key("", "seven_day"))
+	if fiveHour == nil || fiveHour.StandardCostMicroUSD != 0 ||
+		fiveHour.CountFromAt != weeklyRolledAt.Add(time.Minute).Unix() {
+		t.Fatalf("fresh Anthropic 5-hour rollback was not isolated: %#v", fiveHour)
+	}
+	if weekly == nil || weekly.StandardCostMicroUSD != 500_000 {
+		t.Fatalf("fresh Anthropic 5-hour sample reset weekly again: %#v", weekly)
 	}
 }
 
