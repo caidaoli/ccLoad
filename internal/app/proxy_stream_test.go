@@ -242,6 +242,114 @@ func TestStreamTransformSSEEventsUntil_ReassemblesLongLinesAndMultipleEvents(t *
 	}
 }
 
+func unseparatedCodexSSE() string {
+	return ": ping\n" +
+		`event: response.created` + "\n" +
+		`data: {"type":"response.created"}` + "\n" +
+		`event: response.in_progress` + "\n" +
+		`data: {"type":"response.in_progress"}` + "\n" +
+		`event: response.completed` + "\n" +
+		`data: {"type":"response.completed"}` + "\n\n"
+}
+
+func separatedCodexSSE() string {
+	return ": ping\n\n" +
+		`event: response.created` + "\n" +
+		`data: {"type":"response.created"}` + "\n\n" +
+		`event: response.in_progress` + "\n" +
+		`data: {"type":"response.in_progress"}` + "\n\n" +
+		`event: response.completed` + "\n" +
+		`data: {"type":"response.completed"}` + "\n\n"
+}
+
+func TestSSEFramingRepairReader_SplitsUnseparatedTypedEvents(t *testing.T) {
+	input := unseparatedCodexSSE()
+	want := separatedCodexSSE()
+
+	got, err := io.ReadAll(newSSEFramingRepairReader(strings.NewReader(input)))
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("repaired SSE = %q, want %q", got, want)
+	}
+}
+
+func TestStreamAndParseResponse_RepairsCodexSSEEventFraming(t *testing.T) {
+	input := unseparatedCodexSSE()
+	want := separatedCodexSSE()
+
+	recorder := newRecorder()
+	parser, err := streamAndParseResponse(
+		context.Background(),
+		io.NopCloser(strings.NewReader(input)),
+		recorder,
+		"text/event-stream",
+		"codex",
+		true,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamAndParseResponse() error = %v", err)
+	}
+	if parser == nil || !parser.IsStreamComplete() {
+		t.Fatal("repaired Codex stream should reach response.completed")
+	}
+	if got := recorder.Body.String(); got != want {
+		t.Fatalf("forwarded SSE = %q, want %q", got, want)
+	}
+}
+
+func TestStreamAndParseResponse_DoesNotRepairNonCodexSSE(t *testing.T) {
+	input := unseparatedCodexSSE()
+	recorder := newRecorder()
+	_, err := streamAndParseResponse(
+		context.Background(),
+		io.NopCloser(strings.NewReader(input)),
+		recorder,
+		"text/event-stream",
+		"openai",
+		true,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamAndParseResponse() error = %v", err)
+	}
+	if got := recorder.Body.String(); got != input {
+		t.Fatalf("non-Codex SSE was modified: got %q, want %q", got, input)
+	}
+}
+
+func TestSSEFramingRepairReader_PreservesMultilineDataAndAmbiguousEvents(t *testing.T) {
+	validMultiline := "event: custom\ndata: {\"type\":\"custom\",\"value\":" +
+		"\ndata: 1}\n\n"
+	ambiguous := "event: response.created\ndata: {\"type\":\"response.in_progress\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+	input := validMultiline + ambiguous
+
+	got, err := io.ReadAll(newSSEFramingRepairReader(strings.NewReader(input)))
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(got) != input {
+		t.Fatalf("ambiguous or multiline SSE was modified: got %q, want %q", got, input)
+	}
+}
+
+func TestSSEFramingRepairReader_PreservesCRLF(t *testing.T) {
+	input := "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n" +
+		"event: response.completed\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n"
+	want := "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r\n" +
+		"event: response.completed\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n"
+
+	got, err := io.ReadAll(newSSEFramingRepairReader(strings.NewReader(input)))
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("repaired CRLF SSE = %q, want %q", got, want)
+	}
+}
+
 func TestStreamTransformSSEEventsUntil_RejectsOversizedEvent(t *testing.T) {
 	reader := io.MultiReader(
 		&repeatedByteReader{remaining: maxSSEEventBytes},

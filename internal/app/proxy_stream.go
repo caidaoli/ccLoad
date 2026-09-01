@@ -4,11 +4,179 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
+
+// sseFramingRepairReader restores missing SSE event boundaries for the narrow
+// Responses/Codex case where a complete typed event is immediately followed by
+// another event: line. It deliberately leaves ambiguous and non-Responses
+// frames byte-for-byte unchanged.
+type sseFramingRepairReader struct {
+	reader      *bufio.Reader
+	current     bytes.Buffer
+	pending     bytes.Buffer
+	terminalErr error
+	done        bool
+}
+
+func newSSEFramingRepairReader(src io.Reader) *sseFramingRepairReader {
+	return &sseFramingRepairReader{reader: bufio.NewReaderSize(src, SSEBufferSize)}
+}
+
+func wrapSSEFramingRepairReader(src io.Reader) io.Reader {
+	repaired := newSSEFramingRepairReader(src)
+	if closer, ok := src.(io.Closer); ok {
+		return readerWithCloser{Reader: repaired, Closer: closer}
+	}
+	return repaired
+}
+
+func (r *sseFramingRepairReader) Read(p []byte) (int, error) {
+	for {
+		if r.pending.Len() > 0 {
+			return r.pending.Read(p)
+		}
+		if r.done {
+			return 0, r.terminalErr
+		}
+
+		line, err := r.reader.ReadString('\n')
+		if len(line) > 0 {
+			if consumeErr := r.consumeLine([]byte(line)); consumeErr != nil {
+				r.done = true
+				return 0, consumeErr
+			}
+			if r.pending.Len() > 0 {
+				return r.pending.Read(p)
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			r.flushCurrent(shouldSplitBeforeResponsesSSEEvent(r.current.Bytes()))
+			r.done = true
+			r.terminalErr = io.EOF
+			if r.pending.Len() > 0 {
+				return r.pending.Read(p)
+			}
+			return 0, io.EOF
+		}
+
+		r.flushCurrent(false)
+		r.done = true
+		r.terminalErr = err
+		if r.pending.Len() > 0 {
+			return r.pending.Read(p)
+		}
+		return 0, err
+	}
+}
+
+func (r *sseFramingRepairReader) consumeLine(line []byte) error {
+	if isBlankSSELine(line) {
+		r.current.Write(line)
+		r.flushCurrent(false)
+		return nil
+	}
+
+	if isResponsesSSEEventLine(line) && shouldSplitBeforeResponsesSSEEvent(r.current.Bytes()) {
+		r.flushCurrent(true)
+	}
+	r.current.Write(line)
+	if r.current.Len() > maxSSEEventBytes {
+		return fmt.Errorf("SSE event exceeds %d bytes", maxSSEEventBytes)
+	}
+	return nil
+}
+
+func (r *sseFramingRepairReader) flushCurrent(addSeparator bool) {
+	if r.current.Len() == 0 {
+		return
+	}
+	if addSeparator {
+		r.current.WriteString(sseLineEnding(r.current.Bytes()))
+	}
+	_, _ = r.pending.Write(r.current.Bytes())
+	r.current.Reset()
+}
+
+func isBlankSSELine(line []byte) bool {
+	return len(bytes.TrimRight(line, "\r\n")) == 0
+}
+
+func sseLineEnding(block []byte) string {
+	if bytes.HasSuffix(block, []byte("\r\n")) {
+		return "\r\n"
+	}
+	if bytes.HasSuffix(block, []byte("\n")) {
+		return "\n"
+	}
+	if bytes.HasSuffix(block, []byte("\r")) {
+		return "\r"
+	}
+	return "\n"
+}
+
+func isResponsesSSEEventLine(line []byte) bool {
+	line = bytes.TrimRight(line, "\r\n")
+	return bytes.HasPrefix(line, []byte("event: response."))
+}
+
+func shouldSplitBeforeResponsesSSEEvent(block []byte) bool {
+	if len(block) == 0 {
+		return false
+	}
+	if isSSECommentOnly(block) {
+		return true
+	}
+
+	eventType, data := parseSSEEventChunk(block)
+	eventCount, dataCount := sseEventFieldCounts(block)
+	if eventCount != 1 || dataCount != 1 || !strings.HasPrefix(eventType, "response.") || len(data) == 0 {
+		return false
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(data, &payload) != nil {
+		return false
+	}
+	return payload.Type == eventType
+}
+
+func sseEventFieldCounts(block []byte) (eventCount, dataCount int) {
+	for _, rawLine := range bytes.Split(block, []byte{'\n'}) {
+		line := bytes.TrimRight(rawLine, "\r")
+		switch {
+		case bytes.HasPrefix(line, []byte("event:")):
+			eventCount++
+		case bytes.HasPrefix(line, []byte("data:")):
+			dataCount++
+		}
+	}
+	return eventCount, dataCount
+}
+
+func isSSECommentOnly(block []byte) bool {
+	seen := false
+	for _, rawLine := range bytes.Split(block, []byte{'\n'}) {
+		line := bytes.TrimRight(rawLine, "\r")
+		if len(line) == 0 {
+			continue
+		}
+		seen = true
+		if !bytes.HasPrefix(line, []byte(":")) {
+			return false
+		}
+	}
+	return seen
+}
 
 const maxSSEEventBytes = 50 * 1024 * 1024
 

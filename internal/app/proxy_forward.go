@@ -513,6 +513,9 @@ func streamAndParseResponse(
 	}
 	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
 		feed := makeFeed(parser)
+		if upstreamProtocol == util.ProtocolCodex {
+			stream = wrapSSEFramingRepairReader(stream)
+		}
 		if upstreamProtocol != util.ProtocolCodex && upstreamProtocol != util.ProtocolAnthropic {
 			return streamCopySSE(ctx, stream, w, feed)
 		}
@@ -1299,9 +1302,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		}
 		return chunks, nil
 	}
+	streamBody := io.Reader(resp.Body)
+	if upstreamProtocol == util.ProtocolCodex {
+		streamBody = wrapSSEFramingRepairReader(resp.Body)
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
-		resp.Body,
+		streamBody,
 		deferredWriter,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
