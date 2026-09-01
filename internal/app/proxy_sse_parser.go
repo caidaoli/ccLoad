@@ -13,7 +13,6 @@ import (
 
 	"ccLoad/internal/util"
 
-	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 )
 
@@ -713,20 +712,28 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 	}
 }
 
-// sseJSONObjectMap 解析单个 SSE 帧。这是全项目最热的 JSON 入口——一次流式响应
-// 有几百到几千帧——所以用 sonic 而不是 encoding/json：实测 100 B/500 B/2 KB/usage
-// 四档帧上快 2.5–3.5×，分配从 18–27 次降到 12–14 次。
+// sseJSONObjectMap 解析单个 SSE 帧。
 //
-// 语义已逐项比对：12 组边界输入里 11 组完全一致（含 null、顶层非对象、截断、
-// 非法 `\u` 转义、重复 key 后者胜出、超 2^53 整数的 float64 舍入）。唯一差异是
-// 尾随垃圾时 sonic 会在报错前填充部分 map，而这里出错就 return nil，调用方看不到。
+// 值构造用 gjson 是刻意的：gjson 对重复成员采用前者，和 parseEvent 里用
+// gjson.Get(data, "response") 提取 Responses 终态的那条路径一致，避免同一帧的
+// usage 和 response 取自两个不同的成员。这只统一 parseEvent 内共同裁决同一帧的
+// 两条路径，不代表全仓库 JSON 读取语义已经统一。
+//
+// 守卫用 encoding/json 而不是 gjson.ValidBytes：两者只在嵌套深度上分歧——
+// encoding/json 有 10000 层硬上限，gjson 无上限且随后 root.Value() 的物化是
+// O(n²)，1 MiB 以内的深嵌套帧实测可烧掉 20 秒以上 CPU。非法 \u 转义、尾随数据、
+// 多余逗号等其余分歧点两者判定一致，典型帧上多付约 18 ns。
 func sseJSONObjectMap(raw []byte) (map[string]any, error) {
-	var event map[string]any
-	if err := sonic.Unmarshal(raw, &event); err != nil {
-		return nil, fmt.Errorf("invalid JSON object: %w", err)
+	if !json.Valid(raw) {
+		return nil, errors.New("invalid JSON object")
 	}
-	if event == nil {
-		return nil, errors.New("JSON object expected, got null")
+	root := gjson.ParseBytes(raw)
+	event, ok := root.Value().(map[string]any)
+	if !ok {
+		if root.Type == gjson.Null {
+			return nil, errors.New("JSON object expected, got null")
+		}
+		return nil, errors.New("JSON object expected")
 	}
 	return event, nil
 }

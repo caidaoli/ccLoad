@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 const maxAnthropicResponseSize = 50 * 1024 * 1024
@@ -51,25 +51,55 @@ func NormalizeAnthropicResponse(raw []byte) ([]byte, error) {
 	return json.Marshal(message)
 }
 
-// decodeJSONObject decodes upstream-produced JSON leniently: duplicate members
-// resolve to the last one, matching encoding/json. Strict duplicate-key
-// rejection belongs at the downstream request boundary, where refusing an
-// ambiguous document is our call; upstream quirks must not become outages.
+// decodeJSONObject decodes upstream-produced JSON leniently. Duplicate members
+// resolve to the first one, matching the gjson readers used by the translators.
 // Trailing data is still rejected — that is malformed framing, not a quirk.
 func decodeJSONObject(raw []byte) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value map[string]any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, fmt.Errorf("decode anthropic response: %w", err)
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("decode anthropic response: invalid JSON")
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("decode anthropic response: trailing JSON")
-	}
-	if value == nil {
+	root := gjson.ParseBytes(raw)
+	if !root.IsObject() {
 		return nil, fmt.Errorf("anthropic response must be an object")
 	}
-	return value, nil
+	return jsonObjectFirstWins(root), nil
+}
+
+func jsonObjectFirstWins(value gjson.Result) map[string]any {
+	object := make(map[string]any)
+	value.ForEach(func(key, member gjson.Result) bool {
+		if _, exists := object[key.String()]; !exists {
+			object[key.String()] = jsonValueFirstWins(member)
+		}
+		return true
+	})
+	return object
+}
+
+func jsonValueFirstWins(value gjson.Result) any {
+	switch {
+	case value.IsObject():
+		return jsonObjectFirstWins(value)
+	case value.IsArray():
+		items := value.Array()
+		array := make([]any, 0, len(items))
+		for _, item := range items {
+			array = append(array, jsonValueFirstWins(item))
+		}
+		return array
+	}
+	switch value.Type {
+	case gjson.String:
+		return value.String()
+	case gjson.Number:
+		return json.Number(value.Raw)
+	case gjson.True:
+		return true
+	case gjson.False:
+		return false
+	default:
+		return nil
+	}
 }
 
 func validateAnthropicMessage(message map[string]any) error {

@@ -89,3 +89,15 @@ func TestNormalizeAnthropicResponseRejectsNonMessageType(t *testing.T) {
 		t.Fatal("NormalizeAnthropicResponse accepted a non-message envelope")
 	}
 }
+
+func TestNormalizeAnthropicResponseDuplicateKeysFirstWins(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"type":"message","type":"error","role":"assistant","content":[{"type":"text","text":"ok"}],"content":"ignored"}`)
+	got, err := NormalizeAnthropicResponse(raw)
+	if err != nil {
+		t.Fatalf("NormalizeAnthropicResponse() error = %v", err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("response was re-encoded: got %s, want %s", got, raw)
+	}
+}

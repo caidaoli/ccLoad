@@ -8,7 +8,7 @@ import (
 	"ccLoad/internal/util"
 )
 
-func TestSSEUsageParserDuplicateKeysLastWins(t *testing.T) {
+func TestSSEUsageParserDuplicateKeysFirstWins(t *testing.T) {
 	t.Parallel()
 	parser := &sseUsageParser{upstreamProtocol: "codex"}
 	if err := parser.parseEvent(
@@ -21,8 +21,36 @@ func TestSSEUsageParserDuplicateKeysLastWins(t *testing.T) {
 		t.Fatal("duplicate keys must still mark stream complete")
 	}
 	input, _, _, _ := parser.GetUsage()
-	if input != 999 {
-		t.Fatalf("InputTokens = %d, want last-wins 999", input)
+	if input != 3 {
+		t.Fatalf("InputTokens = %d, want first-wins 3", input)
+	}
+}
+
+func TestSSEUsageParserDuplicateResponseKeysFirstWins(t *testing.T) {
+	t.Parallel()
+	parser := &sseUsageParser{upstreamProtocol: "codex"}
+	if err := parser.parseEvent(
+		"response.completed",
+		`{"type":"response.completed","response":{"id":"first","output":[{"type":"function_call","call_id":"call_first","name":"lookup","arguments":"{}"}],"usage":{"input_tokens":3}},"response":{"id":"second","output":[{"type":"function_call","call_id":"call_second","name":"lookup","arguments":"{}"}],"usage":{"input_tokens":999}}}`,
+	); err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	input, _, _, _ := parser.GetUsage()
+	if input != 3 {
+		t.Fatalf("InputTokens = %d, want first-wins 3", input)
+	}
+	result, ok := parser.GetResponsesTurnResult()
+	if !ok {
+		t.Fatal("expected response turn result")
+	}
+	if result.completedResponseID != "first" {
+		t.Fatalf("response ID = %q, want first", result.completedResponseID)
+	}
+	if got := string(result.completedOutput); got != `[{"type":"function_call","call_id":"call_first","name":"lookup","arguments":"{}"}]` {
+		t.Fatalf("completed output = %s, want first response output", got)
+	}
+	if len(result.pendingToolCallIDs) != 1 || result.pendingToolCallIDs[0] != "call_first" {
+		t.Fatalf("pending tool calls = %#v, want [call_first]", result.pendingToolCallIDs)
 	}
 }
 
@@ -54,8 +82,8 @@ func TestSSEUsageParserMarksCompleteOnFinishReasonWithDuplicateKeys(t *testing.T
 		t.Fatal("non-empty finish_reason must still mark the stream complete")
 	}
 	input, _, _, _ := parser.GetUsage()
-	if input != 9 {
-		t.Fatalf("InputTokens = %d, want last-wins 9", input)
+	if input != 1 {
+		t.Fatalf("InputTokens = %d, want first-wins 1", input)
 	}
 }
 
@@ -1697,5 +1725,32 @@ func TestSSEUsageParserPreservesCompletedOutputObjectOrder(t *testing.T) {
 	want := `[{"z":1,"type":"message","a":2}]`
 	if string(result.completedOutput) != want {
 		t.Fatalf("completed output was re-encoded: got %s, want %s", result.completedOutput, want)
+	}
+}
+
+// SSE 帧的语法守卫必须自带嵌套深度上限。gjson.ValidBytes 没有上限，放行后
+// root.Value() 的物化按 O(n²) 展开——maxSSEEventSize 以内的深嵌套帧足以烧掉
+// 数十秒 CPU。这里钉的是「有上限」这个契约，不是某个具体层数。
+func TestSSEJSONObjectMapDepthGuard(t *testing.T) {
+	t.Parallel()
+
+	nest := func(depth int) []byte {
+		return []byte(`{"type":"response.completed","deep":` + strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) + `}`)
+	}
+
+	event, err := sseJSONObjectMap(nest(100))
+	if err != nil {
+		t.Fatalf("ordinary nesting rejected: %v", err)
+	}
+	if event["type"] != "response.completed" {
+		t.Fatalf("type = %v, want response.completed", event["type"])
+	}
+
+	deep := nest(50000)
+	if len(deep) > maxSSEEventSize {
+		t.Fatalf("fixture is %d bytes, exceeds maxSSEEventSize %d", len(deep), maxSSEEventSize)
+	}
+	if _, err := sseJSONObjectMap(deep); err == nil {
+		t.Fatal("deeply nested frame must be rejected by the syntax guard")
 	}
 }
