@@ -81,6 +81,81 @@ func TestFinalizeZedProviderRequestsRejectTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeZedResponsesBodyDeletesLiteralNullKeys(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-5.6-sol","input":[
+		{"type":"message","content":{"secret":"keep"},"content.secret":null},
+		{"type":"message","colon:key":null,"nested":{"colon:key":"keep"}},
+		{"type":"message","star*key":null,"nested":{"star*key":"keep"}},
+		{"type":"message","back\\slash":null,"nested":{"back\\slash":"keep"}},
+		{"type":"message","arr":[{"x":1}],"arr.0.x":null}
+	]}`)
+	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		ProviderRequest struct {
+			Input []map[string]any `json:"input"`
+		} `json:"provider_request"`
+	}
+	if err := json.Unmarshal(finalized, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.ProviderRequest.Input) != 5 {
+		t.Fatalf("input length = %d, want 5", len(envelope.ProviderRequest.Input))
+	}
+
+	dotItem := envelope.ProviderRequest.Input[0]
+	content, _ := dotItem["content"].(map[string]any)
+	if content["secret"] != "keep" {
+		t.Fatalf("dot key: nested content.secret = %#v, want keep", content)
+	}
+	if _, ok := dotItem["content.secret"]; ok {
+		t.Fatalf("dot key: literal content.secret was not removed: %#v", dotItem)
+	}
+
+	colonItem := envelope.ProviderRequest.Input[1]
+	colonNested, _ := colonItem["nested"].(map[string]any)
+	if colonNested["colon:key"] != "keep" {
+		t.Fatalf("colon key: nested value = %#v, want keep", colonNested)
+	}
+	if _, ok := colonItem["colon:key"]; ok {
+		t.Fatalf("colon key: literal colon:key was not removed: %#v", colonItem)
+	}
+
+	starItem := envelope.ProviderRequest.Input[2]
+	starNested, _ := starItem["nested"].(map[string]any)
+	if starNested["star*key"] != "keep" {
+		t.Fatalf("star key: nested value = %#v, want keep", starNested)
+	}
+	if _, ok := starItem["star*key"]; ok {
+		t.Fatalf("star key: literal star*key was not removed: %#v", starItem)
+	}
+
+	slashItem := envelope.ProviderRequest.Input[3]
+	slashNested, _ := slashItem["nested"].(map[string]any)
+	if slashNested["back\\slash"] != "keep" {
+		t.Fatalf("backslash key: nested value = %#v, want keep", slashNested)
+	}
+	if _, ok := slashItem["back\\slash"]; ok {
+		t.Fatalf("backslash key: literal back\\slash was not removed: %#v", slashItem)
+	}
+
+	arrayItem := envelope.ProviderRequest.Input[4]
+	arr, _ := arrayItem["arr"].([]any)
+	if len(arr) != 1 {
+		t.Fatalf("array/object mix: arr = %#v, want one element", arr)
+	}
+	first, _ := arr[0].(map[string]any)
+	if first["x"] != float64(1) {
+		t.Fatalf("array/object mix: arr[0].x = %#v, want 1", first["x"])
+	}
+	if _, ok := arrayItem["arr.0.x"]; ok {
+		t.Fatalf("array/object mix: literal arr.0.x was not removed: %#v", arrayItem)
+	}
+}
+
 func TestFinalizeZedResponsesBodyNormalizesCodexOnlyFields(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","tools":[{"type":"custom","name":"exec"},{"type":"namespace","name":"collaboration"}]},{"role":"developer","content":"rules"},{"type":"reasoning","content":null}],"tools":[{"description":"keep this order","type":"function","name":"wait","parameters":{"z":1,"a":2}}],"tool_choice":{"type":"function","name":"wait"}}`)
 	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), body, nil)

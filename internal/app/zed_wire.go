@@ -153,7 +153,7 @@ func normalizeZedCodexInput(body []byte) []byte {
 		// Delete null-valued fields.
 		item.ForEach(func(key, value gjson.Result) bool {
 			if value.Type == gjson.Null {
-				raw = deleteJSONPath(raw, key.String())
+				raw = deleteJSONPath(raw, sjsonObjectPathJoin("", key.String()))
 				itemChanged = true
 			}
 			return true

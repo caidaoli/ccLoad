@@ -15,8 +15,8 @@ import (
 // 这两点就得额外维护一层「原始字节 vs 目标 map」的差分渲染。就地改写让未触及的字节
 // 原样保留，键序问题从根上不存在。
 
-// setJSONRaw / setJSONValue / deleteJSONPath 是 sjson 的薄封装。路径全是代码里的字面量，
-// 唯一可能的错误来源是非法路径语法，所以失败时保留原字节而不是把错误一路传上去。
+// setJSONRaw / setJSONValue / deleteJSONPath 是 sjson 的薄封装。大多数路径是代码里的字面量；
+// 动态 JSON member name 必须先经 sjsonObjectPathJoin 转义。非法路径语法时保留原字节。
 func setJSONRaw(body []byte, path, raw string) []byte {
 	updated, err := sjson.SetRawBytes(body, path, []byte(raw))
 	if err != nil {
