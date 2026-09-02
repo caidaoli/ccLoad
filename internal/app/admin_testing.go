@@ -1878,9 +1878,14 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.fullURL = buildAnthropicOAuthURL(selectedURL, requestPath, "")
 	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
+	// 与代理链路一致：Anthropic CCH 签名按上游 origin 分流，最终化前必须先有 URL。
+	parsedTestURL, err := neturl.Parse(requestPlan.fullURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse test upstream URL: %w", err)
+	}
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody,
-		requestPlan.apiKey, requestPlan.headers, false,
+		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)

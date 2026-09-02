@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,6 +25,22 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// Anthropic CCH 签名按上游 origin 分流（见 anthropicCCHSigningEnabled）：第一方 origin
+// 上非 OAuth 凭证也签，第三方网关不签。测试要么钉住第一方形态，要么钉住第三方形态，
+// 所以这里给出两个固定 target，不要在测试里传 nil 让判据退化成「只看凭证」。
+var (
+	anthropicOfficialTestURL   = mustParseTestURL("https://api.anthropic.com/v1/messages")
+	anthropicThirdPartyTestURL = mustParseTestURL("https://gateway.example.com/v1/messages")
+)
+
+func mustParseTestURL(raw string) *url.URL {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
 
 const antigravitySandboxDailyBaseURLForTest = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 

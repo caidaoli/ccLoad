@@ -127,9 +127,32 @@ func (s *Server) buildProxyRequest(
 	if reqCtx != nil {
 		sourceBody = reqCtx.transformPlan.OriginalBody
 	}
-	body, err := s.prepareTranslatedUpstreamBody(
+	// 上游 URL 必须在 body 最终化之前解析：Anthropic 的 CCH 签名按上游 origin 分流
+	// （见 anthropicCCHSigningEnabled），签名点拿不到 origin 就只能退化成按凭证判断。
+	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
+	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
+	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
+	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
+		upstreamURL = buildAnthropicOAuthURL(baseURL, requestPath, upstreamQuery)
+	}
+	if xaiResponsesRequest {
+		upstreamURL = buildXAIResponsesURL(baseURL, upstreamQuery)
+	}
+	if cfg.UsesAntigravityOAuth() {
+		antigravityURL, errAntigravity := antigravityUpstreamURL(baseURL, upstreamStreaming)
+		if errAntigravity != nil {
+			return nil, errAntigravity
+		}
+		upstreamURL = antigravityURL
+	}
+	parsedUpstreamURL, err := url.Parse(upstreamURL)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, body, sourceBody, apiKey, hdr,
-		reqCtx != nil && reqCtx.anthropicClaudeCodeWire,
+		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
 	)
 	if err != nil {
 		return nil, err
@@ -155,7 +178,6 @@ func (s *Server) buildProxyRequest(
 			outer.codexMultiAgentV2Conflict = conflict
 		}
 	}
-	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if xaiResponsesRequest {
 		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
 		if err != nil {
@@ -163,24 +185,6 @@ func (s *Server) buildProxyRequest(
 		}
 	}
 
-	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
-	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
-	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
-		upstreamURL = buildAnthropicOAuthURL(baseURL, requestPath, upstreamQuery)
-	}
-	if xaiResponsesRequest {
-		upstreamURL = buildXAIResponsesURL(baseURL, upstreamQuery)
-	}
-	if cfg.UsesAntigravityOAuth() {
-		upstreamURL, err = antigravityUpstreamURL(baseURL, upstreamStreaming)
-		if err != nil {
-			return nil, err
-		}
-	}
-	parsedUpstreamURL, err := url.Parse(upstreamURL)
-	if err != nil {
-		return nil, err
-	}
 	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		if err = validateAnthropicLegacySystemRequestForUpstream(body, cfg, apiKey, hdr, parsedUpstreamURL); err != nil {
@@ -306,6 +310,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	apiKey string,
 	headers http.Header,
 	anthropicAlreadyFinalized bool,
+	target *url.URL,
 ) ([]byte, error) {
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
@@ -326,6 +331,10 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			// Z.ai Coding Plan 自带 ZCode 指纹，只做 Anthropic 线协议归一。
 			body, err = normalizeAnthropicMessagesBody(body)
 		case anthropicAlreadyFinalized:
+			// 重试重放：body 已在首次尝试时最终化过。这里的判据必须是出站身份判据
+			// （不含 CCH），否则「本渠道策略不签名」会让网关自己的产物被判为非原生，
+			// 平白多跑一轮归一。
+			cchSigning := anthropicCCHSigningEnabled(cfg, target)
 			if isAnthropicJSONObject(body) {
 				helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 				if helperShape == anthropicHaikuHelperMinimal {
@@ -333,12 +342,18 @@ func (s *Server) prepareTranslatedUpstreamBody(
 				}
 				if helperShape == anthropicHaikuHelperStructured ||
 					isNativeAnthropicClaudeCodeRequest(body, headers, cfg, apiKey) {
-					return finalizeAnthropicCCH(body)
+					if cchSigning {
+						return finalizeAnthropicCCH(body)
+					}
+					return body, nil
 				}
 			}
 			body, err = normalizeAnthropicMessagesBody(body)
+			if err == nil && cchSigning {
+				body, err = finalizeAnthropicCCH(body)
+			}
 		default:
-			body, err = finalizeAnthropicClaudeCodeMessagesBody(body, cfg, apiKey, headers)
+			body, err = finalizeAnthropicClaudeCodeMessagesBody(body, cfg, apiKey, headers, target)
 		}
 		if err != nil {
 			return nil, err

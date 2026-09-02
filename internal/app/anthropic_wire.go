@@ -47,7 +47,7 @@ func isAnthropicOAuthMessagesRequest(cfg *model.Config, upstream protocol.Protoc
 // isAnthropicClaudeCodeMessagesRequest 判断本次请求要不要套 Claude Code CLI 指纹。
 //
 // 判据只有「是不是 Anthropic Messages 上游」——OAuth、第一方 API Key、第三方网关
-// 同构，认证方式的差异只落在认证头上。唯一例外是 Z.ai Coding Plan：它也走 anthropic
+// 共用 CLI wire 形状；CCH 另由 Claude OAuth 凭证边界决定。唯一例外是 Z.ai Coding Plan：它也走 anthropic
 // 协议，却有自己的 ZCode 设备指纹契约，两套指纹叠加会互相破坏（ZCode 覆盖
 // metadata.user_id，而 Claude Code 的 1h cache TTL 配不上 ZCode 的 beta 头）。
 func isAnthropicClaudeCodeMessagesRequest(cfg *model.Config, upstream protocol.Protocol, requestPath string) bool {
@@ -106,32 +106,61 @@ func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
 	return parsed.String()
 }
 
+// anthropicCCHSigningEnabled 是 CCH 签名策略的唯一判据，对齐上游 CLIProxyAPI 的
+// claudeCCHSigningEnabled（internal/runtime/executor/claude_signing.go）。
+//
+// 原生 gate（Claude Code 2.1.220–2.1.234）：
+//
+//	s = (provider === "firstParty" && isFirstPartyBaseURL()) || provider === "vertex"
+//	      ? " cch=00000;" : ""
+//
+// 映射到两条判据：
+//
+//   - Claude OAuth 凭证：任何上游都签。ccLoad 是恢复第一方形态的那一跳——下游
+//     Claude Code 指向 ccLoad 时看到的是非第一方 base URL，因此自己省略了 cch，
+//     这个值必须在这里重新生成，而不是继承。理由是指纹保真，不是缓存。
+//   - 其余凭证：ccLoad 无条件为 Anthropic 渠道套 CLI 指纹（等价上游
+//     cliFingerprint=true），因此只在第一方 origin 签。第三方网关把 billing block
+//     当普通 prompt 文本，每请求变化的 cch 会打散它的 prompt cache。
+//
+// 上游的 Vertex 分支不适用：ccLoad 没有 Anthropic Vertex 上游。
+func anthropicCCHSigningEnabled(cfg *model.Config, target *url.URL) bool {
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		return true
+	}
+	return isOfficialAnthropicURL(target)
+}
+
 // finalizeAnthropicClaudeCodeMessagesBody 是 Anthropic Messages 上游 body 的唯一
-// 最终化入口，OAuth 与 API Key 渠道共用。指纹只由「是不是 Anthropic Messages 请求」
-// 决定，不由认证方式决定：拆成两套 body 形态，就必然要拆两套 anthropic-beta，
-// 两边迟早对不上（body 用 cache_control.ttl=1h 而 header 少了
-// extended-cache-ttl-2025-04-11 就是 400）。认证差异只落在认证头上。
+// 最终化入口。OAuth 与 API Key 共用同一套 CLI wire 形状与 anthropic-beta 集合；
+// 唯一按凭证/origin 条件化的字段是 billing block 里的 CCH，判据见
+// anthropicCCHSigningEnabled。
 func finalizeAnthropicClaudeCodeMessagesBody(
 	body []byte,
 	cfg *model.Config,
 	apiKey string,
 	headers http.Header,
+	target *url.URL,
 ) ([]byte, error) {
 	if !isAnthropicJSONObject(body) {
 		return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 	}
+	cchSigning := anthropicCCHSigningEnabled(cfg, target)
 	helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 	if helperShape != anthropicHaikuHelperNone {
-		if helperShape == anthropicHaikuHelperStructured {
+		if helperShape == anthropicHaikuHelperStructured && cchSigning {
 			return finalizeAnthropicCCH(body)
 		}
 		return body, nil
 	}
 	if isNativeAnthropicClaudeCodeRequest(body, headers, cfg, apiKey) {
 		// Native Claude Code owns sampling, prompt-cache placement and JSON member
-		// order. Only refresh the CCH digits in place — 连模型别名归一都不做，原生
-		// 请求送来什么模型名就发什么。
-		return finalizeAnthropicCCH(body)
+		// order. Where the policy signs, only the CCH digits are refreshed in place;
+		// otherwise the caller's body goes out byte-for-byte, including its own CCH.
+		if cchSigning {
+			return finalizeAnthropicCCH(body)
+		}
+		return body, nil
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -144,7 +173,9 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		cloakCacheTTL = "1h"
 	}
 	// 新增的顶层键按 sjson 的插入顺序落在对象尾部，所以这里的写入次序就是线上键序。
-	// 顺序取自原生 Claude Code 请求：system → tools → metadata → temperature。
+	// 顺序取自原生 Claude Code 请求：system → tools → metadata。采样参数不在其中：
+	// normalizeAnthropicSampling 会无条件删掉 temperature/top_p，在这里补默认值是
+	// 写完即被抹掉的死操作。
 	originalSystem := anthropicSystemText(gjson.GetBytes(body, "system"))
 	firstUserText := anthropicFirstUserText(gjson.GetBytes(body, "messages"))
 	body = setJSONRaw(body, "system", "["+strings.Join([]string{
@@ -176,9 +207,6 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	if err != nil {
 		return nil, err
 	}
-	if !gjson.GetBytes(body, "temperature").Exists() {
-		body = setJSONRaw(body, "temperature", "1")
-	}
 	autoContextManagement := false
 	if !gjson.GetBytes(body, "context_management").Exists() && anthropicThinkingAcceptsContextManagement(body) {
 		body = setJSONRaw(body, "context_management",
@@ -195,13 +223,9 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		body = deleteJSONPath(body, "context_management")
 	}
 
-	encoded, err := encodeNormalizedAnthropicRequest(body)
-	if err != nil {
-		var validationErr *anthropicRequestValidationError
-		if errors.As(err, &validationErr) {
-			return nil, validationErr
-		}
-		return nil, errors.New("finalize Anthropic Claude Code request: normalize body")
+	encoded := encodeNormalizedAnthropicRequest(body)
+	if cchSigning {
+		return finalizeAnthropicCCH(encoded)
 	}
 	return encoded, nil
 }
@@ -546,8 +570,26 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 	}
 }
 
-// isNativeAnthropicClaudeCodeRequest 判断下游送来的是否已经是完整的原生 Claude Code
-// 请求——是就整体直通、只补 CCH，绝不重写。
+// isNativeAnthropicClaudeCodeRequest 判断这个 body + header 组合是否就是原生 Claude
+// Code 的线协议形态。入站命中即整体直通、绝不重写；出站分派（anthropicRequestOwnsItsWire、
+// 重试重放）同样用它判断「这份 wire 已经是对的，网关只补认证头」。
+//
+// 判据对齐上游 CLIProxyAPI DetectClaudeCodeRequest.Confirmed 的四信号组合
+// （helps/claude_client_detection.go:128）：
+//
+//	XAppCLI && UserAgent && BetasPresent && MetadataUserID
+//
+// 再叠加 ccLoad 特有的 billing 前缀与 header/body session 等式，比上游更严。
+//
+// **不看 CCH**，这一点是契约：CCH 是签名，不是身份。下游 Claude Code 指向 ccLoad
+// 时看到的是非第一方 base URL，native gate 直接省略 cch，但四个身份信号一个不少。
+// 把 ` cch=` 当必要条件会让所有真实 Claude Code 请求误判成第三方调用方，落进重写
+// 路径——system 被重建、客户端自管的 cache_control 断点被丢弃和裁剪，prompt cache
+// 随之失效。上游只在 measuredClaudeCodeHelperSystemMatches 那个窄的 Haiku helper
+// profile 里校验 cch，不要再把它提升成通用判据。
+//
+// 同一个判据同时服务入站与出站也正是这一点的收益：网关自己产出的无签名 body 一样
+// 通过检测，不存在「自己不认自己」的自指。
 //
 // 身份校验按凭证种类分。OAuth 渠道要求与本渠道账号严格一致，防止把别人的身份转发
 // 出去；API Key 渠道的身份本来就是网关自己合成的，下游真实 Claude Code 带的
@@ -573,7 +615,7 @@ func isNativeAnthropicClaudeCodeRequest(
 		return false
 	}
 	billing := anthropicFirstSystemBlockText(gjson.GetBytes(body, "system"))
-	return strings.HasPrefix(billing, "x-anthropic-billing-header:") && strings.Contains(billing, " cch=") &&
+	return strings.HasPrefix(billing, "x-anthropic-billing-header:") &&
 		anthropicHeaderValue(headers, "X-Claude-Code-Session-Id") == anthropicSessionIDFromRequest(body)
 }
 
@@ -1153,9 +1195,8 @@ func injectAnthropicOAuthHeaders(
 	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, "", incoming))
 }
 
-// injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头，与
-// injectAnthropicOAuthHeaders 严格对称：同一份 body 形态必须配同一份 header 形态。
-// 唯一的差别是认证头——OAuth 用 Bearer，API Key 走 applyAnthropicAPIKeyAuth。
+// injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头。
+// CLI 能力头与 OAuth 共用，认证头走 applyAnthropicAPIKeyAuth；body 的 CCH 已在最终化边界排除。
 func injectAnthropicAPIKeyHeaders(
 	req *http.Request,
 	cfg *model.Config,
@@ -1188,8 +1229,9 @@ func anthropicIncomingHeaders(req *http.Request, override []http.Header) http.He
 	return req.Header.Clone()
 }
 
-// anthropicRequestOwnsItsWire 判断下游已经是原生 Claude Code（含内部 Haiku 辅助
-// 请求），此时它自己的 header 就是正确的指纹，网关只做透传。
+// anthropicRequestOwnsItsWire 判断这个 body 配套的 header 就是正确的指纹，网关只做
+// 透传。它跑在**出站** body 上（已经过最终化），所以用不含 CCH 的身份判据：签名与否
+// 是策略决定的，掺进来会让「网关自己产出的 body 通不过自己的检测器」。
 func anthropicRequestOwnsItsWire(body []byte, incoming http.Header, cfg *model.Config, apiKey string) bool {
 	if !isAnthropicJSONObject(body) {
 		return false
@@ -1237,8 +1279,8 @@ func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header) {
 //
 // 这里没有「OAuth 版」和「API Key 版」两套集合：betas 必须与
 // finalizeAnthropicClaudeCodeMessagesBody 产出的 body 形态严格对应，拆成两套就会
-// 出现 body 用了某能力、header 没声明对应 beta 的 400。认证方式的差异只体现在认证
-// 头上，不体现在指纹上。同源是双向的：extended-cache-ttl-2025-04-11 跟随 body 里
+// 出现 body 用了某能力、header 没声明对应 beta 的 400。CCH 是独立的凭证签名边界，
+// 不参与 beta 集合分支。同源是双向的：extended-cache-ttl-2025-04-11 跟随 body 里
 // 实际存在的 cache_control.ttl——缓存窗口由调用方的原始请求决定，网关不主动升级
 // 到 1h，也就不替它声明这个 beta。
 func anthropicClaudeCodeBetas(body []byte) string {

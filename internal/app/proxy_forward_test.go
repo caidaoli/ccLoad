@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -1857,9 +1858,9 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 	body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
 		"model":"claude-sonnet-4-5","system":"answer tersely","messages":[{"role":"user","content":"hello world"}],
 		"thinking":{"type":"enabled"},"tool_choice":{"type":"auto"}
-	}`), cfg, "", http.Header{"User-Agent": []string{"third-party-client"}})
+	}`), cfg, "", http.Header{"User-Agent": []string{"third-party-client"}}, anthropicOfficialTestURL)
 	if err != nil {
-		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody() error = %v", err)
+		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody(, anthropicOfficialTestURL) error = %v", err)
 	}
 	if got := gjson.GetBytes(body, "model").String(); got != "claude-sonnet-4-5-20250929" {
 		t.Fatalf("model = %q", got)
@@ -1911,9 +1912,9 @@ func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
 		"model":"claude-sonnet-4-6",
 		"system":[{"type":"text","text":"x-anthropic-billing-header: attacker-controlled"}],
 		"messages":[{"role":"user","content":"hello"}]
-	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", nil)
+	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", nil, anthropicOfficialTestURL)
 	if err != nil {
-		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody() error = %v", err)
+		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody(, anthropicOfficialTestURL) error = %v", err)
 	}
 	if got := gjson.GetBytes(body, "system.0.text").String(); got == "x-anthropic-billing-header: attacker-controlled" ||
 		!strings.Contains(got, "cc_version=2.1.220.") {
@@ -1950,7 +1951,7 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 		"X-Claude-Code-Session-Id": {"e03895ad-8b34-4a84-bbf6-002e8909b17b"},
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
-		nativeBody, cfg, "", nativeHeaders,
+		nativeBody, cfg, "", nativeHeaders, anthropicOfficialTestURL,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1991,7 +1992,7 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	}
 	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
 
-	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", headers)
+	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", headers, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2021,12 +2022,12 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	}
 	pooled, err := finalizeAnthropicClaudeCodeMessagesBody(body, &model.Config{
 		AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: otherCredentialJSON,
-	}, "", headers)
+	}, "", headers, anthropicOfficialTestURL)
 	if err != nil || !bytes.Equal(pooled, body) {
 		t.Fatalf("native helper was tied to the selected pool credential: err=%v body=%s", err, pooled)
 	}
 	reordered := []byte(fmt.Sprintf(`{"max_tokens":1,"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID))
-	cloaked, err := finalizeAnthropicClaudeCodeMessagesBody(reordered, cfg, "", headers)
+	cloaked, err := finalizeAnthropicClaudeCodeMessagesBody(reordered, cfg, "", headers, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2062,7 +2063,7 @@ func TestAnthropicOAuthPreservesStructuredHaikuHelper(t *testing.T) {
 		"X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"}, "X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
-		body, &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", headers,
+		body, &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", headers, anthropicOfficialTestURL,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2089,7 +2090,7 @@ func TestAnthropicOAuthDropsOnlyAutoContextManagementWithoutThinking(t *testing.
 		"model":"claude-opus-4-6","messages":[{"role":"user","content":"run"}],
 		"tools":[{"name":"run","description":"run","input_schema":{"type":"object"}}],
 		"thinking":{"type":"enabled","budget_tokens":1024},"tool_choice":{"type":"any"}
-	}`), cfg, "", nil)
+	}`), cfg, "", nil, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2100,7 +2101,7 @@ func TestAnthropicOAuthDropsOnlyAutoContextManagementWithoutThinking(t *testing.
 	callerBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
 		"model":"claude-opus-4-6","messages":[{"role":"user","content":"run"}],
 		"context_management":{"edits":[{"type":"caller-owned"}]}
-	}`), cfg, "", nil)
+	}`), cfg, "", nil, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2121,7 +2122,7 @@ func TestAnthropicOAuthCloakOwnsSystemAndRollingMessageCache(t *testing.T) {
 		"model":"claude-opus-4-6",
 		"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}],
 		"tools":[{"name":"search","description":"search","input_schema":{"type":"object"}}]
-	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", nil)
+	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, "", nil, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2162,7 +2163,7 @@ func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
 		"metadata":{"user_id":"x"},
 		"messages":[{"role":"user","content":"hello"}]
 	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON},
-		"", http.Header{"User-Agent": []string{"claude-cli/fake"}})
+		"", http.Header{"User-Agent": []string{"claude-cli/fake"}}, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2325,11 +2326,11 @@ func TestAnthropicAPIKeyAuthenticationUsesOfficialOriginBoundary(t *testing.T) {
 	}
 }
 
-// TestAnthropicAPIKeyFingerprintMatchesOAuthWire 是本次移植的核心契约：Claude Code
-// CLI 指纹只由「是不是 Anthropic Messages 上游」决定，与凭证形态无关。同一份请求
-// 经 OAuth 渠道和 API Key 渠道转发，body 与 header（除认证头与随请求变化的身份值）
-// 必须一字不差——一旦分叉，body 用的能力和 header 声明的 beta 迟早对不上。
-func TestAnthropicAPIKeyFingerprintMatchesOAuthWire(t *testing.T) {
+// TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH 守住凭证边界：OAuth 与
+// API Key 共用 CLI wire/beta 形状，差异只落在 CCH 上——OAuth 无条件签，API Key 只在
+// 第一方 origin 签（第三方网关把 billing 块当 prompt 文本，每请求变化会打散 prompt
+// cache）。判据见 anthropicCCHSigningEnabled。
+func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 	const requestBody = `{
 		"model":"claude-sonnet-4-5","system":"answer tersely",
 		"messages":[{"role":"user","content":"hello world"}],
@@ -2347,11 +2348,11 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWire(t *testing.T) {
 	apiKeyCfg := &model.Config{Name: "anthropic-api-key"}
 	callerHeaders := http.Header{"User-Agent": []string{"third-party-client"}}
 
-	oauthBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(requestBody), oauthCfg, "", callerHeaders)
+	oauthBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(requestBody), oauthCfg, "", callerHeaders, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatalf("OAuth finalize: %v", err)
 	}
-	apiKeyBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(requestBody), apiKeyCfg, "sk-ant-key", callerHeaders)
+	apiKeyBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(requestBody), apiKeyCfg, "sk-ant-key", callerHeaders, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatalf("API key finalize: %v", err)
 	}
@@ -2367,6 +2368,23 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWire(t *testing.T) {
 	if gjson.GetBytes(apiKeyBody, "temperature").Exists() ||
 		!strings.HasPrefix(gjson.GetBytes(apiKeyBody, "system.0.text").String(), "x-anthropic-billing-header:") {
 		t.Fatalf("API key body did not adopt the CLI wire shape: %s", apiKeyBody)
+	}
+	oauthBilling := gjson.GetBytes(oauthBody, "system.0.text").String()
+	apiKeyBilling := gjson.GetBytes(apiKeyBody, "system.0.text").String()
+	if !strings.Contains(oauthBilling, " cch=") || strings.Contains(oauthBilling, "cch=00000;") {
+		t.Fatalf("OAuth billing is not signed: %q", oauthBilling)
+	}
+	if !strings.Contains(apiKeyBilling, " cch=") || strings.Contains(apiKeyBilling, "cch=00000;") {
+		t.Fatalf("API-key billing on first-party origin must be signed: %q", apiKeyBilling)
+	}
+	// 同一份请求发往第三方网关时，billing 必须保持无 cch 的稳定形态。
+	thirdPartyBody, err := finalizeAnthropicClaudeCodeMessagesBody(
+		[]byte(requestBody), apiKeyCfg, "sk-ant-key", callerHeaders, anthropicThirdPartyTestURL)
+	if err != nil {
+		t.Fatalf("third-party finalize: %v", err)
+	}
+	if got := gjson.GetBytes(thirdPartyBody, "system.0.text").String(); strings.Contains(got, "cch=") {
+		t.Fatalf("API-key billing on a third-party gateway must stay unsigned: %q", got)
 	}
 	if anthropicClaudeCodeBetas(oauthBody) != anthropicClaudeCodeBetas(apiKeyBody) {
 		t.Fatalf("beta sets diverged: OAuth=%q API key=%q",
@@ -2417,7 +2435,7 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 
 	defaultBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
 		"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]
-	}`), cfg, "sk-ant-key", headers)
+	}`), cfg, "sk-ant-key", headers, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2432,7 +2450,7 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 		"model":"claude-sonnet-4-5","messages":[{"role":"user","content":[
 			{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}
 		]}]
-	}`), cfg, "sk-ant-key", headers)
+	}`), cfg, "sk-ant-key", headers, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2499,5 +2517,105 @@ func TestZAICodingPlanSkipsClaudeCodeFingerprint(t *testing.T) {
 				t.Fatalf("isAnthropicClaudeCodeMessagesRequest = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+// TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy 守住重试重放路径：body 已在
+// 首次尝试时最终化，重放只允许按凭证/origin 决定要不要重签 CCH，不允许再跑一轮归一。
+//
+// 这一支是 CCH 条件化之后最容易回归的地方：判据一旦写成 isNativeAnthropicClaudeCodeRequest，
+// 「本渠道不签名」产出的无 cch body 就会被网关判成非原生，自己不认自己。
+func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
+	headers := http.Header{"User-Agent": []string{"third-party-client"}}
+	cfg := &model.Config{Name: "anthropic-api-key"}
+	const requestBody = `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`
+
+	server := &Server{}
+	for _, testCase := range []struct {
+		name     string
+		target   *url.URL
+		wantSign bool
+	}{
+		{name: "third_party_stays_unsigned", target: anthropicThirdPartyTestURL},
+		{name: "first_party_signs", target: anthropicOfficialTestURL, wantSign: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
+				[]byte(requestBody), cfg, "sk-ant-key", headers, testCase.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 网关自己的产物必须通过出站身份判据，否则重放会被误判成第三方 body。
+			outboundHeaders := http.Header{
+				"User-Agent":               {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
+				"X-App":                    {"cli"},
+				"Anthropic-Beta":           {"claude-code-20250219"},
+				"X-Claude-Code-Session-Id": {anthropicSessionIDFromRequest(finalized)},
+			}
+			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders, cfg, "sk-ant-key") {
+				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
+			}
+			replayed, err := server.prepareTranslatedUpstreamBody(
+				cfg, protocol.Anthropic, "/v1/messages", finalized, finalized,
+				"sk-ant-key", headers, true, testCase.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(replayed, finalized) {
+				t.Fatalf("retry replay rewrote an already finalized body:\n got %s\nwant %s", replayed, finalized)
+			}
+			billing := gjson.GetBytes(replayed, "system.0.text").String()
+			if signed := strings.Contains(billing, " cch="); signed != testCase.wantSign {
+				t.Fatalf("signed=%v want %v: %q", signed, testCase.wantSign, billing)
+			}
+		})
+	}
+}
+
+// TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough 守住入站判据不看 CCH。
+//
+// 下游 Claude Code 指向 ccLoad 时看到的是非第一方 base URL，native gate
+// (`s = firstParty || vertex ? " cch=00000;" : ""`) 直接省略 cch，但 X-App/UA/beta/
+// metadata.user_id 四个身份信号一个不少。把 ` cch=` 当必要条件会让**所有**真实
+// Claude Code 请求落进重写路径：system 被重建成 CLI 三段式、客户端 system block 上
+// 的 cache_control 随 anthropicSystemText 降级整段丢弃、剩余断点再被
+// enforceAnthropicCacheControlLimit 裁剪——客户端自管的 prompt cache 就此失效。
+func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
+	const sessionID = "f2e293f7-b6ee-48f7-9258-95be092aae58"
+	identity := fmt.Sprintf(`{"device_id":%q,"account_uuid":%q,"session_id":%q}`,
+		"94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1",
+		"00d2be77-53ea-52f8-8a66-bfc5c4b195e9", sessionID)
+	body := []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":[{"type":"text","text":"first","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}],"tools":[{"name":"lookup","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],"max_tokens":1024,"temperature":0.4}`, identity))
+	headers := http.Header{
+		"User-Agent":               {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
+		"X-App":                    {"cli"},
+		"Anthropic-Beta":           {"claude-code-20250219,oauth-2025-04-20"},
+		"X-Claude-Code-Session-Id": {sessionID},
+	}
+	cfg := &model.Config{Name: "anthropic-third-party"}
+
+	if !isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+		t.Fatal("a real Claude Code request without cch was rejected by the native detector")
+	}
+	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(finalized, body) {
+		t.Fatalf("native body was rewritten:\n got %s\nwant %s", finalized, body)
+	}
+	// 逐项钉死重写路径最先破坏的那几处。
+	if strings.Contains(string(finalized), "[System Instructions]") {
+		t.Fatalf("caller system was demoted into messages: %s", finalized)
+	}
+	for _, path := range []string{
+		"system.1.cache_control", "messages.0.content.0.cache_control", "tools.0.cache_control",
+	} {
+		if !gjson.GetBytes(finalized, path).Exists() {
+			t.Fatalf("caller-owned %s was stripped: %s", path, finalized)
+		}
+	}
+	if gjson.GetBytes(finalized, "metadata.user_id").String() != identity {
+		t.Fatalf("caller identity was replaced with a synthesized one: %s", finalized)
 	}
 }

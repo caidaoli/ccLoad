@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,9 @@ type anthropicGoldenCase struct {
 	oauth   bool // true 走 OAuth 凭证，false 走 API Key 合成身份
 	apiKey  string
 	headers http.Header
+	// thirdParty 走非第一方 origin：CCH 只在第一方 origin 或 OAuth 凭证下签名，
+	// 两支形态都要进金标准（判据见 anthropicCCHSigningEnabled）。
+	thirdParty bool
 }
 
 // 固定凭证：金标准要求可复现，身份不能随机。
@@ -90,6 +94,13 @@ func anthropicGoldenCases(t *testing.T) []anthropicGoldenCase {
 			body:    `{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`,
 			apiKey:  anthropicGoldenAPIKey,
 			headers: caller,
+		},
+		{
+			name:       "minimal_api_key_third_party",
+			body:       `{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`,
+			apiKey:     anthropicGoldenAPIKey,
+			headers:    caller,
+			thirdParty: true,
 		},
 		{
 			name:    "system_string_and_tools",
@@ -194,6 +205,17 @@ func anthropicGoldenCases(t *testing.T) []anthropicGoldenCase {
 			oauth:   true,
 			headers: anthropicGoldenNativeHeaders(),
 		},
+		{
+			// 下游 Claude Code 指向 ccLoad 时看到的是非第一方 base URL，native gate
+			// 省略 cch。身份信号仍然齐全，必须整体直通：客户端自管的 cache_control
+			// 断点一个都不能动，否则 prompt cache 会被网关重写打散。
+			name: "native_claude_code_no_cch_passthrough",
+			body: fmt.Sprintf(`{"model":"claude-sonnet-4-5-20250929","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":"%s"},"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"max_tokens":1024,"temperature":0.7}`,
+				nativeUserID),
+			apiKey:     anthropicGoldenAPIKey,
+			headers:    anthropicGoldenNativeHeaders(),
+			thirdParty: true,
+		},
 	}
 }
 
@@ -208,6 +230,13 @@ func anthropicGoldenConfig(t *testing.T, testCase anthropicGoldenCase) *model.Co
 	return &model.Config{AuthType: model.AuthTypeAPIKey}
 }
 
+func anthropicGoldenTarget(testCase anthropicGoldenCase) *url.URL {
+	if testCase.thirdParty {
+		return anthropicThirdPartyTestURL
+	}
+	return anthropicOfficialTestURL
+}
+
 // anthropicGoldenOutputs 跑完整语料，返回 name → 输出字节。
 // finalize 与 normalize 两个入口都记，因为它们是 proxy_forward 实际调用的两个边界。
 func anthropicGoldenOutputs(t *testing.T) map[string]string {
@@ -216,7 +245,7 @@ func anthropicGoldenOutputs(t *testing.T) map[string]string {
 	for _, testCase := range anthropicGoldenCases(t) {
 		cfg := anthropicGoldenConfig(t, testCase)
 		finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
-			[]byte(testCase.body), cfg, testCase.apiKey, testCase.headers,
+			[]byte(testCase.body), cfg, testCase.apiKey, testCase.headers, anthropicGoldenTarget(testCase),
 		)
 		if err != nil {
 			outputs["finalize/"+testCase.name] = "ERROR: " + err.Error()

@@ -521,8 +521,11 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	if got := gjson.GetBytes(upstreamBody, "messages.0.content").String(); !strings.Contains(got, "keep this native prompt") {
 		t.Fatalf("caller system prompt was dropped: %s", upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
-		t.Fatalf("CCH was not rebuilt: %q", got)
+	// 第一方 origin：真实 Claude Code 在这里发 cch，所以 API Key 渠道也必须签（见
+	// anthropicCCHSigningEnabled）。签名值不能是占位哨兵 00000。
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") ||
+		!strings.Contains(got, " cch=") || strings.Contains(got, "cch=00000;") {
+		t.Fatalf("API-key billing on first-party origin must be signed: %q", got)
 	}
 	if gjson.GetBytes(upstreamBody, "temperature").Exists() || gjson.GetBytes(upstreamBody, "top_p").Exists() ||
 		gjson.GetBytes(upstreamBody, "top_k").Exists() {
@@ -764,7 +767,8 @@ func TestProxy_AnthropicCompatibleGatewayOwnsLegacySystemTurns(t *testing.T) {
 }
 
 // TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy 守住原生 Claude Code
-// 请求的直通契约：调用方已经自带完整 CLI 指纹时，网关只重签 CCH，不重写 body。
+// 请求的直通契约：调用方已经自带完整 CLI 指纹时，API Key 网关不处理 CCH，
+// 也不重写 body。
 // 与 TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry 对称——直通判定
 // 看的是请求形态，不是凭证形态，API Key 渠道同样适用。
 func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
@@ -798,7 +802,7 @@ func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "claude-sonnet-4-6",
 		"system": []any{
-			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=4d721;"},
 			map[string]any{
 				"type": "text", "text": "explicit cache only",
 				"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
@@ -833,8 +837,8 @@ func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 		gjson.GetBytes(upstreamBody, "messages.2.content.0.cache_control").Exists() {
 		t.Fatalf("automatic cache breakpoints were added beside explicit policy: %s", upstreamBody)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
-		t.Fatalf("CCH was not rebuilt: %q", got)
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); got != "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=4d721;" {
+		t.Fatalf("caller-owned API-key CCH changed: %q", got)
 	}
 }
 

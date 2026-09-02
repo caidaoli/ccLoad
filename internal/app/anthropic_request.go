@@ -26,7 +26,7 @@ func normalizeAnthropicMessagesBody(body []byte) ([]byte, error) {
 	if !isAnthropicJSONObject(body) {
 		return nil, errors.New("normalize Anthropic request: invalid JSON body")
 	}
-	return encodeNormalizedAnthropicRequest(body)
+	return encodeNormalizedAnthropicRequest(body), nil
 }
 
 // isAnthropicJSONObject 是所有 sjson 就地改写的准入守卫。守卫必须与消费者同源：
@@ -35,21 +35,19 @@ func isAnthropicJSONObject(body []byte) bool {
 	return gjson.ValidBytes(body) && gjson.ParseBytes(body).IsObject()
 }
 
-// encodeNormalizedAnthropicRequest 收尾 Anthropic Messages body 并重签 CCH。
-// CCH 无条件重签：签名值嵌在 body 自己的 billing header 里，finalizeAnthropicCCH
-// 对没有 billing header 的 body 是 no-op，所以「签不签」不需要第二个谓词——一旦
-// 有条件跳过，就会出现 body 改了而 cch 还是旧值的静默错签。
-func encodeNormalizedAnthropicRequest(body []byte) ([]byte, error) {
+// encodeNormalizedAnthropicRequest 只收尾 Anthropic Messages 的通用 wire 形状。
+// 入口守卫由调用方（normalizeAnthropicMessagesBody / 最终化边界）负责，这里三步
+// 都不会失败，所以不返回 error。
+//
+// CCH 不在这里签：它按凭证与上游 origin 条件化，必须由持有这两项上下文的最终发送
+// 边界处理，判据见 anthropicCCHSigningEnabled。
+func encodeNormalizedAnthropicRequest(body []byte) []byte {
 	body = normalizeAnthropicMessagesRequest(body)
 	body = orderAnthropicCacheControlWireShape(body)
 	body, _ = cliproxysignature.SanitizeClaudeMessagesForClaudeUpstream(
 		body, jsonStringValue(gjson.GetBytes(body, "model")),
 	)
-	body, err := finalizeAnthropicCCH(body)
-	if err != nil {
-		return nil, errors.New("normalize Anthropic request: sign Claude CCH")
-	}
-	return body, nil
+	return body
 }
 
 func normalizeAnthropicMessagesRequest(body []byte) []byte {
