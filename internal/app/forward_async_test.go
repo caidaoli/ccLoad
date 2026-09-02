@@ -230,7 +230,7 @@ func TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream(t 
 	if strings.Contains(betas, "messages-2023-12-15") || !strings.Contains(betas, "claude-code-20250219") {
 		t.Fatalf("anthropic-beta = %q, want rebuilt Claude Code beta set", betas)
 	}
-	if got := headerValueFold(req.Header, "User-Agent"); got != "claude-cli/2.1.220 (external, cli)" {
+	if got := headerValueFold(req.Header, "User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want Claude Code CLI fingerprint", got)
 	}
 }

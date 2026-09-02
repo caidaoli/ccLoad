@@ -499,7 +499,7 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	if got := headerValueFold(upstreamHeaders, "x-api-key"); got != "sk-ant-official" {
 		t.Fatalf("official Anthropic x-api-key=%q", got)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.220 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
 	betas := headerValueFold(upstreamHeaders, "Anthropic-Beta")

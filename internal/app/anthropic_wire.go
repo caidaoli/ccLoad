@@ -23,7 +23,9 @@ import (
 )
 
 const (
-	anthropicCLIVersion  = "2.1.220"
+	// anthropicCLIVersion 是伪造官方 Anthropic 线路时写入的 Claude Code UA/账单版本。
+	// Fable 5.1（claude-fable-5-1）会拒绝低于 2.1.251 的客户端。
+	anthropicCLIVersion  = "2.1.258"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
@@ -1300,7 +1302,7 @@ func anthropicUsesLegacySystemReminder(modelName string) bool {
 func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID string) {
 	setRawHeader(req.Header, "Accept", "application/json")
 	setRawHeader(req.Header, "Content-Type", "application/json")
-	setRawHeader(req.Header, "User-Agent", "claude-cli/2.1.220 (external, cli)")
+	setRawHeader(req.Header, "User-Agent", "claude-cli/"+anthropicCLIVersion+" (external, cli)")
 	setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
 	setRawHeader(req.Header, "X-Stainless-Arch", anthropicStainlessArch())
 	setRawHeader(req.Header, "X-Stainless-Lang", "js")
