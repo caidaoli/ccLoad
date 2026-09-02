@@ -2552,7 +2552,7 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 				"Anthropic-Beta":           {"claude-code-20250219"},
 				"X-Claude-Code-Session-Id": {anthropicSessionIDFromRequest(finalized)},
 			}
-			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders) {
+			if !isNativeAnthropicClaudeCodeRequest(outboundHeaders) {
 				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
 			}
 			replayed, err := server.prepareTranslatedUpstreamBody(
@@ -2594,7 +2594,7 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	}
 	cfg := &model.Config{Name: "anthropic-third-party"}
 
-	if !isNativeAnthropicClaudeCodeRequest(body, headers) {
+	if !isNativeAnthropicClaudeCodeRequest(headers) {
 		t.Fatal("a real Claude Code request without cch was rejected by the native detector")
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
@@ -2620,68 +2620,58 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	}
 }
 
-// TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough 守住身份判据允许空
-// account_uuid，对齐上游 isValidUserID（cloak_utils.go:52）。
+// TestAnthropicNativeClaudeCodeBodyShapeIsIrrelevant 守住判定只看请求头。
 //
-// Claude Code 用 API Key 指向非第一方 base URL 时没有 Anthropic 账号，metadata.user_id
-// 里的 account_uuid 就是空串。要求它非空会让这类真实请求全部误判成第三方调用方并被重写，
-// 症状与把 ` cch=` 当必要条件时完全一致：客户端自管的 cache_control 断点被打散。
-func TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough(t *testing.T) {
-	const sessionID = "f2e293f7-b6ee-48f7-9258-95be092aae58"
-	const deviceID = "94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1"
+// body 侧曾经有过三道检查（metadata.user_id 存在性与形态、system[0] 的 billing 前缀、
+// header 与 body 的 session id 等式），每一道都是静默假阴性通道：不匹配不会报错，只会
+// 把真实 Claude Code 请求降级进重写路径、打散客户端自管的 cache_control 断点。这里逐个
+// 钉死它们不再参与判定，并且直通是字节级的。
+func TestAnthropicNativeClaudeCodeBodyShapeIsIrrelevant(t *testing.T) {
+	t.Parallel()
 	headers := http.Header{
-		"User-Agent":               {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
-		"X-App":                    {"cli"},
-		"Anthropic-Beta":           {"claude-code-20250219"},
-		"X-Claude-Code-Session-Id": {sessionID},
+		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
+		"X-App":          {"cli"},
+		"Anthropic-Beta": {"claude-code-20250219"},
 	}
 	cfg := &model.Config{Name: "anthropic-third-party"}
 
-	bodyFor := func(accountUUID string) []byte {
-		identity := fmt.Sprintf(`{"device_id":%q,"account_uuid":%q,"session_id":%q}`,
-			deviceID, accountUUID, sessionID)
-		return []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}],"max_tokens":1024}`, identity))
-	}
+	const cacheControlBody = `{"model":"claude-opus-5","system":[{"type":"text","text":"custom system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}],"max_tokens":1024,"temperature":0.4}`
 
-	t.Run("empty account_uuid is native", func(t *testing.T) {
-		body := bodyFor("")
-		if !isNativeAnthropicClaudeCodeRequest(body, headers) {
-			t.Fatal("Claude Code request with an empty account_uuid was rejected by the native detector")
-		}
-		finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(finalized, body) {
-			t.Fatalf("native body was rewritten:\n got %s\nwant %s", finalized, body)
-		}
-		for _, path := range []string{"system.1.cache_control", "messages.0.content.0.cache_control"} {
-			if !gjson.GetBytes(finalized, path).Exists() {
-				t.Fatalf("caller-owned %s was stripped: %s", path, finalized)
-			}
-		}
-	})
-
-	// 空是合法的，垃圾不是：非空 account_uuid 仍必须是 UUID，device_id 仍必须是
-	// 64 位小写 hex。放宽判据不等于取消判据。
-	for _, badCase := range []struct{ name, accountUUID string }{
-		{"non-uuid account_uuid", "not-a-uuid"},
-		{"whitespace account_uuid", " "},
+	for _, testCase := range []struct{ name, body string }{
+		{"no metadata at all", cacheControlBody},
+		{"empty account_uuid", `{"model":"claude-opus-5","metadata":{"user_id":"{\"device_id\":\"94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1\",\"account_uuid\":\"\",\"session_id\":\"f2e293f7-b6ee-48f7-9258-95be092aae58\"}"},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`},
+		{"non-uuid account_uuid", `{"model":"claude-opus-5","metadata":{"user_id":"{\"device_id\":\"short\",\"account_uuid\":\"not-a-uuid\",\"session_id\":\"nope\"}"},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`},
+		{"no billing prefix in system", cacheControlBody},
 	} {
-		t.Run(badCase.name+" is not native", func(t *testing.T) {
-			if isNativeAnthropicClaudeCodeRequest(bodyFor(badCase.accountUUID), headers) {
-				t.Fatalf("account_uuid %q was accepted as a native identity", badCase.accountUUID)
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if !isNativeAnthropicClaudeCodeRequest(headers) {
+				t.Fatal("native detection must not depend on the body")
+			}
+			body := []byte(testCase.body)
+			finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
+				body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(finalized, body) {
+				t.Fatalf("native body was rewritten:\n got %s\nwant %s", finalized, body)
 			}
 		})
 	}
 
-	t.Run("malformed device_id is not native", func(t *testing.T) {
-		identity := fmt.Sprintf(`{"device_id":"short","account_uuid":"","session_id":%q}`, sessionID)
-		body := []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`, identity))
-		if isNativeAnthropicClaudeCodeRequest(body, headers) {
-			t.Fatal("a malformed device_id was accepted as a native identity")
-		}
-	})
+	// 三个头缺任意一个就不是原生请求。
+	for _, missing := range []string{"User-Agent", "X-App", "Anthropic-Beta"} {
+		t.Run("missing "+missing, func(t *testing.T) {
+			t.Parallel()
+			partial := headers.Clone()
+			partial.Del(missing)
+			if isNativeAnthropicClaudeCodeRequest(partial) {
+				t.Fatalf("a request without %s was accepted as native", missing)
+			}
+		})
+	}
 }
 
 // TestValidAnthropicClaudeCLIUserAgent 钉死 UA 判据对齐上游

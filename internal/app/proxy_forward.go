@@ -341,7 +341,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 					return body, nil
 				}
 				if helperShape == anthropicHaikuHelperStructured ||
-					isNativeAnthropicClaudeCodeRequest(body, headers) {
+					isNativeAnthropicClaudeCodeRequest(headers) {
 					if cchSigning {
 						return finalizeAnthropicCCH(body)
 					}
