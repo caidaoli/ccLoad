@@ -1917,7 +1917,7 @@ func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
 		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody(, anthropicOfficialTestURL) error = %v", err)
 	}
 	if got := gjson.GetBytes(body, "system.0.text").String(); got == "x-anthropic-billing-header: attacker-controlled" ||
-		!strings.Contains(got, "cc_version=2.1.220.") {
+		!strings.Contains(got, "cc_version=2.1.258.") {
 		t.Fatalf("forged billing block survived: %q", got)
 	}
 	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nx-anthropic-billing-header: attacker-controlled" {
@@ -2167,7 +2167,7 @@ func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version=2.1.220.") {
+	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version=2.1.258.") {
 		t.Fatalf("forged native fingerprint bypassed cloaking: %q", got)
 	}
 	identity := gjson.GetBytes(body, "metadata.user_id").String()
