@@ -2161,9 +2161,12 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 }
 
 // responsesBodyForHTTPTransport 收尾 HTTP 传输边界的 Codex Responses 上游 body。
-// 注意 HTTP/WS 不对称契约：status 剥离只在这里做——原生 WS 上游接受 status（WS
-// transcript 从头就不带 status），而官方 Codex HTTP 端点拒绝它。别把剥离挪进
-// prepareCodexResponsesBodyForUpstream，那会扩散到需要保留 status 的 WS 路径。
+// status 剥离不是 HTTP 独有契约：官方 Codex 后端在 HTTP 与原生 WebSocket 上是同一套
+// 校验，WS 侧的对应剥离在 doCodexWebsocketRequest 里。别把它挪进
+// prepareCodexResponsesBodyForUpstream——那里同时服务 WS transcript 的装配阶段，
+// 剥离必须留在两条传输的发送边界上。反过来 prepareCodexOAuthHTTPBody 才是真正的
+// HTTP 专有处理：它删掉 previous_response_id/stream_options，WS 增量请求依赖这两个
+// 字段续接，所以本函数整体不可被 WS 路径复用。
 func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPlan, body []byte) []byte {
 	body = prepareCodexOAuthHTTPBody(cfg, plan.UpstreamProtocol, plan.UpstreamPath, body)
 	if plan.ClientProtocol != protocol.Codex || plan.UpstreamProtocol != protocol.Codex ||

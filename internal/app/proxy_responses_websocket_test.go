@@ -7290,3 +7290,78 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 		t.Fatalf("unexpected Gemini bridge request body=%s", attempts[3].body)
 	}
 }
+
+// HTTP 渠道切换到原生 WS 渠道时重放的完整 transcript 会带 input item status，而官方
+// Codex 后端在 WebSocket 上同样以 unknown_parameter 拒绝它（线上表现为 HTTP 101 之后
+// 的 SSE error `[input[N].status]`）。发送边界必须在首帧就剥离，而不是撞 400 再靠重试
+// 自愈——自愈多一个 RTT，且在响应已提交时根本不可用。
+func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) {
+	requests := make(chan []byte, 1)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakes.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade status-strip websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read status-strip request: %v", err)
+			return
+		}
+		requests <- bytes.Clone(payload)
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-status-stripped", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "ws-status-strip", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-status-strip", "rt-status-strip", "account-status-strip"),
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "ws-status-strip")
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set status-strip deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "store": false,
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "keep going"},
+			map[string]any{
+				"type": "function_call", "id": "fc_item_1", "call_id": "call_status_strip",
+				"name": "shell", "arguments": "{}", "status": "completed",
+			},
+			map[string]any{
+				"type": "function_call_output", "call_id": "call_status_strip",
+				"output": "done", "status": "completed",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write status-strip request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, downstream, "response.completed")
+	completedJSON, _ := json.Marshal(completed)
+	if gjson.GetBytes(completedJSON, "response.id").String() != "resp-status-stripped" {
+		t.Fatalf("unexpected status-strip completion: %#v", completed)
+	}
+
+	sent := <-requests
+	if statuses := gjson.GetBytes(sent, "input.#.status").Array(); len(statuses) != 0 {
+		t.Fatalf("first websocket send kept %d input item status fields: %s", len(statuses), sent)
+	}
+	if gjson.GetBytes(sent, "input.1.call_id").String() != "call_status_strip" {
+		t.Fatalf("status strip damaged the input transcript: %s", sent)
+	}
+	if got := handshakes.Load(); got != 1 {
+		t.Fatalf("status strip must succeed on the first send, handshakes=%d", got)
+	}
+}
