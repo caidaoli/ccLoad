@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +29,22 @@ const (
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
 	anthropicClaudeCodeIdentityPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 )
+
+// anthropicDeviceIDPattern 对齐上游 claudeMetadataDeviceIDPattern。
+var anthropicDeviceIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+// anthropicClaudeCLIUserAgentPattern 对齐上游 claudeCodeNativeUserAgentPattern，
+// 捕获组 1 是版本、2 是 entrypoint。
+var anthropicClaudeCLIUserAgentPattern = regexp.MustCompile(
+	`(?i)^claude-cli/([0-9]+\.[0-9]+\.[0-9]+)\s+\(external,\s*([^,)]+?)\s*(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+\s*)?\)$`)
+
+// nativeAnthropicClaudeEntrypoints 对齐上游 nativeClaudeEntrypoints：只有 wire 形态
+// 被实测确认过的第一方入口才允许直通。
+var nativeAnthropicClaudeEntrypoints = map[string]bool{
+	"cli":           true,
+	"sdk-cli":       true,
+	"claude-vscode": true,
+}
 
 const anthropicClaudeCodePrompt = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -602,7 +620,7 @@ func isNativeAnthropicClaudeCodeRequest(
 ) bool {
 	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
 		anthropicHeaderValue(headers, "X-App") != "cli" ||
-		!strings.Contains(normalizedAnthropicBetaHeader(headers), "claude-code-20250219") {
+		!slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219") {
 		return false
 	}
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
@@ -645,20 +663,41 @@ func anthropicCredentialIdentityMatches(body []byte, credential *anthropicauth.C
 	return ok && deviceID == credential.DeviceID && accountUUID == credential.AccountUUID
 }
 
+// anthropicRequestCarriesClaudeCodeIdentity 判断 metadata.user_id 是不是一份合法的
+// Claude Code 身份，对齐上游 isValidUserID（cloak_utils.go:41）：device_id 必须是 64
+// 位小写 hex，session_id 必须是合法 UUID，account_uuid **允许为空**——Claude Code 用
+// API Key 指向非第一方 base URL 时没有 Anthropic 账号，这一格本就是空串。把它当成必要
+// 条件会让所有这类真实 Claude Code 请求误判成第三方调用方并落进重写路径，客户端自管的
+// cache_control 断点随之被打散（与 ` cch=` 是同一类「只抄了一半」的偏差）。
 func anthropicRequestCarriesClaudeCodeIdentity(body []byte) bool {
 	deviceID, accountUUID, ok := anthropicRequestIdentity(body)
-	return ok && strings.TrimSpace(deviceID) != "" && strings.TrimSpace(accountUUID) != ""
-}
-
-func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
-	userAgent = strings.TrimSpace(userAgent)
-	const prefix = "claude-cli/"
-	const suffix = " (external, cli)"
-	if !strings.HasPrefix(userAgent, prefix) || !strings.HasSuffix(userAgent, suffix) {
+	if !ok || !anthropicDeviceIDPattern.MatchString(deviceID) {
 		return false
 	}
-	version := strings.TrimSuffix(strings.TrimPrefix(userAgent, prefix), suffix)
-	return version == anthropicCLIVersion
+	if accountUUID == "" {
+		return true
+	}
+	_, err := uuid.Parse(accountUUID)
+	return err == nil
+}
+
+// validAnthropicClaudeCLIUserAgent 对齐上游 plausibleClaudeCodeUserAgent +
+// nativeClaudeEntrypoints（claude_client_detection.go:66、462）。
+//
+// 形态是 `claude-cli/<x.y.z> (external, <entrypoint>[, agent-sdk/<x.y.z>])`。两处
+// 曾经写死的假设都会造成静默降级重写：
+//   - entrypoint 不只有 `cli`，`sdk-cli` 与 `claude-vscode` 同样是原生第一方入口；
+//   - 带 Agent SDK 的 CLI 会追加 `, agent-sdk/<ver>` 段，写死后缀会把它整条拒掉。
+//
+// 版本仍要求与 anthropicCLIVersion 精确相等（上游 plausibleClaudeCLIVersion 也是
+// Compare == 0），因为网关伪装出去的就是这个版本的形态；但上游的基线会随观测流量
+// 自升级，ccLoad 是常量——客户端升级后这里必须同步改，否则所有请求重新落回重写路径。
+func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
+	matches := anthropicClaudeCLIUserAgentPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
+	if matches == nil {
+		return false
+	}
+	return matches[1] == anthropicCLIVersion && nativeAnthropicClaudeEntrypoints[strings.ToLower(matches[2])]
 }
 
 func anthropicFirstSystemBlockText(system gjson.Result) string {

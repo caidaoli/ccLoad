@@ -2619,3 +2619,105 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 		t.Fatalf("caller identity was replaced with a synthesized one: %s", finalized)
 	}
 }
+
+// TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough 守住身份判据允许空
+// account_uuid，对齐上游 isValidUserID（cloak_utils.go:52）。
+//
+// Claude Code 用 API Key 指向非第一方 base URL 时没有 Anthropic 账号，metadata.user_id
+// 里的 account_uuid 就是空串。要求它非空会让这类真实请求全部误判成第三方调用方并被重写，
+// 症状与把 ` cch=` 当必要条件时完全一致：客户端自管的 cache_control 断点被打散。
+func TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough(t *testing.T) {
+	const sessionID = "f2e293f7-b6ee-48f7-9258-95be092aae58"
+	const deviceID = "94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1"
+	headers := http.Header{
+		"User-Agent":               {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
+		"X-App":                    {"cli"},
+		"Anthropic-Beta":           {"claude-code-20250219"},
+		"X-Claude-Code-Session-Id": {sessionID},
+	}
+	cfg := &model.Config{Name: "anthropic-third-party"}
+
+	bodyFor := func(accountUUID string) []byte {
+		identity := fmt.Sprintf(`{"device_id":%q,"account_uuid":%q,"session_id":%q}`,
+			deviceID, accountUUID, sessionID)
+		return []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}],"max_tokens":1024}`, identity))
+	}
+
+	t.Run("empty account_uuid is native", func(t *testing.T) {
+		body := bodyFor("")
+		if !isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+			t.Fatal("Claude Code request with an empty account_uuid was rejected by the native detector")
+		}
+		finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(finalized, body) {
+			t.Fatalf("native body was rewritten:\n got %s\nwant %s", finalized, body)
+		}
+		for _, path := range []string{"system.1.cache_control", "messages.0.content.0.cache_control"} {
+			if !gjson.GetBytes(finalized, path).Exists() {
+				t.Fatalf("caller-owned %s was stripped: %s", path, finalized)
+			}
+		}
+	})
+
+	// 空是合法的，垃圾不是：非空 account_uuid 仍必须是 UUID，device_id 仍必须是
+	// 64 位小写 hex。放宽判据不等于取消判据。
+	for _, badCase := range []struct{ name, accountUUID string }{
+		{"non-uuid account_uuid", "not-a-uuid"},
+		{"whitespace account_uuid", " "},
+	} {
+		t.Run(badCase.name+" is not native", func(t *testing.T) {
+			if isNativeAnthropicClaudeCodeRequest(bodyFor(badCase.accountUUID), headers, cfg, "sk-ant-key") {
+				t.Fatalf("account_uuid %q was accepted as a native identity", badCase.accountUUID)
+			}
+		})
+	}
+
+	t.Run("malformed device_id is not native", func(t *testing.T) {
+		identity := fmt.Sprintf(`{"device_id":"short","account_uuid":"","session_id":%q}`, sessionID)
+		body := []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`, identity))
+		if isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+			t.Fatal("a malformed device_id was accepted as a native identity")
+		}
+	})
+}
+
+// TestValidAnthropicClaudeCLIUserAgent 钉死 UA 判据对齐上游
+// claudeCodeNativeUserAgentPattern + nativeClaudeEntrypoints。
+//
+// 写死 " (external, cli)" 后缀会把带 Agent SDK 的 CLI 和 VSCode 扩展整条拒掉，
+// 后果不是报错而是静默降级到重写路径——客户端的 prompt cache 断点被打散。
+func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
+	t.Parallel()
+	version := anthropicCLIVersion
+	for _, testCase := range []struct {
+		name      string
+		userAgent string
+		want      bool
+	}{
+		{"cli", "claude-cli/" + version + " (external, cli)", true},
+		{"cli with agent sdk", "claude-cli/" + version + " (external, cli, agent-sdk/0.1.5)", true},
+		{"sdk-cli", "claude-cli/" + version + " (external, sdk-cli)", true},
+		{"claude-vscode", "claude-cli/" + version + " (external, claude-vscode)", true},
+		{"surrounding whitespace", "  claude-cli/" + version + " (external, cli)  ", true},
+
+		{"unknown entrypoint", "claude-cli/" + version + " (external, sdk-ts)", false},
+		{"other version", "claude-cli/9.9.9 (external, cli)", false},
+		{"non-numeric version", "claude-cli/latest (external, cli)", false},
+		{"missing external marker", "claude-cli/" + version + " (cli)", false},
+		{"trailing junk", "claude-cli/" + version + " (external, cli) extra", false},
+		{"malformed agent sdk", "claude-cli/" + version + " (external, cli, agent-sdk/x)", false},
+		{"empty", "", false},
+		{"unrelated client", "python-httpx/0.27.0", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := validAnthropicClaudeCLIUserAgent(testCase.userAgent); got != testCase.want {
+				t.Fatalf("validAnthropicClaudeCLIUserAgent(%q) = %v, want %v",
+					testCase.userAgent, got, testCase.want)
+			}
+		})
+	}
+}
