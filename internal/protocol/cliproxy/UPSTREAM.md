@@ -161,6 +161,14 @@ documented adaptations:
   trailing signature-only carriers with an empty thinking-text key. Its cache
   rejects empty text, making those calls no-ops; ccLoad has no runtime signature
   cache and keeps the existing pure wire carrier path instead.
+- Antigravity-to-Claude reports cached prompt tokens the same way Gemini-to-Claude
+  does: `usage.input_tokens` excludes `cachedContentTokenCount` and the cached
+  amount is reported separately as `cache_read_input_tokens`. Upstream subtracts
+  in the streaming path only, so its non-stream JSON double-counts cached input at
+  the full input price. Both `totalTokenCount`-based output fallbacks also add the
+  cached amount back before subtracting the prompt, since `totalTokenCount`
+  includes cached tokens while the adjusted prompt count does not; upstream omits
+  this and bills cache-hit input as output tokens.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
   The same boundary supplies the Gemini converter's legacy `ctx["alt"]` mode value;

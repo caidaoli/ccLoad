@@ -497,7 +497,11 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		params.ThoughtsTokenCount = usageResult.Get("thoughtsTokenCount").Int()
 		params.TotalTokenCount = usageResult.Get("totalTokenCount").Int()
 		if params.CandidatesTokenCount == 0 && params.TotalTokenCount > 0 {
-			params.CandidatesTokenCount = params.TotalTokenCount - params.PromptTokenCount - params.ThoughtsTokenCount
+			// PromptTokenCount 已减去 cached，而 TotalTokenCount 仍含 cached，
+			// 必须把 cached 加回来口径才一致；否则缓存命中的输入会被整段
+			// 算成输出 token，按输出价计费。
+			params.CandidatesTokenCount = params.TotalTokenCount -
+				(params.PromptTokenCount + params.CachedTokenCount) - params.ThoughtsTokenCount
 			if params.CandidatesTokenCount < 0 {
 				params.CandidatesTokenCount = 0
 			}
@@ -565,7 +569,8 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	stopReason := resolveStopReason(params)
 	usageOutputTokens := params.CandidatesTokenCount + params.ThoughtsTokenCount
 	if usageOutputTokens == 0 && params.TotalTokenCount > 0 {
-		usageOutputTokens = params.TotalTokenCount - params.PromptTokenCount
+		// 同上：TotalTokenCount 含 cached，PromptTokenCount 已减掉，要加回来。
+		usageOutputTokens = params.TotalTokenCount - (params.PromptTokenCount + params.CachedTokenCount)
 		if usageOutputTokens < 0 {
 			usageOutputTokens = 0
 		}
@@ -622,16 +627,26 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	cachedTokens := root.Get("response.usageMetadata.cachedContentTokenCount").Int()
 	outputTokens := candidateTokens + thoughtTokens
 	if outputTokens == 0 && totalTokens > 0 {
+		// promptTokens 此处必须是**未减 cached** 的原值：Gemini 的 totalTokenCount
+		// 同样把 cached 计入 prompt，两边口径要一致才减得出 output。
 		outputTokens = totalTokens - promptTokens
 		if outputTokens < 0 {
 			outputTokens = 0
 		}
 	}
+	// Anthropic 的 input_tokens 语义是**未命中缓存**的输入，cache_read 与它相加才是
+	// 总输入；Gemini 的 promptTokenCount 则是含 cached 的总量。不减就会把缓存部分
+	// 按全价重复计费，缓存命中率也会被腰斩。流式路径与 gemini/claude 两条兄弟路径
+	// 都已这样处理，这里补齐。
+	inputTokens := promptTokens - cachedTokens
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
 
 	responseJSON := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "id", root.Get("response.responseId").String())
 	responseJSON, _ = sjson.SetBytes(responseJSON, "model", root.Get("response.modelVersion").String())
-	responseJSON, _ = sjson.SetBytes(responseJSON, "usage.input_tokens", promptTokens)
+	responseJSON, _ = sjson.SetBytes(responseJSON, "usage.input_tokens", inputTokens)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "usage.output_tokens", outputTokens)
 	// Add cache_read_input_tokens if cached tokens are present (indicates prompt caching is working)
 	if cachedTokens > 0 {
