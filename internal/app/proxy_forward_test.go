@@ -1928,7 +1928,7 @@ func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
 func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	credential := &anthropicauth.Credential{
 		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
-		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "3f2b7c18-9d4e-4a6b-8c51-7e0a2d9b4f36",
 	}
 	credentialJSON, err := credential.JSON()
 	if err != nil {
@@ -1942,7 +1942,7 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	nativeBody := []byte(fmt.Sprintf(`{
 		"model":"claude-sonnet-4-6",
 		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"}],
-		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"account\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
+		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"3f2b7c18-9d4e-4a6b-8c51-7e0a2d9b4f36\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
 		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
 	}`, parsedCredential.DeviceID))
 	nativeHeaders := http.Header{
@@ -2552,7 +2552,7 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 				"Anthropic-Beta":           {"claude-code-20250219"},
 				"X-Claude-Code-Session-Id": {anthropicSessionIDFromRequest(finalized)},
 			}
-			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders, cfg, "sk-ant-key") {
+			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders) {
 				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
 			}
 			replayed, err := server.prepareTranslatedUpstreamBody(
@@ -2594,7 +2594,7 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	}
 	cfg := &model.Config{Name: "anthropic-third-party"}
 
-	if !isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+	if !isNativeAnthropicClaudeCodeRequest(body, headers) {
 		t.Fatal("a real Claude Code request without cch was rejected by the native detector")
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
@@ -2645,7 +2645,7 @@ func TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough(t *testing.T) {
 
 	t.Run("empty account_uuid is native", func(t *testing.T) {
 		body := bodyFor("")
-		if !isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+		if !isNativeAnthropicClaudeCodeRequest(body, headers) {
 			t.Fatal("Claude Code request with an empty account_uuid was rejected by the native detector")
 		}
 		finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
@@ -2669,7 +2669,7 @@ func TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough(t *testing.T) {
 		{"whitespace account_uuid", " "},
 	} {
 		t.Run(badCase.name+" is not native", func(t *testing.T) {
-			if isNativeAnthropicClaudeCodeRequest(bodyFor(badCase.accountUUID), headers, cfg, "sk-ant-key") {
+			if isNativeAnthropicClaudeCodeRequest(bodyFor(badCase.accountUUID), headers) {
 				t.Fatalf("account_uuid %q was accepted as a native identity", badCase.accountUUID)
 			}
 		})
@@ -2678,7 +2678,7 @@ func TestAnthropicNativeClaudeCodeEmptyAccountUUIDPassesThrough(t *testing.T) {
 	t.Run("malformed device_id is not native", func(t *testing.T) {
 		identity := fmt.Sprintf(`{"device_id":"short","account_uuid":"","session_id":%q}`, sessionID)
 		body := []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`, identity))
-		if isNativeAnthropicClaudeCodeRequest(body, headers, cfg, "sk-ant-key") {
+		if isNativeAnthropicClaudeCodeRequest(body, headers) {
 			t.Fatal("a malformed device_id was accepted as a native identity")
 		}
 	})
@@ -2702,9 +2702,10 @@ func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 		{"sdk-cli", "claude-cli/" + version + " (external, sdk-cli)", true},
 		{"claude-vscode", "claude-cli/" + version + " (external, claude-vscode)", true},
 		{"surrounding whitespace", "  claude-cli/" + version + " (external, cli)  ", true},
-
+		// 版本号刻意不参与判定：锁死它等于给客户端每次升级埋一颗静默降级地雷。
+		{"newer version", "claude-cli/9.9.9 (external, cli)", true},
+		{"older version", "claude-cli/1.0.0 (external, cli)", true},
 		{"unknown entrypoint", "claude-cli/" + version + " (external, sdk-ts)", false},
-		{"other version", "claude-cli/9.9.9 (external, cli)", false},
 		{"non-numeric version", "claude-cli/latest (external, cli)", false},
 		{"missing external marker", "claude-cli/" + version + " (cli)", false},
 		{"trailing junk", "claude-cli/" + version + " (external, cli) extra", false},

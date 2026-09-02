@@ -378,12 +378,20 @@ func antigravityProxyClaudeThoughtSignature(modelName string) string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
+// 身份 fixture 必须是真实形态：device_id 是 64 位小写 hex，account_uuid 是 UUID。
+// isNativeAnthropicClaudeCodeRequest 按上游 isValidUserID 校验这两处，占位串会让
+// 本该直通的原生请求在测试里被误判成第三方调用方。
+const (
+	anthropicProxyTestDeviceID    = "b7c1d0e9f28a34556677889900aabbccddeeff00112233445566778899aabbcc"
+	anthropicProxyTestAccountUUID = "5c9e1a2b-3d4f-4a5b-8c6d-7e8f90a1b2c3"
+)
+
 func anthropicProxyTestCredential(t testing.TB, accessToken string) string {
 	t.Helper()
 	credential := &anthropicauth.Credential{
 		Type: anthropicauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-anthropic",
 		Expired:     time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
-		AccountUUID: "account-anthropic", DeviceID: "device-anthropic",
+		AccountUUID: anthropicProxyTestAccountUUID, DeviceID: anthropicProxyTestDeviceID,
 	}
 	payload, err := credential.JSON()
 	if err != nil {
@@ -413,7 +421,7 @@ func expiredProxyOAuthCredential(t testing.TB, authType, accessToken string) str
 	case model.AuthTypeAnthropicOAuth:
 		payload, err = (&anthropicauth.Credential{
 			Type: anthropicauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-anthropic",
-			Expired: expired, AccountUUID: "account-anthropic", DeviceID: "device-anthropic",
+			Expired: expired, AccountUUID: anthropicProxyTestAccountUUID, DeviceID: anthropicProxyTestDeviceID,
 		}).JSON()
 	case model.AuthTypeAntigravityOAuth:
 		payload, err = (&antigravityauth.Credential{

@@ -106,7 +106,7 @@ func validateAnthropicLegacySystemRequestForUpstream(
 		return nil
 	}
 	if nativeAnthropicHaikuHelperShape(body, headers) != anthropicHaikuHelperNone ||
-		isNativeAnthropicClaudeCodeRequest(body, headers, cfg, apiKey) {
+		isNativeAnthropicClaudeCodeRequest(body, headers) {
 		return nil
 	}
 	return validateAnthropicLegacySystemMessages(body)
@@ -171,7 +171,7 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		}
 		return body, nil
 	}
-	if isNativeAnthropicClaudeCodeRequest(body, headers, cfg, apiKey) {
+	if isNativeAnthropicClaudeCodeRequest(body, headers) {
 		// Native Claude Code owns sampling, prompt-cache placement and JSON member
 		// order. Where the policy signs, only the CCH digits are refreshed in place;
 		// otherwise the caller's body goes out byte-for-byte, including its own CCH.
@@ -592,49 +592,27 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 // Code 的线协议形态。入站命中即整体直通、绝不重写；出站分派（anthropicRequestOwnsItsWire、
 // 重试重放）同样用它判断「这份 wire 已经是对的，网关只补认证头」。
 //
-// 判据对齐上游 CLIProxyAPI DetectClaudeCodeRequest.Confirmed 的四信号组合
-// （helps/claude_client_detection.go:128）：
+// 判据就是上游 CLIProxyAPI DetectClaudeCodeRequest.Confirmed 的四信号组合
+// （helps/claude_client_detection.go:128），一条不多一条不少：
 //
 //	XAppCLI && UserAgent && BetasPresent && MetadataUserID
 //
-// 再叠加 ccLoad 特有的 billing 前缀与 header/body session 等式，比上游更严。
+// 刻意不加额外条件。每加严一条就多一条静默假阴性通道，而假阴性的后果不是报错，
+// 是把真实 Claude Code 请求降级进重写路径、打散客户端自管的 prompt cache 断点——
+// 排查成本极高（实测命中率掉到 7.6% 才被发现）。曾经加过又移除的有:CLI 版本号相等、
+// system[0] 的 billing 前缀、header/body session id 等式、OAuth 凭证身份逐字段比对。
 //
-// **不看 CCH**，这一点是契约：CCH 是签名，不是身份。下游 Claude Code 指向 ccLoad
-// 时看到的是非第一方 base URL，native gate 直接省略 cch，但四个身份信号一个不少。
-// 把 ` cch=` 当必要条件会让所有真实 Claude Code 请求误判成第三方调用方，落进重写
-// 路径——system 被重建、客户端自管的 cache_control 断点被丢弃和裁剪，prompt cache
-// 随之失效。上游只在 measuredClaudeCodeHelperSystemMatches 那个窄的 Haiku helper
-// profile 里校验 cch，不要再把它提升成通用判据。
+// **不看 CCH**：CCH 是签名，不是身份。下游 Claude Code 指向 ccLoad 时看到的是非第一方
+// base URL，native gate 直接省略 cch，但四个身份信号一个不少。上游只在
+// measuredClaudeCodeHelperSystemMatches 那个窄的 Haiku helper profile 里校验 cch。
 //
 // 同一个判据同时服务入站与出站也正是这一点的收益：网关自己产出的无签名 body 一样
 // 通过检测，不存在「自己不认自己」的自指。
-//
-// 身份校验按凭证种类分。OAuth 渠道要求与本渠道账号严格一致，防止把别人的身份转发
-// 出去；API Key 渠道的身份本来就是网关自己合成的，下游真实 Claude Code 带的
-// device_id 才是可信的那个，拿合成值去比对只会把本该直通的请求降级重写。
-func isNativeAnthropicClaudeCodeRequest(
-	body []byte,
-	headers http.Header,
-	cfg *model.Config,
-	apiKey string,
-) bool {
-	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
-		anthropicHeaderValue(headers, "X-App") != "cli" ||
-		!slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219") {
-		return false
-	}
-	if cfg != nil && cfg.UsesAnthropicOAuth() {
-		credential := anthropicCredentialForWire(cfg, apiKey)
-		if credential == nil || credential.AccountUUID == "" || credential.DeviceID == "" ||
-			!anthropicCredentialIdentityMatches(body, credential) {
-			return false
-		}
-	} else if !anthropicRequestCarriesClaudeCodeIdentity(body) {
-		return false
-	}
-	billing := anthropicFirstSystemBlockText(gjson.GetBytes(body, "system"))
-	return strings.HasPrefix(billing, "x-anthropic-billing-header:") &&
-		anthropicHeaderValue(headers, "X-Claude-Code-Session-Id") == anthropicSessionIDFromRequest(body)
+func isNativeAnthropicClaudeCodeRequest(body []byte, headers http.Header) bool {
+	return validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) &&
+		anthropicHeaderValue(headers, "X-App") == "cli" &&
+		slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219") &&
+		anthropicRequestCarriesClaudeCodeIdentity(body)
 }
 
 // anthropicRequestIdentity 解出 metadata.user_id 里的 Claude Code 身份三元组。
@@ -655,14 +633,6 @@ func anthropicRequestIdentity(body []byte) (deviceID, accountUUID string, ok boo
 	return jsonStringValue(identity.Get("device_id")), jsonStringValue(identity.Get("account_uuid")), true
 }
 
-func anthropicCredentialIdentityMatches(body []byte, credential *anthropicauth.Credential) bool {
-	if credential == nil {
-		return false
-	}
-	deviceID, accountUUID, ok := anthropicRequestIdentity(body)
-	return ok && deviceID == credential.DeviceID && accountUUID == credential.AccountUUID
-}
-
 // anthropicRequestCarriesClaudeCodeIdentity 判断 metadata.user_id 是不是一份合法的
 // Claude Code 身份，对齐上游 isValidUserID（cloak_utils.go:41）：device_id 必须是 64
 // 位小写 hex，session_id 必须是合法 UUID，account_uuid **允许为空**——Claude Code 用
@@ -681,23 +651,19 @@ func anthropicRequestCarriesClaudeCodeIdentity(body []byte) bool {
 	return err == nil
 }
 
-// validAnthropicClaudeCLIUserAgent 对齐上游 plausibleClaudeCodeUserAgent +
-// nativeClaudeEntrypoints（claude_client_detection.go:66、462）。
+// validAnthropicClaudeCLIUserAgent 只校验形态与 entrypoint，对齐上游
+// claudeCodeNativeUserAgentPattern + nativeClaudeEntrypoints
+// （claude_client_detection.go:32、66）。
 //
-// 形态是 `claude-cli/<x.y.z> (external, <entrypoint>[, agent-sdk/<x.y.z>])`。两处
-// 曾经写死的假设都会造成静默降级重写：
-//   - entrypoint 不只有 `cli`，`sdk-cli` 与 `claude-vscode` 同样是原生第一方入口；
-//   - 带 Agent SDK 的 CLI 会追加 `, agent-sdk/<ver>` 段，写死后缀会把它整条拒掉。
+// 形态是 `claude-cli/<x.y.z> (external, <entrypoint>[, agent-sdk/<x.y.z>])`，
+// entrypoint 取 cli / sdk-cli / claude-vscode。
 //
-// 版本仍要求与 anthropicCLIVersion 精确相等（上游 plausibleClaudeCLIVersion 也是
-// Compare == 0），因为网关伪装出去的就是这个版本的形态；但上游的基线会随观测流量
-// 自升级，ccLoad 是常量——客户端升级后这里必须同步改，否则所有请求重新落回重写路径。
+// **不比对版本号**。上游 plausibleClaudeCLIVersion 虽然是精确相等，但它的基线会随
+// 观测流量自升级；ccLoad 只有 anthropicCLIVersion 这个常量，锁死版本等于给客户端的
+// 每次升级都埋一颗静默地雷——请求不会报错，只会无声掉回重写路径、缓存归零。
 func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
 	matches := anthropicClaudeCLIUserAgentPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
-	if matches == nil {
-		return false
-	}
-	return matches[1] == anthropicCLIVersion && nativeAnthropicClaudeEntrypoints[strings.ToLower(matches[2])]
+	return matches != nil && nativeAnthropicClaudeEntrypoints[strings.ToLower(matches[2])]
 }
 
 func anthropicFirstSystemBlockText(system gjson.Result) string {
@@ -1276,7 +1242,7 @@ func anthropicRequestOwnsItsWire(body []byte, incoming http.Header, cfg *model.C
 		return false
 	}
 	return nativeAnthropicHaikuHelperShape(body, incoming) != anthropicHaikuHelperNone ||
-		isNativeAnthropicClaudeCodeRequest(body, incoming, cfg, apiKey)
+		isNativeAnthropicClaudeCodeRequest(body, incoming)
 }
 
 // anthropicAPIKeyAuthorizationAllowed 判断 x-api-key 之外能否再带 Bearer。第一方
