@@ -25,6 +25,7 @@ const (
 var antigravityOAuthDefaultModels = []string{
 	"claude-opus-4-6-thinking",
 	"claude-sonnet-4-6",
+	"gemini-3.8-flash-high",
 	"gemini-3.7-flash-high",
 	"gemini-3.6-flash-high",
 	"gemini-3-flash",
