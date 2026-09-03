@@ -1510,6 +1510,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.runtimeMetrics.metric.gcCount': 'GC 次数',
   'settings.runtimeMetrics.metric.gcPauseTotal': 'GC 暂停累计',
   'settings.runtimeMetrics.metric.gcCpuPercent': 'GC CPU 占比',
+  'settings.runtimeMetrics.metric.sseFramingRepairs': 'SSE 分帧修复次数',
   'settings.runtimeMetrics.metric.heapAllocBytes': 'Go 堆已分配',
   'settings.runtimeMetrics.metric.heapSysBytes': 'Go 堆保留空间',
   'settings.runtimeMetrics.metric.httpActiveRequests': '当前客户端 HTTP 请求',

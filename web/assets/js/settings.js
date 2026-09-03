@@ -237,7 +237,8 @@ const runtimeMetricDomains = [
       { key: 'heap_sys_bytes', labelKey: 'settings.runtimeMetrics.metric.heapSysBytes', format: 'bytes' },
       { key: 'gc_count', labelKey: 'settings.runtimeMetrics.metric.gcCount' },
       { key: 'gc_pause_total_ns', labelKey: 'settings.runtimeMetrics.metric.gcPauseTotal', format: 'durationNs' },
-      { key: 'gc_cpu_percent', labelKey: 'settings.runtimeMetrics.metric.gcCpuPercent', format: 'percent' }
+      { key: 'gc_cpu_percent', labelKey: 'settings.runtimeMetrics.metric.gcCpuPercent', format: 'percent' },
+      { key: 'sse_framing_repairs', labelKey: 'settings.runtimeMetrics.metric.sseFramingRepairs' }
     ]
   },
   {

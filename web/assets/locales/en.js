@@ -1510,6 +1510,7 @@ window.I18N_LOCALES['en'] = {
   'settings.runtimeMetrics.metric.gcCount': 'GC cycles',
   'settings.runtimeMetrics.metric.gcPauseTotal': 'Total GC pause',
   'settings.runtimeMetrics.metric.gcCpuPercent': 'GC CPU share',
+  'settings.runtimeMetrics.metric.sseFramingRepairs': 'SSE framing repairs',
   'settings.runtimeMetrics.metric.heapAllocBytes': 'Go heap allocated',
   'settings.runtimeMetrics.metric.heapSysBytes': 'Go heap reserved',
   'settings.runtimeMetrics.metric.httpActiveRequests': 'Current client HTTP requests',
