@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -53,6 +54,417 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	}
 
 	return res, rec.Body.String()
+}
+
+func TestReadSSEPrefixThroughFirstEventReturnsTailWithoutEOF(t *testing.T) {
+	data := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\nTAIL")
+	r := &prefixBurstThenErrorReader{data: data}
+	got, err := readSSEPrefixThroughFirstEvent(wrapCodexSSEBody(io.NopCloser(r)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasSuffix(got, []byte("TAIL")) {
+		t.Fatalf("prefix lost tail: got %q", got)
+	}
+	if !bytes.Contains(got, []byte("}\n\nevent: response.completed")) {
+		t.Fatalf("framing repair missing from prefix: %q", got)
+	}
+}
+
+func TestResponseIsSSEAcceptsHeartbeatAndBOMPrefix(t *testing.T) {
+	input := "\xef\xbb\xbf : ping\nevent: response.created\ndata: {}\n\n"
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Body: &chunkedProbeReadCloser{chunks: [][]byte{
+			[]byte("\xef"), []byte("\xbb\xbf : ping"), []byte("\nevent:"), []byte(" response.created\ndata: {}\n\n"),
+		}},
+	}
+	if !responseIsSSE(resp, true) {
+		t.Fatal("responseIsSSE() rejected BOM/heartbeat-prefixed SSE")
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != input {
+		t.Fatalf("response probe changed body: got %q, want %q", got, input)
+	}
+}
+
+type chunkedProbeReadCloser struct {
+	chunks [][]byte
+}
+
+func (r *chunkedProbeReadCloser) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
+}
+
+func (*chunkedProbeReadCloser) Close() error { return nil }
+
+type probeErrorReadCloser struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *probeErrorReadCloser) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+func (*probeErrorReadCloser) Close() error { return nil }
+
+func TestResponseIsSSEPreservesProbeReadError(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "data and error", data: "event: response.created\ndata: {}\n"},
+		{name: "error without data"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			readErr := errors.New("upstream probe failed")
+			resp := &http.Response{
+				Header: http.Header{"Content-Type": []string{"text/plain"}},
+				Body:   &probeErrorReadCloser{data: []byte(tc.data), err: readErr},
+			}
+			_ = responseIsSSE(resp, true)
+			got, err := io.ReadAll(resp.Body)
+			if !errors.Is(err, readErr) {
+				t.Fatalf("restored body error=%v, want %v", err, readErr)
+			}
+			if string(got) != tc.data {
+				t.Fatalf("restored body=%q, want %q", got, tc.data)
+			}
+		})
+	}
+}
+
+var errUnexpectedPrefixRead = errors.New("readSSEPrefixThroughFirstEvent read past the first chunk")
+
+type prefixBurstThenErrorReader struct {
+	data []byte
+	sent bool
+}
+
+func (r *prefixBurstThenErrorReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.data), nil
+	}
+	return 0, errUnexpectedPrefixRead
+}
+
+func parseCodexResponseEventTypes(t *testing.T, body string) []string {
+	t.Helper()
+	normalized := strings.ReplaceAll(body, "\r\n", "\n")
+	trimmed := strings.TrimSuffix(normalized, "\n\n")
+	if trimmed == "" {
+		return nil
+	}
+	frames := strings.Split(trimmed, "\n\n")
+	got := make([]string, 0, len(frames))
+	for _, frame := range frames {
+		var eventName, dataLine string
+		for _, line := range strings.Split(frame, "\n") {
+			switch {
+			case strings.HasPrefix(line, ":"):
+				continue
+			case strings.HasPrefix(line, "event: "):
+				eventName = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				dataLine = strings.TrimPrefix(line, "data: ")
+			}
+		}
+		if eventName == "" || dataLine == "" {
+			t.Fatalf("incomplete Codex SSE frame %q", frame)
+		}
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(dataLine), &payload); err != nil {
+			t.Fatalf("frame %q has invalid data JSON: %v", frame, err)
+		}
+		if payload.Type != eventName {
+			t.Fatalf("event/type mismatch: event=%q type=%q", eventName, payload.Type)
+		}
+		got = append(got, eventName)
+	}
+	return got
+}
+
+func TestResponseIsSSERejectsCommentOnlyPrefix(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+		Body:   io.NopCloser(strings.NewReader(": ping\n: still-comment\nnot-sse\n")),
+	}
+	if responseIsSSE(resp, true) {
+		t.Fatal("comment-only prefix must not classify as SSE")
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != ": ping\n: still-comment\nnot-sse\n" {
+		t.Fatalf("probe changed body: got %q", got)
+	}
+}
+
+func TestHandleSuccessResponse_CodexMalformedFixtureEmitsIndependentEvents(t *testing.T) {
+	input := readCodexMalformedSSEFixture(t)
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(bytes.NewReader(input)),
+	}
+	recorder := newRecorder()
+	result, _, err := (&Server{}).handleSuccessResponse(
+		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex),
+		&streamReadStats{}, nil,
+	)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if result == nil || !result.ResponseCommitted {
+		t.Fatalf("response not committed: %#v", result)
+	}
+	wantTypes := []string{
+		"response.created",
+		"response.in_progress",
+		"response.output_item.added",
+		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_summary_text.done",
+	}
+	gotTypes := parseCodexResponseEventTypes(t, recorder.Body.String())
+	if !slices.Equal(gotTypes, wantTypes) {
+		t.Fatalf("emitted event sequence=%v, want %v; body=%q", gotTypes, wantTypes, recorder.Body.String())
+	}
+}
+
+func TestHandleSuccessResponse_DynamicCodexMalformedSSEUsesFraming(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	s := &Server{protocolRegistry: reg}
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol: protocol.Codex,
+			OriginalModel:  "gpt-5-codex",
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(bytes.NewReader(readCodexMalformedSSEFixture(t))),
+	}
+	rec := newRecorder()
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "", &streamReadStats{}, nil)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if res == nil || !res.ResponseCommitted {
+		t.Fatalf("response not committed: %#v", res)
+	}
+	wantTypes := []string{
+		"response.created",
+		"response.in_progress",
+		"response.output_item.added",
+		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_summary_text.done",
+	}
+	if got := parseCodexResponseEventTypes(t, rec.Body.String()); !slices.Equal(got, wantTypes) {
+		t.Fatalf("dynamic response event sequence=%v, want %v; body=%q", got, wantTypes, rec.Body.String())
+	}
+}
+
+func TestHandleSuccessResponse_DynamicCodexGluedSSEWithoutBlankLines(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	s := &Server{protocolRegistry: reg}
+	input := "event: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol: protocol.Codex,
+			OriginalModel:  "gpt-5-codex",
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(input)),
+	}
+	rec := newRecorder()
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, "", &streamReadStats{}, nil)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if res == nil || !res.ResponseCommitted {
+		t.Fatalf("response not committed: %#v", res)
+	}
+	got := parseCodexResponseEventTypes(t, rec.Body.String())
+	want := []string{"response.created", "response.completed"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("glued dynamic events=%v, want %v; body=%q", got, want, rec.Body.String())
+	}
+}
+
+func TestHandleSuccessResponse_NonCodexSSEPassesThroughUnchanged(t *testing.T) {
+	input := "event: response.created\ndata: {}\nevent: response.completed\ndata: {}\n\n"
+	reqCtx := &requestContext{
+		ctx: context.Background(), startTime: time.Now(), isStreaming: false,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol: protocol.Anthropic, UpstreamProtocol: protocol.Anthropic,
+			RequestFamily: protocol.RequestFamilyMessages, Streaming: false,
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(input)),
+	}
+	recorder := newRecorder()
+	result, _, err := (&Server{}).handleSuccessResponse(
+		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Anthropic),
+		&streamReadStats{}, nil,
+	)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if result == nil || !result.ResponseCommitted {
+		t.Fatalf("response not committed: %#v", result)
+	}
+	if got := recorder.Body.String(); got != input {
+		t.Fatalf("non-Codex SSE changed: got %q, want %q", got, input)
+	}
+}
+
+func TestHandleSuccessResponse_AnthropicStreamingSSEPassesThroughUnchanged(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	s := &Server{protocolRegistry: reg}
+	input := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.Anthropic,
+			RequestFamily:    protocol.RequestFamilyMessages,
+			Streaming:        true,
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(input)),
+	}
+	rec := newRecorder()
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Anthropic), &streamReadStats{}, nil)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if res == nil || !res.ResponseCommitted {
+		t.Fatalf("response not committed: %#v", res)
+	}
+	if got := rec.Body.String(); got != input {
+		t.Fatalf("Anthropic streaming SSE changed: got %q, want %q", got, input)
+	}
+}
+
+func TestHandleTranslatedStreamSuccessResponse_CodexMalformedSSEFramesEachEvent(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	s := &Server{protocolRegistry: reg}
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now(),
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.OpenAI,
+			UpstreamProtocol: protocol.Codex,
+			OriginalModel:    "gpt-4o",
+			ActualModel:      "gpt-5-codex",
+			NeedsTransform:   true,
+		},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5-codex\"}}\n\n")),
+	}
+	rec := newRecorder()
+	res, _, err := s.handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Codex), &streamReadStats{}, nil)
+	if err != nil {
+		t.Fatalf("translated malformed SSE error = %v", err)
+	}
+	if res == nil || !res.ResponseCommitted {
+		t.Fatalf("translated response not committed: %#v", res)
+	}
+	body := strings.ReplaceAll(rec.Body.String(), "\r\n", "\n")
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Fatalf("translated response missing terminal [DONE]: %q", body)
+	}
+	dataFrames := 0
+	for _, frame := range strings.Split(strings.TrimSuffix(body, "\n\n"), "\n\n") {
+		if !strings.HasPrefix(frame, "data: ") {
+			t.Fatalf("translated output contains unframed chunk: %q", frame)
+		}
+		data := strings.TrimPrefix(frame, "data: ")
+		if data == "[DONE]" {
+			continue
+		}
+		if !json.Valid([]byte(data)) {
+			t.Fatalf("translated data frame is not JSON: %q", frame)
+		}
+		dataFrames++
+	}
+	if dataFrames == 0 || strings.Count(body, "hello") != 1 {
+		t.Fatalf("translated data frames=%d, hello count=%d; body=%q", dataFrames, strings.Count(body, "hello"), body)
+	}
+}
+
+func TestLooksLikeSSERequiresBothEventAndData(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"both fields", "event: response.created\ndata: {}\n\n", true},
+		{"data only", "data: {\"key\":\"value\"}\n\n", false},
+		{"event only", "event: response.created\n\n", false},
+		{"neither", "{\"hello\": \"world\"}\n", false},
+		{"data in JSON value", "{\"data: event:\": true}\n", false},
+		{"both with leading whitespace", "  event: x\n  data: y\n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikeSSE([]byte(tc.data)); got != tc.want {
+				t.Fatalf("looksLikeSSE(%q) = %v, want %v", tc.data, got, tc.want)
+			}
+		})
+	}
 }
 
 func headerValueFold(headers http.Header, name string) string {
@@ -240,9 +652,9 @@ func TestCodexOAuthRequestInjectsModelInstructionsAndPreservesExplicitValue(t *t
 	}
 }
 
-func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
-	body := "event: response.output_item.done\n" +
-		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n\n" +
+func TestCodexOAuthNonStreamReassemblesMalformedSSETerminalResponse(t *testing.T) {
+	body := ": ping\nevent: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n" +
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}` + "\n\n"
 	reqCtx := &requestContext{
@@ -250,7 +662,7 @@ func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
 	}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 	recorder := newRecorder()

@@ -1,0 +1,15 @@
+: ping
+event: response.created
+data: {"type":"response.created","response":{"object":"response","status":"in_progress"}}
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"object":"response","status":"in_progress"}}
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"reasoning"}}
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","part":{"type":"summary_text"}}
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","delta":"<redacted>"}
+
+event: response.reasoning_summary_text.done
+data: {"type":"response.reasoning_summary_text.done"}
+

@@ -1414,13 +1414,11 @@ func TestHandleChannelChatPreservesCodexMessages(t *testing.T) {
 		upstreamBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `event: response.output_text.delta
-data: {"type":"response.output_text.delta","delta":"real answer"}
-
-event: response.completed
-data: {"type":"response.completed"}
-
-`)
+		_, _ = io.WriteString(w, "\xef\xbb\xbf : ping\n"+
+			"event: response.output_text.delta\n"+
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"real answer\"}\n"+
+			"event: response.completed\n"+
+			"data: {\"type\":\"response.completed\"}\n\n")
 	}))
 	defer upstream.Close()
 
@@ -1752,8 +1750,8 @@ func TestHandleChannelChat_CodexOAuthTransformsOpenAIClientProtocol(t *testing.T
 			t.Errorf("ChatGPT-Account-ID = %q", got)
 		}
 		upstreamBody, _ = io.ReadAll(r.Body)
-		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
-		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"openai to codex answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"openai to codex answer\"}\n")
 		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 	}))
 

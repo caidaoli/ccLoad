@@ -159,6 +159,7 @@ func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 	for _, key := range []string{
 		"cpu_usage_percent", "cpu_user_seconds", "cpu_system_seconds",
 		"rss_bytes", "max_rss_bytes", "gc_count", "gc_pause_total_ns", "gc_cpu_percent",
+		"sse_framing_repairs",
 	} {
 		if value, okValue := processMetrics[key].(float64); !okValue || value < 0 {
 			t.Fatalf("%s=%v, want non-negative runtime metric; metrics=%#v", key, processMetrics[key], processMetrics)
@@ -236,6 +237,21 @@ func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 	logMetrics, ok := resp.Data["logs"].(map[string]any)
 	if !ok || logMetrics["dropped_entries"] != float64(4) || logMetrics["persistence_failed_entries"] != float64(5) {
 		t.Fatalf("unexpected log metrics: %#v", logMetrics)
+	}
+	beforeRepairs := sseFramingRepairs.Load()
+	framingInput := "event: response.created\ndata: {}\nevent: response.completed\ndata: {}\n\n"
+	if _, err := io.Copy(io.Discard, newCodexSSEFramingReader(strings.NewReader(framingInput))); err != nil {
+		t.Fatalf("exercise SSE framing repair: %v", err)
+	}
+	c2, w2 := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
+	srv.HandleRuntimeMetrics(c2)
+	resp2 := mustParseAPIResponse[map[string]any](t, w2.Body.Bytes())
+	processMetrics2, ok := resp2.Data["process"].(map[string]any)
+	if !ok {
+		t.Fatalf("process metrics missing after SSE repair: %#v", resp2.Data)
+	}
+	if got, ok := processMetrics2["sse_framing_repairs"].(float64); !ok || got < float64(beforeRepairs+1) {
+		t.Fatalf("sse_framing_repairs=%v, want at least %d", processMetrics2["sse_framing_repairs"], beforeRepairs+1)
 	}
 }
 

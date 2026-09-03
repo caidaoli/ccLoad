@@ -505,6 +505,7 @@ func (s *Server) streamChatWithURLForProtocol(
 
 	contentType := resp.Header.Get("Content-Type")
 	isSSE := responseIsSSE(resp, requestPlan.upstreamStreaming)
+	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isSSE)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))

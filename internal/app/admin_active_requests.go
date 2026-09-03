@@ -34,6 +34,7 @@ type processRuntimeMetrics struct {
 	GCCount               uint32  `json:"gc_count"`
 	GCPauseTotalNs        uint64  `json:"gc_pause_total_ns"`
 	GCCPUPercent          float64 `json:"gc_cpu_percent"`
+	SSEFramingRepairs     uint64  `json:"sse_framing_repairs"`
 }
 
 func (s *Server) processRuntimeMetrics(now time.Time) processRuntimeMetrics {
@@ -55,6 +56,7 @@ func (s *Server) processRuntimeMetrics(now time.Time) processRuntimeMetrics {
 		GCCount:               memory.NumGC,
 		GCPauseTotalNs:        memory.PauseTotalNs,
 		GCCPUPercent:          memory.GCCPUFraction * 100,
+		SSEFramingRepairs:     sseFramingRepairs.Load(),
 	}
 	if user, system, maxRSS, ok := readProcessRusage(); ok {
 		metrics.CPUUserSeconds = user
