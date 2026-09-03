@@ -289,6 +289,7 @@ func TestFamilyMatches(t *testing.T) {
 		{FamilyFable, "claude-sonnet-4", false},
 		{FamilySpark, "gpt-5.3-codex-spark", true},
 		{FamilySpark, "gpt-5.4", false},
+		{FamilyCodexReserve, "gpt-5.4", false},
 	}
 	for _, tc := range tests {
 		if got := FamilyMatches(tc.family, tc.model); got != tc.want {
@@ -305,11 +306,95 @@ func TestCodexWindowFamiliesSeparateSpark(t *testing.T) {
 	if got := WindowFamily(ProviderCodex, "codex-spark", "secondary"); got != FamilySpark {
 		t.Fatalf("Codex Spark window family = %q, want %q", got, FamilySpark)
 	}
+	if got := WindowFamily(ProviderCodex, "gpt-reserve", "primary"); got != FamilyCodexReserve {
+		t.Fatalf("Codex reserve window family = %q, want %q", got, FamilyCodexReserve)
+	}
 	if FamilyMatches(FamilyCodex, "gpt-5.3-codex-spark") {
 		t.Fatal("Codex main family must not match Spark")
 	}
 	if !FamilyMatches(FamilyCodex, "gpt-5.4") {
 		t.Fatal("Codex main family must match regular Codex models")
+	}
+}
+
+func TestCodexReserveWindowDoesNotAccumulateRegularModels(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	usage := &Usage{Windows: []*Window{{
+		// 这是修复前已经落盘的窗口：即使它的旧 family 是 codex，
+		// 后续普通 Codex 请求也不能继续污染 gpt-reserve。
+		Key: "gpt-reserve|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+		StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+		StandardCostMicroUSD: 9_953_296,
+	}}}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.6-sol", 1_000_000); err != nil || changed {
+		t.Fatalf("gpt-reserve window accepted regular cost = (%t, %v)", changed, err)
+	}
+	if got := usage.Windows[0].StandardCostMicroUSD; got != 9_953_296 {
+		t.Fatalf("historical gpt-reserve cost changed to %d", got)
+	}
+
+	// 新采样统一使用独立族，即使调用方漏填 Family 也不能回退到普通 Codex。
+	usage = Reconcile(nil, []Sample{{
+		Key: "gpt-reserve|primary", WindowSeconds: 7 * 24 * 60 * 60,
+		ResetAt: now.Add(6 * 24 * time.Hour),
+	}}, now)
+	window := Find(usage, "gpt-reserve|primary")
+	if window == nil || window.Family != FamilyCodexReserve {
+		t.Fatalf("gpt-reserve sample family = %#v, want %q", window, FamilyCodexReserve)
+	}
+	if changed, err := AddStandardCost(usage, now, "gpt-5.6-sol", 1_000_000); err != nil || changed {
+		t.Fatalf("new gpt-reserve window accepted regular cost = (%t, %v)", changed, err)
+	}
+}
+
+func TestCodexReserveWindowMigratesAndResetsHistoricalCost(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	usage := &Usage{Windows: []*Window{{
+		Key: "gpt-reserve|primary", Family: FamilyCodex,
+		WindowSeconds: 7 * 24 * 60 * 60,
+		StartedAt:     now.Add(-time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+		StandardCostMicroUSD: 9_953_296,
+	}}}
+
+	// A fresh sample migrates the legacy family while retaining historical data
+	// until the explicit reset path clears it.
+	usage = Reconcile(usage, []Sample{{
+		Key: "gpt-reserve|primary", WindowSeconds: 7 * 24 * 60 * 60,
+		ResetAt: now.Add(6 * 24 * time.Hour),
+	}}, now)
+	window := Find(usage, "gpt-reserve|primary")
+	if window == nil || window.Family != FamilyCodexReserve || window.StandardCostMicroUSD != 9_953_296 {
+		t.Fatalf("gpt-reserve migration = %#v, want reserve family with historical cost", window)
+	}
+
+	reset := Reset(usage, now.Add(time.Minute), map[string]int64{FamilyCodex: 123})
+	window = Find(reset, "gpt-reserve|primary")
+	if window == nil || window.Family != FamilyCodexReserve || window.StandardCostMicroUSD != 0 {
+		t.Fatalf("gpt-reserve reset = %#v, want reserve family with zero cost", window)
+	}
+	if err := Validate(reset); err != nil {
+		t.Fatalf("reset reserve usage is invalid: %v", err)
+	}
+}
+
+func TestReconcileSkipsInvalidDuplicateBeforeMarkingSeen(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	usage := Reconcile(nil, []Sample{
+		{
+			Key: "codex|primary", Family: "invalid",
+			WindowSeconds: 7 * 24 * 60 * 60, ResetAt: now.Add(6 * 24 * time.Hour),
+		},
+		{
+			Key: "codex|primary", Family: FamilyCodex,
+			WindowSeconds: 7 * 24 * 60 * 60, ResetAt: now.Add(6 * 24 * time.Hour),
+		},
+	}, now)
+	window := Find(usage, "codex|primary")
+	if window == nil || window.Family != FamilyCodex {
+		t.Fatalf("valid duplicate sample was discarded: %#v", usage)
 	}
 }
 

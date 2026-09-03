@@ -36,6 +36,9 @@ const (
 	FamilySpark = "spark"
 	// FamilyCodex 覆盖 Codex 主额度窗口，但不覆盖单独计量的 Spark。
 	FamilyCodex = "codex"
+	// FamilyCodexReserve 是 Codex 的 gpt-reserve 窗口。
+	// 上游没有提供请求级归属，不能把普通 Codex 请求计入该窗口。
+	FamilyCodexReserve = "codex_reserve"
 )
 
 // Usage is persisted inside an OAuth credential. Costs come from positive
@@ -103,6 +106,8 @@ func FamilyMatches(family, modelName string) bool {
 		// 保留旧日志中可能缺失模型名的累计语义；只有明确识别为 Spark
 		// 时才从主 Codex 窗口排除。
 		return !strings.Contains(modelName, "spark")
+	case FamilyCodexReserve:
+		return false
 	default:
 		return false
 	}
@@ -110,7 +115,7 @@ func FamilyMatches(family, modelName string) bool {
 
 func validFamily(family string) bool {
 	switch family {
-	case FamilyAll, FamilyGemini, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark, FamilyCodex:
+	case FamilyAll, FamilyGemini, FamilyNonGemini, FamilySonnet, FamilyFable, FamilySpark, FamilyCodex, FamilyCodexReserve:
 		return true
 	default:
 		return false
@@ -120,8 +125,12 @@ func validFamily(family string) bool {
 // WindowMatchesModel 判断一个持久化额度窗口是否应累计指定模型。
 // 旧版本把 Codex 主窗口持久化为 FamilyAll；按 key 识别并按新的 Codex
 // 族规则匹配，避免历史窗口在下一次刷新前继续吞掉 Spark 成本。
+// gpt-reserve 是上游独立的保留额度槽位，没有可归属的请求模型，永不累计。
 func WindowMatchesModel(window *Window, modelName string) bool {
 	if window == nil {
+		return false
+	}
+	if isCodexReserveKey(window.Key) {
 		return false
 	}
 	family := window.Family
@@ -129,6 +138,10 @@ func WindowMatchesModel(window *Window, modelName string) bool {
 		family = FamilyCodex
 	}
 	return FamilyMatches(family, modelName)
+}
+
+func isCodexReserveKey(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(strings.SplitN(key, "|", 2)[0]), "gpt-reserve")
 }
 
 // Families 返回持久化窗口里出现过的模型族集合。
@@ -259,6 +272,10 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 		if key == "" || sample.WindowSeconds <= 0 || sample.ResetAt.IsZero() {
 			continue
 		}
+		sample.Key = key
+		if isCodexReserveKey(key) {
+			sample.Family = FamilyCodexReserve
+		}
 		if !validFamily(sample.Family) {
 			continue
 		}
@@ -266,7 +283,6 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 			continue
 		}
 		seen[key] = struct{}{}
-		sample.Key = key
 		sample.UsedPercent = normalizedUsedPercent(sample.UsedPercent)
 		if window := reconcileWindow(Find(current, key), sample, observedAt); window != nil {
 			next.Windows = append(next.Windows, window)
@@ -427,7 +443,12 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		window.CountFromAt = resetAt.Unix()
 		window.SampledUpstreamUsedPercent = nil
 		window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(resetAt)
-		window.StandardCostMicroUSD = costByFamily[window.Family]
+		if isCodexReserveKey(window.Key) {
+			window.Family = FamilyCodexReserve
+			window.StandardCostMicroUSD = 0
+		} else {
+			window.StandardCostMicroUSD = costByFamily[window.Family]
+		}
 	}
 	return next
 }

@@ -189,6 +189,13 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 					StartedAt: resetAt.Add(-7 * 24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
 				},
 				{
+					// 兼容修复前已落盘的 gpt-reserve family：普通 Codex 日志
+					// 不得再把它当成主 Codex 窗口累计。
+					Key: "gpt-reserve|primary", Family: oauthcost.FamilyCodex,
+					WindowSeconds: 7 * 24 * 60 * 60,
+					StartedAt:     resetAt.Add(-7 * 24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
+				},
+				{
 					Key: "codex|monthly", WindowSeconds: 30 * 24 * 60 * 60,
 					StartedAt: resetAt.AddDate(0, -1, 0).Unix(), ResetAt: resetAt.Unix(),
 				},
@@ -229,13 +236,17 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 			t.Fatal(parseErr)
 		}
 		weekly := oauthcost.Find(got.QuotaCostUsage, "codex|secondary")
+		reserve := oauthcost.Find(got.QuotaCostUsage, "gpt-reserve|primary")
 		monthly := oauthcost.Find(got.QuotaCostUsage, "codex|monthly")
-		if weekly == nil || monthly == nil {
+		if weekly == nil || reserve == nil || monthly == nil {
 			t.Fatalf("quota cost usage missing: %#v", got.QuotaCostUsage)
 		}
 		if weekly.StandardCostMicroUSD != want || monthly.StandardCostMicroUSD != want {
 			t.Fatalf("quota costs = weekly %d monthly %d, want %d",
 				weekly.StandardCostMicroUSD, monthly.StandardCostMicroUSD, want)
+		}
+		if reserve.StandardCostMicroUSD != 0 {
+			t.Fatalf("gpt-reserve quota cost = %d, want 0", reserve.StandardCostMicroUSD)
 		}
 		return got
 	}
