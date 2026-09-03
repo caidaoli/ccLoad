@@ -7440,6 +7440,89 @@ func TestProxy_AutomaticProtocolFallback_SkipsUnrepresentableTransforms(t *testi
 	}
 }
 
+func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextProtocol(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"unexpected protocol"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "local-compaction-protocol-skip", upstreamProtocol: "anthropic",
+		protocolTransformMode: model.ProtocolTransformModeLocal, models: "gpt-5.6-sol",
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	configs[0].URLs[0].Protocols = []string{"anthropic", "codex"}
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.6-sol",
+		"input": []map[string]any{{
+			"type":              "compaction",
+			"encrypted_content": "opaque",
+		}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !slices.Equal(paths, []string{"/v1/responses"}) {
+		t.Fatalf("paths=%v, want native Codex after local Anthropic transform rejection", paths)
+	}
+}
+
+func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextChannel(t *testing.T) {
+	var anthropicHits, codexHits int
+	anthropicUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		anthropicHits++
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"message":"anthropic should not be called"}}`)
+	}))
+	defer anthropicUpstream.Close()
+	codexUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codexHits++
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"unexpected path"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer codexUpstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anthropic-local", upstreamProtocol: "anthropic", protocolTransformMode: model.ProtocolTransformModeLocal, models: "gpt-5.6-sol"},
+		{name: "codex-local", upstreamProtocol: "codex", protocolTransformMode: model.ProtocolTransformModeLocal, models: "gpt-5.6-sol"},
+	}, map[int]string{0: anthropicUpstream.URL, 1: codexUpstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.6-sol",
+		"input": []map[string]any{{
+			"type":              "compaction",
+			"encrypted_content": "opaque",
+		}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if anthropicHits != 0 || codexHits != 1 {
+		t.Fatalf("anthropicHits=%d codexHits=%d, want 0/1", anthropicHits, codexHits)
+	}
+}
+
 func TestProxy_AutomaticProtocolFallback_ExactURLTranslatesDirectly(t *testing.T) {
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

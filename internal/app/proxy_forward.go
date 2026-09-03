@@ -2806,28 +2806,22 @@ func (s *Server) forwardAttempt(
 		}
 		var translationErr *protocol.RequestTranslationError
 		if errors.As(err, &translationErr) {
-			if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto {
-				logged := s.logProtocolCapabilityFallback(
-					reqCtx, cfg, actualModel, selectedKey, http.StatusBadRequest,
-					duration, res, err.Error(),
-				)
-				return &proxyResult{
-					status:                    http.StatusBadRequest,
-					body:                      []byte(err.Error()),
-					channelID:                 &cfg.ID,
-					succeeded:                 false,
-					nextAction:                cooldown.ActionRetryChannel,
-					proxyLogWritten:           logged,
-					protocolCapabilityMissing: true,
-				}, cooldown.ActionRetryChannel, nil
-			}
+			// 无法表示当前请求不是上游故障，也不该当成最终客户端错误。
+			// auto/local 都要继续探下一个协议或渠道；否则 Codex compaction
+			// 这类专用状态会把整个请求钉死在第一个 Anthropic 候选上。
+			logged := s.logProtocolCapabilityFallback(
+				reqCtx, cfg, actualModel, selectedKey, http.StatusBadRequest,
+				duration, res, err.Error(),
+			)
 			return &proxyResult{
-				status:     http.StatusBadRequest,
-				body:       []byte(err.Error()),
-				channelID:  &cfg.ID,
-				succeeded:  false,
-				nextAction: cooldown.ActionReturnClient,
-			}, cooldown.ActionReturnClient, nil
+				status:                    http.StatusBadRequest,
+				body:                      []byte(err.Error()),
+				channelID:                 &cfg.ID,
+				succeeded:                 false,
+				nextAction:                cooldown.ActionRetryChannel,
+				proxyLogWritten:           logged,
+				protocolCapabilityMissing: true,
+			}, cooldown.ActionRetryChannel, nil
 		}
 		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
 			return nil, cooldown.ActionRetryChannel, err
