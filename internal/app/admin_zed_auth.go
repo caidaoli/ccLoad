@@ -100,9 +100,8 @@ func newZedOAuthManager(service *zedauth.Service, store storage.Store, invalidat
 			if existingSystemID != "" {
 				systemID = existingSystemID
 			}
-			if systemID == "" {
-				return nil, fmt.Errorf("zed system_id is required for a new account; enter the value from the local Zed database or set %s", zedauth.SystemIDEnv)
-			}
+			// Keep the installation header optional so Zed can enforce trial
+			// policy instead of ccLoad rejecting the native credential early.
 			credential, credentialErr := zedauth.NewCredential(callback.UserID, systemID, callback.NativeCredential)
 			if credentialErr != nil {
 				return nil, credentialErr

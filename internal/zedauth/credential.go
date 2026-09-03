@@ -13,8 +13,10 @@ import (
 // Credential keeps the native long-lived Zed credential separate from the
 // short-lived LLM JWT used by /completions.
 type Credential struct {
-	Type             string          `json:"type"`
-	UserID           string          `json:"user_id"`
+	Type   string `json:"type"`
+	UserID string `json:"user_id"`
+	// SystemID is optional. When empty, Zed requests omit x-zed-system-id;
+	// the upstream service decides whether the account can use trial access.
 	SystemID         string          `json:"system_id"`
 	NativeCredential json.RawMessage `json:"native_credential"`
 	AccessToken      string          `json:"access_token,omitempty"`
@@ -81,9 +83,6 @@ func (c *Credential) Normalize() error {
 	c.LastRefresh = strings.TrimSpace(c.LastRefresh)
 	if c.UserID == "" {
 		return errors.New("zed credential is missing user_id")
-	}
-	if c.SystemID == "" {
-		return errors.New("zed credential is missing system_id")
 	}
 	if len(c.NativeCredential) == 0 || !json.Valid(c.NativeCredential) {
 		return errors.New("zed credential has an invalid native_credential")

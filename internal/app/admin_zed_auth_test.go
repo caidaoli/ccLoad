@@ -19,9 +19,18 @@ import (
 )
 
 func TestZedOAuthManagerCompletesNativeLogin(t *testing.T) {
+	testZedOAuthManagerCompletesNativeLogin(t, "9d4b8c17-12ae-4091-96bc-1a79ce2de601")
+}
+
+func TestZedOAuthManagerCompletesNativeLoginWithoutSystemID(t *testing.T) {
+	// Isolate system identity discovery from the developer's local Zed database.
+	t.Setenv("HOME", t.TempDir())
+	testZedOAuthManagerCompletesNativeLogin(t, "")
+}
+
+func testZedOAuthManagerCompletesNativeLogin(t *testing.T, systemID string) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	const systemID = "9d4b8c17-12ae-4091-96bc-1a79ce2de601"
 	expiresAt := time.Now().Add(time.Hour).Unix()
 	jwt := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".sig"
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

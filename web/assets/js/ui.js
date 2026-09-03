@@ -1928,7 +1928,15 @@ window.WebAuth = window.WebAuth || {
         if (selected) row.classList.add('selected');
         if (idx === activeIndex) row.classList.add('active');
 
+        // Keep the option in the DOM until the click event is dispatched.
+        // Firefox retargets a click to the dialog when a mousedown handler
+        // removes the clicked node immediately; dialog backdrop handlers then
+        // mistake a normal selection for an outside click and close the modal.
         row.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        row.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
           commitOption(item);

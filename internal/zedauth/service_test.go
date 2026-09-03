@@ -104,3 +104,35 @@ func TestServiceUsesNativeAndLLMAuthenticationContracts(t *testing.T) {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
+
+func TestServiceOmitsSystemIDHeaderWhenUnavailable(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".sig"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/client/llm_tokens" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("x-zed-system-id") != "" {
+			t.Errorf("unexpected system id header = %q", request.Header.Get("x-zed-system-id"))
+		}
+		_, _ = fmt.Fprintf(writer, `{"token":%q}`, token)
+	}))
+	defer server.Close()
+
+	service := NewService(server.Client())
+	service.LLMTokensURL = server.URL + "/client/llm_tokens"
+	service.ModelsURL = server.URL + "/models"
+	service.CurrentUserURL = server.URL + "/client/users/me"
+	credential, err := NewCredential("u-1", "", []byte(`{"github_user_login":"octocat","access_token":"native"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted, err := service.MintLLMToken(context.Background(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minted.SystemID != "" || minted.AccessToken != token {
+		t.Fatalf("minted credential = %+v", minted)
+	}
+}
