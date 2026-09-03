@@ -118,7 +118,7 @@ func apiKeyCostMultiplier(entry ChannelAPIKeyRequest) float64 {
 
 const (
 	maxAPIKeyNoteLength              = 512
-	maxAPIKeyAllowedModelsJSONLength = 2000
+	maxAPIKeyAllowedModelsJSONLength = 8000
 )
 
 func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
