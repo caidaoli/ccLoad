@@ -875,9 +875,55 @@ func ensureAPIKeysNote(ctx context.Context, db *sql.DB, dialect Dialect) error {
 }
 
 func ensureAPIKeysAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "api_keys", "allowed_models",
-		"VARCHAR(2000) NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
+	if err := ensureColumn(ctx, db, dialect, "api_keys", "allowed_models",
+		"VARCHAR(8000) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// 历史列是 VARCHAR(2000)，放大到 VARCHAR(8000)。
+	return widenAPIKeysAllowedModels(ctx, db, dialect)
+}
+
+func widenAPIKeysAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	switch dialect {
+	case DialectMySQL:
+		var charMaxLen sql.NullInt64
+		err := db.QueryRowContext(ctx, `
+			SELECT CHARACTER_MAXIMUM_LENGTH
+			FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='api_keys' AND COLUMN_NAME='allowed_models'
+		`).Scan(&charMaxLen)
+		if err != nil {
+			return fmt.Errorf("query api_keys.allowed_models column info: %w", err)
+		}
+		if charMaxLen.Valid && charMaxLen.Int64 >= 8000 {
+			return nil
+		}
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE api_keys MODIFY COLUMN allowed_models VARCHAR(8000) NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("widen allowed_models column: %w", err)
+		}
+		log.Printf("[MIGRATE] 已修改 api_keys.allowed_models: VARCHAR(%d) → VARCHAR(8000)", charMaxLen.Int64)
+	case DialectPostgres:
+		var charMaxLen sql.NullInt64
+		err := db.QueryRowContext(ctx, `
+			SELECT character_maximum_length
+			FROM information_schema.columns
+			WHERE table_name='api_keys' AND column_name='allowed_models'
+		`).Scan(&charMaxLen)
+		if err != nil {
+			return fmt.Errorf("query api_keys.allowed_models column info: %w", err)
+		}
+		if !charMaxLen.Valid || charMaxLen.Int64 >= 8000 {
+			return nil // TEXT (null length) 或已足够大
+		}
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE api_keys ALTER COLUMN allowed_models TYPE VARCHAR(8000)"); err != nil {
+			return fmt.Errorf("widen allowed_models column: %w", err)
+		}
+		log.Printf("[MIGRATE] 已修改 api_keys.allowed_models: VARCHAR(%d) → VARCHAR(8000)", charMaxLen.Int64)
+	}
+	return nil
 }
 
 func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Dialect) error {
