@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,7 +38,18 @@ type zedWirePlan struct {
 	toolIdentities    map[string]cliproxyutil.ResponsesToolIdentity
 }
 
-func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthropicRequest []byte) ([]byte, *zedWirePlan, error) {
+type zedRequestValidationError struct{ message string }
+
+func (e *zedRequestValidationError) Error() string { return e.message }
+
+// finalizeZedResponsesBodyWithOptions 把标准 Responses body 装配成 Zed envelope。
+// preserveReasoning 由调用方判定：渠道 body 规则显式覆盖 reasoning 时必须保留它，
+// 否则本函数会把转换器凭空填入的默认值当成客户端意图删掉。
+func finalizeZedResponsesBodyWithOptions(
+	registry *protocol.Registry,
+	body, originalClientRequest []byte,
+	preserveReasoning bool,
+) ([]byte, *zedWirePlan, error) {
 	if !isMutableJSONObject(body) {
 		return nil, nil, errors.New("finalize Zed Responses request: invalid JSON object")
 	}
@@ -66,6 +79,11 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthrop
 	body = setJSONValue(body, "stream", true)
 	body = normalizeZedCodexInput(body)
 	body = stripZedEncryptedContent(body)
+	if provider == zedauth.ProviderAnthropic && !preserveReasoning && !zedClientRequestedThinking(originalClientRequest) {
+		// OpenAI→Codex 转换在缺少 reasoning_effort 时默认 medium。Zed Anthropic
+		// 再把它变成 thinking.budget_tokens=8192，和保守 max_tokens=8192 撞车。
+		body = deleteJSONPath(body, "reasoning")
+	}
 	originalRequest := body
 
 	translatedRequest := originalRequest
@@ -79,7 +97,7 @@ func finalizeZedResponsesBody(registry *protocol.Registry, body, originalAnthrop
 		if err == nil {
 			switch provider {
 			case zedauth.ProviderAnthropic:
-				translatedRequest, err = finalizeZedAnthropicProviderRequest(translatedRequest, originalRequest, originalAnthropicRequest)
+				translatedRequest, err = finalizeZedAnthropicProviderRequest(translatedRequest, originalRequest, originalClientRequest)
 			case zedauth.ProviderGoogle:
 				translatedRequest, err = finalizeZedGoogleProviderRequest(translatedRequest, modelName)
 			}
@@ -129,6 +147,76 @@ func zedProviderProtocol(modelName string) (string, protocol.Protocol, error) {
 	default:
 		return "", "", fmt.Errorf("finalize Zed Responses request: unsupported provider %q", provider)
 	}
+}
+
+// zedClientRequestedThinking 回读原始客户端 body，判断 thinking 是客户端要的还是
+// 转换器填的。之所以必须在这一层做：转换器在客户端未给 reasoning 时会凭空填默认
+// medium，"是否显式请求"的元信息就此丢失，而 protocol/cliproxy 是上游快照、不能为
+// Zed 一个渠道改通用转换器。别"简化"掉下面的 Gemini 字段变体枚举——转换器已经消费
+// 掉了 generationConfig，只看 reasoning.effort 会把显式 Gemini 请求误判成默认值。
+// 无法判读时返回 true：保留 thinking 比误删客户端要的思考预算安全。
+func zedClientRequestedThinking(originalClientBody []byte) bool {
+	if len(originalClientBody) == 0 || !gjson.ValidBytes(originalClientBody) {
+		return true
+	}
+	root := gjson.ParseBytes(originalClientBody)
+	if jsonStringValue(root.Get("reasoning_effort")) != "" || jsonStringValue(root.Get("reasoning.effort")) != "" {
+		return true
+	}
+	thinking := root.Get("thinking")
+	if thinking.Exists() && thinking.Type != gjson.Null {
+		switch strings.ToLower(strings.TrimSpace(jsonStringValue(thinking.Get("type")))) {
+		case "", "disabled", "none":
+			// Keep checking Gemini's namespace below. An OpenAI/Anthropic request
+			// explicitly disabling thinking still returns false unless Gemini fields
+			// also carry a separate, explicit request.
+		default:
+			return true
+		}
+	}
+
+	// Gemini clients put the same intent under generationConfig. The Gemini→Codex
+	// converter consumes these fields before this function runs, so inspecting only
+	// reasoning.effort would mistake an explicit Gemini request for a converter default.
+	generationConfig := root.Get("generationConfig")
+	if !generationConfig.Exists() || !generationConfig.IsObject() {
+		return false
+	}
+	for _, path := range []string{"thinkingLevel", "thinking_level"} {
+		if value := generationConfig.Get(path); value.Exists() && value.Type != gjson.Null && strings.TrimSpace(value.String()) != "" {
+			return true
+		}
+	}
+	thinkingConfig := generationConfig.Get("thinkingConfig")
+	if !thinkingConfig.Exists() || !thinkingConfig.IsObject() {
+		return false
+	}
+	for _, path := range []string{"includeThoughts", "include_thoughts"} {
+		if includeThoughts := thinkingConfig.Get(path); includeThoughts.Exists() {
+			if includeThoughts.Type == gjson.True || strings.EqualFold(strings.TrimSpace(includeThoughts.String()), "true") {
+				return true
+			}
+		}
+	}
+	for _, path := range []string{"thinkingLevel", "thinking_level", "thinkingBudget", "thinking_budget"} {
+		if value := thinkingConfig.Get(path); value.Exists() && value.Type != gjson.Null && strings.TrimSpace(value.String()) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func zedBodyRulesPreserveThinking(rules []model.CustomBodyRule) bool {
+	for _, rule := range rules {
+		if rule.Action != model.RuleActionOverride {
+			continue
+		}
+		path := strings.TrimSpace(rule.Path)
+		if path == "reasoning" || strings.HasPrefix(path, "reasoning.") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeZedCodexInput(body []byte) []byte {
@@ -384,7 +472,7 @@ func normalizeZedOpenAIProviderRequest(body []byte, modelName string) ([]byte, e
 			body = setJSONValue(body, "reasoning.summary", "detailed")
 		}
 	}
-	requestedBudget := zedOutputBudgetBytes(body)
+	requestedBudget, _ := zedOutputBudget(body)
 	body = deleteJSONPath(body, "max_completion_tokens")
 	body = deleteJSONPath(body, "max_tokens")
 	if effort == "xhigh" && requestedBudget < 32768 {
@@ -480,7 +568,7 @@ func finalizeZedGoogleProviderRequest(body []byte, modelName string) ([]byte, er
 	return body, nil
 }
 
-func finalizeZedAnthropicProviderRequest(body, originalRequest, originalAnthropicRequest []byte) ([]byte, error) {
+func finalizeZedAnthropicProviderRequest(body, originalRequest, originalClientRequest []byte) ([]byte, error) {
 	if !isMutableJSONObject(body) {
 		return nil, errors.New("decode translated Anthropic request")
 	}
@@ -497,15 +585,56 @@ func finalizeZedAnthropicProviderRequest(body, originalRequest, originalAnthropi
 	// does not carry the Anthropic HTTP transport's stream flag.
 	body = deleteJSONPath(body, "stream")
 	body = normalizeZedAnthropicContentBlocks(body)
-	body = restoreZedAnthropicCacheControls(body, originalAnthropicRequest)
-	if zedOutputBudgetBytes(originalRequest) == 0 {
+	body = restoreZedAnthropicCacheControls(body, originalClientRequest)
+	_, explicitMaxTokens := zedOutputBudget(originalRequest)
+	if !explicitMaxTokens {
 		// The shared converter defaults to 32000, but Zed's native request and
 		// Claude Sonnet 4.5 both require the conservative 8192 default.
-		body = setJSONValue(body, "max_tokens", 8192)
+		body = setJSONValue(body, "max_tokens", zedAnthropicDefaultMaxTokens)
+	}
+	body, err := ensureZedAnthropicMaxTokensExceedsThinkingBudget(body, explicitMaxTokens)
+	if err != nil {
+		return nil, err
 	}
 	return body, nil
 }
 
+const zedAnthropicDefaultMaxTokens int64 = 8192
+
+// ensureZedAnthropicMaxTokensExceedsThinkingBudget 保证 max_tokens 在容纳 thinking
+// 预算之后仍留有可见输出预算。Anthropic 的 max_tokens 是含 thinking 的总上限，
+// 所以 max_tokens=budget+1 虽然能过上游校验，却把回答截断成 1 个 token——把响亮的
+// 400 换成沉默的空响应。medium 起的每一档都会撞线（medium 的 budget 恰好等于
+// zedAnthropicDefaultMaxTokens），因此这里按整份默认预算抬高，不做 +1。
+func ensureZedAnthropicMaxTokensExceedsThinkingBudget(body []byte, explicitMaxTokens bool) ([]byte, error) {
+	budget, ok := jsonIntegerValue(gjson.GetBytes(body, "thinking.budget_tokens"))
+	if !ok || budget <= 0 {
+		return body, nil
+	}
+	maxTokens, hasMax := jsonIntegerValue(gjson.GetBytes(body, "max_tokens"))
+	if hasMax && maxTokens > budget {
+		// 上游的硬约束只是 max_tokens > budget。已经满足就不再干预，
+		// 包括调用方刻意选择的紧预算。
+		return body, nil
+	}
+	if explicitMaxTokens {
+		// 调用方自相矛盾时直接拒绝：静默改写别人显式声明的预算比报错更糟。
+		return nil, &zedRequestValidationError{
+			message: fmt.Sprintf("max_tokens must be greater than thinking.budget_tokens (%d <= %d)", maxTokens, budget),
+		}
+	}
+	// 判据必须跟着实际加数走，否则 budget 接近上限时抬高本身就会溢出成负数。
+	if budget > math.MaxInt64-zedAnthropicDefaultMaxTokens {
+		return nil, &zedRequestValidationError{message: "thinking.budget_tokens is too large"}
+	}
+	return setJSONValue(body, "max_tokens", budget+zedAnthropicDefaultMaxTokens), nil
+}
+
+// restoreZedAnthropicCacheControls 把调用方的 cache_control 断点搬回转换后的请求。
+// originalRequest 是任意客户端协议的原始 body，不再限于 Anthropic：下面三条注入路径
+// 都要求源 body 同时具备 Anthropic 的字段名与 cache_control，OpenAI/Gemini/Codex 都
+// 不满足（Codex tools 有顶层 name，但没有 cache_control），所以非 Anthropic 客户端
+// 天然空转。改 Codex tools 形态时要重新核对这个隐式契约。
 func restoreZedAnthropicCacheControls(body, originalRequest []byte) []byte {
 	if len(originalRequest) == 0 || !gjson.ValidBytes(originalRequest) {
 		return body
@@ -639,16 +768,22 @@ func qualifyZedToolName(choice gjson.Result, name string) string {
 	return cliproxyutil.QualifyResponsesNamespaceToolName(namespace, name)
 }
 
-func zedOutputBudgetBytes(body []byte) int64 {
+// zedOutputBudget 返回调用方显式声明的输出预算。specified 为 true 表示调用方写了
+// 这个字段——哪怕类型非法——此时不能用网关默认值静默覆盖它。两个返回值必须来自
+// 同一次遍历：拆成"取值"和"判存在"两个函数会对 {"max_output_tokens":"abc"} 给出
+// 互相矛盾的答案，进而报出 max_tokens=0 这种调用方从没写过的错误消息。
+func zedOutputBudget(body []byte) (budget int64, specified bool) {
 	for _, key := range []string{"max_output_tokens", "max_completion_tokens", "max_tokens"} {
 		value := gjson.GetBytes(body, key)
-		if value.Type == gjson.Number {
-			if n, ok := jsonIntegerValue(value); ok {
-				return n
-			}
+		if !value.Exists() || value.Type == gjson.Null {
+			continue
+		}
+		specified = true
+		if n, ok := jsonIntegerValue(value); ok {
+			return n, true
 		}
 	}
-	return 0
+	return 0, specified
 }
 
 func injectZedResponsesHeaders(request *http.Request, accessToken string) {
@@ -739,12 +874,13 @@ func relayZedResponsesEvents(ctx context.Context, upstream io.ReadCloser, output
 }
 
 type zedRelayState struct {
-	transform          any
-	failed             bool
-	anthropicStarted   bool
-	anthropicStopped   bool
-	anthropicToolUse   bool
-	anthropicOpenIndex *int
+	transform           any
+	failed              bool
+	unknownStatusLogged bool
+	anthropicStarted    bool
+	anthropicStopped    bool
+	anthropicToolUse    bool
+	anthropicOpenIndex  *int
 }
 
 func writeZedResponsesEvent(
@@ -756,17 +892,28 @@ func writeZedResponsesEvent(
 	state *zedRelayState,
 ) (bool, error) {
 	var envelope struct {
-		Status string          `json:"status"`
+		Status json.RawMessage `json:"status"`
 		Event  json.RawMessage `json:"event"`
 		Type   string          `json:"type"`
 	}
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		return false, fmt.Errorf("decode Zed Responses event: %w", err)
 	}
-	if envelope.Status != "" && len(envelope.Event) == 0 && envelope.Type == "" {
-		if envelope.Status != "stream_ended" {
-			if envelope.Status == "error" || envelope.Status == "failed" {
-				return false, fmt.Errorf("zed stream ended with status %q", envelope.Status)
+	statusKind, failedCode, failedMessage := zedCompletionStatusKind(gjson.ParseBytes(envelope.Status))
+	if statusKind != "" && len(envelope.Event) == 0 && envelope.Type == "" {
+		if statusKind != "stream_ended" {
+			if statusKind == "error" || statusKind == "failed" {
+				if failedCode != "" || failedMessage != "" {
+					return false, fmt.Errorf("zed stream failed: %s: %s", failedCode, failedMessage)
+				}
+				return false, fmt.Errorf("zed stream ended with status %q", statusKind)
+			}
+			// 进行中的 status 帧继续读流。未知形态必须留痕：Zed 若新增终态而这里
+			// 静默丢弃，流就永远等不到 stream_ended，客户端只能挂到 stream_timeout。
+			// 不写 StreamDiagMsg——那是 599 的判定开关，会把正常流误升成流故障。
+			if statusKind == zedStatusInProgress && state != nil && !state.unknownStatusLogged {
+				state.unknownStatusLogged = true
+				log.Printf("[WARN] unrecognized Zed status frame relayed as in-progress: %s", bytes.TrimSpace(envelope.Status))
 			}
 			return false, nil
 		}
@@ -794,6 +941,26 @@ func writeZedResponsesEvent(
 	_, err := fmt.Fprintf(output, "event: %s\ndata: %s\n\n", eventType.Type, bytes.TrimSpace(event))
 	return false, err
 }
+
+// zedCompletionStatusKind 归一 Zed 的 status 帧。对象形态里只有 failed 是终态；
+// queued 这类进行中状态和未知形态一律归入 in_progress，由调用方留痕后继续读流——
+// 不要为进行中状态单独开分支，它们与未知形态的处置完全相同。
+func zedCompletionStatusKind(status gjson.Result) (kind, code, message string) {
+	switch {
+	case status.Type == gjson.String:
+		return status.String(), "", ""
+	case status.IsObject():
+		if failed := status.Get("failed"); failed.Exists() {
+			return "failed", jsonStringValue(failed.Get("code")), jsonStringValue(failed.Get("message"))
+		}
+		return zedStatusInProgress, "", ""
+	default:
+		return "", "", ""
+	}
+}
+
+// zedStatusInProgress 标记一个既非终态也不可识别的 status 帧。
+const zedStatusInProgress = "in_progress"
 
 func restoreZedOpenAIToolIdentities(event []byte, identities map[string]cliproxyutil.ResponsesToolIdentity) []byte {
 	if len(identities) == 0 {

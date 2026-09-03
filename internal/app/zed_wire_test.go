@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -20,6 +21,12 @@ func newZedWireTestRegistry() *protocol.Registry {
 	registry := protocol.NewRegistry()
 	builtin.Register(registry)
 	return registry
+}
+
+// finalizeZedResponsesBody 是测试用的默认参数入口。生产代码一律显式传
+// preserveReasoning，所以这个 shim 不属于 zed_wire.go。
+func finalizeZedResponsesBody(registry *protocol.Registry, body, originalClientRequest []byte) ([]byte, *zedWirePlan, error) {
+	return finalizeZedResponsesBodyWithOptions(registry, body, originalClientRequest, false)
 }
 
 func TestFinalizeZedResponsesBodyWrapsProviderRequest(t *testing.T) {
@@ -508,6 +515,134 @@ func TestFinalizeZedAnthropicProviderRequestNormalizesNativeFields(t *testing.T)
 	}
 }
 
+func TestFinalizeZedAnthropicMaxTokensExceedsThinkingBudget(t *testing.T) {
+	t.Parallel()
+	body, _, err := finalizeZedResponsesBody(
+		newZedWireTestRegistry(),
+		[]byte(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":"medium"}}`),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRequest := gjson.GetBytes(body, "provider_request")
+	budget := providerRequest.Get("thinking.budget_tokens").Int()
+	maxTokens := providerRequest.Get("max_tokens").Int()
+	if budget <= 0 {
+		t.Fatalf("thinking.budget_tokens missing: %s", providerRequest.Raw)
+	}
+	if maxTokens <= budget {
+		t.Fatalf("max_tokens=%d must be greater than thinking.budget_tokens=%d; body=%s", maxTokens, budget, providerRequest.Raw)
+	}
+	// budget+1 曾经满足 > 检查但只留 1 token 可见输出——收紧到有意义的预算。
+	if visible := maxTokens - budget; visible < 1024 {
+		t.Fatalf("visible output budget=%d is too small (max_tokens=%d budget=%d)", visible, maxTokens, budget)
+	}
+}
+
+func TestFinalizeZedAnthropicMaxTokensVisibleBudgetByEffort(t *testing.T) {
+	t.Parallel()
+	registry := newZedWireTestRegistry()
+	for _, tc := range []struct {
+		effort string
+	}{
+		{"low"},
+		{"medium"},
+		{"high"},
+		{"xhigh"},
+	} {
+		t.Run(tc.effort, func(t *testing.T) {
+			t.Parallel()
+			body, _, err := finalizeZedResponsesBody(
+				registry,
+				[]byte(fmt.Sprintf(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":%q}}`, tc.effort)),
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("effort=%s: %v", tc.effort, err)
+			}
+			pr := gjson.GetBytes(body, "provider_request")
+			budget := pr.Get("thinking.budget_tokens").Int()
+			maxTokens := pr.Get("max_tokens").Int()
+			if budget <= 0 {
+				t.Fatalf("effort=%s: thinking.budget_tokens missing: %s", tc.effort, pr.Raw)
+			}
+			if visible := maxTokens - budget; visible < 1024 {
+				t.Fatalf("effort=%s: visible output budget=%d is too small (max_tokens=%d budget=%d)", tc.effort, visible, maxTokens, budget)
+			}
+		})
+	}
+}
+
+func TestFinalizeZedAnthropicRejectsExplicitMaxTokensBelowThinkingBudget(t *testing.T) {
+	t.Parallel()
+	_, _, err := finalizeZedResponsesBody(
+		newZedWireTestRegistry(),
+		[]byte(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":"medium"},"max_output_tokens":1}`),
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "max_tokens must be greater than thinking.budget_tokens") {
+		t.Fatalf("expected explicit token budget error, got %v", err)
+	}
+}
+
+func TestFinalizeZedResponsesBodyPreservesGeminiThinking(t *testing.T) {
+	t.Parallel()
+	registry := newZedWireTestRegistry()
+	clientBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"think hard"}]}],
+		"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}
+	}`)
+	codexBody, err := registry.TranslateRequest(protocol.Gemini, protocol.Codex, "claude-haiku-4-5", clientBody, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalized, _, err := finalizeZedResponsesBody(registry, codexBody, clientBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thinking := gjson.GetBytes(finalized, "provider_request.thinking")
+	if thinking.Get("type").String() != "enabled" || thinking.Get("budget_tokens").Int() <= 0 {
+		t.Fatalf("Gemini thinking was dropped: %s", finalized)
+	}
+}
+
+func TestFinalizeZedResponsesBodyPreservesThinkingBodyRule(t *testing.T) {
+	t.Parallel()
+	finalized, _, err := finalizeZedResponsesBodyWithOptions(
+		newZedWireTestRegistry(),
+		[]byte(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":"high"}}`),
+		[]byte(`{"model":"claude-haiku-4-5","input":"hello"}`),
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thinking := gjson.GetBytes(finalized, "provider_request.thinking")
+	if thinking.Get("type").String() != "enabled" || thinking.Get("budget_tokens").Int() <= 0 {
+		t.Fatalf("body rule thinking was dropped: %s", finalized)
+	}
+}
+
+func TestFinalizeZedAnthropicDropsUnsolicitedCodexThinking(t *testing.T) {
+	t.Parallel()
+	body, _, err := finalizeZedResponsesBody(
+		newZedWireTestRegistry(),
+		[]byte(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":"medium"}}`),
+		[]byte(`{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hello"}]}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRequest := gjson.GetBytes(body, "provider_request")
+	if providerRequest.Get("thinking").Exists() {
+		t.Fatalf("unsolicited Codex thinking survived: %s", providerRequest.Raw)
+	}
+	if providerRequest.Get("max_tokens").Int() != 8192 {
+		t.Fatalf("max_tokens=%s, want 8192", providerRequest.Get("max_tokens").Raw)
+	}
+}
+
 func TestZedAnthropicWirePreservesProviderError(t *testing.T) {
 	registry := newZedWireTestRegistry()
 	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"claude-sonnet-5","input":"hello"}`), nil)
@@ -532,6 +667,67 @@ func TestZedAnthropicWirePreservesProviderError(t *testing.T) {
 	}
 	text := string(converted)
 	if !strings.Contains(text, "event: error") || !strings.Contains(text, `"type":"overloaded_error"`) || strings.Contains(text, "response.completed") {
+		t.Fatalf("converted SSE = %q", text)
+	}
+}
+
+func TestZedResponsesWireSurfacesObjectFailedStatus(t *testing.T) {
+	t.Parallel()
+	registry := newZedWireTestRegistry()
+	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"claude-haiku-4-5","input":"hello"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := strings.Join([]string{
+		`{"status":{"failed":{"code":"upstream_http_400","message":"` + "`max_tokens` must be greater than `thinking.budget_tokens`." + `","request_id":"421b2748-5b06-45d3-b2b8-c034d7e8e69b","retry_after":null}}}`,
+		"",
+	}, "\n")
+	response := &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(upstream)),
+	}
+	if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(response.Body)
+	if err == nil {
+		t.Fatal("expected failed status to surface as a stream error")
+	}
+	text := err.Error()
+	if strings.Contains(text, "cannot unmarshal") {
+		t.Fatalf("status object must decode: %v", err)
+	}
+	if !strings.Contains(text, "upstream_http_400") || !strings.Contains(text, "max_tokens") {
+		t.Fatalf("failed status error = %q", text)
+	}
+}
+
+func TestZedResponsesWireIgnoresObjectQueuedStatus(t *testing.T) {
+	t.Parallel()
+	registry := newZedWireTestRegistry()
+	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"gpt-5.6-sol","input":"hello"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := strings.Join([]string{
+		`{"status":{"queued":{"position":2}}}`,
+		`{"event":{"type":"response.output_text.delta","delta":"hello"}}`,
+		`{"status":"stream_ended"}`,
+		"",
+	}, "\n")
+	response := &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(upstream)),
+	}
+	if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if !strings.Contains(text, `"delta":"hello"`) || strings.Contains(text, "queued") {
 		t.Fatalf("converted SSE = %q", text)
 	}
 }

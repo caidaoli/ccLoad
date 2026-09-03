@@ -290,11 +290,9 @@ func (s *Server) buildProxyRequest(
 		}
 	}
 	if isZedResponsesRequest(cfg, upstreamProtocol) {
-		var originalAnthropicRequest []byte
-		if reqCtx.clientProtocol == protocol.Anthropic {
-			originalAnthropicRequest = reqCtx.originalBody
-		}
-		body, reqCtx.zedWire, err = finalizeZedResponsesBody(s.protocolRegistry, body, originalAnthropicRequest)
+		body, reqCtx.zedWire, err = finalizeZedResponsesBodyWithOptions(
+			s.protocolRegistry, body, reqCtx.originalBody, zedBodyRulesPreserveThinking(cfg.BodyRules()),
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -2783,6 +2781,16 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
+		var zedValidationErr *zedRequestValidationError
+		if errors.As(err, &zedValidationErr) {
+			return &proxyResult{
+				status:     http.StatusBadRequest,
+				body:       []byte(zedValidationErr.Error()),
+				channelID:  &cfg.ID,
+				succeeded:  false,
+				nextAction: cooldown.ActionReturnClient,
+			}, cooldown.ActionReturnClient, nil
+		}
 		var anthropicValidationErr *anthropicRequestValidationError
 		if errors.As(err, &anthropicValidationErr) {
 			return &proxyResult{

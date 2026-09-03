@@ -5957,6 +5957,100 @@ func TestBuildTestUpstreamRequestPlanKeepsThinkingSuffixAcrossCodexTransform(t *
 	}
 }
 
+func TestBuildTestUpstreamRequestPlanZedHaikuDoesNotInheritCodexThinkingBudget(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 1485, Name: "zed-haiku", AuthType: model.AuthTypeZedOAuth,
+		URLs:                  model.ChannelURLs{{URL: "https://cloud.zed.dev/completions#", Exact: true, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-haiku-4-5"}},
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model: "claude-haiku-4-5", Content: "2025 年 1 月 20 日发生了什么大事？不允许联网", ClientProtocol: util.ProtocolOpenAI,
+	}
+
+	_, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "zed-jwt", testReq, testReq.Model,
+		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	provider := gjson.GetBytes(plan.requestBody, "provider_request")
+	if gjson.GetBytes(plan.requestBody, "provider").String() != "anthropic" {
+		t.Fatalf("provider=%s body=%s", gjson.GetBytes(plan.requestBody, "provider").Raw, plan.requestBody)
+	}
+	system := provider.Get("system").Raw
+	if strings.Contains(system, "You are Codex") {
+		t.Fatalf("Zed Anthropic test inherited Codex tester instructions: %s", plan.requestBody)
+	}
+	if thinking := provider.Get("thinking"); thinking.Exists() {
+		t.Fatalf("openai client test must not inherit Codex template thinking: %s", provider.Raw)
+	}
+}
+
+func TestBuildTestUpstreamRequestPlanZedPreservesThinkingBodyRule(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 1487, Name: "zed-haiku-body-rule", AuthType: model.AuthTypeZedOAuth,
+		URLs:                  model.ChannelURLs{{URL: "https://cloud.zed.dev/completions#", Exact: true, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-haiku-4-5"}},
+		CustomRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+			Action: model.RuleActionOverride, Path: "reasoning.effort", Value: json.RawMessage(`"high"`),
+		}}},
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model: "claude-haiku-4-5", Content: "hello", ClientProtocol: util.ProtocolOpenAI,
+	}
+
+	_, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "zed-jwt", testReq, testReq.Model,
+		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	thinking := gjson.GetBytes(plan.requestBody, "provider_request.thinking")
+	if thinking.Get("type").String() != "enabled" || thinking.Get("budget_tokens").Int() <= 0 {
+		t.Fatalf("body rule thinking was dropped: %s", plan.requestBody)
+	}
+}
+
+func TestBuildTestUpstreamRequestPlanZedHaikuKeepsExplicitThinkingSuffix(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 1486, Name: "zed-haiku-suffix", AuthType: model.AuthTypeZedOAuth,
+		URLs:                  model.ChannelURLs{{URL: "https://cloud.zed.dev/completions#", Exact: true, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-haiku-4-5"}},
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model: "claude-haiku-4-5", Content: "hello", ClientProtocol: util.ProtocolOpenAI,
+	}
+
+	_, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "zed-jwt", testReq, "claude-haiku-4-5(medium)",
+		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	provider := gjson.GetBytes(plan.requestBody, "provider_request")
+	budget := provider.Get("thinking.budget_tokens").Int()
+	maxTokens := provider.Get("max_tokens").Int()
+	if provider.Get("thinking.type").String() != "enabled" || budget <= 0 {
+		t.Fatalf("explicit thinking suffix missing: %s", provider.Raw)
+	}
+	if maxTokens <= budget {
+		t.Fatalf("max_tokens=%d must be greater than thinking.budget_tokens=%d; body=%s", maxTokens, budget, provider.Raw)
+	}
+	// budget+1 曾经满足 > 检查但只留 1 token 可见输出——收紧到有意义的预算。
+	if visible := maxTokens - budget; visible < 1024 {
+		t.Fatalf("visible output budget=%d is too small (max_tokens=%d budget=%d)", visible, maxTokens, budget)
+	}
+}
+
 func TestChannelTestLogIdentityStripsThinkingSuffix(t *testing.T) {
 	t.Parallel()
 

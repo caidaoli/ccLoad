@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -23,9 +24,29 @@ func TestZedOAuthManagerCompletesNativeLogin(t *testing.T) {
 }
 
 func TestZedOAuthManagerCompletesNativeLoginWithoutSystemID(t *testing.T) {
+	isolateZedSystemIDEnvironment(t)
+	testZedOAuthManagerCompletesNativeLogin(t, "")
+}
+
+// isolateZedSystemIDEnvironment 把 Zed system_id 的所有发现来源替换成空临时目录,
+// 同时 unset CCLOAD_ZED_SYSTEM_ID。t.Setenv 无法 unset,手搓 save/restore 是必要的。
+func isolateZedSystemIDEnvironment(t *testing.T) {
+	t.Helper()
 	// Isolate system identity discovery from the developer's local Zed database.
 	t.Setenv("HOME", t.TempDir())
-	testZedOAuthManagerCompletesNativeLogin(t, "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	previousSystemID, hadSystemID := os.LookupEnv(zedauth.SystemIDEnv)
+	if err := os.Unsetenv(zedauth.SystemIDEnv); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadSystemID {
+			_ = os.Setenv(zedauth.SystemIDEnv, previousSystemID)
+		} else {
+			_ = os.Unsetenv(zedauth.SystemIDEnv)
+		}
+	})
 }
 
 func testZedOAuthManagerCompletesNativeLogin(t *testing.T, systemID string) {
