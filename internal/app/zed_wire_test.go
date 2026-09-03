@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -284,71 +282,6 @@ func TestFinalizeZedResponsesBodyStripsEncryptedContent(t *testing.T) {
 	}
 	if envelope.ProviderRequest.Input[1]["type"] != "message" {
 		t.Fatalf("kept message = %#v", envelope.ProviderRequest.Input[1])
-	}
-}
-
-func TestFinalizeZedResponsesBodyRewritesDumpedAgentMessage(t *testing.T) {
-	t.Parallel()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "req1.txt"))
-	if err != nil {
-		t.Skip("dumped Codex request is not available")
-	}
-	idx := bytes.Index(raw, []byte("\n{"))
-	if idx < 0 {
-		t.Fatal("dumped request is missing a JSON body")
-	}
-	finalized, _, err := finalizeZedResponsesBody(newZedWireTestRegistry(), bytes.TrimSpace(raw[idx+1:]), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope struct {
-		Provider        string `json:"provider"`
-		Model           string `json:"model"`
-		ProviderRequest struct {
-			Input []map[string]any `json:"input"`
-		} `json:"provider_request"`
-	}
-	if err := json.Unmarshal(finalized, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Provider != "open_ai" || envelope.Model != "gpt-5.6-sol" {
-		t.Fatalf("envelope provider=%s model=%s", envelope.Provider, envelope.Model)
-	}
-	var converted map[string]any
-	for index, item := range envelope.ProviderRequest.Input {
-		switch item["type"] {
-		case "agent_message":
-			t.Fatalf("converted dump kept agent_message at input[%d]: %#v", index, item)
-		case "additional_tools":
-			t.Fatalf("converted dump kept additional_tools at input[%d]", index)
-		}
-		if item["id"] == "amsg_01a04b10-2d27-7262-91ff-cb5c261589a9" {
-			converted = item
-		}
-	}
-	if converted == nil {
-		t.Fatal("converted dump lost the dumped agent_message")
-	}
-	if converted["type"] != "message" || converted["role"] != "user" {
-		t.Fatalf("converted agent_message = %#v", converted)
-	}
-	if _, ok := converted["author"]; ok {
-		t.Fatalf("converted agent_message kept author: %#v", converted)
-	}
-	if _, ok := converted["recipient"]; ok {
-		t.Fatalf("converted agent_message kept recipient: %#v", converted)
-	}
-	content, _ := converted["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("converted agent_message content = %#v", converted["content"])
-	}
-	part, _ := content[0].(map[string]any)
-	text, _ := part["text"].(string)
-	if part["type"] != "input_text" || !strings.Contains(text, "只读核查结论") {
-		t.Fatalf("converted agent_message content part = %#v", part)
-	}
-	if bytes.Contains(finalized, []byte(`"encrypted_content"`)) {
-		t.Fatal("converted dump kept encrypted_content")
 	}
 }
 

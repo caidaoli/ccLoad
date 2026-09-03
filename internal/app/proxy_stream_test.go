@@ -6,11 +6,230 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func readCodexMalformedSSEFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/codex_responses_malformed_sse.txt")
+	if err != nil {
+		t.Fatalf("read malformed SSE fixture: %v", err)
+	}
+	return data
+}
+
+func TestCodexSSEFramingReaderPreservesAndRepairs(t *testing.T) {
+	valid := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
+	got, err := io.ReadAll(newCodexSSEFramingReader(bytes.NewReader(valid)))
+	if err != nil || !bytes.Equal(got, valid) {
+		t.Fatalf("valid=%q err=%v", got, err)
+	}
+	malformed := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	got, err = io.ReadAll(newCodexSSEFramingReader(bytes.NewReader(malformed)))
+	if err != nil || !bytes.Contains(got, []byte("}\n\nevent: response.completed")) {
+		t.Fatalf("repaired=%q err=%v", got, err)
+	}
+}
+
+func TestCodexSSEFramingReaderEOFDoesNotAddBoundary(t *testing.T) {
+	for _, raw := range [][]byte{
+		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}"),
+		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n"),
+	} {
+		got, err := io.ReadAll(newCodexSSEFramingReader(bytes.NewReader(raw)))
+		if err != nil || !bytes.Equal(got, raw) {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	}
+}
+
+func TestCodexSSEFramingReaderWireContracts(t *testing.T) {
+	tests := []struct{ name, input, want string }{
+		{"leading blanks", "\n\nevent: response.created\ndata: {\"type\":\"response.created\"}\n\n", "\n\nevent: response.created\ndata: {\"type\":\"response.created\"}\n\n"},
+		{"BOM and leading heartbeat", "\xef\xbb\xbf \t: ping\nevent: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n", "\xef\xbb\xbf \t: ping\nevent: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"},
+		{"json field names", "event: response.created\ndata: {\"type\":\"response.created\",\"text\":\"event: data:\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n", "event: response.created\ndata: {\"type\":\"response.created\",\"text\":\"event: data:\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"},
+		{"adjacent response fields", "event: response.first\ndata: x\nevent: response.second\ndata: y\n\n", "event: response.first\ndata: x\n\nevent: response.second\ndata: y\n\n"},
+		{"data before event", "data: {\"type\":\"response.created\"}\nevent: response.created\nevent: response.completed\n", "data: {\"type\":\"response.created\"}\nevent: response.created\nevent: response.completed\n"},
+		{"multiline data", "event: response.created\ndata: {\"type\":\"response.created\"}\ndata: {}\nevent: response.completed\n", "event: response.created\ndata: {\"type\":\"response.created\"}\ndata: {}\nevent: response.completed\n"},
+		{"crlf", "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\nevent: response.completed\r\n", "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r\nevent: response.completed\r\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCodexSSEFramingReader(&oneByteReader{data: []byte(tc.input)})
+			var got bytes.Buffer
+			p := make([]byte, 3)
+			for {
+				n, err := r.Read(p)
+				got.Write(p[:n])
+				if err != nil {
+					if err != io.EOF {
+						t.Fatal(err)
+					}
+					break
+				}
+			}
+			if got.String() != tc.want {
+				t.Fatalf("got %q want %q", got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexSSEFramingReaderPreservesCRLFAfterLongLine(t *testing.T) {
+	longData := `{"type":"response.created","padding":"` + strings.Repeat("x", 64) + `"}`
+	input := "event: response.created\r\ndata: " + longData + "\r\nevent: response.completed\r\ndata: {\"type\":\"response.completed\"}\r\n\r\n"
+	got, err := io.ReadAll(newCodexSSEFramingReader(strings.NewReader(input)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBoundary := "\r\n\r\nevent: response.completed"
+	if !bytes.Contains(got, []byte(wantBoundary)) {
+		t.Fatalf("long CRLF line lost CRLF repair boundary: got %q", got)
+	}
+	if bytes.Contains(got, []byte("\n\nevent: response.completed")) {
+		t.Fatalf("long CRLF line used LF-only repair boundary: got %q", got)
+	}
+}
+
+func TestCodexSSEFramingReaderDoesNotGuessAcrossFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "comment after data",
+			input: "event: response.created\ndata: {}\n: id\nevent: response.completed\ndata: {}\n\n",
+		},
+		{
+			name:  "id after data",
+			input: "event: response.created\ndata: {}\nid: 1\nevent: response.completed\ndata: {}\n\n",
+		},
+		{
+			name:  "retry after data",
+			input: "event: response.created\ndata: {}\nretry: 1000\nevent: response.completed\ndata: {}\n\n",
+		},
+		{
+			name:  "multiple data lines",
+			input: "event: response.created\ndata: {}\ndata: {}\nevent: response.completed\ndata: {}\n\n",
+		},
+		{
+			name:  "non response event",
+			input: "event: message\ndata: {}\nevent: response.completed\ndata: {}\n\n",
+		},
+		{
+			name:  "lone carriage return",
+			input: "event: response.created\rdata: {}\revent: response.completed\rdata: {}\r",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := io.ReadAll(newCodexSSEFramingReader(strings.NewReader(tc.input)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.input {
+				t.Fatalf("got %q want unchanged input %q", got, tc.input)
+			}
+		})
+	}
+}
+
+func BenchmarkCodexSSEFramingReader(b *testing.B) {
+	const event = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+	input := []byte(strings.Repeat(event, 128))
+	b.SetBytes(int64(len(input)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		reader := newCodexSSEFramingReader(bytes.NewReader(input))
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+type oneByteReader struct{ data []byte }
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	p[0] = r.data[0]
+	r.data = r.data[1:]
+	return 1, nil
+}
+
+type countingReadCloser struct{ closes int }
+
+func (*countingReadCloser) Read([]byte) (int, error) { return 0, io.EOF }
+func (r *countingReadCloser) Close() error           { r.closes++; return nil }
+
+func TestCodexSSEFramingReaderCloseIsIdempotent(t *testing.T) {
+	src := &countingReadCloser{}
+	r := newCodexSSEFramingReader(src)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if src.closes != 1 {
+		t.Fatalf("close count=%d", src.closes)
+	}
+}
+
+var errFramingSource = errors.New("framing source failed")
+
+type dataThenErrorReader struct {
+	data []byte
+	done bool
+}
+
+func (r *dataThenErrorReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, errFramingSource
+	}
+	r.done = true
+	n := copy(p, r.data)
+	return n, errFramingSource
+}
+
+func TestCodexSSEFramingReaderDeliversDataBeforeSourceError(t *testing.T) {
+	raw := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n")
+	r := newCodexSSEFramingReader(&dataThenErrorReader{data: raw})
+	got, err := io.ReadAll(r)
+	if !errors.Is(err, errFramingSource) {
+		t.Fatalf("err=%v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestCodexSSEFramingReaderRejectsOversizedLine(t *testing.T) {
+	r := newCodexSSEFramingReader(&repeatedByteReader{remaining: maxSSEEventBytes + 1})
+	_, err := io.ReadAll(r)
+	if err == nil || !strings.Contains(err.Error(), "SSE event exceeds") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+type zeroNilReader struct{}
+
+func (*zeroNilReader) Read([]byte) (int, error) { return 0, nil }
+
+func TestCodexSSEFramingReaderZeroByteReadIsEOF(t *testing.T) {
+	got, err := io.ReadAll(newCodexSSEFramingReader(&zeroNilReader{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %q", got)
+	}
+}
 
 // errorReader 模拟返回特定错误的 Reader
 type errorReader struct {
@@ -239,6 +458,76 @@ func TestStreamTransformSSEEventsUntil_ReassemblesLongLinesAndMultipleEvents(t *
 	}
 	if got, want := recorder.Body.String(), strings.ToUpper(input); got != want {
 		t.Fatalf("translated output length=%d, want %d", len(got), len(want))
+	}
+}
+
+func TestCodexFramingReaderFeedsSSETransformDistinctEvents(t *testing.T) {
+	input := readCodexMalformedSSEFixture(t)
+	var events [][]byte
+	recorder := newRecorder()
+	err := streamTransformSSEEventsUntil(
+		context.Background(),
+		newCodexSSEFramingReader(bytes.NewReader(input)),
+		recorder,
+		func(rawEvent []byte) error {
+			events = append(events, bytes.Clone(rawEvent))
+			return nil
+		},
+		func(rawEvent []byte) ([][]byte, error) { return [][]byte{rawEvent}, nil },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+	}
+	if len(events) != 6 {
+		t.Fatalf("event count=%d, want 6", len(events))
+	}
+	for i, event := range events {
+		if !bytes.HasSuffix(event, []byte("\n\n")) {
+			t.Fatalf("event %d is not independently framed: %q", i, event)
+		}
+		if !bytes.Contains(event, []byte("event: response.")) || !bytes.Contains(event, []byte("data: {")) {
+			t.Fatalf("event %d missing Codex event/data fields: %q", i, event)
+		}
+	}
+	if got := strings.Count(recorder.Body.String(), "\n\n"); got != 6 {
+		t.Fatalf("output frame count=%d, want 6; body=%q", got, recorder.Body.String())
+	}
+}
+
+func TestStreamTransformSSEEventsUntil_DoesNotCommitEOFBlock(t *testing.T) {
+	input := []byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n")
+	var events [][]byte
+	err := streamTransformSSEEventsUntil(
+		context.Background(), bytes.NewReader(input), newRecorder(),
+		func(rawEvent []byte) error {
+			events = append(events, bytes.Clone(rawEvent))
+			return nil
+		},
+		func(rawEvent []byte) ([][]byte, error) { return [][]byte{rawEvent}, nil },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("EOF-terminated SSE block committed as %q", events)
+	}
+}
+
+func TestStreamTransformSSEEventsUntil_PreservesValidSSEBytes(t *testing.T) {
+	input := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	recorder := newRecorder()
+	err := streamTransformSSEEventsUntil(
+		context.Background(), bytes.NewReader(input), recorder, nil,
+		func(rawEvent []byte) ([][]byte, error) { return [][]byte{rawEvent}, nil },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamTransformSSEEventsUntil() error = %v", err)
+	}
+	if got := recorder.Body.Bytes(); !bytes.Equal(got, input) {
+		t.Fatalf("valid SSE bytes changed: got %q, want %q", got, input)
 	}
 }
 

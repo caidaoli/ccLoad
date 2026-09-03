@@ -89,7 +89,7 @@ func responseIsSSE(resp *http.Response, streamExpected bool) bool {
 	if resp == nil {
 		return false
 	}
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+	if responseContentTypeIsSSE(resp, false) {
 		return true
 	}
 	if !streamExpected || resp.Body == nil {
@@ -97,11 +97,100 @@ func responseIsSSE(resp *http.Response, streamExpected bool) bool {
 	}
 
 	originalBody := resp.Body
-	reader := bufio.NewReader(originalBody)
-	prefix, _ := reader.Peek(16)
-	resp.Body = readerWithCloser{Reader: reader, Closer: originalBody}
-	prefix = bytes.TrimPrefix(prefix, []byte{0xef, 0xbb, 0xbf})
-	return bytes.HasPrefix(prefix, []byte("event:")) || bytes.HasPrefix(prefix, []byte("data:"))
+	// Consume+replay (not bufio.Peek): Peek drops a 0-byte terminal error via
+	// readErr(), which would turn a probe failure into a later EOF.
+	probe := make([]byte, 0, SSEProbeSize)
+	chunk := make([]byte, 256)
+	var readErr error
+	for len(probe) < SSEProbeSize {
+		remaining := SSEProbeSize - len(probe)
+		if remaining < len(chunk) {
+			chunk = chunk[:remaining]
+		}
+		n, err := originalBody.Read(chunk)
+		if n > 0 {
+			probe = append(probe, chunk[:n]...)
+			matched, needMore := classifySSEPrefix(probe)
+			if matched || !needMore {
+				readErr = err
+				break
+			}
+		}
+		if err != nil {
+			readErr = err
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+	resp.Body = replayResponseProbe(originalBody, probe, readErr)
+	matched, _ := classifySSEPrefix(probe)
+	return matched
+}
+
+type fixedReadError struct{ err error }
+
+func (r fixedReadError) Read([]byte) (int, error) { return 0, r.err }
+
+func replayResponseProbe(original io.ReadCloser, prefix []byte, readErr error) io.ReadCloser {
+	readers := []io.Reader{bytes.NewReader(prefix)}
+	if readErr != nil {
+		readers = append(readers, fixedReadError{err: readErr})
+	} else {
+		readers = append(readers, original)
+	}
+	return readerWithCloser{Reader: io.MultiReader(readers...), Closer: original}
+}
+
+func responseContentTypeIsSSE(resp *http.Response, allowTextPlain bool) bool {
+	if resp == nil {
+		return false
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	return allowTextPlain && strings.Contains(contentType, "text/plain")
+}
+
+// classifySSEPrefix recognizes an SSE field after an optional BOM, whitespace,
+// or heartbeat comments. Complete comment lines are skipped, not treated as SSE.
+// needMore is true only while the bytes seen so far can still become SSE.
+func classifySSEPrefix(prefix []byte) (matched, needMore bool) {
+	if len(prefix) < len(utf8BOM) && bytes.HasPrefix(utf8BOM, prefix) {
+		return false, true
+	}
+	for len(prefix) > 0 {
+		prefix = normalizeSSEStreamPrefix(prefix)
+		if len(prefix) == 0 {
+			return false, true
+		}
+		line := prefix
+		complete := false
+		if idx := bytes.IndexByte(prefix, '\n'); idx >= 0 {
+			line = prefix[:idx]
+			prefix = prefix[idx+1:]
+			complete = true
+		} else {
+			prefix = nil
+		}
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if bytes.HasPrefix(line, []byte("event:")) || bytes.HasPrefix(line, []byte("data:")) {
+			return true, false
+		}
+		if bytes.HasPrefix(line, []byte(":")) {
+			if complete {
+				continue
+			}
+			return false, true
+		}
+		if !complete && (bytes.HasPrefix([]byte("event:"), line) || bytes.HasPrefix([]byte("data:"), line)) {
+			return false, true
+		}
+		return false, false
+	}
+	return false, true
 }
 
 // ============================================================================
@@ -747,6 +836,12 @@ func maybePrepareDynamicStreamTransform(reqCtx *requestContext, resp *http.Respo
 		return "", false, nil
 	}
 	resp.Header.Set("Content-Type", "text/event-stream")
+	// Repair before locating the first event. Glued Codex frames have no \n\n
+	// until a later event; wrapping first lets firstSSEEventEnd see a real
+	// boundary. Known Anthropic/OpenAI upstreams skip the filter.
+	if reqCtx.transformPlan.UpstreamProtocol == "" || reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
+		resp.Body = wrapCodexSSEBody(resp.Body)
+	}
 
 	prefix, err := readSSEPrefixThroughFirstEvent(resp.Body)
 	if len(prefix) > 0 {
@@ -956,7 +1051,28 @@ func (s *Server) handleSuccessResponse(
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
-	if reqCtx.responsesSSEUpstreamNonStream && responseIsSSE(resp, true) {
+	// The framing repair is a Codex Responses compatibility fix. Do not put a
+	// generic decorator on every SSE response: Anthropic/OpenAI SSE must remain
+	// byte-for-byte passthrough, and probing an arbitrary stream can block before
+	// the first chunk arrives.
+	isCodexResponses := reqCtx != nil && (protocol.Protocol(upstreamProtocol) == protocol.Codex ||
+		reqCtx.transformPlan.UpstreamProtocol == protocol.Codex)
+	isResponsesSSE := reqCtx != nil && reqCtx.responsesSSEUpstreamNonStream
+	isSSE := false
+	if isCodexResponses || isResponsesSSE {
+		// The OAuth Responses endpoints are SSE even when their HTTP media type is
+		// text/plain. Trust that endpoint contract instead of waiting for a body
+		// probe; this handles leading heartbeats and short streaming reads.
+		allowTextPlain := isResponsesSSE || (isCodexResponses && reqCtx.isStreaming)
+		isSSE = responseContentTypeIsSSE(resp, allowTextPlain)
+		if !isSSE && (isResponsesSSE || reqCtx.isStreaming) {
+			isSSE = responseIsSSE(resp, true)
+		}
+	}
+	if isSSE && isCodexResponses {
+		resp.Body = wrapCodexSSEBody(resp.Body)
+	}
+	if isResponsesSSE && isSSE {
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
 	if reqCtx.transformPlan.Streaming && isXAIImagesResponsesPlan(reqCtx.transformPlan) {
@@ -966,6 +1082,12 @@ func (s *Server) handleSuccessResponse(
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
 			upstreamProtocol = string(detectedProtocol)
+		}
+		if detectedProtocol == protocol.Codex && !isSSE {
+			// maybePrepareDynamicStreamTransform may have already wrapped it
+			// when UpstreamProtocol was Codex; wrapCodexSSEBody is idempotent.
+			resp.Body = wrapCodexSSEBody(resp.Body)
+			isSSE = true
 		}
 		if err != nil {
 			return &fwResult{
@@ -1424,31 +1546,33 @@ func isHTTP2StreamCloseError(err error) bool {
 func peekUntilSSEOrLimit(reader *bufio.Reader, limit int) bool {
 	for n := 1; n <= limit; n++ {
 		current, err := reader.Peek(n)
-		if looksLikeSSE(current) {
+		matched, needMore := classifySSEPrefix(current)
+		if matched {
 			return true
 		}
-		if err != nil {
+		if !needMore || err != nil {
 			return false
 		}
 	}
 	return false
 }
 
-// looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构
+// looksLikeSSE reports whether data already contains both an event: and a
+// data: line prefix. This is stricter than classifySSEPrefix (which matches
+// either field alone for incremental streaming probes) because looksLikeSSE
+// operates on a buffered text/plain body where a lone "data:" could be normal
+// JSON — requiring both fields avoids false positives in proxy_sse_parser.
 func looksLikeSSE(data []byte) bool {
-	// 同时包含 event: 与 data: 行。必须是行前缀，避免普通JSON字符串里的
-	// "event:" 文本把非流响应误判成SSE。
-	hasEvent := false
-	hasData := false
+	hasEvent, hasData := false, false
 	for len(data) > 0 {
-		line := data
+		var line []byte
 		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
 			line = data[:idx]
 			data = data[idx+1:]
 		} else {
+			line = data
 			data = nil
 		}
-
 		line = bytes.TrimLeft(line, " \t\r")
 		if bytes.HasPrefix(line, []byte("event:")) {
 			hasEvent = true
@@ -2161,9 +2285,12 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 }
 
 // responsesBodyForHTTPTransport 收尾 HTTP 传输边界的 Codex Responses 上游 body。
-// 注意 HTTP/WS 不对称契约：status 剥离只在这里做——原生 WS 上游接受 status（WS
-// transcript 从头就不带 status），而官方 Codex HTTP 端点拒绝它。别把剥离挪进
-// prepareCodexResponsesBodyForUpstream，那会扩散到需要保留 status 的 WS 路径。
+// status 剥离不是 HTTP 独有契约：官方 Codex 后端在 HTTP 与原生 WebSocket 上是同一套
+// 校验，WS 侧的对应剥离在 doCodexWebsocketRequest 里。别把它挪进
+// prepareCodexResponsesBodyForUpstream——那里同时服务 WS transcript 的装配阶段，
+// 剥离必须留在两条传输的发送边界上。反过来 prepareCodexOAuthHTTPBody 才是真正的
+// HTTP 专有处理：它删掉 previous_response_id/stream_options，WS 增量请求依赖这两个
+// 字段续接，所以本函数整体不可被 WS 路径复用。
 func responsesBodyForHTTPTransport(cfg *model.Config, plan protocol.TransformPlan, body []byte) []byte {
 	body = prepareCodexOAuthHTTPBody(cfg, plan.UpstreamProtocol, plan.UpstreamPath, body)
 	if plan.ClientProtocol != protocol.Codex || plan.UpstreamProtocol != protocol.Codex ||

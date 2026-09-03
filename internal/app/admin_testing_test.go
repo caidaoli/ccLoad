@@ -1190,9 +1190,9 @@ func TestHandleChannelTest(t *testing.T) {
 	}
 }
 
-func TestChannelTestCodexStopsAfterResponseCompleted(t *testing.T) {
-	streamBody := []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\"}}\n\n" +
-		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+func TestChannelTestCodexRepairsMalformedFramesAndStopsAfterResponseCompleted(t *testing.T) {
+	streamBody := []byte("\xef\xbb\xbf : ping\nevent: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\"}}\n" +
+		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n")
 
 	tests := []struct {
@@ -2858,8 +2858,8 @@ func TestHandleChannelTest_CodexOAuthTransformsOpenAIWithoutSSEContentType(t *te
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
 		}
-		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
-		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"translated answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"translated answer\"}\n")
 		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 	}))
 
@@ -5533,8 +5533,8 @@ func TestHandleChannelImageGeneration_XAIOAuthGrok46UsesResponsesImageTool(t *te
 			t.Errorf("decode xAI Responses request: %v", err)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"created_at":1770000000,"output":[],"tool_usage":{"image_gen":{"total_tokens":9}}}}`+"\n\n")
-		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"aW1hZ2U=","output_format":"png"}}`+"\n\n")
+		_, _ = io.WriteString(w, `event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"created_at":1770000000,"output":[],"tool_usage":{"image_gen":{"total_tokens":9}}}}`+"\n")
+		_, _ = io.WriteString(w, `event: response.output_item.done`+"\n"+`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"aW1hZ2U=","output_format":"png"}}`+"\n\n")
 	}))
 	defer upstream.Close()
 

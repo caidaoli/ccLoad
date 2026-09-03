@@ -1509,10 +1509,14 @@ func (s *Server) doCodexWebsocketRequest(
 	baseURL string,
 ) (*http.Response, *http.Request, []byte, error) {
 	if replayReq != nil {
-		replayBody = normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header)
+		replayBody = stripResponsesInputItemStatus(
+			normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header),
+		)
 	}
 	if incrementalReq != nil {
-		incrementalBody = normalizeCodexWebsocketParallelToolCalls(incrementalBody, incrementalReq.Header)
+		incrementalBody = stripResponsesInputItemStatus(
+			normalizeCodexWebsocketParallelToolCalls(incrementalBody, incrementalReq.Header),
+		)
 	}
 	release, err := s.reserveUpstreamRequest(cfg)
 	if err != nil {

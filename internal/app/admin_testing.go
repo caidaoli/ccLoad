@@ -1604,6 +1604,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")
 	isEventStream := responseIsSSE(resp, requestPlan.upstreamStreaming)
+	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isEventStream)
 
 	// 通用结果初始化
 	result = map[string]any{

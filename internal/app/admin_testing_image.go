@@ -807,6 +807,7 @@ func (s *Server) testXAIResponsesImageGeneration(
 		}
 		return annotateImageGenerationResult(result, actualModel)
 	}
+	wrapCodexSSEResponseBody(resp, protocol.Codex, true)
 	collector := newCodexNonStreamCollector(newSSEUsageParser(string(protocol.Codex)))
 	streamErr := streamTransformSSEEventsUntil(ctx, resp.Body, discardHTTPResponseWriter{}, collector.consume,
 		func([]byte) ([][]byte, error) { return nil, nil }, collector.doneForXAIImages)
