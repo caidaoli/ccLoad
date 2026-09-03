@@ -7,12 +7,13 @@ function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadSettingsPage(t, settings, inputValues) {
+async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } = {}) {
   const clickListeners = [];
   const bodyListeners = new Map();
   const multimodalModalListeners = new Map();
   const multimodalModalClasses = new Set();
   let multimodalRows = [];
+  let renderedMultimodalHTML = '';
   const saveButton = {
     dataset: {},
     addEventListener(type, listener) {
@@ -67,6 +68,21 @@ async function loadSettingsPage(t, settings, inputValues) {
       this.attributes.delete(name);
     }
   };
+  const multimodalAddButton = {
+    dataset: { action: 'add-multimodal-fallback-row' },
+    closest(selector) {
+      return selector === '[data-action]' ? this : null;
+    }
+  };
+  const multimodalFallbackButton = {
+    dataset: {},
+    addEventListener(type, listener) {
+      if (type === 'click') this.clickListener = listener;
+    },
+    click() {
+      this.clickListener?.({ currentTarget: this });
+    }
+  };
   const multimodalModal = {
     dataset: {},
     attributes: new Map(),
@@ -93,6 +109,12 @@ async function loadSettingsPage(t, settings, inputValues) {
     }
   };
   const multimodalRowsContainer = {
+    get innerHTML() {
+      return renderedMultimodalHTML;
+    },
+    set innerHTML(value) {
+      renderedMultimodalHTML = String(value);
+    },
     querySelectorAll(selector) {
       if (selector !== '.multimodal-fallback-row') return [];
       return multimodalRows.map(({ from, to }) => ({
@@ -111,6 +133,7 @@ async function loadSettingsPage(t, settings, inputValues) {
   const elements = new Map([
     ['save-all-btn', saveButton],
     ['settings-tbody', settingsBody],
+    ['model-multimodal-fallback-btn', multimodalFallbackButton],
     ['multimodalFallbackModal', multimodalModal],
     ['multimodalFallbackRows', multimodalRowsContainer],
     ['multimodalFallbackError', multimodalError]
@@ -228,6 +251,9 @@ async function loadSettingsPage(t, settings, inputValues) {
       }
       return nextUpdateResult;
     }
+    if (url === '/admin/channels/filter-options?status=enabled') {
+      return { models: filterModels };
+    }
     if (nextSaveError) {
       const error = nextSaveError;
       nextSaveError = null;
@@ -278,8 +304,19 @@ async function loadSettingsPage(t, settings, inputValues) {
       nextUpdateError = new Error(message);
     },
     multimodalApplyButton,
+    multimodalRowsHTML: () => renderedMultimodalHTML,
     multimodalError,
     multimodalModal,
+    async openMultimodal() {
+      multimodalFallbackButton.click();
+      await flushAsyncWork();
+    },
+    clickAddMultimodal() {
+      multimodalModalListeners.get('click')?.({ target: multimodalAddButton });
+    },
+    setMultimodalRows(rows) {
+      multimodalRows = rows;
+    },
     applyMultimodal(rows) {
       multimodalRows = rows;
       multimodalModal.classList.add('show');
@@ -558,6 +595,31 @@ test('多模态回退映射在对话框内直接保存，无需再点保存所�
   page.saveButton.click();
   await flushAsyncWork();
   assert.equal(saveRequests(page).length, 1);
+});
+
+test('添加映射时保留当前行尚未保存的下拉选择', async (t) => {
+  const page = await loadSettingsPage(t, [{
+    key: 'model_multimodal_fallback',
+    value: '{}',
+    value_type: 'json',
+    description: ''
+  }], {
+    model_multimodal_fallback: '{}'
+  }, {
+    filterModels: ['MiniMax-M2.1', 'glm-5.2-fast-preview', 'qwen3.8-max-0902']
+  });
+
+  await page.openMultimodal();
+  page.clickAddMultimodal();
+  page.setMultimodalRows([{
+    from: 'glm-5.2-fast-preview',
+    to: 'qwen3.8-max-0902'
+  }]);
+  page.clickAddMultimodal();
+
+  const html = page.multimodalRowsHTML();
+  assert.match(html, /value="glm-5\.2-fast-preview" selected/);
+  assert.match(html, /value="qwen3\.8-max-0902" selected/);
 });
 
 test('多模态回退映射保存失败时保留对话框和原持久化值', async (t) => {

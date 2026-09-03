@@ -616,6 +616,10 @@ function closeMultimodalFallbackModal() {
 }
 
 function addMultimodalFallbackRow() {
+  // 现有行的选择值由 DOM 持有；追加后会全量重绘，先把用户编辑同步回草稿，
+  // 否则重绘会用打开弹窗时的旧值覆盖现有行。
+  const container = document.getElementById('multimodalFallbackRows');
+  if (container) multimodalFallbackDraft = collectMultimodalFallbackDraft();
   if (multimodalFallbackDraft.length >= maxMultimodalFallbackMappings) {
     showMultimodalFallbackError(t('settings.multimodalFallback.errorLimit', { max: maxMultimodalFallbackMappings }));
     return;
@@ -625,6 +629,8 @@ function addMultimodalFallbackRow() {
 }
 
 function removeMultimodalFallbackRow(row) {
+  const container = document.getElementById('multimodalFallbackRows');
+  if (container) multimodalFallbackDraft = collectMultimodalFallbackDraft();
   const index = Array.from(row.parentNode?.children || []).indexOf(row);
   if (index >= 0) multimodalFallbackDraft.splice(index, 1);
   row.remove();
