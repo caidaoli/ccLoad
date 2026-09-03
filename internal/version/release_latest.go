@@ -2,18 +2,20 @@ package version
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 const (
 	githubLatestReleaseURL      = "https://github.com/caidaoli/ccLoad/releases/latest"
-	githubReleasesAPIURL        = "https://api.github.com/repos/caidaoli/ccLoad/releases?per_page=100"
+	githubReleasesFeedURL       = "https://github.com/caidaoli/ccLoad/releases.atom"
 	githubDownloadBaseURL       = "https://github.com/caidaoli/ccLoad/releases/download"
 	monlorLatestReleaseURL      = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest"
 	monlorDownloadBaseURL       = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/download"
@@ -84,7 +86,7 @@ func releaseSources(customBaseURL string) ([]ReleaseSource, error) {
 			{
 				Name:            "github.com",
 				LatestURL:       githubLatestReleaseURL,
-				ReleasesURL:     githubReleasesAPIURL,
+				ReleasesURL:     githubReleasesFeedURL,
 				DownloadBaseURL: githubDownloadBaseURL,
 			},
 		}, nil
@@ -102,7 +104,7 @@ func releaseSources(customBaseURL string) ([]ReleaseSource, error) {
 	return []ReleaseSource{{
 		Name:            "custom",
 		LatestURL:       repositoryBaseURL + "/releases/latest",
-		ReleasesURL:     githubReleasesAPIURL,
+		ReleasesURL:     githubReleasesFeedURL,
 		DownloadBaseURL: repositoryBaseURL + "/releases/download",
 	}}, nil
 }
@@ -144,12 +146,18 @@ func resolveLatestRelease(ctx context.Context, client *http.Client, sources []Re
 	return GitHubRelease{}, fmt.Errorf("resolve %s release: %w", channel, errors.Join(sourceErrors...))
 }
 
-type publishedRelease struct {
-	TagName     string `json:"tag_name"`
-	HTMLURL     string `json:"html_url"`
-	Draft       bool   `json:"draft"`
-	Prerelease  bool   `json:"prerelease"`
-	PublishedAt string `json:"published_at"`
+type releasesFeed struct {
+	XMLName xml.Name            `xml:"feed"`
+	Entries []releasesFeedEntry `xml:"entry"`
+}
+
+type releasesFeedEntry struct {
+	Links []releasesFeedLink `xml:"link"`
+}
+
+type releasesFeedLink struct {
+	Rel  string `xml:"rel,attr"`
+	Href string `xml:"href,attr"`
 }
 
 func fetchPreviewRelease(ctx context.Context, client *http.Client, releasesURL string) (GitHubRelease, error) {
@@ -164,7 +172,7 @@ func fetchPreviewRelease(ctx context.Context, client *http.Client, releasesURL s
 	if err != nil {
 		return GitHubRelease{}, fmt.Errorf("create releases request: %w", err)
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Accept", "application/atom+xml")
 	req.Header.Set("User-Agent", OutboundUserAgent())
 
 	resp, err := client.Do(req)
@@ -184,32 +192,40 @@ func fetchPreviewRelease(ctx context.Context, client *http.Client, releasesURL s
 		return GitHubRelease{}, fmt.Errorf("releases response exceeds %d bytes", releaseListMaxBodyBytes)
 	}
 
-	var releases []publishedRelease
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	if err := decoder.Decode(&releases); err != nil {
-		return GitHubRelease{}, fmt.Errorf("decode releases response: %w", err)
+	var feed releasesFeed
+	decoder := xml.NewDecoder(strings.NewReader(string(data)))
+	if err := decoder.Decode(&feed); err != nil {
+		return GitHubRelease{}, fmt.Errorf("decode releases feed: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return GitHubRelease{}, fmt.Errorf("decode releases response: multiple JSON values")
+			return GitHubRelease{}, fmt.Errorf("decode releases feed: multiple XML documents")
 		}
-		return GitHubRelease{}, fmt.Errorf("decode releases response trailing data: %w", err)
+		return GitHubRelease{}, fmt.Errorf("decode releases feed trailing data: %w", err)
 	}
 
 	var selected GitHubRelease
-	for _, release := range releases {
-		if release.Draft || strings.TrimSpace(release.PublishedAt) == "" {
+	for _, entry := range feed.Entries {
+		var releaseURL string
+		for _, link := range entry.Links {
+			if link.Rel == "alternate" {
+				releaseURL = strings.TrimSpace(link.Href)
+				break
+			}
+		}
+		tag, err := releaseTagFromURL(releaseURL)
+		if err != nil {
 			continue
 		}
-		tag := strings.TrimSpace(release.TagName)
-		if _, ok := normalizeSemanticVersion(tag); !ok {
+		normalized, ok := normalizeSemanticVersion(tag)
+		if !ok {
 			continue
 		}
 		if selected.TagName == "" || compareSemanticVersions(tag, selected.TagName) > 0 {
 			selected = GitHubRelease{
 				TagName:    tag,
-				HTMLURL:    strings.TrimSpace(release.HTMLURL),
-				Prerelease: release.Prerelease,
+				HTMLURL:    releaseURL,
+				Prerelease: semver.Prerelease(normalized) != "",
 			}
 		}
 	}

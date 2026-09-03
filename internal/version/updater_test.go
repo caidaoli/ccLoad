@@ -98,10 +98,10 @@ func TestUpdateManagerReleaseSourceConfiguration(t *testing.T) {
 		})
 	})
 
-	t.Run("preview reads published GitHub releases", func(t *testing.T) {
+	t.Run("preview reads the GitHub releases feed", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
 		assertUpdateManagerReleaseRequests(t, ReleaseChannelPreview, []string{
-			"https://api.github.com/repos/caidaoli/ccLoad/releases?per_page=100",
+			"https://github.com/caidaoli/ccLoad/releases.atom",
 		})
 	})
 
@@ -311,16 +311,15 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/releases":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `[
-  {"tag_name":"not-semver","html_url":"https://example.test/releases/tag/not-semver","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
-  {"tag_name":"v9.0.0-beta.1","html_url":"https://example.test/releases/tag/v9.0.0-beta.1","draft":true,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
-  {"tag_name":"v8.0.0-beta.1","html_url":"https://example.test/releases/tag/v8.0.0-beta.1","draft":false,"prerelease":true,"published_at":null},
-  {"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/releases/tag/v1.1.0-beta.1","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
-  {"tag_name":"v1.1.0-beta.2","html_url":"https://example.test/releases/tag/v1.1.0-beta.2","draft":false,"prerelease":true,"published_at":"2026-08-07T02:00:00Z"},
-  {"tag_name":"v1.0.5","html_url":"https://example.test/releases/tag/v1.0.5","draft":false,"prerelease":false,"published_at":"2026-08-07T03:00:00Z"}
-]`)
+		case "/releases.atom":
+			w.Header().Set("Content-Type", "application/atom+xml")
+			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><link rel="alternate" href="https://example.test/releases/tag/not-semver"/><title>Release not-semver</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.1"/><title>Release v1.1.0-beta.1</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.2"/><title>Release v1.1.0-beta.2</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.0.5"/><title>Release v1.0.5</title></entry>
+</feed>`)
 		case "/download/v1.1.0-beta.2/checksums.txt":
 			_, _ = fmt.Fprint(w, checksum)
 		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
@@ -342,7 +341,7 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 		ApplyUpdates: true,
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
-			ReleasesURL:     server.URL + "/releases",
+			ReleasesURL:     server.URL + "/releases.atom",
 			DownloadBaseURL: server.URL + "/download",
 		}},
 		ExecutablePath: exePath,
@@ -438,9 +437,12 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/releases":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `[{"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/releases/tag/v1.1.0-beta.1","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"}]`)
+		case "/releases.atom":
+			w.Header().Set("Content-Type", "application/atom+xml")
+			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.1"/><title>Release v1.1.0-beta.1</title></entry>
+</feed>`)
 		case "/broken/download/v1.1.0-beta.1/checksums.txt":
 			http.Error(w, "broken mirror", http.StatusBadRequest)
 		case "/download/v1.1.0-beta.1/checksums.txt":
@@ -474,7 +476,7 @@ func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
 		ReleaseSources: []ReleaseSource{
 			{
 				Name:            "broken",
-				ReleasesURL:     server.URL + "/releases",
+				ReleasesURL:     server.URL + "/releases.atom",
 				DownloadBaseURL: server.URL + "/broken/download",
 			},
 			{
@@ -659,6 +661,21 @@ func assertUpdateManagerReleaseRequests(t *testing.T, channel ReleaseChannel, wa
 	case unexpected := <-requests:
 		t.Fatalf("unexpected extra release request %q", unexpected)
 	default:
+	}
+}
+
+func TestFetchPreviewReleaseRejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(strings.Repeat("a", releaseListMaxBodyBytes+1)))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := fetchPreviewRelease(context.Background(), server.Client(), server.URL)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d bytes", releaseListMaxBodyBytes)) {
+		t.Fatalf("fetchPreviewRelease() error = %v", err)
 	}
 }
 
