@@ -34,6 +34,7 @@ const (
 
 // 导入凭证和模型获取必须共享这一份 Codex 模型目录，并按订阅计划过滤。
 var codexOAuthDefaultModels = []string{
+	"gpt-6-astra",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -48,6 +49,7 @@ var codexOAuthDefaultModels = []string{
 
 var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
 	"free": {
+		"gpt-6-astra":         {},
 		"gpt-5.6-sol":         {},
 		"gpt-5.4":             {},
 		"gpt-5.3-codex-spark": {},

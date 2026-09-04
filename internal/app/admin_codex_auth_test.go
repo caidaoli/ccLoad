@@ -3022,6 +3022,7 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		"gpt-5.6-luna",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
+		"gpt-6-astra",
 		"gpt-image-1.5",
 		"gpt-image-2",
 	}
@@ -3365,7 +3366,8 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	if err != nil || !wasCreated {
 		t.Fatalf("plus import = (%#v, %v, %v)", created, wasCreated, err)
 	}
-	if !created.SupportsModel("gpt-5.6-sol") || !created.SupportsModel("gpt-5.4") || !created.SupportsModel("gpt-5.3-codex-spark") {
+	if !created.SupportsModel("gpt-6-astra") || !created.SupportsModel("gpt-5.6-sol") ||
+		!created.SupportsModel("gpt-5.4") || !created.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("plus channel models = %v", created.GetModels())
 	}
 
@@ -3389,17 +3391,20 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	if got := updated.GetModels(); !slices.Equal(got, want) {
 		t.Fatalf("free channel models = %v, want %v", got, want)
 	}
+	if updated.SupportsModel("gpt-6-astra") {
+		t.Fatalf("free channel unexpectedly supports gpt-6-astra: %v", updated.GetModels())
+	}
 }
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
 		"codex-auto-review", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
 		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
-		"gpt-image-1.5", "gpt-image-2",
+		"gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
 	}
 	teamModels := []string{
 		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
-		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-image-1.5", "gpt-image-2",
+		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
 	}
 	freeModels := []string{
 		"codex-auto-review", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
