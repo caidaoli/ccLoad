@@ -79,6 +79,32 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_Fable51(t *testing.T) {
+	breakdown := CalculateStandardCostBreakdown(
+		"claude-fable-5-1", "",
+		1_000, 2_000, 4_000, 500, 250,
+	)
+	for _, test := range []struct {
+		name      string
+		component CostComponent
+		pricePerM float64
+	}{
+		{name: "input", component: breakdown.Input, pricePerM: 10.00},
+		{name: "output", component: breakdown.Output, pricePerM: 50.00},
+		{name: "cache read", component: breakdown.CacheRead, pricePerM: 0.25},
+		{name: "cache write", component: breakdown.CacheWrite, pricePerM: 15.00},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !floatEquals(test.component.PricePerMillion, test.pricePerM, 1e-12) {
+				t.Fatalf("price_per_million=%v, want %v", test.component.PricePerMillion, test.pricePerM)
+			}
+		})
+	}
+	if !floatEquals(breakdown.Total, 0.12225, 1e-12) {
+		t.Fatalf("total=%v, want 0.12225", breakdown.Total)
+	}
+}
+
 func TestCalculateCost_Opus41(t *testing.T) {
 	// 场景：Claude Opus 4.1高端请求
 	cost := CalculateCostDetailed("claude-opus-4-1-20250805", 1000, 2000, 0, 0, 0)

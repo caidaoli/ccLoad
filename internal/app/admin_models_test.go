@@ -752,8 +752,10 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models":{
 			"claude-opus-4-6-thinking":{},
 			"claude-sonnet-4-6":{},
+			"gemini-3.8-flash":{},
 			"gemini-3.8-flash-high":{},
 			"gemini-3.8-flash-medium":{},
+			"gemini-3.7-flash":{},
 			"gemini-3.7-flash-high":{},
 			"gemini-3.6-flash-high":{},
 			"gemini-3-flash":{},
@@ -815,7 +817,9 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		{Model: "gemini-3.5-flash-extra-low", RedirectModel: "gemini-3.5-flash-extra-low"},
 		{Model: "gemini-3.5-flash-low", RedirectModel: "gemini-3.5-flash-low"},
 		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
+		{Model: "gemini-3.7-flash", RedirectModel: "gemini-3.7-flash"},
 		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},
+		{Model: "gemini-3.8-flash", RedirectModel: "gemini-3.8-flash"},
 		{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"},
 		{Model: "gemini-3.8-flash-medium", RedirectModel: "gemini-3.8-flash-medium"},
 		{Model: "gemini-pro-agent", RedirectModel: "gemini-pro-agent"},
@@ -850,6 +854,39 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
 		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
 	}
+}
+
+func TestAdminModels_HandleFetchModels_AnthropicOAuthIncludesFable51(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "Anthropic models", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: "deliberately-not-json",
+		URLs:         model.ChannelURLs{{URL: "https://api.anthropic.com", Protocols: []string{"anthropic"}}},
+		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if !resp.Success || resp.Data.Protocol != "anthropic" || resp.Data.Source != "predefined" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	for _, entry := range resp.Data.Models {
+		if entry.Model == "claude-fable-5-1" && entry.RedirectModel == "claude-fable-5-1" {
+			return
+		}
+	}
+	t.Fatalf("claude-fable-5-1 missing from fetched models: %#v", resp.Data.Models)
 }
 
 func TestAdminModels_HandleFetchModels_AntigravityCapacityDoesNotCooldownURLs(t *testing.T) {

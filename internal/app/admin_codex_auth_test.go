@@ -1218,7 +1218,9 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	}
 	wantURLs := []string{antigravityDailyBaseURL}
 	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
+		!channel.SupportsModel("gemini-3.7-flash") ||
 		!channel.SupportsModel("gemini-3.7-flash-high") ||
+		!channel.SupportsModel("gemini-3.8-flash") ||
 		!channel.SupportsModel("gemini-3.8-flash-high") ||
 		!channel.SupportsModel("gemini-3.8-flash-medium") ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
@@ -6486,7 +6488,8 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 				t.Fatalf("status=%+v exchanged state=%q", status, exchangedState)
 			}
 			channel, getErr := store.GetConfig(context.Background(), status.ChannelID)
-			if getErr != nil || !channel.UsesAnthropicOAuth() || len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
+			if getErr != nil || !channel.UsesAnthropicOAuth() || !channel.SupportsModel("claude-fable-5-1") ||
+				len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
 				t.Fatalf("created channel=%+v err=%v", channel, getErr)
 			}
 			break

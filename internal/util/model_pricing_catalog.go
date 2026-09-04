@@ -148,13 +148,16 @@ var basePricing = map[string]ModelPricing{
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
 	},
-	"claude-haiku-4-5":  {InputPrice: 1.00, OutputPrice: 5.00},
-	"claude-opus-4-1":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-0":   {InputPrice: 15.00, OutputPrice: 75.00},
-	"claude-opus-4-6":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
-	"claude-opus-4-7":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
-	"claude-opus-4-8":   {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
-	"claude-opus-5":     {InputPrice: 5.00, OutputPrice: 25.00},  // 全1M窗口统一价格
+	"claude-haiku-4-5": {InputPrice: 1.00, OutputPrice: 5.00},
+	"claude-opus-4-1":  {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-0":  {InputPrice: 15.00, OutputPrice: 75.00},
+	"claude-opus-4-6":  {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
+	"claude-opus-4-7":  {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
+	"claude-opus-4-8":  {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
+	"claude-opus-5":    {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
+	"claude-fable-5-1": {
+		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 0.25, HasCacheReadPrice: true,
+	},
 	"claude-fable-5":    {InputPrice: 10.00, OutputPrice: 50.00}, // claude-opus-4-8 两倍
 	"claude-opus-4-5":   {InputPrice: 5.00, OutputPrice: 25.00},
 	"claude-3-7-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
