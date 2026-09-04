@@ -1800,7 +1800,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.table.actions': '操作',
   'channels.status.channelCooldown': '渠道冷却 · {time}',
   'channels.status.keyCooldowns': 'Key冷却：{count} · {time}',
-  'channels.status.modelCooldowns': '模型冷却：{count} · {time}',
+  'channels.status.modelCooldowns': '{count}模型冷却 {time}',
   'channels.status.protocolProbeRetries': '协议待重探：{count} · {time}',
   'channels.status.secondsUntilRecovery': '{count}秒后恢复',
   'channels.status.minutesUntilRecovery': '{count}分钟后恢复',

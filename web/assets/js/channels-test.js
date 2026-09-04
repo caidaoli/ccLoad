@@ -38,6 +38,7 @@ async function testChannel(id, name, initialModel = '') {
   }
 
   const keys = apiKeys.map(k => k.api_key || k);
+  const keyNotes = apiKeys.map(k => typeof k === 'object' ? String(k.note || '').trim() : '');
   const keySelect = document.getElementById('testKeySelect');
   const keySelectGroup = document.getElementById('testKeySelectGroup');
   const batchTestBtn = document.getElementById('batchTestBtn');
@@ -51,7 +52,8 @@ async function testChannel(id, name, initialModel = '') {
     for (let i = 0; i < maxKeys; i++) {
       const option = document.createElement('option');
       option.value = i;
-      option.textContent = `Key ${i + 1}: ${maskKey(keys[i])}`;
+      const label = keyNotes[i] ? `Key ${i + 1}: ${maskKey(keys[i])} (${keyNotes[i]})` : `Key ${i + 1}: ${maskKey(keys[i])}`;
+      option.textContent = label;
       keySelect.appendChild(option);
     }
 
