@@ -195,8 +195,9 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	// 写完即被抹掉的死操作。
 	originalSystem := anthropicSystemText(gjson.GetBytes(body, "system"))
 	firstUserText := anthropicFirstUserText(gjson.GetBytes(body, "messages"))
+	clientVersion := anthropicClientVersion(headers)
 	body = setJSONRaw(body, "system", "["+strings.Join([]string{
-		anthropicTextBlockRaw(anthropicBillingHeader(firstUserText), ""),
+		anthropicTextBlockRaw(anthropicBillingHeader(firstUserText, clientVersion), ""),
 		anthropicTextBlockRaw(anthropicClaudeCodeIdentityPrompt, ""),
 		anthropicTextBlockRaw(anthropicClaudeCodePrompt, anthropicCloakCacheControl(cloakCacheTTL)),
 	}, ",")+"]")
@@ -1130,12 +1131,25 @@ func anthropicFirstUserText(messages gjson.Result) string {
 	return ""
 }
 
-func anthropicBillingHeader(firstUserText string) string {
+func anthropicBillingHeader(firstUserText, clientVersion string) string {
 	padded := []byte(firstUserText + strings.Repeat("0", 21))
 	selected := []byte{padded[4], padded[7], padded[20]}
-	digest := sha256.Sum256(append([]byte(anthropicBillingSalt), append(selected, []byte(anthropicCLIVersion)...)...))
+	digest := sha256.Sum256(append([]byte(anthropicBillingSalt), append(selected, []byte(clientVersion)...)...))
 	fingerprint := hex.EncodeToString(digest[:])[:3]
-	return "x-anthropic-billing-header: cc_version=" + anthropicCLIVersion + "." + fingerprint + "; cc_entrypoint=cli;"
+	return "x-anthropic-billing-header: cc_version=" + clientVersion + "." + fingerprint + "; cc_entrypoint=cli;"
+}
+
+// anthropicClientVersion keeps the caller's real Claude Code version when its
+// User-Agent has the documented CLI shape. Other clients receive the built-in
+// fallback so arbitrary User-Agent text cannot leak into the billing block.
+func anthropicClientVersion(headers http.Header) string {
+	matches := anthropicClaudeCLIUserAgentPattern.FindStringSubmatch(
+		strings.TrimSpace(anthropicHeaderValue(headers, "User-Agent")),
+	)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return anthropicCLIVersion
 }
 
 func injectAnthropicOAuthHeaders(
@@ -1158,7 +1172,10 @@ func injectAnthropicOAuthHeaders(
 		delete(req.Header, name)
 	}
 	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
-	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, "", incoming))
+	applyAnthropicClaudeCodeHeaders(
+		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, "", incoming),
+		anthropicClientVersion(incoming),
+	)
 }
 
 // injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头。
@@ -1185,6 +1202,7 @@ func injectAnthropicAPIKeyHeaders(
 	applyAnthropicAPIKeyAuth(req, apiKey)
 	applyAnthropicClaudeCodeHeaders(
 		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, apiKey, incoming),
+		anthropicClientVersion(incoming),
 	)
 }
 
@@ -1299,10 +1317,10 @@ func anthropicUsesLegacySystemReminder(modelName string) bool {
 	}
 }
 
-func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID string) {
+func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, clientVersion string) {
 	setRawHeader(req.Header, "Accept", "application/json")
 	setRawHeader(req.Header, "Content-Type", "application/json")
-	setRawHeader(req.Header, "User-Agent", "claude-cli/"+anthropicCLIVersion+" (external, cli)")
+	setRawHeader(req.Header, "User-Agent", "claude-cli/"+clientVersion+" (external, cli)")
 	setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
 	setRawHeader(req.Header, "X-Stainless-Arch", anthropicStainlessArch())
 	setRawHeader(req.Header, "X-Stainless-Lang", "js")

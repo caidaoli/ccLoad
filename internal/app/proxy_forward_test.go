@@ -2337,6 +2337,35 @@ func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
 	}
 }
 
+func TestAnthropicClaudeCodeWireUsesIncomingClientVersion(t *testing.T) {
+	t.Parallel()
+	const clientVersion = "9.9.9"
+	headers := http.Header{
+		"User-Agent": {"claude-cli/" + clientVersion + " (external, cli)"},
+	}
+	cfg := &model.Config{Name: "anthropic-api-key"}
+	body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":"hello"}]
+	}`), cfg, "sk-ant-key", headers, anthropicOfficialTestURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); !strings.Contains(got, "cc_version="+clientVersion+".") {
+		t.Fatalf("billing version = %q", got)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injectAnthropicAPIKeyHeaders(req, cfg, "sk-ant-key", body, headers)
+	if got, want := headerValueFold(req.Header, "User-Agent"),
+		"claude-cli/"+clientVersion+" (external, cli)"; got != want {
+		t.Fatalf("User-Agent = %q, want %q", got, want)
+	}
+}
+
 func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	credential := &anthropicauth.Credential{
 		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",

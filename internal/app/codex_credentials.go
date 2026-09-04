@@ -844,9 +844,13 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("Connection", "Keep-Alive")
-	req.Header.Set("User-Agent", codexUserAgent)
+	clientIdentityComplete := isCodexMultiAgentClient(req.Header.Get("User-Agent")) &&
+		strings.TrimSpace(req.Header.Get("Version")) != ""
+	if !clientIdentityComplete {
+		req.Header.Set("User-Agent", codexUserAgent)
+		req.Header.Set("Version", codexVersion)
+	}
 	req.Header.Set("Originator", codexOriginator)
-	req.Header.Set("Version", codexVersion)
 	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session_id", util.NewUUIDv4())
 	}

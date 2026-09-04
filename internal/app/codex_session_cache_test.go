@@ -402,9 +402,9 @@ func TestBuildProxyRequest_CodexIdentityHeadersAndTurnState(t *testing.T) {
 	}
 
 	for name, want := range map[string]string{
-		"User-Agent":         codexUserAgent,
+		"User-Agent":         "codex-tui/9.9.9",
 		"Originator":         codexOriginator,
-		"Version":            codexVersion,
+		"Version":            "9.9.9",
 		"X-Codex-Turn-State": "turn-state-token",
 	} {
 		if got := req.Header.Get(name); got != want {
