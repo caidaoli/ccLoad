@@ -45,6 +45,10 @@ type TokenPricingTier struct {
 }
 
 var (
+	gpt6AstraTiers = []TokenPricingTier{
+		{MaxInputTokens: 272_000, InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 1.00, HasCacheReadPrice: true},
+		{InputPrice: 20.00, OutputPrice: 75.00, CacheReadPrice: 2.00, HasCacheReadPrice: true},
+	}
 	gpt56SolTiers = []TokenPricingTier{
 		{MaxInputTokens: 272_000, InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true},
 		{InputPrice: 10.00, OutputPrice: 45.00, CacheReadPrice: 1.00, HasCacheReadPrice: true},
@@ -159,7 +163,11 @@ var basePricing = map[string]ModelPricing{
 	"claude-sonnet": {InputPrice: 3.00, OutputPrice: 15.00},
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
-	// ========== OpenAI GPT-5系列 ==========
+	// ========== OpenAI GPT 系列 ==========
+	"gpt-6-astra": {
+		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 1.00, HasCacheReadPrice: true,
+		TokenPricingTiers: gpt6AstraTiers, CacheReadCountsTowardTier: true,
+	},
 	"gpt-5.6": {
 		InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true,
 		TokenPricingTiers: gpt56SolTiers, CacheReadCountsTowardTier: true,

@@ -402,9 +402,10 @@ func isOpenAIModel(model string) bool {
 }
 
 // serviceTierModels 列出支持 priority/flex service_tier 的 OpenAI 模型。
-// 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-5.6 预览公告明确支持 API priority processing。
+// 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-6 Astra 模型页另明确支持 Fast/Flex。
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
+	"gpt-6-astra":       true,
 	"gpt-5.6":           true,
 	"gpt-5.6-sol":       true,
 	"gpt-5.6-terra":     true,
@@ -490,7 +491,7 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 func openAIFastModeMultiplier(model string) float64 {
 	lowerModel := strings.ToLower(model)
 	switch {
-	case strings.HasPrefix(lowerModel, "gpt-5.6"), strings.HasPrefix(lowerModel, "gpt-5.5"):
+	case strings.HasPrefix(lowerModel, "gpt-6-astra"), strings.HasPrefix(lowerModel, "gpt-5.6"), strings.HasPrefix(lowerModel, "gpt-5.5"):
 		return 2.5
 	case strings.HasPrefix(lowerModel, "gpt-5.4"):
 		return 2.0

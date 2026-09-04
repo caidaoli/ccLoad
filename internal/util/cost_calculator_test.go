@@ -349,9 +349,11 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		cacheRead    int
 		expectedCost float64
 	}{
-		// GPT-5 系列（Standard层级 - 官方定价）
+		// OpenAI GPT 系列（Standard 层级 - 官方定价）
 		// inputTokens已归一化: 原始10309-缓存6016=4293
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
+		{"gpt-6-astra", 1000, 1000, 0, 0.06},                // $10.00/1M input, $50.00/1M output
+		{"gpt-6-astra", 1000, 1000, 1000, 0.061},            // 缓存读取 $1.00/1M
 		{"gpt-5.6", 1000, 1000, 0, 0.035},                   // GPT-5.6裸模型名按Sol价格兜底
 		{"gpt-5.6-sol", 1000, 1000, 0, 0.035},               // $5.00/1M input, $30/1M output
 		{"gpt-5.6-terra", 1000, 1000, 0, 0.014},             // $2.00/1M input, $12/1M output
@@ -407,7 +409,7 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_GPT56TieredPricing(t *testing.T) {
+func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 	RestoreEmbeddedModelCatalog()
 	t.Cleanup(RestoreEmbeddedModelCatalog)
 
@@ -420,6 +422,9 @@ func TestCalculateCost_GPT56TieredPricing(t *testing.T) {
 		cacheWrite   int
 		expected     float64
 	}{
+		{name: "astra boundary", model: "gpt-6-astra", inputTokens: 272_000, outputTokens: 1_000, expected: 2.77},
+		{name: "astra above boundary", model: "gpt-6-astra", inputTokens: 272_001, outputTokens: 1_000, expected: 5.51502},
+		{name: "astra cache crosses boundary", model: "gpt-6-astra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 2.475},
 		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
 		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.76501},
 		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.556},
@@ -459,6 +464,8 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		tier       string
 		multiplier float64
 	}{
+		{"gpt-6-astra", "fast", 2.5},
+		{"gpt-6-astra", "flex", 0.5},
 		{"gpt-5.6", "priority", 2.5},
 		{"gpt-5.6", "auto", 2.5},
 		{"gpt-5.6", "ultrafast", 10.0},
