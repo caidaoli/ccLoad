@@ -5400,7 +5400,7 @@ func TestProxy_CodexPriorityRequestBillsFastModeWithoutResponseTier(t *testing.T
 	}
 }
 
-func TestProxy_CodexPriorityRequestUsesUpstreamDefaultTier(t *testing.T) {
+func TestProxy_CodexPriorityRequestBillsFastModeDespiteUpstreamDefaultTier(t *testing.T) {
 	t.Parallel()
 
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -5426,12 +5426,12 @@ func TestProxy_CodexPriorityRequestUsesUpstreamDefaultTier(t *testing.T) {
 	}
 
 	entry := waitForProxyLog(t, env, "gpt-5.6")
-	if entry.ServiceTier != "default" {
-		t.Fatalf("ServiceTier=%q, want default", entry.ServiceTier)
+	if entry.ServiceTier != "priority" {
+		t.Fatalf("ServiceTier=%q, want priority", entry.ServiceTier)
 	}
-	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0)
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 2.5
 	if !floatEquals(entry.Cost, wantCost) {
-		t.Fatalf("Cost=%v, want standard cost %v", entry.Cost, wantCost)
+		t.Fatalf("Cost=%v, want fast-mode cost %v", entry.Cost, wantCost)
 	}
 }
 

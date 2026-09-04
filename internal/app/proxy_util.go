@@ -129,8 +129,8 @@ type fwResult struct {
 	// 或心跳传输错误结束。该故障按物理连接连续计数，不得升级为模型冷却。
 	UpstreamWebsocketTransportFailure bool
 
-	// OpenAI service_tier（2026-03新增）。Codex 请求中的 priority 是 Fast 模式标记；
-	// 其他情况由上游响应中的 service_tier 决定。
+	// OpenAI service_tier（2026-03新增）。请求中的 priority 是 Fast 模式标记，
+	// 计费时不能被上游回显的 default/standard 降档。
 	ServiceTier string
 
 	// ThinkingEffort 记录请求或上游响应声明的思考等级；上游响应非空时覆盖请求值。
@@ -1178,9 +1178,9 @@ func serviceTierCostRank(value string) (int, bool) {
 }
 
 // resolveBillingServiceTier merges the requested tier with the upstream tier.
-// A response can lower the bill when it explicitly reports a cheaper tier. The
-// explicit auto/ultrafast response tiers are retained because they carry
-// priority/Fast (2.5x for GPT-5.6) or ultrafast (10x) charges.
+// priority is an explicit Fast-mode purchase and therefore a billing floor:
+// gateways that omit it or echo default/standard must not silently undercharge.
+// An explicit ultrafast response still wins because it carries a higher charge.
 func resolveBillingServiceTier(requested, observed string) string {
 	requested = normalizeBillingServiceTier(requested)
 	observed = normalizeBillingServiceTier(observed)
@@ -1189,6 +1189,9 @@ func resolveBillingServiceTier(requested, observed string) string {
 	// upstream charge is lost.
 	if observed == "auto" || observed == "ultrafast" {
 		return observed
+	}
+	if requested == "priority" {
+		return requested
 	}
 	if requested == "" {
 		if rank, ok := serviceTierCostRank(observed); ok && rank <= 1 {

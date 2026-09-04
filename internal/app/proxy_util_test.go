@@ -563,7 +563,9 @@ func TestResolveBillingServiceTier(t *testing.T) {
 		observed  string
 		want      string
 	}{
-		{name: "upstream downgrade", requested: "priority", observed: "default", want: "default"},
+		{name: "priority request is billing floor", requested: "priority", observed: "default", want: "priority"},
+		{name: "priority request ignores standard response", requested: "priority", observed: "standard", want: "priority"},
+		{name: "priority request ignores flex response", requested: "priority", observed: "flex", want: "priority"},
 		{name: "anthropic downgrade", requested: "fast", observed: "standard", want: "standard"},
 		{name: "codex auto is explicit fast tier", requested: "priority", observed: "auto", want: "auto"},
 		{name: "codex auto is retained without request tier", requested: "", observed: "auto", want: "auto"},
@@ -572,7 +574,7 @@ func TestResolveBillingServiceTier(t *testing.T) {
 		{name: "ultrafast response is billed at actual tier", requested: "priority", observed: "ultrafast", want: "ultrafast"},
 		{name: "ultrafast response is billed without request tier", requested: "", observed: "ultrafast", want: "ultrafast"},
 		{name: "missing response uses request", requested: "priority", observed: "", want: "priority"},
-		{name: "case and whitespace normalize", requested: " Priority ", observed: " DEFAULT ", want: "default"},
+		{name: "case and whitespace normalize", requested: " Priority ", observed: " DEFAULT ", want: "priority"},
 	}
 
 	for _, tt := range tests {

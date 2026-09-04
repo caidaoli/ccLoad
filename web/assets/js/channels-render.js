@@ -735,23 +735,19 @@ function buildCodexResetCreditsHtml(data, state, channelID) {
   const buttonText = resetting
     ? window.t('channels.oauth.resettingQuota')
     : window.t('channels.oauth.resetQuota');
-  const expiryText = earliest
-    ? window.t('channels.oauth.resetCreditExpiresEarliest', { time: earliest })
-    : window.t('channels.oauth.resetCreditExpiresUnknown');
   const resetError = String(state?.reset_error || '').trim();
-  const expiryDetails = visibleExpiries.length > 1
-    ? `<details class="ch-oauth-usage__credit-expiries">
-        <summary>${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpiresAll', { count: visibleExpiries.length }))}</summary>
-        <ul>${visibleExpiries.map(expiry => `<li>${escapeChannelRefreshText(expiry.text)}</li>`).join('')}</ul>
-      </details>`
-    : '';
+  const expiryText = visibleExpiries.length > 0
+    ? window.t('channels.oauth.resetCreditExpires', {
+        time: visibleExpiries.map(expiry => expiry.text).join('、')
+      })
+    : window.t('channels.oauth.resetCreditExpiresUnknown');
+  const escapedExpiryText = escapeChannelRefreshText(expiryText);
   return `<div class="ch-oauth-usage__credits">
     <div class="ch-oauth-usage__credits-summary">
       <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: availableCount }))}</span>
-      <span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(expiryText)}</span>
+      <span class="ch-oauth-usage__credit-expiry" title="${escapedExpiryText}">${escapedExpiryText}</span>
       <button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-codex-quota" data-channel-id="${channelID}" data-reset-count="${availableCount}" data-reset-expiry="${escapeChannelRefreshText(earliest)}"${disabled ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(buttonText)}</button>
     </div>
-    ${expiryDetails}
     ${resetError ? `<div class="ch-oauth-usage__error" role="status">${escapeChannelRefreshText(resetError)}</div>` : ''}
   </div>`;
 }

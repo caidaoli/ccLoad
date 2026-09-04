@@ -112,9 +112,8 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         'channels.oauth.usageDetailUsed': `已用 ${values.used}`,
         'channels.oauth.usageDetailRemaining': `剩余 ${values.percent}%`,
         'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
-        'channels.oauth.resetCreditExpiresEarliest': `改期 ${values.time}`,
+        'channels.oauth.resetCreditExpires': `过期 ${values.time}`,
         'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
-        'channels.oauth.resetCreditExpiresAll': `查看全部 ${values.count} 个过期时间`,
         'channels.oauth.resetQuota': '重置额度',
         'channels.oauth.resettingQuota': '重置中…'
       })[key] || key;
@@ -148,8 +147,9 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
     const html = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
     assert.match(html, /可重置 2 次/);
     assert.match(html, /\$12\.0/);
-    assert.match(html, /改期 01\/03/);
-    assert.match(html, /查看全部 2 个过期时间/);
+    assert.match(html, /过期 01\/03[^<]*、02\/03/);
+    assert.match(html, /ch-oauth-usage__credit-expiry" title="过期 01\/03[^"<]*、02\/03/);
+    assert.doesNotMatch(html, /<details|<summary/);
     assert.match(html, /data-action="reset-codex-quota" data-channel-id="92"/);
     assert.doesNotMatch(html, /data-action="reset-codex-quota"[^>]*disabled/);
 

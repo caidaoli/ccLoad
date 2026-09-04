@@ -2752,8 +2752,9 @@ func (s *Server) forwardAttempt(
 			break
 		}
 	}
-	// 请求档位只是计费兜底；上游终态明确声明实际档位时按实际档位计费。
-	// 未声明时保留请求档位，避免因兼容网关不回显 service_tier/usage.speed 而少记账。
+	// 请求中的 priority 是 Fast 模式计费下限；上游未回显或错误回显
+	// default/standard 都不能把它降档。resolveBillingServiceTier 仍允许更贵的
+	// ultrafast 以及非 priority 请求的真实终态覆盖请求值。
 	if res != nil {
 		res.ServiceTier = resolveBillingServiceTier(requestedServiceTier(reqCtx), res.ServiceTier)
 	}

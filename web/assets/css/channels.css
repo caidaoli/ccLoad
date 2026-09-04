@@ -2310,7 +2310,6 @@
 
     .ch-oauth-usage__credits-summary {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
       gap: 3px 6px;
       min-width: 0;
@@ -2320,44 +2319,26 @@
     }
 
     .ch-oauth-usage__credit-count {
+      flex: 0 0 auto;
       color: var(--neutral-800);
       font-variant-numeric: tabular-nums;
       font-weight: 700;
     }
 
     .ch-oauth-usage__credit-expiry {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      color: var(--neutral-600);
       font-variant-numeric: tabular-nums;
+      text-align: start;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .ch-oauth-usage__reset-action {
+      flex: 0 0 auto;
       margin-inline-start: auto;
-    }
-
-    .ch-oauth-usage__credit-expiries {
-      min-width: 0;
-      color: var(--neutral-600);
-      font-size: 9px;
-      line-height: 1.4;
-    }
-
-    .ch-oauth-usage__credit-expiries summary {
-      width: fit-content;
-      cursor: pointer;
-      color: var(--primary-600);
-    }
-
-    .ch-oauth-usage__credit-expiries summary:focus-visible {
-      outline: 2px solid var(--primary-500);
-      outline-offset: 2px;
-    }
-
-    .ch-oauth-usage__credit-expiries ul {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1px 12px;
-      margin: 3px 0 0;
-      padding-inline-start: 16px;
-      font-variant-numeric: tabular-nums;
     }
 
     .ch-oauth-usage__credits .ch-oauth-usage__error {
