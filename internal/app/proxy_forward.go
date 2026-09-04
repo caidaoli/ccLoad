@@ -1371,7 +1371,10 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	var translatedComplete bool
 	var state any
 	commitTranslatedOutput := func(chunks [][]byte) error {
-		if deferredWriter.Committed() {
+		// Responses metadata may produce pass-through chunks, but it is not semantic
+		// output. Keep those chunks buffered so a following error can still replace
+		// the attempt (for example invalid_encrypted_content after Codex metadata).
+		if deferredWriter.Committed() || !parser.HasStreamOutput() {
 			return nil
 		}
 		for _, chunk := range chunks {

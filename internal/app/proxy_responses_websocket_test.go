@@ -5845,6 +5845,106 @@ func TestNativeCodexWebsocketMissingStoredInputItemReconnectsWithStrippedReplay(
 	}
 }
 
+func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay(t *testing.T) {
+	requests := make(chan []byte, 2)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection := handshakes.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade invalid-encrypted-content websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read invalid-encrypted-content request: %v", err)
+			return
+		}
+		requests <- bytes.Clone(payload)
+		if connection == 1 {
+			_ = conn.WriteJSON(map[string]any{"type": "codex.rate_limits", "plan_type": "team"})
+			_ = conn.WriteJSON(map[string]any{
+				"type": "codex.response.metadata",
+				"headers": map[string]any{
+					"x-models-etag": `W/"invalid-encrypted-content"`,
+				},
+			})
+			_ = conn.WriteJSON(map[string]any{
+				"type": "error", "status": http.StatusBadRequest,
+				"error": map[string]any{
+					"type": "invalid_request_error", "code": "invalid_encrypted_content",
+					"message": "The encrypted content could not be verified.",
+				},
+			})
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-encrypted-content-stripped", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "invalid-encrypted-content-replay", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-invalid-encrypted", "rt-invalid-encrypted", "account-invalid-encrypted"),
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"Session-Id": {"invalid-encrypted-content"},
+		"User-Agent": {"codex-tui/0.148.0"},
+	})
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set invalid-encrypted-content deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "store": false,
+		"input": []any{
+			map[string]any{
+				"type": "reasoning", "id": "rs_rejected",
+				"encrypted_content": "opaque", "summary": []any{},
+			},
+			map[string]any{"type": "compaction", "encrypted_content": "opaque-compaction"},
+			map[string]any{"type": "message", "role": "user", "content": "keep going"},
+		},
+		"tools": []any{map[string]any{
+			"type": "namespace", "name": "collaboration",
+			"tools": []any{map[string]any{
+				"type": "function", "name": "spawn_agent", "description": "Spawns an agent.",
+				"parameters": map[string]any{"type": "object", "properties": map[string]any{}},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("write invalid-encrypted-content request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, downstream, "response.completed")
+	completedJSON, _ := json.Marshal(completed)
+	if gjson.GetBytes(completedJSON, "response.id").String() != "resp-encrypted-content-stripped" {
+		t.Fatalf("unexpected stripped replay completion: %#v", completed)
+	}
+
+	first := <-requests
+	replay := <-requests
+	if gjson.GetBytes(first, "tools.0.name").String() != codexOptimizedCollaboration {
+		t.Fatalf("first request did not enter Codex multi-agent response path: %s", first)
+	}
+	if !bytes.Contains(first, []byte(`"encrypted_content"`)) {
+		t.Fatalf("first upstream request dropped encrypted content too early: %s", first)
+	}
+	if bytes.Contains(replay, []byte(`"encrypted_content"`)) {
+		t.Fatalf("replay retained rejected encrypted content: %s", replay)
+	}
+	items := gjson.GetBytes(replay, "input").Array()
+	if len(items) != 1 || items[0].Get("type").String() != "message" || handshakes.Load() != 2 {
+		t.Fatalf("replay input=%s handshakes=%d, want only the message and two handshakes", replay, handshakes.Load())
+	}
+}
+
 func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(t *testing.T) {
 	var primaryHandshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
