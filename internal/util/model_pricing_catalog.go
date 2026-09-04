@@ -114,6 +114,11 @@ var (
 		InputPriceHigh: 4.00, OutputPriceHigh: 12.00, CacheReadPriceHigh: 1.00,
 		CacheReadCountsTowardTier: true,
 	}
+	grok46Pricing = ModelPricing{
+		InputPrice: 2.00, OutputPrice: 6.00, CacheReadPrice: 0.50, HasCacheReadPrice: true,
+		InputPriceHigh: 4.00, OutputPriceHigh: 12.00, CacheReadPriceHigh: 1.00,
+		CacheReadCountsTowardTier: true,
+	}
 	grok420Pricing = ModelPricing{
 		InputPrice: 1.25, OutputPrice: 2.50, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		InputPriceHigh: 2.50, OutputPriceHigh: 5.00, CacheReadPriceHigh: 0.40,
@@ -553,6 +558,7 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== xAI Grok 模型 ==========
 	// 来源: https://docs.x.ai/developers/pricing
+	"grok-4.6":                     grok46Pricing,
 	"grok-4.5":                     grok45Pricing,
 	"grok-4.3":                     grok420Pricing,
 	"grok-4.20":                    grok420Pricing,
