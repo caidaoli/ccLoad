@@ -93,4 +93,15 @@ func TestParseRequestOnlyResumesTrailingToolResults(t *testing.T) {
 		request.ToolResults[1].CallID != "call_b" {
 		t.Fatalf("trailing tool results = %+v", request.ToolResults)
 	}
+
+	request = ParseRequest([]byte(`{
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_system","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_system","content":"ok"}]},
+			{"role":"system","content":"updated context"}
+		]
+	}`))
+	if len(request.ToolResults) != 1 || request.ToolResults[0].CallID != "call_system" {
+		t.Fatalf("tool result followed by system context = %+v", request.ToolResults)
+	}
 }

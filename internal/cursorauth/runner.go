@@ -32,7 +32,9 @@ type Event struct {
 	UsageEstimated bool
 	// Replayed marks a completed native run returned for a duplicate tool-result
 	// request. The wire layer must not charge or log that run a second time.
-	Replayed    bool
+	Replayed bool
+	// Ping marks a live run heartbeat (SDK status RUNNING). It is not assistant text.
+	Ping        bool
 	Done        bool
 	Err         error
 	RawResponse []byte

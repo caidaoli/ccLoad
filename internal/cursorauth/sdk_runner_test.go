@@ -1058,6 +1058,19 @@ func TestSDKRunStateRequiresTerminalSequenceAndRejectsDivergence(t *testing.T) {
 	}
 }
 
+func TestSDKRunStateEmitsPingForRunningStatus(t *testing.T) {
+	state := &sdkRunState{agentID: "agent-1"}
+	events, err := state.consume(sdkMessage(t, "status", map[string]any{
+		"agent_id": "agent-1", "run_id": "run-1", "status": "RUNNING", "offset": float64(1),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || !events[0].Ping || events[0].Delta != "" || events[0].Done || events[0].Err != nil {
+		t.Fatalf("running status events = %#v", events)
+	}
+}
+
 func TestSDKRunStateUsesStatusFailureMessage(t *testing.T) {
 	state := &sdkRunState{agentID: "agent-1"}
 	if _, err := state.consume(sdkMessage(t, "status", map[string]any{

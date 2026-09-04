@@ -69,6 +69,9 @@ func (s *sdkRunState) consumeSDKMessage(message *sdkv1.SdkMessage) ([]Event, err
 		if text := firstString(payload, "message"); text != "" {
 			s.statusMessage = text
 		}
+		if strings.EqualFold(firstString(payload, "status"), "RUNNING") {
+			return []Event{{Ping: true}}, nil
+		}
 		return nil, nil
 	}
 	if message.GetType() != "assistant" {

@@ -279,6 +279,16 @@ func (s *Server) forwardCursorAgent(
 		}
 		flush()
 	}
+	writePing := func() {
+		if !streaming || responseTransformErr != nil {
+			return
+		}
+		ensureStream()
+		// Responses translation swallows SSE comments; write the keepalive
+		// directly so clients still see traffic before the first token.
+		_, _ = w.Write(cursorStreamPing(format))
+		flush()
+	}
 
 	var runErr error
 	var usage *cursorauth.Usage
@@ -331,6 +341,10 @@ func (s *Server) forwardCursorAgent(
 		replayed = replayed || event.Replayed
 		if event.ToolCall != nil {
 			calls = append(calls, *event.ToolCall)
+		}
+		if event.Ping {
+			timeoutCtx.stopFirstByteTimer()
+			writePing()
 		}
 		if streaming && event.Delta != "" {
 			writeStream(event.Delta)
@@ -587,6 +601,13 @@ func cursorAnthropicDelta(text string) []byte {
 		"delta": map[string]any{"type": "text_delta", "text": text},
 	})
 	return []byte("event: content_block_delta\ndata: " + string(payload) + "\n\n")
+}
+
+func cursorStreamPing(format string) []byte {
+	if format == "anthropic" {
+		return []byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")
+	}
+	return []byte(": ping\n\n")
 }
 
 func normalizedCursorToolArguments(raw json.RawMessage) json.RawMessage {

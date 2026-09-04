@@ -31,6 +31,7 @@ type fakeCursorRunner struct {
 	toolUsageEstimated bool
 	replayed           bool
 	raw                [][]byte
+	pings              int
 	request            cursorauth.Request
 }
 
@@ -41,6 +42,7 @@ type failingCursorResponseWriter struct {
 type blockingCursorRunner struct {
 	started chan struct{}
 	release chan struct{}
+	ping    bool
 }
 
 type synchronousBlockingCursorRunner struct{}
@@ -60,9 +62,12 @@ func (r *blockingCursorRunner) Run(
 	_ cursorauth.Request,
 ) (<-chan cursorauth.Event, error) {
 	close(r.started)
-	events := make(chan cursorauth.Event, 2)
+	events := make(chan cursorauth.Event, 3)
 	go func() {
 		defer close(events)
+		if r.ping {
+			events <- cursorauth.Event{Ping: true}
+		}
 		select {
 		case <-ctx.Done():
 			events <- cursorauth.Event{Done: true, Err: context.Cause(ctx)}
@@ -103,9 +108,12 @@ func (r *fakeCursorRunner) Run(_ context.Context, _ *cursorauth.Credential, requ
 		})
 		raw = [][]byte{payload}
 	}
-	events := make(chan cursorauth.Event, len(raw)+len(r.toolCalls)+2)
+	events := make(chan cursorauth.Event, len(raw)+len(r.toolCalls)+r.pings+2)
 	for _, payload := range raw {
 		events <- cursorauth.Event{RawResponse: append([]byte(nil), payload...)}
+	}
+	for i := 0; i < r.pings; i++ {
+		events <- cursorauth.Event{Ping: true}
 	}
 	if r.eventErr != nil {
 		events <- cursorauth.Event{Text: r.text, Done: true, Err: r.eventErr, Usage: r.usage}
@@ -467,6 +475,117 @@ func TestForwardCursorAgentStreamsCacheUsage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestForwardCursorAgentStreamsRunningStatusAsPing(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		protocol protocol.Protocol
+		path     string
+		wantPing string
+	}{
+		{name: "anthropic", protocol: protocol.Anthropic, path: "/v1/messages", wantPing: "event: ping\ndata: {\"type\":\"ping\"}\n\n"},
+		{name: "openai", protocol: protocol.OpenAI, path: "/v1/chat/completions", wantPing: ": ping\n\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeCursorRunner{text: "hello", pings: 1}
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = runner
+			rec := httptest.NewRecorder()
+			result, err := srv.forwardCursorAgent(
+				context.Background(),
+				&model.Config{ID: 22, Name: "Cursor-ping", AuthType: model.AuthTypeCursorOAuth},
+				&cursorauth.Credential{AccessToken: "tok"},
+				&proxyRequestContext{
+					originalModel: "model-1", clientProtocol: test.protocol, requestPath: test.path,
+					body:        []byte(`{"model":"model-1","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+					isStreaming: true, skipProxyLog: true,
+				},
+				rec,
+			)
+			if err != nil || result == nil || !result.succeeded {
+				t.Fatalf("result = %+v err = %v", result, err)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, test.wantPing) {
+				t.Fatalf("stream missing ping %q: %s", test.wantPing, body)
+			}
+			if !strings.Contains(body, "hello") {
+				t.Fatalf("stream missing assistant text: %s", body)
+			}
+			if result.firstByteTime <= 0 {
+				t.Fatalf("firstByteTime = %.3f, ping must not replace assistant first byte", result.firstByteTime)
+			}
+		})
+	}
+}
+
+func TestForwardCursorResponsesStreamsRunningStatusAsPing(t *testing.T) {
+	t.Parallel()
+	srv := newInMemoryServer(t)
+	srv.cursorRunner = &fakeCursorRunner{text: "hello", pings: 1}
+	originalBody := []byte(`{"model":"composer-2.5","input":[{"role":"user","content":"hello"}],"stream":true}`)
+	translatedBody, err := srv.protocolRegistry.TranslateRequest(
+		protocol.Codex, protocol.OpenAI, "composer-2.5", originalBody, true,
+	)
+	if err != nil {
+		t.Fatalf("translate request: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	result, err := srv.forwardCursorAgent(
+		context.Background(),
+		&model.Config{ID: 23, AuthType: model.AuthTypeCursorOAuth},
+		&cursorauth.Credential{APIKey: "key"},
+		&proxyRequestContext{
+			originalModel: "composer-2.5", clientProtocol: protocol.Codex,
+			requestPath: "/v1/responses", body: originalBody, translatedBody: translatedBody,
+			isStreaming: true, skipProxyLog: true,
+		},
+		rec,
+	)
+	if err != nil || result == nil || !result.succeeded {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(rec.Body.String(), ": ping\n\n") {
+		t.Fatalf("responses stream missing SSE comment ping: %s", rec.Body.String())
+	}
+}
+
+func TestForwardCursorAgentRunningPingStopsFirstByteTimeout(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	runner := &blockingCursorRunner{
+		started: make(chan struct{}), release: make(chan struct{}), ping: true,
+	}
+	srv := newInMemoryServer(t)
+	srv.cursorRunner = runner
+	srv.firstByteTimeout = timeout
+	done := make(chan struct{})
+	go func() {
+		<-runner.started
+		time.Sleep(60 * time.Millisecond)
+		close(runner.release)
+		close(done)
+	}()
+	result, err := srv.forwardCursorAgent(
+		context.Background(),
+		&model.Config{ID: 24, Name: "Cursor-ping-timeout", AuthType: model.AuthTypeCursorOAuth},
+		&cursorauth.Credential{APIKey: "cursor-user-api-key"},
+		&proxyRequestContext{
+			originalModel: "composer-2.5", clientProtocol: protocol.OpenAI,
+			requestPath: "/v1/chat/completions",
+			body:        []byte(`{"model":"composer-2.5","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+			isStreaming: true, skipProxyLog: true,
+		},
+		httptest.NewRecorder(),
+	)
+	<-done
+	if err != nil {
+		t.Fatalf("forwardCursorAgent() error = %v", err)
+	}
+	if result == nil || !result.succeeded {
+		t.Fatalf("result = %+v, running ping should keep the first-byte timer from firing", result)
 	}
 }
 

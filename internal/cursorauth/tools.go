@@ -252,6 +252,13 @@ func parseToolResults(raw map[string]any) []ToolResult {
 		message, _ := messages[index].(map[string]any)
 		batch := toolResultsFromMessage(message)
 		if len(batch) == 0 {
+			// Cursor clients may append a system context block after the tool
+			// result while resuming the same native run. It is metadata, not a
+			// new user turn, so keep scanning past it. Other message kinds still
+			// terminate the trailing-result window to avoid replaying history.
+			if message != nil && strings.EqualFold(asString(message["role"]), "system") {
+				continue
+			}
 			break
 		}
 		trailing = append(batch, trailing...)
