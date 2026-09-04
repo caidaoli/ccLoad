@@ -182,15 +182,33 @@
         const nextTheme = THEMES[(currentIndex + 1) % THEMES.length];
 
         applyTheme(nextTheme);
-        localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+        setStoredTheme(nextTheme);
         updateThemeIcon(nextTheme);
       });
     }
   }
 
   function getStoredTheme() {
-    const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-    return THEMES.includes(savedTheme) ? savedTheme : 'system';
+    if (window.ccLoadTheme && typeof window.ccLoadTheme.getStoredTheme === 'function') {
+      return window.ccLoadTheme.getStoredTheme();
+    }
+    try {
+      const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+      const mode = typeof savedTheme === 'string' ? savedTheme.split(':', 1)[0] : null;
+      return THEMES.includes(mode) ? mode : 'system';
+    } catch (_) {
+      return 'system';
+    }
+  }
+
+  function setStoredTheme(theme) {
+    if (window.ccLoadTheme && typeof window.ccLoadTheme.setStoredTheme === 'function') {
+      window.ccLoadTheme.setStoredTheme(theme);
+      return;
+    }
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, `${theme}:${Date.now()}`);
+    } catch (_) { /* 主题仍然应用于当前页面。 */ }
   }
 
   function resolveTheme(theme) {

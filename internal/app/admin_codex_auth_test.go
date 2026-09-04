@@ -1219,6 +1219,8 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	wantURLs := []string{antigravityDailyBaseURL}
 	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
 		!channel.SupportsModel("gemini-3.7-flash-high") ||
+		!channel.SupportsModel("gemini-3.8-flash-high") ||
+		!channel.SupportsModel("gemini-3.8-flash-medium") ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
 		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("created Antigravity channel contract = %#v", channel)
