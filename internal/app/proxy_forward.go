@@ -2065,7 +2065,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	usedNativeWebsocket := false
 	if native != nil && native.session != nil {
 		replayReq := cloneRequestWithBody(httpReq, replayBody)
-		copyCodexWebsocketInputHeaders(replayReq.Header, hdr)
+		prepareCodexWebsocketInputHeaders(replayReq.Header, hdr, cfg.HeaderRules())
 		incrementalBody := bytes.Clone(native.incrementalBody)
 		incrementalReq, errBuild := s.buildProxyRequest(
 			reqCtx, cfg, apiKey, method, incrementalBody, hdr, rawQuery,
@@ -2074,7 +2074,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if errBuild != nil {
 			return nil, 0, errBuild
 		}
-		copyCodexWebsocketInputHeaders(incrementalReq.Header, hdr)
+		prepareCodexWebsocketInputHeaders(incrementalReq.Header, hdr, cfg.HeaderRules())
 		// buildProxyRequest applies body rules and prompt_cache_key; send the
 		// resulting wire body, not the pre-normalized caller input.
 		incrementalBody = bytes.Clone(reqCtx.transformPlan.TranslatedBody)

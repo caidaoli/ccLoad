@@ -104,7 +104,7 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	applyHeaderRules(upstreamHeaders, cfg.HeaderRules())
 	probeRequest := &http.Request{Header: upstreamHeaders}
 	injectCodexHeaders(probeRequest, cfg, probe.APIKey, true)
-	copyCodexWebsocketInputHeaders(upstreamHeaders, headers)
+	prepareCodexWebsocketInputHeaders(upstreamHeaders, headers, cfg.HeaderRules())
 	websocketURL, err := codexWebsocketURL(fullURL)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
@@ -1493,7 +1493,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && !cfg.UsesZedOAuth() && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
 	if useNativeCodexWebsocket {
-		copyCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders)
+		prepareCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders, cfg.HeaderRules())
 		preparedBody, prepareErr := buildCodexWebsocketRequestBody(requestPlan.requestBody)
 		if prepareErr != nil {
 			if capacityRelease != nil {

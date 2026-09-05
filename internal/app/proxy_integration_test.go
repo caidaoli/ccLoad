@@ -3719,6 +3719,59 @@ func TestProxy_XAIOAuthDoesNotReplayAfterCommittedSemanticOutput(t *testing.T) {
 	}
 }
 
+func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
+	const clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
+	for _, authType := range []string{model.AuthTypeAPIKey, model.AuthTypeCodexOAuth} {
+		t.Run(authType, func(t *testing.T) {
+			for _, version := range []string{"", "0.153.4"} {
+				t.Run("version="+version, func(t *testing.T) {
+					captured := make(chan http.Header, 1)
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						captured <- r.Header.Clone()
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "event: response.completed\ndata: "+`{"type":"response.completed","response":{"id":"resp-identity","status":"completed","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`+"\n\n")
+					}))
+					defer upstream.Close()
+					channel := testChannel{
+						name: "codex-identity", upstreamProtocol: "codex", models: "gpt-test",
+						authType: authType, apiKey: "sk-upstream",
+					}
+					if authType == model.AuthTypeCodexOAuth {
+						channel.oauthCredential = codexProxyTestCredential(t, "at-upstream", "rt-upstream", "account-upstream")
+					}
+					env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+					headers := map[string]string{
+						"User-Agent": clientUserAgent, "Originator": "codex-tui",
+						"X-Codex-Window-Id": "client-thread:0",
+					}
+					if version != "" {
+						headers["Version"] = version
+					}
+					response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+						"model": "gpt-test", "instructions": "test", "input": []any{}, "stream": true,
+					}, headers)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					var got http.Header
+					select {
+					case got = <-captured:
+					default:
+						t.Fatal("upstream request was not captured")
+					}
+					if got.Get("User-Agent") != clientUserAgent || got.Get("Version") != version {
+						t.Errorf("upstream identity = UA %q Version %q, want UA %q Version %q",
+							got.Get("User-Agent"), got.Get("Version"), clientUserAgent, version)
+					}
+					if windowID := got.Get("X-Codex-Window-Id"); windowID != "client-thread:0" {
+						t.Errorf("upstream X-Codex-Window-Id = %q, want client-thread:0", windowID)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wireBody, err := io.ReadAll(r.Body)

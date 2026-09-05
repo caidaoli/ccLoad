@@ -34,6 +34,7 @@ var codexHTTPForwardHeaders = []string{
 	"X-Codex-Turn-State",
 	"X-Codex-Turn-Metadata",
 	"X-Client-Request-Id",
+	"X-Codex-Window-Id",
 	"User-Agent",
 	"Session_id",
 	"Session-Id",
@@ -844,9 +845,8 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("Connection", "Keep-Alive")
-	clientIdentityComplete := isCodexMultiAgentClient(req.Header.Get("User-Agent")) &&
-		strings.TrimSpace(req.Header.Get("Version")) != ""
-	if !clientIdentityComplete {
+	// Official clients may omit Version; preserve their supplied identity as-is.
+	if !isCodexMultiAgentClient(req.Header.Get("User-Agent")) {
 		req.Header.Set("User-Agent", codexUserAgent)
 		req.Header.Set("Version", codexVersion)
 	}

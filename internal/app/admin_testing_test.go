@@ -3239,7 +3239,7 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 	}
 	if gotHeaders.Get("User-Agent") != codexUserAgent ||
 		gotHeaders.Get("Originator") != codexOriginator ||
-		gotHeaders.Get("Version") != codexVersion {
+		gotHeaders.Get("Version") != "" {
 		t.Fatalf("Codex identity headers=%v", gotHeaders)
 	}
 	if got := gotHeaders.Get("X-Codex-Turn-State"); got != "turn-state" {

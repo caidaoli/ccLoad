@@ -2641,6 +2641,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T) {
+	const clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	requestBody := make(chan map[string]any, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2653,8 +2654,14 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		if got := r.Header.Get("X-OpenAI-FedRAMP"); got != "true" {
 			t.Errorf("X-OpenAI-FedRAMP = %q", got)
 		}
-		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
+		if r.Header.Get("User-Agent") != clientUserAgent || r.Header.Get("Originator") != "codex-tui" {
 			t.Errorf("Codex identity headers = %v", r.Header)
+		}
+		if got := r.Header.Get("Version"); got != "" {
+			t.Errorf("Version = %q, want absent for official client without Version", got)
+		}
+		if got := r.Header.Get("X-Codex-Window-Id"); got != "" {
+			t.Errorf("X-Codex-Window-Id = %q, want omitted from native WebSocket", got)
 		}
 		if r.Header.Get("Session_id") == "" {
 			t.Errorf("Codex Session_id header is missing: %v", r.Header)
@@ -2694,7 +2701,11 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		models: "gpt-test", authType: model.AuthTypeCodexOAuth,
 		oauthCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws", true), priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	downstream := dialResponsesWebsocket(t, env.engine)
+	downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"User-Agent":        {clientUserAgent},
+		"Originator":        {"codex-tui"},
+		"X-Codex-Window-Id": {"client-thread:0"},
+	})
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test",
 		"input": []any{map[string]any{"role": "user", "content": "hello"}},
@@ -2723,6 +2734,70 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
 		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 25 {
 		t.Fatalf("persisted Codex WebSocket quota = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestNativeCodexWebsocketWindowHeaderRules(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action string
+		want   []string
+	}{
+		{name: "default"},
+		{name: "override", action: model.RuleActionOverride, want: []string{"configured-window:0"}},
+		{name: "append", action: model.RuleActionAppend, want: []string{"configured-window:0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captured := make(chan http.Header, 1)
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured <- r.Header.Clone()
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				var request map[string]any
+				if err := conn.ReadJSON(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if err := conn.WriteJSON(map[string]any{
+					"type":     "response.completed",
+					"response": map[string]any{"id": "resp-window", "output": []any{}},
+				}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer upstream.Close()
+			rules := []model.CustomHeaderRule{{Action: model.RuleActionAppend, Name: "X-Configured", Value: "once"}}
+			if tc.action != "" {
+				rules = append(rules, model.CustomHeaderRule{
+					Action: tc.action, Name: "x-codex-window-id", Value: "configured-window:0",
+				})
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "window-headers", upstreamProtocol: "codex", websockets: true, models: "gpt-test",
+				customRequestRules: &model.CustomRequestRules{Headers: rules},
+			}}, map[int]string{0: upstream.URL})
+			downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+				"X-Codex-Window-Id": {"client-thread:0"},
+			})
+			if err := downstream.WriteJSON(map[string]any{
+				"type": "response.create", "model": "gpt-test", "input": []any{},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			readWebsocketUntilType(t, downstream, "response.completed")
+			got := <-captured
+			if !slices.Equal(got.Values("X-Codex-Window-Id"), tc.want) {
+				t.Errorf("X-Codex-Window-Id = %v, want %v", got.Values("X-Codex-Window-Id"), tc.want)
+			}
+			if !slices.Equal(got.Values("X-Configured"), []string{"once"}) {
+				t.Errorf("unrelated header rules applied more than once: %v", got.Values("X-Configured"))
+			}
+		})
 	}
 }
 
@@ -3418,6 +3493,9 @@ func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.
 	var responses atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Codex-Window-Id"); got != "" {
+			t.Errorf("unapproved window header reached upstream: %q", got)
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade header-fingerprint websocket: %v", err)
@@ -3451,6 +3529,7 @@ func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.
 	first := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
 		"Session-Id":          []string{"header-fingerprint"},
 		"OpenAI-Organization": []string{"org-a"},
+		"X-Codex-Window-Id":   []string{"window-a:0"},
 	})
 	if err := first.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test",
@@ -3467,6 +3546,7 @@ func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.
 	second := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
 		"Session-Id":          []string{"header-fingerprint"},
 		"OpenAI-Organization": []string{"org-b"},
+		"X-Codex-Window-Id":   []string{"window-b:0"},
 	})
 	if err := second.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-header-1",
@@ -6220,6 +6300,9 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
 			websocketCalls.Add(1)
+			if got := r.Header.Get("X-Codex-Window-Id"); got != "" {
+				t.Errorf("HTTP-only window header reached WebSocket: %q", got)
+			}
 			if r.Header.Get("X-Codex-Turn-State") != "turn-state" || r.Header.Get("X-ResponsesAPI-Include-Timing-Metrics") != "true" {
 				t.Errorf("websocket-only headers missing from handshake: %v", r.Header)
 			}
@@ -6239,6 +6322,9 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		}
 		if got := r.Header.Get("X-Codex-Turn-State"); got != "turn-state" {
 			t.Errorf("HTTP fallback X-Codex-Turn-State=%q, want %q; headers=%v", got, "turn-state", r.Header)
+		}
+		if got := r.Header.Get("X-Codex-Window-Id"); got != "client-thread:0" {
+			t.Errorf("HTTP fallback X-Codex-Window-Id=%q, want client-thread:0", got)
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil || !json.Valid(body) {
@@ -6309,6 +6395,7 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		http.Header{
 			"OpenAI-Beta":                           []string{"other-feature"},
 			"X-Codex-Turn-State":                    []string{"turn-state"},
+			"X-Codex-Window-Id":                     []string{"client-thread:0"},
 			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
 		},
 	)

@@ -1009,9 +1009,17 @@ func shortenCodexInputItemID(id string, attempt int) string {
 	return string(runes[:prefixLength]) + suffix
 }
 
-func copyCodexWebsocketInputHeaders(target, source http.Header) {
+func prepareCodexWebsocketInputHeaders(target, source http.Header, rules []model.CustomHeaderRule) {
 	if target == nil {
 		return
+	}
+	// HTTP candidates carry the client window ID, but native WebSocket only
+	// sends an explicitly configured value. Rebuild that header's rules once.
+	target.Del("X-Codex-Window-Id")
+	for i, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Name), "X-Codex-Window-Id") {
+			applyHeaderRules(target, rules[i:i+1])
+		}
 	}
 	for _, name := range codexWebsocketForwardHeaders {
 		if target.Get(name) != "" {
