@@ -250,8 +250,9 @@ func Find(usage *Usage, key string) *Window {
 // Reconcile aligns persisted counters with a complete upstream window
 // snapshot. A changed boundary starts at zero unless a manual count cutoff
 // still belongs to the sampled period. Windows missing from a complete
-// snapshot are retired. A usage rollback is scoped to the sampled window,
-// so a rolling 5-hour reset cannot clear the independent weekly counter.
+// snapshot are retired unless they were sampled after that snapshot. A usage
+// rollback is scoped to the sampled window, so a rolling 5-hour reset cannot
+// clear the independent weekly counter.
 func Reconcile(current *Usage, samples []Sample, observedAt time.Time) *Usage {
 	return reconcile(current, samples, observedAt, false)
 }
@@ -265,8 +266,10 @@ func ReconcilePartial(current *Usage, samples []Sample, observedAt time.Time) *U
 }
 
 func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial bool) *Usage {
+	current, staleCodexLayout := reconcileCodexWeeklyKey(current, samples, observedAt)
 	next := &Usage{}
 	seen := make(map[string]struct{}, len(samples))
+	snapshotAtNano := sampleTimeUnixNano(observedAt)
 	for _, sample := range samples {
 		key := strings.TrimSpace(sample.Key)
 		if key == "" || sample.WindowSeconds <= 0 || sample.ResetAt.IsZero() {
@@ -282,17 +285,36 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		// Quota may have been sampled before an auxiliary metadata request.
+		// That later request's completion time cannot authorize deletions.
+		if sampledAtNano := sampleTimeUnixNano(sample.SampledAt); sampledAtNano > 0 &&
+			(snapshotAtNano == 0 || sampledAtNano < snapshotAtNano) {
+			snapshotAtNano = sampledAtNano
+		}
+		if staleCodexLayout && isCodexMainWindowKey(key) {
+			continue
+		}
 		seen[key] = struct{}{}
 		sample.UsedPercent = normalizedUsedPercent(sample.UsedPercent)
 		if window := reconcileWindow(Find(current, key), sample, observedAt); window != nil {
 			next.Windows = append(next.Windows, window)
 		}
 	}
-	if partial && current != nil {
-		// Partial samples retain omitted siblings because absence is not proof
-		// that the upstream window reset.
+	if !partial && !staleCodexLayout && len(next.Windows) == 0 {
+		// An empty/invalid snapshot has no authority to retire any window,
+		// including when only some of the current windows have newer samples.
+		return Clone(current)
+	}
+	if current != nil {
 		for _, window := range current.Windows {
 			if window == nil {
+				continue
+			}
+			// A complete snapshot cannot retire a sibling learned from a newer
+			// passive sample while that snapshot was waiting to be persisted.
+			newerSample := snapshotAtNano > 0 && window.SampledUpstreamAtUnixNano > snapshotAtNano
+			keepOmitted := partial || newerSample || (staleCodexLayout && isCodexMainWindowKey(window.Key))
+			if !keepOmitted {
 				continue
 			}
 			if _, ok := seen[window.Key]; ok {
@@ -311,6 +333,64 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 	return next
 }
 
+// Codex can move its weekly quota between primary and secondary when the 5h
+// limit appears or disappears. Move that counter before reconciling periods;
+// neither the old 5h counter nor another quota group is a weekly cost source.
+// A late snapshot of the previous layout must not move or duplicate it again.
+func reconcileCodexWeeklyKey(current *Usage, samples []Sample, observedAt time.Time) (*Usage, bool) {
+	for _, sample := range samples {
+		key := strings.TrimSpace(sample.Key)
+		if !isCodexMainWindowKey(key) || sample.WindowSeconds != weeklyWindowSeconds || sample.ResetAt.IsZero() ||
+			(sample.Family != FamilyAll && sample.Family != FamilyCodex) {
+			continue
+		}
+		target := Find(current, key)
+		if target != nil && target.WindowSeconds == weeklyWindowSeconds {
+			continue
+		}
+		otherKey := "codex|primary"
+		if key == otherKey {
+			otherKey = "codex|secondary"
+		}
+		source := Find(current, otherKey)
+		if source == nil || source.WindowSeconds != weeklyWindowSeconds ||
+			(source.Family != FamilyAll && source.Family != FamilyCodex) {
+			continue
+		}
+		for _, other := range samples {
+			if strings.TrimSpace(other.Key) == otherKey && other.WindowSeconds == weeklyWindowSeconds && !other.ResetAt.IsZero() {
+				// Two explicitly reported weekly windows are independent counters.
+				return current, false
+			}
+		}
+		sampledAt := sampleTimeUnixNano(firstNonZeroTime(sample.SampledAt, observedAt))
+		for _, window := range []*Window{source, target} {
+			if window != nil && window.SampledUpstreamAtUnixNano > 0 &&
+				(sampledAt < window.SampledUpstreamAtUnixNano ||
+					(sampledAt == window.SampledUpstreamAtUnixNano && window.SampledUpstreamUsedPercent != nil)) {
+				return current, true
+			}
+		}
+		next := &Usage{Windows: make([]*Window, 0, len(current.Windows))}
+		for _, window := range current.Windows {
+			if window != nil && window.Key == key {
+				continue
+			}
+			window = cloneWindow(window)
+			if window != nil && window.Key == otherKey {
+				window.Key = key
+			}
+			next.Windows = append(next.Windows, window)
+		}
+		return next, false
+	}
+	return current, false
+}
+
+func isCodexMainWindowKey(key string) bool {
+	return key == "codex|primary" || key == "codex|secondary"
+}
+
 func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Window {
 	resetAt := sample.ResetAt.UTC()
 	next := newWindow(sample, observedAt, 0)
@@ -321,7 +401,7 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 	if next == nil {
 		return nil
 	}
-	if current == nil || current.WindowSeconds != sample.WindowSeconds {
+	if current == nil {
 		return next
 	}
 	current = cloneWindow(current)
@@ -338,6 +418,9 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		// 主动刷新与被动队列会并发更新同一槽位。旧百分比样本的 reset_at 同样是旧的，
 		// 必须整条丢弃；只忽略百分比仍可能让旧边界清空新周期成本。
 		return current
+	}
+	if current.WindowSeconds != sample.WindowSeconds {
+		return next
 	}
 	if usageSampleIsNewer && upstreamUsageRolledBack(current.SampledUpstreamUsedPercent, sample.UsedPercent) {
 		// 上游可以在原 reset_at 到期前直接恢复额度。使用率在同一额度周期内只会

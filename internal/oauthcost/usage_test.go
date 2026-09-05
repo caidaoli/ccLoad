@@ -91,6 +91,132 @@ func float64Pointer(value float64) *float64 {
 	return &value
 }
 
+func TestCodexWeeklyCostSurvivesWindowRoleChanges(t *testing.T) {
+	t.Parallel()
+	for _, partial := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete", true: "partial"}[partial], func(t *testing.T) {
+			reconcileUsage := Reconcile
+			if partial {
+				reconcileUsage = ReconcilePartial
+			}
+			resetAt := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
+			initial := []Sample{
+				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: resetAt.Add(time.Hour), UsedPercent: float64Pointer(80)},
+				{Key: "codex|secondary", Family: FamilyCodex, WindowSeconds: 604800, ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: float64Pointer(100)},
+			}
+			usage := Reconcile(nil, initial, resetAt.Add(-time.Minute))
+			usage = Reset(usage, resetAt, nil)
+			addCost := func(at time.Time, amount int64, wantChanged bool) {
+				t.Helper()
+				if changed, err := AddStandardCost(usage, at, "gpt-5.6-sol", amount); err != nil || changed != wantChanged {
+					t.Fatalf("AddStandardCost(%s, %d) = (%t, %v)", at, amount, changed, err)
+				}
+			}
+			addCost(resetAt.Add(30*time.Minute), 12_252_287, true)
+			observedAt := resetAt.Add(33 * time.Minute)
+			weekly := Sample{
+				Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800,
+				ResetAt: observedAt.Add(7 * 24 * time.Hour), UsedPercent: float64Pointer(5), SampledAt: observedAt,
+			}
+			usage = reconcileUsage(usage, []Sample{weekly}, observedAt)
+			if len(usage.Windows) != 1 || usage.Windows[0].Key != "codex|primary" ||
+				usage.Windows[0].StandardCostMicroUSD != 12_252_287 || usage.Windows[0].CountFromAt != resetAt.Unix() {
+				t.Fatalf("weekly role change lost the reset-period cost: %#v", usage)
+			}
+			addCost(resetAt.Add(-time.Second), 1_000_000, false)
+			addCost(observedAt.Add(time.Second), 100, true)
+			addCost(observedAt.Add(time.Minute), 18_829_059, true)
+			wantCost := int64(31_081_446)
+			if got := Find(usage, "codex|primary").StandardCostMicroUSD; got != wantCost {
+				t.Fatalf("weekly cost = %d, want %d", got, wantCost)
+			}
+			// A replay of the old two-window layout cannot resurrect a second weekly counter.
+			for i := range initial {
+				initial[i].SampledAt = resetAt.Add(time.Minute)
+			}
+			usage = reconcileUsage(usage, initial, observedAt.Add(2*time.Minute))
+			if len(usage.Windows) != 1 || Find(usage, "codex|primary").StandardCostMicroUSD != wantCost {
+				t.Fatalf("stale layout changed weekly cost: %#v", usage)
+			}
+			// If the 5h limit returns, the weekly cost moves back to secondary once.
+			returnedAt := observedAt.Add(3 * time.Minute)
+			weekly.Key, weekly.SampledAt = "codex|secondary", returnedAt
+			usage = reconcileUsage(usage, []Sample{
+				{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 18000, ResetAt: returnedAt.Add(5 * time.Hour), UsedPercent: float64Pointer(0), SampledAt: returnedAt},
+				weekly,
+			}, returnedAt)
+			if len(usage.Windows) != 2 || Find(usage, "codex|primary").StandardCostMicroUSD != 0 ||
+				Find(usage, "codex|secondary").StandardCostMicroUSD != wantCost {
+				t.Fatalf("returning 5h limit changed weekly cost: %#v", usage)
+			}
+			addCost(returnedAt.Add(time.Second), 200, true)
+			if Find(usage, "codex|primary").StandardCostMicroUSD != 200 ||
+				Find(usage, "codex|secondary").StandardCostMicroUSD != wantCost+200 {
+				t.Fatalf("cost was duplicated after moving weekly back: %#v", usage)
+			}
+		})
+	}
+}
+
+func TestCodexWeeklyRoleChangeStillResetsNewPeriods(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		used     float64
+		resetAt  time.Time
+		wantCost int64
+	}{
+		{name: "same_period", used: 60, resetAt: now.Add(6 * 24 * time.Hour), wantCost: 900_000},
+		{name: "upstream_reset", used: 5, resetAt: now.Add(6 * 24 * time.Hour)},
+		{name: "next_period", used: 60, resetAt: now.Add(13 * 24 * time.Hour)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usage := Reconcile(nil, []Sample{
+				{Key: "codex|primary", WindowSeconds: 18000, ResetAt: now.Add(4 * time.Hour), UsedPercent: float64Pointer(80)},
+				{Key: "codex|secondary", WindowSeconds: 604800, ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: float64Pointer(60)},
+			}, now)
+			if _, err := AddStandardCost(usage, now, "gpt-5.6-sol", 900_000); err != nil {
+				t.Fatal(err)
+			}
+			usage = Reconcile(usage, []Sample{{
+				Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800,
+				ResetAt: test.resetAt, UsedPercent: &test.used, SampledAt: now.Add(time.Minute),
+			}}, now.Add(time.Minute))
+			if len(usage.Windows) != 1 || usage.Windows[0].StandardCostMicroUSD != test.wantCost {
+				t.Fatalf("weekly cost after %s = %#v, want %d", test.name, usage, test.wantCost)
+			}
+		})
+	}
+}
+
+func TestCodexExplicitWeeklyWindowsStayIndependent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
+	secondary := Sample{Key: "codex|secondary", Family: FamilyCodex, WindowSeconds: 604800,
+		ResetAt: now.Add(6 * 24 * time.Hour), UsedPercent: float64Pointer(50), SampledAt: now}
+	usage := Reconcile(nil, []Sample{secondary}, now)
+	if _, err := AddStandardCost(usage, now, "gpt-5.6-sol", 900_000); err != nil {
+		t.Fatal(err)
+	}
+	primary := secondary
+	primary.Key, primary.UsedPercent = "codex|primary", float64Pointer(5)
+	primary.SampledAt, secondary.SampledAt = now.Add(time.Minute), now.Add(time.Minute)
+	usage = Reconcile(usage, []Sample{primary, secondary}, now.Add(time.Minute))
+	if len(usage.Windows) != 2 || Find(usage, "codex|primary").StandardCostMicroUSD != 0 ||
+		Find(usage, "codex|secondary").StandardCostMicroUSD != 900_000 {
+		t.Fatalf("two explicit weekly windows were merged: %#v", usage)
+	}
+	if _, err := AddStandardCost(usage, now.Add(time.Minute), "gpt-5.6-sol", 100_000); err != nil {
+		t.Fatal(err)
+	}
+	primary.SampledAt = now.Add(2 * time.Minute)
+	usage = Reconcile(usage, []Sample{primary}, primary.SampledAt)
+	if len(usage.Windows) != 1 || usage.Windows[0].StandardCostMicroUSD != 100_000 {
+		t.Fatalf("existing primary borrowed the omitted secondary cost: %#v", usage)
+	}
+}
+
 func TestMonthlyQuotaRefreshAdvancesClampedResetWithOriginalAnchor(t *testing.T) {
 	t.Parallel()
 	for _, year := range []int{2027, 2028} {
@@ -194,6 +320,40 @@ func TestReconcileDropsStaleWindows(t *testing.T) {
 	}
 	if usage.Windows[0].StandardCostMicroUSD != 100 {
 		t.Fatalf("kept window cost = %d, want 100", usage.Windows[0].StandardCostMicroUSD)
+	}
+}
+
+func TestReconcileKeepsOmittedWindowsSampledAfterSnapshot(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
+	quotaAt, passiveAt, completedAt := base.Add(time.Minute), base.Add(2*time.Minute), base.Add(3*time.Minute)
+	main := Sample{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800,
+		ResetAt: base.Add(24 * time.Hour), UsedPercent: float64Pointer(20), SampledAt: base}
+	retired := Sample{Key: "old|weekly", WindowSeconds: 604800,
+		ResetAt: base.Add(24 * time.Hour), UsedPercent: float64Pointer(20), SampledAt: base}
+	usage := Reconcile(nil, []Sample{main, retired}, base)
+	spark := Sample{Key: "codex-spark|primary", Family: FamilySpark, WindowSeconds: 18000,
+		ResetAt: base.Add(time.Hour), UsedPercent: float64Pointer(30), SampledAt: passiveAt}
+	usage = ReconcilePartial(usage, []Sample{spark}, passiveAt)
+	if _, err := AddStandardCost(usage, passiveAt, "gpt-5.3-codex-spark", 2_000_000); err != nil {
+		t.Fatal(err)
+	}
+	main.SampledAt = quotaAt
+	untimed := Sample{Key: "untimed|weekly", WindowSeconds: 604800, ResetAt: main.ResetAt}
+	invalid := Sample{Key: "invalid|weekly", Family: "unknown", WindowSeconds: 604800,
+		ResetAt: main.ResetAt, SampledAt: base.Add(-time.Minute)}
+	got := Reconcile(usage, []Sample{main, untimed, invalid}, completedAt)
+	if Find(got, retired.Key) != nil || Find(got, main.Key) == nil || Find(got, untimed.Key) == nil {
+		t.Fatalf("complete snapshot did not reconcile older windows: %+v", got)
+	}
+	if w := Find(got, spark.Key); w == nil || w.StandardCostMicroUSD != 2_000_000 ||
+		w.SampledUpstreamAtUnixNano != passiveAt.UnixNano() || w.ResetAt != spark.ResetAt.Unix() {
+		t.Fatalf("older complete snapshot deleted newer Spark cost: %+v", w)
+	}
+	main.SampledAt = completedAt
+	got = Reconcile(got, []Sample{main}, completedAt)
+	if Find(got, spark.Key) != nil {
+		t.Fatal("a subsequent fresh complete snapshot must retire the omitted Spark window")
 	}
 }
 
@@ -407,6 +567,14 @@ func TestReconcileKeepsCountersWhenSamplesCarryNoBoundary(t *testing.T) {
 	if changed, err := AddStandardCost(usage, now, "gpt-5.4", 500_000); err != nil || !changed {
 		t.Fatalf("seed cost = (%t, %v)", changed, err)
 	}
+	newerAt := now.Add(time.Minute)
+	usage = ReconcilePartial(usage, []Sample{{
+		Key: "codex-spark|primary", Family: FamilySpark, WindowSeconds: 18000,
+		ResetAt: now.Add(time.Hour), SampledAt: newerAt, UsedPercent: float64Pointer(20),
+	}}, newerAt)
+	if _, err := AddStandardCost(usage, newerAt, "gpt-5.3-codex-spark", 300_000); err != nil {
+		t.Fatal(err)
+	}
 	// 采样失败/边界缺失不是「窗口消失」，已累计的成本必须留下。
 	for _, samples := range [][]Sample{
 		nil,
@@ -414,8 +582,14 @@ func TestReconcileKeepsCountersWhenSamplesCarryNoBoundary(t *testing.T) {
 		{{Key: "", WindowSeconds: 604800, ResetAt: now.Add(5 * 24 * time.Hour)}},
 	} {
 		kept := Reconcile(usage, samples, now)
-		if kept == nil || len(kept.Windows) != 1 || kept.Windows[0].StandardCostMicroUSD != 500_000 {
+		if kept == nil || len(kept.Windows) != 2 {
 			t.Fatalf("boundary-less samples %#v dropped counters: %#v", samples, kept)
+		}
+		if main := Find(kept, "codex|secondary"); main == nil || main.StandardCostMicroUSD != 500_000 {
+			t.Fatalf("boundary-less samples dropped older Codex counter: %+v", main)
+		}
+		if spark := Find(kept, "codex-spark|primary"); spark == nil || spark.StandardCostMicroUSD != 300_000 {
+			t.Fatalf("boundary-less samples dropped newer Spark counter: %+v", spark)
 		}
 	}
 }
@@ -726,14 +900,16 @@ func TestReconcileIgnoresOlderUpstreamUsageSample(t *testing.T) {
 		t.Fatalf("seed cost = (%t, %v)", changed, err)
 	}
 
-	usage = Reconcile(usage, []Sample{{
-		Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt.Add(-4 * 24 * time.Hour),
-		UsedPercent: float64Pointer(20), SampledAt: now.Add(-time.Second),
-	}}, now.Add(time.Minute))
-	window := Find(usage, "codex|primary")
-	if window.StandardCostMicroUSD != 1_000_000 || window.SampledUpstreamUsedPercent == nil ||
-		*window.SampledUpstreamUsedPercent != 60 {
-		t.Fatalf("older sample reset quota cost: %#v", window)
+	for _, seconds := range []int64{604800, 18000} {
+		next := Reconcile(usage, []Sample{{
+			Key: "codex|primary", WindowSeconds: seconds, ResetAt: resetAt.Add(-4 * 24 * time.Hour),
+			UsedPercent: float64Pointer(20), SampledAt: now.Add(-time.Second),
+		}}, now.Add(time.Minute))
+		window := Find(next, "codex|primary")
+		if window.StandardCostMicroUSD != 1_000_000 || window.WindowSeconds != 604800 ||
+			window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 60 {
+			t.Fatalf("older %ds sample reset quota cost: %#v", seconds, window)
+		}
 	}
 }
 

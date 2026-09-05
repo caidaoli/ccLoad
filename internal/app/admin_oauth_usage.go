@@ -194,6 +194,8 @@ type oauthUsageWindow struct {
 }
 
 type oauthUsageSummary struct {
+	// Partial means omitted windows were not observed, rather than retired.
+	Partial               bool                    `json:"-"`
 	Provider              string                  `json:"provider"`
 	PlanType              string                  `json:"plan_type,omitempty"`
 	SubscriptionTier      string                  `json:"subscription_tier,omitempty"`
@@ -913,6 +915,7 @@ func requestXAIUsage(
 
 	summary := &oauthUsageSummary{
 		Provider:          xaiauth.ChannelType,
+		Partial:           !credits.recognized || !monthly.recognized,
 		SubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
 		EntitlementStatus: strings.TrimSpace(credential.EntitlementStatus),
 		Windows:           make([]oauthUsageWindow, 0, len(credits.windows)+len(monthly.windows)),
@@ -1731,20 +1734,20 @@ func mergeLatestCodexOAuthUsage(active, passive *oauthUsageSummary) *oauthUsageS
 	for _, window := range active.Windows {
 		key := oauthcost.Key(window.LimitName, window.Kind)
 		candidates := passiveByKey[key]
-		if len(candidates) > 0 {
-			passiveWindow := candidates[0]
+		for i, passiveWindow := range candidates {
+			if passiveWindow.LimitWindowSeconds != window.LimitWindowSeconds ||
+				!oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
+					WindowSeconds: window.LimitWindowSeconds, ResetAt: window.ResetAt,
+				}) {
+				continue
+			}
 			// The official snapshot owns the window identity, duration, and
-			// reset boundary. The passive stream contributes only fresher usage.
+			// reset boundary. Only usage from that same period may replace it.
 			window.UsedPercent = passiveWindow.UsedPercent
 			window.RemainingPercent = passiveWindow.RemainingPercent
 			window.SampledAt = passiveWindow.SampledAt
-			merged.Windows = append(merged.Windows, window)
-			if len(candidates) == 1 {
-				delete(passiveByKey, key)
-			} else {
-				passiveByKey[key] = candidates[1:]
-			}
-			continue
+			passiveByKey[key] = append(candidates[:i], candidates[i+1:]...)
+			break
 		}
 		merged.Windows = append(merged.Windows, window)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -433,6 +434,84 @@ func TestXAIUsage_PartialAndStrictStatusClassification(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+func TestXAIUsage_PartialRefreshPreservesQuotaCosts(t *testing.T) {
+	for _, failedEndpoint := range []string{"credits", "monthly"} {
+		t.Run(failedEndpoint, func(t *testing.T) {
+			server := newInMemoryServer(t)
+			ctx := context.Background()
+			cfg := newXAIUsageChannel(t, server, "quota-access", "quota-refresh", xaiauth.CLIBaseURL)
+			base := time.Now().UTC().Truncate(time.Minute)
+			weeklyStart, weeklyEnd := base.Add(-24*time.Hour), base.Add(6*24*time.Hour)
+			monthlyStart := time.Date(base.Year(), base.Month(), 1, 0, 0, 0, 0, time.UTC)
+			monthlyEnd := monthlyStart.AddDate(0, 1, 0)
+			unavailable := false
+			server.client = &http.Client{Transport: xaiUsageRoundTripper(func(req *http.Request) (*http.Response, error) {
+				endpoint := "monthly"
+				if req.URL.Query().Get("format") == "credits" {
+					endpoint = "credits"
+				}
+				if unavailable && endpoint == failedEndpoint {
+					return xaiUsageResponse(req, http.StatusServiceUnavailable, `{}`), nil
+				}
+				if endpoint == "credits" {
+					return xaiUsageResponse(req, http.StatusOK, fmt.Sprintf(
+						`{"config":{"creditUsagePercent":25,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":%q,"end":%q}}}`,
+						weeklyStart.Format(time.RFC3339), weeklyEnd.Format(time.RFC3339))), nil
+				}
+				return xaiUsageResponse(req, http.StatusOK, fmt.Sprintf(
+					`{"config":{"monthlyLimit":{"val":10000},"used":{"val":4000},"billingPeriodStart":%q,"billingPeriodEnd":%q}}`,
+					monthlyStart.Format(time.RFC3339), monthlyEnd.Format(time.RFC3339))), nil
+			})}
+			server.xaiCredentials = newXAICredentialManager(server.store, func(*model.Config) *http.Client { return server.client }, nil)
+			refresh := func(wantWarning bool) {
+				t.Helper()
+				response := callXAIUsage(t, server, cfg.ID)
+				if response.code != http.StatusOK {
+					t.Fatalf("refresh: status=%d body=%s", response.code, response.body)
+				}
+				summary := mustParseAPIResponse[oauthUsageSummary](t, response.raw).Data
+				if (len(summary.Warnings) > 0) != wantWarning {
+					t.Fatalf("warnings: %v", summary.Warnings)
+				}
+			}
+			addCost := func(cost float64) {
+				t.Helper()
+				if err := server.store.AddLog(ctx, &model.LogEntry{
+					Time: model.JSONTime{Time: base}, ChannelID: cfg.ID, Model: "grok-4.5", StatusCode: http.StatusOK, Cost: cost,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertCost := func(want int64) {
+				t.Helper()
+				gotCfg, err := server.store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, err := xaiauth.ParseCredential([]byte(gotCfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, key := range []string{"xai|weekly", "xai|monthly"} {
+					if w := oauthcost.Find(credential.QuotaCostUsage, key); w == nil || w.StandardCostMicroUSD != want {
+						t.Fatalf("%s cost = %+v, want %d", key, w, want)
+					}
+				}
+			}
+			refresh(false)
+			addCost(2)
+			assertCost(2_000_000)
+			unavailable = true
+			refresh(true)
+			assertCost(2_000_000)
+			addCost(0.25)
+			unavailable = false
+			refresh(false)
+			assertCost(2_250_000)
 		})
 	}
 }

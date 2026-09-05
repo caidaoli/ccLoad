@@ -384,8 +384,9 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 			}
 		}
 		updatedCredential.PassiveUsage = usage
-		updatedCredential.QuotaCostUsage = reconcileOAuthQuotaCostUsage(
-			current.QuotaCostUsage, anthropicPassiveUsageSummary(&updatedCredential), updateSampledAt,
+		// Response headers omit independent windows such as Sonnet's weekly quota.
+		updatedCredential.QuotaCostUsage = oauthcost.ReconcilePartial(
+			current.QuotaCostUsage, oauthQuotaSamples(anthropicPassiveUsageSummary(&updatedCredential)), updateSampledAt,
 		)
 		payload, err := updatedCredential.JSON()
 		if err != nil {

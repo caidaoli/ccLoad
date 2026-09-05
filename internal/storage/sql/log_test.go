@@ -172,6 +172,69 @@ func TestLog_BootstrapsOAuthQuotaWindowsFromSampledUsage(t *testing.T) {
 	}
 }
 
+func TestLog_OAuthQuotaResetUsesIncrementalRounding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cost float64
+		want int64
+	}{
+		{name: "round each up", cost: 0.0000006, want: 2},
+		{name: "round each down", cost: 0.0000004, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t, "quota-reset-rounding.db")
+			ctx := context.Background()
+			base := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
+			credential := &codexauth.Credential{
+				Type: "codex", AccessToken: "access", RefreshToken: "refresh", Expired: base.Add(time.Hour).Format(time.RFC3339),
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{{
+					Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800, ResetAt: base.Add(24 * time.Hour),
+				}}, base),
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "quota-rounding", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://api.example.com", Protocols: []string{"codex"}}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 1; i <= 2; i++ {
+				if err := store.AddLog(ctx, &model.LogEntry{
+					Time: newJSONTime(base.Add(time.Duration(i) * time.Second)), ChannelID: cfg.ID,
+					Model: "gpt-5.6-sol", StatusCode: http.StatusOK, Cost: tc.cost,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertCost := func() {
+				t.Helper()
+				gotCfg, err := store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := codexauth.ParseCredential([]byte(gotCfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				w := oauthcost.Find(got.QuotaCostUsage, "codex|primary")
+				if w == nil || w.StandardCostMicroUSD != tc.want {
+					t.Fatalf("cost = %+v, want %d microUSD", w, tc.want)
+				}
+			}
+			assertCost()
+			if err := store.ResetOAuthQuotaCostUsage(ctx, cfg.ID, base); err != nil {
+				t.Fatal(err)
+			}
+			assertCost()
+		})
+	}
+}
+
 func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	t.Parallel()
 

@@ -145,6 +145,9 @@ func reconcileOAuthQuotaCostUsage(
 	summary *oauthUsageSummary,
 	observedAt time.Time,
 ) *oauthcost.Usage {
+	if summary != nil && summary.Partial {
+		return oauthcost.ReconcilePartial(current, oauthQuotaSamples(summary), observedAt)
+	}
 	return oauthcost.Reconcile(current, oauthQuotaSamples(summary), observedAt)
 }
 
@@ -203,6 +206,17 @@ func pruneCodexPassiveQuotaCostUsage(
 			key := oauthcost.Key(window.LimitName, window.Kind)
 			if key != "" {
 				currentScopes[key] = codexPassiveWindowScope(window)
+			}
+		}
+	}
+	// ReconcilePartial can reject an old layout using a newer active sample.
+	// Its scope must then survive this pruning step as well.
+	if sampledAt, err := time.Parse(time.RFC3339Nano, update.SampledAt); err == nil {
+		for _, window := range usage.Windows {
+			if window != nil && window.SampledUpstreamAtUnixNano > sampledAt.UnixNano() {
+				delete(scopes, currentScopes[window.Key])
+				limitName := strings.ToLower(strings.TrimSpace(strings.SplitN(window.Key, "|", 2)[0]))
+				delete(incomingLimitNames, limitName)
 			}
 		}
 	}

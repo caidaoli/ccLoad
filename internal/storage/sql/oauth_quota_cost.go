@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -178,19 +179,23 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 		return nil, nil
 	}
 	rows, err := s.queryTx(ctx, tx, `
-		SELECT model, actual_model, COALESCE(SUM(cost), 0) FROM logs
+		SELECT model, actual_model, cost FROM logs
 		WHERE channel_id = ? AND time >= ? AND cost > 0
-		GROUP BY model, actual_model
 	`, channelID, resetAt.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	costUSDByFamily := make(map[string]float64, len(families))
+	costByFamily := make(map[string]int64, len(families))
 	for rows.Next() {
 		var modelName, actualModel string
 		var costUSD float64
 		if err := rows.Scan(&modelName, &actualModel, &costUSD); err != nil {
+			return nil, err
+		}
+		// Match incremental accounting: round each log before accumulating.
+		costMicroUSD, err := util.USDToMicroUSDSafe(costUSD)
+		if err != nil {
 			return nil, err
 		}
 		if actual := strings.TrimSpace(actualModel); actual != "" {
@@ -205,21 +210,16 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 				continue
 			}
 			if oauthcost.WindowMatchesModel(window, modelName) {
-				costUSDByFamily[window.Family] += costUSD
+				if costByFamily[window.Family] > math.MaxInt64-costMicroUSD {
+					return nil, errors.New("OAuth quota standard cost overflow")
+				}
+				costByFamily[window.Family] += costMicroUSD
 				matchedFamilies[window.Family] = struct{}{}
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	costByFamily := make(map[string]int64, len(costUSDByFamily))
-	for family, costUSD := range costUSDByFamily {
-		costMicroUSD, err := util.USDToMicroUSDSafe(costUSD)
-		if err != nil {
-			return nil, err
-		}
-		costByFamily[family] = costMicroUSD
 	}
 	return costByFamily, nil
 }
