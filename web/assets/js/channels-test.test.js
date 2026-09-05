@@ -6,11 +6,18 @@ function createClassList() {
   return {
     add: (...names) => names.forEach(name => values.add(name)),
     remove: (...names) => names.forEach(name => values.delete(name)),
-    contains: name => values.has(name)
+    contains: name => values.has(name),
+    toggle(name, force) {
+      const enabled = force === undefined ? !values.has(name) : force;
+      if (enabled) values.add(name);
+      else values.delete(name);
+    }
   };
 }
 
 function installTestChannelGlobals() {
+  const requests = [];
+  const updates = [];
   const elements = new Map();
   const makeElement = () => ({
     value: '',
@@ -37,17 +44,17 @@ function installTestChannelGlobals() {
       getElementById: getElement,
       createElement: () => makeElement()
     },
-    channels: [{
-      id: 7,
-      models: [
-        { model: 'first-model' },
-        { model: 'requested-model' }
-      ]
-    }],
+    channels: [],
     testingChannelId: null,
     testingClientProtocol: 'anthropic',
     defaultTestContent: 'hello',
-    fetchDataWithAuth: async () => [],
+    fetchDataWithAuth: async (url, options) => {
+      if (!options) return [];
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { success: true, status_code: 200, duration_ms: 1 };
+    },
+    TemplateEngine: { render: () => null },
+    handleChannelUpdateSuccess: async update => updates.push(update),
     maskKey: value => value
   };
   const previous = new Map();
@@ -57,6 +64,8 @@ function installTestChannelGlobals() {
   }
   return {
     elements,
+    requests,
+    updates,
     restore() {
       for (const [name, descriptor] of previous) {
         if (descriptor) Object.defineProperty(global, name, descriptor);
@@ -66,18 +75,28 @@ function installTestChannelGlobals() {
   };
 }
 
-test('渠道测试可以预选指定模型', async () => {
+test('渠道测试无需渠道列表即可预选模型、提交请求并刷新当前页面', async () => {
   const fixture = installTestChannelGlobals();
   const modulePath = require.resolve('./channels-test.js');
   delete require.cache[modulePath];
 
   try {
-    const { testChannel } = require(modulePath);
-    const opened = await testChannel(7, 'test-channel', 'requested-model');
+    const { testChannel, runChannelTest } = require(modulePath);
+    const opened = await testChannel({
+      id: 7,
+      name: 'test-channel',
+      models: [{ model: 'first-model' }, { model: 'requested-model' }]
+    }, 'requested-model');
 
     assert.equal(opened, true);
-    assert.equal(fixture.elements.get('testModelSelect').value, 'requested-model');
+    assert.equal(fixture.elements.get('channelTestModelSelect').value, 'requested-model');
     assert.equal(fixture.elements.get('testModal').classList.contains('show'), true);
+    await runChannelTest();
+    assert.deepEqual(fixture.requests, [{
+      url: '/admin/channels/7/test',
+      body: { model: 'requested-model', content: 'hello', stream: false, client_protocol: 'anthropic' }
+    }]);
+    assert.deepEqual(fixture.updates, [{ savedChannelId: 7 }]);
   } finally {
     delete require.cache[modulePath];
     fixture.restore();

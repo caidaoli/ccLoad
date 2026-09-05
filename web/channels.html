@@ -1663,8 +1663,8 @@
       </div>
       <div class="channel-test-grid">
         <div class="form-group channel-test-field">
-          <label class="form-label" for="testModelSelect" data-i18n="channels.selectTestModel">选择测试模型</label>
-          <select id="testModelSelect" class="model-select">
+          <label class="form-label" for="channelTestModelSelect" data-i18n="channels.selectTestModel">选择测试模型</label>
+          <select id="channelTestModelSelect" class="model-select">
             <!-- 动态填充模型选项 -->
           </select>
         </div>
@@ -1708,7 +1708,7 @@
       </div>
 
       <!-- 测试进度 -->
-      <div id="testProgress" class="test-progress">
+      <div id="channelTestProgress" class="test-progress">
         <div class="test-spinner"></div>
         <span id="testProgressText" data-i18n="channels.testingApi">正在测试API连接...</span>
       </div>
@@ -1735,7 +1735,7 @@
         <button type="button" id="testUpstreamDetailBtn" class="btn btn-secondary channel-test-upstream-btn hidden"
           data-action="show-upstream-detail" data-i18n="channels.test.viewUpstreamDetail">查看详情</button>
         <button type="button" class="btn btn-secondary" data-action="close-test-modal" data-i18n="common.close">关闭</button>
-        <button type="button" id="runTestBtn" class="btn btn-primary" data-action="run-channel-test"
+        <button type="button" id="channelRunTestBtn" class="btn btn-primary" data-action="run-channel-test"
           data-i18n="channels.singleTest">单个测试</button>
         <button type="button" id="batchTestBtn" class="btn btn-primary hidden" data-action="run-batch-test"
           data-i18n="channels.batchTestAllKeys">批量测试所有Key</button>

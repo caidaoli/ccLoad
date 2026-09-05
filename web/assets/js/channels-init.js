@@ -146,19 +146,8 @@ function initChannelsPageActions() {
         'batch-set-daily-cost-limit': () => batchSetSelectedChannelsDailyCostLimit(),
         'batch-clear-cooldowns': () => batchClearSelectedChannelCooldowns(),
         'clear-selected-channels': () => clearSelectedChannels(),
-        'close-test-modal': () => closeTestModal(),
-        'run-channel-test': () => runChannelTest(),
-        'run-batch-test': () => runBatchTest(),
-        'show-upstream-detail': () => window.UpstreamDetailModal?.show(window._lastTestUpstreamData),
-        'close-upstream-detail': () => window.UpstreamDetailModal?.close(),
         'close-sort-modal': () => closeSortModal(),
-        'save-sort-order': () => saveSortOrder(),
-        'toggle-response': (actionTarget) => {
-          const responseTarget = actionTarget.dataset.responseTarget;
-          if (responseTarget && typeof window.toggleResponse === 'function') {
-            window.toggleResponse(responseTarget);
-          }
-        }
+        'save-sort-order': () => saveSortOrder()
       }
     });
   }

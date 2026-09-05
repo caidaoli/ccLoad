@@ -2927,7 +2927,7 @@ function setupOAuthActions() {
           renderInlineKeyTable();
         }
         applyChannelAuthEditorMode(editingChannelAuthType, credential, result, result.oauth_credential_info, previousView);
-        await reloadChannelsList();
+        await handleChannelUpdateSuccess({ savedChannelId: editingChannelId, response: result });
         if (window.showSuccess) window.showSuccess(window.t(`${target.i18n}.credentialRefreshed`));
       } catch (error) {
         const message = error?.message || (target

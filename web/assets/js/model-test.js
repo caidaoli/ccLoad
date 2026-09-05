@@ -4706,7 +4706,7 @@ async function bootstrap() {
     return;
   }
   window.ChannelModalHooks = {
-    afterSave: async () => {
+    afterUpdate: async () => {
       await loadChannels({ preserveSelection: true, preserveTableState: true });
     }
   };

@@ -230,18 +230,6 @@ function toPositiveNumber(value) {
   return num;
 }
 
-// 加载默认测试内容（从系统设置）
-async function loadDefaultTestContent() {
-  try {
-    const setting = await fetchDataWithAuth('/admin/settings/channel_test_content');
-    if (setting && setting.value) {
-      defaultTestContent = setting.value;
-    }
-  } catch (e) {
-    console.warn('Failed to load default test content, using built-in default', e);
-  }
-}
-
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { loadChannels, loadChannelsFilterOptions, loadChannelStats };
 }

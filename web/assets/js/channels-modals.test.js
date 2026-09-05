@@ -948,7 +948,8 @@ function installModelRequestTestGlobals({ dirty = false } = {}) {
     editingChannelId: 7,
     editingChannelAuthType: 'api_key',
     channelFormDirty: dirty,
-    channels: [{ id: 7, name: 'test-channel' }],
+    document: { getElementById: id => id === 'channelName' ? { value: 'test-channel' } : null },
+    channels: [],
     testChannel: async (...args) => {
       calls.push({ type: 'open', args });
       return true;
@@ -1483,7 +1484,11 @@ test('model row test opens the existing test flow for the current model and runs
     const { testRedirectModel } = loadChannelsModals();
     assert.equal(await testRedirectModel(0, fixture.button), true);
     assert.deepEqual(fixture.calls, [
-      { type: 'open', args: [7, 'test-channel', 'requested-model'] },
+      { type: 'open', args: [{
+        id: 7,
+        name: 'test-channel',
+        models: [{ model: 'requested-model', redirect_model: 'upstream-model', disabled: false }]
+      }, 'requested-model'] },
       { type: 'run' }
     ]);
     assert.equal(fixture.button.disabled, false);

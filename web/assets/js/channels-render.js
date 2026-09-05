@@ -1452,7 +1452,7 @@ function initChannelEventDelegation() {
         }
         break;
       case 'test':
-        testChannel(channelId, channelName);
+        testChannel(channels.find(channel => channel.id === channelId));
         break;
       case 'toggle':
         toggleChannel(channelId, !enabled);

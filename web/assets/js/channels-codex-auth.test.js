@@ -855,14 +855,18 @@ test('closing and pagehide abort active OAuth secret submissions and clear brows
   }
 });
 
-test('logs channel editor opens a channel and displays Codex auth', async () => {
+for (const failFirstScript of [false, true]) {
+test(`logs channel editor supports Codex auth and Key models${failFirstScript ? ' after retrying a failed script' : ''}`, async () => {
   const requiredMarkupIDs = new Set([
     'channelModal',
+    'quickAddChannelModal',
     'commonModelsModal',
     'keyImportModal',
     'keyExportModal',
     'modelImportModal',
     'customRulesModal',
+    'testModal',
+    'upstreamDetailModal',
     'tpl-key-row',
     'tpl-key-empty',
     'tpl-cooldown-badge',
@@ -871,7 +875,10 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     'tpl-url-row',
     'tpl-url-empty',
     'tpl-redirect-row',
-    'tpl-redirect-empty'
+    'tpl-redirect-empty',
+    'tpl-test-result-header',
+    'tpl-response-section',
+    'tpl-batch-fail-item'
   ]);
   const elements = new Map();
   for (const id of [
@@ -892,10 +899,20 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     removeAttribute() {},
     classList: { add() {}, remove() {} }
   });
+  elements.set('channelModal', {
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; }
+  });
+  const keyModelScopeModal = {
+    id: 'keyModelScopeModal',
+    classList: { add() {}, remove() {} },
+    setAttribute(name, value) { this[name] = value; }
+  };
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
   let openedChannelID = null;
   let oauthSetupCalls = 0;
+  let scriptFailed = false;
   const previous = new Map();
   const installGlobal = (name, value) => {
     previous.set(name, Object.getOwnPropertyDescriptor(global, name));
@@ -908,11 +925,26 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     showError() {}
   });
   installGlobal('setupOAuthActions', () => { oauthSetupCalls++; });
+  installGlobal('editingChannelAuthType', 'api_key');
+  installGlobal('inlineKeyTableData', [{ api_key: 'sk-log-editor' }]);
+  installGlobal('fetch', async () => ({ ok: true, text: async () => '' }));
+  installGlobal('DOMParser', class {
+    parseFromString() {
+      return { getElementById: id => id === keyModelScopeModal.id ? keyModelScopeModal : null };
+    }
+  });
   installGlobal('document', {
     scripts,
+    body: { appendChild(node) { elements.set(node.id, node); } },
+    importNode: node => node,
     head: {
       appendChild(script) {
         scripts.push(script);
+        if (failFirstScript && !scriptFailed) {
+          scriptFailed = true;
+          script.onerror();
+          return;
+        }
         const path = new URL(script.src, global.window.location.origin).pathname;
         if (path === '/web/assets/js/channels-codex-auth.js') {
           global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
@@ -920,9 +952,10 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
         if (path === '/web/assets/js/channels-modals.js') {
           global.editChannel = async id => {
             openedChannelID = id;
+            global.editingChannelAuthType = id === 42 ? 'codex_oauth' : 'api_key';
             if (typeof global.applyChannelAuthEditorMode === 'function') {
               global.applyChannelAuthEditorMode(
-                'codex_oauth',
+                global.editingChannelAuthType,
                 { access_token: 'at-from-log-editor', refresh_token: 'rt-secret' },
                 { codex_plan_type: 'plus' }
               );
@@ -932,7 +965,7 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
         script.onload();
       }
     },
-    createElement: () => ({}),
+    createElement: () => ({ remove() { scripts.splice(scripts.indexOf(this), 1); } }),
     getElementById: id => elements.get(id) || (requiredMarkupIDs.has(id) ? {} : null),
     querySelectorAll: () => [],
     addEventListener() {}
@@ -947,11 +980,24 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
   try {
     require(modulePath);
     await global.window.openLogChannelEditor(42);
+    if (failFirstScript) {
+      assert.equal(openedChannelID, null);
+      await global.window.openLogChannelEditor(42);
+    }
 
     assert.equal(openedChannelID, 42);
     assert.equal(oauthSetupCalls, 1);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
+
+    await global.window.openLogChannelEditor(43);
+    const { openKeyModelScopeModal, closeKeyModelScopeModal } = require('./channels-keys.js');
+    assert.equal(openKeyModelScopeModal(0), true);
+    assert.equal(keyModelScopeModal['aria-hidden'], 'false');
+    assert.equal(elements.get('channelModal').inert, '');
+    closeKeyModelScopeModal(false);
+    assert.equal(keyModelScopeModal['aria-hidden'], 'true');
+    assert.equal(elements.get('channelModal').inert, undefined);
 
   } finally {
     delete require.cache[modulePath];
@@ -961,6 +1007,7 @@ test('logs channel editor opens a channel and displays Codex auth', async () => 
     }
   }
 });
+}
 
 test('Codex OAuth status polling waits for completion and encodes state', async () => {
   const requests = [];
@@ -1642,6 +1689,59 @@ test('manual Codex credential refresh targets the saved channel', async () => {
     options: { method: 'POST' }
   });
   await assert.rejects(() => refreshOAuthCredential(0, async () => response), /saved Codex channel/);
+});
+
+test('credential refresh succeeds in an editor without the channels list', async () => {
+  const { handleChannelUpdateSuccess } = require('./channels-modals.js');
+  const messages = [];
+  const updates = [];
+  let refresh;
+  const button = {
+    dataset: {},
+    addEventListener(type, handler) { if (type === 'click') refresh = handler; }
+  };
+  const content = { textContent: '', removeAttribute() {}, classList: { add() {}, remove() {} } };
+  const response = { oauth_credential: { access_token: 'at-refreshed', refresh_token: 'rt-refreshed' } };
+  const globals = {
+    window: {
+      t: key => key,
+      showSuccess: message => messages.push({ type: 'success', message }),
+      showError: message => messages.push({ type: 'error', message }),
+      ChannelModalHooks: { afterUpdate: async update => updates.push(update) }
+    },
+    document: {
+      getElementById: id => ({ codexCredentialRefreshButton: button, codexCredentialContent: content }[id] || null),
+      querySelectorAll: () => []
+    },
+    editingChannelId: 42,
+    editingChannelAuthType: 'codex_oauth',
+    reloadChannelsList: undefined,
+    handleChannelUpdateSuccess,
+    fetchDataWithAuth: async (url, options) => {
+      assert.equal(url, '/admin/channels/42/codex-credential/refresh');
+      assert.deepEqual(options, { method: 'POST' });
+      return response;
+    }
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  try {
+    setupOAuthActions();
+    await refresh();
+    assert.equal(JSON.parse(content.textContent).access_token, 'at-refreshed');
+    assert.deepEqual(messages, [{ type: 'success', message: 'channels.codex.credentialRefreshed' }]);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].savedChannelId, 42);
+    assert.equal(button.disabled, false);
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
 });
 
 test('Codex quota overdraft setting updates only the saved credential endpoint', async () => {

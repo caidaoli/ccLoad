@@ -3642,7 +3642,7 @@
         flex: 0 0 auto;
       }
 
-      #testModal #runTestBtn {
+      #testModal #channelRunTestBtn {
         order: 3;
         flex: 1 1 calc(50% - 4px);
       }

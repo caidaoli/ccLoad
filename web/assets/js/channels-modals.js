@@ -282,9 +282,9 @@ async function detectChannelWebsocketSupport(button) {
   }
 }
 
-async function handleChannelSaveSuccess({ isNewChannel, savedChannelId, response }) {
-  if (window.ChannelModalHooks && typeof window.ChannelModalHooks.afterSave === 'function') {
-    await window.ChannelModalHooks.afterSave({
+async function handleChannelUpdateSuccess({ isNewChannel = false, savedChannelId, response } = {}) {
+  if (window.ChannelModalHooks && typeof window.ChannelModalHooks.afterUpdate === 'function') {
+    await window.ChannelModalHooks.afterUpdate({
       isNewChannel,
       savedChannelId,
       response
@@ -340,6 +340,14 @@ function initChannelEditorActions() {
         'add-common-models': (actionTarget) => openCommonModelsModal(actionTarget),
         'close-common-models-modal': () => closeCommonModelsModal(),
         'confirm-common-models': () => confirmCommonModelsSelection(),
+        'close-test-modal': () => closeTestModal(),
+        'run-channel-test': () => runChannelTest(),
+        'run-batch-test': () => runBatchTest(),
+        'show-upstream-detail': () => window.UpstreamDetailModal?.show(window._lastTestUpstreamData),
+        'toggle-channel-test-response': (actionTarget) => {
+          const responseTarget = actionTarget.dataset.responseTarget;
+          if (responseTarget) window.toggleResponse(responseTarget);
+        },
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'export-channel-models': () => invokeChannelEditorAction('exportChannelModels'),
@@ -898,7 +906,7 @@ async function saveChannel(event) {
     invokeChannelEditorAction('completeManagementAccountSave');
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
-    await handleChannelSaveSuccess({ isNewChannel, savedChannelId, response: resp });
+    await handleChannelUpdateSuccess({ isNewChannel, savedChannelId, response: resp });
     if (window.showSuccess) window.showSuccess(isNewChannel ? window.t('channels.channelAdded') : window.t('channels.channelUpdated'));
   } catch (e) {
     console.error('Save channel failed', e);
@@ -2383,18 +2391,16 @@ async function testRedirectModel(index, button) {
     return false;
   }
 
-  const channel = channels.find(item => item.id === editingChannelId);
-  if (!channel) {
-    if (window.showError) window.showError(window.t('channels.test.channelNotFound'));
-    return false;
-  }
-
   if (button) {
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
   }
   try {
-    const opened = await testChannel(channel.id, channel.name, modelName);
+    const opened = await testChannel({
+      id: editingChannelId,
+      name: document.getElementById('channelName').value,
+      models: redirectTableData
+    }, modelName);
     if (!opened) return false;
     await runChannelTest();
     return true;
@@ -3817,6 +3823,7 @@ function confirmCommonModelsSelection() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    handleChannelUpdateSuccess,
     addCommonModels,
     fetchedKeyModelApplyAccepted,
     addCommonModelsToRows,
