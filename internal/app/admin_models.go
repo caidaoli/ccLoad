@@ -551,6 +551,7 @@ func (s *Server) fetchModelsForChannel(
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
+	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	if cfg.UsesXAIOAuth() {
 		return sortOAuthFetchModels(fetchXAIOAuthModels(cfg, overrideProtocol))
@@ -918,7 +919,7 @@ func (s *Server) fetchAntigravityModelsWithURLFallback(
 	for i := range cfg.URLs {
 		runtimeURLs[i] = cfg.URLs[i].RuntimeURL()
 	}
-	sortedURLs := orderURLsWithSelector(selector, cfg.ID, runtimeURLs)
+	sortedURLs := orderChannelAttemptURLs(selector, cfg, runtimeURLs)
 	sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, cfg.URLs)
 
 	var lastErr error

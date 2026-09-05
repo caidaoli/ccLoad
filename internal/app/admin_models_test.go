@@ -14,6 +14,7 @@ import (
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 
@@ -730,7 +731,10 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 
 func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	const accessToken = "antigravity-access-token-that-must-not-leak"
+	var primaryUnavailable atomic.Bool
+	var primaryCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
@@ -748,6 +752,10 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		}
 		if request.Project != "project-models" {
 			t.Fatalf("project = %q", request.Project)
+		}
+		if primaryUnavailable.Load() {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
 		}
 		_, _ = w.Write([]byte(`{"models":{
 			"claude-opus-4-6-thinking":{},
@@ -771,10 +779,20 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		}}`))
 	}))
 	t.Cleanup(upstream.Close)
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
+			t.Errorf("fallback request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"models":{"gemini-3.7-flash-high":{}}}`)
+	}))
+	t.Cleanup(fallback.Close)
 
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.urlSelector = NewURLSelector()
 	server.antigravityService = antigravityauth.NewService(upstream.Client())
 	server.antigravityCredentials = newAntigravityCredentialManager(server.antigravityService, store, nil, nil)
 
@@ -788,12 +806,17 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	}
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name: "Antigravity models", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: payload,
-		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"gemini"}}},
+		URLs: model.ChannelURLs{
+			{URL: upstream.URL, Protocols: []string{"gemini"}},
+			{URL: fallback.URL, Protocols: []string{"gemini"}},
+		},
 		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An unexplored fallback must not replace the primary's newer model catalog.
+	server.urlSelector.RecordLatency(cfg.ID, upstream.URL, time.Second)
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
@@ -853,6 +876,105 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	}
 	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
 		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+	}
+	if got := fallbackCalls.Load(); got != 0 {
+		t.Fatalf("fallback calls = %d, want 0 while the primary succeeds", got)
+	}
+
+	for _, tt := range []struct {
+		name             string
+		unavailable      bool
+		disabled         bool
+		wantPrimaryCalls int32
+	}{
+		{name: "primary error falls back", unavailable: true, wantPrimaryCalls: 1},
+		{name: "disabled primary is skipped", disabled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			primaryUnavailable.Store(tt.unavailable)
+			if tt.disabled {
+				server.urlSelector.DisableURL(cfg.ID, upstream.URL)
+				defer server.urlSelector.EnableURL(cfg.ID, upstream.URL)
+			}
+			beforePrimary, beforeFallback := primaryCalls.Load(), fallbackCalls.Load()
+			c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+			server.HandleFetchModels(c)
+			resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			wantFallback := []model.ModelEntry{{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"}}
+			if w.Code != http.StatusOK || !resp.Success || !reflect.DeepEqual(resp.Data.Models, wantFallback) {
+				t.Fatalf("unexpected fallback response: %s", w.Body.String())
+			}
+			if primaryCalls.Load()-beforePrimary != tt.wantPrimaryCalls || fallbackCalls.Load()-beforeFallback != 1 {
+				t.Fatalf("request counts: primary=%d fallback=%d", primaryCalls.Load()-beforePrimary, fallbackCalls.Load()-beforeFallback)
+			}
+		})
+	}
+}
+
+func TestAdminModels_HandleFetchModels_AntigravityDefaultEndpoints(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		configuredURL string
+		overrideURL   string
+		dailyFails    bool
+		wantURLs      []string
+	}{
+		{
+			name: "legacy production URL still starts with daily", configuredURL: antigravityProdBaseURL,
+			wantURLs: []string{antigravityDailyBaseURL},
+		},
+		{
+			name: "daily failure uses daily sandbox", configuredURL: antigravityDailyBaseURL, dailyFails: true,
+			wantURLs: []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURL},
+		},
+		{
+			name: "explicit global URL overrides provider defaults", configuredURL: antigravityDailyBaseURL,
+			overrideURL: antigravityProdBaseURL, wantURLs: []string{antigravityProdBaseURL},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newInMemoryServerWithSettings(t, map[string]string{config.AntigravityURLSettingKey: tt.overrideURL})
+			var gotURLs []string
+			server.antigravityClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPost || req.URL.Path != "/v1internal:fetchAvailableModels" {
+					t.Errorf("model discovery request = %s %s", req.Method, req.URL.Path)
+				}
+				baseURL := req.URL.Scheme + "://" + req.URL.Host
+				gotURLs = append(gotURLs, baseURL)
+				status := http.StatusOK
+				body := `{"models":{"gemini-3.8-flash-high":{}}}`
+				if tt.dailyFails && baseURL == antigravityDailyBaseURL {
+					status = http.StatusServiceUnavailable
+					body = `{"error":{"message":"temporarily unavailable"}}`
+				}
+				return &http.Response{
+					StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(body)), Request: req,
+				}, nil
+			})}
+			cfg := createAntigravityOAuthChannelForAdminTest(t, server, tt.configuredURL)
+			channelID := fmt.Sprintf("%d", cfg.ID)
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+channelID+"/models/fetch", nil))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			server.HandleFetchModels(c)
+
+			resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			wantModels := []model.ModelEntry{{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"}}
+			if w.Code != http.StatusOK || !resp.Success || !reflect.DeepEqual(resp.Data.Models, wantModels) {
+				t.Fatalf("unexpected model response: %s", w.Body.String())
+			}
+			if !reflect.DeepEqual(gotURLs, tt.wantURLs) {
+				t.Fatalf("model discovery URLs = %v, want %v", gotURLs, tt.wantURLs)
+			}
+			persisted, err := server.store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(persisted.URLs, cfg.URLs) {
+				t.Fatalf("model discovery changed persisted URLs: %v", persisted.URLs)
+			}
+		})
 	}
 }
 
