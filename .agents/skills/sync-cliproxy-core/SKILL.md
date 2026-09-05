@@ -1,11 +1,15 @@
 ---
 name: sync-cliproxy-core
-description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、cliproxy、translator core、provider adapters、Antigravity 请求/响应转换、internal/protocol/cliproxy 转换快照，刷新上游 commit，或审查一次核心与渠道适配器的原子同步结果。
+description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider adapter 快照。适用于上游版本对齐，不用于普通渠道配置或独立业务修复。
 ---
 
 # 同步 CLIProxy 转换核心与渠道适配器
 
 一次同步 CLIProxyAPI 的四协议纯转换核心、已登记 provider adapters 及其对应测试。保持 ccLoad Registry 和 provider wire 契约，不引入上游运行时系统。
+
+阅读或编辑本技能本身不执行同步。仅审计时固定比较目标、核对来源与 manifest、报告差异和验证结果，不进入集成变更或更新来源步骤。
+
+仅审计当前快照且未指定比较目标时，使用 `UPSTREAM.md` 已记录的 commit；要求对比最新或指定版本时才解析相应目标。下方自动选择最新稳定版的规则适用于同步请求。
 
 默认调用 `$sync-cliproxy-core` 时，自动固定上游最新稳定版本，并在同一次操作中完成 core 与全部已登记 provider adapters 的比较、集成、来源更新和验证。不要把 provider adapters 留给第二次同步。用户明确指定 commit/tag 时使用指定目标；用户明确要求仅审计时保持只读。
 
@@ -18,7 +22,7 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 
 ## 权威边界
 
-1. 先读仓库根目录 `CLAUDE.md`、`internal/protocol/cliproxy/UPSTREAM.md`、[core snapshot manifest](references/core-snapshot.manifest)、[provider adapter 语义边界](references/provider-adapters.md)和[provider manifest](references/provider-adapters.manifest)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；core manifest 记录直接映射根、特殊映射、明确排除和最近一次 core/provider 原子差异的审查 blob，provider manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
+1. 按任务读取 [协议转换边界](../../../.claude/agent-guide/protocol.md)、`internal/protocol/cliproxy/UPSTREAM.md`、[core snapshot manifest](references/core-snapshot.manifest)、[provider adapter 语义边界](references/provider-adapters.md)和[provider manifest](references/provider-adapters.manifest)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；core manifest 记录直接映射根、特殊映射、明确排除和最近一次 core/provider 原子差异的审查 blob，provider manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
 2. `internal/protocol/registry.go` 定义四协议契约；`internal/protocol/builtin/cliproxy_adapter.go` 处理通用输入验证、JSON/SSE 规范化和流帧封装；`internal/protocol/cliproxy/providers/` 保存 provider-specific 纯转换。
 3. provider 选择留在 ccLoad 请求上下文边界，按实际 wire dialect/AuthType 决定；不要把 provider 注册成第五种通用客户端协议。
 4. 不引入 CLIProxyAPI 的认证、配置、路由、缓存服务、插件、动态 Registry、executor 或网络刷新代码。Interactions 只有在 ccLoad 正式支持其线协议后才可登记。
@@ -48,6 +52,7 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 - 先生成目录级和文件级变化清单，再确认新增文件是纯转换语义。provider 的 `init.go`、动态 Registry 和 noop/分配实现测试按 allowlist 排除。
 - 每个上游 core 变更必须由 core manifest 分类为直接映射、特殊映射、明确删除、明确排除或已登记 provider，并为本次所有非排除 core/provider 差异刷新 review blob。新增 core 源根或本地特例时更新 core manifest；上游删除已同步文件时登记 `delete` 行并删除本地映射；新增 provider 时更新 provider manifest、语义边界和 `UPSTREAM.md`。脚本只从 manifest 读取这些清单，不复制第二份。审计失败不能靠跳过检查解决。
 - 明确列出排除的上游包。不要因为编译缺失就搬入 runtime；删除副作用依赖，或在同步包内用已有纯 `common`/`signature`/`util` 能力替代。
+- 上游删除字段注入时，确认行为是否迁移到被排除的 runtime 层；若是，必须在本地转换边界保留，并用 Registry 契约测试验证。
 - 复查 `UPSTREAM.md` 已排除项的排除理由是否仍成立：上游重构可能使旧理由失效（该同步的补回来），也可能采纳了本地契约（删掉过期的本地差异注记）。
 
 ### 4. 集成变更
@@ -79,7 +84,7 @@ bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests --require-provi
 
 `--require-providers` 是完整同步的完成门禁：它同时要求 `--upstream-repo` 和完整的 `--base-commit`。该 base 必须等于 Git `HEAD` 中修改前 `UPSTREAM.md` 记录的同步 SHA，调用者不能跳过较早变更；脚本随后强制 base 到工作区 `UPSTREAM.md` 目标提交的每个 core/provider 变更都已映射、删除或明确排除。若 base 已等于目标，说明快照本来就是最新版本，脚本改做目标树、review blob 和 provider 的确定性审计，不伪造空同步差异。任一 allowlist provider 尚未落地、review blob 陈旧或出现未知上游文件时必须失败。日常审计历史快照可以省略这些参数，但不得据此报告完整同步成功。
 
-再运行仓库级检查：
+完成同步后运行仓库级检查；只读审计根据实际审计范围选择相关检查：
 
 ```bash
 go test -tags sonic ./internal/...
@@ -88,21 +93,7 @@ golangci-lint run ./...
 git diff --check
 ```
 
-只在并发相关代码受影响时运行 `make race-fast` 或 `make race`。根据最终差异排查是否需要同步更新 `CLAUDE.md`、`README.md` 和 `README.zh-CN.md`。
-
-## 红线自查
-
-出现以下任一念头，停下并回到对应章节，不要继续：
-
-- 「先同步 core，provider 下次再说」→ 违反原子同步契约；整次同步保持未完成
-- 「编译缺依赖，把上游 runtime 包也搬进来」→ 在纯转换包或适配边界消除依赖（比较范围）
-- 「找不到稳定 tag，就用分支 HEAD / 最新提交」→ 停止并说明原因（固定目标）
-- 「上游行为和本地测试冲突，改测试跟上游对齐」→ Registry 边界测试是权威，保留本地契约（权威边界）
-- 「审计脚本报新目录，往允许列表里加个跳过」→ 先确认目录确属纯转换核心，再更新允许列表（比较范围）
-- 「上游 diff 删了转换器里的某个字段注入，跟着删」→ 先确认该行为是消失了，还是迁进了被排除的 runtime 层；后者必须在转换核心保留，只有 Registry 边界测试能抓住这种丢失（权威边界）
-- 「provider 代码先复制但不接生产路径」→ 死代码不算同步；补 provider 边界接线与契约测试（集成变更）
-- 「先更新 UPSTREAM.md 占位，测试晚点补」→ core、provider、接线与测试全部完成后才更新来源记录（更新来源记录）
-- 「文件已经存在，测试数量也没少，应该同步到了」→ 用旧/目标提交差异和 core review blob 证明，不用存在性或数量猜测（验证）
+只在并发相关代码受影响时运行 `make race-fast` 或 `make race`。根据最终差异更新 `.claude/agent-guide/` 中受影响的专题及必要的 `README.md` / `README.zh-CN.md`；只有通用约束或入口变化才修改 `CLAUDE.md`。
 
 ## 完成报告
 
@@ -111,5 +102,5 @@ git diff --check
 - 原同步 commit、目标 commit 和上游 checkout；
 - 同一次同步覆盖的 core、provider 目录/文件与明确排除的上游模块；
 - 为维持 ccLoad Registry/provider wire contract 保留或新增的本地差异；
-- `UPSTREAM.md`、许可证和三份项目文档是否更新；
+- `UPSTREAM.md`、许可证和相关项目文档是否更新；
 - 每条验证命令的结果。

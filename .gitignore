@@ -46,12 +46,11 @@ Thumbs.db
 # Playwright MCP
 .playwright-mcp
 
-# Claude Code local state; keep the shared repository skill entry
-.claude/*
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/sync-cliproxy-core
-!.claude/skills/ccload-release
+# Claude Code local state
+/.claude/settings.local.json
+/.claude/.cc-writes/
+/.claude/worktrees/
+/.claude/plans/
 com.ccload.service.plist
 .dataX
 .serena

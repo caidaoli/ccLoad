@@ -1,11 +1,13 @@
 ---
 name: ccload-release
-description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，按固定版本通道计算并发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和对应通道的容器镜像。Beta 固定沿用最近稳定版的主版本和次版本；只有显式 stable 发布才允许修改次版本。
+description: 发布 ccLoad Beta 或显式 stable 版本，完成提交、推送、CI、Release 和镜像验证；仅检查或修改发布流程时不执行发布。
 ---
 
 # 发布 ccLoad
 
 通过唯一的 Tag 驱动 `.github/workflows/release.yml`。不要手动创建 Release、手动触发发布工作流或单独发布容器镜像。
+
+只要求计算版本或预检时，执行下方对应的 dry-run 并报告结果，不进入 publish。用户要求发布或单独调用本技能（可带通道参数）才适用自动提交、推送和发布授权；编辑技能文件不执行发布。
 
 ## 参数契约
 
