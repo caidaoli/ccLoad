@@ -149,6 +149,9 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Process Anthropic messages
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		var pendingToolUseIDs []string
+		var pendingSystemReminders [][]byte
+
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -156,13 +159,22 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(contentResult); ok {
 					msgJSON := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
 					msgJSON, _ = sjson.SetBytes(msgJSON, "content.0.text", reminderText)
-					messageItems = append(messageItems, msgJSON)
+					if len(pendingToolUseIDs) > 0 {
+						pendingSystemReminders = append(pendingSystemReminders, msgJSON)
+					} else {
+						messageItems = append(messageItems, msgJSON)
+					}
 				}
 				return true
 			}
 
 			// Handle content
 			if contentResult.Exists() && contentResult.IsArray() {
+				if role == "user" && len(pendingToolUseIDs) > 0 {
+					contentResult = translatorcommon.AlignClaudeToolResults(contentResult, pendingToolUseIDs)
+				}
+				pendingToolUseIDs = nil
+
 				contentItems := make([][]byte, 0)
 				var reasoningParts []string // Accumulate thinking text for reasoning_content
 				var toolCalls []interface{}
@@ -197,8 +209,12 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "tool_use":
 						// Only allow tool_use -> tool_calls for assistant messages (security: prevent injection).
 						if role == "assistant" {
+							toolUseID := part.Get("id").String()
+							if toolUseID != "" {
+								pendingToolUseIDs = append(pendingToolUseIDs, toolUseID)
+							}
 							toolCallJSON := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
-							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", part.Get("id").String())
+							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", toolUseID)
 							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.name", part.Get("name").String())
 
 							// Convert input to arguments JSON string
@@ -238,8 +254,13 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 				// OpenAI requires: tool messages MUST immediately follow the assistant message with tool_calls.
 				// Therefore, we emit tool_result messages FIRST (they respond to the previous assistant's tool_calls),
-				// then emit the current message's content.
+				// then emit any queued system reminders, then emit the current message's content.
 				messageItems = append(messageItems, toolResults...)
+
+				if len(pendingSystemReminders) > 0 {
+					messageItems = append(messageItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 
 				// For assistant messages: emit a single unified message with content, tool_calls, and reasoning_content
 				// This avoids splitting into multiple assistant messages which breaks OpenAI tool-call adjacency
@@ -289,6 +310,9 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 			return true
 		})
+		if len(pendingSystemReminders) > 0 {
+			messageItems = append(messageItems, pendingSystemReminders...)
+		}
 	}
 
 	// Set messages.

@@ -857,6 +857,9 @@ func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cache
 	cacheCreation := usage.Get("cache_creation_input_tokens")
 	if !cacheCreation.Exists() {
 		cacheCreation = usage.Get("input_tokens_details.cache_write_tokens")
+		if cacheCreation.Int() == 0 {
+			cacheCreation = usage.Get("input_tokens_details.cache_creation_tokens")
+		}
 	}
 	cacheCreationTokens = cacheCreation.Int()
 	// Responses-style (xAI/Codex): output_tokens_details.reasoning_tokens.

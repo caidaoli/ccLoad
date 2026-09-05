@@ -11,6 +11,46 @@ import (
 	"ccLoad/internal/protocol/builtin"
 )
 
+func TestRegistry_TranslateResponseNonStream_AnthropicTruncation(t *testing.T) {
+	t.Parallel()
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, block := range []struct {
+		name string
+		json string
+	}{
+		{"text", `{"type":"text","text":"partial answer"}`},
+		{"tool", `{"type":"tool_use","id":"call_1","name":"lookup","input":{"query":"go"}}`},
+		{"thinking", `{"type":"thinking","thinking":"partial thought","signature":"sig_1"}`},
+	} {
+		t.Run(block.name, func(t *testing.T) {
+			for _, stopReason := range []string{"end_turn", "max_tokens"} {
+				raw := []byte(fmt.Sprintf(`{"id":"msg_partial","type":"message","role":"assistant","content":[{"type":"text","text":"first"},%s],"stop_reason":%q,"usage":{"input_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":11,"output_tokens":5}}`, block.json, stopReason))
+				request := []byte(`{"instructions":"preserve me"}`)
+				got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", request, nil, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := mustJSONMap(t, got)
+				output := mustSlice(t, response["output"])
+				if len(output) != 2 || mustMap(t, output[0])["status"] != "completed" || response["instructions"] != "preserve me" {
+					t.Fatalf("lost content order or request echo: %s", got)
+				}
+				wantStatus := "completed"
+				if stopReason == "max_tokens" {
+					wantStatus = "incomplete"
+					if mustMap(t, response["incomplete_details"])["reason"] != "max_output_tokens" || mustMap(t, output[1])["status"] != wantStatus {
+						t.Fatalf("lost partial item state: %s", got)
+					}
+				}
+				if response["status"] != wantStatus || mustMap(t, response["usage"])["input_tokens"] != float64(21) {
+					t.Fatalf("unexpected status or cache accounting: %s", got)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_GeminiStructuredOutbound(t *testing.T) {
 	t.Parallel()
 
@@ -470,9 +510,8 @@ func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("content_block_stop failed: %v", err)
 		}
-		joined := string(bytes.Join(toolChunk, nil))
-		if !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"toolu_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
-			t.Fatalf("unexpected Codex tool chunk: %#v", toolChunk)
+		if len(toolChunk) != 0 {
+			t.Fatalf("tool completion must wait for the terminal stop reason: %q", toolChunk)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n"), &state); err != nil || out != nil {
 			t.Fatalf("message_delta = %#v, %v", out, err)
@@ -481,8 +520,16 @@ func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("message_stop failed: %v", err)
 		}
-		if len(done) != 1 || !strings.Contains(string(done[0]), `event: response.completed`) || !strings.Contains(string(done[0]), `"input_tokens":3`) || !strings.Contains(string(done[0]), `"output_tokens":5`) {
-			t.Fatalf("unexpected Codex done chunk: %#v", done)
+		stream := string(bytes.Join(done, nil))
+		item := mustMap(t, mustSSEEventData(t, stream, "response.output_item.done")["item"])
+		arguments := mustJSONMap(t, []byte(mustString(t, item["arguments"])))
+		if item["type"] != "function_call" || item["status"] != "completed" || item["call_id"] != "toolu_1" || item["name"] != "lookup" || arguments["query"] != "go" {
+			t.Fatalf("unexpected Codex tool completion: %s", stream)
+		}
+		completed := mustMap(t, mustSSEEventData(t, stream, "response.completed")["response"])
+		usage := mustMap(t, completed["usage"])
+		if usage["input_tokens"] != float64(3) || usage["output_tokens"] != float64(5) {
+			t.Fatalf("unexpected Codex usage: %s", stream)
 		}
 	})
 }
@@ -583,9 +630,9 @@ func TestRegistry_TranslateResponseStream_AnthropicReasoningAndUsageDetails(t *t
 		if err != nil {
 			t.Fatalf("content_block_stop failed: %v", err)
 		}
-		reasoningJoined := string(bytes.Join(reasoning, nil))
-		if !strings.Contains(reasoningJoined, `event: response.output_item.done`) || !strings.Contains(reasoningJoined, `"type":"reasoning"`) || !strings.Contains(reasoningJoined, `"text":"step by step"`) || !strings.Contains(reasoningJoined, `"encrypted_content":"sig_1"`) {
-			t.Fatalf("unexpected Codex reasoning chunk: %#v", reasoning)
+		summary := mustSSEEventData(t, string(bytes.Join(reasoning, nil)), "response.reasoning_summary_text.done")
+		if summary["text"] != "step by step" {
+			t.Fatalf("unexpected Codex reasoning summary: %q", reasoning)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11,\"reasoning_tokens\":13}}\n\n"), &state); err != nil || out != nil {
 			t.Fatalf("message_delta = %#v, %v", out, err)
@@ -594,8 +641,17 @@ func TestRegistry_TranslateResponseStream_AnthropicReasoningAndUsageDetails(t *t
 		if err != nil {
 			t.Fatalf("message_stop failed: %v", err)
 		}
-		if len(done) != 1 || !strings.Contains(string(done[0]), `"input_tokens":21`) || !strings.Contains(string(done[0]), `"cached_tokens":7`) || !strings.Contains(string(done[0]), `"cache_creation_input_tokens":11`) || !strings.Contains(string(done[0]), `"reasoning_tokens":13`) {
-			t.Fatalf("unexpected Codex done chunk: %#v", done)
+		stream := string(bytes.Join(done, nil))
+		item := mustMap(t, mustSSEEventData(t, stream, "response.output_item.done")["item"])
+		if item["type"] != "reasoning" || item["encrypted_content"] != "sig_1" {
+			t.Fatalf("unexpected Codex reasoning completion: %s", stream)
+		}
+		completed := mustMap(t, mustSSEEventData(t, stream, "response.completed")["response"])
+		usage := mustMap(t, completed["usage"])
+		inputDetails := mustMap(t, usage["input_tokens_details"])
+		outputDetails := mustMap(t, usage["output_tokens_details"])
+		if usage["input_tokens"] != float64(21) || inputDetails["cached_tokens"] != float64(7) || usage["cache_creation_input_tokens"] != float64(11) || outputDetails["reasoning_tokens"] != float64(13) {
+			t.Fatalf("unexpected Codex usage: %s", stream)
 		}
 	})
 }

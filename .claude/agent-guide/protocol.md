@@ -8,3 +8,6 @@
 - 不要把上游 auth/config/routing/cache service/plugin/executor/network 代码搬进来,也不要改成运行时 Go module 依赖;来源 commit、provider allowlist、许可证和同步步骤以 `protocol/cliproxy/UPSTREAM.md` 与仓库 Skill 为准
 - `RequestTranslationError` 是客户端语义错误:代理返回 HTTP 400,不切渠道、不冷却;不要把无法表示的请求伪装成上游故障
 - Registry 边界测试定义 ccLoad 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
+- Anthropic 转 Responses 的原生 JSON 与 SSE 都把 `max_tokens` 映射为 `incomplete`;流式 output item 在下一个内容块或 message stop 时确定最终状态,不得在得知截断原因前报告完成
+- 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
+- Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并

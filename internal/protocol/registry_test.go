@@ -117,7 +117,7 @@ func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testi
 	}{
 		{name: "missing stays absent", model: "gemini-3.6-flash-high"},
 		{name: "adaptive without effort stays absent", model: "gemini-3.6-flash-high", adaptive: true},
-		{name: "minimal stays minimal when supported", model: "gemini-3.6-flash-high", effort: "minimal", want: "minimal"},
+		{name: "minimal clamps to catalog minimum", model: "gemini-3.6-flash-high", effort: "minimal", want: "low"},
 		{name: "low stays low", model: "gemini-3.6-flash-high", effort: "low", want: "low"},
 		{name: "medium stays medium", model: "gemini-3.6-flash-high", effort: "medium", want: "medium"},
 		{name: "high stays high", model: "gemini-3.6-flash-high", effort: "high", want: "high"},

@@ -1388,6 +1388,59 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var callIDs, resultIDs []string
+		foundReminder := false
+		for _, content := range gjson.GetBytes(wire, "request.contents").Array() {
+			for _, part := range content.Get("parts").Array() {
+				if call := part.Get("functionCall"); call.Exists() {
+					callIDs = append(callIDs, call.Get("id").String())
+				}
+				if result := part.Get("functionResponse"); result.Exists() {
+					resultIDs = append(resultIDs, result.Get("id").String())
+					if content.Get("role").String() != "user" {
+						t.Errorf("tool result has non-user role: %s", wire)
+					}
+				}
+				foundReminder = foundReminder || strings.Contains(part.Get("text").String(), "keep the reminder")
+			}
+		}
+		if strings.Join(callIDs, ",") != "call_a,call_b" || strings.Join(resultIDs, ",") != "call_a,call_b" || !foundReminder {
+			t.Errorf("lost tool pairing or system reminder: %s", wire)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-system-tool-pairing", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-system-pairing"),
+	}}, map[int]string{0: upstream.URL})
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "gemini-3-flash", "max_tokens": 64,
+		"messages": []any{
+			map[string]any{"role": "user", "content": "read both"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": "call_a", "name": "read_a", "input": map[string]any{}},
+				map[string]any{"type": "tool_use", "id": "call_b", "name": "read_b", "input": map[string]any{}},
+			}},
+			map[string]any{"role": "system", "content": "keep the reminder"},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "call_b", "content": "B"},
+				map[string]any{"type": "tool_result", "tool_use_id": "call_a", "content": "A"},
+			}},
+		},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestProxy_AntigravityClaudeSequentialToolHistoryBackfillsThoughtSignatures(t *testing.T) {
 	validThinkingSignature := antigravityProxyClaudeThoughtSignature("claude-opus-5")
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

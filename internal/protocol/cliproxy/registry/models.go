@@ -20,9 +20,10 @@ type ThinkingSupport struct {
 
 // ModelInfo describes immutable model capabilities used during conversion.
 type ModelInfo struct {
-	ID       string           `json:"id"`
-	Name     string           `json:"name,omitempty"`
-	Thinking *ThinkingSupport `json:"thinking,omitempty"`
+	ID                  string           `json:"id"`
+	Name                string           `json:"name,omitempty"`
+	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
+	Thinking            *ThinkingSupport `json:"thinking,omitempty"`
 }
 
 type modelCatalog struct {

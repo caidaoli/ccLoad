@@ -236,13 +236,16 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			originalRole := roleResult.String()
-			precedingToolUseIDs := pendingToolUseIDs
-			pendingToolUseIDs = nil
+			var precedingToolUseIDs []string
+			if originalRole != "system" && originalRole != "developer" {
+				precedingToolUseIDs = pendingToolUseIDs
+				pendingToolUseIDs = nil
+			}
 			role := originalRole
 			switch role {
 			case "assistant":
 				role = "model"
-			case "system":
+			case "system", "developer":
 				role = "user"
 			}
 			partItems := make([][]byte, 0, 4)
@@ -265,7 +268,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				pendingDetachedTargetKind = targetKind
 			}
 			contentsResult := messageResult.Get("content")
-			if originalRole == "system" {
+			if originalRole == "system" || originalRole == "developer" {
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(contentsResult); ok {
 					partJSON := []byte(`{}`)
 					partJSON, _ = sjson.SetBytes(partJSON, "text", reminderText)
@@ -308,13 +311,15 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							clearPendingDetachedSignature()
 						}
 
-						// Skip unsigned thinking blocks instead of converting them to text.
+						isGeminiSignature := sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini
+
+						// Skip unsigned thinking blocks instead of converting them to text for non-Gemini providers.
 						isUnsigned := !hasResolvedThinkingSignature(modelName, signature)
 
 						// If unsigned, skip entirely (don't convert to text)
 						// Claude requires assistant messages to start with thinking blocks when thinking is enabled
 						// Converting to text would break this requirement
-						if isUnsigned {
+						if isUnsigned && !isGeminiSignature {
 							logDroppedAntigravityThinkingSignature(modelName, i, j, thinkingText, signatureResult)
 							enableThoughtTranslate = false
 							continue
@@ -332,7 +337,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								nextTargetKind = geminiClaudeCarrierFunction
 							}
 						}
-						isGeminiSignature := sigcompat.SignatureProviderFromModelName(modelName) == sigcompat.SignatureProviderGemini
 						_, carrierDirection, carrierTargetKind, markedCarrier, validCarrier := decodeGeminiClaudeCarrierSignature(signatureResult.String())
 
 						// Gemini places the signature on the visible text/function part that
@@ -732,7 +736,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRawBytes(out, "request.systemInstruction", antigravityClaudeContent("user", systemParts))
 	}
 	if len(contentItems) > 0 {
-		out = translatorcommon.SetRawArrayItems(out, "request.contents", contentItems)
+		out = translatorcommon.SetRawArrayItems(out, "request.contents", translatorcommon.MergeAdjacentGeminiContents(contentItems))
 	}
 	if toolDeclCount > 0 {
 		out, _ = sjson.SetRawBytes(out, "request.tools", toolsJSON)

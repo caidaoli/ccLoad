@@ -105,12 +105,12 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	template = setOpenAIUsage(template, gjson.GetBytes(rawJSON, "response.usage"))
 
 	switch dataType {
-	case "response.reasoning_summary_text.delta":
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", deltaResult.String())
 		}
-	case "response.reasoning_summary_text.done":
+	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
 	case "response.output_text.delta":
