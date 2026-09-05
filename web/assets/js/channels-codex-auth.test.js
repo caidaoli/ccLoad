@@ -17,6 +17,8 @@ const {
   pollAnthropicOAuthStatus,
   pollXAIOAuthStatus,
   getOAuthUsageState,
+  snapshotOAuthUsageStates,
+  syncOAuthUsageFromChannels,
   maybeAutoRefreshActiveChannelUsage,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
@@ -1949,6 +1951,113 @@ test('OAuth usage refresh stores one safe per-channel quota summary', async () =
     assert.equal(renders, 2);
   } finally {
     global.filterChannels = previousFilterChannels;
+  }
+});
+
+test('channel reload updates quota percentages and costs without overwriting newer operations', async () => {
+  const previousGlobals = new Map();
+  const setGlobal = (name, value) => {
+    previousGlobals.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const pendingLists = [];
+  const usage = cost => ({
+    provider: 'codex',
+    windows: [
+      { limit_name: 'codex', kind: 'primary', remaining_percent: 54, standard_cost_microusd: cost },
+      { limit_name: 'codex', kind: 'secondary', remaining_percent: 45, standard_cost_microusd: cost * 10 }
+    ]
+  });
+  const channelID = 1499;
+  const finishList = (resolve, data) => resolve({
+    success: true, count: 1, data: [{ id: channelID, auth_type: 'codex_oauth', oauth_usage: data }]
+  });
+  setGlobal('filters', {});
+  setGlobal('channels', []);
+  setGlobal('channelsPageSize', 20);
+  setGlobal('channelsCurrentPage', 1);
+  setGlobal('channelsTotalCount', 0);
+  setGlobal('channelsTotalPages', 1);
+  setGlobal('channelStatsRange', 'today');
+  setGlobal('channelsReadURL', value => value);
+  setGlobal('filterChannels', () => {});
+  setGlobal('window', { t: key => key });
+  setGlobal('fetchAPIWithAuth', () => new Promise(resolve => pendingLists.push(resolve)));
+  setGlobal('snapshotOAuthUsageStates', snapshotOAuthUsageStates);
+  setGlobal('syncOAuthUsageFromChannels', syncOAuthUsageFromChannels);
+  setGlobal('maybeAutoRefreshActiveChannelUsage', undefined);
+  const { loadChannels } = require('./channels-data.js');
+  try {
+    await refreshOAuthUsage(channelID, async () => usage(1), { reload: false });
+    let request = loadChannels();
+    const updated = usage(5_697_691);
+    finishList(pendingLists.shift(), updated);
+    await request;
+    assert.deepEqual(getOAuthUsageState(channelID).data, updated);
+
+    // Concurrent lists must always leave the last requested snapshot visible,
+    // regardless of which network response finishes first.
+    for (const reverse of [false, true]) {
+      const first = loadChannels();
+      const second = loadChannels();
+      const resolveFirst = pendingLists.shift();
+      const resolveSecond = pendingLists.shift();
+      const newest = usage(reverse ? 30 : 20);
+      if (reverse) {
+        finishList(resolveSecond, newest);
+        await second;
+        finishList(resolveFirst, usage(2));
+      } else {
+        finishList(resolveFirst, usage(2));
+        await first;
+        finishList(resolveSecond, newest);
+      }
+      await Promise.all([first, second]);
+      assert.deepEqual(getOAuthUsageState(channelID).data, newest);
+      assert.deepEqual(global.channels[0].oauth_usage, newest);
+    }
+
+    request = loadChannels();
+    const manual = usage(40);
+    await refreshOAuthUsage(channelID, async () => manual, { reload: false });
+    finishList(pendingLists.shift(), usage(3));
+    await request;
+    assert.deepEqual(getOAuthUsageState(channelID).data, manual);
+
+    let resolveReset;
+    const reset = resetCodexQuota(channelID, () => new Promise(resolve => { resolveReset = resolve; }), { reload: false });
+    request = loadChannels();
+    finishList(pendingLists.shift(), usage(4));
+    await request;
+    assert.equal(getOAuthUsageState(channelID).reset_status, 'loading');
+    assert.deepEqual(getOAuthUsageState(channelID).data, manual);
+    request = loadChannels();
+    const resetUsage = usage(0);
+    resolveReset({ reset: true, usage: resetUsage });
+    await reset;
+    finishList(pendingLists.shift(), usage(5));
+    await request;
+    assert.deepEqual(getOAuthUsageState(channelID).data, resetUsage);
+    assert.equal(getOAuthUsageState(channelID).reset_status, 'ready');
+
+    // The first list response cannot overwrite an automatic refresh that
+    // completed while that list was in flight.
+    resetActiveChannelUsageAutoRefreshState();
+    request = loadChannels();
+    const automatic = usage(50);
+    await maybeAutoRefreshActiveChannelUsage([channelID], async () => oauthUsageBatchSSE([
+      { event: 'progress', result: { channel_id: channelID, kind: 'oauth', status: 'succeeded', usage: automatic } },
+      { event: 'complete', total: 1, processed: 1, succeeded: 1, failed: 0 }
+    ]));
+    finishList(pendingLists.shift(), usage(6));
+    await request;
+    assert.deepEqual(getOAuthUsageState(channelID).data, automatic);
+  } finally {
+    resetActiveChannelUsageAutoRefreshState();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
   }
 });
 

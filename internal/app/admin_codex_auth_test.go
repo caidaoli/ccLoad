@@ -5463,6 +5463,103 @@ func TestLatestCodexOAuthUsageRequiresSameQuotaPeriod(t *testing.T) {
 	}
 }
 
+func TestHandleChannelsCodexQuotaUsesCurrentPassivePeriod(t *testing.T) {
+	base := time.Date(2026, time.September, 5, 8, 49, 40, 0, time.UTC)
+	for _, tc := range []struct {
+		name     string
+		kind     string
+		duration time.Duration
+		stale    bool
+		cost     int64
+	}{
+		{name: "five-hour rollover", kind: "primary", duration: 5 * time.Hour, cost: 5_697_691},
+		{name: "weekly rollover", kind: "secondary", duration: 7 * 24 * time.Hour, cost: 53_408_956},
+		{name: "new sibling cannot promote an old sample", kind: "primary", duration: 5 * time.Hour, stale: true, cost: 5_697_691},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			activeAt := base.Add(-2 * time.Hour)
+			oldReset := base.Add(-40 * time.Minute)
+			newReset := oldReset.Add(tc.duration + 30*time.Minute)
+			passiveAt := base
+			wantUsed := float64(46)
+			wantReset := newReset
+			if tc.stale {
+				oldReset = base.Add(time.Hour)
+				newReset = oldReset
+				passiveAt = activeAt.Add(-time.Minute)
+				wantUsed = 100
+				wantReset = oldReset
+			}
+			seconds := int64(tc.duration / time.Second)
+			snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+				RequestedAt: activeAt.Format(time.RFC3339Nano), SampledAt: activeAt.Format(time.RFC3339Nano),
+				Summary: oauthUsageSummary{
+					Provider: "codex", PlanType: "plus",
+					Windows: []oauthUsageWindow{{
+						LimitName: "codex", Kind: tc.kind, LimitWindowSeconds: seconds,
+						ResetAt: oldReset.Unix(), UsedPercent: 100, RemainingPercent: 0,
+					}},
+					RateLimitResetCredits: &codexQuotaResetCredits{AvailableCount: 2},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential := &codexauth.Credential{
+				Type: "codex", AccessToken: "quota-test", PlanType: "plus", OAuthUsage: snapshot,
+				RefreshToken: "quota-refresh-test", Expired: base.Add(24 * time.Hour).Format(time.RFC3339),
+				PassiveUsage: &codexauth.PassiveUsage{
+					SampledAt: base.Format(time.RFC3339Nano),
+					Windows: []codexauth.PassiveUsageWindow{
+						{Scope: "codex", LimitName: "codex", Kind: tc.kind, LimitWindowSeconds: seconds,
+							ResetAt: newReset.Unix(), UsedPercent: 46, SampledAt: passiveAt.Format(time.RFC3339Nano)},
+						{Scope: "gpt-reserve", LimitName: "gpt-reserve", Kind: "primary", LimitWindowSeconds: 604800,
+							ResetAt: base.Add(7 * 24 * time.Hour).Unix(), SampledAt: base.Format(time.RFC3339Nano)},
+					},
+				},
+				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+					Key: oauthcost.Key("codex", tc.kind), Family: oauthcost.FamilyCodex, WindowSeconds: seconds,
+					StartedAt: newReset.Add(-tc.duration - 3*time.Minute).Unix(), ResetAt: newReset.Add(-3 * time.Minute).Unix(),
+					StandardCostMicroUSD: tc.cost,
+				}}},
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), &model.Config{
+				Name: "Codex quota rollover", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(c)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || len(list.Data) != 1 || list.Data[0].OAuthUsage == nil {
+				t.Fatalf("channel list status=%d response=%#v", w.Code, list)
+			}
+			usage := list.Data[0].OAuthUsage
+			if len(usage.Windows) != 1 || usage.RateLimitResetCredits == nil || usage.RateLimitResetCredits.AvailableCount != 2 {
+				t.Fatalf("official windows and reset credits changed: %#v", usage)
+			}
+			window := usage.Windows[0]
+			if window.Kind != tc.kind || window.LimitWindowSeconds != seconds || window.UsedPercent != wantUsed ||
+				window.RemainingPercent != 100-wantUsed || window.ResetAt != wantReset.Unix() ||
+				window.StandardCostMicroUSD == nil || *window.StandardCostMicroUSD != tc.cost {
+				t.Fatalf("wrong quota period or accumulated cost: %#v", window)
+			}
+			persisted, err := store.GetConfig(context.Background(), channel.ID)
+			if err != nil || persisted.OAuthCredential != raw {
+				t.Fatalf("listing changed persisted quota history: %v", err)
+			}
+		})
+	}
+}
+
 func TestAttachOAuthQuotaCostUsageMatchesResetJitter(t *testing.T) {
 	t.Parallel()
 	displayResetAt := time.Date(2026, time.August, 31, 13, 28, 7, 0, time.UTC).Unix()

@@ -2030,6 +2030,23 @@ function getOAuthUsageState(channelID) {
   return oauthUsageStateByChannelID.get(numericID) || null;
 }
 
+function snapshotOAuthUsageStates() {
+  return new Map(oauthUsageStateByChannelID);
+}
+
+function syncOAuthUsageFromChannels(channelList, previousStates) {
+  if (!previousStates) return;
+  for (const channel of channelList) {
+    const channelID = Number(channel.id);
+    const current = oauthUsageStateByChannelID.get(channelID);
+    // Refresh/reset results replace the state object. A list fetched before
+    // that operation finished must not overwrite its result or pending state.
+    if (!current || current !== previousStates.get(channelID) || current.status !== 'ready' ||
+        oauthUsageOperationByChannelID.has(channelID) || !Array.isArray(channel.oauth_usage?.windows)) continue;
+    oauthUsageStateByChannelID.set(channelID, { ...current, data: channel.oauth_usage });
+  }
+}
+
 function rerenderOAuthUsage() {
   if (typeof filterChannels === 'function') filterChannels();
 }
@@ -2957,6 +2974,8 @@ if (typeof module !== 'undefined' && module.exports) {
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
     getOAuthUsageState,
+    snapshotOAuthUsageStates,
+    syncOAuthUsageFromChannels,
     maybeAutoRefreshActiveChannelUsage,
     importOAuthCredentials,
     loadOAuthCredentialCleanupModels,

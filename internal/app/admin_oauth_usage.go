@@ -1702,7 +1702,7 @@ func latestOAuthUsage(
 	passiveTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(passiveSampledAt))
 	if err == nil && passiveTime.After(activeSampledAt) {
 		if strings.EqualFold(strings.TrimSpace(active.Provider), codexauth.ChannelType) {
-			return mergeLatestCodexOAuthUsage(active, passive)
+			return mergeLatestCodexOAuthUsage(active, activeSampledAt, passive, passiveTime)
 		}
 		merged := *passive
 		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
@@ -1717,7 +1717,7 @@ func latestOAuthUsage(
 // the official endpoint stopped returning it); allowing those groups to
 // replace the whole snapshot makes the admin page display phantom windows.
 // The official window identities therefore define the result set.
-func mergeLatestCodexOAuthUsage(active, passive *oauthUsageSummary) *oauthUsageSummary {
+func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.Time, passive *oauthUsageSummary, passiveSampledAt time.Time) *oauthUsageSummary {
 	if active == nil {
 		return passive
 	}
@@ -1732,20 +1732,42 @@ func mergeLatestCodexOAuthUsage(active, passive *oauthUsageSummary) *oauthUsageS
 	}
 	merged.Windows = make([]oauthUsageWindow, 0, len(active.Windows))
 	for _, window := range active.Windows {
+		windowSampledAt := window.SampledAt
+		if windowSampledAt.IsZero() {
+			windowSampledAt = activeSampledAt
+		}
 		key := oauthcost.Key(window.LimitName, window.Kind)
 		candidates := passiveByKey[key]
 		for i, passiveWindow := range candidates {
-			if passiveWindow.LimitWindowSeconds != window.LimitWindowSeconds ||
-				!oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
-					WindowSeconds: window.LimitWindowSeconds, ResetAt: window.ResetAt,
-				}) {
+			if window.LimitWindowSeconds <= 0 || passiveWindow.LimitWindowSeconds != window.LimitWindowSeconds ||
+				window.ResetAt <= 0 || passiveWindow.ResetAt <= 0 {
 				continue
 			}
-			// The official snapshot owns the window identity, duration, and
-			// reset boundary. Only usage from that same period may replace it.
+			sampledAt := passiveWindow.SampledAt
+			if sampledAt.IsZero() {
+				sampledAt = passiveSampledAt
+			}
+			if !sampledAt.After(windowSampledAt) {
+				continue
+			}
+			if !oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
+				WindowSeconds: window.LimitWindowSeconds, ResetAt: window.ResetAt,
+			}) {
+				// A completed official period cannot pin the display forever.
+				// Accept a forward rollover only once both periods' boundaries
+				// and the passive sample prove the new period is current.
+				at := sampledAt.Unix()
+				if passiveWindow.ResetAt <= window.ResetAt || at < window.ResetAt ||
+					at < passiveWindow.ResetAt-passiveWindow.LimitWindowSeconds || at >= passiveWindow.ResetAt {
+					continue
+				}
+				window.ResetAt = passiveWindow.ResetAt
+			}
+			// Same-period jitter retains the official boundary; a new period
+			// uses its own boundary so its accumulated cost can also be attached.
 			window.UsedPercent = passiveWindow.UsedPercent
 			window.RemainingPercent = passiveWindow.RemainingPercent
-			window.SampledAt = passiveWindow.SampledAt
+			window.SampledAt = sampledAt
 			passiveByKey[key] = append(candidates[:i], candidates[i+1:]...)
 			break
 		}
