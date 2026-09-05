@@ -382,7 +382,7 @@ function initChannelEditorActions() {
         'toggle-select-all-urls': (actionTarget) => invokeChannelEditorAction('toggleSelectAllURLs', actionTarget.checked),
         'toggle-select-all-keys': (actionTarget) => invokeChannelEditorAction('toggleSelectAllKeys', actionTarget.checked),
         'filter-keys-by-status': (actionTarget) => invokeChannelEditorAction('filterKeysByStatus', actionTarget.value),
-        'toggle-select-all-models': (actionTarget) => invokeChannelEditorAction('toggleSelectAllModels', actionTarget.checked),
+        'invert-model-selection': () => invokeChannelEditorAction('invertVisibleModelSelection'),
         'switch-model-import-format': (actionTarget) => invokeChannelEditorAction('switchModelImportFormat', actionTarget.value),
         'update-export-preview': () => invokeChannelEditorAction('updateExportPreview')
       },
@@ -2278,8 +2278,16 @@ async function confirmModelImport() {
   }
 }
 
+function getModelsForExport(rows, selectedIndices) {
+  const sourceRows = selectedIndices?.size > 0
+    ? (rows || []).filter((_, index) => selectedIndices.has(index))
+    : rows;
+  return collectModelsForSubmit(sourceRows);
+}
+
 function exportChannelModels() {
-  const models = collectModelsForSubmit(redirectTableData);
+  const selectedIndices = typeof selectedModelIndices !== 'undefined' ? selectedModelIndices : null;
+  const models = getModelsForExport(redirectTableData, selectedIndices);
   const text = window.ModelEntryParser.serializeModelEntries(models);
   if (!text) {
     if (window.showWarning) window.showWarning(window.t('channels.noModelsToExport'));
@@ -2716,6 +2724,8 @@ function renderRedirectTable() {
   const validCount = redirectTableData.filter(r => r.model && r.model.trim()).length;
   countSpan.textContent = validCount;
   syncScheduledCheckModelState();
+  updateSelectAllModelsCheckbox();
+  updateModelBatchDeleteButton();
 
   // 初始化事件委托（仅一次）
   initRedirectTableEventDelegation();
@@ -2755,10 +2765,6 @@ function renderRedirectTable() {
   tbody.appendChild(fragment);
   syncChannelEditorTableSizing();
 
-  // 更新全选复选框和批量删除按钮状态
-  updateSelectAllModelsCheckbox();
-  updateModelBatchDeleteButton();
-
   // Translate dynamically rendered elements
   if (window.i18n && window.i18n.translatePage) {
     window.i18n.translatePage();
@@ -2781,18 +2787,19 @@ function toggleModelSelection(index, checked) {
 }
 
 /**
- * 全选/取消全选模型（仅操作当前可见的模型）
+ * 反选当前可见的模型；全选与全不选时互相切换
  */
-function toggleSelectAllModels(checked) {
+function invertVisibleModelSelection() {
   const visibleIndices = getVisibleModelIndices();
 
-  if (checked) {
-    visibleIndices.forEach(index => selectedModelIndices.add(index));
-  } else {
-    visibleIndices.forEach(index => selectedModelIndices.delete(index));
-  }
+  visibleIndices.forEach(index => {
+    if (selectedModelIndices.has(index)) {
+      selectedModelIndices.delete(index);
+    } else {
+      selectedModelIndices.add(index);
+    }
+  });
 
-  updateModelBatchDeleteButton();
   renderRedirectTable();
 }
 
@@ -3845,6 +3852,7 @@ if (typeof module !== 'undefined' && module.exports) {
     exportChannelModels,
     fetchModelsFromAPI,
     fetchKeyRate,
+    getModelsForExport,
     initModelNormalizationOptions,
     mergeModelRowsWithFetchedModels,
     openBatchModelImportModal,

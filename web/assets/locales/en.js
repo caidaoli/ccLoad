@@ -576,6 +576,7 @@ window.I18N_LOCALES['en'] = {
   'channels.keyModelsSearch': 'Search models',
   'channels.keyModelsDetect': 'Detect This Key',
   'channels.keyModelsToggleVisible': 'Select or clear all currently visible models',
+  'channels.invertVisibleModels': 'Invert selection of currently visible models',
   'channels.keyModelsSelectionCount': '{selected} / {total} selected',
   'channels.keyModelsLegend': 'Available channel models',
   'channels.keyModelDisabled': 'Channel model disabled',

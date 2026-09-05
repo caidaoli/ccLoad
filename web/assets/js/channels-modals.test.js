@@ -1426,6 +1426,24 @@ test('common models add every selected type and ignore existing names case-insen
   }
 });
 
+test('model export uses selected rows and falls back to all rows when nothing is selected', () => {
+  const { getModelsForExport } = loadChannelsModals();
+  const rows = [
+    { model: 'gpt-a', redirect_model: 'upstream-a' },
+    { model: 'gpt-b', disabled: true },
+    { model: 'claude' }
+  ];
+
+  assert.deepEqual(getModelsForExport(rows, new Set([1])), [{
+    model: 'gpt-b', redirect_model: '', disabled: true
+  }]);
+  assert.deepEqual(getModelsForExport(rows, new Set()), [
+    { model: 'gpt-a', redirect_model: 'upstream-a', disabled: false },
+    { model: 'gpt-b', redirect_model: '', disabled: true },
+    { model: 'claude', redirect_model: '', disabled: false }
+  ]);
+});
+
 test('common models require at least one supported type', () => {
   const fixture = installCommonModelsGlobals();
 

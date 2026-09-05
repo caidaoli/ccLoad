@@ -575,6 +575,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.keyModelsSearch': '搜索模型',
   'channels.keyModelsDetect': '探测此 Key',
   'channels.keyModelsToggleVisible': '全选或取消选择当前显示的模型',
+  'channels.invertVisibleModels': '反选当前显示的模型',
   'channels.keyModelsSelectionCount': '已选 {selected} / {total}',
   'channels.keyModelsLegend': '可用渠道模型',
   'channels.keyModelDisabled': '渠道模型已停用',
