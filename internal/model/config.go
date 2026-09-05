@@ -482,18 +482,20 @@ type ChannelInfo struct {
 
 // Config 渠道配置
 type Config struct {
-	ID                    int64       `json:"id"`
-	Name                  string      `json:"name"`
-	AuthType              string      `json:"auth_type"`
-	Websockets            bool        `json:"websockets,omitempty"`
-	ProtocolTransformMode string      `json:"protocol_transform_mode"`
-	URLs                  ChannelURLs `json:"urls"`
-	Priority              int         `json:"priority"`
-	RPMLimit              int         `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
-	MaxConcurrency        int         `json:"max_concurrency"` // 最大并发请求数，0表示无限制
-	Enabled               bool        `json:"enabled"`
-	ScheduledCheckEnabled bool        `json:"scheduled_check_enabled"`
-	ScheduledCheckModel   string      `json:"scheduled_check_model"`
+	ID                            int64       `json:"id"`
+	Name                          string      `json:"name"`
+	AuthType                      string      `json:"auth_type"`
+	Websockets                    bool        `json:"websockets,omitempty"`
+	ProtocolTransformMode         string      `json:"protocol_transform_mode"`
+	URLs                          ChannelURLs `json:"urls"`
+	Priority                      int         `json:"priority"`
+	RPMLimit                      int         `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
+	MaxConcurrency                int         `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+	Enabled                       bool        `json:"enabled"`
+	ScheduledCheckEnabled         bool        `json:"scheduled_check_enabled"`
+	ScheduledCheckModel           string      `json:"scheduled_check_model"`
+	ScheduledCheckIntervalMinutes int         `json:"scheduled_check_interval_minutes"`
+	ScheduledCheckStartTime       string      `json:"scheduled_check_start_time"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`
@@ -559,39 +561,41 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	dst := &Config{
-		ID:                      c.ID,
-		Name:                    c.Name,
-		AuthType:                c.AuthType,
-		Websockets:              c.Websockets,
-		ProtocolTransformMode:   c.ProtocolTransformMode,
-		URLs:                    c.URLs.Clone(),
-		Priority:                c.Priority,
-		RPMLimit:                c.RPMLimit,
-		MaxConcurrency:          c.MaxConcurrency,
-		Enabled:                 c.Enabled,
-		ScheduledCheckEnabled:   c.ScheduledCheckEnabled,
-		ScheduledCheckModel:     c.ScheduledCheckModel,
-		CooldownUntil:           c.CooldownUntil,
-		CooldownDurationMs:      c.CooldownDurationMs,
-		DailyCostLimit:          c.DailyCostLimit,
-		CostMultiplier:          c.CostMultiplier,
-		CustomRequestRules:      c.CustomRequestRules.Clone(),
-		CooldownDetectionRules:  c.CooldownDetectionRules.Clone(),
-		ProxyURL:                c.ProxyURL,
-		AvailableTimeStart:      c.AvailableTimeStart,
-		AvailableTimeEnd:        c.AvailableTimeEnd,
-		RetryOtherKeysOnFailure: c.RetryOtherKeysOnFailure,
-		OAuthCredential:         c.OAuthCredential,
-		CodexAccessToken:        c.CodexAccessToken,
-		CodexAccountID:          c.CodexAccountID,
-		CodexAccountFedRAMP:     c.CodexAccountFedRAMP,
-		AntigravityAccessToken:  c.AntigravityAccessToken,
-		AntigravityProjectID:    c.AntigravityProjectID,
-		ZAIDeviceID:             c.ZAIDeviceID,
-		CreatedAt:               c.CreatedAt,
-		UpdatedAt:               c.UpdatedAt,
-		KeyCount:                c.KeyCount,
-		CooldownFallback:        c.CooldownFallback,
+		ID:                            c.ID,
+		Name:                          c.Name,
+		AuthType:                      c.AuthType,
+		Websockets:                    c.Websockets,
+		ProtocolTransformMode:         c.ProtocolTransformMode,
+		URLs:                          c.URLs.Clone(),
+		Priority:                      c.Priority,
+		RPMLimit:                      c.RPMLimit,
+		MaxConcurrency:                c.MaxConcurrency,
+		Enabled:                       c.Enabled,
+		ScheduledCheckEnabled:         c.ScheduledCheckEnabled,
+		ScheduledCheckModel:           c.ScheduledCheckModel,
+		ScheduledCheckIntervalMinutes: c.ScheduledCheckIntervalMinutes,
+		ScheduledCheckStartTime:       c.ScheduledCheckStartTime,
+		CooldownUntil:                 c.CooldownUntil,
+		CooldownDurationMs:            c.CooldownDurationMs,
+		DailyCostLimit:                c.DailyCostLimit,
+		CostMultiplier:                c.CostMultiplier,
+		CustomRequestRules:            c.CustomRequestRules.Clone(),
+		CooldownDetectionRules:        c.CooldownDetectionRules.Clone(),
+		ProxyURL:                      c.ProxyURL,
+		AvailableTimeStart:            c.AvailableTimeStart,
+		AvailableTimeEnd:              c.AvailableTimeEnd,
+		RetryOtherKeysOnFailure:       c.RetryOtherKeysOnFailure,
+		OAuthCredential:               c.OAuthCredential,
+		CodexAccessToken:              c.CodexAccessToken,
+		CodexAccountID:                c.CodexAccountID,
+		CodexAccountFedRAMP:           c.CodexAccountFedRAMP,
+		AntigravityAccessToken:        c.AntigravityAccessToken,
+		AntigravityProjectID:          c.AntigravityProjectID,
+		ZAIDeviceID:                   c.ZAIDeviceID,
+		CreatedAt:                     c.CreatedAt,
+		UpdatedAt:                     c.UpdatedAt,
+		KeyCount:                      c.KeyCount,
+		CooldownFallback:              c.CooldownFallback,
 	}
 	if c.ModelEntries != nil {
 		dst.ModelEntries = make([]ModelEntry, len(c.ModelEntries))

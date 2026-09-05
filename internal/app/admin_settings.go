@@ -478,7 +478,7 @@ func validateSettingValue(key, valueType, value string) error {
 			return fmt.Errorf("must be a finite number")
 		}
 		switch key {
-		case "channel_check_interval_hours", "model_catalog_sync_interval_hours":
+		case "model_catalog_sync_interval_hours":
 			if floatVal < 0 || floatVal > float64(maxSettingDurationHours) {
 				return fmt.Errorf("%s must be between 0 and %d", key, maxSettingDurationHours)
 			}

@@ -663,6 +663,15 @@ func ensureChannelsScheduledCheckEnabled(ctx context.Context, db *sql.DB, dialec
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func ensureChannelsScheduledCheckSchedule(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "channels", "scheduled_check_interval_minutes",
+		"INT NOT NULL DEFAULT 300", "INTEGER NOT NULL DEFAULT 300"); err != nil {
+		return err
+	}
+	return ensureColumn(ctx, db, dialect, "channels", "scheduled_check_start_time",
+		"VARCHAR(5) NOT NULL DEFAULT '00:00'", "TEXT NOT NULL DEFAULT '00:00'")
+}
+
 func ensureChannelsScheduledCheckModel(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "scheduled_check_model",
 		"VARCHAR(191) NOT NULL DEFAULT ''",

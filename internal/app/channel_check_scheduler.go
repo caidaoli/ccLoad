@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/config"
@@ -11,18 +12,6 @@ import (
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 )
-
-const defaultChannelCheckIntervalHours = config.DefaultChannelCheckIntervalHours
-
-func normalizeChannelCheckIntervalHours(hours float64) float64 {
-	if hours == 0 {
-		return 0
-	}
-	if _, ok := settingDurationFromFloat64(hours, time.Hour); !ok {
-		return defaultChannelCheckIntervalHours
-	}
-	return hours
-}
 
 func configuredChannelTestContent(configService *ConfigService) string {
 	if configService == nil {
@@ -35,130 +24,125 @@ func configuredChannelTestContent(configService *ConfigService) string {
 	return content
 }
 
-func (s *Server) startScheduledChannelCheckLoop(interval time.Duration) {
-	if s == nil || interval <= 0 {
-		return
-	}
-
-	log.Printf("[INFO] 渠道定时检测已启用：间隔=%s（启动后完整周期才会首次执行）", interval)
-
+func (s *Server) startScheduledChannelCheckLoop() {
+	log.Print("[INFO] 渠道每日定时检测已启用（服务端本地时间）")
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
+		// Always wait for a future minute; startup never replays missed checks.
+		timer := time.NewTimer(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
+		defer timer.Stop()
 		for {
 			select {
 			case <-s.shutdownCh:
-				log.Print("[INFO] 渠道定时检测已停止")
 				return
-			case <-ticker.C:
-				s.triggerScheduledChannelChecks()
+			case <-timer.C:
+				s.triggerScheduledChannelChecks(time.Now())
+				timer.Reset(time.Until(time.Now().Truncate(time.Minute).Add(time.Minute)))
 			}
 		}
 	}()
 }
 
-func (s *Server) triggerScheduledChannelChecks() bool {
-	if s == nil {
-		return false
-	}
-	if !s.scheduledChannelChecksRunning.CompareAndSwap(false, true) {
-		log.Print("[WARN] 跳过本轮渠道定时检测：上一轮仍在执行")
-		return false
-	}
-
+func (s *Server) triggerScheduledChannelChecks(now time.Time) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer s.scheduledChannelChecksRunning.Store(false)
-
-		ctx := s.baseCtx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := s.runScheduledChannelChecks(ctx); err != nil && !isExpectedScheduledCheckStop(err) {
-			log.Printf("[WARN] 渠道定时检测执行失败: %v", err)
+		if err := s.runScheduledChannelChecks(s.baseCtx, now); err != nil && !isExpectedScheduledCheckStop(err) {
+			log.Printf("[WARN] 渠道每日定时检测执行失败: %v", err)
 		}
 	}()
-
-	return true
 }
-
 func isExpectedScheduledCheckStop(err error) bool {
 	return err == context.Canceled || err == context.DeadlineExceeded
 }
 
-func (s *Server) runScheduledChannelChecks(ctx context.Context) error {
+func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 
-	configs, err := s.store.ListConfigs(ctx)
+	// Scanning must finish within this minute; delayed scans must not replay a slot.
+	scanCtx, cancel := context.WithDeadline(ctx, now.Truncate(time.Minute).Add(time.Minute))
+	defer cancel()
+	configs, err := s.store.ListConfigs(scanCtx)
 	if err != nil {
 		return err
 	}
-	apiKeysByChannel, err := s.store.GetAllAPIKeys(ctx)
+	due := configs[:0]
+	for _, cfg := range configs {
+		if cfg.ScheduledCheckDueAt(now) && cfg.UpdatedAt.Before(now.Truncate(time.Minute)) {
+			due = append(due, cfg)
+		}
+	}
+	if len(due) == 0 {
+		return nil
+	}
+	apiKeysByChannel, err := s.store.GetAllAPIKeys(scanCtx)
 	if err != nil {
 		return err
 	}
 
 	content := configuredChannelTestContent(s.configService)
+	var running sync.WaitGroup
+	defer running.Wait()
 
-	for _, cfg := range configs {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	for _, cfg := range due {
+		if scanCtx.Err() != nil {
+			return scanCtx.Err()
 		}
-		if !shouldRunScheduledChannelCheck(cfg) {
+		if _, loaded := s.scheduledChannelChecksRunning.LoadOrStore(cfg.ID, struct{}{}); loaded {
 			continue
 		}
-		modelName, skipReason := selectScheduledCheckModel(cfg)
-		if skipReason != "" {
-			log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%s", cfg.ID, cfg.Name, skipReason)
-			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, skipReason))
-			continue
-		}
-
-		apiKeys := apiKeysByChannel[cfg.ID]
-		apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
-		if len(apiKeys) == 0 {
-			log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：模型 %s 未配置可用 Key", cfg.ID, cfg.Name, modelName)
-			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, "该模型未配置可用 Key"))
-			continue
-		}
-
-		selector := s.keySelector
-		if selector == nil {
-			selector = NewKeySelector()
-		}
-		keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-		if err != nil {
-			log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, err)
-			if !isExpectedScheduledCheckStop(err) {
-				s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, err.Error()))
-			}
-			continue
-		}
-
-		req := &testutil.TestChannelRequest{
-			Model:          modelName,
-			ClientProtocol: string(protocol.Anthropic),
-			Content:        content,
-			Stream:         false,
-		}
-		logModel, logThinking := channelTestLogIdentity(req.Model, req.ThinkingEffort)
-		result := s.executeChannelTest(ctx, cfg, keyIndex, apiKey, req)
-		s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, model.RoutingModelName(req.Model), apiKey, "", logThinking, result))
-		logScheduledChannelCheckResult(cfg, keyIndex, req.Model, result)
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			defer s.scheduledChannelChecksRunning.Delete(cfg.ID)
+			s.runScheduledChannelCheck(ctx, cfg, apiKeysByChannel[cfg.ID], content)
+		}()
 	}
 
 	return nil
 }
 
-func shouldRunScheduledChannelCheck(cfg *model.Config) bool {
-	return cfg != nil && cfg.Enabled && cfg.ScheduledCheckEnabled && cfg.IsAvailableAt(time.Now())
+func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config, apiKeys []*model.APIKey, content string) {
+	modelName, skipReason := selectScheduledCheckModel(cfg)
+	if skipReason != "" {
+		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%s", cfg.ID, cfg.Name, skipReason)
+		s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, skipReason))
+		return
+	}
+
+	apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
+	if len(apiKeys) == 0 {
+		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：模型 %s 未配置可用 Key", cfg.ID, cfg.Name, modelName)
+		s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, "该模型未配置可用 Key"))
+		return
+	}
+
+	selector := s.keySelector
+	if selector == nil {
+		selector = NewKeySelector()
+	}
+	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+	if err != nil {
+		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, err)
+		if !isExpectedScheduledCheckStop(err) {
+			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, err.Error()))
+		}
+		return
+	}
+
+	req := &testutil.TestChannelRequest{
+		Model:          modelName,
+		ClientProtocol: string(protocol.Anthropic),
+		Content:        content,
+		Stream:         false,
+	}
+	logModel, logThinking := channelTestLogIdentity(req.Model, req.ThinkingEffort)
+	result := s.executeChannelTest(ctx, cfg, keyIndex, apiKey, req)
+	s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, model.RoutingModelName(req.Model), apiKey, "", logThinking, result))
+	logScheduledChannelCheckResult(cfg, keyIndex, req.Model, result)
 }
 
 func logScheduledChannelCheckResult(cfg *model.Config, keyIndex int, modelName string, result map[string]any) {

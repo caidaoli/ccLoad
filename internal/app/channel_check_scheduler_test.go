@@ -3,8 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, keys ...*model.APIKey) *model.Config {
 	t.Helper()
 
+	if cfg.ScheduledCheckIntervalMinutes == 0 {
+		cfg.ScheduledCheckIntervalMinutes = 1
+	}
 	created, err := srv.store.CreateConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -40,29 +44,90 @@ func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, k
 	return created
 }
 
-func TestNormalizeChannelCheckIntervalHours(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		in   float64
-		want float64
-	}{
-		{name: "positive_kept", in: 5, want: 5},
-		{name: "decimal_kept", in: 0.5, want: 0.5},
-		{name: "zero_disables", in: 0, want: 0},
-		{name: "negative_uses_default", in: -0.1, want: defaultChannelCheckIntervalHours},
-		{name: "nan_uses_default", in: math.NaN(), want: defaultChannelCheckIntervalHours},
-		{name: "infinity_uses_default", in: math.Inf(1), want: defaultChannelCheckIntervalHours},
-		{name: "overflow_uses_default", in: float64(maxSettingDurationHours + 1), want: defaultChannelCheckIntervalHours},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeChannelCheckIntervalHours(tt.in); got != tt.want {
-				t.Fatalf("normalizeChannelCheckIntervalHours(%v) = %v, want %v", tt.in, got, tt.want)
+func TestDailyScheduledChecksIndependentChannelsAndChanges(t *testing.T) {
+	var slowCalls, fastCalls atomic.Int32
+	started := make(chan string, 10)
+	release := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/slow") {
+			slowCalls.Add(1)
+			started <- "slow"
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
 			}
-		})
+		} else {
+			fastCalls.Add(1)
+			started <- "fast"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+	srv := newInMemoryServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fast *model.Config
+	for _, name := range []string{"slow", "fast"} {
+		cfg := createScheduledCheckChannel(t, srv, &model.Config{
+			Name: name, URLs: model.ChannelURLs{{URL: upstream.URL + "/" + name}}, Enabled: true,
+			ScheduledCheckEnabled: true, ScheduledCheckIntervalMinutes: 360, ScheduledCheckStartTime: "08:30",
+			ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		}, &model.APIKey{APIKey: "sk-test"})
+		if name == "fast" {
+			fast = cfg
+		}
+	}
+	now := time.Now().AddDate(1, 0, 0)
+	now = time.Date(now.Year(), now.Month(), now.Day(), 8, 30, 0, 0, time.Local)
+	done := make(chan error, 1)
+	go func() { done <- srv.runScheduledChannelChecks(ctx, now) }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("slow channel blocked another channel")
+		}
+	}
+	// Fast detection must finish before the next simulated tick.
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for {
+		if _, running := srv.scheduledChannelChecksRunning.Load(fast.ID); !running {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("fast detection did not finish")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if err := srv.runScheduledChannelChecks(ctx, now.Add(6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if slowCalls.Load() != 1 || fastCalls.Load() != 2 {
+		t.Fatalf("overlap or blocking: slow=%d fast=%d", slowCalls.Load(), fastCalls.Load())
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.runScheduledChannelChecks(ctx, now.Add(7*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if slowCalls.Load() != 1 || fastCalls.Load() != 2 {
+		t.Fatal("missed schedules were replayed")
+	}
+	fast.ScheduledCheckStartTime, fast.ScheduledCheckIntervalMinutes = "15:30", 120
+	if _, err := srv.store.UpdateConfig(ctx, fast.ID, fast); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.runScheduledChannelChecks(ctx, now.Add(7*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if fastCalls.Load() != 3 {
+		t.Fatal("updated schedule did not take effect")
 	}
 }
 
@@ -224,7 +289,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
 	}, &model.APIKey{APIKey: "sk-disabled", KeyStrategy: model.KeyStrategySequential})
 
-	if err := srv.runScheduledChannelChecks(ctx); err != nil {
+	if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
 		t.Fatalf("runScheduledChannelChecks failed: %v", err)
 	}
 
@@ -272,7 +337,7 @@ func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *test
 		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
 	})
 
-	if err := srv.runScheduledChannelChecks(ctx); err != nil {
+	if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
 		t.Fatalf("runScheduledChannelChecks failed: %v", err)
 	}
 
@@ -333,19 +398,10 @@ func TestRunScheduledChannelChecks_SkipsChannelsWithoutRunnableKey(t *testing.T)
 		t.Fatalf("SetKeyCooldown failed: %v", err)
 	}
 
-	if err := srv.runScheduledChannelChecks(ctx); err != nil {
+	if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
 		t.Fatalf("runScheduledChannelChecks failed: %v", err)
 	}
 	if called != 0 {
 		t.Fatalf("expected no upstream call when all keys cooled down, got %d", called)
-	}
-}
-
-func TestTriggerScheduledChannelChecks_SkipsReentry(t *testing.T) {
-	srv := newInMemoryServer(t)
-	srv.scheduledChannelChecksRunning.Store(true)
-
-	if started := srv.triggerScheduledChannelChecks(); started {
-		t.Fatal("expected triggerScheduledChannelChecks to skip when previous run is active")
 	}
 }

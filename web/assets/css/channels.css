@@ -6518,17 +6518,52 @@
       line-height: 1.45;
     }
 
-    .advanced-settings-scheduled-row {
+    .advanced-settings-scheduled-group {
       display: grid;
-      grid-template-columns: var(--advanced-settings-label-width) var(--advanced-settings-control-width);
-      align-items: center;
       gap: 10px;
-      max-width: 420px;
+    }
+
+    .advanced-settings-scheduled-group > p {
+      margin: 0;
+    }
+
+    .advanced-settings-scheduled-field {
+      display: grid;
+      grid-template-columns: max-content var(--scheduled-input-width, 90px);
+      align-items: center;
+      gap: 6px 8px;
+    }
+
+    .advanced-settings-scheduled-field[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-scheduled-time {
+      --scheduled-input-width: 128px;
+    }
+
+    .advanced-settings-scheduled-field > small {
+      grid-column: 1 / -1;
+    }
+
+    .advanced-settings-scheduled-field > .form-label {
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .advanced-settings-scheduled-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px 16px;
       min-width: 0;
     }
 
     #channelScheduledCheckModelWrapper {
       grid-template-columns: minmax(0, 1fr);
+      flex: 0 1 220px;
+      min-width: 0;
+      max-width: 100%;
     }
 
     .advanced-settings-other-field {
@@ -7188,13 +7223,6 @@
       .cooldown-detection-name {
         grid-template-columns: 1fr;
         gap: 4px;
-      }
-
-      .advanced-settings-scheduled-row {
-        grid-template-columns: 1fr;
-        gap: 10px;
-        width: 100%;
-        max-width: none;
       }
 
       .advanced-settings-availability-row {

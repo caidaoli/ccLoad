@@ -503,6 +503,8 @@
   }
 
   async function applyAdvancedSettingsFromForm() {
+    if (hasWindow && typeof window.validateChannelScheduledCheckSchedule === 'function'
+        && !window.validateChannelScheduledCheckSchedule()) return false;
     const customRulesValid = validateCustomRulesDraft();
     const cooldownRulesValid = !hasWindow || typeof window.validateCooldownDetectionDraft !== 'function'
       || window.validateCooldownDetectionDraft();

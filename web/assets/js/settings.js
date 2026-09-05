@@ -80,7 +80,6 @@ const numericSettingConstraints = new Map([
   ['cooldown_rate_limit_seconds', { min: 1, max: maxDurationSeconds }],
   ['cooldown_min_seconds', { min: 1, max: maxDurationSeconds }],
   ['cooldown_max_seconds', { min: 1, max: maxDurationSeconds }],
-  ['channel_check_interval_hours', { min: 0, max: maxDurationHours }],
   ['model_catalog_sync_interval_hours', { min: 0, max: maxDurationHours }],
   ['auto_update_interval_hours', { min: 0, max: maxDurationHours }],
   ['success_rate_penalty_weight', { min: 0 }],

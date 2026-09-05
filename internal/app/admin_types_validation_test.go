@@ -23,6 +23,38 @@ func newValidChannelRequest() *ChannelRequest {
 	}
 }
 
+func TestChannelRequestDailyScheduleValidation(t *testing.T) {
+	for _, tc := range []struct {
+		minutes int
+		start   string
+		valid   bool
+	}{
+		{1, "00:00", true}, {1440, "23:59", true}, {30, "08:30", true},
+		{0, "08:30", false}, {-1, "08:30", false}, {1441, "08:30", false},
+		{30, "8:30", false}, {30, "24:00", false}, {30, "08:60", false},
+		{30, "08:30:00", false}, {30, "", false},
+	} {
+		req := newValidChannelRequest()
+		req.ScheduledCheckIntervalMinutes, req.ScheduledCheckStartTime = &tc.minutes, &tc.start
+		if err := req.Validate(); (err == nil) != tc.valid {
+			t.Errorf("schedule %d/%q: %v, valid=%v", tc.minutes, tc.start, err, tc.valid)
+		}
+		if tc.valid {
+			cfg := req.ToConfig()
+			if cfg.ScheduledCheckIntervalMinutes != tc.minutes || cfg.ScheduledCheckStartTime != tc.start {
+				t.Fatalf("schedule lost during conversion: %+v", cfg)
+			}
+		}
+	}
+	req := newValidChannelRequest()
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := req.ToConfig(); cfg.ScheduledCheckIntervalMinutes != 300 || cfg.ScheduledCheckStartTime != "00:00" {
+		t.Fatalf("unexpected schedule defaults: %+v", cfg)
+	}
+}
+
 func runChannelRequestFieldValidation(
 	t *testing.T,
 	cases []channelRequestFieldCase,

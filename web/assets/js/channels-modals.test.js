@@ -845,7 +845,6 @@ function installEditChannelGlobals(channel, {
             available: true,
             items: [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }]
           },
-          features: { scheduled_check_enabled: true }
         };
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -1186,6 +1185,9 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
   const channel = {
     id: 77,
     name: 'xai-save',
+    scheduled_check_enabled: true,
+    scheduled_check_interval_minutes: 37,
+    scheduled_check_start_time: '08:30',
     auth_type: 'xai_oauth',
     urls: [{ url: 'https://cli-chat-proxy.grok.com/v1', exact: false, protocols: ['codex'] }],
     models: [],
@@ -1221,6 +1223,11 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
 
     await saveChannel({ preventDefault() {} });
     assert.equal(submitted.auth_type, 'xai_oauth');
+    assert.equal(fixture.getElement('channelScheduledCheckIntervalMinutes').value, 37);
+    assert.equal(fixture.getElement('channelScheduledCheckStartTime').value, '08:30');
+    assert.equal(submitted.scheduled_check_enabled, true);
+    assert.equal(submitted.scheduled_check_interval_minutes, 37);
+    assert.equal(submitted.scheduled_check_start_time, '08:30');
     assert.equal(submitted.api_key, '');
     assert.deepEqual(submitted.api_keys, []);
     assert.equal(submitted.key_strategy, undefined);
@@ -1234,6 +1241,36 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
       if (descriptor === undefined) delete global[key];
       else Object.defineProperty(global, key, descriptor);
     }
+    fixture.restore();
+  }
+});
+
+test('saving rejects invalid daily schedules and focuses the field with an inline error', async () => {
+  const channel = { id: 80, name: 'invalid-schedule', auth_type: 'api_key', urls: [{ url: 'https://example.com' }], models: [] };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    for (const [id, value] of [
+      ['channelScheduledCheckIntervalMinutes', '0'],
+      ['channelScheduledCheckIntervalMinutes', '1.5'],
+      ['channelScheduledCheckIntervalMinutes', '1441'],
+      ['channelScheduledCheckStartTime', '8:30']
+    ]) {
+      fixture.getElement('channelScheduledCheckIntervalMinutes').value = '30';
+      fixture.getElement('channelScheduledCheckStartTime').value = '08:30';
+      const input = fixture.getElement(id);
+      input.id = id;
+      input.value = value;
+      let focused = false;
+      input.focus = () => { focused = true; };
+      await saveChannel({ preventDefault() {} });
+      assert.equal(focused, true);
+      assert.equal(fixture.getElement(`${id}Error`).hidden, false);
+      assert.ok(fixture.getElement(`${id}Error`).textContent);
+    }
+    assert.deepEqual(fixture.requests, ['/admin/channels/80/editor']);
+  } finally {
     fixture.restore();
   }
 });

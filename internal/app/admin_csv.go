@@ -99,7 +99,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -215,6 +215,8 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			managementCheckinEnabled,
 			managementCheckinTime,
 			strconv.FormatBool(cfg.Websockets),
+			strconv.Itoa(cfg.ScheduledCheckIntervalMinutes),
+			cfg.ScheduledCheckStartTime,
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -283,17 +285,21 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasAPIKeyModelScopeEmptyColumn := columnIndex["api_key_model_scope_empty"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
+	existingSchedulesByName := make(map[string]*model.Config)
+	_, hasInterval := columnIndex["scheduled_check_interval_minutes"]
+	_, hasStart := columnIndex["scheduled_check_start_time"]
 	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
 	existingWebsocketsByName := make(map[string]bool)
 	existingAPIKeysByName := make(map[string][]*model.APIKey)
-	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyModelScopeEmptyColumn {
+	if !hasInterval || !hasStart || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyModelScopeEmptyColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}
 		for _, cfg := range existingConfigs {
+			existingSchedulesByName[cfg.Name] = cfg
 			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
 			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
 			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
@@ -349,6 +355,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingRetryOtherKeysOnFailureByName,
 			existingWebsocketsByName,
 			existingAPIKeysByName,
+			existingSchedulesByName,
 		)
 		if skip {
 			if errMsg != "" {
@@ -490,6 +497,7 @@ func (s *Server) parseChannelImportRow(
 	existingRetryOtherKeysOnFailureByName map[string]bool,
 	existingWebsocketsByName map[string]bool,
 	existingAPIKeysByName map[string][]*model.APIKey,
+	existingSchedulesByName map[string]*model.Config,
 ) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
 	if isCSVRecordEmpty(record) {
 		return nil, "", true
@@ -666,6 +674,24 @@ func (s *Server) parseChannelImportRow(
 		scheduledCheckEnabled = false
 	}
 
+	interval, start := model.DefaultScheduledCheckIntervalMinutes, model.DefaultScheduledCheckStartTime
+	if existing := existingSchedulesByName[name]; existing != nil {
+		interval, start = existing.ScheduledCheckIntervalMinutes, existing.ScheduledCheckStartTime
+	}
+	if _, present := columnIndex["scheduled_check_interval_minutes"]; present {
+		parsed, err := strconv.Atoi(fetch("scheduled_check_interval_minutes"))
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 scheduled_check_interval_minutes 必须为 1–1440 的整数分钟", lineNo), true
+		}
+		interval = parsed
+	}
+	if _, present := columnIndex["scheduled_check_start_time"]; present {
+		start = fetch("scheduled_check_start_time")
+	}
+	if err := model.ValidateScheduledCheckSchedule(interval, start); err != nil {
+		return nil, fmt.Sprintf("第%d行: %v", lineNo, err), true
+	}
+
 	rawScheduledCheckModel := fetch("scheduled_check_model")
 	scheduledCheckModel := existingScheduledCheckModelByName[name]
 	shouldValidateScheduledCheckModel := false
@@ -747,21 +773,23 @@ func (s *Server) parseChannelImportRow(
 	// 构建渠道配置
 	// CSV 中的 id 只在导出实例内有意义，跨库导入必须按渠道名称匹配。
 	cfg := &model.Config{
-		Name:                    name,
-		AuthType:                authType,
-		OAuthCredential:         oauthCredential,
-		Websockets:              websockets,
-		URLs:                    urls,
-		Priority:                priority,
-		RPMLimit:                rpmLimit,
-		MaxConcurrency:          maxConcurrency,
-		ModelEntries:            modelEntries,
-		ProtocolTransformMode:   protocolTransformMode,
-		Enabled:                 enabled,
-		ScheduledCheckEnabled:   scheduledCheckEnabled,
-		ScheduledCheckModel:     scheduledCheckModel,
-		CooldownDetectionRules:  cooldownDetectionRules,
-		RetryOtherKeysOnFailure: retryOtherKeysOnFailure,
+		Name:                          name,
+		AuthType:                      authType,
+		OAuthCredential:               oauthCredential,
+		Websockets:                    websockets,
+		URLs:                          urls,
+		Priority:                      priority,
+		RPMLimit:                      rpmLimit,
+		MaxConcurrency:                maxConcurrency,
+		ModelEntries:                  modelEntries,
+		ProtocolTransformMode:         protocolTransformMode,
+		Enabled:                       enabled,
+		ScheduledCheckEnabled:         scheduledCheckEnabled,
+		ScheduledCheckModel:           scheduledCheckModel,
+		ScheduledCheckIntervalMinutes: interval,
+		ScheduledCheckStartTime:       start,
+		CooldownDetectionRules:        cooldownDetectionRules,
+		RetryOtherKeysOnFailure:       retryOtherKeysOnFailure,
 	}
 
 	// 解析并构建API Keys
@@ -1189,6 +1217,10 @@ func normalizeCSVHeader(name string) string {
 		return "scheduled_check_enabled"
 	case "scheduled-check-model", "scheduledcheckmodel", "scheduled check model":
 		return "scheduled_check_model"
+	case "scheduled-check-interval-minutes", "scheduledcheckintervalminutes", "scheduled check interval minutes":
+		return "scheduled_check_interval_minutes"
+	case "scheduled-check-start-time", "scheduledcheckstarttime", "scheduled check start time":
+		return "scheduled_check_start_time"
 	case "management-daily-checkin-enabled", "managementdailycheckinenabled", "management daily checkin enabled":
 		return "management_daily_checkin_enabled"
 	case "management-daily-checkin-time", "managementdailycheckintime", "management daily checkin time":

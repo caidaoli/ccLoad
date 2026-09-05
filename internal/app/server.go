@@ -112,7 +112,7 @@ type Server struct {
 	ensureCursorBridge            func(context.Context) (string, error)
 	startCursorBridge             func(context.Context, string) (cursorauth.Runner, error)
 	antigravityPromptMatcher      *regexp.Regexp
-	scheduledChannelChecksRunning atomic.Bool
+	scheduledChannelChecksRunning sync.Map // channel ID -> in-flight detection
 
 	// 异步统计（有界队列，避免每请求起goroutine）
 	tokenStatsCh               chan tokenStatsUpdate
@@ -441,15 +441,7 @@ func NewServer(store storage.Store) *Server {
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
 	s.startBackgroundWorkers()
 
-	channelCheckIntervalHours := normalizeChannelCheckIntervalHours(
-		configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours),
-	)
-	if channelCheckIntervalHours == 0 {
-		log.Print("[INFO] 渠道定时检测未启用（channel_check_interval_hours=0）")
-	} else {
-		interval, _ := settingDurationFromFloat64(channelCheckIntervalHours, time.Hour)
-		s.startScheduledChannelCheckLoop(interval)
-	}
+	s.startScheduledChannelCheckLoop()
 
 	s.oauthCredentialImportJobs = newOAuthCredentialImportJobManager(s.baseCtx, oauthCredentialImportMaxRunningJobs)
 	s.oauthCredentialCleanupJobs = newOAuthCredentialCleanupJobManager(s.baseCtx)

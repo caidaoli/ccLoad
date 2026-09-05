@@ -5,6 +5,39 @@ import (
 	"time"
 )
 
+func TestConfigDailyScheduledCheck(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Enabled: true, ScheduledCheckEnabled: true, ScheduledCheckIntervalMinutes: 360, ScheduledCheckStartTime: "08:30"}
+	location := time.FixedZone("server", 8*60*60)
+	for _, tc := range []struct {
+		day, hour, minute int
+		want              bool
+	}{
+		{5, 8, 29, false}, {5, 8, 30, true}, {5, 14, 29, false},
+		{5, 14, 30, true}, {5, 20, 30, true}, {5, 23, 59, false},
+		{6, 2, 30, false}, {6, 8, 30, true},
+	} {
+		now := time.Date(2026, 9, tc.day, tc.hour, tc.minute, 0, 0, location)
+		if got := cfg.ScheduledCheckDueAt(now); got != tc.want {
+			t.Errorf("due at %s = %v, want %v", now, got, tc.want)
+		}
+	}
+	now := time.Date(2026, 9, 5, 8, 30, 0, 0, location)
+	cfg.AvailableTimeStart, cfg.AvailableTimeEnd = "10:00", "20:00"
+	if cfg.ScheduledCheckDueAt(now) {
+		t.Fatal("must respect channel availability")
+	}
+	cfg.AvailableTimeStart, cfg.AvailableTimeEnd = "", ""
+	cfg.Enabled = false
+	if cfg.ScheduledCheckDueAt(now) {
+		t.Fatal("disabled channel must not run")
+	}
+	cfg.Enabled, cfg.ScheduledCheckEnabled = true, false
+	if cfg.ScheduledCheckDueAt(now) {
+		t.Fatal("disabled schedule must not run")
+	}
+}
+
 // 渠道条目字面写成 gpt-5.6-luna(max) 时，对外暴露的名字和选路索引必须一致，
 // 否则会出现「模型列表里看得到、请求却没有可用渠道」。
 func TestThinkingSuffixEntriesAreRoutableByBaseName(t *testing.T) {

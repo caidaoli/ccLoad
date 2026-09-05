@@ -14,7 +14,7 @@
 ## 渠道管理与定时检测
 
 - **渠道管理账户**(`channel_management_service.go`+`admin_channel_management.go`+`model/channel_management.go`):仅限 `auth_type=api_key` 渠道,在 `oauth_credential` 字段存放版本化私有封套(`ChannelManagementEnvelope`,kind=`channel_management`,version=1)。三种 profile:`new_api`(New API,含 `user_id`、支持签到+余额)、`sub2api`(Sub2API,仅余额)、`sub2api_pro`(Sub2API Pro,签到+余额)。所有写入走 `CompareAndSwapChannelManagement` CAS,并发安全;`acquireChannel` 渠道级互斥保证同一渠道的余额刷新/签到/设置修改序列化。每日自动签到由 `channel_management_scheduler.go` 驱动:启动立即补偿扫描+每分钟定时扫描,按服务器本地时间 `HH:MM` 判到期,`LastScheduledDay` CAS claim 保证幂等;4 worker 并发执行,签到结果写 `log_source=checkin` 审计日志。手动签到/余额刷新走 Admin API `POST /admin/channels/:id/management-account/{checkin,balance}`。请求体写出后拒绝 uTLS 重放(`errManagementRequestAlreadySent`),POST 结果不确定时回读状态判定(`uncertain`)。CSV 导入导出支持 `management_daily_checkin_enabled`/`management_daily_checkin_time` 列,`oauth_credential` 列同时承载 OAuth 凭证和管理封套。编辑器端点 `GET /admin/channels/:id/editor` 回填凭据(`channelManagementEditorView`)供前端渠道编辑弹窗的管理账户区显示
-- **定时检测**(`channel_check_scheduler.go`):全局 `channel_check_interval_hours`(0=禁用,启动读一次,改后重启生效)+ 渠道级开关
+- **每日定时检测**(`channel_check_scheduler.go`):渠道独立配置 `scheduled_check_enabled`、`scheduled_check_interval_minutes`（1–1440 整数分钟，默认 300）、`scheduled_check_start_time`（服务端本地时间 `HH:MM`，默认 `00:00`）与 `scheduled_check_model`。每天从开始时间按间隔执行至当天结束，次日重新开始；按整分钟调度，停机/忙碌错过的时间点不补跑，渠道之间独立执行，同渠道禁止重叠。保存后从下一个未来计划时间点生效，继续遵守渠道开关与可用时段。CSV 导入导出支持全部四项，旧 CSV 缺列时更新保留原值、新建使用默认值。启动迁移一次性将旧全局小时间隔换算为分钟并删除旧设置；旧全局为 0 时保持渠道检测关闭。
 
 ## 发布与更新
 

@@ -51,9 +51,6 @@ const (
 	// DefaultCooldownMinSeconds 指数退避冷却下限秒数
 	DefaultCooldownMinSeconds = 10
 
-	// DefaultChannelCheckIntervalHours 渠道定时检测默认间隔；0 仍表示显式关闭。
-	DefaultChannelCheckIntervalHours = 5.0
-
 	// DefaultDebugLogRetentionMinutes Debug 日志默认保留时长。
 	DefaultDebugLogRetentionMinutes = 2
 

@@ -1122,9 +1122,6 @@ func TestHandleChannelEditorAggregatesInitialState(t *testing.T) {
 			Available bool      `json:"available"`
 			Items     []URLStat `json:"items"`
 		} `json:"url_stats"`
-		Features struct {
-			ScheduledCheckEnabled bool `json:"scheduled_check_enabled"`
-		} `json:"features"`
 	}](t, w.Body.Bytes())
 
 	if resp.Data.Channel.ID != created.ID || resp.Data.Channel.Name != created.Name {
@@ -1138,9 +1135,6 @@ func TestHandleChannelEditorAggregatesInitialState(t *testing.T) {
 	}
 	if !resp.Data.URLStats.Available || len(resp.Data.URLStats.Items) != 1 || resp.Data.URLStats.Items[0].Requests != 1 {
 		t.Fatalf("url_stats=%+v, want available runtime stats", resp.Data.URLStats)
-	}
-	if !resp.Data.Features.ScheduledCheckEnabled {
-		t.Fatalf("features=%+v, want scheduled check enabled", resp.Data.Features)
 	}
 }
 

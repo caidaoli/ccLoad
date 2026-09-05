@@ -28,6 +28,63 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func TestMigrateDailyChannelChecks(t *testing.T) {
+	for _, tc := range []struct {
+		hours            string
+		minutes, enabled int
+	}{
+		{"5", 300, 1}, {"0.5", 30, 1}, {"0.01", 1, 1},
+		{"0.51", 31, 1}, {"48", 1440, 1}, {"0", 300, 0},
+	} {
+		t.Run(tc.hours, func(t *testing.T) {
+			db, ctx := openTestDB(t), context.Background()
+			// Start with an actual legacy table, before the new columns exist.
+			_, err := db.ExecContext(ctx, `CREATE TABLE channels (
+				id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+				priority INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+				scheduled_check_enabled INTEGER NOT NULL DEFAULT 0,
+				cooldown_until INTEGER NOT NULL DEFAULT 0, cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+				INSERT INTO channels(id,name,url,scheduled_check_enabled,created_at,updated_at)
+				VALUES(1,'legacy','https://example.com',1,1,1);
+				CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, value_type TEXT NOT NULL,
+				description TEXT NOT NULL, default_value TEXT NOT NULL, updated_at INTEGER NOT NULL);`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx, `INSERT INTO system_settings VALUES('channel_check_interval_hours',?,'float','','5',1)`, tc.hours); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrate(ctx, db, DialectSQLite); err != nil {
+				t.Fatal(err)
+			}
+			var minutes, enabled, remaining int
+			var start string
+			if err := db.QueryRowContext(ctx, `SELECT scheduled_check_interval_minutes,scheduled_check_start_time,scheduled_check_enabled FROM channels WHERE id=1`).Scan(&minutes, &start, &enabled); err != nil {
+				t.Fatal(err)
+			}
+			if minutes != tc.minutes || start != "00:00" || enabled != tc.enabled {
+				t.Fatalf("schedule=%d/%s/%d", minutes, start, enabled)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM system_settings WHERE key='channel_check_interval_hours'`).Scan(&remaining); err != nil || remaining != 0 {
+				t.Fatalf("legacy setting remains: %d, %v", remaining, err)
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE channels SET scheduled_check_interval_minutes=17,scheduled_check_start_time='08:30' WHERE id=1`); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrate(ctx, db, DialectSQLite); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT scheduled_check_interval_minutes,scheduled_check_start_time FROM channels WHERE id=1`).Scan(&minutes, &start); err != nil {
+				t.Fatal(err)
+			}
+			if minutes != 17 || start != "08:30" {
+				t.Fatalf("repeat migration overwrote schedule: %d/%s", minutes, start)
+			}
+		})
+	}
+}
+
 func TestMigrate_SQLite_AddsProtocolTransformModeWithAutoDefault(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -1501,7 +1558,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"gemini_non_stream_timeout",
 		"model_fuzzy_match",
 		"channel_test_content",
-		"channel_check_interval_hours",
 		"auto_update_interval_hours",
 		"auto_update_channel",
 		"channel_stats_range",
@@ -1526,9 +1582,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		).Scan(&val, &defaultValue)
 		if err != nil {
 			t.Errorf("setting %q not found: %v", key, err)
-		}
-		if key == "channel_check_interval_hours" && val != "5" {
-			t.Errorf("setting %q default = %q, want 5", key, val)
 		}
 		if key == "auto_update_interval_hours" && val != "12" {
 			t.Errorf("setting %q default = %q, want 12", key, val)

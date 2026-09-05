@@ -113,7 +113,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -480,11 +480,15 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.Config{
-		Name:         "Key Multiplier Source",
-		AuthType:     model.AuthTypeAPIKey,
-		URLs:         model.ChannelURLs{{URL: "https://key.example.com"}},
-		Enabled:      true,
-		ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+		Name:                          "Key Multiplier Source",
+		ScheduledCheckEnabled:         true,
+		ScheduledCheckModel:           "gpt-5.4",
+		ScheduledCheckIntervalMinutes: 37,
+		ScheduledCheckStartTime:       "08:30",
+		AuthType:                      model.AuthTypeAPIKey,
+		URLs:                          model.ChannelURLs{{URL: "https://key.example.com"}},
+		Enabled:                       true,
+		ModelEntries:                  []model.ModelEntry{{Model: "gpt-5.4"}},
 	}
 	created, err := source.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -530,6 +534,9 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 	}
 	if len(configs) != 1 {
 		t.Fatalf("restored channel count=%d, want 1", len(configs))
+	}
+	if got := configs[0]; !got.ScheduledCheckEnabled || got.ScheduledCheckModel != "gpt-5.4" || got.ScheduledCheckIntervalMinutes != 37 || got.ScheduledCheckStartTime != "08:30" {
+		t.Fatalf("CSV round trip lost daily schedule: %+v", got)
 	}
 	keys, err := target.store.GetAPIKeys(ctx, configs[0].ID)
 	if err != nil {
@@ -1031,15 +1038,17 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 	ctx := context.Background()
 
 	created, err := server.store.CreateConfig(ctx, &model.Config{
-		Name:                    "Import-Preserve-Scheduled",
-		URLs:                    model.ChannelURLs{{URL: "https://old.example.com"}},
-		Priority:                10,
-		Websockets:              true,
-		ModelEntries:            []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
-		Enabled:                 true,
-		RetryOtherKeysOnFailure: true,
-		ScheduledCheckEnabled:   true,
-		ScheduledCheckModel:     "old-model",
+		Name:                          "Import-Preserve-Scheduled",
+		URLs:                          model.ChannelURLs{{URL: "https://old.example.com"}},
+		Priority:                      10,
+		Websockets:                    true,
+		ModelEntries:                  []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
+		Enabled:                       true,
+		RetryOtherKeysOnFailure:       true,
+		ScheduledCheckEnabled:         true,
+		ScheduledCheckModel:           "old-model",
+		ScheduledCheckIntervalMinutes: 17,
+		ScheduledCheckStartTime:       "09:15",
 		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 			Enabled: true, Name: "preserved-rule", Priority: 0, StatusCodes: []int{429},
 			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
@@ -1100,6 +1109,9 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	}
 	if updated.ScheduledCheckModel != "old-model" {
 		t.Fatalf("缺少 scheduled_check_model 列时应保留旧值 old-model，实际为 %q", updated.ScheduledCheckModel)
+	}
+	if updated.ScheduledCheckIntervalMinutes != 17 || updated.ScheduledCheckStartTime != "09:15" {
+		t.Fatalf("missing CSV columns overwrote schedule: %+v", updated)
 	}
 	if updated.CooldownDetectionRules == nil || len(updated.CooldownDetectionRules.Rules) != 1 || updated.CooldownDetectionRules.Rules[0].Name != "preserved-rule" {
 		t.Fatalf("缺少 cooldown_detection_rules 列时应保留旧规则，实际为 %#v", updated.CooldownDetectionRules)

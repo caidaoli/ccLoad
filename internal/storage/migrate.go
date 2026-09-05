@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,41 @@ const (
 	clientProtocolBackfillMigrationVersion = "v5_logs_client_protocol_backfill"
 	previousAntigravitySensitiveWords      = `["API","proxy"]`
 )
+
+// migrateDailyChannelChecks consumes the legacy setting atomically with its backfill.
+// Absence of the setting makes subsequent startups a no-op.
+func migrateDailyChannelChecks(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	keyColumn := quoteKeyIdent(dialect)
+	var raw string
+	err = tx.QueryRowContext(ctx, "SELECT value FROM system_settings WHERE "+keyColumn+" = 'channel_check_interval_hours'").Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	hours, parseErr := strconv.ParseFloat(raw, 64)
+	minutes := model.DefaultScheduledCheckIntervalMinutes
+	if parseErr == nil && hours > 0 && !math.IsInf(hours, 0) {
+		minutes = int(math.Min(1440, math.Max(1, math.Ceil(hours*60))))
+	}
+	query := "UPDATE channels SET scheduled_check_interval_minutes = ?, scheduled_check_start_time = '00:00'"
+	if parseErr == nil && hours == 0 {
+		query += ", scheduled_check_enabled = 0"
+	}
+	if _, err := tx.ExecContext(ctx, rebindIfPostgres(dialect, query), minutes); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM system_settings WHERE "+keyColumn+" = 'channel_check_interval_hours'"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 // Dialect 数据库方言
 type Dialect int
@@ -151,6 +187,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureChannelsScheduledCheckModel(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_model: %w", err)
+			}
+			if err := ensureChannelsScheduledCheckSchedule(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels daily check schedule: %w", err)
 			}
 			if err := ensureChannelsCustomRequestRules(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels custom_request_rules: %w", err)
@@ -483,7 +522,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", config.DefaultChannelTestContent, "string", "渠道测试默认内容（不能为空）", config.DefaultChannelTestContent},
-		{"channel_check_interval_hours", strconv.FormatFloat(config.DefaultChannelCheckIntervalHours, 'f', -1, 64), "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", strconv.FormatFloat(config.DefaultChannelCheckIntervalHours, 'f', -1, 64)},
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
 		{"auto_update_interval_hours", "12", "int", "非容器部署的版本检查间隔（整数小时；0=关闭检查；启用时最低1小时）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查和自动更新渠道（stable=稳定版，preview=稳定版和测试版）", "stable"},
@@ -558,7 +596,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		descriptionRefreshKeys := map[string]bool{
 			"antigravity_sensitive_words":            true,
 			"channel_test_content":                   true,
-			"channel_check_interval_hours":           true,
 			"channel_stats_range":                    true,
 			"success_rate_penalty_weight":            true,
 			"health_score_window_minutes":            true,
@@ -647,14 +684,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 迁移 channel_check_interval_hours 类型：int → float（支持分钟级小数间隔）
-	{
-		keyCol := quoteKeyIdent(dialect)
-		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
-		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
-		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
-			return fmt.Errorf("migrate channel_check_interval_hours type: %w", err)
-		}
+	if err := migrateDailyChannelChecks(ctx, db, dialect); err != nil {
+		return fmt.Errorf("migrate daily channel checks: %w", err)
 	}
 
 	// 迁移旧 migration marker 从 system_settings 到 schema_migrations

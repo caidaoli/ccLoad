@@ -284,7 +284,7 @@ func TestAdminSettingContractValidation(t *testing.T) {
 		{name: "channel stats unknown", key: "channel_stats_range", value: "forever", wantCode: http.StatusBadRequest},
 		{name: "duration maximum", key: "stream_timeout", value: strconv.FormatInt(maxSettingDurationSeconds, 10), wantCode: http.StatusOK},
 		{name: "duration overflow", key: "stream_timeout", value: strconv.FormatInt(maxSettingDurationSeconds+1, 10), wantCode: http.StatusBadRequest},
-		{name: "channel interval overflow", key: "channel_check_interval_hours", value: strconv.FormatInt(maxSettingDurationHours+1, 10), wantCode: http.StatusBadRequest},
+		{name: "channel interval overflow", key: "model_catalog_sync_interval_hours", value: strconv.FormatInt(maxSettingDurationHours+1, 10), wantCode: http.StatusBadRequest},
 		{name: "auto update overflow", key: autoUpdateIntervalSettingKey, value: strconv.FormatInt(maxSettingDurationHours+1, 10), wantCode: http.StatusBadRequest},
 		{name: "websocket ttl default", key: responsesWebsocketSessionTTLSetting, value: "0", wantCode: http.StatusOK},
 		{name: "websocket ttl overflow", key: responsesWebsocketSessionTTLSetting, value: strconv.FormatInt(maxSettingDurationMinutes+1, 10), wantCode: http.StatusBadRequest},
@@ -547,22 +547,22 @@ func TestAdminSettingsHandlers(t *testing.T) {
 	})
 
 	t.Run("AdminGetSetting_returns_latest_db_value_before_restart", func(t *testing.T) {
-		if err := store.UpdateSetting(context.Background(), "channel_check_interval_hours", "1"); err != nil {
+		if err := store.UpdateSetting(context.Background(), "model_catalog_sync_interval_hours", "1"); err != nil {
 			t.Fatalf("failed to seed setting in db: %v", err)
 		}
 
-		seed, err := store.GetSetting(context.Background(), "channel_check_interval_hours")
+		seed, err := store.GetSetting(context.Background(), "model_catalog_sync_interval_hours")
 		if err != nil {
 			t.Fatalf("failed to read seeded setting: %v", err)
 		}
 		seed.Value = "1"
 
 		server.configService.mu.Lock()
-		server.configService.cache["channel_check_interval_hours"] = seed
+		server.configService.cache["model_catalog_sync_interval_hours"] = seed
 		server.configService.mu.Unlock()
 
-		updateCtx, updateW := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/channel_check_interval_hours", []byte(`{"value":"0"}`)))
-		updateCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+		updateCtx, updateW := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/settings/model_catalog_sync_interval_hours", []byte(`{"value":"0"}`)))
+		updateCtx.Params = gin.Params{{Key: "key", Value: "model_catalog_sync_interval_hours"}}
 
 		server.AdminUpdateSetting(updateCtx)
 
@@ -576,8 +576,8 @@ func TestAdminSettingsHandlers(t *testing.T) {
 			t.Fatal("expected restart triggered")
 		}
 
-		getCtx, getW := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/channel_check_interval_hours", nil))
-		getCtx.Params = gin.Params{{Key: "key", Value: "channel_check_interval_hours"}}
+		getCtx, getW := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/model_catalog_sync_interval_hours", nil))
+		getCtx.Params = gin.Params{{Key: "key", Value: "model_catalog_sync_interval_hours"}}
 
 		server.AdminGetSetting(getCtx)
 

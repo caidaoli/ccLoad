@@ -1519,20 +1519,33 @@
             <input type="checkbox" id="channelRetryOtherKeysOnFailure">
             <span><span data-i18n="channels.retryOtherKeysOnFailure">渠道故障优先换 Key</span><span class="advanced-settings-inline-help" data-i18n="channels.retryOtherKeysOnFailureHelp">渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。</span></span>
           </label>
-          <div class="advanced-settings-scheduled-row">
-            <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
-              <input type="checkbox" id="channelScheduledCheckEnabled">
-              <span data-i18n="channels.enableScheduledCheck">定时检测</span>
-            </label>
-            <div id="channelScheduledCheckModelWrapper" class="advanced-settings-other-field" hidden>
-              <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
-                <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
-                  autocomplete="off" spellcheck="false" aria-label="检测模型"
-                  data-i18n-aria-label="channels.scheduledCheckModel">
-                <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
-                <input type="hidden" id="channelScheduledCheckModel" value="">
+          <div class="advanced-settings-scheduled-group">
+            <div class="advanced-settings-scheduled-row">
+              <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label">
+                <input type="checkbox" id="channelScheduledCheckEnabled">
+                <span data-i18n="channels.enableScheduledCheck">每日定时检测</span>
+              </label>
+              <div id="channelScheduledCheckModelWrapper" class="advanced-settings-other-field">
+                <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
+                  <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
+                    autocomplete="off" spellcheck="false" aria-label="检测模型"
+                    data-i18n-aria-label="channels.scheduledCheckModel">
+                  <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
+                  <input type="hidden" id="channelScheduledCheckModel" value="">
+                </div>
+              </div>
+              <div id="channelScheduledCheckIntervalMinutesWrapper" class="advanced-settings-scheduled-field" hidden>
+                <label class="form-label" for="channelScheduledCheckIntervalMinutes" data-i18n="channels.scheduledCheckIntervalMinutes">检测间隔（分钟）</label>
+                <input id="channelScheduledCheckIntervalMinutes" class="form-input" type="number" min="1" max="1440" step="1" value="300" required disabled aria-describedby="channelScheduledCheckScheduleHint channelScheduledCheckIntervalMinutesError">
+                <small id="channelScheduledCheckIntervalMinutesError" class="advanced-settings-field-help" hidden></small>
+              </div>
+              <div id="channelScheduledCheckStartTimeWrapper" class="advanced-settings-scheduled-field advanced-settings-scheduled-time" hidden>
+                <label class="form-label" for="channelScheduledCheckStartTime" data-i18n="channels.scheduledCheckStartTime">开始时间</label>
+                <input id="channelScheduledCheckStartTime" class="form-input" type="time" step="60" value="00:00" required disabled aria-describedby="channelScheduledCheckScheduleHint channelScheduledCheckStartTimeError">
+                <small id="channelScheduledCheckStartTimeError" class="advanced-settings-field-help" hidden></small>
               </div>
             </div>
+            <p id="channelScheduledCheckScheduleHint" class="advanced-settings-inline-help" data-i18n="channels.scheduledCheckScheduleHint">按服务端时间，每天从开始时间按间隔执行至当天结束；错过的检测不补跑。</p>
           </div>
           <fieldset id="channelManagementGroup" class="advanced-settings-management" hidden>
             <legend class="advanced-settings-management-legend" data-i18n="channels.management.legend">管理账户</legend>

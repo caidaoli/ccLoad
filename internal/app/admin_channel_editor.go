@@ -28,10 +28,6 @@ type channelEditorURLStats struct {
 	Items     []URLStat `json:"items"`
 }
 
-type channelEditorFeatures struct {
-	ScheduledCheckEnabled bool `json:"scheduled_check_enabled"`
-}
-
 // channelManagementEditorView is returned only by the authenticated channel
 // editor endpoint. List/detail responses keep using channelManagementView,
 // which intentionally contains only configuration flags and runtime state.
@@ -52,7 +48,6 @@ type channelEditorData struct {
 	OAuthCredentialInfo *codexauth.IDTokenInfo       `json:"oauth_credential_info,omitempty"`
 	ModelStats          channelEditorModelStats      `json:"model_stats"`
 	URLStats            channelEditorURLStats        `json:"url_stats"`
-	Features            channelEditorFeatures        `json:"features"`
 }
 
 // HandleChannelEditor 聚合编辑器首次打开所需的数据，避免前端拼装多个快照。
@@ -170,14 +165,6 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}
 	}
 
-	scheduledCheckEnabled := false
-	if s.configService != nil {
-		hours := normalizeChannelCheckIntervalHours(
-			s.configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours),
-		)
-		scheduledCheckEnabled = hours > 0
-	}
-
 	RespondJSON(c, http.StatusOK, channelEditorData{
 		Channel:             detail,
 		Keys:                apiKeys,
@@ -186,8 +173,5 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		OAuthCredentialInfo: oauthCredentialInfo,
 		ModelStats:          modelStats,
 		URLStats:            urlStats,
-		Features: channelEditorFeatures{
-			ScheduledCheckEnabled: scheduledCheckEnabled,
-		},
 	})
 }

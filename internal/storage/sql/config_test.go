@@ -31,7 +31,10 @@ func TestConfig_CreateAndGet(t *testing.T) {
 
 	// 创建渠道
 	cfg := &model.Config{
-		Name: "test-channel",
+		Name:                          "test-channel",
+		ScheduledCheckEnabled:         true,
+		ScheduledCheckIntervalMinutes: 37,
+		ScheduledCheckStartTime:       "08:30",
 		URLs: model.ChannelURLs{
 			{URL: "https://api.openai.com", Protocols: []string{"openai", "codex"}},
 			{URL: "https://api.openai.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
@@ -60,6 +63,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if created.ID == 0 {
 		t.Error("expected non-zero ID")
+	}
+	if created.ScheduledCheckIntervalMinutes != 37 || created.ScheduledCheckStartTime != "08:30" {
+		t.Fatalf("schedule not persisted: %+v", created)
 	}
 
 	// 获取渠道

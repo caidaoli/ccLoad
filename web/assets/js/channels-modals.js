@@ -82,30 +82,6 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-async function syncScheduledCheckVisibility(enabledOverride) {
-  const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
-  const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
-  if (!scheduledCheckWrapper) return false;
-
-  let enabled = enabledOverride === true;
-  if (typeof enabledOverride !== 'boolean') {
-    try {
-      const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
-      const intervalHours = Number(setting && setting.value);
-      enabled = Number.isFinite(intervalHours) && intervalHours > 0;
-    } catch (error) {
-      console.warn('Failed to load channel check interval setting', error);
-    }
-  }
-
-  scheduledCheckWrapper.hidden = !enabled;
-  if (scheduledCheckModelWrapper) {
-    scheduledCheckModelWrapper.hidden = !enabled;
-  }
-  syncScheduledCheckModelState();
-  return enabled;
-}
-
 function setScheduledCheckModelHint(i18nKey) {
   const hint = document.getElementById('channelScheduledCheckModelHint');
   if (!hint) return;
@@ -183,7 +159,21 @@ function syncScheduledCheckModelState() {
     input.value = nextLabel;
   }
 
-  input.disabled = wrapper.hidden || !checkbox.checked;
+  input.disabled = !checkbox.checked;
+  for (const id of ['channelScheduledCheckIntervalMinutes', 'channelScheduledCheckStartTime']) {
+    const field = document.getElementById(`${id}Wrapper`);
+    if (field) field.hidden = !checkbox.checked;
+    const control = document.getElementById(id);
+    if (control) {
+      control.disabled = !checkbox.checked;
+      control.removeAttribute?.('aria-invalid');
+    }
+    const error = document.getElementById(`${id}Error`);
+    if (error) {
+      error.hidden = true;
+      error.textContent = '';
+    }
+  }
 }
 
 function setChannelWebsocketChecked(checkbox, checked) {
@@ -435,7 +425,6 @@ async function showAddModal() {
   editingChannelAuthType = 'api_key';
   currentChannelKeyCooldowns = [];
   resetModalKeyStatusFilter();
-  await syncScheduledCheckVisibility();
 
   setChannelModalTitle('channels.addChannel');
   document.getElementById('channelForm').reset();
@@ -446,6 +435,8 @@ async function showAddModal() {
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
+  document.getElementById('channelScheduledCheckIntervalMinutes').value = '300';
+  document.getElementById('channelScheduledCheckStartTime').value = '00:00';
 	await ensureProtocolTransformModeCombobox('auto');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
@@ -507,13 +498,9 @@ async function editChannel(id) {
   const urlStats = editorData.url_stats && Array.isArray(editorData.url_stats.items)
     ? editorData.url_stats.items
     : [];
-  const scheduledCheckEnabled = Boolean(
-    editorData.features && editorData.features.scheduled_check_enabled
-  );
 
   resetModalKeyStatusFilter();
 
-  const scheduledVisibilityPromise = syncScheduledCheckVisibility(scheduledCheckEnabled);
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
@@ -528,7 +515,6 @@ async function editChannel(id) {
   applyURLStats(urlStats);
 
   await Promise.all([
-    scheduledVisibilityPromise,
     protocolModeRenderPromise
   ]);
 
@@ -580,6 +566,8 @@ async function editChannel(id) {
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
+  document.getElementById('channelScheduledCheckIntervalMinutes').value = channel.scheduled_check_interval_minutes ?? 300;
+  document.getElementById('channelScheduledCheckStartTime').value = channel.scheduled_check_start_time ?? '00:00';
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
 
@@ -777,8 +765,37 @@ function collectModelsForSubmit(rows) {
     }));
 }
 
+function validateChannelScheduledCheckSchedule() {
+  const intervalInput = document.getElementById('channelScheduledCheckIntervalMinutes');
+  const startInput = document.getElementById('channelScheduledCheckStartTime');
+  const interval = Number(intervalInput.value);
+  const scheduleErrors = [
+    [intervalInput, Number.isInteger(interval) && interval >= 1 && interval <= 1440, 'channels.scheduledCheckIntervalInvalid'],
+    [startInput, /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(startInput.value.trim()), 'channels.scheduledCheckStartInvalid']
+  ];
+  for (const [input, valid, errorKey] of scheduleErrors) {
+    const error = document.getElementById(`${input.id}Error`);
+    if (error) {
+      error.textContent = valid ? '' : window.t(errorKey);
+      error.hidden = valid;
+    }
+    if (!valid) {
+      if (!document.getElementById('customRulesModal')?.classList.contains('show')) {
+        invokeChannelEditorAction('openCustomRulesModal');
+      }
+      invokeChannelEditorAction('switchAdvancedSettingsTab', 'other');
+      input.setAttribute('aria-invalid', 'true');
+      input.focus();
+      return false;
+    }
+    input.removeAttribute?.('aria-invalid');
+  }
+  return true;
+}
+
 async function saveChannel(event) {
   event.preventDefault();
+  if (!validateChannelScheduledCheckSchedule()) return;
 
   const cooldownRuleErrors = invokeChannelEditorAction('validateCooldownDetectionRulesForSubmit');
   if (Array.isArray(cooldownRuleErrors) && cooldownRuleErrors.length > 0) {
@@ -854,6 +871,8 @@ async function saveChannel(event) {
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
     websockets: !!document.getElementById('channelWebsockets')?.checked,
     scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
+    scheduled_check_interval_minutes: Number(document.getElementById('channelScheduledCheckIntervalMinutes').value),
+    scheduled_check_start_time: document.getElementById('channelScheduledCheckStartTime').value.trim(),
     custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
     cooldown_detection_rules: invokeChannelEditorAction('collectCooldownDetectionRulesForSubmit') || null,
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
@@ -1879,7 +1898,6 @@ function batchRefreshSelectedChannelsReplace() {
 async function copyChannel(id, name) {
   const channel = channels.find(c => c.id === id);
   if (!channel) return;
-  await syncScheduledCheckVisibility();
 
   const copiedName = generateCopyName(name);
 
@@ -1923,6 +1941,8 @@ async function copyChannel(id, name) {
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
+  document.getElementById('channelScheduledCheckIntervalMinutes').value = channel.scheduled_check_interval_minutes ?? 300;
+  document.getElementById('channelScheduledCheckStartTime').value = channel.scheduled_check_start_time ?? '00:00';
   const proxyUrlInput = document.getElementById('channelProxyURL');
   if (proxyUrlInput) proxyUrlInput.value = channel.proxy_url || '';
   const availableTimeStart = document.getElementById('channelAvailableTimeStart');
