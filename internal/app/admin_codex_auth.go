@@ -699,11 +699,6 @@ func updateExistingCodexChannel(
 			return nil, false, err
 		}
 		if credentialUpdated {
-			if _, err := persistCodexModelState(
-				ctx, store, currentCfg, current.PlanType, next, nextJSON,
-			); err != nil {
-				return nil, false, err
-			}
 			if err := store.ResetChannelCooldown(ctx, currentCfg.ID); err != nil {
 				return nil, false, fmt.Errorf("clear Codex channel cooldown after reauthorization: %w", err)
 			}
@@ -766,63 +761,6 @@ func findCodexOAuthChannel(
 	return nil, nil, codexIdentityNone
 }
 
-func persistCodexModelState(
-	ctx context.Context,
-	store storage.Store,
-	cfg *model.Config,
-	previousPlanType string,
-	credential *codexauth.Credential,
-	credentialJSON string,
-) (*codexauth.Credential, error) {
-	models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, previousPlanType, credential.PlanType)
-	scheduledCheckModel := cfg.ScheduledCheckModel
-	if !codexOAuthModelAllowed(scheduledCheckModel, credential.PlanType) {
-		scheduledCheckModel = ""
-	}
-	updated, err := store.UpdateOAuthModelStateIfCredentialMatches(
-		ctx, cfg.ID, model.AuthTypeCodexOAuth, credentialJSON, models, scheduledCheckModel,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("reconcile Codex models for plan %q: %w", credential.PlanType, err)
-	}
-	if updated {
-		return credential, nil
-	}
-	winnerCfg, err := store.GetConfig(ctx, cfg.ID)
-	if err != nil {
-		return nil, fmt.Errorf("reload Codex winner for model reconciliation: %w", err)
-	}
-	winner, err := codexauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
-	if err != nil {
-		return nil, fmt.Errorf("parse Codex winner for model reconciliation: %w", err)
-	}
-	return applyCodexWinnerModelState(ctx, store, winnerCfg, previousPlanType, winner)
-}
-
-func applyCodexWinnerModelState(
-	ctx context.Context,
-	store storage.Store,
-	cfg *model.Config,
-	previousPlanType string,
-	credential *codexauth.Credential,
-) (*codexauth.Credential, error) {
-	models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, previousPlanType, credential.PlanType)
-	scheduledCheckModel := cfg.ScheduledCheckModel
-	if !codexOAuthModelAllowed(scheduledCheckModel, credential.PlanType) {
-		scheduledCheckModel = ""
-	}
-	updated, err := store.UpdateOAuthModelStateIfCredentialMatches(
-		ctx, cfg.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, models, scheduledCheckModel,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("repair Codex models for winning plan %q: %w", credential.PlanType, err)
-	}
-	if !updated {
-		return nil, errors.New("codex credential changed during model reconciliation")
-	}
-	return credential, nil
-}
-
 func newCodexOAuthChannel(name, credentialJSON, planType string) *model.Config {
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
@@ -872,47 +810,6 @@ func codexOAuthModelEntries(planType string) []model.ModelEntry {
 	}
 	sortOAuthModelEntries(entries)
 	return entries
-}
-
-func filterCodexOAuthModelEntries(entries []model.ModelEntry, planType string) []model.ModelEntry {
-	filtered := make([]model.ModelEntry, 0, len(entries))
-	for _, entry := range entries {
-		if codexOAuthModelAllowed(entry.Model, planType) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
-}
-
-func mergeCodexOAuthModelEntries(entries []model.ModelEntry, planType string) []model.ModelEntry {
-	existing := make(map[string]model.ModelEntry, len(entries))
-	for _, entry := range entries {
-		existing[entry.Model] = entry
-	}
-	models := codexOAuthModelEntries(planType)
-	for i := range models {
-		if entry, ok := existing[models[i].Model]; ok {
-			models[i] = entry
-		}
-	}
-	return models
-}
-
-func reconcileCodexOAuthModelEntries(entries []model.ModelEntry, previousPlanType, planType string) []model.ModelEntry {
-	models := filterCodexOAuthModelEntries(entries, planType)
-	if hasWildcardCodexModel(entries) || codexOAuthPlanTier(previousPlanType) != codexOAuthPlanTier(planType) || len(models) == 0 {
-		return mergeCodexOAuthModelEntries(entries, planType)
-	}
-	return models
-}
-
-func hasWildcardCodexModel(entries []model.ModelEntry) bool {
-	for _, entry := range entries {
-		if strings.TrimSpace(entry.Model) == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 type codexIdentityMatch uint8

@@ -177,11 +177,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 			return nil, fmt.Errorf("parse Codex credential for channel %d: %w", currentCfg.ID, parseErr)
 		}
 		if current.AccessToken != forcedAccessToken {
-			winner, reconcileErr := applyCodexWinnerModelState(refreshCtx, m.store, currentCfg, "", current)
-			if reconcileErr != nil {
-				return nil, reconcileErr
-			}
-			m.cache(currentCfg.ID, winner)
+			m.cache(currentCfg.ID, current)
 			return oauthCredentialRefreshRedirect{}, nil
 		}
 		service := *m.service
@@ -195,12 +191,6 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 				winner, parseWinnerErr := codexauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
 				if parseWinnerErr == nil &&
 					(winner.AccessToken != current.AccessToken || winner.RefreshToken != current.RefreshToken) {
-					winner, reconcileErr := applyCodexWinnerModelState(
-						refreshCtx, m.store, winnerCfg, current.PlanType, winner,
-					)
-					if reconcileErr != nil {
-						return nil, reconcileErr
-					}
 					m.cache(currentCfg.ID, winner)
 					return cloneCodexCredential(winner), nil
 				}
@@ -248,14 +238,8 @@ func (m *codexCredentialManager) persistRefreshResult(
 	current := refreshedFrom
 	for {
 		if current.AccessToken != refreshedFrom.AccessToken || current.RefreshToken != refreshedFrom.RefreshToken {
-			winner, err := applyCodexWinnerModelState(
-				ctx, m.store, currentCfg, refreshedFrom.PlanType, current,
-			)
-			if err != nil {
-				return nil, err
-			}
-			m.cache(currentCfg.ID, winner)
-			return cloneCodexCredential(winner), nil
+			m.cache(currentCfg.ID, current)
+			return cloneCodexCredential(current), nil
 		}
 		merged, err := current.MergeRefresh(refreshed)
 		if err != nil {
@@ -272,17 +256,11 @@ func (m *codexCredentialManager) persistRefreshResult(
 			return nil, err
 		}
 		if updated {
-			persisted, persistErr := persistCodexModelState(
-				ctx, m.store, currentCfg, current.PlanType, merged, payload,
-			)
-			if persistErr != nil {
-				return nil, persistErr
-			}
 			if m.invalidateConfig != nil {
 				m.invalidateConfig(currentCfg.ID)
 			}
-			m.cache(currentCfg.ID, persisted)
-			return cloneCodexCredential(persisted), nil
+			m.cache(currentCfg.ID, merged)
+			return cloneCodexCredential(merged), nil
 		}
 		currentCfg, err = m.store.GetConfig(ctx, currentCfg.ID)
 		if err != nil {

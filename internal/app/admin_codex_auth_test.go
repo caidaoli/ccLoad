@@ -3334,20 +3334,12 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	if err != nil || wasCreated {
 		t.Fatalf("free reimport = (%#v, %v, %v)", updated, wasCreated, err)
 	}
-	want := []string{
-		"codex-auto-review",
-		"gpt-5.4-mini",
-		"gpt-5.5",
-		"gpt-5.6-luna",
-		"gpt-5.6-terra",
-		"gpt-image-1.5",
-		"gpt-image-2",
-	}
+	want := append([]string(nil), created.GetModels()...)
 	if got := updated.GetModels(); !slices.Equal(got, want) {
 		t.Fatalf("free channel models = %v, want %v", got, want)
 	}
-	if updated.SupportsModel("gpt-6-astra") {
-		t.Fatalf("free channel unexpectedly supports gpt-6-astra: %v", updated.GetModels())
+	if !updated.SupportsModel("gpt-6-astra") {
+		t.Fatalf("manual model was removed: %v", updated.GetModels())
 	}
 }
 
@@ -3649,8 +3641,8 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	if persisted.Name != "codex-renamed" || persisted.OAuthCredential != channel.OAuthCredential {
 		t.Fatalf("allowed update changed credential or missed name: %#v", persisted)
 	}
-	if persisted.SupportsModel("gpt-5.4") {
-		t.Fatalf("free Codex channel kept unsupported model: %v", persisted.GetModels())
+	if !persisted.SupportsModel("gpt-5.4") {
+		t.Fatalf("manual model was removed: %v", persisted.GetModels())
 	}
 	keys, err := store.GetAPIKeys(context.Background(), channel.ID)
 	if err != nil || len(keys) != 0 {
@@ -3729,8 +3721,8 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 		persistedCredential.IDToken != freeIDToken {
 		t.Fatalf("persisted refreshed credential = %#v", persistedCredential)
 	}
-	if persisted.SupportsModel("gpt-5.6-sol") || persisted.SupportsModel("gpt-5.4") || persisted.SupportsModel("gpt-5.3-codex-spark") {
-		t.Fatalf("refreshed free channel kept unsupported models: %v", persisted.GetModels())
+	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.3-codex-spark") {
+		t.Fatalf("refresh removed existing models: %v", persisted.GetModels())
 	}
 }
 

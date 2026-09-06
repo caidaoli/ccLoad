@@ -1267,14 +1267,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			}
 		}
 	}
-	if existing.UsesCodexOAuth() {
-		credential, parseErr := codexauth.ParseCredential([]byte(existing.OAuthCredential))
-		if parseErr != nil {
-			RespondError(c, http.StatusInternalServerError, parseErr)
-			return
-		}
-		req.Models = filterCodexOAuthModelEntries(req.Models, credential.PlanType)
-	}
 	var oldKeys []*model.APIKey
 	if !existing.UsesOAuth() {
 		oldKeys, err = s.getAPIKeys(c.Request.Context(), id)
