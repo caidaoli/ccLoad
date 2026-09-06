@@ -754,7 +754,6 @@ func completeImportedCodexCredential(
 		validated.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
 		validated.OAuthUsage = append(json.RawMessage(nil), credential.OAuthUsage...)
 		validated.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
-		validated.QuotaOverdraft = codexauth.CloneQuotaOverdraft(credential.QuotaOverdraft)
 		return validated, nil
 	}
 

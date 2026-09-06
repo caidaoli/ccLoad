@@ -59,17 +59,6 @@ type concurrentOAuthWinnerStore struct {
 	winnerErr  error
 }
 
-type transientOAuthCASStore struct {
-	storage.Store
-	calls atomic.Int32
-}
-
-type transientOAuthGetStore struct {
-	storage.Store
-	getCalls atomic.Int32
-	casCalls atomic.Int32
-}
-
 type blockingCodexModelStateStore struct {
 	storage.Store
 	firstStarted chan struct{}
@@ -183,37 +172,6 @@ func (s *concurrentOAuthWinnerStore) CompareAndSwapOAuthCredential(
 	if injected {
 		return false, nil
 	}
-	return s.Store.CompareAndSwapOAuthCredential(
-		ctx, channelID, expectedAuthType, expectedCredential, nextCredential,
-	)
-}
-
-func (s *transientOAuthCASStore) CompareAndSwapOAuthCredential(
-	ctx context.Context,
-	channelID int64,
-	expectedAuthType, expectedCredential, nextCredential string,
-) (bool, error) {
-	if s.calls.Add(1) == 1 {
-		return false, errors.New("database is locked")
-	}
-	return s.Store.CompareAndSwapOAuthCredential(
-		ctx, channelID, expectedAuthType, expectedCredential, nextCredential,
-	)
-}
-
-func (s *transientOAuthGetStore) GetConfig(ctx context.Context, channelID int64) (*model.Config, error) {
-	if s.getCalls.Add(1) == 1 {
-		return nil, errors.New("database is locked")
-	}
-	return s.Store.GetConfig(ctx, channelID)
-}
-
-func (s *transientOAuthGetStore) CompareAndSwapOAuthCredential(
-	ctx context.Context,
-	channelID int64,
-	expectedAuthType, expectedCredential, nextCredential string,
-) (bool, error) {
-	s.casCalls.Add(1)
 	return s.Store.CompareAndSwapOAuthCredential(
 		ctx, channelID, expectedAuthType, expectedCredential, nextCredential,
 	)
@@ -1706,7 +1664,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		)
 		if file.personal {
 			credential = fmt.Sprintf(
-				`{"type":"codex","auth_mode":"personalAccessToken","access_token":%q,"chatgpt_user_id":"forged-user","account_id":%q,"email":"forged@example.com","plan_type":"free","quota_overdraft":{"enabled":true},"quota_cost_usage":{"windows":[{"key":"codex|secondary","window_seconds":604800,"started_at":1893456000,"reset_at":1894060800,"standard_cost_microusd":6500000}]}}`,
+				`{"type":"codex","auth_mode":"personalAccessToken","access_token":%q,"chatgpt_user_id":"forged-user","account_id":%q,"email":"forged@example.com","plan_type":"free","quota_cost_usage":{"windows":[{"key":"codex|secondary","window_seconds":604800,"started_at":1893456000,"reset_at":1894060800,"standard_cost_microusd":6500000}]}}`,
 				file.accessToken, file.accountID,
 			)
 		}
@@ -1769,7 +1727,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 	personal := persisted["verified-pat-account"]
 	if personal == nil || !personal.IsPersonalAccessToken() || personal.ChatGPTUserID != "verified-pat-user" ||
 		personal.Email != "verified-pat@example.com" || personal.PlanType != "plus" || !personal.AccountFedRAMP ||
-		personal.QuotaOverdraft == nil || !personal.QuotaOverdraft.Enabled || personal.QuotaCostUsage == nil ||
+		personal.QuotaCostUsage == nil ||
 		oauthcost.Find(personal.QuotaCostUsage, "codex|secondary") == nil ||
 		oauthcost.Find(personal.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 6_500_000 {
 		t.Fatalf("persisted PAT did not use whoami identity and local quota state: %#v", personal)
@@ -3319,9 +3277,6 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 		StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
 		StandardCostMicroUSD: 7_500_000,
 	}}}
-	winner.QuotaOverdraft = &codexauth.QuotaOverdraft{
-		Enabled: true, SuccessfulRequests: 3, CostMicroUSD: 2500,
-	}
 	winnerJSON, err := winner.JSON()
 	if err != nil {
 		t.Fatal(err)
@@ -3350,9 +3305,7 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 		persisted.PassiveUsage.Windows[0].UsedPercent != 25 ||
 		!bytes.Equal(persisted.OAuthUsage, winner.OAuthUsage) ||
 		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
-		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 7_500_000 ||
-		persisted.QuotaOverdraft == nil || persisted.QuotaOverdraft.SuccessfulRequests != 3 ||
-		persisted.QuotaOverdraft.CostMicroUSD != 2500 {
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 7_500_000 {
 		t.Fatalf("reauthorization lost runtime metadata: %#v", persisted)
 	}
 }
@@ -3635,49 +3588,6 @@ func TestHandleChannelEditorExposesOAuthCredentialOnlyInEditorData(t *testing.T)
 	}
 }
 
-func TestHandleUpdateCodexQuotaOverdraftPersistsSettingAndKeepsStats(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	server.codexCredentials = newCodexCredentialManager(nil, store, nil, nil)
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-overdraft-setting", RefreshToken: "rt-overdraft-setting",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-setting",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{SuccessfulRequests: 4, CostMicroUSD: 3200},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := fmt.Sprintf("/admin/channels/%d/codex-quota-overdraft", channel.ID)
-	c, w := newTestContext(t, newRequest(http.MethodPut, path, bytes.NewBufferString(`{"enabled":true}`)))
-	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
-
-	server.HandleUpdateCodexQuotaOverdraft(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("update overdraft status=%d body=%s", w.Code, w.Body.String())
-	}
-	resp := mustParseAPIResponse[codexQuotaOverdraftSettingsResponse](t, w.Body.Bytes())
-	if resp.Data.QuotaOverdraft == nil || !resp.Data.QuotaOverdraft.Enabled ||
-		resp.Data.QuotaOverdraft.SuccessfulRequests != 4 || resp.Data.QuotaOverdraft.CostMicroUSD != 3200 {
-		t.Fatalf("update overdraft response=%#v", resp.Data.QuotaOverdraft)
-	}
-	persisted, err := store.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persistedCredential.QuotaOverdraft == nil || !persistedCredential.QuotaOverdraft.Enabled ||
-		persistedCredential.QuotaOverdraft.SuccessfulRequests != 4 ||
-		persistedCredential.QuotaOverdraft.CostMicroUSD != 3200 {
-		t.Fatalf("persisted overdraft=%#v", persistedCredential.QuotaOverdraft)
-	}
-}
-
 func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
@@ -3942,225 +3852,6 @@ func TestCodexCredentialManagerCASMissMergesPassiveUsageWithoutRefreshingTwice(t
 	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
 		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 25 {
 		t.Fatalf("persisted credential lost passive quota = (%#v, %v)", persistedCredential, err)
-	}
-}
-
-func TestCodexQuotaOverdraftStatsRetryAfterConcurrentTokenRefresh(t *testing.T) {
-	t.Parallel()
-	baseStore := newCodexAuthTestStore(t)
-	initial := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-cas",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix()},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
-	if err != nil {
-		t.Fatal(err)
-	}
-	winner := cloneCodexCredential(initial)
-	winner.AccessToken = "at-refreshed"
-	winner.RefreshToken = "rt-refreshed"
-	winnerJSON, err := winner.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := &concurrentOAuthWinnerStore{
-		Store: baseStore, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON,
-	}
-	manager := newCodexCredentialManager(nil, store, nil, nil)
-	stats, recorded, err := manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 1750, false, 0)
-	if err != nil {
-		t.Fatalf("recordQuotaOverdraftSuccess() error = %v", err)
-	}
-	if !recorded {
-		t.Fatal("active overdraft success was not recorded")
-	}
-	if stats.SuccessfulRequests != 1 || stats.CostMicroUSD != 1750 {
-		t.Fatalf("returned overdraft stats = %#v", stats)
-	}
-	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persistedCredential.AccessToken != "at-refreshed" || persistedCredential.RefreshToken != "rt-refreshed" ||
-		persistedCredential.QuotaOverdraft == nil || persistedCredential.QuotaOverdraft.SuccessfulRequests != 1 ||
-		persistedCredential.QuotaOverdraft.CostMicroUSD != 1750 {
-		t.Fatalf("concurrent refresh was overwritten or stats were lost: %#v", persistedCredential)
-	}
-}
-
-func TestCodexQuotaOverdraftStatsFollowCredentialActiveCycle(t *testing.T) {
-	t.Parallel()
-	store := newCodexAuthTestStore(t)
-	now := time.Now().UTC()
-	passiveResetAt := now.Add(2 * time.Hour).Unix()
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-overdraft-cycle", RefreshToken: "rt-overdraft-cycle",
-		Expired: now.Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-cycle",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true},
-		PassiveUsage: &codexauth.PassiveUsage{
-			SampledAt: now.Format(time.RFC3339Nano),
-			Windows: []codexauth.PassiveUsageWindow{{
-				Scope: codexauth.ChannelType, LimitName: "codex", Kind: "primary", UsedPercent: 100,
-				LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: passiveResetAt, SampledAt: now.Format(time.RFC3339Nano),
-			}},
-		},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := newCodexCredentialManager(nil, store, nil, nil)
-
-	stats, recorded, err := manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 10, false, 0)
-	if err != nil || recorded || stats.SuccessfulRequests != 0 || stats.CostMicroUSD != 0 {
-		t.Fatalf("inactive success=(%#v, recorded=%t, err=%v), want no accounting", stats, recorded, err)
-	}
-	activeUntil := now.Add(time.Hour).Unix()
-	stats, recorded, err = manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 10, true, activeUntil)
-	if err != nil || !recorded || stats.ActiveUntil != activeUntil ||
-		stats.SuccessfulRequests != 1 || stats.CostMicroUSD != 10 {
-		t.Fatalf("activating success=(%#v, recorded=%t, err=%v)", stats, recorded, err)
-	}
-	stats, recorded, err = manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 20, false, 0)
-	if err != nil || !recorded || stats.SuccessfulRequests != 2 || stats.CostMicroUSD != 30 {
-		t.Fatalf("active follow-up=(%#v, recorded=%t, err=%v)", stats, recorded, err)
-	}
-	stats, err = manager.setQuotaOverdraftEnabled(context.Background(), channel.ID, false)
-	if err != nil || stats.Enabled || stats.ActiveUntil != 0 {
-		t.Fatalf("disabled overdraft=%#v err=%v, want inactive state", stats, err)
-	}
-	stats, recorded, err = manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 40, false, 0)
-	if err != nil || recorded || stats.SuccessfulRequests != 2 || stats.CostMicroUSD != 30 {
-		t.Fatalf("disabled follow-up=(%#v, recorded=%t, err=%v), want unchanged stats", stats, recorded, err)
-	}
-}
-
-func TestCodexQuotaOverdraftStatsRetryTransientCredentialWrite(t *testing.T) {
-	t.Parallel()
-	baseStore := newCodexAuthTestStore(t)
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-overdraft-retry", RefreshToken: "rt-overdraft-retry",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-retry",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix()},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := &transientOAuthCASStore{Store: baseStore}
-	manager := newCodexCredentialManager(nil, store, nil, nil)
-	stats, recorded, err := manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 12, false, 0)
-	if err != nil {
-		t.Fatalf("recordQuotaOverdraftSuccess() error = %v", err)
-	}
-	if !recorded {
-		t.Fatal("active overdraft success was not recorded")
-	}
-	if store.calls.Load() != 2 {
-		t.Fatalf("credential CAS calls=%d, want 2", store.calls.Load())
-	}
-	if stats.SuccessfulRequests != 1 || stats.CostMicroUSD != 12 {
-		t.Fatalf("overdraft stats=%#v", stats)
-	}
-	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil || persistedCredential.QuotaOverdraft == nil ||
-		persistedCredential.QuotaOverdraft.SuccessfulRequests != 1 ||
-		persistedCredential.QuotaOverdraft.CostMicroUSD != 12 {
-		t.Fatalf("persisted overdraft stats=(%#v, %v)", persistedCredential, err)
-	}
-}
-
-func TestCodexQuotaOverdraftStatsRetryTransientCredentialRead(t *testing.T) {
-	t.Parallel()
-	baseStore := newCodexAuthTestStore(t)
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-overdraft-read-retry", RefreshToken: "rt-overdraft-read-retry",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-read-retry",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix()},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := &transientOAuthGetStore{Store: baseStore}
-	manager := newCodexCredentialManager(nil, store, nil, nil)
-	stats, recorded, err := manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 12, false, 0)
-	if err != nil {
-		t.Fatalf("recordQuotaOverdraftSuccess() error = %v", err)
-	}
-	if !recorded {
-		t.Fatal("active overdraft success was not recorded")
-	}
-	if store.getCalls.Load() != 2 || store.casCalls.Load() != 1 {
-		t.Fatalf("credential calls=(get %d, CAS %d), want (get 2, CAS 1)", store.getCalls.Load(), store.casCalls.Load())
-	}
-	if stats.SuccessfulRequests != 1 || stats.CostMicroUSD != 12 {
-		t.Fatalf("overdraft stats=%#v", stats)
-	}
-	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil || persistedCredential.QuotaOverdraft == nil ||
-		persistedCredential.QuotaOverdraft.SuccessfulRequests != 1 ||
-		persistedCredential.QuotaOverdraft.CostMicroUSD != 12 {
-		t.Fatalf("persisted overdraft stats=(%#v, %v)", persistedCredential, err)
-	}
-}
-
-func TestCodexQuotaOverdraftStatsAccumulateConcurrentSuccesses(t *testing.T) {
-	t.Parallel()
-	store := newCodexAuthTestStore(t)
-	credential := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-overdraft-concurrent", RefreshToken: "rt-overdraft-concurrent",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-concurrent",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix()},
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := newCodexCredentialManager(nil, store, nil, nil)
-	const successes = 8
-	errorsCh := make(chan error, successes)
-	var wg sync.WaitGroup
-	for range successes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, recorded, recordErr := manager.recordQuotaOverdraftSuccess(context.Background(), channel.ID, 12, false, 0)
-			if recordErr == nil && !recorded {
-				recordErr = errors.New("active overdraft success was not recorded")
-			}
-			errorsCh <- recordErr
-		}()
-	}
-	wg.Wait()
-	close(errorsCh)
-	for recordErr := range errorsCh {
-		if recordErr != nil {
-			t.Fatalf("recordQuotaOverdraftSuccess() error = %v", recordErr)
-		}
-	}
-	persisted, err := store.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil || persistedCredential.QuotaOverdraft == nil ||
-		persistedCredential.QuotaOverdraft.SuccessfulRequests != successes ||
-		persistedCredential.QuotaOverdraft.CostMicroUSD != successes*12 {
-		t.Fatalf("concurrent overdraft stats=(%#v, %v)", persistedCredential, err)
 	}
 }
 
@@ -5682,9 +5373,6 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-reset-secret", RefreshToken: "rt-reset-secret",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset",
-		QuotaOverdraft: &codexauth.QuotaOverdraft{
-			Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix(), SuccessfulRequests: 3, CostMicroUSD: 45,
-		},
 		QuotaCostUsage: &oauthcost.Usage{
 			Windows: []*oauthcost.Window{
 				{
@@ -5786,9 +5474,8 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil || persistedCredential.QuotaOverdraft == nil || persistedCredential.QuotaOverdraft.ActiveUntil != 0 ||
-		persistedCredential.QuotaOverdraft.SuccessfulRequests != 3 || persistedCredential.QuotaOverdraft.CostMicroUSD != 45 {
-		t.Fatalf("quota overdraft after reset = (%#v, %v)", persistedCredential.QuotaOverdraft, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	persistedPrimary := oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|primary")
 	if persistedPrimary == nil || len(persistedCredential.QuotaCostUsage.Windows) != 1 ||

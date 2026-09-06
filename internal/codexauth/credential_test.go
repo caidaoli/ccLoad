@@ -31,6 +31,9 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 		"refresh_token": " rt ",
 		"expired":       "2030-01-02T03:04:05Z",
 		"type":          "codex",
+		"quota_overdraft": map[string]any{
+			"enabled": true, "active_until": 4102444800, "successful_requests": 2, "cost_microusd": 1250,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,9 +65,16 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JSON() error = %v", err)
 	}
-	if !strings.Contains(encoded, `"access_token":"at"`) || !strings.Contains(encoded, `"refresh_token":"rt"`) ||
-		!strings.Contains(encoded, `"chatgpt_user_id":"user-1"`) {
+	var canonical map[string]any
+	if err := json.Unmarshal([]byte(encoded), &canonical); err != nil {
+		t.Fatal(err)
+	}
+	if canonical["access_token"] != "at" || canonical["refresh_token"] != "rt" ||
+		canonical["chatgpt_user_id"] != "user-1" {
 		t.Fatalf("canonical JSON = %s", encoded)
+	}
+	if _, exists := canonical["quota_overdraft"]; exists {
+		t.Fatal("canonical credential retained the removed quota overage setting")
 	}
 }
 
@@ -88,9 +98,6 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), StandardCostMicroUSD: 2_500_000,
 		}}},
-		QuotaOverdraft: &QuotaOverdraft{
-			Enabled: true, ActiveUntil: now.Add(2 * time.Hour).Unix(), SuccessfulRequests: 2, CostMicroUSD: 1250,
-		},
 	}
 	needsRefresh, err := current.NeedsRefresh(now, 5*time.Minute)
 	if err != nil || !needsRefresh {
@@ -107,20 +114,13 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
 		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
 		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 ||
-		merged.QuotaOverdraft == nil || !merged.QuotaOverdraft.Enabled ||
-		merged.QuotaOverdraft.ActiveUntil != now.Add(2*time.Hour).Unix() ||
-		merged.QuotaOverdraft.SuccessfulRequests != 2 || merged.QuotaOverdraft.CostMicroUSD != 1250 ||
 		!merged.AccountFedRAMP {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
 	current.QuotaCostUsage.Windows[0].StandardCostMicroUSD = 99
-	current.QuotaOverdraft.SuccessfulRequests = 99
 	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
-	}
-	if merged.QuotaOverdraft.SuccessfulRequests != 2 {
-		t.Fatalf("merged quota overdraft shares mutable state with the old credential: %#v", merged.QuotaOverdraft)
 	}
 	if merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 {
 		t.Fatalf("merged quota cost usage shares mutable state with the old credential: %#v", merged.QuotaCostUsage)
@@ -171,8 +171,6 @@ func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 		`{}`,
 		`{"type":"api_key","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"bad"}`,
-		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"successful_requests":-1}}`,
-		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"active_until":-1}}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} {}`,
 		`{"type":"codex","auth_mode":"personalAccessToken","access_token":"not-an-at-token"}`,
 		`{"type":"codex","auth_mode":"unknown","access_token":"at-token"}`,

@@ -261,9 +261,6 @@ func (s *Server) HandleResetCodexQuota(c *gin.Context) {
 	if err := s.resetAllChannelCooldowns(postCtx, id); err != nil {
 		warnings = append(warnings, "Codex quota was reset, but local cooldown cleanup failed")
 	}
-	if err := s.codexCredentials.clearQuotaOverdraftWindow(postCtx, id); err != nil {
-		warnings = append(warnings, "Codex quota was reset, but quota overdraft state cleanup failed")
-	}
 	usage, err := s.refreshOAuthUsage(postCtx, id)
 	if err != nil {
 		warnings = append(warnings, "Codex quota was reset, but refreshed usage is unavailable")

@@ -240,9 +240,6 @@
     if (hasWindow && typeof window.beginCooldownDetectionDraft === 'function') {
       window.beginCooldownDetectionDraft();
     }
-    if (hasWindow && typeof window.resetCodexQuotaOverdraftDraft === 'function') {
-      window.resetCodexQuotaOverdraftDraft();
-    }
     if (hasWindow && typeof window.beginManagementAccountDraft === 'function') {
       window.beginManagementAccountDraft();
     }
@@ -502,7 +499,7 @@
     return true;
   }
 
-  async function applyAdvancedSettingsFromForm() {
+  function applyAdvancedSettingsFromForm() {
     if (hasWindow && typeof window.validateChannelScheduledCheckSchedule === 'function'
         && !window.validateChannelScheduledCheckSchedule()) return false;
     const customRulesValid = validateCustomRulesDraft();
@@ -527,41 +524,16 @@
       window.validateManagementAccountDraft();
       return false;
     }
-    const confirmButton = hasDocument
-      ? document.querySelector('[data-action="apply-advanced-settings"]')
-      : null;
-    try {
-      if (confirmButton) {
-        confirmButton.disabled = true;
-        confirmButton.setAttribute('aria-busy', 'true');
-      }
-      if (hasWindow && typeof window.saveCodexQuotaOverdraftFromAdvancedSettings === 'function') {
-        await window.saveCodexQuotaOverdraftFromAdvancedSettings();
-      }
-      if (!commitCustomRulesDraft()) return false;
-      if (hasWindow && typeof window.commitCooldownDetectionRules === 'function' && !window.commitCooldownDetectionRules()) {
-        return false;
-      }
-      if (hasWindow && typeof window.commitManagementAccountDraft === 'function'
-          && !window.commitManagementAccountDraft()) {
-        return false;
-      }
-      closeCustomRulesModal();
-      return true;
-    } catch (error) {
-      switchAdvancedSettingsTab('credential');
-      const message = error?.message || t(
-        'channels.codex.quotaOverdraftSaveFailed',
-        'Failed to save quota overage setting'
-      );
-      if (hasWindow && typeof window.showError === 'function') window.showError(message);
+    if (!commitCustomRulesDraft()) return false;
+    if (hasWindow && typeof window.commitCooldownDetectionRules === 'function' && !window.commitCooldownDetectionRules()) {
       return false;
-    } finally {
-      if (confirmButton) {
-        confirmButton.disabled = false;
-        confirmButton.removeAttribute('aria-busy');
-      }
     }
+    if (hasWindow && typeof window.commitManagementAccountDraft === 'function'
+        && !window.commitManagementAccountDraft()) {
+      return false;
+    }
+    closeCustomRulesModal();
+    return true;
   }
 
   function showCustomRulesHelp(target) {

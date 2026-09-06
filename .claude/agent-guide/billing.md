@@ -11,5 +11,5 @@
 - **Codex 周窗口换位**(`oauthcost/usage.go:reconcileCodexWeeklyKey`):主额度可能从 `primary=5h,secondary=7d` 变成 `primary=7d` 或反向变化。对账前只迁移主 `codex` 的对应 7 天计数器,保留原累计和 `CountFromAt`,随后仍按采样回退/周期滚动规则判断是否清零;不把 5h、Spark 或其它额度组的成本移入周窗口。旧布局采样不得回写或通过缺失窗口清理删除较新的计数器
 - **OAuth 配额采样完整性**:Anthropic 被动响应和 xAI 周/月端点部分失败走 `ReconcilePartial`,保留未返回窗口;完整快照也不得删除采样时间比它更新的窗口。退休截止取有效窗口 `SampledAt` 与请求完成时间的最早值,避免 Codex reset credits/Anthropic profile 请求延迟掩盖旧额度采样。Codex 展示合并按单窗口采样时间判新旧,只匹配官方已有的同 key、同正时长窗口;同周期抖动保留官方边界,旧周期已结束且被动样本落在向前推进的新周期内时,同步采用新比例及重置时间以关联新累计成本;旧样本、未知边界、跨时长或尚未开始的周期不能覆盖官方值
 - **渠道列表额度同步**:列表加载成功后更新已有 ready 额度缓存,让被动比例与累计金额持续更新;仅接受最新发起的列表请求,且不得覆盖请求期间完成的手动/自动额度刷新或正在进行的重置。同步只替换额度数据,保留操作状态,不清理或重算历史成本
-- **Codex 手动配额重置**(`admin_codex_quota_reset.go`,`POST /admin/channels/:id/codex-quota-reset`):先查上游 reset credit,无可用额度返回 409;credit 一经消费不可退,之后的本地清理(成本窗口重置、渠道全部冷却清除、超额窗口清理、额度刷新)全部 best-effort,失败只进响应 `warnings` 而不回滚。同渠道并发重置由 `codexQuotaResetInFlight` 直接 409 拒绝。重算标准成本必须先将每条日志取整为微美元再求和,与增量累计保持一致
+- **Codex 手动配额重置**(`admin_codex_quota_reset.go`,`POST /admin/channels/:id/codex-quota-reset`):先查上游 reset credit,无可用额度返回 409;credit 一经消费不可退,之后的本地清理(成本窗口重置、渠道全部冷却清除、额度刷新)全部 best-effort,失败只进响应 `warnings` 而不回滚。同渠道并发重置由 `codexQuotaResetInFlight` 直接 409 拒绝。重算标准成本必须先将每条日志取整为微美元再求和,与增量累计保持一致
 - **定价细节**(service_tier 倍率、GPT-5.4/Qwen-Plus 分层降档、Gemini 长上下文翻倍、缓存读折扣/写乘数):读 `cost_calculator.go`

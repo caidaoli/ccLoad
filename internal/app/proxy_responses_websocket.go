@@ -227,9 +227,6 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			turnResult, errTurn := s.executeResponsesWebsocketTurn(
 				connectionCtx, c, conn, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm,
 			)
-			if len(turnResult.committedRequest) > 0 {
-				requestBody = turnResult.committedRequest
-			}
 			if errTurn != nil {
 				if turnResult.interrupted {
 					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
@@ -351,7 +348,6 @@ type responsesWebsocketTurnResult struct {
 	completedResponseID string
 	pendingToolCallIDs  []string
 	interrupted         bool
-	committedRequest    []byte
 }
 
 type responsesWebsocketTerminalError struct {
@@ -533,7 +529,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 	lastResult, succeeded := s.runProxyAttemptLoopWithFailureBoundary(
 		ctx, candidates, reqCtx, bridgeWriter, stopBeforeNativeWebsocket,
 	)
-	committedRequest := bytes.Clone(reqCtx.quotaOverdraftTranscript)
 	s.updateCodexMultiAgentV2SessionState(executionSession, reqCtx)
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
@@ -564,7 +559,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 					completedOutput:    interruptedOutput,
 					pendingToolCallIDs: pendingToolCallIDs,
 					interrupted:        true,
-					committedRequest:   committedRequest,
 				}
 			}
 			return turnResult, &responsesWebsocketClientRetryError{
@@ -576,7 +570,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 			completedOutput:     bytes.Clone(bridgeWriter.completedOutput),
 			completedResponseID: bridgeWriter.completedResponseID,
 			pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(bridgeWriter.completedOutput),
-			committedRequest:    committedRequest,
 		}, nil
 	}
 	originalStatus := determineFinalClientStatus(lastResult)

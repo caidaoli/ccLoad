@@ -103,13 +103,6 @@ type fwResult struct {
 
 	// 重试策略（例如 Codex 400 后剥离 reasoning/thinking 再成功）
 	RetryStrategy string
-	// QuotaOverdraftReplayed marks a request that consumed the one-shot Codex
-	// usage-limit replay. A successful final response activates credential-wide
-	// overdraft accounting until the upstream quota reset.
-	QuotaOverdraftReplayed bool
-	// QuotaOverdraftActiveUntil is the upstream quota reset time captured from
-	// the usage_limit_reached response that caused the successful replay.
-	QuotaOverdraftActiveUntil int64
 
 	// 上游响应字节数（2026-02新增）
 	// 用于499场景诊断：区分客户端在首字节前取消还是接收部分数据后取消
@@ -184,7 +177,6 @@ type proxyRequestContext struct {
 	routingSession             *responsesExecutionSession // 当前 Responses execution session 的首选渠道
 	nativeCodexWS              *codexUpstreamWebsocketSession
 	nativeCodexBody            []byte
-	quotaOverdraftTranscript   []byte
 	codexMultiAgentV2Optimized bool
 	codexMultiAgentV2Conflict  bool
 }

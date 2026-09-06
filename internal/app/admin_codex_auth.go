@@ -682,7 +682,6 @@ func updateExistingCodexChannel(
 		next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
 		next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
 		next.QuotaCostUsage = oauthcost.Clone(current.QuotaCostUsage)
-		next.QuotaOverdraft = codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
 		if next.Email == "" {
 			next.Email = current.Email
 		}

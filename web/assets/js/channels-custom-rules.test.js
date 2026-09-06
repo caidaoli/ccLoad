@@ -152,55 +152,6 @@ test('collectCustomRulesForSubmit remove 头带值表示 token 精确移除', ()
   assert.ok(!('value' in payload.headers[1]), 'remove + 空值不应包含 value');
 });
 
-test('高级设置确定会等待超额设置保存，失败时保持对话框打开', async () => {
-  const modulePath = require.resolve('./channels-custom-rules.js');
-  const cachedModule = require.cache[modulePath];
-  const previousDocument = global.document;
-  const previousWindow = global.window;
-  let modalClosed = 0;
-  let shownError = '';
-  const confirmButton = {
-    disabled: false,
-    attributes: new Set(),
-    setAttribute(name) { this.attributes.add(name); },
-    removeAttribute(name) { this.attributes.delete(name); }
-  };
-  const modal = { classList: { remove() { modalClosed++; } } };
-
-  delete require.cache[modulePath];
-  global.document = {
-    readyState: 'complete',
-    getElementById: id => id === 'customRulesModal' ? modal : null,
-    querySelector: selector => selector === '[data-action="apply-advanced-settings"]' ? confirmButton : null,
-    querySelectorAll: () => []
-  };
-  global.window = {
-    t: key => key,
-    saveCodexQuotaOverdraftFromAdvancedSettings: async () => {},
-    showError: message => { shownError = message; }
-  };
-  try {
-    const browserModule = require('./channels-custom-rules.js');
-    assert.equal(await browserModule.applyAdvancedSettingsFromForm(), true);
-    assert.equal(modalClosed, 1);
-    assert.equal(confirmButton.disabled, false);
-    assert.equal(confirmButton.attributes.has('aria-busy'), false);
-
-    global.window.saveCodexQuotaOverdraftFromAdvancedSettings = async () => {
-      throw new Error('credential write failed');
-    };
-    assert.equal(await browserModule.applyAdvancedSettingsFromForm(), false);
-    assert.equal(modalClosed, 1);
-    assert.equal(shownError, 'credential write failed');
-    assert.equal(confirmButton.disabled, false);
-  } finally {
-    delete require.cache[modulePath];
-    if (cachedModule) require.cache[modulePath] = cachedModule;
-    global.document = previousDocument;
-    global.window = previousWindow;
-  }
-});
-
 test('高级设置确定会校验并提交管理账户草稿，校验失败时停留在“其他”页', async () => {
   const modulePath = require.resolve('./channels-custom-rules.js');
   const cachedModule = require.cache[modulePath];
