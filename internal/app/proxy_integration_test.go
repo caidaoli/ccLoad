@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -8890,6 +8891,68 @@ func TestProxy_CodexNormalizesToolSearchArgumentsBeforeForward(t *testing.T) {
 	}
 	if !foundOutput {
 		t.Fatalf("tool_search_output without arguments should be preserved: %s", upstreamBody)
+	}
+}
+
+func TestProxy_AnyrouterCodexContentItemKinds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		url   string
+		strip bool
+	}{
+		{"prefix-AnyRouter-codex", "https://upstream.example.com", true},
+		{"regular-codex", "https://upstream.example.com", false},
+		{"url-only", "https://anyrouter.top", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: tc.name, upstreamProtocol: "codex", models: "gpt-6-astra", apiKey: "sk-test"},
+			}, map[int]string{0: tc.url})
+			var captured []byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				var err error
+				captured, err = io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","object":"response","status":"completed","model":"gpt-6-astra","output":[]}`)),
+				}, nil
+			})}
+			input := []map[string]any{
+				{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hello"}}, "internal_chat_message_metadata_passthrough": map[string]any{"content_item_kinds": []string{"test"}, "turn_id": "turn-1", "create_time": 123}},
+				{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "world"}}, "internal_chat_message_metadata_passthrough": map[string]any{"content_item_kinds": []string{"test"}}},
+			}
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-6-astra", "input": input}, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+			}
+			var got struct {
+				Input []map[string]any `json:"input"`
+			}
+			if err := json.Unmarshal(captured, &got); err != nil {
+				t.Fatal(err)
+			}
+			if tc.strip {
+				for _, item := range input {
+					delete(item["internal_chat_message_metadata_passthrough"].(map[string]any), "content_item_kinds")
+				}
+			}
+			wantJSON, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want []map[string]any
+			if err := json.Unmarshal(wantJSON, &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Input, want) {
+				t.Fatalf("upstream input mismatch: got %#v, want %#v", got.Input, want)
+			}
+		})
 	}
 }
 

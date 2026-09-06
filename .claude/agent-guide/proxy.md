@@ -13,6 +13,8 @@
 
 ## 故障切换(`util/classifier.go` + `cooldown/detection.go`)
 
+- **Anyrouter Responses 元数据兼容**:上游协议为 Codex、请求属于 Responses 且渠道名称包含 `anyrouter`（忽略大小写）时，转发前仅删除 `input[*].internal_chat_message_metadata_passthrough.content_item_kinds`，保留正文及其他元数据；仅 URL 包含 anyrouter 不触发此规则。
+
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
 - 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道

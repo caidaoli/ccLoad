@@ -3288,6 +3288,18 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 		return body
 	}
 	body = sanitizeCodexInputItemIDs(body)
+	// Anyrouter rejects Codex's per-content classification metadata.
+	if cfg != nil && strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
+		for index, item := range gjson.GetBytes(body, "input").Array() {
+			if !item.Get("internal_chat_message_metadata_passthrough.content_item_kinds").Exists() {
+				continue
+			}
+			path := fmt.Sprintf("input.%d.internal_chat_message_metadata_passthrough.content_item_kinds", index)
+			if stripped, err := sjson.DeleteBytes(body, path); err == nil {
+				body = stripped
+			}
+		}
+	}
 	if normalized, ok := normalizeCodexToolSearchInputItems(body); ok {
 		body = normalized
 	}
