@@ -229,7 +229,7 @@
               <li><code>max_concurrency</code>: maximum in-flight requests for the channel. Streaming requests release the slot only when the stream ends.</li>
               <li><code>daily_cost_limit</code>: daily channel cost limit. The channel is skipped after the limit is reached.</li>
               <li><code>cost_multiplier</code>: for OAuth channels the credential is 1:1 with the channel, so the multiplier stays channel-level; for <code>api_key</code> channels it lives on each key.</li>
-              <li><code>scheduled_check_enabled</code>: enables scheduled probing, usually paired with a check model.</li>
+              <li><code>scheduled_check_enabled</code>: enables daily scheduled probing, usually paired with <code>scheduled_check_model</code>. <code>scheduled_check_interval_minutes</code> accepts 1–1440 whole minutes (default <code>300</code>), and <code>scheduled_check_start_time</code> uses server-local <code>HH:MM</code> (default <code>00:00</code>). Checks run from the start time at the configured interval until the day ends; missed checks are skipped.</li>
             </ul>
           </article>
         </div>

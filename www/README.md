@@ -91,7 +91,7 @@ cp -r www /path/to/webroot/
 ### ✅ 首页（index.html）
 - Hero 区域（对齐正式版 README 标语）
 - 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
-- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / Z.ai / Cursor
+- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / Z.ai / Cursor / Zed
 - 管理后台预览截图
 - 4 种部署方式卡片（Go 1.26+，官方 latest 二进制）
 - 快速开始 Tab 切换
@@ -106,9 +106,9 @@ cp -r www /path/to/webroot/
 ### ✅ 配置手册（config.html）
 - 启动环境变量表（含 PORT、CURSOR_SDK_BRIDGE_BIN、TRUSTED_PROXIES）
 - SQLite / MySQL / PostgreSQL / Hybrid 存储模式对比
-- 渠道配置、OAuth auth_type、Key 模型白名单、单模型启停、可用时段
+- 渠道配置、OAuth auth_type、Key 模型白名单、单模型启停、可用时段、每日定时检测
 - 思考后缀、全局 OAuth 上游地址、冷却兜底
-- 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制（256 会话 / 256 MiB）
+- 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制（1024 会话 / 256 MiB）
 - 批量模型名小写与来源前缀清理
 - API Token 模型、渠道白名单/黑名单、费用和并发限制
 - 管理后台热配置说明
@@ -137,7 +137,7 @@ cp -r www /path/to/webroot/
 
 ## 文档
 
-详细的实施报告请查看：[docs/www-implementation-report.md](../docs/www-implementation-report.md)
+项目主文档请查看：[GitHub README](https://github.com/caidaoli/ccLoad/blob/master/README.md)。
 
 ## 贡献
 
