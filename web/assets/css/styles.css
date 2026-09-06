@@ -4026,6 +4026,19 @@ body {
   white-space: nowrap;
 }
 
+.settings-update-check-btn:disabled {
+  background: var(--surface-bg-muted);
+  color: var(--muted-fg);
+  border-color: var(--surface-border);
+  box-shadow: none;
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.settings-update-check-btn:disabled::before {
+  content: none;
+}
+
 .settings-multimodal-fallback-summary {
   color: var(--color-text-secondary);
   font-size: 0.875rem;
