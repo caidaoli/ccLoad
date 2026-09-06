@@ -1240,23 +1240,19 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel auth_type is read-only")
 			return
 		}
-		// 合成 Key 行最多一条，只用于回传倍率，永不落库；
-		// 其 api_key 必须是当前凭证掩码值，防止借合成行改写凭证，其余 Key 变更一律 409。
+		// 合成 Key 行最多一条，只用于回传倍率，永不落库（见下方 UpdateConfig 后的 OAuth 分支，
+		// 以及 ToConfig 只取 APIKeys[0].CostMultiplier）。
+		// 只校验形状不校验具体值：后台自动刷新会在编辑器打开期间轮换 AT，
+		// 比对当前掩码值会把正常保存误判成改写凭证（保存报 409）。
+		// 掩码不可逆，任何掩码形状的值都无法还原成可用凭证。
 		submittedKeys := req.normalizeAPIKeys()
 		if len(submittedKeys) > 1 {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel accepts at most one synthetic API key row")
 			return
 		}
-		if len(submittedKeys) == 1 {
-			accessToken, _, parseErr := oauthSyntheticKeyFields(existing)
-			if parseErr != nil {
-				RespondError(c, http.StatusInternalServerError, parseErr)
-				return
-			}
-			if submittedKeys[0].APIKey != util.MaskAPIKey(accessToken) {
-				RespondErrorMsg(c, http.StatusConflict, "OAuth channel API keys are read-only")
-				return
-			}
+		if len(submittedKeys) == 1 && !util.IsMaskedAPIKey(submittedKeys[0].APIKey) {
+			RespondErrorMsg(c, http.StatusConflict, "OAuth channel API keys are read-only")
+			return
 		}
 		if _, submitted := rawReq["key_strategy"]; submitted {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel key strategy is read-only")

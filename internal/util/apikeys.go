@@ -32,6 +32,17 @@ func MaskAPIKey(key string) string {
 	return key[:3] + "." + key[len(key)-3:]
 }
 
+// IsMaskedAPIKey 判断值是否为 MaskAPIKey 的输出形状。
+// 用途：OAuth 渠道的合成 Key 行只回传掩码值，据此拒绝真实 Key 写入。
+// 掩码不可逆，所以只校验形状，不与当前凭证比对——凭证可能在编辑期间被后台刷新轮换。
+func IsMaskedAPIKey(key string) bool {
+	if key == "****" {
+		return true
+	}
+	first, last, found := strings.Cut(key, ".")
+	return found && len(first) == 3 && len(last) == 3 && !strings.Contains(last, ".")
+}
+
 // HashAPIKey 计算API Key的SHA256哈希（十六进制字符串）
 // 用于日志中稳定标识 key，不存储明文。
 func HashAPIKey(key string) string {

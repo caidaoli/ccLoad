@@ -29,6 +29,16 @@ function escapeChannelRefreshText(value) {
   }[c]));
 }
 
+// Codex plan_type → 用户可读标签；未登记的值原样返回。
+function codexPlanLabel(rawPlanType) {
+  const key = String(rawPlanType || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  switch (key) {
+    case 'self_serve_business_prolite': return 'Premium seat';
+    case 'team': return 'Standard seat';
+    default: return rawPlanType;
+  }
+}
+
 function buildOAuthPlanBadge(channel) {
   let planType = '';
   if (channel?.auth_type === 'codex_oauth') {
@@ -51,9 +61,13 @@ function buildOAuthPlanBadge(channel) {
   const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   if (channel?.auth_type !== 'xai_oauth' && planTokens.includes('free')) return '';
 
-  const planTone = ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
+  const planTone = channel?.auth_type === 'codex_oauth' &&
+    String(planType).toLowerCase().replace(/[^a-z0-9]+/g, '_') === 'self_serve_business_prolite'
+    ? 'pro'
+    : ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
   const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
-  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(planType)}</span>`;
+  const displayLabel = channel?.auth_type === 'codex_oauth' ? codexPlanLabel(planType) : planType;
+  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(displayLabel)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {
@@ -1534,6 +1548,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildChannelRuntimeStatusHtml,
     buildOAuthPlanBadge,
+    codexPlanLabel,
     buildOAuthUsageStatusHtml,
     buildManagementAccountStatusHtml,
     formatCooldownRecoveryTime

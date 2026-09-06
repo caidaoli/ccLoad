@@ -82,6 +82,32 @@ func TestMaskAPIKey(t *testing.T) {
 	}
 }
 
+func TestIsMaskedAPIKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "MaskAPIKey 输出", input: MaskAPIKey("sk-test-key"), expected: true},
+		{name: "短Key掩码", input: "****", expected: true},
+		{name: "真实Key", input: "sk-test-key", expected: false},
+		{name: "空值", input: "", expected: false},
+		{name: "含点的真实Key", input: "sk-abcdef.ghijkl", expected: false},
+		{name: "多段点", input: "abc.def.ghi", expected: false},
+		{name: "段长不符", input: "ab.cd", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsMaskedAPIKey(tt.input); got != tt.expected {
+				t.Fatalf("IsMaskedAPIKey(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestHashAPIKey(t *testing.T) {
 	t.Parallel()
 

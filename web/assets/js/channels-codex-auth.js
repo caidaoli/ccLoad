@@ -65,8 +65,9 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
 function formatCodexPlanBadgeText(planType, subscriptionActiveUntil) {
   const plan = String(planType || '').trim();
   if (!plan) return '';
+  const label = typeof codexPlanLabel === 'function' ? codexPlanLabel(plan) : plan;
   const date = String(subscriptionActiveUntil || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
-  return date ? `${plan} · ${date[1]}` : plan;
+  return date ? `${label} · ${date[1]}` : label;
 }
 
 function buildOAuthCredentialView() {
@@ -1939,6 +1940,14 @@ function oauthCredentialRefreshTarget(authType) {
   }
 }
 
+// 与后端 util.MaskAPIKey 保持同一规则：OAuth 合成 Key 行显示的掩码值
+// 必须和编辑器加载路径（channelKeysForAdmin）产出的值一致。
+function maskOAuthSyntheticKey(token) {
+  const value = String(token || '');
+  if (value.length <= 6) return '****';
+  return `${value.slice(0, 3)}.${value.slice(-3)}`;
+}
+
 async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
   const target = oauthCredentialRefreshTarget(authType);
   if (!target) {
@@ -2860,12 +2869,20 @@ function setupOAuthActions() {
         if (!token) throw new Error(window.t(`${target.i18n}.credentialRefreshInvalid`));
 
         if (typeof setInlineKeyTableDataFromAPI === 'function' && typeof renderInlineKeyTable === 'function') {
+          // 合成行只回传倍率：写入掩码值与编辑器加载路径保持一致，
+          // 明文 AT 落进 Key 输入框会把凭证暴露在普通 Key 列表里。
+          // 倍率必须沿用当前行，否则刷新后保存会把渠道倍率重置成默认 1。
+          const currentMultiplier = typeof inlineKeyTableData !== 'undefined' &&
+            Array.isArray(inlineKeyTableData) && inlineKeyTableData.length > 0
+            ? inlineKeyTableData[0]?.cost_multiplier
+            : undefined;
           setInlineKeyTableDataFromAPI([{
             channel_id: editingChannelId,
             key_index: 0,
-            api_key: token,
+            api_key: maskOAuthSyntheticKey(token),
             note: target.keyNote,
-            key_strategy: 'sequential'
+            key_strategy: 'sequential',
+            cost_multiplier: currentMultiplier
           }]);
           inlineKeyVisible = true;
           renderInlineKeyTable();
@@ -2906,6 +2923,7 @@ if (typeof module !== 'undefined' && module.exports) {
     maybeAutoRefreshActiveChannelUsage,
     importOAuthCredentials,
     loadOAuthCredentialCleanupModels,
+    maskOAuthSyntheticKey,
     openOAuthCredentialImportDialog,
     openOAuthLoginDialog,
     pollAntigravityOAuthStatus,

@@ -182,6 +182,97 @@ func TestXAIChannelUpdateAllowsVersionedProviderBaseURL(t *testing.T) {
 	}
 }
 
+func TestOAuthChannelUpdateAcceptsStaleSyntheticKeyRow(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	credential := &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth",
+		AccessToken: "xai-access-rotated", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Email: "xai@example.com",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := newXAIOAuthChannel("xAI stale synthetic row", credentialJSON)
+	channel.CostMultiplier = 0.5
+	created, err := store.CreateConfig(context.Background(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 编辑器打开后台自动刷新轮换了 AT，表单里仍是轮换前的掩码值。
+	// 合成行的 api_key 永不落库，保存必须成功且保留渠道倍率。
+	path := fmt.Sprintf("/admin/channels/%d", created.ID)
+	update := map[string]any{
+		"name": created.Name, "auth_type": model.AuthTypeXAIOAuth,
+		"urls": created.URLs, "models": created.ModelEntries, "enabled": true,
+		"api_keys": []map[string]any{{
+			"api_key": util.MaskAPIKey("xai-access-before-rotation"), "cost_multiplier": 0.5,
+		}},
+	}
+	updateContext, updateResponse := newTestContext(t, newJSONRequest(t, http.MethodPut, path, update))
+	updateContext.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	server.HandleChannelByID(updateContext)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	persisted, err := store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.OAuthCredential != credentialJSON {
+		t.Fatalf("OAuth credential changed via synthetic key row: %s", persisted.OAuthCredential)
+	}
+	if persisted.CostMultiplier != 0.5 {
+		t.Fatalf("cost multiplier=%v, want 0.5", persisted.CostMultiplier)
+	}
+	storedKeys, err := store.GetAPIKeys(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedKeys) != 0 {
+		t.Fatalf("synthetic key row was persisted: %#v", storedKeys)
+	}
+}
+
+func TestOAuthChannelUpdateRejectsMultipleSyntheticKeyRows(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	credential := &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth",
+		AccessToken: "xai-access", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Email: "xai@example.com",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(context.Background(), newXAIOAuthChannel("xAI multi row", credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d", created.ID)
+	update := map[string]any{
+		"name": created.Name, "auth_type": model.AuthTypeXAIOAuth,
+		"urls": created.URLs, "models": created.ModelEntries, "enabled": true,
+		"api_keys": []map[string]any{
+			{"api_key": util.MaskAPIKey(credential.AccessToken)},
+			{"api_key": "injected-second-key"},
+		},
+	}
+	updateContext, updateResponse := newTestContext(t, newJSONRequest(t, http.MethodPut, path, update))
+	updateContext.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	server.HandleChannelByID(updateContext)
+	if updateResponse.Code != http.StatusConflict {
+		t.Fatalf("update status=%d body=%s, want 409", updateResponse.Code, updateResponse.Body.String())
+	}
+}
+
 func TestDeleteChannelClearsAnthropicCredentialCache(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

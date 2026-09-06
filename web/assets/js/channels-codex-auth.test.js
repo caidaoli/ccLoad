@@ -1744,6 +1744,58 @@ test('credential refresh succeeds in an editor without the channels list', async
   }
 });
 
+test('credential refresh writes a masked synthetic key row and keeps the cost multiplier', async () => {
+  const { handleChannelUpdateSuccess } = require('./channels-modals.js');
+  let refresh;
+  let loadedKeys;
+  const button = {
+    dataset: {},
+    addEventListener(type, handler) { if (type === 'click') refresh = handler; }
+  };
+  const content = { textContent: '', removeAttribute() {}, classList: { add() {}, remove() {} } };
+  const response = { oauth_credential: { access_token: 'at-refreshed-token-value' } };
+  const globals = {
+    window: {
+      t: key => key,
+      showSuccess() {},
+      showError() {},
+      ChannelModalHooks: { afterUpdate: async () => {} }
+    },
+    document: {
+      getElementById: id => ({ codexCredentialRefreshButton: button, codexCredentialContent: content }[id] || null),
+      querySelectorAll: () => []
+    },
+    editingChannelId: 42,
+    editingChannelAuthType: 'codex_oauth',
+    // 刷新前编辑器里已有的合成行：倍率 0.25 必须被保留。
+    inlineKeyTableData: [{ api_key: 'old.old', note: 'Codex OAuth AT', cost_multiplier: 0.25 }],
+    inlineKeyVisible: false,
+    setInlineKeyTableDataFromAPI(keys) { loadedKeys = keys; },
+    renderInlineKeyTable() {},
+    reloadChannelsList: undefined,
+    handleChannelUpdateSuccess,
+    fetchDataWithAuth: async () => response
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  try {
+    setupOAuthActions();
+    await refresh();
+    // 明文 AT 绝不能落进 Key 输入框，掩码规则须与后端 util.MaskAPIKey 一致。
+    assert.equal(loadedKeys.length, 1);
+    assert.equal(loadedKeys[0].api_key, 'at-.lue');
+    assert.equal(loadedKeys[0].cost_multiplier, 0.25);
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('manual Antigravity credential refresh targets the saved channel', async () => {
   let captured;
   const response = { oauth_credential: { access_token: 'gravity-at' } };

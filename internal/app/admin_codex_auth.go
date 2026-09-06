@@ -837,7 +837,7 @@ func codexOAuthPlanTier(planType string) string {
 	switch strings.ToLower(strings.TrimSpace(planType)) {
 	case "free":
 		return "free"
-	case "team", "business", "go":
+	case "team", "business", "go", "self_serve_business_prolite":
 		return "team"
 	case "plus":
 		return "plus"
