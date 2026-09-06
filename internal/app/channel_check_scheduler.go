@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ func (s *Server) triggerScheduledChannelChecks(now time.Time) {
 	}()
 }
 func isExpectedScheduledCheckStop(err error) bool {
-	return err == context.Canceled || err == context.DeadlineExceeded
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) error {
@@ -113,18 +114,7 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 		return
 	}
 
-	apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
-	if len(apiKeys) == 0 {
-		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：模型 %s 未配置可用 Key", cfg.ID, cfg.Name, modelName)
-		s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, "该模型未配置可用 Key"))
-		return
-	}
-
-	selector := s.keySelector
-	if selector == nil {
-		selector = NewKeySelector()
-	}
-	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+	runtimeCfg, keySelection, err := s.prepareScheduledChannelCheckAuth(ctx, cfg, apiKeys, modelName)
 	if err != nil {
 		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, err)
 		if !isExpectedScheduledCheckStop(err) {
@@ -140,9 +130,33 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 		Stream:         false,
 	}
 	logModel, logThinking := channelTestLogIdentity(req.Model, req.ThinkingEffort)
-	result := s.executeChannelTest(ctx, cfg, keyIndex, apiKey, req)
-	s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, model.RoutingModelName(req.Model), apiKey, "", logThinking, result))
-	logScheduledChannelCheckResult(cfg, keyIndex, req.Model, result)
+	result := s.executeChannelTestWithCooldown(ctx, runtimeCfg, keySelection.keyIndex, keySelection.requestCredential, req, keySelection.updatePersistedCooldown)
+	s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, model.RoutingModelName(req.Model), keySelection.apiKey, "", logThinking, result))
+	logScheduledChannelCheckResult(cfg, keySelection.keyIndex, req.Model, result)
+}
+
+func (s *Server) prepareScheduledChannelCheckAuth(ctx context.Context, cfg *model.Config, apiKeys []*model.APIKey, modelName string) (*model.Config, channelTestKeySelection, error) {
+	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, oauthCredentialRefreshIfNeeded); handled {
+		return runtimeCfg, selection, err
+	}
+
+	apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
+	if len(apiKeys) == 0 {
+		return nil, channelTestKeySelection{}, errors.New("该模型未配置可用 Key")
+	}
+
+	// Scheduled checks skip cooled keys; manual tests may probe them via fallback.
+	selector := s.keySelector
+	if selector == nil {
+		selector = NewKeySelector()
+	}
+	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+	return cfg, channelTestKeySelection{
+		keyIndex:                keyIndex,
+		apiKey:                  apiKey,
+		requestCredential:       apiKey,
+		updatePersistedCooldown: true,
+	}, err
 }
 
 func logScheduledChannelCheckResult(cfg *model.Config, keyIndex int, modelName string, result map[string]any) {

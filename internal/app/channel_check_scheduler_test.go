@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 )
@@ -225,6 +227,136 @@ var testRequestOpenAI = testutil.TestChannelRequest{
 	Model:          "gpt-4o-mini",
 	ClientProtocol: "openai",
 	Content:        "hello",
+}
+
+func TestRunScheduledChannelChecks_CodexOAuthWithoutAPIKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		expired      bool
+		invalid      bool
+		refreshFails bool
+		wantSkip     string
+	}{
+		{name: "current credential"},
+		{name: "expired credential", expired: true},
+		{name: "invalid credential", invalid: true, wantSkip: "加载 Codex OAuth 凭证失败"},
+		{name: "refresh failure", expired: true, refreshFails: true, wantSkip: "加载 Codex OAuth 凭证失败"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var inferenceCalls, refreshCalls atomic.Int32
+			wantToken := "at-scheduled-current"
+			if tc.expired {
+				wantToken = "at-scheduled-refreshed"
+			}
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/oauth/token" {
+					refreshCalls.Add(1)
+					if err := r.ParseForm(); err != nil {
+						t.Errorf("parse refresh request: %v", err)
+					}
+					if r.Form.Get("refresh_token") != "rt-scheduled-current" {
+						t.Errorf("unexpected refresh token: %q", r.Form.Get("refresh_token"))
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if tc.refreshFails {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"access_token":"at-scheduled-refreshed","refresh_token":"rt-scheduled-rotated","expires_in":3600}`)
+					return
+				}
+				inferenceCalls.Add(1)
+				if r.URL.Path != "/backend-api/codex/responses" {
+					t.Errorf("unexpected inference path: %s", r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+					t.Errorf("Authorization = %q, want Bearer %s", got, wantToken)
+				}
+				if got := r.Header.Get("Chatgpt-Account-Id"); got != "account-scheduled" {
+					t.Errorf("account ID = %q", got)
+				}
+				var body struct {
+					Model  string `json:"model"`
+					Stream bool   `json:"stream"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode inference request: %v", err)
+				}
+				if body.Model != "gpt-5.6-luna" || !body.Stream {
+					t.Errorf("unexpected Codex request: %+v", body)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+				_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_scheduled\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n")
+			}))
+			srv := newInMemoryServer(t)
+			srv.codexCredentials.service.TokenURL = upstream.URL + "/oauth/token"
+			ctx := context.Background()
+			expires := time.Now().Add(time.Hour)
+			if tc.expired {
+				expires = time.Now().Add(-time.Hour)
+			}
+			credentialJSON, err := (&codexauth.Credential{
+				Type: "codex", AccessToken: "at-scheduled-current", RefreshToken: "rt-scheduled-current",
+				AccountID: "account-scheduled", Expired: expires.UTC().Format(time.RFC3339),
+			}).JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.invalid {
+				credentialJSON = "invalid credential"
+			}
+			cfg := createScheduledCheckChannel(t, srv, &model.Config{
+				Name: "scheduled-codex", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+				URLs:                  model.ChannelURLs{{URL: upstream.URL + "/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
+				ProtocolTransformMode: model.ProtocolTransformModeLocal,
+				Enabled:               true, ScheduledCheckEnabled: true, ScheduledCheckModel: "gpt-5.6-luna",
+				ModelEntries: []model.ModelEntry{{Model: "gpt-5.4-mini"}, {Model: "gpt-5.6-luna"}},
+			})
+			if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			wantRefreshCalls := int32(0)
+			if tc.expired {
+				wantRefreshCalls = 1
+			}
+			if got := refreshCalls.Load(); got != wantRefreshCalls {
+				t.Errorf("refresh calls = %d, want %d", got, wantRefreshCalls)
+			}
+			logs, err := srv.store.ListLogs(ctx, time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+			if err != nil || len(logs) != 1 {
+				t.Fatalf("scheduled logs = %d, err = %v", len(logs), err)
+			}
+			entry := logs[0]
+			if entry.ChannelID != cfg.ID || entry.Model != "gpt-5.6-luna" || entry.APIKeyUsed != "" {
+				t.Fatalf("unexpected OAuth detection log: %+v", entry)
+			}
+			if tc.wantSkip != "" {
+				if inferenceCalls.Load() != 0 || entry.StatusCode != 0 || !strings.Contains(entry.Message, tc.wantSkip) {
+					t.Fatalf("expected credential skip, calls = %d, log = %+v", inferenceCalls.Load(), entry)
+				}
+				return
+			}
+			if inferenceCalls.Load() != 1 || entry.StatusCode != http.StatusOK || entry.InputTokens != 10 || entry.OutputTokens != 5 {
+				t.Fatalf("expected successful OAuth detection, calls = %d, log = %+v", inferenceCalls.Load(), entry)
+			}
+			storedKeys, err := srv.store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil || len(storedKeys) != 0 {
+				t.Fatalf("OAuth detection persisted API keys: %v, err = %v", storedKeys, err)
+			}
+			if tc.expired {
+				persisted, err := srv.store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+				if err != nil || credential.AccessToken != wantToken || credential.RefreshToken != "rt-scheduled-rotated" {
+					t.Fatalf("refreshed credential was not persisted: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *testing.T) {
