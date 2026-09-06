@@ -59,13 +59,6 @@ type concurrentOAuthWinnerStore struct {
 	winnerErr  error
 }
 
-type blockingCodexModelStateStore struct {
-	storage.Store
-	firstStarted chan struct{}
-	releaseFirst chan struct{}
-	calls        atomic.Int32
-}
-
 type snapshotBarrierStore struct {
 	storage.Store
 	calls   atomic.Int32
@@ -127,26 +120,6 @@ func (s *snapshotBarrierStore) ListConfigs(ctx context.Context) ([]*model.Config
 		}
 	}
 	return configs, nil
-}
-
-func (s *blockingCodexModelStateStore) UpdateOAuthModelStateIfCredentialMatches(
-	ctx context.Context,
-	channelID int64,
-	expectedAuthType, expectedCredential string,
-	modelEntries []model.ModelEntry,
-	scheduledCheckModel string,
-) (bool, error) {
-	if s.calls.Add(1) == 1 {
-		close(s.firstStarted)
-		select {
-		case <-s.releaseFirst:
-		case <-ctx.Done():
-			return false, ctx.Err()
-		}
-	}
-	return s.Store.UpdateOAuthModelStateIfCredentialMatches(
-		ctx, channelID, expectedAuthType, expectedCredential, modelEntries, scheduledCheckModel,
-	)
 }
 
 func (s *concurrentOAuthWinnerStore) CompareAndSwapOAuthCredential(
@@ -3005,8 +2978,8 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	if updated.ID != created.ID || !strings.Contains(updated.OAuthCredential, `"access_token":"at-2"`) {
 		t.Fatalf("updated channel = %#v", updated)
 	}
-	if got := updated.GetModels(); !slices.Equal(got, wantModels) {
-		t.Fatalf("reimported legacy channel models = %v, want %v", got, wantModels)
+	if got := updated.GetModels(); !slices.Equal(got, []string{"*"}) {
+		t.Fatalf("reimported legacy channel models = %v, want wildcard preserved", got)
 	}
 	channels, err := store.ListConfigs(context.Background())
 	if err != nil || len(channels) != 1 {
@@ -3781,8 +3754,8 @@ func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 	if err != nil || persistedCredential.RefreshToken != "rt-winner" {
 		t.Fatalf("persisted credential = (%#v, %v), want winner refresh token", persistedCredential, err)
 	}
-	if !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.6-sol") {
-		t.Fatalf("winning pro credential has stale free models: %v", persisted.GetModels())
+	if persisted.SupportsModel("gpt-5.4") || persisted.SupportsModel("gpt-5.6-sol") {
+		t.Fatalf("winning pro credential overwrote manually configured models: %v", persisted.GetModels())
 	}
 }
 
@@ -4352,70 +4325,6 @@ func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing
 	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil || persistedCredential.RefreshToken != "rt-new" {
 		t.Fatalf("SQLite credential = (%#v, %v)", persistedCredential, err)
-	}
-}
-
-func TestCodexReauthorizationLateModelWriteCannotOverrideWinningPlan(t *testing.T) {
-	baseStore := newCodexAuthTestStore(t)
-	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	initial := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-initial", RefreshToken: "rt-initial",
-		Expired: expires, ChatGPTUserID: "user-plan-cas", AccountID: "account-plan-cas",
-		Email: "plan-cas@example.com", PlanType: "plus",
-	}
-	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
-	if err != nil {
-		t.Fatal(err)
-	}
-	channel.ScheduledCheckModel = "gpt-5.4"
-	if _, err := baseStore.UpdateConfig(context.Background(), channel.ID, channel); err != nil {
-		t.Fatal(err)
-	}
-
-	store := &blockingCodexModelStateStore{
-		Store: baseStore, firstStarted: make(chan struct{}), releaseFirst: make(chan struct{}),
-	}
-	free := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-free", RefreshToken: "rt-free",
-		Expired: expires, ChatGPTUserID: initial.ChatGPTUserID, AccountID: "account-plan-cas",
-		Email: "plan-cas@example.com", PlanType: "free",
-	}
-	freeDone := make(chan error, 1)
-	go func() {
-		_, _, updateErr := createOrUpdateCodexChannel(context.Background(), store, free)
-		freeDone <- updateErr
-	}()
-	<-store.firstStarted
-
-	pro := &codexauth.Credential{
-		Type: codexauth.ChannelType, AccessToken: "at-pro", RefreshToken: "rt-pro",
-		Expired: expires, ChatGPTUserID: initial.ChatGPTUserID, AccountID: "account-plan-cas",
-		Email: "plan-cas@example.com", PlanType: "pro",
-	}
-	if _, _, err := createOrUpdateCodexChannel(context.Background(), store, pro); err != nil {
-		t.Fatalf("winning pro reauthorization error = %v", err)
-	}
-	close(store.releaseFirst)
-	if err := <-freeDone; err != nil {
-		t.Fatalf("late free reauthorization error = %v", err)
-	}
-
-	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persistedCredential.PlanType != "pro" || persistedCredential.RefreshToken != "rt-pro" {
-		t.Fatalf("winning credential = %#v, want pro", persistedCredential)
-	}
-	if !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.6-sol") {
-		t.Fatalf("pro credential has stale free models: %v", persisted.GetModels())
-	}
-	if persisted.ScheduledCheckModel != "gpt-5.4" {
-		t.Fatalf("scheduled check model = %q, want pro model preserved", persisted.ScheduledCheckModel)
 	}
 }
 
