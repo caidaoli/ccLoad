@@ -84,7 +84,7 @@ func TestHandleListChannels(t *testing.T) {
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
 
 	// 调用处理函数
-	server.handleListChannels(c)
+	server.HandleChannels(c)
 
 	// 验证响应
 	if w.Code != http.StatusOK {
@@ -857,7 +857,7 @@ func TestHandleGetChannel(t *testing.T) {
 		{
 			name:           "无效的渠道ID",
 			channelID:      "invalid",
-			expectedStatus: http.StatusNotFound, // strconv.ParseInt失败会传入0，查不到返回404
+			expectedStatus: http.StatusBadRequest,
 			checkSuccess:   false,
 		},
 	}
@@ -867,9 +867,7 @@ func TestHandleGetChannel(t *testing.T) {
 			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+tt.channelID, nil))
 			c.Params = gin.Params{{Key: "id", Value: tt.channelID}}
 
-			// 从Params中解析ID并调用
-			id, _ := strconv.ParseInt(tt.channelID, 10, 64)
-			server.handleGetChannel(c, id)
+			server.HandleChannelByID(c)
 
 			if w.Code != tt.expectedStatus {
 				t.Errorf("期望状态码%d，实际%d", tt.expectedStatus, w.Code)

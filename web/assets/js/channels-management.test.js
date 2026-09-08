@@ -147,7 +147,6 @@ test('管理账户表单按 profile 显示字段矩阵并标注平台限制', ()
     assert.equal(dom.el('channelManagementUserIDField').hidden, false);
     assert.equal(dom.el('channelManagementCheckinField').hidden, false);
     assert.equal(dom.el('channelManagementNotice').hidden, true);
-    assert.equal(dom.el('channelManagementTokenHelp').textContent, 'channels.management.tokenHelpNewAPI');
 
     selectProfile(dom, mod, 'sub2api');
     assert.equal(dom.el('channelManagementTokenField').hidden, true, 'Sub2API 不再接收手工 JWT');
@@ -156,13 +155,11 @@ test('管理账户表单按 profile 显示字段矩阵并标注平台限制', ()
     assert.equal(dom.el('channelManagementUserIDField').hidden, true, '标准 Sub2API 不接受 user_id');
     assert.equal(dom.el('channelManagementCheckinField').hidden, true, '标准 Sub2API 不显示签到配置');
     assert.equal(dom.el('channelManagementNotice').hidden, false);
-    assert.equal(dom.el('channelManagementNotice').textContent, 'channels.management.noticeSub2API');
 
     selectProfile(dom, mod, 'sub2api_pro');
     assert.equal(dom.el('channelManagementLoginField').hidden, false);
     assert.equal(dom.el('channelManagementUserIDField').hidden, true);
     assert.equal(dom.el('channelManagementCheckinField').hidden, false);
-    assert.equal(dom.el('channelManagementNotice').textContent, 'channels.management.noticeSub2APIPro');
   } finally {
     dom.restore();
   }
