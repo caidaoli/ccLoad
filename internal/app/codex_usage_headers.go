@@ -30,6 +30,19 @@ type codexPassiveUsageTask struct {
 }
 
 func (s *Server) persistCodexPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response) {
+	s.observeCodexPassiveUsage(ctx, cfg, resp, func(update codexPassiveUsageUpdate) {
+		s.enqueueCodexPassiveUsage(cfg.ID, update)
+	})
+}
+
+// 检测同步写日志，必须先保存响应体中的额度窗口，避免首次检测成本丢失。
+func (s *Server) persistDetectionCodexPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response) {
+	s.observeCodexPassiveUsage(ctx, cfg, resp, func(update codexPassiveUsageUpdate) {
+		s.persistCodexPassiveUsageUpdate(ctx, cfg, update)
+	})
+}
+
+func (s *Server) observeCodexPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response, onUpdate func(codexPassiveUsageUpdate)) {
 	if s == nil || s.codexCredentials == nil || cfg == nil || !cfg.UsesCodexOAuth() || resp == nil {
 		return
 	}
@@ -45,9 +58,7 @@ func (s *Server) persistCodexPassiveUsage(ctx context.Context, cfg *model.Config
 	}
 	resp.Body = &codexPassiveUsageReadCloser{
 		ReadCloser: resp.Body,
-		onUpdate: func(update codexPassiveUsageUpdate) {
-			s.enqueueCodexPassiveUsage(cfg.ID, update)
-		},
+		onUpdate:   onUpdate,
 	}
 }
 

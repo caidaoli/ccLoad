@@ -12,6 +12,7 @@ import (
 
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/testutil"
 )
 
@@ -227,6 +228,50 @@ var testRequestOpenAI = testutil.TestChannelRequest{
 	Model:          "gpt-4o-mini",
 	ClientProtocol: "openai",
 	Content:        "hello",
+}
+
+func TestScheduledCheckCodexSSECostUsesRedirectedModel(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).Unix()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		event, err := json.Marshal(map[string]any{
+			"type": "codex.rate_limits",
+			"additional_rate_limits": map[string]any{
+				"GPT-5.3-Codex-Spark": map[string]any{
+					"primary": map[string]any{"used_percent": 42, "window_minutes": 10080, "reset_at": resetAt},
+				},
+			},
+		})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = io.WriteString(w, "data: "+string(event)+"\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":100}}}\n\n")
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	cfg.ModelEntries = []model.ModelEntry{{Model: "test-alias", RedirectModel: "gpt-5.3-codex-spark"}}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	srv.runScheduledChannelCheck(context.Background(), cfg, nil, "hello")
+	stored, err := srv.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(stored.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.PassiveUsage == nil || len(credential.PassiveUsage.Windows) != 1 || credential.PassiveUsage.Windows[0].UsedPercent != 42 {
+		t.Fatalf("missing progress: %+v", credential.PassiveUsage)
+	}
+	if credential.QuotaCostUsage == nil || len(credential.QuotaCostUsage.Windows) != 1 {
+		t.Fatalf("missing cost window: %+v", credential.QuotaCostUsage)
+	}
+	window := credential.QuotaCostUsage.Windows[0]
+	if window.Family != oauthcost.FamilySpark || window.StandardCostMicroUSD <= 0 {
+		t.Fatalf("redirected detection must charge Spark: %+v", window)
+	}
 }
 
 func TestRunScheduledChannelChecks_CodexOAuthWithoutAPIKeys(t *testing.T) {

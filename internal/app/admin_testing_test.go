@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -1079,6 +1080,72 @@ func TestOAuthCredentialRefreshTrackerOwnsDetachedRefreshLifetime(t *testing.T) 
 		t.Fatal("forced tracker shutdown did not cancel the refresh context")
 	}
 	timeoutDone()
+}
+
+func TestOAuthDetectionPersistsUsageAndCost(t *testing.T) {
+	for _, mode := range []string{"manual", "manual-stream", "chat-stream", "scheduled"} {
+		t.Run(mode, func(t *testing.T) {
+			resetAt := time.Now().Add(time.Hour).Unix()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(anthropicRateLimit5hStatus, "allowed")
+				w.Header().Set(anthropicRateLimit5hUtilization, "0.42")
+				w.Header().Set(anthropicRateLimit5hReset, strconv.FormatInt(resetAt, 10))
+				if strings.HasSuffix(mode, "-stream") {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1000,\"output_tokens\":0}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":100}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn","usage":{"input_tokens":1000,"output_tokens":100}}`)
+			}))
+			srv := newInMemoryServer(t)
+			cfg := createAnthropicOAuthChannelForAdminTest(t, srv, upstream.URL)
+			var previousCost int64
+			for i := 0; i < 2; i++ {
+				if mode == "scheduled" {
+					srv.runScheduledChannelCheck(context.Background(), cfg, nil, "hello")
+				} else {
+					recorder := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(recorder)
+					c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+					c.Request = httptest.NewRequest(http.MethodPost, "/admin/channels/1/test", strings.NewReader(fmt.Sprintf(`{"model":"claude-sonnet-4-5","client_protocol":"anthropic","stream":%t}`, strings.HasSuffix(mode, "-stream"))))
+					c.Request.Header.Set("Content-Type", "application/json")
+					if mode == "chat-stream" {
+						srv.HandleChannelChat(c)
+					} else {
+						srv.HandleChannelTest(c)
+						var response struct {
+							Data struct {
+								Success bool `json:"success"`
+							} `json:"data"`
+						}
+						if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || !response.Data.Success {
+							t.Fatalf("test response: %s, error: %v", recorder.Body.String(), err)
+						}
+					}
+				}
+				stored, err := srv.store.GetConfig(context.Background(), cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, err := anthropicauth.ParseCredential([]byte(stored.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if credential.PassiveUsage == nil || credential.PassiveUsage.FiveHour == nil || credential.PassiveUsage.FiveHour.Utilization == nil || *credential.PassiveUsage.FiveHour.Utilization != 0.42 {
+					t.Fatalf("missing persisted progress: %+v", credential.PassiveUsage)
+				}
+				if credential.QuotaCostUsage == nil || len(credential.QuotaCostUsage.Windows) != 1 {
+					t.Fatalf("missing cost window: %+v", credential.QuotaCostUsage)
+				}
+				cost := credential.QuotaCostUsage.Windows[0].StandardCostMicroUSD
+				if cost <= 0 || (i == 1 && cost != 2*previousCost) {
+					t.Fatalf("cost=%d previous=%d", cost, previousCost)
+				}
+				previousCost = cost
+			}
+		})
+	}
 }
 
 func TestAnthropicOAuthChannelTestDecodesAdvertisedCompression(t *testing.T) {
@@ -2303,11 +2370,13 @@ func TestHandleChannelTest_CodexOAuthWithoutQuotaHeadersLeavesUsageEmpty(t *test
 
 func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
 	const rateLimitEvent = `{"type":"codex.rate_limits","plan_type":"pro","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":10,"window_minutes":10080,"reset_after_seconds":571277,"reset_at":1786851417},"secondary":null},"code_review_rate_limits":null,"additional_rate_limits":{"GPT-5.3-Codex-Spark":{"allowed":true,"limit_reached":false,"primary":{"used_percent":0,"window_minutes":10080,"reset_after_seconds":604800,"reset_at":1786884940},"secondary":null}},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"promo":null}`
+	resetAt := time.Now().Add(24 * time.Hour).Unix()
+	currentRateLimitEvent := strings.NewReplacer("1786851417", strconv.FormatInt(resetAt, 10), "1786884940", strconv.FormatInt(resetAt, 10)).Replace(rateLimitEvent)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: "+rateLimitEvent+"\n\n")
+		_, _ = io.WriteString(w, "data: "+currentRateLimitEvent+"\n\n")
 		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
-		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_admin\",\"status\":\"completed\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_admin\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":100}}}\n\n")
 	}))
 
 	srv := newInMemoryServer(t)
@@ -2328,37 +2397,40 @@ func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
 	if success, _ := response.Data["success"].(bool); !response.Success || !success {
 		t.Fatalf("Codex OAuth channel test failed: %+v", response)
 	}
-	if raw, _ := response.Data["raw_response"].(string); !strings.Contains(raw, rateLimitEvent) {
+	if raw, _ := response.Data["raw_response"].(string); !strings.Contains(raw, currentRateLimitEvent) {
 		t.Fatalf("raw_response lost codex.rate_limits event: %q", raw)
 	}
-	var credential *codexauth.Credential
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		persisted, err := srv.store.GetConfig(context.Background(), created.ID)
-		if err != nil {
-			t.Fatalf("GetConfig: %v", err)
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.PassiveUsage == nil || len(credential.PassiveUsage.Windows) != 2 {
+		t.Fatalf("missing persisted Codex SSE quota: %#v", credential)
+	}
+	if credential.QuotaCostUsage == nil || len(credential.QuotaCostUsage.Windows) != 2 {
+		t.Fatalf("missing cost windows: %+v", credential.QuotaCostUsage)
+	}
+	for _, window := range credential.QuotaCostUsage.Windows {
+		if window.Family == oauthcost.FamilyCodex && window.StandardCostMicroUSD <= 0 {
+			t.Fatalf("first detection cost was lost: %+v", window)
 		}
-		credential, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
-		if err != nil {
-			t.Fatalf("ParseCredential: %v", err)
+		if window.Family == oauthcost.FamilySpark && window.StandardCostMicroUSD != 0 {
+			t.Fatalf("non-Spark detection charged Spark window: %+v", window)
 		}
-		if credential.PassiveUsage != nil && len(credential.PassiveUsage.Windows) == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for persisted Codex SSE quota: %#v", credential)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	primary := credential.PassiveUsage.Windows[0]
 	if primary.Scope != "codex" || primary.LimitName != "codex" || primary.Kind != "primary" ||
-		primary.UsedPercent != 10 || primary.LimitWindowSeconds != 10080*60 || primary.ResetAt != 1786851417 {
+		primary.UsedPercent != 10 || primary.LimitWindowSeconds != 10080*60 || primary.ResetAt != resetAt {
 		t.Fatalf("persisted Codex primary SSE quota window = %#v", primary)
 	}
 	additional := credential.PassiveUsage.Windows[1]
 	if additional.Scope != "gpt-5.3-codex-spark" || additional.LimitName != "GPT-5.3-Codex-Spark" ||
 		additional.Kind != "primary" || additional.UsedPercent != 0 ||
-		additional.LimitWindowSeconds != 10080*60 || additional.ResetAt != 1786884940 {
+		additional.LimitWindowSeconds != 10080*60 || additional.ResetAt != resetAt {
 		t.Fatalf("persisted Codex additional SSE quota window = %#v", additional)
 	}
 }

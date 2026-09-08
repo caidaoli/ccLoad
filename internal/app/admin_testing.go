@@ -1577,7 +1577,8 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		result["is_streaming"] = testReq.Stream
 		return attachTestDebugData(requestPlan, nil, result)
 	}
-	s.persistCodexPassiveUsage(ctx, cfg, resp)
+	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp)
+	s.persistAnthropicPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if cfg.UsesZedOAuth() {
 		if zedErr := prepareZedResponsesResponse(resp, requestPlan.zedWire, s.protocolRegistry); zedErr != nil {
