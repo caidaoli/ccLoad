@@ -317,7 +317,7 @@ func (s *Server) buildProxyRequest(
 	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
 	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx, cfg))
 
-	// 5.5 Codex Responses 缓存提示：设置 Session_id 头（仅客户端未自带时）
+	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）
 	ensureCodexSessionHeader(req.Header, codexSessionID)
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
@@ -466,7 +466,7 @@ func ensureCodexSessionHeader(headers http.Header, sessionID string) {
 	if headers == nil || sessionID == "" || headers.Get("Session_id") != "" || headers.Get("Session-Id") != "" {
 		return
 	}
-	headers.Set("Session_id", sessionID)
+	headers.Set("Session-Id", sessionID)
 }
 
 func upstreamQueryForAttempt(reqCtx *requestContext, rawQuery string) string {

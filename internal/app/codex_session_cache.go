@@ -14,7 +14,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Codex Responses API 的 prompt 缓存需要 `prompt_cache_key` 请求体字段与 `Session_id` 请求头配合，
+// Codex Responses API 的 prompt 缓存使用 `prompt_cache_key` 请求体字段与 `Session-Id` 请求头配合，
 // 仅当稳定分桶时 OpenAI 才能稳定命中缓存。ccLoad 需在 Anthropic/OpenAI 客户端转换到 Codex 上游时补齐，
 // 策略参考 CLIProxyAPI internal/runtime/executor/codex_executor.go:cacheHelper。
 

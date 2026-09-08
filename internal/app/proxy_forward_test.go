@@ -528,8 +528,11 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		req.Header.Get("Version") != codexVersion {
 		t.Fatalf("Codex identity headers = %v", req.Header)
 	}
-	if req.Header.Get("Session_id") == "" {
-		t.Fatalf("Codex Session_id header is missing: %v", req.Header)
+	if req.Header.Get("Session-Id") == "" {
+		t.Fatalf("Codex Session-Id header is missing: %v", req.Header)
+	}
+	if req.Header.Get("Session_id") != "" || req.Header.Get("Conversation_id") != "" {
+		t.Fatalf("legacy session headers were generated: %v", req.Header)
 	}
 	if got := req.Header.Get("Accept"); got != "text/event-stream" {
 		t.Fatalf("Accept = %q, want text/event-stream", got)

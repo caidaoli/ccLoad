@@ -1049,18 +1049,14 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 
 	// Current Codex clients use the canonical Session-Id header. Keep it intact:
 	// a downstream ccLoad instance needs Session-Id + Thread-Id to isolate parent
-	// and subagent execution sessions. The official websocket still receives its
-	// legacy aliases, all normalized from the same canonical value.
+	// and subagent execution sessions. Accept the legacy session header as a
+	// fallback without synthesizing legacy aliases for the upstream.
 	sessionID := strings.TrimSpace(header.Get("Session-Id"))
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(header.Get("Session_id"))
 	}
 	if sessionID != "" {
 		header.Set("Session-Id", sessionID)
-		header.Set("Session_id", sessionID)
-		if strings.TrimSpace(header.Get("Conversation_id")) == "" {
-			header.Set("Conversation_id", sessionID)
-		}
 	}
 	return header
 }

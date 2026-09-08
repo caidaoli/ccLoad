@@ -755,7 +755,7 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	srv.configService.mu.Unlock()
 	srv.client = &http.Client{
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			gotSessionID = r.Header.Get("Session_id")
+			gotSessionID = r.Header.Get("Session-Id")
 			gotBody, _ = io.ReadAll(r.Body)
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
@@ -803,10 +803,10 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 		t.Fatalf("forwardOnceAsync error = %v", err)
 	}
 	if gotSessionID == "" || !uuidPattern.MatchString(gotSessionID) {
-		t.Fatalf("Session_id header missing or invalid: %q", gotSessionID)
+		t.Fatalf("Session-Id header missing or invalid: %q", gotSessionID)
 	}
 	if key := readCodexPromptCacheKey(gotBody); key != gotSessionID {
-		t.Fatalf("prompt_cache_key = %q, want Session_id %q; body=%s", key, gotSessionID, gotBody)
+		t.Fatalf("prompt_cache_key = %q, want Session-Id %q; body=%s", key, gotSessionID, gotBody)
 	}
 	assertFieldOrder(t, string(gotBody), `"model"`, `"instructions"`, `"input"`, `"prompt_cache_key"`)
 	if result.DebugData == nil {
@@ -906,7 +906,9 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"Connection":            "Keep-Alive",
 		"Content-Type":          "application/json",
 		"Originator":            "codex-tui",
-		"Session_id":            "session-1",
+		"Session-Id":            "session-1",
+		"Session_id":            "",
+		"Conversation_id":       "",
 		"User-Agent":            codexUserAgent,
 		"Version":               codexVersion,
 		"X-Client-Request-Id":   "request-1",

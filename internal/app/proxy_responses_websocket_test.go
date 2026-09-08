@@ -2513,9 +2513,9 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 			t.Errorf("native upstream identity headers=%v", r.Header)
 		}
 		for name, want := range map[string]string{
-			"Conversation_id":                       "ws-session",
+			"Conversation_id":                       "",
 			"Session-Id":                            "ws-session",
-			"Session_id":                            "ws-session",
+			"Session_id":                            "",
 			"Thread-Id":                             "worker-thread",
 			"Version":                               codexVersion,
 			"X-Client-Request-Id":                   "request-1",
@@ -2663,8 +2663,11 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		if got := r.Header.Get("X-Codex-Window-Id"); got != "" {
 			t.Errorf("X-Codex-Window-Id = %q, want omitted from native WebSocket", got)
 		}
-		if r.Header.Get("Session_id") == "" {
-			t.Errorf("Codex Session_id header is missing: %v", r.Header)
+		if r.Header.Get("Session-Id") == "" {
+			t.Errorf("Codex Session-Id header is missing: %v", r.Header)
+		}
+		if r.Header.Get("Session_id") != "" || r.Header.Get("Conversation_id") != "" {
+			t.Errorf("legacy session headers were generated: %v", r.Header)
 		}
 		if !strings.Contains(r.Header.Get("OpenAI-Beta"), "responses_websockets=") {
 			t.Errorf("OpenAI-Beta = %q", r.Header.Get("OpenAI-Beta"))

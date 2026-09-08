@@ -622,7 +622,7 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 	}
 	req.Header.Set("Originator", codexOriginator)
 	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
-		req.Header.Set("Session_id", util.NewUUIDv4())
+		req.Header.Set("Session-Id", util.NewUUIDv4())
 	}
 	if cfg.UsesCodexOAuth() && cfg.CodexAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", cfg.CodexAccountID)

@@ -5218,7 +5218,10 @@ func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T
 		gotOriginator = r.Header.Get("Originator")
 		gotVersion = r.Header.Get("Version")
 		gotUserAgent = r.Header.Get("User-Agent")
-		gotSessionID = r.Header.Get("Session_id")
+		gotSessionID = r.Header.Get("Session-Id")
+		if r.Header.Get("Session_id") != "" || r.Header.Get("Conversation_id") != "" {
+			t.Errorf("legacy session headers were generated: %v", r.Header)
+		}
 		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode Codex Images request: %v", err)
@@ -5260,7 +5263,7 @@ func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T
 		t.Fatalf("Codex auth headers: Authorization=%q Account-ID=%q", gotAuthorization, gotAccountID)
 	}
 	if gotOriginator != codexOriginator || gotVersion != codexVersion || gotUserAgent != codexUserAgent || gotSessionID == "" {
-		t.Fatalf("Codex identity headers: Originator=%q Version=%q User-Agent=%q Session_id=%q", gotOriginator, gotVersion, gotUserAgent, gotSessionID)
+		t.Fatalf("Codex identity headers: Originator=%q Version=%q User-Agent=%q Session-Id=%q", gotOriginator, gotVersion, gotUserAgent, gotSessionID)
 	}
 	if gotAcceptEncoding != "identity" {
 		t.Fatalf("Accept-Encoding=%q, want identity", gotAcceptEncoding)
