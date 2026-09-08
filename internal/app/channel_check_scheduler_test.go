@@ -47,6 +47,84 @@ func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, k
 	return created
 }
 
+func TestScheduledCheckUsesURLProtocol(t *testing.T) {
+	for _, mode := range []string{model.ProtocolTransformModeAuto, model.ProtocolTransformModeLocal, model.ProtocolTransformModeUpstream} {
+		for _, tc := range []struct {
+			name      string
+			protocols []string
+			paths     []string
+			multiURL  bool
+		}{
+			{name: "undeclared", paths: []string{"/v1/chat/completions"}},
+			{name: "declared_openai", protocols: []string{"openai"}, paths: []string{"/v1/chat/completions"}},
+			{name: "declared_anthropic_first", protocols: []string{"anthropic", "openai"}, paths: []string{"/v1/messages"}},
+			{name: "declared_codex_first", protocols: []string{"codex", "openai"}, paths: []string{"/v1/responses"}},
+			{name: "undeclared_fallback", paths: []string{"/v1/chat/completions", "/v1/messages"}},
+			{name: "next_url_uses_own_protocol", multiURL: true, paths: []string{"/first/v1/messages", "/v1/chat/completions"}},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				var paths []string
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode request: %v", err)
+					}
+					if body["model"] != "test-model" {
+						t.Errorf("model = %v", body["model"])
+					}
+					field := "messages"
+					if r.URL.Path == "/v1/responses" {
+						field = "input"
+					}
+					if _, ok := body[field]; !ok {
+						t.Errorf("request missing %s: %v", field, body)
+					}
+					if len(paths) < len(tc.paths) {
+						http.Error(w, `{"error":{"message":"endpoint not found"}}`, http.StatusNotFound)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					switch r.URL.Path {
+					case "/v1/messages":
+						_, _ = io.WriteString(w, `{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+					case "/v1/responses":
+						_, _ = io.WriteString(w, `{"id":"resp-test","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+					default:
+						_, _ = io.WriteString(w, `{"id":"test","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+					}
+				}))
+				defer upstream.Close()
+				srv := newInMemoryServer(t)
+				urls := model.ChannelURLs{{URL: upstream.URL, Protocols: tc.protocols}}
+				if tc.multiURL {
+					urls = append(model.ChannelURLs{{URL: upstream.URL + "/first", Protocols: []string{"anthropic"}}}, urls...)
+					srv.urlSelector = nil // Keep the failing URL first to exercise fallback deterministically.
+				}
+				createScheduledCheckChannel(t, srv, &model.Config{
+					Name: "protocol-check", Enabled: true, ScheduledCheckEnabled: true,
+					URLs:                  urls,
+					ProtocolTransformMode: mode, ModelEntries: []model.ModelEntry{{Model: "test-model"}},
+				}, &model.APIKey{APIKey: "sk-test"})
+				ctx := context.Background()
+				if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Join(paths, ",") != strings.Join(tc.paths, ",") {
+					t.Fatalf("paths = %v, want %v", paths, tc.paths)
+				}
+				logs, err := srv.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("logs = %v, err = %v", logs, err)
+				}
+				if logs[0].StatusCode != http.StatusOK {
+					t.Fatalf("detection failed: %+v", logs[0])
+				}
+			})
+		}
+	}
+}
+
 func TestDailyScheduledChecksIndependentChannelsAndChanges(t *testing.T) {
 	var slowCalls, fastCalls atomic.Int32
 	started := make(chan string, 10)

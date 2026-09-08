@@ -52,6 +52,7 @@ type TestChannelRequest struct {
 	APIKey            string                  `json:"api_key,omitempty"`         // 可选，测试当前编辑器中的未保存Key
 	BaseURL           string                  `json:"base_url,omitempty"`        // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
 	WaitForCapacity   bool                    `json:"-"`                         // 后台批任务等待渠道配额；交互式测试仍快速失败
+	UseURLProtocol    bool                    `json:"-"`                         // 定时检测按 URL 声明选择原生协议，未声明时优先 OpenAI
 	ImageGeneration   *ImageGenerationOptions `json:"-"`                         // 生图 Tab 的 Chat Completions 请求选项
 	resolvedSessionID string
 }

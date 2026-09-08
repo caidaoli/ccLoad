@@ -125,7 +125,8 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 
 	req := &testutil.TestChannelRequest{
 		Model:          modelName,
-		ClientProtocol: string(protocol.Anthropic),
+		ClientProtocol: string(protocol.OpenAI),
+		UseURLProtocol: true,
 		Content:        content,
 		Stream:         false,
 	}

@@ -1193,19 +1193,32 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		selector = s.urlSelector
 	}
 	orderedURLs := orderChannelAttemptURLs(selector, cfg, urls)
-	switch cfg.GetProtocolTransformMode() {
-	case model.ProtocolTransformModeAuto:
-		orderedURLs = prioritizeAutomaticProtocolURLs(orderedURLs, cfg.URLs)
-	case model.ProtocolTransformModeLocal:
+	if testReq.UseURLProtocol {
 		orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
+	} else {
+		switch cfg.GetProtocolTransformMode() {
+		case model.ProtocolTransformModeAuto:
+			orderedURLs = prioritizeAutomaticProtocolURLs(orderedURLs, cfg.URLs)
+		case model.ProtocolTransformModeLocal:
+			orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
+		}
 	}
 
 	var lastResult map[string]any
 	var urlPolicy channelURLAttemptPolicy
 	for idx, entry := range orderedURLs {
-		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
-			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
-		)
+		configuredURL := configuredURLAt(cfg, entry.idx, entry.url)
+		var upstreamProtocols []string
+		if testReq.UseURLProtocol {
+			upstreamProtocols = configuredURL.Protocols
+			if len(upstreamProtocols) == 0 {
+				for _, candidate := range automaticFallbackProtocolOrder {
+					upstreamProtocols = append(upstreamProtocols, string(candidate))
+				}
+			}
+		} else {
+			upstreamProtocols = resolveConfiguredURLUpstreamProtocols(cfg, configuredURL, clientProtocol)
+		}
 		if len(upstreamProtocols) == 0 {
 			lastResult = map[string]any{
 				"success":  false,
@@ -1217,6 +1230,9 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 
 		capabilityExhausted := false
 		for protocolIdx, upstreamProtocol := range upstreamProtocols {
+			if testReq.UseURLProtocol {
+				clientProtocol = upstreamProtocol
+			}
 			lastResult = s.testChannelAPIWithURLForProtocol(
 				reqCtx, cfg, apiKey, testReq, clientProtocol, upstreamProtocol, entry.url,
 			)
@@ -1254,7 +1270,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 		if !hasNextURL {
 			break
 		}
-		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+		if capabilityExhausted && (testReq.UseURLProtocol || cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream) {
 			continue
 		}
 

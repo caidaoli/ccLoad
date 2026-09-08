@@ -1669,6 +1669,22 @@ function shouldShowZoom(points, hours, trendType) {
       }
 
       // 渠道ID和渠道名已改为 combobox，onSelect 回调自动触发 persistState + loadData
+      document.getElementById('btn_clear_filters')?.addEventListener('click', resetTrendFilters);
+    }
+
+    async function resetTrendFilters() {
+      window.currentModel = '';
+      window.currentClientProtocol = '';
+      window.currentAuthToken = '';
+      window.currentChannelName = '';
+      window.applyFilterControlValues({ range: 'today' }, {
+        range: 'f_hours',
+        model: 'f_model',
+        clientProtocol: 'f_client_protocol',
+        authToken: 'f_auth_token'
+      });
+      trendChannelNameCombobox?.setValue('', t('stats.allChannels'));
+      await handleTrendRangeChange('today');
     }
 
     async function handleTrendRangeChange(nextRange, customRange) {
