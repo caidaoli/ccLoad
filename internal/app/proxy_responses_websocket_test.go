@@ -5483,12 +5483,16 @@ func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay
 	if !bytes.Contains(first, []byte(`"encrypted_content"`)) {
 		t.Fatalf("first upstream request dropped encrypted content too early: %s", first)
 	}
-	if bytes.Contains(replay, []byte(`"encrypted_content"`)) {
-		t.Fatalf("replay retained rejected encrypted content: %s", replay)
-	}
 	items := gjson.GetBytes(replay, "input").Array()
-	if len(items) != 1 || items[0].Get("type").String() != "message" || handshakes.Load() != 2 {
-		t.Fatalf("replay input=%s handshakes=%d, want only the message and two handshakes", replay, handshakes.Load())
+	if len(items) != 2 || items[0].Get("type").String() != "compaction" ||
+		items[1].Get("type").String() != "message" || handshakes.Load() != 2 {
+		t.Fatalf("replay input=%s handshakes=%d, want compaction, message and two handshakes", gjson.GetBytes(replay, "input").Raw, handshakes.Load())
+	}
+	if items[0].Raw != gjson.GetBytes(first, "input.1").Raw {
+		t.Fatalf("replay changed the compaction history: %s", items[0].Raw)
+	}
+	if items[1].Get("content").String() != "keep going" {
+		t.Fatalf("replay changed the retained message: %s", items[1].Raw)
 	}
 }
 

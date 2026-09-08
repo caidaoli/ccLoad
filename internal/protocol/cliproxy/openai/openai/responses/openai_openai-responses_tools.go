@@ -79,7 +79,13 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 	scan(root.Get("tools"))
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
 		input.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("type").String() == "additional_tools" {
+			switch item.Get("type").String() {
+			case "additional_tools":
+				scan(item.Get("tools"))
+			case "tool_search_output":
+				// Client-executed tool search returns the declarations that
+				// were loaded. They participate in the same flattened tool
+				// namespace as request-level declarations.
 				scan(item.Get("tools"))
 			}
 			return proceed
@@ -100,6 +106,29 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
 	var merged [][]byte
 	seenToolNames := make(map[string]struct{})
+	hasSearchDeclaration := false
+	// A client-executed tool_search is exposed to Chat Completions as one
+	// reserved ordinary function. Its call and output are translated back to
+	// Responses tool_search items by the response converter. Emit it before
+	// ordinary declarations so the request-level declaration keeps its
+	// canonical leading position when present.
+	walkResponsesToolSearchDeclarations(root, func(declaration responsesToolSearchDeclaration) bool {
+		hasSearchDeclaration = true
+		name := responsesChatToolSearchFunctionName
+		if _, duplicate := seenToolNames[name]; duplicate {
+			return true
+		}
+		chatTool := convertResponsesToolSearchToOpenAIChat(declaration.tool, name)
+		seenToolNames[name] = struct{}{}
+		merged = append(merged, chatTool)
+		return true
+	})
+	if !hasSearchDeclaration && responsesRequestHasToolSearch(root) {
+		// A complete replay may omit the original search declaration. Keep
+		// the reserved function available for its paired search history.
+		seenToolNames[responsesChatToolSearchFunctionName] = struct{}{}
+		merged = append(merged, convertResponsesToolSearchToOpenAIChat(gjson.Result{}, responsesChatToolSearchFunctionName))
+	}
 	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
 		if _, duplicate := seenToolNames[declaration.chatName]; duplicate {
 			return true
@@ -115,6 +144,18 @@ func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
 		return true
 	})
 	return merged
+}
+
+func convertResponsesToolSearchToOpenAIChat(tool gjson.Result, overrideName string) []byte {
+	chatTool := []byte(`{"type":"function","function":{"name":"","description":"","parameters":{"type":"object"}}}`)
+	chatTool, _ = sjson.SetBytes(chatTool, "function.name", overrideName)
+	if description := responsesToolDescription(tool); description != "" {
+		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
+	}
+	if parameters := responsesToolParameters(tool); parameters.Exists() {
+		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
+	}
+	return chatTool
 }
 
 // convertResponsesCustomToolToOpenAIChat maps a Responses freeform ("custom")

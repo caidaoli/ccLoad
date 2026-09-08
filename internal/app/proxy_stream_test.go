@@ -6,11 +6,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/builtin"
 )
 
 func readCodexMalformedSSEFixture(t *testing.T) []byte {
@@ -236,6 +240,53 @@ type errorReader struct {
 	err error
 }
 
+type streamStatsResponseWriter struct {
+	header        http.Header
+	status        int
+	body          bytes.Buffer
+	writeCalls    int
+	flushCalls    int
+	writeErr      error
+	writeBytes    int
+	flushObserved chan struct{}
+}
+
+func (w *streamStatsResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *streamStatsResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *streamStatsResponseWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	if w.writeErr != nil {
+		n := w.writeBytes
+		if n > len(p) {
+			n = len(p)
+		}
+		return n, w.writeErr
+	}
+	return w.body.Write(p)
+}
+
+func (w *streamStatsResponseWriter) Flush() {
+	w.flushCalls++
+	if w.flushObserved != nil {
+		select {
+		case <-w.flushObserved:
+		default:
+			close(w.flushObserved)
+		}
+	}
+}
+
 type repeatedByteReader struct {
 	remaining int
 }
@@ -283,6 +334,164 @@ func (r *blockingReadCloser) Close() error {
 		close(r.closed)
 	})
 	return nil
+}
+
+func TestStreamResponseWriterTracksSuccessfulOutput(t *testing.T) {
+	start := time.Now().Add(-10 * time.Millisecond)
+	stats := &streamReadStats{}
+	target := &streamStatsResponseWriter{}
+	writer := newStreamResponseWriter(target, stats, start)
+
+	if n, err := writer.Write([]byte("hello")); err != nil || n != 5 {
+		t.Fatalf("Write() = (%d, %v), want (5, nil)", n, err)
+	}
+	writer.Flush()
+
+	if got, want := stats.downstreamBytes, int64(5); got != want {
+		t.Fatalf("downstreamBytes = %d, want %d", got, want)
+	}
+	if got, want := stats.downstreamWrites, 1; got != want {
+		t.Fatalf("downstreamWrites = %d, want %d", got, want)
+	}
+	if got, want := stats.downstreamFlushes, 1; got != want {
+		t.Fatalf("downstreamFlushes = %d, want %d", got, want)
+	}
+	if stats.lastWriteSec <= 0 || stats.lastFlushSec <= 0 {
+		t.Fatalf("output timings = write %.6f flush %.6f, want positive values", stats.lastWriteSec, stats.lastFlushSec)
+	}
+	if target.body.String() != "hello" {
+		t.Fatalf("forwarded body = %q, want %q", target.body.String(), "hello")
+	}
+}
+
+func TestStreamResponseWriterTracksPartialWriteWithError(t *testing.T) {
+	stats := &streamReadStats{}
+	target := &streamStatsResponseWriter{writeErr: io.ErrClosedPipe, writeBytes: 2}
+	writer := newStreamResponseWriter(target, stats, time.Now().Add(-10*time.Millisecond))
+
+	n, err := writer.Write([]byte("hello"))
+	if n != 2 || !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("Write() = (%d, %v), want (2, io.ErrClosedPipe)", n, err)
+	}
+	if stats.downstreamBytes != 2 || stats.downstreamWrites != 1 || stats.lastWriteSec <= 0 {
+		t.Fatalf("partial write stats = %#v, want n>0 to be recorded", *stats)
+	}
+}
+
+func TestDeferredResponseWriterTracksCommittedOutput(t *testing.T) {
+	start := time.Now().Add(-10 * time.Millisecond)
+	stats := &streamReadStats{}
+	target := &streamStatsResponseWriter{}
+	writer := newDeferredResponseWriter(newStreamResponseWriter(target, stats, start))
+
+	if _, err := writer.Write([]byte("buffered")); err != nil {
+		t.Fatalf("buffered Write() error = %v", err)
+	}
+	if stats.downstreamBytes != 0 || stats.downstreamWrites != 0 {
+		t.Fatalf("uncommitted output was counted: bytes=%d writes=%d", stats.downstreamBytes, stats.downstreamWrites)
+	}
+	if err := writer.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if _, err := writer.Write([]byte("visible")); err != nil {
+		t.Fatalf("committed Write() error = %v", err)
+	}
+	writer.Flush()
+
+	if got, want := stats.downstreamBytes, int64(len("buffered")+len("visible")); got != want {
+		t.Fatalf("downstreamBytes = %d, want %d", got, want)
+	}
+	if got, want := stats.downstreamWrites, 2; got != want {
+		t.Fatalf("downstreamWrites = %d, want %d", got, want)
+	}
+	if got, want := stats.downstreamFlushes, 1; got != want {
+		t.Fatalf("downstreamFlushes = %d, want %d", got, want)
+	}
+	if target.body.String() != "bufferedvisible" {
+		t.Fatalf("forwarded body = %q, want %q", target.body.String(), "bufferedvisible")
+	}
+}
+
+func TestHandleSuccessResponseTracksRawStreamAndClientCancel(t *testing.T) {
+	const body = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   time.Now().Add(-10 * time.Millisecond),
+		isStreaming: true,
+	}
+	readStats := &streamReadStats{}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(io.MultiReader(
+			strings.NewReader(body),
+			&errorReader{err: context.Canceled},
+		)),
+	}
+	attachFirstByteDetector(reqCtx, resp, readStats, nil)
+	target := &streamStatsResponseWriter{}
+	result, _, err := (&Server{}).handleSuccessResponse(
+		reqCtx, resp, resp.Header.Clone(), target, "openai", readStats, nil,
+	)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("handleSuccessResponse() error = %v, want wrapped context.Canceled", err)
+	}
+	if result == nil || result.StreamDiagMsg != "" {
+		t.Fatalf("client cancellation should keep StreamDiagMsg empty, result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "流时序:") || !strings.Contains(err.Error(), "下游最后写入") {
+		t.Fatalf("client cancellation error lacks timing diagnostics: %v", err)
+	}
+	if readStats.lastReadSec <= 0 || readStats.downstreamBytes != int64(len(body)) ||
+		readStats.downstreamWrites == 0 || readStats.downstreamFlushes == 0 {
+		t.Fatalf("stream stats = %#v, want read/write/flush observations", *readStats)
+	}
+	if target.body.String() != body {
+		t.Fatalf("forwarded body = %q, want original SSE body", target.body.String())
+	}
+}
+
+func TestHandleSuccessResponseTracksTranslatedStream(t *testing.T) {
+	const body = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n"
+	start := time.Now().Add(-10 * time.Millisecond)
+	reqCtx := &requestContext{
+		ctx:         context.Background(),
+		startTime:   start,
+		isStreaming: true,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.OpenAI,
+			OriginalModel:    "claude-3-5-sonnet",
+			ActualModel:      "gpt-4o",
+			NeedsTransform:   true,
+		},
+	}
+	readStats := &streamReadStats{}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	attachFirstByteDetector(reqCtx, resp, readStats, nil)
+	target := &streamStatsResponseWriter{}
+	registry := protocol.NewRegistry()
+	builtin.Register(registry)
+	result, _, err := (&Server{protocolRegistry: registry}).handleSuccessResponse(
+		reqCtx, resp, resp.Header.Clone(), target, "openai", readStats, nil,
+	)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if result == nil || !result.ResponseCommitted {
+		t.Fatalf("translated stream result = %#v, want committed response", result)
+	}
+	if readStats.lastReadSec <= 0 || readStats.downstreamBytes == 0 ||
+		readStats.downstreamWrites == 0 || readStats.downstreamFlushes == 0 {
+		t.Fatalf("translated stream stats = %#v, want read/write/flush observations", *readStats)
+	}
+	if !strings.Contains(target.body.String(), "message_stop") {
+		t.Fatalf("translated response lacks message_stop: %s", target.body.String())
+	}
 }
 
 // TestStreamCopySSE_ContextCanceledDuringRead 测试在 Read 期间 context 被取消的场景

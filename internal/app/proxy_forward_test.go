@@ -1069,6 +1069,167 @@ func TestCodexBodyWithoutThinking_RemovesReasoningControls(t *testing.T) {
 	assertFieldOrder(t, text, `"model"`, `"include"`, `"input"`)
 }
 
+func TestIsInvalidEncryptedContentErrorRecognizesPackyMessage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "Packy invalid argument",
+			body: `{"error":{"message":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.","type":"packy_invalid-argument","code":"invalid-argument"}}`,
+			want: true,
+		},
+		{
+			name: "legacy Codex response",
+			body: `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`,
+			want: true,
+		},
+		{
+			name: "generic decryption failure",
+			body: `{"error":{"message":"Could not decrypt the provided request token."}}`,
+			want: false,
+		},
+		{
+			name: "encrypted content without replay provenance",
+			body: `{"error":{"message":"Could not decrypt encrypted_content."}}`,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isInvalidEncryptedContentError([]byte(tc.body)); got != tc.want {
+				t.Fatalf("isInvalidEncryptedContentError()=%v, want %v for %s", got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
+func TestCodexBodyWithoutEncryptedInputItemsPreservesCompactionAndToolHistory(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"compaction","encrypted_content":"opaque-summary"},
+		{"type":"reasoning","summary":[],"encrypted_content":"opaque-reasoning"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]},
+		{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call-1","output":"ok"}
+	]}`)
+
+	got, ok := codexBodyWithoutEncryptedInputItems(body)
+	if !ok {
+		t.Fatal("codexBodyWithoutEncryptedInputItems returned ok=false")
+	}
+	items := gjson.GetBytes(got, "input").Array()
+	if len(items) != 4 {
+		t.Fatalf("retry input items=%d, want 4: %s", len(items), got)
+	}
+	if compaction := gjson.GetBytes(got, "input.0"); compaction.Get("type").String() != "compaction" ||
+		compaction.Get("encrypted_content").String() != "opaque-summary" {
+		t.Fatalf("encrypted compaction was changed or removed: %s", got)
+	}
+	if gjson.GetBytes(got, "input.#(type==reasoning)").Exists() {
+		t.Fatalf("encrypted reasoning should be removed: %s", got)
+	}
+	for index, wantType := range []string{"message", "function_call", "function_call_output"} {
+		if gotType := gjson.GetBytes(got, fmt.Sprintf("input.%d.type", index+1)).String(); gotType != wantType {
+			t.Fatalf("input.%d.type=%q, want %q: %s", index+1, gotType, wantType, got)
+		}
+	}
+	if gotCallID := gjson.GetBytes(got, "input.3.call_id").String(); gotCallID != "call-1" {
+		t.Fatalf("tool output call_id=%q, want call-1: %s", gotCallID, got)
+	}
+}
+
+func TestCodexBodyWithoutEncryptedInputItemsOnlyRemovesEncryptedReasoning(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"clear reasoning"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+
+	if got, ok := codexBodyWithoutEncryptedInputItems(body); ok || got != nil {
+		t.Fatalf("plain reasoning must not be stripped by encrypted-content retry: ok=%v body=%s", ok, got)
+	}
+}
+
+func TestCodexBodyWithoutEncryptedContentPreservesCompaction(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"compaction","encrypted_content":"opaque-summary"},
+		{"type":"compaction_summary","encrypted_content":"opaque-summary-2"},
+		{"type":"reasoning","encrypted_content":"opaque-reasoning"},
+		{"type":"message","role":"user","content":"continue"}
+	]}`)
+
+	got, ok := codexBodyWithoutEncryptedContent(body)
+	if !ok {
+		t.Fatal("codexBodyWithoutEncryptedContent returned ok=false")
+	}
+	if gjson.GetBytes(got, "input.0.type").String() != "compaction" ||
+		gjson.GetBytes(got, "input.0.encrypted_content").String() != "opaque-summary" {
+		t.Fatalf("encrypted compaction was changed or removed: %s", got)
+	}
+	if gjson.GetBytes(got, "input.1.type").String() != "compaction_summary" ||
+		gjson.GetBytes(got, "input.1.encrypted_content").String() != "opaque-summary-2" {
+		t.Fatalf("encrypted compaction summary was changed or removed: %s", got)
+	}
+	if gjson.GetBytes(got, "input.2.encrypted_content").Exists() {
+		t.Fatalf("reasoning encrypted_content should be removed: %s", got)
+	}
+}
+
+func TestCodexBodyWithoutEncryptedContentPreservesLargeValuesAndDottedKeys(t *testing.T) {
+	body := []byte(`{"input":[{"type":"compaction","encrypted_content":"keep","metadata":{"turn.id":9007199254740993123456789}},{"type":"tool_result","payload":{"encrypted_content":"drop","turn.id":9007199254740993123456789}}]}`)
+
+	got, ok := codexBodyWithoutEncryptedContent(body)
+	if !ok {
+		t.Fatal("codexBodyWithoutEncryptedContent returned ok=false")
+	}
+	if !bytes.Contains(got, []byte(`"turn.id":9007199254740993123456789`)) {
+		t.Fatalf("large dotted-key value was changed: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`"type":"compaction","encrypted_content":"keep"`)) {
+		t.Fatalf("compaction payload was changed: %s", got)
+	}
+	if bytes.Contains(got, []byte(`"encrypted_content":"drop"`)) {
+		t.Fatalf("non-compaction encrypted content was retained: %s", got)
+	}
+}
+
+func TestCodexRetryBodyFor400_RecognizesPackyEncryptedContentError(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.5","input":[
+		{"type":"reasoning","summary":[],"encrypted_content":"opaque-reasoning"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"message":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.","type":"packy_invalid-argument","code":"invalid-argument"}}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, nil, plan, res)
+	if !ok {
+		t.Fatal("codexRetryBodyFor400 returned ok=false for Packy error")
+	}
+	if strategy != "strip_codex_encrypted_input" {
+		t.Fatalf("strategy=%q, want strip_codex_encrypted_input", strategy)
+	}
+	if gjson.GetBytes(got, "input.#").Int() != 1 ||
+		gjson.GetBytes(got, "input.0.type").String() != "message" ||
+		gjson.GetBytes(got, "input.0.content.0.text").String() != "continue" {
+		t.Fatalf("retry body did not retain usable message history: %s", got)
+	}
+}
+
 func TestResponsesRetryBodyForMissingRequiredParameter_DropsInputItem(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
@@ -1779,7 +1940,7 @@ func TestCodexRetryBodyFor400_UsesSSEErrorStatusForEncryptedContent(t *testing.T
 	body := []byte(`{
 		"model":"gpt-5.5",
 		"input":[
-			{"type":"compaction","encrypted_content":"drop-compaction"},
+			{"type":"compaction","encrypted_content":"keep-compaction"},
 			{"type":"reasoning","summary":[],"encrypted_content":"drop-reasoning"},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}
 		]
@@ -1797,8 +1958,11 @@ func TestCodexRetryBodyFor400_UsesSSEErrorStatusForEncryptedContent(t *testing.T
 	if strategy != "strip_codex_encrypted_input" {
 		t.Fatalf("strategy=%q, want strip_codex_encrypted_input", strategy)
 	}
-	if items := gjson.GetBytes(got, "input").Array(); len(items) != 1 || items[0].Get("type").String() != "message" {
-		t.Fatalf("retry body should keep only the non-encrypted message, got %s", got)
+	if items := gjson.GetBytes(got, "input").Array(); len(items) != 2 ||
+		items[0].Get("type").String() != "compaction" ||
+		items[0].Get("encrypted_content").String() != "keep-compaction" ||
+		items[1].Get("type").String() != "message" {
+		t.Fatalf("retry body should preserve compaction and keep the message, got %s", got)
 	}
 }
 
