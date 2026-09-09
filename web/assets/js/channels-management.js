@@ -358,7 +358,12 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
 /** 重开高级设置时丢弃未确认的编辑，回到最近一次 commit 的草稿。 */
 function beginManagementAccountDraft() {
   clearManagementPendingSession();
-  renderManagementAccountFields(managementAccountState);
+  const draft = { ...managementAccountState };
+  // 新建弹窗初始化时 URL 尚未填写，进入高级设置时再补齐默认面板地址。
+  if (!draft.base_url && typeof getValidInlineURLConfigs === 'function') {
+    draft.base_url = firstManagementBaseURL(getValidInlineURLConfigs());
+  }
+  renderManagementAccountFields(draft);
 }
 
 function validateManagementAccountDraft() {
