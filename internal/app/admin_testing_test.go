@@ -2435,6 +2435,106 @@ func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
+	for _, tc := range []struct {
+		name, active, group, transport string
+		weeklySecondary                bool
+		distinctMain                   bool
+	}{
+		{name: "header direct group", active: "gpt-reserve", group: "gpt-reserve", transport: "header"},
+		{name: "header prefixed group", active: "codex_reserve", group: "reserve", transport: "header"},
+		{name: "header limit name", active: "gpt-reserve", group: "reserve", transport: "header"},
+		{name: "header keeps main secondary", active: "gpt-reserve", group: "reserve", transport: "header", weeklySecondary: true},
+		{name: "SSE metered limit", active: "gpt-reserve", transport: "sse"},
+		{name: "SSE preserves distinct main", active: "gpt-reserve", transport: "sse", distinctMain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := time.Now().UTC().Add(-time.Minute)
+			mainReset := base.Add(6 * 24 * time.Hour).Unix()
+			reserveReset := mainReset - 149668
+			mainKind := "primary"
+			mainEvent := fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, mainReset)
+			if tc.weeklySecondary {
+				mainKind = "secondary"
+				mainEvent = fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":20,"window_minutes":300,"reset_at":%d},"secondary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, base.Add(4*time.Hour).Unix(), mainReset)
+			}
+			genericUsed, genericReset := 8, reserveReset
+			wantMainUsed := 50.0
+			if tc.distinctMain {
+				genericUsed, genericReset, wantMainUsed = 51, mainReset, 51
+			}
+			reserveEvent := fmt.Sprintf(`{"type":"codex.rate_limits","metered_limit_name":%q,"rate_limits":{"primary":{"used_percent":%d,"window_minutes":10080,"reset_at":%d}},"additional_rate_limits":{"gpt-reserve":{"primary":{"used_percent":8,"window_minutes":10080,"reset_at":%d}}}}`, tc.active, genericUsed, genericReset, reserveReset)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.transport == "header" {
+					w.Header().Set("X-Codex-Active-Limit", tc.active)
+					w.Header().Set("X-Codex-Primary-Used-Percent", "8")
+					w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+					w.Header().Set("X-Codex-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
+					prefix := "X-Codex-" + tc.group
+					w.Header().Set(prefix+"-Limit-Name", "gpt-reserve")
+					w.Header().Set(prefix+"-Primary-Used-Percent", "8")
+					w.Header().Set(prefix+"-Primary-Window-Minutes", "10080")
+					w.Header().Set(prefix+"-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
+					_, _ = io.WriteString(w, "data: "+mainEvent+"\n\n")
+				} else {
+					_, _ = io.WriteString(w, "data: "+reserveEvent+"\n\n")
+				}
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"quota-alias\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":100}}}\n\n")
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+			summary := &oauthUsageSummary{Provider: "codex", Windows: []oauthUsageWindow{
+				{LimitName: "codex", Kind: mainKind, UsedPercent: 50, RemainingPercent: 50, LimitWindowSeconds: 604800, ResetAt: mainReset, SampledAt: base},
+				{LimitName: "gpt-reserve", Kind: "primary", UsedPercent: 6, RemainingPercent: 94, LimitWindowSeconds: 604800, ResetAt: reserveReset, SampledAt: base},
+			}}
+			if tc.weeklySecondary {
+				summary.Windows = append(summary.Windows, oauthUsageWindow{LimitName: "codex", Kind: "primary", UsedPercent: 20, RemainingPercent: 80, LimitWindowSeconds: 18000, ResetAt: base.Add(4 * time.Hour).Unix(), SampledAt: base})
+			}
+			if _, err := srv.persistOAuthUsage(context.Background(), created, summary, base, base); err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.store.AddLog(context.Background(), &model.LogEntry{
+				Time: model.JSONTime{Time: base}, ChannelID: created.ID, Model: "gpt-5.6-sol", StatusCode: http.StatusOK, Cost: 12,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			lastCost := int64(12_000_000)
+			channelID := strconv.FormatInt(created.ID, 10)
+			for attempt := range 2 {
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+					"model": "gpt-5.6-sol", "client_protocol": "codex", "stream": true,
+				}))
+				c.Params = gin.Params{{Key: "id", Value: channelID}}
+				srv.HandleChannelTest(c)
+				response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+				if success, _ := response.Data["success"].(bool); w.Code != http.StatusOK || !response.Success || !success {
+					t.Fatalf("detection %d failed: status=%d response=%+v", attempt, w.Code, response)
+				}
+				cfg, err := srv.store.GetConfig(context.Background(), created.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				main := oauthcost.Find(credential.QuotaCostUsage, "codex|"+mainKind)
+				if main == nil || main.StandardCostMicroUSD <= lastCost || main.CountFromAt != 0 || main.ResetAt != mainReset || main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != wantMainUsed {
+					t.Fatalf("unexpected main quota after detection %d: %+v; previous cost=%d, want used=%g", attempt, main, lastCost, wantMainUsed)
+				}
+				lastCost = main.StandardCostMicroUSD
+				reserve := oauthcost.Find(credential.QuotaCostUsage, "gpt-reserve|primary")
+				if reserve == nil || reserve.StandardCostMicroUSD != 0 || reserve.ResetAt != reserveReset || reserve.SampledUpstreamUsedPercent == nil || *reserve.SampledUpstreamUsedPercent != 8 {
+					t.Fatalf("reserve quota was not independently updated: %+v", reserve)
+				}
+			}
+		})
+	}
+}
+
 func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	var upstreamBody []byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

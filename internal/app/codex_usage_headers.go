@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -183,6 +184,7 @@ type codexPassiveUsageSSERateLimit struct {
 
 type codexPassiveUsageSSEEvent struct {
 	Type                 string                                    `json:"type"`
+	MeteredLimitName     string                                    `json:"metered_limit_name"`
 	RateLimits           *codexPassiveUsageSSERateLimit            `json:"rate_limits"`
 	CodeReviewRateLimits *codexPassiveUsageSSERateLimit            `json:"code_review_rate_limits"`
 	AdditionalRateLimits map[string]*codexPassiveUsageSSERateLimit `json:"additional_rate_limits"`
@@ -198,13 +200,24 @@ func sampleCodexPassiveUsageEvent(payload []byte, sampledAt time.Time) (codexPas
 		SampledAt:     sampledAt.UTC().Format(time.RFC3339Nano),
 		ReplaceScopes: make([]string, 0, 2+len(event.AdditionalRateLimits)),
 	}
-	if event.RateLimits != nil {
+	// Only treat rate_limits as an alias when both its explicit active identity
+	// and normalized windows match an additional group. An event may still
+	// carry distinct main-account limits alongside the active group's limits.
+	mainIsAlias := false
+	for name, limit := range event.AdditionalRateLimits {
+		if codexActiveLimitMatches(event.MeteredLimitName, name, name) &&
+			codexPassiveEventIsAlias(event.RateLimits, limit, sampledAt) {
+			mainIsAlias = true
+			break
+		}
+	}
+	if event.RateLimits != nil && !mainIsAlias {
 		update.ReplaceScopes = append(update.ReplaceScopes, "codex")
+		update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.RateLimits, "codex", "codex", sampledAt)
 	}
 	if event.CodeReviewRateLimits != nil {
 		update.ReplaceScopes = append(update.ReplaceScopes, "code_review")
 	}
-	update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.RateLimits, "codex", "codex", sampledAt)
 	update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.CodeReviewRateLimits, "code_review", "code_review", sampledAt)
 	additionalNames := make([]string, 0, len(event.AdditionalRateLimits))
 	for name := range event.AdditionalRateLimits {
@@ -225,6 +238,19 @@ func sampleCodexPassiveUsageEvent(payload []byte, sampledAt time.Time) (codexPas
 		return codexPassiveUsageUpdate{}, false
 	}
 	return update, true
+}
+
+func codexPassiveEventIsAlias(generic, named *codexPassiveUsageSSERateLimit, sampledAt time.Time) bool {
+	// Use the same identity to compare normalized values, including kind,
+	// duration and absolute reset time. Named groups may have extra windows.
+	genericWindows := appendCodexPassiveEventRateLimit(nil, generic, "", "", sampledAt)
+	namedWindows := appendCodexPassiveEventRateLimit(nil, named, "", "", sampledAt)
+	for _, window := range genericWindows {
+		if !slices.Contains(namedWindows, window) {
+			return false
+		}
+	}
+	return len(genericWindows) > 0
 }
 
 func appendCodexPassiveEventRateLimit(
@@ -301,8 +327,8 @@ func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPas
 		genericWindowCount := len(update.Windows)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "primary", sampledAt)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "secondary", sampledAt)
-		// Active-Limit values outside codex_<group> identify the main Codex
-		// scope. The generic header set is a complete snapshot of that scope:
+		// When no additional group matches Active-Limit, the generic header
+		// set is a complete snapshot of the main Codex scope:
 		// when a window (for example Pro secondary) is absent, remove the stale
 		// persisted window instead of keeping it in passive usage and cost state.
 		if len(update.Windows) > genericWindowCount {
@@ -323,18 +349,22 @@ func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPas
 }
 
 func codexActiveHeaderGroup(headers http.Header) string {
-	active := strings.ToLower(strings.TrimSpace(headers.Get("X-Codex-Active-Limit")))
-	const prefix = "codex_"
-	if !strings.HasPrefix(active, prefix) {
-		return ""
-	}
-	group := strings.TrimPrefix(active, prefix)
+	active := headers.Get("X-Codex-Active-Limit")
 	for _, candidate := range codexAdditionalQuotaGroups(headers) {
-		if candidate == group {
-			return group
+		if codexActiveLimitMatches(active, candidate, codexHeaderLimitName(headers, candidate)) {
+			return candidate
 		}
 	}
 	return ""
+}
+
+// Active-Limit may name a header group, its codex_ identifier, or the
+// group's explicit limit name. Never infer identity from usage or duration.
+func codexActiveLimitMatches(active, group, limitName string) bool {
+	active = strings.TrimSpace(active)
+	group = strings.TrimSpace(group)
+	return active != "" && group != "" && (strings.EqualFold(active, group) ||
+		strings.EqualFold(active, "codex_"+group) || strings.EqualFold(active, strings.TrimSpace(limitName)))
 }
 
 func codexHeaderLimitName(headers http.Header, group string) string {
