@@ -890,18 +890,9 @@ function buildXAIUsageRows(data) {
 }
 
 function buildAntigravityCreditsHtml(credits) {
-  if (!credits) return '';
-  const amount = value => typeof value === 'number' && Number.isFinite(value) ? String(value) : window.t('channels.oauth.creditsUnknown');
-  const sampled = new Date(credits.sampled_at);
-  const known = typeof credits.balance === 'number' && typeof credits.minimum === 'number';
-  const available = known && credits.minimum >= 0 && credits.balance >= credits.minimum && !credits.unavailable_at;
-  const lines = [
-    window.t('channels.oauth.antigravityCredits', { balance: amount(credits.balance), minimum: amount(credits.minimum) }),
-    window.t(Number.isFinite(sampled.getTime()) && Date.now() - sampled.getTime() <= 600000 && available
-      ? 'channels.oauth.creditsAvailable' : 'channels.oauth.creditsUnavailable'),
-    window.t('channels.oauth.creditsUpdated', { time: Number.isFinite(sampled.getTime()) ? sampled.toLocaleString() : window.t('channels.oauth.creditsUnknown') })
-  ];
-  return `<div class="ch-oauth-usage__credits">${lines.map(line => `<div>${escapeChannelRefreshText(line)}</div>`).join('')}</div>`;
+  if (!credits || typeof credits.balance !== 'number' || !Number.isFinite(credits.balance)) return '';
+  const text = window.t('channels.oauth.antigravityCredits', { balance: credits.balance.toLocaleString() });
+  return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
 function buildOAuthUsageStatusHtml(channel) {
