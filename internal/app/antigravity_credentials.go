@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type antigravityCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*antigravityauth.Credential
 	refreshes        singleflight.Group
+	metadata         singleflight.Group
 	refreshTracker   *oauthCredentialRefreshTracker
 	service          *antigravityauth.Service
 	store            storage.Store
@@ -62,6 +64,17 @@ func (m *antigravityCredentialManager) resolveCredential(
 	refreshMetadata bool,
 	rejectedAccessToken string,
 ) (*antigravityauth.Credential, error) {
+	credential, err := m.resolveTokenCredential(ctx, cfg, forceRefresh, rejectedAccessToken)
+	if err != nil || credential == nil {
+		return credential, err
+	}
+	if !refreshMetadata && credential.ProjectID != "" {
+		return credential, nil
+	}
+	return m.completeStoredMetadata(ctx, cfg, credential, refreshMetadata)
+}
+
+func (m *antigravityCredentialManager) resolveTokenCredential(ctx context.Context, cfg *model.Config, forceRefresh bool, rejectedAccessToken string) (*antigravityauth.Credential, error) {
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return nil, errors.New("credential manager: Antigravity is unavailable")
 	}
@@ -76,7 +89,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 	if err != nil {
 		return nil, err
 	}
-	if !forceRefresh && !needsRefresh && !refreshMetadata && credential.ProjectID != "" && credential.Email != "" {
+	if !forceRefresh && !needsRefresh {
 		return cloneAntigravityCredential(credential), nil
 	}
 	forcedAccessToken := credential.AccessToken
@@ -117,7 +130,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 			m.cache(currentCfg.ID, current)
 			return oauthCredentialRefreshRedirect{}, nil
 		}
-		if !tokenRefreshRequested && !refreshMetadata && current.ProjectID != "" && current.Email != "" {
+		if !tokenRefreshRequested {
 			m.cache(currentCfg.ID, current)
 			return cloneAntigravityCredential(current), nil
 		}
@@ -126,9 +139,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 		if m.clientFor != nil {
 			service.Client = m.clientFor(currentCfg)
 		}
-		merged := current
-		tokenRefreshed := tokenRefreshRequested
-		if tokenRefreshed {
+		if tokenRefreshRequested {
 			refreshed, err := service.Refresh(refreshCtx, current.RefreshToken)
 			if err != nil {
 				winnerCfg, winnerErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
@@ -140,21 +151,11 @@ func (m *antigravityCredentialManager) resolveCredential(
 						return cloneAntigravityCredential(winner), nil
 					}
 				}
-				return nil, fmt.Errorf("refresh Antigravity credential for channel %d: %w", currentCfg.ID, err)
+				return nil, newCodexCredentialRefreshError(currentCfg, fmt.Errorf("refresh Antigravity credential for channel %d: %w", currentCfg.ID, err))
 			}
-			merged, err = current.MergeRefresh(refreshed)
-			if err != nil {
-				return nil, err
-			}
+			return m.persistResolvedCredential(refreshCtx, currentCfg, current, refreshed)
 		}
-		if refreshMetadata || tokenRefreshed || merged.ProjectID == "" || merged.Email == "" {
-			completed, err := service.CompleteCredential(refreshCtx, merged)
-			if err != nil {
-				return nil, fmt.Errorf("complete Antigravity credential for channel %d: %w", currentCfg.ID, err)
-			}
-			merged = completed
-		}
-		return m.persistResolvedCredential(refreshCtx, currentCfg, current, merged)
+		return cloneAntigravityCredential(current), nil
 	})
 	var result singleflight.Result
 	if ctx == nil {
@@ -177,9 +178,129 @@ func (m *antigravityCredentialManager) resolveCredential(
 		if rejectedAccessToken != "" {
 			return cloneAntigravityCredential(winner), nil
 		}
-		return m.resolveCredential(ctx, cfg, false, refreshMetadata, "")
+		return m.resolveTokenCredential(ctx, cfg, false, "")
 	}
 	return result.Val.(*antigravityauth.Credential), nil
+}
+
+func (m *antigravityCredentialManager) completeStoredMetadata(ctx context.Context, cfg *model.Config, credential *antigravityauth.Credential, subscription bool) (*antigravityauth.Credential, error) {
+	key := fmt.Sprintf("%s:%t", oauthCredentialRefreshSingleflightKey(cfg.ID, credential.AccessToken, false), subscription)
+	ch := m.metadata.DoChan(key, func() (any, error) {
+		queryCtx := context.Background()
+		if ctx != nil {
+			queryCtx = context.WithoutCancel(ctx)
+		}
+		if m.refreshTracker != nil {
+			tracked, done, err := m.refreshTracker.begin()
+			if err != nil {
+				return nil, err
+			}
+			defer done()
+			queryCtx = tracked
+		}
+		timeout := 30 * time.Second
+		if subscription {
+			timeout = 5 * time.Second
+		}
+		queryCtx, cancel := context.WithTimeout(queryCtx, timeout)
+		defer cancel()
+		current := cloneAntigravityCredential(credential)
+		for attempt := 0; attempt < 2; attempt++ {
+			service := *m.service
+			if m.clientFor != nil {
+				service.Client = m.clientFor(cfg)
+			}
+			project := current.ProjectID
+			var tier *antigravityauth.PaidTier
+			var credits *antigravityauth.Credits
+			var err error
+			if project == "" {
+				project, err = service.FetchProjectID(queryCtx, current.AccessToken)
+				if err == nil {
+					current, err = m.updateStoredMetadata(queryCtx, cfg.ID, current, func(latest *antigravityauth.Credential) { latest.ProjectID = project })
+					if err != nil {
+						return credential, err
+					}
+					project = current.ProjectID
+				}
+			}
+			if err == nil && subscription {
+				tier, credits, err = service.FetchSubscription(queryCtx, current.AccessToken)
+			}
+			if antigravityauth.AccessTokenRejected(err) && attempt == 0 {
+				current, err = m.resolveTokenCredential(queryCtx, cfg, true, current.AccessToken)
+				if err != nil {
+					return current, err
+				}
+				continue
+			}
+			if err != nil {
+				if current.ProjectID == "" {
+					err = fmt.Errorf("%w: %w", antigravityauth.ErrProjectUnavailable, err)
+				}
+				return current, err
+			}
+			return m.updateStoredMetadata(queryCtx, cfg.ID, current, func(latest *antigravityauth.Credential) {
+				latest.ProjectID = project
+				if subscription {
+					if latest.Credits == nil || (!latest.Credits.SampledAt.After(credits.SampledAt) && latest.Credits.UnavailableAt <= credits.SampledAt.UnixMilli()) {
+						latest.PaidTier = tier
+						latest.Credits = credits.Clone()
+					}
+				}
+			})
+		}
+		return current, errors.New("antigravity metadata retry exhausted")
+	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case result := <-ch:
+		if result.Val != nil {
+			return cloneAntigravityCredential(result.Val.(*antigravityauth.Credential)), result.Err
+		}
+		return credential, result.Err
+	case <-ctx.Done():
+		return credential, ctx.Err()
+	}
+}
+
+// Metadata patches never replay token fields or cost snapshots over a concurrent write.
+func (m *antigravityCredentialManager) updateStoredMetadata(ctx context.Context, channelID int64, source *antigravityauth.Credential, update func(*antigravityauth.Credential)) (*antigravityauth.Credential, error) {
+	for {
+		cfg, err := m.store.GetConfig(ctx, channelID)
+		if err != nil {
+			return nil, err
+		}
+		if !cfg.UsesAntigravityOAuth() {
+			return nil, errors.New("antigravity credential changed provider")
+		}
+		current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		if current.AccessToken != source.AccessToken || current.RefreshToken != source.RefreshToken {
+			m.cache(channelID, current)
+			return current, nil
+		}
+		update(current)
+		payload, err := current.JSON()
+		if err != nil {
+			return nil, err
+		}
+		updated, err := m.store.CompareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+		if err != nil {
+			return nil, err
+		}
+		if updated {
+			if m.invalidateConfig != nil {
+				m.invalidateConfig(channelID)
+			}
+			m.cache(channelID, current)
+			return current, nil
+		}
+	}
 }
 
 func (m *antigravityCredentialManager) persistResolvedCredential(
@@ -277,5 +398,7 @@ func cloneAntigravityCredential(credential *antigravityauth.Credential) *antigra
 	}
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
+	clone.Credits = credential.Credits.Clone()
+	clone.StandardQuota = maps.Clone(credential.StandardQuota)
 	return &clone
 }

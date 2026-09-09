@@ -1155,6 +1155,202 @@ func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 	})
 }
 
+func TestProxy_AntigravityCreditsFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                           string
+		model                                                          string
+		redirect                                                       string
+		stale, refreshFailure, terminal                                bool
+		initialQuota, fallback, unknown, networkCooldown, insufficient bool
+		wantStandard, wantPaid                                         int32
+	}{
+		{name: "standard then credits", model: "claude-sonnet-4-6", wantStandard: 1, wantPaid: 1},
+		{name: "empty ordinary without fallback", model: "claude-sonnet-4-6", initialQuota: true, wantPaid: 1},
+		{name: "empty ordinary with fallback", model: "claude-sonnet-4-6", initialQuota: true, fallback: true, wantStandard: 1, wantPaid: 1},
+		{name: "unknown balance", model: "claude-sonnet-4-6", unknown: true, wantStandard: 1},
+		{name: "gemini", model: "gemini-3-flash", wantStandard: 1},
+		{name: "network cooldown", model: "claude-sonnet-4-6", initialQuota: true, networkCooldown: true},
+		{name: "insufficient credits", model: "claude-sonnet-4-6", insufficient: true, wantStandard: 1, wantPaid: 1},
+		{name: "stale balance refresh", model: "claude-sonnet-4-6", initialQuota: true, stale: true, wantPaid: 1},
+		{name: "subscription refresh terminal rejection", model: "claude-sonnet-4-6", initialQuota: true, stale: true, terminal: true},
+		{name: "refresh failure never bypasses balance", model: "claude-sonnet-4-6", initialQuota: true, unknown: true, refreshFailure: true},
+		{name: "alias to Claude", model: "custom-alias", redirect: "claude-sonnet-4-6", wantStandard: 1, wantPaid: 1},
+		{name: "Claude to Gemini", model: "claude-sonnet-4-6", redirect: "gemini-3-flash", wantStandard: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actualModel := tc.model
+			if tc.redirect != "" {
+				actualModel = tc.redirect
+			}
+			var standard, paid atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/token" {
+					if tc.terminal {
+						w.WriteHeader(400)
+						_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+						return
+					}
+					w.WriteHeader(503)
+					_, _ = io.WriteString(w, `{"error":"temporarily_unavailable"}`)
+					return
+				}
+				if r.URL.Path == "/v1internal:loadCodeAssist" {
+					if tc.terminal {
+						w.WriteHeader(401)
+						_, _ = io.WriteString(w, `{"error":{"status":"UNAUTHENTICATED"}}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"paidTier":{"id":"paid","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"50","minimumCreditAmountForUsage":"1"}]}}`)
+					return
+				}
+				var wire struct {
+					Model   string   `json:"model"`
+					Credits []string `json:"enabledCreditTypes"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+					t.Error(err)
+				}
+				if wire.Model != actualModel {
+					t.Errorf("wire model=%s", wire.Model)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if len(wire.Credits) == 0 {
+					standard.Add(1)
+					w.WriteHeader(429)
+					_, _ = io.WriteString(w, `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3600s"}]}}`)
+					return
+				}
+				paid.Add(1)
+				if !slices.Equal(wire.Credits, []string{"GOOGLE_ONE_AI"}) {
+					t.Errorf("credits=%v", wire.Credits)
+				}
+				if tc.insufficient {
+					w.WriteHeader(429)
+					_, _ = io.WriteString(w, `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INSUFFICIENT_G1_CREDITS_BALANCE"}]}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"paid ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`)
+			}))
+			credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "credits-token")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			balance, minimum := 50.0, 1.0
+			credential.Credits = &antigravityauth.Credits{Balance: &balance, Minimum: &minimum, SampledAt: time.Now()}
+			if tc.stale {
+				credential.Credits.SampledAt = time.Now().Add(-11 * time.Minute)
+			}
+			if tc.refreshFailure {
+				credential.Expired = time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+			}
+			if tc.unknown {
+				credential.Credits.Balance = nil
+			}
+			if tc.initialQuota {
+				credential.StandardQuota = map[string]time.Time{actualModel: time.Now().Add(time.Hour)}
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "credits", upstreamProtocol: "gemini", models: tc.model, priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: raw}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": strconv.FormatBool(tc.fallback)})
+			env.server.antigravityService.TokenURL = upstream.URL + "/token"
+			env.server.antigravityService.DailyAPIBaseURL = upstream.URL
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.redirect != "" {
+				configs[0].ModelEntries = []model.ModelEntry{{Model: tc.model, RedirectModel: tc.redirect}}
+				if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+					t.Fatal(err)
+				}
+				env.server.InvalidateChannelListCache()
+			}
+			if tc.networkCooldown {
+				if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, tc.model, time.Now().Add(time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := doProxyRequest(t, env.engine, "/v1beta/models/"+tc.model+":generateContent", map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}}, nil)
+			if standard.Load() != tc.wantStandard || paid.Load() != tc.wantPaid {
+				t.Fatalf("standard=%d paid=%d status=%d body=%s", standard.Load(), paid.Load(), response.Code, response.Body.String())
+			}
+			if tc.wantPaid > 0 && !tc.insufficient && response.Code != 200 {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			stored, err := env.store.GetConfig(context.Background(), configs[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := antigravityauth.ParseCredential([]byte(stored.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.networkCooldown && !persisted.StandardQuota[actualModel].After(time.Now()) {
+				t.Fatal("standard quota evidence lost")
+			}
+			if tc.insufficient && (!stored.Enabled || persisted.Credits.Available()) {
+				t.Fatal("insufficient balance did not disable only credits")
+			}
+			if tc.terminal && stored.Enabled {
+				t.Fatal("terminal metadata-triggered refresh rejection did not disable matching credential")
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		delay   string
+		succeed bool
+		calls   int32
+	}{
+		{"0.01s", true, 2}, {"0.01s", false, 2}, {"3s", false, 1}, {"3.125s", false, 1},
+	} {
+		t.Run(fmt.Sprintf("%s/%v", tc.delay, tc.succeed), func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if gjson.GetBytes(body, "enabledCreditTypes").Exists() {
+					t.Error("rate limiting authorized credits")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if calls.Add(1) == 2 && tc.succeed {
+					_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+					return
+				}
+				w.WriteHeader(429)
+				_, _ = fmt.Fprintf(w, `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":%q}]}}`, tc.delay)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{name: "rate", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "rate-token")}}, map[int]string{0: upstream.URL})
+			start := time.Now()
+			response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}}}, nil)
+			if calls.Load() != tc.calls {
+				t.Fatalf("calls=%d want=%d", calls.Load(), tc.calls)
+			}
+			if tc.succeed && response.Code != 200 {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if !tc.succeed {
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				delay, _ := time.ParseDuration(tc.delay)
+				until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]
+				if until.Before(start.Add(delay)) || until.After(time.Now().Add(delay+time.Second)) {
+					t.Fatalf("imprecise cooldown %v for %s", until, tc.delay)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
 	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2402,7 +2598,7 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 	if entry.StatusCode != http.StatusOK {
 		t.Fatalf("log status=%d, want 200", entry.StatusCode)
 	}
-	if entry.Message != "ok [model_capacity_retry_1]" {
+	if entry.Message != "ok [model_capacity_retry_1] [antigravity:standard]" {
 		t.Fatalf("log message=%q, want capacity retry count", entry.Message)
 	}
 	logs, err := env.store.ListLogs(
@@ -2724,7 +2920,7 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "refreshed" {
 		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 	}
-	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 || paidTierRefreshes.Load() != 1 {
+	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 || paidTierRefreshes.Load() != 0 {
 		t.Fatalf("upstream attempts=%d refreshes=%d paid tier refreshes=%d", upstreamAttempts.Load(), refreshes.Load(), paidTierRefreshes.Load())
 	}
 	configs, err := env.store.ListConfigs(context.Background())
@@ -2732,7 +2928,7 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 		t.Fatalf("persisted channel=%#v err=%v", configs, err)
 	}
 	persistedCredential, err := antigravityauth.ParseCredential([]byte(configs[0].OAuthCredential))
-	if err != nil || persistedCredential.PaidTier == nil || persistedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+	if err != nil || persistedCredential.PaidTier != nil {
 		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
 	}
 }
@@ -3586,7 +3782,7 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				if response.Code != http.StatusUnauthorized {
 					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 				}
-				if tt.authType == model.AuthTypeCodexOAuth {
+				if tt.authType == model.AuthTypeCodexOAuth || tt.authType == model.AuthTypeAntigravityOAuth {
 					if configs[0].Enabled {
 						t.Fatal("terminally rejected Codex credential left channel enabled")
 					}

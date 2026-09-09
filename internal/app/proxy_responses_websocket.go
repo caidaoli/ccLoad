@@ -446,6 +446,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 
 	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex))
+	if err == nil {
+		candidates = s.appendAntigravityCreditsCandidates(ctx, candidates, modelName, string(protocol.Codex), requestBody)
+	}
 	if err != nil {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("select upstream candidates: %w", err)
 	}

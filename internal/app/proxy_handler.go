@@ -453,6 +453,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
+	if err == nil && requestMethod == http.MethodPost && protocol.DetectRequestFamily(effectiveRequestPath) != protocol.RequestFamilyAlphaSearch {
+		cands = s.appendAntigravityCreditsCandidates(ctx, cands, originalModel, string(clientProtocol), all)
+	}
 	if err != nil {
 		if errors.Is(err, errUnknownClientProtocol) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "unsupported path"})
@@ -562,7 +565,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	s.writeFinalProxyResponse(c, reqCtx, isStreaming, lastResult, len(cands))
+	channelIDs := make(map[int64]struct{}, len(cands))
+	for _, cfg := range cands {
+		channelIDs[cfg.ID] = struct{}{}
+	}
+	s.writeFinalProxyResponse(c, reqCtx, isStreaming, lastResult, len(channelIDs))
 }
 
 func determineFinalClientStatus(lastResult *proxyResult) int {
@@ -671,7 +678,37 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
 ) (lastResult *proxyResult, succeeded bool) {
 	sawAlphaSearchUnsupported := false
+	// Session affinity may reorder candidates; paid attempts must still come last.
+	ordered := make([]*model.Config, 0, len(cands))
+	for _, cfg := range cands {
+		if !cfg.AntigravityCredits {
+			ordered = append(ordered, cfg)
+		}
+	}
+	for _, cfg := range cands {
+		if cfg.AntigravityCredits {
+			ordered = append(ordered, cfg)
+		}
+	}
+	cands = ordered
 	for index, cfg := range cands {
+		if cfg.AntigravityCredits {
+			current, loadErr := s.store.GetConfig(ctx, cfg.ID)
+			if loadErr != nil || !current.Enabled || !current.UsesAntigravityOAuth() || !s.configSupportsModelWithFuzzyMatch(current, reqCtx.originalModel) {
+				continue
+			}
+			cfg = current.Clone()
+			cfg.AntigravityCredits = true
+			cfg.CooldownFallback = false
+			actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Gemini))
+			if !s.antigravityCredentials.standardQuotaUntil(cfg, actualModel).After(time.Now()) {
+				continue
+			}
+			eligible, filterErr := s.filterCooldownChannelsStrict(ctx, []*model.Config{cfg}, reqCtx.originalModel, string(reqCtx.clientProtocol))
+			if filterErr != nil || len(eligible) == 0 {
+				continue
+			}
+		}
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 		if err != nil && errors.Is(err, ErrNoAPIKeyForModel) {
 			log.Printf("[INFO] 渠道 %s (ID=%d) 没有可用于模型 %s 的 Key，跳过该渠道", cfg.Name, cfg.ID, reqCtx.originalModel)

@@ -227,7 +227,7 @@ func buildProxyLogEntry(
 	if res != nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices && res.ResponseModel != "" {
 		responseModel = res.ResponseModel
 	}
-	return buildLogEntry(logEntryParams{
+	entry := buildLogEntry(logEntryParams{
 		RequestModel:     reqCtx.requestLogModel(),
 		ActualModel:      actualModel,
 		ResponseModel:    responseModel,
@@ -249,6 +249,14 @@ func buildProxyLogEntry(
 		CostMultiplier:   reqCtx.attemptCostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
+	if cfg.UsesAntigravityOAuth() {
+		path := "standard"
+		if cfg.AntigravityCredits {
+			path = "credits: standard quota exhausted"
+		}
+		entry.Message += " [antigravity:" + path + "]"
+	}
+	return entry
 }
 
 func (s *Server) updateTokenStatsForProxy(
@@ -526,32 +534,37 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
-		count := cooldownClearChannelFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
-		}
-	}
-	if keyIndex != cooldown.NoKeyIndex {
-		if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
-			count := cooldownClearKeyFailCount.Add(1)
+	if !cfg.AntigravityCredits {
+		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
+			count := cooldownClearChannelFailCount.Add(1)
 			if count%100 == 1 {
-				log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+				log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
 			}
 		}
-	}
-	if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
-		if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
-			count := cooldownClearModelFailCount.Add(1)
-			if count%100 == 1 {
-				log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
-					count, cfg.ID, actualModel, err)
+		if keyIndex != cooldown.NoKeyIndex {
+			if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
+				count := cooldownClearKeyFailCount.Add(1)
+				if count%100 == 1 {
+					log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+				}
 			}
 		}
-	}
+		if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
+			if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
+				count := cooldownClearModelFailCount.Add(1)
+				if count%100 == 1 {
+					log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
+						count, cfg.ID, actualModel, err)
+				}
+			}
+		}
 
-	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
-	s.invalidateChannelRelatedCache(cfg.ID)
+		// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
+		s.invalidateChannelRelatedCache(cfg.ID)
+	}
+	if !cfg.AntigravityCredits && s.antigravityCredentials.standardQuotaUntil(cfg, actualModel).After(time.Now()) {
+		s.antigravityCredentials.updateQuotaState(ctx, cfg, actualModel, time.Time{}, false)
+	}
 
 	if cfg.RetryOtherKeysOnFailure && reqCtx.routingSession != nil {
 		reqCtx.routingSession.rememberPreferredChannel(cfg.ID)

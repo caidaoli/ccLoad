@@ -186,6 +186,14 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/userinfo":
+			emails := map[string]string{"Bearer at-refreshed-secret": "new@example.com", "Bearer at-gravity-explicit": "gravity-explicit@example.com", "Bearer at-gravity-inferred": "gravity-inferred@example.com"}
+			email := emails[r.Header.Get("Authorization")]
+			if email == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"email": email})
 		case "/token":
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("ParseForm: %v", err)
@@ -207,7 +215,7 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project-new","paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -215,6 +223,8 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 	t.Cleanup(server.Close)
 	service := antigravityauth.NewService(server.Client())
 	service.TokenURL = server.URL + "/token"
+	service.UserInfoURL = server.URL + "/userinfo"
+	service.APIBaseURL = server.URL
 	service.DailyAPIBaseURL = server.URL
 	return service
 }
@@ -4402,6 +4412,69 @@ func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T)
 	}
 }
 
+func TestAntigravityMetadataFailurePreservesRefreshedCredential(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired=%t", expired), func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			expiry := time.Now().Add(time.Hour)
+			if expired {
+				expiry = time.Now().Add(-time.Hour)
+			}
+			initial := &antigravityauth.Credential{Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt", Expired: expiry.Format(time.RFC3339), ProjectID: "project", PaidTier: &antigravityauth.PaidTier{ID: "old-tier"}}
+			payload, err := initial.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("metadata", payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var refreshes atomic.Int32
+			client := &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				status, body := http.StatusServiceUnavailable, `{"error":{"status":"UNAVAILABLE"}}`
+				if r.URL.Path == "/token" {
+					refreshes.Add(1)
+					status, body = http.StatusOK, `{"access_token":"new-at","refresh_token":"new-rt","expires_in":3600}`
+				} else if r.Header.Get("Authorization") == "Bearer old-at" {
+					status = http.StatusUnauthorized
+				} else {
+					persisted, err := store.GetConfig(context.Background(), cfg.ID)
+					if err != nil {
+						return nil, err
+					}
+					c, err := antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
+					if err != nil {
+						return nil, err
+					}
+					if c.RefreshToken != "new-rt" {
+						t.Error("metadata queried before rotated token was saved")
+					}
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})}
+			service := antigravityauth.NewService(client)
+			service.TokenURL = "https://oauth.test/token"
+			manager := newAntigravityCredentialManager(service, store, nil, nil)
+			got, err := manager.credentialWithMetadata(context.Background(), cfg)
+			if err == nil || got == nil || got.RefreshToken != "new-rt" {
+				t.Fatalf("metadata failure: credential=%v err=%v", got, err)
+			}
+			got, err = manager.credentialAfterUnauthorized(context.Background(), cfg, "old-at")
+			if err != nil || got.AccessToken != "new-at" || refreshes.Load() != 1 {
+				t.Fatalf("late 401: err=%v refreshes=%d", err, refreshes.Load())
+			}
+			persisted, err := store.GetConfig(context.Background(), cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err = antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil || got.RefreshToken != "new-rt" || got.PaidTier == nil || got.PaidTier.ID != "old-tier" {
+				t.Fatalf("persisted: %v %v", got, err)
+			}
+		})
+	}
+}
+
 func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -6193,7 +6266,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 			if got := request.Header.Get("User-Agent"); got != discoveredUserAgent {
 				t.Errorf("loadCodeAssist User-Agent = %q", got)
 			}
-			responseBody = `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`
+			responseBody = `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"25.5","minimumCreditAmountForUsage":"1"}]}}`
 		case antigravityUsageURL:
 			if got := request.Header.Get("User-Agent"); got != discoveredUserAgent {
 				t.Errorf("quota User-Agent = %q", got)
@@ -6250,6 +6323,9 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
 	if response.Data.Provider != antigravityauth.ChannelType || response.Data.PlanType != "" || len(response.Data.Windows) != 3 {
 		t.Fatalf("usage summary = %#v", response.Data)
+	}
+	if credits := response.Data.Credits; !credits.Available() || *credits.Balance != 25.5 || !credits.Fresh(time.Now()) {
+		t.Fatalf("missing credits snapshot: %+v", credits)
 	}
 	if len(requestURLs) != 2 || requestURLs[0] != antigravityauth.DefaultDailyAPIBaseURL+"/v1internal:loadCodeAssist" || requestURLs[1] != antigravityUsageURL {
 		t.Fatalf("Antigravity usage request order = %v", requestURLs)

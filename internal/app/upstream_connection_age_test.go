@@ -67,7 +67,7 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	maxAge := 100 * time.Millisecond
 	server := &Server{
 		client:            newUpstreamHTTPClient(base, maxAge),
-		antigravityClient: newAntigravityHTTPClient(base, maxAge),
+		antigravityClient: newAntigravityHTTPClient(base, maxAge, antigravityPoolConfig{}),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
@@ -130,10 +130,57 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	}
 }
 
+func TestAntigravityConnectionReuseSettings(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			addresses := make(chan string, 3)
+			closed := make(chan struct{}, 3)
+			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				addresses <- r.RemoteAddr
+				_, _ = io.WriteString(w, "ok")
+			}))
+			upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateClosed {
+					select {
+					case closed <- struct{}{}:
+					default:
+					}
+				}
+			}
+			upstream.Start()
+			t.Cleanup(upstream.Close)
+			client := newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour, antigravityPoolConfig{DisableReuse: disabled, IdleTimeout: time.Second, MaxIdleConnsPerHost: 2})
+			t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+			request := func() string {
+				t.Helper()
+				response, err := client.Get(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+				return <-addresses
+			}
+			first, second := request(), request()
+			if (first != second) != disabled {
+				t.Fatalf("disabled=%v connections=%s/%s", disabled, first, second)
+			}
+			select {
+			case <-closed:
+			case <-time.After(3 * time.Second):
+				t.Fatal("idle connection was not reclaimed")
+			}
+			if third := request(); third == second {
+				t.Fatal("closed idle connection reused")
+			}
+		})
+	}
+}
+
 func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
 	server := &Server{
 		client:            http.DefaultClient,
-		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true), 0),
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true), 0, antigravityPoolConfig{}),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
@@ -171,7 +218,7 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 	t.Cleanup(upstream.Close)
 	server := &Server{
 		client:            http.DefaultClient,
-		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false), 0),
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false), 0, antigravityPoolConfig{}),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
@@ -239,7 +286,7 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	}
 	agingCache := newAntigravityHTTPClientCache(1)
 	agingClient, err := agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "aging"}, func() (*http.Client, error) {
-		return newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour), nil
+		return newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour, antigravityPoolConfig{}), nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -293,35 +340,20 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 
 func TestAntigravityPoolLimitsMatchNativeReuseProfile(t *testing.T) {
 	base := &http.Transport{MaxIdleConns: 20, MaxIdleConnsPerHost: 20, IdleConnTimeout: 90 * time.Second}
-	client := newAntigravityHTTPClient(base, 0)
+	client := newAntigravityHTTPClient(base, 0, antigravityPoolConfig{})
 	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
 	}
-	if transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost ||
+	if transport.MaxIdleConnsPerHost != antigravityMaxIdleConnsPerHost ||
 		transport.MaxIdleConns < transport.MaxIdleConnsPerHost ||
-		transport.IdleConnTimeout < antigravityIdleConnTimeout {
+		transport.IdleConnTimeout != antigravityIdleConnTimeout {
 		t.Fatalf("Antigravity pool limits = idle %d per-host %d timeout %v",
 			transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
 	}
 	if base.MaxIdleConnsPerHost != 20 || base.IdleConnTimeout != 90*time.Second {
 		t.Fatal("Antigravity pool tuning mutated the shared base transport")
-	}
-	wide := &http.Transport{MaxIdleConns: 512, MaxIdleConnsPerHost: 256, IdleConnTimeout: time.Hour}
-	applyAntigravityPoolLimits(wide)
-	if wide.MaxIdleConns != 512 || wide.MaxIdleConnsPerHost != 256 || wide.IdleConnTimeout != time.Hour {
-		t.Fatalf("wider operator pool was narrowed: %#v", wide)
-	}
-	unlimited := &http.Transport{MaxIdleConns: 0, IdleConnTimeout: 0}
-	applyAntigravityPoolLimits(unlimited)
-	if unlimited.MaxIdleConns != 0 || unlimited.IdleConnTimeout != 0 || unlimited.MaxIdleConnsPerHost != antigravityMaxIdleConnsPerHost {
-		t.Fatalf("unlimited sentinels/default per-host were mishandled: %#v", unlimited)
-	}
-	disabled := &http.Transport{MaxIdleConnsPerHost: -1}
-	applyAntigravityPoolLimits(disabled)
-	if disabled.MaxIdleConnsPerHost != -1 {
-		t.Fatalf("disabled idle pooling was overwritten: %#v", disabled)
 	}
 }
 

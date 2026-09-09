@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"strings"
 	"time"
 
@@ -26,6 +28,41 @@ type PaidTier struct {
 	Name string `json:"name,omitempty"`
 }
 
+// Credits is a sampled Google One AI balance, not a monetary billing amount.
+type Credits struct {
+	Balance       *float64  `json:"balance,omitempty"`
+	Minimum       *float64  `json:"minimum,omitempty"`
+	SampledAt     time.Time `json:"sampled_at"`
+	UnavailableAt int64     `json:"unavailable_at,omitempty"`
+}
+
+// Available reports whether the sampled balance meets the upstream minimum.
+func (c *Credits) Available() bool {
+	return c != nil && c.UnavailableAt == 0 && c.Balance != nil && c.Minimum != nil && *c.Minimum >= 0 && *c.Balance >= *c.Minimum
+}
+
+// Fresh limits spending decisions to a non-future sample from the last ten minutes.
+func (c *Credits) Fresh(now time.Time) bool {
+	return c != nil && !c.SampledAt.IsZero() && !c.SampledAt.After(now) && now.Sub(c.SampledAt) <= 10*time.Minute
+}
+
+// Clone returns an independent snapshot, including its optional amounts.
+func (c *Credits) Clone() *Credits {
+	if c == nil {
+		return nil
+	}
+	clone := *c
+	if c.Balance != nil {
+		value := *c.Balance
+		clone.Balance = &value
+	}
+	if c.Minimum != nil {
+		value := *c.Minimum
+		clone.Minimum = &value
+	}
+	return &clone
+}
+
 // DisplayName returns the human-readable tier name, falling back to its ID.
 func (t *PaidTier) DisplayName() string {
 	if t == nil {
@@ -43,17 +80,19 @@ func (t *PaidTier) DisplayName() string {
 // Credential is the CLIProxyAPI-compatible Antigravity OAuth payload stored in
 // the private OAuth channel column.
 type Credential struct {
-	Type           string           `json:"type"`
-	AccessToken    string           `json:"access_token"`
-	RefreshToken   string           `json:"refresh_token"`
-	ExpiresIn      int64            `json:"expires_in,omitempty"`
-	Timestamp      int64            `json:"timestamp,omitempty"`
-	Expired        string           `json:"expired"`
-	Email          string           `json:"email,omitempty"`
-	ProjectID      string           `json:"project_id,omitempty"`
-	PaidTier       *PaidTier        `json:"paid_tier,omitempty"`
-	OAuthUsage     json.RawMessage  `json:"oauth_usage,omitempty"`
-	QuotaCostUsage *oauthcost.Usage `json:"quota_cost_usage,omitempty"`
+	Type           string               `json:"type"`
+	AccessToken    string               `json:"access_token"`
+	RefreshToken   string               `json:"refresh_token"`
+	ExpiresIn      int64                `json:"expires_in,omitempty"`
+	Timestamp      int64                `json:"timestamp,omitempty"`
+	Expired        string               `json:"expired"`
+	Email          string               `json:"email,omitempty"`
+	ProjectID      string               `json:"project_id,omitempty"`
+	PaidTier       *PaidTier            `json:"paid_tier,omitempty"`
+	OAuthUsage     json.RawMessage      `json:"oauth_usage,omitempty"`
+	QuotaCostUsage *oauthcost.Usage     `json:"quota_cost_usage,omitempty"`
+	Credits        *Credits             `json:"credits,omitempty"`
+	StandardQuota  map[string]time.Time `json:"standard_quota,omitempty"`
 }
 
 // ParseCredential validates imported CLIProxyAPI JSON and returns its canonical form.
@@ -69,7 +108,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	if err := decoder.Decode(&credential); err != nil {
 		return nil, fmt.Errorf("decode Antigravity credential: %w", err)
 	}
-	if decoder.Decode(&struct{}{}) == nil {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, errors.New("credential: Antigravity data contains trailing JSON")
 	}
 	if err := credential.Normalize(); err != nil {
@@ -162,6 +201,8 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	}
 	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
 	merged.QuotaCostUsage = oauthcost.Clone(c.QuotaCostUsage)
+	merged.Credits = c.Credits.Clone()
+	merged.StandardQuota = maps.Clone(c.StandardQuota)
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}

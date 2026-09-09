@@ -889,6 +889,21 @@ function buildXAIUsageRows(data) {
   return rows;
 }
 
+function buildAntigravityCreditsHtml(credits) {
+  if (!credits) return '';
+  const amount = value => typeof value === 'number' && Number.isFinite(value) ? String(value) : window.t('channels.oauth.creditsUnknown');
+  const sampled = new Date(credits.sampled_at);
+  const known = typeof credits.balance === 'number' && typeof credits.minimum === 'number';
+  const available = known && credits.minimum >= 0 && credits.balance >= credits.minimum && !credits.unavailable_at;
+  const lines = [
+    window.t('channels.oauth.antigravityCredits', { balance: amount(credits.balance), minimum: amount(credits.minimum) }),
+    window.t(Number.isFinite(sampled.getTime()) && Date.now() - sampled.getTime() <= 600000 && available
+      ? 'channels.oauth.creditsAvailable' : 'channels.oauth.creditsUnavailable'),
+    window.t('channels.oauth.creditsUpdated', { time: Number.isFinite(sampled.getTime()) ? sampled.toLocaleString() : window.t('channels.oauth.creditsUnknown') })
+  ];
+  return `<div class="ch-oauth-usage__credits">${lines.map(line => `<div>${escapeChannelRefreshText(line)}</div>`).join('')}</div>`;
+}
+
 function buildOAuthUsageStatusHtml(channel) {
   if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
@@ -989,6 +1004,7 @@ function buildOAuthUsageStatusHtml(channel) {
     <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id, false, state.reset_status === 'loading')}</div>
     ${rows.join('')}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
+    ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
     ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;

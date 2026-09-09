@@ -194,6 +194,7 @@ type oauthUsageWindow struct {
 }
 
 type oauthUsageSummary struct {
+	Credits *antigravityauth.Credits `json:"credits,omitempty"`
 	// Partial means omitted windows were not observed, rather than retired.
 	Partial               bool                    `json:"-"`
 	Provider              string                  `json:"provider"`
@@ -853,7 +854,11 @@ func requestAntigravityUsage(
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, errors.New("usage: Antigravity response is invalid")
 	}
-	return normalizeAntigravityUsage(&payload)
+	summary, err := normalizeAntigravityUsage(&payload)
+	if summary != nil {
+		summary.Credits = credential.Credits.Clone()
+	}
+	return summary, err
 }
 
 func executeOAuthUsageRequest(client *http.Client, req *http.Request, provider string) ([]byte, error) {
@@ -1818,10 +1823,15 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			return nil, errAntigravityManagerUnavailable
 		}
 		credential, err := s.antigravityCredentials.credentialWithMetadata(ctx, cfg)
-		if err != nil {
+		var refreshErr *codexCredentialRefreshError
+		if err != nil && (credential == nil || credential.ProjectID == "" || credential.AccessToken == "" || errors.As(err, &refreshErr)) {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Antigravity credential refresh failed")
 		}
-		return requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential, s.antigravityUserAgent())
+		summary, usageErr := requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential, s.antigravityUserAgent())
+		if summary != nil && err != nil {
+			summary.Warnings = append(summary.Warnings, "Antigravity subscription refresh failed")
+		}
+		return summary, usageErr
 	case cfg.UsesXAIOAuth():
 		if s.xaiCredentials == nil {
 			return nil, errXAIUsageManagerUnavailable

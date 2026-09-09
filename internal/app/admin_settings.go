@@ -404,6 +404,10 @@ func validateSettingValue(key, valueType, value string) error {
 		}
 		// 按配置项定义具体约束
 		switch key {
+		case "antigravity_max_idle_conns_per_host":
+			if intVal < 1 || intVal > 100 {
+				return fmt.Errorf("%s must be between 1 and 100", key)
+			}
 		case "max_key_retries":
 			if intVal < 1 {
 				return fmt.Errorf("max_key_retries must be >= 1")
@@ -497,6 +501,9 @@ func validateSettingValue(key, valueType, value string) error {
 		intVal, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("duration must be an integer (seconds)")
+		}
+		if key == "antigravity_idle_conn_timeout_seconds" && (intVal < 1 || intVal > 210) {
+			return fmt.Errorf("%s must be between 1 and 210 seconds", key)
 		}
 		if intVal < 0 || int64(intVal) > maxSettingDurationSeconds {
 			return fmt.Errorf("duration must be between 0 and %d seconds", maxSettingDurationSeconds)

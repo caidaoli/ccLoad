@@ -482,6 +482,8 @@ type ChannelInfo struct {
 
 // Config 渠道配置
 type Config struct {
+	// AntigravityCredits is request-local; never accepted or persisted by admin APIs.
+	AntigravityCredits            bool        `json:"-"`
 	ID                            int64       `json:"id"`
 	Name                          string      `json:"name"`
 	AuthType                      string      `json:"auth_type"`
@@ -561,6 +563,7 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	dst := &Config{
+		AntigravityCredits:            c.AntigravityCredits,
 		ID:                            c.ID,
 		Name:                          c.Name,
 		AuthType:                      c.AuthType,

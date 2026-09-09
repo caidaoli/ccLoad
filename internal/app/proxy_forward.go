@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
@@ -2529,6 +2530,9 @@ func (s *Server) forwardAttempt(
 	reqCtx.upstreamProtocol = upstreamProtocol
 	reqCtx.debugData = nil
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
+	if cfg.UsesAntigravityOAuth() && (hasAntigravityWebSearchTool(reqCtx.body) || hasAntigravityWebSearchTool(bodyToSend)) {
+		actualModel = antigravityWebSearchFallbackModel
+	}
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
 	var translatedRequestOverride []byte
 	if bridgeModel, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge && upstreamProtocol == protocol.Codex {
@@ -2648,9 +2652,24 @@ func (s *Server) forwardAttempt(
 	}
 
 	forceReturnClient := false
+	if err == nil && cfg.UsesAntigravityOAuth() && !cfg.AntigravityCredits && res != nil && !res.ResponseCommitted && res.Status == http.StatusTooManyRequests {
+		reason, delay := antigravityLimitDetails(res.Body)
+		if reason == "RATE_LIMIT_EXCEEDED" && delay > 0 && delay < 3*time.Second {
+			credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if parseErr == nil && !antigravityCredentialAttempted(&reqCtx.antigravityRateRetried, cfg, credential) {
+				if waitErr := waitForChannelURLRetry(ctx, delay); waitErr != nil {
+					return buildCtxDoneResult(cfg, waitErr), cooldown.ActionReturnClient, nil
+				}
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				res, _, err = s.forwardOnceAsyncWithNativeCodexWebsocket(ctx, cfg, selectedKey, reqCtx.requestMethod,
+					plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride)
+				duration = time.Since(reqCtx.attemptStartTime).Seconds()
+			}
+		}
+	}
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
-	for {
+	for !cfg.AntigravityCredits {
 		retrySourcePlan := plan
 		// Rebuild an optimized Codex multi-agent request from the original plan on
 		// retry. Reusing the wire body would make collaboration-optimize look like
@@ -2739,6 +2758,9 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
+		if errors.Is(err, errAntigravityCreditsUnavailable) {
+			return nil, cooldown.ActionRetryChannel, nil
+		}
 		var zedValidationErr *zedRequestValidationError
 		if errors.As(err, &zedValidationErr) {
 			return &proxyResult{
@@ -2841,6 +2863,11 @@ func (s *Server) forwardAttempt(
 	}
 
 	// 处理错误响应
+	if !res.ResponseCommitted {
+		if result, handled := s.handleAntigravityQuotaFailure(ctx, cfg, actualModel, selectedKey, res, duration, reqCtx); handled {
+			return result, result.nextAction, nil
+		}
+	}
 	result, action := s.handleProxyErrorResponse(
 		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx,
 		deferChannelCooldown, forceReturnClient, modelCapacityRateLimited,
@@ -3415,6 +3442,9 @@ func (s *Server) attemptKeyAcrossURLs(
 		sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, cfg.URLs)
 	}
 	localProtocolOrder := localUpstreamProtocolOrder(cfg.URLs)
+	if cfg.AntigravityCredits {
+		sortedURLs = sortedURLs[:1]
+	}
 	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
 	urlsCount := len(sortedURLs)
 	var urlPolicy channelURLAttemptPolicy
@@ -3521,7 +3551,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			if attemptErr != nil {
 				return nil, nil, attemptErr
 			}
-			if result == nil || !result.protocolCapabilityMissing {
+			if cfg.AntigravityCredits || result == nil || !result.protocolCapabilityMissing {
 				if learnCapability {
 					s.protocolCapabilities.set(capabilityKey, upstreamProtocol)
 				}
@@ -3557,6 +3587,15 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		if result != nil {
 			urlLastFailure = result
+		}
+		if cfg.AntigravityCredits {
+			return nil, urlLastFailure, nil
+		}
+		if cfg.UsesAntigravityOAuth() && result != nil && result.status == http.StatusTooManyRequests {
+			reason, _ := antigravityLimitDetails(result.body)
+			if reason != "" {
+				return nil, result, nil
+			}
 		}
 		if result != nil {
 			decision := urlPolicy.decide(cfg, shouldDeferChannelCooldown, channelURLFailure{
@@ -3812,7 +3851,13 @@ func (s *Server) tryOAuthChannel(
 			runtimeCfg = cfg
 		}
 		if credentialErr != nil {
+			if errors.Is(credentialErr, errAntigravityCreditsUnavailable) {
+				return nil, nil
+			}
 			log.Printf("[WARN] %s OAuth credential refresh failed: channel_id=%d err=%v", provider, cfg.ID, credentialErr)
+			if errors.Is(credentialErr, antigravityauth.ErrProjectUnavailable) {
+				return oauthCredentialUnavailableResult(cfg, provider), nil
+			}
 			if accessToken == "" || (rejectedResult != nil && accessToken == rejectedAccessToken) {
 				if disableRejectedCredential && s.disableTerminalOAuthCredential(ctx, cfg, provider, credentialErr) {
 					if rejectedResult != nil {
@@ -4056,14 +4101,38 @@ func (s *Server) tryAntigravityOAuthChannel(
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Antigravity", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
-		credential, err := s.antigravityCredentials.credential(ctx, cfg, forceRefresh)
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Antigravity", true, func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error) {
+		var credential *antigravityauth.Credential
+		var err error
+		if forceRefresh {
+			credential, err = s.antigravityCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		} else {
+			credential, err = s.antigravityCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			return cfg, "", err
+		}
+		if cfg.AntigravityCredits {
+			if err != nil {
+				if oauthRefreshTokenRejected(err) {
+					return cfg, "", err
+				}
+				return cfg, "", errAntigravityCreditsUnavailable
+			}
+			credential, err = s.prepareAntigravityCredits(ctx, cfg, reqCtx, credential)
+			if err != nil {
+				return cfg, "", err
+			}
+			if !forceRefresh {
+				if antigravityCredentialAttempted(&reqCtx.antigravityCreditsTried, cfg, credential) {
+					return cfg, "", errAntigravityCreditsUnavailable
+				}
+			}
 		}
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.AntigravityAccessToken = credential.AccessToken
 		runtimeCfg.AntigravityProjectID = credential.ProjectID
+		runtimeCfg.OAuthCredential, _ = credential.JSON()
 		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && result.status == http.StatusUnauthorized

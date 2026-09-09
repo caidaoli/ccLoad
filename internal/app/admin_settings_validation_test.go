@@ -116,6 +116,23 @@ func TestValidateSettingValue(t *testing.T) {
 	}
 }
 
+func TestValidateAntigravityPoolSettings(t *testing.T) {
+	for _, tc := range []struct {
+		key, kind string
+		max       int
+	}{
+		{"antigravity_max_idle_conns_per_host", "int", 100},
+		{"antigravity_idle_conn_timeout_seconds", "duration", 210},
+	} {
+		for _, value := range []int{-1, 0, 1, tc.max, tc.max + 1} {
+			err := validateSettingValue(tc.key, tc.kind, fmt.Sprint(value))
+			if (err == nil) != (value >= 1 && value <= tc.max) {
+				t.Errorf("%s=%d: %v", tc.key, value, err)
+			}
+		}
+	}
+}
+
 func buildManyFallbackPairs(count int) string {
 	var pairs []string
 	for i := 0; i < count; i++ {

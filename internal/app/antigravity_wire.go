@@ -249,16 +249,23 @@ func prepareAntigravityRequestBody(
 	}
 
 	envelope := struct {
-		Project     string          `json:"project"`
-		Request     json.RawMessage `json:"request"`
-		Model       string          `json:"model"`
-		UserAgent   string          `json:"userAgent"`
-		RequestType string          `json:"requestType"`
-		RequestID   string          `json:"requestId"`
+		EnabledCreditTypes []string        `json:"enabledCreditTypes,omitempty"`
+		Project            string          `json:"project"`
+		Request            json.RawMessage `json:"request"`
+		Model              string          `json:"model"`
+		UserAgent          string          `json:"userAgent"`
+		RequestType        string          `json:"requestType"`
+		RequestID          string          `json:"requestId"`
 	}{
 		Project: cfg.AntigravityProjectID, Request: json.RawMessage(request),
 		Model: strings.TrimSpace(modelName), UserAgent: "antigravity",
 		RequestType: requestType, RequestID: requestID,
+	}
+	if cfg.AntigravityCredits {
+		if requestType != "agent" || !antigravityClaudeModel(modelName) {
+			return nil, errAntigravityCreditsUnavailable
+		}
+		envelope.EnabledCreditTypes = []string{"GOOGLE_ONE_AI"}
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {

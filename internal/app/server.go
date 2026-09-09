@@ -129,6 +129,7 @@ type Server struct {
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
 	upstreamConnectionMaxAge time.Duration
+	antigravityPool          antigravityPoolConfig
 	// 仅供测试注入（缩短下游与上游 WebSocket 的 idle/ping 间隔以覆盖保活路径）；
 	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
@@ -238,6 +239,7 @@ func NewServer(store storage.Store) *Server {
 		streamTimeout:            runtimeCfg.StreamTimeout,
 		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
+		antigravityPool:          runtimeCfg.AntigravityPool,
 		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
@@ -247,7 +249,7 @@ func NewServer(store storage.Store) *Server {
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
 		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge, runtimeCfg.AntigravityPool),
 		antigravityTransports: newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity),
 		xaiSSOClient:          newXAISSOHTTPClient(transport),
 		skipTLSVerify:         skipTLSVerify,
@@ -631,6 +633,7 @@ type serverRuntimeConfig struct {
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
 	UpstreamConnectionMaxAge     time.Duration
+	AntigravityPool              antigravityPoolConfig
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
@@ -757,15 +760,20 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 
 	return serverRuntimeConfig{
-		MaxKeyRetries:                maxKeyRetries,
-		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
-		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
-		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
-		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
-		FirstByteTimeout:             firstByteTimeout,
-		StreamTimeout:                streamTimeout,
-		NonStreamTimeout:             nonStreamTimeout,
-		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
+		MaxKeyRetries:            maxKeyRetries,
+		MaxConcurrency:           loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
+		MaxBodyBytes:             loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
+		MaxImageBodyBytes:        loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		HTTPReadTimeout:          loadHTTPReadTimeout(cs),
+		FirstByteTimeout:         firstByteTimeout,
+		StreamTimeout:            streamTimeout,
+		NonStreamTimeout:         nonStreamTimeout,
+		UpstreamConnectionMaxAge: upstreamConnectionMaxAge,
+		AntigravityPool: (antigravityPoolConfig{
+			DisableReuse:        !cs.GetBool("antigravity_connection_reuse_enabled", true),
+			MaxIdleConnsPerHost: cs.GetInt("antigravity_max_idle_conns_per_host", antigravityMaxIdleConnsPerHost),
+			IdleTimeout:         cs.GetDuration("antigravity_idle_conn_timeout_seconds", antigravityIdleConnTimeout),
+		}).normalized(),
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
@@ -1207,7 +1215,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
 	if antigravityHTTP11Only {
 		defaultClient = s.antigravityClient
-		clientFactory = newAntigravityHTTPClient
+		clientFactory = func(base *http.Transport, maxAge time.Duration) *http.Client {
+			return newAntigravityHTTPClient(base, maxAge, s.antigravityPool)
+		}
 		// Tests and embedders may inject a semantic RoundTripper. It already is
 		// the transport boundary; replacing it with a network transport would
 		// silently bypass the injected behavior.

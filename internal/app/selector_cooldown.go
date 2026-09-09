@@ -58,8 +58,12 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	}
 
 	// 批量查询冷却状态（优先走缓存层）
+	paid := slices.ContainsFunc(channels, func(cfg *modelpkg.Config) bool { return cfg.AntigravityCredits })
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
+		if paid {
+			return nil, err
+		}
 		// 降级策略：无法获取冷却数据时，跳过冷却过滤；仍保留后续健康度/负载均衡逻辑，避免直接返回未排序列表。
 		log.Printf("[ERROR] 获取渠道冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		channelCooldowns = make(map[int64]time.Time)
@@ -67,6 +71,9 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
 	if err != nil {
+		if paid {
+			return nil, err
+		}
 		// 降级策略：同上。
 		log.Printf("[ERROR] 获取 Key 冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		keyCooldowns = make(map[int64]map[int]time.Time)
@@ -76,6 +83,9 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	if requestModel != "" && requestModel != "*" {
 		modelCooldowns, err = s.getAllModelCooldowns(ctx)
 		if err != nil {
+			if paid {
+				return nil, err
+			}
 			log.Printf("[ERROR] 获取模型冷却状态失败，跳过模型冷却过滤（降级模式）: %v", err)
 			modelCooldowns = make(map[int64]map[string]time.Time)
 		}
@@ -255,6 +265,9 @@ func (s *Server) filterCooledChannels(
 ) []*modelpkg.Config {
 	filtered := channels[:0]
 	for _, cfg := range channels {
+		if !cfg.AntigravityCredits && s.antigravityCredentials.standardQuotaUntil(cfg, s.resolveFinalUpstreamModel(cfg, requestModel, "gemini")).After(now) {
+			continue
+		}
 		// 1. 检查渠道级冷却
 		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
 			if cooldownUntil.After(now) {

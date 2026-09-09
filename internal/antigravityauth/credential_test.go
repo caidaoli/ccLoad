@@ -63,10 +63,15 @@ func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`,
 		`{"type":"antigravity","access_token":"at","refresh_token":"rt","expired":"bad"}`,
 		`{"type":"antigravity","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} {}`,
+		`{"access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} garbage`,
+		`{"access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} 123`,
 	} {
 		if _, err := ParseCredential([]byte(raw)); err == nil {
 			t.Fatalf("ParseCredential(%q) succeeded", raw)
 		}
+	}
+	if _, err := ParseCredential([]byte("{\"access_token\":\"at\",\"refresh_token\":\"rt\",\"expired\":\"2030-01-01T00:00:00Z\"}\n\t ")); err != nil {
+		t.Fatalf("trailing whitespace: %v", err)
 	}
 }
 

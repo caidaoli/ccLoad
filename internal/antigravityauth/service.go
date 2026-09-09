@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +50,32 @@ var (
 	errAccessTokenRejected = errors.New("antigravity access token was rejected")
 	// ErrCredentialUnusable means neither the imported AT nor one RT refresh produced an accepted access token.
 	ErrCredentialUnusable = errors.New("antigravity credential could not obtain a usable access token")
+	// ErrProjectUnavailable prevents inference without a discovered project.
+	ErrProjectUnavailable = errors.New("antigravity project is unavailable")
 )
+
+// MetadataError preserves diagnostics without implementing the token endpoint
+// failure interface: a metadata 401 must never classify as a revoked refresh token.
+type MetadataError struct {
+	HTTPStatus int
+	Code       string
+	body       string
+}
+
+func (e *MetadataError) Error() string {
+	return fmt.Sprintf("Antigravity metadata upstream returned HTTP %d: %s", e.HTTPStatus, e.body)
+}
+
+// UpstreamResponseBody preserves the original response for internal diagnostics.
+func (e *MetadataError) UpstreamResponseBody() string { return e.body }
+
+// Is identifies access-token rejection without classifying permissions as authentication.
+func (e *MetadataError) Is(target error) bool {
+	return target == errAccessTokenRejected && e.HTTPStatus == http.StatusUnauthorized
+}
+
+// AccessTokenRejected reports a metadata authentication failure, excluding 403.
+func AccessTokenRejected(err error) bool { return errors.Is(err, errAccessTokenRejected) }
 
 var unavailableModelIDs = map[string]struct{}{
 	"chat_20706":                  {},
@@ -316,14 +343,14 @@ func (s *Service) completeCredentialMetadata(ctx context.Context, credential *Cr
 	if credential == nil {
 		return errors.New("credential: Antigravity data is nil")
 	}
-	if credential.Email == "" {
+	{
 		email, err := s.FetchUserInfo(ctx, credential.AccessToken)
 		if err != nil {
 			return err
 		}
 		credential.Email = email
 	}
-	if credential.ProjectID == "" {
+	{
 		projectID, err := s.FetchProjectID(ctx, credential.AccessToken)
 		if err != nil {
 			return err
@@ -333,37 +360,85 @@ func (s *Service) completeCredentialMetadata(ctx context.Context, credential *Cr
 	if credential.ProjectID == "" {
 		return errors.New("project discovery: Antigravity returned an empty project_id")
 	}
-	paidTier, err := s.FetchPaidTier(ctx, credential.AccessToken)
+	paidTier, credits, err := s.FetchSubscription(ctx, credential.AccessToken)
 	if err != nil {
-		return err
+		if AccessTokenRejected(err) {
+			return err
+		}
+		return nil // Subscription metadata is optional; preserve the previous value.
 	}
 	credential.PaidTier = paidTier
+	credential.Credits = credits
 	return nil
 }
 
 // FetchPaidTier returns the current paid subscription tier from the daily
 // loadCodeAssist endpoint. A missing paidTier means the account has no paid tier.
 func (s *Service) FetchPaidTier(ctx context.Context, accessToken string) (*PaidTier, error) {
+	tier, _, err := s.FetchSubscription(ctx, accessToken)
+	return tier, err
+}
+
+// FetchSubscription uses loadCodeAssist's paidTier.availableCredits contract.
+// Both JSON numbers and protobuf decimal strings are accepted; absent or invalid
+// amounts remain unknown and cannot authorize spending credits.
+func (s *Service) FetchSubscription(ctx context.Context, accessToken string) (*PaidTier, *Credits, error) {
+	sampledAt := time.Now().UTC()
 	request := map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}}
 	body, err := s.doJSON(ctx, http.MethodPost, strings.TrimRight(s.DailyAPIBaseURL, "/")+"/"+apiVersion+":loadCodeAssist", accessToken, request, false)
 	if err != nil {
-		return nil, fmt.Errorf("load Antigravity paid tier: %w", err)
+		return nil, nil, fmt.Errorf("load Antigravity paid tier: %w", err)
 	}
 	var response struct {
 		PaidTier *PaidTier `json:"paidTier"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("decode Antigravity paid tier: %w", err)
+		return nil, nil, fmt.Errorf("decode Antigravity paid tier: %w", err)
+	}
+	var raw struct {
+		PaidTier struct {
+			AvailableCredits []struct {
+				Type    string          `json:"creditType"`
+				Balance json.RawMessage `json:"creditAmount"`
+				Minimum json.RawMessage `json:"minimumCreditAmountForUsage"`
+			} `json:"availableCredits"`
+		} `json:"paidTier"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, nil, fmt.Errorf("decode Antigravity credits: %w", err)
+	}
+	credits := &Credits{SampledAt: sampledAt}
+	for _, entry := range raw.PaidTier.AvailableCredits {
+		if !strings.EqualFold(entry.Type, "GOOGLE_ONE_AI") {
+			continue
+		}
+		credits.Balance = parseCreditAmount(entry.Balance)
+		credits.Minimum = parseCreditAmount(entry.Minimum)
+		break
 	}
 	if response.PaidTier == nil {
-		return nil, nil
+		return nil, credits, nil
 	}
 	response.PaidTier.ID = strings.TrimSpace(response.PaidTier.ID)
 	response.PaidTier.Name = strings.TrimSpace(response.PaidTier.Name)
 	if response.PaidTier.ID == "" && response.PaidTier.Name == "" {
-		return nil, nil
+		return nil, credits, nil
 	}
-	return response.PaidTier, nil
+	return response.PaidTier, credits, nil
+}
+
+func parseCreditAmount(raw json.RawMessage) *float64 {
+	text := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(text, "\"") {
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil
+		}
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return nil
+	}
+	return &value
 }
 
 // FetchUserInfo returns the Google account email.
@@ -567,14 +642,14 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("%w: upstream returned HTTP %d", errAccessTokenRejected, resp.StatusCode)
-	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		if responseBody := strings.TrimSpace(string(raw)); responseBody != "" {
-			return nil, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, responseBody)
+		var payload struct {
+			Error struct {
+				Status string `json:"status"`
+			} `json:"error"`
 		}
-		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+		_ = json.Unmarshal(raw, &payload)
+		return nil, &MetadataError{HTTPStatus: resp.StatusCode, Code: payload.Error.Status, body: string(raw)}
 	}
 	return raw, nil
 }

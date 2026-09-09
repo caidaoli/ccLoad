@@ -474,6 +474,12 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, antigravityauth.ChannelType)
+		if usage == nil && credential.Credits != nil {
+			usage = &oauthUsageSummary{Provider: antigravityauth.ChannelType, Windows: []oauthUsageWindow{}}
+		}
+		if usage != nil {
+			usage.Credits = credential.Credits.Clone()
+		}
 		usage = attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage)
 		return channelOAuthMetadata{
 			antigravityPaidTier: credential.PaidTier.DisplayName(),

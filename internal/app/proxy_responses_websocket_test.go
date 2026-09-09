@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
@@ -6870,6 +6871,64 @@ func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T
 	}
 	if entry.Cost != 0 {
 		t.Fatalf("failed-terminal cost=%v, want 0", entry.Cost)
+	}
+}
+
+func TestResponsesWebsocketAntigravityCreditsFallback(t *testing.T) {
+	for _, initialEmpty := range []bool{false, true} {
+		t.Run(strconv.FormatBool(initialEmpty), func(t *testing.T) {
+			var standard, paid atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Credits []string `json:"enabledCreditTypes"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if len(request.Credits) == 0 {
+					standard.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(429)
+					_, _ = io.WriteString(w, `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}`)
+					return
+				}
+				paid.Add(1)
+				if !slices.Equal(request.Credits, []string{"GOOGLE_ONE_AI"}) {
+					t.Errorf("credits=%v", request.Credits)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"paid answer\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}}\n\n")
+			}))
+			credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "ws-credits")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			balance, minimum := 10.0, 1.0
+			credential.Credits = &antigravityauth.Credits{Balance: &balance, Minimum: &minimum, SampledAt: time.Now()}
+			if initialEmpty {
+				credential.StandardQuota = map[string]time.Time{"claude-sonnet-4-6": time.Now().Add(time.Hour)}
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "ws credits", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", authType: model.AuthTypeAntigravityOAuth, oauthCredential: raw}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+			conn := dialResponsesWebsocket(t, env.engine)
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "claude-sonnet-4-6", "input": []any{map[string]any{"role": "user", "content": "hello"}}}); err != nil {
+				t.Fatal(err)
+			}
+			readWebsocketUntilType(t, conn, "response.completed")
+			wantStandard := int32(1)
+			if initialEmpty {
+				wantStandard = 0
+			}
+			if standard.Load() != wantStandard || paid.Load() != 1 {
+				t.Fatalf("standard=%d paid=%d", standard.Load(), paid.Load())
+			}
+		})
 	}
 }
 

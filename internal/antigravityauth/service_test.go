@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,6 +38,40 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 	}
 	if got := service.RequestUserAgent(); got != "antigravity/hub/2.9.3 darwin/arm64" {
 		t.Fatalf("discovered User-Agent = %q", got)
+	}
+}
+
+func TestFetchSubscriptionCredits(t *testing.T) {
+	for _, tc := range []struct {
+		name, amount, minimum string
+		known, available      bool
+	}{
+		{"numbers", "4.5", "1", true, true},
+		{"protobuf strings", `"4.5"`, `"1"`, true, true},
+		{"insufficient", "0", "1", true, false},
+		{"zero minimum", "1", "0", true, true},
+		{"missing", "null", "1", false, false},
+		{"invalid", `"NaN"`, "1", false, false},
+		{"negative", "-1", "1", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1internal:loadCodeAssist" || r.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("unexpected subscription request: %s", r.URL.Path)
+				}
+				_, _ = fmt.Fprintf(w, `{"paidTier":{"id":"paid","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":%s,"minimumCreditAmountForUsage":%s}]}}`, tc.amount, tc.minimum)
+			}))
+			defer server.Close()
+			service := NewService(server.Client())
+			service.DailyAPIBaseURL = server.URL
+			tier, credits, err := service.FetchSubscription(context.Background(), "token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tier.ID != "paid" || credits.SampledAt.IsZero() || (credits.Balance != nil) != tc.known || credits.Available() != tc.available {
+				t.Fatalf("tier=%+v credits=%+v", tier, credits)
+			}
+		})
 	}
 }
 
@@ -172,6 +207,10 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 	var refreshCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"email":"user@example.com"}`)
+		case "/v1internal:loadCodeAssist":
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project-1"}`)
 		case "/token":
 			refreshCalls++
 			if err := r.ParseForm(); err != nil {
@@ -222,6 +261,10 @@ func TestServiceCompleteCredentialRefreshesRejectedAccessToken(t *testing.T) {
 	var refreshCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"email":"user@example.com"}`)
+		case "/v1internal:loadCodeAssist":
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project-1"}`)
 		case "/token":
 			refreshCalls++
 			_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt-rotated","expires_in":3600}`))

@@ -68,6 +68,8 @@ const selectSettingOptions = new Map([
 ]);
 
 const numericSettingConstraints = new Map([
+  ['antigravity_max_idle_conns_per_host', { min: 1, max: 100 }],
+  ['antigravity_idle_conn_timeout_seconds', { min: 1, max: 210 }],
   ['max_key_retries', { min: 1 }],
   ['max_concurrency', { min: 1 }],
   ['max_body_bytes', { min: 1 / bytesPerMiB }],
@@ -1051,7 +1053,7 @@ function getSettingGroupInfo(key) {
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
 
-    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
+    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || ['antigravity_connection_reuse_enabled', 'antigravity_max_idle_conns_per_host', 'antigravity_idle_conn_timeout_seconds'].includes(k) || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
     { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('_first_byte_timeout') },
     { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
@@ -1072,6 +1074,9 @@ function getSettingGroupInfo(key) {
 function getSettingOrder(key) {
   const orders = {
     upstream_connection_reuse_limit_seconds: 90,
+    antigravity_connection_reuse_enabled: 91,
+    antigravity_max_idle_conns_per_host: 92,
+    antigravity_idle_conn_timeout_seconds: 93,
     codex_base_url: 91,
     xai_base_url: 92,
     antigravity_url: 93,
