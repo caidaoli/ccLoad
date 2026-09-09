@@ -29,6 +29,21 @@ import (
 // Returns:
 //   - []byte: The transformed request data in OpenAI chat completions format
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, inputRawJSON, stream)
+}
+
+// ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError converts a
+// Responses request while rejecting tool-search modes that cannot be
+// represented by Chat Completions. The legacy converter above remains a
+// best-effort API for callers that historically relied on a []byte result.
+func ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	if err := validateOpenAIResponsesRequestForChat(inputRawJSON); err != nil {
+		return nil, err
+	}
+	return convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, inputRawJSON, stream), nil
+}
+
+func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 	// Base OpenAI chat completions template with default values
 	out := []byte(`{"model":"","messages":[],"stream":false}`)
@@ -71,7 +86,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		outputCallIDs := make(map[string]struct{})
 		for _, item := range inputItems {
 			itemType := item.Get("type").String()
-			if itemType != "function_call_output" && itemType != "custom_tool_call_output" {
+			if itemType != "function_call_output" && itemType != "custom_tool_call_output" && itemType != "tool_search_output" {
 				continue
 			}
 			callID := strings.TrimSpace(item.Get("call_id").String())
@@ -169,7 +184,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
-			if itemType != "function_call" && itemType != "custom_tool_call" {
+			if itemType != "function_call" && itemType != "custom_tool_call" && itemType != "tool_search_call" {
 				flushPendingToolCalls()
 			}
 
@@ -271,6 +286,20 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					pendingToolCallIDs = append(pendingToolCallIDs, callID)
 				}
 
+			case "tool_search_call":
+				pendingReasoningContent = combineOpenAIResponsesReasoning(pendingReasoningContent, item.Get("reasoning_content").String())
+				toolCall := []byte(`{"id":"","type":"function","function":{"name":"tool_search","arguments":""}}`)
+				callID := strings.TrimSpace(item.Get("call_id").String())
+				toolCall, _ = sjson.SetBytes(toolCall, "id", callID)
+				toolCall, _ = sjson.SetBytes(toolCall, "function.name", responsesChatToolSearchFunctionName)
+				if arguments, err := normalizeResponsesToolSearchArguments(item.Get("arguments")); err == nil {
+					toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", arguments)
+				}
+				pendingToolCalls = append(pendingToolCalls, gjson.ParseBytes(toolCall).Value())
+				if callID != "" {
+					pendingToolCallIDs = append(pendingToolCallIDs, callID)
+				}
+
 			case "function_call_output":
 				mergeableAssistantIndex = -1
 				// Handle function call output conversion to tool message
@@ -286,6 +315,20 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					toolMessage = setFunctionCallOutputContent(toolMessage, output)
 				}
 
+				appendMessage(toolMessage)
+				if callID != "" {
+					delete(awaitingToolOutputs, callID)
+				}
+				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+					flushDeferredMessages()
+				}
+
+			case "tool_search_output":
+				mergeableAssistantIndex = -1
+				callID := strings.TrimSpace(item.Get("call_id").String())
+				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
+				toolMessage, _ = sjson.SetBytes(toolMessage, "tool_call_id", callID)
+				toolMessage = setToolSearchOutputContent(toolMessage, item.Get("tools"))
 				appendMessage(toolMessage)
 				if callID != "" {
 					delete(awaitingToolOutputs, callID)

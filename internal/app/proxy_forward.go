@@ -367,7 +367,13 @@ func (s *Server) buildProxyRequest(
 		isAnyrouterChannel(cfg) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
-
+	if isOpenCodeChannel(cfg) {
+		executionIdentity := ""
+		if reqCtx != nil {
+			executionIdentity = reqCtx.executionIdentity
+		}
+		ensureOpenCodeSessionHeader(req.Header, hdr, executionIdentity)
+	}
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
 	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx, cfg))
 
@@ -705,11 +711,36 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 		if streamComplete {
 			return "" // 不触发冷却，数据已完整
 		}
-		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 流结束标志=%v | 渠道=%s | Content-Type=%s",
-			streamErr, bytesRead, readCount, streamComplete, upstreamProtocol, contentType)
+		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 流结束标志=%v | 渠道=%s | Content-Type=%s | %s",
+			streamErr, bytesRead, readCount, streamComplete, upstreamProtocol, contentType,
+			streamTimingDiagnostics(readStats))
 	}
 
 	return ""
+}
+
+// annotateStreamDisconnectError keeps context cancellation discoverable by
+// errors.Is while making the transport direction and timing visible in the
+// ordinary 499 error log. It deliberately does not populate StreamDiagMsg,
+// which is reserved for upstream stream failures and drives cooldown.
+func annotateStreamDisconnectError(streamErr error, readStats *streamReadStats) error {
+	if streamErr == nil || readStats == nil || !isClientDisconnectError(streamErr) {
+		return streamErr
+	}
+	return fmt.Errorf("%w (%s)", streamErr, streamTimingDiagnostics(readStats))
+}
+
+func streamTimingDiagnostics(readStats *streamReadStats) string {
+	if readStats == nil {
+		return "流时序: 上游最后读取=未知 | 下游最后写入=未知 | 下游最后Flush=未知 | 下游已写=0字节"
+	}
+	return fmt.Sprintf(
+		"流时序: 上游最后读取=%.3fs | 下游最后写入=%.3fs(次数%d) | 下游最后Flush=%.3fs(次数%d) | 下游已写=%d字节",
+		readStats.lastReadSec,
+		readStats.lastWriteSec, readStats.downstreamWrites,
+		readStats.lastFlushSec, readStats.downstreamFlushes,
+		readStats.downstreamBytes,
+	)
 }
 
 func translatedStreamChunksComplete(clientProtocol protocol.Protocol, chunks [][]byte) bool {
@@ -1045,6 +1076,15 @@ func (s *Server) handleSuccessResponse(
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
+	if reqCtx != nil && reqCtx.isStreaming {
+		w = wrapStreamResponseWriter(w, readStats, reqCtx.startTime)
+	}
+	finishStreaming := func(result *fwResult, duration float64, streamErr error) (*fwResult, float64, error) {
+		if reqCtx != nil && reqCtx.isStreaming {
+			streamErr = annotateStreamDisconnectError(streamErr, readStats)
+		}
+		return result, duration, streamErr
+	}
 	// The framing repair is a Codex Responses compatibility fix. Do not put a
 	// generic decorator on every SSE response: Anthropic/OpenAI SSE must remain
 	// byte-for-byte passthrough, and probing an arbitrary stream can block before
@@ -1070,7 +1110,7 @@ func (s *Server) handleSuccessResponse(
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
 	if reqCtx.transformPlan.Streaming && isXAIImagesResponsesPlan(reqCtx.transformPlan) {
-		return s.handleXAIImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer)
+		return finishStreaming(s.handleXAIImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer))
 	}
 	if reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
@@ -1084,16 +1124,16 @@ func (s *Server) handleSuccessResponse(
 			isSSE = true
 		}
 		if err != nil {
-			return &fwResult{
+			return finishStreaming(&fwResult{
 				Status:         resp.StatusCode,
 				UpstreamStatus: resp.StatusCode,
 				Header:         hdrClone,
 				FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 				BytesReceived:  readStats.totalBytes,
-			}, reqCtx.Duration().Seconds(), err
+			}, reqCtx.Duration().Seconds(), err)
 		}
 		if transform {
-			return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats, observer)
+			return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats, observer))
 		}
 	}
 
@@ -1121,7 +1161,7 @@ func (s *Server) handleSuccessResponse(
 		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.codexMultiAgentV2Optimized) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
-		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
+		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
 	}
 
 	if !reqCtx.isStreaming &&
@@ -1233,7 +1273,7 @@ func (s *Server) handleSuccessResponse(
 		}
 	}
 
-	return result, reqCtx.Duration().Seconds(), streamErr
+	return finishStreaming(result, reqCtx.Duration().Seconds(), streamErr)
 }
 
 func (s *Server) handleTranslatedNonStreamSuccessResponse(
@@ -1593,6 +1633,12 @@ func attachFirstByteDetector(
 	resp.Body = &firstByteDetector{
 		ReadCloser: resp.Body,
 		stats:      readStats,
+		requestStart: func() time.Time {
+			if reqCtx == nil {
+				return time.Time{}
+			}
+			return reqCtx.startTime
+		}(),
 		onFirstRead: func() {
 			if reqCtx.isStreaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return
@@ -2930,6 +2976,18 @@ func isInvalidEncryptedContentError(body []byte) bool {
 			strings.Contains(message, "could not decode")) {
 		return true
 	}
+	// Packy uses the Responses error shape with a provider-specific
+	// `invalid-argument` code and keeps the field name's underscore in its
+	// message: "Could not decrypt the provided encrypted_content. Ensure the
+	// value is the unmodified encrypted_content from a previous response.".
+	// Keep the surrounding provenance wording in the predicate so an unrelated
+	// decryption failure does not trigger a replay that drops conversation state.
+	if strings.Contains(message, "encrypted_content") &&
+		strings.Contains(message, "could not decrypt") &&
+		(strings.Contains(message, "unmodified encrypted_content") ||
+			strings.Contains(message, "previous response")) {
+		return true
+	}
 	return strings.Contains(message, "compaction blob") &&
 		(strings.Contains(message, "could not decode") || strings.Contains(message, "unmodified from the compact response"))
 }
@@ -3075,8 +3133,31 @@ func isUnsupportedThinkingError(body []byte) bool {
 }
 
 func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return nil, false
+	}
+	// Only encrypted reasoning is provider-private retry metadata. Keep
+	// compaction and tool call/output items so the replay retains its history.
+	removed := false
+	retainedHistory := false
+	for _, item := range input.Array() {
+		if item.IsObject() &&
+			item.Get("type").Type == gjson.String &&
+			item.Get("type").String() == "reasoning" &&
+			item.Get("encrypted_content").Exists() {
+			removed = true
+			continue
+		}
+		retainedHistory = true
+	}
+	if !removed || !retainedHistory {
+		return nil, false
+	}
 	return deleteCodexInputItems(body, func(item gjson.Result) bool {
-		return (item.Get("type").Type == gjson.String && item.Get("type").String() == "reasoning") || item.Get("encrypted_content").Exists()
+		return item.Get("type").Type == gjson.String &&
+			item.Get("type").String() == "reasoning" &&
+			item.Get("encrypted_content").Exists()
 	})
 }
 
@@ -3290,6 +3371,13 @@ func collectJSONKeyPaths(value gjson.Result, prefix, key string, depth int, path
 		return
 	}
 	if value.IsObject() {
+		// Compaction payloads carry opaque conversation history. Keep the entire
+		// subtree intact when stripping optional encrypted content elsewhere.
+		typ := value.Get("type")
+		if typ.Type == gjson.String &&
+			(typ.String() == "compaction" || typ.String() == "compaction_summary") {
+			return
+		}
 		value.ForEach(func(name, child gjson.Result) bool {
 			childPath := sjsonObjectPathJoin(prefix, name.String())
 			if name.String() == key {
