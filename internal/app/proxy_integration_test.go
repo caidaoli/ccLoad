@@ -2598,7 +2598,7 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 	if entry.StatusCode != http.StatusOK {
 		t.Fatalf("log status=%d, want 200", entry.StatusCode)
 	}
-	if entry.Message != "ok [model_capacity_retry_1] [antigravity:standard]" {
+	if entry.Message != "ok [model_capacity_retry_1]" {
 		t.Fatalf("log message=%q, want capacity retry count", entry.Message)
 	}
 	logs, err := env.store.ListLogs(

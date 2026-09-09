@@ -249,12 +249,8 @@ func buildProxyLogEntry(
 		CostMultiplier:   reqCtx.attemptCostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
-	if cfg.UsesAntigravityOAuth() {
-		path := "standard"
-		if cfg.AntigravityCredits {
-			path = "credits: standard quota exhausted"
-		}
-		entry.Message += " [antigravity:" + path + "]"
+	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
+		entry.Message += " [credits]"
 	}
 	return entry
 }
