@@ -8473,7 +8473,7 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *testing.T) {
 	t.Parallel()
 
-	const invalidEncryptedContentBody = `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`
+	const invalidEncryptedContentBody = `{"error":{"message":"Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.","type":"packy_invalid-argument","code":"invalid-argument"}}`
 
 	var attempts atomic.Int32
 	var bodies [][]byte
@@ -8506,7 +8506,7 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
-			{"type": "compaction", "encrypted_content": "drop-compaction"},
+			{"type": "compaction", "encrypted_content": "keep-compaction"},
 			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
 			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
 		},
@@ -8527,9 +8527,10 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) {
 		t.Fatalf("retry request should remove reasoning item, got %s", bodies[1])
 	}
-	if bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) ||
-		bytes.Contains(bodies[1], []byte(`"type":"compaction"`)) {
-		t.Fatalf("retry request should remove encrypted input items, got %s", bodies[1])
+	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) ||
+		!bytes.Contains(bodies[1], []byte(`"type":"compaction"`)) ||
+		!bytes.Contains(bodies[1], []byte(`"encrypted_content":"keep-compaction"`)) {
+		t.Fatalf("retry request should remove encrypted reasoning while preserving compaction, got %s", bodies[1])
 	}
 	if !bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
 		t.Fatalf("retry request should keep non-encrypted input items, got %s", bodies[1])

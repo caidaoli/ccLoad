@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const maxSSEEventBytes = 50 * 1024 * 1024
@@ -39,14 +40,21 @@ type streamReadStats struct {
 	totalBytes         int64
 	firstByteSec       float64 // 上游首个有效事件耗时（秒），用于首字超时控制
 	clientFirstByteSec float64 // 首个客户端可见事件耗时（秒），用于实时状态和日志
+	lastReadSec        float64 // 从本次请求开始到上游最近一次读取数据的耗时（秒）
+	lastWriteSec       float64 // 从本次请求开始到下游最近一次写入数据的耗时（秒）
+	lastFlushSec       float64 // 从本次请求开始到下游最近一次Flush的耗时（秒）
+	downstreamBytes    int64   // 实际写入下游的字节数（不含仅缓冲在网关内的数据）
+	downstreamWrites   int     // 下游实际写入调用次数（用于区分未写出与零字节响应）
+	downstreamFlushes  int     // 下游实际Flush调用次数
 }
 
 // firstByteDetector 检测首字节读取时间和传输统计的Reader包装器
 type firstByteDetector struct {
 	io.ReadCloser
-	stats       *streamReadStats
-	onFirstRead func()
-	onBytesRead func(int64) // 可选：每次读取后的回调（nil 时不触发）
+	stats        *streamReadStats
+	requestStart time.Time
+	onFirstRead  func()
+	onBytesRead  func(int64) // 可选：每次读取后的回调（nil 时不触发）
 }
 
 // Read 实现io.Reader接口，记录读取统计
@@ -57,6 +65,7 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 		if r.stats != nil {
 			r.stats.readCount++
 			r.stats.totalBytes += int64(n)
+			r.stats.lastReadSec = streamElapsedSeconds(r.requestStart)
 		}
 		// 触发首次读取回调
 		if r.onFirstRead != nil {
@@ -69,6 +78,71 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 		}
 	}
 	return
+}
+
+// streamResponseWriter 记录实际写到客户端的流量及时间。
+// 它只包裹流式响应路径；数据仍由底层 ResponseWriter 原样写出，不缓存、不记录正文。
+type streamResponseWriter struct {
+	target       http.ResponseWriter
+	stats        *streamReadStats
+	requestStart time.Time
+}
+
+func newStreamResponseWriter(target http.ResponseWriter, stats *streamReadStats, requestStart time.Time) *streamResponseWriter {
+	return &streamResponseWriter{target: target, stats: stats, requestStart: requestStart}
+}
+
+func wrapStreamResponseWriter(target http.ResponseWriter, stats *streamReadStats, requestStart time.Time) http.ResponseWriter {
+	if target == nil {
+		return nil
+	}
+	if _, ok := target.(*streamResponseWriter); ok {
+		return target
+	}
+	return newStreamResponseWriter(target, stats, requestStart)
+}
+
+func (w *streamResponseWriter) Header() http.Header {
+	return w.target.Header()
+}
+
+func (w *streamResponseWriter) WriteHeader(statusCode int) {
+	w.target.WriteHeader(statusCode)
+}
+
+func (w *streamResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.target.Write(p)
+	if w.stats != nil && n > 0 {
+		w.stats.downstreamWrites++
+		w.stats.downstreamBytes += int64(n)
+		w.stats.lastWriteSec = streamElapsedSeconds(w.requestStart)
+	}
+	return n, err
+}
+
+func (w *streamResponseWriter) Flush() {
+	flusher, ok := w.target.(http.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+	if w.stats != nil {
+		w.stats.downstreamFlushes++
+		w.stats.lastFlushSec = streamElapsedSeconds(w.requestStart)
+	}
+}
+
+// Unwrap lets http.ResponseController reach the original writer for deadlines
+// and other optional ResponseWriter capabilities.
+func (w *streamResponseWriter) Unwrap() http.ResponseWriter {
+	return w.target
+}
+
+func streamElapsedSeconds(requestStart time.Time) float64 {
+	if requestStart.IsZero() {
+		return 0
+	}
+	return positiveDuration(time.Since(requestStart)).Seconds()
 }
 
 // ============================================================================

@@ -2017,6 +2017,13 @@ func (s *Server) newTestUpstreamRequest(
 	if requestProtocol == protocol.Anthropic && isAnyrouterChannel(cfgForBuild) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
+	if isOpenCodeChannel(cfgForBuild) {
+		executionIdentity := ""
+		if testReq != nil {
+			executionIdentity = testReq.ResolveSessionID()
+		}
+		ensureOpenCodeSessionHeader(req.Header, sourceHeaders, executionIdentity)
+	}
 	// Some compatibility gateways decompress the response but leave the gzip marker.
 	// Admin tests need the wire body for diagnostics, so never negotiate compression.
 	req.Header.Set("Accept-Encoding", "identity")
