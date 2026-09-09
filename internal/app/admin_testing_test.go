@@ -5284,6 +5284,67 @@ func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T
 	}
 }
 
+func TestHandleChannelImageGeneration_CodexImage25(t *testing.T) {
+	for _, tc := range []struct {
+		model  string
+		failed bool
+	}{
+		{model: "gpt-image-2.5-flare"},
+		{model: "gpt-image-2.5-sunburst"},
+		{model: "gpt-image-2.5-flare", failed: true},
+	} {
+		imageModel := tc.model
+		t.Run(fmt.Sprintf("%s/failed=%t", imageModel, tc.failed), func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				if r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer at-admin-test" {
+					t.Errorf("upstream request: %s %v", r.URL.Path, r.Header)
+				}
+				if gjson.GetBytes(body, "model").String() != "gpt-5.6-luna" ||
+					gjson.GetBytes(body, "tools.0.model").String() != imageModel ||
+					gjson.GetBytes(body, "tools.0.quality").String() != "xhigh" ||
+					!gjson.GetBytes(body, "stream").Bool() {
+					t.Errorf("image request: %s", body)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.failed {
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"image generation rejected\"}}}\n\n")
+					return
+				}
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aW1hZ2U=\",\"output_format\":\"png\"}]}}\n\n")
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+			updated := created.Clone()
+			updated.ModelEntries = []model.ModelEntry{{Model: imageModel}}
+			if _, err := srv.store.UpdateConfig(context.Background(), created.ID, updated); err != nil {
+				t.Fatal(err)
+			}
+			req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+				"generation_api": "images", "model": "codex/" + imageModel, "prompt": "draw a cat", "quality": "xhigh",
+			})
+			c, w := newTestContext(t, req)
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(created.ID)}}
+			srv.HandleChannelImageGeneration(c)
+			response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			if tc.failed {
+				if response.Data["success"] != false || response.Data["error"] != "image generation rejected" {
+					t.Fatalf("upstream error lost: %s", w.Body.String())
+				}
+				return
+			}
+			if w.Code != http.StatusOK || response.Data["success"] != true || response.Data["actual_model"] != imageModel {
+				t.Fatalf("image result: %s", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleChannelImageGeneration_AntigravityUsesChatCompletions(t *testing.T) {
 	var gotPath string
 	var gotAuthorization string

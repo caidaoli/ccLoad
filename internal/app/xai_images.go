@@ -143,7 +143,7 @@ func xaiImagesCompletedChunks(response xaiImagesResponsesResult, originalRequest
 		completed = append(completed, chunk)
 	}
 	if len(completed) == 0 {
-		return nil, errors.New("xAI Responses completed without image_generation_call result")
+		return nil, errors.New("responses completed without image_generation_call result")
 	}
 	return completed, nil
 }
@@ -154,17 +154,20 @@ func isOpenAIImagesGenerationRequest(method, path string, clientProtocol protoco
 		strings.TrimRight(strings.TrimSpace(path), "/") == openAIImagesGenerationsPath
 }
 
-func (s *Server) xaiImagesResponsesModel(cfg *model.Config, reqCtx *proxyRequestContext) (string, bool) {
-	if cfg == nil || reqCtx == nil || !cfg.UsesXAIOAuth() ||
+func (s *Server) imagesResponsesModel(cfg *model.Config, reqCtx *proxyRequestContext) (string, bool) {
+	if cfg == nil || reqCtx == nil || (!cfg.UsesXAIOAuth() && !cfg.UsesCodexOAuth()) ||
 		cfg.GetProtocolTransformMode() == model.ProtocolTransformModeUpstream ||
 		!isOpenAIImagesGenerationRequest(reqCtx.requestMethod, reqCtx.requestPath, reqCtx.clientProtocol) {
 		return "", false
 	}
 	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Codex))
+	if cfg.UsesCodexOAuth() {
+		return actualModel, codexImageUsesResponses(actualModel)
+	}
 	return actualModel, xaiSupportsImageGeneration(actualModel)
 }
 
-func isXAIImagesResponsesPlan(plan protocol.TransformPlan) bool {
+func isImagesResponsesPlan(plan protocol.TransformPlan) bool {
 	return plan.ClientProtocol == protocol.OpenAI &&
 		plan.UpstreamProtocol == protocol.Codex &&
 		plan.RequestFamily == protocol.RequestFamilyImages &&
@@ -172,6 +175,10 @@ func isXAIImagesResponsesPlan(plan protocol.TransformPlan) bool {
 }
 
 func buildXAIImagesResponsesRequest(raw []byte, actualModel string) ([]byte, error) {
+	return buildImagesResponsesRequest(raw, actualModel, "")
+}
+
+func buildImagesResponsesRequest(raw []byte, mainModel, imageModel string) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var source map[string]any
@@ -222,6 +229,9 @@ func buildXAIImagesResponsesRequest(raw []byte, actualModel string) ([]byte, err
 		"type":   xaiImageGenerationToolType,
 		"action": "generate",
 	}
+	if imageModel != "" {
+		tool["model"] = imageModel
+	}
 	for _, field := range xaiImagesToolOptionFields {
 		if value, exists := source[field]; exists {
 			tool[field] = value
@@ -237,7 +247,7 @@ func buildXAIImagesResponsesRequest(raw []byte, actualModel string) ([]byte, err
 				"text": prompt,
 			}},
 		}},
-		"model":               actualModel,
+		"model":               mainModel,
 		"parallel_tool_calls": true,
 		"store":               false,
 		"stream":              true,
@@ -246,15 +256,15 @@ func buildXAIImagesResponsesRequest(raw []byte, actualModel string) ([]byte, err
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("encode xAI Images Responses request: %w", err)
+		return nil, fmt.Errorf("encode Images Responses request: %w", err)
 	}
 	return encoded, nil
 }
 
-func buildOpenAIImagesResponseFromXAIResponses(responseBody, originalRequest []byte) ([]byte, error) {
+func buildOpenAIImagesResponseFromResponses(responseBody, originalRequest []byte) ([]byte, error) {
 	var response xaiImagesResponsesResult
 	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return nil, errors.New("decode xAI Responses image result")
+		return nil, errors.New("decode Responses image result")
 	}
 
 	responseFormat, requestOutputFormat := xaiImagesResponseFormats(originalRequest)
@@ -291,7 +301,7 @@ func buildOpenAIImagesResponseFromXAIResponses(responseBody, originalRequest []b
 		}
 	}
 	if len(data) == 0 {
-		return nil, errors.New("xAI Responses completed without image_generation_call result")
+		return nil, errors.New("responses completed without image_generation_call result")
 	}
 
 	payload := map[string]any{"created": createdAt, "data": data}
@@ -373,7 +383,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 		return nil, false, nil
 	}
 	if !json.Valid(data) {
-		chunk, err := xaiImagesStreamErrorEvent(nil, "invalid xAI Responses SSE data JSON")
+		chunk, err := xaiImagesStreamErrorEvent(nil, "invalid Responses SSE data JSON")
 		return [][]byte{chunk}, true, err
 	}
 
@@ -390,7 +400,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(data, &event); err != nil {
-		chunk, streamErr := xaiImagesStreamErrorEvent(nil, "decode xAI Responses SSE event")
+		chunk, streamErr := xaiImagesStreamErrorEvent(nil, "decode Responses SSE event")
 		return [][]byte{chunk}, true, streamErr
 	}
 	payloadType := strings.TrimSpace(event.Type)
@@ -402,7 +412,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 		if len(rawError) == 0 || string(rawError) == "null" {
 			rawError = event.Response.Error
 		}
-		chunk, err := xaiImagesStreamErrorEvent(rawError, "xAI Responses image stream failed")
+		chunk, err := xaiImagesStreamErrorEvent(rawError, "Responses image stream failed")
 		return [][]byte{chunk}, true, err
 	}
 
@@ -451,14 +461,14 @@ func translateXAIImagesResponsesStreamEventWithState(
 		}
 		return [][]byte{chunk}, false, nil
 	case "response.incomplete":
-		chunk, err := xaiImagesStreamErrorEvent(nil, "xAI Responses image generation did not complete")
+		chunk, err := xaiImagesStreamErrorEvent(nil, "Responses image generation did not complete")
 		return [][]byte{chunk}, true, err
 	case "response.completed":
 		var envelope struct {
 			Response xaiImagesResponsesResult `json:"response"`
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {
-			chunk, streamErr := xaiImagesStreamErrorEvent(nil, "decode completed xAI Responses image event")
+			chunk, streamErr := xaiImagesStreamErrorEvent(nil, "decode completed Responses image event")
 			return [][]byte{chunk}, true, streamErr
 		}
 		var collected []xaiImageGenerationOutput
@@ -468,7 +478,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 		outputs := mergeXAIImageOutputs(envelope.Response.Output, collected)
 		if !hasXAIImageGenerationOutput(outputs) {
 			if state == nil {
-				chunk, err := xaiImagesStreamErrorEvent(nil, "xAI Responses completed without image_generation_call result")
+				chunk, err := xaiImagesStreamErrorEvent(nil, "Responses completed without image_generation_call result")
 				return [][]byte{chunk}, true, err
 			}
 			envelope.Response.Output = outputs
@@ -487,7 +497,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 	}
 }
 
-func (s *Server) handleXAIImagesResponsesStreamSuccessResponse(
+func (s *Server) handleImagesResponsesStreamSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	hdrClone http.Header,
@@ -555,9 +565,9 @@ func (s *Server) handleXAIImagesResponsesStreamSuccessResponse(
 		streamErr = nil
 	}
 	if !terminal && translationErr == nil && parser.GetLastError() == nil && reqCtx.ctx.Err() == nil {
-		message := "xAI Responses image stream ended before completion"
+		message := "Responses image stream ended before completion"
 		if streamErr != nil && !isClientDisconnectError(streamErr) {
-			message = "xAI Responses image stream interrupted: " + streamErr.Error()
+			message = "Responses image stream interrupted: " + streamErr.Error()
 		}
 		if streamErr == nil || !isClientDisconnectError(streamErr) {
 			if deferredWriter.Committed() {

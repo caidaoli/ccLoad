@@ -648,20 +648,22 @@ func TestCalculateCost_MimoModels(t *testing.T) {
 }
 
 func TestCalculateImageGenerationToolCost_GPTImage2(t *testing.T) {
-	cost := CalculateImageGenerationToolCost("gpt-image-2", ImageGenerationToolUsage{
-		TextInputTokens:   10,
-		TextCachedTokens:  4,
-		ImageInputTokens:  20,
-		ImageCachedTokens: 6,
-		ImageOutputTokens: 30,
-	})
+	for _, model := range []string{"gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
+		cost := CalculateImageGenerationToolCost(model, ImageGenerationToolUsage{
+			TextInputTokens:   10,
+			TextCachedTokens:  4,
+			ImageInputTokens:  20,
+			ImageCachedTokens: 6,
+			ImageOutputTokens: 30,
+		})
 
-	// gpt-image-2:
-	// text input $5/M, text cached $1.25/M,
-	// image input $8/M, image cached $2/M, image output $30/M.
-	expected := (10*5.00 + 4*1.25 + 20*8.00 + 6*2.00 + 30*30.00) / 1_000_000
-	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("gpt-image-2 tool成本 = %.6f, 期望 %.6f", cost, expected)
+		// gpt-image-2:
+		// text input $5/M, text cached $1.25/M,
+		// image input $8/M, image cached $2/M, image output $30/M.
+		expected := (10*5.00 + 4*1.25 + 20*8.00 + 6*2.00 + 30*30.00) / 1_000_000
+		if !floatEquals(cost, expected, 0.000001) {
+			t.Errorf("%s tool成本 = %.6f, 期望 %.6f", model, cost, expected)
+		}
 	}
 }
 

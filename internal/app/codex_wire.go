@@ -130,8 +130,8 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 		}
 	}
 	stopAfterEvent := collector.done
-	if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
-		stopAfterEvent = collector.doneForXAIImages
+	if isImagesResponsesPlan(reqCtx.transformPlan) {
+		stopAfterEvent = collector.doneForImages
 	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
@@ -174,9 +174,9 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	}
 
 	terminal := collector.patchedTerminal()
-	if isXAIImagesResponsesPlan(reqCtx.transformPlan) &&
+	if isImagesResponsesPlan(reqCtx.transformPlan) &&
 		gjson.GetBytes(terminal, "type").String() != "response.completed" {
-		err := errors.New("xAI Responses image generation did not complete")
+		err := errors.New("responses image generation did not complete")
 		result.Body = terminal
 		result.StreamDiagMsg = err.Error()
 		return result, reqCtx.Duration().Seconds(), err
@@ -189,8 +189,8 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	if reqCtx.codexMultiAgentV2Optimized {
 		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
 	}
-	if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
-		translatedBody, err := buildOpenAIImagesResponseFromXAIResponses(
+	if isImagesResponsesPlan(reqCtx.transformPlan) {
+		translatedBody, err := buildOpenAIImagesResponseFromResponses(
 			responseBody,
 			reqCtx.transformPlan.OriginalBody,
 		)
@@ -317,8 +317,11 @@ func (c *codexNonStreamCollector) done() bool {
 	return c.err != nil || c.parser.GetLastError() != nil || len(c.terminal) > 0
 }
 
-func (c *codexNonStreamCollector) doneForXAIImages() bool {
-	if c.err != nil || c.parser.GetLastError() != nil || len(c.terminal) == 0 {
+func (c *codexNonStreamCollector) doneForImages() bool {
+	if c.err != nil || c.parser.GetLastError() != nil {
+		return true
+	}
+	if len(c.terminal) == 0 {
 		return false
 	}
 	if gjson.GetBytes(c.terminal, "type").String() != "response.completed" {

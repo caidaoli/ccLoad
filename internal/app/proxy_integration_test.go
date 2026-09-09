@@ -3216,6 +3216,62 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	}
 }
 
+func TestProxy_CodexOAuthImage25(t *testing.T) {
+	for _, imageModel := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
+		t.Run(imageModel, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer image-access" {
+					t.Errorf("upstream request: %s %v", r.URL.Path, r.Header)
+				}
+				wire, _ := json.Marshal(body)
+				if body["model"] != "gpt-5.6-luna" || body["stream"] != true ||
+					gjson.GetBytes(wire, "tools.0.model").String() != imageModel ||
+					gjson.GetBytes(wire, "tools.0.quality").String() != "max" ||
+					gjson.GetBytes(wire, "input.0.content.0.text").String() != "draw a cat" {
+					t.Errorf("image request contract: %s", wire)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"result\":\"aW1hZ2U=\",\"output_format\":\"png\"}}\n\n")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-image\",\"status\":\"completed\",\"output\":[],\"tool_usage\":{\"image_gen\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}}\n\n")
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "codex-images", upstreamProtocol: "codex", models: imageModel,
+				authType:        model.AuthTypeCodexOAuth,
+				oauthCredential: codexProxyTestCredential(t, "image-access", "refresh", "account"),
+			}}, map[int]string{0: upstream.URL + "/backend-api/codex/responses#"})
+			for _, stream := range []bool{false, true} {
+				response := doProxyRequest(t, env.engine, "/v1/images/generations", map[string]any{
+					"model": imageModel, "prompt": "draw a cat", "quality": "max", "stream": stream,
+				}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if !stream {
+					if gjson.Get(response.Body.String(), "data.0.b64_json").String() != "aW1hZ2U=" || gjson.Get(response.Body.String(), "usage.total_tokens").Int() != 8 {
+						t.Fatalf("image result: %s", response.Body.String())
+					}
+					continue
+				}
+				completed := false
+				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+					_, data := parseSSEEventChunk([]byte(block + "\n\n"))
+					if gjson.GetBytes(data, "type").String() == "image_generation.completed" {
+						completed = gjson.GetBytes(data, "b64_json").String() == "aW1hZ2U="
+					}
+				}
+				if !completed {
+					t.Fatalf("missing completed image: %s", response.Body.String())
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_XAIOAuthBridgesImagesGenerationsToGrok46Responses(t *testing.T) {
 	t.Parallel()
 

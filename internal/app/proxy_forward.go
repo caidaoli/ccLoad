@@ -328,7 +328,7 @@ func (s *Server) buildProxyRequest(
 		injectZedResponsesHeaders(req, apiKey)
 		wireRebuilt = true
 	} else if cfg.UsesXAIOAuth() {
-		if isXAIImagesResponsesPlan(reqCtx.transformPlan) {
+		if isImagesResponsesPlan(reqCtx.transformPlan) {
 			injectXAIAPIResponsesHeaders(req, apiKey)
 		} else {
 			injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
@@ -1109,8 +1109,8 @@ func (s *Server) handleSuccessResponse(
 	if isResponsesSSE && isSSE {
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
-	if reqCtx.transformPlan.Streaming && isXAIImagesResponsesPlan(reqCtx.transformPlan) {
-		return finishStreaming(s.handleXAIImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer))
+	if reqCtx.transformPlan.Streaming && isImagesResponsesPlan(reqCtx.transformPlan) {
+		return finishStreaming(s.handleImagesResponsesStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats, observer))
 	}
 	if reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
@@ -2581,10 +2581,14 @@ func (s *Server) forwardAttempt(
 	}
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
 	var translatedRequestOverride []byte
-	if bridgeModel, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge && upstreamProtocol == protocol.Codex {
+	if bridgeModel, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge && upstreamProtocol == protocol.Codex {
 		actualModel = bridgeModel
 		var err error
-		translatedRequestOverride, err = buildXAIImagesResponsesRequest(reqCtx.body, actualModel)
+		if cfg.UsesCodexOAuth() {
+			translatedRequestOverride, err = buildCodexImagesResponsesRequest(reqCtx.body, actualModel)
+		} else {
+			translatedRequestOverride, err = buildXAIImagesResponsesRequest(reqCtx.body, actualModel)
+		}
 		if err != nil {
 			channelID := cfg.ID
 			if errors.Is(err, errXAIImagesBridgeUnsupported) {
@@ -3560,7 +3564,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		abortAttempt = cancelAttempt
 
 		attemptBaseURL := urlEntry.url
-		if _, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge {
+		if _, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge && cfg.UsesXAIOAuth() {
 			// The Grok CLI chat proxy silently removes hosted image_generation
 			// tools. xAI exposes that tool only on the public Responses API.
 			attemptBaseURL = xaiauth.APIBaseURL
@@ -3594,11 +3598,10 @@ func (s *Server) attemptKeyAcrossURLs(
 		protocolCandidates, declared := protocolCandidatesForURL(
 			cfg.URLs[urlEntry.idx], transformMode, clientProtocol, requestFamily, localProtocolOrder,
 		)
-		if _, bridge := s.xaiImagesResponsesModel(cfg, reqCtx); bridge &&
+		if _, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge &&
 			cfg.URLs[urlEntry.idx].SupportsProtocol(string(protocol.Codex)) {
-			// Images is not a general OpenAI -> Codex transform. xAI OAuth is the
-			// one provider that deliberately maps this endpoint to a Responses
-			// image_generation tool, so keep the capability exception local here.
+			// Hosted image tools are a provider-specific Images -> Responses
+			// bridge, not a general protocol conversion capability.
 			protocolCandidates = []protocol.Protocol{protocol.Codex}
 			declared = true
 		}

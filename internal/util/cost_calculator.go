@@ -97,6 +97,16 @@ var imageGenerationToolPricingByModel = map[string]imageGenerationToolPricing{
 		TextInputPrice: 5.00, TextCachedPrice: 1.25,
 		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
 	},
+	// https://developers.openai.com/api/docs/models/gpt-image-2.5-flare
+	"gpt-image-2.5-flare": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
+	// https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
+	"gpt-image-2.5-sunburst": {
+		TextInputPrice: 5.00, TextCachedPrice: 1.25,
+		ImageInputPrice: 8.00, ImageCachedPrice: 2.00, ImageOutputPrice: 30.00,
+	},
 }
 
 var imageGenerationFallbackCostByModel = map[string]imageGenerationFallbackPricing{
@@ -338,6 +348,9 @@ func CalculateImageGenerationToolCost(model string, usage ImageGenerationToolUsa
 		model = "gpt-image-2"
 	}
 	pricing, ok := imageGenerationToolPricingByModel[model]
+	if !ok {
+		pricing, ok = imageGenerationToolPricingByModel[strings.TrimSuffix(model, "-2026-09-08")]
+	}
 	if !ok {
 		return 0
 	}
