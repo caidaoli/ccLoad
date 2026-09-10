@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -339,8 +340,54 @@ func TestCompleteXAICredentialRejectsIndeterminateBillingWithoutRefresh(t *testi
 	}
 }
 
+func codeBuddyModelCatalogTestClient() *http.Client {
+	return &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/config" {
+			return nil, fmt.Errorf("unexpected model request: %s %s", r.Method, r.URL.Path)
+		}
+		return jsonResponse(r, `{"code":0,"data":{"agents":[{"name":"cli","models":["live-model","disabled-model"]}],"models":[{"id":"live-model"},{"id":"disabled-model","disabled":true},{"id":"not-cli"}]}}`)
+	})}
+}
+
+func TestCodeBuddyCredentialImportUsesLiveModels(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unavailable=%v", unavailable), func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			srv.client = codeBuddyModelCatalogTestClient()
+			if unavailable {
+				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					return nil, errors.New("catalog unavailable")
+				})}
+			}
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/codebuddy/credentials/import", strings.NewReader(`{"auth":{"accessToken":"access"},"account":{"uid":"uid"}}`)))
+			srv.HandleImportCodeBuddyCredential(c)
+			configs, err := srv.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unavailable {
+				if w.Code == http.StatusOK || len(configs) != 0 {
+					t.Fatalf("failed discovery persisted channel: status=%d count=%d", w.Code, len(configs))
+				}
+				return
+			}
+			if w.Code != http.StatusOK || len(configs) != 1 {
+				t.Fatalf("import: %d %s", w.Code, w.Body.String())
+			}
+			response, err := sortOAuthFetchModels(srv.fetchCodeBuddyOAuthModels(context.Background(), configs[0], ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Models) != 1 || response.Models[0].Model != "live-model" || !reflect.DeepEqual(configs[0].ModelEntries, response.Models) {
+				t.Fatalf("saved=%+v fetched=%+v", configs[0].ModelEntries, response.Models)
+			}
+		})
+	}
+}
+
 func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
 	srv := newInMemoryServer(t)
+	srv.client = codeBuddyModelCatalogTestClient()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("files", "workbuddy.json")
@@ -374,6 +421,9 @@ func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
 	if !configs[0].UsesCodeBuddyOAuth() || !configs[0].URLs[0].Exact || configs[0].URLs[0].URL != codebuddyauth.CompletionsURL {
 		t.Fatal("invalid imported provider endpoint")
 	}
+	if got := configs[0].ModelEntries; len(got) != 1 || got[0].Model != "live-model" {
+		t.Fatalf("imported models = %+v", got)
+	}
 	if strings.Contains(w.Body.String(), "import-access") || strings.Contains(w.Body.String(), "import-refresh") {
 		t.Fatal("import response leaked credentials")
 	}
@@ -383,6 +433,7 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 	for _, reauthorize := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reauthorize=%v", reauthorize), func(t *testing.T) {
 			srv := newInMemoryServer(t)
+			srv.client = codeBuddyModelCatalogTestClient()
 			importCredential := func(raw string) int64 {
 				t.Helper()
 				c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/codebuddy/credential/import", strings.NewReader(raw)))

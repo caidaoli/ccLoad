@@ -500,7 +500,11 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			return prepared
 		}
 		prepared.ChannelName = codeBuddyChannelBaseName(credential)
-		prepared.Config = newCodeBuddyChannel(prepared.ChannelName, credentialJSON)
+		prepared.Config, err = s.prepareCodeBuddyChannel(ctx, prepared.ChannelName, credentialJSON)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
 	case codexauth.ChannelType:
 		credential, err := codexauth.ParseCredential(file.Raw)
 		if err != nil {

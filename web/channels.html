@@ -180,6 +180,24 @@
                   </div>
                 </div>
               </div>
+              <div id="codebuddyOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="codebuddyOAuthMethod" data-i18n="channels.codebuddy.methodLabel">CodeBuddy 授权方式</label>
+                  <select id="codebuddyOAuthMethod" class="form-input">
+                    <option value="oauth" data-i18n="channels.codex.methodOAuth">浏览器 OAuth</option>
+                    <option value="file" data-i18n="channels.codebuddy.methodFile">认证文件</option>
+                  </select>
+                </div>
+                <div id="codebuddyCredentialFileField" class="oauth-field" hidden>
+                  <label for="codebuddyCredentialFile" data-i18n="channels.codebuddy.methodFile">认证文件</label>
+                  <input id="codebuddyCredentialFile" type="file" class="form-input" accept=".info,.json,application/json" aria-describedby="codebuddyCredentialFileHint">
+                  <label for="codebuddyCredentialContent" data-i18n="channels.codebuddy.contentLabel">认证文件内容（JSON）</label>
+                  <textarea id="codebuddyCredentialContent" class="form-input oauth-url" rows="8" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="codebuddyCredentialFileHint oauthLoginDialogStatus"></textarea>
+                  <div id="codebuddyCredentialFileHint" class="oauth-field-hint">
+                    <p data-i18n="channels.codebuddy.fileHint">选择文件自动填入内容，或直接粘贴认证 JSON。提交后清空内容，仅导入当前登录账号。</p>
+                  </div>
+                </div>
+              </div>
               <div id="anthropicOAuthControls" hidden>
                 <div class="oauth-field">
                   <label for="anthropicOAuthMethod" data-i18n="channels.anthropic.methodLabel">Anthropic 授权方式</label>

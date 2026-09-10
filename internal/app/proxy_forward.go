@@ -476,7 +476,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		}
 	}
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
-		return finalizeCodeBuddyBody(body)
+		return finalizeCodeBuddyBody(body, s.antigravityPromptMatcher)
 	}
 	return body, nil
 }

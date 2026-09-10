@@ -41,6 +41,60 @@ import (
 
 const antigravityCapacityBodyForAdminTest = `{"error":{"code":503,"message":"No capacity available for model gemini-3-flash on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"gemini-3-flash"}}]}}`
 
+func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			t.Parallel()
+			messages := []map[string]any{
+				{"role": "system", "content": "Claude API"},
+				{"role": "developer", "content": []any{map[string]any{"type": "text", "text": "claude API"}}},
+				{"role": "user", "content": "Claude API"},
+				{"role": "assistant", "content": "Claude API", "tool_calls": []any{map[string]any{"id": "call-1", "type": "function", "function": map[string]any{"name": "API", "arguments": `{"text":"Claude"}`}}}},
+				{"role": "tool", "tool_call_id": "call-1", "content": "Claude API"},
+			}
+			raw, err := json.Marshal(messages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Messages []map[string]any `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				var want []map[string]any
+				if err := json.Unmarshal(raw, &want); err != nil {
+					t.Error(err)
+				}
+				if enabled {
+					want[0]["content"] = "C\u200blaude A\u200bPI"
+					want[1]["content"].([]any)[0].(map[string]any)["text"] = "c\u200blaude A\u200bPI"
+				}
+				if !reflect.DeepEqual(request.Messages, want) {
+					t.Errorf("wire messages = %+v, want %+v", request.Messages, want)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.antigravityPromptMatcher = nil
+			if enabled {
+				srv.antigravityPromptMatcher = buildAntigravitySensitiveWordMatcher([]string{"Claude", "API"})
+			}
+			credential, _ := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+			cfg := newCodeBuddyChannel("CodeBuddy", credential)
+			cfg.URLs[0].URL = upstream.URL + "/v2/chat/completions"
+			cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "messages", Value: raw}}}
+			result := srv.testChannelAPI(context.Background(), cfg, "access", &testutil.TestChannelRequest{Model: "hy3", ClientProtocol: "openai", Content: "test"})
+			if result["success"] != true {
+				t.Fatalf("test failed: %+v", result)
+			}
+		})
+	}
+}
+
 func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 	for _, effort := range []string{"", "low", "none", "high"} {
 		for _, stream := range []bool{false, true} {

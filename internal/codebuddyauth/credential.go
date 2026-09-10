@@ -17,9 +17,6 @@ const (
 	LoginTTL       = 5 * time.Minute
 )
 
-// DefaultModels is the reference provider's catalog, not an account entitlement list.
-var DefaultModels = []string{"glm-5.2", "glm-5.1", "glm-5v-turbo", "kimi-k2.7", "minimax-m3-pay", "hy3", "hy3-preview", "hy3-preview-agent", "deepseek-v4-pro", "deepseek-v4-flash"}
-
 // Credential is the canonical storage format. Import also accepts workbuddy.json.
 type Credential struct {
 	Type         string `json:"type"`

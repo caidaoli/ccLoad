@@ -16,6 +16,7 @@ let xaiImportStopPromise = null;
 let activeAnthropicCookieFlow = null;
 let activeZAIKeyFlow = null;
 let activeCursorImportFlow = null;
+let activeCodeBuddyFileFlow = null;
 let oauthPagehideBound = false;
 let activeOAuthCredentialCleanup = null;
 let oauthCredentialCleanupModelLoadSequence = 0;
@@ -503,6 +504,21 @@ function clearAnthropicCookieSecret(input = document.getElementById('anthropicSe
 
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
+  const codebuddyMethod = document.getElementById('codebuddyOAuthMethod')?.value || 'oauth';
+  const codebuddyFile = provider === 'codebuddy' && codebuddyMethod === 'file';
+  const codebuddyControls = document.getElementById('codebuddyOAuthControls');
+  const codebuddyField = document.getElementById('codebuddyCredentialFileField');
+  const codebuddyInput = document.getElementById('codebuddyCredentialFile');
+  const codebuddyContent = document.getElementById('codebuddyCredentialContent');
+  if (codebuddyControls) codebuddyControls.hidden = provider !== 'codebuddy';
+  if (codebuddyField) codebuddyField.hidden = !codebuddyFile;
+  if (codebuddyInput) {
+    if (!codebuddyFile) codebuddyInput.value = '';
+  }
+  if (codebuddyContent) {
+    codebuddyContent.required = codebuddyFile;
+    if (!codebuddyFile) codebuddyContent.value = '';
+  }
   const codexMethod = document.getElementById('codexOAuthMethod')?.value || 'oauth';
   const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
   const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
@@ -555,7 +571,7 @@ function syncOAuthProviderFields() {
     cursorAPIKeyInput.required = cursorAPIKey;
     if (!cursorAPIKey) clearCursorSecret(cursorAPIKeyInput);
   }
-  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
+  if (sessionFields && (codebuddyFile || xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -573,7 +589,9 @@ function syncOAuthProviderFields() {
     if (!anthropicCookie) clearAnthropicCookieSecret(anthropicSessionKey);
   }
   if (description) {
-    const descriptionKey = codexPersonalAccessToken
+    const descriptionKey = codebuddyFile
+      ? 'channels.codebuddy.fileHint'
+      : codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
       : zed
       ? 'channels.zed.oauthDescription'
@@ -593,14 +611,16 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
+    const method = provider === 'codebuddy' ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
 
 function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
   if (!button) return;
-  const key = provider === 'cursor'
+  const key = provider === 'codebuddy' && method === 'file'
+    ? 'channels.codebuddy.fileSubmit'
+    : provider === 'cursor'
     ? 'channels.cursor.apiKeySubmit'
     : provider === 'zai'
     ? (method === 'api_key' ? 'channels.zai.apiKeySubmit' : 'channels.oauth.startAuthorization')
@@ -855,6 +875,34 @@ async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal
   } finally {
     body = '';
   }
+}
+
+async function loadCodeBuddyCredentialFile(input, content) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (file.size === 0 || file.size > 1048576) {
+    throw new Error(window.t('channels.codebuddy.fileRequired'));
+  }
+  const previous = content.value;
+  const body = await file.text();
+  if (input.files?.[0] === file && content.value === previous) content.value = body;
+}
+
+async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined) {
+  const body = String(input?.value || '').trim();
+  if (!body || new TextEncoder().encode(body).length > 1048576) {
+    throw new Error(window.t('channels.codebuddy.contentRequired'));
+  }
+  signal?.throwIfAborted();
+  try {
+    JSON.parse(body);
+  } catch {
+    throw new Error(window.t('channels.codebuddy.fileInvalid'));
+  }
+  input.value = '';
+  return fetcher('/admin/codebuddy/credentials/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
+  });
 }
 
 function clearZAICodingPlanKey(input = document.getElementById('zaiCodingPlanKey')) {
@@ -1126,6 +1174,19 @@ async function stopActiveXAIImport(options = {}) {
 }
 
 async function stopActiveOAuth(options = {}) {
+  const fileFlow = activeCodeBuddyFileFlow;
+  if (fileFlow) {
+    activeCodeBuddyFileFlow = null;
+    fileFlow.controller.abort();
+    fileFlow.button.disabled = false;
+    fileFlow.button.removeAttribute?.('aria-busy');
+  }
+  const fileInput = document.getElementById('codebuddyCredentialFile');
+  if (fileInput) fileInput.value = '';
+  const fileContent = document.getElementById('codebuddyCredentialContent');
+  if (fileContent) fileContent.value = '';
+  const fileMethod = document.getElementById('codebuddyOAuthMethod');
+  if (fileMethod) fileMethod.disabled = false;
   await Promise.all([
     stopActiveCodexOAuth({ closeDialog: false }),
     stopActiveCodexPersonalAccessToken(),
@@ -2334,6 +2395,9 @@ function setupOAuthActions() {
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const anthropicMethod = document.getElementById('anthropicOAuthMethod');
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
+  const codebuddyMethod = document.getElementById('codebuddyOAuthMethod');
+  const codebuddyFile = document.getElementById('codebuddyCredentialFile');
+  const codebuddyContent = document.getElementById('codebuddyCredentialContent');
   const zaiMethod = document.getElementById('zaiOAuthMethod');
   const zaiCodingPlanKey = document.getElementById('zaiCodingPlanKey');
   const cursorUserAPIKey = document.getElementById('cursorUserAPIKey');
@@ -2382,6 +2446,20 @@ function setupOAuthActions() {
     anthropicMethod.addEventListener('change', syncOAuthProviderFields);
     anthropicMethod.dataset.bound = '1';
   }
+  if (codebuddyMethod && !codebuddyMethod.dataset.bound) {
+    codebuddyMethod.addEventListener('change', syncOAuthProviderFields);
+    codebuddyMethod.dataset.bound = '1';
+  }
+  if (codebuddyFile && codebuddyContent && !codebuddyFile.dataset.bound) {
+    codebuddyFile.addEventListener('change', async () => {
+      try {
+        await loadCodeBuddyCredentialFile(codebuddyFile, codebuddyContent);
+      } catch (error) {
+        setCodexOAuthDialogStatus(error?.message || window.t('channels.codebuddy.fileInvalid'), 'error');
+      }
+    });
+    codebuddyFile.dataset.bound = '1';
+  }
   if (zaiMethod && !zaiMethod.dataset.bound) {
     zaiMethod.addEventListener('change', syncOAuthProviderFields);
     zaiMethod.dataset.bound = '1';
@@ -2390,9 +2468,35 @@ function setupOAuthActions() {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
-        activeAnthropicCookieFlow || activeZAIKeyFlow || activeCursorImportFlow) return;
+        activeAnthropicCookieFlow || activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow) return;
       providerSelect.disabled = true;
-      if (providerSelect.value === 'codex' && codexMethod?.value === 'personalAccessToken') {
+      if (providerSelect.value === 'codebuddy' && codebuddyMethod?.value === 'file') {
+        const flow = { controller: new AbortController(), button: authorizeButton };
+        activeCodeBuddyFileFlow = flow;
+        codebuddyMethod.disabled = true;
+        authorizeButton.disabled = true;
+        authorizeButton.setAttribute?.('aria-busy', 'true');
+        try {
+          setCodexOAuthDialogStatus(window.t('channels.codebuddy.fileSubmitting'));
+          codebuddyFile.value = '';
+          await submitCodeBuddyCredentialFile(codebuddyContent, fetchDataWithAuth, flow.controller.signal);
+          if (activeCodeBuddyFileFlow !== flow) return;
+          closeOAuthLoginDialogElement();
+          setCodexAuthStatus(window.t('channels.codebuddy.oauthComplete'), 'success');
+          await reloadChannelsList();
+        } catch (error) {
+          if (activeCodeBuddyFileFlow !== flow) return;
+          setCodexOAuthDialogStatus(error?.message || window.t('channels.codebuddy.oauthFailed'), 'error');
+        } finally {
+          if (activeCodeBuddyFileFlow === flow) {
+            activeCodeBuddyFileFlow = null;
+            codebuddyMethod.disabled = false;
+            authorizeButton.disabled = false;
+            authorizeButton.removeAttribute?.('aria-busy');
+            providerSelect.disabled = false;
+          }
+        }
+      } else if (providerSelect.value === 'codex' && codexMethod?.value === 'personalAccessToken') {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         const flow = {
           button: authorizeButton, input: codexPersonalAccessToken, cancelling: false, controller
@@ -2923,6 +3027,8 @@ function setupOAuthActions() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    loadCodeBuddyCredentialFile,
+    submitCodeBuddyCredentialFile,
     applyChannelAuthEditorMode,
     batchRefreshSelectedOAuthUsage,
     cancelAntigravityOAuth,

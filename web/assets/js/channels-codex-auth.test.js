@@ -40,8 +40,54 @@ const {
   submitCodexOAuthCallback,
   submitCodexPersonalAccessToken,
   submitCursorCredential,
+  submitCodeBuddyCredentialFile,
+  loadCodeBuddyCredentialFile,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('CodeBuddy CLI file authorization preserves the session and uses the dedicated endpoint', async () => {
+  const credential = { auth: { accessToken: 'test-access' }, account: { uid: 'current' }, accounts: [{ uid: 'current' }, { uid: 'other' }] };
+  const body = JSON.stringify(credential);
+  const input = { value: body };
+  const result = await submitCodeBuddyCredentialFile(input, async (url, options) => {
+    assert.equal(url, '/admin/codebuddy/credentials/import');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(options.body), credential);
+    assert.equal(input.value, '');
+    return { channel_id: 1 };
+  });
+  assert.equal(result.channel_id, 1);
+});
+
+test('CodeBuddy file authorization does not send a request after cancellation', async () => {
+  const controller = new AbortController();
+  const input = { value: '{}' };
+  controller.abort();
+  await assert.rejects(submitCodeBuddyCredentialFile(input, async () => assert.fail('unexpected request'), controller.signal), { name: 'AbortError' });
+  assert.equal(input.value, '{}');
+});
+
+test('CodeBuddy file selection fills editable content without overwriting newer edits', async () => {
+  const content = { value: '' };
+  const file = { size: 2, text: async () => '{}' };
+  await loadCodeBuddyCredentialFile({ files: [file] }, content);
+  assert.equal(content.value, '{}');
+  let finish;
+  const slowFile = { size: 2, text: () => new Promise(resolve => { finish = resolve; }) };
+  const input = { files: [slowFile] };
+  const loading = loadCodeBuddyCredentialFile(input, content);
+  content.value = '{"auth":{"accessToken":"pasted"}}';
+  finish('{}');
+  await loading;
+  assert.equal(content.value, '{"auth":{"accessToken":"pasted"}}');
+  const cancelled = loadCodeBuddyCredentialFile(input, content);
+  input.files = [];
+  content.value = '';
+  finish('{}');
+  await cancelled;
+  assert.equal(content.value, '');
+});
 
 test('Zed login submits the registered installation identity', () => {
   const previousWindow = global.window;

@@ -34,13 +34,21 @@ func codeBuddyChannelBaseName(credential *codebuddyauth.Credential) string {
 }
 
 func newCodeBuddyChannel(name, credential string) *model.Config {
-	entries := make([]model.ModelEntry, 0, len(codebuddyauth.DefaultModels))
-	for _, name := range codebuddyauth.DefaultModels {
-		entries = append(entries, model.ModelEntry{Model: name})
-	}
 	return &model.Config{Name: name, AuthType: model.AuthTypeCodeBuddyOAuth, OAuthCredential: credential,
 		URLs:                  model.ChannelURLs{{URL: codebuddyauth.CompletionsURL, Exact: true, Protocols: []string{"openai"}}},
-		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true, CostMultiplier: 1, ModelEntries: entries}
+		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true, CostMultiplier: 1}
+}
+
+func (s *Server) prepareCodeBuddyChannel(ctx context.Context, name, credential string) (*model.Config, error) {
+	cfg := newCodeBuddyChannel(name, credential)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	response, err := sortOAuthFetchModels(s.fetchCodeBuddyOAuthModels(ctx, cfg, ""))
+	if err != nil {
+		return nil, err
+	}
+	cfg.ModelEntries = response.Models
+	return cfg, nil
 }
 
 func codeBuddyIdentityMatches(a, b *codebuddyauth.Credential) bool {
@@ -89,7 +97,11 @@ func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *code
 	created := cfg == nil
 	if created {
 		name := codeBuddyChannelBaseName(credential)
-		cfg, err = s.store.CreateConfig(ctx, newCodeBuddyChannel(uniqueZedChannelName(configs, name), payload))
+		cfg, err = s.prepareCodeBuddyChannel(ctx, uniqueZedChannelName(configs, name), payload)
+		if err != nil {
+			return nil, false, err
+		}
+		cfg, err = s.store.CreateConfig(ctx, cfg)
 		if err != nil {
 			return nil, false, err
 		}

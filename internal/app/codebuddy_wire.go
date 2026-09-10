@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -39,7 +40,7 @@ func prepareCodeBuddyDefaults(body, source []byte) []byte {
 	return body
 }
 
-func finalizeCodeBuddyBody(body []byte) ([]byte, error) {
+func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) {
 	var request map[string]json.RawMessage
 	if json.Unmarshal(body, &request) != nil || request == nil {
 		return nil, errors.New("invalid CodeBuddy chat request")
@@ -53,20 +54,29 @@ func finalizeCodeBuddyBody(body []byte) ([]byte, error) {
 		"Main branch (you will usually use this for PRs)", "Default branch (you will usually use this for PRs)",
 	)
 	for _, message := range messages {
+		var role string
+		_ = json.Unmarshal(message["role"], &role)
 		// Rewrite only text content, never serialized function arguments or tool results.
-		if string(message["role"]) == `"tool"` {
+		if role == "tool" {
 			continue
+		}
+		rewrite := func(text string) string {
+			text = replacer.Replace(text)
+			if matcher != nil && (role == "system" || role == "developer") {
+				text = obfuscateAntigravityText(text, matcher)
+			}
+			return text
 		}
 		var content string
 		if json.Unmarshal(message["content"], &content) == nil {
-			message["content"], _ = json.Marshal(replacer.Replace(content))
+			message["content"], _ = json.Marshal(rewrite(content))
 			continue
 		}
 		var parts []map[string]json.RawMessage
 		if json.Unmarshal(message["content"], &parts) == nil && parts != nil {
 			for _, part := range parts {
 				if json.Unmarshal(part["text"], &content) == nil {
-					part["text"], _ = json.Marshal(replacer.Replace(content))
+					part["text"], _ = json.Marshal(rewrite(content))
 				}
 			}
 			message["content"], _ = json.Marshal(parts)
