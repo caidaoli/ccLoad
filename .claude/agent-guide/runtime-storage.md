@@ -23,7 +23,8 @@
 - 发布必须使用仓库 Skill:Codex 调 `$ccload-release`,Claude Code 调 `/ccload-release`;唯一源码在 `.agents/skills/ccload-release/`,`.claude/skills/ccload-release` 只是软链接
 - 无参数默认 Beta;只有显式 `stable` 才发稳定版。Tag 只允许 `vX.Y.Z-beta.N` / `vX.Y.Z`
 - `.github/workflows/test.yml` 是提交级唯一发布门禁:`master` 的完整 SHA 必须通过后端测试、Web 验证、构建、lint 和 PostgreSQL 集成测试,发布脚本才允许打 Tag。`.github/workflows/release.yml` 只校验 Tag、构建多平台产物并生成 Release 和 GHCR 镜像;Beta=`prerelease=true` 且不改 GitHub latest,镜像发布精确版本 Tag+`beta`;稳定版更新 GitHub latest,镜像发布精确版本 Tag+`latest`,且该稳定版为 SemVer 最高版本时同步把 `beta` 别名推进到它(存在更高 Beta Tag 时不动,禁止降级)——`beta` 别名语义=全渠道 SemVer 最高版本,与 `preview` 更新渠道一致
-- 官方容器直接打包同一 Release 的 Linux 二进制;`CCLOAD_CONTAINER=1` 时不启动版本检查或进程内更新,`auto_update_*` 设置只读;稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换
+- GitHub Release 仅上传 ccLoad 各平台二进制和 `checksums.txt`,不再分发 `cursor-sdk-bridge-*` 旧更新器兼容附件;使用 `v4.7.3-beta.1` 旧更新器的用户需手动升级。
+- 官方容器直接打包同一 Release 的 ccLoad Linux 二进制;Cursor SDK Bridge 在镜像构建时从 Cursor 官方下载 `bridge.lock` 锁定版本并校验 SHA-256。`CCLOAD_CONTAINER=1` 时不启动版本检查或进程内更新,`auto_update_*` 设置只读;稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换
 - 非容器部署的单一更新管理器同时负责前端版本提示和可选自动应用;默认 `auto_update_channel=stable`,`preview` 同时考虑稳定版/测试版并按 SemVer 取最高版本;`auto_update_interval_hours=0` 只关闭定时检查——设置页「检测更新」按钮走 `POST /admin/update/check`(`HandleManualUpdate` → `UpdateManager.CheckNow`,互斥单飞),在任何间隔值下都执行完整检查/校验/替换流程;容器部署不注册该入口
 
 ## 存储

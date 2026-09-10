@@ -9,7 +9,7 @@ fi
 goos=$1
 goarch=$2
 output=$3
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 lock_file="$repo_root/third_party/cursor-sdk-bridge/bridge.lock"
 
 read_lock() {
