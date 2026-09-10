@@ -2008,6 +2008,13 @@
     .ch-runtime-status--models {
       border-left: 3px solid var(--channel-runtime-status-model-accent);
       color: var(--channel-runtime-status-model-fg);
+      gap: 4px;
+    }
+
+    .ch-runtime-status__clock {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
     }
 
     .ch-runtime-status--protocols {

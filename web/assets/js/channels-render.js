@@ -1158,6 +1158,8 @@ function buildManagementAccountStatusHtml(channel) {
   </div>`;
 }
 
+const MODEL_COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+
 function buildChannelRuntimeStatusHtml(channel) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
@@ -1184,11 +1186,9 @@ function buildChannelRuntimeStatusHtml(channel) {
     .filter(remainingMS => remainingMS > 0);
   if (coolingModels.length > 0) {
     const nextRecoveryMS = Math.min(...coolingModels);
-    const text = window.t('channels.status.modelCooldowns', {
-      count: coolingModels.length,
-      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
-    });
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
+    const countText = escapeChannelRefreshText(window.t('channels.status.modelCooldownsCount', { count: coolingModels.length }));
+    const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery'));
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span>${countText}</span><span class="ch-runtime-status__clock">${MODEL_COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
   }
 
   const protocolProbeRetryCount = Number(channel.protocol_probe_retry_count || 0);

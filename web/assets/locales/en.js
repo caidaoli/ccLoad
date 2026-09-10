@@ -1805,7 +1805,7 @@ window.I18N_LOCALES['en'] = {
   'channels.table.actions': 'Actions',
   'channels.status.channelCooldown': 'Channel cooldown · {time}',
   'channels.status.keyCooldowns': 'Key cooldown: {count} · {time}',
-  'channels.status.modelCooldowns': '{count} model cooldown {time}',
+  'channels.status.modelCooldownsCount': '{count} model cooldown',
   'channels.status.protocolProbeRetries': 'Protocol recheck: {count} · {time}',
   'channels.status.secondsUntilRecovery': 'recovers in {count}s',
   'channels.status.minutesUntilRecovery': 'recovers in {count}m',
