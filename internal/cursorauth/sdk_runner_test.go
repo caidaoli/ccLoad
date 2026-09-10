@@ -39,6 +39,7 @@ type testAgentHandler struct {
 	deleteRelease chan struct{}
 	getRunStarted chan struct{}
 	getRunRelease chan struct{}
+	getRunStopped chan struct{}
 }
 
 type testCursorHandler struct {
@@ -175,7 +176,11 @@ func (h *testAgentHandler) GetRun(
 	snapshot := h.runSnapshot
 	started := h.getRunStarted
 	release := h.getRunRelease
+	stopped := h.getRunStopped
 	h.mu.Unlock()
+	if stopped != nil {
+		defer close(stopped)
+	}
 	if started != nil {
 		close(started)
 	}
@@ -908,7 +913,8 @@ func TestSDKRunnerSendFailureReturnsBeforeAgentCleanup(t *testing.T) {
 func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
 	getRunStarted := make(chan struct{})
 	getRunRelease := make(chan struct{})
-	handler := &testAgentHandler{getRunStarted: getRunStarted, getRunRelease: getRunRelease}
+	getRunStopped := make(chan struct{})
+	handler := &testAgentHandler{getRunStarted: getRunStarted, getRunRelease: getRunRelease, getRunStopped: getRunStopped}
 	handler.sendFn = func(_ context.Context, stream *connect.ServerStream[sdkv1.RunStreamMessage]) error {
 		if err := stream.Send(runResult("agent-1", "run-1", sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED, "done")); err != nil {
 			return err
@@ -916,7 +922,9 @@ func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
 		return stream.Send(runDone("agent-1", "run-1"))
 	}
 	runner := newTestSDKRunner(t, handler)
+	t.Cleanup(func() { close(getRunRelease) })
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	events, err := runner.Run(ctx, &Credential{APIKey: "key-1"}, Request{Model: "model-1", Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -937,6 +945,11 @@ func TestSDKRunnerCallerCancellationInterruptsUsageFallback(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("GetRun fallback ignored caller cancellation")
+	}
+	select {
+	case <-getRunStopped:
+	case <-time.After(time.Second):
+		t.Fatal("GetRun RPC kept running after caller cancellation")
 	}
 }
 

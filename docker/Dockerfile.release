@@ -1,4 +1,18 @@
 # syntax=docker/dockerfile:1
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS cursor-bridge
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY scripts/fetch-cursor-sdk-bridge.sh scripts/fetch-cursor-sdk-bridge.sh
+COPY third_party/cursor-sdk-bridge/bridge.lock third_party/cursor-sdk-bridge/bridge.lock
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN scripts/fetch-cursor-sdk-bridge.sh "${TARGETOS}" "${TARGETARCH}" /app/cursor-sdk-bridge
+
 FROM debian:bookworm-slim
 
 ARG TARGETARCH
@@ -14,7 +28,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY --chown=1001:1001 --chmod=0755 dist/ccload-linux-${TARGETARCH} /app/ccload
-COPY --chown=1001:1001 --chmod=0755 dist/cursor-sdk-bridge-linux-${TARGETARCH} /app/cursor-sdk-bridge
+COPY --from=cursor-bridge --chown=1001:1001 --chmod=0755 /app/cursor-sdk-bridge /app/cursor-sdk-bridge
 COPY --chown=1001:1001 third_party/cursor-sdk-bridge/v1.0.28/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
 
 USER ccload

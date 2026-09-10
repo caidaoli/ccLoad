@@ -172,6 +172,10 @@ type Server struct {
 
 // NewServer 创建并初始化一个新的 Server 实例
 func NewServer(store storage.Store) *Server {
+	return newServer(store, config.LogBatchTimeout)
+}
+
+func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	startedAt := time.Now()
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
 	configService := NewConfigService(store)
@@ -431,6 +435,7 @@ func NewServer(store storage.Store) *Server {
 		&s.isShuttingDown,
 		&s.wg,
 	)
+	s.logService.batchTimeout = logBatchTimeout
 	// 2. AuthService（负责认证授权）
 	// 初始化时自动从数据库加载API访问令牌
 	s.authService = NewAuthService(

@@ -393,12 +393,16 @@ func TestProxy_CursorOAuthFirstByteTimeoutPersistsActualDuration(t *testing.T) {
 }
 
 func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
+	t.Parallel()
+
 	for _, streaming := range []bool{false, true} {
 		name := "non-stream"
 		if streaming {
 			name = "stream"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			upstreamHits := 0
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				upstreamHits++

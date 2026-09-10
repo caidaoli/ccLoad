@@ -766,16 +766,19 @@ func (r *SDKRunner) consumeRun(
 		canceller.Request()
 	}
 
+	// Usage lookup is part of the run and must stop when its caller cancels.
+	// Keep the session alive until the lookup completes; agent deletion below
+	// retains its independent cleanup context.
+	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED && !hasTokenUsage(state.usage) {
+		if usage := loadRunUsage(runCtx, client, state.runID, agentID, session.workdir, session.apiKey); hasTokenUsage(usage) {
+			state.usage = usage
+		}
+	}
 	session.cancel()
 	if stopRunCallback() {
 		close(runCallbackDone)
 	} else {
 		<-runCallbackDone
-	}
-	if state.status == sdkv1.RunLifecycleStatus_RUN_LIFECYCLE_STATUS_FINISHED && !hasTokenUsage(state.usage) {
-		if usage := loadRunUsage(context.Background(), client, state.runID, agentID, session.workdir, session.apiKey); hasTokenUsage(usage) {
-			state.usage = usage
-		}
 	}
 	finalEvent := Event{Text: state.text, Done: true, Err: consumeErr, Usage: state.usage}
 	if !hasTokenUsage(finalEvent.Usage) {

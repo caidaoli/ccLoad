@@ -451,7 +451,8 @@ func newInMemoryServerCore(t testing.TB, settings map[string]string, wrapStore f
 	} else {
 		serverStore = store
 	}
-	srv := NewServer(serverStore)
+	// Keep asynchronous persistence while avoiding the production batching wait.
+	srv := newServer(serverStore, 20*time.Millisecond)
 	closeUpstreamHTTPClient(srv.client)
 	closeUpstreamHTTPClient(srv.antigravityClient)
 	testClient := newTestHTTPClient()
