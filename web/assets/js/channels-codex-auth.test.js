@@ -1030,6 +1030,33 @@ test('Codex OAuth status polling waits for completion and encodes state', async 
   assert.equal(requests[0], '/admin/codex/oauth/status?state=state%20with%20%2F%20symbols');
 });
 
+test('OAuth status polling resumes the same session after a browser network failure', async () => {
+  for (const failure of [new TypeError('NetworkError when attempting to fetch resource.'), new TypeError('Failed to fetch'), new TypeError('Load failed'), Object.assign(new Error('offline'), { name: 'NetworkError' })]) {
+    const requests = [];
+    const result = await pollCodexOAuthStatus('existing-state', {
+      fetchStatus: async url => {
+        requests.push(url);
+        if (requests.length === 1) throw failure;
+        return { status: 'complete', channel_id: 42 };
+      },
+      delay: async () => {}, maxPolls: 2, interval: 0
+    });
+    assert.equal(result.channel_id, 42);
+    assert.deepEqual(requests, Array(2).fill('/admin/codex/oauth/status?state=existing-state'));
+  }
+});
+
+test('OAuth polling bounds network retries and preserves terminal errors', async () => {
+  for (const [error, expectedCalls] of [[new TypeError('Failed to fetch'), 3], [new Error('unauthorized'), 1], [Object.assign(new Error('cancelled'), { name: 'AbortError' }), 1]]) {
+    let calls = 0;
+    await assert.rejects(pollCodexOAuthStatus('state', {
+      fetchStatus: async () => { calls++; throw error; },
+      delay: async () => {}, maxPolls: 3, interval: 0
+    }), value => value === error);
+    assert.equal(calls, expectedCalls);
+  }
+});
+
 test('OAuth login dialog requires provider selection before exposing an authorization session', async () => {
   const elements = new Map([
     ['oauthLoginDialog', { open: false, showModal() { this.open = true; } }],
@@ -1888,6 +1915,21 @@ test('manual Zed credential refresh targets the saved channel', async () => {
     options: { method: 'POST' }
   });
   await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'zed_oauth'), /saved Zed channel/);
+});
+
+test('manual CodeBuddy credential refresh targets the saved channel', async () => {
+  let captured;
+  const response = { oauth_credential: { access_token: 'codebuddy-access', refresh_token: 'rotated-refresh' } };
+  const result = await refreshOAuthCredential(42, async (url, options) => {
+    captured = { url, options };
+    return response;
+  }, 'codebuddy_oauth');
+  assert.equal(result, response);
+  assert.deepEqual(captured, {
+    url: '/admin/channels/42/codebuddy-credential/refresh',
+    options: { method: 'POST' }
+  });
+  await assert.rejects(() => refreshOAuthCredential(0, async () => response, 'codebuddy_oauth'), /saved CodeBuddy channel/);
 });
 
 test('manual credential refresh rejects unsupported auth types', async () => {

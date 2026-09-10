@@ -24,6 +24,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
@@ -100,6 +101,9 @@ type Server struct {
 	zaiService                    *zaiauth.Service
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	codeBuddyService              *codebuddyauth.Service
+	codeBuddyCredentials          *codeBuddyCredentialManager
+	codeBuddyOAuth                *codeBuddyOAuthManager
 	zedService                    *zedauth.Service
 	zedCredentials                *zedCredentialManager
 	zedOAuth                      *codexOAuthManager
@@ -360,6 +364,9 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.zaiService = zaiauth.NewService(s.client)
+	s.codeBuddyService = codebuddyauth.NewService(s.client)
+	s.codeBuddyCredentials = &codeBuddyCredentialManager{server: s}
+	s.codeBuddyOAuth = &codeBuddyOAuthManager{server: s, sessions: make(map[string]*codeBuddyLoginSession)}
 	s.zaiCredentials = newZAICredentialManager(store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
@@ -1629,6 +1636,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/anthropic/oauth/cookie", s.HandleAnthropicCookieAuth)
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/zai/oauth/start", s.HandleStartZAIOAuth)
+		admin.POST("/codebuddy/oauth/start", s.HandleStartCodeBuddyOAuth)
+		admin.GET("/codebuddy/oauth/status", s.HandleCodeBuddyOAuthStatus)
+		admin.POST("/codebuddy/oauth/cancel", s.HandleCancelCodeBuddyOAuth)
+		admin.POST("/codebuddy/credentials/import", s.HandleImportCodeBuddyCredential)
+		admin.POST("/channels/:id/codebuddy-credential/refresh", s.HandleRefreshCodeBuddyCredential)
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
@@ -1893,6 +1905,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
+	}
+	if s.codeBuddyOAuth != nil {
+		s.codeBuddyOAuth.close()
 	}
 	if s.zedOAuth != nil {
 		s.zedOAuth.close()

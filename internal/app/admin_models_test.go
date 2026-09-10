@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
@@ -20,6 +21,63 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestAdminModels_CodeBuddyLiveCatalog(t *testing.T) {
+	for _, scenario := range []string{"live", "refresh", "unavailable"} {
+		t.Run(scenario, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			var requests, refreshes atomic.Int32
+			srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/v2/plugin/auth/token/refresh" {
+					refreshes.Add(1)
+					return jsonResponse(r, `{"code":0,"data":{"accessToken":"new","refreshToken":"new-refresh","expiresIn":3600}}`)
+				}
+				if r.URL.Path != "/v3/config" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				requests.Add(1)
+				if scenario == "unavailable" {
+					return jsonResponseStatus(r, 503, `{"error":"down"}`)
+				}
+				if scenario == "refresh" && r.Header.Get("Authorization") == "Bearer old" {
+					return jsonResponseStatus(r, 401, `{}`)
+				}
+				return jsonResponse(r, `{"code":0,"data":{"agents":[{"name":"cli","models":["z-new-release","a-new-release"]}],"models":[{"id":"z-new-release"},{"id":"glm-4.6"},{"id":"glm-4.6v"},{"id":"glm-4.7"},{"id":"glm-5.0"},{"id":"hunyuan-image-v3.0-art"},{"id":"hy4-preview-x"},{"id":"kimi-k2-thinking"},{"id":"minimax-m2.5"},{"id":"a-new-release"}]}}`)
+			})}
+			raw, _ := (&codebuddyauth.Credential{AccessToken: "old", RefreshToken: "refresh"}).JSON()
+			cfg, err := srv.store.CreateConfig(context.Background(), newCodeBuddyChannel("CodeBuddy", raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/models/fetch", nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+			srv.HandleFetchModels(c)
+			result := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+			if scenario == "unavailable" {
+				if result.Success {
+					t.Fatal("upstream failure fell back to static models")
+				}
+				return
+			}
+			if !result.Success || result.Data.Source != "api" || len(result.Data.Models) != 2 || result.Data.Models[0].Model != "a-new-release" {
+				t.Fatalf("response %s", w.Body.String())
+			}
+			if scenario == "refresh" {
+				if requests.Load() != 2 || refreshes.Load() != 1 {
+					t.Fatalf("requests=%d refreshes=%d", requests.Load(), refreshes.Load())
+				}
+				stored, err := srv.store.GetConfig(context.Background(), cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, err := codebuddyauth.ParseCredential([]byte(stored.OAuthCredential))
+				if err != nil || credential.AccessToken != "new" {
+					t.Fatal("refreshed credential not persisted")
+				}
+			}
+		})
+	}
+}
 
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string

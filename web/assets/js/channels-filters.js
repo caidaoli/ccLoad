@@ -14,7 +14,8 @@ function getChannelAuthTypeOptions() {
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
     { value: 'zai_oauth', label: window.t('channels.authTypeZAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
-    { value: 'zed_oauth', label: window.t('channels.authTypeZed') }
+    { value: 'zed_oauth', label: window.t('channels.authTypeZed') },
+    { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') }
   ];
 }
 
@@ -128,7 +129,7 @@ function setupFilterListeners() {
       showAllOptionsOnOpen: true,
       getOptions: getChannelAuthTypeOptions,
       onSelect: (value) => {
-        const validValues = new Set(['all', 'api_key', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth']);
+        const validValues = new Set(['all', 'codebuddy_oauth', 'api_key', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth']);
         filters.authType = validValues.has(value) ? value : 'all';
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();

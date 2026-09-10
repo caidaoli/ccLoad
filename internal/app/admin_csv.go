@@ -16,6 +16,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
@@ -907,6 +908,12 @@ func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime str
 
 func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	switch authType {
+	case model.AuthTypeCodeBuddyOAuth:
+		credential, err := codebuddyauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodexOAuth:
 		credential, err := codexauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1009,6 +1016,29 @@ func (s *Server) validateCSVImportOAuthCredential(
 ) (string, error) {
 	client := s.getClientForChannel(existing)
 	switch imported.GetAuthType() {
+	case model.AuthTypeCodeBuddyOAuth:
+		credential, err := codebuddyauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := codebuddyauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !codeBuddyIdentityMatches(current, credential) {
+			return "", errors.New("CodeBuddy imported account does not match existing channel")
+		}
+		if credential.RefreshToken != "" {
+			service := *s.codeBuddyService
+			service.Client = client
+			credential, err = service.Refresh(ctx, credential)
+			if err != nil {
+				return "", err
+			}
+		} else if credential.AccessToken != current.AccessToken {
+			return "", errors.New("cannot validate replacement CodeBuddy token without refresh_token")
+		}
+		return credential.JSON()
 	case model.AuthTypeCodexOAuth:
 		credential, err := codexauth.ParseCredential([]byte(imported.OAuthCredential))
 		if err != nil {

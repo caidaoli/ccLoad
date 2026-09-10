@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -442,7 +443,7 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth:
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth:
 		return authType
 	default:
 		return ""
@@ -880,6 +881,9 @@ type oauthTokenEndpointFailure interface {
 }
 
 func oauthRefreshTokenRejected(err error) bool {
+	if errors.Is(err, codebuddyauth.ErrCannotRefresh) {
+		return true
+	}
 	if errors.Is(err, codexauth.ErrPersonalAccessTokenCannotRefresh) {
 		return true
 	}

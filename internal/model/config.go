@@ -22,6 +22,7 @@ const (
 	AuthTypeZAIOAuth         = "zai_oauth"
 	AuthTypeCursorOAuth      = "cursor_oauth"
 	AuthTypeZedOAuth         = "zed_oauth"
+	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -54,9 +55,16 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeCursorOAuth
 	case AuthTypeZedOAuth:
 		return AuthTypeZedOAuth
+	case AuthTypeCodeBuddyOAuth:
+		return AuthTypeCodeBuddyOAuth
 	default:
 		return ""
 	}
+}
+
+// UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.
+func (c *Config) UsesCodeBuddyOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeCodeBuddyOAuth
 }
 
 // NormalizeProtocolTransformMode normalizes persisted/admin values.

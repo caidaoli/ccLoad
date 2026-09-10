@@ -34,6 +34,10 @@ let oauthUsageOperationSequence = 0;
 const activeChannelUsageAutoRefreshPendingIDs = new Set();
 const activeChannelUsageAutoRefreshCompletedIDs = new Set();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
+  codebuddy: Object.freeze({
+    provider: 'codebuddy', label: 'CodeBuddy', i18n: 'channels.codebuddy',
+    callbackPlaceholder: '', pollOnly: true
+  }),
   codex: Object.freeze({
     provider: 'codex', label: 'Codex', i18n: 'channels.codex',
     callbackPlaceholder: 'http://localhost:1455/auth/callback?code=...&state=...'
@@ -138,7 +142,7 @@ function applyChannelAuthEditorMode(
   const zaiOAuth = authType === 'zai_oauth';
   const cursorOAuth = authType === 'cursor_oauth';
   const zedOAuth = authType === 'zed_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth;
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth;
   const oauth = credentialVisible;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -195,7 +199,7 @@ function applyChannelAuthEditorMode(
   if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {
     credentialRefreshButton.hidden = !oauthCredentialRefreshTarget(authType) || Boolean(
-      codexPersonalAccessToken || (zaiOAuth && !String(credential?.access_token || '').trim())
+      codexPersonalAccessToken || (authType === 'codebuddy_oauth' && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
     );
   }
   renderOAuthCredential(
@@ -975,7 +979,18 @@ async function pollOAuthStatus(provider, state, options = {}) {
   const maxPolls = options.maxPolls || CODEX_OAUTH_MAX_POLLS;
   const interval = options.interval ?? CODEX_OAUTH_POLL_INTERVAL_MS;
   for (let attempt = 0; attempt < maxPolls; attempt++) {
-    const status = await fetchStatus(`/admin/${config.provider}/oauth/status?state=${encodeURIComponent(state)}`);
+    let status;
+    try {
+      status = await fetchStatus(`/admin/${config.provider}/oauth/status?state=${encodeURIComponent(state)}`);
+    } catch (error) {
+      // A failed read does not cancel the server-owned login. Keep the same
+      // state and bounded polling window after browser transport failures.
+      const networkFailure = error?.name === 'NetworkError' ||
+        (error?.name === 'TypeError' && /fetch|network|load failed/i.test(error.message || ''));
+      if (!networkFailure || attempt + 1 >= maxPolls) throw error;
+      await delay(interval);
+      continue;
+    }
     if (status?.status === 'complete') return status;
     if (status?.status === 'cancelled') throw new Error(window.t(`${config.i18n}.oauthCancelled`));
     if (status?.status === 'error') throw new Error(status.error || window.t(`${config.i18n}.oauthFailed`));
@@ -1518,7 +1533,8 @@ function oauthCredentialCleanupProviderLabel(authType) {
     anthropic_oauth: 'Anthropic',
     zai_oauth: 'Z.ai',
     cursor_oauth: 'Cursor',
-    zed_oauth: 'Zed'
+    zed_oauth: 'Zed',
+    codebuddy_oauth: 'CodeBuddy'
   })[authType] || authType;
 }
 
@@ -1921,6 +1937,8 @@ async function cancelOAuthCredentialCleanup(
 
 function oauthCredentialRefreshTarget(authType) {
   switch (authType) {
+    case 'codebuddy_oauth':
+      return { resource: 'codebuddy-credential', label: 'CodeBuddy', i18n: 'channels.codebuddy', keyNote: 'CodeBuddy OAuth AT' };
     case 'antigravity_oauth':
       return { resource: 'antigravity-credential', label: 'Antigravity', i18n: 'channels.antigravity', keyNote: 'Antigravity OAuth AT' };
     case 'anthropic_oauth':

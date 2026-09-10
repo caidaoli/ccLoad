@@ -1041,6 +1041,23 @@ func TestCalculateCost_MoonshotFuzzyMatch(t *testing.T) {
 }
 
 func TestCalculateCost_DeepSeekModels(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		input, output, cache int
+		want                 float64
+	}{
+		{"v4.1-flash-input", 1_000_000, 0, 0, 0.30},
+		{"v4.1-flash-output", 0, 1_000_000, 0, 1.20},
+		{"v4.1-flash-cache", 0, 0, 1_000_000, 0.006},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := CalculateCostDetailed("deepseek-v4.1-flash", tc.input, tc.output, tc.cache, 0, 0)
+			if !floatEquals(cost, tc.want, 0.000001) {
+				t.Errorf("成本 = %.6f, 期望 %.6f", cost, tc.want)
+			}
+		})
+	}
+
 	// deepseek-r1: Input $0.70/1M, Output $2.50/1M
 	costR1 := CalculateCostDetailed("deepseek-r1", 1_000_000, 1_000_000, 0, 0, 0)
 	expectedR1 := 0.70 + 2.50

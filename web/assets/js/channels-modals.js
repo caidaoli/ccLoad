@@ -504,7 +504,7 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
-  editingChannelAuthType = ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type)
+  editingChannelAuthType = ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type)
     ? channel.auth_type
     : 'api_key';
   clearChannelDuplicateHint();
@@ -814,7 +814,7 @@ async function saveChannel(event) {
     return;
   }
 
-  const isOAuth = ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType);
+  const isOAuth = ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType);
   const validKeyRows = isOAuth ? [] : getValidInlineKeyRows();
   const validKeys = validKeyRows.map(row => row.api_key);
   if (!isOAuth && validKeyRows.length === 0) {
@@ -3447,7 +3447,7 @@ async function fetchModelsFromAPI() {
   let fetchOptions;
   let modelFetchEntries = [];
   let skippedKeyCount = 0;
-  if (['antigravity_oauth', 'codex_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType)) {
+  if (['codebuddy_oauth', 'antigravity_oauth', 'codex_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType)) {
     if (!editingChannelId) {
       if (window.showError) window.showError(window.t('channels.saveBeforeModelTest'));
       else alert(window.t('channels.saveBeforeModelTest'));

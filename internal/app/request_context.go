@@ -26,6 +26,7 @@ type requestContext struct {
 	streamTimeout                 time.Duration
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
+	codeBuddyOAuth                bool
 	antigravityOAuth              bool
 	anthropicClaudeCodeWire       bool
 	zedWire                       *zedWirePlan

@@ -2549,7 +2549,7 @@ window.WebAuth = window.WebAuth || {
     }
   }
 
-  const SENSITIVE_HEADER_RE = /^(authorization|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
+  const SENSITIVE_HEADER_RE = /^(authorization|x-refresh-token|x-api-key|api-key|x-goog-api-key|proxy-authorization)$/i;
 
   function maskHeaderValue(v) {
     if (typeof v !== 'string' || v.length <= 8) return '******';

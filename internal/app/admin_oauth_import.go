@@ -15,6 +15,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
@@ -80,7 +81,7 @@ func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
 	case "", oauthCredentialProviderAuto:
 		return oauthCredentialProviderAuto, nil
-	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType:
+	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported credential provider %q", normalized)
@@ -152,8 +153,10 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 			return "", errors.New("credential type must be a string")
 		}
 		switch normalized := strings.ToLower(strings.TrimSpace(credentialType)); normalized {
-		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType:
+		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType:
 			return normalized, nil
+		case "workbuddy":
+			return codebuddyauth.ChannelType, nil
 		case "claude":
 			return anthropicauth.ChannelType, nil
 		case "", "oauth":
@@ -163,6 +166,11 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 		}
 	}
 
+	if _, ok := fields["auth"]; ok {
+		if credential, err := codebuddyauth.ParseCredential(raw); err == nil && credential.AccessToken != "" {
+			return codebuddyauth.ChannelType, nil
+		}
+	}
 	codexFields := hasAnyJSONField(fields, "account_id", "plan_type")
 	antigravityFields := hasAnyJSONField(fields, "project_id", "timestamp")
 	xaiFields := hasStrongXAIImportMarker(fields)
@@ -276,6 +284,7 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 		return nil, http.StatusBadRequest, err
 	}
 	nextPriorityByProvider := map[string]int{
+		codebuddyauth.ChannelType:   0,
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
 		xaiauth.ChannelType:         0,
@@ -291,6 +300,8 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 				continue
 			}
 			switch {
+			case cfg.UsesCodeBuddyOAuth() && cfg.Priority > nextPriorityByProvider[codebuddyauth.ChannelType]:
+				nextPriorityByProvider[codebuddyauth.ChannelType] = cfg.Priority
 			case cfg.UsesCodexOAuth() && cfg.Priority > nextPriorityByProvider[codexauth.ChannelType]:
 				nextPriorityByProvider[codexauth.ChannelType] = cfg.Priority
 			case cfg.UsesAntigravityOAuth() && cfg.Priority > nextPriorityByProvider[antigravityauth.ChannelType]:
@@ -477,6 +488,19 @@ func (s *Server) prepareOAuthCredentialImportFile(
 	prepared.Provider = credentialProvider
 
 	switch credentialProvider {
+	case codebuddyauth.ChannelType:
+		credential, err := codebuddyauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = codeBuddyChannelBaseName(credential)
+		prepared.Config = newCodeBuddyChannel(prepared.ChannelName, credentialJSON)
 	case codexauth.ChannelType:
 		credential, err := codexauth.ParseCredential(file.Raw)
 		if err != nil {

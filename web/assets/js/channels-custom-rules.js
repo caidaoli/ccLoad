@@ -16,7 +16,7 @@
   const MAX_VALUE_BYTES = 8 * 1024;
   const MAX_NAME = 256;
   const PATH_REGEX = /^[A-Za-z0-9_.\-]+$/;
-  const AUTH_BLACKLIST = new Set(['authorization', 'x-api-key', 'x-goog-api-key']);
+  const AUTH_BLACKLIST = new Set(['authorization', 'x-api-key', 'x-goog-api-key', 'x-refresh-token']);
 
   const HEADER_ACTIONS = ['override', 'append', 'remove'];
   const BODY_ACTIONS = ['override', 'remove'];
@@ -553,7 +553,7 @@
   }
 
   function defaultHelpHeaders() {
-    return 'Rewrite HTTP headers sent to upstream.\nActions: remove / override / append.\nremove: empty value deletes the header; non-empty value removes only that comma-separated token (e.g. remove "context-1m-2025-08-07" from Anthropic-Beta).\nAuth headers (Authorization / x-api-key / x-goog-api-key) are protected.';
+    return 'Rewrite HTTP headers sent to upstream.\nActions: remove / override / append.\nremove: empty value deletes the header; non-empty value removes only that comma-separated token (e.g. remove "context-1m-2025-08-07" from Anthropic-Beta).\nAuth headers (Authorization / x-api-key / x-goog-api-key / x-refresh-token) are protected.';
   }
   function defaultHelpBody() {
     return 'Rewrite JSON body fields.\nActions: remove / override.\nPath uses dots + integer indices (messages.0.role).\nValues are JSON literals — strings need quotes.';

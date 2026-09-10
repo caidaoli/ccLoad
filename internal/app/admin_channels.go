@@ -13,6 +13,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
@@ -847,6 +848,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 // oauthSyntheticKeyFields 解析 OAuth 渠道凭证，返回合成 Key 行所需的原始凭证值与备注。
 func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err error) {
 	switch {
+	case cfg.UsesCodeBuddyOAuth():
+		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.AccessToken, "CodeBuddy OAuth AT", nil
 	case cfg.UsesCodexOAuth():
 		credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

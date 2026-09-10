@@ -2,6 +2,15 @@
 
 只读取本次涉及的提供商章节。通用协议转换见 [protocol.md](protocol.md)，故障切换及 OAuth 凭证终态禁用见 [proxy.md](proxy.md)，配额累计见 [billing.md](billing.md)。省略目录的 app 文件位于 `internal/app/`；文中的渠道禁用、连接轮换等跨专题机制按这些链接查阅。
 
+## CodeBuddy
+
+- `codebuddy_oauth` 渠道支持扫码登录、workbuddy.json / canonical JSON 导入与自动刷新。登录 state 和 CookieJar 按管理员会话隔离，轮询最长 5 分钟；相同 UID + enterprise_id 重新授权更新已有渠道。
+- 默认精确端点 `https://copilot.tencent.com/v2/chat/completions`，OpenAI 上游、本地协议转换。上游始终 `stream:true`；非流式调用通过共享 SSE 读取器聚合，保留工具参数、思考内容、结束原因及尾部 usage。读取到 `[DONE]` 停止；缺少 `[DONE]` 时仅接受已有完成标记的 EOF。
+- 两句 Claude Code 固定文本仅在消息文本内精确替换：`official CLI for Claude.` → `official CLI tool for Claude.`（完整身份句匹配），`Main branch (you will usually use this for PRs)` → `Default branch (you will usually use this for PRs)`。工具结果和函数参数不改写。hy3 系列仅在调用方未指定思考选项时默认 `reasoning_effort:high`，渠道请求体规则可覆盖。
+- 已知到期时间提前 60 秒刷新，HTTP 401 时强制刷新后重试一次；并发刷新按渠道和被拒 Token 合并，全凭证 CAS 保存，重新授权结果优先。刷新任务归服务器生命周期，单个请求取消不取消共享刷新。
+- Bearer 和 X-Refresh-Token / 账号身份头由渠道凭证生成，刷新令牌禁止自定义规则覆盖并在调试输出脱敏。“获取模型”通过官方 CLI 的 `GET /v3/config` 读取 `data.models[].id`，使用账号凭证和渠道代理；401 时刷新后重试一次，失败或空目录直接报错，不回退内置列表。新建渠道初始列表仍为参考提交目录，用户可通过获取模型更新。无额度 API，批量额度刷新不包含此渠道。
+- 来源及许可见 `internal/codebuddyauth/UPSTREAM.md`。未修改 CLIProxyAPI 核心快照。
+
 ## Codex
 
 - **Codex 图片模型**(`codex_images.go`、`admin_testing_image.go`):`gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 的公开 `/v1/images/generations`、`/v1/images/edits` 在 auto/local 模式按渠道 Codex 能力接入原生 OpenAI Images wire，使用 Codex OAuth 认证，URL 从 Responses 端点切到同 base 的 `/images/generations`、`/images/edits`。顶层 model 保留图片模型并去除路由/思考后缀；管理页共用模型归一、URL 和 JSON 请求构造。编辑 JSON 保留图片引用和 mask，multipart 的 image/image[]、mask 文件转 data URL；不下载远程图片，不创建临时文件。保留 JSON/SSE 响应与正整数 n，不在网关做多次生图展开。两款 `-2026-09-08` 快照继续仅在 generations 使用原有 Luna Responses 工具桥接；原生 Responses 文本主模型不替换。`gpt-image-1.5`、`gpt-image-2` 的管理页直连维持原状。参考 CLIProxyAPI `d1a024e9400bc65bd78ccd908945cf2eacc2835e`（checkout `e8399ffe8aeb48917df1730db93e5b5071c05cd1`）；这是 app 层移植，不更新转换核心快照。

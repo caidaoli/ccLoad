@@ -253,7 +253,7 @@ window.initPageBootstrap({
       }
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
-      filters.authType = ['api_key', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
+      filters.authType = ['codebuddy_oauth', 'api_key', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
       filters.model = savedFilters.model || 'all';
       filters.modelExact = filters.model !== 'all' && savedFilters.modelExact !== false;
       filters.search = savedFilters.search || '';

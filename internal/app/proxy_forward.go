@@ -325,7 +325,11 @@ func (s *Server) buildProxyRequest(
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	wireRebuilt := false
-	if cfg.UsesZedOAuth() {
+	if cfg.UsesCodeBuddyOAuth() {
+		if err := injectCodeBuddyHeaders(req, cfg, apiKey); err != nil {
+			return nil, err
+		}
+	} else if cfg.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, apiKey)
 		wireRebuilt = true
 	} else if cfg.UsesXAIOAuth() {
@@ -404,6 +408,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	target *url.URL,
 ) ([]byte, error) {
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
+	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
+		body = prepareCodeBuddyDefaults(body, sourceBody)
+	}
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
 	// Codex OAuth 的契约归一化会删除上游不接受的字段。这类请求的自定义
 	// 规则必须最后执行，才能真正覆盖内置值。
@@ -467,6 +474,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		if err != nil {
 			return nil, err
 		}
+	}
+	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
+		return finalizeCodeBuddyBody(body)
 	}
 	return body, nil
 }
@@ -1098,6 +1108,17 @@ func (s *Server) handleSuccessResponse(
 	// the first chunk arrives.
 	isCodexResponses := reqCtx != nil && (protocol.Protocol(upstreamProtocol) == protocol.Codex ||
 		reqCtx.transformPlan.UpstreamProtocol == protocol.Codex)
+	if reqCtx.codeBuddyOAuth {
+		if !responseIsSSE(resp, true) {
+			return &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: hdrClone},
+				reqCtx.Duration().Seconds(), fmt.Errorf("%w: CodeBuddy requires an SSE completion", util.ErrUpstreamInvalidResponse)
+		}
+		resp.Header.Set("Content-Type", "text/event-stream")
+		if !reqCtx.isStreaming {
+			return s.handleCodeBuddyNonStream(reqCtx, resp, hdrClone, w, readStats)
+		}
+		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
+	}
 	isResponsesSSE := reqCtx != nil && reqCtx.responsesSSEUpstreamNonStream
 	isSSE := false
 	if isCodexResponses || isResponsesSSE {
@@ -1426,6 +1447,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 
 	parser := newSSEUsageParser(upstreamProtocol)
 	var translatedComplete bool
+	var codeBuddyDone bool
 	var state any
 	commitTranslatedOutput := func(chunks [][]byte) error {
 		// Responses metadata may produce pass-through chunks, but it is not semantic
@@ -1447,6 +1469,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		return nil
 	}
 	translateEvent := func(rawEvent []byte) ([][]byte, error) {
+		if reqCtx.codeBuddyOAuth {
+			rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
+		}
 		if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
 			rawEvent = restoreCodexMultiAgentV2SSEEvent(rawEvent, true)
 		}
@@ -1507,6 +1532,10 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		deferredWriter,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
+			if reqCtx.codeBuddyOAuth {
+				codeBuddyDone = bytes.Equal(sseEventData(parserEvent), sseDoneMarker)
+				parserEvent = normalizeCodeBuddySSEEvent(parserEvent)
+			}
 			if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
 				parserEvent = restoreCodexMultiAgentV2SSEEvent(parserEvent, true)
 			}
@@ -1530,6 +1559,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		},
 		translateEvent,
 		func() bool {
+			if reqCtx.codeBuddyOAuth {
+				return codeBuddyDone
+			}
 			terminalProtocol := reqCtx.transformPlan.UpstreamProtocol == protocol.Codex ||
 				reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
 			return terminalProtocol && parser.IsStreamComplete() && translatedComplete
@@ -1661,10 +1693,10 @@ func attachFirstByteDetector(
 			return reqCtx.startTime
 		}(),
 		onFirstRead: func() {
-			if reqCtx.isStreaming && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if (reqCtx.isStreaming || reqCtx.codeBuddyOAuth) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return
 			}
-			if reqCtx.isStreaming {
+			if reqCtx.isStreaming || reqCtx.codeBuddyOAuth {
 				reqCtx.stopFirstByteTimer()
 			}
 			if readStats.firstByteSec == 0 {
@@ -1688,7 +1720,7 @@ func attachFirstByteDetector(
 // Responses 元数据也属于上游已返回数据，可以结束上游首字节计时；但此处
 // 不通知客户端，因为 deferredResponseWriter 可能仍在缓冲，客户端尚未收到任何字节。
 func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats) {
-	if !reqCtx.isStreaming || readStats.firstByteSec > 0 {
+	if (!reqCtx.isStreaming && !reqCtx.codeBuddyOAuth) || readStats.firstByteSec > 0 {
 		return
 	}
 
@@ -2034,7 +2066,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	translatedRequestOverride []byte,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
-	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(plan))
+	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
+	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))
+	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) {
+		reqCtx.isStreaming = plan.Streaming
+	}
 	if outer := codexMultiAgentV2RequestContextFromContext(ctx); outer != nil {
 		reqCtx.codexMultiAgentV2Optimized = outer.codexMultiAgentV2Optimized
 	}
@@ -2109,6 +2145,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
 	}
+	reqCtx.codeBuddyOAuth = isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx.responsesSSEUpstreamNonStream = !plan.Streaming &&
 		(isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
 			isXAIOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
@@ -3844,6 +3881,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	}
 	if cfg.UsesCodexOAuth() {
 		return s.tryCodexOAuthChannel(ctx, cfg, reqCtx, w)
+	}
+	if cfg.UsesCodeBuddyOAuth() {
+		return s.tryCodeBuddyOAuthChannel(ctx, cfg, reqCtx, w)
 	}
 	if cfg.UsesAntigravityOAuth() {
 		return s.tryAntigravityOAuthChannel(ctx, cfg, reqCtx, w)

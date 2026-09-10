@@ -27,6 +27,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
@@ -335,6 +336,177 @@ func TestCompleteXAICredentialRejectsIndeterminateBillingWithoutRefresh(t *testi
 	_, err := completeXAICredential(context.Background(), xaiauth.NewService(client), client, xaiTestCredential("fresh-access", "refresh-secret", time.Now().Add(time.Hour)), xaiauth.CLIBaseURL)
 	if err == nil || strings.Contains(err.Error(), secret) || refreshes.Load() != 0 {
 		t.Fatalf("unsafe completion error=%v refreshes=%d", err, refreshes.Load())
+	}
+}
+
+func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
+	srv := newInMemoryServer(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "workbuddy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(part, `{"auth":{"accessToken":"import-access","refreshToken":"import-refresh"},"account":{"uid":"uid"}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("provider", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+	srv.HandleImportOAuthCredentials(c)
+	if w.Code != 200 {
+		t.Fatalf("import: %d %s", w.Code, w.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, w.Body.Bytes())
+	if result.Data.Created != 1 || result.Data.Failed != 0 {
+		t.Fatalf("summary: %+v", result.Data)
+	}
+	configs, err := srv.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("channels=%d err=%v", len(configs), err)
+	}
+	if !configs[0].UsesCodeBuddyOAuth() || !configs[0].URLs[0].Exact || configs[0].URLs[0].URL != codebuddyauth.CompletionsURL {
+		t.Fatal("invalid imported provider endpoint")
+	}
+	if strings.Contains(w.Body.String(), "import-access") || strings.Contains(w.Body.String(), "import-refresh") {
+		t.Fatal("import response leaked credentials")
+	}
+}
+
+func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
+	for _, reauthorize := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reauthorize=%v", reauthorize), func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			importCredential := func(raw string) int64 {
+				t.Helper()
+				c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/codebuddy/credential/import", strings.NewReader(raw)))
+				srv.HandleImportCodeBuddyCredential(c)
+				if w.Code != 200 {
+					t.Fatalf("import: %d %s", w.Code, w.Body.String())
+				}
+				result := mustParseAPIResponse[struct {
+					ChannelID int64 `json:"channel_id"`
+				}](t, w.Body.Bytes())
+				return result.Data.ChannelID
+			}
+			id := importCredential(`{"auth":{"accessToken":"old","refreshToken":"old-refresh"},"account":{"uid":"uid","enterpriseId":"org"}}`)
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path != "/v2/plugin/auth/token/refresh" || r.Header.Get("X-Refresh-Token") != "old-refresh" {
+					t.Errorf("unexpected refresh request %s", r.URL.Path)
+				}
+				close(started)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+				return jsonResponse(r, `{"code":0,"data":{"accessToken":"rotated","refreshToken":"rotated-refresh","expiresIn":3600}}`)
+			})}
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/refresh", nil))
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(id, 10)}}
+			done := make(chan struct{})
+			go func() { defer close(done); srv.HandleRefreshCodeBuddyCredential(c) }()
+			select {
+			case <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("refresh did not start")
+			}
+			wantToken, wantRefresh := "rotated", "rotated-refresh"
+			if reauthorize {
+				if updatedID := importCredential(`{"type":"codebuddy","access_token":"new-login","refresh_token":"new-refresh","uid":"uid","enterprise_id":"org"}`); updatedID != id {
+					t.Fatalf("duplicate account channel %d != %d", updatedID, id)
+				}
+				wantToken, wantRefresh = "new-login", "new-refresh"
+			}
+			unblock()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("refresh did not finish")
+			}
+			if w.Code != 200 {
+				t.Fatalf("refresh: %d %s", w.Code, w.Body.String())
+			}
+			cfg, err := srv.store.GetConfig(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil || credential.AccessToken != wantToken || credential.RefreshToken != wantRefresh || credential.UID != "uid" {
+				t.Fatalf("unexpected persisted credential: err=%v", err)
+			}
+			configs, err := srv.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+		})
+	}
+}
+
+func TestCodeBuddyOAuthSessionOwnershipAndCancellation(t *testing.T) {
+	srv := newInMemoryServer(t)
+	srv.codeBuddyService.Client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/v2/plugin/auth/state" {
+			return jsonResponse(r, `{"code":0,"data":{"state":"upstream-state","authUrl":"https://www.codebuddy.cn/auth"}}`)
+		}
+		return jsonResponse(r, `{"code":11217}`)
+	})}
+	call := func(owner, method, path, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+		c, w := newTestContext(t, httptest.NewRequest(method, path, strings.NewReader(body)))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAdmin, SessionHash: owner})
+		handler(c)
+		return w
+	}
+	start := func() string {
+		t.Helper()
+		w := call("owner", "POST", "/start", "", srv.HandleStartCodeBuddyOAuth)
+		if w.Code != 200 {
+			t.Fatalf("start: %d %s", w.Code, w.Body.String())
+		}
+		result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes())
+		if result.Data.State == "" || result.Data.State == "upstream-state" {
+			t.Fatal("public state not isolated")
+		}
+		return result.Data.State
+	}
+	oldState := start()
+	state := start()
+	w := call("owner", "GET", "/status?state="+oldState, "", srv.HandleCodeBuddyOAuthStatus)
+	if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
+		t.Fatalf("old login status %s", result.Data.Status)
+	}
+	for _, method := range []string{"GET", "POST"} {
+		handler, path, body := srv.HandleCodeBuddyOAuthStatus, "/status?state="+state, ""
+		if method == "POST" {
+			handler, path, body = srv.HandleCancelCodeBuddyOAuth, "/cancel", fmt.Sprintf(`{"state":%q}`, state)
+		}
+		if response := call("other", method, path, body, handler); response.Code != 404 {
+			t.Fatalf("other owner got %d", response.Code)
+		}
+	}
+	w = call("owner", "POST", "/cancel", fmt.Sprintf(`{"state":%q}`, state), srv.HandleCancelCodeBuddyOAuth)
+	if w.Code != 200 {
+		t.Fatalf("cancel: %d", w.Code)
+	}
+	srv.codeBuddyOAuth.close()
+	w = call("owner", "GET", "/status?state="+state, "", srv.HandleCodeBuddyOAuthStatus)
+	if result := mustParseAPIResponse[codeBuddyLoginStatus](t, w.Body.Bytes()); result.Data.Status != "cancelled" {
+		t.Fatalf("cancel overwritten: %s", result.Data.Status)
+	}
+	configs, err := srv.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("cancel created channels=%d err=%v", len(configs), err)
 	}
 }
 

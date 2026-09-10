@@ -24,6 +24,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
@@ -64,6 +65,150 @@ type proxyTestEnv struct {
 	server *Server
 	store  storage.Store
 	engine *gin.Engine
+}
+
+func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, clientProtocol := range []string{"openai", "anthropic", "codex", "gemini"} {
+			t.Run(fmt.Sprintf("%s/stream=%v", clientProtocol, stream), func(t *testing.T) {
+				t.Parallel()
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var request map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+					}
+					if request["stream"] != true {
+						t.Error("upstream must stream")
+					}
+					if r.Header.Get("Authorization") != "Bearer access" || r.Header.Get("X-Refresh-Token") != "refresh" || r.Header.Get("X-User-Id") != "uid" {
+						t.Error("provider credentials missing")
+					}
+					if r.URL.Path != "/v2/chat/completions" {
+						t.Errorf("path %s", r.URL.Path)
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, chunk := range []string{
+						`{"id":"chat-1","model":"hy3","created":100,"choices":[{"index":0,"delta":{"role":"assistant","content":"hello","tool_calls":[],"function_call":null},"finish_reason":null}]}`,
+						`{"id":"chat-1","model":"hy3","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
+						`{"id":"chat-1","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`,
+					} {
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+						w.(http.Flusher).Flush()
+					}
+					_, _ = io.WriteString(w, "data: [DONE]\n\n")
+				}))
+				defer upstream.Close()
+				credential, _ := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh", UID: "uid"}).JSON()
+				env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+				path := "/v1/chat/completions"
+				body := map[string]any{"model": "hy3", "stream": stream, "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+				switch clientProtocol {
+				case "anthropic":
+					path = "/v1/messages"
+					body["max_tokens"] = 32
+				case "codex":
+					path = "/v1/responses"
+					delete(body, "messages")
+					body["input"] = "hi"
+				case "gemini":
+					path = "/v1beta/models/hy3:generateContent"
+					if stream {
+						path = "/v1beta/models/hy3:streamGenerateContent"
+					}
+					delete(body, "messages")
+					body["contents"] = []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}}
+				}
+				response := doProxyRequest(t, env.engine, path, body, nil)
+				if response.Code != 200 {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if !stream {
+					var payload map[string]any
+					if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+						t.Fatalf("nonstream not JSON: %v %s", err, response.Body.String())
+					}
+					if clientProtocol == "openai" && (gjson.GetBytes(response.Body.Bytes(), "choices.0.message.content").String() != "hello world" || gjson.GetBytes(response.Body.Bytes(), "usage.total_tokens").Int() != 13) {
+						t.Fatalf("incomplete completion %s", response.Body.String())
+					}
+				} else {
+					parser := newSSEUsageParser(clientProtocol)
+					if err := parser.Feed(response.Body.Bytes()); err != nil {
+						t.Fatal(err)
+					}
+					if !parser.IsStreamComplete() {
+						t.Fatalf("incomplete SSE: %s", response.Body.String())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
+	for _, scenario := range []string{"tools", "length", "missing-done", "truncated", "error", "business-error", "json-error"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if scenario == "json-error" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"code":11101,"msg":"rejected"}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if scenario == "error" {
+					_, _ = io.WriteString(w, "data: {\"error\":{\"type\":\"server_error\",\"message\":\"unavailable\"}}\n\n")
+					return
+				}
+				if scenario == "business-error" {
+					_, _ = io.WriteString(w, "data: {\"code\":11101,\"msg\":\"rejected\"}\n\n")
+					return
+				}
+				chunks := []string{
+					`{"id":"c","model":"hy3","choices":[{"index":0,"delta":{"reasoning_content":"think","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}},{"index":1,"id":"call_b","type":"function","function":{"name":"second","arguments":"{"}}]}}]}`,
+					`{"id":"c","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"}"}},{"index":0,"function":{"arguments":"\"test\"}"}}]}}]}`,
+				}
+				for _, chunk := range chunks {
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+				}
+				if scenario == "truncated" {
+					return
+				}
+				finish := "tool_calls"
+				if scenario == "length" {
+					finish = "length"
+				}
+				_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":%q}]}\n\n", finish)
+				_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n")
+				if scenario != "missing-done" {
+					_, _ = io.WriteString(w, "data: [DONE]\n\n")
+				}
+			}))
+			defer upstream.Close()
+			credential, _ := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+			env := setupProxyTestEnv(t, []testChannel{{name: "codebuddy", upstreamProtocol: "openai", models: "hy3", authType: model.AuthTypeCodeBuddyOAuth, oauthCredential: credential}}, map[int]string{0: upstream.URL + "/v2/chat/completions#"})
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "hy3", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, nil)
+			if scenario == "error" || scenario == "business-error" || scenario == "json-error" || scenario == "truncated" {
+				if response.Code == 200 {
+					t.Fatalf("failure reported success: %s", response.Body.String())
+				}
+				return
+			}
+			if response.Code != 200 {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			payload := gjson.ParseBytes(response.Body.Bytes())
+			calls := payload.Get("choices.0.message.tool_calls").Array()
+			if len(calls) != 2 || calls[0].Get("id").String() != "call_a" || calls[0].Get("function.arguments").String() != `{"q":"test"}` || calls[1].Get("function.arguments").String() != "{}" {
+				t.Fatalf("broken tool aggregation %s", response.Body.String())
+			}
+			if payload.Get("usage.total_tokens").Int() != 18 || payload.Get("choices.0.message.reasoning_content").String() != "think" {
+				t.Fatalf("lost usage/reasoning %s", response.Body.String())
+			}
+			if scenario == "length" && payload.Get("choices.0.finish_reason").String() != "length" {
+				t.Fatal("lost length stop reason")
+			}
+		})
+	}
 }
 
 func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {

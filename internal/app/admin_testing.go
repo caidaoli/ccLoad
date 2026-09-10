@@ -19,6 +19,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
@@ -147,6 +148,7 @@ type channelTestRequestPlan struct {
 	clientProtocol    string
 	upstreamProtocol  string
 	upstreamStreaming bool
+	codeBuddyOAuth    bool
 	apiKey            string
 	xaiOAuth          bool
 	xaiConversationID string
@@ -822,6 +824,21 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
 		}
 		return runtimeCfg, selection, true, nil
+	case cfg.UsesCodeBuddyOAuth():
+		var credential *codebuddyauth.Credential
+		var err error
+		if mode == oauthCredentialUseCurrent {
+			credential, err = codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		} else {
+			credential, err = s.codeBuddyCredentials.credential(ctx, cfg, mode == oauthCredentialForceRefresh, rejectedAccessToken)
+		}
+		if err != nil {
+			return nil, selection, true, err
+		}
+		runtime := cfg.Clone()
+		runtime.OAuthCredential, _ = credential.JSON()
+		selection.requestCredential = credential.AccessToken
+		return runtime, selection, true, nil
 	case cfg.UsesAntigravityOAuth():
 		var credential *antigravityauth.Credential
 		var err error
@@ -1627,6 +1644,12 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")
 	isEventStream := responseIsSSE(resp, requestPlan.upstreamStreaming)
+	if requestPlan.codeBuddyOAuth && resp.StatusCode >= 200 && resp.StatusCode < 300 && !isEventStream {
+		return attachTestDebugData(requestPlan, resp, map[string]any{
+			"success": false, "status_code": http.StatusBadGateway,
+			"error": "CodeBuddy requires an SSE completion", "is_streaming": testReq.Stream,
+		})
+	}
 	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isEventStream)
 
 	// 通用结果初始化
@@ -1659,7 +1682,19 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 
 	if isEventStream {
-		if requestPlan.clientProtocol != requestPlan.upstreamProtocol || requestPlan.antigravityOAuth {
+		if cfg.UsesCodeBuddyOAuth() && !testReq.Stream {
+			body, _, collectErr := collectCodeBuddyCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
+				if testStreamParserHasFirstContent(parser) {
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
+			})
+			if collectErr != nil {
+				result["success"], result["error"] = false, collectErr.Error()
+				return attachTestDebugData(requestPlan, resp, result)
+			}
+			return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, "application/json", start, body, result))
+		}
+		if requestPlan.clientProtocol != requestPlan.upstreamProtocol || requestPlan.antigravityOAuth || requestPlan.codeBuddyOAuth {
 			return attachTestDebugData(requestPlan, resp, s.parseTestTranslatedSSEResponse(ctx, requestPlan, testReq, resp, start, result))
 		}
 		return attachTestDebugData(requestPlan, resp, s.parseTestNativeSSEResponse(ctx, requestPlan, testReq, resp, contentType, start, result))
@@ -1951,6 +1986,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.upstreamStreaming = true
 	}
 	requestPlan.endpointPath = requestPath
+	requestPlan.codeBuddyOAuth = cfgForBuild.UsesCodeBuddyOAuth()
 	return cfgForBuild, requestPlan, nil
 }
 
@@ -1960,7 +1996,7 @@ func (s *Server) newTestUpstreamRequest(
 	testReq *testutil.TestChannelRequest,
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
-	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(protocol.TransformPlan{
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth(), s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout
@@ -1987,7 +2023,12 @@ func (s *Server) newTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	wireRebuilt := false
-	if cfgForBuild.UsesZedOAuth() {
+	if cfgForBuild.UsesCodeBuddyOAuth() {
+		if err := injectCodeBuddyHeaders(req, cfgForBuild, requestPlan.apiKey); err != nil {
+			timeout.cancelAll()
+			return nil, nil, err
+		}
+	} else if cfgForBuild.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, requestPlan.apiKey)
 		wireRebuilt = true
 	} else if requestPlan.xaiOAuth {
@@ -2088,6 +2129,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	firstContentCaptured := false
 	upstreamParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 	var translatedComplete bool
+	var codeBuddyDone bool
 	var state any
 
 	streamErr := streamTransformSSEEventsUntil(
@@ -2099,6 +2141,10 @@ func (s *Server) parseTestTranslatedSSEResponse(
 				return nil
 			}
 			parserEvent := rawEvent
+			if requestPlan.codeBuddyOAuth {
+				codeBuddyDone = bytes.Equal(sseEventData(parserEvent), sseDoneMarker)
+				parserEvent = normalizeCodeBuddySSEEvent(parserEvent)
+			}
 			if requestPlan.antigravityOAuth {
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
@@ -2117,6 +2163,9 @@ func (s *Server) parseTestTranslatedSSEResponse(
 		},
 		func(rawEvent []byte) ([][]byte, error) {
 			translatedRequestBody := requestPlan.requestBody
+			if requestPlan.codeBuddyOAuth {
+				rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
+			}
 			if requestPlan.antigravityOAuth {
 				var err error
 				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
@@ -2147,6 +2196,9 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			return chunks, nil
 		},
 		func() bool {
+			if requestPlan.codeBuddyOAuth {
+				return codeBuddyDone
+			}
 			return upstreamParser.IsStreamComplete() && translatedComplete
 		},
 	)

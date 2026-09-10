@@ -66,11 +66,12 @@ test('validateRulesLocally 拒绝认证头改写', () => {
   const errors = validateRulesLocally({
     headers: [
       { action: 'override', name: 'Authorization', value: 'Bearer hijack' },
-      { action: 'remove', name: 'x-api-key', value: '' }
+      { action: 'remove', name: 'x-api-key', value: '' },
+      { action: 'override', name: 'X-Refresh-Token', value: 'hijack' }
     ],
     body: []
   });
-  assert.equal(errors.length, 2);
+  assert.equal(errors.length, 3);
 });
 
 test('validateRulesLocally 拒绝非法 body path', () => {

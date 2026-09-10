@@ -22,6 +22,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
@@ -39,6 +40,60 @@ import (
 )
 
 const antigravityCapacityBodyForAdminTest = `{"error":{"code":503,"message":"No capacity available for model gemini-3-flash on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"gemini-3-flash"}}]}}`
+
+func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
+	for _, effort := range []string{"", "low", "none", "high"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("effort=%s/stream=%v", effort, stream), func(t *testing.T) {
+				t.Parallel()
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, _ := io.ReadAll(r.Body)
+					if !gjson.GetBytes(body, "stream").Bool() {
+						t.Error("admin upstream not streaming")
+					}
+					actual := gjson.GetBytes(body, "reasoning_effort").String()
+					want := effort
+					if want == "" {
+						want = "high"
+					}
+					if actual != want {
+						t.Errorf("effort=%q want=%q body=%s", actual, want, body)
+					}
+					messages := gjson.GetBytes(body, "messages").Array()
+					if len(messages) == 0 {
+						t.Error("missing messages")
+					}
+					var texts []string
+					for _, message := range messages {
+						texts = append(texts, message.Get("content").String())
+					}
+					joined := strings.Join(texts, "\n")
+					if !strings.Contains(joined, "official CLI tool for Claude.") || !strings.Contains(joined, "Default branch (you will usually use this for PRs)") {
+						t.Errorf("template not rewritten: %s", body)
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"id\":\"c\",\"model\":\"hy3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				}))
+				defer upstream.Close()
+				srv := newInMemoryServer(t)
+				credential, _ := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh"}).JSON()
+				cfg := newCodeBuddyChannel("CodeBuddy", credential)
+				cfg.URLs[0].URL = upstream.URL + "/v2/chat/completions"
+				if effort != "" {
+					cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "reasoning_effort", Value: json.RawMessage(fmt.Sprintf("%q", effort))}}}
+				}
+				result := srv.testChannelAPI(context.Background(), cfg, "access", &testutil.TestChannelRequest{Model: "hy3", ClientProtocol: "openai", Stream: stream, Content: "You are Claude Code, Anthropic's official CLI for Claude.\nMain branch (you will usually use this for PRs)"})
+				if result["success"] != true {
+					t.Fatalf("test failed: %+v", result)
+				}
+				headers, _ := result["upstream_request_headers"].(map[string]string)
+				if headers["X-Refresh-Token"] == "refresh" {
+					t.Error("refresh token leaked in debug response")
+				}
+			})
+		}
+	}
+}
 
 func createCodexOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
 	t.Helper()

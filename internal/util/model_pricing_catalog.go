@@ -556,8 +556,11 @@ var basePricing = map[string]ModelPricing{
 	"deepseek-v3.2-exp":             {InputPrice: 0.27, OutputPrice: 0.41, CacheReadPrice: 0.27, HasCacheReadPrice: true},
 	"deepseek-v3.2-speciale":        {InputPrice: 0.287, OutputPrice: 0.431, CacheReadPrice: 0.058, HasCacheReadPrice: true},
 	"deepseek-v4-flash":             {InputPrice: 0.112, OutputPrice: 0.224, CacheReadPrice: 0.0028, HasCacheReadPrice: true},
-	"deepseek-v4-pro":               {InputPrice: 0.435, OutputPrice: 0.87, CacheReadPrice: 0.0036, HasCacheReadPrice: true},
-	"deepseek-prover-v2":            {InputPrice: 0.50, OutputPrice: 2.18},
+	// 2026-09-10 官方 V4.1 Flash 高峰价；当前固定单价不自动应用空闲时段半价。
+	// https://api-docs.deepseek.com/quick_start/pricing/
+	"deepseek-v4.1-flash": {InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.006, HasCacheReadPrice: true},
+	"deepseek-v4-pro":     {InputPrice: 0.435, OutputPrice: 0.87, CacheReadPrice: 0.0036, HasCacheReadPrice: true},
+	"deepseek-prover-v2":  {InputPrice: 0.50, OutputPrice: 2.18},
 
 	// ========== xAI Grok 模型 ==========
 	// 来源: https://docs.x.ai/developers/pricing

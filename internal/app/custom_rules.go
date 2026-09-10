@@ -13,9 +13,10 @@ import (
 
 // authHeaderBlacklist 禁止自定义规则改写的认证头（大小写不敏感）
 var authHeaderBlacklist = map[string]struct{}{
-	"authorization":  {},
-	"x-api-key":      {},
-	"x-goog-api-key": {},
+	"authorization":   {},
+	"x-refresh-token": {},
+	"x-api-key":       {},
+	"x-goog-api-key":  {},
 }
 
 // applyHeaderRules 按配置顺序改写请求头；认证头受黑名单保护，规则被静默忽略并记录警告。
