@@ -6471,7 +6471,7 @@ func TestHandleChannelTestCursorWritesOneManualLogWithDebug(t *testing.T) {
 		t.Fatalf("response=%v", response.Data)
 	}
 	// 等待异步代理日志的完整刷新周期，确保没有迟到的重复记录。
-	time.Sleep(config.LogBatchTimeout + 250*time.Millisecond)
+	time.Sleep(srv.logService.batchTimeout + 250*time.Millisecond)
 	logs, err := srv.store.ListLogs(context.Background(), time.Time{}, 10, 0, &model.LogFilter{LogSource: model.LogSourceAll})
 	if err != nil {
 		t.Fatalf("ListLogs() error = %v", err)

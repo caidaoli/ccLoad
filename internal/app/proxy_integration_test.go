@@ -174,7 +174,7 @@ func TestProxy_APIKeyCostMultiplierSnapshotsPerKeyInLogs(t *testing.T) {
 		}
 	}
 	// 日志是批量异步落库，等待一个完整刷新周期。
-	time.Sleep(config.LogBatchTimeout + 250*time.Millisecond)
+	time.Sleep(srv.logService.batchTimeout + 250*time.Millisecond)
 
 	logs, err := srv.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{Model: "gpt-multiplier-test"})
 	if err != nil {
@@ -3274,10 +3274,14 @@ func TestProxy_CodexOAuthImage25Snapshots(t *testing.T) {
 }
 
 func TestProxy_CodexOAuthImage25Direct(t *testing.T) {
+	t.Parallel()
+
 	for _, imageModel := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
 		for _, endpoint := range []string{"generations", "edits"} {
 			for _, stream := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/stream=%t", imageModel, endpoint, stream), func(t *testing.T) {
+					t.Parallel()
+
 					imageData := "aW1hZ2U="
 					if stream {
 						imageData = strings.Repeat("YWJj", maxSSEEventSize/4+1)
@@ -3406,8 +3410,12 @@ func TestProxy_CodexOAuthImage25Multipart(t *testing.T) {
 }
 
 func TestProxy_CodexOAuthImage25FailuresAndCooldown(t *testing.T) {
+	t.Parallel()
+
 	for _, failure := range []string{"invalid", "rate_limit", "stream_error", "incomplete"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+
 			var calls atomic.Int32
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				calls.Add(1)
@@ -6016,6 +6024,8 @@ func TestProxy_DebugLogDistinguishesTransportErrorFromEmptyHTTPResponse(t *testi
 	t.Parallel()
 
 	t.Run("transport error before response", func(t *testing.T) {
+		t.Parallel()
+
 		env := setupProxyTestEnv(t, []testChannel{
 			{name: "transport-debug", upstreamProtocol: "openai", models: "gpt-transport-debug", apiKey: "sk-test"},
 		}, map[int]string{0: "https://transport-error.example.com"})
@@ -6052,6 +6062,8 @@ func TestProxy_DebugLogDistinguishesTransportErrorFromEmptyHTTPResponse(t *testi
 	})
 
 	t.Run("empty HTTP response", func(t *testing.T) {
+		t.Parallel()
+
 		env := setupProxyTestEnv(t, []testChannel{
 			{name: "empty-response-debug", upstreamProtocol: "openai", models: "gpt-empty-response", apiKey: "sk-test"},
 		}, map[int]string{0: "https://empty-response.example.com"})
@@ -7219,6 +7231,8 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 }
 
 func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailures(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name                 string
 		statuses             []int
@@ -7252,6 +7266,8 @@ func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailur
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			var attempts atomic.Int64
 			fallbackUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				attempt := attempts.Add(1)
@@ -7406,6 +7422,8 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 }
 
 func TestProxy_CodexMap429To503Setting(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name             string
 		clientProtocol   string

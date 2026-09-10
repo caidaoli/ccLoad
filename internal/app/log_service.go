@@ -33,6 +33,7 @@ type LogService struct {
 	// 日志队列和 Worker
 	logChan      chan *model.LogEntry
 	logWorkers   int
+	batchTimeout time.Duration
 	logDropCount atomic.Uint64
 	logFailCount atomic.Uint64
 
@@ -78,6 +79,7 @@ func NewLogService(
 		store:          store,
 		logChan:        make(chan *model.LogEntry, logBufferSize),
 		logWorkers:     logWorkers,
+		batchTimeout:   config.LogBatchTimeout,
 		retentionDays:  retentionDays,
 		shutdownCh:     shutdownCh,
 		isShuttingDown: isShuttingDown,
@@ -102,7 +104,7 @@ func (s *LogService) logWorker() {
 	defer s.wg.Done()
 
 	batch := make([]*model.LogEntry, 0, config.LogBatchSize)
-	ticker := time.NewTicker(config.LogBatchTimeout)
+	ticker := time.NewTicker(s.batchTimeout)
 	defer ticker.Stop()
 
 	for {
@@ -138,7 +140,7 @@ func (s *LogService) logWorker() {
 			if len(batch) >= config.LogBatchSize {
 				s.flushLogs(batch)
 				batch = batch[:0]
-				ticker.Reset(config.LogBatchTimeout)
+				ticker.Reset(s.batchTimeout)
 			}
 
 		case <-ticker.C:

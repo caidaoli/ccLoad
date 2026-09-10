@@ -1,0 +1,36 @@
+name: Set up Go
+description: Cache dependencies separately from the build results updated by each job.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Go
+      id: go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - name: Locate Go caches
+      id: paths
+      shell: bash
+      run: |
+        echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Go modules
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.paths.outputs.modules }}
+        key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+        restore-keys: |
+          go-mod-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-
+
+    - name: Cache Go build results
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.paths.outputs.build }}
+        key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-${{ hashFiles('go.mod', 'go.sum') }}-
+          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-
