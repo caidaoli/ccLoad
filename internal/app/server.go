@@ -1059,6 +1059,10 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		DisableCompression:  false,
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   true, // 启用标准库 HTTP/2（HTTPS 自动协商）
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: config.HTTP2SendPingTimeout,
+			PingTimeout:     config.HTTP2PingTimeout,
+		},
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,

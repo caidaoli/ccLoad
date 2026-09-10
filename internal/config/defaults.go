@@ -83,6 +83,11 @@ const (
 	// 配合Linux默认重试(9次×3s)，总检测时间42秒
 	HTTPKeepAliveInterval = 15 * time.Second
 
+	// HTTP2SendPingTimeout 在连接未收到帧时启动健康探测，不限制生成内容的等待时间。
+	HTTP2SendPingTimeout = 30 * time.Second
+	// HTTP2PingTimeout 为代理抖动预留应答时间；超时关闭整条 HTTP/2 连接。
+	HTTP2PingTimeout = 15 * time.Second
+
 	// HTTPTLSHandshakeTimeout TLS握手超时
 	// 10秒：更快失败，上游TLS异常时尽快返回/切换（代价：握手慢时更容易超时）
 	HTTPTLSHandshakeTimeout = 10 * time.Second

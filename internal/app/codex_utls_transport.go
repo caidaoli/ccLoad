@@ -195,11 +195,17 @@ func newCodexUTLSH2Transport(base *http.Transport) *http2.Transport {
 		maxConns = min(maxConns, base.MaxConnsPerHost)
 	}
 	limiter := newCodexUTLSConnectionLimiter(maxConns)
+	readIdleTimeout, pingTimeout := config.HTTP2SendPingTimeout, config.HTTP2PingTimeout
+	if base.HTTP2 != nil {
+		readIdleTimeout, pingTimeout = base.HTTP2.SendPingTimeout, base.HTTP2.PingTimeout
+	}
 	return &http2.Transport{
 		StrictMaxConcurrentStreams: false,
 		TLSClientConfig:            cloneTLSConfig(base.TLSClientConfig, []string{"h2"}),
 		DisableCompression:         base.DisableCompression,
 		IdleConnTimeout:            base.IdleConnTimeout,
+		ReadIdleTimeout:            readIdleTimeout,
+		PingTimeout:                pingTimeout,
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *cryptotls.Config) (net.Conn, error) {
 			release, err := limiter.acquire(ctx, addr)
 			if err != nil {

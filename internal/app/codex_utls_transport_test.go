@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,132 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/net/http2"
 )
+
+func TestUpstreamHTTP2KeepAlive(t *testing.T) {
+	for _, protected := range []bool{false, true} {
+		for _, acknowledge := range []bool{false, true} {
+			t.Run(fmt.Sprintf("protected=%t/ack=%t", protected, acknowledge), func(t *testing.T) {
+				peerDone := make(chan error, 1)
+				upstream := httptest.NewUnstartedServer(nil)
+				upstream.EnableHTTP2 = true
+				upstream.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
+					"h2": func(_ *http.Server, conn *tls.Conn, _ http.Handler) {
+						peerDone <- serveKeepAlivePeer(conn, acknowledge)
+					},
+				}
+				upstream.StartTLS()
+				defer upstream.Close()
+
+				base := buildHTTPTransport(true)
+				base.Proxy = nil
+				if base.HTTP2 == nil || base.HTTP2.SendPingTimeout <= 0 || base.HTTP2.PingTimeout <= 0 {
+					t.Fatal("upstream HTTP/2 health checks are disabled")
+				}
+				base.HTTP2.SendPingTimeout = 20 * time.Millisecond
+				base.HTTP2.PingTimeout = 500 * time.Millisecond
+				client := newUpstreamHTTPClient(base, 0)
+				defer closeUpstreamHTTPClient(client)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if protected {
+					req = withChromeUTLS(req)
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				body, readErr := io.ReadAll(resp.Body)
+				if resp.ProtoMajor != 2 {
+					t.Fatalf("protocol = %s, want HTTP/2", resp.Proto)
+				}
+				if acknowledge {
+					if readErr != nil || string(body) != "startfinish" {
+						t.Fatalf("healthy stream: body=%q error=%v", body, readErr)
+					}
+				} else if readErr == nil || ctx.Err() != nil || string(body) != "start" {
+					t.Fatalf("unresponsive peer must interrupt active body before request deadline: body=%q error=%v context=%v", body, readErr, ctx.Err())
+				}
+				select {
+				case err := <-peerDone:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-ctx.Done():
+					t.Fatal("HTTP/2 peer did not finish")
+				}
+			})
+		}
+	}
+}
+
+// Exchange real HTTP/2 frames while the response body stays open. A healthy
+// peer resumes the body after two PINGs; an unresponsive peer never sends ACK.
+func serveKeepAlivePeer(conn net.Conn, acknowledge bool) error {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	preface := make([]byte, len(http2.ClientPreface))
+	if _, err := io.ReadFull(conn, preface); err != nil {
+		return err
+	}
+	if string(preface) != http2.ClientPreface {
+		return fmt.Errorf("invalid HTTP/2 client preface")
+	}
+	framer := http2.NewFramer(conn, conn)
+	if err := framer.WriteSettings(); err != nil {
+		return err
+	}
+	var streamID uint32
+	pings := 0
+	for {
+		frame, err := framer.ReadFrame()
+		if err != nil {
+			if !acknowledge && pings > 0 && errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("read peer frame after %d PINGs: %w", pings, err)
+		}
+		switch frame := frame.(type) {
+		case *http2.SettingsFrame:
+			if !frame.IsAck() {
+				if err := framer.WriteSettingsAck(); err != nil {
+					return err
+				}
+			}
+		case *http2.HeadersFrame:
+			streamID = frame.StreamID
+			// HPACK static-table index 8 is :status 200.
+			if err := framer.WriteHeaders(http2.HeadersFrameParam{StreamID: streamID, BlockFragment: []byte{0x88}, EndHeaders: true}); err != nil {
+				return err
+			}
+			if err := framer.WriteData(streamID, false, []byte("start")); err != nil {
+				return err
+			}
+		case *http2.PingFrame:
+			if frame.IsAck() {
+				continue
+			}
+			pings++
+			if acknowledge {
+				if err := framer.WritePing(true, frame.Data); err != nil {
+					return err
+				}
+				if pings == 2 {
+					return framer.WriteData(streamID, true, []byte("finish"))
+				}
+			}
+		}
+	}
+}
 
 func TestUpstreamHTTPClientUsesChromeUTLSForProtectedWebOrigins(t *testing.T) {
 	for _, targetURL := range []string{
