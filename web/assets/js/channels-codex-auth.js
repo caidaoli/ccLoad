@@ -2077,7 +2077,7 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
     oauthUsageOperationByChannelID.delete(numericID);
     oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
     if (options.reload !== false && typeof loadChannels === 'function') {
-      await loadChannels();
+      await loadChannels({ refreshUsage: false });
     } else {
       rerenderOAuthUsage();
     }
@@ -2132,7 +2132,7 @@ async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options =
       });
     }
     if (options.reload !== false && typeof loadChannels === 'function') {
-      await loadChannels();
+      await loadChannels({ refreshUsage: false });
     } else {
       rerenderOAuthUsage();
     }
@@ -2213,7 +2213,7 @@ async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth, optio
     }
 
     if (options.reload !== false && typeof loadChannels === 'function') {
-      await loadChannels();
+      await loadChannels({ refreshUsage: false });
     } else {
       rerenderOAuthUsage();
     }

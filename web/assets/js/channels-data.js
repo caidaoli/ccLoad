@@ -53,7 +53,7 @@ async function loadChannels(options = {}) {
     if (typeof updateChannelsPagination === 'function') {
       updateChannelsPagination();
     }
-    if (typeof maybeAutoRefreshActiveChannelUsage === 'function') {
+    if (options.refreshUsage !== false && typeof maybeAutoRefreshActiveChannelUsage === 'function') {
       void maybeAutoRefreshActiveChannelUsage(channels.map(channel => channel.id));
     }
   } catch (e) {

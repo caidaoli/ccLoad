@@ -2039,6 +2039,92 @@ test('channel reload updates quota percentages and costs without overwriting new
   }
 });
 
+test('quota operations reload the list without cascading into automatic usage requests', async () => {
+  const { loadChannels } = require('./channels-data.js');
+  const previousGlobals = new Map();
+  const setGlobal = (name, value) => {
+    previousGlobals.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const usage = { provider: 'codex', windows: [] };
+  const requests = [];
+  let automaticRequests = [];
+  let failAutomatic = false;
+  let listRequests = 0;
+  setGlobal('window', { t: key => key });
+  setGlobal('filters', {});
+  setGlobal('channels', []);
+  setGlobal('channelsPageSize', 20);
+  setGlobal('channelsCurrentPage', 1);
+  setGlobal('channelsTotalCount', 0);
+  setGlobal('channelsTotalPages', 1);
+  setGlobal('channelStatsRange', 'today');
+  setGlobal('channelsReadURL', value => value);
+  setGlobal('filterChannels', () => {});
+  setGlobal('isTokenChannelsReadOnly', () => false);
+  setGlobal('loadChannels', loadChannels);
+  setGlobal('fetchAPIWithAuth', async () => {
+    listRequests++;
+    return { success: true, count: 2, data: [1501, 1502].map(id => ({ id, oauth_usage: usage })) };
+  });
+  setGlobal('maybeAutoRefreshActiveChannelUsage', ids => {
+    const request = maybeAutoRefreshActiveChannelUsage(ids, async (url, options) => {
+      requests.push({ url, ...JSON.parse(options.body) });
+      if (failAutomatic) return { ok: false, status: 503, async text() { return ''; } };
+      return oauthUsageBatchSSE([
+        { event: 'complete', total: 0, processed: 0, succeeded: 0, failed: 0 }
+      ]);
+    });
+    automaticRequests.push(request);
+    return request;
+  });
+  const settleAutomatic = async () => {
+    await Promise.all(automaticRequests);
+    automaticRequests = [];
+  };
+  try {
+    for (const operation of [
+      () => refreshOAuthUsage(1501, async () => usage),
+      () => resetCodexQuota(1501, async () => ({ reset: true, usage })),
+      () => refreshOAuthUsageBatch([1501], async () => oauthUsageBatchSSE([
+        { event: 'progress', result: { channel_id: 1501, status: 'succeeded', usage } },
+        { event: 'complete', total: 1, processed: 1, succeeded: 1, failed: 0 }
+      ]))
+    ]) {
+      resetActiveChannelUsageAutoRefreshState();
+      requests.length = 0;
+      failAutomatic = true;
+      await loadChannels();
+      await settleAutomatic();
+      assert.equal(requests.length, 1);
+
+      failAutomatic = false;
+      const before = listRequests;
+      // Exercise pagination correction as well as the ordinary reload path.
+      global.channelsCurrentPage = 2;
+      await operation();
+      await settleAutomatic();
+      assert.equal(listRequests, before + 2);
+      assert.equal(global.channelsCurrentPage, 1);
+      assert.equal(requests.length, 1, 'manual completion must not retry the whole page');
+
+      await loadChannels();
+      await settleAutomatic();
+      assert.equal(requests.length, 2, 'ordinary list loads must still retry automatic usage');
+      assert.deepEqual(requests[1], {
+        url: '/admin/channels/usage/active/batch/stream', channel_ids: [1501, 1502]
+      });
+    }
+  } finally {
+    await settleAutomatic();
+    resetActiveChannelUsageAutoRefreshState();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('failed OAuth usage refresh remains retryable', async () => {
   const previousFilterChannels = global.filterChannels;
   global.filterChannels = () => {};
