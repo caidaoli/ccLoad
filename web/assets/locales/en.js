@@ -1584,6 +1584,18 @@ window.I18N_LOCALES['en'] = {
   'settings.runtimeMetrics.metric.previousResponseMisses': 'Previous response misses',
   // Group names
   'settings.group.channel': 'Channel & Testing',
+  'settings.nav.channel': 'Channels',
+  'settings.nav.upstream-connection': 'Connections',
+  'settings.nav.stream-timeout': 'Stream Timeout',
+  'settings.nav.non-stream-timeout': 'Non-stream Timeout',
+  'settings.nav.websocket': 'WebSocket',
+  'settings.nav.limits': 'Limits',
+  'settings.nav.health': 'Channel Ranking',
+  'settings.nav.cooldown': 'Cooldown',
+  'settings.nav.log': 'Logging',
+  'settings.nav.access': 'Access',
+  'settings.nav.update': 'Updates',
+  'settings.nav.advanced': 'Advanced',
 
   'settings.group.upstreamConnection': 'Upstream Connections',
   'settings.group.streamTimeout': 'Stream Request Timeout',

@@ -1789,4 +1789,8 @@ function shouldShowZoom(points, hours, trendType) {
       }
     }
 
+    window.i18n?.onLocaleChange?.(() => {
+      if (window.chartInstance && document.getElementById('chart').style.display !== 'none') renderChart();
+    });
+
     // 注销功能（已由 ui.js 的 onLogout 统一处理）

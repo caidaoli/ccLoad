@@ -1584,6 +1584,18 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.runtimeMetrics.metric.previousResponseMisses': 'Previous response 未命中',
   // 分组名称
   'settings.group.channel': '渠道与测试',
+  'settings.nav.channel': '渠道与测试',
+  'settings.nav.upstream-connection': '上游连接',
+  'settings.nav.stream-timeout': '流式超时',
+  'settings.nav.non-stream-timeout': '非流式超时',
+  'settings.nav.websocket': 'WebSocket',
+  'settings.nav.limits': '并发与请求体',
+  'settings.nav.health': '渠道排序',
+  'settings.nav.cooldown': '冷却策略',
+  'settings.nav.log': '日志',
+  'settings.nav.access': '访问控制',
+  'settings.nav.update': '程序更新',
+  'settings.nav.advanced': '高级',
 
   'settings.group.upstreamConnection': '上游连接',
   'settings.group.streamTimeout': '流式请求超时',

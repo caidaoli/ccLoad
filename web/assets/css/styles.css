@@ -3186,6 +3186,13 @@ body {
 
 .settings-group-nav {
   width: auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.settings-group-nav .time-range-btn {
+  padding-inline: 12px;
 }
 
 .table-col-select {

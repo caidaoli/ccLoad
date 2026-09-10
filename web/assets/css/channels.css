@@ -1759,13 +1759,13 @@
     }
 
     @media (min-width: 1536px) {
-      html[lang^="zh"] .channel-table .ch-col-name {
+      .channel-table .ch-col-name {
         width: 422px;
         min-width: 422px;
         max-width: 422px;
       }
 
-      html[lang^="zh"] .channel-table .ch-col-models {
+      .channel-table .ch-col-models {
         width: auto;
         min-width: 202px;
         max-width: none;

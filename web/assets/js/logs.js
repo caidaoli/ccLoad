@@ -1050,6 +1050,7 @@ function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) 
 }
 
 function renderLogsLoading() {
+  displayedLogs = null;
   const tbody = document.getElementById('tbody');
   const colspan = getTableColspan();
   const loadingRow = TemplateEngine.render('tpl-log-loading', { colspan });
@@ -1058,6 +1059,7 @@ function renderLogsLoading() {
 }
 
 function renderLogsError() {
+  displayedLogs = null;
   const tbody = document.getElementById('tbody');
   const colspan = getTableColspan();
   const errorRow = TemplateEngine.render('tpl-log-error', { colspan });
@@ -1065,7 +1067,10 @@ function renderLogsError() {
   if (errorRow) tbody.appendChild(errorRow);
 }
 
+let displayedLogs = null;
+
 function renderLogs(data) {
+  displayedLogs = data;
   const tbody = document.getElementById('tbody');
   const colspan = getTableColspan();
   const logMobileLabels = getLogMobileLabels();
@@ -2824,4 +2829,13 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay };
+}
+
+if (typeof window !== 'undefined') {
+  window.i18n?.onLocaleChange?.(() => {
+    if (displayedLogs !== null) {
+      renderLogs(displayedLogs);
+      window.i18n.translatePage();
+    }
+  });
 }

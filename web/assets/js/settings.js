@@ -1148,7 +1148,9 @@ function renderGroupNav(groups) {
     const g = groups[i];
     const btn = document.createElement('button');
     btn.className = 'time-range-btn' + (i === 0 ? ' active' : '');
-    btn.textContent = g.name;
+    btn.dataset.group = g.id;
+    btn.textContent = t(`settings.nav.${g.id}`);
+    btn.title = g.name;
     btn.addEventListener('click', () => {
       // 移除所有按钮的 active 状态
       nav.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
@@ -1159,6 +1161,32 @@ function renderGroupNav(groups) {
     });
     nav.appendChild(btn);
   }
+}
+
+function refreshSettingsTranslations() {
+  const groups = groupSettings(Array.from(settingDefinitions.values()));
+  for (const group of groups) {
+    const button = document.querySelector(`#settings-group-nav [data-group="${group.id}"]`);
+    if (button) {
+      button.textContent = t(`settings.nav.${group.id}`);
+      button.title = group.name;
+    }
+    const title = document.querySelector(`#settings-group-${group.id} .setting-group-title`);
+    if (title) title.textContent = group.name;
+  }
+  for (const setting of settingDefinitions.values()) {
+    const row = document.querySelector(`.setting-data-row[data-key="${setting.key}"]`);
+    if (!row) continue;
+    const description = row.querySelector('.setting-col-description');
+    const key = `settings.desc.${setting.key}`;
+    const translated = t(key);
+    description.textContent = translated !== key ? translated : setting.description;
+    description.dataset.mobileLabel = t('settings.configItem');
+    row.querySelector('.setting-col-value').dataset.mobileLabel = t('settings.currentValue');
+    row.querySelector('.setting-col-actions').dataset.mobileLabel = t('common.actions');
+  }
+  updateGlobalCooldownRulesSummary(document.getElementById(globalCooldownRulesSettingKey)?.value || '');
+  updateMultimodalFallbackSummary(document.getElementById(modelMultimodalFallbackSettingKey)?.value || '');
 }
 
 async function loadSettings() {
@@ -1229,12 +1257,12 @@ function renderSettingGroupNotice(group) {
 
   return `
     <div class="settings-group-notice" role="note">
-      <p>${escapeHtml(t('settings.update.containerManaged'))}</p>
+      <p data-i18n="settings.update.containerManaged">${escapeHtml(t('settings.update.containerManaged'))}</p>
       <ul>
-        <li>${escapeHtml(t('settings.update.stableImage'))}: <code>ghcr.io/caidaoli/ccload:latest</code></li>
-        <li>${escapeHtml(t('settings.update.betaImage'))}: <code>ghcr.io/caidaoli/ccload:beta</code></li>
+        <li><span data-i18n="settings.update.stableImage">${escapeHtml(t('settings.update.stableImage'))}</span>: <code>ghcr.io/caidaoli/ccload:latest</code></li>
+        <li><span data-i18n="settings.update.betaImage">${escapeHtml(t('settings.update.betaImage'))}</span>: <code>ghcr.io/caidaoli/ccload:beta</code></li>
       </ul>
-      <p>${escapeHtml(t('settings.update.applyImage'))}</p>
+      <p data-i18n="settings.update.applyImage">${escapeHtml(t('settings.update.applyImage'))}</p>
       <code class="settings-group-notice-command">docker compose pull &amp;&amp; docker compose up -d</code>
     </div>`;
 }
@@ -1310,7 +1338,7 @@ function renderInput(setting) {
     return `
       <div class="global-cooldown-rules-control">
         <input type="hidden" id="${safeKey}" value="${safeValue}">
-        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules" ${disabledAttributes}>
+        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules" data-i18n="settings.globalCooldownRules.edit" ${disabledAttributes}>
           ${escapeHtml(t('settings.globalCooldownRules.edit'))}
         </button>
         <span id="global-cooldown-rules-summary" class="global-cooldown-rules-summary">
@@ -1322,7 +1350,7 @@ function renderInput(setting) {
   const selectOptions = selectSettingOptions.get(setting.key);
   if (selectOptions) {
     const optionsHtml = selectOptions.map(({ value, labelKey }) => (
-      `<option value="${value}" ${setting.value === value ? 'selected' : ''}>${escapeHtml(t(labelKey))}</option>`
+      `<option value="${value}" data-i18n="${labelKey}" ${setting.value === value ? 'selected' : ''}>${escapeHtml(t(labelKey))}</option>`
     )).join('');
     const selectHtml = `
       <select id="${safeKey}" class="settings-input settings-input--select" ${disabledAttributes}>
@@ -1333,7 +1361,7 @@ function renderInput(setting) {
       return `
         <div class="settings-update-channel-control">
           ${selectHtml}
-          <button type="button" class="btn btn-secondary settings-update-check-btn" data-action="check-for-updates">
+          <button type="button" class="btn btn-secondary settings-update-check-btn" data-action="check-for-updates" data-i18n="settings.updateCheck.check">
             ${escapeHtml(t('settings.updateCheck.check'))}
           </button>
         </div>`;
@@ -1351,10 +1379,10 @@ function renderInput(setting) {
       return `
         <div class="settings-bool-group">
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} ${disabledAttributes}> ${t('common.enable')}
+            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} ${disabledAttributes}> <span data-i18n="common.enable">${t('common.enable')}</span>
           </label>
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} ${disabledAttributes}> ${t('common.disable')}
+            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} ${disabledAttributes}> <span data-i18n="common.disable">${t('common.disable')}</span>
           </label>
         </div>`;
     case 'int':
@@ -1520,6 +1548,8 @@ function resetSetting(key) {
   const control = setSettingControlValue(key, setting.default_value ?? '');
   if (control?.input) markChanged(control.input);
 }
+
+window.i18n?.onLocaleChange?.(refreshSettingsTranslations);
 
 window.initPageBootstrap({
   topbarKey: 'settings',
