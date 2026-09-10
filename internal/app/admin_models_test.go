@@ -1124,6 +1124,7 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 		{Model: "gpt-5.6-terra", RedirectModel: "gpt-5.6-terra"},
 		{Model: "gpt-image-1.5", RedirectModel: "gpt-image-1.5"},
 		{Model: "gpt-image-2", RedirectModel: "gpt-image-2"},
+		{Model: "gpt-image-2.5", RedirectModel: "gpt-image-2.5"},
 		{Model: "gpt-image-2.5-flare", RedirectModel: "gpt-image-2.5-flare"},
 		{Model: "gpt-image-2.5-sunburst", RedirectModel: "gpt-image-2.5-sunburst"},
 	}

@@ -33,7 +33,8 @@ type usageAccumulator struct {
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
 	ToolCostUSD              float64
-	ServiceTier              string // 上游实际声明的 service_tier/speed
+	ImageUsage               util.ImageGenerationToolUsage // Native Images usage, distinct from Responses tool usage.
+	ServiceTier              string                        // 上游实际声明的 service_tier/speed
 	ThinkingEffort           string
 	ResponseModel            string // 上游原始响应声明的模型；只用于日志观测
 	usageVersion             int
@@ -117,6 +118,7 @@ type usageParser interface {
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与上游 service_tier/speed
 	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
+	GetImageUsage() util.ImageGenerationToolUsage
 	GetThinkingEffort() string
 	GetReasoningTokens() int
 	GetResponseModel() string
@@ -134,6 +136,10 @@ func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTie
 
 func (u *usageAccumulator) GetToolCostUSD() float64 {
 	return u.ToolCostUSD
+}
+
+func (u *usageAccumulator) GetImageUsage() util.ImageGenerationToolUsage {
+	return u.ImageUsage
 }
 
 func (u *usageAccumulator) GetThinkingEffort() string {
@@ -265,6 +271,7 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
+		p.ImageUsage = p.scanner.ImageUsage
 		p.scanVersion = p.scanner.usageVersion
 	}
 	if p.scanner.ThinkingEffort != "" {
@@ -463,7 +470,7 @@ func (s *sseLargeFieldSanitizer) clearPending() {
 }
 
 func isLargeJSONStringField(key string) bool {
-	return key == "result" || key == "partial_image_b64"
+	return key == "result" || key == "partial_image_b64" || key == "b64_json"
 }
 
 // parseBuffer 解析缓冲区中的SSE事件（增量解析）
@@ -582,6 +589,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 	isAnthropicTerminal := payloadType == "message_stop" || (payloadType == "" && eventType == "message_stop")
 	if isAnthropicTerminal || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
+		p.streamComplete = true
+	}
+	if isImagesStreamTerminal(payloadType) || (payloadType == "" && isImagesStreamTerminal(eventType)) {
 		p.streamComplete = true
 	}
 	// OpenAI Chat Completions 与 Gemini 在 finish_reason 处就已给出语义终态，
@@ -713,6 +723,10 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 	}
 }
 
+func isImagesStreamTerminal(eventType string) bool {
+	return eventType == "image_generation.completed" || eventType == "image_edit.completed"
+}
+
 // sseJSONObjectMap 解析单个 SSE 帧。
 //
 // 值构造用 gjson 是刻意的：gjson 对重复成员采用前者，和 parseEvent 里用
@@ -769,6 +783,9 @@ func markSSETerminalFromRaw(p *sseUsageParser, eventType, data string) {
 	isAnthropicTerminal := payloadType == "message_stop" || (payloadType == "" && eventType == "message_stop")
 	if isAnthropicTerminal || isSuccessfulResponsesTerminal(payloadType) ||
 		(payloadType == "" && isSuccessfulResponsesTerminal(eventType)) {
+		p.streamComplete = true
+	}
+	if isImagesStreamTerminal(payloadType) || (payloadType == "" && isImagesStreamTerminal(eventType)) {
 		p.streamComplete = true
 	}
 	if gjsonOpenAIStreamComplete(payload) || gjsonGeminiStreamComplete(payload) {
@@ -1168,6 +1185,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			p.ThinkingEffort = sseParser.GetThinkingEffort()
 			p.ReasoningTokens = sseParser.GetReasoningTokens()
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
+			p.ImageUsage = sseParser.GetImageUsage()
 			p.ResponseModel = sseParser.GetResponseModel()
 			return sseParser.GetUsage()
 		}
@@ -1381,6 +1399,23 @@ func imageGenerationToolUsageFromMap(usage map[string]any) util.ImageGenerationT
 	}
 }
 
+// Images API input detail counts include cached tokens; the cost calculator
+// accepts disjoint buckets, unlike the Responses image tool's flat details.
+func imageAPIUsageFromMap(usage map[string]any) util.ImageGenerationToolUsage {
+	result := imageGenerationToolUsageFromMap(usage)
+	input, _ := usage["input_tokens_details"].(map[string]any)
+	cached, _ := input["cached_tokens_details"].(map[string]any)
+	if cached != nil {
+		result.TextCachedTokens = usageInt(cached, "text_tokens")
+		result.ImageCachedTokens = usageInt(cached, "image_tokens")
+	}
+	result.TextCachedTokens = min(result.TextInputTokens, result.TextCachedTokens)
+	result.ImageCachedTokens = min(result.ImageInputTokens, result.ImageCachedTokens)
+	result.TextInputTokens -= result.TextCachedTokens
+	result.ImageInputTokens -= result.ImageCachedTokens
+	return result
+}
+
 // usageTokenCount 是 usage 数值转 token 计数的唯一入口。
 //
 // 上游 JSON 里的数字一律解成 float64，直接 int(v) 会把 NaN、±Inf、1e300 这类坏数据
@@ -1432,6 +1467,9 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, upstreamProtocol str
 		return
 	}
 	u.usageVersion++
+	if upstreamProtocol == "openai" || upstreamProtocol == "codex" {
+		u.ImageUsage = imageAPIUsageFromMap(usage)
+	}
 
 	// 优先使用本次请求的实际上游协议，缺失时才回退到字段特征检测。
 	switch upstreamProtocol {

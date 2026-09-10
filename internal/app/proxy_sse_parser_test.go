@@ -8,6 +8,39 @@ import (
 	"ccLoad/internal/util"
 )
 
+func TestNativeImagesUsageAndCompletion(t *testing.T) {
+	usage := `{"input_tokens":100,"input_tokens_details":{"text_tokens":40,"image_tokens":60,"cached_tokens":30,"cached_tokens_details":{"text_tokens":10,"image_tokens":20}},"output_tokens":50}`
+	for _, kind := range []string{"json", "image_generation", "image_edit"} {
+		t.Run(kind, func(t *testing.T) {
+			var parser usageParser
+			var body string
+			if kind == "json" {
+				parser = newJSONUsageParser("openai")
+				body = `{"data":[{"b64_json":"aW1hZ2U="}],"usage":` + usage + `}`
+			} else {
+				parser = newSSEUsageParser("openai")
+				body = "event: " + kind + ".completed\ndata: {\"type\":\"" + kind + ".completed\",\"b64_json\":\"aW1hZ2U=\",\"usage\":" + usage + "}\n\n"
+			}
+			if err := parser.Feed([]byte(body)); err != nil {
+				t.Fatal(err)
+			}
+			input, output, cached, _ := parser.GetUsage()
+			if input != 70 || output != 50 || cached != 30 {
+				t.Fatalf("usage=%d/%d/%d", input, output, cached)
+			}
+			if kind != "json" && !parser.IsStreamComplete() {
+				t.Fatal("image completion not recognized")
+			}
+			imageUsage := parser.GetImageUsage()
+			res := &fwResult{InputTokens: input, OutputTokens: output, CacheReadInputTokens: cached, ImageUsage: &imageUsage}
+			// 30 text + 10 cached text + 40 image + 20 cached image + 50 output.
+			if cost := computeRequestCost("gpt-image-2.5-flare", "", res); !floatEquals(cost, 0.0020225) {
+				t.Fatalf("image cost=%g, want 0.0020225", cost)
+			}
+		})
+	}
+}
+
 func TestSSEUsageParserDuplicateKeysFirstWins(t *testing.T) {
 	t.Parallel()
 	parser := &sseUsageParser{upstreamProtocol: "codex"}

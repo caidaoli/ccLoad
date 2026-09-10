@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3216,8 +3217,8 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	}
 }
 
-func TestProxy_CodexOAuthImage25(t *testing.T) {
-	for _, imageModel := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
+func TestProxy_CodexOAuthImage25Snapshots(t *testing.T) {
+	for _, imageModel := range []string{"gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
 		t.Run(imageModel, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body map[string]any
@@ -3267,6 +3268,195 @@ func TestProxy_CodexOAuthImage25(t *testing.T) {
 				if !completed {
 					t.Fatalf("missing completed image: %s", response.Body.String())
 				}
+			}
+		})
+	}
+}
+
+func TestProxy_CodexOAuthImage25Direct(t *testing.T) {
+	for _, imageModel := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+		for _, endpoint := range []string{"generations", "edits"} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", imageModel, endpoint, stream), func(t *testing.T) {
+					imageData := "aW1hZ2U="
+					if stream {
+						imageData = strings.Repeat("YWJj", maxSSEEventSize/4+1)
+					}
+					upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						var body map[string]any
+						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+							t.Fatal(err)
+						}
+						if r.URL.Path != "/backend-api/codex/images/"+endpoint || r.Header.Get("Authorization") != "Bearer image-access" {
+							t.Errorf("upstream request: %s %v", r.URL.Path, r.Header)
+						}
+						if body["model"] != imageModel || body["stream"] != stream || body["prompt"] != "draw a cat" ||
+							body["n"] != float64(2) || body["quality"] != "max" || body["tools"] != nil || body["prompt_cache_key"] != nil {
+							t.Errorf("image wire: %#v", body)
+						}
+						if endpoint == "edits" {
+							wire, _ := json.Marshal(body)
+							if gjson.GetBytes(wire, "images.0.file_id").String() != "file-image" || gjson.GetBytes(wire, "mask.file_id").String() != "file-mask" {
+								t.Errorf("image references lost: %s", wire)
+							}
+						}
+						if stream {
+							w.Header().Set("Content-Type", "text/event-stream")
+							prefix := "image_generation"
+							if endpoint == "edits" {
+								prefix = "image_edit"
+							}
+							_, _ = fmt.Fprintf(w, "event: %s.completed\ndata: {\"type\":\"%s.completed\",\"b64_json\":\"%s\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}\n\n", prefix, prefix, imageData)
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, `{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":3,"output_tokens":5}}`)
+						}
+					}))
+					defer upstream.Close()
+					env := setupProxyTestEnv(t, []testChannel{{
+						name: "codex-images", upstreamProtocol: "codex", models: imageModel, authType: model.AuthTypeCodexOAuth,
+						oauthCredential: codexProxyTestCredential(t, "image-access", "refresh", "account"),
+					}}, map[int]string{0: upstream.URL + "/backend-api/codex/responses#"})
+					request := map[string]any{"model": imageModel, "prompt": "draw a cat", "quality": "max", "n": 2, "stream": stream}
+					if endpoint == "edits" {
+						request["images"] = []any{map[string]any{"file_id": "file-image"}}
+						request["mask"] = map[string]any{"file_id": "file-mask"}
+					}
+					response := doProxyRequest(t, env.engine, "/v1/images/"+endpoint, request, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					payload := response.Body.Bytes()
+					if stream {
+						_, payload = parseSSEEventChunk(payload)
+					}
+					field := "data.0.b64_json"
+					if stream {
+						field = "b64_json"
+					}
+					if gjson.GetBytes(payload, field).String() != imageData {
+						t.Fatalf("image response mismatch, bytes=%d", len(payload))
+					}
+					entry := waitForProxyLog(t, env, imageModel)
+					if entry.StatusCode != http.StatusOK || entry.InputTokens != 3 || entry.OutputTokens != 5 {
+						t.Fatalf("image log: %+v", entry)
+					}
+					if imageModel != "gpt-image-2.5" && !floatEquals(entry.Cost, 0.000174) {
+						t.Fatalf("image cost=%g, want 0.000174", entry.Cost)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestProxy_CodexOAuthImage25Multipart(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if r.URL.Path != "/backend-api/codex/images/edits" || r.Header.Get("Content-Type") != "application/json" ||
+					gjson.GetBytes(body, "model").String() != "gpt-image-2.5-flare" || gjson.GetBytes(body, "stream").Bool() != stream ||
+					gjson.GetBytes(body, "images.0.image_url").String() != "data:text/plain; charset=utf-8;base64,aW1hZ2U=" ||
+					gjson.GetBytes(body, "mask.image_url").String() != "data:text/plain; charset=utf-8;base64,bWFzaw==" ||
+					gjson.GetBytes(body, "partial_images").Int() != 2 {
+					t.Errorf("multipart wire: %s %v %s", r.URL.Path, r.Header, body)
+				}
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "event: image_edit.completed\ndata: {\"type\":\"image_edit.completed\",\"b64_json\":\"aW1hZ2U=\"}\n\n")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}]}`)
+				}
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{name: "codex-edit", upstreamProtocol: "codex", models: "codex/gpt-image-2.5-flare",
+				authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "image-access", "refresh", "account")}},
+				map[int]string{0: upstream.URL + "/backend-api/codex/responses#"})
+			var buf bytes.Buffer
+			form := multipart.NewWriter(&buf)
+			for key, value := range map[string]string{"model": "codex/gpt-image-2.5-flare", "prompt": "edit a cat", "stream": strconv.FormatBool(stream), "partial_images": "2"} {
+				if err := form.WriteField(key, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range []string{"image", "mask"} {
+				part, err := form.CreateFormFile(name, name+".png")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(part, name); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := form.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &buf)
+			req.Header.Set("Content-Type", form.FormDataContentType())
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			response := httptest.NewRecorder()
+			env.engine.ServeHTTP(response, req)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_CodexOAuthImage25FailuresAndCooldown(t *testing.T) {
+	for _, failure := range []string{"invalid", "rate_limit", "stream_error", "incomplete"} {
+		t.Run(failure, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				if failure == "rate_limit" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"image model limit"}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if failure == "stream_error" {
+					_, _ = io.WriteString(w, "event: error\ndata: {\"error\":{\"type\":\"server_error\",\"message\":\"image failed\"}}\n\n")
+				} else {
+					_, _ = io.WriteString(w, "event: image_generation.partial_image\ndata: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"cGFydGlhbA==\"}\n\n")
+				}
+			}))
+			defer upstream.Close()
+			name := "codex/gpt-image-2.5-flare"
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "image-errors", upstreamProtocol: "codex", models: name, protocolTransformMode: model.ProtocolTransformModeAuto,
+				authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "image-access", "refresh", "account")}},
+				map[int]string{0: upstream.URL + "/backend-api/codex/responses#"}, map[string]string{"cooldown_fallback_enabled": "false"})
+			request := map[string]any{"model": name, "prompt": "draw a cat", "stream": true}
+			if failure == "invalid" {
+				request["n"] = 0
+			}
+			response := doProxyRequest(t, env.engine, "/v1/images/generations", request, nil)
+			if failure == "invalid" {
+				if response.Code != http.StatusBadRequest || calls.Load() != 0 {
+					t.Fatalf("invalid request: status=%d calls=%d", response.Code, calls.Load())
+				}
+				return
+			}
+			entry := waitForProxyLog(t, env, name)
+			if entry.StatusCode == http.StatusOK {
+				t.Fatalf("failure logged as success: %+v", entry)
+			}
+			if entry.ActualModel != "gpt-image-2.5-flare" {
+				t.Fatalf("actual model=%q", entry.ActualModel)
+			}
+			if failure == "stream_error" {
+				return // Error envelope follows the existing classifier's cooldown policy.
+			}
+			if failure == "incomplete" && entry.StatusCode != util.StatusStreamIncomplete {
+				t.Fatalf("incomplete status=%d", entry.StatusCode)
+			}
+			before := calls.Load()
+			_ = doProxyRequest(t, env.engine, "/v1/images/generations", request, nil)
+			if calls.Load() != before {
+				t.Fatalf("cooled model retried: before=%d after=%d", before, calls.Load())
 			}
 		})
 	}

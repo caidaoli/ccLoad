@@ -2,6 +2,8 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
+- **原生 Images 计费**(`proxy_sse_parser.go`、`proxy_util.go:computeRequestCost`):原生 Images 的顶层 usage 保留普通 token 统计，并独立提取 text/image/cache 明细；`cached_tokens_details` 从含缓存的输入明细扣除后计费。已登记图片费率时以图片专项成本替代普通 token 成本，不重复累加 Responses tool cost。flare/sunburst 使用已登记官方费率，不套 Image 2 按尺寸估算。基础 `gpt-image-2.5` 官方独立费率尚未确认（2026-09-10 模型文档返回 404），不假定等同某变体，维持现有普通价格目录/自定义价格回退；该回退不代表已核实的图片专项费率。
+
 - **OAuth 累计窗口边界校正**(`oauthcost/usage.go:reconcileWindow`):带有效用量的新采样确认同周期、未发生显著用量回退且上游重置时间仍在未来时，在本地周期滚动之前更新成本窗口 `ResetAt`。保留 `StartedAt`、`CountFromAt` 和已有累计，避免移动计数起点后漏掉已计日志。半窗口容差只用于识别周期，不用于永久锚住旧重置时间；旧采样或缺用量基线的快照不得借此改写边界。真正的周期滚动和用量回退继续按原规则清零。
 
 - **渠道倍率** `cost_multiplier`(≤0 归 1):× 标准成本 = `effective_cost`,写日志时快照到 `logs.cost_multiplier` 避免历史污染

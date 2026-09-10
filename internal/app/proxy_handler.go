@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -183,6 +184,9 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 
 	// 智能检测流式请求
 	isStreaming := isStreamingRequest(requestPath, all)
+	if mediaType == "multipart/form-data" && protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyImages {
+		isStreaming, _ = strconv.ParseBool(extractMultipartField(all, mediaParams["boundary"], "stream"))
+	}
 
 	// 多源模型名称获取：优先请求体，其次URL路径
 	originalModel := reqModel.Model
@@ -249,13 +253,17 @@ func (l requestBodyLimits) maxForPath(requestPath string) int64 {
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
 func extractModelFromMultipart(body []byte, boundary string) string {
+	return extractMultipartField(body, boundary, "model")
+}
+
+func extractMultipartField(body []byte, boundary, field string) string {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	for {
 		part, err := reader.NextPart()
 		if err != nil {
 			break
 		}
-		if part.FormName() == "model" {
+		if part.FormName() == field && part.FileName() == "" {
 			val, err := io.ReadAll(io.LimitReader(part, 256))
 			_ = part.Close()
 			if err == nil {

@@ -5389,6 +5389,7 @@ func TestHandleChannelImageGeneration_CodexImage25(t *testing.T) {
 		model  string
 		failed bool
 	}{
+		{model: "gpt-image-2.5"},
 		{model: "gpt-image-2.5-flare"},
 		{model: "gpt-image-2.5-sunburst"},
 		{model: "gpt-image-2.5-flare", failed: true},
@@ -5400,21 +5401,21 @@ func TestHandleChannelImageGeneration_CodexImage25(t *testing.T) {
 				if err != nil {
 					t.Error(err)
 				}
-				if r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer at-admin-test" {
+				if r.URL.Path != "/backend-api/codex/images/generations" || r.Header.Get("Authorization") != "Bearer at-admin-test" {
 					t.Errorf("upstream request: %s %v", r.URL.Path, r.Header)
 				}
-				if gjson.GetBytes(body, "model").String() != "gpt-5.6-luna" ||
-					gjson.GetBytes(body, "tools.0.model").String() != imageModel ||
-					gjson.GetBytes(body, "tools.0.quality").String() != "xhigh" ||
-					!gjson.GetBytes(body, "stream").Bool() {
+				if gjson.GetBytes(body, "model").String() != imageModel ||
+					gjson.GetBytes(body, "quality").String() != "xhigh" ||
+					gjson.GetBytes(body, "stream").Bool() {
 					t.Errorf("image request: %s", body)
 				}
-				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Type", "application/json")
 				if tc.failed {
-					_, _ = io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_request_error\",\"message\":\"image generation rejected\"}}}\n\n")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = io.WriteString(w, `{"error":{"code":"invalid_request_error","message":"image generation rejected"}}`)
 					return
 				}
-				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aW1hZ2U=\",\"output_format\":\"png\"}]}}\n\n")
+				_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}],"output_format":"png"}`)
 			}))
 			defer upstream.Close()
 			srv := newInMemoryServer(t)

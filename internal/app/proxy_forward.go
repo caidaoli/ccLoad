@@ -302,7 +302,8 @@ func (s *Server) buildProxyRequest(
 	}
 
 	// 3. Codex 使用专用白名单；其他上游继续执行通用反代复制。
-	if upstreamProtocol == protocol.Codex {
+	if upstreamProtocol == protocol.Codex || (cfg.UsesCodexOAuth() &&
+		(requestPath == "/images/generations" || requestPath == "/images/edits")) {
 		copyCodexHTTPHeaders(req.Header, hdr)
 	} else {
 		copyRequestHeaders(req, hdr)
@@ -333,7 +334,8 @@ func (s *Server) buildProxyRequest(
 		} else {
 			injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
 		}
-	} else if upstreamProtocol == protocol.Codex {
+	} else if upstreamProtocol == protocol.Codex || (cfg.UsesCodexOAuth() &&
+		(requestPath == "/images/generations" || requestPath == "/images/edits")) {
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
 		}
@@ -857,6 +859,11 @@ func maybePrepareDynamicStreamTransform(reqCtx *requestContext, resp *http.Respo
 	if !reqCtx.isStreaming {
 		return "", false, nil
 	}
+	// Images responses have a known wire format and may start with a multi-MiB
+	// image. Protocol probing must not buffer that entire first event.
+	if reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyImages {
+		return "", false, nil
+	}
 	if !responseIsSSE(resp, true) {
 		return "", false, nil
 	}
@@ -1242,6 +1249,10 @@ func (s *Server) handleSuccessResponse(
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
+	if reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyImages && !reqCtx.transformPlan.NeedsTransform {
+		usage := parser.GetImageUsage()
+		result.ImageUsage = &usage
+	}
 	result.ThinkingEffort = parser.GetThinkingEffort()
 
 	if errorEvent := parser.GetLastError(); errorEvent != nil {
@@ -1249,6 +1260,16 @@ func (s *Server) handleSuccessResponse(
 	}
 	streamComplete = parser.IsStreamComplete()
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
+	if reqCtx.isStreaming && result.ImageUsage != nil && responseContentTypeIsSSE(resp, true) && !streamComplete &&
+		len(result.SSEErrorEvent) == 0 && streamErr == nil {
+		streamErr = io.ErrUnexpectedEOF
+		if result.ResponseCommitted {
+			chunk, _ := xaiImagesStreamErrorEvent(nil, "Images stream disconnected before completion")
+			if _, writeErr := w.Write(chunk); writeErr != nil {
+				streamErr = writeErr
+			}
+		}
+	}
 
 	// 生成流诊断消息（仅流请求）
 	if reqCtx.isStreaming {
@@ -2580,6 +2601,23 @@ func (s *Server) forwardAttempt(
 		actualModel = antigravityWebSearchFallbackModel
 	}
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
+	forwardHeaders := reqCtx.header
+	if directModel, direct := s.codexDirectImagesModel(cfg, reqCtx); direct && upstreamProtocol == protocol.Codex {
+		var err error
+		bodyToSend, err = prepareCodexDirectImagesBody(reqCtx.body, reqCtx.header.Get("Content-Type"), directModel)
+		if err != nil {
+			return &proxyResult{status: http.StatusBadRequest, body: []byte(err.Error()), channelID: &cfg.ID,
+				nextAction: cooldown.ActionReturnClient}, cooldown.ActionReturnClient, nil
+		}
+		actualModel = directModel
+		requestPath = strings.TrimPrefix(strings.TrimRight(reqCtx.requestPath, "/"), "/v1")
+		baseURL = codexImagesURL(baseURL, requestPath, "") + model.ExactUpstreamURLMarker
+		// Codex authentication serves the native OpenAI Images wire protocol.
+		upstreamProtocol = protocol.OpenAI
+		reqCtx.upstreamProtocol = upstreamProtocol
+		forwardHeaders = reqCtx.header.Clone()
+		forwardHeaders.Set("Content-Type", "application/json")
+	}
 	var translatedRequestOverride []byte
 	if bridgeModel, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge && upstreamProtocol == protocol.Codex {
 		actualModel = bridgeModel
@@ -2692,7 +2730,7 @@ func (s *Server) forwardAttempt(
 	executionIdentity := deriveXAIExecutionIDForRequest(reqCtx)
 	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
-		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
+		plan, forwardHeaders, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 		translatedRequestOverride,
 	)
 
@@ -3602,6 +3640,11 @@ func (s *Server) attemptKeyAcrossURLs(
 			cfg.URLs[urlEntry.idx].SupportsProtocol(string(protocol.Codex)) {
 			// Hosted image tools are a provider-specific Images -> Responses
 			// bridge, not a general protocol conversion capability.
+			protocolCandidates = []protocol.Protocol{protocol.Codex}
+			declared = true
+		}
+		if _, direct := s.codexDirectImagesModel(cfg, reqCtx); direct &&
+			cfg.URLs[urlEntry.idx].SupportsProtocol(string(protocol.Codex)) {
 			protocolCandidates = []protocol.Protocol{protocol.Codex}
 			declared = true
 		}

@@ -2968,6 +2968,7 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		"gpt-6-astra",
 		"gpt-image-1.5",
 		"gpt-image-2",
+		"gpt-image-2.5",
 		"gpt-image-2.5-flare",
 		"gpt-image-2.5-sunburst",
 	}
@@ -3333,17 +3334,17 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 		"codex-auto-review", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
 		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
 		"gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
 	teamModels := []string{
 		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
 	freeModels := []string{
 		"codex-auto-review", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
 		"gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
 	tests := []struct {
 		plan string

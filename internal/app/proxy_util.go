@@ -97,6 +97,7 @@ type fwResult struct {
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
 	Cache1hInputTokens       int // 1小时缓存写入Token数（新增2025-12）
 	ToolCostUSD              float64
+	ImageUsage               *util.ImageGenerationToolUsage
 
 	// 转发诊断信息（2025-12新增）
 	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
@@ -701,10 +702,16 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 // Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
 func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
 	actualModel := s.resolveActualModel(cfg, originalModel)
-	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) == protocol.Gemini {
-		return actualModel
+	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) != protocol.Gemini {
+		actualModel = resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
 	}
-	return resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
+	if cfg.UsesCodexOAuth() {
+		if canonical, ok := canonicalCodexImageModel(actualModel); ok &&
+			(canonical == "gpt-image-2.5" || canonical == "gpt-image-2.5-flare" || canonical == "gpt-image-2.5-sunburst") {
+			return canonical
+		}
+	}
+	return actualModel
 }
 
 func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext, upstreamProtocol protocol.Protocol) (actualModel string, bodyToSend []byte) {
@@ -1114,6 +1121,11 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 func computeRequestCost(model string, serviceTier string, res *fwResult) float64 {
 	if res == nil {
 		return 0
+	}
+	if res.ImageUsage != nil {
+		if cost := util.CalculateImageGenerationToolCost(model, *res.ImageUsage); cost > 0 {
+			return cost
+		}
 	}
 	return util.CalculateStandardCostBreakdown(
 		model,

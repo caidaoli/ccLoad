@@ -488,11 +488,9 @@ func withCodexImageGenerationRuntime(cfg *model.Config) *model.Config {
 	if len(cfg.URLs) > 0 && strings.TrimSpace(cfg.URLs[0].URL) != "" {
 		responsesURL = strings.TrimSpace(cfg.URLs[0].URL)
 	}
-	baseURL := strings.TrimRight(responsesURL, "/")
-	baseURL = strings.TrimSuffix(baseURL, "/responses")
 	runtimeCfg := cfg.Clone()
 	runtimeCfg.URLs = model.ChannelURLs{{
-		URL:       baseURL + directImageGenerationPath,
+		URL:       codexImagesURL(responsesURL, directImageGenerationPath, ""),
 		Exact:     true,
 		Protocols: []string{util.ProtocolOpenAI},
 	}}
@@ -603,6 +601,9 @@ func (s *Server) testChannelImageGenerationWithURL(
 		return s.testResponsesImageGeneration(parent, cfg, apiKey, imageReq, selectedURL, actualModel)
 	}
 	body, err := imageGenerationRequestBody(cfg, actualModel, imageReq)
+	if err == nil && cfg.UsesCodexOAuth() {
+		body, err = prepareCodexDirectImagesBody(body, "application/json", actualModel)
+	}
 	if err != nil {
 		result := imageGenerationErrorResult(start, err)
 		result["error"] = err.Error()
@@ -867,26 +868,8 @@ func (s *Server) testResponsesImageGeneration(
 	return annotateImageGenerationResult(result, actualModel)
 }
 
-func canonicalCodexImageModel(raw string) (string, bool) {
-	modelName := strings.TrimSpace(raw)
-	if slash := strings.LastIndex(modelName, "/"); slash >= 0 && slash < len(modelName)-1 {
-		modelName = strings.TrimSpace(modelName[slash+1:])
-	}
-	switch strings.ToLower(modelName) {
-	case "gpt-image-1.5":
-		return "gpt-image-1.5", true
-	case "gpt-image-2":
-		return "gpt-image-2", true
-	case "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
-		"gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08":
-		return strings.ToLower(modelName), true
-	default:
-		return "", false
-	}
-}
-
 func codexImageUnsupportedModelError(modelName string) error {
-	return fmt.Errorf("模型 %s 不受 Codex Images API 支持；可用模型: gpt-image-1.5, gpt-image-2, gpt-image-2.5-flare, gpt-image-2.5-sunburst", modelName)
+	return fmt.Errorf("模型 %s 不受 Codex Images API 支持；可用模型: gpt-image-1.5, gpt-image-2, gpt-image-2.5, gpt-image-2.5-flare, gpt-image-2.5-sunburst", modelName)
 }
 
 func xaiImageGenerationRequestBody(actualModel string, imageReq *imageGenerationTestRequest) ([]byte, error) {
