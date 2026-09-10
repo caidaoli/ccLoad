@@ -87,6 +87,42 @@ func TestManualResetCutoffSurvivesQuotaRefresh(t *testing.T) {
 	}
 }
 
+func TestMonthlyQuotaBoundaryCorrectionUpdatesCalendarAnchor(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                               string
+		oldReset, newReset, followingReset time.Time
+	}{
+		{"month_end", time.Date(2027, 1, 30, 8, 0, 0, 0, time.UTC), time.Date(2027, 1, 31, 8, 0, 0, 0, time.UTC), time.Date(2027, 2, 28, 8, 0, 0, 0, time.UTC)},
+		{"month_start", time.Date(2027, 7, 31, 8, 0, 0, 0, time.UTC), time.Date(2027, 8, 1, 8, 0, 0, 0, time.UTC), time.Date(2027, 9, 1, 8, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			at := tc.oldReset.Add(-time.Hour)
+			sample := Sample{Key: "test|monthly", WindowSeconds: 30 * 24 * 60 * 60, ResetAt: tc.oldReset, UsedPercent: float64Pointer(40), SampledAt: at}
+			usage := Reconcile(nil, []Sample{sample}, at)
+			if _, err := AddStandardCost(usage, at, "gpt-5.6-luna", 100); err != nil {
+				t.Fatal(err)
+			}
+			sample.ResetAt, sample.SampledAt = tc.newReset, at.Add(time.Minute)
+			usage = Reconcile(usage, []Sample{sample}, sample.SampledAt)
+			if usage.Windows[0].StandardCostMicroUSD != 100 {
+				t.Fatal("correction lost cost")
+			}
+			if changed, err := AddStandardCost(usage, tc.newReset, "gpt-5.6-luna", 1); err != nil || !changed {
+				t.Fatalf("new period log rejected: %t %v", changed, err)
+			}
+			w := usage.Windows[0]
+			if w.StartedAt != tc.newReset.Unix() || w.ResetAt != tc.followingReset.Unix() || w.StandardCostMicroUSD != 1 {
+				t.Fatalf("wrong corrected calendar period: %#v", w)
+			}
+			if changed, err := AddStandardCost(usage, tc.newReset.Add(-time.Second), "gpt-5.6-luna", 100); err != nil || changed {
+				t.Fatalf("old period log accepted: %t %v", changed, err)
+			}
+		})
+	}
+}
+
 func float64Pointer(value float64) *float64 {
 	return &value
 }
@@ -817,6 +853,78 @@ func TestReconcileKeepsCostWhenUpstreamUsageOnlyAdvances(t *testing.T) {
 	}
 }
 
+func TestReconcileCorrectsResetBoundaryBeforeRollingCost(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                        string
+		key                         string
+		seconds, oldReset, newReset int64
+	}{
+		{"five_hour", "codex|primary", 18000, 1788976810, 1788981445},
+		{"weekly", "codex|secondary", 604800, 1789449221, 1789491612},
+	} {
+		for _, partial := range []bool{false, true} {
+			for _, afterOldReset := range []bool{false, true} {
+				name := tc.name + map[bool]string{false: "/complete", true: "/partial"}[partial] + map[bool]string{false: "/before_old_reset", true: "/after_old_reset"}[afterOldReset]
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					reconcileUsage := Reconcile
+					if partial {
+						reconcileUsage = ReconcilePartial
+					}
+					seedAt := time.Unix(tc.oldReset-600, 0)
+					original := Sample{Key: tc.key, Family: FamilyCodex, WindowSeconds: tc.seconds, ResetAt: time.Unix(tc.oldReset, 0), UsedPercent: float64Pointer(40), SampledAt: seedAt}
+					usage := Reconcile(nil, []Sample{original}, seedAt)
+					if tc.name == "weekly" {
+						usage = Reset(usage, seedAt, map[string]int64{FamilyCodex: 1_000_000})
+					} else if _, err := AddStandardCost(usage, seedAt, "gpt-5.6-luna", 1_000_000); err != nil {
+						t.Fatal(err)
+					}
+					original.SampledAt = seedAt.Add(time.Second)
+					usage = Reconcile(usage, []Sample{original}, original.SampledAt)
+					startedAt := usage.Windows[0].StartedAt
+					countFromAt := usage.Windows[0].CountFromAt
+					at := seedAt.Add(time.Minute)
+					if afterOldReset {
+						at = time.Unix(tc.oldReset+1, 0)
+					}
+					sample := original
+					sample.ResetAt, sample.SampledAt, sample.UsedPercent = time.Unix(tc.newReset, 0), at, float64Pointer(41)
+					usage = reconcileUsage(usage, []Sample{sample}, at)
+					w := Find(usage, tc.key)
+					if w.ResetAt != tc.newReset || w.StartedAt != startedAt || w.CountFromAt != countFromAt || w.StandardCostMicroUSD != 1_000_000 {
+						t.Fatalf("new sample lost accounting period or retained old reset: %#v", w)
+					}
+					// A delayed old snapshot cannot restore the old reset boundary.
+					usage = reconcileUsage(usage, []Sample{original}, at.Add(time.Second))
+					w = Find(usage, tc.key)
+					if w.ResetAt != tc.newReset || w.StandardCostMicroUSD != 1_000_000 {
+						t.Fatalf("stale sample changed corrected window: %#v", w)
+					}
+					if changed, err := AddStandardCost(usage, time.Unix(max(startedAt, countFromAt)-1, 0), "gpt-5.6-luna", 100); err != nil || changed {
+						t.Fatalf("pre-cutoff log accepted: %t %v", changed, err)
+					}
+					if changed, err := AddStandardCost(usage, time.Unix(tc.oldReset+2, 0), "gpt-5.6-luna", 569); err != nil || !changed {
+						t.Fatalf("add detection cost: %t %v", changed, err)
+					}
+					if w.StandardCostMicroUSD != 1_000_569 {
+						t.Fatalf("old reset cleared cost: %#v", w)
+					}
+					if _, err := AddStandardCost(usage, time.Unix(tc.newReset, 0), "gpt-5.6-luna", 1); err != nil {
+						t.Fatal(err)
+					}
+					if w.StandardCostMicroUSD != 1 || w.StartedAt != tc.newReset {
+						t.Fatalf("new reset did not roll cost: %#v", w)
+					}
+					if err := Validate(usage); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestReconcilePartialKeepsCostWhenFiveHourResetJitters(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC)
@@ -839,8 +947,8 @@ func TestReconcilePartialKeepsCostWhenFiveHourResetJitters(t *testing.T) {
 		window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 11 {
 		t.Fatalf("reset_at jitter discarded cost: %#v", window)
 	}
-	if window.ResetAt != resetAt.Unix() {
-		t.Fatalf("reset boundary shifted by jitter: got %d, want %d", window.ResetAt, resetAt.Unix())
+	if window.ResetAt != resetAt.Add(3*time.Minute).Unix() {
+		t.Fatalf("reset boundary did not follow latest sample: %#v", window)
 	}
 }
 
@@ -948,7 +1056,7 @@ func TestReconcileIgnoresSmallUpstreamUsageRollback(t *testing.T) {
 	t.Parallel()
 	// 渠道 526 复盘：Google remaining_fraction 浮点抖动使 used% 出现 0.001
 	// 级的微回退，零容差判定曾把整周累计清空。微回退必须当噪声处理：
-	// 只刷新采样基线，不动成本、count_from_at 和窗口边界。
+	// 刷新采样基线和重置时间，不动成本、count_from_at 和累计起点。
 	now := time.Date(2026, time.August, 24, 2, 29, 7, 0, time.UTC)
 	resetAt := now.Add(6 * 24 * time.Hour)
 	usage := Reconcile(nil, []Sample{{
@@ -968,8 +1076,8 @@ func TestReconcileIgnoresSmallUpstreamUsageRollback(t *testing.T) {
 	if window.StandardCostMicroUSD != 72_417_000 || window.CountFromAt != 0 {
 		t.Fatalf("small upstream usage drop cleared cost: %#v", window)
 	}
-	if window.StartedAt != resetAt.Add(-7*24*time.Hour).Unix() || window.ResetAt != resetAt.Unix() {
-		t.Fatalf("small upstream usage drop moved boundaries: %#v", window)
+	if window.StartedAt != resetAt.Add(-7*24*time.Hour).Unix() || window.ResetAt != resetAt.Add(7*time.Second).Unix() {
+		t.Fatalf("small upstream usage drop lost accounting start or latest reset: %#v", window)
 	}
 	if window.SampledUpstreamUsedPercent == nil || *window.SampledUpstreamUsedPercent != 80.5575 {
 		t.Fatalf("small upstream usage drop did not refresh baseline: %#v", window)

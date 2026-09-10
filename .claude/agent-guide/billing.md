@@ -2,6 +2,8 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
+- **OAuth 累计窗口边界校正**(`oauthcost/usage.go:reconcileWindow`):带有效用量的新采样确认同周期、未发生显著用量回退且上游重置时间仍在未来时，在本地周期滚动之前更新成本窗口 `ResetAt`。保留 `StartedAt`、`CountFromAt` 和已有累计，避免移动计数起点后漏掉已计日志。半窗口容差只用于识别周期，不用于永久锚住旧重置时间；旧采样或缺用量基线的快照不得借此改写边界。真正的周期滚动和用量回退继续按原规则清零。
+
 - **渠道倍率** `cost_multiplier`(≤0 归 1):× 标准成本 = `effective_cost`,写日志时快照到 `logs.cost_multiplier` 避免历史污染
 - **Auth Token**:`cost_*_microusd`(微美元整数避浮点);`cost_limit` 是总限额,`cost_daily_*`/`cost_monthly_*` 按服务器本地自然日/自然月累计,任一限额启用时必须同时设正数 `max_concurrency`;仅 2xx 累加费用,失败只计次,允许「超额一个请求」;`CCLOAD_API_TOKENS` 启动预置
 - **Auth Token 访问控制**(`model/auth_token.go`、`auth_service.go`):`allowed_models` 模型白名单(空=无限制);`allowed_channel_ids`+`channel_restriction_mode`(`allow` 白名单/`deny` 黑名单,空 mode 视为 allow,空列表始终无限制),`ChannelRestriction.Allows` 封装极性,选择链路走 `FilterAllowedChannels`;`max_concurrency` 令牌级并发上限(0=无限),`acquireTokenConcurrencySlot` 获取槽位

@@ -405,9 +405,21 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		return next
 	}
 	current = cloneWindow(current)
-	advanceWindow(current, observedAt)
 	usageSampledAt := firstNonZeroTime(sample.SampledAt, observedAt)
 	sampledAtUnixNano := sampleTimeUnixNano(usageSampledAt)
+	// Correct a same-period deadline before advancing, or the old deadline can
+	// destroy cost before the upstream period ends. Keep the accounting start
+	// and manual cutoff so already-counted logs remain in the counted interval.
+	if sample.UsedPercent != nil &&
+		(sampledAtUnixNano > current.SampledUpstreamAtUnixNano ||
+			(sampledAtUnixNano == current.SampledUpstreamAtUnixNano && current.SampledUpstreamUsedPercent == nil)) &&
+		current.WindowSeconds == sample.WindowSeconds && sample.ResetAt.After(observedAt) &&
+		next.ResetAt > current.StartedAt && sameQuotaPeriod(current, next) &&
+		!upstreamUsageRolledBack(current.SampledUpstreamUsedPercent, sample.UsedPercent) {
+		current.ResetAt = next.ResetAt
+		current.ResetDay = next.ResetDay
+	}
+	advanceWindow(current, observedAt)
 	usageSampleIsNewer := sample.UsedPercent != nil &&
 		(current.SampledUpstreamAtUnixNano == 0 || sampledAtUnixNano > current.SampledUpstreamAtUnixNano ||
 			(current.SampledUpstreamUsedPercent == nil && sampledAtUnixNano == current.SampledUpstreamAtUnixNano))
@@ -430,10 +442,8 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		return next
 	}
 	if sameQuotaPeriod(current, next) {
-		// 边界一经确立就锚住，只更新采样基线与 Family：上游同一个周期会用两种精度
-		// 表达 reset 时间（Codex 响应头给绝对 reset-at，SSE rate_limits 事件只给
-		// resets_in_seconds，换算成 sampledAt+n 每次都不同），半个窗口的容差足以
-		// 区分换算抖动和真实周期滚动。
+		// 同周期保留累计；有效新采样的 reset 边界已在本地滚动前校正。
+		// 无用量基线的边界快照仍不能覆盖已确认的重置时间。
 		current.Family = next.Family
 		if usageSampleIsNewer {
 			current.SampledUpstreamUsedPercent = cloneFloat64(sample.UsedPercent)
@@ -467,9 +477,8 @@ func sampleTimeUnixNano(sampledAt time.Time) int64 {
 	return sampledAt.UnixNano()
 }
 
-// sameQuotaPeriod 判断两次采样是否落在同一个上游额度周期。真正的周期滚动会把
-// reset 时间整整推进一个窗口时长，而采样噪声只有秒级（相对剩余秒数换算、上游取整、
-// 时钟漂移），半个窗口的容差足以把两者区分开。
+// sameQuotaPeriod 用半窗口容差识别同周期的边界修正或采样抖动；它只决定
+// 是否保留累计，不决定采用哪个重置时间。整窗口推进仍视为周期切换。
 func sameQuotaPeriod(current, next *Window) bool {
 	delta := next.ResetAt - current.ResetAt
 	if delta < 0 {
