@@ -223,6 +223,94 @@ func TestClassifyHTTPResponse(t *testing.T) {
 	}
 }
 
+// TestClassifyHTTPResponseCloudflareChallenge 覆盖 Cloudflare 质询页的分类。
+// 质询由出口 IP 与 TLS 指纹决定，与具体 Key 无关：漏判会落到默认 Key 级，
+// OAuth 渠道（无独立 Key）下既不写 Key 冷却也不写渠道冷却，故障永不收敛。
+func TestClassifyHTTPResponseCloudflareChallenge(t *testing.T) {
+	const justAMoment = `<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Verifying you are human</body></html>`
+
+	tests := []struct {
+		name                  string
+		status                int
+		headers               map[string][]string
+		body                  string
+		expected              ErrorLevel
+		expectedChannelReason string
+		reason                string
+	}{
+		{
+			name:                  "cf_mitigated_challenge_header",
+			status:                http.StatusForbidden,
+			headers:               map[string][]string{"cf-mitigated": {"challenge"}},
+			body:                  "<html>...</html>",
+			expected:              ErrorLevelChannel,
+			expectedChannelReason: "cloudflare_challenge",
+			reason:                "cf-mitigated: challenge 是质询页的权威标识",
+		},
+		{
+			name:                  "cf_mitigated_case_and_space_insensitive",
+			status:                http.StatusForbidden,
+			headers:               map[string][]string{"CF-Mitigated": {" Challenge "}},
+			body:                  "",
+			expected:              ErrorLevelChannel,
+			expectedChannelReason: "cloudflare_challenge",
+			reason:                "header 键名大小写与首尾空格不应影响判定（管理测试路径来自 JSON 反序列化）",
+		},
+		{
+			name:                  "cf_mitigated_challenge_on_service_unavailable",
+			status:                http.StatusServiceUnavailable,
+			headers:               map[string][]string{"cf-mitigated": {"challenge"}},
+			body:                  "<html>...</html>",
+			expected:              ErrorLevelChannel,
+			expectedChannelReason: "cloudflare_challenge",
+			reason:                "503 质询同样与出口 IP/TLS 指纹相关，应按渠道级处理",
+		},
+		{
+			name:     "just_a_moment_body_without_header",
+			status:   http.StatusForbidden,
+			body:     justAMoment,
+			expected: ErrorLevelChannel,
+			reason:   "缺少响应头时应回退到正文关键字",
+		},
+		{
+			name:     "block_page_still_channel_level",
+			status:   http.StatusForbidden,
+			body:     `<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1></body></html>`,
+			expected: ErrorLevelChannel,
+			reason:   "封锁页共用同一判定函数，行为不应回归",
+		},
+		{
+			name:     "non_challenge_mitigated_value_keeps_key_level",
+			status:   http.StatusForbidden,
+			headers:  map[string][]string{"cf-mitigated": {"managed"}},
+			body:     `{"error":"permission denied"}`,
+			expected: ErrorLevelKey,
+			reason:   "cf-mitigated 非 challenge 值不应升级为渠道级",
+		},
+		{
+			name:     "ordinary_forbidden_keeps_key_level",
+			status:   http.StatusForbidden,
+			body:     `{"error":"forbidden"}`,
+			expected: ErrorLevelKey,
+			reason:   "普通 403 不应受质询判定影响",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(tt.status, tt.headers, []byte(tt.body))
+			got := classification.Level
+			if got != tt.expected {
+				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
+					tt.name, tt.expected, got, tt.reason)
+			}
+			if tt.expectedChannelReason != "" && classification.ChannelCooldownReason != tt.expectedChannelReason {
+				t.Errorf("ChannelCooldownReason=%q, want %q", classification.ChannelCooldownReason, tt.expectedChannelReason)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPStatus(t *testing.T) {
 	tests := []struct {
 		statusCode int
@@ -809,6 +897,24 @@ func TestClassifyHTTPResponseWithMeta_CodexRollingSpendLimit(t *testing.T) {
 	}
 	if result.KeyCooldownReason != "RATE_LIMIT_RETRY_AFTER" {
 		t.Errorf("冷却原因: 期望 RATE_LIMIT_RETRY_AFTER, 实际 %s", result.KeyCooldownReason)
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_TokenHarborRollingFreeAllowance(t *testing.T) {
+	now := time.Date(2026, time.September, 11, 14, 0, 0, 0, time.UTC)
+	resetAt := time.Date(2026, time.September, 15, 21, 20, 38, 475253000, time.UTC)
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"You've used this period's free allowance. Your next rolling 7-day period starts at 2026-09-15T21:20:38.475253+00:00. Use the paid model 'deepseek-v4.1-flash' to keep going, or subscribe to a Token Harbor Pass for a recurring included allowance across more models. https://tokenharbor.ai/pricing"}}`)
+
+	result := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, nil, body, now)
+
+	if result.Level != ErrorLevelKey || result.ModelScoped {
+		t.Fatalf("classification=%+v, want credential-scoped key cooldown", result)
+	}
+	if !result.HasKeyCooldownUntil || !result.KeyCooldownUntil.Equal(resetAt) {
+		t.Fatalf("KeyCooldownUntil=%v present=%v, want %v", result.KeyCooldownUntil, result.HasKeyCooldownUntil, resetAt)
+	}
+	if result.KeyCooldownReason != "ROLLING_FREE_ALLOWANCE_RESET" {
+		t.Fatalf("KeyCooldownReason=%q, want ROLLING_FREE_ALLOWANCE_RESET", result.KeyCooldownReason)
 	}
 }
 

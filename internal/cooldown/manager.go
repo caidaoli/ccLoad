@@ -128,6 +128,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		decision.channelCooldownUntil = classification.ChannelCooldownUntil
 		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
 		decision.channelCooldownReason = classification.ChannelCooldownReason
+		decision.preventKeyFallback = classification.PreventKeyFallback
 
 		// OAuth 渠道没有独立 Key。结构化配额错误给出的模型和精确 Key 截止时间
 		// 必须落到上游确认的模型；响应未提供模型时才回退请求侧身份。
@@ -143,6 +144,8 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 		}
 
+		// 普通 5xx 仍收窄为当前模型；带明确渠道原因的分类（如 Cloudflare 质询）
+		// 已确认与模型无关，必须保持渠道级语义。
 		if classification.ModelScoped {
 			decision.model = strings.TrimSpace(classification.Model)
 			if decision.model == "" {
@@ -150,7 +153,6 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
-				decision.preventKeyFallback = classification.PreventKeyFallback
 				if classification.HasModelCooldownUntil {
 					decision.modelCooldownUntil = classification.ModelCooldownUntil
 					decision.hasModelCooldownUntil = true
@@ -158,6 +160,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 		} else if errLevel == util.ErrorLevelChannel &&
 			!decision.hasChannelCooldownUntil &&
+			decision.channelCooldownReason == "" &&
 			util.IsModelScopedHTTPStatus(statusCode) {
 			decision.model = strings.TrimSpace(in.Model)
 			if decision.model != "" {

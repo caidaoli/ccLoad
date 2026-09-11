@@ -42,6 +42,9 @@ var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0
 // retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
 var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
 
+// rollingFreeAllowanceResetRegex 匹配 Token Harbor 免费额度的下一个滚动周期起点。
+var rollingFreeAllowanceResetRegex = regexp.MustCompile(`(?i)\bnext\s+rolling\s+7-day\s+period\s+starts\s+at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\b`)
+
 // globalFixedWindowRetryClockRegex 匹配“请在 今天 12:00 后再试”这类全站固定窗口限额文案。
 var globalFixedWindowRetryClockRegex = regexp.MustCompile(`(今天|明天)\s*(\d{1,2})\s*[:：]\s*(\d{1,2})`)
 
@@ -498,6 +501,21 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
+	// Cloudflare 质询由出口 IP 与 TLS 指纹决定，与具体 Key 无关：同渠道其他 Key
+	// 一个都过不去，只有切换渠道才有意义。按渠道级分类交给默认指数退避处理，
+	// 不设固定冷却时长（无法预判质询持续时间），也不设置 ModelScoped（切模型无效）。
+	// 必须排在响应体关键字匹配之前：质询页 HTML 匹配不上任何渠道级特征，
+	// 否则会落到默认的 Key 级，OAuth 渠道下更是既不写 Key 冷却也不写渠道冷却。
+	if statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable {
+		if isCloudflareChallengeResponse(firstHeaderValueFold(headers, "cf-mitigated"), responseBody) {
+			return HTTPResponseClassification{
+				Level:                 ErrorLevelChannel,
+				PreventKeyFallback:    true,
+				ChannelCooldownReason: "cloudflare_challenge",
+			}
+		}
+	}
+
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
 		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode)}
@@ -602,21 +620,15 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 }
 
 func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (time.Time, bool) {
-	for name, values := range headers {
-		if !strings.EqualFold(name, anthropicRateLimitUnifiedResetHeader) {
+	for _, value := range headerValuesFold(headers, anthropicRateLimitUnifiedResetHeader) {
+		resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
 			continue
 		}
-		for _, value := range values {
-			resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-			if err != nil {
-				continue
-			}
-			until := time.Unix(resetUnix, 0)
-			if until.After(now) {
-				return until, true
-			}
+		until := time.Unix(resetUnix, 0)
+		if until.After(now) {
+			return until, true
 		}
-		return time.Time{}, false
 	}
 	return time.Time{}, false
 }
@@ -755,6 +767,11 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 	case code == "RATE_LIMIT_EXCEEDED":
 		if until, ok := parseRetryAfterSecondsCooldownUntil(message, now); ok {
 			return until, "RATE_LIMIT_RETRY_AFTER", ErrorLevelKey, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
+	case code == "RATE_LIMIT_ERROR":
+		if until, ok := parseRollingFreeAllowanceCooldownUntil(message, now); ok {
+			return until, "ROLLING_FREE_ALLOWANCE_RESET", ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
 	case code == "USAGE_LIMIT_REACHED":
@@ -952,6 +969,19 @@ func parseRetryAfterSecondsCooldownUntil(message string, now time.Time) (time.Ti
 	return now.Add(time.Duration(seconds) * time.Second), true
 }
 
+func parseRollingFreeAllowanceCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := rollingFreeAllowanceResetRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	until, err := time.Parse(time.RFC3339Nano, matches[1])
+	if err != nil || !until.After(now) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
 func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (time.Time, bool) {
 	matches := globalFixedWindowRetryClockRegex.FindStringSubmatch(message)
 	if matches == nil {
@@ -1092,10 +1122,43 @@ func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	}
 }
 
+// firstHeaderValueFold 大小写无关地取首个 header 值。
+// HTTP 转发路径写入的是 canonical 形式，管理测试路径来自 JSON 反序列化，
+// 键名大小写不可控，因此不能依赖 map 直接索引。
+func firstHeaderValueFold(headers map[string][]string, name string) string {
+	values := headerValuesFold(headers, name)
+	if len(values) > 0 {
+		return strings.TrimSpace(values[0])
+	}
+	return ""
+}
+
+func headerValuesFold(headers map[string][]string, name string) []string {
+	for key, values := range headers {
+		if strings.EqualFold(key, name) {
+			return values
+		}
+	}
+	return nil
+}
+
 func isCloudflareBlockPage(responseBody []byte) bool {
 	body := strings.ToLower(string(responseBody))
 	return strings.Contains(body, "<title>attention required! | cloudflare</title>") &&
 		strings.Contains(body, "sorry, you have been blocked")
+}
+
+// isCloudflareChallengeResponse 判断响应是否为 Cloudflare 质询或封锁页。
+// 优先看 cf-mitigated 响应头（质询时为 "challenge"），再回退到正文关键字。
+// 两类页面都在模型执行前拒绝请求，对冷却决策而言语义等价。
+func isCloudflareChallengeResponse(cfMitigated string, responseBody []byte) bool {
+	if strings.EqualFold(strings.TrimSpace(cfMitigated), "challenge") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(string(responseBody)), "<title>just a moment...</title>") {
+		return true
+	}
+	return isCloudflareBlockPage(responseBody)
 }
 
 func isProtocolConversionNotImplemented(responseBody []byte) bool {
