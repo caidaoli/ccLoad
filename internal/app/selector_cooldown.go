@@ -12,6 +12,23 @@ import (
 	"ccLoad/internal/util"
 )
 
+type channelRestrictionTokenContextKey struct{}
+
+func withChannelRestrictionToken(ctx context.Context, tokenHash string) context.Context {
+	if ctx == nil || tokenHash == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, channelRestrictionTokenContextKey{}, tokenHash)
+}
+
+func channelRestrictionTokenFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	tokenHash, _ := ctx.Value(channelRestrictionTokenContextKey{}).(string)
+	return tokenHash
+}
+
 // filterCooldownChannels 过滤冷却中的渠道
 //
 // [IMPORTANT] 冷却状态优先级：**最高优先级**，必须在健康度排序前执行
@@ -38,6 +55,16 @@ func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*m
 func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
+	}
+	if tokenHash := channelRestrictionTokenFromContext(ctx); tokenHash != "" && s.authService != nil {
+		filtered, restricted := s.authService.FilterAllowedChannels(tokenHash, channels)
+		if restricted {
+			// 空集合必须保持为空，不能让越权渠道重新参与冷却兜底。
+			channels = filtered
+			if len(channels) == 0 {
+				return nil, nil
+			}
+		}
 	}
 
 	now := time.Now()

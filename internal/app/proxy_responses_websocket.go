@@ -444,6 +444,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 			return responsesWebsocketTurnResult{}, errors.New("token cost limit exceeded")
 		}
 	}
+	ctx = withChannelRestrictionToken(ctx, tokenHashString)
 
 	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex))
 	if err == nil {

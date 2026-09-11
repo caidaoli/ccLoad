@@ -415,6 +415,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	ctx = withChannelRestrictionToken(ctx, tokenHashStr)
 
 	var executionSession *responsesExecutionSession
 	var routingSession *responsesExecutionSession
