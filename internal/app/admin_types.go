@@ -626,6 +626,7 @@ type ChannelWithCooldown struct {
 	XAIEmail                      string                 `json:"xai_email,omitempty"`
 	XAISubscriptionTier           string                 `json:"xai_subscription_tier,omitempty"`
 	XAIEntitlementStatus          string                 `json:"xai_entitlement_status,omitempty"`
+	CodeBuddyEnterprise           bool                   `json:"codebuddy_enterprise,omitempty"`
 	KeyStrategy                   string                 `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil                 *time.Time             `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS           int64                  `json:"cooldown_remaining_ms,omitempty"`

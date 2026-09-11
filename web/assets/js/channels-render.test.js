@@ -113,6 +113,33 @@ test('Codex 额度重置保留操作绑定、禁用状态和错误转义', () =>
   }
 });
 
+test('CodeBuddy 额度工具栏提供独立的手动签到状态', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  let state = {
+    status: 'ready',
+    data: { provider: 'codebuddy', windows: [], codebuddy_credits: { remain: 720 } },
+    checkin_status: 'loading'
+  };
+  global.window = { t: key => key };
+  global.getOAuthUsageState = () => state;
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    let html = buildOAuthUsageStatusHtml({ id: 73, auth_type: 'codebuddy_oauth' });
+    assert.match(html, /data-action="checkin-codebuddy" data-channel-id="73" disabled aria-busy="true"/);
+    assert.match(html, /data-action="refresh-oauth-usage"[^>]*disabled/);
+
+    state = { ...state, checkin_status: 'ready', checkin_result: 'already_checked' };
+    html = buildOAuthUsageStatusHtml({ id: 73, auth_type: 'codebuddy_oauth' });
+    assert.match(html, /channels\.codebuddy\.alreadyCheckedIn/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
 test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;

@@ -9,6 +9,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
@@ -32,6 +33,21 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return nil, errors.New("OAuth credential is unavailable")
 	}
 	switch {
+	case cfg.UsesCodeBuddyOAuth():
+		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// CodeBuddy exposes an absolute credit balance, not token windows, so
+		// persist the safe snapshot without standard-cost reconciliation.
+		return &oauthUsageCredentialState{
+			provider: codebuddyauth.ChannelType, authType: model.AuthTypeCodeBuddyOAuth,
+			oauthUsage: json.RawMessage(credential.OAuthUsage),
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = string(usage)
+				return credential.JSON()
+			},
+		}, nil
 	case cfg.UsesCodexOAuth():
 		credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

@@ -720,6 +720,28 @@ function buildOAuthUsageRefreshButton(channelID, loading = false, disabled = fal
   return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
 }
 
+function buildCodeBuddyCheckinButton(channelID, state = {}) {
+  const loading = state?.checkin_status === 'loading';
+  const disabled = state?.status === 'loading' || state?.reset_status === 'loading';
+  const text = loading
+    ? window.t('channels.codebuddy.checkinRunning')
+    : window.t('channels.codebuddy.checkin');
+  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="checkin-codebuddy" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+}
+
+function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
+  const checkinLoading = state?.checkin_status === 'loading';
+  const buttons = [buildOAuthUsageRefreshButton(
+    channel.id,
+    usageLoading,
+    checkinLoading || state?.reset_status === 'loading'
+  )];
+  if (channel?.auth_type === 'codebuddy_oauth' && !channel?.codebuddy_enterprise) {
+    buttons.push(buildCodeBuddyCheckinButton(channel.id, state));
+  }
+  return `<div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>`;
+}
+
 function formatCodexResetCreditExpiry(expiresAt) {
   const date = new Date(String(expiresAt || '').trim());
   if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return null;
@@ -895,24 +917,45 @@ function buildAntigravityCreditsHtml(credits) {
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
+function buildCodeBuddyCreditsHtml(credits) {
+  const remain = Number(credits?.remain);
+  if (!Number.isFinite(remain)) return '';
+  const formatCredits = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const total = credits?.total;
+  const used = credits?.used;
+  const usageBar = !credits?.unlimited && Number.isFinite(total) && Number.isFinite(used)
+    ? buildManagementUsageBar({
+      percent: total > 0 ? remain / total * 100 : 0,
+      used: formatCredits(used),
+      total: formatCredits(total)
+    }) : '';
+  if (usageBar) return usageBar;
+  const text = credits?.unlimited
+    ? window.t('channels.codebuddy.unlimitedCredits')
+    : window.t('channels.oauth.codeBuddyCredits', { remain: formatCredits(Math.max(0, remain)) });
+  return `<div class="ch-management__balance">
+    <div class="ch-management__summary"><div class="ch-management__meta ch-management__meta--remaining"><span class="ch-management__amount">${escapeChannelRefreshText(text)}</span></div></div>
+  </div>`;
+}
+
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
   if (!state) {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel)}</div>`;
   }
   if (state.status === 'loading') {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id, true)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, state, true)}</div>`;
   }
   if (state.status === 'error') {
     const fallback = window.t('channels.oauth.usageFailed');
     const message = formatOAuthUsageError(state.error) || fallback;
     return `<div class="ch-oauth-usage">
-      ${buildOAuthUsageRefreshButton(channel.id)}
+      ${buildOAuthUsageToolbar(channel, state)}
       <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(message)}">${escapeChannelRefreshText(message)}</div>
     </div>`;
   }
@@ -922,12 +965,13 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
+  const isCodeBuddy = channel?.auth_type === 'codebuddy_oauth' || state.data?.provider === 'codebuddy';
   const displayedWindows = isCursor
     ? orderCursorUsageWindows(windows)
     : isCodex
       ? orderCodexUsageWindows(windows)
       : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data) : displayedWindows.map((windowInfo, windowIndex) => {
+  const rows = isXAI ? buildXAIUsageRows(state.data) : isCodeBuddy ? [] : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -991,11 +1035,22 @@ function buildOAuthUsageStatusHtml(channel) {
   const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
+  const codeBuddyCheckinNotice = isCodeBuddy && state.checkin_status === 'ready'
+    ? window.t(state.checkin_result === 'already_checked'
+      ? 'channels.codebuddy.alreadyCheckedIn'
+      : 'channels.codebuddy.checkinSuccess')
+    : '';
+  const codeBuddyCheckinError = isCodeBuddy && state.checkin_status === 'error'
+    ? String(state.checkin_error || '').trim()
+    : '';
   return `<div class="ch-oauth-usage">
-    <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id, false, state.reset_status === 'loading')}</div>
+    ${buildOAuthUsageToolbar(channel, state)}
     ${rows.join('')}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
+    ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits) : ''}
+    ${codeBuddyCheckinNotice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(codeBuddyCheckinNotice)}</div>` : ''}
+    ${codeBuddyCheckinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(codeBuddyCheckinError)}">${escapeChannelRefreshText(codeBuddyCheckinError)}</div>` : ''}
     ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;
@@ -1420,7 +1475,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1438,6 +1493,18 @@ function initChannelEventDelegation() {
         if (typeof refreshOAuthUsage === 'function') {
           refreshOAuthUsage(channelId).catch(error => {
             if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
+          });
+        }
+        break;
+      case 'checkin-codebuddy':
+        if (typeof checkInCodeBuddy === 'function') {
+          checkInCodeBuddy(channelId).then(result => {
+            const key = result?.status === 'already_checked'
+              ? 'channels.codebuddy.alreadyCheckedIn'
+              : 'channels.codebuddy.checkinSuccess';
+            if (window.showSuccess) window.showSuccess(window.t(key));
+          }).catch(error => {
+            if (window.showError) window.showError(error?.message || window.t('channels.codebuddy.checkinFailed'));
           });
         }
         break;

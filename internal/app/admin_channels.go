@@ -396,6 +396,7 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 		XAIEmail:                     metadata.xaiEmail,
 		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
 		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
+		CodeBuddyEnterprise:          metadata.codeBuddyEnterprise,
 	}
 
 	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
@@ -463,6 +464,7 @@ type channelOAuthMetadata struct {
 	xaiEmail                string
 	xaiSubscriptionTier     string
 	xaiEntitlementStatus    string
+	codeBuddyEnterprise     bool
 }
 
 func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
@@ -526,6 +528,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
+	}
+	if cfg.UsesCodeBuddyOAuth() {
+		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), codebuddyauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage, codeBuddyEnterprise: credential.EnterpriseID != ""}
 	}
 	if cfg.UsesCursorOAuth() {
 		credential, err := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))

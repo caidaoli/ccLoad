@@ -1641,6 +1641,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/codebuddy/oauth/cancel", s.HandleCancelCodeBuddyOAuth)
 		admin.POST("/codebuddy/credentials/import", s.HandleImportCodeBuddyCredential)
 		admin.POST("/channels/:id/codebuddy-credential/refresh", s.HandleRefreshCodeBuddyCredential)
+		admin.POST("/channels/:id/codebuddy-checkin", s.HandleCodeBuddyCheckin)
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)

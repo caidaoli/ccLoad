@@ -2172,6 +2172,69 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
   }
 }
 
+async function checkInCodeBuddy(channelID, fetcher = fetchDataWithAuth, options = {}) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved CodeBuddy channel is required');
+  }
+  const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+  const persistedUsage = channelList.find(channel => Number(channel?.id) === numericID)?.oauth_usage;
+  const previous = oauthUsageStateByChannelID.get(numericID) ||
+    (persistedUsage ? { status: 'ready', data: persistedUsage } : null);
+  const operationID = ++oauthUsageOperationSequence;
+  oauthUsageLastOperationByChannelID.set(numericID, operationID);
+  oauthUsageOperationByChannelID.set(numericID, operationID);
+  oauthUsageStateByChannelID.set(numericID, {
+    ...(previous || {}),
+    status: previous?.data ? 'ready' : 'idle',
+    checkin_status: 'loading',
+    checkin_error: ''
+  });
+  rerenderOAuthUsage();
+  try {
+    const result = await fetcher(`/admin/channels/${numericID}/codebuddy-checkin`, { method: 'POST' });
+    if (!result || !['success', 'already_checked'].includes(result.status) ||
+        !result.usage || !Array.isArray(result.usage.windows)) {
+      throw new Error(window.t('channels.codebuddy.checkinInvalid'));
+    }
+    if (oauthUsageOperationByChannelID.get(numericID) !== operationID) return result;
+    oauthUsageOperationByChannelID.delete(numericID);
+    oauthUsageStateByChannelID.set(numericID, {
+      status: 'ready',
+      data: result.usage,
+      checkin_status: 'ready',
+      checkin_result: result.status
+    });
+    if (options.reload !== false && typeof loadChannels === 'function') {
+      await loadChannels({ refreshUsage: false });
+    } else {
+      rerenderOAuthUsage();
+    }
+    return result;
+  } catch (error) {
+    const rawMessage = error?.message || window.t('channels.codebuddy.checkinFailed');
+    // The API error is intentionally detailed for logs, but the channel row
+    // should show only CodeBuddy's actionable upstream message.
+    const message = String(rawMessage).match(/\):\s*(.+)$/)?.[1]?.trim() || rawMessage;
+    if (oauthUsageOperationByChannelID.get(numericID) === operationID) {
+      oauthUsageOperationByChannelID.delete(numericID);
+      oauthUsageStateByChannelID.set(numericID, previous?.data ? {
+        ...previous,
+        status: 'ready',
+        checkin_status: 'error',
+        checkin_error: message
+      } : {
+        status: 'error',
+        error: message,
+        checkin_status: 'error',
+        checkin_error: message
+      });
+      rerenderOAuthUsage();
+    }
+    throw error;
+  }
+}
+
 async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
@@ -2320,7 +2383,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -3055,6 +3118,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pollCodexOAuthStatus,
     pollXAIOAuthStatus,
     refreshOAuthCredential,
+    checkInCodeBuddy,
     refreshOAuthUsage,
     refreshOAuthUsageBatch,
     resetActiveChannelUsageAutoRefreshState,

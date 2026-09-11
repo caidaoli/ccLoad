@@ -9,7 +9,7 @@
 - 两句 Claude Code 固定文本仅在消息文本内精确替换：`official CLI for Claude.` → `official CLI tool for Claude.`（完整身份句匹配），`Main branch (you will usually use this for PRs)` → `Default branch (you will usually use this for PRs)`。工具结果和函数参数不改写。hy3 系列仅在调用方未指定思考选项时默认 `reasoning_effort:high`，渠道请求体规则可覆盖。
 - CodeBuddy 复用 `antigravity_sensitive_words` 设置及匹配器，在固定文本替换后仅对 `system` / `developer` 消息的字符串或内容数组文本插入零宽字符；不改写用户/助手消息、工具参数及工具结果。空数组禁用，修改后重启生效，正常代理与管理测试共用最终化入口。
 - 已知到期时间提前 60 秒刷新，HTTP 401 时强制刷新后重试一次；并发刷新按渠道和被拒 Token 合并，全凭证 CAS 保存，重新授权结果优先。刷新任务归服务器生命周期，单个请求取消不取消共享刷新。
-- Bearer 和 X-Refresh-Token / 账号身份头由渠道凭证生成，刷新令牌禁止自定义规则覆盖并在调试输出脱敏。“获取模型”通过官方 CLI 的 `GET /v3/config` 读取 `data.models[].id`，使用账号凭证和渠道代理；已保存渠道在 401 时刷新后重试一次，失败或空目录直接报错，不回退内置列表。浏览器 OAuth、认证文件及批量凭证导入新建渠道共用该模型查询、过滤和排序逻辑，查询失败不创建渠道；已有渠道重新授权保留自定义模型配置。尚未接入额度 API，批量额度刷新不包含此渠道。
+- Bearer 和 X-Refresh-Token / 账号身份头由渠道凭证生成，刷新令牌禁止自定义规则覆盖并在调试输出脱敏；计费签到/余额请求使用独立头部，绝不携带 `X-Refresh-Token`。“获取模型”通过官方 CLI 的 `GET /v3/config` 读取 `data.models[].id`，使用账号凭证和渠道代理；已保存渠道在 401 时刷新后重试一次，失败或空目录直接报错，不回退内置列表。浏览器 OAuth、认证文件及批量凭证导入新建渠道共用该模型查询、过滤和排序逻辑，查询失败不创建渠道；已有渠道重新授权保留自定义模型配置。余额通过 `www.codebuddy.cn` 的 `daily-checkin` / `get-user-resource` 接口查询，结果进入 OAuth 用量快照并纳入单个、批量和活跃渠道额度刷新；管理端可通过 `POST /admin/channels/:id/codebuddy-checkin` 立即签到并同步余额。
 - 来源及许可见 `internal/codebuddyauth/UPSTREAM.md`。未修改 CLIProxyAPI 核心快照。
 
 ## Codex

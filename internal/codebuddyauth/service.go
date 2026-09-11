@@ -19,9 +19,10 @@ import (
 // commit 7efb280563b8cf2bf62e4295340708bac4ec3d6a.
 // Auth/control plane and transport lifecycle are owned by ccLoad.
 type Service struct {
-	Client  *http.Client
-	BaseURL string
-	Now     func() time.Time
+	Client         *http.Client
+	BaseURL        string
+	BillingBaseURL string
+	Now            func() time.Time
 }
 
 // NewService creates a service using the supplied transport.
@@ -29,16 +30,25 @@ func NewService(client *http.Client) *Service {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Service{Client: client, BaseURL: BaseURL, Now: time.Now}
+	return &Service{Client: client, BaseURL: BaseURL, BillingBaseURL: BillingBaseURL, Now: time.Now}
 }
+
+// BillingBaseURL is separate from the chat/control-plane endpoint in the
+// official client. Tests that override BaseURL continue to route billing calls
+// to that test endpoint through billingBaseURL.
+const BillingBaseURL = "https://www.codebuddy.cn"
 
 // APIError retains status and business code without reflecting tokens or upstream bodies.
 type APIError struct {
-	Status int
-	Code   int
+	Status  int
+	Code    int
+	Message string
 }
 
 func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("CodeBuddy upstream HTTP %d (code %d): %s", e.Status, e.Code, e.Message)
+	}
 	return fmt.Sprintf("CodeBuddy upstream HTTP %d (code %d)", e.Status, e.Code)
 }
 
@@ -50,6 +60,13 @@ func (e *APIError) UpstreamResponseBody() string { return "{}" }
 
 // ErrCannotRefresh requires reauthorization because no refresh token is available.
 var ErrCannotRefresh = errors.New("CodeBuddy credential has no refresh token; authorize again")
+
+// IsAlreadyCheckedIn reports the provider's idempotent "today already
+// checked in" business response.
+func IsAlreadyCheckedIn(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == 14001
+}
 
 // ApplySourceHeaders supplies the CodeBuddy CLI request fingerprint.
 func ApplySourceHeaders(h http.Header) {
@@ -82,10 +99,43 @@ func ApplyCredentialHeaders(h http.Header, c *Credential) {
 	h.Set("X-Product", "SaaS")
 }
 
+// ApplyBillingHeaders builds the narrower header set required by CodeBuddy's
+// CN billing service. Refresh tokens are accepted only by the refresh endpoint
+// and must never be sent with check-in or balance requests.
+func ApplyBillingHeaders(h http.Header, c *Credential) {
+	h.Set("Authorization", "Bearer "+c.AccessToken)
+	h.Set("Accept", "application/json")
+	h.Set("Content-Type", "application/json")
+	if c.UID != "" {
+		h.Set("X-User-Id", c.UID)
+	}
+	if c.EnterpriseID != "" {
+		h.Set("X-Enterprise-Id", c.EnterpriseID)
+		h.Set("X-Tenant-Id", c.EnterpriseID)
+	}
+	if c.Domain != "" {
+		h.Set("X-Domain", c.Domain)
+	}
+	h.Del("X-Refresh-Token")
+}
+
 func (s *Service) request(ctx context.Context, client *http.Client, method, path string, headers http.Header, body []byte) (json.RawMessage, error) {
+	if s == nil {
+		return nil, errors.New("CodeBuddy service is unavailable")
+	}
+	return s.requestAt(ctx, client, s.BaseURL, method, path, headers, body)
+}
+
+func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, method, path string, headers http.Header, body []byte) (json.RawMessage, error) {
+	if s == nil || client == nil {
+		return nil, errors.New("CodeBuddy service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(s.BaseURL, "/")+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(baseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, errors.New("invalid CodeBuddy endpoint")
 	}
@@ -106,7 +156,15 @@ func (s *Service) request(ctx context.Context, client *http.Client, method, path
 		return nil, errors.New("read CodeBuddy upstream response failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &APIError{Status: resp.StatusCode}
+		var envelope struct {
+			Code    *int   `json:"code"`
+			Message string `json:"msg"`
+		}
+		code := 0
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Code != nil {
+			code = *envelope.Code
+		}
+		return nil, &APIError{Status: resp.StatusCode, Code: code, Message: envelope.Message}
 	}
 	var envelope struct {
 		Code *int            `json:"code"`
@@ -119,6 +177,19 @@ func (s *Service) request(ctx context.Context, client *http.Client, method, path
 		return nil, &APIError{Status: resp.StatusCode, Code: *envelope.Code}
 	}
 	return envelope.Data, nil
+}
+
+func (s *Service) billingBaseURL() string {
+	if s == nil {
+		return BillingBaseURL
+	}
+	// A custom BaseURL is commonly injected by tests and embedders. Unless the
+	// billing endpoint was explicitly changed as well, keep those calls local.
+	if strings.TrimSpace(s.BillingBaseURL) == "" ||
+		(s.BillingBaseURL == BillingBaseURL && s.BaseURL != BaseURL) {
+		return s.BaseURL
+	}
+	return s.BillingBaseURL
 }
 
 // FetchModels reads the account's live cloud product catalog, as CodeBuddy CLI
@@ -182,6 +253,121 @@ func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]st
 		return nil, errors.New("CodeBuddy model catalog contains no enabled models; check account authorization")
 	}
 	return names, nil
+}
+
+// DailyCheckin performs the CodeBuddy daily check-in.
+func (s *Service) DailyCheckin(ctx context.Context, credential *Credential) error {
+	if s == nil || credential == nil {
+		return errors.New("CodeBuddy credential is required")
+	}
+	// Enterprise allowances are managed centrally and the upstream explicitly
+	// rejects the personal daily-check-in operation for them.
+	if credential.EnterpriseID != "" {
+		return nil
+	}
+	h := make(http.Header)
+	ApplyBillingHeaders(h, credential)
+	_, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/daily-checkin", h, []byte("{}"))
+	return err
+}
+
+// ResourceUsage is a safe credit snapshot. Total and Used are absent when the
+// upstream does not expose them; Unlimited is explicit rather than a zero balance.
+type ResourceUsage struct {
+	Remain    float64  `json:"remain"`
+	Total     *float64 `json:"total,omitempty"`
+	Used      *float64 `json:"used,omitempty"`
+	Unlimited bool     `json:"unlimited,omitempty"`
+}
+
+// UserResource returns personal package credits or the enterprise member's
+// remaining allowance for the current billing cycle.
+func (s *Service) UserResource(ctx context.Context, credential *Credential) (*ResourceUsage, error) {
+	if s == nil || credential == nil {
+		return nil, errors.New("CodeBuddy credential is required")
+	}
+	if credential.EnterpriseID != "" {
+		return s.enterpriseUserResource(ctx, credential)
+	}
+	now := time.Now()
+	if s.Now != nil {
+		now = s.Now()
+	}
+	body, _ := json.Marshal(map[string]any{"PageNumber": 1, "PageSize": 100, "ProductCode": "p_tcaca", "Status": []int{0, 3}, "PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"), "PackageEndTimeRangeEnd": now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05")})
+	h := make(http.Header)
+	ApplyBillingHeaders(h, credential)
+	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/get-user-resource", h, body)
+	if err != nil {
+		return nil, err
+	}
+	var v struct {
+		Response struct {
+			Data struct {
+				Accounts []struct {
+					CapacityRemain      float64  `json:"CapacityRemain"`
+					CapacitySize        *float64 `json:"CapacitySize"`
+					CycleCapacityRemain float64  `json:"CycleCapacityRemain"`
+					CycleCapacitySize   float64  `json:"CycleCapacitySize"`
+					CycleCapacityUsed   float64  `json:"CycleCapacityUsed"`
+				} `json:"Accounts"`
+			} `json:"Data"`
+		} `json:"Response"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("resource parse: %w", err)
+	}
+	usage := &ResourceUsage{}
+	var total float64
+	complete := true
+	for _, a := range v.Response.Data.Accounts {
+		remain := a.CapacityRemain
+		var size *float64
+		switch {
+		case a.CycleCapacitySize > 0:
+			remain = a.CycleCapacityRemain
+			size = &a.CycleCapacitySize
+		case a.CycleCapacityRemain > 0 || a.CycleCapacityUsed > 0:
+			remain = a.CycleCapacityRemain
+			cycleTotal := max(0, remain) + max(0, a.CycleCapacityUsed)
+			size = &cycleTotal
+		default:
+			size = a.CapacitySize
+		}
+		usage.Remain += max(0, remain)
+		if size == nil || *size < 0 {
+			complete = false
+		} else {
+			total += *size
+		}
+	}
+	if complete {
+		used := max(0, total-usage.Remain)
+		usage.Total, usage.Used = &total, &used
+	}
+	return usage, nil
+}
+
+func (s *Service) enterpriseUserResource(ctx context.Context, credential *Credential) (*ResourceUsage, error) {
+	h := make(http.Header)
+	ApplyBillingHeaders(h, credential)
+	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/get-enterprise-user-usage", h, []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var usage struct {
+		Credit   *float64 `json:"credit"`
+		LimitNum *float64 `json:"limitNum"`
+	}
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return nil, fmt.Errorf("enterprise usage parse: %w", err)
+	}
+	if usage.Credit == nil || usage.LimitNum == nil || *usage.Credit < 0 || (*usage.LimitNum < 0 && *usage.LimitNum != -1) {
+		return nil, errors.New("CodeBuddy enterprise usage is missing a valid credit allowance")
+	}
+	if *usage.LimitNum == -1 {
+		return &ResourceUsage{Used: usage.Credit, Unlimited: true}, nil
+	}
+	return &ResourceUsage{Remain: max(0, *usage.LimitNum-*usage.Credit), Total: usage.LimitNum, Used: usage.Credit}, nil
 }
 
 // Login keeps cookies isolated for the lifetime of a single authorization.

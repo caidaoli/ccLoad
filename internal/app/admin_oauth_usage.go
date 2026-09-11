@@ -17,6 +17,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
@@ -45,17 +46,18 @@ const (
 )
 
 var (
-	errOAuthUsageUnsupported         = errors.New("usage: channel does not use a supported OAuth provider")
-	errZAIUsageManagerUnavailable    = errors.New("usage: Z.ai credential manager is unavailable")
-	errCursorUsageManagerUnavailable = errors.New("usage: Cursor credential manager is unavailable")
-	errZedUsageManagerUnavailable    = errors.New("usage: Zed credential manager is unavailable")
-	errCodexUsageManagerUnavailable  = errors.New("usage: Codex credential manager is unavailable")
-	errAnthropicManagerUnavailable   = errors.New("usage: Anthropic credential manager is unavailable")
-	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
-	errXAIUsageManagerUnavailable    = errors.New("usage: xAI credential manager is unavailable")
-	errXAIBillingBadCredential       = errors.New("usage: xAI credential was rejected")
-	errOAuthUsageChannelNotFound     = errors.New("channel not found")
-	errOAuthUsagePersistFailed       = errors.New("usage: persist OAuth quota failed")
+	errOAuthUsageUnsupported            = errors.New("usage: channel does not use a supported OAuth provider")
+	errCodeBuddyUsageManagerUnavailable = errors.New("usage: CodeBuddy credential manager is unavailable")
+	errZAIUsageManagerUnavailable       = errors.New("usage: Z.ai credential manager is unavailable")
+	errCursorUsageManagerUnavailable    = errors.New("usage: Cursor credential manager is unavailable")
+	errZedUsageManagerUnavailable       = errors.New("usage: Zed credential manager is unavailable")
+	errCodexUsageManagerUnavailable     = errors.New("usage: Codex credential manager is unavailable")
+	errAnthropicManagerUnavailable      = errors.New("usage: Anthropic credential manager is unavailable")
+	errAntigravityManagerUnavailable    = errors.New("usage: Antigravity credential manager is unavailable")
+	errXAIUsageManagerUnavailable       = errors.New("usage: xAI credential manager is unavailable")
+	errXAIBillingBadCredential          = errors.New("usage: xAI credential was rejected")
+	errOAuthUsageChannelNotFound        = errors.New("channel not found")
+	errOAuthUsagePersistFailed          = errors.New("usage: persist OAuth quota failed")
 )
 
 type oauthUsageBatchRequest struct {
@@ -195,6 +197,10 @@ type oauthUsageWindow struct {
 
 type oauthUsageSummary struct {
 	Credits *antigravityauth.Credits `json:"credits,omitempty"`
+	// CodeBuddyCredits is the absolute remaining balance returned by the
+	// billing meter. CodeBuddy does not expose a percentage window like the
+	// other OAuth providers, so retain the provider-native value.
+	CodeBuddyCredits *codeBuddyCredits `json:"codebuddy_credits,omitempty"`
 	// Partial means omitted windows were not observed, rather than retired.
 	Partial               bool                    `json:"-"`
 	Provider              string                  `json:"provider"`
@@ -210,6 +216,8 @@ type oauthUsageSummary struct {
 	XAIBilling     *xaiBillingSummary `json:"xai_billing,omitempty"`
 	QuotaCostUsage *oauthcost.Usage   `json:"quota_cost_usage,omitempty"`
 }
+
+type codeBuddyCredits = codebuddyauth.ResourceUsage
 
 type persistedOAuthUsageSnapshot struct {
 	RequestedAt string            `json:"requested_at"`
@@ -1450,6 +1458,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
+			cfg.UsesCodeBuddyOAuth() ||
 			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
@@ -1492,6 +1501,7 @@ func oauthUsageHTTPStatus(err error) int {
 	case errors.Is(err, errCodexUsageManagerUnavailable),
 		errors.Is(err, errAnthropicManagerUnavailable),
 		errors.Is(err, errAntigravityManagerUnavailable),
+		errors.Is(err, errCodeBuddyUsageManagerUnavailable),
 		errors.Is(err, errXAIUsageManagerUnavailable),
 		errors.Is(err, errZAIUsageManagerUnavailable),
 		errors.Is(err, errCursorUsageManagerUnavailable),
@@ -1785,6 +1795,17 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
+	case cfg.UsesCodeBuddyOAuth():
+		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
+			return nil, errCodeBuddyUsageManagerUnavailable
+		}
+		credential, err := s.codeBuddyCredentials.credential(ctx, cfg, false, "")
+		if err != nil {
+			return nil, oauthUsageCredentialRefreshError(err, "usage: CodeBuddy credential refresh failed")
+		}
+		service := *s.codeBuddyService
+		service.Client = s.getClientForChannel(cfg)
+		return requestCodeBuddyUsage(ctx, &service, credential)
 	case cfg.UsesCodexOAuth():
 		if s.codexCredentials == nil {
 			return nil, errCodexUsageManagerUnavailable
@@ -1913,6 +1934,25 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 	default:
 		return nil, errOAuthUsageUnsupported
 	}
+}
+
+func requestCodeBuddyUsage(
+	ctx context.Context,
+	service *codebuddyauth.Service,
+	credential *codebuddyauth.Credential,
+) (*oauthUsageSummary, error) {
+	if service == nil || credential == nil {
+		return nil, errors.New("usage: CodeBuddy resource request is unavailable")
+	}
+	usage, err := service.UserResource(ctx, credential)
+	if err != nil {
+		return nil, fmt.Errorf("usage: CodeBuddy resource request failed: %w", err)
+	}
+	return &oauthUsageSummary{
+		Provider:         codebuddyauth.ChannelType,
+		Windows:          []oauthUsageWindow{},
+		CodeBuddyCredits: usage,
+	}, nil
 }
 
 // zaiUsageService reuses the channel's transport so a channel proxy applies to

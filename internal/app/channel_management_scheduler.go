@@ -3,16 +3,20 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/model"
 )
 
 const (
 	channelManagementScheduleInterval = time.Minute
 	channelManagementScheduleWorkers  = 4
+	codeBuddyCheckinWorkers           = 4
+	codeBuddyCheckinTimeout           = 60 * time.Second
 )
 
 // managementCheckinLoop owns the daily management check-in scheduler lifecycle.
@@ -28,6 +32,10 @@ func (s *Server) managementCheckinLoop() {
 	if err := s.runDueManagementCheckins(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("[WARN] 管理账户每日签到补偿扫描失败: %v", err)
 	}
+	// CodeBuddy OAuth accounts use the provider's fixed 09:00/21:00 local
+	// check-in windows. Initialize the current slot without replaying it on
+	// every server restart; the next slot transition performs the check-in.
+	codeBuddySlot := codeBuddyCheckinSlot(time.Now())
 
 	ticker := time.NewTicker(channelManagementScheduleInterval)
 	defer ticker.Stop()
@@ -41,8 +49,133 @@ func (s *Server) managementCheckinLoop() {
 			if err := s.runDueManagementCheckins(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("[WARN] 管理账户每日签到扫描失败: %v", err)
 			}
+			if slot := codeBuddyCheckinSlot(now); slot != "" && slot != codeBuddySlot {
+				s.runDueCodeBuddyCheckins(ctx)
+				codeBuddySlot = slot
+			}
 		}
 	}
+}
+
+func (s *Server) runDueCodeBuddyCheckins(ctx context.Context) {
+	if s == nil || s.store == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		log.Printf("[WARN] CodeBuddy 签到扫描失败: %v", err)
+		return
+	}
+	targets := make([]*model.Config, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg != nil && cfg.Enabled && cfg.UsesCodeBuddyOAuth() {
+			targets = append(targets, cfg)
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	jobs := make(chan *model.Config)
+	workers := min(codeBuddyCheckinWorkers, len(targets))
+	if workers == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for cfg := range jobs {
+				s.runCodeBuddyCheckin(ctx, cfg)
+			}
+		}()
+	}
+	for _, cfg := range targets {
+		select {
+		case jobs <- cfg:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		}
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+type codeBuddyCheckinResult struct {
+	Status string             `json:"status"`
+	Usage  *oauthUsageSummary `json:"usage"`
+}
+
+func (s *Server) checkInCodeBuddy(ctx context.Context, cfg *model.Config) (*codeBuddyCheckinResult, error) {
+	if cfg == nil || !cfg.UsesCodeBuddyOAuth() {
+		return nil, errOAuthUsageUnsupported
+	}
+	if s == nil || s.codeBuddyService == nil || s.codeBuddyCredentials == nil {
+		return nil, errCodeBuddyUsageManagerUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, codeBuddyCheckinTimeout)
+	defer cancel()
+	cred, err := s.codeBuddyCredentials.credential(operationCtx, cfg, false, "")
+	if err != nil {
+		return nil, err
+	}
+	service := *s.codeBuddyService
+	service.Client = s.getClientForChannel(cfg)
+	checkinErr := service.DailyCheckin(operationCtx, cred)
+	status := "success"
+	if codebuddyauth.IsAlreadyCheckedIn(checkinErr) {
+		status = "already_checked"
+	}
+	summary, err := requestCodeBuddyUsage(operationCtx, &service, cred)
+	if err != nil {
+		if checkinErr != nil && status != "already_checked" {
+			return nil, errors.Join(fmt.Errorf("CodeBuddy check-in failed: %w", checkinErr), err)
+		}
+		return nil, err
+	}
+	requestedAt := time.Now().UTC()
+	sampledAt := requestedAt
+	summary, err = s.persistOAuthUsage(operationCtx, cfg, summary, requestedAt, sampledAt)
+	if err != nil {
+		return nil, errOAuthUsagePersistFailed
+	}
+	result := &codeBuddyCheckinResult{Status: status, Usage: summary}
+	if checkinErr != nil && status != "already_checked" {
+		return result, fmt.Errorf("CodeBuddy check-in failed: %w", checkinErr)
+	}
+	return result, nil
+}
+
+func (s *Server) runCodeBuddyCheckin(ctx context.Context, cfg *model.Config) {
+	if cfg == nil || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	result, err := s.checkInCodeBuddy(ctx, cfg)
+	if err != nil && ctx.Err() == nil {
+		log.Printf("[WARN] CodeBuddy 签到失败 channel=%d: %v", cfg.ID, err)
+	}
+	if result != nil && result.Usage != nil && result.Usage.CodeBuddyCredits != nil {
+		log.Printf("[INFO] CodeBuddy 余额 channel=%d remain=%g", cfg.ID, result.Usage.CodeBuddyCredits.Remain)
+	}
+}
+
+func codeBuddyCheckinSlot(now time.Time) string {
+	if now.Hour() < 9 {
+		return ""
+	}
+	slot := "09"
+	if now.Hour() >= 21 {
+		slot = "21"
+	}
+	return now.Format("2006-01-02") + "-" + slot
 }
 
 // runDueManagementCheckins claims all channels due at now and waits for their

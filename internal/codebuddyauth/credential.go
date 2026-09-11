@@ -27,6 +27,9 @@ type Credential struct {
 	UID          string `json:"uid,omitempty"`
 	EnterpriseID string `json:"enterprise_id,omitempty"`
 	Nickname     string `json:"nickname,omitempty"`
+	// OAuthUsage stores the last billing snapshot. It is intentionally kept in
+	// the private credential envelope and exposed only through safe metadata.
+	OAuthUsage string `json:"oauth_usage,omitempty"`
 }
 
 // ParseCredential accepts canonical credentials and workbuddy.json exports.

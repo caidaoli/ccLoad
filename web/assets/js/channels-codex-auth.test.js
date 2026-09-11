@@ -22,6 +22,7 @@ const {
   maybeAutoRefreshActiveChannelUsage,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
+  checkInCodeBuddy,
   resetActiveChannelUsageAutoRefreshState,
   resetCodexQuota,
   batchRefreshSelectedOAuthUsage,
@@ -44,6 +45,34 @@ const {
   loadCodeBuddyCredentialFile,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('manual CodeBuddy check-in uses the saved channel and publishes refreshed credits', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  try {
+    const result = await checkInCodeBuddy(73, async (url, options) => {
+      assert.equal(url, '/admin/channels/73/codebuddy-checkin');
+      assert.equal(options.method, 'POST');
+      return {
+        status: 'already_checked',
+        usage: { provider: 'codebuddy', windows: [], codebuddy_credits: { remain: 720 } }
+      };
+    }, { reload: false });
+    assert.equal(result.status, 'already_checked');
+    assert.deepEqual(getOAuthUsageState(73), {
+      status: 'ready',
+      data: result.usage,
+      checkin_status: 'ready',
+      checkin_result: 'already_checked'
+    });
+    await assert.rejects(
+      () => checkInCodeBuddy(0, async () => assert.fail('unexpected request')),
+      /saved CodeBuddy channel/
+    );
+  } finally {
+    global.window = previousWindow;
+  }
+});
 
 test('CodeBuddy CLI file authorization preserves the session and uses the dedicated endpoint', async () => {
   const credential = { auth: { accessToken: 'test-access' }, account: { uid: 'current' }, accounts: [{ uid: 'current' }, { uid: 'other' }] };

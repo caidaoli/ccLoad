@@ -156,6 +156,31 @@ func (s *Server) HandleRefreshCodeBuddyCredential(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"oauth_credential": credential})
 }
 
+// HandleCodeBuddyCheckin checks in one CodeBuddy channel and persists the
+// balance returned by the follow-up resource query.
+func (s *Server) HandleCodeBuddyCheckin(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, errOAuthUsageChannelNotFound)
+		return
+	}
+	if !cfg.UsesCodeBuddyOAuth() {
+		RespondError(c, http.StatusConflict, errOAuthUsageUnsupported)
+		return
+	}
+	result, err := s.checkInCodeBuddy(c.Request.Context(), cfg)
+	if err != nil {
+		RespondError(c, oauthUsageHTTPStatus(err), err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, result)
+}
+
 type codeBuddyLoginStatus struct {
 	State       string `json:"state"`
 	Status      string `json:"status"`

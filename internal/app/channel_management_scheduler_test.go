@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,9 +11,198 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+
+	"github.com/gin-gonic/gin"
 )
+
+func TestCodeBuddyCheckinSlot(t *testing.T) {
+	loc := time.FixedZone("server", 8*60*60)
+	cases := []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{name: "before morning", now: time.Date(2026, 9, 11, 8, 59, 0, 0, loc), want: ""},
+		{name: "morning", now: time.Date(2026, 9, 11, 9, 0, 0, 0, loc), want: "2026-09-11-09"},
+		{name: "before evening", now: time.Date(2026, 9, 11, 20, 59, 0, 0, loc), want: "2026-09-11-09"},
+		{name: "evening", now: time.Date(2026, 9, 11, 21, 0, 0, 0, loc), want: "2026-09-11-21"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codeBuddyCheckinSlot(tc.now); got != tc.want {
+				t.Fatalf("slot=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodeBuddyUsageRefreshAndScheduledCheckin(t *testing.T) {
+	var checkins, resources atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			if r.Method != http.MethodPost {
+				t.Errorf("check-in method=%s, want POST", r.Method)
+			}
+			checkins.Add(1)
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		case "/v2/billing/meter/get-enterprise-user-usage":
+			resources.Add(1)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"credit":104.35,"limitNum":2000}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv := newInMemoryServer(t)
+	srv.codeBuddyService.BaseURL = upstream.URL
+	raw, err := (&codebuddyauth.Credential{AccessToken: "access", RefreshToken: "refresh", EnterpriseID: "enterprise"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := srv.store.CreateConfig(context.Background(), newCodeBuddyChannel("scheduled-codebuddy", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := newCodeBuddyChannel("disabled-codebuddy", raw)
+	disabled.Enabled = false
+	if _, err := srv.store.CreateConfig(context.Background(), disabled); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := srv.refreshOAuthUsage(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatalf("refreshOAuthUsage: %v", err)
+	}
+	if summary.Provider != codebuddyauth.ChannelType || summary.CodeBuddyCredits == nil || summary.CodeBuddyCredits.Remain != 1895.65 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	stored, err := srv.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := codebuddyauth.ParseCredential([]byte(stored.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), codebuddyauth.ChannelType)
+	if persisted == nil || persisted.CodeBuddyCredits == nil || persisted.CodeBuddyCredits.Remain != 1895.65 ||
+		persisted.CodeBuddyCredits.Total == nil || *persisted.CodeBuddyCredits.Total != 2000 ||
+		persisted.CodeBuddyCredits.Used == nil || *persisted.CodeBuddyCredits.Used != 104.35 {
+		t.Fatalf("persisted summary missing: %+v", persisted)
+	}
+
+	srv.runDueCodeBuddyCheckins(context.Background())
+	if checkins.Load() != 0 || resources.Load() != 2 {
+		t.Fatalf("checkins=%d resources=%d, want 0 and 2", checkins.Load(), resources.Load())
+	}
+}
+
+func TestHandleCodeBuddyCheckin(t *testing.T) {
+	var mode, checkins, resources atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			checkins.Add(1)
+			switch mode.Load() {
+			case 0:
+				_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+			case 1:
+				_, _ = w.Write([]byte(`{"code":14001,"msg":"今日已签到"}`))
+			default:
+				_, _ = w.Write([]byte(`{"code":9001,"msg":"private upstream detail"}`))
+			}
+		case "/v2/billing/meter/get-user-resource":
+			resources.Add(1)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":720}]}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	server := newInMemoryServer(t)
+	server.codeBuddyService.BaseURL = upstream.URL
+	raw, err := (&codebuddyauth.Credential{AccessToken: "manual-secret"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := server.store.CreateConfig(context.Background(), newCodeBuddyChannel("manual-codebuddy", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(channelID int64) (int, []byte) {
+		path := fmt.Sprintf("/admin/channels/%d/codebuddy-checkin", channelID)
+		c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channelID)}}
+		server.HandleCodeBuddyCheckin(c)
+		return w.Code, append([]byte(nil), w.Body.Bytes()...)
+	}
+
+	status, body := call(channel.ID)
+	if status != http.StatusOK {
+		t.Fatalf("check-in status=%d body=%s", status, body)
+	}
+	response := mustParseAPIResponse[codeBuddyCheckinResult](t, body)
+	if response.Data.Status != "success" || response.Data.Usage == nil ||
+		response.Data.Usage.CodeBuddyCredits == nil || response.Data.Usage.CodeBuddyCredits.Remain != 720 {
+		t.Fatalf("check-in response=%+v", response.Data)
+	}
+	persistedChannel, err := server.store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codebuddyauth.ParseCredential([]byte(persistedChannel.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedUsage, _, _ := persistedOAuthUsage([]byte(persistedCredential.OAuthUsage), codebuddyauth.ChannelType)
+	if persistedUsage == nil || persistedUsage.CodeBuddyCredits == nil || persistedUsage.CodeBuddyCredits.Remain != 720 {
+		t.Fatalf("manual check-in did not persist balance: %+v", persistedUsage)
+	}
+
+	mode.Store(1)
+	status, body = call(channel.ID)
+	response = mustParseAPIResponse[codeBuddyCheckinResult](t, body)
+	if status != http.StatusOK || response.Data.Status != "already_checked" {
+		t.Fatalf("already checked status=%d response=%+v", status, response.Data)
+	}
+
+	mode.Store(2)
+	status, body = call(channel.ID)
+	if status != http.StatusBadGateway || strings.Contains(string(body), "private upstream detail") || strings.Contains(string(body), "manual-secret") {
+		t.Fatalf("failed check-in status=%d body=%s", status, body)
+	}
+	if checkins.Load() != 3 || resources.Load() != 3 {
+		t.Fatalf("checkins=%d resources=%d, want 3 and 3", checkins.Load(), resources.Load())
+	}
+
+	unsupported, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "not-codebuddy", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://api.example.test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ = call(unsupported.ID)
+	if status != http.StatusConflict {
+		t.Fatalf("unsupported check-in status=%d, want %d", status, http.StatusConflict)
+	}
+
+	engine := gin.New()
+	server.SetupRoutes(engine)
+	found := false
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/admin/channels/:id/codebuddy-checkin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("CodeBuddy manual check-in route is not registered")
+	}
+}
 
 func TestManagementCheckinDueUsesServerLocalDateAndTime(t *testing.T) {
 	t.Parallel()
