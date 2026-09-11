@@ -12,6 +12,23 @@ import (
 	"ccLoad/internal/util"
 )
 
+type channelRestrictionTokenContextKey struct{}
+
+func withChannelRestrictionToken(ctx context.Context, tokenHash string) context.Context {
+	if ctx == nil || tokenHash == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, channelRestrictionTokenContextKey{}, tokenHash)
+}
+
+func channelRestrictionTokenFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	tokenHash, _ := ctx.Value(channelRestrictionTokenContextKey{}).(string)
+	return tokenHash
+}
+
 // filterCooldownChannels 过滤冷却中的渠道
 //
 // [IMPORTANT] 冷却状态优先级：**最高优先级**，必须在健康度排序前执行
@@ -38,6 +55,18 @@ func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*m
 func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
+	}
+
+	// Token 渠道限制是路由边界，必须在全冷却兜底选择之前收窄候选集合。
+	// 限制后为空时保留原候选，让调用方现有的末端过滤继续返回 403。
+	if tokenHash := channelRestrictionTokenFromContext(ctx); tokenHash != "" && s.authService != nil {
+		filtered, restricted := s.authService.FilterAllowedChannels(tokenHash, channels)
+		if restricted {
+			if len(filtered) == 0 {
+				return channels, nil
+			}
+			channels = filtered
+		}
 	}
 
 	now := time.Now()
