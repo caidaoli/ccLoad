@@ -1106,7 +1106,7 @@ function renderLogs(data) {
     const statusCode = entry.status_code;
 
     // 3. 模型显示（支持重定向与思考等级角标）
-    const displayedActualModel = entry.response_model || entry.actual_model;
+    const displayedActualModel = entry.actual_model || entry.response_model;
     const modelDisplay = buildLogModelDisplay(entry.model, displayedActualModel, entry.thinking_effort, entry.reasoning_tokens);
 
     // 4. 响应时间显示(流式/非流式)
