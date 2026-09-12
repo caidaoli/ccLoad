@@ -61,11 +61,24 @@ func (e *APIError) UpstreamResponseBody() string { return "{}" }
 // ErrCannotRefresh requires reauthorization because no refresh token is available.
 var ErrCannotRefresh = errors.New("CodeBuddy credential has no refresh token; authorize again")
 
+// dailyCheckinBusinessCode is the provider's generic business rejection code.
+// The daily check-in endpoint returns it for every non-success outcome, so
+// callers must inspect APIError.Message to tell the cases apart.
+const dailyCheckinBusinessCode = 10001
+
+// dailyCheckinAlreadyDoneMarker is the only wording the provider uses for the
+// idempotent "already checked in today" outcome. Verified against the live
+// upstream on 2026-09-12: 10001 is overloaded, and its siblings ("签到活动未开启
+// 或已过期", "企业账号不支持该操作") mean the check-in did not happen.
+const dailyCheckinAlreadyDoneMarker = "已签到"
+
 // IsAlreadyCheckedIn reports the provider's idempotent "today already
 // checked in" business response.
 func IsAlreadyCheckedIn(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.Code == 14001
+	return errors.As(err, &apiErr) &&
+		apiErr.Code == dailyCheckinBusinessCode &&
+		strings.Contains(apiErr.Message, dailyCheckinAlreadyDoneMarker)
 }
 
 // ApplySourceHeaders supplies the CodeBuddy CLI request fingerprint.

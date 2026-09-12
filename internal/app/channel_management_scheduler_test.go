@@ -110,7 +110,8 @@ func TestHandleCodeBuddyCheckin(t *testing.T) {
 			case 0:
 				_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
 			case 1:
-				_, _ = w.Write([]byte(`{"code":14001,"msg":"今日已签到"}`))
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":10001,"msg":"今天已签到，请明天再来"}`))
 			default:
 				_, _ = w.Write([]byte(`{"code":9001,"msg":"private upstream detail"}`))
 			}

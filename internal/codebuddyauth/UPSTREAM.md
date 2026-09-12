@@ -12,4 +12,6 @@
 
 签到和余额查询沿用 `workbuddy2api` 的计费接口：国内版向 `https://www.codebuddy.cn/v2/billing/meter/daily-checkin` POST 空 JSON；国际版不支持签到，ccLoad 不会对国际版发起该请求。两版都向各自产品端点的 `/v2/billing/meter/get-user-resource` POST 当前有效套餐筛选条件查询余额。余额按套餐的周期剩余量聚合，周期字段缺失时回退到总剩余量，并将负值截为零。ccLoad 仅在每日 09:00 和 21:00（服务器本地时间）为国内 CodeBuddy OAuth 渠道执行签到并把安全余额快照写入凭证；管理端的 CodeBuddy 手动签到按钮同样仅对国内版显示，OAuth 用量接口仍可为两版手动刷新余额。
 
+2026-09-12 用三个真实渠道的 OAuth Bearer 直连上游实测签到响应：该接口把所有非成功结果都编码为 `HTTP 400` + `code 10001`，只有 `msg` 区分语义，因此判定必须同时看 `code` 和 `msg`，不能只看 `code`。三种实测文案：国内个人版当天已签到 `今天已签到，请明天再来`（幂等成功，ccLoad 记为 `already_checked`）；国际版 `签到活动未开启或已过期`；企业版 `企业账号不支持该操作`。后两者表示签到并未发生，仍按失败返回。国际版换用不带 `/v2` 的 `/billing/meter/daily-checkin` 结果相同，同一凭证的 `get-user-resource` 两个路径均返回 200，可确认国际版是确实没有签到活动而非"已签到"。幂等判定依赖上游中文文案（见 `IsAlreadyCheckedIn`），上游若改变措辞会回退为报错而非静默假成功。
+
 企业渠道（`enterprise_id` 非空）使用 `POST /v2/billing/meter/get-enterprise-user-usage`，空 JSON 请求体及现有企业身份头。企业账号不执行个人 `daily-checkin`（上游返回 10001/400“企业账号不支持该操作”），手动签到操作直接刷新企业积分。2026-09-11 对照[官方用量页面](https://www.codebuddy.cn/profile/usage)及其公开 `config-D_y8qqW1.js`、`index-Da0UxXq9.js` 核实：官网使用不带 `/v2` 的同名接口，现有 OAuth Bearer 实测两个路径均可读取。`credit` 是周期已用积分、`limitNum` 是成员周期总额度，剩余为 `max(0, limitNum-credit)`；`limitNum=-1` 表示无限额度。企业积分保留小数，不能按个人资源包的空 `Accounts` 当作零余额。安全快照包含 `remain/used/total/unlimited`；个人包按同一周期口径聚合总额，缺总额时不生成进度条。

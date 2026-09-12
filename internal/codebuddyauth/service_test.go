@@ -302,6 +302,60 @@ func TestBillingHTTPErrorRetainsBusinessCode(t *testing.T) {
 	}
 }
 
+// The daily check-in endpoint reports every non-success outcome as business
+// code 10001, so only the message separates the idempotent replay from real
+// failures. Messages below are the live upstream wordings observed on
+// 2026-09-12 for the domestic personal, international, and enterprise editions.
+func TestDailyCheckinOutcomeClassification(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		code int
+		msg  string
+		want bool
+	}{
+		{name: "domestic already checked in today", code: 10001, msg: "今天已签到，请明天再来", want: true},
+		{name: "domestic already checked in (legacy wording)", code: 10001, msg: "今日已签到", want: true},
+		{name: "international campaign closed", code: 10001, msg: "签到活动未开启或已过期", want: false},
+		{name: "enterprise unsupported", code: 10001, msg: "企业账号不支持该操作", want: false},
+		{name: "unrelated business code", code: 14001, msg: "今天已签到，请明天再来", want: false},
+		{name: "code without message", code: 10001, msg: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body, err := json.Marshal(map[string]any{"code": tc.code, "msg": tc.msg})
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+			service := NewService(server.Client())
+			service.BaseURL = server.URL
+
+			checkinErr := service.DailyCheckin(context.Background(), &Credential{AccessToken: "access"})
+			if checkinErr == nil {
+				t.Fatal("upstream rejection returned no error")
+			}
+			if got := IsAlreadyCheckedIn(checkinErr); got != tc.want {
+				t.Fatalf("IsAlreadyCheckedIn(%v)=%v, want %v", checkinErr, got, tc.want)
+			}
+		})
+	}
+}
+
+// A transport-level failure must never be mistaken for the idempotent replay.
+func TestIsAlreadyCheckedInRejectsNonAPIErrors(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{nil, errors.New("今天已签到，请明天再来")} {
+		if IsAlreadyCheckedIn(err) {
+			t.Fatalf("IsAlreadyCheckedIn(%v)=true, want false", err)
+		}
+	}
+}
+
 // This new provider package has no existing test file; exercise its public
 // authentication and persistence contracts through a simulated control plane.
 func TestLoginRefreshAndCredentialRoundTrip(t *testing.T) {
