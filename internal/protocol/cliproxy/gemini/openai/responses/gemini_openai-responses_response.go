@@ -366,6 +366,19 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	emitTrailingDetachedReasoning := func(signature string) {
 		switch st.LastSemanticKind {
 		case geminiResponsesCarrierText:
+			signature = strings.TrimSpace(signature)
+			if signature == "" || st.SeenReasoningSignatures[signature] {
+				return
+			}
+			finalizeReasoning()
+			finalizeMessage()
+			// LastSemanticKind also includes thought text. Never bind a later
+			// thought signature to a visible message from before that thought.
+			if !st.MsgOpened || (st.ReasoningOpened && st.ReasoningIndex > st.MsgIndex) {
+				emitDetachedReasoning(signature, geminiResponsesCarrierPrevious, geminiResponsesCarrierText)
+				return
+			}
+			// Keep the signature in-band so replay does not depend on runtime cache state.
 			emitDetachedReasoning(signature, geminiResponsesCarrierPrevious, geminiResponsesCarrierText)
 		case geminiResponsesCarrierFunction:
 			emitDetachedReasoning(signature, geminiResponsesCarrierPrevious, geminiResponsesCarrierFunction)
@@ -559,7 +572,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				}
 				// Responses output items are sequential: finish reasoning before
 				// opening the visible message. A signature that arrives later is
-				// emitted as an explicit trailing carrier and recombined on replay.
+				// cached with the message and recombined on replay.
 				finalizeReasoning()
 				if st.MsgClosed {
 					st.MsgOpened = false
@@ -926,11 +939,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			// cached token details: align with OpenAI "cached_tokens" semantics.
 			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", um.Get("cachedContentTokenCount").Int())
 			// output tokens
-			if v := um.Get("candidatesTokenCount"); v.Exists() {
-				completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", v.Int())
-			} else {
-				completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", 0)
-			}
+			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", um.Get("candidatesTokenCount").Int()+um.Get("thoughtsTokenCount").Int())
 			if v := um.Get("thoughtsTokenCount"); v.Exists() {
 				completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens_details.reasoning_tokens", v.Int())
 			} else {
@@ -1333,9 +1342,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 		// cached token details: align with OpenAI "cached_tokens" semantics.
 		resp, _ = sjson.SetBytes(resp, "usage.input_tokens_details.cached_tokens", um.Get("cachedContentTokenCount").Int())
 		// output tokens
-		if v := um.Get("candidatesTokenCount"); v.Exists() {
-			resp, _ = sjson.SetBytes(resp, "usage.output_tokens", v.Int())
-		}
+		resp, _ = sjson.SetBytes(resp, "usage.output_tokens", um.Get("candidatesTokenCount").Int()+um.Get("thoughtsTokenCount").Int())
 		if v := um.Get("thoughtsTokenCount"); v.Exists() {
 			resp, _ = sjson.SetBytes(resp, "usage.output_tokens_details.reasoning_tokens", v.Int())
 		}

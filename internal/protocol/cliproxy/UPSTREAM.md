@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `725e31d898c40f1517105e82c7898b4f745dbb65` (`fork/v8.80.0`)
-- Synchronized at: `2026-09-05`
+- Last synchronized commit: `37b858c3603442e39c78945ffdfef6c2f007ef26` (`fork/v8.85.0`)
+- Synchronized at: `2026-09-12`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -40,7 +40,7 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 61 `_test.go` files from the same commit as the
+The core snapshot includes 64 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -50,13 +50,13 @@ production sources:
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 8
+- `common`: 9
 - `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
 - `gemini/openai/responses`: 3
 - `openai/claude`: 3
 - `openai/gemini`: 2
-- `openai/openai/responses`: 2
+- `openai/openai/responses`: 4
 - `signature`: 8
 - `util`: 6
 
@@ -76,7 +76,10 @@ ccLoad's Registry defines same-protocol traffic as byte-for-byte passthrough and
 never registers same-protocol converters.
 The new `common/antigravity_tools.go` and its tests are also excluded: their
 tool-name collision mapping is used exclusively by the unsupported Interactions
-translators, not the registered Antigravity generateContent adapters.
+translators, not the registered Antigravity generateContent adapters. Gemini
+Responses `trailing_signature.go` and its tests are excluded because they bind
+the converter to the runtime reasoning replay cache; ccLoad keeps the explicit
+pure-wire signature carrier and removes it before emitting Gemini wire data.
 
 ## Local contract fixes
 
@@ -97,10 +100,13 @@ documented adaptations:
   preserved as the sole user content, terminal `[DONE]`, protocol-specific
   cache-creation usage, and unsigned Anthropic thinking preserved as OpenAI
   reasoning.
-- Codex-to-OpenAI Chat Completions maps cache-write usage to
-  `prompt_tokens_details.cached_creation_tokens` in both streaming and
-  non-streaming responses, and does not expose Codex encrypted reasoning
-  carriers; readable reasoning summaries remain available as `reasoning_content`.
+- Codex-to-OpenAI Chat Completions maps cache-write usage to both
+  `prompt_tokens_details.cached_creation_tokens` and `cache_write_tokens` in
+  streaming and non-streaming responses. It also preserves a valid upstream
+  `service_tier` across the streaming lifecycle, and does not expose Codex
+  encrypted reasoning carriers; readable reasoning summaries remain available
+  as `reasoning_content`; the local top-level `cache_creation_input_tokens` alias
+  remains accepted.
 - Codex-to-Claude maps both top-level `cache_creation_input_tokens` and
   `input_tokens_details.cache_write_tokens` (including its
   `cache_creation_tokens` alias) to Anthropic
@@ -111,6 +117,12 @@ documented adaptations:
   `cache_creation_input_tokens` alongside upstream's cache-write aliases, in
   streaming and native non-stream JSON. Upstream's tests are adapted to avoid
   counting cache writes twice.
+- Claude-to-OpenAI keeps image and document parts inside structured tool-message
+  content. The upstream user-message image relay changes the Registry-visible role
+  sequence, so its tests are adapted to the ccLoad wire contract.
+- Claude-to-OpenAI streaming emits the trailing empty-choices usage chunk only
+  when the original request sets `stream_options.include_usage=true`; otherwise
+  `message_stop` maps directly to the terminal `[DONE]` frame.
 - Codex-to-OpenAI accepts both `reasoning_summary_text` and `reasoning_text`
   stream events. Non-stream output preserves ccLoad's full-content-first rule:
   reasoning `content` wins when present, with `summary` as the fallback, rather
@@ -183,6 +195,8 @@ documented adaptations:
   each model turn; parallel sibling function calls remain unsigned. All supported
   ingress paths converge on this rule, preventing sequential tool history from
   being rejected before execution.
+  OpenAI Responses reasoning effort does not inject `includeThoughts` in the
+  pure converter; summary visibility remains an application runtime policy.
   The shared Antigravity wire finalizer also performs the excluded runtime
   `ApplyThinking` effort-alias normalization (`minimal` to `low`, `xhigh`/`max`
   to `high`) for every client protocol before the request is sent.

@@ -1047,7 +1047,7 @@ func TestConvertGeminiResponseToOpenAIResponsesNonStream_PreservesTextAroundSign
 	}
 }
 
-func TestConvertGeminiResponseToOpenAIResponses_DetachedSignatureAfterVisibleText(t *testing.T) {
+func TestConvertGeminiResponseToOpenAIResponses_CachesSignatureAfterVisibleText(t *testing.T) {
 	in := []string{
 		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"visible answer"}]}}],"modelVersion":"gemini-3.6-flash","responseId":"resp_detached"}}`,
 		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"","thoughtSignature":"` + testResponsesGeminiThoughtSignature + `"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":15},"modelVersion":"gemini-3.6-flash","responseId":"resp_detached"}}`,
@@ -1533,5 +1533,67 @@ func TestConvertGeminiResponseToOpenAIResponses_MessageOutputItemDoneFields(t *t
 
 	if !gotItemDone {
 		t.Fatalf("missing message response.output_item.done event")
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponsesOutputTokensIncludeThoughts(t *testing.T) {
+	var param any
+	chunk := []byte(`data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":16,"candidatesTokenCount":5,"thoughtsTokenCount":42,"totalTokenCount":63},"modelVersion":"gemini-3.6-flash","responseId":"resp_usage"}`)
+
+	result := ConvertGeminiResponseToOpenAIResponses(context.Background(), "model", nil, nil, chunk, &param)
+	var completed gjson.Result
+	for _, event := range result {
+		name, data := parseSSEEvent(t, event)
+		if name == "response.completed" {
+			completed = data
+		}
+	}
+	if !completed.Exists() {
+		t.Fatalf("missing response.completed event")
+	}
+	outputTokens := completed.Get("response.usage.output_tokens")
+	if !outputTokens.Exists() || outputTokens.Int() != 47 {
+		t.Fatalf("output_tokens = %s, want present with value 47. Output: %s", outputTokens.Raw, completed.Raw)
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponsesNonStreamOutputTokensIncludeThoughts(t *testing.T) {
+	response := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":16,"thoughtsTokenCount":42,"totalTokenCount":58},"modelVersion":"gemini-3.6-flash","responseId":"resp_usage"}`)
+
+	result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "model", nil, nil, response, nil)
+	outputTokens := gjson.GetBytes(result, "usage.output_tokens")
+	if !outputTokens.Exists() || outputTokens.Int() != 42 {
+		t.Fatalf("output_tokens = %s, want present with value 42. Output: %s", outputTokens.Raw, result)
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponses_CachedTrailingCarrierPreservesDirection(t *testing.T) {
+	signature2 := differentResponsesGeminiThoughtSignature(t)
+	lines := []string{
+		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"answer","thoughtSignature":"` + testResponsesGeminiThoughtSignature + `"}]}}],"responseId":"trailing-direction-stream"}}`,
+		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"` + signature2 + `"}]},"finishReason":"STOP"}],"responseId":"trailing-direction-stream"}}`,
+	}
+	var param any
+	var completed gjson.Result
+	for _, line := range lines {
+		for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.6-flash-high", nil, nil, []byte(line), &param) {
+			event, data := parseSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completed = data.Get("response.output")
+			}
+		}
+	}
+	request := []byte(`{"model":"gemini-3.6-flash-high","input":[]}`)
+	request, _ = sjson.SetRawBytes(request, "input", []byte(completed.Raw))
+	translated := ConvertOpenAIResponsesRequestToGemini("gemini-3.6-flash-high", request, false)
+	parts := gjson.GetBytes(translated, "contents.0.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != "answer" || parts[0].Get("thoughtSignature").String() != testResponsesGeminiThoughtSignature || !parts[1].Get("text").Exists() || parts[1].Get("text").String() != "" || parts[1].Get("thoughtSignature").String() != signature2 {
+		t.Fatalf("Cached trailing carrier changed direction: output=%s translated=%s", completed.Raw, translated)
+	}
+	if !strings.Contains(completed.Raw, geminiResponsesCarrierPrefix) {
+		t.Fatalf("pure Responses carrier missing before round trip: output=%s", completed.Raw)
+	}
+	if strings.Contains(string(translated), geminiResponsesCarrierPrefix) {
+		t.Fatalf("Responses carrier leaked into Gemini wire: translated=%s", translated)
 	}
 }

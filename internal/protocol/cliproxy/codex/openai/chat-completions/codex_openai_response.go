@@ -30,6 +30,7 @@ type toolCallStreamState struct {
 
 // ConvertCliToOpenAIParams holds parameters for response conversion.
 type ConvertCliToOpenAIParams struct {
+	ServiceTier           string
 	ResponseID            string
 	CreatedAt             int64
 	Model                 string
@@ -75,6 +76,16 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 
 	rootResult := gjson.ParseBytes(rawJSON)
 
+	p := (*param).(*ConvertCliToOpenAIParams)
+	if tier := codexResponseServiceTier(rootResult.Get("response")); tier != "" {
+		p.ServiceTier = tier
+	} else if tier := codexResponseServiceTier(rootResult); tier != "" {
+		p.ServiceTier = tier
+	}
+	if p.ServiceTier != "" {
+		template, _ = sjson.SetBytes(template, "service_tier", p.ServiceTier)
+	}
+
 	typeResult := rootResult.Get("type")
 	dataType := typeResult.String()
 	if dataType == "response.created" {
@@ -102,7 +113,11 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	// Extract and set the response ID.
 	template, _ = sjson.SetBytes(template, "id", (*param).(*ConvertCliToOpenAIParams).ResponseID)
 
-	template = setOpenAIUsage(template, gjson.GetBytes(rawJSON, "response.usage"))
+	// Extract and set usage metadata (token counts).
+	if usageResult := gjson.GetBytes(rawJSON, "response.usage"); usageResult.Exists() {
+		template = setOpenAIUsage(template, usageResult)
+		template = setCodexCacheWriteTokens(template, usageResult)
+	}
 
 	switch dataType {
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
@@ -405,6 +420,12 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 
 	template := []byte(`{"id":"","object":"chat.completion","created":123456,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}`)
 
+	if tier := codexResponseServiceTier(responseResult); tier != "" {
+		template, _ = sjson.SetBytes(template, "service_tier", tier)
+	} else if tier := codexResponseServiceTier(rootResult); tier != "" {
+		template, _ = sjson.SetBytes(template, "service_tier", tier)
+	}
+
 	// Extract and set the model version.
 	if modelResult := responseResult.Get("model"); modelResult.Exists() {
 		template, _ = sjson.SetBytes(template, "model", modelResult.String())
@@ -422,7 +443,11 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		template, _ = sjson.SetBytes(template, "id", idResult.String())
 	}
 
-	template = setOpenAIUsage(template, responseResult.Get("usage"))
+	// Extract and set usage metadata (token counts).
+	if usageResult := responseResult.Get("usage"); usageResult.Exists() {
+		template = setOpenAIUsage(template, usageResult)
+		template = setCodexCacheWriteTokens(template, usageResult)
+	}
 
 	// Process the output array for content and function calls
 	var toolCalls [][]byte
@@ -613,33 +638,12 @@ func codexToolCallArguments(itemResult gjson.Result) string {
 // buildReverseMapFromOriginalOpenAI builds a map of shortened tool name -> original tool name
 // from the original OpenAI-style request JSON using the same shortening logic.
 func buildReverseMapFromOriginalOpenAI(original []byte) map[string]string {
-	tools := gjson.GetBytes(original, "tools")
 	rev := map[string]string{}
-	if tools.IsArray() && len(tools.Array()) > 0 {
-		var names []string
-		seenNames := map[string]struct{}{}
-		arr := tools.Array()
-		for i := 0; i < len(arr); i++ {
-			t := arr[i]
-			var name string
-			switch t.Get("type").String() {
-			case "function":
-				name = t.Get("function.name").String()
-			case "custom":
-				name = t.Get("name").String()
-			}
-			if name != "" {
-				if _, seen := seenNames[name]; !seen {
-					names = append(names, name)
-					seenNames[name] = struct{}{}
-				}
-			}
-		}
-		if len(names) > 0 {
-			m := buildShortNameMap(names)
-			for orig, short := range m {
-				rev[short] = orig
-			}
+	names := collectRequestToolNames(original)
+	if len(names) > 0 {
+		m := buildShortNameMap(names)
+		for orig, short := range m {
+			rev[short] = orig
 		}
 	}
 	return rev
@@ -664,4 +668,34 @@ func mimeTypeFromCodexOutputFormat(outputFormat string) string {
 	default:
 		return "image/png"
 	}
+}
+
+// codexResponseServiceTier returns only an actual nonempty upstream tier.
+func codexResponseServiceTier(response gjson.Result) string {
+	tier := response.Get("service_tier")
+	if tier.Type != gjson.String || strings.TrimSpace(tier.Str) == "" {
+		return ""
+	}
+	return strings.TrimSpace(tier.Str)
+}
+
+// setCodexCacheWriteTokens preserves the upstream integer without float conversion.
+func setCodexCacheWriteTokens(template []byte, usage gjson.Result) []byte {
+	value := usage.Get("input_tokens_details.cache_write_tokens")
+	if !value.Exists() || value.Type == gjson.Null {
+		return template
+	}
+	valid := value.Type == gjson.Number && value.Raw != ""
+	for _, digit := range value.Raw {
+		if digit < '0' || digit > '9' {
+			valid = false
+			break
+		}
+	}
+	if !valid {
+		return template
+	}
+	template, _ = sjson.SetRawBytes(template, "usage.prompt_tokens_details.cache_write_tokens", []byte(value.Raw))
+	template, _ = sjson.SetRawBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", []byte(value.Raw))
+	return template
 }

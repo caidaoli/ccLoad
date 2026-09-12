@@ -701,110 +701,54 @@ func TestConvertClaudeRequestToOpenAI_ToolResultObjectContent(t *testing.T) {
 }
 
 func TestConvertClaudeRequestToOpenAI_ToolResultTextAndImageContent(t *testing.T) {
-	inputJSON := `{
-		"model": "claude-3-opus",
-		"messages": [
-			{
-				"role": "assistant",
-				"content": [
-					{"type": "tool_use", "id": "call_1", "name": "do_work", "input": {"a": 1}}
-				]
-			},
-			{
-				"role": "user",
-				"content": [
-					{
-						"type": "tool_result",
-						"tool_use_id": "call_1",
-						"content": [
-							{"type": "text", "text": "tool ok"},
-							{
-								"type": "image",
-								"source": {
-									"type": "base64",
-									"media_type": "image/png",
-									"data": "iVBORw0KGgoAAAANSUhEUg=="
-								}
-							}
-						]
-					}
-				]
-			}
-		]
-	}`
-
-	result := ConvertClaudeRequestToOpenAI("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
-	messages := resultJSON.Get("messages").Array()
-
-	if len(messages) != 2 {
-		t.Fatalf("Expected 2 messages, got %d. Messages: %s", len(messages), resultJSON.Get("messages").Raw)
+	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"do_work","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"tool ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1n"}}]}]}]}`)
+	messages := gjson.GetBytes(ConvertClaudeRequestToOpenAI("test-model", input, false), "messages").Array()
+	if len(messages) != 2 || messages[1].Get("role").String() != "tool" {
+		t.Fatalf("unexpected messages: %v", messages)
 	}
-
-	toolContent := messages[1].Get("content")
-	if !toolContent.IsArray() {
-		t.Fatalf("Expected tool content array, got %s", toolContent.Raw)
-	}
-	if got := toolContent.Get("0.type").String(); got != "text" {
-		t.Fatalf("Expected first tool content type %q, got %q", "text", got)
-	}
-	if got := toolContent.Get("0.text").String(); got != "tool ok" {
-		t.Fatalf("Expected first tool content text %q, got %q", "tool ok", got)
-	}
-	if got := toolContent.Get("1.type").String(); got != "image_url" {
-		t.Fatalf("Expected second tool content type %q, got %q", "image_url", got)
-	}
-	if got := toolContent.Get("1.image_url.url").String(); got != "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" {
-		t.Fatalf("Unexpected image_url: %q", got)
+	content := messages[1].Get("content")
+	if !content.IsArray() || content.Get("0.text").String() != "tool ok" || content.Get("1.type").String() != "image_url" || content.Get("1.image_url.url").String() != "data:image/png;base64,aW1n" {
+		t.Fatalf("unexpected structured tool content: %s", content.Raw)
 	}
 }
 
 func TestConvertClaudeRequestToOpenAI_ToolResultURLImageOnly(t *testing.T) {
-	inputJSON := `{
-		"model": "claude-3-opus",
-		"messages": [
-			{
-				"role": "assistant",
-				"content": [
-					{"type": "tool_use", "id": "call_1", "name": "do_work", "input": {"a": 1}}
-				]
-			},
-			{
-				"role": "user",
-				"content": [
-					{
-						"type": "tool_result",
-						"tool_use_id": "call_1",
-						"content": {
-							"type": "image",
-							"source": {
-								"type": "url",
-								"url": "https://example.com/tool.png"
-							}
-						}
-					}
-				]
-			}
-		]
-	}`
-
-	result := ConvertClaudeRequestToOpenAI("test-model", []byte(inputJSON), false)
-	resultJSON := gjson.ParseBytes(result)
-	messages := resultJSON.Get("messages").Array()
-
+	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"do_work","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":{"type":"image","source":{"type":"url","url":"https://example.com/tool.png"}}}]}]}`)
+	messages := gjson.GetBytes(ConvertClaudeRequestToOpenAI("test-model", input, false), "messages").Array()
 	if len(messages) != 2 {
-		t.Fatalf("Expected 2 messages, got %d. Messages: %s", len(messages), resultJSON.Get("messages").Raw)
+		t.Fatalf("unexpected messages: %v", messages)
 	}
+	content := messages[1].Get("content")
+	if !content.IsArray() || content.Get("0.type").String() != "image_url" || content.Get("0.image_url.url").String() != "https://example.com/tool.png" {
+		t.Fatalf("unexpected image-only tool content: %s", content.Raw)
+	}
+}
 
-	toolContent := messages[1].Get("content")
-	if !toolContent.IsArray() {
-		t.Fatalf("Expected tool content array, got %s", toolContent.Raw)
+func TestConvertClaudeRequestToOpenAI_ToolResultImageMergesIntoUserText(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"screenshot","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1n"}}]},{"type":"text","text":"What color?"}]}]}`)
+	messages := gjson.GetBytes(ConvertClaudeRequestToOpenAI("test-model", input, false), "messages").Array()
+	if len(messages) != 3 || messages[1].Get("role").String() != "tool" || messages[2].Get("role").String() != "user" {
+		t.Fatalf("unexpected messages: %v", messages)
 	}
-	if got := toolContent.Get("0.type").String(); got != "image_url" {
-		t.Fatalf("Expected tool content type %q, got %q", "image_url", got)
+	if got := messages[1].Get("content.0.image_url.url").String(); got != "data:image/png;base64,aW1n" {
+		t.Fatalf("tool image=%q", got)
 	}
-	if got := toolContent.Get("0.image_url.url").String(); got != "https://example.com/tool.png" {
-		t.Fatalf("Unexpected image_url: %q", got)
+	if got := messages[2].Get("content.0.text").String(); got != "What color?" {
+		t.Fatalf("user text=%q", got)
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_MultipleToolResultsWithImages(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"shot1","input":{}},{"type":"tool_use","id":"call_2","name":"shot2","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"result 1"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1nMQ=="}}]},{"type":"tool_result","tool_use_id":"call_2","content":{"type":"image","source":{"type":"url","url":"https://example.com/2.png"}}}]}]}`)
+	messages := gjson.GetBytes(ConvertClaudeRequestToOpenAI("test-model", input, false), "messages").Array()
+	if len(messages) != 3 {
+		t.Fatalf("unexpected messages: %v", messages)
+	}
+	if got := messages[1].Get("content.1.image_url.url").String(); got != "data:image/png;base64,aW1nMQ==" {
+		t.Fatalf("first tool image=%q", got)
+	}
+	if got := messages[2].Get("content.0.image_url.url").String(); got != "https://example.com/2.png" {
+		t.Fatalf("second tool image=%q", got)
 	}
 }
 
@@ -978,5 +922,185 @@ func TestConvertClaudeRequestToOpenAI_StopSequences(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_ToolWithoutInputSchemaDefaultsParameters(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-opus-5",
+		"tools": [
+			{
+				"type": "web_search_20250305",
+				"name": "web_search",
+				"max_uses": 8
+			},
+			{
+				"name": "no_schema_custom"
+			},
+			{
+				"name": "null_schema_custom",
+				"input_schema": null
+			}
+		],
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	output := ConvertClaudeRequestToOpenAI("test-model", inputJSON, false)
+	outputJSON := gjson.ParseBytes(output)
+
+	for i, toolName := range []string{"web_search", "no_schema_custom", "null_schema_custom"} {
+		path := fmt.Sprintf("tools.%d.function", i)
+		if got := outputJSON.Get(path + ".name").String(); got != toolName {
+			t.Fatalf("tool %d name = %q, want %q", i, got, toolName)
+		}
+		params := outputJSON.Get(path + ".parameters")
+		if !params.Exists() {
+			t.Fatalf("tool %d function.parameters missing: %s", i, outputJSON.Get(path).Raw)
+		}
+		if got := params.Get("type").String(); got != "object" {
+			t.Fatalf("tool %d function.parameters.type = %q, want object", i, got)
+		}
+		if got := params.Get("properties"); !got.Exists() || !got.IsObject() {
+			t.Fatalf("tool %d function.parameters.properties missing or not object: %s", i, params.Raw)
+		}
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_StripsUnsupportedUnicodePropertyEscapePatterns(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.6",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{
+			"name": "Artifact",
+			"description": "Render an HTML file to an Artifact",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"field": {
+						"type": "string",
+						"description": "field to replace",
+						"pattern": "^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$"
+					},
+					"asset_id": {
+						"type": "string",
+						"pattern": "^[0-9a-f]{32}$"
+					},
+					"lookahead_safe": {
+						"type": "string",
+						"pattern": "^(?!__.*__$).{1,200}$"
+					}
+				}
+			}
+		}]
+	}`)
+
+	output := ConvertClaudeRequestToOpenAI("gpt-5.6", inputJSON, false)
+	outputJSON := gjson.ParseBytes(output)
+
+	params := outputJSON.Get("tools.0.function.parameters")
+	if !params.Exists() {
+		t.Fatalf("expected function.parameters in output: %s", output)
+	}
+
+	// Incompatible \p{...} pattern must be stripped
+	if params.Get("properties.field.pattern").Exists() {
+		t.Errorf("expected properties.field.pattern to be removed, got: %s", params.Get("properties.field.pattern").Raw)
+	}
+	if got := params.Get("properties.field.type").String(); got != "string" {
+		t.Errorf("expected properties.field.type == 'string', got %q", got)
+	}
+
+	// Valid patterns must remain intact
+	if got := params.Get("properties.asset_id.pattern").String(); got != "^[0-9a-f]{32}$" {
+		t.Errorf("expected properties.asset_id.pattern preserved, got %q", got)
+	}
+	if got := params.Get("properties.lookahead_safe.pattern").String(); got != "^(?!__.*__$).{1,200}$" {
+		t.Errorf("expected properties.lookahead_safe.pattern preserved, got %q", got)
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_PreservesNonSchemaPatternKeys(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.6",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{
+			"name": "config_tool",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"regex_config": {
+						"type": "object",
+						"default": {
+							"pattern": "\\p{L}+"
+						},
+						"enum": [
+							{"pattern": "\\p{N}+"}
+						]
+					},
+					"real_schema": {
+						"type": "string",
+						"pattern": "\\p{L}+"
+					}
+				}
+			}
+		}]
+	}`)
+
+	output := ConvertClaudeRequestToOpenAI("gpt-5.6", inputJSON, false)
+	outputJSON := gjson.ParseBytes(output)
+
+	params := outputJSON.Get("tools.0.function.parameters")
+	if !params.Exists() {
+		t.Fatalf("expected function.parameters in output: %s", output)
+	}
+
+	// Real schema pattern must be removed
+	if params.Get("properties.real_schema.pattern").Exists() {
+		t.Errorf("expected real_schema.pattern to be removed, got: %s", params.Get("properties.real_schema").Raw)
+	}
+
+	// User data under default and enum must be PRESERVED
+	if got := params.Get("properties.regex_config.default.pattern").String(); got != `\p{L}+` {
+		t.Errorf("expected default.pattern preserved, got %q", got)
+	}
+	if got := params.Get("properties.regex_config.enum.0.pattern").String(); got != `\p{N}+` {
+		t.Errorf("expected enum.0.pattern preserved, got %q", got)
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_StripsPatternPropertiesIncompatibleKeys(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gpt-5.6",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{
+			"name": "pattern_tool",
+			"input_schema": {
+				"type": "object",
+				"patternProperties": {
+					"^\\\\p{L}+$": {
+						"type": "string"
+					},
+					"^[a-z]+$": {
+						"type": "number"
+					}
+				}
+			}
+		}]
+	}`)
+
+	output := ConvertClaudeRequestToOpenAI("gpt-5.6", inputJSON, false)
+	outputJSON := gjson.ParseBytes(output)
+
+	params := outputJSON.Get("tools.0.function.parameters")
+	if !params.Exists() {
+		t.Fatalf("expected function.parameters in output: %s", output)
+	}
+
+	patternProps := params.Get("patternProperties").Map()
+	if _, exists := patternProps[`^\p{L}+$`]; exists {
+		t.Errorf("expected patternProperties key '^\\\\p{L}+$' to be removed, got: %s", params.Get("patternProperties").Raw)
+	}
+	if _, exists := patternProps[`^[a-z]+$`]; !exists {
+		t.Errorf("expected patternProperties key '^[a-z]+$' to be preserved, got: %s", params.Get("patternProperties").Raw)
 	}
 }

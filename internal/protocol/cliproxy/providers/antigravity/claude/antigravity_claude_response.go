@@ -424,6 +424,9 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 					if hasThoughtSignature {
 						signatureTargetsVisibleText = appendPartSignature(thoughtSignatureResult.String(), geminiClaudeCarrierNext, geminiClaudeCarrierText)
 					}
+					// Empty text parts must not close an active block; appendText
+					// already reuses an open text block and only opens a new one
+					// for non-empty segments.
 					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
 					if partText != "" || !finishReasonResult.Exists() {
 						appendPseudoThinkingSegments(partText, false)

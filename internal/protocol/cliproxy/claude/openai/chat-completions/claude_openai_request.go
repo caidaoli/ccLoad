@@ -138,6 +138,9 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	// Stream configuration to enable or disable streaming responses
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
+	systemBlocks := make([][]byte, 0)
+	messageBlocks := make([][]byte, 0)
+
 	// Process messages and transform them to Claude Code format
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		lastToolMessage := map[string]gjson.Result{}
@@ -152,7 +155,6 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 		})
 		emittedToolResults := map[string]struct{}{}
 
-		systemBlocks := make([][]byte, 0)
 		messageAccumulator := common.NewClaudeMessageAccumulator(int(root.Get("messages.#").Int()))
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
@@ -292,23 +294,29 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 			return true
 		})
 
-		messageBlocks := messageAccumulator.Messages()
+		messageBlocks = messageAccumulator.Messages()
+	}
 
-		// Preserve a minimal conversational turn for system-only inputs.
-		// Claude payloads with top-level system instructions but no messages are risky for downstream validation.
-		if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
-			fallbackMsg := []byte(`{"role":"user","content":[]}`)
-			fallbackMsg, _ = sjson.SetRawBytes(fallbackMsg, "content", common.JoinRawArray(systemBlocks))
-			messageBlocks = append(messageBlocks, fallbackMsg)
-			systemBlocks = nil
-		}
+	if formatInstruction := common.BuildClaudeStructuredOutputInstruction(root.Get("response_format")); formatInstruction != "" {
+		systemBlock := []byte(`{"type":"text","text":""}`)
+		systemBlock, _ = sjson.SetBytes(systemBlock, "text", formatInstruction)
+		systemBlocks = append(systemBlocks, systemBlock)
+	}
 
-		if len(systemBlocks) > 0 {
-			out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))
-		}
-		if len(messageBlocks) > 0 {
-			out = common.SetRawArrayItems(out, "messages", messageBlocks)
-		}
+	// Preserve a minimal conversational turn for system-only inputs.
+	// Claude payloads with top-level system instructions but no messages are risky for downstream validation.
+	if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
+		fallbackMsg := []byte(`{"role":"user","content":[]}`)
+		fallbackMsg, _ = sjson.SetRawBytes(fallbackMsg, "content", common.JoinRawArray(systemBlocks))
+		messageBlocks = append(messageBlocks, fallbackMsg)
+		systemBlocks = nil
+	}
+
+	if len(systemBlocks) > 0 {
+		out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))
+	}
+	if len(messageBlocks) > 0 {
+		out = common.SetRawArrayItems(out, "messages", messageBlocks)
 	}
 
 	// Tools mapping: OpenAI tools -> Claude Code tools

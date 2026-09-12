@@ -31,6 +31,8 @@ type ConvertAnthropicResponseToOpenAIParams struct {
 	NextToolCallIndex    int
 	ReasoningAccumulator map[int]*ReasoningAccumulator
 	Done                 bool
+	TrailingUsageSent    bool
+	IncludeUsage         bool
 }
 
 type claudeUsageTokens struct {
@@ -108,6 +110,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			CreatedAt:    0,
 			ResponseID:   "",
 			FinishReason: "",
+			IncludeUsage: gjson.GetBytes(originalRequestRawJSON, "stream_options.include_usage").Bool(),
 		}
 	}
 
@@ -310,6 +313,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokens)
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
+			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
 			if cacheCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.CacheCreationInputTokens; cacheCreationTokens > 0 {
 				template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokens)
 			}
@@ -320,11 +324,35 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		return [][]byte{template}
 
 	case "message_stop":
-		if (*param).(*ConvertAnthropicResponseToOpenAIParams).Done {
+		p := (*param).(*ConvertAnthropicResponseToOpenAIParams)
+		if p.Done {
 			return [][]byte{}
 		}
-		(*param).(*ConvertAnthropicResponseToOpenAIParams).Done = true
-		return [][]byte{[]byte("[DONE]")}
+		p.Done = true
+		out := make([][]byte, 0, 2)
+		if p.IncludeUsage && p.Usage.HasUsage && !p.TrailingUsageSent {
+			p.TrailingUsageSent = true
+			usageTemplate := []byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[]}`)
+			if p.ResponseID != "" {
+				usageTemplate, _ = sjson.SetBytes(usageTemplate, "id", p.ResponseID)
+			}
+			if modelName != "" {
+				usageTemplate, _ = sjson.SetBytes(usageTemplate, "model", modelName)
+			}
+			if p.CreatedAt > 0 {
+				usageTemplate, _ = sjson.SetBytes(usageTemplate, "created", p.CreatedAt)
+			}
+			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := p.Usage.OpenAIUsage()
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens", promptTokens)
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.completion_tokens", completionTokens)
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.total_tokens", totalTokens)
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
+			usageTemplate, _ = sjson.SetBytes(usageTemplate, "usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
+			out = append(out, usageTemplate)
+		}
+		out = append(out, []byte("[DONE]"))
+		return out
 
 	case "ping":
 		// Ping events for keeping connection alive - no output needed
@@ -584,6 +612,7 @@ func ConvertClaudeResponseToOpenAINonStream(ctx context.Context, modelName strin
 		out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cache_write_tokens", cachedCreationTokens)
 	}
 
 	// Set basic response fields including message ID, creation time, and model
