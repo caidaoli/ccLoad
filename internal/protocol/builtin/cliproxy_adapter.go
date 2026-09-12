@@ -382,6 +382,13 @@ func cliproxyValidateCodexRequest(raw []byte, allowToolSearch bool) error {
 				}
 			}
 		case "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning", "web_search_call", "computer_call", "computer_call_output", "image_generation_call", "local_shell_call", "local_shell_call_output", "shell_call", "shell_call_output", "apply_patch_call", "apply_patch_call_output", "additional_tools":
+		case "compaction":
+			// Chat Completions has no equivalent for Codex's encrypted context
+			// control item. The OpenAI bridge drops it in the converter while
+			// preserving representable messages; other bridges still reject it.
+			if !allowToolSearch {
+				return fmt.Errorf("unsupported Codex input item type %q", itemType)
+			}
 		case "tool_search_call", "tool_search_output":
 			if !allowToolSearch {
 				return fmt.Errorf("unsupported Codex input item type %q for this provider", itemType)

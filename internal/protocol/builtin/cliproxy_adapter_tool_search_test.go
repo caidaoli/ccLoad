@@ -47,3 +47,24 @@ func TestOpenAIToCodexToolSearchResponseRejectsMalformedArguments(t *testing.T) 
 		t.Fatalf("expected stream translation error, got %v", err)
 	}
 }
+
+func TestCodexCompactionIsDroppedForOpenAIChatBridge(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[
+			{"type":"compaction","encrypted_content":"opaque"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`)
+
+	translated, err := cliproxyCodexRequestToOpenAI("gpt-5.6-sol", raw, true)
+	if err != nil {
+		t.Fatalf("OpenAI bridge rejected representable request with compaction metadata: %v", err)
+	}
+	if got := gjson.GetBytes(translated, "messages.0.content.0.text").String(); got != "continue" {
+		t.Fatalf("translated message = %q, want continue: %s", got, translated)
+	}
+	if gjson.GetBytes(translated, "input").Exists() || gjson.GetBytes(translated, "messages.0.type").Exists() {
+		t.Fatalf("compaction item leaked into Chat Completions request: %s", translated)
+	}
+}

@@ -154,6 +154,13 @@ func normalizeCodeBuddySSEEvent(raw []byte) []byte {
 	if json.Unmarshal(payload["choices"], &choices) != nil {
 		return raw
 	}
+	// CodeBuddy's chat endpoint currently labels Chat Completions chunks as
+	// "response". Normalize this provider-specific alias before the protocol
+	// registry sees the event; otherwise the OpenAI -> Responses converter
+	// rejects every chunk and the downstream response is empty.
+	if gjson.GetBytes(data, "object").String() == "response" {
+		payload["object"] = json.RawMessage(`"chat.completion.chunk"`)
+	}
 	for _, choice := range choices {
 		var delta map[string]json.RawMessage
 		if json.Unmarshal(choice["delta"], &delta) != nil || delta == nil {

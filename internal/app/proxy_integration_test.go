@@ -88,9 +88,9 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "text/event-stream")
 					for _, chunk := range []string{
-						`{"id":"chat-1","model":"hy3","created":100,"choices":[{"index":0,"delta":{"role":"assistant","content":"hello","tool_calls":[],"function_call":null},"finish_reason":null}]}`,
-						`{"id":"chat-1","model":"hy3","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
-						`{"id":"chat-1","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`,
+						`{"id":"chat-1","model":"hy3","created":100,"object":"response","choices":[{"index":0,"delta":{"role":"assistant","content":"hello","tool_calls":[],"function_call":null},"finish_reason":null}]}`,
+						`{"id":"chat-1","model":"hy3","object":"response","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
+						`{"id":"chat-1","object":"response","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}`,
 					} {
 						_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
 						w.(http.Flusher).Flush()
@@ -109,7 +109,10 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 				case "codex":
 					path = "/v1/responses"
 					delete(body, "messages")
-					body["input"] = "hi"
+					body["input"] = []any{
+						map[string]any{"type": "compaction", "encrypted_content": "opaque"},
+						map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hi"}}},
+					}
 				case "gemini":
 					path = "/v1beta/models/hy3:generateContent"
 					if stream {

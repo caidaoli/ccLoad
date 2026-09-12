@@ -373,6 +373,10 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					flushDeferredMessages()
 				}
 
+			case "compaction":
+				// Codex context compaction is encrypted control metadata and has no
+				// Chat Completions representation; the OpenAI bridge intentionally drops it.
+				mergeableAssistantIndex = -1
 			default:
 				mergeableAssistantIndex = -1
 			}
