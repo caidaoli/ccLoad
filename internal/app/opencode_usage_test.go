@@ -16,15 +16,14 @@ import (
 
 func TestNormalizeOpenCodeGoUsageProjectsOfficialWindows(t *testing.T) {
 	t.Parallel()
-	summary, err := normalizeOpenCodeGoUsage(&opencodeGoUsagePayload{})
-	if err == nil {
+	if _, err := normalizeOpenCodeGoUsage(&opencodeGoUsagePayload{}); err == nil {
 		t.Fatal("normalizeOpenCodeGoUsage() expected an error for empty windows")
 	}
 	payload := &opencodeGoUsagePayload{}
 	payload.Usage.Rolling = &opencodeGoUsageWindow{Status: "ok", Percent: 19.5, ResetsAt: "2026-09-12T06:38:42.393Z"}
 	payload.Usage.Weekly = &opencodeGoUsageWindow{Status: "ok", Percent: 29.7, ResetsAt: "2026-09-14T00:00:00.393Z"}
 	payload.Usage.Monthly = &opencodeGoUsageWindow{Status: "ok", Percent: 25, ResetsAt: "2026-10-11T01:58:47.393Z"}
-	summary, err = normalizeOpenCodeGoUsage(payload)
+	summary, err := normalizeOpenCodeGoUsage(payload)
 	if err != nil {
 		t.Fatalf("normalizeOpenCodeGoUsage() error = %v", err)
 	}
@@ -51,7 +50,7 @@ func TestHandleOAuthUsageReturnsOpenCodeGoQuotaWithoutLeakingKey(t *testing.T) {
 	ctx := context.Background()
 	channel, err := store.CreateConfig(ctx, &model.Config{
 		Name: "OpenCode Go", AuthType: model.AuthTypeAPIKey,
-		URLs: model.ChannelURLs{{URL: "https://opencode.ai/zen/go"}},
+		URLs:    model.ChannelURLs{{URL: "https://opencode.ai/zen/go"}},
 		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "glm-5.3-flash"}},
 	})
 	if err != nil {
@@ -110,7 +109,7 @@ func TestHandleOAuthUsageRejectsNonOpenCodeAPIKeyChannel(t *testing.T) {
 	defer cleanup()
 	channel, err := store.CreateConfig(context.Background(), &model.Config{
 		Name: "generic", AuthType: model.AuthTypeAPIKey,
-		URLs: model.ChannelURLs{{URL: "https://example.com"}},
+		URLs:    model.ChannelURLs{{URL: "https://example.com"}},
 		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "m"}},
 	})
 	if err != nil {

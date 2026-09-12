@@ -59,7 +59,7 @@ func (s *Server) requestOpenCodeGoUsage(ctx context.Context, cfg *model.Config) 
 	if err != nil {
 		return nil, &oauthUsageRequestError{provider: opencodeGoUsageProvider}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthUsageResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("usage: read OpenCode Go response: %w", err)
