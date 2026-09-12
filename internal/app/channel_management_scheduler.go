@@ -32,9 +32,9 @@ func (s *Server) managementCheckinLoop() {
 	if err := s.runDueManagementCheckins(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("[WARN] 管理账户每日签到补偿扫描失败: %v", err)
 	}
-	// CodeBuddy OAuth accounts use the provider's fixed 09:00/21:00 local
-	// check-in windows. Initialize the current slot without replaying it on
-	// every server restart; the next slot transition performs the check-in.
+	// Domestic CodeBuddy OAuth accounts use the provider's fixed 09:00/21:00
+	// local check-in windows. Initialize the current slot without replaying it
+	// on every server restart; the next slot transition performs the check-in.
 	codeBuddySlot := codeBuddyCheckinSlot(time.Now())
 
 	ticker := time.NewTicker(channelManagementScheduleInterval)
@@ -71,7 +71,7 @@ func (s *Server) runDueCodeBuddyCheckins(ctx context.Context) {
 	}
 	targets := make([]*model.Config, 0, len(configs))
 	for _, cfg := range configs {
-		if cfg != nil && cfg.Enabled && cfg.UsesCodeBuddyOAuth() {
+		if cfg != nil && cfg.Enabled && cfg.UsesCodeBuddyOAuth() && !isInternationalCodeBuddyConfig(cfg) {
 			targets = append(targets, cfg)
 		}
 	}
@@ -127,6 +127,9 @@ func (s *Server) checkInCodeBuddy(ctx context.Context, cfg *model.Config) (*code
 	if err != nil {
 		return nil, err
 	}
+	if !cred.SupportsDailyCheckin() {
+		return nil, errOAuthUsageUnsupported
+	}
 	service := *s.codeBuddyService
 	service.Client = s.getClientForChannel(cfg)
 	checkinErr := service.DailyCheckin(operationCtx, cred)
@@ -152,6 +155,14 @@ func (s *Server) checkInCodeBuddy(ctx context.Context, cfg *model.Config) (*code
 		return result, fmt.Errorf("CodeBuddy check-in failed: %w", checkinErr)
 	}
 	return result, nil
+}
+
+func isInternationalCodeBuddyConfig(cfg *model.Config) bool {
+	if cfg == nil || !cfg.UsesCodeBuddyOAuth() {
+		return false
+	}
+	credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+	return err == nil && credential.IsInternational()
 }
 
 func (s *Server) runCodeBuddyCheckin(ctx context.Context, cfg *model.Config) {

@@ -133,6 +133,9 @@ test('CodeBuddy 额度工具栏提供独立的手动签到状态', () => {
     state = { ...state, checkin_status: 'ready', checkin_result: 'already_checked' };
     html = buildOAuthUsageStatusHtml({ id: 73, auth_type: 'codebuddy_oauth' });
     assert.match(html, /channels\.codebuddy\.alreadyCheckedIn/);
+
+    html = buildOAuthUsageStatusHtml({ id: 73, auth_type: 'codebuddy_oauth', codebuddy_international: true });
+    assert.doesNotMatch(html, /data-action="checkin-codebuddy"/);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

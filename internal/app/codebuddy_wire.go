@@ -24,6 +24,8 @@ func isCodeBuddyChatRequest(cfg *model.Config, upstream protocol.Protocol) bool 
 	return cfg != nil && cfg.UsesCodeBuddyOAuth() && upstream == protocol.OpenAI
 }
 
+const codeBuddyDefaultSystemPrompt = "You are CodeBuddy Code.You are an interactive CLI tool that helps users with software engineering tasks."
+
 func prepareCodeBuddyDefaults(body, source []byte) []byte {
 	if !strings.HasPrefix(gjson.GetBytes(body, "model").String(), "hy3") || gjson.GetBytes(body, "reasoning_effort").Exists() {
 		return body
@@ -48,6 +50,19 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 	var messages []map[string]json.RawMessage
 	if json.Unmarshal(request["messages"], &messages) != nil || len(messages) == 0 {
 		return nil, errors.New("CodeBuddy requires chat messages")
+	}
+	// CodeBuddy 的 chat endpoint 要求首条消息必须是 system。标准 OpenAI
+	// 请求允许省略 system，因此管理测试和普通 OpenAI 客户端都可能只带 user。
+	// 注入 CodeBuddy CLI 默认提示词，保持与官方 CLI 的请求契约一致。
+	var firstRole string
+	_ = json.Unmarshal(messages[0]["role"], &firstRole)
+	if firstRole != "system" {
+		messages = append([]map[string]json.RawMessage{
+			{
+				"role":    json.RawMessage(`"system"`),
+				"content": json.RawMessage(`"` + codeBuddyDefaultSystemPrompt + `"`),
+			},
+		}, messages...)
 	}
 	replacer := strings.NewReplacer(
 		"You are Claude Code, Anthropic's official CLI for Claude.", "You are Claude Code, Anthropic's official CLI tool for Claude.",

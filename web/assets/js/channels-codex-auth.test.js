@@ -89,6 +89,17 @@ test('CodeBuddy CLI file authorization preserves the session and uses the dedica
   assert.equal(result.channel_id, 1);
 });
 
+test('CodeBuddy international edition uses its dedicated credential endpoint', async () => {
+  const input = { value: JSON.stringify({ auth: { accessToken: 'intl-access' } }) };
+  await submitCodeBuddyCredentialFile(input, async (url, options) => {
+    assert.equal(url, '/admin/codebuddy-international/credentials/import');
+    assert.equal(options.method, 'POST');
+    assert.equal(JSON.parse(options.body).auth.accessToken, 'intl-access');
+    return { channel_id: 2 };
+  }, undefined, 'international');
+  assert.equal(input.value, '');
+});
+
 test('CodeBuddy file authorization does not send a request after cancellation', async () => {
   const controller = new AbortController();
   const input = { value: '{}' };

@@ -70,17 +70,30 @@ func IsAlreadyCheckedIn(err error) bool {
 
 // ApplySourceHeaders supplies the CodeBuddy CLI request fingerprint.
 func ApplySourceHeaders(h http.Header) {
+	ApplySourceHeadersForBaseURL(h, BaseURL)
+}
+
+// ApplySourceHeadersForBaseURL supplies the CLI request fingerprint for the
+// selected public CodeBuddy edition.
+func ApplySourceHeadersForBaseURL(h http.Header, baseURL string) {
 	h.Set("Content-Type", "application/json")
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("X-Requested-With", "XMLHttpRequest")
-	h.Set("Origin", "https://www.codebuddy.cn")
-	h.Set("Referer", "https://www.codebuddy.cn/")
+	normalizedBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	// Keep the existing domestic CLI fingerprint: the control-plane host is
+	// copilot.tencent.com while the official web origin is codebuddy.cn.
+	origin := BillingBaseURL
+	if normalizedBaseURL == InternationalBaseURL {
+		origin = InternationalBaseURL
+	}
+	h.Set("Origin", origin)
+	h.Set("Referer", origin+"/")
 	h.Set("User-Agent", "CLI/2.63.2 CodeBuddy/2.63.2")
 }
 
 // ApplyCredentialHeaders adds authentication and account identity headers.
 func ApplyCredentialHeaders(h http.Header, c *Credential) {
-	ApplySourceHeaders(h)
+	ApplySourceHeadersForBaseURL(h, c.Endpoint())
 	h.Set("Authorization", "Bearer "+c.AccessToken)
 	for _, item := range [][3]string{{"X-User-Id", "X-No-User-Id", c.UID}, {"X-Enterprise-Id", "X-No-Enterprise-Id", c.EnterpriseID}, {"X-Domain", "X-No-Department-Info", c.Domain}} {
 		h.Del(item[0])
@@ -119,13 +132,6 @@ func ApplyBillingHeaders(h http.Header, c *Credential) {
 	h.Del("X-Refresh-Token")
 }
 
-func (s *Service) request(ctx context.Context, client *http.Client, method, path string, headers http.Header, body []byte) (json.RawMessage, error) {
-	if s == nil {
-		return nil, errors.New("CodeBuddy service is unavailable")
-	}
-	return s.requestAt(ctx, client, s.BaseURL, method, path, headers, body)
-}
-
 func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, method, path string, headers http.Header, body []byte) (json.RawMessage, error) {
 	if s == nil || client == nil {
 		return nil, errors.New("CodeBuddy service is unavailable")
@@ -139,7 +145,7 @@ func (s *Service) requestAt(ctx context.Context, client *http.Client, baseURL, m
 	if err != nil {
 		return nil, errors.New("invalid CodeBuddy endpoint")
 	}
-	ApplySourceHeaders(req.Header)
+	ApplySourceHeadersForBaseURL(req.Header, baseURL)
 	for name, values := range headers {
 		req.Header[name] = append([]string(nil), values...)
 	}
@@ -192,6 +198,23 @@ func (s *Service) billingBaseURL() string {
 	return s.BillingBaseURL
 }
 
+func (s *Service) credentialBaseURL(c *Credential) string {
+	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+		return c.Endpoint()
+	}
+	if s == nil || strings.TrimSpace(s.BaseURL) == "" {
+		return BaseURL
+	}
+	return s.BaseURL
+}
+
+func (s *Service) billingBaseURLForCredential(c *Credential) string {
+	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+		return c.Endpoint()
+	}
+	return s.billingBaseURL()
+}
+
 // FetchModels reads the account's live cloud product catalog, as CodeBuddy CLI
 // 2.148.0 CloudProductProvider does. It never falls back to a compiled catalog.
 func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]string, error) {
@@ -205,7 +228,7 @@ func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]st
 	headers := make(http.Header)
 	ApplyCredentialHeaders(headers, &c)
 	headers.Set("User-Agent", "CLI/2.148.0 CodeBuddy/2.148.0")
-	raw, err := s.request(ctx, s.Client, http.MethodGet, "/v3/config", headers, nil)
+	raw, err := s.requestAt(ctx, s.Client, s.credentialBaseURL(&c), http.MethodGet, "/v3/config", headers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -260,6 +283,9 @@ func (s *Service) DailyCheckin(ctx context.Context, credential *Credential) erro
 	if s == nil || credential == nil {
 		return errors.New("CodeBuddy credential is required")
 	}
+	if !credential.SupportsDailyCheckin() {
+		return ErrDailyCheckinUnsupported
+	}
 	// Enterprise allowances are managed centrally and the upstream explicitly
 	// rejects the personal daily-check-in operation for them.
 	if credential.EnterpriseID != "" {
@@ -267,7 +293,7 @@ func (s *Service) DailyCheckin(ctx context.Context, credential *Credential) erro
 	}
 	h := make(http.Header)
 	ApplyBillingHeaders(h, credential)
-	_, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/daily-checkin", h, []byte("{}"))
+	_, err := s.requestAt(ctx, s.Client, s.billingBaseURLForCredential(credential), http.MethodPost, "/v2/billing/meter/daily-checkin", h, []byte("{}"))
 	return err
 }
 
@@ -296,7 +322,7 @@ func (s *Service) UserResource(ctx context.Context, credential *Credential) (*Re
 	body, _ := json.Marshal(map[string]any{"PageNumber": 1, "PageSize": 100, "ProductCode": "p_tcaca", "Status": []int{0, 3}, "PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"), "PackageEndTimeRangeEnd": now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05")})
 	h := make(http.Header)
 	ApplyBillingHeaders(h, credential)
-	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/get-user-resource", h, body)
+	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURLForCredential(credential), http.MethodPost, "/v2/billing/meter/get-user-resource", h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +376,7 @@ func (s *Service) UserResource(ctx context.Context, credential *Credential) (*Re
 func (s *Service) enterpriseUserResource(ctx context.Context, credential *Credential) (*ResourceUsage, error) {
 	h := make(http.Header)
 	ApplyBillingHeaders(h, credential)
-	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURL(), http.MethodPost, "/v2/billing/meter/get-enterprise-user-usage", h, []byte("{}"))
+	raw, err := s.requestAt(ctx, s.Client, s.billingBaseURLForCredential(credential), http.MethodPost, "/v2/billing/meter/get-enterprise-user-usage", h, []byte("{}"))
 	if err != nil {
 		return nil, err
 	}
@@ -372,20 +398,35 @@ func (s *Service) enterpriseUserResource(ctx context.Context, credential *Creden
 
 // Login keeps cookies isolated for the lifetime of a single authorization.
 type Login struct {
-	State  string
-	URL    string
-	client *http.Client
+	State   string
+	URL     string
+	BaseURL string
+	client  *http.Client
 }
 
 // Start creates an isolated browser authorization session.
 func (s *Service) Start(ctx context.Context) (*Login, error) {
+	if s == nil {
+		return nil, errors.New("CodeBuddy service is unavailable")
+	}
+	return s.StartAt(ctx, s.BaseURL)
+}
+
+// StartAt creates an isolated browser authorization session for a public edition.
+func (s *Service) StartAt(ctx context.Context, baseURL string) (*Login, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("CodeBuddy service is unavailable")
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = BaseURL
+	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
 	client := *s.Client
 	client.Jar = jar
-	raw, err := s.request(ctx, &client, http.MethodPost, "/v2/plugin/auth/state?platform=CLI", nil, []byte("{}"))
+	raw, err := s.requestAt(ctx, &client, baseURL, http.MethodPost, "/v2/plugin/auth/state?platform=CLI", nil, []byte("{}"))
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +441,7 @@ func (s *Service) Start(ctx context.Context) (*Login, error) {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 		return nil, errors.New("CodeBuddy login response has invalid URL")
 	}
-	return &Login{State: state.State, URL: state.URL, client: &client}, nil
+	return &Login{State: state.State, URL: state.URL, BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), client: &client}, nil
 }
 
 type tokenData struct {
@@ -419,7 +460,11 @@ func (s *Service) tokenCredential(raw []byte, current *Credential) (*Credential,
 	if current != nil {
 		*c = *current
 	}
-	c.AccessToken, c.ExpiresAt = tok.AccessToken, s.Now().Unix()+tok.ExpiresIn
+	now := time.Now()
+	if s != nil && s.Now != nil {
+		now = s.Now()
+	}
+	c.AccessToken, c.ExpiresAt = tok.AccessToken, now.Unix()+tok.ExpiresIn
 	if tok.RefreshToken != "" {
 		c.RefreshToken = tok.RefreshToken
 	}
@@ -434,8 +479,15 @@ func (s *Service) tokenCredential(raw []byte, current *Credential) (*Credential,
 
 // Poll returns nil, nil only for the documented pending-login business code.
 func (s *Service) Poll(ctx context.Context, login *Login) (*Credential, error) {
+	if s == nil || login == nil || login.client == nil {
+		return nil, errors.New("CodeBuddy login session is unavailable")
+	}
+	baseURL := login.BaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = s.BaseURL
+	}
 	query := url.QueryEscape(login.State)
-	raw, err := s.request(ctx, login.client, http.MethodGet, "/v2/plugin/auth/token?state="+query, nil, nil)
+	raw, err := s.requestAt(ctx, login.client, baseURL, http.MethodGet, "/v2/plugin/auth/token?state="+query, nil, nil)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Code == 11217 {
@@ -447,7 +499,10 @@ func (s *Service) Poll(ctx context.Context, login *Login) (*Credential, error) {
 	if err != nil {
 		return nil, err
 	}
-	account, err := s.request(ctx, login.client, http.MethodGet, "/v2/plugin/login/account?state="+query, http.Header{"Authorization": {"Bearer " + c.AccessToken}}, nil)
+	if normalized, normalizeErr := normalizeBaseURL(baseURL); normalizeErr == nil {
+		c.BaseURL = normalized
+	}
+	account, err := s.requestAt(ctx, login.client, baseURL, http.MethodGet, "/v2/plugin/login/account?state="+query, http.Header{"Authorization": {"Bearer " + c.AccessToken}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -468,6 +523,9 @@ func (s *Service) Poll(ctx context.Context, login *Login) (*Credential, error) {
 
 // Refresh rotates tokens while retaining account identity and omitted fields.
 func (s *Service) Refresh(ctx context.Context, c *Credential) (*Credential, error) {
+	if s == nil || c == nil {
+		return nil, errors.New("CodeBuddy credential is required")
+	}
 	if c.RefreshToken == "" {
 		return nil, ErrCannotRefresh
 	}
@@ -475,7 +533,7 @@ func (s *Service) Refresh(ctx context.Context, c *Credential) (*Credential, erro
 	if c.EnterpriseID != "" {
 		h.Set("X-Enterprise-Id", c.EnterpriseID)
 	}
-	raw, err := s.request(ctx, s.Client, http.MethodPost, "/v2/plugin/auth/token/refresh", h, nil)
+	raw, err := s.requestAt(ctx, s.Client, s.credentialBaseURL(c), http.MethodPost, "/v2/plugin/auth/token/refresh", h, nil)
 	if err != nil {
 		return nil, err
 	}

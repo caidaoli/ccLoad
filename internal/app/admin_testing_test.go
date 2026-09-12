@@ -117,6 +117,12 @@ func TestCodeBuddyAdminWireAndTemplateCompatibility(t *testing.T) {
 					if len(messages) == 0 {
 						t.Error("missing messages")
 					}
+					if role := messages[0].Get("role").String(); role != "system" {
+						t.Errorf("first message role = %q, want system", role)
+					}
+					if prompt := messages[0].Get("content").String(); prompt != codeBuddyDefaultSystemPrompt {
+						t.Errorf("default system prompt = %q, want %q", prompt, codeBuddyDefaultSystemPrompt)
+					}
 					var texts []string
 					for _, message := range messages {
 						texts = append(texts, message.Get("content").String())

@@ -4,18 +4,25 @@ package codebuddyauth
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // CodeBuddy provider endpoints and authentication lifetimes.
 const (
-	ChannelType    = "codebuddy"
-	BaseURL        = "https://copilot.tencent.com"
-	CompletionsURL = BaseURL + "/v2/chat/completions"
-	RefreshLead    = time.Minute
-	LoginTTL       = 5 * time.Minute
+	ChannelType                 = "codebuddy"
+	BaseURL                     = "https://copilot.tencent.com"
+	InternationalBaseURL        = "https://www.codebuddy.ai"
+	CompletionsURL              = BaseURL + "/v2/chat/completions"
+	InternationalCompletionsURL = InternationalBaseURL + "/v2/chat/completions"
+	RefreshLead                 = time.Minute
+	LoginTTL                    = 5 * time.Minute
 )
+
+// ErrDailyCheckinUnsupported indicates that the selected public edition does
+// not expose the domestic daily check-in operation.
+var ErrDailyCheckinUnsupported = errors.New("CodeBuddy international edition does not support daily check-in")
 
 // Credential is the canonical storage format. Import also accepts workbuddy.json.
 type Credential struct {
@@ -27,9 +34,41 @@ type Credential struct {
 	UID          string `json:"uid,omitempty"`
 	EnterpriseID string `json:"enterprise_id,omitempty"`
 	Nickname     string `json:"nickname,omitempty"`
+	// BaseURL identifies the CodeBuddy public edition that issued the token.
+	// Empty values retain the historical China endpoint for backwards compatibility.
+	BaseURL string `json:"base_url,omitempty"`
 	// OAuthUsage stores the last billing snapshot. It is intentionally kept in
 	// the private credential envelope and exposed only through safe metadata.
 	OAuthUsage string `json:"oauth_usage,omitempty"`
+}
+
+// CompletionsURLForBaseURL returns the OpenAI-compatible endpoint for an edition.
+func CompletionsURLForBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		baseURL = BaseURL
+	}
+	return baseURL + "/v2/chat/completions"
+}
+
+// Endpoint returns the control-plane endpoint associated with the credential.
+func (c *Credential) Endpoint() string {
+	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
+		return strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	}
+	return BaseURL
+}
+
+// IsInternational reports whether the credential belongs to CodeBuddy's
+// international public edition.
+func (c *Credential) IsInternational() bool {
+	return c != nil && c.Endpoint() == InternationalBaseURL
+}
+
+// SupportsDailyCheckin reports whether the credential's edition supports the
+// CodeBuddy daily check-in operation.
+func (c *Credential) SupportsDailyCheckin() bool {
+	return c != nil && !c.IsInternational()
 }
 
 // ParseCredential accepts canonical credentials and workbuddy.json exports.
@@ -76,11 +115,18 @@ func (c *Credential) Normalize() error {
 		return errors.New("invalid CodeBuddy credential type")
 	}
 	c.Type = ChannelType
-	for _, value := range []*string{&c.AccessToken, &c.RefreshToken, &c.Domain, &c.UID, &c.EnterpriseID} {
+	for _, value := range []*string{&c.AccessToken, &c.RefreshToken, &c.Domain, &c.UID, &c.EnterpriseID, &c.BaseURL} {
 		*value = strings.TrimSpace(*value)
 		if strings.ContainsFunc(*value, func(r rune) bool { return r < 32 || r == 127 }) {
 			return errors.New("CodeBuddy credential contains invalid header characters")
 		}
+	}
+	if c.BaseURL != "" {
+		normalized, err := normalizeBaseURL(c.BaseURL)
+		if err != nil {
+			return err
+		}
+		c.BaseURL = normalized
 	}
 	if c.AccessToken == "" {
 		return errors.New("CodeBuddy credential is missing access_token")
@@ -89,6 +135,19 @@ func (c *Credential) Normalize() error {
 		return errors.New("CodeBuddy credential has invalid expires_at")
 	}
 	return nil
+}
+
+func normalizeBaseURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", errors.New("invalid CodeBuddy credential base_url")
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "copilot.tencent.com", "www.codebuddy.ai":
+	default:
+		return "", errors.New("unsupported CodeBuddy credential base_url")
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 // JSON encodes a validated copy in canonical storage format.

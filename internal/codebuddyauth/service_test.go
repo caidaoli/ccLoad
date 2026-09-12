@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,12 @@ import (
 	"testing"
 	"time"
 )
+
+type codeBuddyRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f codeBuddyRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 func TestFetchModelsLiveCatalog(t *testing.T) {
 	for _, body := range []string{
@@ -209,6 +216,76 @@ func TestEnterpriseDailyCheckinIsSkipped(t *testing.T) {
 	}
 }
 
+func TestInternationalDailyCheckinIsUnsupportedWithoutUpstreamRequest(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	service := NewService(&http.Client{Transport: codeBuddyRoundTripper(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, errors.New("unexpected international check-in request")
+	})})
+	err := service.DailyCheckin(context.Background(), &Credential{
+		AccessToken: "access",
+		BaseURL:     InternationalBaseURL,
+	})
+	if !errors.Is(err, ErrDailyCheckinUnsupported) {
+		t.Fatalf("international DailyCheckin() = %v, want ErrDailyCheckinUnsupported", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("international check-in requests=%d, want 0", requests.Load())
+	}
+}
+
+func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
+	t.Parallel()
+	var requests []string
+	client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.URL.String())
+		if r.URL.Host != "www.codebuddy.ai" {
+			t.Fatalf("request host=%q, want international host", r.URL.Host)
+		}
+		if r.Header.Get("Origin") != InternationalBaseURL {
+			t.Fatalf("origin=%q, want %q", r.Header.Get("Origin"), InternationalBaseURL)
+		}
+		var body string
+		switch r.URL.Path {
+		case "/v2/plugin/auth/state":
+			body = `{"code":0,"data":{"state":"intl-state","authUrl":"https://www.codebuddy.ai/login"}}`
+		case "/v2/plugin/auth/token":
+			body = `{"code":0,"data":{"accessToken":"intl-access","refreshToken":"intl-refresh","expiresIn":3600}}`
+		case "/v2/plugin/login/account":
+			body = `{"code":0,"data":{"uid":"intl-user","nickname":"International"}}`
+		case "/v2/plugin/auth/token/refresh":
+			body = `{"code":0,"data":{"accessToken":"intl-new-access","refreshToken":"intl-new-refresh","expiresIn":3600}}`
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	service := NewService(client)
+	service.Now = func() time.Time { return time.Unix(1000, 0) }
+	login, err := service.StartAt(context.Background(), InternationalBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := service.Poll(context.Background(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.BaseURL != InternationalBaseURL || credential.UID != "intl-user" {
+		t.Fatalf("credential=%+v, want international endpoint and identity", credential)
+	}
+	refreshed, err := service.Refresh(context.Background(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.BaseURL != InternationalBaseURL || refreshed.AccessToken != "intl-new-access" {
+		t.Fatalf("refreshed=%+v, want international endpoint", refreshed)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("requests=%v, want state/token/account/refresh", requests)
+	}
+}
+
 func TestBillingHTTPErrorRetainsBusinessCode(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +394,7 @@ func TestCredentialImportAndFailureContracts(t *testing.T) {
 	if err != nil || c.UID != "u" || c.RefreshToken != "r" || c.ExpiresAt != 12345 {
 		t.Fatalf("legacy import: %v", err)
 	}
-	for _, raw := range []string{`{}`, `{"access_token":"x\r\ny"}`, `{"access_token":"a","type":"codex"}`, `{"access_token":"a"} {}`} {
+	for _, raw := range []string{`{}`, `{"access_token":"x\r\ny"}`, `{"access_token":"a","type":"codex"}`, `{"access_token":"a","base_url":"https://evil.example"}`, `{"access_token":"a"} {}`} {
 		if _, err := ParseCredential([]byte(raw)); err == nil {
 			t.Errorf("accepted invalid credential: %s", raw)
 		}

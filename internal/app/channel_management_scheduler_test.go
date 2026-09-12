@@ -178,6 +178,25 @@ func TestHandleCodeBuddyCheckin(t *testing.T) {
 		t.Fatalf("checkins=%d resources=%d, want 3 and 3", checkins.Load(), resources.Load())
 	}
 
+	internationalRaw, err := (&codebuddyauth.Credential{
+		AccessToken: "international-secret",
+		BaseURL:     codebuddyauth.InternationalBaseURL,
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	international, err := server.store.CreateConfig(context.Background(), newCodeBuddyChannel("international-codebuddy", internationalRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ = call(international.ID)
+	if status != http.StatusConflict {
+		t.Fatalf("international check-in status=%d, want %d", status, http.StatusConflict)
+	}
+	if checkins.Load() != 3 || resources.Load() != 3 {
+		t.Fatalf("international check-in made upstream requests: checkins=%d resources=%d", checkins.Load(), resources.Load())
+	}
+
 	unsupported, err := server.store.CreateConfig(context.Background(), &model.Config{
 		Name: "not-codebuddy", AuthType: model.AuthTypeAPIKey, Enabled: true,
 		URLs: model.ChannelURLs{{URL: "https://api.example.test"}},

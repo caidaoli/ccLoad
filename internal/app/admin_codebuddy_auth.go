@@ -21,9 +21,9 @@ import (
 var codeBuddyChannelCreateMu sync.Mutex
 
 func codeBuddyChannelBaseName(credential *codebuddyauth.Credential) string {
-	identity := credential.UID + "/" + credential.EnterpriseID
+	identity := credential.Endpoint() + "/" + credential.UID + "/" + credential.EnterpriseID
 	if credential.UID == "" {
-		identity = credential.AccessToken
+		identity = credential.Endpoint() + "/" + credential.AccessToken
 	}
 	digest := sha256.Sum256([]byte(identity))
 	label := "CodeBuddy"
@@ -34,8 +34,12 @@ func codeBuddyChannelBaseName(credential *codebuddyauth.Credential) string {
 }
 
 func newCodeBuddyChannel(name, credential string) *model.Config {
+	completionURL := codebuddyauth.CompletionsURL
+	if parsed, err := codebuddyauth.ParseCredential([]byte(credential)); err == nil {
+		completionURL = codebuddyauth.CompletionsURLForBaseURL(parsed.Endpoint())
+	}
 	return &model.Config{Name: name, AuthType: model.AuthTypeCodeBuddyOAuth, OAuthCredential: credential,
-		URLs:                  model.ChannelURLs{{URL: codebuddyauth.CompletionsURL, Exact: true, Protocols: []string{"openai"}}},
+		URLs:                  model.ChannelURLs{{URL: completionURL, Exact: true, Protocols: []string{"openai"}}},
 		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true, CostMultiplier: 1}
 }
 
@@ -52,6 +56,9 @@ func (s *Server) prepareCodeBuddyChannel(ctx context.Context, name, credential s
 }
 
 func codeBuddyIdentityMatches(a, b *codebuddyauth.Credential) bool {
+	if a.Endpoint() != b.Endpoint() {
+		return false
+	}
 	if a.UID != "" && b.UID != "" {
 		return a.UID == b.UID && a.EnterpriseID == b.EnterpriseID
 	}
@@ -111,8 +118,7 @@ func (s *Server) commitCodeBuddyCredential(ctx context.Context, credential *code
 	return cfg, created, nil
 }
 
-// HandleImportCodeBuddyCredential imports a canonical or workbuddy credential.
-func (s *Server) HandleImportCodeBuddyCredential(c *gin.Context) {
+func (s *Server) handleImportCodeBuddyCredential(c *gin.Context, baseURL string) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	raw, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -124,12 +130,34 @@ func (s *Server) HandleImportCodeBuddyCredential(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(baseURL) != "" {
+		if strings.TrimSpace(credential.BaseURL) == "" {
+			credential.BaseURL = baseURL
+			if err := credential.Normalize(); err != nil {
+				RespondError(c, http.StatusBadRequest, err)
+				return
+			}
+		} else if credential.Endpoint() != strings.TrimRight(strings.TrimSpace(baseURL), "/") {
+			RespondErrorMsg(c, http.StatusBadRequest, "CodeBuddy credential belongs to a different edition")
+			return
+		}
+	}
 	cfg, created, err := s.commitCodeBuddyCredential(c.Request.Context(), credential)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"channel_id": cfg.ID, "channel_name": cfg.Name, "created": created})
+}
+
+// HandleImportCodeBuddyCredential imports a canonical or workbuddy credential.
+func (s *Server) HandleImportCodeBuddyCredential(c *gin.Context) {
+	s.handleImportCodeBuddyCredential(c, "")
+}
+
+// HandleImportCodeBuddyInternationalCredential imports an international CLI credential.
+func (s *Server) HandleImportCodeBuddyInternationalCredential(c *gin.Context) {
+	s.handleImportCodeBuddyCredential(c, codebuddyauth.InternationalBaseURL)
 }
 
 // HandleRefreshCodeBuddyCredential refreshes and persists a channel credential.
@@ -173,6 +201,11 @@ func (s *Server) HandleCodeBuddyCheckin(c *gin.Context) {
 		RespondError(c, http.StatusConflict, errOAuthUsageUnsupported)
 		return
 	}
+	credential, parseErr := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if parseErr == nil && credential.IsInternational() {
+		RespondError(c, http.StatusConflict, errOAuthUsageUnsupported)
+		return
+	}
 	result, err := s.checkInCodeBuddy(c.Request.Context(), cfg)
 	if err != nil {
 		RespondError(c, oauthUsageHTTPStatus(err), err)
@@ -212,14 +245,13 @@ func (m *codeBuddyOAuthManager) close() {
 	m.wg.Wait()
 }
 
-// HandleStartCodeBuddyOAuth starts authorization owned by the current admin session.
-func (s *Server) HandleStartCodeBuddyOAuth(c *gin.Context) {
+func (s *Server) handleStartCodeBuddyOAuth(c *gin.Context, baseURL string) {
 	owner, ok := xaiAdminSessionHash(c)
 	if !ok {
 		RespondErrorMsg(c, http.StatusUnauthorized, "administrator session required")
 		return
 	}
-	login, err := s.codeBuddyService.Start(c.Request.Context())
+	login, err := s.codeBuddyService.StartAt(c.Request.Context(), baseURL)
 	if err != nil {
 		RespondError(c, http.StatusBadGateway, err)
 		return
@@ -250,6 +282,16 @@ func (s *Server) HandleStartCodeBuddyOAuth(c *gin.Context) {
 	m.mu.Unlock()
 	go m.run(ctx, session, login)
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "url": login.URL, "status": "pending"})
+}
+
+// HandleStartCodeBuddyOAuth starts authorization owned by the current admin session.
+func (s *Server) HandleStartCodeBuddyOAuth(c *gin.Context) {
+	s.handleStartCodeBuddyOAuth(c, codebuddyauth.BaseURL)
+}
+
+// HandleStartCodeBuddyInternationalOAuth starts the international authorization flow.
+func (s *Server) HandleStartCodeBuddyInternationalOAuth(c *gin.Context) {
+	s.handleStartCodeBuddyOAuth(c, codebuddyauth.InternationalBaseURL)
 }
 
 func (m *codeBuddyOAuthManager) run(ctx context.Context, session *codeBuddyLoginSession, login *codebuddyauth.Login) {

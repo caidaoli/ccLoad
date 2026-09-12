@@ -736,7 +736,7 @@ function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
     usageLoading,
     checkinLoading || state?.reset_status === 'loading'
   )];
-  if (channel?.auth_type === 'codebuddy_oauth' && !channel?.codebuddy_enterprise) {
+  if (channel?.auth_type === 'codebuddy_oauth' && !channel?.codebuddy_enterprise && !channel?.codebuddy_international) {
     buttons.push(buildCodeBuddyCheckinButton(channel.id, state));
   }
   return `<div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>`;

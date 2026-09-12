@@ -39,6 +39,10 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
     provider: 'codebuddy', label: 'CodeBuddy', i18n: 'channels.codebuddy',
     callbackPlaceholder: '', pollOnly: true
   }),
+  'codebuddy-international': Object.freeze({
+    provider: 'codebuddy-international', label: 'CodeBuddy International', i18n: 'channels.codebuddyInternational',
+    callbackPlaceholder: '', pollOnly: true
+  }),
   codex: Object.freeze({
     provider: 'codex', label: 'Codex', i18n: 'channels.codex',
     callbackPlaceholder: 'http://localhost:1455/auth/callback?code=...&state=...'
@@ -231,6 +235,26 @@ function oauthProviderConfig(provider = 'codex') {
   return OAUTH_PROVIDER_CONFIGS[provider] || OAUTH_PROVIDER_CONFIGS.codex;
 }
 
+function normalizeCodeBuddyEdition(edition = 'domestic') {
+  return edition === 'international' || edition === 'codebuddy-international'
+    ? 'international' : 'domestic';
+}
+
+function codeBuddyEdition() {
+  if (typeof document === 'undefined') return 'domestic';
+  return normalizeCodeBuddyEdition(document.getElementById('codebuddyOAuthEdition')?.value);
+}
+
+function codeBuddyOAuthProvider(edition = undefined) {
+  return normalizeCodeBuddyEdition(edition === undefined ? codeBuddyEdition() : edition) === 'international'
+    ? 'codebuddy-international' : 'codebuddy';
+}
+
+function selectedOAuthProvider(provider = (typeof document !== 'undefined'
+  ? document.getElementById('oauthProviderSelect')?.value : '') || 'codex') {
+  return provider === 'codebuddy' ? codeBuddyOAuthProvider() : oauthProviderConfig(provider).provider;
+}
+
 function setCodexAuthStatus(message, kind = '') {
   const status = document.getElementById('codexAuthStatus');
   if (!status) return;
@@ -406,6 +430,11 @@ function openOAuthLoginDialog(trigger = null) {
   oauthLoginDialogTrigger = trigger;
   providerSelect.value = 'codex';
   providerSelect.disabled = false;
+  const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
+  if (codebuddyEditionSelect) {
+    codebuddyEditionSelect.value = 'domestic';
+    codebuddyEditionSelect.disabled = false;
+  }
   authorizeButton.disabled = false;
   if (loginActions) loginActions.hidden = false;
   sessionFields.hidden = true;
@@ -505,12 +534,17 @@ function clearAnthropicCookieSecret(input = document.getElementById('anthropicSe
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod')?.value || 'oauth';
-  const codebuddyFile = provider === 'codebuddy' && codebuddyMethod === 'file';
+  const codebuddyProvider = provider === 'codebuddy' || provider === 'codebuddy-international';
+  const codebuddyFile = codebuddyProvider && codebuddyMethod === 'file';
   const codebuddyControls = document.getElementById('codebuddyOAuthControls');
   const codebuddyField = document.getElementById('codebuddyCredentialFileField');
   const codebuddyInput = document.getElementById('codebuddyCredentialFile');
   const codebuddyContent = document.getElementById('codebuddyCredentialContent');
-  if (codebuddyControls) codebuddyControls.hidden = provider !== 'codebuddy';
+  const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
+  if (codebuddyEditionSelect && provider === 'codebuddy-international') {
+    codebuddyEditionSelect.value = 'international';
+  }
+  if (codebuddyControls) codebuddyControls.hidden = !codebuddyProvider;
   if (codebuddyField) codebuddyField.hidden = !codebuddyFile;
   if (codebuddyInput) {
     if (!codebuddyFile) codebuddyInput.value = '';
@@ -611,15 +645,17 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = provider === 'codebuddy' ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
+    const method = codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
 
 function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
   if (!button) return;
-  const key = provider === 'codebuddy' && method === 'file'
-    ? 'channels.codebuddy.fileSubmit'
+  const codebuddyInternational = provider === 'codebuddy-international' ||
+    (provider === 'codebuddy' && codeBuddyEdition() === 'international');
+  const key = (provider === 'codebuddy' || codebuddyInternational) && method === 'file'
+    ? (codebuddyInternational ? 'channels.codebuddyInternational.fileSubmit' : 'channels.codebuddy.fileSubmit')
     : provider === 'cursor'
     ? 'channels.cursor.apiKeySubmit'
     : provider === 'zai'
@@ -682,7 +718,12 @@ function showOAuthSession(session, provider = 'codex') {
   const loginActions = document.getElementById('oauthLoginActions');
   if (!dialog || !providerSelect || !sessionFields || !authorizationURL || !openLink || !callbackURL) return false;
 
-  providerSelect.value = config.provider;
+  providerSelect.value = config.provider === 'codebuddy-international' ? 'codebuddy' : config.provider;
+  const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
+  if (codebuddyEditionSelect && (config.provider === 'codebuddy' || config.provider === 'codebuddy-international')) {
+    codebuddyEditionSelect.value = normalizeCodeBuddyEdition(config.provider);
+    codebuddyEditionSelect.disabled = true;
+  }
   providerSelect.disabled = true;
   if (loginActions) loginActions.hidden = true;
   else if (authorizeButton) authorizeButton.hidden = true;
@@ -888,7 +929,7 @@ async function loadCodeBuddyCredentialFile(input, content) {
   if (input.files?.[0] === file && content.value === previous) content.value = body;
 }
 
-async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined) {
+async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined, edition = 'codebuddy') {
   const body = String(input?.value || '').trim();
   if (!body || new TextEncoder().encode(body).length > 1048576) {
     throw new Error(window.t('channels.codebuddy.contentRequired'));
@@ -900,7 +941,8 @@ async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth,
     throw new Error(window.t('channels.codebuddy.fileInvalid'));
   }
   input.value = '';
-  return fetcher('/admin/codebuddy/credentials/import', {
+  const provider = codeBuddyOAuthProvider(edition);
+  return fetcher(`/admin/${provider}/credentials/import`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
   });
 }
@@ -1187,6 +1229,8 @@ async function stopActiveOAuth(options = {}) {
   if (fileContent) fileContent.value = '';
   const fileMethod = document.getElementById('codebuddyOAuthMethod');
   if (fileMethod) fileMethod.disabled = false;
+  const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
+  if (codebuddyEditionSelect) codebuddyEditionSelect.disabled = false;
   await Promise.all([
     stopActiveCodexOAuth({ closeDialog: false }),
     stopActiveCodexPersonalAccessToken(),
@@ -2459,6 +2503,7 @@ function setupOAuthActions() {
   const anthropicMethod = document.getElementById('anthropicOAuthMethod');
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod');
+  const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   const codebuddyFile = document.getElementById('codebuddyCredentialFile');
   const codebuddyContent = document.getElementById('codebuddyCredentialContent');
   const zaiMethod = document.getElementById('zaiOAuthMethod');
@@ -2513,6 +2558,10 @@ function setupOAuthActions() {
     codebuddyMethod.addEventListener('change', syncOAuthProviderFields);
     codebuddyMethod.dataset.bound = '1';
   }
+  if (codebuddyEditionSelect && !codebuddyEditionSelect.dataset.bound) {
+    codebuddyEditionSelect.addEventListener('change', syncOAuthProviderFields);
+    codebuddyEditionSelect.dataset.bound = '1';
+  }
   if (codebuddyFile && codebuddyContent && !codebuddyFile.dataset.bound) {
     codebuddyFile.addEventListener('change', async () => {
       try {
@@ -2533,27 +2582,34 @@ function setupOAuthActions() {
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
         activeAnthropicCookieFlow || activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow) return;
       providerSelect.disabled = true;
-      if (providerSelect.value === 'codebuddy' && codebuddyMethod?.value === 'file') {
+      const codebuddyProvider = providerSelect.value === 'codebuddy' || providerSelect.value === 'codebuddy-international';
+      const codebuddyEditionValue = providerSelect.value === 'codebuddy-international'
+        ? 'international' : codeBuddyEdition();
+      if (codebuddyProvider && codebuddyMethod?.value === 'file') {
         const flow = { controller: new AbortController(), button: authorizeButton };
         activeCodeBuddyFileFlow = flow;
         codebuddyMethod.disabled = true;
+        if (codebuddyEditionSelect) codebuddyEditionSelect.disabled = true;
         authorizeButton.disabled = true;
         authorizeButton.setAttribute?.('aria-busy', 'true');
+        const codebuddyI18n = codebuddyEditionValue === 'international'
+          ? 'channels.codebuddyInternational' : 'channels.codebuddy';
         try {
-          setCodexOAuthDialogStatus(window.t('channels.codebuddy.fileSubmitting'));
+          setCodexOAuthDialogStatus(window.t(`${codebuddyI18n}.fileSubmitting`));
           codebuddyFile.value = '';
-          await submitCodeBuddyCredentialFile(codebuddyContent, fetchDataWithAuth, flow.controller.signal);
+          await submitCodeBuddyCredentialFile(codebuddyContent, fetchDataWithAuth, flow.controller.signal, codebuddyEditionValue);
           if (activeCodeBuddyFileFlow !== flow) return;
           closeOAuthLoginDialogElement();
-          setCodexAuthStatus(window.t('channels.codebuddy.oauthComplete'), 'success');
+          setCodexAuthStatus(window.t(`${codebuddyI18n}.oauthComplete`), 'success');
           await reloadChannelsList();
         } catch (error) {
           if (activeCodeBuddyFileFlow !== flow) return;
-          setCodexOAuthDialogStatus(error?.message || window.t('channels.codebuddy.oauthFailed'), 'error');
+          setCodexOAuthDialogStatus(error?.message || window.t(`${codebuddyI18n}.oauthFailed`), 'error');
         } finally {
           if (activeCodeBuddyFileFlow === flow) {
             activeCodeBuddyFileFlow = null;
             codebuddyMethod.disabled = false;
+            if (codebuddyEditionSelect) codebuddyEditionSelect.disabled = false;
             authorizeButton.disabled = false;
             authorizeButton.removeAttribute?.('aria-busy');
             providerSelect.disabled = false;
@@ -2741,7 +2797,7 @@ function setupOAuthActions() {
           if (loginDialog?.open && sessionFields?.hidden) providerSelect.disabled = false;
         }
       } else {
-        await startOAuth(oauthProviderConfig(providerSelect.value).provider, authorizeButton);
+        await startOAuth(selectedOAuthProvider(providerSelect.value), authorizeButton);
       }
       if (loginDialog?.open && sessionFields?.hidden) providerSelect.disabled = false;
     });
@@ -2761,7 +2817,7 @@ function setupOAuthActions() {
   }
   if (restartButton && !restartButton.dataset.bound) {
     restartButton.addEventListener('click', () => restartOAuth(
-      activeCodexOAuthFlow?.provider || oauthProviderConfig(providerSelect?.value).provider,
+      activeCodexOAuthFlow?.provider || selectedOAuthProvider(providerSelect?.value),
       restartButton
     ));
     restartButton.dataset.bound = '1';
@@ -2770,7 +2826,7 @@ function setupOAuthActions() {
     callbackForm.addEventListener('submit', async event => {
       event.preventDefault();
       const value = callbackURL.value.trim();
-      const provider = activeCodexOAuthFlow?.provider || oauthProviderConfig(providerSelect?.value).provider;
+      const provider = activeCodexOAuthFlow?.provider || selectedOAuthProvider(providerSelect?.value);
       const providerConfig = oauthProviderConfig(provider);
       if (!value) {
         callbackURL.setAttribute('aria-invalid', 'true');
@@ -2790,7 +2846,7 @@ function setupOAuthActions() {
       } catch (error) {
         callbackURL.setAttribute('aria-invalid', 'true');
         callbackURL.focus();
-        const config = oauthProviderConfig(activeCodexOAuthFlow?.provider || providerSelect?.value);
+        const config = oauthProviderConfig(activeCodexOAuthFlow?.provider || selectedOAuthProvider(providerSelect?.value));
         setCodexOAuthDialogStatus(error?.message || window.t(`${config.i18n}.oauthFailed`), 'error');
       } finally {
         if (callbackButton) callbackButton.disabled = false;
