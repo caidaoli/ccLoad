@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const {
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
-  buildManagementAccountStatusHtml
+  buildManagementAccountStatusHtml,
+  isOpenCodeGoChannel,
+  channelShowsOAuthUsage
 } = require('./channels-render.js');
 
 test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
@@ -136,6 +138,32 @@ test('CodeBuddy 额度工具栏提供独立的手动签到状态', () => {
 
     html = buildOAuthUsageStatusHtml({ id: 73, auth_type: 'codebuddy_oauth', codebuddy_international: true });
     assert.doesNotMatch(html, /data-action="checkin-codebuddy"/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('OpenCode Go API Key 渠道显示额度工具栏', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = { t: key => key === 'channels.oauth.usageRefresh' ? '刷新额度' : key };
+  global.getOAuthUsageState = () => null;
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const channel = {
+      id: 4,
+      auth_type: 'api_key',
+      urls: [{ url: 'https://opencode.ai/zen/go' }]
+    };
+    assert.equal(isOpenCodeGoChannel(channel), true);
+    assert.equal(channelShowsOAuthUsage(channel), true);
+    assert.equal(isOpenCodeGoChannel({ auth_type: 'api_key', urls: [{ url: 'https://example.com' }] }), false);
+    const html = buildOAuthUsageStatusHtml(channel);
+    assert.match(html, /data-action="refresh-oauth-usage"/);
+    assert.match(html, /data-channel-id="4"/);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

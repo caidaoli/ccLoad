@@ -1577,6 +1577,10 @@ func (s *Server) refreshChannelUsage(ctx context.Context, channelID int64) (stri
 		return "", nil, nil, errOAuthUsageChannelNotFound
 	}
 	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+		if isOpenCodeChannel(cfg) {
+			usage, err := s.refreshOAuthUsage(ctx, channelID)
+			return "oauth", usage, nil, err
+		}
 		if s.channelManagement == nil {
 			return "management", nil, nil, errChannelManagementProviderUnavailable
 		}
@@ -1596,6 +1600,9 @@ func (s *Server) persistOAuthUsage(
 ) (*oauthUsageSummary, error) {
 	if s == nil || s.store == nil || cfg == nil || summary == nil {
 		return nil, errors.New("OAuth usage persistence is unavailable")
+	}
+	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+		return summary, nil
 	}
 
 	for {
@@ -1912,6 +1919,8 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			}
 		}
 		return nil, errors.New("usage: Cursor session token was rejected")
+	case isOpenCodeChannel(cfg):
+		return s.requestOpenCodeGoUsage(ctx, cfg)
 	case cfg.UsesZedOAuth():
 		if s.zedCredentials == nil {
 			return nil, errZedUsageManagerUnavailable

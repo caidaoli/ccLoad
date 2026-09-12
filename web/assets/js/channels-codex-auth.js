@@ -2427,7 +2427,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel.auth_type);
+    return typeof channelShowsOAuthUsage === 'function' ? channelShowsOAuthUsage(channel) : false;
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {

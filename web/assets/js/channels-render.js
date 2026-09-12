@@ -29,6 +29,43 @@ function escapeChannelRefreshText(value) {
   }[c]));
 }
 
+const OAUTH_USAGE_AUTH_TYPES = [
+  'codex_oauth',
+  'antigravity_oauth',
+  'xai_oauth',
+  'anthropic_oauth',
+  'zai_oauth',
+  'cursor_oauth',
+  'zed_oauth',
+  'codebuddy_oauth'
+];
+
+function isOpenCodeGoEndpoint(raw) {
+  const text = String(raw || '').trim().replace(/#$/, '');
+  if (!text) return false;
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch (_) {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'opencode.ai' || parsed.port || parsed.username || parsed.password || parsed.hash) {
+    return false;
+  }
+  const path = parsed.pathname || '';
+  if (path.split('/').some(segment => segment === '.' || segment === '..')) return false;
+  return path === '/zen/go' || path.startsWith('/zen/go/');
+}
+
+function isOpenCodeGoChannel(channel) {
+  const entries = Array.isArray(channel?.urls) ? channel.urls : [];
+  return entries.some(entry => isOpenCodeGoEndpoint(typeof entry === 'string' ? entry : entry?.url));
+}
+
+function channelShowsOAuthUsage(channel) {
+  return OAUTH_USAGE_AUTH_TYPES.includes(channel?.auth_type) || isOpenCodeGoChannel(channel);
+}
+
 // Codex plan_type → 用户可读标签；未登记的值原样返回。
 function codexPlanLabel(rawPlanType) {
   const key = String(rawPlanType || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -644,7 +681,7 @@ function formatOAuthUsageLimitName(limitName) {
   if (isCodexSparkLimitName(limitName)) return 'Spark';
   if (normalized === 'gemini models') return 'Gemini';
   // Z.ai 的 token 窗口只有时长有信息量，时长已单独渲染，避免出现「five_hour 5小时」。
-  if (normalized === 'five_hour' || normalized === 'weekly') return '';
+  if (normalized === 'five_hour' || normalized === 'weekly' || normalized === 'monthly' || normalized === 'rolling') return '';
   if (normalized === 'mcp_limit') return 'MCP';
   if (normalized === 'included') return window.t('channels.cursor.usageMonthlyLimit');
   if (normalized === 'api') return window.t('channels.cursor.usageOtherModels');
@@ -939,7 +976,7 @@ function buildCodeBuddyCreditsHtml(credits) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel?.auth_type) ||
+  if (!channelShowsOAuthUsage(channel) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
@@ -1625,6 +1662,8 @@ if (typeof module !== 'undefined' && module.exports) {
     codexPlanLabel,
     buildOAuthUsageStatusHtml,
     buildManagementAccountStatusHtml,
-    formatCooldownRecoveryTime
+    formatCooldownRecoveryTime,
+    isOpenCodeGoChannel,
+    channelShowsOAuthUsage
   };
 }
