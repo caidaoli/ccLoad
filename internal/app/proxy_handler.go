@@ -479,6 +479,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			writeEmptyAlphaSearchResponse(c.Writer)
 			return
 		}
+		if channelRestrictionDeniedFromContext(ctx) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "no allowed upstream channel for this token",
+			})
+			return
+		}
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: time.Now()},
 			Model:          clientModel,

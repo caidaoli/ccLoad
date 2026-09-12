@@ -14,19 +14,35 @@ import (
 
 type channelRestrictionTokenContextKey struct{}
 
+type channelRestrictionState struct {
+	tokenHash string
+	denied    bool
+}
+
 func withChannelRestrictionToken(ctx context.Context, tokenHash string) context.Context {
 	if ctx == nil || tokenHash == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, channelRestrictionTokenContextKey{}, tokenHash)
+	return context.WithValue(ctx, channelRestrictionTokenContextKey{}, &channelRestrictionState{tokenHash: tokenHash})
 }
 
 func channelRestrictionTokenFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	tokenHash, _ := ctx.Value(channelRestrictionTokenContextKey{}).(string)
-	return tokenHash
+	state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState)
+	if state == nil {
+		return ""
+	}
+	return state.tokenHash
+}
+
+func channelRestrictionDeniedFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState)
+	return state != nil && state.denied
 }
 
 // filterCooldownChannels 过滤冷却中的渠道
@@ -61,6 +77,9 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		if restricted {
 			// 空集合必须保持为空，不能让越权渠道重新参与冷却兜底。
 			channels = filtered
+			if state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState); state != nil {
+				state.denied = len(channels) == 0
+			}
 			if len(channels) == 0 {
 				return nil, nil
 			}
