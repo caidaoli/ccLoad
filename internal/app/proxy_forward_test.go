@@ -3094,6 +3094,34 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 	}
 }
 
+func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"model":"claude-fable-5-1","messages":[{"role":"user","content":"title"}],"tools":[]}`
+	headers := http.Header{
+		"User-Agent":     {"claude-cli/2.1.236 (external, cli)"},
+		"X-App":          {"cli"},
+		"Anthropic-Beta": {"claude-code-20250219"},
+	}
+
+	got, err := (&Server{}).prepareTranslatedUpstreamBody(
+		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages",
+		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := gjson.GetBytes(got, "tools")
+	if !tools.IsArray() || jsonMemberCount(tools) != 3 {
+		t.Fatalf("tools = %s, want three fallback tools", tools.Raw)
+	}
+	for index, want := range []string{"Edit", "Read", "Write"} {
+		if name := gjson.GetBytes(got, fmt.Sprintf("tools.%d.name", index)).String(); name != want {
+			t.Fatalf("tools.%d.name = %q, want %q; body = %s", index, name, want, got)
+		}
+	}
+}
+
 // TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough 守住入站判据不看 CCH。
 //
 // 下游 Claude Code 指向 ccLoad 时看到的是非第一方 base URL，native gate
