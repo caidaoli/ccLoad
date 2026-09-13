@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -97,6 +98,74 @@ func TestCodeBuddyUsageRefreshAndScheduledCheckin(t *testing.T) {
 	srv.runDueCodeBuddyCheckins(context.Background())
 	if checkins.Load() != 0 || resources.Load() != 2 {
 		t.Fatalf("checkins=%d resources=%d, want 0 and 2", checkins.Load(), resources.Load())
+	}
+	logs, err := srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{
+		LogSource: model.LogSourceCheckin,
+		ChannelID: &cfg.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("CodeBuddy check-in audit count=%d, want 1", len(logs))
+	}
+	if logs[0].ChannelID != cfg.ID || logs[0].LogSource != model.LogSourceCheckin {
+		t.Fatalf("unexpected CodeBuddy audit entry: %#v", logs[0])
+	}
+	var audit channelCheckinAuditMessage
+	if err := json.Unmarshal([]byte(logs[0].Message), &audit); err != nil {
+		t.Fatalf("invalid CodeBuddy audit message: %v", err)
+	}
+	if audit.Profile != codebuddyauth.ChannelType || audit.Status != "success" ||
+		audit.Balance == nil || audit.Balance.Remaining != 1895.65 {
+		t.Fatalf("unexpected CodeBuddy audit message: %#v", audit)
+	}
+}
+
+func TestCodeBuddyScheduledCheckinAuditsFailure(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":10001,"msg":"签到活动未开启或已过期"}`))
+		case "/v2/billing/meter/get-user-resource":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":720}]}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv := newInMemoryServer(t)
+	srv.codeBuddyService.BaseURL = upstream.URL
+	raw, err := (&codebuddyauth.Credential{AccessToken: "access"}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := srv.store.CreateConfig(context.Background(), newCodeBuddyChannel("scheduled-codebuddy-failure", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.runDueCodeBuddyCheckins(context.Background())
+	logs, err := srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{
+		LogSource: model.LogSourceCheckin,
+		ChannelID: &cfg.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("CodeBuddy failed check-in audit count=%d, want 1", len(logs))
+	}
+	if logs[0].StatusCode != http.StatusBadGateway {
+		t.Fatalf("CodeBuddy failed check-in status code=%d, want %d", logs[0].StatusCode, http.StatusBadGateway)
+	}
+	var audit channelCheckinAuditMessage
+	if err := json.Unmarshal([]byte(logs[0].Message), &audit); err != nil {
+		t.Fatalf("invalid CodeBuddy failure audit message: %v", err)
+	}
+	if audit.Profile != codebuddyauth.ChannelType || audit.Status != "failed" ||
+		audit.Balance == nil || audit.Balance.Remaining != 720 {
+		t.Fatalf("unexpected CodeBuddy failure audit message: %#v", audit)
 	}
 }
 
