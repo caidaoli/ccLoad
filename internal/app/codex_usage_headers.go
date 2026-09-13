@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,18 +199,11 @@ func sampleCodexPassiveUsageEvent(payload []byte, sampledAt time.Time) (codexPas
 		SampledAt:     sampledAt.UTC().Format(time.RFC3339Nano),
 		ReplaceScopes: make([]string, 0, 2+len(event.AdditionalRateLimits)),
 	}
-	// Only treat rate_limits as an alias when both its explicit active identity
-	// and normalized windows match an additional group. An event may still
-	// carry distinct main-account limits alongside the active group's limits.
-	mainIsAlias := false
-	for name, limit := range event.AdditionalRateLimits {
-		if codexActiveLimitMatches(event.MeteredLimitName, name, name) &&
-			codexPassiveEventIsAlias(event.RateLimits, limit, sampledAt) {
-			mainIsAlias = true
-			break
-		}
-	}
-	if event.RateLimits != nil && !mainIsAlias {
+	// rate_limits describes whichever limit metered this request, so only the
+	// metered identity decides its scope. The additional_rate_limits block is
+	// optional and may spell the active limit differently, so it cannot serve
+	// as proof that rate_limits belongs to the main account.
+	if event.RateLimits != nil && codexPassiveMainIdentity(event.MeteredLimitName) {
 		update.ReplaceScopes = append(update.ReplaceScopes, "codex")
 		update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.RateLimits, "codex", "codex", sampledAt)
 	}
@@ -240,17 +232,20 @@ func sampleCodexPassiveUsageEvent(payload []byte, sampledAt time.Time) (codexPas
 	return update, true
 }
 
-func codexPassiveEventIsAlias(generic, named *codexPassiveUsageSSERateLimit, sampledAt time.Time) bool {
-	// Use the same identity to compare normalized values, including kind,
-	// duration and absolute reset time. Named groups may have extra windows.
-	genericWindows := appendCodexPassiveEventRateLimit(nil, generic, "", "", sampledAt)
-	namedWindows := appendCodexPassiveEventRateLimit(nil, named, "", "", sampledAt)
-	for _, window := range genericWindows {
-		if !slices.Contains(namedWindows, window) {
-			return false
-		}
+// codexPassiveMainIdentity reports whether the metered-limit identity of a
+// response denotes the main Codex account quota. Codex names the main quota
+// "premium" and omits the identity on plain responses; every other value is an
+// additional limit (codex_<group>, gpt-reserve, ...) or an identity this build
+// does not know. Unknown identities must not fall through to the main scope: a
+// misattributed low-usage sample reads as an early upstream reset and wipes
+// the accumulated main cost, while a skipped passive sample is repaired by the
+// next official usage refresh.
+func codexPassiveMainIdentity(active string) bool {
+	switch strings.ToLower(strings.TrimSpace(active)) {
+	case "", "premium", "codex":
+		return true
 	}
-	return len(genericWindows) > 0
+	return false
 }
 
 func appendCodexPassiveEventRateLimit(
@@ -313,27 +308,22 @@ func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPas
 		Windows:   make([]codexauth.PassiveUsageWindow, 0, 4),
 		SampledAt: sampledAt.UTC().Format(time.RFC3339Nano),
 	}
-	// When Active-Limit points at an additional group, the generic x-codex
-	// fields are aliases for that group. Keep the explicitly named group as the
-	// canonical record instead of renaming and storing the alias a second time.
-	activeGroup := codexActiveHeaderGroup(headers)
-	if activeGroup != "" {
-		// The generic x-codex-* fields are aliases for the active additional
-		// group in this shape.  They are not a complete snapshot of the main
-		// Codex scope, so never mark "codex" for replacement here.  Doing so
-		// deletes the weekly Codex window when a Spark-only response arrives.
-		update.ReplaceScopes = []string{activeGroup}
-	} else {
-		genericWindowCount := len(update.Windows)
+	// The generic x-codex-* fields describe whichever limit Active-Limit names.
+	// They are only a complete snapshot of the main Codex scope when that
+	// identity is the main quota; for an additional limit the explicitly named
+	// group is the canonical record, and the alias is never stored a second
+	// time nor written into the main scope.
+	active := headers.Get("X-Codex-Active-Limit")
+	if codexPassiveMainIdentity(active) {
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "primary", sampledAt)
 		update.Windows = appendCodexPassiveHeaderWindow(update.Windows, headers, "x-codex", "codex", "codex", "secondary", sampledAt)
-		// When no additional group matches Active-Limit, the generic header
-		// set is a complete snapshot of the main Codex scope:
-		// when a window (for example Pro secondary) is absent, remove the stale
+		// When a window (for example Pro secondary) is absent, remove the stale
 		// persisted window instead of keeping it in passive usage and cost state.
-		if len(update.Windows) > genericWindowCount {
+		if len(update.Windows) > 0 {
 			update.ReplaceScopes = append(update.ReplaceScopes, "codex")
 		}
+	} else if activeGroup := codexActiveHeaderGroup(headers); activeGroup != "" {
+		update.ReplaceScopes = append(update.ReplaceScopes, activeGroup)
 	}
 
 	for _, group := range codexAdditionalQuotaGroups(headers) {

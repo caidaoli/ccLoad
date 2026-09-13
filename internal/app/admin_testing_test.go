@@ -2554,31 +2554,40 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 	for _, tc := range []struct {
 		name, active, group, transport string
 		weeklySecondary                bool
-		distinctMain                   bool
+		// noReserveBlock omits the named reserve block so only the generic
+		// fields plus the active identity arrive; the reserve slot then keeps
+		// its prior official sample instead of being fed from the alias.
+		noReserveBlock bool
+		// genericResetSkew shifts the generic reset_at away from the named
+		// block so the two are no longer byte-identical.
+		genericResetSkew int64
 	}{
 		{name: "header direct group", active: "gpt-reserve", group: "gpt-reserve", transport: "header"},
 		{name: "header prefixed group", active: "codex_reserve", group: "reserve", transport: "header"},
 		{name: "header limit name", active: "gpt-reserve", group: "reserve", transport: "header"},
 		{name: "header keeps main secondary", active: "gpt-reserve", group: "reserve", transport: "header", weeklySecondary: true},
+		{name: "header active without group headers", active: "gpt-reserve", transport: "header", noReserveBlock: true},
 		{name: "SSE metered limit", active: "gpt-reserve", transport: "sse"},
-		{name: "SSE preserves distinct main", active: "gpt-reserve", transport: "sse", distinctMain: true},
+		{name: "SSE metered without additional block", active: "gpt-reserve", transport: "sse", noReserveBlock: true},
+		{name: "SSE metered with skewed generic reset", active: "gpt-reserve", transport: "sse", genericResetSkew: 1},
+		{name: "SSE metered by internal codename", active: "codex_bengalfox", transport: "sse"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := time.Now().UTC().Add(-time.Minute)
 			mainReset := base.Add(6 * 24 * time.Hour).Unix()
-			reserveReset := mainReset - 149668
+			// reserve 刚进入新周期：reset 比主窗口晚约一天，使用率远低于主额度。
+			reserveReset := mainReset + 24*3600
 			mainKind := "primary"
 			mainEvent := fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, mainReset)
 			if tc.weeklySecondary {
 				mainKind = "secondary"
 				mainEvent = fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":20,"window_minutes":300,"reset_at":%d},"secondary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, base.Add(4*time.Hour).Unix(), mainReset)
 			}
-			genericUsed, genericReset := 8, reserveReset
-			wantMainUsed := 50.0
-			if tc.distinctMain {
-				genericUsed, genericReset, wantMainUsed = 51, mainReset, 51
+			reserveBlock := fmt.Sprintf(`,"additional_rate_limits":{"gpt-reserve":{"primary":{"used_percent":8,"window_minutes":10080,"reset_at":%d}}}`, reserveReset)
+			if tc.noReserveBlock {
+				reserveBlock = ""
 			}
-			reserveEvent := fmt.Sprintf(`{"type":"codex.rate_limits","metered_limit_name":%q,"rate_limits":{"primary":{"used_percent":%d,"window_minutes":10080,"reset_at":%d}},"additional_rate_limits":{"gpt-reserve":{"primary":{"used_percent":8,"window_minutes":10080,"reset_at":%d}}}}`, tc.active, genericUsed, genericReset, reserveReset)
+			reserveEvent := fmt.Sprintf(`{"type":"codex.rate_limits","plan_type":"pro","metered_limit_name":%q,"rate_limits":{"primary":{"used_percent":8,"window_minutes":10080,"reset_at":%d},"secondary":null}%s}`, tc.active, reserveReset+tc.genericResetSkew, reserveBlock)
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				if tc.transport == "header" {
@@ -2586,11 +2595,13 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 					w.Header().Set("X-Codex-Primary-Used-Percent", "8")
 					w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
 					w.Header().Set("X-Codex-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
-					prefix := "X-Codex-" + tc.group
-					w.Header().Set(prefix+"-Limit-Name", "gpt-reserve")
-					w.Header().Set(prefix+"-Primary-Used-Percent", "8")
-					w.Header().Set(prefix+"-Primary-Window-Minutes", "10080")
-					w.Header().Set(prefix+"-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
+					if !tc.noReserveBlock {
+						prefix := "X-Codex-" + tc.group
+						w.Header().Set(prefix+"-Limit-Name", "gpt-reserve")
+						w.Header().Set(prefix+"-Primary-Used-Percent", "8")
+						w.Header().Set(prefix+"-Primary-Window-Minutes", "10080")
+						w.Header().Set(prefix+"-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
+					}
 					_, _ = io.WriteString(w, "data: "+mainEvent+"\n\n")
 				} else {
 					_, _ = io.WriteString(w, "data: "+reserveEvent+"\n\n")
@@ -2617,6 +2628,10 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 				t.Fatal(err)
 			}
 			lastCost := int64(12_000_000)
+			wantReserveUsed := 8.0
+			if tc.noReserveBlock {
+				wantReserveUsed = 6
+			}
 			channelID := strconv.FormatInt(created.ID, 10)
 			for attempt := range 2 {
 				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
@@ -2637,13 +2652,20 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				main := oauthcost.Find(credential.QuotaCostUsage, "codex|"+mainKind)
-				if main == nil || main.StandardCostMicroUSD <= lastCost || main.CountFromAt != 0 || main.ResetAt != mainReset || main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != wantMainUsed {
-					t.Fatalf("unexpected main quota after detection %d: %+v; previous cost=%d, want used=%g", attempt, main, lastCost, wantMainUsed)
+				if main == nil || main.StandardCostMicroUSD <= lastCost || main.CountFromAt != 0 || main.ResetAt != mainReset || main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != 50 {
+					t.Fatalf("unexpected main quota after detection %d: %+v; previous cost=%d", attempt, main, lastCost)
 				}
 				lastCost = main.StandardCostMicroUSD
 				reserve := oauthcost.Find(credential.QuotaCostUsage, "gpt-reserve|primary")
-				if reserve == nil || reserve.StandardCostMicroUSD != 0 || reserve.ResetAt != reserveReset || reserve.SampledUpstreamUsedPercent == nil || *reserve.SampledUpstreamUsedPercent != 8 {
-					t.Fatalf("reserve quota was not independently updated: %+v", reserve)
+				if reserve == nil || reserve.StandardCostMicroUSD != 0 || reserve.ResetAt != reserveReset || reserve.SampledUpstreamUsedPercent == nil || *reserve.SampledUpstreamUsedPercent != wantReserveUsed {
+					t.Fatalf("reserve quota = %+v, want used=%g reset=%d", reserve, wantReserveUsed, reserveReset)
+				}
+				if tc.transport == "sse" && credential.PassiveUsage != nil {
+					for _, window := range credential.PassiveUsage.Windows {
+						if strings.EqualFold(window.Scope, "codex") {
+							t.Fatalf("reserve-metered response wrote passive main window: %+v", window)
+						}
+					}
 				}
 			}
 		})
