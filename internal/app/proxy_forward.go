@@ -3670,8 +3670,9 @@ func (s *Server) attemptKeyAcrossURLs(
 		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
 			return nil, nil, fmt.Errorf("invalid URL selector index %d for channel %d", urlEntry.idx, cfg.ID)
 		}
-		protocolCandidates, declared := protocolCandidatesForURL(
+		protocolCandidates, declared := protocolCandidatesForURLWithPreference(
 			cfg.URLs[urlEntry.idx], transformMode, clientProtocol, requestFamily, localProtocolOrder,
+			reqCtx.codexClient,
 		)
 		if _, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge &&
 			cfg.URLs[urlEntry.idx].SupportsProtocol(string(protocol.Codex)) {

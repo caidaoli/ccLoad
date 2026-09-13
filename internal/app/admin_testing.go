@@ -630,14 +630,22 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		}
 		testReq.BaseURL = normalizedBaseURL
 	}
-	if !cfg.SupportsModel(model.RoutingModelName(testReq.Model)) {
-		RespondJSON(c, http.StatusOK, gin.H{
-			"success":          false,
-			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
-			"model":            testReq.Model,
-			"supported_models": cfg.GetModels(),
-		})
-		return
+	routedModel := model.RoutingModelName(testReq.Model)
+	testCfg := cfg
+	if !cfg.SupportsModel(routedModel) {
+		// Disabled models remain excluded from normal routing, but the admin test
+		// endpoint must be able to probe the configured upstream model explicitly.
+		testCfg = cfg.Clone()
+		if !enableDisabledChannelTestModel(testCfg, routedModel) {
+			RespondJSON(c, http.StatusOK, gin.H{
+				"success":          false,
+				"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
+				"model":            testReq.Model,
+				"supported_models": cfg.GetModels(),
+			})
+			return
+		}
+		cfg = testCfg
 	}
 
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
@@ -696,6 +704,22 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	testResult["total_keys"] = len(apiKeys)
 
 	RespondJSON(c, http.StatusOK, testResult)
+}
+
+// enableDisabledChannelTestModel enables one configured model on a cloned
+// config so the admin test can exercise it without changing normal routing.
+func enableDisabledChannelTestModel(cfg *model.Config, routedModel string) bool {
+	if cfg == nil || routedModel == "" {
+		return false
+	}
+	for index := range cfg.ModelEntries {
+		entry := &cfg.ModelEntries[index]
+		if entry.Disabled && model.RoutingModelName(entry.Model) == routedModel {
+			entry.Disabled = false
+			return true
+		}
+	}
+	return false
 }
 
 func channelTestActualModel(result map[string]any, fallback string) string {

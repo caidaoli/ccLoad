@@ -3281,6 +3281,78 @@ func TestHandleChannelTest_UnsupportedModel(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_AllowsDisabledConfiguredModel(t *testing.T) {
+	var gotPath string
+	var gotModel string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		} else {
+			gotModel, _ = body["model"].(string)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-disabled-test","object":"chat.completion","model":"disabled-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	srv.modelFuzzyMatch = true
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "disabled-model-test-channel", URLs: model.ChannelURLs{{URL: upstream.URL}}, Priority: 1,
+		ModelEntries: []model.ModelEntry{
+			{Model: "disabled-model", Disabled: true},
+			{Model: "disabled-model-backup"},
+		}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-disabled-test",
+	}}); err != nil {
+		t.Fatalf("添加 API key 失败: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "disabled-model", "client_protocol": "openai",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200, 实际 %d, 响应: %s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("外层 APIResponse.Success 应为 true, error=%q data=%+v", resp.Error, resp.Data)
+	}
+	if success, _ := resp.Data["success"].(bool); !success {
+		t.Fatalf("禁用模型测试应继续执行并成功, data=%+v", resp.Data)
+	}
+	if gotPath != "/v1/chat/completions" || gotModel != "disabled-model" {
+		t.Fatalf("上游请求 path=%q model=%q, want /v1/chat/completions disabled-model", gotPath, gotModel)
+	}
+	persisted, err := srv.store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("读取测试渠道失败: %v", err)
+	}
+	foundDisabled := false
+	for _, entry := range persisted.ModelEntries {
+		if entry.Model == "disabled-model" {
+			foundDisabled = entry.Disabled
+			break
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("测试不应持久化启用禁用模型: %+v", persisted.ModelEntries)
+	}
+}
+
 func TestHandleChannelTest_RejectsMissingClientProtocol(t *testing.T) {
 	var gotPath string
 

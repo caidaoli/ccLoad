@@ -95,6 +95,23 @@ func protocolCandidatesForURL(
 	requestFamily protocol.RequestFamily,
 	localProtocolOrder []protocol.Protocol,
 ) (candidates []protocol.Protocol, declared bool) {
+	return protocolCandidatesForURLWithPreference(
+		entry, transformMode, clientProtocol, requestFamily, localProtocolOrder, false,
+	)
+}
+
+// protocolCandidatesForURLWithPreference applies an optional native Codex
+// preference for official Codex clients. The preference only changes ordering
+// when the request itself is Codex Responses; it never makes an URL that does
+// not advertise Codex eligible for a native request.
+func protocolCandidatesForURLWithPreference(
+	entry model.ChannelURL,
+	transformMode string,
+	clientProtocol protocol.Protocol,
+	requestFamily protocol.RequestFamily,
+	localProtocolOrder []protocol.Protocol,
+	preferNativeCodex bool,
+) (candidates []protocol.Protocol, declared bool) {
 	declared = !entry.UsesAutomaticProtocolDetection()
 	appendIfSupported := func(upstream protocol.Protocol) {
 		if entry.SupportsProtocol(string(upstream)) &&
@@ -102,6 +119,9 @@ func protocolCandidatesForURL(
 			candidates = append(candidates, upstream)
 		}
 	}
+	nativeCodexPreferred := preferNativeCodex &&
+		clientProtocol == protocol.Codex &&
+		requestFamily == protocol.RequestFamilyResponses
 
 	switch transformMode {
 	case model.ProtocolTransformModeUpstream:
@@ -110,11 +130,22 @@ func protocolCandidatesForURL(
 		}
 	case model.ProtocolTransformModeLocal:
 		if declared {
+			if nativeCodexPreferred {
+				appendIfSupported(protocol.Codex)
+			}
 			for _, configured := range entry.Protocols {
-				appendIfSupported(protocol.Protocol(configured))
+				upstream := protocol.Protocol(configured)
+				if nativeCodexPreferred && upstream == protocol.Codex {
+					continue
+				}
+				appendIfSupported(upstream)
 			}
 		} else {
-			for _, upstream := range localProtocolOrder {
+			order := localProtocolOrder
+			if nativeCodexPreferred {
+				order = prioritizeProtocolCandidate(order, protocol.Codex)
+			}
+			for _, upstream := range order {
 				appendIfSupported(upstream)
 			}
 		}

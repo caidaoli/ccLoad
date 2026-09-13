@@ -800,7 +800,7 @@ window.I18N_LOCALES['en'] = {
   'channels.modal.protocolTransformModeLocal': 'ccLoad Translation',
   'channels.modal.protocolTransformModeAutoHelp': 'Try the client protocol first, then OpenAI, Anthropic, Codex, and Gemini without retrying it',
   'channels.modal.protocolTransformModeUpstreamHelp': 'Always use the client protocol upstream without local translation',
-  'channels.modal.protocolTransformModeLocalHelp': 'Translate to protocols declared by each URL; if none are declared, try Anthropic, Codex, OpenAI, then Gemini',
+  'channels.modal.protocolTransformModeLocalHelp': 'Translate to protocols declared by each URL; promote declared Codex for official Codex Responses requests; if none are declared, try Anthropic, Codex, OpenAI, then Gemini',
   'channels.modal.keyStrategy': 'Key Strategy',
   'channels.modal.keyStrategySequential': 'Sequential',
   'channels.modal.keyStrategyRoundRobin': 'Round Robin',

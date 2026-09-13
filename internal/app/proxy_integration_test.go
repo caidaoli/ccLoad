@@ -7068,6 +7068,97 @@ func TestProxy_LocalModeUsesDeclaredProtocolOrder(t *testing.T) {
 	}
 }
 
+func TestProxy_OfficialCodexClientPrefersDeclaredNativeCodex(t *testing.T) {
+	tests := []struct {
+		name           string
+		protocols      []string
+		userAgent      string
+		wantPath       string
+		wantNativeBody bool
+	}{
+		{
+			name:           "official client prefers codex when declared",
+			protocols:      []string{"openai", "codex"},
+			userAgent:      "codex_cli_rs/0.153.4",
+			wantPath:       "/v1/responses",
+			wantNativeBody: true,
+		},
+		{
+			name:      "official client does not invent codex capability",
+			protocols: []string{"openai"},
+			userAgent: "codex_cli_rs/0.153.4",
+			wantPath:  "/v1/chat/completions",
+		},
+		{
+			name:      "non official client keeps declaration order",
+			protocols: []string{"openai", "codex"},
+			wantPath:  "/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			var gotBody []byte
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v1/responses":
+					_, _ = io.WriteString(w, `{"id":"resp-native","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+				case "/v1/chat/completions":
+					_, _ = io.WriteString(w, `{"id":"chatcmpl-translated","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "official-codex-preference", upstreamProtocol: "openai",
+				protocolTransformMode: model.ProtocolTransformModeLocal, models: "gpt-test",
+			}}, map[int]string{0: upstream.URL})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+			}
+			configs[0].URLs[0].Protocols = tt.protocols
+			if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+				t.Fatalf("UpdateConfig: %v", err)
+			}
+			env.server.InvalidateChannelListCache()
+
+			headers := map[string]string{}
+			if tt.userAgent != "" {
+				headers["User-Agent"] = tt.userAgent
+			}
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model":        "gpt-test",
+				"instructions": "preserve this",
+				"input": []any{map[string]any{
+					"type": "message", "role": "user",
+					"content": []any{map[string]any{"type": "input_text", "text": "hello"}},
+				}},
+				"stream": false,
+			}, headers)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s path=%s", response.Code, response.Body.String(), gotPath)
+			}
+			if gotPath != tt.wantPath {
+				t.Fatalf("upstream path=%q, want %q", gotPath, tt.wantPath)
+			}
+			if tt.wantNativeBody {
+				if !gjson.GetBytes(gotBody, "input.0.content.0.text").Exists() || gjson.GetBytes(gotBody, "messages").Exists() {
+					t.Fatalf("native Codex body was translated: %s", gotBody)
+				}
+			} else if tt.wantPath == "/v1/chat/completions" && !gjson.GetBytes(gotBody, "messages").Exists() {
+				t.Fatalf("OpenAI fallback body was not translated: %s", gotBody)
+			}
+		})
+	}
+}
+
 func TestProxy_LocalModeUsesFixedOrderWhenAllURLsAreAutomatic(t *testing.T) {
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

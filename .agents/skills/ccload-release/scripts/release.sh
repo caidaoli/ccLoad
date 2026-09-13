@@ -212,9 +212,11 @@ EOF
     bump='beta-sequence'
   fi
   release_tag="v${stable_major}.${stable_minor}.${target_patch}-beta.${target_beta_number}"
-  if git rev-parse -q --verify "refs/tags/$release_tag" >/dev/null; then
-    fail "tag already exists: $release_tag"
-  fi
+  # Unreachable published Beta tags still occupy the Git tag namespace.
+  while git rev-parse -q --verify "refs/tags/$release_tag" >/dev/null; do
+    target_beta_number=$((target_beta_number + 1))
+    release_tag="v${stable_major}.${stable_minor}.${target_patch}-beta.${target_beta_number}"
+  done
 }
 
 self_test() {
@@ -230,8 +232,8 @@ self_test() {
   local script_path remote_dir work_dir other_dir stub_dir stub_path before_head before_remote
   local dry_run_output publish_output published_head published_tag_target remote_ahead_error
   local ci_failure_output ci_failure_head
-  local small_beta_output large_beta_output stable_output stable_publish_output invalid_beta_error
-  local stable_commit stable_tree invalid_beta_commit stable_published_head stable_tag_target
+  local small_beta_output large_beta_output collision_beta_output stable_output stable_publish_output invalid_beta_error
+  local stable_commit stable_tree orphan_beta_commit invalid_beta_commit stable_published_head stable_tag_target
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   self_test_root=$(mktemp -d)
   trap 'rm -rf -- "$self_test_root"' EXIT
@@ -353,6 +355,14 @@ EOF
     --commit-message 'feat: large Beta change')
   [[ "$large_beta_output" == *'target tag:      v1.0.2-beta.1'* ]] || \
     fail "large change did not increment only the Beta patch"
+  orphan_beta_commit=$(printf 'orphan Beta collision\n' | \
+    git -C "$work_dir" commit-tree "$(git -C "$work_dir" rev-parse 'v1.0.0^{tree}')")
+  git -C "$work_dir" tag -a v1.0.1-beta.2 "$orphan_beta_commit" -m 'Orphan Beta collision'
+  collision_beta_output=$(cd "$work_dir" && "$script_path" beta --dry-run \
+    --commit-message 'fix: orphan Beta collision')
+  [[ "$collision_beta_output" == *'target tag:      v1.0.1-beta.3'* ]] || \
+    fail "orphan Beta Tag collision did not advance the sequence"
+  git -C "$work_dir" tag -d v1.0.1-beta.2 >/dev/null
   stable_output=$(cd "$work_dir" && "$script_path" stable --dry-run \
     --commit-message 'feat: stable minor change')
   [[ "$stable_output" == *'target tag:      v1.1.0'* ]] || \
