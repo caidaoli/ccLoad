@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -173,9 +175,62 @@ func (s *Server) runCodeBuddyCheckin(ctx context.Context, cfg *model.Config) {
 	if err != nil && ctx.Err() == nil {
 		log.Printf("[WARN] CodeBuddy 签到失败 channel=%d: %v", cfg.ID, err)
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	if auditErr := s.addCodeBuddyCheckinAuditLog(ctx, cfg, result, err); auditErr != nil {
+		log.Printf("[WARN] CodeBuddy 签到审计日志写入失败（channel=%d）: %v", cfg.ID, auditErr)
+	}
 	if result != nil && result.Usage != nil && result.Usage.CodeBuddyCredits != nil {
 		log.Printf("[INFO] CodeBuddy 余额 channel=%d remain=%g", cfg.ID, result.Usage.CodeBuddyCredits.Remain)
 	}
+}
+
+func (s *Server) addCodeBuddyCheckinAuditLog(
+	ctx context.Context,
+	cfg *model.Config,
+	result *codeBuddyCheckinResult,
+	operationErr error,
+) error {
+	if s == nil || s.store == nil || cfg == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	status := ""
+	statusCode := http.StatusOK
+	var balance *channelCheckinAuditBalance
+	if result != nil {
+		status = result.Status
+		if result.Usage != nil && result.Usage.CodeBuddyCredits != nil {
+			balance = &channelCheckinAuditBalance{
+				Remaining: result.Usage.CodeBuddyCredits.Remain,
+				Unit:      "credits",
+			}
+		}
+	}
+	if operationErr != nil || status == "" {
+		status = "failed"
+		statusCode = http.StatusBadGateway
+	}
+
+	message, err := json.Marshal(channelCheckinAuditMessage{
+		Profile: codebuddyauth.ChannelType,
+		Status:  status,
+		Balance: balance,
+	})
+	if err != nil {
+		return err
+	}
+	return s.store.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: time.Now()},
+		ChannelID:  cfg.ID,
+		StatusCode: statusCode,
+		LogSource:  model.LogSourceCheckin,
+		Message:    string(message),
+	})
 }
 
 func codeBuddyCheckinSlot(now time.Time) string {
