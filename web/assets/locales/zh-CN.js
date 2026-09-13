@@ -433,6 +433,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.cursor.openDashboard': '打开 Cursor Dashboard',
   'channels.cursor.apiKeyHint': '提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。',
   'channels.cursor.apiKeyRequired': '请填写 Cursor User API Key。',
+  'channels.cursor.apiKeyOpenDashboard': '已打开 Cursor Dashboard。请在 Integrations → User API Keys 创建密钥后粘贴回来。CLI auth.json 会话令牌不能当 User API Key。',
+  'channels.cursor.apiKeyNotSession': '这是 Cursor CLI 的 auth.json 会话令牌，不能导入。请到 Dashboard → Integrations → User API Keys 创建密钥。',
   'channels.cursor.apiKeySubmit': '导入 API Key',
   'channels.cursor.apiKeyValidating': '正在校验 Cursor User API Key…',
   'channels.cursor.importComplete': 'Cursor 渠道已就绪：{channel}',
