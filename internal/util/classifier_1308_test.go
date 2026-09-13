@@ -214,3 +214,61 @@ func TestClassifyHTTPResponseWithMeta_GlobalFixedWindowQuotaCoolsModelUntilRetry
 			want.Format(time.RFC3339))
 	}
 }
+
+func TestClassifyHTTPResponseWithMeta_CodexUsageFrequencyLimitUsesMsgResetTime(t *testing.T) {
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		body string
+		want time.Time
+	}{
+		{
+			name: "english",
+			body: `{"code":6004,"msg":"usage exceeds frequency limit, but don't worry, your usage will reset at 2026-09-14 00:27:01 UTC+8, alternatively, you can switch to the other models to continue using it.","requestId":"4b5e4395-1348-48b9-b87a-f6ae32f1a842"}`,
+			want: time.Date(2026, 9, 14, 0, 27, 1, 0, loc),
+		},
+		{
+			name: "chinese",
+			body: `{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-14 11:22:33 UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"f1f3ee76-9331-4ad0-a777-de48197d77f0"}`,
+			want: time.Date(2026, 9, 14, 11, 22, 33, 0, loc),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(429, nil, []byte(tt.body), now)
+			if got.Level != ErrorLevelKey {
+				t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
+			}
+			if !got.ModelScoped || !got.HasModelCooldownUntil {
+				t.Fatalf("classification=%+v, want fixed model cooldown", got)
+			}
+			if got.ModelCooldownReason != codexUsageFrequencyLimitReason {
+				t.Fatalf("ModelCooldownReason=%q, want %q", got.ModelCooldownReason, codexUsageFrequencyLimitReason)
+			}
+			if !got.ModelCooldownUntil.Equal(tt.want) {
+				t.Fatalf("ModelCooldownUntil=%s, want %s", got.ModelCooldownUntil, tt.want)
+			}
+
+			code, message := ExtractUpstreamErrorCodeAndMessage([]byte(tt.body))
+			if code != "6004" || message == "" {
+				t.Fatalf("ExtractUpstreamErrorCodeAndMessage()=(%q, %q), want code 6004 and msg", code, message)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_CodexUsageFrequencyLimitExpiredResetFallsBack(t *testing.T) {
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, loc)
+	body := []byte(`{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-14 11:22:33 UTC+8 重置，您也可以切换其他模型继续使用。"}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+	if !got.ModelScoped {
+		t.Fatal("expired reset should still use model-scoped 429 fallback")
+	}
+	if got.HasModelCooldownUntil {
+		t.Fatalf("expired reset must not produce fixed deadline: %s", got.ModelCooldownUntil)
+	}
+}

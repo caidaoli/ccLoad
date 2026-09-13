@@ -1533,6 +1533,46 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 	})
 }
 
+func TestHandleError_CodexUsageFrequencyLimitMsgResetTime(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+	cfg := createTestChannel(t, store, "test-codex-usage-frequency-limit")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-codex-usage-frequency-limit",
+		KeyStrategy: model.KeyStrategySequential,
+	}})
+
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	resetAt := time.Now().In(loc).Add(2 * time.Hour).Truncate(time.Second)
+	body := []byte(fmt.Sprintf(`{"code":6004,"msg":"您的使用量已超出频率限制，将在 %s UTC+8 重置，您也可以切换其他模型继续使用。"}`, resetAt.Format("2006-01-02 15:04:05")))
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		Model:      "gpt-6-astra",
+		KeyIndex:   0,
+		StatusCode: 429,
+		ErrorBody:  body,
+	})
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+
+	modelCooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-6-astra")
+	if !exists {
+		t.Fatal("expected model cooldown")
+	}
+	if !modelCooldownUntil.Equal(resetAt) {
+		t.Fatalf("model cooldown until=%s, want %s", modelCooldownUntil, resetAt)
+	}
+	if keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyCooldownUntil.After(time.Now()) {
+		t.Fatalf("model-scoped cooldown must not cool the key, got until %s", keyCooldownUntil)
+	}
+}
+
 func TestHandleError_GeminiResourceExhaustedRetryIn(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

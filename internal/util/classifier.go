@@ -48,6 +48,10 @@ var rollingFreeAllowanceResetRegex = regexp.MustCompile(`(?i)\bnext\s+rolling\s+
 // globalFixedWindowRetryClockRegex 匹配“请在 今天 12:00 后再试”这类全站固定窗口限额文案。
 var globalFixedWindowRetryClockRegex = regexp.MustCompile(`(今天|明天)\s*(\d{1,2})\s*[:：]\s*(\d{1,2})`)
 
+// codexUsageFrequencyLimitResetRegex 匹配 Codex 频率限制错误中的绝对重置时间。
+// 文案可能是英文或中文，但时间格式固定为 YYYY-MM-DD HH:MM:SS UTC+8。
+var codexUsageFrequencyLimitResetRegex = regexp.MustCompile(`(?i)(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+UTC\s*([+-])\s*(\d{1,2})(?:\s*:\s*(\d{2}))?`)
+
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
 	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
@@ -74,6 +78,8 @@ const (
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
 	RetryAfterThresholdSeconds = 60
+	// codexUsageFrequencyLimitReason 是 Codex 6004 频率限制的精确冷却原因。
+	codexUsageFrequencyLimitReason = "CODEX_USAGE_FREQUENCY_LIMIT"
 	// anthropicRateLimitUnifiedResetHeader 是 Anthropic 当前被拒绝配额窗口的 Unix 秒重置时间。
 	anthropicRateLimitUnifiedResetHeader = "Anthropic-Ratelimit-Unified-Reset"
 	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
@@ -147,6 +153,7 @@ type sseErrorDetail struct {
 type structuredQuotaErrorResponse struct {
 	Code            any                          `json:"code"`
 	Message         string                       `json:"message"`
+	Msg             string                       `json:"msg"`
 	Model           string                       `json:"model"`
 	ResetSeconds    int64                        `json:"reset_seconds"`
 	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
@@ -161,6 +168,7 @@ type structuredQuotaErrorObject struct {
 	Type            any                          `json:"type"`
 	Code            any                          `json:"code"`
 	Message         string                       `json:"message"`
+	Msg             string                       `json:"msg"`
 	Model           string                       `json:"model"`
 	ResetSeconds    int64                        `json:"reset_seconds"`
 	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
@@ -402,7 +410,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 				Level: level,
 				Model: strings.TrimSpace(quotaErr.model),
 			}
-			if reason == "model_cooldown" {
+			if reason == "model_cooldown" || reason == codexUsageFrequencyLimitReason {
 				classification.ModelScoped = true
 				classification.ModelCooldownReason = reason
 				if cooldownUntil.After(now) {
@@ -728,6 +736,11 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 	messageUpper := strings.ToUpper(message)
 
 	switch {
+	case code == "6004":
+		if until, ok := parseCodexUsageFrequencyLimitCooldown(message, now); ok {
+			return until, codexUsageFrequencyLimitReason, ErrorLevelKey, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
 	case code == "MODEL_COOLDOWN":
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
 			return until, "model_cooldown", ErrorLevelKey, true
@@ -792,9 +805,13 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 		return structuredQuotaError{}, false
 	}
 
+	message := errResp.Message
+	if strings.TrimSpace(message) == "" {
+		message = errResp.Msg
+	}
 	parsed := structuredQuotaError{
 		code:         normalizeStructuredScalar(errResp.Code),
-		message:      errResp.Message,
+		message:      message,
 		model:        strings.TrimSpace(errResp.Model),
 		resetSeconds: coalesceInt64(errResp.ResetSeconds, errResp.ResetsInSeconds),
 		resetsAt:     errResp.ResetsAt,
@@ -820,6 +837,9 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 				}
 				if parsed.message == "" {
 					parsed.message = errorObj.Message
+					if strings.TrimSpace(parsed.message) == "" {
+						parsed.message = errorObj.Msg
+					}
 				}
 				if parsed.model == "" {
 					parsed.model = strings.TrimSpace(errorObj.Model)
@@ -941,6 +961,37 @@ func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) 
 	}
 
 	return time.Time{}, false
+}
+
+func parseCodexUsageFrequencyLimitCooldown(message string, now time.Time) (time.Time, bool) {
+	matches := codexUsageFrequencyLimitResetRegex.FindStringSubmatch(message)
+	if len(matches) < 4 {
+		return time.Time{}, false
+	}
+
+	hours, err := strconv.Atoi(matches[3])
+	if err != nil || hours > 23 {
+		return time.Time{}, false
+	}
+	minutes := 0
+	if len(matches) > 4 && matches[4] != "" {
+		minutes, err = strconv.Atoi(matches[4])
+		if err != nil || minutes > 59 {
+			return time.Time{}, false
+		}
+	}
+	offsetSeconds := (hours*60 + minutes) * 60
+	if matches[2] == "-" {
+		offsetSeconds = -offsetSeconds
+	}
+
+	dateTime := strings.Join(strings.Fields(matches[1]), " ")
+	location := time.FixedZone("UTC"+matches[2]+strconv.Itoa(hours), offsetSeconds)
+	until, err := time.ParseInLocation("2006-01-02 15:04:05", dateTime, location)
+	if err != nil || !until.After(now) {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func parseRetryInCooldownUntil(message string, now time.Time) (time.Time, bool) {
