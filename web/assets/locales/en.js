@@ -433,6 +433,8 @@ window.I18N_LOCALES['en'] = {
   'channels.cursor.openDashboard': 'Open Cursor Dashboard',
   'channels.cursor.apiKeyHint': 'The input is cleared from the page on submit. ccLoad exchanges it for a CLI session token.',
   'channels.cursor.apiKeyRequired': 'Enter a Cursor user API key.',
+  'channels.cursor.apiKeyOpenDashboard': 'Opened the Cursor Dashboard. Create a User API Key under Integrations → User API Keys, then paste it here. CLI auth.json session tokens are not accepted.',
+  'channels.cursor.apiKeyNotSession': 'That is a Cursor CLI auth.json session token, not a User API Key. Create a key in Dashboard → Integrations → User API Keys.',
   'channels.cursor.apiKeySubmit': 'Import API key',
   'channels.cursor.apiKeyValidating': 'Validating the Cursor user API key…',
   'channels.cursor.importComplete': 'Cursor channel ready: {channel}',

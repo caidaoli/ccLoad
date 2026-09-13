@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -33,7 +34,30 @@ func (r *cursorCredentialImportRequest) Validate() error {
 	if strings.ContainsAny(r.APIKey, " \r\n\t") {
 		return errors.New("credential contains invalid characters")
 	}
+	if looksLikeCursorCLISessionSecret(r.APIKey) {
+		return errCursorCLISessionNotAPIKey
+	}
 	return nil
+}
+
+var errCursorCLISessionNotAPIKey = errors.New("需要 Cursor Dashboard 的 User API Key，不能导入 CLI auth.json 会话令牌")
+
+func looksLikeCursorCLISessionSecret(secret string) bool {
+	if strings.HasPrefix(secret, "eyJ") {
+		return true
+	}
+	if !strings.HasPrefix(secret, "{") {
+		return false
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal([]byte(secret), &payload) != nil {
+		return false
+	}
+	_, hasAccess := payload["accessToken"]
+	if !hasAccess {
+		_, hasAccess = payload["access_token"]
+	}
+	return hasAccess
 }
 
 type cursorCredentialImportResponse struct {

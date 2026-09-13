@@ -958,12 +958,38 @@ function clearCursorSecret(input) {
   input.removeAttribute?.('aria-invalid');
 }
 
+const CURSOR_USER_API_KEYS_URL = 'https://cursor.com/dashboard?tab=integrations';
+
+function looksLikeCursorCLISessionSecret(secret) {
+  const value = String(secret || '').trim();
+  if (value.startsWith('eyJ')) return true;
+  if (!value.startsWith('{')) return false;
+  try {
+    const parsed = JSON.parse(value);
+    return Boolean(parsed?.accessToken || parsed?.access_token || parsed?.session?.auth?.accessToken);
+  } catch (_) {
+    return false;
+  }
+}
+
+function openCursorUserAPIKeysPage() {
+  if (typeof window !== 'undefined' && typeof window.open === 'function') {
+    window.open(CURSOR_USER_API_KEYS_URL, '_blank', 'noopener,noreferrer');
+  }
+}
+
 async function submitCursorCredential(input, fetcher = fetchDataWithAuth, signal = undefined) {
   let secret = String(input?.value || '').trim();
   if (!secret) {
     input?.setAttribute?.('aria-invalid', 'true');
     input?.focus?.();
-    throw new Error(window.t('channels.cursor.apiKeyRequired'));
+    openCursorUserAPIKeysPage();
+    throw new Error(window.t('channels.cursor.apiKeyOpenDashboard'));
+  }
+  if (looksLikeCursorCLISessionSecret(secret)) {
+    input?.setAttribute?.('aria-invalid', 'true');
+    input?.focus?.();
+    throw new Error(window.t('channels.cursor.apiKeyNotSession'));
   }
   let body = JSON.stringify({ api_key: secret });
   secret = '';
@@ -3190,6 +3216,8 @@ if (typeof module !== 'undefined' && module.exports) {
     submitAnthropicOAuthCode,
     submitCodexPersonalAccessToken,
     submitCursorCredential,
+    looksLikeCursorCLISessionSecret,
+    CURSOR_USER_API_KEYS_URL,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,
     submitXAICredentialBatch,

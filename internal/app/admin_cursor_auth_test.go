@@ -40,6 +40,25 @@ func TestHandleImportCursorCredentialRejectsSessionToken(t *testing.T) {
 	}
 }
 
+func TestHandleImportCursorCredentialRejectsCLIAuthJSON(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	for _, body := range []string{
+		`{"api_key":"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.sig"}`,
+		`{"api_key":"{\"accessToken\":\"eyJhbGciOiJSUzI1NiJ9.e30.sig\",\"refreshToken\":\"rt\"}"}`,
+	} {
+		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/cursor/credentials/import", bytes.NewBufferString(body)))
+		c.Request.Header.Set("Content-Type", "application/json")
+		server.HandleImportCursorCredential(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "User API Key") && !strings.Contains(w.Body.String(), "auth.json") {
+			t.Fatalf("body=%s", w.Body.String())
+		}
+	}
+}
+
 func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	t.Parallel()
 	channel := newCursorOAuthChannel("Cursor-user@example.com", `{"type":"cursor","access_token":"tok"}`, nil)

@@ -41,6 +41,8 @@ const {
   submitCodexOAuthCallback,
   submitCodexPersonalAccessToken,
   submitCursorCredential,
+  looksLikeCursorCLISessionSecret,
+  CURSOR_USER_API_KEYS_URL,
   submitCodeBuddyCredentialFile,
   loadCodeBuddyCredentialFile,
   submitXAIOAuthCallback
@@ -160,6 +162,37 @@ test('Cursor credential import accepts only a user API key', async () => {
     assert.equal(request.url, '/admin/cursor/credentials/import');
     assert.deepEqual(JSON.parse(request.options.body), { api_key: 'cursor-user-key' });
     assert.equal(input.value, '');
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('Cursor credential import rejects CLI auth.json and opens Dashboard when empty', async () => {
+  const previousWindow = global.window;
+  const opened = [];
+  global.window = {
+    t: key => key,
+    open: (url, target, features) => {
+      opened.push({ url, target, features });
+      return {};
+    }
+  };
+  const input = { value: '', removeAttribute() {}, setAttribute() {}, focus() {} };
+  try {
+    assert.equal(looksLikeCursorCLISessionSecret('eyJhbGciOiJSUzI1NiJ9.e30.sig'), true);
+    assert.equal(looksLikeCursorCLISessionSecret('{"accessToken":"eyJhbGciOiJSUzI1NiJ9.e30.sig","refreshToken":"rt"}'), true);
+    assert.equal(looksLikeCursorCLISessionSecret('cursor-user-key'), false);
+    await assert.rejects(
+      () => submitCursorCredential(input, async () => ({})),
+      /channels\.cursor\.apiKeyOpenDashboard/
+    );
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].url, CURSOR_USER_API_KEYS_URL);
+    input.value = '{"accessToken":"eyJhbGciOiJSUzI1NiJ9.e30.sig","refreshToken":"rt"}';
+    await assert.rejects(
+      () => submitCursorCredential(input, async () => ({})),
+      /channels\.cursor\.apiKeyNotSession/
+    );
   } finally {
     global.window = previousWindow;
   }
