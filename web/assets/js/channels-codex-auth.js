@@ -33,7 +33,6 @@ const oauthUsageOperationByChannelID = new Map();
 const oauthUsageLastOperationByChannelID = new Map();
 let oauthUsageOperationSequence = 0;
 const activeChannelUsageAutoRefreshPendingIDs = new Set();
-const activeChannelUsageAutoRefreshCompletedIDs = new Set();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   codebuddy: Object.freeze({
     provider: 'codebuddy', label: 'CodeBuddy', i18n: 'channels.codebuddy',
@@ -2112,17 +2111,17 @@ function rerenderOAuthUsage() {
 
 function resetActiveChannelUsageAutoRefreshState() {
   activeChannelUsageAutoRefreshPendingIDs.clear();
-  activeChannelUsageAutoRefreshCompletedIDs.clear();
 }
 
+// Every list load refreshes the displayed channels again; only an in-flight
+// request for the same channel is skipped.
 async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWithAuth) {
   const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
   if (readOnly) return null;
   const pendingIDs = Array.from(new Set((Array.isArray(channelIDs) ? channelIDs : [])
     .map(Number)
     .filter(channelID => Number.isInteger(channelID) && channelID > 0)))
-    .filter(channelID => !activeChannelUsageAutoRefreshPendingIDs.has(channelID)
-      && !activeChannelUsageAutoRefreshCompletedIDs.has(channelID));
+    .filter(channelID => !activeChannelUsageAutoRefreshPendingIDs.has(channelID));
   if (pendingIDs.length === 0) return null;
   for (const channelID of pendingIDs) activeChannelUsageAutoRefreshPendingIDs.add(channelID);
   const oauthOperationFloor = oauthUsageOperationSequence;
@@ -2171,7 +2170,6 @@ async function maybeAutoRefreshActiveChannelUsage(channelIDs, fetcher = fetchWit
     if (processed !== total || succeeded + failed !== total) {
       throw new Error(window.t('channels.batchOAuthUsageIncomplete'));
     }
-    for (const channelID of pendingIDs) activeChannelUsageAutoRefreshCompletedIDs.add(channelID);
     return { total, succeeded, failed };
   } catch (error) {
     console.error('Failed to auto-refresh active channel usage', error);

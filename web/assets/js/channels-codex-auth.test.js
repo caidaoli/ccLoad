@@ -2461,7 +2461,7 @@ test('newer batch OAuth usage result is not overwritten by an older single refre
   }
 });
 
-test('channel list auto-refresh submits only newly displayed page channel IDs', async () => {
+test('channel list auto-refresh refreshes displayed page channel IDs on every load', async () => {
   resetActiveChannelUsageAutoRefreshState();
   const previous = {
     isTokenChannelsReadOnly: global.isTokenChannelsReadOnly,
@@ -2492,8 +2492,14 @@ test('channel list auto-refresh submits only newly displayed page channel IDs', 
         { event: 'complete', processed: 2, total: 2, succeeded: 2, failed: 0 }
       ]);
     });
-    const repeated = await maybeAutoRefreshActiveChannelUsage([81, 82, 83], async () => {
-      throw new Error('displayed channels should refresh once');
+    // Re-displaying the same channels (filter switch, pagination, refresh)
+    // samples them again instead of trusting the session's first snapshot.
+    const repeated = await maybeAutoRefreshActiveChannelUsage([81, 82, 83], async (url, options) => {
+      requested.push({ url, options });
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 0, succeeded: 0, failed: 0 },
+        { event: 'complete', processed: 0, total: 0, succeeded: 0, failed: 0 }
+      ]);
     });
     const secondPage = await maybeAutoRefreshActiveChannelUsage([83, 85], async (url, options) => {
       requested.push({ url, options });
@@ -2503,14 +2509,15 @@ test('channel list auto-refresh submits only newly displayed page channel IDs', 
       ]);
     });
     assert.deepEqual(first, { total: 2, succeeded: 2, failed: 0 });
-    assert.equal(repeated, null);
+    assert.deepEqual(repeated, { total: 0, succeeded: 0, failed: 0 });
     assert.deepEqual(secondPage, { total: 0, succeeded: 0, failed: 0 });
     assert.equal(reloads, 0);
-    assert.equal(requested.length, 2);
+    assert.equal(requested.length, 3);
     assert.equal(requested[0].url, '/admin/channels/usage/active/batch/stream');
     assert.equal(requested[0].options.method, 'POST');
     assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [81, 82, 83] });
-    assert.deepEqual(JSON.parse(requested[1].options.body), { channel_ids: [85] });
+    assert.deepEqual(JSON.parse(requested[1].options.body), { channel_ids: [81, 82, 83] });
+    assert.deepEqual(JSON.parse(requested[2].options.body), { channel_ids: [83, 85] });
     assert.equal(getOAuthUsageState(81).status, 'ready');
     assert.equal(getOAuthUsageState(83).status, 'ready');
   } finally {
