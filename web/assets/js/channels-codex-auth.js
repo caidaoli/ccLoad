@@ -604,6 +604,9 @@ function syncOAuthProviderFields() {
     cursorAPIKeyInput.required = cursorAPIKey;
     if (!cursorAPIKey) clearCursorSecret(cursorAPIKeyInput);
   }
+  // Let Cursor's custom empty-value handler run so it can open the Dashboard.
+  // Keep the input required for assistive technology and other form semantics.
+  if (authorizeButton) authorizeButton.formNoValidate = cursorAPIKey;
   if (sessionFields && (codebuddyFile || xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {

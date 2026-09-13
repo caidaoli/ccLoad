@@ -1248,8 +1248,14 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     removeAttribute(name) { delete this[name]; },
     setAttribute(name, value) { this[name] = value; }
   });
+  const cursorUserAPIKey = makeTarget({
+    value: '', required: false,
+    focus() { this.focused = true; },
+    removeAttribute(name) { delete this[name]; },
+    setAttribute(name, value) { this[name] = value; }
+  });
   const authorizeButton = {
-    disabled: false, hidden: false, textContent: '',
+    disabled: false, hidden: false, textContent: '', formNoValidate: false,
     setAttribute(name, value) { this[name] = value; }
   };
   const sessionFields = { hidden: false };
@@ -1278,6 +1284,9 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ['anthropicOAuthMethod', anthropicMethod],
     ['anthropicCookieField', { hidden: true }],
     ['anthropicSessionKey', anthropicSessionKey],
+    ['cursorOAuthControls', { hidden: true }],
+    ['cursorAPIKeyField', { hidden: true }],
+    ['cursorUserAPIKey', cursorUserAPIKey],
     ['oauthAuthorizeButton', authorizeButton],
     ['oauthSessionFields', sessionFields],
     ['oauthAuthorizationURL', authorizationURL],
@@ -1332,6 +1341,14 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(providerSelect.focused, true);
     assert.equal(sessionFields.hidden, true);
     assert.deepEqual(requests, []);
+
+    providerSelect.value = 'cursor';
+    providerSelect.listeners.change();
+    assert.equal(cursorUserAPIKey.required, true);
+    assert.equal(authorizeButton.formNoValidate, true);
+    providerSelect.value = 'codex';
+    providerSelect.listeners.change();
+    assert.equal(authorizeButton.formNoValidate, false);
 
     codexMethod.value = 'personalAccessToken';
     codexMethod.listeners.change();
