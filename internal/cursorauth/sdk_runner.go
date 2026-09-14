@@ -171,8 +171,9 @@ func listCursorModels(
 	}))
 }
 
-// Run starts a native Cursor SDK turn, or resumes a suspended custom-tool
-// callback when the client returns tool results.
+// Run is the generic Cursor turn entry: resume a live custom-tool callback,
+// replay a completed one, or start CreateAgent. Trailing tool_result blocks
+// that do not match an in-memory call_id are history, not a 502.
 func (r *SDKRunner) Run(
 	ctx context.Context,
 	credential *Credential,
@@ -185,18 +186,22 @@ func (r *SDKRunner) Run(
 		return nil, ErrMissingAPIKey
 	}
 	if len(request.ToolResults) > 0 {
-		events, err := r.resumeToolRun(ctx, credential, request.ToolResults, request.InputTokenEstimate)
-		if err == nil {
-			return events, nil
-		}
-		if !errors.Is(err, ErrToolSessionNotFound) {
+		turn, err := r.classifyCursorToolTurn(credential, request.ToolResults)
+		if err != nil {
 			return nil, err
 		}
-		// Stale Claude Code transcripts still send trailing tool_result blocks
-		// after the native run is gone (kernel upgrade, rejected model id, or
-		// another provider). Resume cannot find those call_ids; continue as a
-		// new CreateAgent turn. ParseRequest already folded the tool history
-		// into Prompt.
+		switch turn.kind {
+		case cursorTurnResume:
+			return turn.session.nextTurn(ctx, func() error {
+				turn.session.setInputTokenEstimate(request.InputTokenEstimate)
+				return r.resolveToolResults(turn.session, turn.pending)
+			})
+		case cursorTurnReplay:
+			turn.session.setInputTokenEstimate(request.InputTokenEstimate)
+			return replayCompletedToolTurn(ctx, turn.session), nil
+		}
+		// cursorTurnNew: trailing tool_result blocks are conversation history.
+		// ParseRequest already inlined them into Prompt.
 	}
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {
@@ -311,37 +316,85 @@ func (r *SDKRunner) Run(
 }
 
 func cursorModelSelection(model string) *sdkv1.ModelSelection {
-	selection := &sdkv1.ModelSelection{Id: model}
-	const fastSuffix = "-fast"
-	if !strings.HasSuffix(strings.ToLower(model), fastSuffix) {
-		return selection
+	id, fast := normalizeCursorModelID(model)
+	selection := &sdkv1.ModelSelection{Id: id}
+	if fast && id != "" {
+		selection.Params = []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}
 	}
-	base := strings.TrimSpace(model[:len(model)-len(fastSuffix)])
-	if base == "" {
-		return selection
-	}
-	selection.Id = base
-	selection.Params = []*sdkv1.ModelParameterValue{{Id: "fast", Value: "true"}}
 	return selection
 }
 
-func (r *SDKRunner) resumeToolRun(
-	ctx context.Context,
-	credential *Credential,
-	results []ToolResult,
-	inputTokenEstimate int,
-) (<-chan Event, error) {
-	// Serialize this short state transition so concurrent retries cannot race
-	// between the pending and completed-call indexes.
+// normalizeCursorModelID maps client/catalog aliases onto SDK ListModels IDs.
+// Cursor stores thinking/effort as request fields, not model suffixes; only
+// -fast is a real ModelSelection param.
+func normalizeCursorModelID(model string) (id string, fast bool) {
+	id = strings.TrimSpace(model)
+	if id == "" {
+		return "", false
+	}
+	lower := strings.ToLower(id)
+	if strings.HasSuffix(lower, "-fast") {
+		fast = true
+		id = strings.TrimSpace(id[:len(id)-len("-fast")])
+		lower = strings.ToLower(id)
+	}
+	for _, suffix := range cursorEffortSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			id = strings.TrimSpace(id[:len(id)-len(suffix)])
+			break
+		}
+	}
+	if id == "" {
+		return strings.TrimSpace(model), false
+	}
+	return id, fast
+}
+
+// Longer tokens first so -thinking-xhigh wins over -high and extra-high over high.
+var cursorEffortSuffixes = []string{
+	"-thinking-extra-high",
+	"-thinking-xhigh",
+	"-thinking-medium",
+	"-thinking-minimal",
+	"-thinking-high",
+	"-thinking-none",
+	"-thinking-low",
+	"-thinking-max",
+	"-extra-high",
+	"-xhigh",
+	"-medium",
+	"-minimal",
+	"-high",
+	"-none",
+	"-low",
+	"-max",
+}
+
+type cursorTurnKind int
+
+const (
+	cursorTurnNew cursorTurnKind = iota
+	cursorTurnResume
+	cursorTurnReplay
+)
+
+type cursorToolTurn struct {
+	kind    cursorTurnKind
+	session *sdkSession
+	pending []ToolResult
+}
+
+func (r *SDKRunner) classifyCursorToolTurn(credential *Credential, results []ToolResult) (cursorToolTurn, error) {
 	r.resumeMu.Lock()
 	defer r.resumeMu.Unlock()
 
 	var session *sdkSession
 	pendingResults := make([]ToolResult, 0, len(results))
+	unknown := 0
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.closed {
-		r.mu.Unlock()
-		return nil, ErrBridgeClosed
+		return cursorToolTurn{}, ErrBridgeClosed
 	}
 	for _, result := range results {
 		callID := strings.TrimSpace(result.CallID)
@@ -355,14 +408,13 @@ func (r *SDKRunner) resumeToolRun(
 		if pending == nil || pending.session == nil || pendingResolved {
 			completedSession := r.completedCalls[callID]
 			if completedSession == nil {
-				r.mu.Unlock()
-				return nil, fmt.Errorf("%w: call_id %q", ErrToolSessionNotFound, result.CallID)
+				unknown++
+				continue
 			}
 			if session == nil {
 				session = completedSession
 			} else if session != completedSession {
-				r.mu.Unlock()
-				return nil, errors.New("tool results from different Cursor sessions cannot share one request")
+				return cursorToolTurn{}, errors.New("tool results from different Cursor sessions cannot share one request")
 			}
 			continue
 		}
@@ -370,25 +422,19 @@ func (r *SDKRunner) resumeToolRun(
 		if session == nil {
 			session = pending.session
 		} else if session != pending.session {
-			r.mu.Unlock()
-			return nil, errors.New("tool results from different Cursor sessions cannot share one request")
+			return cursorToolTurn{}, errors.New("tool results from different Cursor sessions cannot share one request")
 		}
 	}
-	r.mu.Unlock()
-	if session == nil {
-		return nil, ErrToolSessionNotFound
+	if unknown > 0 || session == nil {
+		return cursorToolTurn{kind: cursorTurnNew}, nil
 	}
 	if subtleAPIKeyMismatch(session.apiKey, credential.APIKey) {
-		return nil, ErrToolSessionNotFound
+		return cursorToolTurn{kind: cursorTurnNew}, nil
 	}
 	if len(pendingResults) == 0 {
-		session.setInputTokenEstimate(inputTokenEstimate)
-		return replayCompletedToolTurn(ctx, session), nil
+		return cursorToolTurn{kind: cursorTurnReplay, session: session}, nil
 	}
-	return session.nextTurn(ctx, func() error {
-		session.setInputTokenEstimate(inputTokenEstimate)
-		return r.resolveToolResults(session, pendingResults)
-	})
+	return cursorToolTurn{kind: cursorTurnResume, session: session, pending: pendingResults}, nil
 }
 
 func replayCompletedToolTurn(ctx context.Context, session *sdkSession) <-chan Event {
