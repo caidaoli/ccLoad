@@ -271,6 +271,58 @@ func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
 	}
 }
 
+func TestNormalizeCursorModelID(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		id   string
+		fast bool
+	}{
+		{"claude-opus-5", "claude-opus-5", false},
+		{"claude-opus-5-fast", "claude-opus-5", true},
+		{"claude-opus-5-thinking-xhigh", "claude-opus-5", false},
+		{"claude-opus-5-thinking-xhigh-fast", "claude-opus-5", true},
+		{"gpt-5.6-sol-high", "gpt-5.6-sol", false},
+		{"gpt-5.4-mini", "gpt-5.4-mini", false},
+		{"composer-2.5", "composer-2.5", false},
+		{"gpt-5.6-sol-xhigh-fast", "gpt-5.6-sol", true},
+	}
+	for _, tc := range cases {
+		id, fast := normalizeCursorModelID(tc.in)
+		if id != tc.id || fast != tc.fast {
+			t.Fatalf("normalizeCursorModelID(%q)=(%q,%v), want (%q,%v)", tc.in, id, fast, tc.id, tc.fast)
+		}
+		selection := cursorModelSelection(tc.in)
+		if selection.GetId() != tc.id {
+			t.Fatalf("cursorModelSelection(%q).Id=%q, want %q", tc.in, selection.GetId(), tc.id)
+		}
+	}
+}
+
+func TestSDKRunnerFallsBackToNewTurnWhenToolSessionIsMissing(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	events, err := runner.Run(context.Background(), credential, Request{
+		Model:       "claude-opus-5",
+		Prompt:      "user: continue\ntool call_stale: ok",
+		ToolChoice:  "auto",
+		Tools:       []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+		ToolResults: []ToolResult{{CallID: "call_stale_missing", Output: "ok"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if call := readNativeToolCall(t, events); call.ID == "" {
+		t.Fatal("expected a new native tool call after stale tool_result")
+	}
+	handler.mu.Lock()
+	created := len(handler.creates)
+	handler.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("CreateAgent count = %d, want 1 (stale tool_result must start a new turn)", created)
+	}
+}
+
 func TestSDKRunnerReportsUsageAtNativeToolBoundary(t *testing.T) {
 	runner, handler := newNativeToolTestRunner(t)
 	events, err := runner.Run(context.Background(), &Credential{APIKey: "channel-key"}, Request{
