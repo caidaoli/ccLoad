@@ -1153,13 +1153,24 @@ func (s *Server) handleSuccessResponse(
 			isSSE = true
 		}
 		if err != nil {
-			return finishStreaming(&fwResult{
+			// Protocol probing reads the upstream stream before the normal
+			// forwarding loop. If an operator abort closes that read, preserve
+			// the cancellation cause and classify it as an incomplete upstream
+			// stream so Responses WebSocket can terminate the turn.
+			if cause := context.Cause(reqCtx.ctx); cause != nil {
+				err = cause
+			}
+			result := &fwResult{
 				Status:         resp.StatusCode,
 				UpstreamStatus: resp.StatusCode,
 				Header:         hdrClone,
 				FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 				BytesReceived:  readStats.totalBytes,
-			}, reqCtx.Duration().Seconds(), err)
+			}
+			if diagMsg := buildStreamDiagnostics(err, readStats, false, upstreamProtocol, resp.Header.Get("Content-Type")); diagMsg != "" {
+				result.StreamDiagMsg = diagMsg
+			}
+			return finishStreaming(result, reqCtx.Duration().Seconds(), err)
 		}
 		if transform {
 			return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, string(detectedProtocol), readStats, observer))
@@ -1207,12 +1218,13 @@ func (s *Server) handleSuccessResponse(
 		disableResponseWriteTimeout(w, "非流式")
 	}
 
-	streamWriter := w
-	var deferredWriter *deferredResponseWriter
-	if reqCtx.isStreaming {
-		deferredWriter = newDeferredResponseWriter(w)
-		streamWriter = deferredWriter
-	}
+	// Keep non-stream responses uncommitted until the upstream body has been
+	// read successfully. Some providers incorrectly return an SSE body (often
+	// heartbeat-only `: PING`) for a stream=false request. Writing that body
+	// directly would commit a 200 response, then a cancelled attempt could
+	// append a failover response to the same client connection.
+	deferredWriter := newDeferredResponseWriter(w)
+	streamWriter := http.ResponseWriter(deferredWriter)
 
 	// 写入响应头
 	filterAndWriteResponseHeaders(streamWriter, resp.Header)
@@ -1229,10 +1241,10 @@ func (s *Server) handleSuccessResponse(
 			if shouldMarkUpstreamFirstByte(parser) {
 				markFirstStreamResponse(reqCtx, readStats)
 			}
-			if parser.GetLastError() != nil {
+			if reqCtx.isStreaming && parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			if parser.HasStreamOutput() {
+			if reqCtx.isStreaming && parser.HasStreamOutput() {
 				if err := deferredWriter.Commit(); err != nil {
 					return err
 				}
@@ -1242,14 +1254,24 @@ func (s *Server) handleSuccessResponse(
 		},
 	)
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
-	if abortedBeforeCommit {
-		streamErr = nil
-	} else if deferredWriter != nil && !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
-		if streamErr == nil {
-			return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+	if reqCtx.isStreaming {
+		if abortedBeforeCommit {
+			streamErr = nil
+		} else if !deferredWriter.Committed() && isEmptyStreamOutput(parser, readStats) {
+			if streamErr == nil {
+				return emptyOKResponseResult(reqCtx, resp, hdrClone, readStats, emptyStreamDetail(readStats))
+			}
+		} else if !deferredWriter.Committed() {
+			if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+				streamErr = commitErr
+			}
 		}
-	} else if deferredWriter != nil && !deferredWriter.Committed() {
-		if commitErr := deferredWriter.Commit(); commitErr != nil && streamErr == nil {
+	} else if !deferredWriter.Committed() && streamErr == nil {
+		// Non-stream responses are atomic: any bytes read successfully are
+		// committed together. Empty-body validation is handled before this path
+		// by probeEmptyOKResponse; preserving the existing passthrough behavior
+		// here also covers providers that return non-standard SSE framing.
+		if commitErr := deferredWriter.Commit(); commitErr != nil {
 			streamErr = commitErr
 		}
 	}

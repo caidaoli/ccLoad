@@ -11216,6 +11216,93 @@ func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
 	}
 }
 
+func TestProxy_OperatorAbort_NonStreamPingOnlyHTTP(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		close(upstreamStarted)
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, ": PING\n\n")
+		flusher.Flush()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = io.WriteString(w, ": PING\n\n")
+				flusher.Flush()
+			}
+		}
+	}))
+	defer primary.Close()
+
+	var backupHits atomic.Int64
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backupHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer backup.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "abort-nonstream-primary", models: "gpt-abort-nonstream", apiKey: "sk-1", priority: 100},
+		{name: "abort-nonstream-backup", models: "gpt-abort-nonstream", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: primary.URL, 1: backup.URL})
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "gpt-abort-nonstream", "stream": false,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.engine.ServeHTTP(w, req)
+	}()
+	select {
+	case <-upstreamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("non-stream upstream did not start")
+	}
+	time.Sleep(100 * time.Millisecond)
+	var aborted bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		for _, active := range env.server.activeRequests.List() {
+			if active.Abortable && env.server.activeRequests.Abort(active.ID) {
+				aborted = true
+				break
+			}
+		}
+		if aborted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !aborted {
+		t.Fatal("no abortable non-stream request appeared")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("non-stream proxy request did not finish after abort")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 after failover; body=%q", w.Code, w.Body.String())
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}` {
+		t.Fatalf("non-stream response contains partial primary data: %q", got)
+	}
+	if got := backupHits.Load(); got != 1 {
+		t.Fatalf("backup hits=%d, want 1", got)
+	}
+}
+
 // 响应已提交给客户端后再中断：按契约禁止网关内部切换或重放，正确收场是 599
 // （流式中断）+ 模型级冷却，绝不能变成 499，也不能偷偷换渠道重发一遍。
 func TestProxy_OperatorAbort_AfterCommitDoesNotSwitchChannel(t *testing.T) {

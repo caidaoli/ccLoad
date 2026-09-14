@@ -124,6 +124,46 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 	}
 }
 
+func readResponsesWebsocketRetryAndClose(t testing.TB, conn *websocket.Conn) {
+	t.Helper()
+	seenRetry := false
+	for {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			var closeErr *websocket.CloseError
+			if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+				t.Fatalf("operator-abort close=%v, want websocket 1011", err)
+			}
+			if !seenRetry {
+				t.Fatal("operator abort closed websocket without retry error")
+			}
+			return
+		}
+		if messageType != websocket.TextMessage {
+			continue
+		}
+		var event struct {
+			Type   string `json:"type"`
+			Status int    `json:"status"`
+			Error  struct {
+				Type string `json:"type"`
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(payload, &event); err != nil {
+			t.Fatalf("operator-abort websocket payload is not JSON: %v", err)
+		}
+		if event.Type != "error" {
+			continue
+		}
+		if event.Status != http.StatusBadGateway || event.Error.Type != "server_error" ||
+			event.Error.Code != responsesWebsocketInterruptedCode {
+			t.Fatalf("operator-abort retry event=%s", payload)
+		}
+		seenRetry = true
+	}
+}
+
 func waitForResponsesWebsocketAttachments(
 	t testing.TB,
 	store *responsesExecutionSessionStore,
@@ -6818,6 +6858,138 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 
 	close(releaseResponse)
 	readWebsocketUntilType(t, downstream, "response.completed")
+}
+
+func TestResponsesWebsocketOperatorAbortPingOnlyUpstream(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	requestStarted := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade operator-abort websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read operator-abort websocket payload: %v", err)
+			return
+		}
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		// Metadata-only frames mirror a heartbeat-only Responses stream: they
+		// must not commit the downstream response and the turn remains pending.
+		for {
+			if err := conn.WriteJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-ping-only"}}); err != nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "active-abort-native-ws", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.client = upstream.Client()
+	downstream := dialResponsesWebsocket(t, env.engine)
+	defer func() { _ = downstream.Close() }()
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set operator-abort websocket deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "abort ping-only"}},
+	}); err != nil {
+		t.Fatalf("write operator-abort websocket request: %v", err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream websocket request did not start")
+	}
+	var aborted bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		for _, active := range env.server.activeRequests.List() {
+			if active.Abortable && env.server.activeRequests.Abort(active.ID) {
+				aborted = true
+				break
+			}
+		}
+		if aborted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !aborted {
+		t.Fatal("no abortable native websocket request appeared")
+	}
+	// The operator abort must send a retryable error and close the downstream
+	// turn promptly. A timeout here reproduces the issue's stuck "aborting" request.
+	readResponsesWebsocketRetryAndClose(t, downstream)
+}
+
+func TestResponsesWebsocketOperatorAbortPingOnlyHTTPUpstream(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		flusher := w.(http.Flusher)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				_, _ = io.WriteString(w, ": PING\n\n")
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "active-abort-http-ping", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "http-ping-abort")
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set http-ping websocket deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "abort http ping-only"}},
+	}); err != nil {
+		t.Fatalf("write http-ping websocket request: %v", err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("http upstream request did not start")
+	}
+	var aborted bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		for _, active := range env.server.activeRequests.List() {
+			if active.Abortable && env.server.activeRequests.Abort(active.ID) {
+				aborted = true
+				break
+			}
+		}
+		if aborted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !aborted {
+		t.Fatal("no abortable http ping-only request appeared")
+	}
+	readResponsesWebsocketRetryAndClose(t, conn)
 }
 
 func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T) {

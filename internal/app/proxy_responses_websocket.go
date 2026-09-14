@@ -607,6 +607,19 @@ func (s *Server) executeResponsesWebsocketTurn(
 			message: responsesWebsocketUpstreamErrorMessage(lastResult.body),
 		}
 	}
+	// A 598/599 result is an internal stream failure, not a client-visible
+	// Responses error payload. When every candidate is exhausted (including an
+	// administrator abort of a heartbeat-only stream), forwarding its diagnostic
+	// text through the generic error path would emit a 400 `upstream_error` and
+	// leave the WebSocket open with no turn terminator. Make it client-retryable,
+	// matching the already-committed interruption path above.
+	if lastResult != nil && util.IsModelScopedStreamFailure(lastResult.status) {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
+			status:  status,
+			code:    responsesWebsocketInterruptedCode,
+			message: responsesWebsocketInterruptedMessage,
+		}
+	}
 	if lastResult != nil && len(lastResult.body) > 0 {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
 	}
