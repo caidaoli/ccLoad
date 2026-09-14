@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildChannelUsageHtml,
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
   buildManagementAccountStatusHtml,
@@ -693,6 +694,89 @@ test('只读模式不渲染管理账户动作', () => {
       auth_type: 'api_key',
       management_account: { profile: 'new_api', credential_configured: true }
     }), '');
+  } finally {
+    restore();
+  }
+});
+
+function installUsageRenderGlobals() {
+  const previous = {
+    window: global.window,
+    formatMetricNumber: global.formatMetricNumber,
+    buildCostStackHtml: global.buildCostStackHtml
+  };
+  global.window = {
+    t: (key, values) => (values
+      ? Object.entries(values).reduce((text, [name, value]) => text.replace(`{${name}}`, String(value)), key)
+      : key)
+  };
+  global.formatMetricNumber = value => String(value);
+  global.buildCostStackHtml = () => '';
+  return () => {
+    global.window = previous.window;
+    global.formatMetricNumber = previous.formatMetricNumber;
+    global.buildCostStackHtml = previous.buildCostStackHtml;
+  };
+}
+
+test('消耗列按实际数据渲染缓读，与渠道声明的协议无关', () => {
+  const restore = installUsageRenderGlobals();
+  try {
+    // CodeBuddy 声明 protocols:["openai"] 但上游确实返回缓读，必须显示。
+    const codebuddy = buildChannelUsageHtml({
+      totalInputTokens: 399773,
+      totalOutputTokens: 365036,
+      totalCacheReadInputTokens: 30473088,
+      totalCacheCreationInputTokens: 0,
+      totalCost: 0.6,
+      effectiveCost: 0.6
+    });
+    assert.match(codebuddy, /channels\.stats\.cacheRead/);
+    assert.match(codebuddy, /30473088/);
+    assert.doesNotMatch(codebuddy, /channels\.stats\.cacheCreate/);
+
+    // Gemini 渠道同样按数据渲染，不再被协议白名单隐藏。
+    const gemini = buildChannelUsageHtml({
+      totalInputTokens: 100,
+      totalOutputTokens: 10,
+      totalCacheReadInputTokens: 297415744,
+      totalCacheCreationInputTokens: 0,
+      totalCost: 0.1,
+      effectiveCost: 0.1
+    });
+    assert.match(gemini, /297415744/);
+  } finally {
+    restore();
+  }
+});
+
+test('没有缓存数据时不渲染缓存行', () => {
+  const restore = installUsageRenderGlobals();
+  try {
+    const html = buildChannelUsageHtml({
+      totalInputTokens: 500,
+      totalOutputTokens: 60,
+      totalCacheReadInputTokens: 0,
+      totalCacheCreationInputTokens: 0,
+      totalCost: 0.01,
+      effectiveCost: 0.01
+    });
+    assert.doesNotMatch(html, /channels\.stats\.cacheRead/);
+    assert.doesNotMatch(html, /channels\.stats\.cacheCreate/);
+
+    // 有缓建无缓读：只渲染缓建行。
+    const writeOnly = buildChannelUsageHtml({
+      totalInputTokens: 500,
+      totalOutputTokens: 60,
+      totalCacheReadInputTokens: 0,
+      totalCacheCreationInputTokens: 2741528,
+      totalCost: 0.01,
+      effectiveCost: 0.01
+    });
+    assert.doesNotMatch(writeOnly, /channels\.stats\.cacheRead/);
+    assert.match(writeOnly, /channels\.stats\.cacheCreate/);
+
+    assert.equal(buildChannelUsageHtml(null), '');
   } finally {
     restore();
   }

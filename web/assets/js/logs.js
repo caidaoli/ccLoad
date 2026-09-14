@@ -1049,6 +1049,27 @@ function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) 
   return `<span class="token-metric-value" style="color: var(--success-600);">${pct.toFixed(1)}%</span>`;
 }
 
+// buildCacheCreationDisplay 渲染缓存建列，分桶角标按实际数据判定。
+// 上游给了 5m/1h 明细就显示，不看模型名或协议——走 codex 协议的 gpt 模型同样
+// 会上报分桶，用模型名判断会把这些真实分桶吞掉。
+function buildCacheCreationDisplay(entry) {
+  const total = entry.cache_creation_input_tokens || 0;
+  if (total <= 0) return '';
+
+  const cache5m = entry.cache_5m_input_tokens || 0;
+  const cache1h = entry.cache_1h_input_tokens || 0;
+
+  let badge = '';
+  if (cache5m > 0 && cache1h === 0) {
+    badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup>';
+  } else if (cache1h > 0 && cache5m === 0) {
+    badge = ' <sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">1h</sup>';
+  } else if (cache5m > 0 && cache1h > 0) {
+    badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup><sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">+1h</sup>';
+  }
+  return `<span class="token-metric-value" style="color: var(--primary-600);">${total.toLocaleString()}${badge}</span>`;
+}
+
 function renderLogsLoading() {
   displayedLogs = null;
   const tbody = document.getElementById('tbody');
@@ -1169,27 +1190,7 @@ function renderLogs(data) {
     const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
 
     // 缓存建列
-    let cacheCreationDisplay = '';
-    const total = entry.cache_creation_input_tokens || 0;
-    const cache5m = entry.cache_5m_input_tokens || 0;
-    const cache1h = entry.cache_1h_input_tokens || 0;
-
-    if (total > 0) {
-      const model = (entry.model || '').toLowerCase();
-      const isClaudeOrCodex = model.includes('claude') || model.includes('codex');
-
-      let badge = '';
-      if (isClaudeOrCodex && (cache5m > 0 || cache1h > 0)) {
-        if (cache5m > 0 && cache1h === 0) {
-          badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup>';
-        } else if (cache1h > 0 && cache5m === 0) {
-          badge = ' <sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">1h</sup>';
-        } else if (cache5m > 0 && cache1h > 0) {
-          badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup><sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">+1h</sup>';
-        }
-      }
-      cacheCreationDisplay = `<span class="token-metric-value" style="color: var(--primary-600);">${total.toLocaleString()}${badge}</span>`;
-    }
+    const cacheCreationDisplay = buildCacheCreationDisplay(entry);
 
     // 7. 成本显示
     const costInfo = getLogCostInfo(entry);
@@ -2828,7 +2829,7 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay };
+  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay, buildCacheCreationDisplay };
 }
 
 if (typeof window !== 'undefined') {

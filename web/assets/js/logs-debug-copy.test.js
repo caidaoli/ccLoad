@@ -298,3 +298,45 @@ test('model filter options contain request models but not redirected models', as
     assert.deepEqual(global.window.availableLogsModels, ['requested-model']);
   });
 });
+
+test('缓存建分桶角标按实际数据渲染，与模型名无关', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: 'gpt-5.6-sol',
+      status_code: 200,
+      duration: 0,
+      log_source: 'proxy',
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_creation_input_tokens: 163485,
+      cache_5m_input_tokens: 163485,
+      cache_1h_input_tokens: 0
+    }]
+  }, ({ tbody }) => {
+    // 模型名不含 claude/codex，但上游确实上报了 5m 分桶，必须显示角标。
+    assert.match(tbody.innerHTML, /5m/);
+    assert.match(tbody.innerHTML, /163,485/);
+  });
+});
+
+test('无缓存建数据时不渲染缓存建单元格', async () => {
+  await withLoadedLogsPage({
+    entries: [{
+      time: Date.now(),
+      model: 'claude-sonnet-5',
+      status_code: 200,
+      duration: 0,
+      log_source: 'proxy',
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_creation_input_tokens: 0,
+      cache_5m_input_tokens: 0,
+      cache_1h_input_tokens: 0
+    }]
+  }, ({ tbody }) => {
+    // 模型名含 claude 但无数据，不应凭空渲染。
+    assert.doesNotMatch(tbody.innerHTML, /5m<\/sup>/);
+    assert.doesNotMatch(tbody.innerHTML, /1h<\/sup>/);
+  });
+});
