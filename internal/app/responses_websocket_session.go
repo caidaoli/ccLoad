@@ -177,6 +177,15 @@ func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
 		}
 		return replayRequest, bytes.Clone(replayRequest), true, nil
 	}
+	if !gjson.GetBytes(websocketPayload, "instructions").Exists() {
+		instructions := gjson.GetBytes(s.lastRequest, "instructions")
+		if instructions.Exists() {
+			websocketPayload, err = sjson.SetRawBytes(websocketPayload, "instructions", []byte(instructions.Raw))
+			if err != nil {
+				return nil, nil, false, fmt.Errorf("inherit HTTP instructions: %w", err)
+			}
+		}
+	}
 	replayRequest, incrementalRequest, err = s.normalizeRequests(websocketPayload)
 	return replayRequest, incrementalRequest, err == nil, err
 }
@@ -228,12 +237,6 @@ func normalizeReplacementResponsesWebsocketRequest(payload []byte, lastRequest [
 		modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 		if modelName != "" {
 			normalized, _ = sjson.SetBytes(normalized, "model", modelName)
-		}
-	}
-	if !gjson.GetBytes(normalized, "instructions").Exists() {
-		instructions := gjson.GetBytes(lastRequest, "instructions")
-		if instructions.Exists() {
-			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 		}
 	}
 	normalized, err = sjson.SetBytes(normalized, "stream", true)
