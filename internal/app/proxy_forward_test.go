@@ -655,6 +655,27 @@ func TestCodexOAuthRequestInjectsModelInstructionsAndPreservesExplicitValue(t *t
 	}
 }
 
+func TestCodexOAuthWebsocketInstructionsDropOnlySynthesizedDefault(t *testing.T) {
+	cfg := &model.Config{AuthType: model.AuthTypeCodexOAuth}
+	withoutInstructions := []byte(`{"model":"gpt-5.6-sol","input":[]}`)
+	prepared := prepareCodexOAuthResponsesBody(
+		cfg, protocol.Codex, "/v1/responses", withoutInstructions, make(http.Header),
+	)
+	stripped := stripInjectedCodexOAuthInstructionsForWebsocket(cfg, withoutInstructions, prepared)
+	if gjson.GetBytes(stripped, "instructions").Exists() {
+		t.Fatalf("synthesized websocket instructions were not removed: %s", stripped)
+	}
+
+	explicit := []byte(`{"model":"gpt-5.6-sol","instructions":"client instructions","input":[]}`)
+	explicitPrepared := prepareCodexOAuthResponsesBody(
+		cfg, protocol.Codex, "/v1/responses", explicit, make(http.Header),
+	)
+	explicitStripped := stripInjectedCodexOAuthInstructionsForWebsocket(cfg, explicit, explicitPrepared)
+	if got := gjson.GetBytes(explicitStripped, "instructions").String(); got != "client instructions" {
+		t.Fatalf("explicit websocket instructions = %q, want %q", got, "client instructions")
+	}
+}
+
 func TestCodexOAuthNonStreamReassemblesMalformedSSETerminalResponse(t *testing.T) {
 	body := ": ping\nevent: response.output_item.done\n" +
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n" +

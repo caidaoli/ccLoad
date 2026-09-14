@@ -94,6 +94,40 @@ func prepareCodexOAuthResponsesBody(
 	return body
 }
 
+// stripInjectedCodexOAuthInstructionsForWebsocket removes only the default
+// instructions synthesized by the shared HTTP/WS request finalizer. Explicit
+// non-empty caller instructions remain untouched.
+func stripInjectedCodexOAuthInstructionsForWebsocket(
+	cfg *model.Config,
+	sourceBody []byte,
+	body []byte,
+) []byte {
+	if cfg == nil || !cfg.UsesCodexOAuth() {
+		return body
+	}
+	sourceInstructions := gjson.GetBytes(sourceBody, "instructions")
+	if sourceInstructions.Exists() && sourceInstructions.Type == gjson.String &&
+		strings.TrimSpace(sourceInstructions.String()) != "" {
+		return body
+	}
+	instructions := gjson.GetBytes(body, "instructions")
+	if instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == "" {
+		return body
+	}
+	defaultInstructions := codexBaseInstructionsForModel(gjson.GetBytes(body, "model").String())
+	if instructions.String() != defaultInstructions {
+		sourceModel := strings.TrimSpace(gjson.GetBytes(sourceBody, "model").String())
+		if sourceModel == "" || instructions.String() != codexBaseInstructionsForModel(sourceModel) {
+			return body
+		}
+	}
+	stripped, err := sjson.DeleteBytes(body, "instructions")
+	if err != nil {
+		return body
+	}
+	return stripped
+}
+
 func prepareCodexOAuthHTTPBody(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string, body []byte) []byte {
 	if !isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 		return body

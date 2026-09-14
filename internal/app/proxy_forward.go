@@ -2153,6 +2153,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			isZedResponsesRequest(cfg, plan.UpstreamProtocol))
 
 	// 2. 构建上游请求
+	replaySourceBody := bytes.Clone(reqCtx.transformPlan.TranslatedBody)
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, reqCtx.transformPlan.TranslatedBody, hdr, rawQuery, reqCtx.transformPlan.UpstreamPath, baseURL)
 	if err != nil {
 		return nil, 0, err
@@ -2165,11 +2166,14 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	var sentBody []byte
 	usedNativeWebsocket := false
 	if native != nil && native.session != nil {
-		replayReq := cloneRequestWithBody(httpReq, replayBody)
+		wsReplayBody := stripInjectedCodexOAuthInstructionsForWebsocket(
+			cfg, replaySourceBody, replayBody,
+		)
+		replayReq := cloneRequestWithBody(httpReq, wsReplayBody)
 		prepareCodexWebsocketInputHeaders(replayReq.Header, hdr, cfg.HeaderRules())
-		incrementalBody := bytes.Clone(native.incrementalBody)
+		incrementalSourceBody := bytes.Clone(native.incrementalBody)
 		incrementalReq, errBuild := s.buildProxyRequest(
-			reqCtx, cfg, apiKey, method, incrementalBody, hdr, rawQuery,
+			reqCtx, cfg, apiKey, method, incrementalSourceBody, hdr, rawQuery,
 			reqCtx.transformPlan.UpstreamPath, baseURL,
 		)
 		if errBuild != nil {
@@ -2178,10 +2182,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		prepareCodexWebsocketInputHeaders(incrementalReq.Header, hdr, cfg.HeaderRules())
 		// buildProxyRequest applies body rules and prompt_cache_key; send the
 		// resulting wire body, not the pre-normalized caller input.
-		incrementalBody = bytes.Clone(reqCtx.transformPlan.TranslatedBody)
+		incrementalBody := stripInjectedCodexOAuthInstructionsForWebsocket(
+			cfg, incrementalSourceBody, reqCtx.transformPlan.TranslatedBody,
+		)
+		incrementalReq = cloneRequestWithBody(incrementalReq, incrementalBody)
 		resp, req, sentBody, err = s.doCodexWebsocketRequest(
 			reqCtx.ctx, cfg, native.session,
-			replayReq, replayBody, incrementalReq, incrementalBody,
+			replayReq, wsReplayBody, incrementalReq, incrementalBody,
 			baseURL,
 		)
 		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
