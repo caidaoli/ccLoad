@@ -501,6 +501,39 @@ function buildChannelTimingHtml(stats) {
   return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';
 }
 
+/**
+ * 构建渠道消耗列（token 与成本统一放在同一列）。
+ * 缓存行按实际数据渲染：协议声明无法判定渠道是否缓存——CodeBuddy 等上游同样
+ * 声明 openai 且返回缓读，用协议白名单会把真实数据永久隐藏。
+ */
+function buildChannelUsageHtml(stats) {
+  if (!stats) return '';
+
+  const inputTokensText = formatMetricNumber(stats.totalInputTokens);
+  const outputTokensText = formatMetricNumber(stats.totalOutputTokens);
+  const cacheReadTokens = stats.totalCacheReadInputTokens || 0;
+  const cacheCreationTokens = stats.totalCacheCreationInputTokens || 0;
+
+  const parts = [];
+  parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.input')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${inputTokensText}</span></div>`);
+  parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.output')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${outputTokensText}</span></div>`);
+  if (cacheReadTokens > 0) {
+    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheRead')}</span><span class="ch-usage-value" style="color: var(--success-500);">${formatMetricNumber(cacheReadTokens)}</span></div>`);
+  }
+  if (cacheCreationTokens > 0) {
+    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheCreate')}</span><span class="ch-usage-value" style="color: var(--primary-500);">${formatMetricNumber(cacheCreationTokens)}</span></div>`);
+  }
+  const costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, {
+    tone: 'warning',
+    decimalPlaces: 2,
+    inline: true
+  });
+  if (costHtml) {
+    parts.push(`<div class="ch-usage-row ch-usage-cost-row" title="${escapeChannelRefreshText(window.t('channels.stats.cost'))}">${costHtml}</div>`);
+  }
+  return `<div class="ch-usage-list">${parts.join('')}</div>`;
+}
+
 function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
   const ts = Number(timestampMs);
   if (!Number.isFinite(ts) || ts <= 0) return '';
@@ -1311,24 +1344,8 @@ function buildChannelRuntimeStatusHtml(channel) {
  */
 function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
-  const configuredProtocols = new Set(
-    (Array.isArray(channel.urls) ? channel.urls : [])
-      .flatMap(entry => Array.isArray(entry?.protocols) ? entry.protocols : [])
-      .map(protocol => String(protocol || '').trim().toLowerCase())
-  );
-  const hasAutoProtocolURL = (Array.isArray(channel.urls) ? channel.urls : [])
-    .some(entry => !Array.isArray(entry?.protocols) || entry.protocols.length === 0);
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
-
-  // 预计算统计数据
-  const statsCache = stats ? {
-    inputTokensText: formatMetricNumber(stats.totalInputTokens),
-    outputTokensText: formatMetricNumber(stats.totalOutputTokens),
-    cacheReadText: formatMetricNumber(stats.totalCacheReadInputTokens),
-    cacheCreationTokens: stats.totalCacheCreationInputTokens || 0,
-    cacheCreationText: formatMetricNumber(stats.totalCacheCreationInputTokens)
-  } : null;
 
   // 模型文本
   const modelsText = Array.isArray(channel.models)
@@ -1338,30 +1355,7 @@ function createChannelCard(channel) {
   const durationHtml = buildChannelTimingHtml(stats);
   const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
   const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
-
-  // 消耗HTML：token 与成本统一放在同一列
-  let usageHtml = '';
-  if (stats && statsCache) {
-    const parts = [];
-    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.input')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.inputTokensText}</span></div>`);
-    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.output')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.outputTokensText}</span></div>`);
-    const supportsCaching = hasAutoProtocolURL || configuredProtocols.has('anthropic') || configuredProtocols.has('codex');
-    if (supportsCaching) {
-      parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheRead')}</span><span class="ch-usage-value" style="color: var(--success-500);">${statsCache.cacheReadText}</span></div>`);
-      if (statsCache.cacheCreationTokens > 0) {
-        parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheCreate')}</span><span class="ch-usage-value" style="color: var(--primary-500);">${statsCache.cacheCreationText}</span></div>`);
-      }
-    }
-    const costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, {
-      tone: 'warning',
-      decimalPlaces: 2,
-      inline: true
-    });
-    if (costHtml) {
-      parts.push(`<div class="ch-usage-row ch-usage-cost-row" title="${escapeChannelRefreshText(window.t('channels.stats.cost'))}">${costHtml}</div>`);
-    }
-    usageHtml = `<div class="ch-usage-list">${parts.join('')}</div>`;
-  }
+  const usageHtml = buildChannelUsageHtml(stats);
 
   // 健康指示器
   let healthHtml = '';
@@ -1658,6 +1652,7 @@ function renderChannels(channelsToRender = channels) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildChannelRuntimeStatusHtml,
+    buildChannelUsageHtml,
     buildOAuthPlanBadge,
     codexPlanLabel,
     buildOAuthUsageStatusHtml,
