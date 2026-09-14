@@ -710,7 +710,9 @@ func (s *codexUpstreamWebsocketSession) writeRequest(conn *websocket.Conn, body 
 func isCodexWebsocketSemanticEvent(eventType string) bool {
 	// eventType != "" 不能省：isResponsesMetadataEvent("") == false，
 	// 省掉后未解析出 type 的 WS 帧会被当成语义输出。
-	return eventType != "" && !isResponsesMetadataEvent(eventType)
+	// keepalive 与 ping 同为保活帧，必须在首个语义输出前保持可重连，
+	// 与 SSE 路径的 isHeartbeatEvent 判定对齐。
+	return eventType != "" && !isResponsesMetadataEvent(eventType) && !isHeartbeatEventType(eventType)
 }
 
 func isCodexWebsocketTerminalEvent(eventType string) bool {

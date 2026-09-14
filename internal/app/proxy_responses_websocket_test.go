@@ -4794,6 +4794,18 @@ func TestNativeCodexWebsocketInterruptedEventReconnectsWithReplayBeforeSemanticO
 	)
 }
 
+// keepalive 是保活帧而非语义输出：上游发完 keepalive 就断连时，
+// 只要还没出现真实内容就必须允许同目标重连重放。
+func TestNativeCodexWebsocketKeepaliveReconnectsWithReplayBeforeSemanticOutput(t *testing.T) {
+	testNativeCodexWebsocketReadFailureReconnectsWithReplay(
+		t,
+		"keepalive",
+		func(conn *websocket.Conn) error {
+			return conn.WriteJSON(map[string]any{"type": "keepalive", "sequence_number": 2})
+		},
+	)
+}
+
 func testNativeCodexWebsocketReadFailureReconnectsWithReplay(
 	t *testing.T,
 	failureName string,
