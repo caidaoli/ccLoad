@@ -12019,6 +12019,113 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 }
 
+// Codex 上游在响应开始与终态之间会插入 `event: keepalive`（data: {"type":"keepalive",...}）。
+// 它既不是 ping 心跳，也不在 Responses 元数据事件列表里，修复前会被算成语义输出，
+// 导致 deferredWriter 提前 commit，随后的 server_is_overloaded 无法切渠道。
+func TestProxy_ResponsesKeepaliveThenSSEError_RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int32
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.created\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-ch1-created","status":"in_progress"}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: response.in_progress\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.in_progress","response":{"id":"resp-ch1-created","status":"in_progress"}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: keepalive\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"keepalive","sequence_number":2}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: error\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":3}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream1.Close()
+
+	var secondCalls atomic.Int32
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-ch2","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream2.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch1-keepalive-then-overloaded", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1", priority: 100},
+		{name: "ch2-ok", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-test",
+		"stream": true,
+		"input":  "hi",
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next channel, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "resp-ch2") {
+		t.Fatalf("expected completed response from second channel, got: %s", body)
+	}
+	if strings.Contains(body, "resp-ch1-created") || strings.Contains(body, "server_is_overloaded") {
+		t.Fatalf("expected first channel metadata/keepalive/error not to leak to client, body: %s", body)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("upstream calls first=%d second=%d, want 1/1", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+// keepalive 是上游保活帧：它不算语义输出（否则会提前 commit、阻断切渠道），
+// 但字节本身必须原样透传给客户端，不能像 ping 那样被解析器丢弃。
+func TestProxy_ResponsesKeepaliveIsForwardedToClient(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.created\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-keepalive","status":"in_progress"}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: keepalive\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"keepalive","sequence_number":2}`+"\n\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-keepalive","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch-keepalive-ok", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1", priority: 100},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-test",
+		"stream": true,
+		"input":  "hi",
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"type":"keepalive"`) {
+		t.Fatalf("keepalive frame must be forwarded to client, body: %s", body)
+	}
+	if !strings.Contains(body, "resp-keepalive") {
+		t.Fatalf("expected completed response from channel, body: %s", body)
+	}
+}
+
 func TestProxy_TranslatedEmptyChunkDoesNotCommitBeforeFailure(t *testing.T) {
 	t.Parallel()
 

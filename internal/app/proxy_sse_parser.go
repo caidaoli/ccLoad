@@ -891,7 +891,7 @@ func geminiStreamPayloadComplete(payload map[string]any) bool {
 }
 
 func isHeartbeatEvent(eventType, data string) bool {
-	if eventType == "ping" {
+	if isHeartbeatEventType(eventType) {
 		return true
 	}
 	if data == "" {
@@ -900,7 +900,21 @@ func isHeartbeatEvent(eventType, data string) bool {
 	var event struct {
 		Type string `json:"type"`
 	}
-	return json.Unmarshal([]byte(data), &event) == nil && event.Type == "ping"
+	return json.Unmarshal([]byte(data), &event) == nil && isHeartbeatEventType(event.Type)
+}
+
+// isHeartbeatEventType 判断事件类型是否为纯心跳。
+// Codex 上游在响应开始与终态之间插入 `event: keepalive`
+// （data: {"type":"keepalive","sequence_number":N}）。它和 ping 一样只是保活，
+// 既不是语义输出（否则 deferredWriter 提前 commit，后续 error 无法切渠道），
+// 也不能阻止首个语义输出前的重试。
+func isHeartbeatEventType(eventType string) bool {
+	switch eventType {
+	case "ping", "keepalive":
+		return true
+	default:
+		return false
+	}
 }
 
 // isErrorPayload 检测 data 是否为 error 事件 JSON，用于兼容不带 event: error 行的不规范上游。
