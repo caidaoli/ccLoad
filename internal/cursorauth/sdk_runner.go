@@ -185,7 +185,18 @@ func (r *SDKRunner) Run(
 		return nil, ErrMissingAPIKey
 	}
 	if len(request.ToolResults) > 0 {
-		return r.resumeToolRun(ctx, credential, request.ToolResults, request.InputTokenEstimate)
+		events, err := r.resumeToolRun(ctx, credential, request.ToolResults, request.InputTokenEstimate)
+		if err == nil {
+			return events, nil
+		}
+		if !errors.Is(err, ErrToolSessionNotFound) {
+			return nil, err
+		}
+		// Stale Claude Code transcripts still send trailing tool_result blocks
+		// after the native run is gone (kernel upgrade, rejected model id, or
+		// another provider). Resume cannot find those call_ids; continue as a
+		// new CreateAgent turn. ParseRequest already folded the tool history
+		// into Prompt.
 	}
 	prompt := strings.TrimSpace(request.Prompt)
 	if prompt == "" {

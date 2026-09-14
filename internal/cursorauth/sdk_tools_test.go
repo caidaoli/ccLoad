@@ -271,6 +271,30 @@ func TestSDKRunnerReplaysCompletedNativeToolTurn(t *testing.T) {
 	}
 }
 
+func TestSDKRunnerFallsBackToNewTurnWhenToolSessionIsMissing(t *testing.T) {
+	runner, handler := newNativeToolTestRunner(t)
+	credential := &Credential{APIKey: "channel-key"}
+	events, err := runner.Run(context.Background(), credential, Request{
+		Model:       "claude-opus-5",
+		Prompt:      "user: continue\ntool call_stale: ok",
+		ToolChoice:  "auto",
+		Tools:       []Tool{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+		ToolResults: []ToolResult{{CallID: "call_stale_missing", Output: "ok"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if call := readNativeToolCall(t, events); call.ID == "" {
+		t.Fatal("expected a new native tool call after stale tool_result")
+	}
+	handler.mu.Lock()
+	created := len(handler.creates)
+	handler.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("CreateAgent count = %d, want 1 (stale tool_result must start a new turn)", created)
+	}
+}
+
 func TestSDKRunnerReportsUsageAtNativeToolBoundary(t *testing.T) {
 	runner, handler := newNativeToolTestRunner(t)
 	events, err := runner.Run(context.Background(), &Credential{APIKey: "channel-key"}, Request{
