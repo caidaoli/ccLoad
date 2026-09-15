@@ -1436,7 +1436,7 @@ func TestProxy_AntigravityCreditsFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !tc.networkCooldown && !persisted.StandardQuota[actualModel].After(time.Now()) {
+			if !tc.networkCooldown && antigravityClaudeModel(actualModel) && !persisted.StandardQuota[actualModel].After(time.Now()) {
 				t.Fatal("standard quota evidence lost")
 			}
 			if tc.insufficient && (!stored.Enabled || persisted.Credits.Available()) {
@@ -1444,6 +1444,144 @@ func TestProxy_AntigravityCreditsFallback(t *testing.T) {
 			}
 			if tc.terminal && stored.Enabled {
 				t.Fatal("terminal metadata-triggered refresh rejection did not disable matching credential")
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
+	const actualModel = "gemini-3.8-flash-high"
+	for _, tc := range []struct {
+		name         string
+		requestModel string
+		stream       bool
+		otherModel   bool
+		allExhausted bool
+	}{
+		{name: "nonstream", requestModel: actualModel},
+		{name: "stream preserves other models", requestModel: actualModel, stream: true, otherModel: true},
+		{name: "Claude alias to Gemini", requestModel: "claude-sonnet-4-6", stream: true},
+		{name: "all exhausted selects earliest reset", requestModel: actualModel, stream: true, allExhausted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls [2]atomic.Int32
+			var channels []testChannel
+			urls := make(map[int]string)
+			resetDelay := []time.Duration{26*time.Hour + 56*time.Minute + 11*time.Second, time.Hour}
+			for i := range calls {
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls[i].Add(1)
+					var wire struct {
+						Model   string   `json:"model"`
+						Credits []string `json:"enabledCreditTypes"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+						t.Error(err)
+					}
+					if wire.Model != actualModel || len(wire.Credits) != 0 {
+						t.Errorf("unexpected Gemini request: %+v", wire)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if i == 0 || tc.allExhausted {
+						w.WriteHeader(http.StatusTooManyRequests)
+						_, _ = fmt.Fprintf(w, `{"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription to increase your limits.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"uiMessage":"true","model":%q,"quotaResetDelay":%q}}]}}`, actualModel, resetDelay[i].String())
+						return
+					}
+					const response = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"available account"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`
+					if tc.stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", response)
+					} else {
+						_, _ = io.WriteString(w, response)
+					}
+				}))
+				defer upstream.Close()
+				credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, fmt.Sprintf("quota-token-%d", i))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential.Email = fmt.Sprintf("quota-%d@example.com", i)
+				raw, err := credential.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				channels = append(channels, testChannel{name: fmt.Sprintf("quota-%d", i), upstreamProtocol: "gemini", models: tc.requestModel, authType: model.AuthTypeAntigravityOAuth, oauthCredential: raw})
+				urls[i] = upstream.URL
+			}
+			env := setupProxyTestEnvWithSettings(t, channels, urls, map[string]string{"cooldown_fallback_enabled": "true"})
+			ctx := context.Background()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range configs {
+				cfg.ModelEntries = []model.ModelEntry{{Model: tc.requestModel, RedirectModel: actualModel}}
+				if tc.otherModel {
+					cfg.ModelEntries = append(cfg.ModelEntries, model.ModelEntry{Model: "gemini-other"})
+				}
+				if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env.server.InvalidateChannelListCache()
+			start := time.Now()
+			for range 2 {
+				response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+					"model": tc.requestModel, "stream": tc.stream, "max_tokens": 32,
+					"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				}, nil)
+				if tc.allExhausted {
+					if response.Code != http.StatusTooManyRequests {
+						t.Fatalf("exhausted response=%d body=%s", response.Code, response.Body.String())
+					}
+					continue
+				}
+				if response.Code != http.StatusOK {
+					t.Fatalf("account fallback failed: status=%d body=%s", response.Code, response.Body.String())
+				}
+				if tc.stream {
+					parser := newSSEUsageParser("anthropic")
+					if err := parser.Feed(response.Body.Bytes()); err != nil {
+						t.Fatal(err)
+					}
+					if !parser.IsStreamComplete() || parser.GetLastError() != nil {
+						t.Fatalf("incomplete fallback stream: %s", response.Body.String())
+					}
+				} else if gjson.GetBytes(response.Body.Bytes(), "content.0.text").String() != "available account" {
+					t.Fatalf("unexpected fallback response: %s", response.Body.String())
+				}
+			}
+			if calls[0].Load() != 1 || calls[1].Load() != 2 {
+				t.Errorf("account requests=%d/%d, want 1/2", calls[0].Load(), calls[1].Load())
+			}
+			cooldowns, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cfg := range configs {
+				exhausted := cfg.Name == "quota-0" || tc.allExhausted
+				if !exhausted {
+					if len(cooldowns[cfg.ID]) != 0 {
+						t.Error("available account was cooled")
+					}
+					continue
+				}
+				delay := resetDelay[0]
+				if cfg.Name == "quota-1" {
+					delay = resetDelay[1]
+				}
+				until := cooldowns[cfg.ID][actualModel]
+				if len(cooldowns[cfg.ID]) != 1 || until.Before(start.Add(delay).Truncate(time.Second)) || until.After(time.Now().Add(delay)) {
+					t.Errorf("model cooldown=%v, want only %s until reset in %s", cooldowns[cfg.ID], actualModel, delay)
+				}
+				stored, err := env.store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				channelCooled := time.Unix(stored.CooldownUntil, 0).After(time.Now())
+				if channelCooled == tc.otherModel {
+					t.Errorf("channel cooled=%v with other model=%v", channelCooled, tc.otherModel)
+				}
 			}
 		})
 	}

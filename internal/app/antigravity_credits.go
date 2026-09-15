@@ -187,8 +187,8 @@ func antigravityQuotaReset(res *fwResult, delay time.Duration) time.Time {
 	return time.Now().Add(time.Minute)
 }
 
-// Standard quota and credits balance errors never become generic channel/model
-// cooldowns; those must remain independent blockers for both execution paths.
+// Claude standard quota and credits balance errors stay separate from generic
+// cooldowns so paid fallback remains possible. Other models use normal cooldowns.
 func (s *Server) handleAntigravityQuotaFailure(ctx context.Context, cfg *model.Config, modelName, selectedKey string, res *fwResult, duration float64, reqCtx *proxyRequestContext) (*proxyResult, bool) {
 	if !cfg.UsesAntigravityOAuth() || res.Status != http.StatusTooManyRequests {
 		return nil, false
@@ -207,7 +207,7 @@ func (s *Server) handleAntigravityQuotaFailure(ctx context.Context, cfg *model.C
 		if reason != "QUOTA_EXHAUSTED" && (!cfg.AntigravityCredits || reason != "INSUFFICIENT_G1_CREDITS_BALANCE") {
 			return nil, false
 		}
-		if reason == "QUOTA_EXHAUSTED" && cfg.AntigravityCredits {
+		if reason == "QUOTA_EXHAUSTED" && (cfg.AntigravityCredits || !antigravityClaudeModel(modelName)) {
 			return nil, false
 		}
 		s.antigravityCredentials.updateQuotaState(ctx, cfg, modelName, antigravityQuotaReset(res, delay), cfg.AntigravityCredits)

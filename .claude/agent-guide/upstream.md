@@ -40,6 +40,7 @@
 
 - **Antigravity 上游契约**(`server.go`+`antigravityauth/service.go`+`antigravity_wire.go`+`upstream_connection_age.go`):启动时以 `electron-builder` UA 从官方 Hub manifest 读取三段式版本,失败回退 `antigravity/hub/2.8.1 darwin/arm64`;非流请求走 `/v1internal:generateContent`,流式请求走 `/v1internal:streamGenerateContent?alt=sse`,但两者共用 daily → daily sandbox 的地址回退策略;Cloud Code 数据请求及项目/模型/额度查询共用该 UA 和独立的标准 HTTP/1.1 连接池,OAuth Token 端点仍按原生契约使用 `Go-http-client/2.0`;不用 uTLS、不先试 HTTP/2,避免在 Google Cloud Code 内部端点上重放失败的 POST;无代理与渠道代理池都和普通渠道按传输配置隔离,并继续服从 `upstream_connection_reuse_limit_seconds`。Claude 目标请求必须在每个 model turn 的首个 `functionCall` 写入 `skip_thought_signature_validator`,同 turn 的并行 sibling 不带签名;所有已支持入口统一在 provider finalizer 收敛,禁止依赖 400 后剥离工具历史的降级重试
 - **Antigravity 容量错误**:精确 `MODEL_CAPACITY_EXHAUSTED` 首次出现时立即按原始 503 冷却当前实际上游模型(默认 2 min),默认在 daily 与 daily sandbox 间重试;自定义 URL 列表仍最多尝试 3 个。重试成功立即清除该模型冷却,全部失败保留上游 503 供诊断、对外统一为 429。容量/URL 回退失败的日志延迟到重试器定论后只落一条,避免一次逻辑请求产生多条失败日志;模型发现不因该错误冷却 URL
+- **Antigravity 额度耗尽**:只有实际上游模型为 Claude 时,`QUOTA_EXHAUSTED` 才写入独立 `StandardQuota` 状态,保留积分回退路径。Gemini 等不支持积分回退的模型走通用冷却,按上游 `metadata.model` 与精确 reset 时间冷却模型并切换渠道;所有配置模型均冷却时升级渠道冷却,管理测试与代理遵循相同规则。
 
 ## OAuth 全局上游地址
 
