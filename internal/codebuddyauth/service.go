@@ -3,6 +3,8 @@ package codebuddyauth
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,21 +94,50 @@ func ApplySourceHeadersForBaseURL(h http.Header, baseURL string) {
 	h.Set("Content-Type", "application/json")
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("X-Requested-With", "XMLHttpRequest")
-	normalizedBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	// Keep the existing domestic CLI fingerprint: the control-plane host is
-	// copilot.tencent.com while the official web origin is codebuddy.cn.
-	origin := BillingBaseURL
-	if normalizedBaseURL == InternationalBaseURL {
-		origin = InternationalBaseURL
-	}
+	origin := originForBaseURL(baseURL)
 	h.Set("Origin", origin)
 	h.Set("Referer", origin+"/")
-	h.Set("User-Agent", "CLI/2.63.2 CodeBuddy/2.63.2")
+	h.Set("User-Agent", "CLI/"+CLIVersion+" CodeBuddy/"+CLIVersion)
+	h.Set("X-CodeBuddy-Request", "1")
+	h.Set("Accept-Language", acceptLanguageForBaseURL(baseURL))
+}
+
+func originForBaseURL(baseURL string) string {
+	host := ""
+	if u, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/")); err == nil {
+		host = canonicalProductHost(u.Hostname())
+	}
+	switch host {
+	case "www.workbuddy.ai":
+		return WorkBuddyBaseURL
+	case "www.codebuddy.ai":
+		return InternationalBaseURL
+	default:
+		// Domestic control-plane host is copilot.tencent.com; web origin is codebuddy.cn.
+		return BillingBaseURL
+	}
+}
+
+func acceptLanguageForBaseURL(baseURL string) string {
+	host := ""
+	if u, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/")); err == nil {
+		host = canonicalProductHost(u.Hostname())
+	}
+	if host == "www.workbuddy.ai" || host == "www.codebuddy.ai" {
+		return "en-US"
+	}
+	return "zh-CN"
 }
 
 // ApplyCredentialHeaders adds authentication and account identity headers.
+// Refresh tokens belong only on the token refresh endpoint; chat and catalog
+// requests that carry X-Refresh-Token are a WAF/fingerprint tell.
 func ApplyCredentialHeaders(h http.Header, c *Credential) {
-	ApplySourceHeadersForBaseURL(h, c.Endpoint())
+	base := BaseURL
+	if c != nil {
+		base = c.Endpoint()
+	}
+	ApplySourceHeadersForBaseURL(h, base)
 	h.Set("Authorization", "Bearer "+c.AccessToken)
 	for _, item := range [][3]string{{"X-User-Id", "X-No-User-Id", c.UID}, {"X-Enterprise-Id", "X-No-Enterprise-Id", c.EnterpriseID}, {"X-Domain", "X-No-Department-Info", c.Domain}} {
 		h.Del(item[0])
@@ -119,10 +150,63 @@ func ApplyCredentialHeaders(h http.Header, c *Credential) {
 	}
 	h.Del("X-No-Authorization")
 	h.Del("X-Refresh-Token")
-	if c.RefreshToken != "" {
-		h.Set("X-Refresh-Token", c.RefreshToken)
-	}
 	h.Set("X-Product", "SaaS")
+}
+
+// ApplyChatHeaders is the official CLI chat fingerprint. Conversation IDs are
+// generated per request; Origin/X-Domain follow JWT iss when it disagrees
+// with the stored portal base_url.
+func ApplyChatHeaders(h http.Header, c *Credential) {
+	ApplyCredentialHeaders(h, c)
+	EnsureChatFingerprint(h, c)
+}
+
+// EnsureChatFingerprint aligns chat-only headers with the token's product host
+// and fills conversation IDs when missing.
+func EnsureChatFingerprint(h http.Header, c *Credential) {
+	origin := ChatBaseURL(c)
+	host := ChatHost(c)
+	h.Set("Origin", origin)
+	h.Set("Referer", origin+"/")
+	h.Set("X-Domain", host)
+	h.Del("X-No-Department-Info")
+	h.Set("Accept", "text/event-stream, application/json")
+	h.Set("Accept-Language", acceptLanguageForBaseURL(origin))
+	h.Set("User-Agent", "CLI/"+CLIVersion+" CodeBuddy/"+CLIVersion)
+	h.Set("X-CodeBuddy-Request", "1")
+	h.Set("X-Agent-Intent", "craft")
+	h.Set("X-IDE-Type", "CLI")
+	h.Set("X-IDE-Name", "CLI")
+	h.Set("X-IDE-Version", CLIVersion)
+	h.Set("X-Product", "SaaS")
+	h.Del("X-Refresh-Token")
+	if h.Get("X-Conversation-Request-ID") == "" {
+		convReq := randomHex(16)
+		msgID := randomHex(16)
+		h.Set("X-Conversation-ID", randomUUID())
+		h.Set("X-Conversation-Request-ID", convReq)
+		h.Set("X-Conversation-Message-ID", msgID)
+		h.Set("X-Request-ID", msgID)
+		h.Set("X-Root-Request-ID", convReq)
+	}
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%0*x", n*2, time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func randomUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("00000000-0000-4000-8000-%012x", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // ApplyBillingHeaders builds the narrower header set required by CodeBuddy's
@@ -240,7 +324,7 @@ func (s *Service) FetchModels(ctx context.Context, credential *Credential) ([]st
 	}
 	headers := make(http.Header)
 	ApplyCredentialHeaders(headers, &c)
-	headers.Set("User-Agent", "CLI/2.148.0 CodeBuddy/2.148.0")
+	headers.Set("User-Agent", "CLI/"+CLIVersion+" CodeBuddy/"+CLIVersion)
 	raw, err := s.requestAt(ctx, s.Client, s.credentialBaseURL(&c), http.MethodGet, "/v3/config", headers, nil)
 	if err != nil {
 		return nil, err
@@ -542,7 +626,7 @@ func (s *Service) Refresh(ctx context.Context, c *Credential) (*Credential, erro
 	if c.RefreshToken == "" {
 		return nil, ErrCannotRefresh
 	}
-	h := http.Header{"X-Refresh-Token": {c.RefreshToken}, "X-Auth-Refresh-Source": {"workbuddy"}}
+	h := http.Header{"X-Refresh-Token": {c.RefreshToken}, "X-Auth-Refresh-Source": {"plugin"}}
 	if c.EnterpriseID != "" {
 		h.Set("X-Enterprise-Id", c.EnterpriseID)
 	}

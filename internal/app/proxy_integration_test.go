@@ -80,8 +80,11 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 					if request["stream"] != true {
 						t.Error("upstream must stream")
 					}
-					if r.Header.Get("Authorization") != "Bearer access" || r.Header.Get("X-Refresh-Token") != "refresh" || r.Header.Get("X-User-Id") != "uid" {
+					if r.Header.Get("Authorization") != "Bearer access" || r.Header.Get("X-Refresh-Token") != "" || r.Header.Get("X-User-Id") != "uid" {
 						t.Error("provider credentials missing")
+					}
+					if r.Header.Get("X-CodeBuddy-Request") != "1" || r.Header.Get("X-Agent-Intent") != "craft" || r.Header.Get("X-Conversation-Request-ID") == "" {
+						t.Error("official CodeBuddy chat fingerprint missing")
 					}
 					if r.URL.Path != "/v2/chat/completions" {
 						t.Errorf("path %s", r.URL.Path)

@@ -2,8 +2,10 @@
 package codebuddyauth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -14,10 +16,16 @@ const (
 	ChannelType                 = "codebuddy"
 	BaseURL                     = "https://copilot.tencent.com"
 	InternationalBaseURL        = "https://www.codebuddy.ai"
+	WorkBuddyBaseURL            = "https://www.workbuddy.ai"
 	CompletionsURL              = BaseURL + "/v2/chat/completions"
 	InternationalCompletionsURL = InternationalBaseURL + "/v2/chat/completions"
-	RefreshLead                 = time.Minute
-	LoginTTL                    = 5 * time.Minute
+	WorkBuddyCompletionsURL     = WorkBuddyBaseURL + "/v2/chat/completions"
+	// CLIVersion is the official @tencent-ai/codebuddy-code version used on
+	// chat and catalog requests. FetchModels historically pinned 2.148.0;
+	// keep one value so UA and X-IDE-Version cannot drift.
+	CLIVersion  = "2.151.0"
+	RefreshLead = time.Minute
+	LoginTTL    = 5 * time.Minute
 )
 
 // ErrDailyCheckinUnsupported indicates that the selected public edition does
@@ -60,9 +68,44 @@ func (c *Credential) Endpoint() string {
 }
 
 // IsInternational reports whether the credential belongs to CodeBuddy's
-// international public edition.
+// international public edition (codebuddy.ai or workbuddy.ai).
 func (c *Credential) IsInternational() bool {
-	return c != nil && c.Endpoint() == InternationalBaseURL
+	host := ChatHost(c)
+	return host == "www.codebuddy.ai" || host == "www.workbuddy.ai"
+}
+
+// ChatHost is the host the official CLI uses for chat. International OAuth
+// tokens often store base_url=www.codebuddy.ai while JWT iss is workbuddy.ai;
+// sending that token to the wrong site is upstream 403 code 11140.
+func ChatHost(c *Credential) string {
+	if host := canonicalProductHost(issuerHost(c)); isKnownProductHost(host) {
+		return host
+	}
+	if c != nil {
+		if u, err := url.Parse(c.Endpoint()); err == nil {
+			if host := canonicalProductHost(u.Hostname()); host != "" {
+				return host
+			}
+		}
+	}
+	return "copilot.tencent.com"
+}
+
+// ChatBaseURL is the https origin for ChatHost.
+func ChatBaseURL(c *Credential) string {
+	return "https://" + ChatHost(c)
+}
+
+// RewriteChatRequest retargets a production CodeBuddy/WorkBuddy URL to the
+// token's chat host. Test and custom upstreams are left unchanged.
+func RewriteChatRequest(req *http.Request, c *Credential) {
+	if req == nil || req.URL == nil || !isKnownProductHost(canonicalProductHost(req.URL.Hostname())) {
+		return
+	}
+	host := ChatHost(c)
+	req.URL.Scheme = "https"
+	req.URL.Host = host
+	req.Host = host
 }
 
 // SupportsDailyCheckin reports whether the credential's edition supports the
@@ -143,11 +186,67 @@ func normalizeBaseURL(raw string) (string, error) {
 		return "", errors.New("invalid CodeBuddy credential base_url")
 	}
 	switch strings.ToLower(u.Hostname()) {
-	case "copilot.tencent.com", "www.codebuddy.ai":
+	case "copilot.tencent.com", "www.codebuddy.ai", "www.workbuddy.ai":
 	default:
 		return "", errors.New("unsupported CodeBuddy credential base_url")
 	}
 	return strings.TrimRight(raw, "/"), nil
+}
+
+func issuerHost(c *Credential) string {
+	if c == nil {
+		return ""
+	}
+	parts := strings.Split(c.AccessToken, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := decodeJWTPayload(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	u, err := url.Parse(claims.Iss)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return u.Hostname()
+}
+
+func decodeJWTPayload(seg string) ([]byte, error) {
+	if raw, err := base64.RawURLEncoding.DecodeString(seg); err == nil {
+		return raw, nil
+	}
+	return base64.URLEncoding.DecodeString(seg)
+}
+
+func canonicalProductHost(host string) string {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "workbuddy.ai", "www.workbuddy.ai":
+		return "www.workbuddy.ai"
+	case "codebuddy.ai", "www.codebuddy.ai":
+		return "www.codebuddy.ai"
+	case "codebuddy.cn", "www.codebuddy.cn":
+		return "www.codebuddy.cn"
+	case "copilot.tencent.com":
+		return "copilot.tencent.com"
+	default:
+		return ""
+	}
+}
+
+func isKnownProductHost(host string) bool {
+	switch host {
+	case "www.workbuddy.ai", "www.codebuddy.ai", "www.codebuddy.cn", "copilot.tencent.com":
+		return true
+	default:
+		return false
+	}
 }
 
 // JSON encodes a validated copy in canonical storage format.

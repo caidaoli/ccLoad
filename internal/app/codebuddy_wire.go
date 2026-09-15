@@ -99,7 +99,34 @@ func finalizeCodeBuddyBody(body []byte, matcher *regexp.Regexp) ([]byte, error) 
 	}
 	request["messages"], _ = json.Marshal(messages)
 	request["stream"] = json.RawMessage("true")
+	if _, ok := request["stream_options"]; !ok {
+		request["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	}
+	finalizeCodeBuddyThinking(request)
 	return json.Marshal(request)
+}
+
+func finalizeCodeBuddyThinking(request map[string]json.RawMessage) {
+	var modelName string
+	_ = json.Unmarshal(request["model"], &modelName)
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek") {
+		return
+	}
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(request["thinking"], "type").String()))
+	if thinkingType == "disabled" {
+		return
+	}
+	if _, ok := request["thinking"]; !ok || thinkingType == "" {
+		request["thinking"] = json.RawMessage(`{"type":"enabled"}`)
+	}
+	if _, ok := request["reasoning_effort"]; ok {
+		return
+	}
+	if _, ok := request["reasoning"]; ok {
+		return
+	}
+	request["reasoning_effort"] = json.RawMessage(`"high"`)
+	request["reasoning"] = json.RawMessage(`{"effort":"high"}`)
 }
 
 func injectCodeBuddyHeaders(req *http.Request, cfg *model.Config, accessToken string) error {
@@ -109,17 +136,19 @@ func injectCodeBuddyHeaders(req *http.Request, cfg *model.Config, accessToken st
 	}
 	credential.AccessToken = accessToken
 	req.Header = make(http.Header)
-	codebuddyauth.ApplyCredentialHeaders(req.Header, credential)
+	codebuddyauth.ApplyChatHeaders(req.Header, credential)
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	// Provider identity is authoritative even if a custom rule targets identity headers.
 	identityHeaders := make(http.Header)
 	codebuddyauth.ApplyCredentialHeaders(identityHeaders, credential)
-	for _, name := range []string{"Authorization", "X-Refresh-Token", "X-User-Id", "X-Enterprise-Id", "X-Domain", "X-No-Authorization", "X-No-User-Id", "X-No-Enterprise-Id", "X-No-Department-Info", "X-Product"} {
+	for _, name := range []string{"Authorization", "X-User-Id", "X-Enterprise-Id", "X-No-Authorization", "X-No-User-Id", "X-No-Enterprise-Id", "X-No-Department-Info", "X-Product"} {
 		req.Header.Del(name)
 		for _, value := range identityHeaders.Values(name) {
 			req.Header.Add(name, value)
 		}
 	}
+	codebuddyauth.EnsureChatFingerprint(req.Header, credential)
+	codebuddyauth.RewriteChatRequest(req, credential)
 	return nil
 }
 
