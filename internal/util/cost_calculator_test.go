@@ -435,6 +435,9 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+// GPT-5.6/GPT-6 等长上下文模型的分段计费：>272K 整段改用高价。
+// 这些模型用 InputPriceHigh/OutputPriceHigh 表达（而非 TokenPricingTiers），
+// 以便自定义价格能整份替换；本测试断言的是分段行为本身，与表达方式无关。
 func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 	RestoreEmbeddedModelCatalog()
 	t.Cleanup(RestoreEmbeddedModelCatalog)
@@ -453,6 +456,8 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 		{name: "astra cache crosses boundary", model: "gpt-6-astra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 2.475},
 		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
 		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.76501},
+		{name: "bare name boundary", model: "gpt-5.6", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
+		{name: "astra base row", model: "gpt-6-astra", inputTokens: 1000, outputTokens: 1000, expected: 0.06},
 		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.556},
 		{name: "terra above boundary", model: "gpt-5.6-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 1.106004},
 		{name: "luna boundary", model: "gpt-5.6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.0556},

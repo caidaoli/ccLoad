@@ -148,6 +148,7 @@ type Server struct {
 	// 多模态回退映射使用不可变快照热更新；更新锁保证持久化顺序与运行态发布顺序一致。
 	multimodalFallbackModels   atomic.Pointer[multimodalFallbackSnapshot]
 	multimodalFallbackUpdateMu sync.Mutex
+	modelPricingUpdateMu       sync.Mutex
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -189,6 +190,11 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		log.Fatalf("[FATAL] ConfigService初始化失败: %v", err)
 	}
 	log.Print("[INFO] ConfigService已加载系统配置（支持Web界面管理）")
+	if err := util.InstallCustomModelPricingJSON(configService.GetString(modelCustomPricingSettingKey, "{}")); err != nil {
+		// 数据库中的历史非法值不得以部分结果污染运行态；设置接口会继续拒绝该值。
+		log.Printf("[WARN] 无效的 %s，已回退为未配置: %v", modelCustomPricingSettingKey, err)
+		_ = util.InstallCustomModelPricing(nil)
+	}
 
 	// 管理员密码：仅从环境变量读取（安全考虑：密码不应存储在数据库中）
 	password := os.Getenv("CCLOAD_PASS")
@@ -1714,6 +1720,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/auth-tokens/:id", s.HandleDeleteAuthToken)
 
 		// 系统配置管理
+		admin.GET("/model-pricing", s.HandleGetModelPricing)
 		admin.GET("/settings", s.AdminListSettings)
 		admin.GET("/settings/:key", s.AdminGetSetting)
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)

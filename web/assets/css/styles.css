@@ -4051,6 +4051,15 @@ body {
   font-size: 0.875rem;
 }
 
+.settings-custom-pricing-btn {
+  min-width: 0;
+}
+
+.settings-custom-pricing-summary {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
 .multimodal-fallback-toolbar {
   display: flex;
   align-items: center;
@@ -4102,6 +4111,219 @@ body {
   margin: 0;
   padding: 16px;
   text-align: center;
+}
+
+.modal-content.custom-pricing-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, calc(100vw - 48px));
+  max-width: none;
+  height: auto;
+  min-height: min(420px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 16px;
+  background: var(--surface-bg-strong);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+}
+
+.custom-pricing-modal > .modal-header {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.custom-pricing-modal .modal-title {
+  margin: 0;
+}
+
+.custom-pricing-modal .modal-description {
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+.custom-pricing-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 18px 24px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.custom-pricing-modal > .custom-rules-footer {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--surface-border);
+  background: var(--surface-bg);
+}
+
+.custom-pricing-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.custom-pricing-search {
+  display: flex;
+  flex: 1 1 20rem;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 28rem;
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+}
+
+.custom-pricing-table-container {
+  overflow-x: auto;
+}
+
+.custom-pricing-table {
+  min-width: 820px;
+}
+
+.custom-pricing-table th,
+.custom-pricing-table td {
+  vertical-align: top;
+}
+
+.custom-pricing-table th:nth-child(1),
+.custom-pricing-table td:nth-child(1) {
+  min-width: 180px;
+}
+
+.custom-pricing-table th:nth-child(2),
+.custom-pricing-table th:nth-child(3),
+.custom-pricing-table th:nth-child(4),
+.custom-pricing-table th:nth-child(5) {
+  min-width: 125px;
+}
+
+/* 高上下文行的操作列为空，只约束基础价行的删除按钮列。 */
+.custom-pricing-table th:last-child,
+.custom-pricing-model-row > td:last-child {
+  width: 58px;
+  min-width: 58px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+/* 同一模型的两行靠近，模型组之间保留双倍间距；横向 padding 保持一致以对齐列。 */
+.custom-pricing-model-row > td {
+  padding: 8px 10px 4px;
+  vertical-align: middle;
+}
+
+.custom-pricing-high-row > td {
+  padding: 4px 10px 8px;
+  vertical-align: middle;
+}
+
+.custom-pricing-model-row > td:first-child,
+.custom-pricing-high-row > td:first-child {
+  padding-left: 14px;
+}
+
+.custom-pricing-model-row > td:last-child,
+.custom-pricing-high-row > td:last-child {
+  padding-right: 12px;
+}
+
+.custom-pricing-model-cell {
+  display: flex;
+  min-width: 170px;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.custom-pricing-model-id-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.custom-pricing-model-status {
+  min-height: 1.15em;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+
+.custom-pricing-model-status[data-state="success"] {
+  color: var(--success-600, #16a34a);
+}
+
+.custom-pricing-model-status[data-state="error"] {
+  color: var(--error-600, #dc2626);
+}
+
+.custom-pricing-model-status[data-state="loading"] {
+  color: var(--primary-600, #2563eb);
+}
+
+.custom-pricing-number {
+  font-variant-numeric: tabular-nums;
+}
+
+.custom-pricing-high-label {
+  display: block;
+  color: var(--primary-600, #2563eb);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+/* 高上下文价格行：输入框就是表格单元格，列宽由表格列算法统一决定。
+   任何独立容器（grid/flex）都会算出与列宽无关的宽度，两行输入框必然错位。 */
+.custom-pricing-high-row > td {
+  border-bottom: 1px solid var(--neutral-200);
+  background: color-mix(in srgb, var(--surface-bg-muted) 45%, transparent);
+}
+
+.custom-pricing-empty {
+  border: 1px dashed var(--color-text-secondary);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  margin: 12px 0 0;
+  padding: 16px;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .modal-content.custom-pricing-modal {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+    border-radius: 12px;
+  }
+
+  .custom-pricing-modal > .modal-header,
+  .custom-pricing-panel,
+  .custom-pricing-modal > .custom-rules-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+@media (max-width: 720px) {
+  .custom-pricing-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .custom-pricing-search {
+    max-width: none;
+  }
+
+  .custom-pricing-toolbar > .btn {
+    align-self: flex-start;
+  }
 }
 
 .modal-content.runtime-metrics-modal {

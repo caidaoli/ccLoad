@@ -56,6 +56,11 @@
             </button>
             <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
             <input type="hidden" id="model_multimodal_fallback" value="{}">
+            <button id="model-custom-pricing-btn" type="button" class="btn btn-secondary settings-custom-pricing-btn" data-i18n="settings.customPricing.edit">
+              模型价格
+            </button>
+            <span id="model-custom-pricing-summary" class="settings-custom-pricing-summary"></span>
+            <input type="hidden" id="model_custom_pricing" value="{}">
             <button id="save-all-btn" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
               保存所有更改
             </button>
@@ -172,6 +177,54 @@
           data-i18n="common.cancel">取消</button>
         <button type="button" class="btn btn-primary" data-action="apply-multimodal-fallback"
           data-i18n="settings.multimodalFallback.apply">保存并应用</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 自定义模型价格 -->
+  <div id="customPricingModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="customPricingTitle" aria-describedby="customPricingDescription" aria-hidden="true">
+    <div class="modal-content custom-pricing-modal">
+      <div class="modal-header">
+        <div>
+          <h2 id="customPricingTitle" class="modal-title" data-i18n="settings.customPricing.title">自定义模型价格</h2>
+          <p id="customPricingDescription" class="modal-description" data-i18n="settings.customPricing.description">输入模型 ID 后自动加载系统默认价格；保存的是该模型的完整价格配置，确认后立即生效。系统分层定价的模型不支持自定义覆盖。</p>
+        </div>
+        <button type="button" class="close-btn" data-action="close-custom-pricing"
+          data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+      </div>
+
+      <section class="advanced-settings-panel custom-pricing-panel" role="region" aria-labelledby="customPricingTitle">
+        <div class="custom-pricing-toolbar">
+          <label class="custom-pricing-search">
+            <input id="customPricingSearch" type="search" class="form-input" data-i18n-placeholder="settings.customPricing.searchPlaceholder"
+              data-i18n-aria-label="settings.customPricing.search" aria-label="查询模型"
+              placeholder="输入模型 ID" spellcheck="false">
+          </label>
+          <button type="button" class="btn btn-secondary" data-action="add-custom-pricing-model" data-i18n="settings.customPricing.addModel">+ 添加模型</button>
+        </div>
+        <div class="table-container custom-pricing-table-container">
+          <table class="modern-table custom-pricing-table">
+            <thead>
+              <tr>
+                <th data-i18n="settings.customPricing.modelId">模型 ID</th>
+                <th data-i18n="settings.customPricing.inputPriceShort">输入 ($/1M)</th>
+                <th data-i18n="settings.customPricing.outputPriceShort">输出 ($/1M)</th>
+                <th data-i18n="settings.customPricing.cacheReadPriceShort">缓存读取 ($/1M)</th>
+                <th data-i18n="settings.customPricing.cacheWritePriceShort">缓存创建 ($/1M)</th>
+                <th data-i18n="common.actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="customPricingRows"></tbody>
+          </table>
+        </div>
+        <p id="customPricingEmpty" class="custom-pricing-empty" data-i18n="settings.customPricing.empty">尚未配置自定义模型价格。</p>
+        <div id="customPricingError" class="custom-rules-error" role="alert" hidden></div>
+      </section>
+
+      <div class="modal-footer custom-rules-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-custom-pricing" data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="apply-custom-pricing" data-i18n="settings.customPricing.apply">保存并应用</button>
       </div>
     </div>
   </div>
