@@ -1176,7 +1176,6 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	}
 	want := []model.ModelEntry{
 		{Model: "codex-auto-review", RedirectModel: "codex-auto-review"},
-		{Model: "gpt-5.4-mini", RedirectModel: "gpt-5.4-mini"},
 		{Model: "gpt-5.5", RedirectModel: "gpt-5.5"},
 		{Model: "gpt-5.6-luna", RedirectModel: "gpt-5.6-luna"},
 		{Model: "gpt-5.6-terra", RedirectModel: "gpt-5.6-terra"},

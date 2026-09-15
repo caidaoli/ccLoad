@@ -1293,7 +1293,7 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 	}
 	channel := channels[0]
 	if channel.Name != "Codex-user@example.com" || !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 ||
-		!channel.SupportsModel("gpt-5.4") || !channel.SupportsModel("gpt-image-1.5") || !channel.SupportsModel("gpt-image-2") {
+		!channel.SupportsModel("gpt-5.5") || !channel.SupportsModel("gpt-image-1.5") || !channel.SupportsModel("gpt-image-2") {
 		t.Fatalf("created channel = %#v", channel)
 	}
 	if len(channel.URLs) != 1 || channel.URLs[0].URL != codexUpstreamURL || !channel.URLs[0].Exact || strings.Contains(channel.OAuthCredential, "code-1") {
@@ -3182,8 +3182,6 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	wantModels := []string{
 		"codex-auto-review",
 		"gpt-5.3-codex-spark",
-		"gpt-5.4",
-		"gpt-5.4-mini",
 		"gpt-5.5",
 		"gpt-5.6-luna",
 		"gpt-5.6-sol",
@@ -3531,7 +3529,7 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 		t.Fatalf("plus import = (%#v, %v, %v)", created, wasCreated, err)
 	}
 	if !created.SupportsModel("gpt-6-astra") || !created.SupportsModel("gpt-5.6-sol") ||
-		!created.SupportsModel("gpt-5.4") || !created.SupportsModel("gpt-5.3-codex-spark") {
+		!created.SupportsModel("gpt-5.5") || !created.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("plus channel models = %v", created.GetModels())
 	}
 
@@ -3554,18 +3552,18 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
-		"codex-auto-review", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
+		"codex-auto-review", "gpt-5.3-codex-spark",
 		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
 		"gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
 		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
 	teamModels := []string{
-		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
+		"codex-auto-review", "gpt-5.5", "gpt-5.6-luna",
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
 		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
 	freeModels := []string{
-		"codex-auto-review", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
+		"codex-auto-review", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
 		"gpt-image-1.5", "gpt-image-2",
 		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
 	}
@@ -3933,7 +3931,7 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 		persistedCredential.IDToken != freeIDToken {
 		t.Fatalf("persisted refreshed credential = %#v", persistedCredential)
 	}
-	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.3-codex-spark") {
+	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.5") || !persisted.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("refresh removed existing models: %v", persisted.GetModels())
 	}
 }
