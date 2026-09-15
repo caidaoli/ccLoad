@@ -329,6 +329,7 @@ func (s *Server) buildProxyRequest(
 		if err := injectCodeBuddyHeaders(req, cfg, apiKey); err != nil {
 			return nil, err
 		}
+		wireRebuilt = true
 	} else if cfg.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, apiKey)
 		wireRebuilt = true

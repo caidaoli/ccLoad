@@ -2,6 +2,7 @@ package codebuddyauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ func TestFetchModelsLiveCatalog(t *testing.T) {
 				if r.Method != http.MethodGet || r.URL.Path != "/v3/config" {
 					t.Errorf("invalid catalog request %s %s", r.Method, r.URL.Path)
 				}
-				if r.Header.Get("Authorization") != "Bearer secret-access" || r.Header.Get("X-Refresh-Token") != "secret-refresh" || r.Header.Get("X-User-Id") != "uid" {
+				if r.Header.Get("Authorization") != "Bearer secret-access" || r.Header.Get("X-Refresh-Token") != "" || r.Header.Get("X-User-Id") != "uid" {
 					t.Error("missing credential headers")
 				}
 				_, _ = w.Write([]byte(body))
@@ -474,5 +475,69 @@ func TestCredentialImportAndFailureContracts(t *testing.T) {
 	_, err = s.Start(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
+	}
+}
+
+func jwtWithIssuer(iss string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"iss":%q}`, iss)))
+	return header + "." + payload + ".sig"
+}
+
+func TestChatHostFollowsJWTIssuer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		token, base, want string
+		intl              bool
+	}{
+		{jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.workbuddy.ai", true},
+		{jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.codebuddy.ai", true},
+		{"not-a-jwt", InternationalBaseURL, "www.codebuddy.ai", true},
+		{"not-a-jwt", "", "copilot.tencent.com", false},
+		{"access", WorkBuddyBaseURL, "www.workbuddy.ai", true},
+	}
+	for _, tc := range cases {
+		c := &Credential{AccessToken: tc.token, BaseURL: tc.base}
+		if err := c.Normalize(); err != nil {
+			t.Fatalf("normalize %s: %v", tc.want, err)
+		}
+		if host := ChatHost(c); host != tc.want {
+			t.Errorf("ChatHost()=%q want %q", host, tc.want)
+		}
+		if c.IsInternational() != tc.intl {
+			t.Errorf("IsInternational()=%v want %v host=%s", c.IsInternational(), tc.intl, ChatHost(c))
+		}
+	}
+}
+
+func TestApplyChatHeadersOmitsRefreshToken(t *testing.T) {
+	t.Parallel()
+	h := make(http.Header)
+	ApplyChatHeaders(h, &Credential{
+		AccessToken:  jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot"),
+		RefreshToken: "secret-refresh",
+		UID:          "uid",
+		BaseURL:      InternationalBaseURL,
+		Domain:       "www.codebuddy.ai",
+	})
+	if h.Get("X-Refresh-Token") != "" {
+		t.Fatal("chat headers leaked refresh token")
+	}
+	if h.Get("X-CodeBuddy-Request") != "1" || h.Get("X-Agent-Intent") != "craft" || h.Get("X-IDE-Type") != "CLI" {
+		t.Fatalf("missing CLI fingerprint: %v", h)
+	}
+	if h.Get("X-Domain") != "www.workbuddy.ai" || h.Get("Origin") != WorkBuddyBaseURL {
+		t.Fatalf("host mismatch domain=%s origin=%s", h.Get("X-Domain"), h.Get("Origin"))
+	}
+	if h.Get("X-Conversation-Request-ID") == "" || h.Get("User-Agent") != "CLI/"+CLIVersion+" CodeBuddy/"+CLIVersion {
+		t.Fatalf("missing session fingerprint: %v", h)
+	}
+}
+
+func TestParseWorkBuddyBaseURL(t *testing.T) {
+	t.Parallel()
+	c, err := ParseCredential([]byte(`{"access_token":"a","base_url":"https://www.workbuddy.ai"}`))
+	if err != nil || c.BaseURL != WorkBuddyBaseURL || !c.IsInternational() {
+		t.Fatalf("workbuddy base_url: %+v err=%v", c, err)
 	}
 }

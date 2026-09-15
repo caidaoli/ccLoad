@@ -2052,6 +2052,8 @@ func (s *Server) newTestUpstreamRequest(
 			timeout.cancelAll()
 			return nil, nil, err
 		}
+		requestPlan.fullURL = req.URL.String()
+		wireRebuilt = true
 	} else if cfgForBuild.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, requestPlan.apiKey)
 		wireRebuilt = true
