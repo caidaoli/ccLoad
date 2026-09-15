@@ -3181,7 +3181,6 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	}
 	wantModels := []string{
 		"codex-auto-review",
-		"gpt-5.3-codex-spark",
 		"gpt-5.5",
 		"gpt-5.6-luna",
 		"gpt-5.6-sol",
@@ -3529,7 +3528,7 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 		t.Fatalf("plus import = (%#v, %v, %v)", created, wasCreated, err)
 	}
 	if !created.SupportsModel("gpt-6-astra") || !created.SupportsModel("gpt-5.6-sol") ||
-		!created.SupportsModel("gpt-5.5") || !created.SupportsModel("gpt-5.3-codex-spark") {
+		!created.SupportsModel("gpt-5.5") {
 		t.Fatalf("plus channel models = %v", created.GetModels())
 	}
 
@@ -3552,7 +3551,7 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
-		"codex-auto-review", "gpt-5.3-codex-spark",
+		"codex-auto-review",
 		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
 		"gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
 		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
@@ -3931,7 +3930,7 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 		persistedCredential.IDToken != freeIDToken {
 		t.Fatalf("persisted refreshed credential = %#v", persistedCredential)
 	}
-	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.5") || !persisted.SupportsModel("gpt-5.3-codex-spark") {
+	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.5") {
 		t.Fatalf("refresh removed existing models: %v", persisted.GetModels())
 	}
 }
