@@ -35,9 +35,10 @@ type ModelPricing struct {
 	CacheReadCountsTowardTier bool
 
 	// 长上下文定价（>200k tokens，Claude/Gemini/xAI）
-	// 如果为0，表示无分段定价，使用InputPrice/OutputPrice
-	InputPriceHigh  float64 // 高上下文输入价格（$/1M tokens, >200k context）
-	OutputPriceHigh float64 // 高上下文输出价格（$/1M tokens, >200k context）
+	// 正数或 HasInputPriceHigh=true 时启用分档，允许显式配置免费输入。
+	InputPriceHigh    float64 // 高上下文输入价格（$/1M tokens, >200k context）
+	OutputPriceHigh   float64 // 高上下文输出价格（$/1M tokens, >200k context）
+	HasInputPriceHigh bool    // 区分高上下文输入价未配置与显式为 0
 
 	// 固定按次计费（图像生成等非token计费模型）
 	// 如果 > 0，当token成本为0时使用此值作为每次请求成本
@@ -847,8 +848,12 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, custom map[string]
 	for id, entry := range custom {
 		// 目录可能在自定义价格保存后才新增该模型或新增分层。最终快照必须仍让
 		// 系统分层价格胜出，不能让历史覆盖静默抹掉中间档。
-		if systemEntry, ok := lookupModelPricingWithFallback(systemPricing, systemAliases, systemPrefixBuckets, id); ok && len(systemEntry.TokenPricingTiers) > 0 {
-			continue
+		if systemEntry, ok := lookupModelPricingWithFallback(systemPricing, systemAliases, systemPrefixBuckets, id); ok {
+			if len(systemEntry.TokenPricingTiers) > 0 {
+				continue
+			}
+			// 自定义只替换价目，缓存是否参与分档仍由系统模型语义决定。
+			entry.CacheReadCountsTowardTier = systemEntry.CacheReadCountsTowardTier
 		}
 		// 自定义精确 ID 是最高优先级，即使该字符串原本登记为别名也不得重定向。
 		delete(aliases, id)
@@ -888,6 +893,7 @@ func overlayRemotePricing(model string, embedded, remote ModelPricing) ModelPric
 		overlay.TokenPricingTiers = append([]TokenPricingTier(nil), remote.TokenPricingTiers...)
 		overlay.CacheReadCountsTowardTier = remote.CacheReadCountsTowardTier
 		overlay.InputPriceHigh = 0
+		overlay.HasInputPriceHigh = false
 		overlay.OutputPriceHigh = 0
 		overlay.CacheReadPriceHigh = 0
 		overlay.HasCacheReadPriceHigh = false
@@ -920,6 +926,7 @@ func collapseTwoTierHighContextPricing(model string, pricing ModelPricing) Model
 		pricing.HasCacheReadPrice = true
 	}
 	pricing.InputPriceHigh = high.InputPrice
+	pricing.HasInputPriceHigh = true
 	pricing.OutputPriceHigh = high.OutputPrice
 	if high.HasCacheReadPrice {
 		pricing.CacheReadPriceHigh = high.CacheReadPrice
@@ -1046,7 +1053,7 @@ func withEffectiveSystemDefaults(model string, pricing ModelPricing) ModelPricin
 		pricing.CacheReadPrice = pricing.InputPrice * cacheMultiplier
 		pricing.HasCacheReadPrice = true
 	}
-	if pricing.InputPriceHigh > 0 && !pricing.HasCacheReadPriceHigh {
+	if (pricing.HasInputPriceHigh || pricing.InputPriceHigh > 0) && !pricing.HasCacheReadPriceHigh {
 		if pricing.CacheReadPriceHigh == 0 {
 			pricing.CacheReadPriceHigh = pricing.InputPriceHigh * cacheMultiplier
 		}
@@ -1068,7 +1075,7 @@ func withEffectiveSystemDefaults(model string, pricing ModelPricing) ModelPricin
 			pricing.CacheWritePrice = pricing.InputPrice * cacheWrite5mMultiplier
 			pricing.HasCacheWritePrice = true
 		}
-		if pricing.InputPriceHigh > 0 && !pricing.HasCacheWritePriceHigh {
+		if (pricing.HasInputPriceHigh || pricing.InputPriceHigh > 0) && !pricing.HasCacheWritePriceHigh {
 			if pricing.CacheWritePriceHigh == 0 {
 				pricing.CacheWritePriceHigh = pricing.InputPriceHigh * cacheWrite5mMultiplier
 			}

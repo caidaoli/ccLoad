@@ -171,6 +171,7 @@ func normalizeCustomModelPricing(raw customModelPricingJSON) (ModelPricing, erro
 			return ModelPricing{}, err
 		}
 	}
+	pricing.HasInputPriceHigh = raw.InputPriceHigh != nil
 	// 缓存价没有独立的启用开关：填了（含显式 0）就按填的值算，
 	// 留空则按基础价 × 系列倍率回退。
 	if raw.CacheReadPrice != nil {

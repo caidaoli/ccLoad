@@ -292,7 +292,7 @@ func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cac
 		hasSelectedTier = true
 		inputPricePerM = selectedTier.InputPrice
 		outputPricePerM = selectedTier.OutputPrice
-	} else if pricing.InputPriceHigh > 0 && tierInputTokens > tierThreshold {
+	} else if (pricing.HasInputPriceHigh || pricing.InputPriceHigh > 0) && tierInputTokens > tierThreshold {
 		useHighPricing = true
 		inputPricePerM = pricing.InputPriceHigh
 		outputPricePerM = pricing.OutputPriceHigh // 分段定价同时影响输入和输出

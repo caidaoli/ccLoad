@@ -141,6 +141,68 @@ func TestCustomModelPricingOverridesAndCalculatesAllPriceForms(t *testing.T) {
 	}
 }
 
+func TestCustomModelPricingPreservesSystemTierSelection(t *testing.T) {
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	util.RestoreEmbeddedModelCatalog()
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-sol-custom", "gemini-2.5-pro"} {
+		t.Run(model, func(t *testing.T) {
+			if err := util.InstallCustomModelPricing(nil); err != nil {
+				t.Fatal(err)
+			}
+			pricing, ok := util.LookupSystemModelPricing(model)
+			if !ok {
+				t.Fatal("missing system pricing")
+			}
+			inputs := []int{172_000, 172_001, 200_000}
+			want := make([]float64, len(inputs))
+			for i, input := range inputs {
+				want[i] = util.CalculateCostDetailed(model, input, 1_000, 100_000, 0, 0)
+			}
+			data, err := json.Marshal(map[string]any{model: map[string]float64{
+				"input_price": pricing.InputPrice, "output_price": pricing.OutputPrice,
+				"input_price_high": pricing.InputPriceHigh, "output_price_high": pricing.OutputPriceHigh,
+				"cache_read_price": pricing.CacheReadPrice, "cache_read_price_high": pricing.CacheReadPriceHigh,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := util.InstallCustomModelPricingJSON(string(data)); err != nil {
+				t.Fatal(err)
+			}
+			for i, input := range inputs {
+				if got := util.CalculateCostDetailed(model, input, 1_000, 100_000, 0, 0); math.Abs(got-want[i]) > 1e-12 {
+					t.Errorf("input=%d: override cost=%v, system cost=%v", input, got, want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCustomModelPricingHonorsExplicitZeroHighInputPrice(t *testing.T) {
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	for _, tc := range []struct {
+		name  string
+		high  string
+		input int
+		want  float64
+	}{
+		{"omitted", "", 300_000, 0.312},
+		{"threshold", `,"input_price_high":0`, 200_000, 0.212},
+		{"above threshold", `,"input_price_high":0`, 200_001, 0.034},
+		{"free high input", `,"input_price_high":0`, 300_000, 0.034},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := `{"custom-zero-input":{"input_price":1,"output_price":2,"output_price_high":4,"cache_read_price_high":0.3` + tc.high + `}}`
+			if err := util.InstallCustomModelPricingJSON(value); err != nil {
+				t.Fatal(err)
+			}
+			if got := util.CalculateCostDetailed("custom-zero-input", tc.input, 1_000, 100_000, 0, 0); math.Abs(got-tc.want) > 1e-12 {
+				t.Fatalf("cost=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCustomModelPricingHonorsExplicitZeroHighCachePrices(t *testing.T) {
 	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
 	if err := util.InstallCustomModelPricingJSON(`{
