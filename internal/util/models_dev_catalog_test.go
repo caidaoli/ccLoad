@@ -205,6 +205,37 @@ func TestModelCatalogInstallIsImmutable(t *testing.T) {
 	}
 }
 
+func TestModelCatalogLegacyCachePricingStillDecodes(t *testing.T) {
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	util.RestoreEmbeddedModelCatalog()
+
+	const legacyCache = `{
+  "version": 1,
+  "source": "models.dev",
+  "etag": "legacy-etag",
+  "models": [{
+    "id": "legacy-cached-model",
+    "provider": "openai",
+    "pricing": {
+      "InputPrice": 7,
+      "OutputPrice": 11,
+      "CacheReadPrice": 0.7,
+      "HasCacheReadPrice": true
+    }
+  }]
+}`
+	var snapshot util.ModelCatalogSnapshot
+	if err := json.Unmarshal([]byte(legacyCache), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := util.InstallModelCatalog(&snapshot, "cache"); err != nil {
+		t.Fatal(err)
+	}
+	if got := util.CalculateCostDetailed("legacy-cached-model", 1_000_000, 1_000_000, 0, 0, 0); got != 18 {
+		t.Fatalf("legacy cached model cost = %v, want 18", got)
+	}
+}
+
 func validModelsDevFixture(t *testing.T, targetProvider, targetID string, override map[string]any) []byte {
 	t.Helper()
 	providers := validModelsDevProviders()

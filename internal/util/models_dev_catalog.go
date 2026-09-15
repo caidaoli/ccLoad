@@ -334,7 +334,10 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 		return installed.Models[i].ID < installed.Models[j].ID
 	})
 
-	activeModelPricing.Store(buildModelPricingSnapshot(installed))
+	modelPricingStateMu.Lock()
+	installedModelCatalog = installed
+	activeModelPricing.Store(buildModelPricingSnapshot(installedModelCatalog, activeCustomModelPricing))
+	modelPricingStateMu.Unlock()
 	return nil
 }
 
@@ -365,9 +368,12 @@ func validateModelCatalogEntry(entry ModelCatalogEntry) error {
 	return nil
 }
 
-// RestoreEmbeddedModelCatalog 丢弃远端目录并恢复编译期定价表。
+// RestoreEmbeddedModelCatalog 丢弃远端目录并恢复编译期定价表；保留当前自定义价格覆盖。
 func RestoreEmbeddedModelCatalog() {
-	activeModelPricing.Store(buildModelPricingSnapshot(nil))
+	modelPricingStateMu.Lock()
+	installedModelCatalog = nil
+	activeModelPricing.Store(buildModelPricingSnapshot(nil, activeCustomModelPricing))
+	modelPricingStateMu.Unlock()
 }
 
 // CurrentModelCatalogETag 返回当前已安装远端目录的 ETag。

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -328,6 +329,59 @@ func TestAdminSettingContractValidation(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+func TestAdminCustomPricingSettingHotReloadsAndResets(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+	restarted := make(chan struct{}, 1)
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
+
+	value := `{"custom-admin-model":{"input_price":2,"output_price":4}}`
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+modelCustomPricingSettingKey, map[string]string{"value": value}))
+	c.Params = gin.Params{{Key: "key", Value: modelCustomPricingSettingKey}}
+	server.AdminUpdateSetting(c)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
+		t.Fatalf("hot pricing update status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := util.CalculateCostDetailed("custom-admin-model", 1_000_000, 0, 0, 0, 0); got != 2 {
+		t.Fatalf("hot pricing cost=%v, want 2", got)
+	}
+	persisted, err := store.GetSetting(context.Background(), modelCustomPricingSettingKey)
+	if err != nil || persisted.Value != value {
+		t.Fatalf("persisted custom pricing=%#v err=%v", persisted, err)
+	}
+	select {
+	case <-restarted:
+		t.Fatal("custom pricing update unexpectedly triggered restart")
+	default:
+	}
+
+	invalid := `{"custom-admin-model":{"unknown":1}}`
+	c, w = newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+modelCustomPricingSettingKey, map[string]string{"value": invalid}))
+	c.Params = gin.Params{{Key: "key", Value: modelCustomPricingSettingKey}}
+	server.AdminUpdateSetting(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid pricing status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := util.CalculateCostDetailed("custom-admin-model", 1_000_000, 0, 0, 0, 0); got != 2 {
+		t.Fatalf("invalid update changed runtime price=%v, want 2", got)
+	}
+
+	c, w = newTestContext(t, newRequest(http.MethodPost, "/admin/settings/"+modelCustomPricingSettingKey+"/reset", nil))
+	c.Params = gin.Params{{Key: "key", Value: modelCustomPricingSettingKey}}
+	server.AdminResetSetting(c)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "重启") {
+		t.Fatalf("pricing reset status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := util.CalculateCostDetailed("custom-admin-model", 1_000_000, 0, 0, 0, 0); got != 0 {
+		t.Fatalf("reset custom pricing cost=%v, want 0", got)
 	}
 }
 
