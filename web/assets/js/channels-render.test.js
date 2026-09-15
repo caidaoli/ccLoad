@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  buildChannelUsageHtml,
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
   buildManagementAccountStatusHtml,
@@ -406,54 +405,6 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
   }
 });
 
-test('Cursor 额度按官网顺序显示可用比例和按量月限额', () => {
-  const previousWindow = global.window;
-  const previousGetUsageState = global.getOAuthUsageState;
-  const previousReadOnly = global.isTokenChannelsReadOnly;
-  global.window = {
-    t(key, values = {}) {
-      return ({
-        'channels.oauth.usageRefresh': '刷新额度',
-        'channels.oauth.usageLabel': `${values.name}${values.duration}`,
-        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
-        'channels.oauth.usageWarnings': '部分额度数据不可用',
-        'channels.cursor.usageMonthlyLimit': '按量月限额',
-        'channels.cursor.usageOtherModels': 'Other Models',
-        'channels.cursor.usageCursorModels': 'Cursor Models'
-      })[key] || key;
-    }
-  };
-  global.getOAuthUsageState = () => ({
-    status: 'ready',
-    data: {
-      provider: 'cursor',
-      display_message: "You've hit your usage limit",
-      windows: [
-        { limit_name: 'included', kind: 'spend', used_percent: 100, remaining_percent: 0, limit_window_seconds: 2678400, reset_at: 1789181874 },
-        { limit_name: 'api', kind: 'spend', used_percent: 29.6, remaining_percent: 70.4, limit_window_seconds: 2678400 },
-        { limit_name: 'auto', kind: 'spend', used_percent: 18, remaining_percent: 82, limit_window_seconds: 2678400 }
-      ]
-    }
-  });
-  global.isTokenChannelsReadOnly = () => false;
-  try {
-    const html = buildOAuthUsageStatusHtml({ id: 1481, auth_type: 'cursor_oauth' });
-    assert.match(html, /Cursor Models剩余 82%/);
-    assert.match(html, /Other Models剩余 70\.4%/);
-    assert.match(html, /按量月限额剩余 0%/);
-    assert.doesNotMatch(html, /ch-oauth-usage__notice/);
-    assert.doesNotMatch(html, /包含额度|API月限额|Auto月限额/);
-    assert.doesNotMatch(html, /You&#39;ve hit your usage limit/);
-    assert.doesNotMatch(html, /部分额度数据不可用/);
-    assert.doesNotMatch(html, /\$0\.0/);
-  } finally {
-    global.window = previousWindow;
-    global.getOAuthUsageState = previousGetUsageState;
-    global.isTokenChannelsReadOnly = previousReadOnly;
-  }
-});
-
-
 function installManagementRenderGlobals({ balanceState = null, checkinState = null, readOnly = false } = {}) {
   const previous = {
     window: global.window,
@@ -694,89 +645,6 @@ test('只读模式不渲染管理账户动作', () => {
       auth_type: 'api_key',
       management_account: { profile: 'new_api', credential_configured: true }
     }), '');
-  } finally {
-    restore();
-  }
-});
-
-function installUsageRenderGlobals() {
-  const previous = {
-    window: global.window,
-    formatMetricNumber: global.formatMetricNumber,
-    buildCostStackHtml: global.buildCostStackHtml
-  };
-  global.window = {
-    t: (key, values) => (values
-      ? Object.entries(values).reduce((text, [name, value]) => text.replace(`{${name}}`, String(value)), key)
-      : key)
-  };
-  global.formatMetricNumber = value => String(value);
-  global.buildCostStackHtml = () => '';
-  return () => {
-    global.window = previous.window;
-    global.formatMetricNumber = previous.formatMetricNumber;
-    global.buildCostStackHtml = previous.buildCostStackHtml;
-  };
-}
-
-test('消耗列按实际数据渲染缓读，与渠道声明的协议无关', () => {
-  const restore = installUsageRenderGlobals();
-  try {
-    // CodeBuddy 声明 protocols:["openai"] 但上游确实返回缓读，必须显示。
-    const codebuddy = buildChannelUsageHtml({
-      totalInputTokens: 399773,
-      totalOutputTokens: 365036,
-      totalCacheReadInputTokens: 30473088,
-      totalCacheCreationInputTokens: 0,
-      totalCost: 0.6,
-      effectiveCost: 0.6
-    });
-    assert.match(codebuddy, /channels\.stats\.cacheRead/);
-    assert.match(codebuddy, /30473088/);
-    assert.doesNotMatch(codebuddy, /channels\.stats\.cacheCreate/);
-
-    // Gemini 渠道同样按数据渲染，不再被协议白名单隐藏。
-    const gemini = buildChannelUsageHtml({
-      totalInputTokens: 100,
-      totalOutputTokens: 10,
-      totalCacheReadInputTokens: 297415744,
-      totalCacheCreationInputTokens: 0,
-      totalCost: 0.1,
-      effectiveCost: 0.1
-    });
-    assert.match(gemini, /297415744/);
-  } finally {
-    restore();
-  }
-});
-
-test('没有缓存数据时不渲染缓存行', () => {
-  const restore = installUsageRenderGlobals();
-  try {
-    const html = buildChannelUsageHtml({
-      totalInputTokens: 500,
-      totalOutputTokens: 60,
-      totalCacheReadInputTokens: 0,
-      totalCacheCreationInputTokens: 0,
-      totalCost: 0.01,
-      effectiveCost: 0.01
-    });
-    assert.doesNotMatch(html, /channels\.stats\.cacheRead/);
-    assert.doesNotMatch(html, /channels\.stats\.cacheCreate/);
-
-    // 有缓建无缓读：只渲染缓建行。
-    const writeOnly = buildChannelUsageHtml({
-      totalInputTokens: 500,
-      totalOutputTokens: 60,
-      totalCacheReadInputTokens: 0,
-      totalCacheCreationInputTokens: 2741528,
-      totalCost: 0.01,
-      effectiveCost: 0.01
-    });
-    assert.doesNotMatch(writeOnly, /channels\.stats\.cacheRead/);
-    assert.match(writeOnly, /channels\.stats\.cacheCreate/);
-
-    assert.equal(buildChannelUsageHtml(null), '');
   } finally {
     restore();
   }

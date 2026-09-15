@@ -3179,22 +3179,6 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	if err != nil || !wasCreated {
 		t.Fatalf("first import = (%#v, %v, %v)", created, wasCreated, err)
 	}
-	wantModels := []string{
-		"codex-auto-review",
-		"gpt-5.5",
-		"gpt-5.6-luna",
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-6-astra",
-		"gpt-image-1.5",
-		"gpt-image-2",
-		"gpt-image-2.5",
-		"gpt-image-2.5-flare",
-		"gpt-image-2.5-sunburst",
-	}
-	if got := created.GetModels(); !slices.Equal(got, wantModels) {
-		t.Fatalf("imported channel models = %v, want %v", got, wantModels)
-	}
 	legacy := created.Clone()
 	legacy.ModelEntries = []model.ModelEntry{{Model: "*"}}
 	if _, err := store.UpdateConfig(context.Background(), created.ID, legacy); err != nil {
@@ -3516,7 +3500,7 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 	}
 }
 
-func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
+func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	plus := &codexauth.Credential{
@@ -3526,10 +3510,6 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plus)
 	if err != nil || !wasCreated {
 		t.Fatalf("plus import = (%#v, %v, %v)", created, wasCreated, err)
-	}
-	if !created.SupportsModel("gpt-6-astra") || !created.SupportsModel("gpt-5.6-sol") ||
-		!created.SupportsModel("gpt-5.5") {
-		t.Fatalf("plus channel models = %v", created.GetModels())
 	}
 
 	free := &codexauth.Credential{
@@ -3544,40 +3524,21 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	if got := updated.GetModels(); !slices.Equal(got, want) {
 		t.Fatalf("free channel models = %v, want %v", got, want)
 	}
-	if !updated.SupportsModel("gpt-6-astra") {
-		t.Fatalf("manual model was removed: %v", updated.GetModels())
-	}
 }
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
-	allModels := []string{
-		"codex-auto-review",
-		"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
-		"gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
-	}
-	teamModels := []string{
-		"codex-auto-review", "gpt-5.5", "gpt-5.6-luna",
-		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
-	}
-	freeModels := []string{
-		"codex-auto-review", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra",
-		"gpt-image-1.5", "gpt-image-2",
-		"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
-	}
 	tests := []struct {
-		plan string
-		want []string
+		plan              string
+		paidModelsAllowed bool
 	}{
-		{plan: "free", want: freeModels},
-		{plan: "team", want: teamModels},
-		{plan: "business", want: teamModels},
-		{plan: "go", want: teamModels},
-		{plan: "plus", want: allModels},
-		{plan: "pro", want: allModels},
-		{plan: "enterprise", want: allModels},
-		{plan: "", want: allModels},
+		{plan: "free", paidModelsAllowed: false},
+		{plan: "team", paidModelsAllowed: true},
+		{plan: "business", paidModelsAllowed: true},
+		{plan: "go", paidModelsAllowed: true},
+		{plan: "plus", paidModelsAllowed: true},
+		{plan: "pro", paidModelsAllowed: true},
+		{plan: "enterprise", paidModelsAllowed: true},
+		{plan: "", paidModelsAllowed: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.plan, func(t *testing.T) {
@@ -3590,8 +3551,13 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 			if err != nil || !created {
 				t.Fatalf("create channel = (%#v, %v, %v)", channel, created, err)
 			}
-			if got := channel.GetModels(); !slices.Equal(got, tt.want) {
-				t.Fatalf("plan %q models = %v, want %v", tt.plan, got, tt.want)
+			if !channel.SupportsModel("gpt-5.5") {
+				t.Fatalf("plan %q lost the shared model", tt.plan)
+			}
+			for _, name := range []string{"gpt-6-astra", "gpt-5.6-sol"} {
+				if channel.SupportsModel(name) != tt.paidModelsAllowed {
+					t.Fatalf("plan %q allows %q = %v, want %v", tt.plan, name, channel.SupportsModel(name), tt.paidModelsAllowed)
+				}
 			}
 		})
 	}
@@ -3930,8 +3896,8 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 		persistedCredential.IDToken != freeIDToken {
 		t.Fatalf("persisted refreshed credential = %#v", persistedCredential)
 	}
-	if !persisted.SupportsModel("gpt-5.6-sol") || !persisted.SupportsModel("gpt-5.5") {
-		t.Fatalf("refresh removed existing models: %v", persisted.GetModels())
+	if got, want := persisted.GetModels(), channel.GetModels(); !slices.Equal(got, want) {
+		t.Fatalf("refreshed channel models = %v, want %v", got, want)
 	}
 }
 

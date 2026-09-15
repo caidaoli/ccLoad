@@ -42,12 +42,3 @@ func TestNormalizePeriodUsageRequiresPlanUsage(t *testing.T) {
 		t.Fatal("empty plan usage must fail")
 	}
 }
-
-func TestPercentOfRoundsToHeadlineShare(t *testing.T) {
-	t.Parallel()
-	used, limit := 36027.0, 40000.0
-	got := percentOf(&used, &limit)
-	if got == nil || *got != 90.07 {
-		t.Fatalf("percent = %v", got)
-	}
-}

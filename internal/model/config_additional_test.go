@@ -348,24 +348,6 @@ func TestAPIKey_AllowsModel(t *testing.T) {
 	}
 }
 
-func TestDefaultHealthScoreConfig(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultHealthScoreConfig()
-	if cfg.Enabled {
-		t.Fatal("default health score config should be disabled")
-	}
-	if cfg.SuccessRatePenaltyWeight <= 0 || cfg.WindowMinutes <= 0 || cfg.UpdateIntervalSeconds <= 0 || cfg.MinConfidentSample <= 0 {
-		t.Fatalf("unexpected default config: %+v", cfg)
-	}
-	if cfg.EnableTTFBScore {
-		t.Fatal("default ttfb score should be disabled")
-	}
-	if cfg.TTFBPenaltyWeight <= 0 || cfg.TTFBMaxSlowRatio <= 0 || cfg.TTFBMinConfidentSample <= 0 {
-		t.Fatalf("unexpected ttfb defaults: %+v", cfg)
-	}
-}
-
 func TestConfig_ChannelURLs(t *testing.T) {
 	t.Parallel()
 

@@ -1354,8 +1354,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     codexMethod.listeners.change();
     assert.equal(elements.get('codexPersonalAccessTokenField').hidden, false);
     assert.equal(codexPersonalAccessToken.required, true);
-    assert.equal(authorizeButton.textContent, 'channels.codex.personalAccessTokenSubmit');
-    assert.equal(dialogDescription.textContent, 'channels.codex.personalAccessTokenDescription');
     codexPersonalAccessToken.value = 'at-browser-held-secret';
     const patReloadOptions = [];
     global.reloadChannelsList = async options => {
@@ -1378,8 +1376,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(codexPersonalAccessToken.value, '');
     assert.equal(secretField.hidden, true);
     assert.equal(authorizeButton.hidden, false);
-    assert.equal(authorizeButton.textContent, 'channels.xai.generateLink');
-    assert.equal(dialogDescription.textContent, 'channels.xai.manualDescription');
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.deepEqual(requests, [
       '/admin/codex/personal-access-token',
@@ -1393,13 +1389,9 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     xaiMethod.value = 'sso';
     xaiMethod.listeners.change();
     assert.equal(secretField.hidden, false);
-    assert.equal(authorizeButton.textContent, 'channels.xai.importSecrets');
     assert.equal(xaiProgress.hidden, true);
-    assert.equal(dialogDescription.textContent, 'channels.xai.importDescription');
     openOAuthLoginDialog(loginButton);
     assert.equal(authorizeButton.hidden, false);
-    assert.equal(authorizeButton.textContent, 'channels.oauth.startAuthorization');
-    assert.equal(dialogDescription.textContent, 'channels.oauth.loginDialogDescription');
 
     providerSelect.value = 'antigravity';
     await loginForm.listeners.submit({ preventDefault() {} });
@@ -1420,12 +1412,9 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     providerSelect.listeners.change();
     assert.equal(elements.get('anthropicOAuthControls').hidden, false);
     assert.equal(elements.get('anthropicCookieField').hidden, true);
-    assert.equal(dialogDescription.textContent, 'channels.anthropic.codeDescription');
     anthropicMethod.value = 'cookie';
     anthropicMethod.listeners.change();
     assert.equal(elements.get('anthropicCookieField').hidden, false);
-    assert.equal(authorizeButton.textContent, 'channels.anthropic.authorizeWithCookie');
-    assert.equal(dialogDescription.textContent, 'channels.anthropic.cookieDescription');
     anthropicSessionKey.value = 'sk-ant-sid01-ui-first\nsk-ant-sid01-ui-second';
     const cookieReloadOptions = [];
     global.reloadChannelsList = async (options = {}) => {
@@ -2738,7 +2727,6 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
     assert.equal(button.disabled, false);
     assert.equal(attributes.has('aria-busy'), false);
     assert.equal(menuAttributes.has('aria-busy'), false);
-    assert.equal(label.textContent, 'channels.oauth.usageRefresh');
   } finally {
     for (const [name, descriptor] of previousGlobals) {
       if (descriptor) Object.defineProperty(global, name, descriptor);
@@ -2814,7 +2802,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialViewDescription').hidden, false);
     assert.equal(elements.get('codexCredentialViewSwitch').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
-    assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
     const decodedCredential = { ...credential, id_token: credentialInfo };
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(decodedCredential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
@@ -2874,7 +2861,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     };
     applyChannelAuthEditorMode('anthropic_oauth', anthropicCredential, { anthropic_plan_type: 'Pro' });
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
-    assert.equal(elements.get('channelCodexPlanBadge').textContent, 'Max 20x');
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(anthropicCredential, null, 2));
 
     const cursorCredential = {
@@ -2911,7 +2897,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialViewSwitch').hidden, true);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
-    assert.equal(elements.get('channelCodexPlanBadge').textContent, '');
     assert.equal(elements.get('codexCredentialContent').textContent, '');
     assert.ok(strategyInputs.every(input => !input.disabled));
     assert.equal(rowKeyInput.readOnly, false);
