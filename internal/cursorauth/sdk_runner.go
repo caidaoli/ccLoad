@@ -186,19 +186,9 @@ func (r *SDKRunner) Run(
 		return nil, ErrMissingAPIKey
 	}
 	if len(request.ToolResults) > 0 {
-		turn, err := r.classifyCursorToolTurn(credential, request.ToolResults)
-		if err != nil {
-			return nil, err
-		}
-		switch turn.kind {
-		case cursorTurnResume:
-			return turn.session.nextTurn(ctx, func() error {
-				turn.session.setInputTokenEstimate(request.InputTokenEstimate)
-				return r.resolveToolResults(turn.session, turn.pending)
-			})
-		case cursorTurnReplay:
-			turn.session.setInputTokenEstimate(request.InputTokenEstimate)
-			return replayCompletedToolTurn(ctx, turn.session), nil
+		events, err := r.resumeToolTurn(ctx, credential, request)
+		if err != nil || events != nil {
+			return events, err
 		}
 		// cursorTurnNew: trailing tool_result blocks are conversation history.
 		// ParseRequest already inlined them into Prompt.
@@ -384,10 +374,29 @@ type cursorToolTurn struct {
 	pending []ToolResult
 }
 
-func (r *SDKRunner) classifyCursorToolTurn(credential *Credential, results []ToolResult) (cursorToolTurn, error) {
+func (r *SDKRunner) resumeToolTurn(ctx context.Context, credential *Credential, request Request) (<-chan Event, error) {
+	// 分类与提交结果必须处于同一临界区，重复请求才能看到已提交状态并重放。
 	r.resumeMu.Lock()
 	defer r.resumeMu.Unlock()
+	turn, err := r.classifyCursorToolTurn(credential, request.ToolResults)
+	if err != nil {
+		return nil, err
+	}
+	switch turn.kind {
+	case cursorTurnResume:
+		return turn.session.nextTurn(ctx, func() error {
+			turn.session.setInputTokenEstimate(request.InputTokenEstimate)
+			return r.resolveToolResults(turn.session, turn.pending)
+		})
+	case cursorTurnReplay:
+		turn.session.setInputTokenEstimate(request.InputTokenEstimate)
+		return replayCompletedToolTurn(ctx, turn.session), nil
+	default:
+		return nil, nil
+	}
+}
 
+func (r *SDKRunner) classifyCursorToolTurn(credential *Credential, results []ToolResult) (cursorToolTurn, error) {
 	var session *sdkSession
 	pendingResults := make([]ToolResult, 0, len(results))
 	unknown := 0
