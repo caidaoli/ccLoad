@@ -437,10 +437,11 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			if isAnthropicJSONObject(body) {
 				helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 				if helperShape == anthropicHaikuHelperMinimal {
-					return body, nil
+					return sanitizeAnthropicEmptyTextBlocks(body), nil
 				}
 				if helperShape == anthropicHaikuHelperStructured ||
 					isNativeAnthropicClaudeCodeRequest(headers) {
+					body = sanitizeAnthropicEmptyTextBlocks(body)
 					if cchSigning {
 						return finalizeAnthropicCCH(body)
 					}

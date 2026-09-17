@@ -165,6 +165,7 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	cchSigning := anthropicCCHSigningEnabled(cfg, target)
 	helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 	if helperShape != anthropicHaikuHelperNone {
+		body = sanitizeAnthropicEmptyTextBlocks(body)
 		if helperShape == anthropicHaikuHelperStructured && cchSigning {
 			return finalizeAnthropicCCH(body)
 		}
@@ -172,8 +173,11 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	}
 	if isNativeAnthropicClaudeCodeRequest(headers) {
 		// Native Claude Code owns sampling, prompt-cache placement and JSON member
-		// order. Where the policy signs, only the CCH digits are refreshed in place;
-		// otherwise the caller's body goes out byte-for-byte, including its own CCH.
+		// order. Empty text blocks are the one exception: Anthropic 400s
+		// `text:""` (typical tool_use-only assistant turns), so they are dropped
+		// before send. Everything else stays byte-for-byte; CCH is still only
+		// refreshed in place when the policy signs.
+		body = sanitizeAnthropicEmptyTextBlocks(body)
 		if cchSigning {
 			return finalizeAnthropicCCH(body)
 		}
@@ -589,8 +593,9 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 }
 
 // isNativeAnthropicClaudeCodeRequest 判断这组请求头是否就是原生 Claude Code 的线协议
-// 形态。入站命中即整体直通、绝不重写；出站分派（anthropicRequestOwnsItsWire、重试重放）
-// 同样用它判断「这份 wire 已经是对的，网关只补认证头」。
+// 形态。入站命中即整体直通：不重建 system、不重排 cache_control、不改采样。唯一的
+// 出站改写是丢掉 Anthropic 会 400 的空 text 块。出站分派（anthropicRequestOwnsItsWire、
+// 重试重放）同样用它判断「这份 wire 已经是对的，网关只补认证头」。
 //
 // 判据只有三个请求头信号：
 //
@@ -746,20 +751,8 @@ func anthropicSessionIDFromHeaders(headers http.Header) string {
 }
 
 func sanitizeAnthropicOAuthMessages(body []byte) []byte {
-	var patches []anthropicRawPatch
+	body = sanitizeAnthropicEmptyTextBlocks(body)
 	var deletions []string
-	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
-		for index, message := range messages.Array() {
-			if !message.IsObject() {
-				continue
-			}
-			if cleaned, changed := stripEmptyAnthropicTextBlocks(message.Get("content")); changed {
-				patches = append(patches, anthropicRawPatch{
-					path: "messages." + strconv.Itoa(index) + ".content", raw: cleaned,
-				})
-			}
-		}
-	}
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
 		for index, tool := range tools.Array() {
 			if !tool.IsObject() || !strings.HasPrefix(jsonStringValue(tool.Get("type")), "web_search_") {
@@ -772,11 +765,47 @@ func sanitizeAnthropicOAuthMessages(body []byte) []byte {
 			}
 		}
 	}
-	for _, patch := range patches {
-		body = setJSONRaw(body, patch.path, patch.raw)
-	}
 	for _, path := range deletions {
 		body = deleteJSONPath(body, path)
+	}
+	return body
+}
+
+// sanitizeAnthropicEmptyTextBlocks drops empty Anthropic `text` blocks that
+// the Messages API rejects with 400 "text content blocks must be non-empty".
+// Native Claude Code often serializes tool_use-only assistant turns as
+// `{"type":"text","text":""}` plus `tool_use`; only those empty text blocks
+// (and empty nested tool_result text) are removed. Sampling, tools,
+// cache_control on remaining blocks, and key order of untouched members are
+// left as-is. Messages that would become an empty content array are not
+// rewritten, so role alternation is preserved.
+func sanitizeAnthropicEmptyTextBlocks(body []byte) []byte {
+	if !isAnthropicJSONObject(body) {
+		return body
+	}
+	var patches []anthropicRawPatch
+	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
+		for index, message := range messages.Array() {
+			if !message.IsObject() {
+				continue
+			}
+			cleaned, changed := stripEmptyAnthropicTextBlocks(message.Get("content"))
+			if !changed || cleaned == "" || cleaned == "[]" {
+				continue
+			}
+			patches = append(patches, anthropicRawPatch{
+				path: "messages." + strconv.Itoa(index) + ".content", raw: cleaned,
+			})
+		}
+	}
+	if system := gjson.GetBytes(body, "system"); system.IsArray() {
+		cleaned, changed := stripEmptyAnthropicTextBlocks(system)
+		if changed && cleaned != "" && cleaned != "[]" {
+			patches = append(patches, anthropicRawPatch{path: "system", raw: cleaned})
+		}
+	}
+	for _, patch := range patches {
+		body = setJSONRaw(body, patch.path, patch.raw)
 	}
 	return body
 }
