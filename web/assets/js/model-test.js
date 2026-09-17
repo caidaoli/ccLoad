@@ -2933,9 +2933,12 @@ function normalizeModelTestKeyIndex(value) {
 
 function formatModelTestKeyLabel(key) {
   const raw = String(key?.api_key || '').trim();
-  if (!raw) return `#${key?.key_index ?? '?'}`;
-  if (raw.length <= 6) return raw;
-  return `${raw.slice(0, 3)}.${raw.slice(-3)}`;
+  const maskedKey = raw.length > 6
+    ? `${raw.slice(0, 3)}.${raw.slice(-3)}`
+    : raw || `#${key?.key_index ?? '?'}`;
+  const note = String(key?.note || '').trim();
+  const multiplier = normalizeModelTestCostMultiplier(key?.cost_multiplier ?? 1);
+  return `${maskedKey}(${note}${multiplier}x)`;
 }
 
 function getModelTestKeyOptionClass(key) {
