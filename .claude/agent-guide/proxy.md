@@ -35,7 +35,10 @@
 ## 自定义状态码(改相关代码前先读语义)
 
 - **499** 客户端取消:不计失败、不冷却;上游直接返回 499:模型级冷却
-- **管理员手动中断**(`admin_active_requests.go`,`POST /admin/active-requests/:request_id/abort`):日志页中止在途请求时注入的 cancel cause(`errOperatorAbort`)**刻意写成 connection reset by peer 形态**——分类器只认错误文本,让手动中断按「上游断链」冒泡,走正常故障切换;改成 `context.Canceled` 或不含该文案会被误判成 499 客户端取消(不计失败、不冷却)。改这两处文案前先读 `proxy_forward.go` 与 `active_requests.go` 的集成测试
+- **管理员手动中断**(`admin_active_requests.go`,`POST /admin/active-requests/:request_id/abort`):`errOperatorAbort` 是独立控制信号,不伪装网络故障、不施加冷却。
+  - **未提交响应**:立即终止当前上游,跳过当前渠道的剩余 Key/URL/协议及付费候选,保留下游并切下一渠道(包括 Responses WS 的跨传输切换);无候选则失败。日志记 502
+  - **已提交响应**:禁止重放,终止上下游请求并解除阻塞 Write/Flush(`cancelableResponseWriter`)。日志记 599
+  - 判据**只看下游提交边界**(`fwResult.ResponseCommitted`),不看 stream 参数或上游是否已回响应头
 - **596** 1308 配额超限 → Key 级冷却,不计健康度
 - **597** SSE error(HTTP 200+错误体)→ `classifySSEError` 按 error.type 动态判级
 - **598** 首字节超时 → 模型级;**599** 流式中断 → 模型级

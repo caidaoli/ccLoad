@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"math"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
-
-	"ccLoad/internal/util"
 )
 
 func beginTestActiveRequest(m *activeRequestManager, start time.Time, model, clientIP string, streaming bool) int64 {
@@ -118,7 +115,7 @@ func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
 	}
 }
 
-func TestActiveRequestManager_AbortCancelsAttemptWithNetworkFailureCause(t *testing.T) {
+func TestActiveRequestManager_AbortCancelsAttemptWithOperatorCause(t *testing.T) {
 	m := newActiveRequestManager()
 
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -138,19 +135,11 @@ func TestActiveRequestManager_AbortCancelsAttemptWithNetworkFailureCause(t *test
 
 	<-ctx.Done()
 	cause := context.Cause(ctx)
-	// 中断必须以「上游断链」形态冒泡：分类器只认错误文本，认成 context.Canceled 就会
-	// 变成 499（不冷却、不切渠道），与需求相反。
 	if !errors.Is(cause, errOperatorAbort) {
 		t.Fatalf("cancel cause=%v, want errOperatorAbort", cause)
 	}
 	if errors.Is(cause, context.Canceled) {
 		t.Fatal("abort cause must not be classifiable as client cancellation")
-	}
-	if code, _, _ := util.ClassifyError(cause); code != http.StatusBadGateway {
-		t.Fatalf("ClassifyError(abort cause)=%d, want %d", code, http.StatusBadGateway)
-	}
-	if !util.IsModelScopedNetworkError(cause) {
-		t.Fatal("abort cause must be a model-scoped network error")
 	}
 }
 

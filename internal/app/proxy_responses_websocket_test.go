@@ -6944,64 +6944,108 @@ func TestResponsesWebsocketOperatorAbortPingOnlyUpstream(t *testing.T) {
 }
 
 func TestResponsesWebsocketOperatorAbortPingOnlyHTTPUpstream(t *testing.T) {
-	requestStarted := make(chan struct{}, 1)
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		select {
-		case requestStarted <- struct{}{}:
-		default:
-		}
-		flusher := w.(http.Flusher)
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
+	for _, withBackup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("nativeBackup=%v", withBackup), func(t *testing.T) {
+			requestStarted := make(chan struct{}, 1)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				select {
+				case requestStarted <- struct{}{}:
+				default:
+				}
+				flusher := w.(http.Flusher)
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-ticker.C:
+						_, _ = io.WriteString(w, ": PING\n\n")
+						flusher.Flush()
+					}
+				}
+			}))
+			defer upstream.Close()
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			var backupHits atomic.Int64
+			backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamConn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("backup upgrade: %v", err)
+					return
+				}
+				defer func() { _ = upstreamConn.Close() }()
+				if _, _, err := upstreamConn.ReadMessage(); err != nil {
+					t.Errorf("backup request: %v", err)
+					return
+				}
+				backupHits.Add(1)
+				_ = upstreamConn.WriteJSON(map[string]any{"type": "response.output_text.delta", "response_id": "resp-backup", "item_id": "msg-backup", "output_index": 0, "content_index": 0, "delta": "backup"})
+				_ = upstreamConn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-backup", "status": "completed", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "backup"}}}}}})
+			}))
+			defer backup.Close()
+			channels := []testChannel{{name: "active-abort-http-ping", upstreamProtocol: "codex", models: "gpt-test", priority: 100}}
+			if withBackup {
+				channels = append(channels, testChannel{name: "abort-native-backup", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 50})
+			}
+			env := setupProxyTestEnv(t, channels, map[int]string{0: upstream.URL, 1: backup.URL})
+
+			conn := dialResponsesWebsocketWithSessionID(t, env.engine, "http-ping-abort")
+			defer func() { _ = conn.Close() }()
+			if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatalf("set http-ping websocket deadline: %v", err)
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{map[string]any{"role": "user", "content": "abort http ping-only"}},
+			}); err != nil {
+				t.Fatalf("write http-ping websocket request: %v", err)
+			}
 			select {
-			case <-r.Context().Done():
+			case <-requestStarted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("http upstream request did not start")
+			}
+			var aborted bool
+			for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+				for _, active := range env.server.activeRequests.List() {
+					if active.Abortable && env.server.activeRequests.Abort(active.ID) {
+						aborted = true
+						break
+					}
+				}
+				if aborted {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !aborted {
+				t.Fatal("no abortable http ping-only request appeared")
+			}
+			if !withBackup {
+				readResponsesWebsocketRetryAndClose(t, conn)
 				return
-			case <-ticker.C:
-				_, _ = io.WriteString(w, ": PING\n\n")
-				flusher.Flush()
 			}
-		}
-	}))
-	defer upstream.Close()
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "active-abort-http-ping", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
-	}}, map[int]string{0: upstream.URL})
-	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "http-ping-abort")
-	defer func() { _ = conn.Close() }()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set http-ping websocket deadline: %v", err)
-	}
-	if err := conn.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test",
-		"input": []any{map[string]any{"role": "user", "content": "abort http ping-only"}},
-	}); err != nil {
-		t.Fatalf("write http-ping websocket request: %v", err)
-	}
-	select {
-	case <-requestStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("http upstream request did not start")
-	}
-	var aborted bool
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		for _, active := range env.server.activeRequests.List() {
-			if active.Abortable && env.server.activeRequests.Abort(active.ID) {
-				aborted = true
-				break
+			for {
+				_, payload, err := conn.ReadMessage()
+				if err != nil {
+					t.Fatalf("abort failed to switch to native backup: %v", err)
+				}
+				event := gjson.ParseBytes(payload)
+				if event.Get("type").String() == "error" {
+					t.Fatalf("unexpected retry error: %s", payload)
+				}
+				if event.Get("type").String() == "response.completed" {
+					if event.Get("response.id").String() != "resp-backup" || backupHits.Load() != 1 {
+						t.Fatalf("unexpected backup response: %s", payload)
+					}
+					break
+				}
 			}
-		}
-		if aborted {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+		})
 	}
-	if !aborted {
-		t.Fatal("no abortable http ping-only request appeared")
-	}
-	readResponsesWebsocketRetryAndClose(t, conn)
 }
 
 func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T) {

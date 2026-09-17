@@ -1009,12 +1009,12 @@ function renderActiveRequests(activeRequests) {
   }
 }
 
-// 中断运行中请求的当前上游尝试（服务端按上游连接重置处理，随后正常故障切换）
+// 中断当前渠道：响应未提交则切下一渠道，已提交则终止请求。
 async function abortActiveRequest(button) {
   const id = button.dataset.abortRequestId;
   if (!id || abortingActiveRequests.has(id)) return;
 
-  const confirmMsg = (typeof t === 'function' ? t('logs.abortConfirm') : '') || '确定中断这个进行中的请求吗？将按上游网络故障处理。';
+  const confirmMsg = (typeof t === 'function' ? t('logs.abortConfirm') : '') || '确定中断当前渠道的请求吗？尚未发送响应时将切换渠道，已经开始响应则立即终止。';
   if (!confirm(confirmMsg)) return;
 
   abortingActiveRequests.set(id, Number(button.dataset.abortStart) || 0);

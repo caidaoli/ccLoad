@@ -5768,11 +5768,8 @@ func TestHandleChannelImageGeneration_AntigravityNoImagePersistsDebugBody(t *tes
 	}))
 	defer upstream.Close()
 
-	srv := newInMemoryServer(t)
+	srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": "true"})
 	srv.client = upstream.Client()
-	srv.configService.mu.Lock()
-	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
-	srv.configService.mu.Unlock()
 	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
 	created.ModelEntries = []model.ModelEntry{{Model: "gemini-3.1-flash-image"}}
 	updated, err := srv.store.UpdateConfig(context.Background(), created.ID, created)

@@ -706,7 +706,11 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		}
 	}
 	cands = ordered
+	operatorSkipped := make(map[int64]bool)
 	for index, cfg := range cands {
+		if operatorSkipped[cfg.ID] {
+			continue
+		}
 		if cfg.AntigravityCredits {
 			current, loadErr := s.store.GetConfig(ctx, cfg.ID)
 			if loadErr != nil || !current.Enabled || !current.UsesAntigravityOAuth() || !s.configSupportsModelWithFuzzyMatch(current, reqCtx.originalModel) {
@@ -763,6 +767,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			}
 
 			lastResult = result
+			if result.operatorAborted {
+				operatorSkipped[cfg.ID] = true
+			}
 
 			// 客户端已取消：别再浪费资源“重试”了。
 			if result.isClientCanceled {

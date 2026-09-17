@@ -521,6 +521,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn, s.bodyLimits.maxForPath("/v1/responses"))
 	clientReplay := false
 	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
+		// 管理员中断要继续切渠道，不在此处收口。
+		if result == nil || result.operatorAborted {
+			return false
+		}
 		if isNativeCodexWebsocketCandidate(current) || !isNativeCodexWebsocketCandidate(next) {
 			return false
 		}
@@ -613,7 +617,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	// text through the generic error path would emit a 400 `upstream_error` and
 	// leave the WebSocket open with no turn terminator. Make it client-retryable,
 	// matching the already-committed interruption path above.
-	if lastResult != nil && util.IsModelScopedStreamFailure(lastResult.status) {
+	if lastResult != nil && (lastResult.operatorAborted || util.IsModelScopedStreamFailure(lastResult.status)) {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
 			status:  status,
 			code:    responsesWebsocketInterruptedCode,

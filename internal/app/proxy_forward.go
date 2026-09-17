@@ -61,12 +61,16 @@ func (rc *onceCloseReadCloser) Close() error {
 // 避免大响应或长流式在写回客户端时被传输层截断。
 //
 // 流式与非流式都需要：非流式大 body 一次性写回也可能超过 WriteTimeout。
-// 代价是慢速客户端可拖长写阻塞，但请求整体已受 nonStreamTimeout 的 context 约束，
-// 且最大并发由 concurrencySem 封顶，DoS 面有界——故彻底清零而非另设写 deadline。
+// cancelableResponseWriter 在请求取消时打断下游写入，避免无限阻塞。
 func disableResponseWriteTimeout(w http.ResponseWriter, requestKind string) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 		if errors.Is(err, http.ErrNotSupported) {
+			return
+		}
+		// 请求已取消时 cancelableResponseWriter 会拒绝清除截止时间，保护取消回调设定的打断动作。
+		// 这是预期控制流，不是传输故障。
+		if errors.Is(err, errOperatorAbort) || errors.Is(err, context.Canceled) {
 			return
 		}
 		log.Printf("[WARN] 无法禁用%s请求的 WriteTimeout: %v", requestKind, err)
@@ -1431,7 +1435,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 
 	filterAndWriteResponseHeaders(w, translatedHeader)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(translatedBody)
+	headerErr := responseHeaderWriteError(w)
+	committed := headerErr == nil
+	if committed {
+		_, _ = w.Write(translatedBody)
+	}
 
 	result := &fwResult{
 		Status:            resp.StatusCode,
@@ -1439,7 +1447,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		Header:            hdrClone,
 		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
 		BytesReceived:     readStats.totalBytes,
-		ResponseCommitted: true,
+		ResponseCommitted: committed,
 	}
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
 	result.ResponseModel = parser.GetResponseModel()
@@ -1450,7 +1458,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
 
-	return result, reqCtx.Duration().Seconds(), nil
+	return result, reqCtx.Duration().Seconds(), headerErr
 }
 
 func (s *Server) handleTranslatedStreamSuccessResponse(
@@ -2337,9 +2345,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 4. 处理响应(传递upstreamProtocol用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64
-	responseWriter := w
+	cancelableWriter, stopWrites := newCancelableResponseWriter(reqCtx.ctx, w)
+	defer stopWrites()
+	var responseWriter http.ResponseWriter = cancelableWriter
 	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth()) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		responseWriter = dc.wrapTranslatedResponseWriter(w)
+		responseWriter = dc.wrapTranslatedResponseWriter(cancelableWriter)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	reqCtx.antigravityReplay.finish(res, err)
@@ -2396,8 +2406,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		// Cancellation closes the response body to unblock a pending read. Depending
 		// on scheduling, that read may report io.ErrClosedPipe/net.ErrClosed before
 		// the transport returns ctx.Err(). Preserve the cause that controls retries.
-		// 必须用 context.Cause 而不是 ctx.Err()：管理端手动中断把「上游断链」语义放在
-		// cause 里，退化成 context.Canceled 会被判成客户端取消（499、不冷却、不切渠道）。
+		// 保留管理员中断的控制信号，不能退化成客户端取消。
 		if cause := context.Cause(reqCtx.ctx); cause != nil {
 			err = cause
 		}
@@ -2725,6 +2734,10 @@ func (s *Server) forwardAttempt(
 	if upstreamProtocol == protocol.Codex {
 		requestPath = normalizeCodexClientPath(requestPath)
 	}
+	// 记录本次尝试的实际模型与 Key：中断可能发生在 forwardAttempt 之外（凭证刷新、
+	// Key/URL 重试等待），那些路径只能靠 reqCtx 还原尝试上下文。
+	reqCtx.attemptActualModel = actualModel
+	reqCtx.attemptSelectedKey = selectedKey
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
@@ -2813,6 +2826,10 @@ func (s *Server) forwardAttempt(
 			credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
 			if parseErr == nil && !antigravityCredentialAttempted(&reqCtx.antigravityRateRetried, cfg, credential) {
 				if waitErr := waitForChannelURLRetry(ctx, delay); waitErr != nil {
+					if errors.Is(context.Cause(ctx), errOperatorAbort) {
+						result := s.handleOperatorAbort(cfg, actualModel, selectedKey, res, duration, reqCtx)
+						return result, result.nextAction, nil
+					}
 					return buildCtxDoneResult(cfg, waitErr), cooldown.ActionReturnClient, nil
 				}
 				s.activeRequests.Retry(reqCtx.activeReqID)
@@ -2824,7 +2841,7 @@ func (s *Server) forwardAttempt(
 	}
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
-	for !cfg.AntigravityCredits {
+	for !cfg.AntigravityCredits && ctx.Err() == nil {
 		retrySourcePlan := plan
 		// Rebuild an optimized Codex multi-agent request from the original plan on
 		// retry. Reusing the wire body would make collaboration-optimize look like
@@ -2907,6 +2924,11 @@ func (s *Server) forwardAttempt(
 		res.Status = http.StatusTooManyRequests
 		// 签名/请求体降级重试只能截止请求语义错误，不能吞掉模型容量重试。
 		forceReturnClient = false
+	}
+
+	if errors.Is(context.Cause(ctx), errOperatorAbort) {
+		result := s.handleOperatorAbort(cfg, actualModel, selectedKey, res, duration, reqCtx)
+		return result, result.nextAction, nil
 	}
 
 	// 处理网络错误或异常响应（如空响应）
@@ -3641,14 +3663,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	urlsCount := len(sortedURLs)
 	var urlPolicy channelURLAttemptPolicy
 	var deferredFallbackLog *model.LogEntry
-	// 每个 URL 尝试持有独立的可取消 ctx，供管理端「中断」注入连接重置语义。
-	// 循环体有大量 continue/break/return，所以释放只在两个地方做：下一轮开头释放
-	// 上一轮，函数退出时由 defer 释放最后一轮。别改成在循环体内就地 defer。
-	var abortAttempt context.CancelCauseFunc
 	defer func() {
-		if abortAttempt != nil {
-			abortAttempt(nil)
-		}
 		if deferredFallbackLog != nil {
 			s.AddLogAsync(deferredFallbackLog)
 		}
@@ -3657,11 +3672,6 @@ func (s *Server) attemptKeyAcrossURLs(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
-		if abortAttempt != nil {
-			abortAttempt(nil)
-		}
-		attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
-		abortAttempt = cancelAttempt
 
 		attemptBaseURL := urlEntry.url
 		if _, bridge := s.imagesResponsesModel(cfg, reqCtx); bridge && cfg.UsesXAIOAuth() {
@@ -3684,7 +3694,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			BaseURL:          attemptBaseURL,
 			CostMultiplier:   reqCtx.attemptCostMultiplier,
 			ThinkingEffort:   reqCtx.thinkingEffort,
-			Abort:            cancelAttempt,
+			Abort:            reqCtx.abortChannel,
 		})
 
 		shouldDeferChannelCooldown := urlIdx < len(sortedURLs)-1
@@ -3743,10 +3753,13 @@ func (s *Server) attemptKeyAcrossURLs(
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
-				attemptCtx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, attemptBaseURL, w,
+				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, attemptBaseURL, w,
 				shouldDeferChannelCooldown, urlPolicy.antigravityCapacityRetries)
 			if attemptErr != nil {
 				return nil, nil, attemptErr
+			}
+			if result != nil && result.operatorAborted {
+				return result, nil, nil
 			}
 			if cfg.AntigravityCredits || result == nil || !result.protocolCapabilityMissing {
 				if learnCapability {
@@ -3896,8 +3909,24 @@ func prioritizePinnedCodexWebsocketURL(
 	return urls
 }
 
-func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
+func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (result *proxyResult, err error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	reqCtx.abortChannel = cancel
+	defer func() {
+		// 兜底：中断也可能发生在 Key/URL 重试间隔、查库或选 Key 期间，而非 forwardAttempt 内。
+		// 这些路径只看得到 context.Canceled，产出的结果需要在此改写成中断语义。
+		if !errors.Is(context.Cause(ctx), errOperatorAbort) || (result != nil && (result.operatorAborted || result.succeeded)) {
+			return
+		}
+		result = s.newOperatorAbortResult(cfg, reqCtx.attemptModelOrOriginal(), reqCtx.attemptSelectedKey, reqCtx)
+		err = nil
+	}()
+
 	reqCtx.channelStartTime = time.Now()
+	// 换渠道即清空上一渠道的尝试上下文，避免中断日志写入别的渠道的模型/Key。
+	reqCtx.attemptActualModel = ""
+	reqCtx.attemptSelectedKey = ""
 	// 倍率默认取渠道级：OAuth 凭证 1:1，渠道级即权威；api_key 渠道稍后按选中 Key 覆盖。
 	reqCtx.attemptCostMultiplier = cfg.CostMultiplier
 
@@ -4046,6 +4075,18 @@ func (s *Server) tryOAuthChannel(
 	var rejectedResult *proxyResult
 	for attempt := 0; attempt < 2; attempt++ {
 		runtimeCfg, accessToken, credentialErr := loadCredential(attempt == 1, rejectedAccessToken)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// 中断优先于取消：ctx.Err() 只给 context.Canceled，管理员信号只在 cause 里。
+			if errors.Is(context.Cause(ctx), errOperatorAbort) {
+				// 刷新成功时用新 token，失败时退回上次尝试选中的 token。
+				abortKey := strings.TrimSpace(accessToken)
+				if abortKey == "" {
+					abortKey = reqCtx.attemptSelectedKey
+				}
+				return s.newOperatorAbortResult(cfg, reqCtx.attemptModelOrOriginal(), abortKey, reqCtx), nil
+			}
+			return buildCtxDoneResult(cfg, ctxErr), nil
+		}
 		accessToken = strings.TrimSpace(accessToken)
 		if runtimeCfg == nil {
 			runtimeCfg = cfg

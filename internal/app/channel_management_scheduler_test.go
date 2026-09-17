@@ -337,6 +337,27 @@ func TestManagementCheckinDueSkipsUnsupportedOrDisabledProfiles(t *testing.T) {
 		}
 	}
 }
+
+// 调度测试自行推进扫描，不启动会抢先认领任务的后台启动补偿扫描。
+func newManagementSchedulerTestServer(t *testing.T) *Server {
+	t.Helper()
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+	return &Server{
+		store: store,
+		channelManagement: newChannelManagementService(store, func(*model.Config) *http.Client {
+			return newTestHTTPClient()
+		}),
+	}
+}
+
 func newDueNewAPIEnvelope(baseURL string) *model.ChannelManagementEnvelope {
 	return &model.ChannelManagementEnvelope{
 		Kind: model.ChannelManagementKind, Version: model.ChannelManagementVersion,
@@ -366,7 +387,7 @@ func TestManagementCheckinSchedulerExecutesAuditsAndDoesNotRetry(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	server.channelManagement.now = func() time.Time { return time.Now() }
 	cfg := seedManagementEnvelope(t, server, "scheduler-no-retry", newDueNewAPIEnvelope(upstream.URL))
 
@@ -403,7 +424,7 @@ func TestManagementCheckinSchedulerExecutesInitiallyDisabledChannel(t *testing.T
 			http.NotFound(w, r)
 		}
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	cfg := seedManagementEnvelope(t, server, "scheduler-initially-disabled", newDueNewAPIEnvelope(upstream.URL))
 	cfg.Enabled = false
 	if _, err := server.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
@@ -446,7 +467,7 @@ func TestManagementCheckinSchedulerMaxFourWorkersAndSameChannelOnce(t *testing.T
 			http.NotFound(w, r)
 		}
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	var cfgs []*model.Config
 	for i := range 6 {
 		cfgs = append(cfgs, seedManagementEnvelope(t, server, "scheduler-concurrent-"+string(rune('a'+i)), newDueNewAPIEnvelope(upstream.URL)))
@@ -519,7 +540,7 @@ func TestManagementCheckinSchedulerClaimConflictSkipsUpstream(t *testing.T) {
 		requests.Add(1)
 		http.Error(w, "unexpected upstream request", http.StatusInternalServerError)
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	cfg := seedManagementEnvelope(t, server, "scheduler-claim-conflict", newDueNewAPIEnvelope(upstream.URL))
 	wrapped := &schedulerStore{Store: server.store, conflictID: cfg.ID, day: time.Now().In(time.Local).Format("2006-01-02")}
 	server.store = wrapped
@@ -549,7 +570,7 @@ func TestManagementCheckinSchedulerClaimFailureKeepsEarlierClaims(t *testing.T) 
 			http.NotFound(w, r)
 		}
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	first := seedManagementEnvelope(t, server, "scheduler-claim-first", newDueNewAPIEnvelope(upstream.URL))
 	second := seedManagementEnvelope(t, server, "scheduler-claim-error", newDueNewAPIEnvelope(upstream.URL))
 	wrapped := &schedulerStore{Store: server.store, claimErrorID: second.ID}
@@ -580,7 +601,7 @@ func TestManagementCheckinSchedulerRereadsDisabledAndExecutes(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	cfg := seedManagementEnvelope(t, server, "scheduler-reread-disabled", newDueNewAPIEnvelope(upstream.URL))
 	wrapped := &schedulerStore{Store: server.store, disableAfterID: cfg.ID}
 	server.store = wrapped
@@ -607,7 +628,7 @@ func TestManagementCheckinSchedulerCancellationSkipsFalseAuditAndLoopStops(t *te
 		}
 		_, _ = w.Write([]byte(`{"success":true,"data":{"checkin_enabled":true}}`))
 	}))
-	server := newInMemoryServer(t)
+	server := newManagementSchedulerTestServer(t)
 	seedManagementEnvelope(t, server, "scheduler-cancel", newDueNewAPIEnvelope(upstream.URL))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

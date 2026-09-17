@@ -19,17 +19,8 @@ const (
 	activeRequestStatusRetrying   = "retrying"
 )
 
-// errOperatorAbort 是管理员从日志页手动中断上游尝试时注入的 cancel cause。
-//
-// 文案刻意与真实的上游连接重置一致，这是本机制的核心：Go 的 context.WithCancelCause
-// 会让 HTTP 传输层和响应体读取直接返回 cause 本身（而不是 context.Canceled），
-// 于是 util.ClassifyError、util.IsModelScopedNetworkError 和 buildStreamDiagnostics
-// 全都无需针对手动中断加特判，中断自动走完与真实断链完全相同的分类、冷却和故障切换
-// 路径——未提交时 502 模型级冷却并切下一渠道，已提交时 599 流中断。
-//
-// 别改成 context.Canceled 或不含 "connection reset by peer" 的文案：前者会被判成
-// 客户端取消（499、不冷却、不重试），后者会掉进通用 502 分支而丢掉模型级作用域。
-var errOperatorAbort = errors.New("read: connection reset by peer (aborted by operator)")
+// errOperatorAbort 是管理员中断当前渠道的控制信号，不参与网络故障分类和冷却。
+var errOperatorAbort = errors.New("aborted by operator")
 
 // ActiveRequest 表示一个进行中的请求
 type ActiveRequest struct {
@@ -206,10 +197,7 @@ func (m *activeRequestManager) GetDebugLogSnapshot(id int64) (*model.DebugLogEnt
 	return dc.buildEntry(nil), true
 }
 
-// Abort 以「上游连接被重置」的语义中断指定请求当前正在进行的上游尝试。
-// 中断只作用于这一次尝试：后续的故障切换、冷却与重试全部交给既有的网络故障
-// 处置链路，因此中断的可见结果取决于时机——上游尚未提交响应时会切换到下一个
-// 渠道，已经在向客户端输出时只能按流中断收尾。
+// Abort 取消当前上游尝试。响应未提交时直接切换渠道，已提交时终止上下游请求。
 //
 // 命中返回 true；请求已结束或当前尝试未登记中断句柄时返回 false。
 func (m *activeRequestManager) Abort(id int64) bool {

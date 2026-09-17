@@ -1227,7 +1227,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.colSpeed': 'Tok/s',
   'logs.abort': '中断',
   'logs.aborting': '中断中',
-  'logs.abortConfirm': '确定中断这个进行中的请求吗？将按上游网络故障处理：上游还没开始响应时会切换到下一个渠道，已经在输出时只能按流中断收尾。',
+  'logs.abortConfirm': '确定中断当前渠道的请求吗？尚未向客户端发送响应时将切换到下一个渠道；已经开始响应则立即终止请求。',
   'logs.colInput': '输入',
   'logs.colOutput': '输出',
   'logs.colCacheRead': '缓存读',

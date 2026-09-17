@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -4511,6 +4512,75 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 	}
 }
 
+func TestProxy_OperatorAbort_DuringOAuthRefreshDoesNotCoolChannel(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+	}))
+	defer upstream.Close()
+	backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp-backup","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
+	}))
+	defer backup.Close()
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "abort-refresh", upstreamProtocol: "codex", models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth, oauthCredential: codexProxyTestCredential(t, "at-old", "rt-old", "account")},
+		{name: "backup", upstreamProtocol: "codex", models: "gpt-test", priority: 50},
+	}, map[int]string{0: upstream.URL, 1: backup.URL})
+	refreshStarted, releaseRefresh := make(chan struct{}), make(chan struct{})
+	defer close(releaseRefresh)
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		close(refreshStarted)
+		<-releaseRefresh
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"at-new","refresh_token":"rt-new","expires_in":604800}`)), Request: req}, nil
+	})}
+	service := codexauth.NewService(refreshClient)
+	service.TokenURL = "https://oauth.test/token"
+	env.server.codexCredentials.service = service
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","stream":false,"input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { defer close(done); env.engine.ServeHTTP(response, req) }()
+	select {
+	case <-refreshStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not start")
+	}
+	active := env.server.activeRequests.List()
+	if len(active) != 1 || !env.server.activeRequests.Abort(active[0].ID) {
+		t.Fatal("no abortable request during refresh")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("abort did not stop waiting for refresh")
+	}
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-backup" {
+		t.Fatalf("backup response=%d %s", response.Code, response.Body.String())
+	}
+	cfg, err := env.store.GetConfig(context.Background(), active[0].ChannelID)
+	if err != nil || !cfg.Enabled {
+		t.Fatalf("channel disabled: cfg=%+v err=%v", cfg, err)
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil || !cooldowns[cfg.ID].IsZero() {
+		t.Fatalf("abort cooled credentials: cooldowns=%+v err=%v", cooldowns, err)
+	}
+	// 刷新期间的中断绕过 forwardAttempt，必须仍留下 502 记录，否则日志只剩
+	// "401 + 换渠道成功"，运维无法解释换渠原因。
+	abortLog := waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool {
+		return e.ChannelID == cfg.ID && e.StatusCode == http.StatusBadGateway &&
+			strings.Contains(e.Message, errOperatorAbort.Error())
+	})
+	if abortLog == nil {
+		t.Fatal("operator abort during refresh left no proxy log")
+	}
+}
+
 func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) {
 	const accessToken = "stale-access-token"
 	var upstreamAttempts atomic.Int32
@@ -6212,6 +6282,27 @@ func waitForProxyLog(t testing.TB, env *proxyTestEnv, modelName string) *model.L
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("proxy log for model %q not found within deadline", modelName)
+	return nil
+}
+
+func waitForProxyLogMatching(t testing.TB, env *proxyTestEnv, match func(*model.LogEntry) bool) *model.LogEntry {
+	t.Helper()
+
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, err := env.store.ListLogs(ctx, since, 50, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		for _, entry := range logs {
+			if match(entry) {
+				return entry
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	return nil
 }
 
@@ -11406,12 +11497,13 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 	}
 }
 
-// 管理员手动中断必须走「上游断链」而不是「客户端取消」：上游还没提交响应时
-// 应当模型级冷却当前渠道并切到下一个渠道，绝不能变成 499（不冷却、不重试）。
-func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
+// 下游响应未提交时，中断跳过当前渠道所有 URL/Key，不施加故障冷却。
+func TestProxy_OperatorAbort_SkipsChannelWithoutCooldown(t *testing.T) {
 	upstreamStarted := make(chan struct{})
 	var startOnce sync.Once
+	var primaryHits atomic.Int64
 	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
 		startOnce.Do(func() { close(upstreamStarted) })
 		select {
 		case <-r.Context().Done(): // 被中断：不提交任何响应
@@ -11430,9 +11522,27 @@ func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
 	defer backup.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "abort-primary", models: "gpt-abort", apiKey: "sk-1", priority: 100},
+		{name: "abort-primary", models: "gpt-abort", apiKey: "sk-1", priority: 100, retryOtherKeysOnFailure: true},
 		{name: "abort-backup", models: "gpt-abort", apiKey: "sk-2", priority: 50},
 	}, map[int]string{0: primary.URL, 1: backup.URL})
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name != "abort-primary" {
+			continue
+		}
+		cfg.URLs = model.ChannelURLs{{URL: primary.URL}, {URL: primary.URL + "/alternate"}}
+		if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-extra"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.server.InvalidateChannelListCache()
 
 	body, _ := json.Marshal(map[string]any{
 		"model":    "gpt-abort",
@@ -11489,6 +11599,9 @@ func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
 		t.Fatalf("backup channel hits=%d, want 1", got)
 	}
 
+	if got := primaryHits.Load(); got != 1 {
+		t.Fatalf("primary hits=%d, want 1: abort must skip remaining URLs and keys", got)
+	}
 	channels, err := env.store.ListConfigs(context.Background())
 	if err != nil {
 		t.Fatalf("ListConfigs: %v", err)
@@ -11508,8 +11621,8 @@ func TestProxy_OperatorAbort_FailsOverLikeNetworkFailure(t *testing.T) {
 		t.Fatalf("GetAllModelCooldowns: %v", err)
 	}
 	until, ok := cooldowns[primaryID]["gpt-abort"]
-	if !ok || !until.After(time.Now()) {
-		t.Fatalf("aborted channel must get a model cooldown, got %v (ok=%v)", until, ok)
+	if ok && until.After(time.Now()) {
+		t.Fatalf("operator abort must not cool the channel, got %v (ok=%v)", until, ok)
 	}
 }
 
@@ -11601,7 +11714,7 @@ func TestProxy_OperatorAbort_NonStreamPingOnlyHTTP(t *testing.T) {
 }
 
 // 响应已提交给客户端后再中断：按契约禁止网关内部切换或重放，正确收场是 599
-// （流式中断）+ 模型级冷却，绝不能变成 499，也不能偷偷换渠道重发一遍。
+// （流式中断），不施加冷却，也不能换渠道重发。
 func TestProxy_OperatorAbort_AfterCommitDoesNotSwitchChannel(t *testing.T) {
 	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -11697,8 +11810,352 @@ func TestProxy_OperatorAbort_AfterCommitDoesNotSwitchChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllModelCooldowns: %v", err)
 	}
-	if until, ok := cooldowns[primaryID]["gpt-abort-stream"]; !ok || !until.After(time.Now()) {
-		t.Fatalf("aborted channel must get a model cooldown, got %v (ok=%v)", until, ok)
+	if until, ok := cooldowns[primaryID]["gpt-abort-stream"]; ok && until.After(time.Now()) {
+		t.Fatalf("operator abort must not cool the channel, got %v (ok=%v)", until, ok)
+	}
+}
+
+// abortOnCommitDownstream 在 deferredResponseWriter.Commit() 复制响应头时触发中断，
+// 精确命中"提交动作已开始、但首字节尚未写出下游"的窗口。
+// gin 会在代理注册活跃请求前就调用 Header()，所以 trigger 必须重试到真正中断为止。
+type abortOnCommitDownstream struct {
+	http.ResponseWriter
+	trigger      func() bool
+	armed        atomic.Bool
+	wroteHdr     atomic.Bool
+	bodyBytes    atomic.Int64
+	bytesAtAbort atomic.Int64
+}
+
+func (w *abortOnCommitDownstream) Header() http.Header {
+	if w.trigger != nil && !w.armed.Load() && w.trigger() {
+		w.armed.Store(true)
+		w.bytesAtAbort.Store(w.bodyBytes.Load())
+	}
+	return w.ResponseWriter.Header()
+}
+
+func (w *abortOnCommitDownstream) WriteHeader(status int) {
+	w.wroteHdr.Store(true)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *abortOnCommitDownstream) Write(p []byte) (int, error) {
+	w.bodyBytes.Add(int64(len(p)))
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *abortOnCommitDownstream) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *abortOnCommitDownstream) SetWriteDeadline(time.Time) error { return nil }
+
+// 中断恰好落在首字节提交窗口时，下游实际未收到任何字节，必须仍按"未提交"切换渠道，
+// 而不是把空的 200 留给客户端。
+func TestProxy_OperatorAbort_AtCommitBoundaryStillFailsOver(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stream     bool
+		translated bool
+	}{
+		{name: "passthrough_stream", stream: true},
+		{name: "translated_stream", stream: true, translated: true},
+		{name: "translated_nonstream", translated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`+"\n\n")
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"primary","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)
+			}))
+			defer upstream.Close()
+
+			var backupHits atomic.Int64
+			backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backupHits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"resp-backup","choices":[{"message":{"role":"assistant","content":"backup"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			defer backup.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "abort-at-commit", models: "abort-commit", priority: 100},
+				{name: "backup", models: "abort-commit", priority: 50},
+			}, map[int]string{0: upstream.URL, 1: backup.URL})
+
+			var probe *abortOnCommitDownstream
+			done := make(chan struct{})
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				probe = &abortOnCommitDownstream{ResponseWriter: w}
+				probe.trigger = func() bool {
+					for _, entry := range env.server.activeRequests.List() {
+						if env.server.activeRequests.Abort(entry.ID) {
+							return true
+						}
+					}
+					return false
+				}
+				env.engine.ServeHTTP(probe, r)
+			}))
+			defer proxy.Close()
+
+			path := "/v1/chat/completions"
+			if tc.translated {
+				path = "/v1/messages"
+			}
+			body := fmt.Sprintf(`{"model":"abort-commit","stream":%t,"max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`, tc.stream)
+			req, err := http.NewRequest(http.MethodPost, proxy.URL+path, strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			responseBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			if !probe.armed.Load() {
+				t.Fatal("abort never triggered at commit boundary")
+			}
+			if probe.bytesAtAbort.Load() != 0 {
+				t.Fatalf("downstream received %d bytes before abort", probe.bytesAtAbort.Load())
+			}
+			if backupHits.Load() != 1 {
+				t.Fatalf("backup hits=%d, want 1; body=%q", backupHits.Load(), responseBody)
+			}
+			var payload struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(responseBody, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK || payload.ID != "resp-backup" {
+				t.Fatalf("status=%d body=%s, want backup response", resp.StatusCode, responseBody)
+			}
+		})
+	}
+}
+
+// 中断落在 WriteHeader 成功之后：响应头已真正写给下游，Commit 必须置 committed=true。
+// 旧代码用 responseWriteAborted（取消状态反推）会在此窗口误判为"未提交"，导致非法换渠。
+// 本测试用 cancelOnWriteHeader 在下游 WriteHeader 成功后立即取消 ctx，精确命中
+// "写出成功、但取消已可见"的边界。
+func TestDeferredCommit_CancelAfterHeaderDelivered_StillCommits(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	raw := &cancelOnWriteHeader{ResponseRecorder: httptest.NewRecorder(), cancel: cancel}
+
+	cw, stopWrites := newCancelableResponseWriter(ctx, raw)
+	defer stopWrites()
+
+	dw := newDeferredResponseWriter(cw)
+	dw.WriteHeader(http.StatusOK)
+
+	err := dw.Commit()
+	if err != nil {
+		t.Fatalf("Commit() returned error %v after header was already delivered; must succeed", err)
+	}
+	if !dw.Committed() {
+		t.Fatal("Committed() is false after header was delivered; must be true")
+	}
+	if raw.Code != http.StatusOK {
+		t.Fatalf("raw recorder status=%d, want 200", raw.Code)
+	}
+}
+
+// cancelOnWriteHeader 在 WriteHeader 完成后立即取消 ctx。
+// 模拟"响应头刚写给下游、取消紧随其后"的精确竞态。
+type cancelOnWriteHeader struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelCauseFunc
+}
+
+func (w *cancelOnWriteHeader) WriteHeader(status int) {
+	w.ResponseRecorder.WriteHeader(status)
+	if w.cancel != nil {
+		w.cancel(errOperatorAbort)
+		w.cancel = nil // 只触发一次
+	}
+}
+
+// cancelBeforeWriteHeader 在包装链传递 WriteHeader 时取消，精确覆盖
+// Commit 前置检查已通过、但 cancelableResponseWriter 尚未接受写头的窗口。
+type cancelBeforeWriteHeader struct {
+	http.ResponseWriter
+	cancel context.CancelCauseFunc
+}
+
+func (w *cancelBeforeWriteHeader) WriteHeader(status int) {
+	w.cancel(errOperatorAbort)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *cancelBeforeWriteHeader) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func TestDeferredCommit_CancelBeforeHeaderDelivered_ReturnsError(t *testing.T) {
+	for _, duringWriteHeader := range []bool{false, true} {
+		t.Run(fmt.Sprintf("during_write_header=%t", duringWriteHeader), func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			raw := httptest.NewRecorder()
+			cw, stopWrites := newCancelableResponseWriter(ctx, raw)
+			defer stopWrites()
+
+			var target http.ResponseWriter = cw
+			if duringWriteHeader {
+				target = &cancelBeforeWriteHeader{ResponseWriter: cw, cancel: cancel}
+			}
+			dw := newDeferredResponseWriter(target)
+			dw.Header().Set("X-Primary", "must-not-be-committed")
+			dw.WriteHeader(http.StatusAccepted)
+			if _, err := dw.Write([]byte(`{"id":"primary"}`)); err != nil {
+				t.Fatal(err)
+			}
+			if !duringWriteHeader {
+				cancel(errOperatorAbort)
+			}
+
+			if err := dw.Commit(); !errors.Is(err, errOperatorAbort) {
+				t.Fatalf("Commit() error=%v, want operator abort", err)
+			}
+			if dw.Committed() {
+				t.Fatal("Committed() is true but header was never delivered")
+			}
+			// 同一底层连接仍能写入完整备用响应，且主渠道没有提交状态或正文。
+			raw.Header().Del("X-Primary")
+			raw.WriteHeader(http.StatusCreated)
+			_, _ = raw.Write([]byte(`{"id":"backup"}`))
+			response := raw.Result()
+			defer func() { _ = response.Body.Close() }()
+			var payload struct {
+				ID string `json:"id"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusCreated || response.Header.Get("X-Primary") != "" || payload.ID != "backup" {
+				t.Fatalf("unexpected fallback response: status=%d header=%v payload=%+v", response.StatusCode, response.Header, payload)
+			}
+		})
+	}
+}
+
+// blockedDownstream 模拟客户端不读取时阻塞的 Write/Flush，写截止时间必须能解除阻塞。
+type blockedDownstream struct {
+	*httptest.ResponseRecorder
+	blockFlush  bool
+	started     chan struct{}
+	released    chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func (w *blockedDownstream) block() {
+	w.startOnce.Do(func() { close(w.started) })
+	<-w.released
+}
+
+func (w *blockedDownstream) Write(p []byte) (int, error) {
+	if w.blockFlush {
+		return w.ResponseRecorder.Write(p)
+	}
+	w.block()
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (w *blockedDownstream) Flush() { w.block() }
+
+func (w *blockedDownstream) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && !deadline.After(time.Now()) {
+		w.releaseOnce.Do(func() { close(w.released) })
+	}
+	return nil
+}
+
+func TestProxy_OperatorAbort_UnblocksDownstream(t *testing.T) {
+	for _, translated := range []bool{false, true} {
+		for _, flush := range []bool{false, true} {
+			t.Run(fmt.Sprintf("translated=%v/flush=%v", translated, flush), func(t *testing.T) {
+				upstreamClosed := make(chan struct{})
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					if translated {
+						_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"abort-blocked\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hello\"}}\n\n")
+					} else {
+						_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`+"\n\n")
+					}
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					close(upstreamClosed)
+				}))
+				defer upstream.Close()
+				var backupHits atomic.Int64
+				backup := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { backupHits.Add(1); w.WriteHeader(502) }))
+				defer backup.Close()
+				upstreamProtocol := "openai"
+				if translated {
+					upstreamProtocol = "anthropic"
+				}
+				env := setupProxyTestEnv(t, []testChannel{
+					{name: "blocked", upstreamProtocol: upstreamProtocol, models: "abort-blocked", priority: 100},
+					{name: "backup", models: "abort-blocked", priority: 50},
+				}, map[int]string{0: upstream.URL, 1: backup.URL})
+				requestPath, requestBody := "/v1/chat/completions", `{"model":"abort-blocked","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+				if translated {
+					requestPath, requestBody = "/v1/responses", `{"model":"abort-blocked","stream":true,"input":"hi"}`
+				}
+				req := httptest.NewRequest(http.MethodPost, requestPath, strings.NewReader(requestBody))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer test-api-key")
+				w := &blockedDownstream{ResponseRecorder: httptest.NewRecorder(), blockFlush: flush, started: make(chan struct{}), released: make(chan struct{})}
+				done := make(chan struct{})
+				go func() { defer close(done); env.engine.ServeHTTP(w, req) }()
+				defer func() { _ = w.SetWriteDeadline(time.Now()); <-done }()
+				select {
+				case <-w.started:
+				case <-time.After(5 * time.Second):
+					t.Fatal("downstream never blocked")
+				}
+				active := env.server.activeRequests.List()
+				if len(active) != 1 || !env.server.activeRequests.Abort(active[0].ID) {
+					t.Fatal("no abortable request")
+				}
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("abort did not unblock downstream")
+				}
+				select {
+				case <-upstreamClosed:
+				case <-time.After(time.Second):
+					t.Fatal("upstream still connected")
+				}
+				if backupHits.Load() != 0 {
+					t.Fatal("committed response retried on backup")
+				}
+				if len(env.server.activeRequests.List()) != 0 {
+					t.Fatal("aborted request still active")
+				}
+				entry := waitForProxyLog(t, env, "abort-blocked")
+				if entry.StatusCode != util.StatusStreamIncomplete {
+					t.Fatalf("status=%d, want interrupted", entry.StatusCode)
+				}
+			})
+		}
 	}
 }
 

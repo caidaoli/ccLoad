@@ -111,8 +111,7 @@ func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
 // HandleAbortActiveRequest 中断运行中请求当前的上游尝试。
 // POST /admin/active-requests/:request_id/abort
 //
-// 中断按「上游连接被重置」处理，因此后续行为完全由既有的网络故障链路决定：
-// 上游尚未提交响应时切换到下一个渠道，已经在向客户端输出时按流中断收尾。
+// 下游响应尚未提交时跳过当前渠道；已提交时终止上下游请求，不施加故障冷却。
 func (s *Server) HandleAbortActiveRequest(c *gin.Context) {
 	requestID, err := strconv.ParseInt(c.Param("request_id"), 10, 64)
 	if err != nil || requestID <= 0 {

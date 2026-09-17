@@ -273,6 +273,49 @@ func (s *Server) updateTokenStatsForProxy(
 	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 
+// newOperatorAbortResult 构造"未向下游提交响应"时的中断结果：跳过当前渠道，不施加冷却。
+// 已提交响应的中断走 handleOperatorAbort（记 599 并停止切换）。
+//
+// 中断可能发生在 forwardAttempt 之外（凭证刷新、Key/URL 重试等待），这些路径直接返回本结果，
+// 不经过 handleOperatorAbort，因此必须在此记 502，否则日志只剩"上一次失败 + 换渠道成功"，
+// 无法解释换渠原因。
+func (s *Server) newOperatorAbortResult(cfg *model.Config, actualModel, selectedKey string, reqCtx *proxyRequestContext) *proxyResult {
+	logged := false
+	if reqCtx != nil && !reqCtx.skipProxyLog {
+		duration := 0.0
+		if !reqCtx.channelStartTime.IsZero() {
+			duration = time.Since(reqCtx.channelStartTime).Seconds()
+		}
+		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, http.StatusBadGateway, duration, nil, errOperatorAbort.Error())
+		logged = true
+	}
+	return &proxyResult{
+		status: http.StatusBadGateway, body: []byte(errOperatorAbort.Error()), channelID: &cfg.ID,
+		operatorAborted: true, nextAction: cooldown.ActionRetryChannel, proxyLogWritten: logged,
+	}
+}
+
+// handleOperatorAbort 只记录本次尝试，不把人工控制转成渠道故障。
+func (s *Server) handleOperatorAbort(cfg *model.Config, actualModel, selectedKey string, res *fwResult, duration float64, reqCtx *proxyRequestContext) *proxyResult {
+	committed := res != nil && res.ResponseCommitted
+	status, action := http.StatusBadGateway, cooldown.ActionRetryChannel
+	if committed {
+		status, action = util.StatusStreamIncomplete, cooldown.ActionReturnClient
+	}
+	if !reqCtx.skipProxyLog {
+		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, status, duration, res, errOperatorAbort.Error())
+	}
+	if res != nil && hasConsumedTokens(res) {
+		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+	}
+	return &proxyResult{
+		status: status, body: []byte(errOperatorAbort.Error()), channelID: &cfg.ID,
+		// succeeded 表示"响应已提交给下游，不要再写第二份"，而非请求成功。
+		duration: duration, succeeded: committed, nextAction: action,
+		operatorAborted: true, proxyLogWritten: !reqCtx.skipProxyLog,
+	}
+}
+
 // handleNetworkError 处理网络错误
 // 从proxy.go提取，遵循SRP原则
 // [FIX] 2025-12: 添加 res 和 reqCtx 参数，用于保留 499 场景下已消耗的 token 统计

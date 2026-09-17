@@ -8,8 +8,112 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// cancelableResponseWriter 把请求取消传递到下游阻塞写入。
+// 尚未提交时保留下游连接，以便下一渠道继续使用；结束前等待取消回调退出，
+// 防止旧 attempt 的回调影响后续响应。
+type cancelableResponseWriter struct {
+	http.ResponseWriter
+	ctx       context.Context
+	mu        sync.Mutex
+	started   bool
+	writing   atomic.Bool
+	headerErr error // 最近一次 WriteHeader 被取消守卫拒绝的原因；由响应写入协程读写。
+}
+
+func newCancelableResponseWriter(ctx context.Context, target http.ResponseWriter) (*cancelableResponseWriter, func()) {
+	w := &cancelableResponseWriter{ResponseWriter: target, ctx: ctx}
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if !w.started {
+			return
+		}
+		if bridge, ok := target.(*responsesWebsocketBridgeWriter); ok {
+			// Gorilla 的 SetWriteDeadline 不能与 WriteMessage 并发，Close 可以。
+			if w.writing.Load() {
+				_ = bridge.conn.Close()
+			}
+			return
+		}
+		_ = http.NewResponseController(target).SetWriteDeadline(time.Now())
+	})
+	return w, func() {
+		if !stop() {
+			<-done
+		}
+	}
+}
+
+func (w *cancelableResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *cancelableResponseWriter) startWrite() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := context.Cause(w.ctx); err != nil {
+		return err
+	}
+	w.started = true
+	return nil
+}
+
+func (w *cancelableResponseWriter) WriteHeader(status int) {
+	w.headerErr = w.startWrite()
+	if w.headerErr == nil {
+		w.ResponseWriter.WriteHeader(status)
+	}
+}
+
+func (w *cancelableResponseWriter) Write(p []byte) (int, error) {
+	w.writing.Store(true)
+	defer w.writing.Store(false)
+	if err := w.startWrite(); err != nil {
+		return 0, err
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *cancelableResponseWriter) Flush() {
+	if w.startWrite() == nil {
+		_ = http.NewResponseController(w.ResponseWriter).Flush()
+	}
+}
+
+func (w *cancelableResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// disableResponseWriteTimeout 不能覆盖取消回调已设置的截止时间。
+	if err := context.Cause(w.ctx); err != nil {
+		return err
+	}
+	return http.NewResponseController(w.ResponseWriter).SetWriteDeadline(deadline)
+}
+
+// responseHeaderWriteError 在 WriteHeader 返回后读取实际写头结果。
+// 不能读取当前取消状态：写头成功后发生的取消不应撤销提交。
+func responseHeaderWriteError(w http.ResponseWriter) error {
+	for range 8 { // 防御异常包装链导致的无限循环
+		if cw, ok := w.(*cancelableResponseWriter); ok {
+			return cw.headerErr
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		next := unwrapper.Unwrap()
+		if next == nil {
+			return nil
+		}
+		w = next
+	}
+	return nil
+}
 
 const maxSSEEventBytes = 50 * 1024 * 1024
 
@@ -285,6 +389,9 @@ func (w *deferredResponseWriter) Commit() error {
 		status = http.StatusOK
 	}
 	w.target.WriteHeader(status)
+	if err := responseHeaderWriteError(w.target); err != nil {
+		return err
+	}
 	w.committed = true
 	if w.buffer.Len() > 0 {
 		if _, err := w.target.Write(w.buffer.Bytes()); err != nil {

@@ -1227,7 +1227,7 @@ window.I18N_LOCALES['en'] = {
   'logs.colSpeed': 'Tok/s',
   'logs.abort': 'Abort',
   'logs.aborting': 'Aborting',
-  'logs.abortConfirm': 'Abort this in-flight request? It is treated as an upstream network failure: if the upstream has not responded yet the request fails over to the next channel, otherwise it ends as an interrupted stream.',
+  'logs.abortConfirm': 'Abort the request on this channel? If no response has been sent to the client, switch to the next channel. Otherwise, terminate the request immediately.',
   'logs.colInput': 'Input',
   'logs.colOutput': 'Output',
   'logs.colCacheRead': 'Cache Read',
