@@ -165,19 +165,10 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	cchSigning := anthropicCCHSigningEnabled(cfg, target)
 	helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 	if helperShape != anthropicHaikuHelperNone {
-		if helperShape == anthropicHaikuHelperStructured && cchSigning {
-			return finalizeAnthropicCCH(body)
-		}
-		return body, nil
+		return finishAnthropicPassthrough(body, helperShape == anthropicHaikuHelperStructured && cchSigning)
 	}
 	if isNativeAnthropicClaudeCodeRequest(headers) {
-		// Native Claude Code owns sampling, prompt-cache placement and JSON member
-		// order. Where the policy signs, only the CCH digits are refreshed in place;
-		// otherwise the caller's body goes out byte-for-byte, including its own CCH.
-		if cchSigning {
-			return finalizeAnthropicCCH(body)
-		}
-		return body, nil
+		return finishAnthropicPassthrough(body, cchSigning)
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -241,11 +232,28 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		body = deleteJSONPath(body, "context_management")
 	}
 
-	encoded := encodeNormalizedAnthropicRequest(body)
-	if cchSigning {
-		return finalizeAnthropicCCH(encoded)
+	return finishAnthropicPassthrough(encodeNormalizedAnthropicRequest(body), cchSigning)
+}
+
+// finishAnthropicPassthrough is the single Anthropic Messages outbound exit.
+// Fingerprint rewrite (system cloak, sampling, cache stamps) happens before
+// this, or is skipped for native Claude Code / Haiku helper. This layer only
+// applies API-contract invariants and optional CCH, so new Anthropic 400
+// guards extend applyAnthropicMessagesAPIInvariants instead of growing every
+// early-return branch.
+func finishAnthropicPassthrough(body []byte, signCCH bool) ([]byte, error) {
+	body = applyAnthropicMessagesAPIInvariants(body)
+	if !signCCH {
+		return body, nil
 	}
-	return encoded, nil
+	return finalizeAnthropicCCH(body)
+}
+
+// applyAnthropicMessagesAPIInvariants enforces Anthropic Messages request
+// constraints that are independent of CLI fingerprint and session identity.
+// Native passthrough skips fingerprint rewrite but still runs this layer.
+func applyAnthropicMessagesAPIInvariants(body []byte) []byte {
+	return sanitizeAnthropicEmptyTextBlocks(body)
 }
 
 // anthropicRawArrayItems 取出数组每个元素的原始字节。重建数组时逐个拼回，元素自身
@@ -589,8 +597,9 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 }
 
 // isNativeAnthropicClaudeCodeRequest 判断这组请求头是否就是原生 Claude Code 的线协议
-// 形态。入站命中即整体直通、绝不重写；出站分派（anthropicRequestOwnsItsWire、重试重放）
-// 同样用它判断「这份 wire 已经是对的，网关只补认证头」。
+// 形态。入站命中即整体直通：不重建 system、不重排 cache_control、不改采样。唯一的
+// 出站改写是丢掉 Anthropic 会 400 的空 text 块。出站分派（anthropicRequestOwnsItsWire、
+// 重试重放）同样用它判断「这份 wire 已经是对的，网关只补认证头」。
 //
 // 判据只有三个请求头信号：
 //
@@ -746,20 +755,8 @@ func anthropicSessionIDFromHeaders(headers http.Header) string {
 }
 
 func sanitizeAnthropicOAuthMessages(body []byte) []byte {
-	var patches []anthropicRawPatch
+	body = applyAnthropicMessagesAPIInvariants(body)
 	var deletions []string
-	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
-		for index, message := range messages.Array() {
-			if !message.IsObject() {
-				continue
-			}
-			if cleaned, changed := stripEmptyAnthropicTextBlocks(message.Get("content")); changed {
-				patches = append(patches, anthropicRawPatch{
-					path: "messages." + strconv.Itoa(index) + ".content", raw: cleaned,
-				})
-			}
-		}
-	}
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
 		for index, tool := range tools.Array() {
 			if !tool.IsObject() || !strings.HasPrefix(jsonStringValue(tool.Get("type")), "web_search_") {
@@ -772,11 +769,47 @@ func sanitizeAnthropicOAuthMessages(body []byte) []byte {
 			}
 		}
 	}
-	for _, patch := range patches {
-		body = setJSONRaw(body, patch.path, patch.raw)
-	}
 	for _, path := range deletions {
 		body = deleteJSONPath(body, path)
+	}
+	return body
+}
+
+// sanitizeAnthropicEmptyTextBlocks drops empty Anthropic `text` blocks that
+// the Messages API rejects with 400 "text content blocks must be non-empty".
+// Native Claude Code often serializes tool_use-only assistant turns as
+// `{"type":"text","text":""}` plus `tool_use`; only those empty text blocks
+// (and empty nested tool_result text) are removed. Sampling, tools,
+// cache_control on remaining blocks, and key order of untouched members are
+// left as-is. Messages that would become an empty content array are not
+// rewritten, so role alternation is preserved.
+func sanitizeAnthropicEmptyTextBlocks(body []byte) []byte {
+	if !isAnthropicJSONObject(body) {
+		return body
+	}
+	var patches []anthropicRawPatch
+	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
+		for index, message := range messages.Array() {
+			if !message.IsObject() {
+				continue
+			}
+			cleaned, changed := stripEmptyAnthropicTextBlocks(message.Get("content"))
+			if !changed || cleaned == "" || cleaned == "[]" {
+				continue
+			}
+			patches = append(patches, anthropicRawPatch{
+				path: "messages." + strconv.Itoa(index) + ".content", raw: cleaned,
+			})
+		}
+	}
+	if system := gjson.GetBytes(body, "system"); system.IsArray() {
+		cleaned, changed := stripEmptyAnthropicTextBlocks(system)
+		if changed && cleaned != "" && cleaned != "[]" {
+			patches = append(patches, anthropicRawPatch{path: "system", raw: cleaned})
+		}
+	}
+	for _, patch := range patches {
+		body = setJSONRaw(body, patch.path, patch.raw)
 	}
 	return body
 }
