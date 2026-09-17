@@ -289,7 +289,7 @@ var statusCodeMetaMap = map[int]StatusCodeMeta{
 	405: {ErrorLevelChannel}, // Method Not Allowed
 	406: {ErrorLevelClient},  // Not Acceptable
 	410: {ErrorLevelClient},  // Gone（模型退役由响应语义收窄为模型级故障）
-	413: {ErrorLevelClient},  // Payload Too Large
+	413: {ErrorLevelKey},     // Payload Too Large：按模型冷却并换渠，见 ClassifyHTTPResponseWithMeta
 	414: {ErrorLevelClient},  // URI Too Long
 	415: {ErrorLevelClient},  // Unsupported Media Type
 	416: {ErrorLevelClient},  // Range Not Satisfiable
@@ -365,7 +365,9 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 //
 // 分类策略：
 //   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
-//   - 400 固定按模型级处理，避免一个模型的请求约束误伤整个渠道
+//   - 400/413 固定按模型级处理，避免一个模型的请求约束误伤整个渠道；
+//     413 不能当客户端直返：同一份 Claude Code 历史在 Anthropic 能过、在别的网关会 RequestTooLarge，
+//     直返会打断已经开始的渠道 failover
 //   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
 //   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
 //   - 其他状态码：走表驱动分类（statusCodeMetaMap）
@@ -484,8 +486,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		return classification
 	}
 
-	// 400 表示当前模型无法接受该请求。切换渠道，但只冷却实际请求的模型。
-	if statusCode == 400 {
+	// 400/413 表示当前模型/上游无法接受该请求。切换渠道，但只冷却实际请求的模型。
+	// 413 必须与 400 同级：否则 auto 协议探测把 Anthropic 400 交给下一个候选后，
+	// 候选网关的 RequestTooLarge 会 ActionReturnClient，客户端直接中断、后面的匹配渠道进不去。
+	if statusCode == 400 || statusCode == http.StatusRequestEntityTooLarge {
 		return HTTPResponseClassification{
 			Level:       ErrorLevelKey,
 			ModelScoped: true,

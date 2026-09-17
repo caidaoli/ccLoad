@@ -1093,6 +1093,15 @@ func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPResponse413IsModelScoped(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"code":"RequestTooLarge","message":"Request body size exceeds maximum allowed size"}`)
+	classification := ClassifyHTTPResponseWithMeta(http.StatusRequestEntityTooLarge, nil, body)
+	if classification.Level != ErrorLevelKey || !classification.ModelScoped {
+		t.Fatalf("413 RequestTooLarge classification=%+v, want model-scoped Key so failover continues", classification)
+	}
+}
+
 func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1359,7 +1368,7 @@ func TestGetStatusCodeMeta(t *testing.T) {
 
 		// 客户端错误
 		{406, ErrorLevelClient, "406 -> 客户端级"},
-		{413, ErrorLevelClient, "413 -> 客户端级"},
+		{413, ErrorLevelKey, "413 -> Key级(模型作用域由 ClassifyHTTPResponseWithMeta 收窄)"},
 
 		// 默认行为
 		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},

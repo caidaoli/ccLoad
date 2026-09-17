@@ -491,6 +491,50 @@ func TestHandleError_HTTP400CoolsOnlyCurrentModel(t *testing.T) {
 	}
 }
 
+func TestHandleError_HTTP413CoolsOnlyCurrentModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-http-413-model-scope",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		Model:      "model-a",
+		KeyIndex:   0,
+		StatusCode: 413,
+		ErrorBody:  []byte(`{"code":"RequestTooLarge","message":"Request body size exceeds maximum allowed size"}`),
+	})
+
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+	if !exists || !until.After(time.Now()) {
+		t.Fatalf("model-a should be cooled, until=%v exists=%v", until, exists)
+	}
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("HTTP 413 must not cool the whole channel while another model is available")
+	}
+}
+
 func TestHandleError_Upstream499CoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
