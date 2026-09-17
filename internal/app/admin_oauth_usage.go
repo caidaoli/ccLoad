@@ -1764,7 +1764,7 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 		key := oauthcost.Key(window.LimitName, window.Kind)
 		candidates := passiveByKey[key]
 		for i, passiveWindow := range candidates {
-			if window.LimitWindowSeconds <= 0 || passiveWindow.LimitWindowSeconds != window.LimitWindowSeconds ||
+			if window.LimitWindowSeconds <= 0 || passiveWindow.LimitWindowSeconds <= 0 ||
 				window.ResetAt <= 0 || passiveWindow.ResetAt <= 0 {
 				continue
 			}
@@ -1775,7 +1775,32 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 			if !sampledAt.After(windowSampledAt) {
 				continue
 			}
-			if !oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
+			if passiveWindow.LimitWindowSeconds != window.LimitWindowSeconds {
+				// Plans and upstream quota policies can change the duration before
+				// the official snapshot expires. Accept only a currently sampled
+				// period, and move its duration and boundary together.
+				at := sampledAt.Unix()
+				if at < passiveWindow.ResetAt-passiveWindow.LimitWindowSeconds || at >= passiveWindow.ResetAt {
+					continue
+				}
+				// A duration change can also be a primary/secondary layout change.
+				// Without a complete scope snapshot, do not create a duplicate of
+				// a sibling or infer that the sibling has been retired.
+				conflictsWithSibling := false
+				for _, sibling := range active.Windows {
+					if strings.EqualFold(strings.TrimSpace(sibling.LimitName), strings.TrimSpace(window.LimitName)) &&
+						oauthcost.Key(sibling.LimitName, sibling.Kind) != key &&
+						sibling.LimitWindowSeconds == passiveWindow.LimitWindowSeconds {
+						conflictsWithSibling = true
+						break
+					}
+				}
+				if conflictsWithSibling {
+					continue
+				}
+				window.LimitWindowSeconds = passiveWindow.LimitWindowSeconds
+				window.ResetAt = passiveWindow.ResetAt
+			} else if !oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
 				WindowSeconds: window.LimitWindowSeconds, ResetAt: window.ResetAt,
 			}) {
 				// A completed official period cannot pin the display forever.

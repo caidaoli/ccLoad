@@ -5506,6 +5506,120 @@ func TestHandleChannelsCodexQuotaUsesCurrentPassivePeriod(t *testing.T) {
 	}
 }
 
+func TestHandleChannelsCodexQuotaFollowsDurationChanges(t *testing.T) {
+	const day = 24 * time.Hour
+	base := time.Date(2026, time.September, 17, 15, 9, 49, 0, time.UTC)
+	for _, tc := range []struct {
+		name            string
+		activeDuration  time.Duration
+		passiveDuration time.Duration
+		resetOffset     time.Duration
+		sampleOffset    time.Duration
+		siblingName     string
+		wantPassive     bool
+	}{
+		{name: "month to week", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 6 * day, wantPassive: true},
+		{name: "week to month", activeDuration: 7 * day, passiveDuration: 30 * day, resetOffset: 28 * day, wantPassive: true},
+		{name: "week to five hours", activeDuration: 7 * day, passiveDuration: 5 * time.Hour, resetOffset: 4 * time.Hour, wantPassive: true},
+		{name: "new period starts at sample", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 7 * day, wantPassive: true},
+		{name: "older window despite newer sibling", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 6 * day, sampleOffset: -3 * time.Hour},
+		{name: "equally old window", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 6 * day, sampleOffset: -2 * time.Hour},
+		{name: "future period", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 7*day + time.Second},
+		{name: "period ends at sample", activeDuration: 30 * day, passiveDuration: 7 * day},
+		{name: "expired period", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: -time.Second},
+		{name: "unknown duration", activeDuration: 30 * day, resetOffset: 6 * day},
+		{name: "weekly slot migration needs a complete layout", activeDuration: 5 * time.Hour, passiveDuration: 7 * day, resetOffset: 6 * day, siblingName: "codex"},
+		{name: "independent Spark week does not block main change", activeDuration: 30 * day, passiveDuration: 7 * day, resetOffset: 6 * day, siblingName: "GPT-5.3-Codex-Spark", wantPassive: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			activeAt := base.Add(-2 * time.Hour)
+			oldReset := base.Add(tc.activeDuration / 2)
+			newReset := base.Add(tc.resetOffset)
+			activeSeconds := int64(tc.activeDuration / time.Second)
+			passiveSeconds := int64(tc.passiveDuration / time.Second)
+			activeWindows := []oauthUsageWindow{{
+				LimitName: "codex", Kind: "primary", LimitWindowSeconds: activeSeconds,
+				ResetAt: oldReset.Unix(), UsedPercent: 0, RemainingPercent: 100,
+			}}
+			if tc.siblingName != "" {
+				activeWindows = append(activeWindows, oauthUsageWindow{
+					LimitName: tc.siblingName, Kind: "secondary", LimitWindowSeconds: 604800,
+					ResetAt: base.Add(6 * day).Unix(), UsedPercent: 10, RemainingPercent: 90,
+				})
+			}
+			snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+				RequestedAt: activeAt.Format(time.RFC3339Nano), SampledAt: activeAt.Format(time.RFC3339Nano),
+				Summary: oauthUsageSummary{
+					Provider: "codex", PlanType: "free",
+					Windows:               activeWindows,
+					RateLimitResetCredits: &codexQuotaResetCredits{AvailableCount: 2},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSeconds, wantReset, wantUsed := activeSeconds, oldReset.Unix(), float64(0)
+			if tc.wantPassive {
+				wantSeconds, wantReset, wantUsed = passiveSeconds, newReset.Unix(), 2
+			}
+			const cost = int64(9_182_805)
+			credential := &codexauth.Credential{
+				Type: "codex", AccessToken: "quota-test", PlanType: "self_serve_business_prolite", OAuthUsage: snapshot,
+				RefreshToken: "quota-refresh-test", Expired: base.Add(24 * time.Hour).Format(time.RFC3339),
+				PassiveUsage: &codexauth.PassiveUsage{
+					SampledAt: base.Format(time.RFC3339Nano),
+					Windows: []codexauth.PassiveUsageWindow{
+						{Scope: "codex", LimitName: "codex", Kind: "primary", LimitWindowSeconds: passiveSeconds,
+							ResetAt: newReset.Unix(), UsedPercent: 2, SampledAt: base.Add(tc.sampleOffset).Format(time.RFC3339Nano)},
+						{Scope: "gpt-reserve", LimitName: "gpt-reserve", Kind: "primary", LimitWindowSeconds: 604800,
+							ResetAt: base.Add(7 * day).Unix(), SampledAt: base.Format(time.RFC3339Nano)},
+					},
+				},
+				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+					Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: wantSeconds,
+					StartedAt: wantReset - wantSeconds, ResetAt: wantReset, StandardCostMicroUSD: cost,
+				}}},
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), &model.Config{
+				Name: "Codex quota duration change", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(c)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || len(list.Data) != 1 || list.Data[0].OAuthUsage == nil {
+				t.Fatalf("channel list status=%d response=%#v", w.Code, list)
+			}
+			usage := list.Data[0].OAuthUsage
+			if len(usage.Windows) != len(activeWindows) || usage.RateLimitResetCredits == nil || usage.RateLimitResetCredits.AvailableCount != 2 {
+				t.Fatalf("official window identities or reset credits changed: %#v", usage)
+			}
+			if tc.siblingName != "" && usage.Windows[1] != activeWindows[1] {
+				t.Fatalf("independent sibling changed: %#v", usage.Windows[1])
+			}
+			window := usage.Windows[0]
+			if window.LimitName != "codex" || window.Kind != "primary" || window.LimitWindowSeconds != wantSeconds ||
+				window.ResetAt != wantReset || window.UsedPercent != wantUsed || window.RemainingPercent != 100-wantUsed ||
+				window.StandardCostMicroUSD == nil || *window.StandardCostMicroUSD != cost {
+				t.Fatalf("wrong quota duration, usage or cost: %#v", window)
+			}
+			persisted, err := store.GetConfig(context.Background(), channel.ID)
+			if err != nil || persisted.OAuthCredential != raw {
+				t.Fatalf("listing changed persisted quota history: %v", err)
+			}
+		})
+	}
+}
+
 func TestAttachOAuthQuotaCostUsageMatchesResetJitter(t *testing.T) {
 	t.Parallel()
 	displayResetAt := time.Date(2026, time.August, 31, 13, 28, 7, 0, time.UTC).Unix()
