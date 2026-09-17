@@ -91,7 +91,7 @@ cp -r www /path/to/webroot/
 ### ✅ 首页（index.html）
 - Hero 区域（对齐正式版 README 标语）
 - 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
-- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / Z.ai / Cursor / Zed
+- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / CodeBuddy / Z.ai / Cursor / Zed
 - 管理后台预览截图
 - 4 种部署方式卡片（Go 1.26+，官方 latest 二进制）
 - 快速开始 Tab 切换
@@ -111,6 +111,7 @@ cp -r www /path/to/webroot/
 - 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制（1024 会话 / 256 MiB）
 - 批量模型名小写与来源前缀清理
 - API Token 模型、渠道白名单/黑名单、费用和并发限制
+- 自定义模型价格：基础/高上下文输入、输出和缓存价，覆盖恢复及适用边界
 - 管理后台热配置说明
 - 安全上线检查
 
@@ -119,7 +120,8 @@ cp -r www /path/to/webroot/
 - 思考后缀、第一方账号渠道、Images API
 - HTTP 与 Responses WebSocket 端点速查表、会话隔离、连接轮换和故障切换边界
 - 多协议内置搜索映射说明
-- 管理后台的客户端协议统计、7 天服务健康度与模型测试说明
+- Antigravity Responses 原生搜索、域名过滤与引用返回
+- 管理后台的客户端协议统计、7 天服务健康度、缓存统计与模型测试 Key 备注/倍率
 - 渠道管理 API 与 CSV 导入导出
 
 ### ✅ 反馈渠道（feedback.html）

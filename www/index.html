@@ -16,8 +16,8 @@
   <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
 
   <!-- Locale bundles + i18n -->
-  <script defer src="assets/locales/zh-CN.js?v=20260829-1"></script>
-  <script defer src="assets/locales/en.js?v=20260829-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260917-1"></script>
+  <script defer src="assets/locales/en.js?v=20260917-1"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
 
   <!-- Scripts -->
@@ -84,7 +84,7 @@
           <span class="www-feature-icon">💰</span>
           <h3 class="www-feature-title" data-i18n="www.home.features.cost.title">Cost Control</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.cost.desc">
-            Daily channel limits, token total/daily/monthly limits, and OAuth quota windows aligned to upstream reset times, tracked in micro-dollars.
+            Custom model prices, per-key multipliers, daily channel limits, and token total/daily/monthly limits. Track OAuth quota windows against upstream reset times.
           </p>
         </div>
 
@@ -92,7 +92,7 @@
           <span class="www-feature-icon">🔑</span>
           <h3 class="www-feature-title" data-i18n="www.home.features.oauth.title">OAuth Channels</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.oauth.desc">
-            Import Codex, Anthropic, Antigravity, xAI, Z.ai Coding Plan, Cursor, and Zed credentials. Batch-refresh quotas; permanently rejected credentials disable the channel.
+            Connect Codex, Anthropic, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, and Zed accounts. Refresh quotas and balances from the channel list.
           </p>
         </div>
 
@@ -189,6 +189,13 @@
           <h3 class="www-feature-title" data-i18n="www.home.oauth.xai.title">xAI</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.xai.desc">
             Grok OAuth channels. Conversational models at grok-4.6 and later can use the Images API through the image_generation tool.
+          </p>
+        </div>
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🧩</span>
+          <h3 class="www-feature-title" data-i18n="www.home.oauth.codebuddy.title">CodeBuddy</h3>
+          <p class="www-feature-desc" data-i18n="www.home.oauth.codebuddy.desc">
+            Scan to sign in or import workbuddy.json credentials. Fetch account models, refresh tokens automatically, and refresh balances from the channel card. China accounts also support daily check-in.
           </p>
         </div>
         <div class="www-feature-card">
