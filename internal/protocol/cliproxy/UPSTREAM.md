@@ -96,7 +96,13 @@ Registry and Interactions paths, while the Claude-to-Codex
 benchmark measures allocation details rather than a wire contract. Upstream
 `noop_optimization_test.go` files and allocation-reuse assertions are likewise
 excluded because they test private implementation and memory reuse instead of
-the public conversion contract. The `thinking` package keeps only the pure
+the public conversion contract. This also excludes
+`TestParseGJSONBytesNoCopyReferencesInput`, `TestSortByDepthUsesSegmentsAndIsStable`,
+and `TestByteEntropyRatio_SingleByteReturnsZero`: pointer identity, internal path
+sorting, and entropy for a one-byte buffer rejected by the public validator's
+length check do not define converter behavior. JSON parsing, nested schema
+cleanup, and malformed/low-entropy signature rejection remain covered.
+The `thinking` package keeps only the pure
 conversion sources (`convert.go`, `suffix.go`, `text.go`, `types.go`); upstream's
 runtime thinking application (`apply.go`, `strip.go`, `summary.go`,
 `validate.go`, `errors.go`, `provider/`) and its tests stay excluded, as does

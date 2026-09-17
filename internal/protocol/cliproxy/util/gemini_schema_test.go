@@ -1530,15 +1530,6 @@ func TestCleanJSONSchemaForAntigravityResponseHintsIgnoredConstraints(t *testing
 	}
 }
 
-func TestSortByDepthUsesSegmentsAndIsStable(t *testing.T) {
-	paths := []string{"root.verylong", "root.x.y", "first.same", "later.same"}
-	sortByDepth(paths)
-	want := []string{"root.x.y", "root.verylong", "first.same", "later.same"}
-	if !reflect.DeepEqual(paths, want) {
-		t.Fatalf("sortByDepth() = %v, want %v", paths, want)
-	}
-}
-
 // TestCleanJSONSchemaStripsEncryptedMetadata covers Codex client tool definitions where
 // properties carry the Responses-only "encrypted" marker (e.g. "encrypted": true or "encrypted": false).
 // The Gemini backend strictly rejects unknown schema fields with an INVALID_ARGUMENT 400.

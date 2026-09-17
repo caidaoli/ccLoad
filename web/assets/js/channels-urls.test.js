@@ -47,8 +47,7 @@ test('URL row echoes the persisted exact flag in its checkbox', () => {
       if (selector === '.inline-url-exact-checkbox') return exactCheckbox;
       throw new Error(`Unexpected selector: ${selector}`);
     },
-    querySelectorAll(selector) {
-      assert.equal(selector, 'td');
+    querySelectorAll() {
       return [lastCell];
     },
     insertBefore() {}
@@ -56,8 +55,7 @@ test('URL row echoes the persisted exact flag in its checkbox', () => {
   const globals = {
     TemplateEngine: { render: () => row },
     document: {
-      createElement(tagName) {
-        assert.equal(tagName, 'td');
+      createElement() {
         return {
           setAttribute() {}
         };

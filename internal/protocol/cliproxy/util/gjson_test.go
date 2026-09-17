@@ -1,9 +1,6 @@
 package util
 
-import (
-	"testing"
-	"unsafe"
-)
+import "testing"
 
 func TestGetGJSONBytesNoCopy(t *testing.T) {
 	input := []byte(`{"request":{"contents":[{"role":"user"}]}}`)
@@ -24,17 +21,6 @@ func TestParseGJSONBytesNoCopy(t *testing.T) {
 	root := ParseGJSONBytesNoCopy(input)
 	if !root.IsObject() || root.Get("request.contents.0.role").String() != "user" {
 		t.Fatalf("parsed root = %s, want user content array", root.Raw)
-	}
-}
-
-func TestParseGJSONBytesNoCopyReferencesInput(t *testing.T) {
-	input := []byte(`{"contents":[{"role":"user"}]}`)
-	root := ParseGJSONBytesNoCopy(input)
-	if len(root.Raw) != len(input) {
-		t.Fatalf("raw length = %d, want %d", len(root.Raw), len(input))
-	}
-	if unsafe.StringData(root.Raw) != unsafe.SliceData(input) {
-		t.Fatal("parsed result copied the input instead of referencing it")
 	}
 }
 
