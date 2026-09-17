@@ -11,3 +11,6 @@
 - Anthropic 转 Responses 的原生 JSON 与 SSE 都把 `max_tokens` 映射为 `incomplete`;流式 output item 在下一个内容块或 message stop 时确定最终状态,不得在得知截断原因前报告完成
 - 转 Anthropic usage 时,未缓存输入量须扣除 cache read 和 cache creation;保留 ccLoad 的缓存写入字段及上游别名,避免缓存写入重复计量
 - Gemini/Antigravity 的会话中途提醒不能拆散工具调用与结果配对;保留 model turn 与签名索引,Responses 入口含 functionResponse 的 user turn 不与普通提醒合并
+- Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。
+- OpenAI → Claude 接收 reasoning_content、reasoning、reasoning_details 的首个有效表示；工具流保留 length/content_filter，累计参数不是有效对象时不得标成正常 tool_use。单条 system 输入继续作为原始用户提示，不包中途提醒。
+- Gemini 原生搜索仅查询静态模型能力；响应转换以实际发出的 googleSearch 请求判断搜索模式，不引入动态模型注册或探测。

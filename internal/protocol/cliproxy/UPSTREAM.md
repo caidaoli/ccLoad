@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `37b858c3603442e39c78945ffdfef6c2f007ef26` (`fork/v8.85.0`)
-- Synchronized at: `2026-09-12`
+- Last synchronized commit: `6c1d872f4f1e4693a611edbbad3c0ccbb9e8141a` (`fork/v8.90.0`)
+- Synchronized at: `2026-09-17`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -22,24 +22,27 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
-## Scoped Antigravity backport (2026-09-17)
+## Synchronization adaptations (2026-09-17)
 
-The atomic baseline above is unchanged. This user-scoped backport references
-CLIProxyAPI `6c1d872f4f1e4693a611edbbad3c0ccbb9e8141a`; it is not a full
-snapshot synchronization. It adapts Antigravity Responses native search request
-construction, Gemini Responses search output/citations and streaming lifecycle,
-`common/bytes.go` JSON string encoding, and Chat Completions system reminders.
-The new `gemini_openai-responses_web_search.go` helper is registered as a local
-adaptation until a future atomic baseline includes its upstream source. Existing
-manifest upstream hashes still identify the baseline; local hashes include these
-explicit adaptations.
+The earlier scoped Antigravity search/reminder backport is now included in the
+shared atomic baseline. Responses tool history repair, namespace-aware tool name
+capping/collision handling and tool choice conversion, OpenAI reasoning aliases
+and interrupted tool-call finish reasons are synchronized with their tests.
+Single-system-message input remains the user's sole prompt; only mid-conversation
+system/developer messages receive the reminder envelope.
 
-Search activation follows the effective provider request without a dynamic model
-registry. Only search-only Responses tools with an enabled tool choice select the
-app's existing Gemini search model; mixed function tools retain their normal path.
-ccLoad keeps its Claude usage/cache accounting, stream termination fixes and
-request-driven thinking visibility policy. Search contract tests cover JSON/SSE,
-late grounding, CJK citation offsets, output order and absence of grounding.
+Native search capability reads use the immutable model catalog, without dynamic
+registration or probes. Gemini Responses request tests use a catalog model with
+explicit search capability; response tests pass the effective translated Gemini
+request so search buffering reflects the actual outgoing tools. The upstream
+runtime-only dynamic capability veto test is explicitly excluded in the manifest;
+provider isolation is checked through generic versus dedicated search requests. Grounding and citation behavior is tested through public converter
+outputs rather than private merge helpers. The new search test file follows its
+upstream source; previously backported duplicate tests were consolidated into it.
+Antigravity keeps app-selected dedicated search routing and request-driven
+thinking visibility. Claude usage/cache accounting and stream termination fixes
+remain local contracts. Codex Responses Lite HTTP/WS header recognition stays
+excluded because it is only used by upstream runtime executors and handlers.
 
 Signature recovery lives in `internal/app/antigravity_replay.go`, outside this
 pure snapshot. It restores Anthropic thinking signatures and Responses reasoning
@@ -67,7 +70,7 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 64 `_test.go` files from the same commit as the
+The core snapshot includes 65 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -80,7 +83,7 @@ production sources:
 - `common`: 9
 - `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
-- `gemini/openai/responses`: 3
+- `gemini/openai/responses`: 4
 - `openai/claude`: 3
 - `openai/gemini`: 2
 - `openai/openai/responses`: 4

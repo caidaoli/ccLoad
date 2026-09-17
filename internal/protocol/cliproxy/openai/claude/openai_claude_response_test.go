@@ -1053,3 +1053,189 @@ func TestStreaming_InterleavedTextAndThinkingPreservesOrder(t *testing.T) {
 		t.Fatalf("unexpected thinking deltas: %v", thinkingDeltas)
 	}
 }
+
+func TestStreamingTool_FinishReasonLengthEmitsMaxTokensStopReason(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/test.txt\",\"content\":\"hello"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":400}}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreamingTool_TruncatedArgumentsWithoutFinishReasonEmitsMaxTokens(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/test.txt\",\"content\":\"hello"}}]},"finish_reason":null}]}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreamingTool_ValidArgumentsWithStopReasonEmitsToolUse(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/test.txt\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+	)
+
+	if got := lastStopReason(events); got != "tool_use" {
+		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
+	}
+}
+
+func TestStreamingTool_TruncatedArgumentsWithStopReasonEmitsMaxTokens(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/test.txt\""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreamingTool_EmptyArgumentsWithToolCallsEmitsToolUse(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_time","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10}}`,
+	)
+
+	if got := lastStopReason(events); got != "tool_use" {
+		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
+	}
+}
+
+func TestStreamingTool_WhitespaceOnlyArgumentsWithoutFinishReasonEmitsMaxTokens(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":" \n\t"}}]},"finish_reason":null}]}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreamingTool_ContentFilterWithToolCallEmitsEndTurn(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/test.txt\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+	)
+
+	if got := lastStopReason(events); got != "end_turn" {
+		t.Fatalf("stop_reason = %q, want %q", got, "end_turn")
+	}
+}
+
+func TestStreamingTool_ParallelCallsOneTruncatedEmitsMaxTokens(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/a\"}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/b"}}]},"finish_reason":null}]}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreamingTool_MultiChunkTruncatedWithTrailingUsageEmitsMaxTokens(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/a\","}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"\"content\":\"incompl"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":400}}`,
+	)
+
+	if got := lastStopReason(events); got != "max_tokens" {
+		t.Fatalf("stop_reason = %q, want %q", got, "max_tokens")
+	}
+}
+
+func TestStreaming_ReasoningFieldEmitsThinkingDelta(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"reasoning":"I am thinking","reasoning_details":[{"type":"reasoning.text","text":"I am thinking"}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var thinkingDeltas []string
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "thinking_delta" {
+			thinkingDeltas = append(thinkingDeltas, gjson.Get(e.Payload, "delta.thinking").String())
+		}
+	}
+	if len(thinkingDeltas) != 1 || thinkingDeltas[0] != "I am thinking" {
+		t.Fatalf("expected 1 thinking delta 'I am thinking', got %v", thinkingDeltas)
+	}
+}
+
+func TestStreaming_ReasoningContentStillPreferred(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"reasoning_content":"primary reasoning","reasoning":"fallback reasoning"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var thinkingDeltas []string
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "thinking_delta" {
+			thinkingDeltas = append(thinkingDeltas, gjson.Get(e.Payload, "delta.thinking").String())
+		}
+	}
+	if len(thinkingDeltas) != 1 || thinkingDeltas[0] != "primary reasoning" {
+		t.Fatalf("expected reasoning_content to take precedence, got %v", thinkingDeltas)
+	}
+}
+
+func TestStreaming_ReasoningDetailsOnlyEmitsThinkingDelta(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"Only details thinking"}]},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"Answer"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var thinkingDeltas []string
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "thinking_delta" {
+			thinkingDeltas = append(thinkingDeltas, gjson.Get(e.Payload, "delta.thinking").String())
+		}
+	}
+	if len(thinkingDeltas) != 1 || thinkingDeltas[0] != "Only details thinking" {
+		t.Fatalf("expected 1 thinking delta 'Only details thinking', got %v", thinkingDeltas)
+	}
+}
+
+func TestStreaming_EmptyReasoningContentFallsBackToReasoning(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"reasoning_content":"","reasoning":"fallback from empty"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"reasoning_content":null,"reasoning":"fallback from null"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var thinkingDeltas []string
+	for _, e := range events {
+		if e.Type == "content_block_delta" && gjson.Get(e.Payload, "delta.type").String() == "thinking_delta" {
+			thinkingDeltas = append(thinkingDeltas, gjson.Get(e.Payload, "delta.thinking").String())
+		}
+	}
+	if len(thinkingDeltas) != 2 || thinkingDeltas[0] != "fallback from empty" || thinkingDeltas[1] != "fallback from null" {
+		t.Fatalf("expected 2 thinking deltas from fallback, got %v", thinkingDeltas)
+	}
+}
+
+func TestNonStream_ReasoningFieldEmitsThinkingBlock(t *testing.T) {
+	rawJSON := []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"deepseek","choices":[{"index":0,"message":{"role":"assistant","content":"Done","reasoning":"Thought process"},"finish_reason":"stop"}]}`)
+
+	// Test ConvertOpenAIResponseToClaudeNonStream
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "", nil, nil, rawJSON, nil)
+	content := gjson.GetBytes(out, "content").Array()
+	var thinkingTexts []string
+	for _, block := range content {
+		if block.Get("type").String() == "thinking" {
+			thinkingTexts = append(thinkingTexts, block.Get("thinking").String())
+		}
+	}
+	if len(thinkingTexts) != 1 || thinkingTexts[0] != "Thought process" {
+		t.Fatalf("expected non-stream content to contain thinking block 'Thought process', got %v (output: %s)", thinkingTexts, string(out))
+	}
+
+}

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
+	"ccLoad/internal/protocol/cliproxy/registry"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -799,4 +800,20 @@ func BuildResponsesURLCitations(groundingMetadata gjson.Result, text ...string) 
 		}
 	}
 	return nil
+}
+
+// ModelSupportsWebSearch reads immutable catalog capabilities; no runtime probes are imported.
+func ModelSupportsWebSearch(modelID string) bool {
+	infos := []*registry.ModelInfo{registry.LookupModelInfo(modelID), registry.LookupModelInfo(modelID, "antigravity")}
+	supported := false
+	for _, info := range infos {
+		if info == nil || info.NativeCapabilities == nil || info.NativeCapabilities.WebSearch == nil {
+			continue
+		}
+		if !*info.NativeCapabilities.WebSearch {
+			return false
+		}
+		supported = true
+	}
+	return supported
 }

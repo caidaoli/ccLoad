@@ -274,7 +274,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				if name := item.Get("name"); name.Exists() {
 					functionName := name.String()
 					if namespace := strings.TrimSpace(item.Get("namespace").String()); namespace != "" {
-						functionName = qualifyResponsesNamespaceToolName(namespace, functionName)
+						functionName = chatNameForResponsesNamespaceToolCall(inputRawJSON, namespace, functionName)
 					} else {
 						functionName = canonicalResponsesToolName(inputRawJSON, functionName)
 					}
@@ -305,19 +305,21 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 			case "function_call_output":
 				mergeableAssistantIndex = -1
-				// Handle function call output conversion to tool message
-				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 				callID := translatorcommon.ExtractResponsesCallID(item)
-				if callID != "" {
+				if _, awaiting := awaitingToolOutputs[callID]; !awaiting {
+					// Orphan outputs (empty call_id or no matching assistant
+					// tool_calls, e.g. Codex send_message_to_thread cards) must
+					// not become tool messages. Emit as user text instead.
+					appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setFunctionCallOutputContent, appendRegularMessage)
+				} else {
+					toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 					toolMessage, _ = sjson.SetBytes(toolMessage, "tool_call_id", callID)
 					delete(awaitingToolOutputs, callID)
+					if output := item.Get("output"); output.Exists() {
+						toolMessage = setFunctionCallOutputContent(toolMessage, output)
+					}
+					appendMessage(toolMessage)
 				}
-
-				if output := item.Get("output"); output.Exists() {
-					toolMessage = setFunctionCallOutputContent(toolMessage, output)
-				}
-
-				appendMessage(toolMessage)
 				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 					flushDeferredMessages()
 				}
@@ -345,7 +347,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				toolCall, _ = sjson.SetBytes(toolCall, "id", translatorcommon.ExtractResponsesCallID(item))
 				functionName := item.Get("name").String()
 				if namespace := item.Get("namespace").String(); namespace != "" {
-					functionName = qualifyResponsesNamespaceToolName(namespace, functionName)
+					functionName = chatNameForResponsesNamespaceToolCall(inputRawJSON, namespace, functionName)
 				} else {
 					functionName = canonicalResponsesToolName(inputRawJSON, functionName)
 				}
@@ -359,16 +361,18 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 			case "custom_tool_call_output":
 				mergeableAssistantIndex = -1
-				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 				callID := translatorcommon.ExtractResponsesCallID(item)
-				if callID != "" {
+				if _, awaiting := awaitingToolOutputs[callID]; !awaiting {
+					appendStandaloneResponsesToolOutputAsUser(item.Get("output"), setCustomToolCallOutputContent, appendRegularMessage)
+				} else {
+					toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 					toolMessage, _ = sjson.SetBytes(toolMessage, "tool_call_id", callID)
 					delete(awaitingToolOutputs, callID)
+					if output := item.Get("output"); output.Exists() {
+						toolMessage = setCustomToolCallOutputContent(toolMessage, output)
+					}
+					appendMessage(toolMessage)
 				}
-				if output := item.Get("output"); output.Exists() {
-					toolMessage = setCustomToolCallOutputContent(toolMessage, output)
-				}
-				appendMessage(toolMessage)
 				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 					flushDeferredMessages()
 				}
@@ -431,7 +435,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			out, _ = sjson.SetBytes(out, "parallel_tool_calls", parallelToolCalls.Bool())
 		}
 		if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(toolChoice.Raw))
+			out, _ = sjson.SetRawBytes(out, "tool_choice", convertResponsesToolChoiceToChatCompletions(toolChoice, inputRawJSON))
 		}
 	}
 	if webSearch.Exists() {
@@ -462,6 +466,45 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	return out
 }
 
+func convertResponsesToolChoiceToChatCompletions(toolChoice gjson.Result, inputRawJSON []byte) []byte {
+	if !toolChoice.IsObject() {
+		return []byte(toolChoice.Raw)
+	}
+
+	choiceType := toolChoice.Get("type").String()
+	if choiceType != "function" && choiceType != "custom" {
+		return []byte(toolChoice.Raw)
+	}
+
+	name := toolChoice.Get("function.name").String()
+	if name == "" {
+		name = toolChoice.Get("custom.name").String()
+	}
+	if name == "" {
+		name = toolChoice.Get("name").String()
+	}
+	if name == "" {
+		return []byte(toolChoice.Raw)
+	}
+
+	namespace := strings.TrimSpace(toolChoice.Get("namespace").String())
+	if namespace == "" {
+		namespace = strings.TrimSpace(toolChoice.Get("function.namespace").String())
+	}
+	if namespace == "" {
+		namespace = strings.TrimSpace(toolChoice.Get("custom.namespace").String())
+	}
+	if namespace != "" {
+		name = chatNameForResponsesNamespaceToolCall(inputRawJSON, namespace, name)
+	} else {
+		name = canonicalResponsesToolName(inputRawJSON, name)
+	}
+
+	converted := []byte(`{"type":"function","function":{"name":""}}`)
+	converted, _ = sjson.SetBytes(converted, "function.name", name)
+	return converted
+}
+
 func convertResponsesTextFormatToChatResponseFormat(textFormat gjson.Result) []byte {
 	formatType := textFormat.Get("type").String()
 	switch formatType {
@@ -483,6 +526,24 @@ func convertResponsesTextFormatToChatResponseFormat(textFormat gjson.Result) []b
 	default:
 		return nil
 	}
+}
+
+func appendStandaloneResponsesToolOutputAsUser(output gjson.Result, setContent func([]byte, gjson.Result) []byte, appendMessage func([]byte) int) {
+	userMessage := []byte(`{"role":"user","content":""}`)
+	if output.Exists() {
+		userMessage = setContent(userMessage, output)
+	}
+	content := gjson.GetBytes(userMessage, "content")
+	if !content.Exists() {
+		return
+	}
+	if content.Type == gjson.String && strings.TrimSpace(content.String()) == "" {
+		return
+	}
+	if content.IsArray() && !content.Get("0").Exists() {
+		return
+	}
+	appendMessage(userMessage)
 }
 
 func setFunctionCallOutputContent(toolMessage []byte, output gjson.Result) []byte {

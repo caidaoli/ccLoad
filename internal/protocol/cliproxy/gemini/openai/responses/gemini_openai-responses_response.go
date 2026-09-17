@@ -1357,7 +1357,6 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		if len(outputs) > 0 {
 			completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
 		}
-
 		if st.WebSearchDone {
 			completed, _ = sjson.SetBytes(completed, "response.tool_usage.web_search.num_requests", 1)
 		}

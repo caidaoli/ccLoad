@@ -18,12 +18,18 @@ type ThinkingSupport struct {
 	Levels         []string `json:"levels,omitempty"`
 }
 
+// NativeCapabilities describes static provider capabilities.
+type NativeCapabilities struct {
+	WebSearch *bool `json:"web_search,omitempty"`
+}
+
 // ModelInfo describes immutable model capabilities used during conversion.
 type ModelInfo struct {
-	ID                  string           `json:"id"`
-	Name                string           `json:"name,omitempty"`
-	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
-	Thinking            *ThinkingSupport `json:"thinking,omitempty"`
+	NativeCapabilities  *NativeCapabilities `json:"native_capabilities,omitempty"`
+	ID                  string              `json:"id"`
+	Name                string              `json:"name,omitempty"`
+	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
+	Thinking            *ThinkingSupport    `json:"thinking,omitempty"`
 }
 
 type modelCatalog struct {
@@ -86,6 +92,14 @@ func modelsForProvider(provider string) [][]*ModelInfo {
 
 func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	clone := *model
+	if model.NativeCapabilities != nil {
+		capabilities := *model.NativeCapabilities
+		if capabilities.WebSearch != nil {
+			enabled := *capabilities.WebSearch
+			capabilities.WebSearch = &enabled
+		}
+		clone.NativeCapabilities = &capabilities
+	}
 	if model.Thinking != nil {
 		thinking := *model.Thinking
 		thinking.Levels = append([]string(nil), model.Thinking.Levels...)

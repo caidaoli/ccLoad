@@ -1595,7 +1595,7 @@ func TestRegistry_TranslateRequest_CodexToOpenAI(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"model":"gpt-4o","instructions":"be careful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_file","file_id":"file_123","filename":"doc.pdf"}]},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`)
+	raw := []byte(`{"model":"gpt-4o","instructions":"be careful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_file","file_id":"file_123","filename":"doc.pdf"}]},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`)
 	got, err := reg.TranslateRequest(protocol.Codex, protocol.OpenAI, "gpt-4o", raw, false)
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
