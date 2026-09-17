@@ -22,6 +22,33 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Scoped Antigravity backport (2026-09-17)
+
+The atomic baseline above is unchanged. This user-scoped backport references
+CLIProxyAPI `6c1d872f4f1e4693a611edbbad3c0ccbb9e8141a`; it is not a full
+snapshot synchronization. It adapts Antigravity Responses native search request
+construction, Gemini Responses search output/citations and streaming lifecycle,
+`common/bytes.go` JSON string encoding, and Chat Completions system reminders.
+The new `gemini_openai-responses_web_search.go` helper is registered as a local
+adaptation until a future atomic baseline includes its upstream source. Existing
+manifest upstream hashes still identify the baseline; local hashes include these
+explicit adaptations.
+
+Search activation follows the effective provider request without a dynamic model
+registry. Only search-only Responses tools with an enabled tool choice select the
+app's existing Gemini search model; mixed function tools retain their normal path.
+ccLoad keeps its Claude usage/cache accounting, stream termination fixes and
+request-driven thinking visibility policy. Search contract tests cover JSON/SSE,
+late grounding, CJK citation offsets, output order and absence of grounding.
+
+Signature recovery lives in `internal/app/antigravity_replay.go`, outside this
+pure snapshot. It restores Anthropic thinking signatures and Responses reasoning
+or detached text carriers within caller/session/account/model/origin/protocol
+boundaries, commits only complete successful responses, and invalidates the scope
+on signature rejection. Explicit carriers remain authoritative. No upstream
+runtime cache or executor is imported, and signature-400 history-stripping retries
+are removed. The Hub UA fallback is `2.9.1` in the app auth service.
+
 ## Provider adapter snapshot
 
 The canonical synchronization operation audits the semantic boundary in

@@ -92,6 +92,7 @@ type Server struct {
 	antigravityOAuth              *codexOAuthManager
 	antigravityCredentials        *antigravityCredentialManager
 	antigravityService            *antigravityauth.Service
+	antigravityReplay             antigravityReplayCache
 	xaiService                    *xaiauth.Service
 	xaiCredentials                *xaiCredentialManager
 	xaiOAuth                      *xaiOAuthManager

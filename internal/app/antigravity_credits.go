@@ -44,7 +44,7 @@ func antigravityClaudeModel(name string) bool {
 // Keep paid candidates after all ordinary candidates, including when the latter
 // are empty. General cooldowns stay strict; standard quota has its own state.
 func (s *Server) appendAntigravityCreditsCandidates(ctx context.Context, ordinary []*model.Config, modelName, clientProtocol string, body []byte) []*model.Config {
-	if s.antigravityCredentials == nil || hasAntigravityWebSearchTool(body) {
+	if s.antigravityCredentials == nil || wantsAntigravityWebSearch(body) {
 		return ordinary
 	}
 	source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
@@ -127,7 +127,7 @@ func (s *Server) prepareAntigravityCredits(ctx context.Context, cfg *model.Confi
 		return nil, errAntigravityCreditsUnavailable
 	}
 	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Gemini))
-	if !antigravityClaudeModel(actualModel) || hasAntigravityWebSearchTool(reqCtx.body) || !credential.StandardQuota[actualModel].After(time.Now()) {
+	if !antigravityClaudeModel(actualModel) || wantsAntigravityWebSearch(reqCtx.body) || !credential.StandardQuota[actualModel].After(time.Now()) {
 		return credential, errAntigravityCreditsUnavailable
 	}
 	if !credential.Credits.Fresh(time.Now()) {

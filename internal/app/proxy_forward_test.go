@@ -1470,60 +1470,6 @@ func TestDowngradeAnthropicThinkingBlocksRemovesEmptyOutputConfig(t *testing.T) 
 	}
 }
 
-func TestAntigravitySignatureRetryReturnsOrderedInnerRequest(t *testing.T) {
-	t.Parallel()
-	body := []byte(`{"project":"p","model":"claude-sonnet-4-6","request":{"generationConfig":{"thinkingConfig":{"includeThoughts":true},"keep":1},"contents":[{"role":"model","parts":[{"thought":true,"text":"keep thought","thoughtSignature":"sig"},{"text":"answer"}]}],"z":1}}`)
-
-	got, strategy, ok := antigravitySignatureRetryBody(body, []byte(`{"error":{"message":"invalid thought signature"}}`), http.StatusBadRequest)
-	if !ok || strategy != "strip_antigravity_thinking" {
-		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
-	}
-	if gjson.GetBytes(got, "request").Exists() {
-		t.Fatalf("retry body must be the inner request: %s", got)
-	}
-	if gjson.GetBytes(got, "generationConfig.thinkingConfig").Exists() {
-		t.Fatalf("thinkingConfig survived retry: %s", got)
-	}
-	if gotKeep := gjson.GetBytes(got, "generationConfig.keep").Int(); gotKeep != 1 {
-		t.Fatalf("generationConfig.keep = %d, body=%s", gotKeep, got)
-	}
-	if gotText := gjson.GetBytes(got, "contents.0.parts.0.text").String(); gotText != "keep thought" {
-		t.Fatalf("downgraded thought text = %q, body=%s", gotText, got)
-	}
-	assertFieldOrder(t, string(got), `"generationConfig"`, `"contents"`, `"z"`)
-}
-
-func TestAntigravityGeminiSignatureRetryPatchesNestedSignaturesInPlace(t *testing.T) {
-	t.Parallel()
-	body := []byte(`{"project":"p","model":"gemini-2.5-pro","request":{"contents":[{"parts":[{"text":"answer","thoughtSignature":"original"}]}],"metadata":{"z":1,"a":2}}}`)
-
-	got, strategy, ok := antigravitySignatureRetryBody(body, []byte(`{"error":{"message":"thought signature is invalid"}}`), http.StatusBadRequest)
-	if !ok || strategy != "replace_antigravity_thought_signatures" {
-		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
-	}
-	if signature := gjson.GetBytes(got, "contents.0.parts.0.thoughtSignature").String(); signature != "skip_thought_signature_validator" {
-		t.Fatalf("thoughtSignature = %q, body=%s", signature, got)
-	}
-	assertFieldOrder(t, string(got), `"contents"`, `"metadata"`)
-	assertFieldOrder(t, gjson.GetBytes(got, "metadata").Raw, `"z"`, `"a"`)
-}
-func TestReplaceAntigravityThoughtSignaturesAlreadySkipValidatorIsNoOp(t *testing.T) {
-	t.Parallel()
-	// thoughtSignature 已是 skip-validator 哨兵时不得再报告变更：
-	// 重复替换会触发无意义的 retry 循环。
-	body := []byte(`{"contents":[{"parts":[{"text":"answer","thoughtSignature":"skip_thought_signature_validator"}]}]}`)
-
-	got, changed := replaceAntigravityThoughtSignatures(body)
-	if changed {
-		t.Fatalf("already-skip-validator body reported changed: %s", got)
-	}
-	if got != nil {
-		if signature := gjson.GetBytes(got, "contents.0.parts.0.thoughtSignature").String(); signature != "skip_thought_signature_validator" {
-			t.Fatalf("sentinel must be preserved: %s", got)
-		}
-	}
-}
-
 func TestRetryBodyForRejectedRequest_StripsUnknownInputStatus(t *testing.T) {
 	t.Parallel()
 	// 两个 item 都带 status：一次性剥离全部，而不是只删上游点名的单个路径。

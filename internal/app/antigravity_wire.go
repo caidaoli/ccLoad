@@ -235,7 +235,7 @@ func prepareAntigravityRequestBody(
 
 	requestType := "agent"
 	requestID := "agent-" + util.NewUUIDv4()
-	if hasAntigravityWebSearchTool(sourceBody) || hasAntigravityWebSearchTool(body) {
+	if wantsAntigravityWebSearch(sourceBody) || gjson.GetBytes(body, "requestType").String() == "web_search" {
 		requestType = "web_search"
 		modelName = antigravityWebSearchFallbackModel
 	} else if strings.Contains(strings.ToLower(modelName), "image") {
@@ -420,6 +420,13 @@ func antigravitySystemInstructionContainsIdentity(request []byte) bool {
 		}
 	}
 	return false
+}
+
+func wantsAntigravityWebSearch(body []byte) bool {
+	if gjson.GetBytes(body, "input").Exists() {
+		return antigravityresponses.WantsWebSearch(body)
+	}
+	return hasAntigravityWebSearchTool(body)
 }
 
 func hasAntigravityWebSearchTool(body []byte) bool {

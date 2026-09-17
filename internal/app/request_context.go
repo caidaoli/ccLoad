@@ -28,6 +28,7 @@ type requestContext struct {
 	responsesSSEUpstreamNonStream bool
 	codeBuddyOAuth                bool
 	antigravityOAuth              bool
+	antigravityReplay             *antigravityReplay
 	anthropicClaudeCodeWire       bool
 	zedWire                       *zedWirePlan
 	// codexMultiAgentV2Optimized records that this attempt renamed the

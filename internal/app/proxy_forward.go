@@ -1399,7 +1399,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			reqCtx.transformPlan.ClientProtocol,
 			reqCtx.transformPlan.ResponseModel(),
 			reqCtx.transformPlan.OriginalBody,
-			translatedRequestBody,
+			reqCtx.transformPlan.TranslatedBody,
 			rawBody,
 		)
 	} else {
@@ -1422,6 +1422,8 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		}, reqCtx.Duration().Seconds(), err
 	}
+
+	reqCtx.antigravityReplay.captureJSON(translatedBody)
 
 	translatedHeader := resp.Header.Clone()
 	translatedHeader.Set("Content-Type", "application/json")
@@ -1505,22 +1507,19 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if err != nil {
 				return nil, err
 			}
-			translatedRequestBody, err = unwrapAntigravityRequest(reqCtx.transformPlan.TranslatedBody)
-			if err != nil {
-				return nil, err
-			}
 			chunks, translateErr := translateAntigravityResponseStream(
 				reqCtx.ctx,
 				reqCtx.transformPlan.ClientProtocol,
 				reqCtx.transformPlan.ResponseModel(),
 				reqCtx.transformPlan.OriginalBody,
-				translatedRequestBody,
+				reqCtx.transformPlan.TranslatedBody,
 				providerEvent,
 				&state,
 			)
 			if translateErr != nil {
 				return nil, translateErr
 			}
+			reqCtx.antigravityReplay.captureStream(chunks)
 			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
 				translatedComplete = true
 			}
@@ -2111,6 +2110,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
 	if cfg.UsesAntigravityOAuth() {
+		reqCtx.antigravityReplay = s.antigravityReplay.begin(cfg, plan.RequestModel(), baseURL, hdr, plan.OriginalBody, plan.ClientProtocol)
+		defer reqCtx.antigravityReplay.close()
 		var translatedBody []byte
 		if translatedRequestOverride != nil {
 			translatedBody = translatedRequestOverride
@@ -2119,7 +2120,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			translatedBody, err = translateAntigravityRequest(
 				plan.ClientProtocol,
 				plan.RequestModel(),
-				plan.TranslatedBody,
+				reqCtx.antigravityReplay.restore(plan.TranslatedBody),
 				plan.Streaming,
 			)
 			if err != nil {
@@ -2344,6 +2345,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		responseWriter = dc.wrapTranslatedResponseWriter(w)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
+	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && res.Status == http.StatusBadRequest {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
 	}
@@ -2665,7 +2667,7 @@ func (s *Server) forwardAttempt(
 	reqCtx.upstreamProtocol = upstreamProtocol
 	reqCtx.debugData = nil
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
-	if cfg.UsesAntigravityOAuth() && (hasAntigravityWebSearchTool(reqCtx.body) || hasAntigravityWebSearchTool(bodyToSend)) {
+	if cfg.UsesAntigravityOAuth() && (wantsAntigravityWebSearch(reqCtx.body) || wantsAntigravityWebSearch(bodyToSend)) {
 		actualModel = antigravityWebSearchFallbackModel
 	}
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
@@ -3146,11 +3148,6 @@ func retryBodyForRejectedRequest(
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForMissingStoredInputItem(plan, res); ok {
 		return retryBody, strategy, true
-	}
-	if cfg != nil && cfg.UsesAntigravityOAuth() && res != nil && !res.ResponseCommitted {
-		if retryBody, strategy, ok := antigravitySignatureRetryBody(plan.TranslatedBody, res.Body, res.Status); ok {
-			return retryBody, strategy, true
-		}
 	}
 	return codexRetryBodyFor400(upstreamProtocol, cfg, plan, res)
 }

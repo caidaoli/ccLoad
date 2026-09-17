@@ -29,7 +29,7 @@ const (
 	DefaultClientID         = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	DefaultClientSecret     = "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"
 	DefaultRedirectURI      = "http://localhost:51121/oauth-callback"
-	DefaultUserAgent        = "antigravity/hub/2.8.1 darwin/arm64"
+	DefaultUserAgent        = "antigravity/hub/2.9.1 darwin/arm64"
 	DefaultManifestURL      = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 	defaultRequestTimeout   = 30 * time.Second
 	maxResponseBytes        = 1 << 20

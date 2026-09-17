@@ -106,3 +106,8 @@ func BuildClaudeStructuredOutputInstruction(format gjson.Result) string {
 		return ""
 	}
 }
+
+// SystemReminderText preserves the directive identity of a demoted system message.
+func SystemReminderText(text string) string {
+	return claudeSystemReminderStart + "\n" + text + "\n" + claudeSystemReminderEnd
+}
