@@ -2244,7 +2244,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			err = prepareZedResponsesResponse(resp, reqCtx.zedWire, s.protocolRegistry)
 		}
 		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
-		s.persistAnthropicPassiveUsage(reqCtx.ctx, cfg, resp)
+		s.persistAnthropicPassiveUsage(cfg, resp)
 		// Claude Code 的 Accept-Encoding 声明了 br/zstd，Go transport 只会自动解 gzip，
 		// 剩下的必须自己解——发了那个头就得负责解码。
 		if err == nil && reqCtx.anthropicClaudeCodeWire {

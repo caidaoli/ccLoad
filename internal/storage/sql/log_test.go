@@ -843,3 +843,357 @@ func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 		t.Fatal("upstream_websocket=false, want true")
 	}
 }
+
+func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
+	for _, seconds := range []int64{604800, 30 * 24 * 60 * 60} {
+		t.Run(time.Duration(seconds*int64(time.Second)).String(), func(t *testing.T) {
+			store := newTestStore(t, "quota-retention.db")
+			ctx := context.Background()
+			base := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
+			used := 10.0
+			sample := oauthcost.Sample{Key: "gemini models|quota", Family: oauthcost.FamilyGemini,
+				WindowSeconds: seconds, ResetAt: base.Add(24 * time.Hour), UsedPercent: &used, SampledAt: base.Add(-6 * 24 * time.Hour)}
+			credential := &antigravityauth.Credential{Type: "antigravity", AccessToken: "test", RefreshToken: "test", Expired: "2030-01-01T00:00:00Z",
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, sample.SampledAt)}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: "quota-retention", AuthType: model.AuthTypeAntigravityOAuth,
+				OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, at := range []time.Time{base.Add(-5 * 24 * time.Hour), base.Add(-time.Minute)} {
+				if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+					Model: "alias", ActualModel: "gemini-3.8-flash-high", Cost: 1.25, CostMultiplier: 9}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.CleanupLogsBefore(ctx, base.Add(-2*24*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			refresh := func(cfg *model.Config, wantUpdated bool, want int64) {
+				t.Helper()
+				current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sample.ResetAt, sample.SampledAt = base.Add(25*time.Hour), base
+				current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{sample}, base)
+				payload, err := current.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+				if err != nil || updated != wantUpdated {
+					t.Fatalf("quota CAS = %t, %v, want %t", updated, err, wantUpdated)
+				}
+				if updated && oauthcost.Find(costs, sample.Key).StandardCostMicroUSD != want {
+					t.Fatalf("quota cost = %+v, want %d", oauthcost.Find(costs, sample.Key), want)
+				}
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A log committing after the snapshot must force a CAS retry.
+			if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(base), ChannelID: channel.ID,
+				Model: "gemini-3.8-flash-high", Cost: 0.25}); err != nil {
+				t.Fatal(err)
+			}
+			refresh(cfg, false, 0)
+			cfg, err = store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refresh(cfg, true, 2_750_000)
+		})
+	}
+}
+
+func TestLog_OAuthUsageConfirmsLocallyAdvancedPeriod(t *testing.T) {
+	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
+		t.Run(time.Duration(seconds*int64(time.Second)).String(), func(t *testing.T) {
+			store := newTestStore(t, "quota-local-rollover.db")
+			ctx := context.Background()
+			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
+			used := 10.0
+			sample := oauthcost.Sample{Key: "gemini models|quota", Family: oauthcost.FamilyGemini,
+				WindowSeconds: seconds, ResetAt: oldReset, UsedPercent: &used, SampledAt: oldReset.Add(-time.Hour)}
+			credential := &antigravityauth.Credential{Type: "antigravity", AccessToken: "test", RefreshToken: "test", Expired: "2030-01-01T00:00:00Z",
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, sample.SampledAt)}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: "quota-local-rollover", AuthType: model.AuthTypeAntigravityOAuth,
+				OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, at := range []time.Time{oldReset.Add(-30 * time.Minute), oldReset.Add(time.Minute)} {
+				if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+					Model: "gemini-3.8-flash-high", Cost: 1.25}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The locally predicted period discarded the first log. Upstream now
+			// confirms a period covering both, within the half-window tolerance.
+			sample.ResetAt = oldReset.Add(time.Duration(seconds) * time.Second * 3 / 5)
+			sample.SampledAt = oldReset.Add(2 * time.Minute)
+			current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{sample}, sample.SampledAt)
+			payload, err := current.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+			if err != nil || !updated {
+				t.Fatalf("quota CAS = %t, %v", updated, err)
+			}
+			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 2_500_000 {
+				t.Fatalf("confirmed quota cost = %d, want 2500000", got)
+			}
+		})
+	}
+}
+
+// 本地误滚后上游确认真实周期时，旧周期尾部的日志可能已经超出保留期。
+// 对账只能核对边界的对称差；按新边界全量重算会把这段成本直接抹掉。
+func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
+	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
+		window := time.Duration(seconds) * time.Second
+		t.Run(window.String(), func(t *testing.T) {
+			store := newTestStore(t, "quota-local-rollover-expired.db")
+			ctx := context.Background()
+			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
+			used := 10.0
+			sample := oauthcost.Sample{Key: "gemini models|quota", Family: oauthcost.FamilyGemini,
+				WindowSeconds: seconds, ResetAt: oldReset, UsedPercent: &used, SampledAt: oldReset.Add(-window / 2)}
+			credential := &antigravityauth.Credential{Type: "antigravity", AccessToken: "test", RefreshToken: "test",
+				Expired:        "2030-01-01T00:00:00Z",
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, sample.SampledAt)}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: "quota-local-rollover-expired",
+				AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			add := func(at time.Time) {
+				t.Helper()
+				if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+					Model: "gemini-3.8-flash-high", Cost: 1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			refresh := func(next oauthcost.Sample, observedAt time.Time) *oauthcost.Usage {
+				t.Helper()
+				cfg, err := store.GetConfig(ctx, channel.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{next}, observedAt)
+				payload, err := current.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
+					model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+				if err != nil || !updated {
+					t.Fatalf("quota CAS = %t, %v", updated, err)
+				}
+				return costs
+			}
+
+			// 一次常规刷新把「已计入区间」落盘，随后的边界变化才有对账基准。
+			add(oldReset.Add(-window / 3))
+			sample.SampledAt = oldReset.Add(-window / 4)
+			if got := oauthcost.Find(refresh(sample, sample.SampledAt), sample.Key).StandardCostMicroUSD; got != 1_000_000 {
+				t.Fatalf("accounted quota cost = %d, want 1000000", got)
+			}
+
+			// 本地时钟越过预测截止点：窗口滚动清零，新周期重新累计。
+			add(oldReset)
+			add(oldReset.Add(window / 3))
+			if err := store.CleanupLogsBefore(ctx, oldReset.Add(window/6)); err != nil {
+				t.Fatal(err)
+			}
+
+			// 上游确认真实周期比本地预测早结束，起点随之前移。前移进来的那段
+			// 日志已被清理，但本地滚动后累计的成本必须原样保留。
+			used = 30
+			sample.ResetAt = oldReset.Add(window - window/10)
+			sample.SampledAt = oldReset.Add(window / 2)
+			if got := oauthcost.Find(refresh(sample, sample.SampledAt), sample.Key).StandardCostMicroUSD; got != 2_000_000 {
+				t.Fatalf("confirmed quota cost = %d, want 2000000", got)
+			}
+		})
+	}
+}
+
+// 上游额度周期以「本周期首个请求」为锚点，新周期的 reset_at 会整段跳变，
+// 超出半窗口容差即判定为周期切换，reconcileWindow 直接返回全新窗口。
+// 全新窗口的 started_at 早于采样时刻，而累计成本从零起步：这段已落盘的日志
+// 必须在对账时补回，否则额度成本会长期少算（线上 Antigravity 5h 窗口即为此
+// 现象，周/月窗口只是切换频率低，缺陷路径与窗口长度无关）。
+func TestLog_OAuthUsagePeriodSwitchBackfillsLogsBeforeSample(t *testing.T) {
+	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
+		window := time.Duration(seconds) * time.Second
+		t.Run(window.String(), func(t *testing.T) {
+			store := newTestStore(t, "quota-period-switch.db")
+			ctx := context.Background()
+			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
+			used := 10.0
+			sample := oauthcost.Sample{Key: "gemini models|quota", Family: oauthcost.FamilyGemini,
+				WindowSeconds: seconds, ResetAt: oldReset, UsedPercent: &used, SampledAt: oldReset.Add(-window / 2)}
+			credential := &antigravityauth.Credential{Type: "antigravity", AccessToken: "test", RefreshToken: "test",
+				Expired:        "2030-01-01T00:00:00Z",
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, sample.SampledAt)}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: "quota-period-switch",
+				AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 本地按旧截止点滚出新周期并逐条累计；此刻边界都是暂定值。
+			for _, at := range []time.Time{oldReset.Add(window / 10), oldReset.Add(window / 5)} {
+				if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+					Model: "alias", ActualModel: "gemini-3.8-flash-high", Cost: 1.25}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 上游给出的真实截止点与本地预测相差半个窗口以上：判定周期切换，
+			// 新窗口起点回溯到采样之前，覆盖上面两条已落盘的日志。
+			observedAt := oldReset.Add(window / 4)
+			sample.ResetAt, sample.SampledAt = oldReset.Add(window/2), observedAt
+			current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{sample}, observedAt)
+			if got := oauthcost.Find(current.QuotaCostUsage, sample.Key).StandardCostMicroUSD; got != 0 {
+				t.Fatalf("switched window cost = %d, want 0 before reconcile", got)
+			}
+			payload, err := current.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
+				model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+			if err != nil || !updated {
+				t.Fatalf("quota CAS = %t, %v", updated, err)
+			}
+			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 2_500_000 {
+				t.Fatalf("backfilled quota cost = %d, want 2500000", got)
+			}
+		})
+	}
+}
+
+func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		name := "upstream_rollback"
+		if manual {
+			name = "manual_reset_and_weekly_role_change"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newTestStore(t, "quota-cutoff.db")
+			ctx := context.Background()
+			base := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
+			used := 80.0
+			sample := oauthcost.Sample{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
+				ResetAt: base.Add(2 * 24 * time.Hour), UsedPercent: &used, SampledAt: base.Add(-time.Hour)}
+			credential := &codexauth.Credential{Type: "codex", AccessToken: "test", RefreshToken: "test", Expired: "2030-01-01T00:00:00Z",
+				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{sample}, sample.SampledAt)}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: name, AuthType: model.AuthTypeCodexOAuth,
+				OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			add := func(at time.Time, cost float64) {
+				t.Helper()
+				if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+					Model: "gpt-5.6-sol", Cost: cost}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			add(base.Add(-time.Minute), 2)
+			add(base.Add(30*time.Minute), 1.25)
+			if manual {
+				if err := store.ResetOAuthQuotaCostUsage(ctx, channel.ID, base); err != nil {
+					t.Fatal(err)
+				}
+				sample.Key = "codex|primary"
+				sample.ResetAt = base.Add(7*24*time.Hour + 33*time.Minute)
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			used = 5
+			sample.SampledAt = base.Add(20 * time.Minute)
+			current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{sample}, base.Add(time.Hour))
+			payload, err := current.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
+			if err != nil || !updated {
+				t.Fatalf("quota CAS = %t, %v", updated, err)
+			}
+			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 1_250_000 {
+				t.Fatalf("cost after reset = %d, want 1250000", got)
+			}
+			// Late logs obey the actual reset cutoff, including manual resets
+			// earlier than the newly sampled period's nominal start.
+			add(base.Add(10*time.Minute), 0.25)
+			want := int64(1_250_000)
+			if manual {
+				want += 250_000
+			}
+			cfg, err = store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := oauthcost.Find(persisted.QuotaCostUsage, sample.Key).StandardCostMicroUSD; got != want {
+				t.Fatalf("cost after late log = %d, want %d", got, want)
+			}
+		})
+	}
+}

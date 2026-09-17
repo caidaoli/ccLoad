@@ -50,6 +50,10 @@ type Usage struct {
 }
 
 // Window is one persisted quota period and its accumulated standard cost.
+//
+// StartedAt 是周期起点，CountFromAt 是手动重置截止点；计数起点取两者较大值，
+// 见 CountFrom。周期切换时若要保留真实计数起点，StartedAt 会被一并前移到
+// CountFromAt 之前，所以 StartedAt 不总是名义周期起点。
 type Window struct {
 	Key                        string   `json:"key"`
 	Family                     string   `json:"family,omitempty"`
@@ -61,6 +65,46 @@ type Window struct {
 	SampledUpstreamUsedPercent *float64 `json:"sampled_upstream_used_percent,omitempty"`
 	SampledUpstreamAtUnixNano  int64    `json:"sampled_upstream_at_unix_nano,omitempty"`
 	StandardCostMicroUSD       int64    `json:"standard_cost_microusd"`
+
+	// AccountedFrom/AccountedUntil 是 StandardCostMicroUSD 已经计入的日志时间
+	// 区间（半开，Unix 秒）。不变式：区间非空时，累计值等于该区间内本族日志
+	// 成本之和——包括日志已被保留期清理掉的那部分，这正是边界变化时只能核对
+	// 对称差、不能全量重算的原因（日志保留期可以短于周/月额度周期）。
+	// 零值表示未知，存储层会按当前边界重算一次并写回，重算结果只取较大值。
+	AccountedFrom  int64 `json:"accounted_from,omitempty"`
+	AccountedUntil int64 `json:"accounted_until,omitempty"`
+
+	// LocallyAdvanced 标记这个周期是本地按截止时间滚出来的、还没被任何上游采样
+	// 确认。此时 StartedAt/ResetAt 都只是暂定值：真实重置可能漂移到旧截止点的
+	// 另一侧，采样确认时必须允许边界被改写（见 reconcileWindow）。
+	// 显式记录而不是从其他字段反推——否则 advanceWindow 的任何赋值调整都会
+	// 让这个判断静默失效，额度数字慢慢跑偏且没有任何编译或测试信号。
+	LocallyAdvanced bool `json:"locally_advanced,omitempty"`
+}
+
+// CountFrom 返回窗口的计数起点：周期起点与手动重置截止点中较晚的一个。
+func CountFrom(window *Window) int64 {
+	if window == nil {
+		return 0
+	}
+	return max(window.StartedAt, window.CountFromAt)
+}
+
+// Accounted 报告窗口是否带有可信的已计入区间。
+func Accounted(window *Window) bool {
+	return window != nil && window.AccountedUntil > window.AccountedFrom
+}
+
+// MarkAccounted 记录累计成本所覆盖的日志时间区间；空区间表示未知。
+func MarkAccounted(window *Window, from, until int64) {
+	if window == nil {
+		return
+	}
+	if from <= 0 || until <= from {
+		window.AccountedFrom, window.AccountedUntil = 0, 0
+		return
+	}
+	window.AccountedFrom, window.AccountedUntil = from, until
 }
 
 // Sample 是一次上游额度采样中的单个窗口状态。
@@ -125,19 +169,25 @@ func validFamily(family string) bool {
 // WindowMatchesModel 判断一个持久化额度窗口是否应累计指定模型。
 // 旧版本把 Codex 主窗口持久化为 FamilyAll；按 key 识别并按新的 Codex
 // 族规则匹配，避免历史窗口在下一次刷新前继续吞掉 Spark 成本。
-// gpt-reserve 是上游独立的保留额度槽位，没有可归属的请求模型，永不累计。
 func WindowMatchesModel(window *Window, modelName string) bool {
-	if window == nil {
+	if window == nil || NeverAccumulates(window) {
 		return false
 	}
-	if isCodexReserveKey(window.Key) {
-		return false
-	}
+	return FamilyMatches(windowFamily(window), modelName)
+}
+
+// NeverAccumulates 报告窗口是否永不累计请求成本。
+// gpt-reserve 是上游独立的保留额度槽位，没有可归属的请求模型。
+func NeverAccumulates(window *Window) bool {
+	return window != nil && isCodexReserveKey(window.Key)
+}
+
+func windowFamily(window *Window) string {
 	family := window.Family
 	if family == FamilyAll && strings.EqualFold(strings.TrimSpace(strings.SplitN(window.Key, "|", 2)[0]), ProviderCodex) {
 		family = FamilyCodex
 	}
-	return FamilyMatches(family, modelName)
+	return family
 }
 
 func isCodexReserveKey(key string) bool {
@@ -229,6 +279,14 @@ func Validate(usage *Usage) error {
 		}
 		if window.StandardCostMicroUSD < 0 {
 			return errors.New("OAuth quota standard cost cannot be negative")
+		}
+		// 已计入区间只有两种合法状态：整体为零（未知）或半开区间 [from, until)。
+		// 半开状态 from>0 && until==0 会被 Accounted 判为未知、却又留着一个看似
+		// 可信的起点，后续对账按它做差集就会漏算，必须在入库前拦下。
+		if window.AccountedFrom < 0 || window.AccountedUntil < 0 ||
+			(window.AccountedFrom == 0) != (window.AccountedUntil == 0) ||
+			(window.AccountedUntil > 0 && window.AccountedUntil <= window.AccountedFrom) {
+			return errors.New("OAuth quota accounted range is invalid")
 		}
 	}
 	return nil
@@ -446,14 +504,30 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		// 无用量基线的边界快照仍不能覆盖已确认的重置时间。
 		current.Family = next.Family
 		if usageSampleIsNewer {
+			// A locally advanced period has no upstream baseline. Its start is
+			// provisional too: retaining it can exclude logs when the actual
+			// reset drifted across the old deadline. The storage transaction
+			// reconciles costs against the newly confirmed interval.
+			if current.LocallyAdvanced {
+				current.StartedAt = next.StartedAt
+				current.ResetAt = next.ResetAt
+				current.ResetDay = next.ResetDay
+			}
 			current.SampledUpstreamUsedPercent = cloneFloat64(sample.UsedPercent)
 			current.SampledUpstreamAtUnixNano = sampledAtUnixNano
+			// 采样确认了边界，暂定状态结束。
+			current.LocallyAdvanced = false
 		}
 		return current
 	}
 	if current.CountFromAt > 0 && current.CountFromAt < next.ResetAt && observedAt.Before(time.Unix(next.ResetAt, 0)) {
 		next.StandardCostMicroUSD = current.StandardCostMicroUSD
 		next.CountFromAt = current.CountFromAt
+		// 周期切换不得抬高计数起点，否则手动重置后已计入的日志会被排除。
+		next.StartedAt = min(next.StartedAt, current.StartedAt)
+		// 成本沿用，已计入区间必须一同沿用，否则存储层会按新边界全量重算，
+		// 把保留期外的历史成本抹掉。
+		next.AccountedFrom, next.AccountedUntil = current.AccountedFrom, current.AccountedUntil
 	}
 	return next
 }
@@ -508,6 +582,9 @@ func newWindow(sample Sample, observedAt time.Time, resetDay int) *Window {
 	}
 	window.StartedAt = periodStart(window, resetAt).Unix()
 	advanceWindow(window, observedAt)
+	// 全新窗口的零成本只是缺省值：该周期内可能已有日志落盘，
+	// 已计入区间必须标记为未知，交给存储层按当前边界重算一次。
+	window.AccountedFrom, window.AccountedUntil = 0, 0
 	return window
 }
 
@@ -535,12 +612,17 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		window.CountFromAt = resetAt.Unix()
 		window.SampledUpstreamUsedPercent = nil
 		window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(resetAt)
+		// 手动重置是已确认的计数起点，不是本地按截止时间猜出来的边界：
+		// 后续采样不得改写 StartedAt，否则会把重置后已计入的日志排除在外。
+		window.LocallyAdvanced = false
 		if isCodexReserveKey(window.Key) {
 			window.Family = FamilyCodexReserve
 			window.StandardCostMicroUSD = 0
 		} else {
 			window.StandardCostMicroUSD = costByFamily[window.Family]
 		}
+		// costByFamily 正是自计数起点起的已落盘成本，已计入区间随之确定。
+		MarkAccounted(window, CountFrom(window), window.ResetAt)
 	}
 	return next
 }
@@ -561,11 +643,7 @@ func AddStandardCost(usage *Usage, at time.Time, modelName string, costMicroUSD 
 			continue
 		}
 		advanceWindow(window, at)
-		countFromAt := window.StartedAt
-		if window.CountFromAt > countFromAt {
-			countFromAt = window.CountFromAt
-		}
-		if at.Before(time.Unix(countFromAt, 0)) || !at.Before(time.Unix(window.ResetAt, 0)) {
+		if at.Before(time.Unix(CountFrom(window), 0)) || !at.Before(time.Unix(window.ResetAt, 0)) {
 			continue
 		}
 		if window.StandardCostMicroUSD > math.MaxInt64-costMicroUSD {
@@ -601,6 +679,11 @@ func advanceWindow(window *Window, at time.Time) {
 	window.SampledUpstreamUsedPercent = nil
 	window.SampledUpstreamAtUnixNano = sampleTimeUnixNano(time.Unix(window.StartedAt, 0).UTC())
 	window.StandardCostMicroUSD = 0
+	// 本地按截止时间滚出的新周期，边界都是暂定值，等采样确认。
+	window.LocallyAdvanced = true
+	// 新周期的零成本是确定的：落在新周期内的日志都会先推进窗口再累计，
+	// 所以此刻整个新区间「已计入」且为零，后续日志由增量累计维持该不变式。
+	MarkAccounted(window, CountFrom(window), window.ResetAt)
 }
 
 // isMonthlyWindow 判断窗口是否按自然月推进——月长不固定，按秒推进会漂移。

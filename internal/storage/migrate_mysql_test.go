@@ -178,6 +178,17 @@ func TestMySQL(t *testing.T) {
 		}
 	})
 
+	t.Run("OAuthQuotaRounding", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("CreateMySQLStore: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		assertOAuthQuotaRoundingMatchesGo(t, store)
+	})
+
 	t.Run("SyncManagerLargeRestore", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 		primaryStore, err := CreateMySQLStoreForTest(env.dsn)

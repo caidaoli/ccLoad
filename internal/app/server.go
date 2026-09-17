@@ -120,10 +120,12 @@ type Server struct {
 	scheduledChannelChecksRunning sync.Map // channel ID -> in-flight detection
 
 	// 异步统计（有界队列，避免每请求起goroutine）
-	tokenStatsCh               chan tokenStatsUpdate
-	tokenStatsDropCount        atomic.Int64
-	codexPassiveUsageCh        chan codexPassiveUsageTask
-	codexPassiveUsageDropCount atomic.Int64
+	tokenStatsCh                   chan tokenStatsUpdate
+	tokenStatsDropCount            atomic.Int64
+	codexPassiveUsageCh            chan codexPassiveUsageTask
+	codexPassiveUsageDropCount     atomic.Int64
+	anthropicPassiveUsageCh        chan anthropicPassiveUsageTask
+	anthropicPassiveUsageDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int // 单个渠道内最大Key重试次数
@@ -283,8 +285,9 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		startCursorBridge:        startCursorSDKRunner,
 
 		// Token统计队列（避免每请求起goroutine）
-		tokenStatsCh:        make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
-		codexPassiveUsageCh: make(chan codexPassiveUsageTask, codexPassiveUsageQueueSize),
+		tokenStatsCh:            make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
+		codexPassiveUsageCh:     make(chan codexPassiveUsageTask, codexPassiveUsageQueueSize),
+		anthropicPassiveUsageCh: make(chan anthropicPassiveUsageTask, anthropicPassiveUsageQueueSize),
 
 		activeRequests: newActiveRequestManager(),
 		responsesExecutionSessions: newResponsesExecutionSessionStore(
@@ -968,6 +971,10 @@ func (s *Server) startBackgroundWorkers() {
 	// Codex SSE 额度是旁路元数据，异步落库不得阻塞流式响应。
 	s.wg.Add(1)
 	go s.codexPassiveUsageWorker()
+
+	// Anthropic 额度响应头同理：CAS 退避与成本对账不得计入客户端 TTFB。
+	s.wg.Add(1)
+	go s.anthropicPassiveUsageWorker()
 
 	// 启动后台清理协程（Token 认证）
 	s.wg.Add(1)

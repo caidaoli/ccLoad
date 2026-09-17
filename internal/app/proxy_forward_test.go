@@ -1434,22 +1434,6 @@ func TestNormalizeAnthropicMessagesBodyRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestAnthropicToolResultTextPreservesScalarContent(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		input string
-		want  string
-	}{
-		{input: `{"tool_use_id":"toolu_1","content":123}`, want: "\n123"},
-		{input: `{"tool_use_id":"toolu_1","content":true}`, want: "\ntrue"},
-	} {
-		got := anthropicToolResultText(gjson.Parse(test.input))
-		if !strings.HasSuffix(got, test.want) {
-			t.Fatalf("scalar tool result lost: input=%s got=%q", test.input, got)
-		}
-	}
-}
-
 func TestRectifyAnthropicThinkingBudgetRejectsFractionalTokenCounts(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"thinking":{"type":"enabled","budget_tokens":32000.5},"max_tokens":64000.5}`)

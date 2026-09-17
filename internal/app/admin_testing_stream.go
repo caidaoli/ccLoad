@@ -499,7 +499,7 @@ func (s *Server) streamChatWithURLForProtocol(
 		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, nil, result)}
 	}
 	s.persistDetectionCodexPassiveUsage(req.Context(), cfg, resp)
-	s.persistAnthropicPassiveUsage(req.Context(), cfg, resp)
+	s.persistDetectionAnthropicPassiveUsage(req.Context(), cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if requestPlan.debugCapture != nil {
 		requestPlan.debugCapture.wrapResponseBody(resp)

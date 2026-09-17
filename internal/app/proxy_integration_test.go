@@ -990,100 +990,281 @@ func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 	}
 }
 
-func TestProxy_NativeAnthropic400RepairsToolAndBudget(t *testing.T) {
+func TestProxy_NativeAnthropic400RepairsThinkingBudget(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name          string
-		upstreamError string
-		request       map[string]any
-		assertRetry   func(testing.TB, []byte)
-	}{
-		{
-			name:          "tool blocks",
-			upstreamError: `{"type":"error","error":{"type":"invalid_request_error","message":"tool_use blocks are not supported"}}`,
-			request: map[string]any{
-				"model": "claude-sonnet-4-6", "max_tokens": 4096,
-				"messages": []any{
-					map[string]any{"role": "user", "content": "call a tool"},
-					map[string]any{"role": "assistant", "content": []any{map[string]any{
-						"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"q": "x"},
-					}}},
-					map[string]any{"role": "user", "content": []any{map[string]any{
-						"type": "tool_result", "tool_use_id": "toolu_1", "content": "result",
-					}}},
-				},
-				"tools":       []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
-				"tool_choice": map[string]any{"type": "auto"},
-			},
-			assertRetry: func(t testing.TB, body []byte) {
-				t.Helper()
-				if gjson.GetBytes(body, "tools").Exists() || gjson.GetBytes(body, "tool_choice").Exists() ||
-					strings.Contains(string(body), `"type":"tool_use"`) || strings.Contains(string(body), `"type":"tool_result"`) {
-					t.Fatalf("tool blocks survived retry: %s", body)
-				}
-				if !strings.Contains(string(body), "[Tool call: lookup]") || !strings.Contains(string(body), "[Tool result: toolu_1]") {
-					t.Fatalf("tool semantics were not preserved as text: %s", body)
-				}
-			},
-		},
-		{
-			name:          "thinking budget",
-			upstreamError: `{"type":"error","error":{"type":"invalid_request_error","message":"thinking budget_tokens must be less than max_tokens"}}`,
-			request: map[string]any{
-				"model": "claude-sonnet-4-6", "max_tokens": 10000,
-				"thinking": map[string]any{"type": "enabled", "budget_tokens": 10000},
-				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
-			},
-			assertRetry: func(t testing.TB, body []byte) {
-				t.Helper()
-				if got := gjson.GetBytes(body, "thinking.type").String(); got != "enabled" {
-					t.Fatalf("thinking.type=%q body=%s", got, body)
-				}
-				if got := gjson.GetBytes(body, "thinking.budget_tokens").Int(); got != 32000 {
-					t.Fatalf("budget_tokens=%d body=%s", got, body)
-				}
-				if got := gjson.GetBytes(body, "max_tokens").Int(); got != 64000 {
-					t.Fatalf("max_tokens=%d body=%s", got, body)
-				}
-			},
-		},
+	var attempts atomic.Int32
+	var bodies [][]byte
+	env := setupProxyTestEnv(t, []testChannel{{name: "anthropic-repair", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant"}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		if attempts.Add(1) == 1 {
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"thinking budget_tokens must be less than max_tokens"}}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 10000, "thinking": map[string]any{"type": "enabled", "budget_tokens": 10000}, "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+	if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
+		t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
 	}
+	body := bodies[1]
+	if gjson.GetBytes(body, "thinking.type").String() != "enabled" || gjson.GetBytes(body, "thinking.budget_tokens").Int() != 32000 || gjson.GetBytes(body, "max_tokens").Int() != 64000 {
+		t.Fatalf("thinking budget was not repaired: %s", body)
+	}
+}
 
-	for _, test := range tests {
+func TestProxy_NativeAnthropicToolErrorsPreserveRequest(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, upstreamError string }{
+		{"unsupported tools", `{"error":{"type":"invalid_request_error","message":"tool_use blocks are not supported"}}`},
+		{"missing result", `{"error":{"type":"invalid_request_error","message":"tool_use ids were found without tool_result blocks immediately after: toolu_1"}}`},
+		{"wrapped Google error", `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"tool_use ids were found without tool_result blocks immediately after: toolu_1\"}}"}}`},
+		{"unsupported tool choice", `{"error":{"type":"invalid_request_error","message":"tool_choice is not supported"}}`},
+	} {
 		t.Run(test.name, func(t *testing.T) {
+			upstreamError := test.upstreamError
 			t.Parallel()
 			var attempts atomic.Int32
-			var bodies [][]byte
-			env := setupProxyTestEnv(t, []testChannel{{
-				name: "anthropic-repair", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant",
-			}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+			env := setupProxyTestEnv(t, []testChannel{{name: "anthropic-tool-rejection", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant"}}, map[int]string{0: "https://anthropic-gateway.example.com"})
 			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				body, _ := io.ReadAll(r.Body)
-				bodies = append(bodies, body)
-				if attempts.Add(1) == 1 {
-					return &http.Response{
-						StatusCode: http.StatusBadRequest,
-						Header:     http.Header{"Content-Type": []string{"application/json"}},
-						Body:       io.NopCloser(strings.NewReader(test.upstreamError)),
-					}, nil
+				attempts.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
 				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-					Body: io.NopCloser(strings.NewReader(
-						`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
-					)),
-				}, nil
+				for path, want := range map[string]string{"tools.0.name": "lookup", "tool_choice.type": "auto", "messages.1.content.0.type": "tool_use", "messages.1.content.0.id": "toolu_1", "messages.1.content.0.input.q": "x", "messages.2.content.0.type": "tool_result", "messages.2.content.0.tool_use_id": "toolu_1", "messages.2.content.0.content": "result"} {
+					if got := gjson.GetBytes(body, path).String(); got != want {
+						t.Errorf("%s=%q, want %q", path, got, want)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(upstreamError))}, nil
 			})}
-
-			response := doProxyRequest(t, env.engine, "/v1/messages", test.request, map[string]string{
-				"anthropic-version": "2023-06-01",
-			})
-			if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
-				t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 4096,
+				"tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}}, "tool_choice": map[string]any{"type": "auto"},
+				"messages": []any{
+					map[string]any{"role": "user", "content": "call a tool"},
+					map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"q": "x"}}}},
+					map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "result"}}},
+				},
+			}, map[string]string{"anthropic-version": "2023-06-01"})
+			if response.Code != http.StatusBadRequest || attempts.Load() != 1 {
+				t.Fatalf("status=%d attempts=%d response=%s", response.Code, attempts.Load(), response.Body.String())
 			}
-			test.assertRetry(t, bodies[1])
+			if got := gjson.Get(response.Body.String(), "error.message").String(); got != gjson.Get(upstreamError, "error.message").String() {
+				t.Fatalf("upstream error lost: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_NativeAnthropicToolRepairIsLocalized(t *testing.T) {
+	t.Parallel()
+	const requestBody = `{
+		"model":"claude-sonnet-4-6","max_tokens":4096,
+		"tools":[{"name":"lookup","input_schema":{"type":"object"}},{"name":"read","input_schema":{"type":"object"}},{"name":"unused","input_schema":{"type":"object"}}],
+		"tool_choice":{"type":"tool","name":"lookup"},
+		"messages":[
+			{"role":"user","content":"call tools"},
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"Call_A","name":"lookup","input":{"q":"a"}},
+				{"type":"tool_use","id":"Call_B","name":"read","input":{"file":"keep"}},
+				{"type":"tool_use","id":"Call_C","name":"lookup","input":{"q":"c"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"Call_A","is_error":true,"cache_control":{"type":"ephemeral","ttl":"1h"},"content":[{"type":"text","text":"a failed"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1hZ2U="}}]},
+				{"type":"tool_result","tool_use_id":"Call_C","content":"c result"},
+				{"type":"tool_result","tool_use_id":"Call_B","content":"keep result"},
+				{"type":"text","text":"continue"}
+			]}
+		]}`
+	for _, tc := range []struct {
+		name, message, param                   string
+		removeTool                             string
+		pairOnly, retry                        bool
+		brokenPair, duplicateID, repeatError   bool
+		mixedTTL, emptyText, unsupportedResult bool
+		scalarResult                           bool
+	}{
+		{name: "unused definition", message: "tools.2.custom.input_schema: Invalid schema", removeTool: "unused", retry: true},
+		{name: "definition and its history", message: "tools.0.custom.input_schema: Invalid schema", removeTool: "lookup", retry: true},
+		{name: "parameter location", param: "tools[0].input_schema.properties.thinking", message: "Invalid schema", removeTool: "lookup", retry: true},
+		{name: "one call not all calls of same tool", message: "messages.1.content.0: tool_use blocks are not supported", pairOnly: true, retry: true},
+		{name: "wire index after empty text cleanup", message: "messages.1.content.0: tool_use blocks are not supported", pairOnly: true, retry: true, emptyText: true},
+		{name: "mixed TTL reorder", message: "messages.1.content.0: tool_use blocks are not supported", mixedTTL: true},
+		{name: "unknown history location", param: "messages.99.content.0.input.thinking", message: "Invalid argument"},
+		{name: "unparseable history location", param: "messages.1.content.0.input.thinking-mode", message: "Invalid argument"},
+		{name: "unknown result content", message: "messages.1.content.0: tool_use blocks are not supported", unsupportedResult: true},
+		// 标量 tool_result.content 无法在保留语义的前提下文本化，降级必须整体放弃。
+		{name: "scalar result content", message: "messages.1.content.0: tool_use blocks are not supported", scalarResult: true},
+		{name: "result location", message: "messages.2.content.0: tool_result is not supported", pairOnly: true, retry: true},
+		{name: "result parameter", param: "messages[2].content[0]", message: "unsupported tool_result block", pairOnly: true, retry: true},
+		// 第三方兼容网关的措辞不受 Anthropic 契约约束，判定必须是语义而非整句相等。
+		{name: "gateway wording", message: "messages.1.content.0: This model does not support tool_use blocks", pairOnly: true, retry: true},
+		{name: "gateway wording not allowed", message: "messages.1.content.0: tool_use block type is not allowed here", pairOnly: true, retry: true},
+		{name: "bounded retry", message: "tools.0.custom.input_schema: Invalid schema", removeTool: "lookup", retry: true, repeatError: true},
+		{name: "no location", message: "tool_use blocks are not supported"},
+		{name: "unrelated prose", message: "The description mentions tools.0: tool_use blocks are not supported"},
+		{name: "conflicting locations", param: "tools.1.name", message: "tools.0.name: Invalid thinking tool name"},
+		{name: "unknown parameter", param: "tools.bad", message: "tools.0.name: Invalid thinking tool name"},
+		{name: "out of range", message: "tools.90.name: Invalid name"},
+		{name: "negative index", message: "tools[-1].name: Invalid name"},
+		{name: "missing result is not incompatibility", message: "messages.1.content.0: tool_use ids were found without tool_result blocks immediately after: Call_A"},
+		{name: "invalid arguments are not incompatibility", message: "messages.1.content.0.input.thinking: Invalid tool_use input"},
+		{name: "non tool block", message: "messages.2.content.3: tool_result blocks are not supported"},
+		{name: "incomplete pair", message: "messages.1.content.0: tool_use blocks are not supported", brokenPair: true},
+		{name: "definition with incomplete pair", message: "tools.0.input_schema: Invalid schema", brokenPair: true},
+		{name: "duplicate ID", message: "messages.1.content.0: tool_use blocks are not supported", duplicateID: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var request map[string]any
+			if err := json.Unmarshal([]byte(requestBody), &request); err != nil {
+				t.Fatal(err)
+			}
+			request["thinking"] = map[string]any{"type": "adaptive"}
+			request["output_config"] = map[string]any{"effort": "high"}
+			if strings.Contains(tc.message+tc.param, "thinking") {
+				request["tool_choice"] = map[string]any{"type": "auto"}
+			}
+			messages := request["messages"].([]any)
+			if tc.mixedTTL {
+				result := messages[2].(map[string]any)["content"].([]any)[2].(map[string]any)
+				result["cache_control"] = map[string]any{"type": "ephemeral", "ttl": "5m"}
+			}
+			if tc.emptyText {
+				content := messages[1].(map[string]any)["content"].([]any)
+				messages[1].(map[string]any)["content"] = append([]any{map[string]any{"type": "text", "text": ""}}, content...)
+			}
+			if tc.unsupportedResult {
+				result := messages[2].(map[string]any)["content"].([]any)[0].(map[string]any)
+				result["content"] = []any{map[string]any{"type": "unknown_content", "data": "preserve"}}
+			}
+			if tc.scalarResult {
+				result := messages[2].(map[string]any)["content"].([]any)[0].(map[string]any)
+				result["content"] = 123
+			}
+			if tc.brokenPair {
+				content := messages[2].(map[string]any)["content"].([]any)
+				messages[2].(map[string]any)["content"] = content[1:]
+			}
+			if tc.duplicateID {
+				content := messages[1].(map[string]any)["content"].([]any)
+				content[2].(map[string]any)["id"] = "Call_A"
+			}
+			errorBody, err := json.Marshal(map[string]any{"error": map[string]any{"type": "invalid_request_error", "message": tc.message, "param": tc.param}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{name: "localized-repair", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant"}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+			var bodies [][]byte
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				body, readErr := io.ReadAll(r.Body)
+				if readErr != nil {
+					t.Error(readErr)
+				}
+				bodies = append(bodies, body)
+				status, response := http.StatusBadRequest, string(errorBody)
+				if len(bodies) > 1 && !tc.repeatError {
+					status = http.StatusOK
+					response = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(response))}, nil
+			})}
+			response := doProxyRequest(t, env.engine, "/v1/messages", request, map[string]string{"anthropic-version": "2023-06-01"})
+			wantAttempts, wantStatus := 1, http.StatusBadRequest
+			if tc.retry {
+				wantAttempts = 2
+				if !tc.repeatError {
+					wantStatus = http.StatusOK
+				}
+			}
+			if len(bodies) != wantAttempts || response.Code != wantStatus {
+				t.Fatalf("attempts=%d status=%d, want %d/%d: %s", len(bodies), response.Code, wantAttempts, wantStatus, response.Body.String())
+			}
+			if strings.Contains(tc.message+tc.param, "thinking") && !gjson.GetBytes(bodies[0], "thinking").Exists() {
+				t.Fatal("fixture must retain thinking on the actual wire")
+			}
+			if !tc.retry {
+				if gjson.Get(response.Body.String(), "error.message").String() != tc.message {
+					t.Fatalf("original error lost: %s", response.Body.String())
+				}
+				return
+			}
+			before, after := gjson.ParseBytes(bodies[0]), gjson.ParseBytes(bodies[1])
+			for _, path := range []string{"messages.0", "messages.1.content.1", "model", "max_tokens", "system", "thinking", "output_config"} {
+				if !reflect.DeepEqual(before.Get(path).Value(), after.Get(path).Value()) {
+					t.Errorf("unrelated %s changed", path)
+				}
+			}
+			var toolNames []string
+			for _, tool := range after.Get("tools").Array() {
+				toolNames = append(toolNames, tool.Get("name").String())
+			}
+			wantTools := []string{"lookup", "read", "unused"}
+			if tc.removeTool != "" {
+				wantTools = slices.DeleteFunc(wantTools, func(name string) bool { return name == tc.removeTool })
+			}
+			if !reflect.DeepEqual(toolNames, wantTools) {
+				t.Errorf("tools=%v, want %v", toolNames, wantTools)
+			}
+			if tc.removeTool != "" && tc.removeTool == before.Get("tool_choice.name").String() {
+				if after.Get("tool_choice").Exists() {
+					t.Error("removed tool is still forced by tool_choice")
+				}
+			} else if !reflect.DeepEqual(before.Get("tool_choice").Value(), after.Get("tool_choice").Value()) {
+				t.Error("unrelated tool_choice changed")
+			}
+			if tc.removeTool == "unused" {
+				if !reflect.DeepEqual(before.Get("messages").Value(), after.Get("messages").Value()) {
+					t.Error("removing unused definition changed history")
+				}
+				return
+			}
+			converted := after.Get("messages.1.content.0")
+			if converted.Get("type").String() != "text" ||
+				!strings.Contains(converted.Get("text").String(), "lookup") ||
+				!strings.Contains(converted.Get("text").String(), `"q":"a"`) {
+				t.Errorf("selected call history lost: %s", converted.Raw)
+			}
+			if strings.Contains(converted.Get("text").String(), "cache_control") {
+				t.Error("wire-only fields must not leak into converted history text")
+			}
+			if tc.pairOnly && !reflect.DeepEqual(before.Get("messages.1.content.2").Value(), after.Get("messages.1.content.2").Value()) {
+				t.Error("another call of the same tool changed")
+			}
+			var resultIDs []string
+			imageFound, errorFound, seenOther := false, false, false
+			for _, part := range after.Get("messages.2.content").Array() {
+				if part.Get("type").String() == "tool_result" {
+					if seenOther {
+						t.Error("remaining results must precede converted text")
+					}
+					resultIDs = append(resultIDs, part.Get("tool_use_id").String())
+				} else {
+					seenOther = true
+				}
+				if part.Get("type").String() == "image" {
+					wantImage := before.Get("messages.2.content.0.content.1").Value().(map[string]any)
+					wantImage["cache_control"] = before.Get("messages.2.content.0.cache_control").Value()
+					imageFound = reflect.DeepEqual(part.Value(), wantImage)
+				}
+				if strings.Contains(part.Get("text").String(), "Call_A] (error)") {
+					errorFound = true
+				}
+			}
+			wantResults := []string{"Call_B"}
+			if tc.pairOnly {
+				wantResults = []string{"Call_C", "Call_B"}
+			}
+			if !reflect.DeepEqual(resultIDs, wantResults) || !imageFound || !errorFound {
+				t.Errorf("results=%v want=%v image=%v error=%v: %s", resultIDs, wantResults, imageFound, errorFound, bodies[1])
+			}
 		})
 	}
 }
@@ -1116,7 +1297,7 @@ func TestProxy_NativeAnthropicDoesNotRepairUnrelatedSignature400(t *testing.T) {
 	}
 }
 
-func TestProxy_NativeAnthropicRepairFailureUsesNormalChannelRouting(t *testing.T) {
+func TestProxy_NativeAnthropicToolRepairFailurePreservesNextChannelRequest(t *testing.T) {
 	t.Parallel()
 
 	var firstAttempts atomic.Int32
@@ -1138,14 +1319,28 @@ func TestProxy_NativeAnthropicRepairFailureUsesNormalChannelRouting(t *testing.T
 	}, map[int]string{0: "https://first-anthropic.example.com", 1: "https://fallback-anthropic.example.com"})
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host == "first-anthropic.example.com" {
-			firstAttempts.Add(1)
+			attempt := firstAttempts.Add(1)
+			body, readErr := io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Error(readErr)
+			}
+			if attempt == 2 && (gjson.GetBytes(body, "tools").Exists() || gjson.GetBytes(body, "tool_choice").Exists() || gjson.GetBytes(body, "messages.1.content.0.type").String() != "text") {
+				t.Errorf("rejected last tool was not localized: %s", body)
+			}
 			return &http.Response{
 				StatusCode: http.StatusBadRequest,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body: io.NopCloser(strings.NewReader(
-					`{"type":"error","error":{"type":"invalid_request_error","message":"tool_use blocks are not supported"}}`,
+					`{"type":"error","error":{"type":"invalid_request_error","message":"tools.0.input_schema: Invalid schema"}}`,
 				)),
 			}, nil
+		}
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Error(readErr)
+		}
+		if gjson.GetBytes(body, "tools.0.name").String() != "lookup" || gjson.GetBytes(body, "messages.1.content.0.type").String() != "tool_use" || gjson.GetBytes(body, "messages.2.content.0.tool_use_id").String() != "toolu_1" || gjson.GetBytes(body, "tool_choice.name").String() != "lookup" {
+			t.Errorf("fallback lost tools: %s", body)
 		}
 		fallbackAttempts.Add(1)
 		return &http.Response{
@@ -1164,8 +1359,10 @@ func TestProxy_NativeAnthropicRepairFailureUsesNormalChannelRouting(t *testing.T
 			map[string]any{"role": "assistant", "content": []any{map[string]any{
 				"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{},
 			}}},
+			map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "keep result"}}},
 		},
-		"tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
+		"tool_choice": map[string]any{"type": "tool", "name": "lookup"},
+		"tools":       []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
 	}, map[string]string{"anthropic-version": "2023-06-01"})
 	if response.Code != http.StatusOK || firstAttempts.Load() != 2 || fallbackAttempts.Load() != 1 {
 		t.Fatalf("status=%d first=%d fallback=%d body=%s", response.Code, firstAttempts.Load(), fallbackAttempts.Load(), response.Body.String())
@@ -1863,55 +2060,99 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 }
 
 func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T) {
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		wire, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var callIDs, resultIDs []string
-		foundReminder := false
-		for _, content := range gjson.GetBytes(wire, "request.contents").Array() {
-			for _, part := range content.Get("parts").Array() {
-				if call := part.Get("functionCall"); call.Exists() {
-					callIDs = append(callIDs, call.Get("id").String())
-				}
-				if result := part.Get("functionResponse"); result.Exists() {
-					resultIDs = append(resultIDs, result.Get("id").String())
-					if content.Get("role").String() != "user" {
-						t.Errorf("tool result has non-user role: %s", wire)
+	t.Parallel()
+	for _, target := range []string{"claude-sonnet-4-6", "gemini-3-flash"} {
+		for _, reminderPosition := range []string{"before results", "after results", "within results"} {
+			t.Run(target+"/"+reminderPosition, func(t *testing.T) {
+				t.Parallel()
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					wire, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+						w.WriteHeader(500)
+						return
 					}
+					contents := gjson.GetBytes(wire, "request.contents").Array()
+					if len(contents) != 3 {
+						t.Errorf("contents=%d, want user/model/user: %s", len(contents), wire)
+						w.WriteHeader(400)
+						return
+					}
+					calls := contents[1].Get("parts").Array()
+					results := contents[2].Get("parts").Array()
+					if len(calls) != 2 || len(results) != 3 {
+						t.Errorf("calls=%d results=%d: %s", len(calls), len(results), wire)
+						w.WriteHeader(400)
+						return
+					}
+					resultOffset, reminderIndex := 0, 2
+					if target == "gemini-3-flash" {
+						resultOffset, reminderIndex = 1, 0
+					}
+					for i, id := range []string{"call_a", "call_b"} {
+						call, result := calls[i].Get("functionCall"), results[resultOffset+i].Get("functionResponse")
+						if call.Get("id").String() != id || result.Get("id").String() != id || call.Get("name").String() != result.Get("name").String() {
+							t.Errorf("tool order or pairing lost: %s", wire)
+						}
+						textPath := "response.result"
+						if i == 1 {
+							textPath += ".text"
+						}
+						if got := result.Get(textPath).String(); got != []string{"A", "B"}[i] {
+							t.Errorf("result=%q, want original result", got)
+						}
+					}
+					if got := results[resultOffset+1].Get("functionResponse.parts.0.inlineData"); got.Get("mimeType").String() != "image/png" || got.Get("data").String() != "aW1hZ2U=" {
+						t.Errorf("tool result image lost: %s", wire)
+					}
+					if !strings.Contains(results[reminderIndex].Get("text").String(), "keep the reminder") {
+						t.Errorf("reminder lost or misplaced: %s", wire)
+					}
+					if gjson.GetBytes(wire, "request.tools.0.functionDeclarations.#").Int() != 2 {
+						t.Errorf("tool definitions lost: %s", wire)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+				}))
+				t.Cleanup(upstream.Close)
+				env := setupProxyTestEnv(t, []testChannel{{name: "antigravity-system-tool-pairing", upstreamProtocol: "gemini", models: target, priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-system-pairing")}}, map[int]string{0: upstream.URL})
+				messages := []any{
+					map[string]any{"role": "user", "content": "read both"},
+					map[string]any{"role": "assistant", "content": []any{
+						map[string]any{"type": "tool_use", "id": "call_a", "name": "read_a", "input": map[string]any{}},
+						map[string]any{"type": "tool_use", "id": "call_b", "name": "read_b", "input": map[string]any{}},
+					}},
 				}
-				foundReminder = foundReminder || strings.Contains(part.Get("text").String(), "keep the reminder")
-			}
+				reminder := map[string]any{"role": "system", "content": "keep the reminder"}
+				results := []any{
+					map[string]any{"type": "tool_result", "tool_use_id": "call_b", "content": []any{
+						map[string]any{"type": "text", "text": "B"},
+						map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}},
+					}},
+					map[string]any{"type": "tool_result", "tool_use_id": "call_a", "content": "A"},
+				}
+				if reminderPosition == "before results" {
+					messages = append(messages, reminder)
+				}
+				if reminderPosition == "within results" {
+					results = append([]any{map[string]any{"type": "text", "text": "keep the reminder"}}, results...)
+				}
+				messages = append(messages, map[string]any{"role": "user", "content": results})
+				if reminderPosition == "after results" {
+					messages = append(messages, reminder)
+				}
+				response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+					"model": target, "max_tokens": 64, "messages": messages,
+					"tools": []any{
+						map[string]any{"name": "read_a", "input_schema": map[string]any{"type": "object"}},
+						map[string]any{"name": "read_b", "input_schema": map[string]any{"type": "object"}},
+					},
+				}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			})
 		}
-		if strings.Join(callIDs, ",") != "call_a,call_b" || strings.Join(resultIDs, ",") != "call_a,call_b" || !foundReminder {
-			t.Errorf("lost tool pairing or system reminder: %s", wire)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
-	}))
-	t.Cleanup(upstream.Close)
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "antigravity-system-tool-pairing", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
-		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-system-pairing"),
-	}}, map[int]string{0: upstream.URL})
-	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
-		"model": "gemini-3-flash", "max_tokens": 64,
-		"messages": []any{
-			map[string]any{"role": "user", "content": "read both"},
-			map[string]any{"role": "assistant", "content": []any{
-				map[string]any{"type": "tool_use", "id": "call_a", "name": "read_a", "input": map[string]any{}},
-				map[string]any{"type": "tool_use", "id": "call_b", "name": "read_b", "input": map[string]any{}},
-			}},
-			map[string]any{"role": "system", "content": "keep the reminder"},
-			map[string]any{"role": "user", "content": []any{
-				map[string]any{"type": "tool_result", "tool_use_id": "call_b", "content": "B"},
-				map[string]any{"type": "tool_result", "tool_use_id": "call_a", "content": "A"},
-			}},
-		},
-	}, nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

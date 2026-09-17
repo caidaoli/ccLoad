@@ -1635,7 +1635,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		return attachTestDebugData(requestPlan, nil, result)
 	}
 	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp)
-	s.persistAnthropicPassiveUsage(ctx, cfg, resp)
+	s.persistDetectionAnthropicPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if cfg.UsesZedOAuth() {
 		if zedErr := prepareZedResponsesResponse(resp, requestPlan.zedWire, s.protocolRegistry); zedErr != nil {

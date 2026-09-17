@@ -23,7 +23,31 @@ const (
 	anthropicRateLimit7dOIReset     = "anthropic-ratelimit-unified-7d_oi-reset"
 )
 
-func (s *Server) persistAnthropicPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response) {
+const anthropicPassiveUsageQueueSize = 256
+
+type anthropicPassiveUsageTask struct {
+	channelID int64
+	update    anthropicPassiveUsageUpdate
+}
+
+// 额度响应头是旁路元数据，持久化要经过凭证 CAS 与成本对账，绝不能占用
+// 代理转发路径——CAS 冲突退避和日志对账都会直接计入客户端 TTFB。
+func (s *Server) persistAnthropicPassiveUsage(cfg *model.Config, resp *http.Response) {
+	s.observeAnthropicPassiveUsage(cfg, resp, func(update anthropicPassiveUsageUpdate) {
+		s.enqueueAnthropicPassiveUsage(cfg.ID, update)
+	})
+}
+
+// 检测同步写日志，必须先保存响应头中的额度窗口，避免首次检测成本丢失。
+func (s *Server) persistDetectionAnthropicPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response) {
+	s.observeAnthropicPassiveUsage(cfg, resp, func(update anthropicPassiveUsageUpdate) {
+		s.persistAnthropicPassiveUsageUpdate(ctx, cfg, update)
+	})
+}
+
+func (s *Server) observeAnthropicPassiveUsage(
+	cfg *model.Config, resp *http.Response, onUpdate func(anthropicPassiveUsageUpdate),
+) {
 	if s == nil || s.anthropicCredentials == nil || cfg == nil || !cfg.UsesAnthropicOAuth() || resp == nil {
 		return
 	}
@@ -36,6 +60,39 @@ func (s *Server) persistAnthropicPassiveUsage(ctx context.Context, cfg *model.Co
 	if !ok {
 		return
 	}
+	onUpdate(update)
+}
+
+func (s *Server) enqueueAnthropicPassiveUsage(channelID int64, update anthropicPassiveUsageUpdate) {
+	if s == nil || s.anthropicPassiveUsageCh == nil || channelID <= 0 || s.isShuttingDown.Load() {
+		return
+	}
+	select {
+	case s.anthropicPassiveUsageCh <- anthropicPassiveUsageTask{channelID: channelID, update: update}:
+	default:
+		if dropped := s.anthropicPassiveUsageDropCount.Add(1); dropped%100 == 1 {
+			log.Printf("[WARN] Anthropic passive usage queue full; dropped updates=%d", dropped)
+		}
+	}
+}
+
+func (s *Server) anthropicPassiveUsageWorker() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case task := <-s.anthropicPassiveUsageCh:
+			s.persistAnthropicPassiveUsageUpdate(s.baseCtx, &model.Config{
+				ID: task.channelID, AuthType: model.AuthTypeAnthropicOAuth,
+			}, task.update)
+		}
+	}
+}
+
+func (s *Server) persistAnthropicPassiveUsageUpdate(
+	ctx context.Context, cfg *model.Config, update anthropicPassiveUsageUpdate,
+) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

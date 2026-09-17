@@ -355,7 +355,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return false, nil
 	}
-	for {
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -400,13 +400,16 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		if err != nil {
 			return false, err
 		}
-		updated, err := m.store.CompareAndSwapOAuthCredential(
+		updated, _, err := m.store.CompareAndSwapOAuthUsage(
 			ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {
 			return false, err
 		}
 		if !updated {
+			if err := waitOAuthCASRetry(ctx, attempt); err != nil {
+				return false, err
+			}
 			continue
 		}
 		// A concurrent token refresh may have committed and cached a newer

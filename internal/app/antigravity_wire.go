@@ -226,6 +226,7 @@ func prepareAntigravityRequestBody(
 	request = normalizeAntigravitySchemas(request, modelName)
 	request = normalizeAntigravityThinkingLevel(request)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
+		request = normalizeAntigravityClaudeToolResultOrder(request)
 		request = ensureAntigravityValidatedToolMode(request)
 	} else {
 		if gjson.GetBytes(request, "generationConfig").IsObject() {
@@ -622,6 +623,31 @@ func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {
 
 func ensureAntigravityValidatedToolMode(request []byte) []byte {
 	return setJSONValue(request, "toolConfig.functionCallingConfig.mode", "VALIDATED")
+}
+
+// Claude requires tool results before ordinary user content. Shared Gemini
+// translators put reminders first for Vertex, so enforce the Claude wire contract
+// here for every client protocol without changing model turns or result payloads.
+func normalizeAntigravityClaudeToolResultOrder(request []byte) []byte {
+	for index, content := range gjson.GetBytes(request, "contents").Array() {
+		if content.Get("role").String() != "user" {
+			continue
+		}
+		var results, other []string
+		needsReorder := false
+		for _, part := range content.Get("parts").Array() {
+			if part.Get("functionResponse").IsObject() {
+				results = append(results, part.Raw)
+				needsReorder = needsReorder || len(other) > 0
+			} else {
+				other = append(other, part.Raw)
+			}
+		}
+		if needsReorder {
+			request = setJSONRaw(request, fmt.Sprintf("contents.%d.parts", index), joinJSONRaw(append(results, other...)))
+		}
+	}
+	return request
 }
 
 func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {

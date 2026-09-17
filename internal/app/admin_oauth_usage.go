@@ -1605,7 +1605,7 @@ func (s *Server) persistOAuthUsage(
 		return summary, nil
 	}
 
-	for {
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -1629,7 +1629,7 @@ func (s *Server) persistOAuthUsage(
 		}
 
 		var nextQuotaCostUsage *oauthcost.Usage
-		if state.tracksQuotaCost {
+		if state.tracksQuotaCost() {
 			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(state.quotaCostUsage, summary, sampledAt)
 		}
 		storedSummary := *summary
@@ -1649,19 +1649,22 @@ func (s *Server) persistOAuthUsage(
 		if len(payload) > maxOAuthCredentialBytes {
 			return nil, errors.New("OAuth credential exceeds persistence limit")
 		}
-		updated, err := s.store.CompareAndSwapOAuthCredential(
+		updated, persistedCosts, err := s.store.CompareAndSwapOAuthUsage(
 			ctx, currentCfg.ID, state.authType, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {
 			return nil, err
 		}
 		if !updated {
+			if err := waitOAuthCASRetry(ctx, attempt); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
 		s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 		s.InvalidateChannelListCache()
-		return attachOAuthQuotaCostUsage(summary, nextQuotaCostUsage), nil
+		return attachOAuthQuotaCostUsage(summary, persistedCosts), nil
 	}
 }
 

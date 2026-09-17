@@ -20,12 +20,17 @@ import (
 )
 
 type oauthUsageCredentialState struct {
-	provider        string
-	authType        string
-	oauthUsage      json.RawMessage
-	quotaCostUsage  *oauthcost.Usage
-	tracksQuotaCost bool
-	encode          func(json.RawMessage, *oauthcost.Usage) (string, error)
+	provider       string
+	authType       string
+	oauthUsage     json.RawMessage
+	quotaCostUsage *oauthcost.Usage
+	encode         func(json.RawMessage, *oauthcost.Usage) (string, error)
+}
+
+// tracksQuotaCost 与存储层事务读同一份真值表，避免两边各写一份 switch 后
+// 新增提供商漏改一侧、标准成本静默归零。
+func (s *oauthUsageCredentialState) tracksQuotaCost() bool {
+	return s != nil && model.TracksQuotaCost(s.authType)
 }
 
 func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialState, error) {
@@ -56,7 +61,6 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: codexauth.ChannelType, authType: model.AuthTypeCodexOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
-			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -71,7 +75,6 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: anthropicauth.ChannelType, authType: model.AuthTypeAnthropicOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
-			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -86,7 +89,6 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: antigravityauth.ChannelType, authType: model.AuthTypeAntigravityOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
-			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -101,7 +103,6 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: xaiauth.ChannelType, authType: model.AuthTypeXAIOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
-			tracksQuotaCost: true,
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)
@@ -345,4 +346,29 @@ func (s *Server) resetOAuthQuotaCostUsage(ctx context.Context, channelID int64, 
 	}
 	s.invalidateOAuthCredential(channelID, codexauth.ChannelType)
 	return nil
+}
+
+// OAuth 凭证 CAS 与增量成本累计写同一行：高流量渠道每批带成本的日志都会重写
+// 凭证，无界重试可以在活跃渠道上空转到 context 超时，占住被动用量分片锁。
+// 让步有界且退避递增，把槽位还给下一次采样。
+const (
+	oauthCASMaxAttempts  = 8
+	oauthCASRetryBackoff = 5 * time.Millisecond
+)
+
+var errOAuthCASContention = errors.New("OAuth credential is being updated concurrently")
+
+// waitOAuthCASRetry 在 CAS 失败后退避等待；超过尝试上限或 context 结束时返回错误。
+func waitOAuthCASRetry(ctx context.Context, attempt int) error {
+	if attempt >= oauthCASMaxAttempts {
+		return errOAuthCASContention
+	}
+	timer := time.NewTimer(oauthCASRetryBackoff << min(attempt, 6))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

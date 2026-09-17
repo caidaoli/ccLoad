@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 )
 
 // ==================== Config CRUD 实现 ====================
@@ -386,19 +387,41 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
 ) (bool, error) {
+	updated, _, err := s.compareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential, false)
+	return updated, err
+}
+
+// CompareAndSwapOAuthUsage persists a quota sample and its log-derived costs
+// under the same channel lock used by incremental log accounting.
+func (s *SQLStore) CompareAndSwapOAuthUsage(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, *oauthcost.Usage, error) {
+	return s.compareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential, true)
+}
+
+func (s *SQLStore) compareAndSwapOAuthCredential(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+	reconcileCosts bool,
+) (bool, *oauthcost.Usage, error) {
 	authType := model.NormalizeAuthType(expectedAuthType)
 	if authType == "" || authType == model.AuthTypeAPIKey {
-		return false, errors.New("OAuth auth type is invalid")
+		return false, nil, errors.New("OAuth auth type is invalid")
 	}
 	if strings.TrimSpace(expectedCredential) == "" {
-		return false, errors.New("expected OAuth credential cannot be empty")
+		return false, nil, errors.New("expected OAuth credential cannot be empty")
 	}
 	if strings.TrimSpace(nextCredential) == "" {
-		return false, errors.New("next OAuth credential cannot be empty")
+		return false, nil, errors.New("next OAuth credential cannot be empty")
 	}
 	matched := false
+	var costs *oauthcost.Usage
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		matched = false
+		costs = nil
 		currentAuthType, currentCredential, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
 		if errors.Is(loadErr, sql.ErrNoRows) {
 			return nil
@@ -409,18 +432,26 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 		if currentAuthType != authType || currentCredential != expectedCredential {
 			return nil
 		}
+		payload := nextCredential
+		if reconcileCosts && model.TracksQuotaCost(authType) {
+			var err error
+			payload, costs, err = s.reconcileOAuthQuotaCostsTx(ctx, tx, channelID, nextCredential)
+			if err != nil {
+				return err
+			}
+		}
 		if _, updateErr := s.execTx(ctx, tx, `
 			UPDATE channels SET oauth_credential = ?, updated_at = ? WHERE id = ?
-		`, nextCredential, timeToUnix(time.Now()), channelID); updateErr != nil {
+		`, payload, timeToUnix(time.Now()), channelID); updateErr != nil {
 			return updateErr
 		}
 		matched = true
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("compare and swap OAuth credential: %w", err)
+		return false, nil, fmt.Errorf("compare and swap OAuth credential: %w", err)
 	}
-	return matched, nil
+	return matched, costs, nil
 }
 
 // CompareAndSwapChannelManagement replaces the private management envelope of

@@ -173,6 +173,18 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("OAuthQuotaRounding", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("CreatePostgresStore 失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		assertOAuthQuotaRoundingMatchesGo(t, store)
+	})
+
 	t.Run("StructuredChannelURLs", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 

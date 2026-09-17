@@ -62,6 +62,20 @@ func NormalizeAuthType(value string) string {
 	}
 }
 
+// TracksQuotaCost 报告该认证方式是否按令牌窗口累计标准成本。
+//
+// 唯一真值表：凭证层（决定是否解码/写回 quota_cost_usage）与存储层（决定事务里
+// 是否对账日志成本）必须读同一份。两边各写一份 switch 的话，新增提供商漏改任一
+// 侧都不会报错，只会让管理端的标准成本静默变成 0。
+func TracksQuotaCost(authType string) bool {
+	switch NormalizeAuthType(authType) {
+	case AuthTypeCodexOAuth, AuthTypeAnthropicOAuth, AuthTypeAntigravityOAuth, AuthTypeXAIOAuth:
+		return true
+	default:
+		return false
+	}
+}
+
 // UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.
 func (c *Config) UsesCodeBuddyOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCodeBuddyOAuth

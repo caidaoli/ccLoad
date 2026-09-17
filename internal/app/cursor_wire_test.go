@@ -686,7 +686,7 @@ func TestCursorUsageSnapshotPersistsOnCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseOAuthUsageCredentialState() error = %v", err)
 	}
-	if state.provider != cursorauth.ChannelType || state.authType != model.AuthTypeCursorOAuth || state.tracksQuotaCost {
+	if state.provider != cursorauth.ChannelType || state.authType != model.AuthTypeCursorOAuth || state.tracksQuotaCost() {
 		t.Fatalf("state = %+v", state)
 	}
 	snapshot := []byte(`{"requested_at":"2026-08-18T00:00:00Z","sampled_at":"2026-08-18T00:00:01Z",` +

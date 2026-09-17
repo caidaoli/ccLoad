@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
 )
@@ -35,7 +36,9 @@ type HybridStore struct {
 	primarySync *primaryWriteBehind
 
 	// OAuth credential writes are serialized so the SQLite projection cannot apply them out of order.
-	oauthCredentialMu sync.Mutex
+	// Reads take the read lock: they must not observe a half-applied credential swap, but they also
+	// must not queue behind a write that is reconciling costs against the log table.
+	oauthCredentialMu sync.RWMutex
 
 	sqliteReadFailCount atomic.Uint64
 	analyticsPrimary    atomic.Bool
@@ -162,14 +165,14 @@ func cloneLogEntriesForSync(entries []*model.LogEntry) []*model.LogEntry {
 // === Channel Management ===
 
 func (h *HybridStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
+	h.oauthCredentialMu.RLock()
+	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.ListConfigs(ctx)
 }
 
 func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
+	h.oauthCredentialMu.RLock()
+	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetConfig(ctx, id)
 }
 
@@ -213,6 +216,20 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	}
 	h.markChannelDirty(channelID, false)
 	return true, nil
+}
+
+func (h *HybridStore) CompareAndSwapOAuthUsage(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, *oauthcost.Usage, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+	updated, usage, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+	if err == nil && updated {
+		h.markChannelDirty(channelID, false)
+	}
+	return updated, usage, err
 }
 
 func (h *HybridStore) CompareAndSwapChannelManagement(
@@ -350,8 +367,8 @@ func (h *HybridStore) DisableConfigIfOAuthSnapshotMatches(
 }
 
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
-	h.oauthCredentialMu.Lock()
-	defer h.oauthCredentialMu.Unlock()
+	h.oauthCredentialMu.RLock()
+	defer h.oauthCredentialMu.RUnlock()
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
