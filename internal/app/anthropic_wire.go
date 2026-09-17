@@ -165,23 +165,10 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	cchSigning := anthropicCCHSigningEnabled(cfg, target)
 	helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 	if helperShape != anthropicHaikuHelperNone {
-		body = sanitizeAnthropicEmptyTextBlocks(body)
-		if helperShape == anthropicHaikuHelperStructured && cchSigning {
-			return finalizeAnthropicCCH(body)
-		}
-		return body, nil
+		return finishAnthropicPassthrough(body, helperShape == anthropicHaikuHelperStructured && cchSigning)
 	}
 	if isNativeAnthropicClaudeCodeRequest(headers) {
-		// Native Claude Code owns sampling, prompt-cache placement and JSON member
-		// order. Empty text blocks are the one exception: Anthropic 400s
-		// `text:""` (typical tool_use-only assistant turns), so they are dropped
-		// before send. Everything else stays byte-for-byte; CCH is still only
-		// refreshed in place when the policy signs.
-		body = sanitizeAnthropicEmptyTextBlocks(body)
-		if cchSigning {
-			return finalizeAnthropicCCH(body)
-		}
-		return body, nil
+		return finishAnthropicPassthrough(body, cchSigning)
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -245,11 +232,28 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		body = deleteJSONPath(body, "context_management")
 	}
 
-	encoded := encodeNormalizedAnthropicRequest(body)
-	if cchSigning {
-		return finalizeAnthropicCCH(encoded)
+	return finishAnthropicPassthrough(encodeNormalizedAnthropicRequest(body), cchSigning)
+}
+
+// finishAnthropicPassthrough is the single Anthropic Messages outbound exit.
+// Fingerprint rewrite (system cloak, sampling, cache stamps) happens before
+// this, or is skipped for native Claude Code / Haiku helper. This layer only
+// applies API-contract invariants and optional CCH, so new Anthropic 400
+// guards extend applyAnthropicMessagesAPIInvariants instead of growing every
+// early-return branch.
+func finishAnthropicPassthrough(body []byte, signCCH bool) ([]byte, error) {
+	body = applyAnthropicMessagesAPIInvariants(body)
+	if !signCCH {
+		return body, nil
 	}
-	return encoded, nil
+	return finalizeAnthropicCCH(body)
+}
+
+// applyAnthropicMessagesAPIInvariants enforces Anthropic Messages request
+// constraints that are independent of CLI fingerprint and session identity.
+// Native passthrough skips fingerprint rewrite but still runs this layer.
+func applyAnthropicMessagesAPIInvariants(body []byte) []byte {
+	return sanitizeAnthropicEmptyTextBlocks(body)
 }
 
 // anthropicRawArrayItems 取出数组每个元素的原始字节。重建数组时逐个拼回，元素自身
@@ -751,7 +755,7 @@ func anthropicSessionIDFromHeaders(headers http.Header) string {
 }
 
 func sanitizeAnthropicOAuthMessages(body []byte) []byte {
-	body = sanitizeAnthropicEmptyTextBlocks(body)
+	body = applyAnthropicMessagesAPIInvariants(body)
 	var deletions []string
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
 		for index, tool := range tools.Array() {

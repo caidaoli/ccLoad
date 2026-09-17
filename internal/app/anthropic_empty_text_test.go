@@ -82,6 +82,15 @@ func TestNativeClaudeCodeFinalizeStripsEmptyTextOnly(t *testing.T) {
 	}
 }
 
+func TestApplyAnthropicMessagesAPIInvariantsIsTheEmptyTextHook(t *testing.T) {
+	t.Parallel()
+	in := []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":""},{"type":"tool_use","id":"t","name":"Bash","input":{}}]}]}`)
+	out := applyAnthropicMessagesAPIInvariants(in)
+	if gjson.GetBytes(out, "messages.0.content.0.type").String() != "tool_use" {
+		t.Fatalf("API invariant hook did not strip empty text: %s", out)
+	}
+}
+
 func TestNativeClaudeCodeFinalizeLeavesCleanBodyBytes(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)

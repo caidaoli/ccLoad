@@ -437,20 +437,16 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			if isAnthropicJSONObject(body) {
 				helperShape := nativeAnthropicHaikuHelperShape(body, headers)
 				if helperShape == anthropicHaikuHelperMinimal {
-					return sanitizeAnthropicEmptyTextBlocks(body), nil
+					return finishAnthropicPassthrough(body, false)
 				}
 				if helperShape == anthropicHaikuHelperStructured ||
 					isNativeAnthropicClaudeCodeRequest(headers) {
-					body = sanitizeAnthropicEmptyTextBlocks(body)
-					if cchSigning {
-						return finalizeAnthropicCCH(body)
-					}
-					return body, nil
+					return finishAnthropicPassthrough(body, cchSigning)
 				}
 			}
 			body, err = normalizeAnthropicMessagesBody(body)
-			if err == nil && cchSigning {
-				body, err = finalizeAnthropicCCH(body)
+			if err == nil {
+				body, err = finishAnthropicPassthrough(body, cchSigning)
 			}
 		default:
 			body, err = finalizeAnthropicClaudeCodeMessagesBody(body, cfg, apiKey, headers, target)
