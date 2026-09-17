@@ -1093,12 +1093,28 @@ func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	}
 }
 
-func TestClassifyHTTPResponse413IsModelScoped(t *testing.T) {
+func TestClassifyHTTPResponse413(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"code":"RequestTooLarge","message":"Request body size exceeds maximum allowed size"}`)
-	classification := ClassifyHTTPResponseWithMeta(http.StatusRequestEntityTooLarge, nil, body)
-	if classification.Level != ErrorLevelKey || !classification.ModelScoped {
-		t.Fatalf("413 RequestTooLarge classification=%+v, want model-scoped Key so failover continues", classification)
+	for _, tt := range []struct {
+		name        string
+		body        string
+		clientError bool
+	}{
+		{"request_too_large", `{"code":"RequestTooLarge","message":"Request body size exceeds maximum allowed size"}`, false},
+		{"websocket_close_1009", `{"type":"error","status":413,"error":{"type":"invalid_request_error","code":"message_too_big","message":"upstream websocket message too big"}}`, true},
+		{"context_length", `{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`, true},
+		{"message_is_not_error_code", `{"error":{"code":"RequestTooLarge","message":"message_too_big"}}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusRequestEntityTooLarge, nil, []byte(tt.body))
+			wantLevel := ErrorLevelKey
+			if tt.clientError {
+				wantLevel = ErrorLevelClient
+			}
+			if classification.Level != wantLevel || classification.ModelScoped != !tt.clientError {
+				t.Fatalf("classification=%+v, want level=%v modelScoped=%v", classification, wantLevel, !tt.clientError)
+			}
+		})
 	}
 }
 

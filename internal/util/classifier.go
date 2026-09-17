@@ -486,6 +486,14 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		return classification
 	}
 
+	// WebSocket close 1009 被桥接为 413，必须保留关闭语义，不能按普通 HTTP 413 换渠。
+	if statusCode == http.StatusRequestEntityTooLarge {
+		var payload sseErrorResponse
+		if json.Unmarshal(responseBody, &payload) == nil && strings.TrimSpace(payload.Error.Code) == "message_too_big" {
+			return HTTPResponseClassification{Level: ErrorLevelClient}
+		}
+	}
+
 	// 400/413 表示当前模型/上游无法接受该请求。切换渠道，但只冷却实际请求的模型。
 	// 413 必须与 400 同级：否则 auto 协议探测把 Anthropic 400 交给下一个候选后，
 	// 候选网关的 RequestTooLarge 会 ActionReturnClient，客户端直接中断、后面的匹配渠道进不去。
