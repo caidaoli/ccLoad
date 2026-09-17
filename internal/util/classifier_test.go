@@ -1093,6 +1093,31 @@ func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPResponse413(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		body        string
+		clientError bool
+	}{
+		{"request_too_large", `{"code":"RequestTooLarge","message":"Request body size exceeds maximum allowed size"}`, false},
+		{"websocket_close_1009", `{"type":"error","status":413,"error":{"type":"invalid_request_error","code":"message_too_big","message":"upstream websocket message too big"}}`, true},
+		{"context_length", `{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`, true},
+		{"message_is_not_error_code", `{"error":{"code":"RequestTooLarge","message":"message_too_big"}}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusRequestEntityTooLarge, nil, []byte(tt.body))
+			wantLevel := ErrorLevelKey
+			if tt.clientError {
+				wantLevel = ErrorLevelClient
+			}
+			if classification.Level != wantLevel || classification.ModelScoped != !tt.clientError {
+				t.Fatalf("classification=%+v, want level=%v modelScoped=%v", classification, wantLevel, !tt.clientError)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1359,7 +1384,7 @@ func TestGetStatusCodeMeta(t *testing.T) {
 
 		// 客户端错误
 		{406, ErrorLevelClient, "406 -> 客户端级"},
-		{413, ErrorLevelClient, "413 -> 客户端级"},
+		{413, ErrorLevelKey, "413 -> Key级(模型作用域由 ClassifyHTTPResponseWithMeta 收窄)"},
 
 		// 默认行为
 		{599, ErrorLevelChannel, "599 -> 渠道级(自定义)"},
