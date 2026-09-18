@@ -747,6 +747,13 @@
       overflow: hidden;
     }
 
+    /* 渠道编辑器接近全屏，双层 backdrop blur 会让每次输入都重新合成整页。 */
+    #channelModal.modal,
+    #channelModal .channel-editor-modal {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
     .channel-editor-form {
       display: flex;
       flex-direction: column;
@@ -5384,11 +5391,6 @@
 
       #channelModal .channel-editor-footer-enabled {
         margin-right: auto;
-      }
-
-      #channelModal.modal,
-      #channelModal .channel-editor-modal {
-        backdrop-filter: none;
       }
 
       #channelModal .channel-editor-modal {
