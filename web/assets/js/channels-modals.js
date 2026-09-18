@@ -2527,7 +2527,7 @@ function renderActiveRedirectModelStatus(statusCell, redirect) {
     : Math.max(0, responseRemainingMS);
   if (cooldownRemainingMS > 0) {
     const badge = TemplateEngine.render('tpl-cooldown-badge', {
-      text: humanizeMS(cooldownRemainingMS)
+      text: formatCooldownRecoveryTime(cooldownRemainingMS, 'channels.status.daysHoursUntilRecovery')
     });
     if (badge) {
       badge.classList.add('redirect-model-cooldown-badge');
