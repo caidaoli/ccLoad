@@ -1658,11 +1658,15 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 		stream       bool
 		otherModel   bool
 		allExhausted bool
+		multiURL     bool
 	}{
 		{name: "nonstream", requestModel: actualModel},
 		{name: "stream preserves other models", requestModel: actualModel, stream: true, otherModel: true},
 		{name: "Claude alias to Gemini", requestModel: "claude-sonnet-4-6", stream: true},
 		{name: "all exhausted selects earliest reset", requestModel: actualModel, stream: true, allExhausted: true},
+		{name: "multiple URLs preserve quota cooldown", requestModel: actualModel, stream: true, multiURL: true},
+		{name: "multiple URLs preserve other models", requestModel: actualModel, stream: true, multiURL: true, otherModel: true},
+		{name: "multiple URLs all exhausted select earliest reset", requestModel: actualModel, stream: true, multiURL: true, allExhausted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls [2]atomic.Int32
@@ -1717,6 +1721,11 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 			}
 			for _, cfg := range configs {
 				cfg.ModelEntries = []model.ModelEntry{{Model: tc.requestModel, RedirectModel: actualModel}}
+				if tc.multiURL {
+					fallback := cfg.URLs[0]
+					fallback.URL += "/fallback"
+					cfg.URLs = append(cfg.URLs, fallback)
+				}
 				if tc.otherModel {
 					cfg.ModelEntries = append(cfg.ModelEntries, model.ModelEntry{Model: "gemini-other"})
 				}

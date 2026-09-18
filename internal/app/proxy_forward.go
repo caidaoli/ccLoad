@@ -3804,6 +3804,12 @@ func (s *Server) attemptKeyAcrossURLs(
 		if cfg.UsesAntigravityOAuth() && result != nil && result.status == http.StatusTooManyRequests {
 			reason, _ := antigravityLimitDetails(result.body)
 			if reason != "" {
+				// Typed quota failures skip URL fallback, so persist any cooldown
+				// deferred by the first URL before moving to another account.
+				if result.deferredCooldown != nil {
+					result.nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
+					result.deferredCooldown = nil
+				}
 				return nil, result, nil
 			}
 		}
