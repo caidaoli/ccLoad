@@ -975,3 +975,70 @@ func channelURLStatesHasLegacySchema(ctx context.Context, db *sql.DB, dialect Di
 	}
 	return !existing["url_hash"], nil
 }
+
+const sequentialKeyPrioritiesMigrationVersion = "v6_sequential_key_priorities"
+
+// migrateSequentialKeyPriorities preserves legacy sequential order using explicit
+// priorities. User-configured priorities and round-robin channels remain unchanged.
+func migrateSequentialKeyPriorities(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var applied int
+	if err := tx.QueryRowContext(ctx, rebindIfPostgres(dialect,
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?"), sequentialKeyPrioritiesMigrationVersion).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT k.channel_id, k.key_index FROM api_keys k
+ JOIN channels c ON c.id = k.channel_id
+ WHERE c.auth_type = 'api_key' AND k.channel_id IN (
+  SELECT channel_id FROM api_keys GROUP BY channel_id
+  HAVING MIN(priority) = 0 AND MAX(priority) = 0
+   AND MIN(key_strategy) = 'sequential' AND MAX(key_strategy) = 'sequential'
+ ) ORDER BY k.channel_id, k.key_index`)
+	if err != nil {
+		return err
+	}
+	byChannel := make(map[int64][]int)
+	for rows.Next() {
+		var channelID int64
+		var keyIndex int
+		if err := rows.Scan(&channelID, &keyIndex); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		byChannel[channelID] = append(byChannel[channelID], keyIndex)
+	}
+	readErr := rows.Err()
+	closeErr := rows.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	for channelID, indices := range byChannel {
+		if len(indices) > 10000000 {
+			return fmt.Errorf("channel %d has too many keys to assign priorities", channelID)
+		}
+		for i, keyIndex := range indices {
+			priority := len(indices) - 1 - i
+			if priority == 0 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, rebindIfPostgres(dialect,
+				"UPDATE api_keys SET priority = ? WHERE channel_id = ? AND key_index = ?"), priority, channelID, keyIndex); err != nil {
+				return err
+			}
+		}
+	}
+	if err := recordMigrationTx(ctx, tx, sequentialKeyPrioritiesMigrationVersion, dialect); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

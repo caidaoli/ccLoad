@@ -931,19 +931,7 @@
                     id="virtualScrollHint" style="display: none; color: var(--primary-600); font-weight: 600;"
                     data-i18n="channels.virtualScrollEnabled">· 虚拟滚动已启用</span></span>
               <div class="channel-editor-inline-strategy">
-                <label class="channel-editor-inline-label channel-editor-inline-label--muted"
-                  data-i18n="channels.keyStrategy">Key 策略</label>
-                <div class="channel-editor-radio-group channel-editor-radio-group--strategy" id="keyStrategyRadios">
-                  <label class="channel-editor-radio-option">
-                    <input type="radio" name="keyStrategy" value="sequential" checked>
-                    <span data-i18n="channels.keyStrategySequential">顺序</span>
-                  </label>
-                  <label class="channel-editor-radio-option">
-                    <input type="radio" name="keyStrategy" value="round_robin">
-                    <span data-i18n="channels.keyStrategyRoundRobin">轮询</span>
-                  </label>
-                </div>
-                <span class="models-hint" data-i18n="channels.keyDragSortHint">拖动API Key可排序</span>
+                <span class="models-hint channel-key-priority-hint" data-i18n="channels.keyPriorityHint">优先请求高优先级 Key，同优先级轮询</span>
                 <span id="codexCredentialReadOnlyNotice" class="models-hint channel-codex-key-hint" role="status"
                   data-i18n="channels.oauthCredentialReadOnly" hidden>AT 作为只读 Key 显示；完整 OAuth 凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
               </div>
@@ -1023,7 +1011,7 @@
                       <option value="disabled" data-i18n="channels.keyStatusDisabled">已禁用</option>
                     </select>
                   </th>
-                  <th style="width: 100px;" data-i18n="channels.keyPriority" data-i18n-title="channels.keyPriorityHint" title="数值越大越优先，同优先级按 Key 策略选择">优先级</th>
+                  <th style="width: 100px;" data-i18n="channels.keyPriority" data-i18n-title="channels.keyPriorityHint" title="优先请求高优先级 Key，同优先级轮询">优先级</th>
                   <th style="width: 190px;" data-i18n="channels.costMultiplier">倍率</th>
                   <th style="width: 80px;"></th>
                 </tr>

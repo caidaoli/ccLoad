@@ -136,8 +136,8 @@ func TestSelectAvailableKey_SingleKeyCooldown(t *testing.T) {
 	})
 }
 
-// TestSelectAvailableKey_Sequential 测试顺序策略
-func TestSelectAvailableKey_Sequential(t *testing.T) {
+// TestSelectAvailableKey_DescendingPriorities 验证递减优先级保留旧顺序
+func TestSelectAvailableKey_DescendingPriorities(t *testing.T) {
 	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
 
@@ -163,6 +163,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    i,
 			APIKey:      "sk-seq-key-" + string(rune('0'+i)),
+			Priority:    2 - i,
 			KeyStrategy: model.KeyStrategySequential,
 		}
 	}
@@ -184,7 +185,7 @@ func TestSelectAvailableKey_Sequential(t *testing.T) {
 		}
 
 		if keyIndex != 0 {
-			t.Errorf("顺序策略首次应返回keyIndex=0，实际%d", keyIndex)
+			t.Errorf("最高优先级应返回keyIndex=0，实际%d", keyIndex)
 		}
 
 		if apiKey != "sk-seq-key-0" { //nolint:gosec // 测试用的假 API Key
@@ -710,77 +711,6 @@ func TestSelectAvailableKey_NoKeys(t *testing.T) {
 	}
 }
 
-func assertSelectAvailableKeyFirstIndex(t *testing.T, channelName string, keyPrefix string, keyStrategy string, wantIndex int, _ string) {
-	t.Helper()
-
-	store, cleanup := testutil.SetupTestStore(t)
-	defer cleanup()
-
-	selector := NewKeySelector()
-	ctx := context.WithValue(context.Background(), testingContextKey, true)
-
-	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:         channelName,
-		URLs:         model.ChannelURLs{{URL: "https://api.com"}},
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	assertKeys := make([]*model.APIKey, 2)
-	for i := 0; i < 2; i++ {
-		assertKeys[i] = &model.APIKey{
-			ChannelID:   cfg.ID,
-			KeyIndex:    i,
-			APIKey:      keyPrefix + string(rune('0'+i)),
-			KeyStrategy: keyStrategy,
-		}
-	}
-	if err = store.CreateAPIKeysBatch(ctx, assertKeys); err != nil {
-		t.Fatalf("批量创建API Keys失败: %v", err)
-	}
-
-	apiKeys, err := store.GetAPIKeys(ctx, cfg.ID)
-	if err != nil {
-		t.Fatalf("查询API Keys失败: %v", err)
-	}
-
-	keyIndex, _, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
-	if err != nil {
-		t.Fatalf("SelectAvailableKey失败: %v", err)
-	}
-	if keyIndex != wantIndex {
-		t.Errorf("期望返回keyIndex=%d，实际%d", wantIndex, keyIndex)
-	}
-}
-
-// TestSelectAvailableKey_DefaultStrategy 测试默认策略
-func TestSelectAvailableKey_DefaultStrategy(t *testing.T) {
-	assertSelectAvailableKeyFirstIndex(
-		t,
-		"default-strategy-channel",
-		"sk-default-key-",
-		"",
-		0,
-		"默认策略（sequential）正确生效",
-	)
-}
-
-// TestSelectAvailableKey_UnknownStrategy 测试未知策略回退到默认
-func TestSelectAvailableKey_UnknownStrategy(t *testing.T) {
-	assertSelectAvailableKeyFirstIndex(
-		t,
-		"unknown-strategy-channel",
-		"sk-unknown-key-",
-		"unknown-strategy",
-		0,
-		"未知策略正确回退到默认sequential",
-	)
-}
-
 func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 	ks := NewKeySelector()
 
@@ -825,7 +755,7 @@ func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 
 func TestSelectAvailableKey_PriorityTiers(t *testing.T) {
 	t.Parallel()
-	for _, strategy := range []string{model.KeyStrategySequential, model.KeyStrategyRoundRobin} {
+	for _, strategy := range []string{model.KeyStrategySequential, model.KeyStrategyRoundRobin, "", "unknown"} {
 		t.Run(strategy, func(t *testing.T) {
 			selector := NewKeySelector()
 			keys := []*model.APIKey{
@@ -835,8 +765,19 @@ func TestSelectAvailableKey_PriorityTiers(t *testing.T) {
 				{KeyIndex: 15, APIKey: "disabled", Priority: 100, Disabled: true, KeyStrategy: strategy},
 				{KeyIndex: 21, APIKey: "middle", Priority: 0, KeyStrategy: strategy},
 			}
+			seen := map[int]bool{}
+			for range 2 {
+				index, _, err := selector.SelectAvailableKey(1, keys, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				seen[index] = true
+			}
+			if !seen[7] || !seen[11] {
+				t.Fatalf("equal priorities must rotate for legacy strategy %s: %v", strategy, seen)
+			}
 			excluded := map[int]bool{}
-			for i, priority := range []int{20, 20, 0, -10} {
+			for _, priority := range []int{20, 20, 0, -10} {
 				index, _, err := selector.SelectAvailableKey(1, keys, excluded)
 				if err != nil {
 					t.Fatal(err)
@@ -848,10 +789,7 @@ func TestSelectAvailableKey_PriorityTiers(t *testing.T) {
 					}
 				}
 				if selected == nil || selected.Priority != priority || excluded[index] {
-					t.Fatalf("attempt %d selected %v, want priority %d", i, selected, priority)
-				}
-				if strategy == model.KeyStrategySequential && i == 0 && index != 7 {
-					t.Fatalf("same-priority order changed: %d", index)
+					t.Fatalf("selected %v, want priority %d", selected, priority)
 				}
 				excluded[index] = true
 			}

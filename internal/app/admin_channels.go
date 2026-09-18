@@ -1353,7 +1353,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	normalizeAPIKeyScopesForModels(newKeys, req.Models)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
-		keyStrategy = model.KeyStrategySequential
+		keyStrategy = channelKeyStrategy(oldKeys)
 	}
 
 	// 比较Key数量和内容是否变化

@@ -42,7 +42,7 @@ func NewKeySelector() *KeySelector {
 }
 
 // SelectAvailableKey 返回 (keyIndex, apiKey, error)
-// 策略: sequential顺序尝试 | round_robin轮询选择
+// 优先选择最高可用优先级，同优先级轮询；key_strategy 仅保留为历史配置字段。
 // excludeKeys: 避免同一请求内重复尝试
 // 移除store依赖，apiKeys由调用方传入，避免重复查询
 func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIKey, excludeKeys map[int]bool) (int, string, error) {
@@ -68,7 +68,7 @@ func (ks *KeySelector) SelectAvailableKey(channelID int64, apiKeys []*model.APIK
 		}
 		return -1, "", fmt.Errorf("all API keys are in cooldown or already tried")
 	}
-	if len(apiKeys) == 1 || best.KeyStrategy != model.KeyStrategyRoundRobin {
+	if len(apiKeys) == 1 {
 		return best.KeyIndex, best.APIKey, nil
 	}
 	peers := make([]*model.APIKey, 0, len(apiKeys))

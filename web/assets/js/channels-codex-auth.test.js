@@ -2754,7 +2754,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   ]) {
     elements.set(id, { hidden: false, required: true, value: 'must-not-remain' });
   }
-  const strategyInputs = [{ disabled: false }, { disabled: false }];
   const rowKeyInput = { readOnly: false };
   const rowNoteInput = { readOnly: false };
   const rowDeleteButton = { hidden: false, disabled: false };
@@ -2769,7 +2768,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   global.document = {
     getElementById: id => elements.get(id) || null,
     querySelectorAll: selector => ({
-      'input[name="keyStrategy"]': strategyInputs,
       '#inlineKeyTableBody .inline-key-input': [rowKeyInput],
       '#inlineKeyTableBody .inline-key-note-input': [rowNoteInput],
       '#inlineKeyTableBody [data-action="delete"], #inlineKeyTableBody [data-action="toggle-disabled"]': [rowDeleteButton, rowToggleButton],
@@ -2804,7 +2802,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
     const decodedCredential = { ...credential, id_token: credentialInfo };
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(decodedCredential, null, 2));
-    assert.ok(strategyInputs.every(input => input.disabled));
     assert.equal(rowKeyInput.readOnly, true);
     assert.equal(rowNoteInput.readOnly, true);
     assert.equal(rowDeleteButton.hidden, false);
@@ -2836,7 +2833,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialViewSwitch').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(antigravityCredential, null, 2));
-    assert.ok(strategyInputs.every(input => input.disabled));
 
     const xaiCredential = {
       type: 'xai', auth_kind: 'oauth', access_token: 'xai-at', refresh_token: 'xai-rt', id_token: 'xai-id'
@@ -2898,7 +2894,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
     assert.equal(elements.get('codexCredentialContent').textContent, '');
-    assert.ok(strategyInputs.every(input => !input.disabled));
     assert.equal(rowKeyInput.readOnly, false);
     assert.equal(rowNoteInput.readOnly, false);
     assert.equal(rowDeleteButton.hidden, false);

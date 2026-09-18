@@ -1168,8 +1168,8 @@ func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
 		`, keyIndex).Scan(&multiplier, &priority); err != nil {
 			t.Fatalf("query api key %d multiplier: %v", keyIndex, err)
 		}
-		if priority != 0 {
-			t.Fatalf("legacy priority=%d, want 0", priority)
+		if priority != 1-keyIndex {
+			t.Fatalf("legacy priority=%d, want %d", priority, 1-keyIndex)
 		}
 		if multiplier != 2.5 {
 			t.Fatalf("api key %d multiplier=%v, want 2.5", keyIndex, multiplier)
@@ -2162,5 +2162,76 @@ func TestHasMigration_NotApplied(t *testing.T) {
 
 	if hasMigration(ctx, db, "never_applied_migration", DialectSQLite) {
 		t.Fatal("never_applied_migration should not be applied")
+	}
+}
+
+func TestMigrateSQLite_SequentialKeyPriorities(t *testing.T) {
+	testSequentialKeyPrioritiesMigration(t, openTestDB(t), DialectSQLite)
+}
+
+// Shared by SQLite, MySQL and PostgreSQL startup migration tests.
+func testSequentialKeyPrioritiesMigration(t *testing.T, db *sql.DB, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	if err := migrate(ctx, db, dialect); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, auth, strategy string
+		priorities, want     []int
+	}{
+		{"sequential", "api_key", "sequential", []int{0, 0, 0}, []int{2, 1, 0}},
+		{"round-robin", "api_key", "round_robin", []int{0, 0, 0}, []int{0, 0, 0}},
+		{"custom-sequential", "api_key", "sequential", []int{0, -3, 8}, []int{0, -3, 8}},
+		{"custom-round-robin", "api_key", "round_robin", []int{9, 0, -2}, []int{9, 0, -2}},
+		{"oauth", "codex_oauth", "sequential", []int{0, 0, 0}, []int{0, 0, 0}},
+	}
+	for i, tc := range cases {
+		id := i + 1
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect,
+			"INSERT INTO channels (id,name,url,auth_type,created_at,updated_at) VALUES (?,?,'[]',?,1,1)"), id, tc.name, tc.auth); err != nil {
+			t.Fatal(err)
+		}
+		// Insert out of order with non-contiguous indices; include disabled/cooling keys.
+		for _, j := range []int{2, 0, 1} {
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `INSERT INTO api_keys
+    (channel_id,key_index,api_key,key_strategy,priority,disabled,cooldown_until,cooldown_duration_ms,created_at,updated_at)
+    VALUES (?,?,'sk-test',?,?,1,1234567,456,1,2)`), id, []int{2, 7, 21}[j], tc.strategy, tc.priorities[j]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, "DELETE FROM schema_migrations WHERE version = ?"), sequentialKeyPrioritiesMigrationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, db, dialect); err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range cases {
+		for j, want := range tc.want {
+			var priority, disabled, until, duration, updated int
+			var strategy string
+			if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, `SELECT priority,key_strategy,disabled,cooldown_until,cooldown_duration_ms,updated_at
+    FROM api_keys WHERE channel_id = ? AND key_index = ?`), i+1, []int{2, 7, 21}[j]).Scan(&priority, &strategy, &disabled, &until, &duration, &updated); err != nil {
+				t.Fatal(err)
+			}
+			if priority != want || strategy != tc.strategy || disabled != 1 || until != 1234567 || duration != 456 || updated != 2 {
+				t.Fatalf("%s key %d: priority=%d want=%d strategy=%s disabled=%d cooldown=%d/%d updated=%d", tc.name, j, priority, want, strategy, disabled, until, duration, updated)
+			}
+		}
+	}
+	// Clearing all priorities after the migration must survive later restarts.
+	if _, err := db.ExecContext(ctx, "UPDATE api_keys SET priority = 0 WHERE channel_id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, db, dialect); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT SUM(priority) FROM api_keys WHERE channel_id = 1").Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("migration reapplied: priority sum=%d", total)
 	}
 }

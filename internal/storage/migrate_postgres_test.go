@@ -154,6 +154,11 @@ func TestPostgres(t *testing.T) {
 	env := setupPostgresEnv(t)
 	ctx := context.Background()
 
+	t.Run("SequentialKeyPriorities", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+		testSequentialKeyPrioritiesMigration(t, env.db, DialectPostgres)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 

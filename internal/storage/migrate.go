@@ -253,6 +253,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys cost_multiplier: %w", err)
 			}
+			if err := migrateSequentialKeyPriorities(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate sequential key priorities: %w", err)
+			}
 			// 一次性回填：api_key 渠道的倍率从 channels.cost_multiplier 下沉到每条 Key
 			if err := backfillAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("backfill api_keys cost_multiplier: %w", err)

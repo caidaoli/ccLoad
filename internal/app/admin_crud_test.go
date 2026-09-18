@@ -2773,7 +2773,8 @@ func TestHandleChannelAPIKeyPriorities(t *testing.T) {
 	payload := ChannelRequest{
 		Name: "key-priorities", URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		Models: []model.ModelEntry{{Model: "model-1"}}, Enabled: true,
-		APIKeys: []ChannelAPIKeyRequest{{APIKey: "sk-default"}, {APIKey: "sk-priority", Priority: &priority}},
+		KeyStrategy: model.KeyStrategyRoundRobin,
+		APIKeys:     []ChannelAPIKeyRequest{{APIKey: "sk-default"}, {APIKey: "sk-priority", Priority: &priority}},
 	}
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
 	server.handleCreateChannel(c)
@@ -2815,13 +2816,14 @@ func TestHandleChannelAPIKeyPriorities(t *testing.T) {
 			t.Fatalf("update: %d %s", w.Code, w.Body.String())
 		}
 	}
+	payload.KeyStrategy = ""                              // The editor no longer submits the historical field.
 	payload.ManagementAccount = &channelManagementInput{} // Browser submits the unchanged management settings.
 	priority = 17
 	payload.APIKeys[0].Priority = &priority
 	payload.APIKeys[1].Priority = nil
 	update()
 	keys = readKeys()
-	if keys[0].Priority != 17 || keys[1].Priority != -9 || !keys[0].Disabled || keys[1].CooldownUntil != until.Unix() {
+	if keys[0].KeyStrategy != model.KeyStrategyRoundRobin || keys[1].KeyStrategy != model.KeyStrategyRoundRobin || keys[0].Priority != 17 || keys[1].Priority != -9 || !keys[0].Disabled || keys[1].CooldownUntil != until.Unix() {
 		t.Fatalf("priority update lost state or retained stale cache: %+v %+v", keys[0], keys[1])
 	}
 	priority = 0

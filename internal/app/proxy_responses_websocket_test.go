@@ -5104,7 +5104,7 @@ func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
 	}
 }
 
-func TestNativeCodexWebsocketSequentialKeyFailbackReplaysBetweenTurns(t *testing.T) {
+func TestNativeCodexWebsocketPriorityKeyFailbackReplaysBetweenTurns(t *testing.T) {
 	var phase atomic.Int32
 	var keyAHandshakes, keyBHandshakes atomic.Int32
 	keyAReplay := make(chan map[string]any, 1)
@@ -5181,7 +5181,7 @@ func TestNativeCodexWebsocketSequentialKeyFailbackReplaysBetweenTurns(t *testing
 		models: "gpt-test", apiKey: "sk-ws-a", priority: 100, retryOtherKeysOnFailure: true,
 	}}, map[int]string{0: upstream.URL})
 	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
-		ChannelID: 1, KeyIndex: 1, APIKey: "sk-ws-b", KeyStrategy: model.KeyStrategySequential,
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-ws-b", Priority: -1, KeyStrategy: model.KeyStrategySequential,
 	}}); err != nil {
 		t.Fatalf("create websocket fallback key: %v", err)
 	}

@@ -5277,8 +5277,12 @@
         white-space: nowrap;
       }
 
-      .channel-editor-group--keys .channel-editor-inline-strategy > .models-hint {
+      .channel-editor-group--keys .channel-editor-inline-strategy > .models-hint:not(.channel-key-priority-hint) {
         display: none;
+      }
+
+      .channel-editor-group--keys .channel-key-priority-hint {
+        white-space: normal;
       }
 
       .channel-editor-group--keys .channel-editor-radio-group--strategy {

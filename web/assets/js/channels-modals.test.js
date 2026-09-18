@@ -1379,6 +1379,7 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
     setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority: 0 }]);
     await saveChannel({ preventDefault() {} });
     assert.equal(submitted.api_keys[0].priority, 0);
+    assert.equal(submitted.key_strategy, undefined);
 
   } finally {
     for (const [key, descriptor] of extraGlobals) {

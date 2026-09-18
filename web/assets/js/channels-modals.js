@@ -438,7 +438,6 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckIntervalMinutes').value = '300';
   document.getElementById('channelScheduledCheckStartTime').value = '00:00';
 	await ensureProtocolTransformModeCombobox('auto');
-  document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
   selectedModelIndices.clear();
@@ -551,11 +550,6 @@ async function editChannel(id) {
       channel,
       editorData.oauth_credential_info || null
     );
-  }
-  const keyStrategy = channel.key_strategy || 'sequential';
-  const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
-  if (strategyRadio) {
-    strategyRadio.checked = true;
   }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
@@ -851,7 +845,6 @@ async function saveChannel(event) {
     return;
   }
 
-  const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
@@ -885,7 +878,6 @@ async function saveChannel(event) {
     available_time_end: (document.getElementById('channelAvailableTimeEnd')?.value || '').trim(),
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
-  if (!isOAuth) formData.key_strategy = keyStrategy;
   if (isOAuth) {
     // OAuth 凭证 1:1：倍率经合成 Key 行提交（后端 ToConfig 取 APIKeys[0].CostMultiplier 写入渠道列）。
     // 合成行的 api_key 为掩码后的非空值，保证不被 normalizeAPIKeys 丢弃；未提交时后端保底现值。
@@ -1932,11 +1924,6 @@ async function copyChannel(id, name) {
 
   await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
   scheduleChannelDuplicateHintCheck();
-  const keyStrategy = channel.key_strategy || 'sequential';
-  const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
-  if (strategyRadio) {
-    strategyRadio.checked = true;
-  }
   document.getElementById('channelPriority').value = channel.priority;
   document.getElementById('channelRPMLimit').value = channel.rpm_limit || 0;
   document.getElementById('channelMaxConcurrency').value = String(channel.max_concurrency || 0);

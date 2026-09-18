@@ -4934,7 +4934,7 @@ func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 				{name: "fallback", models: "gpt-test", priority: 50},
 			}, map[int]string{0: upstream.URL, 1: fallback.URL})
 			if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
-				ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", KeyStrategy: model.KeyStrategySequential,
+				ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", Priority: -1, KeyStrategy: model.KeyStrategySequential,
 			}}); err != nil {
 				t.Fatalf("create secondary key: %v", err)
 			}
@@ -5021,7 +5021,7 @@ func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
 		},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
-		ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", KeyStrategy: model.KeyStrategySequential,
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", Priority: -1, KeyStrategy: model.KeyStrategySequential,
 	}}); err != nil {
 		t.Fatalf("create relay keys: %v", err)
 	}
@@ -11211,7 +11211,7 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	err = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-bad"},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-bad", Priority: 1},
 		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-good"},
 	})
 	if err != nil {

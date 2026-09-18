@@ -212,9 +212,6 @@ function applyChannelAuthEditorMode(
     credentialView
   );
 
-  document.querySelectorAll('input[name="keyStrategy"]').forEach(input => {
-    input.disabled = oauth;
-  });
   document.querySelectorAll('#inlineKeyTableBody .inline-key-input').forEach(input => {
     input.readOnly = oauth;
   });

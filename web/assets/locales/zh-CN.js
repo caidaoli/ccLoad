@@ -690,7 +690,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.maxConcurrency': '并发',
   'channels.maxConcurrencyPlaceholder': '0=无限制',
   'channels.keyPriority': '优先级',
-  'channels.keyPriorityHint': '数值越大越优先，同优先级按 Key 策略选择',
+  'channels.keyPriorityHint': '优先请求高优先级 Key，同优先级轮询',
   'channels.keyPriorityInvalid': 'Key 优先级必须为 -99999～9999999 之间的整数',
   'channels.costMultiplier': '倍率',
   'channels.fetchRate': '获取',

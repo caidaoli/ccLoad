@@ -157,6 +157,11 @@ func TestMySQL(t *testing.T) {
 	env := setupMySQLEnv(t)
 
 	// 子测试共享同一个容器
+	t.Run("SequentialKeyPriorities", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		testSequentialKeyPrioritiesMigration(t, env.db, DialectMySQL)
+	})
+
 	t.Run("FullMigration", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 

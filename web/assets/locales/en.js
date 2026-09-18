@@ -690,7 +690,7 @@ window.I18N_LOCALES['en'] = {
   'channels.maxConcurrency': 'Concurrency',
   'channels.maxConcurrencyPlaceholder': '0=No limit',
   'channels.keyPriority': 'Priority',
-  'channels.keyPriorityHint': 'Higher values are selected first; keys with equal priority follow the Key strategy',
+  'channels.keyPriorityHint': 'Higher-priority keys are used first; equal-priority keys rotate',
   'channels.keyPriorityInvalid': 'Key priority must be an integer between -99999 and 9999999',
   'channels.costMultiplier': 'Multiplier',
   'channels.fetchRate': 'Fetch Rate',

@@ -861,7 +861,7 @@ type APIKey struct {
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"` // true 表示该 Key 当前不允许任何模型
 
 	Priority    int    `json:"priority"`     // 数值越大越优先，仅在渠道内比较
-	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
+	KeyStrategy string `json:"key_strategy"` // 历史配置字段，保留读写；同优先级统一轮询
 	Disabled    bool   `json:"disabled"`
 
 	// 成本倍率：api_key 渠道的权威倍率存在每条 Key 上（OAuth 渠道仍用 Config.CostMultiplier）。
