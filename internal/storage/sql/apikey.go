@@ -19,7 +19,7 @@ import (
 func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, created_at, updated_at
+		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
@@ -50,6 +50,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 			&key.CooldownDurationMs,
 			&disabled,
 			&key.CostMultiplier,
+			&key.Priority,
 			&createdAt,
 			&updatedAt,
 		)
@@ -81,7 +82,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, created_at, updated_at
+		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
@@ -105,6 +106,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 		&key.CooldownDurationMs,
 		&disabled,
 		&key.CostMultiplier,
+		&key.Priority,
 		&createdAt,
 		&updatedAt,
 	)
@@ -166,14 +168,14 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 		// 构建 VALUES 部分
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, model_scope_empty, key_strategy,
-		                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, created_at, updated_at) VALUES `)
+		                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at) VALUES `)
 
-		args := make([]any, 0, len(batch)*13)
+		args := make([]any, 0, len(batch)*14)
 		for j, key := range batch {
 			if j > 0 {
 				sb.WriteString(",")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 			strategy := key.KeyStrategy
 			if strategy == "" {
@@ -184,7 +186,7 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 				return fmt.Errorf("api key index %d: %w", key.KeyIndex, err)
 			}
 			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, key.ModelScopeEmpty, strategy,
-				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), nowUnix, nowUnix)
+				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, nowUnix, nowUnix)
 		}
 
 		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
@@ -296,6 +298,44 @@ func (s *SQLStore) UpdateAPIKeyCostMultipliers(ctx context.Context, channelID in
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit update api key cost multipliers: %w", err)
+	}
+	return nil
+}
+
+// UpdateAPIKeyPriorities updates ordering metadata without changing runtime state.
+func (s *SQLStore) UpdateAPIKeyPriorities(ctx context.Context, channelID int64, prioritiesByIndex map[int]int) error {
+	if len(prioritiesByIndex) == 0 {
+		return nil
+	}
+	if err := s.ensureAPIKeyChannelMutable(ctx, channelID); err != nil {
+		return err
+	}
+
+	tx, err := s.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin update api key priorities transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := s.prepareTx(ctx, tx, `
+		UPDATE api_keys
+		SET priority = ?, updated_at = ?
+		WHERE channel_id = ? AND key_index = ?
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare update api key priorities: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	updatedAtUnix := timeToUnix(time.Now())
+	for keyIndex, priority := range prioritiesByIndex {
+		if _, err := stmt.ExecContext(ctx, priority, updatedAtUnix, channelID, keyIndex); err != nil {
+			return fmt.Errorf("update api key priority index %d: %w", keyIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit update api key priorities: %w", err)
 	}
 	return nil
 }
@@ -559,8 +599,8 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 		// 预编译API Key插入语句
 		keyStmt, err := s.prepareTx(ctx, tx, `
 			INSERT INTO api_keys (channel_id, key_index, api_key, note, allowed_models, model_scope_empty, key_strategy,
-			                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			                      cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return fmt.Errorf("prepare api key statement: %w", err)
@@ -675,7 +715,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				}
 				_, err = keyStmt.ExecContext(ctx,
 					channelID, key.KeyIndex, key.APIKey, key.Note, allowedModelsJSON, key.ModelScopeEmpty, key.KeyStrategy,
-					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), nowUnix, nowUnix)
+					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, normalizeCostMultiplier(key.CostMultiplier), key.Priority, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
 				}
@@ -717,7 +757,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, created_at, updated_at
+		       note, allowed_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`
@@ -747,6 +787,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 			&key.CooldownDurationMs,
 			&disabled,
 			&key.CostMultiplier,
+			&key.Priority,
 			&createdAt,
 			&updatedAt,
 		)

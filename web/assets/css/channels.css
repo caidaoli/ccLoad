@@ -5864,6 +5864,29 @@
         text-align: left !important;
       }
 
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority,
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority {
+        grid-row: 3;
+      }
+
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
+        grid-row: 4;
+      }
+
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority[data-mobile-label]::before,
+      .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier[data-mobile-label]::before {
+        width: auto;
+        margin: 0 8px 0 0;
+        flex: 0 0 auto;
+      }
+
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-actions {
         order: 5;
         grid-column: 3 / -1;

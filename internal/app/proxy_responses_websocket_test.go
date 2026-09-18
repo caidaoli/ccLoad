@@ -4134,6 +4134,12 @@ func TestNativeCodexWebsocketRetainsAffinityAfterPhysicalDisconnect(t *testing.T
 	}
 	readWebsocketUntilType(t, downstream, "response.completed")
 
+	// A higher-priority alternative must not override the established session.
+	if err := env.store.UpdateAPIKeyPriorities(context.Background(), configs[0].ID, map[int]int{0: 100, 1: -100}); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateAPIKeysCache(configs[0].ID)
+
 	deadline := time.Now().Add(time.Second)
 	for env.server.responsesExecutionSessions.stats().UpstreamConnections != 0 {
 		if time.Now().After(deadline) {

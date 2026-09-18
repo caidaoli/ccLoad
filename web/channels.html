@@ -1023,6 +1023,7 @@
                       <option value="disabled" data-i18n="channels.keyStatusDisabled">已禁用</option>
                     </select>
                   </th>
+                  <th style="width: 100px;" data-i18n="channels.keyPriority" data-i18n-title="channels.keyPriorityHint" title="数值越大越优先，同优先级按 Key 策略选择">优先级</th>
                   <th style="width: 190px;" data-i18n="channels.costMultiplier">倍率</th>
                   <th style="width: 80px;"></th>
                 </tr>
@@ -2064,6 +2065,11 @@
         </div>
       </td>
       <td class="inline-key-col-status" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelStatus}}">{{{cooldownHtml}}}</td>
+      <td class="inline-key-col-priority" style="padding: 4px 8px;" data-mobile-label="{{priorityLabel}}">
+        <input type="number" value="{{priority}}" class="inline-key-priority-input modal-inline-input"
+          data-index="{{index}}" min="-99999" max="9999999" step="1" aria-label="{{priorityLabel}}" title="{{priorityHint}}"
+          style="width: 90px; padding: 4px 5px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px;">
+      </td>
       <td class="inline-key-col-multiplier" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelMultiplier}}">
         <div class="inline-key-multiplier-scope">
           <input type="number" value="{{costMultiplier}}" class="inline-key-multiplier-input modal-inline-input"
@@ -2081,7 +2087,7 @@
 
   <template id="tpl-key-empty">
     <tr>
-      <td colspan="6" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+      <td colspan="7" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
         {{message}}
       </td>
     </tr>

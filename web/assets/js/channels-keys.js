@@ -59,7 +59,8 @@ function normalizeInlineKeyRow(row) {
       api_key: String(row.api_key || '').trim(),
       note: String(row.note || '').trim(),
       allowed_models: normalizeKeyAllowedModels(row.allowed_models),
-      cost_multiplier: normalizeKeyCostMultiplier(row.cost_multiplier)
+      cost_multiplier: normalizeKeyCostMultiplier(row.cost_multiplier),
+      priority: Number(row.priority ?? 0)
     };
     if (row.model_scope_empty === true) normalized.model_scope_empty = true;
     return normalized;
@@ -68,7 +69,8 @@ function normalizeInlineKeyRow(row) {
     api_key: String(row || '').trim(),
     note: '',
     allowed_models: [],
-    cost_multiplier: 1
+    cost_multiplier: 1,
+    priority: 0
   };
 }
 
@@ -221,7 +223,8 @@ function setInlineKeyTableDataFromAPI(apiKeys) {
         note: item.note || '',
         allowed_models: item.allowed_models || [],
         model_scope_empty: item.model_scope_empty === true,
-        cost_multiplier: item.cost_multiplier
+        cost_multiplier: item.cost_multiplier,
+        priority: item.priority
       });
     }
     return makeInlineKeyRow(item || '', '');
@@ -695,7 +698,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
 
   if (visibleStart > 0) {
     const topSpacer = document.createElement('tr');
-    topSpacer.innerHTML = `<td colspan="5" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+    topSpacer.innerHTML = `<td colspan="7" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(topSpacer);
   }
 
@@ -708,7 +711,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   if (visibleEnd < filteredIndices.length) {
     const bottomSpacer = document.createElement('tr');
     const bottomHeight = (filteredIndices.length - visibleEnd) * ROW_HEIGHT;
-    bottomSpacer.innerHTML = `<td colspan="5" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
+    bottomSpacer.innerHTML = `<td colspan="7" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(bottomSpacer);
   }
 }
@@ -798,6 +801,9 @@ function createKeyRow(index) {
     mobileLabelActions: window.t('common.actions'),
     mobileLabelMultiplier: window.t('channels.costMultiplier'),
     costMultiplier: keyRow.cost_multiplier,
+    priority: keyRow.priority,
+    priorityLabel: window.t('channels.keyPriority'),
+    priorityHint: window.t('channels.keyPriorityHint'),
     fetchRateTitle: window.t('channels.fetchRateTitle'),
     fetchRateLabel: window.t('channels.fetchRate'),
     notePlaceholder: window.t('channels.keyNotePlaceholder')
@@ -821,6 +827,8 @@ function createKeyRow(index) {
     row.draggable = false;
     const keyInput = row.querySelector('.inline-key-input');
     const noteInput = row.querySelector('.inline-key-note-input');
+    const priorityInput = row.querySelector('.inline-key-priority-input');
+    if (priorityInput) priorityInput.disabled = true;
     const checkbox = row.querySelector('.key-checkbox');
     if (keyInput) keyInput.readOnly = true;
     if (noteInput) noteInput.readOnly = true;
@@ -1033,6 +1041,11 @@ function initKeyTableEventDelegation() {
       return;
     }
     if (isChannelKeyEditorReadOnly()) return;
+    const priorityInput = e.target.closest('.inline-key-priority-input');
+    if (priorityInput) {
+      updateInlineKeyPriority(Number(priorityInput.dataset.index), priorityInput.value);
+      return;
+    }
     const input = e.target.closest('.inline-key-input');
     if (input) {
       const index = parseInt(input.dataset.index);
@@ -1049,7 +1062,7 @@ function initKeyTableEventDelegation() {
 
   // 处理输入框焦点样式
   tbody.addEventListener('focusin', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input');
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
@@ -1059,7 +1072,7 @@ function initKeyTableEventDelegation() {
   });
 
   tbody.addEventListener('focusout', (e) => {
-    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input, .inline-key-multiplier-input, .inline-key-priority-input');
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
@@ -1240,6 +1253,16 @@ function updateInlineKeyNote(index, value) {
   if (row.note === nextValue) return;
 
   row.note = nextValue;
+  inlineKeyTableData[index] = row;
+  markChannelFormDirty();
+}
+
+function updateInlineKeyPriority(index, value) {
+  if (isChannelKeyEditorReadOnly()) return;
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  const priority = Number(value);
+  if (row.priority === priority) return;
+  row.priority = priority;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
 }

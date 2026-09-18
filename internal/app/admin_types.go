@@ -80,6 +80,7 @@ type ChannelAPIKeyRequest struct {
 	// CostMultiplier 用指针区分「未提交」：nil 保留现值（Key 更新）或取默认 1（创建）；
 	// 0 是合法的「免费 Key」。OAuth 渠道的合成 Key 行也用它携带渠道倍率。
 	CostMultiplier *float64 `json:"cost_multiplier,omitempty"`
+	Priority       *int     `json:"priority,omitempty"`
 	// allowedModelsSet distinguishes an omitted field from an explicit empty list.
 	// Updates preserve an existing scope when old clients do not send the new field.
 	allowedModelsSet bool
@@ -93,6 +94,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 		AllowedModels   json.RawMessage `json:"allowed_models"`
 		ModelScopeEmpty bool            `json:"model_scope_empty,omitempty"`
 		CostMultiplier  *float64        `json:"cost_multiplier"`
+		Priority        *int            `json:"priority"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -102,6 +104,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	r.Note = raw.Note
 	r.ModelScopeEmpty = raw.ModelScopeEmpty
 	r.CostMultiplier = raw.CostMultiplier
+	r.Priority = raw.Priority
 	r.AllowedModels = nil
 	r.allowedModelsSet = raw.AllowedModels != nil
 	if !r.allowedModelsSet || string(raw.AllowedModels) == "null" {
@@ -116,6 +119,13 @@ func apiKeyCostMultiplier(entry ChannelAPIKeyRequest) float64 {
 		return 1
 	}
 	return *entry.CostMultiplier
+}
+
+func apiKeyPriority(entry ChannelAPIKeyRequest) int {
+	if entry.Priority == nil {
+		return 0
+	}
+	return *entry.Priority
 }
 
 const (
@@ -137,6 +147,7 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				AllowedModels:    append([]string(nil), item.AllowedModels...),
 				ModelScopeEmpty:  item.ModelScopeEmpty,
 				CostMultiplier:   item.CostMultiplier,
+				Priority:         item.Priority,
 				allowedModelsSet: item.allowedModelsSet,
 			})
 		}
@@ -284,6 +295,14 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		if key.ModelScopeEmpty && len(key.AllowedModels) != 0 {
 			return fmt.Errorf("api_keys[%d].model_scope_empty requires empty allowed_models", i)
+		}
+		if key.Priority != nil {
+			if authType != model.AuthTypeAPIKey {
+				return fmt.Errorf("OAuth channel API key priority is read-only")
+			}
+			if *key.Priority < -99999 || *key.Priority > 9999999 {
+				return fmt.Errorf("api_keys[%d].priority must be between -99999 and 9999999", i)
+			}
 		}
 		if key.CostMultiplier != nil && (math.IsNaN(*key.CostMultiplier) || math.IsInf(*key.CostMultiplier, 0) || *key.CostMultiplier < 0) {
 			return fmt.Errorf("api_keys[%d].cost_multiplier must be finite and >= 0 (got %v)", i, *key.CostMultiplier)

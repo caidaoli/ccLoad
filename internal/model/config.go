@@ -860,6 +860,7 @@ type APIKey struct {
 	AllowedModels   []string `json:"allowed_models,omitempty"`    // 空表示该 Key 不限制模型
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"` // true 表示该 Key 当前不允许任何模型
 
+	Priority    int    `json:"priority"`     // 数值越大越优先，仅在渠道内比较
 	KeyStrategy string `json:"key_strategy"` // "sequential" | "round_robin"
 	Disabled    bool   `json:"disabled"`
 

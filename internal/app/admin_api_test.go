@@ -113,7 +113,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -495,8 +495,8 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	if err := source.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5},
-		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-double", CostMultiplier: 2.0},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5, Priority: -8},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-double", CostMultiplier: 2.0, Priority: 20},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
@@ -546,7 +546,11 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 		t.Fatalf("restored API key count=%d, want 2", len(keys))
 	}
 	want := map[int]float64{0: 0.5, 1: 2.0}
+	wantPriority := map[int]int{0: -8, 1: 20}
 	for _, key := range keys {
+		if key.Priority != wantPriority[key.KeyIndex] {
+			t.Fatalf("priority lost: %+v", key)
+		}
 		if got, ok := want[key.KeyIndex]; !ok || key.CostMultiplier != got {
 			t.Fatalf("restored key %d multiplier=%v, want %v", key.KeyIndex, key.CostMultiplier, got)
 		}
@@ -1061,6 +1065,7 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		ChannelID:     created.ID,
 		KeyIndex:      0,
 		APIKey:        "sk-old-key",
+		Priority:      -19,
 		AllowedModels: []string{"old-model"},
 		KeyStrategy:   model.KeyStrategySequential,
 	}}); err != nil {
@@ -1132,7 +1137,7 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	if err != nil {
 		t.Fatalf("查询更新后的 key 失败: %v", err)
 	}
-	if len(keys) != 1 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) {
+	if len(keys) != 1 || keys[0].Priority != -19 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) {
 		t.Fatalf("旧 CSV 缺少 api_key_allowed_models 列时应保留范围，实际为 %+v", keys)
 	}
 }
@@ -1845,5 +1850,43 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if resp.Data.Status != "ok" {
 		t.Fatalf("期望 status='ok'，实际: %v", resp.Data.Status)
+	}
+}
+
+func TestAdminAPI_CSVKeyPriorityValidation(t *testing.T) {
+	server := newInMemoryServer(t)
+	for _, priorities := range []string{`[1]`, `[1,2,3]`, `[1.5,0]`, `[null,0]`, `[10000000,0]`, `[-100000,0]`} {
+		var data bytes.Buffer
+		csvWriter := csv.NewWriter(&data)
+		if err := csvWriter.WriteAll([][]string{
+			{"name", "api_key", "urls", "models", "api_key_priorities"},
+			{"invalid-priorities", "sk-one,sk-two", `[{"url":"https://api.example.com"}]`, "model-1", priorities},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "priorities.csv")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(data.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := newRequest(http.MethodPost, "/admin/channels/import", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		c, w := newTestContext(t, req)
+		server.HandleImportChannelsCSV(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var summary ChannelImportSummary
+		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+		if summary.Skipped != 1 || summary.Created != 0 || len(summary.Errors) != 1 || !strings.Contains(summary.Errors[0], "api_key_priorities") {
+			t.Fatalf("priorities %s: %+v", priorities, summary)
+		}
 	}
 }

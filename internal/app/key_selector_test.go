@@ -822,3 +822,104 @@ func TestKeySelector_CleanupInactiveCounters(t *testing.T) {
 		t.Fatalf("expected channel=200 counter to remain")
 	}
 }
+
+func TestSelectAvailableKey_PriorityTiers(t *testing.T) {
+	t.Parallel()
+	for _, strategy := range []string{model.KeyStrategySequential, model.KeyStrategyRoundRobin} {
+		t.Run(strategy, func(t *testing.T) {
+			selector := NewKeySelector()
+			keys := []*model.APIKey{
+				{KeyIndex: 2, APIKey: "low", Priority: -10, KeyStrategy: strategy},
+				{KeyIndex: 7, APIKey: "high-a", Priority: 20, KeyStrategy: strategy},
+				{KeyIndex: 11, APIKey: "high-b", Priority: 20, KeyStrategy: strategy},
+				{KeyIndex: 15, APIKey: "disabled", Priority: 100, Disabled: true, KeyStrategy: strategy},
+				{KeyIndex: 21, APIKey: "middle", Priority: 0, KeyStrategy: strategy},
+			}
+			excluded := map[int]bool{}
+			for i, priority := range []int{20, 20, 0, -10} {
+				index, _, err := selector.SelectAvailableKey(1, keys, excluded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var selected *model.APIKey
+				for _, key := range keys {
+					if key.KeyIndex == index {
+						selected = key
+					}
+				}
+				if selected == nil || selected.Priority != priority || excluded[index] {
+					t.Fatalf("attempt %d selected %v, want priority %d", i, selected, priority)
+				}
+				if strategy == model.KeyStrategySequential && i == 0 && index != 7 {
+					t.Fatalf("same-priority order changed: %d", index)
+				}
+				excluded[index] = true
+			}
+			if _, _, err := selector.SelectAvailableKey(1, keys, excluded); err == nil {
+				t.Fatal("exhausted keys selected")
+			}
+			for _, key := range keys[1:3] {
+				key.CooldownUntil = time.Now().Add(time.Hour).Unix()
+			}
+			if index, _, err := selector.SelectAvailableKey(1, keys, nil); err != nil || index != 21 {
+				t.Fatalf("cooling top tier: index=%d err=%v", index, err)
+			}
+			keys[1].CooldownUntil = time.Now().Add(-time.Second).Unix()
+			if index, _, err := selector.SelectAvailableKey(1, keys, nil); err != nil || index != 7 {
+				t.Fatalf("recovered top tier: index=%d err=%v", index, err)
+			}
+		})
+	}
+}
+
+func TestSelectAvailableKey_RoundRobinIsolatedByPriority(t *testing.T) {
+	t.Parallel()
+	selector := NewKeySelector()
+	keys := []*model.APIKey{
+		{KeyIndex: 2, APIKey: "low-a", Priority: -1, KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 4, APIKey: "high-a", Priority: 1, KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 8, APIKey: "low-b", Priority: -1, KeyStrategy: model.KeyStrategyRoundRobin},
+		{KeyIndex: 16, APIKey: "high-b", Priority: 1, KeyStrategy: model.KeyStrategyRoundRobin},
+	}
+	seenHigh, seenLow := map[int]bool{}, map[int]bool{}
+	for range 2 {
+		index, _, err := selector.SelectAvailableKey(1, keys, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seenHigh[index] = true
+		index, _, err = selector.SelectAvailableKey(1, keys, map[int]bool{4: true, 16: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seenLow[index] = true
+	}
+	if !seenHigh[4] || !seenHigh[16] || !seenLow[2] || !seenLow[8] {
+		t.Fatalf("tiers did not rotate: %v %v", seenHigh, seenLow)
+	}
+}
+
+func TestSelectCooldownFallbackKey_PriorityTieBreak(t *testing.T) {
+	t.Parallel()
+	until := time.Now().Add(time.Hour).Unix()
+	keys := []*model.APIKey{
+		{KeyIndex: 1, APIKey: "low", Priority: -1, CooldownUntil: until},
+		{KeyIndex: 9, APIKey: "high-later-index", Priority: 5, CooldownUntil: until},
+		{KeyIndex: 7, APIKey: "high", Priority: 5, CooldownUntil: until},
+		{KeyIndex: 15, APIKey: "earlier", Priority: -10, CooldownUntil: until - 1},
+		{KeyIndex: 20, APIKey: "disabled", Priority: 99, Disabled: true, CooldownUntil: until - 2},
+	}
+	selector := NewKeySelector()
+	excluded := map[int]bool{}
+	for _, want := range []int{15, 7, 9, 1} {
+		index, _, err := selector.SelectCooldownFallbackKey(1, keys, excluded)
+		if err != nil || index != want {
+			t.Fatalf("fallback index=%d want=%d err=%v", index, want, err)
+		}
+		excluded[index] = true
+	}
+	keys[0].CooldownUntil, keys[2].CooldownUntil = 0, 0
+	if index, _, err := selector.SelectCooldownFallbackKey(1, keys, nil); err != nil || index != 7 {
+		t.Fatalf("recovered keys must use priority: index=%d err=%v", index, err)
+	}
+}

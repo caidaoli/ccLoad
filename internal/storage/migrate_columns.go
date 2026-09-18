@@ -1005,3 +1005,8 @@ func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dial
 
 	return recordMigration(ctx, db, marker, dialect)
 }
+
+func ensureAPIKeysPriority(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "api_keys", "priority",
+		"INT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0")
+}

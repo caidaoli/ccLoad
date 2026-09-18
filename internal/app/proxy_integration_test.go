@@ -11258,8 +11258,8 @@ func TestProxy_APIKeyModelAllowlistRoutesToMatchingKey(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	if err := srv.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gpt", AllowedModels: []string{"gpt-5"}},
-		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-qwen", AllowedModels: []string{"qwen3"}},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gpt", Priority: 100, AllowedModels: []string{"gpt-5"}},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-qwen", Priority: -10, AllowedModels: []string{"qwen3"}},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
@@ -11313,7 +11313,7 @@ func TestProxy_NoKeyForModelSkipsChannelWithoutCooldown(t *testing.T) {
 		t.Fatalf("CreateConfig(second): %v", err)
 	}
 	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: first.ID, KeyIndex: 0, APIKey: "sk-qwen", AllowedModels: []string{"qwen3"}},
+		{ChannelID: first.ID, KeyIndex: 0, APIKey: "sk-qwen", Priority: -10, AllowedModels: []string{"qwen3"}},
 		{ChannelID: second.ID, KeyIndex: 0, APIKey: "sk-fallback"},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)

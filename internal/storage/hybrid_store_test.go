@@ -108,6 +108,9 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
+	if err := hybrid.UpdateAPIKeyPriorities(ctx, created.ID, map[int]int{0: -9}); err != nil {
+		t.Fatal(err)
+	}
 	if err := hybrid.SetAPIKeyDisabled(ctx, created.ID, 0, true); err != nil {
 		t.Fatalf("SetAPIKeyDisabled: %v", err)
 	}
@@ -130,7 +133,7 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 		// The model cooldown replicates as its own queued entity, so waiting on
 		// the channel state alone can observe a queue that is still draining.
 		return cfgErr == nil && cfg.Name == "final" &&
-			keysErr == nil && len(keys) == 1 && keys[0].Disabled &&
+			keysErr == nil && len(keys) == 1 && keys[0].Disabled && keys[0].Priority == -9 &&
 			disabledErr == nil && len(disabled[created.ID]) == 1 &&
 			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})

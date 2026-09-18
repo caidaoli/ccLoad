@@ -470,6 +470,15 @@ func (h *HybridStore) UpdateAPIKeyCostMultipliers(ctx context.Context, channelID
 	return nil
 }
 
+func (h *HybridStore) UpdateAPIKeyPriorities(ctx context.Context, channelID int64, prioritiesByIndex map[int]int) error {
+	if err := h.sqlite.UpdateAPIKeyPriorities(ctx, channelID, prioritiesByIndex); err != nil {
+		return err
+	}
+
+	h.markChannelDirty(channelID, false)
+	return nil
+}
+
 func (h *HybridStore) UpdateAPIKeyModelScopes(
 	ctx context.Context,
 	channelID int64,

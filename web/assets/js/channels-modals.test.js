@@ -96,7 +96,7 @@ test('inline Key rows preserve and normalize model scopes', () => {
     api_key: 'sk-test',
     note: 'primary',
     allowed_models: ['GPT-5', 'Claude-4'],
-    cost_multiplier: 1
+    priority: 0, cost_multiplier: 1
   });
   assert.deepEqual(normalizeInlineKeyRow('legacy-key').allowed_models, []);
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-free', cost_multiplier: 0 }).cost_multiplier, 0);
@@ -115,20 +115,20 @@ test('removing configured models prunes every restricted Key scope', () => {
   ];
 
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: 'gpt-5' }]), [
-    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'], cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'], priority: 0, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: '*' }]), [
-    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'], cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
+    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'], priority: 0, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(
     [{ api_key: 'sk-thinking', allowed_models: ['gpt-5'] }],
     [{ model: 'gpt-5(max)' }]
-  ), [{ api_key: 'sk-thinking', note: '', allowed_models: ['gpt-5'], cost_multiplier: 1 }]);
+  ), [{ api_key: 'sk-thinking', note: '', allowed_models: ['gpt-5'], priority: 0, cost_multiplier: 1 }]);
   assert.deepEqual(pruneKeyAllowedModels(rows, []), [
-    { api_key: 'sk-primary', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [], cost_multiplier: 1 }
+    { api_key: 'sk-primary', note: '', allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 },
+    { api_key: 'sk-unrestricted', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 }
   ]);
 });
 
@@ -162,7 +162,7 @@ test('single and batch model deletion use the same Key scope reconciliation', ()
       note: '',
       allowed_models: [],
       model_scope_empty: true,
-      cost_multiplier: 1
+      priority: 0, cost_multiplier: 1
     }]);
     assert.deepEqual([...global.selectedModelIndices], []);
   } finally {
@@ -1095,13 +1095,15 @@ test('editing a channel loads the complete editor state with one request', async
     enabled: true,
     protocol_transform_mode: 'auto'
   };
-  const fixture = installEditChannelGlobals(channel);
+  const keys = [{ api_key: 'sk-priority', priority: -7 }, { api_key: 'sk-default', priority: 0 }];
+  const fixture = installEditChannelGlobals(channel, { editorKeys: keys });
 
   try {
     const { editChannel } = loadChannelsModals();
     await editChannel(channel.id);
     assert.deepEqual(fixture.requests, [`/admin/channels/${channel.id}/editor`]);
     assert.equal(fixture.getElement('quickAddChannelBtn').hidden, false);
+    assert.deepEqual(fixture.loadedKeys, keys);
   } finally {
     fixture.restore();
   }
@@ -1336,7 +1338,7 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
   const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
   const extraGlobals = new Map();
   const setGlobal = (key, value) => {
-    extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    if (!extraGlobals.has(key)) extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
     Object.defineProperty(global, key, { configurable: true, writable: true, value });
   };
   let submitted;
@@ -1355,8 +1357,8 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
     ]) fixture.getElement(id).value = '0';
     setGlobal('getValidInlineURLConfigs', () => channel.urls);
     setGlobal('getValidInlineKeyRows', () => [
-      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], cost_multiplier: 2 },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 }
+      { api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], priority: -7, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 }
     ]);
     setGlobal('fetchAPIWithAuth', async (_url, options) => {
       submitted = JSON.parse(options.body);
@@ -1365,9 +1367,19 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
 
     await saveChannel({ preventDefault() {} });
 	assert.deepEqual(submitted.api_keys, [
-		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false, cost_multiplier: 2 },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, cost_multiplier: 1 }
+		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false, priority: -7, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 }
     ]);
+    for (const priority of [1.5, -100000, 10000000, NaN]) {
+      submitted = undefined;
+      setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority }]);
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted, undefined, `invalid priority ${priority} must not be submitted`);
+    }
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'sk-test', priority: 0 }]);
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.api_keys[0].priority, 0);
+
   } finally {
     for (const [key, descriptor] of extraGlobals) {
       if (descriptor === undefined) delete global[key];

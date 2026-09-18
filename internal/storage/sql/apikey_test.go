@@ -19,7 +19,7 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	// 批量创建 API Keys
 	keys := []*model.APIKey{
 		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key-0", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", AllowedModels: []string{"gpt-5", "gpt-4.1"}, KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Priority: -8, AllowedModels: []string{"gpt-5", "gpt-4.1"}, KeyStrategy: model.KeyStrategySequential},
 		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key-2", ModelScopeEmpty: true, Disabled: true, KeyStrategy: model.KeyStrategySequential},
 	}
 	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
@@ -33,6 +33,9 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	}
 	if key.APIKey != "sk-key-1" {
 		t.Errorf("api key: got %q, want %q", key.APIKey, "sk-key-1")
+	}
+	if key.Priority != -8 {
+		t.Fatalf("priority=%d", key.Priority)
 	}
 	if key.KeyIndex != 1 {
 		t.Errorf("key index: got %d, want %d", key.KeyIndex, 1)
@@ -704,6 +707,32 @@ func TestAPIKey_ImportChannelBatchMigratesChannelManagementEnvelope(t *testing.T
 			if cfg.OAuthCredential != "" {
 				t.Fatalf("new unmanaged channel inherited private envelope=%q", cfg.OAuthCredential)
 			}
+		}
+	}
+}
+
+func TestAPIKey_UpdatePrioritiesPreservesRuntimeState(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "priority.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "priority")
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channelID, KeyIndex: 7, APIKey: "sk-test", Disabled: true,
+		CooldownUntil: 1234, CooldownDurationMs: 5678, Priority: 20,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, priority := range []int{-3, 0} {
+		if err := store.UpdateAPIKeyPriorities(ctx, channelID, map[int]int{7: priority}); err != nil {
+			t.Fatal(err)
+		}
+		allKeys, err := store.GetAllAPIKeys(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := allKeys[channelID]
+		if len(keys) != 1 || keys[0].Priority != priority || !keys[0].Disabled || keys[0].CooldownUntil != 1234 || keys[0].CooldownDurationMs != 5678 {
+			t.Fatalf("priority update lost state: %+v", keys)
 		}
 	}
 }

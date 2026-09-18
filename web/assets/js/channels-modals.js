@@ -816,6 +816,10 @@ async function saveChannel(event) {
 
   const isOAuth = ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(editingChannelAuthType);
   const validKeyRows = isOAuth ? [] : getValidInlineKeyRows();
+  if (validKeyRows.some(row => !Number.isInteger(row.priority) || row.priority < -99999 || row.priority > 9999999)) {
+    if (window.showError) window.showError(window.t('channels.keyPriorityInvalid'));
+    return;
+  }
   const validKeys = validKeyRows.map(row => row.api_key);
   if (!isOAuth && validKeyRows.length === 0) {
     alert(window.t('channels.atLeastOneKey'));
@@ -859,7 +863,8 @@ async function saveChannel(event) {
       note: row.note || '',
       allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : [],
       model_scope_empty: row.model_scope_empty === true,
-      cost_multiplier: row.cost_multiplier
+      cost_multiplier: row.cost_multiplier,
+      priority: row.priority
     })),
     protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,

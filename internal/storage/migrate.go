@@ -232,6 +232,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 
 		// 增量迁移：修复 api_keys.api_key 历史长度漂移（旧版可能为 VARCHAR(64)）
 		if tb.Name() == "api_keys" {
+			if err := ensureAPIKeysPriority(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys priority: %w", err)
+			}
 			if err := ensureAPIKeysAPIKeyLength(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys api_key column: %w", err)
 			}

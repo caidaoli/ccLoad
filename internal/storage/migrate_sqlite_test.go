@@ -1162,10 +1162,14 @@ func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
 	// api_key 渠道的 Key 下沉渠道倍率 2.5。
 	for _, keyIndex := range []int{0, 1} {
 		var multiplier float64
+		var priority int
 		if err := db.QueryRowContext(ctx, `
-			SELECT cost_multiplier FROM api_keys WHERE channel_id = 1 AND key_index = ?
-		`, keyIndex).Scan(&multiplier); err != nil {
+			SELECT cost_multiplier, priority FROM api_keys WHERE channel_id = 1 AND key_index = ?
+		`, keyIndex).Scan(&multiplier, &priority); err != nil {
 			t.Fatalf("query api key %d multiplier: %v", keyIndex, err)
+		}
+		if priority != 0 {
+			t.Fatalf("legacy priority=%d, want 0", priority)
 		}
 		if multiplier != 2.5 {
 			t.Fatalf("api key %d multiplier=%v, want 2.5", keyIndex, multiplier)
@@ -1182,6 +1186,10 @@ func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
 		t.Fatalf("oauth channel multiplier=%v, want 3.0", oauthMultiplier)
 	}
 
+	// 幂等迁移保留已经设置的 Key 优先级。
+	if _, err := db.ExecContext(ctx, `UPDATE api_keys SET priority = -7 WHERE channel_id = 1`); err != nil {
+		t.Fatal(err)
+	}
 	// 幂等：回填有一次性标记，渠道列后续变化不会再次下沉。
 	if _, err := db.ExecContext(ctx, `UPDATE channels SET cost_multiplier = 9.9 WHERE id = 1`); err != nil {
 		t.Fatalf("update channel multiplier: %v", err)
@@ -1190,10 +1198,14 @@ func TestMigrateSQLite_BackfillsAPIKeyCostMultiplierFromChannels(t *testing.T) {
 		t.Fatalf("second migrate: %v", err)
 	}
 	var multiplier float64
+	var priority int
 	if err := db.QueryRowContext(ctx, `
-		SELECT cost_multiplier FROM api_keys WHERE channel_id = 1 AND key_index = 0
-	`).Scan(&multiplier); err != nil {
+		SELECT cost_multiplier, priority FROM api_keys WHERE channel_id = 1 AND key_index = 0
+	`).Scan(&multiplier, &priority); err != nil {
 		t.Fatalf("query api key multiplier after second migrate: %v", err)
+	}
+	if priority != -7 {
+		t.Fatalf("second migrate priority=%d", priority)
 	}
 	if multiplier != 2.5 {
 		t.Fatalf("api key multiplier after second migrate=%v, want 2.5 (backfill must not rerun)", multiplier)

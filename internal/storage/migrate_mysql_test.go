@@ -403,7 +403,7 @@ func TestMySQL(t *testing.T) {
 			}
 			t.Logf("列 auth_tokens.%s 存在", col)
 		}
-		for _, col := range []string{"allowed_models", "model_scope_empty"} {
+		for _, col := range []string{"allowed_models", "model_scope_empty", "priority"} {
 			var columnName string
 			err := env.db.QueryRow(
 				"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'api_keys' AND COLUMN_NAME = ?",

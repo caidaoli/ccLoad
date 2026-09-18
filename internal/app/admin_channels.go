@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -722,6 +723,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			KeyStrategy:     keyStrategy,
 			Disabled:        entry.ModelScopeEmpty,
 			CostMultiplier:  apiKeyCostMultiplier(entry),
+			Priority:        apiKeyPriority(entry),
 			CreatedAt:       model.JSONTime{Time: now},
 			UpdatedAt:       model.JSONTime{Time: now},
 		})
@@ -1304,7 +1306,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			return
 		}
 		submittedKeys := req.normalizeAPIKeys()
-		preserveOmittedAPIKeyAllowedModels(submittedKeys, oldKeys)
+		preserveOmittedAPIKeyMetadata(submittedKeys, oldKeys)
 		req.APIKeys = submittedKeys
 		req.APIKey = strings.Join(apiKeyStrings(submittedKeys), ",")
 	}
@@ -1318,6 +1320,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	managementChanged := false
 	if req.managementAccountSet {
 		// Sub2API login creates a real upstream session. Run it only after every
 		// local channel field has passed validation, so rejected edits have no
@@ -1332,10 +1335,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			respondChannelManagementError(c, resolveErr)
 			return
 		}
-		if _, _, mergeErr := mergeChannelManagementSettings(existing.OAuthCredential, resolvedManagement); mergeErr != nil {
+		_, nextManagement, mergeErr := mergeChannelManagementSettings(existing.OAuthCredential, resolvedManagement)
+		if mergeErr != nil {
 			RespondErrorMsg(c, http.StatusBadRequest, "invalid management account")
 			return
 		}
+		managementChanged = nextManagement != existing.OAuthCredential
 		req.ManagementAccount = resolvedManagement
 	}
 
@@ -1365,8 +1370,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	notesByIndex := make(map[int]string)
 	scopesByIndex := make(map[int]model.APIKeyModelScope)
 	multipliersByIndex := make(map[int]float64)
+	prioritiesByIndex := make(map[int]int)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
+			if newKeys[i].Priority != nil && *newKeys[i].Priority != oldKey.Priority {
+				prioritiesByIndex[oldKey.KeyIndex] = *newKeys[i].Priority
+			}
 			if oldKey.Note != newKeys[i].Note {
 				notesByIndex[oldKey.KeyIndex] = newKeys[i].Note
 			}
@@ -1461,6 +1470,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				KeyStrategy:     keyStrategy,
 				Disabled:        wasDisabled || key.ModelScopeEmpty,
 				CostMultiplier:  apiKeyCostMultiplier(key),
+				Priority:        apiKeyPriority(key),
 				CreatedAt:       model.JSONTime{Time: now},
 				UpdatedAt:       model.JSONTime{Time: now},
 			})
@@ -1479,6 +1489,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		if noteChanged {
 			if err := s.store.UpdateAPIKeyNotes(c.Request.Context(), id, notesByIndex); err != nil {
 				log.Printf("[WARN] 批量更新API Key备注失败 (channel=%d): %v", id, err)
+			}
+		}
+		if len(prioritiesByIndex) > 0 {
+			if err := s.store.UpdateAPIKeyPriorities(c.Request.Context(), id, prioritiesByIndex); err != nil {
+				RespondError(c, http.StatusInternalServerError, fmt.Errorf("update API key priorities: %w", err))
+				return
 			}
 		}
 		if multiplierChanged {
@@ -1501,8 +1517,21 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	// 编辑保存后重置渠道、Key 和模型冷却状态。
-	s.clearAllChannelCooldowns(c.Request.Context(), id)
+	// 仅调整优先级不代表凭据已经恢复，保留禁用和冷却状态。
+	before, after := existing.Clone(), upd.Clone()
+	after.UpdatedAt = before.UpdatedAt
+	if !existing.UsesOAuth() {
+		// API Key 渠道的旧渠道倍率会被 ToConfig 归一为 1，实际计费只读取 Key 倍率。
+		after.CostMultiplier = before.CostMultiplier
+	}
+	priorityOnly := len(prioritiesByIndex) > 0 && !keyChanged && !strategyChanged &&
+		!noteChanged && !modelsChanged && !multiplierChanged && !managementChanged &&
+		reflect.DeepEqual(before, after)
+	if !priorityOnly {
+		s.clearAllChannelCooldowns(c.Request.Context(), id)
+	} else {
+		s.InvalidateAPIKeysCache(id)
+	}
 
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()
@@ -1517,7 +1546,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, upd)
 }
 
-func preserveOmittedAPIKeyAllowedModels(submitted []ChannelAPIKeyRequest, existing []*model.APIKey) {
+func preserveOmittedAPIKeyMetadata(submitted []ChannelAPIKeyRequest, existing []*model.APIKey) {
 	byValue := make(map[string]*model.APIKey, len(existing))
 	for _, key := range existing {
 		if key != nil {
@@ -1527,14 +1556,18 @@ func preserveOmittedAPIKeyAllowedModels(submitted []ChannelAPIKeyRequest, existi
 		}
 	}
 	for i := range submitted {
-		if submitted[i].allowedModelsSet {
-			continue
-		}
 		oldKey := byValue[submitted[i].APIKey]
 		if i < len(existing) && existing[i] != nil && existing[i].APIKey == submitted[i].APIKey {
 			oldKey = existing[i]
 		}
 		if oldKey != nil {
+			if submitted[i].Priority == nil {
+				priority := oldKey.Priority
+				submitted[i].Priority = &priority
+			}
+			if submitted[i].allowedModelsSet {
+				continue
+			}
 			submitted[i].AllowedModels = append([]string(nil), oldKey.AllowedModels...)
 			submitted[i].ModelScopeEmpty = oldKey.ModelScopeEmpty
 		}
