@@ -6,6 +6,7 @@
     'keyModelScopeModal',
     'keyImportModal',
     'keyExportModal',
+    'keySortModal',
     'modelImportModal',
     'customRulesModal',
     'testModal',
@@ -14,6 +15,7 @@
 
   const CHANNEL_TEMPLATE_IDS = [
     'tpl-key-row',
+    'tpl-key-sort-item',
     'tpl-key-empty',
     'tpl-cooldown-badge',
     'tpl-key-normal-status',

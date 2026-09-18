@@ -222,9 +222,8 @@ function applyChannelAuthEditorMode(
     button.hidden = false;
     button.disabled = oauth;
   });
-  document.querySelectorAll('#inlineKeyTableBody .inline-key-row').forEach(row => {
-    row.draggable = !oauth;
-  });
+  const sortButton = document.getElementById('sortKeysBtn');
+  if (sortButton) sortButton.disabled = oauth || getValidInlineKeyRows().length < 2;
 }
 
 function oauthProviderConfig(provider = 'codex') {

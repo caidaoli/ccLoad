@@ -182,7 +182,8 @@
       color: var(--error-600);
     }
 
-    .oauth-dialog {
+    .oauth-dialog,
+    .key-sort-dialog {
       position: fixed;
       inset: 0;
       width: min(760px, calc(100vw - 32px));
@@ -202,7 +203,8 @@
       width: min(560px, calc(100vw - 32px));
     }
 
-    .oauth-dialog::backdrop {
+    .oauth-dialog::backdrop,
+    .key-sort-dialog::backdrop {
       background: rgba(15, 23, 42, 0.5);
       backdrop-filter: blur(3px);
     }
@@ -761,8 +763,6 @@
       --channel-editor-table-header-height: 38px;
       --channel-editor-key-visible-rows: 1;
       --channel-editor-key-max-visible-rows: 8;
-      --channel-editor-model-visible-rows: 3;
-      --channel-editor-model-max-visible-rows: 12;
       display: flex;
       flex-direction: column;
       gap: 4px;
@@ -853,10 +853,9 @@
     }
 
     #channelModal .channel-editor-group--models .inline-table-container {
-      --channel-editor-table-visible-rows: var(--channel-editor-model-visible-rows);
       flex: 1 1 auto;
-      min-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-visible-rows) * var(--channel-editor-table-row-height)));
-      max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
+      min-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
+      max-height: none;
       overflow-y: auto;
     }
 
@@ -3166,21 +3165,6 @@
     .pie-chart-container {
       width: 100%;
       height: 280px;
-    }
-
-    /* Drag and Drop for Keys */
-    .draggable-key-row {
-      cursor: move;
-      transition: background-color 0.2s;
-    }
-
-    .draggable-key-row.dragging {
-      opacity: 0.5;
-      background-color: var(--neutral-100);
-    }
-
-    .draggable-key-row.drag-over {
-      border-top: 2px solid var(--primary-500) !important;
     }
 
     /* 健康状态指示器 */
@@ -5856,7 +5840,7 @@
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-status {
         order: 4;
         grid-column: 1 / 3;
-        grid-row: 2;
+        grid-row: 4;
         display: flex;
         align-items: center;
         gap: 6px;
@@ -5881,7 +5865,7 @@
       }
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-multiplier {
-        grid-row: 4;
+        grid-row: 2;
       }
 
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-priority[data-mobile-label]::before,
@@ -5894,7 +5878,7 @@
       .inline-key-table tbody .mobile-inline-row td.inline-key-col-actions {
         order: 5;
         grid-column: 3 / -1;
-        grid-row: 2;
+        grid-row: 4;
         display: flex;
         align-items: center;
         justify-content: flex-start;
@@ -7304,3 +7288,76 @@
         padding-right: 0;
       }
     }
+
+/* Key 倍率按内容收紧，剩余空间交给 API Key 输入框。 */
+@media (min-width: 769px) {
+  #channelModal .inline-key-col-multiplier {
+    width: 1%;
+    white-space: nowrap;
+  }
+}
+
+.inline-key-multiplier-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inline-key-multiplier-input {
+  flex-shrink: 0;
+}
+
+.key-fetch-rate-btn {
+  padding: 3px 5px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 6px;
+  background: var(--surface-bg-strong);
+  color: var(--neutral-600);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.key-sort-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  max-height: min(85vh, 800px);
+}
+
+.key-sort-dialog .channel-sort-modal-body {
+  min-height: 0;
+}
+
+.key-sort-dialog .form-actions {
+  padding: 0 20px 20px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.key-sort-dialog .modal-header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 16px 20px 0;
+}
+
+.key-sort-dialog .channel-sort-hint {
+  margin: 0 0 12px;
+}
+
+.key-sort-description {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.key-sort-description .sort-item-priority-label {
+  white-space: nowrap;
+}
+
+.key-sort-move-buttons {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}

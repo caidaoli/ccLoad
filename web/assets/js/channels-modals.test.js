@@ -2716,3 +2716,90 @@ test('single-Key channel never applies fetched Key model scopes', () => {
     else delete global.window;
   }
 });
+
+
+test('Key sorting confirms priorities without rebuilding keys, cancels drafts, and rejects OAuth edits', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const handlers = {};
+  const list = {
+    children: [],
+    addEventListener(name, handler) { handlers[name] = handler; },
+    replaceChildren() { this.children = []; },
+    appendChild(item) { this.children.push(item); },
+    querySelector(selector) {
+      return this.children.find(item => selector === `[data-index="${item.dataset.index}"]`);
+    }
+  };
+  const dialogEvents = {};
+  const dialog = {
+    dataset: {}, open: false,
+    addEventListener(name, handler) { dialogEvents[name] = handler; },
+    showModal() { this.open = true; },
+    close() { this.open = false; dialogEvents.close(); }
+  };
+  const rows = [
+    { api_key: 'sk-duplicate', note: 'first', allowed_models: ['gpt-5'], priority: -4, cost_multiplier: 2 },
+    { api_key: '', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 },
+    { api_key: 'sk-duplicate', note: 'second', allowed_models: [], model_scope_empty: true, priority: 20, cost_multiplier: 0 }
+  ];
+  const states = [{ key_index: 0, disabled: true }, { key_index: 2, cooldown_remaining_ms: 30000 }];
+  const context = vm.createContext({
+    inlineKeyTableData: structuredClone(rows), currentChannelKeyCooldowns: structuredClone(states),
+    editingChannelAuthType: 'api_key', currentKeyStatusFilter: 'all',
+    document: { getElementById: id => id === 'keySortModal' ? dialog : list },
+    window: { t: key => key },
+    TemplateEngine: {
+      render(_template, data) {
+        const item = { dataset: { index: String(data.index) } };
+        const buttons = [-1, 1].map(direction => ({
+          dataset: { keySortMove: String(direction) }, disabled: false,
+          closest: () => item, focus() {}
+        }));
+        item.querySelector = selector => selector === 'button:not(:disabled)'
+          ? buttons.find(button => !button.disabled)
+          : buttons.find(button => selector === `[data-key-sort-move="${button.dataset.keySortMove}"]`);
+        return item;
+      }
+    }
+  });
+  vm.runInContext(fs.readFileSync(require.resolve('./channels-keys.js'), 'utf8'), context);
+  let dirty = false;
+  context.renderInlineKeyTable = () => {};
+  context.markChannelFormDirty = () => { dirty = true; };
+  const readRows = () => JSON.parse(JSON.stringify(context.getInlineKeyRows()));
+  const move = (index, direction) => {
+    const button = list.querySelector(`[data-index="${index}"]`).querySelector(`[data-key-sort-move="${direction}"]`);
+    handlers.click({ target: { closest: () => button } });
+  };
+
+  context.openKeySortModal();
+  assert.equal(dialog.open, true);
+  assert.deepEqual(list.children.map(item => item.dataset.index), ['2', '0']);
+  move(0, -1);
+  assert.deepEqual(readRows(), rows, 'moving changes only the dialog draft');
+  context.closeKeySortModal();
+  assert.equal(dirty, false);
+  assert.deepEqual(readRows(), rows);
+
+  context.openKeySortModal();
+  assert.deepEqual(list.children.map(item => item.dataset.index), ['2', '0']);
+  move(0, -1);
+  context.confirmKeySort();
+  const expected = rows.map((row, index) => ({ ...row, priority: index === 0 ? 20 : index === 2 ? 10 : 0 }));
+  assert.deepEqual(readRows(), expected, 'duplicate keys retain separate identity and metadata');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.currentChannelKeyCooldowns)), states);
+  assert.equal(dirty, true);
+  assert.equal(dialog.open, false);
+
+  context.openKeySortModal();
+  assert.deepEqual(list.children.map(item => item.dataset.index), ['0', '2']);
+  move(0, 1);
+  dialog.close(); // Native Escape closes without committing.
+  context.confirmKeySort();
+  assert.deepEqual(readRows(), expected);
+  context.editingChannelAuthType = 'codex_oauth';
+  context.openKeySortModal();
+  assert.equal(dialog.open, false);
+  assert.deepEqual(readRows(), expected);
+});

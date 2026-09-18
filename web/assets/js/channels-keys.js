@@ -567,8 +567,6 @@ function getKeyTableViewportHeight(container = getKeyTableContainer()) {
 const CHANNEL_EDITOR_TABLE_LAYOUT = {
   KEY_MIN_ROWS: 1,
   KEY_MAX_ROWS: 8,
-  MODEL_MIN_ROWS: 3,
-  MODEL_MAX_ROWS: 12,
   DEFAULT_ROW_HEIGHT: 36
 };
 
@@ -591,13 +589,6 @@ function getVisibleKeyCountForLayout() {
     return getVisibleKeyIndices().length;
   }
   return Array.isArray(inlineKeyTableData) ? inlineKeyTableData.length : 0;
-}
-
-function getVisibleModelCountForLayout() {
-  if (typeof getVisibleModelIndices === 'function') {
-    return getVisibleModelIndices().length;
-  }
-  return Array.isArray(redirectTableData) ? redirectTableData.length : 0;
 }
 
 function ensureChannelEditorLayoutResizeSync() {
@@ -640,15 +631,6 @@ function syncChannelEditorTableSizing() {
     CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MAX_ROWS
   );
   body.style.setProperty('--channel-editor-key-visible-rows', String(keyRows));
-
-  const visibleModelCount = getVisibleModelCountForLayout();
-  const naturalModelRows = clampChannelEditorRows(
-    Math.max(visibleModelCount, CHANNEL_EDITOR_TABLE_LAYOUT.MODEL_MIN_ROWS),
-    CHANNEL_EDITOR_TABLE_LAYOUT.MODEL_MIN_ROWS,
-    CHANNEL_EDITOR_TABLE_LAYOUT.MODEL_MAX_ROWS
-  );
-
-  body.style.setProperty('--channel-editor-model-visible-rows', String(naturalModelRows));
 
   const modelTable = modelGroup.querySelector('.inline-table-container');
   if (modelTable && rowHeight > 0) {
@@ -824,7 +806,6 @@ function createKeyRow(index) {
   }
 
   if (isChannelKeyEditorReadOnly()) {
-    row.draggable = false;
     const keyInput = row.querySelector('.inline-key-input');
     const noteInput = row.querySelector('.inline-key-note-input');
     const priorityInput = row.querySelector('.inline-key-priority-input');
@@ -909,6 +890,118 @@ function cleanupVirtualScroll() {
   }
 }
 
+// 草稿保存原始索引；排序只改优先级，不重建 Key 或更改其冷却状态。
+let keySortIndices = null;
+
+function openKeySortModal() {
+  if (isChannelKeyEditorReadOnly()) return;
+  const rows = getInlineKeyRows();
+  keySortIndices = rows.map((_, index) => index)
+    .filter(index => rows[index].api_key)
+    .sort((a, b) => rows[b].priority - rows[a].priority || a - b);
+  if (keySortIndices.length < 2) {
+    keySortIndices = null;
+    return;
+  }
+  const dialog = document.getElementById('keySortModal');
+  if (!dialog.dataset.bound) {
+    dialog.dataset.bound = 'true';
+    dialog.addEventListener('close', () => { keySortIndices = null; });
+    dialog.addEventListener('keydown', event => {
+      // 让原生 dialog 处理 Escape，避免同时关闭底层渠道编辑器。
+      if (event.key === 'Escape') event.stopPropagation();
+    });
+    const list = document.getElementById('keySortList');
+    let draggedItem = null;
+    list.addEventListener('click', event => {
+      const button = event.target.closest('[data-key-sort-move]');
+      if (!button || !keySortIndices) return;
+      const index = Number(button.closest('.sort-item').dataset.index);
+      const from = keySortIndices.indexOf(index);
+      const to = from + Number(button.dataset.keySortMove);
+      if (to < 0 || to >= keySortIndices.length) return;
+      keySortIndices.splice(to, 0, keySortIndices.splice(from, 1)[0]);
+      renderKeySortList();
+      const item = list.querySelector(`[data-index="${index}"]`);
+      const nextButton = item.querySelector(`[data-key-sort-move="${button.dataset.keySortMove}"]`);
+      (nextButton.disabled ? item.querySelector('button:not(:disabled)') : nextButton).focus();
+    });
+    list.addEventListener('dragstart', event => {
+      if (event.target.closest('button')) {
+        event.preventDefault();
+        return;
+      }
+      draggedItem = event.target.closest('.sort-item');
+      if (!draggedItem) return;
+      draggedItem.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', draggedItem.dataset.index);
+    });
+    list.addEventListener('dragover', event => {
+      if (!draggedItem) return;
+      event.preventDefault();
+      const after = Array.from(list.querySelectorAll('.sort-item:not(.is-dragging)'))
+        .find(item => {
+          const rect = item.getBoundingClientRect();
+          return event.clientY < rect.top + rect.height / 2;
+        });
+      list.insertBefore(draggedItem, after || null);
+    });
+    list.addEventListener('drop', event => { event.preventDefault(); });
+    list.addEventListener('dragend', () => {
+      if (!draggedItem) return;
+      draggedItem = null;
+      if (!keySortIndices) return;
+      keySortIndices = Array.from(list.querySelectorAll('.sort-item'), item => Number(item.dataset.index));
+      renderKeySortList();
+    });
+  }
+  renderKeySortList();
+  dialog.showModal();
+}
+
+function renderKeySortList() {
+  const list = document.getElementById('keySortList');
+  list.replaceChildren();
+  keySortIndices.forEach((index, position) => {
+    const row = inlineKeyTableData[index];
+    const maskedKey = row.api_key.length > 8 ? `${row.api_key.slice(0, 3)}…${row.api_key.slice(-4)}` : '••••••••';
+    const item = TemplateEngine.render('tpl-key-sort-item', {
+      index,
+      label: `#${index + 1} ${maskedKey}(${row.note}${row.cost_multiplier}x)`,
+      priority: row.priority,
+      priorityLabel: window.t('channels.sort.currentPriority'),
+      moveUp: window.t('channels.keySortMoveUp'),
+      moveDown: window.t('channels.keySortMoveDown')
+    });
+    item.querySelector('[data-key-sort-move="-1"]').disabled = position === 0;
+    item.querySelector('[data-key-sort-move="1"]').disabled = position === keySortIndices.length - 1;
+    list.appendChild(item);
+  });
+}
+
+function closeKeySortModal() {
+  keySortIndices = null;
+  document.getElementById('keySortModal').close();
+}
+
+function confirmKeySort() {
+  if (!keySortIndices || isChannelKeyEditorReadOnly()) return;
+  let changed = false;
+  keySortIndices.forEach((index, position) => {
+    const priority = (keySortIndices.length - position) * 10;
+    if (inlineKeyTableData[index].priority !== priority) {
+      inlineKeyTableData[index].priority = priority;
+      changed = true;
+    }
+  });
+  closeKeySortModal();
+  if (changed) {
+    renderInlineKeyTable();
+    markChannelFormDirty();
+  }
+}
+
 /**
  * 初始化Key表格事件委托 (替代inline onclick)
  */
@@ -917,97 +1010,6 @@ function initKeyTableEventDelegation() {
   if (!tbody || tbody.dataset.delegated) return;
 
   tbody.dataset.delegated = 'true';
-  let dragSrcIndex = null;
-
-  // Drag and drop listeners
-  tbody.addEventListener('dragstart', (e) => {
-    if (isChannelKeyEditorReadOnly()) return;
-    // Prevent dragging when interacting with inputs or buttons
-    if (['INPUT', 'BUTTON', 'A'].includes(e.target.tagName)) return;
-
-    const row = e.target.closest('tr');
-    if (row && row.classList.contains('draggable-key-row')) {
-      dragSrcIndex = parseInt(row.dataset.index);
-      row.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', dragSrcIndex);
-
-      // Improve visual feedback
-      // e.dataTransfer.setDragImage(row, 0, 0); // Optional
-    }
-  });
-
-  tbody.addEventListener('dragend', (e) => {
-    const row = e.target.closest('tr');
-    if (row) row.classList.remove('dragging');
-    tbody.querySelectorAll('.draggable-key-row.drag-over').forEach(r => r.classList.remove('drag-over'));
-    dragSrcIndex = null;
-  });
-
-  tbody.addEventListener('dragover', (e) => {
-    e.preventDefault(); // Necessary to allow dropping
-    const row = e.target.closest('tr');
-
-    // Clear other drag-overs
-    tbody.querySelectorAll('.draggable-key-row.drag-over').forEach(r => {
-      if (r !== row) r.classList.remove('drag-over');
-    });
-
-    if (row && row.classList.contains('draggable-key-row')) {
-      const targetIndex = parseInt(row.dataset.index);
-      if (targetIndex !== dragSrcIndex) {
-        row.classList.add('drag-over');
-      }
-    }
-  });
-
-  tbody.addEventListener('drop', (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    if (isChannelKeyEditorReadOnly()) return;
-
-    const targetRow = e.target.closest('tr');
-    if (!targetRow || !targetRow.classList.contains('draggable-key-row')) return;
-
-    const targetIndex = parseInt(targetRow.dataset.index);
-
-    if (dragSrcIndex !== null && dragSrcIndex !== targetIndex) {
-      // Perform Swap
-      const movedKey = inlineKeyTableData[dragSrcIndex];
-
-      inlineKeyTableData.splice(dragSrcIndex, 1);
-      inlineKeyTableData.splice(targetIndex, 0, movedKey);
-
-      // Update Cooldowns: Key Indices Shift
-      if (currentChannelKeyCooldowns && currentChannelKeyCooldowns.length > 0) {
-        currentChannelKeyCooldowns.forEach(kc => {
-          if (kc.key_index === dragSrcIndex) {
-            kc.key_index = targetIndex;
-          } else if (dragSrcIndex < targetIndex) {
-            // Moved down: Items between src and target shift UP (-1)
-            if (kc.key_index > dragSrcIndex && kc.key_index <= targetIndex) {
-              kc.key_index -= 1;
-            }
-          } else {
-            // Moved up: Items between target and src shift DOWN (+1)
-            if (kc.key_index >= targetIndex && kc.key_index < dragSrcIndex) {
-              kc.key_index += 1;
-            }
-          }
-        });
-      }
-
-      selectedKeyIndices.clear();
-      renderInlineKeyTable();
-
-      // 标记表单有未保存的更改
-      markChannelFormDirty();
-
-      // Update hidden input
-      updateInlineKeyHiddenInput();
-    }
-  });
-
   // 事件委托：处理所有按钮和输入事件
   tbody.addEventListener('click', (e) => {
     // 处理操作按钮点击
@@ -1066,8 +1068,6 @@ function initKeyTableEventDelegation() {
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
-      // Ensure drag doesn't interfere with typing
-      input.closest('tr').setAttribute('draggable', 'false');
     }
   });
 
@@ -1076,7 +1076,6 @@ function initKeyTableEventDelegation() {
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
-      input.closest('tr').setAttribute('draggable', 'true');
     }
   });
 
@@ -1119,6 +1118,8 @@ function renderInlineKeyTable() {
   normalizeInlineKeyTableData();
   tbody.innerHTML = '';
   keyCount.textContent = inlineKeyTableData.length;
+  const sortButton = document.getElementById('sortKeysBtn');
+  if (sortButton) sortButton.disabled = isChannelKeyEditorReadOnly() || getValidInlineKeyRows().length < 2;
 
   updateInlineKeyHiddenInput();
 
@@ -1552,12 +1553,14 @@ function filterKeysByStatus(status) {
 }
 
 function getVisibleKeyIndices() {
+  const indices = inlineKeyTableData.map((_, index) => index)
+    .sort((a, b) => inlineKeyTableData[b].priority - inlineKeyTableData[a].priority || a - b);
   if (currentKeyStatusFilter === 'all') {
-    return inlineKeyTableData.map((_, index) => index);
+    return indices;
   }
 
-  return inlineKeyTableData
-    .map((_, index) => {
+  return indices
+    .map(index => {
       const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
       const isCoolingDown = keyCooldown && keyCooldown.cooldown_remaining_ms > 0;
       const isDisabled = keyCooldown && keyCooldown.disabled;

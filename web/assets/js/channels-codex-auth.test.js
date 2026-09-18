@@ -982,11 +982,13 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
     'commonModelsModal',
     'keyImportModal',
     'keyExportModal',
+    'keySortModal',
     'modelImportModal',
     'customRulesModal',
     'testModal',
     'upstreamDetailModal',
     'tpl-key-row',
+    'tpl-key-sort-item',
     'tpl-key-empty',
     'tpl-cooldown-badge',
     'tpl-key-normal-status',
@@ -2758,7 +2760,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   const rowNoteInput = { readOnly: false };
   const rowDeleteButton = { hidden: false, disabled: false };
   const rowToggleButton = { hidden: false, disabled: false };
-  const row = { draggable: true };
   const viewButtons = ['decoded', 'raw'].map(view => ({
     dataset: { codexCredentialView: view },
     classList: { toggle() {} },
@@ -2771,7 +2772,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
       '#inlineKeyTableBody .inline-key-input': [rowKeyInput],
       '#inlineKeyTableBody .inline-key-note-input': [rowNoteInput],
       '#inlineKeyTableBody [data-action="delete"], #inlineKeyTableBody [data-action="toggle-disabled"]': [rowDeleteButton, rowToggleButton],
-      '#inlineKeyTableBody .inline-key-row': [row],
       '[data-codex-credential-view]': viewButtons
     })[selector] || []
   };
@@ -2808,7 +2808,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(rowDeleteButton.disabled, true);
     assert.equal(rowToggleButton.hidden, false);
     assert.equal(rowToggleButton.disabled, true);
-    assert.equal(row.draggable, false);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
 
     let copiedCredential = '';
@@ -2900,7 +2899,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(rowDeleteButton.disabled, false);
     assert.equal(rowToggleButton.hidden, false);
     assert.equal(rowToggleButton.disabled, false);
-    assert.equal(row.draggable, true);
   } finally {
     global.document = previousDocument;
   }
