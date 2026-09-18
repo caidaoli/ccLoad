@@ -240,6 +240,10 @@ message CustomToolDefinition {
   optional string description = 1;
   // JSON Schema object describing the tool's input parameters.
   google.protobuf.Struct input_schema = 2;
+  // JSON Schema object describing the tool's structured output
+  // (`Tool.outputSchema` from the MCP spec), set only when the author
+  // declares one.
+  google.protobuf.Struct output_schema = 3;
 }
 
 message LocalAgentOptions {

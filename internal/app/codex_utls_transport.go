@@ -32,7 +32,7 @@ const (
 
 type codexUTLSRoundTripper struct {
 	fallback   *http.Transport
-	h2         *http2.Transport
+	h2         *http2.Transport //nolint:staticcheck // uTLS requires the HTTP/2 transport; see newCodexUTLSH2Transport.
 	h1         *http.Transport
 	anthropic  *http.Transport
 	standardH1 *http.Transport
@@ -181,13 +181,18 @@ func (t *codexUTLSRoundTripper) CloseIdleConnections() {
 	if t == nil {
 		return
 	}
-	t.h2.CloseIdleConnections()
+	t.h2.CloseIdleConnections() //nolint:staticcheck // Close the uTLS HTTP/2 connection pool.
 	t.h1.CloseIdleConnections()
 	t.anthropic.CloseIdleConnections()
 	t.standardH1.CloseIdleConnections()
 	t.fallback.CloseIdleConnections()
 }
 
+// uTLS exposes utls.ConnectionState, not crypto/tls.ConnectionState, so net/http
+// cannot discover its negotiated ALPN through DialTLSContext. Keep the explicit
+// HTTP/2 transport to preserve uTLS handshakes and HTTP/2 connection pooling.
+//
+//nolint:staticcheck // x/net deprecates this API, but net/http is not a drop-in replacement for uTLS.
 func newCodexUTLSH2Transport(base *http.Transport) *http2.Transport {
 	dialer := newCodexUTLSDialer(base)
 	maxConns := codexUTLSH2MaxConnsPerHost

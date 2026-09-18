@@ -7,7 +7,7 @@ import _ "embed"
 var (
 	//go:embed bridge.lock
 	lockFile string
-	//go:embed v1.0.28/LICENSE
+	//go:embed v1.0.31/LICENSE
 	licenseFile string
 )
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -360,6 +361,74 @@ func TestEnsureBridgeLivePinnedArchive(t *testing.T) {
 	}
 	if err := bridge.close(ctx); err != nil {
 		t.Fatalf("close installed bridge: %v", err)
+	}
+}
+
+func TestEnsureBridgeUpgradesDiscoveredBinary(t *testing.T) {
+	oldBinary := os.Getenv("CURSOR_SDK_BRIDGE_OLD_BIN")
+	if oldBinary == "" {
+		t.Skip("set CURSOR_SDK_BRIDGE_OLD_BIN to a previous release to test automatic upgrade")
+	}
+	oldContent, err := os.ReadFile(oldBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "cursor-sdk-bridge"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	sibling := filepath.Join(filepath.Dir(executable), name)
+	file, err := os.OpenFile(sibling, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+	_, writeErr := file.Write(oldContent)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQLITE_PATH", filepath.Join(t.TempDir(), "ccload.db"))
+	t.Setenv("CURSOR_SDK_BRIDGE_BIN", sibling)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	// An explicit override remains authoritative even for an older SDK.
+	if path, err := EnsureBridge(ctx); err != nil || path != sibling {
+		t.Fatalf("explicit old bridge = (%q, %v), want %q", path, err, sibling)
+	}
+	t.Setenv("CURSOR_SDK_BRIDGE_BIN", "")
+	path, err := EnsureBridge(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == sibling {
+		t.Fatal("automatically discovered older bridge was reused")
+	}
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(installed, oldContent) {
+		t.Fatal("installed bridge still contains the older release")
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The old sibling must not hide the now-installed release or cause re-downloads.
+	if second, err := EnsureBridge(ctx); err != nil || second != path {
+		t.Fatalf("second ensure = (%q, %v), want %q", second, err, path)
+	}
+	after, err := os.Stat(path)
+	if err != nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("matching cached bridge was replaced: %v", err)
+	}
+	remaining, err := os.ReadFile(sibling)
+	if err != nil || !bytes.Equal(remaining, oldContent) {
+		t.Fatalf("old sibling was modified: %v", err)
 	}
 }
 

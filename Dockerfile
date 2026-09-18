@@ -88,7 +88,7 @@ WORKDIR /app
 # 从构建阶段复制（web资源已嵌入二进制）
 COPY --from=builder /app/ccload .
 COPY --from=cursor-bridge /app/cursor-sdk-bridge .
-COPY third_party/cursor-sdk-bridge/v1.0.28/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
+COPY third_party/cursor-sdk-bridge/v1.0.31/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \

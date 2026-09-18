@@ -50,7 +50,7 @@ type bridgeInstaller struct {
 
 var bridgeInstallMu sync.Mutex
 
-// EnsureBridge returns an existing bridge or installs the pinned release into
+// EnsureBridge returns a bridge matching the pinned binary digest or installs it into
 // ccLoad's persistent data directory. Explicit operator overrides remain
 // authoritative: an invalid CURSOR_SDK_BRIDGE_BIN is reported, not bypassed.
 func EnsureBridge(ctx context.Context) (string, error) {
@@ -60,37 +60,69 @@ func EnsureBridge(ctx context.Context) (string, error) {
 	bridge := newBridge()
 	defer bridge.lifeStop()
 	path, locateErr := bridge.bridgePath()
+	if strings.TrimSpace(os.Getenv("CURSOR_SDK_BRIDGE_BIN")) != "" {
+		if locateErr != nil {
+			return "", locateErr
+		}
+		if err := probeBridgeBinary(ctx, path); err != nil {
+			return "", fmt.Errorf("validate CURSOR_SDK_BRIDGE_BIN %q: %w", path, err)
+		}
+		return path, nil
+	}
+	manifest, err := parseBridgeReleaseManifest(cursorbridge.LockFile())
+	if err != nil {
+		return "", fmt.Errorf("load cursor-sdk-bridge release lock: %w", err)
+	}
+	spec, err := bridgeArchiveForPlatform(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return "", err
+	}
+	expected := manifest.hashes["binary_"+spec.hashKey]
+	if expected == "" {
+		return "", fmt.Errorf("bridge lock is missing binary_%s", spec.hashKey)
+	}
+	// GetVersion reports the bridge service version (1.0.0), not the SDK
+	// release version. Identify automatic discoveries by their release digest.
+	probePinned := func(ctx context.Context, path string) error {
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		hash := sha256.New()
+		_, readErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		if actual := hex.EncodeToString(hash.Sum(nil)); actual != expected {
+			return fmt.Errorf("cursor-sdk-bridge binary %q does not match %s", path, manifest.version)
+		}
+		return probeBridgeBinary(ctx, path)
+	}
 	forceInstall := false
 	temporaryRoot := temporaryBridgeStateRoot()
 	temporaryPath := managedBridgeBinaryPathAt(temporaryRoot, runtime.GOOS)
 	temporaryBroken := false
 	if locateErr == nil {
-		if probeErr := probeBridgeBinary(ctx, path); probeErr == nil {
+		if probeErr := probePinned(ctx, path); probeErr == nil {
 			return path, nil
-		} else if strings.TrimSpace(os.Getenv("CURSOR_SDK_BRIDGE_BIN")) != "" {
-			return "", fmt.Errorf("validate CURSOR_SDK_BRIDGE_BIN %q: %w", path, probeErr)
 		}
 		managed := managedBridgeBinaryPath(runtime.GOOS)
 		if managed != path && isUsableBridgeFile(managed, runtime.GOOS) {
-			if probeErr := probeBridgeBinary(ctx, managed); probeErr == nil {
+			if probeErr := probePinned(ctx, managed); probeErr == nil {
 				return managed, nil
 			}
 		}
 		forceInstall = true
-	} else if strings.TrimSpace(os.Getenv("CURSOR_SDK_BRIDGE_BIN")) != "" {
-		return "", locateErr
+		temporaryBroken = path == temporaryPath
 	}
 	if temporaryPath != path && isUsableBridgeFile(temporaryPath, runtime.GOOS) {
-		if probeErr := probeBridgeBinary(ctx, temporaryPath); probeErr == nil {
+		if probeErr := probePinned(ctx, temporaryPath); probeErr == nil {
 			return temporaryPath, nil
 		}
 		temporaryBroken = true
 	}
 
-	manifest, manifestErr := parseBridgeReleaseManifest(cursorbridge.LockFile())
-	if manifestErr != nil {
-		return "", fmt.Errorf("load cursor-sdk-bridge release lock: %w", manifestErr)
-	}
 	locations := []bridgeInstallLocation{{stateRoot: bridgeStateRoot(), force: forceInstall}}
 	if locations[0].stateRoot != temporaryRoot {
 		locations = append(locations, bridgeInstallLocation{stateRoot: temporaryRoot, force: temporaryBroken})
@@ -109,7 +141,7 @@ func EnsureBridge(ctx context.Context) (string, error) {
 		}
 		return installer.ensure(ctx, force)
 	}
-	return ensureBridgeInStateRoots(ctx, locations, install, probeBridgeBinary)
+	return ensureBridgeInStateRoots(ctx, locations, install, probePinned)
 }
 
 type bridgeInstallLocation struct {
@@ -455,7 +487,7 @@ func parseBridgeReleaseManifest(raw string) (bridgeReleaseManifest, error) {
 	}
 	hashes := make(map[string]string)
 	for key, value := range values {
-		if !strings.HasPrefix(key, "sha256_") {
+		if !strings.HasPrefix(key, "sha256_") && !strings.HasPrefix(key, "binary_sha256_") {
 			continue
 		}
 		decoded, err := hex.DecodeString(value)

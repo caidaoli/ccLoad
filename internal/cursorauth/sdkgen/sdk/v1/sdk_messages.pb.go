@@ -1629,7 +1629,11 @@ type CustomToolDefinition struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Description *string                `protobuf:"bytes,1,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	// JSON Schema object describing the tool's input parameters.
-	InputSchema   *structpb.Struct `protobuf:"bytes,2,opt,name=input_schema,json=inputSchema,proto3" json:"input_schema,omitempty"`
+	InputSchema *structpb.Struct `protobuf:"bytes,2,opt,name=input_schema,json=inputSchema,proto3" json:"input_schema,omitempty"`
+	// JSON Schema object describing the tool's structured output
+	// (`Tool.outputSchema` from the MCP spec), set only when the author
+	// declares one.
+	OutputSchema  *structpb.Struct `protobuf:"bytes,3,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1674,6 +1678,13 @@ func (x *CustomToolDefinition) GetDescription() string {
 func (x *CustomToolDefinition) GetInputSchema() *structpb.Struct {
 	if x != nil {
 		return x.InputSchema
+	}
+	return nil
+}
+
+func (x *CustomToolDefinition) GetOutputSchema() *structpb.Struct {
+	if x != nil {
+		return x.OutputSchema
 	}
 	return nil
 }
@@ -4018,10 +4029,11 @@ const file_sdk_v1_sdk_messages_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"F\n" +
 	"\x15LocalAgentStoreConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x19\n" +
-	"\broot_dir\x18\x02 \x01(\tR\arootDir\"\x89\x01\n" +
+	"\broot_dir\x18\x02 \x01(\tR\arootDir\"\xc7\x01\n" +
 	"\x14CustomToolDefinition\x12%\n" +
 	"\vdescription\x18\x01 \x01(\tH\x00R\vdescription\x88\x01\x01\x12:\n" +
-	"\finput_schema\x18\x02 \x01(\v2\x17.google.protobuf.StructR\vinputSchemaB\x0e\n" +
+	"\finput_schema\x18\x02 \x01(\v2\x17.google.protobuf.StructR\vinputSchema\x12<\n" +
+	"\routput_schema\x18\x03 \x01(\v2\x17.google.protobuf.StructR\foutputSchemaB\x0e\n" +
 	"\f_description\"\xd2\x03\n" +
 	"\x11LocalAgentOptions\x12\x10\n" +
 	"\x03cwd\x18\x01 \x03(\tR\x03cwd\x12>\n" +
@@ -4376,67 +4388,68 @@ var file_sdk_v1_sdk_messages_proto_depIdxs = []int32{
 	24, // 20: sdk.v1.SendOptions.cloud:type_name -> sdk.v1.CloudSendOptions
 	61, // 21: sdk.v1.CloudSendOptions.env_vars:type_name -> sdk.v1.CloudSendOptions.EnvVarsEntry
 	68, // 22: sdk.v1.CustomToolDefinition.input_schema:type_name -> google.protobuf.Struct
-	3,  // 23: sdk.v1.LocalAgentOptions.setting_sources:type_name -> sdk.v1.SettingSource
-	28, // 24: sdk.v1.LocalAgentOptions.sandbox_options:type_name -> sdk.v1.SandboxOptions
-	25, // 25: sdk.v1.LocalAgentOptions.store:type_name -> sdk.v1.LocalAgentStoreConfig
-	62, // 26: sdk.v1.LocalAgentOptions.custom_tools:type_name -> sdk.v1.LocalAgentOptions.CustomToolsEntry
-	30, // 27: sdk.v1.CloudAgentOptions.env:type_name -> sdk.v1.CloudEnvironment
-	31, // 28: sdk.v1.CloudAgentOptions.repos:type_name -> sdk.v1.CloudRepository
-	63, // 29: sdk.v1.CloudAgentOptions.env_vars:type_name -> sdk.v1.CloudAgentOptions.EnvVarsEntry
-	64, // 30: sdk.v1.CloudAgentOptions.metadata:type_name -> sdk.v1.CloudAgentOptions.MetadataEntry
-	4,  // 31: sdk.v1.CloudEnvironment.type:type_name -> sdk.v1.CloudEnvironmentType
-	33, // 32: sdk.v1.McpServerConfig.stdio:type_name -> sdk.v1.StdioMcpServerConfig
-	34, // 33: sdk.v1.McpServerConfig.http:type_name -> sdk.v1.HttpMcpServerConfig
-	65, // 34: sdk.v1.StdioMcpServerConfig.env:type_name -> sdk.v1.StdioMcpServerConfig.EnvEntry
-	5,  // 35: sdk.v1.HttpMcpServerConfig.type:type_name -> sdk.v1.HttpMcpTransportType
-	66, // 36: sdk.v1.HttpMcpServerConfig.headers:type_name -> sdk.v1.HttpMcpServerConfig.HeadersEntry
-	35, // 37: sdk.v1.HttpMcpServerConfig.auth:type_name -> sdk.v1.McpAuthConfig
-	7,  // 38: sdk.v1.AgentDefinition.model:type_name -> sdk.v1.ModelSelection
-	37, // 39: sdk.v1.AgentDefinition.mcp_servers:type_name -> sdk.v1.AgentDefinitionMcpServer
-	32, // 40: sdk.v1.AgentDefinitionMcpServer.inline_config:type_name -> sdk.v1.McpServerConfig
-	69, // 41: sdk.v1.SdkAgentInfo.last_modified:type_name -> google.protobuf.Timestamp
-	2,  // 42: sdk.v1.SdkAgentInfo.status:type_name -> sdk.v1.AgentInfoStatus
-	69, // 43: sdk.v1.SdkAgentInfo.created_at:type_name -> google.protobuf.Timestamp
-	39, // 44: sdk.v1.SdkAgentInfo.local:type_name -> sdk.v1.LocalAgentInfo
-	40, // 45: sdk.v1.SdkAgentInfo.cloud:type_name -> sdk.v1.CloudAgentInfo
-	30, // 46: sdk.v1.CloudAgentInfo.env:type_name -> sdk.v1.CloudEnvironment
-	67, // 47: sdk.v1.CloudAgentInfo.metadata:type_name -> sdk.v1.CloudAgentInfo.MetadataEntry
-	41, // 48: sdk.v1.RunUsage.usage:type_name -> sdk.v1.TokenUsage
-	42, // 49: sdk.v1.RunUsage.cost:type_name -> sdk.v1.UsageCost
-	41, // 50: sdk.v1.AgentUsage.usage:type_name -> sdk.v1.TokenUsage
-	42, // 51: sdk.v1.AgentUsage.cost:type_name -> sdk.v1.UsageCost
-	43, // 52: sdk.v1.AgentUsage.runs:type_name -> sdk.v1.RunUsage
-	1,  // 53: sdk.v1.RunSnapshot.status:type_name -> sdk.v1.RunLifecycleStatus
-	7,  // 54: sdk.v1.RunSnapshot.model:type_name -> sdk.v1.ModelSelection
-	47, // 55: sdk.v1.RunSnapshot.git:type_name -> sdk.v1.RunGitInfo
-	69, // 56: sdk.v1.RunSnapshot.created_at:type_name -> google.protobuf.Timestamp
-	41, // 57: sdk.v1.RunSnapshot.usage:type_name -> sdk.v1.TokenUsage
-	1,  // 58: sdk.v1.RunResult.status:type_name -> sdk.v1.RunLifecycleStatus
-	7,  // 59: sdk.v1.RunResult.model:type_name -> sdk.v1.ModelSelection
-	47, // 60: sdk.v1.RunResult.git:type_name -> sdk.v1.RunGitInfo
-	69, // 61: sdk.v1.RunResult.created_at:type_name -> google.protobuf.Timestamp
-	41, // 62: sdk.v1.RunResult.usage:type_name -> sdk.v1.TokenUsage
-	48, // 63: sdk.v1.RunGitInfo.branches:type_name -> sdk.v1.RunGitBranchInfo
-	54, // 64: sdk.v1.RunStreamMessage.sdk_message:type_name -> sdk.v1.SdkMessage
-	50, // 65: sdk.v1.RunStreamMessage.result:type_name -> sdk.v1.RunStreamResult
-	51, // 66: sdk.v1.RunStreamMessage.done:type_name -> sdk.v1.RunStreamDone
-	52, // 67: sdk.v1.RunStreamMessage.interaction_update:type_name -> sdk.v1.InteractionUpdate
-	53, // 68: sdk.v1.RunStreamMessage.step:type_name -> sdk.v1.ConversationStep
-	1,  // 69: sdk.v1.RunStreamResult.status:type_name -> sdk.v1.RunLifecycleStatus
-	46, // 70: sdk.v1.RunStreamResult.result:type_name -> sdk.v1.RunResult
-	68, // 71: sdk.v1.InteractionUpdate.update:type_name -> google.protobuf.Struct
-	68, // 72: sdk.v1.ConversationStep.step:type_name -> google.protobuf.Struct
-	68, // 73: sdk.v1.SdkMessage.message:type_name -> google.protobuf.Struct
-	68, // 74: sdk.v1.AgentMessage.message:type_name -> google.protobuf.Struct
-	32, // 75: sdk.v1.AgentOptions.McpServersEntry.value:type_name -> sdk.v1.McpServerConfig
-	36, // 76: sdk.v1.AgentOptions.AgentsEntry.value:type_name -> sdk.v1.AgentDefinition
-	32, // 77: sdk.v1.SendOptions.McpServersEntry.value:type_name -> sdk.v1.McpServerConfig
-	26, // 78: sdk.v1.LocalAgentOptions.CustomToolsEntry.value:type_name -> sdk.v1.CustomToolDefinition
-	79, // [79:79] is the sub-list for method output_type
-	79, // [79:79] is the sub-list for method input_type
-	79, // [79:79] is the sub-list for extension type_name
-	79, // [79:79] is the sub-list for extension extendee
-	0,  // [0:79] is the sub-list for field type_name
+	68, // 23: sdk.v1.CustomToolDefinition.output_schema:type_name -> google.protobuf.Struct
+	3,  // 24: sdk.v1.LocalAgentOptions.setting_sources:type_name -> sdk.v1.SettingSource
+	28, // 25: sdk.v1.LocalAgentOptions.sandbox_options:type_name -> sdk.v1.SandboxOptions
+	25, // 26: sdk.v1.LocalAgentOptions.store:type_name -> sdk.v1.LocalAgentStoreConfig
+	62, // 27: sdk.v1.LocalAgentOptions.custom_tools:type_name -> sdk.v1.LocalAgentOptions.CustomToolsEntry
+	30, // 28: sdk.v1.CloudAgentOptions.env:type_name -> sdk.v1.CloudEnvironment
+	31, // 29: sdk.v1.CloudAgentOptions.repos:type_name -> sdk.v1.CloudRepository
+	63, // 30: sdk.v1.CloudAgentOptions.env_vars:type_name -> sdk.v1.CloudAgentOptions.EnvVarsEntry
+	64, // 31: sdk.v1.CloudAgentOptions.metadata:type_name -> sdk.v1.CloudAgentOptions.MetadataEntry
+	4,  // 32: sdk.v1.CloudEnvironment.type:type_name -> sdk.v1.CloudEnvironmentType
+	33, // 33: sdk.v1.McpServerConfig.stdio:type_name -> sdk.v1.StdioMcpServerConfig
+	34, // 34: sdk.v1.McpServerConfig.http:type_name -> sdk.v1.HttpMcpServerConfig
+	65, // 35: sdk.v1.StdioMcpServerConfig.env:type_name -> sdk.v1.StdioMcpServerConfig.EnvEntry
+	5,  // 36: sdk.v1.HttpMcpServerConfig.type:type_name -> sdk.v1.HttpMcpTransportType
+	66, // 37: sdk.v1.HttpMcpServerConfig.headers:type_name -> sdk.v1.HttpMcpServerConfig.HeadersEntry
+	35, // 38: sdk.v1.HttpMcpServerConfig.auth:type_name -> sdk.v1.McpAuthConfig
+	7,  // 39: sdk.v1.AgentDefinition.model:type_name -> sdk.v1.ModelSelection
+	37, // 40: sdk.v1.AgentDefinition.mcp_servers:type_name -> sdk.v1.AgentDefinitionMcpServer
+	32, // 41: sdk.v1.AgentDefinitionMcpServer.inline_config:type_name -> sdk.v1.McpServerConfig
+	69, // 42: sdk.v1.SdkAgentInfo.last_modified:type_name -> google.protobuf.Timestamp
+	2,  // 43: sdk.v1.SdkAgentInfo.status:type_name -> sdk.v1.AgentInfoStatus
+	69, // 44: sdk.v1.SdkAgentInfo.created_at:type_name -> google.protobuf.Timestamp
+	39, // 45: sdk.v1.SdkAgentInfo.local:type_name -> sdk.v1.LocalAgentInfo
+	40, // 46: sdk.v1.SdkAgentInfo.cloud:type_name -> sdk.v1.CloudAgentInfo
+	30, // 47: sdk.v1.CloudAgentInfo.env:type_name -> sdk.v1.CloudEnvironment
+	67, // 48: sdk.v1.CloudAgentInfo.metadata:type_name -> sdk.v1.CloudAgentInfo.MetadataEntry
+	41, // 49: sdk.v1.RunUsage.usage:type_name -> sdk.v1.TokenUsage
+	42, // 50: sdk.v1.RunUsage.cost:type_name -> sdk.v1.UsageCost
+	41, // 51: sdk.v1.AgentUsage.usage:type_name -> sdk.v1.TokenUsage
+	42, // 52: sdk.v1.AgentUsage.cost:type_name -> sdk.v1.UsageCost
+	43, // 53: sdk.v1.AgentUsage.runs:type_name -> sdk.v1.RunUsage
+	1,  // 54: sdk.v1.RunSnapshot.status:type_name -> sdk.v1.RunLifecycleStatus
+	7,  // 55: sdk.v1.RunSnapshot.model:type_name -> sdk.v1.ModelSelection
+	47, // 56: sdk.v1.RunSnapshot.git:type_name -> sdk.v1.RunGitInfo
+	69, // 57: sdk.v1.RunSnapshot.created_at:type_name -> google.protobuf.Timestamp
+	41, // 58: sdk.v1.RunSnapshot.usage:type_name -> sdk.v1.TokenUsage
+	1,  // 59: sdk.v1.RunResult.status:type_name -> sdk.v1.RunLifecycleStatus
+	7,  // 60: sdk.v1.RunResult.model:type_name -> sdk.v1.ModelSelection
+	47, // 61: sdk.v1.RunResult.git:type_name -> sdk.v1.RunGitInfo
+	69, // 62: sdk.v1.RunResult.created_at:type_name -> google.protobuf.Timestamp
+	41, // 63: sdk.v1.RunResult.usage:type_name -> sdk.v1.TokenUsage
+	48, // 64: sdk.v1.RunGitInfo.branches:type_name -> sdk.v1.RunGitBranchInfo
+	54, // 65: sdk.v1.RunStreamMessage.sdk_message:type_name -> sdk.v1.SdkMessage
+	50, // 66: sdk.v1.RunStreamMessage.result:type_name -> sdk.v1.RunStreamResult
+	51, // 67: sdk.v1.RunStreamMessage.done:type_name -> sdk.v1.RunStreamDone
+	52, // 68: sdk.v1.RunStreamMessage.interaction_update:type_name -> sdk.v1.InteractionUpdate
+	53, // 69: sdk.v1.RunStreamMessage.step:type_name -> sdk.v1.ConversationStep
+	1,  // 70: sdk.v1.RunStreamResult.status:type_name -> sdk.v1.RunLifecycleStatus
+	46, // 71: sdk.v1.RunStreamResult.result:type_name -> sdk.v1.RunResult
+	68, // 72: sdk.v1.InteractionUpdate.update:type_name -> google.protobuf.Struct
+	68, // 73: sdk.v1.ConversationStep.step:type_name -> google.protobuf.Struct
+	68, // 74: sdk.v1.SdkMessage.message:type_name -> google.protobuf.Struct
+	68, // 75: sdk.v1.AgentMessage.message:type_name -> google.protobuf.Struct
+	32, // 76: sdk.v1.AgentOptions.McpServersEntry.value:type_name -> sdk.v1.McpServerConfig
+	36, // 77: sdk.v1.AgentOptions.AgentsEntry.value:type_name -> sdk.v1.AgentDefinition
+	32, // 78: sdk.v1.SendOptions.McpServersEntry.value:type_name -> sdk.v1.McpServerConfig
+	26, // 79: sdk.v1.LocalAgentOptions.CustomToolsEntry.value:type_name -> sdk.v1.CustomToolDefinition
+	80, // [80:80] is the sub-list for method output_type
+	80, // [80:80] is the sub-list for method input_type
+	80, // [80:80] is the sub-list for extension type_name
+	80, // [80:80] is the sub-list for extension extendee
+	0,  // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_sdk_v1_sdk_messages_proto_init() }

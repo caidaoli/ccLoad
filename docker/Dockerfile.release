@@ -29,7 +29,7 @@ WORKDIR /app
 
 COPY --chown=1001:1001 --chmod=0755 dist/ccload-linux-${TARGETARCH} /app/ccload
 COPY --from=cursor-bridge --chown=1001:1001 --chmod=0755 /app/cursor-sdk-bridge /app/cursor-sdk-bridge
-COPY --chown=1001:1001 third_party/cursor-sdk-bridge/v1.0.28/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
+COPY --chown=1001:1001 third_party/cursor-sdk-bridge/v1.0.31/LICENSE /usr/share/licenses/cursor-sdk-bridge/LICENSE
 
 USER ccload
 

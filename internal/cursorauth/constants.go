@@ -30,7 +30,7 @@ const (
 	// AgentTimeout bounds one Cursor SDK Agent inference.
 	AgentTimeout = 180 * time.Second
 	// BridgeVersion pins the standalone companion shipped with ccLoad.
-	BridgeVersion = "v1.0.28"
+	BridgeVersion = "v1.0.31"
 	// BridgeProtocol is the only wire contract this build accepts.
 	BridgeProtocol = "sdk.v1"
 	// BridgeStartupTimeout bounds spawn, discovery, Ping, and capability checks.
