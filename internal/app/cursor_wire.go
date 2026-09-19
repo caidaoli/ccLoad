@@ -222,7 +222,7 @@ func (s *Server) forwardCursorAgent(
 			duration := time.Since(started).Seconds()
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
 			if status != StatusClientClosedRequest {
-				s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+				s.updateTokenStatsForProxy(reqCtx, false, duration, failed, modelID)
 			}
 		}
 		return result, nil
@@ -389,7 +389,7 @@ func (s *Server) forwardCursorAgent(
 			applyCursorUsage(failed, billableUsage)
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
 			if status != StatusClientClosedRequest {
-				s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, failed, modelID)
+				s.updateTokenStatsForProxy(reqCtx, false, duration, failed, modelID)
 			}
 		}
 		result.proxyLogWritten = !reqCtx.skipProxyLog && !replayed
@@ -481,7 +481,7 @@ func (s *Server) forwardCursorAgent(
 	applyCursorUsage(forwarded, billableUsage)
 	if !reqCtx.skipProxyLog && !replayed {
 		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
-		s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, forwarded, modelID)
+		s.updateTokenStatsForProxy(reqCtx, true, duration, forwarded, modelID)
 	}
 	return &proxyResult{
 		status: http.StatusOK, header: header, body: responseBody, channelID: &channelID,
@@ -621,7 +621,9 @@ func normalizedCursorToolArguments(raw json.RawMessage) json.RawMessage {
 func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.Usage) []byte {
 	var b bytes.Buffer
 	stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": 0})
-	b.WriteString("event: content_block_stop\ndata: " + string(stop) + "\n\n")
+	b.WriteString("event: content_block_stop\ndata: ")
+	b.Write(stop)
+	b.WriteString("\n\n")
 	for i, call := range calls {
 		blockIndex := i + 1
 		input := normalizedCursorToolArguments(call.Arguments)
@@ -634,9 +636,15 @@ func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.
 			"delta": map[string]any{"type": "input_json_delta", "partial_json": string(input)},
 		})
 		blockStop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": blockIndex})
-		b.WriteString("event: content_block_start\ndata: " + string(start) + "\n\n")
-		b.WriteString("event: content_block_delta\ndata: " + string(delta) + "\n\n")
-		b.WriteString("event: content_block_stop\ndata: " + string(blockStop) + "\n\n")
+		b.WriteString("event: content_block_start\ndata: ")
+		b.Write(start)
+		b.WriteString("\n\n")
+		b.WriteString("event: content_block_delta\ndata: ")
+		b.Write(delta)
+		b.WriteString("\n\n")
+		b.WriteString("event: content_block_stop\ndata: ")
+		b.Write(blockStop)
+		b.WriteString("\n\n")
 	}
 	reason := "end_turn"
 	if len(calls) > 0 {
@@ -647,9 +655,13 @@ func cursorAnthropicStreamFinish(calls []cursorauth.ToolCall, usage *cursorauth.
 		"delta": map[string]any{"stop_reason": reason, "stop_sequence": nil},
 		"usage": cursorAnthropicUsage(usage),
 	})
-	b.WriteString("event: message_delta\ndata: " + string(messageDelta) + "\n\n")
+	b.WriteString("event: message_delta\ndata: ")
+	b.Write(messageDelta)
+	b.WriteString("\n\n")
 	messageStop, _ := json.Marshal(map[string]any{"type": "message_stop"})
-	b.WriteString("event: message_stop\ndata: " + string(messageStop) + "\n\n")
+	b.WriteString("event: message_stop\ndata: ")
+	b.Write(messageStop)
+	b.WriteString("\n\n")
 	return b.Bytes()
 }
 
@@ -718,7 +730,9 @@ func cursorOpenAIFinish(id, modelID, text string, calls []cursorauth.ToolCall, t
 			"created": time.Now().Unix(), "model": modelID,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}},
 		})
-		b.WriteString("data: " + string(payload) + "\n\n")
+		b.WriteString("data: ")
+		b.Write(payload)
+		b.WriteString("\n\n")
 	}
 	finish := "stop"
 	if len(calls) > 0 {

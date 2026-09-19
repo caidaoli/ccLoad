@@ -3571,6 +3571,16 @@ func TestReauthorizationResetsQuotaCostOnPlanTierChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse updated credential: %v", err)
 	}
+	if updatedCredential.Type != free.Type ||
+		updatedCredential.AccessToken != free.AccessToken ||
+		updatedCredential.RefreshToken != free.RefreshToken ||
+		updatedCredential.Expired != free.Expired ||
+		updatedCredential.ChatGPTUserID != free.ChatGPTUserID ||
+		updatedCredential.AccountID != free.AccountID ||
+		updatedCredential.Email != free.Email ||
+		updatedCredential.PlanType != free.PlanType {
+		t.Fatalf("free reauthorization did not persist credential identity: got %#v want %#v", updatedCredential, free)
+	}
 	if updatedCredential.QuotaCostUsage != nil {
 		t.Fatalf("plan tier changed team→free but QuotaCostUsage not cleared: %+v", updatedCredential.QuotaCostUsage)
 	}
@@ -3579,12 +3589,7 @@ func TestReauthorizationResetsQuotaCostOnPlanTierChange(t *testing.T) {
 	}
 
 	// Same-tier reauthorization preserves quota cost.
-	teamAgain := &codexauth.Credential{
-		Type: "codex", AccessToken: "at-team2", RefreshToken: "rt-team2", Expired: expiresAt,
-		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
-		Email: "plan-change@example.com", PlanType: "free",
-	}
-	teamAgain.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
+	quotaCostUsage := &oauthcost.Usage{Windows: []*oauthcost.Window{{
 		Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
 		StartedAt:            time.Now().Add(-3 * 24 * time.Hour).Unix(),
 		ResetAt:              time.Now().Add(27 * 24 * time.Hour).Unix(),
@@ -3594,7 +3599,7 @@ func TestReauthorizationResetsQuotaCostOnPlanTierChange(t *testing.T) {
 	}}}
 	// Inject quota cost into the stored credential so the next update can inherit it.
 	storedCred, _ := codexauth.ParseCredential([]byte(updated.OAuthCredential))
-	storedCred.QuotaCostUsage = oauthcost.Clone(teamAgain.QuotaCostUsage)
+	storedCred.QuotaCostUsage = oauthcost.Clone(quotaCostUsage)
 	storedJSON, _ := storedCred.JSON()
 	_, _ = store.CompareAndSwapOAuthCredential(context.Background(), updated.ID, model.AuthTypeCodexOAuth, updated.OAuthCredential, storedJSON)
 

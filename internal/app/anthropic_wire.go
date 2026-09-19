@@ -93,8 +93,6 @@ func isOfficialAnthropicURL(target *url.URL) bool {
 // compatible gateways and confirmed native Claude Code callers own their wire.
 func validateAnthropicLegacySystemRequestForUpstream(
 	body []byte,
-	cfg *model.Config,
-	apiKey string,
 	headers http.Header,
 	target *url.URL,
 ) error {
@@ -1196,7 +1194,7 @@ func injectAnthropicOAuthHeaders(
 		return
 	}
 	incoming := anthropicIncomingHeaders(req, incomingHeaders)
-	if anthropicRequestOwnsItsWire(body, incoming, cfg, "") {
+	if anthropicRequestOwnsItsWire(body, incoming) {
 		applyAnthropicNativeHeaders(req, incoming)
 		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
 		return
@@ -1224,7 +1222,7 @@ func injectAnthropicAPIKeyHeaders(
 		return
 	}
 	incoming := anthropicIncomingHeaders(req, incomingHeaders)
-	if anthropicRequestOwnsItsWire(body, incoming, cfg, apiKey) {
+	if anthropicRequestOwnsItsWire(body, incoming) {
 		applyAnthropicNativeHeaders(req, incoming)
 		applyAnthropicAPIKeyAuth(req, apiKey)
 		return
@@ -1249,7 +1247,7 @@ func anthropicIncomingHeaders(req *http.Request, override []http.Header) http.He
 // anthropicRequestOwnsItsWire 判断这个 body 配套的 header 就是正确的指纹，网关只做
 // 透传。它跑在**出站** body 上（已经过最终化），所以用不含 CCH 的身份判据：签名与否
 // 是策略决定的，掺进来会让「网关自己产出的 body 通不过自己的检测器」。
-func anthropicRequestOwnsItsWire(body []byte, incoming http.Header, cfg *model.Config, apiKey string) bool {
+func anthropicRequestOwnsItsWire(body []byte, incoming http.Header) bool {
 	if !isAnthropicJSONObject(body) {
 		return false
 	}

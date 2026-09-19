@@ -70,7 +70,7 @@ func codexSessionIDForOpenAIKey(apiKey string) string {
 //   - OpenAI 客户端：基于 apiKey 生成确定性 UUID
 //   - 其他协议：返回空
 func resolveCodexSessionHint(reqCtx *requestContext, translatedBody []byte, apiKey string, header http.Header) string {
-	if reqCtx == nil || runtimeUpstreamProtocol(reqCtx, nil) != string(protocol.Codex) {
+	if reqCtx == nil || runtimeUpstreamProtocol(reqCtx) != string(protocol.Codex) {
 		return ""
 	}
 	switch reqCtx.clientProtocol {

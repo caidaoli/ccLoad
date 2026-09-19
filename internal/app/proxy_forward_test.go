@@ -2412,12 +2412,12 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
-	nativeBody := []byte(fmt.Sprintf(`{
+	nativeBody := fmt.Appendf(nil, `{
 		"model":"claude-sonnet-4-6",
 		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"}],
 		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"3f2b7c18-9d4e-4a6b-8c51-7e0a2d9b4f36\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
 		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
-	}`, parsedCredential.DeviceID))
+	}`, parsedCredential.DeviceID)
 	nativeHeaders := http.Header{
 		"User-Agent": {"claude-cli/2.1.220 (external, cli)"},
 		"X-App":      {"cli"}, "Anthropic-Beta": {"claude-code-20250219"},
@@ -2452,7 +2452,7 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	const sessionID = "11111111-2222-4333-8444-555555555555"
 	userID := fmt.Sprintf(`{"device_id":%q,"account_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":%q}`,
 		credential.DeviceID, sessionID)
-	body := []byte(fmt.Sprintf(`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID))
+	body := fmt.Appendf(nil, `{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID)
 	betas := "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
 	headers := http.Header{
 		"Accept": {"application/json"}, "Accept-Encoding": {"gzip"}, "Content-Type": {"application/json"},
@@ -2499,7 +2499,7 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	if err != nil || !bytes.Equal(pooled, body) {
 		t.Fatalf("native helper was tied to the selected pool credential: err=%v body=%s", err, pooled)
 	}
-	reordered := []byte(fmt.Sprintf(`{"max_tokens":1,"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID))
+	reordered := fmt.Appendf(nil, `{"max_tokens":1,"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID)
 	cloaked, err := finalizeAnthropicClaudeCodeMessagesBody(reordered, cfg, "", headers, anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
@@ -2524,7 +2524,7 @@ func TestAnthropicOAuthPreservesStructuredHaikuHelper(t *testing.T) {
 	const sessionID = "11111111-2222-4333-8444-555555555555"
 	userID := fmt.Sprintf(`{"device_id":%q,"account_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":%q}`,
 		credential.DeviceID, sessionID)
-	body := []byte(fmt.Sprintf(`{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":[{"type":"text","text":"helper probe"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"Return a short title."}],"tools":[],"metadata":{"user_id":%q},"max_tokens":32000,"thinking":{"type":"disabled"},"temperature":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},"stream":true}`, userID))
+	body := fmt.Appendf(nil, `{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":[{"type":"text","text":"helper probe"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"Return a short title."}],"tools":[],"metadata":{"user_id":%q},"max_tokens":32000,"thinking":{"type":"disabled"},"temperature":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},"stream":true}`, userID)
 	betas := "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15"
 	headers := http.Header{
 		"Accept": {"application/json"}, "Accept-Encoding": {"gzip, deflate, br, zstd"}, "Content-Type": {"application/json"},
@@ -3087,7 +3087,7 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	identity := fmt.Sprintf(`{"device_id":%q,"account_uuid":%q,"session_id":%q}`,
 		"94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1",
 		"00d2be77-53ea-52f8-8a66-bfc5c4b195e9", sessionID)
-	body := []byte(fmt.Sprintf(`{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":[{"type":"text","text":"first","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}],"tools":[{"name":"lookup","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],"max_tokens":1024,"temperature":0.4}`, identity))
+	body := fmt.Appendf(nil, `{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}}],"metadata":{"user_id":%q},"messages":[{"role":"user","content":[{"type":"text","text":"first","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":"ok"},{"role":"user","content":"second"}],"tools":[{"name":"lookup","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],"max_tokens":1024,"temperature":0.4}`, identity)
 	headers := http.Header{
 		"User-Agent":               {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":                    {"cli"},

@@ -37,7 +37,7 @@ func benchProtocolChannelConfig() *model.Config {
 func BenchmarkPossibleUpstreamProtocols(b *testing.B) {
 	cfg := benchProtocolChannelConfig()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = possibleUpstreamProtocols(cfg, protocol.Anthropic)
 	}
 }
@@ -48,7 +48,7 @@ func BenchmarkPossibleActualModels(b *testing.B) {
 	cfg := benchProtocolChannelConfig()
 	s := &Server{}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = s.possibleActualModels(cfg, "claude-sonnet-5", "anthropic")
 	}
 }
@@ -58,14 +58,14 @@ func BenchmarkProtocolCandidatesForURL(b *testing.B) {
 	localOrder := localUpstreamProtocolOrder(cfg.URLs)
 	b.Run("AutoUndeclared", func(b *testing.B) {
 		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_, _ = protocolCandidatesForURL(cfg.URLs[0], model.ProtocolTransformModeAuto,
 				protocol.Anthropic, protocol.RequestFamilyMessages, localOrder)
 		}
 	})
 	b.Run("AutoDeclared", func(b *testing.B) {
 		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			_, _ = protocolCandidatesForURL(cfg.URLs[1], model.ProtocolTransformModeAuto,
 				protocol.Anthropic, protocol.RequestFamilyMessages, localOrder)
 		}
@@ -75,7 +75,7 @@ func BenchmarkProtocolCandidatesForURL(b *testing.B) {
 func BenchmarkLocalUpstreamProtocolOrder(b *testing.B) {
 	cfg := benchProtocolChannelConfig()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = localUpstreamProtocolOrder(cfg.URLs)
 	}
 }
@@ -98,7 +98,7 @@ func BenchmarkProtocolCapabilityCacheSet(b *testing.B) {
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				cache.set(key, protocol.OpenAI)
 			}
 		})
@@ -113,7 +113,7 @@ func BenchmarkProtocolCapabilityCacheGet(b *testing.B) {
 	}
 	cache.set(key, protocol.OpenAI)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = cache.get(key)
 	}
 }

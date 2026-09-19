@@ -14,7 +14,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	ctx := context.Background()
 
-	createModelConfig := func(t testing.TB, name, upstreamProtocol string, _ []string, priority int, modelName string) {
+	createModelConfig := func(t testing.TB, name, _ string, _ []string, priority int, modelName string) {
 		t.Helper()
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:     name,

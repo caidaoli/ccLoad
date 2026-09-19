@@ -214,6 +214,6 @@ func (s *Server) handleAntigravityQuotaFailure(ctx context.Context, cfg *model.C
 	}
 	entry := buildProxyLogEntry(reqCtx, cfg, modelName, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, "")
 	s.AddLogAsync(entry)
-	s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, modelName)
+	s.updateTokenStatsForProxy(reqCtx, false, duration, res, modelName)
 	return &proxyResult{status: res.Status, body: res.Body, header: res.Header, channelID: &cfg.ID, duration: duration, nextAction: cooldown.ActionRetryChannel, proxyLogWritten: true}, true
 }

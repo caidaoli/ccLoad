@@ -1009,7 +1009,7 @@ func writeZedProviderEvent(
 			return err
 		}
 		if !state.anthropicStarted && metadata.Type != "message_start" && metadata.Type != "ping" {
-			start := []byte(fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_zed","type":"message","role":"assistant","model":%q,"content":[],"stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}}`, plan.model))
+			start := fmt.Appendf(nil, `{"type":"message_start","message":{"id":"msg_zed","type":"message","role":"assistant","model":%q,"content":[],"stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}}`, plan.model)
 			if err := translateZedProviderEvent(ctx, output, start, plan, registry, state); err != nil {
 				return err
 			}
@@ -1043,7 +1043,7 @@ func finishZedAnthropicStream(
 		return nil
 	}
 	if state.anthropicOpenIndex != nil {
-		stop := []byte(fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, *state.anthropicOpenIndex))
+		stop := fmt.Appendf(nil, `{"type":"content_block_stop","index":%d}`, *state.anthropicOpenIndex)
 		if err := translateZedProviderEvent(ctx, output, stop, plan, registry, state); err != nil {
 			return err
 		}
@@ -1053,7 +1053,7 @@ func finishZedAnthropicStream(
 	if state.anthropicToolUse {
 		stopReason = "tool_use"
 	}
-	delta := []byte(fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q},"usage":{"output_tokens":0}}`, stopReason))
+	delta := fmt.Appendf(nil, `{"type":"message_delta","delta":{"stop_reason":%q},"usage":{"output_tokens":0}}`, stopReason)
 	if err := translateZedProviderEvent(ctx, output, delta, plan, registry, state); err != nil {
 		return err
 	}
@@ -1101,7 +1101,7 @@ func frameZedProviderEvent(providerProtocol protocol.Protocol, event []byte) ([]
 		if err := json.Unmarshal(event, &payload); err != nil || strings.TrimSpace(payload.Type) == "" {
 			return nil, errors.New("zed Anthropic event is missing type")
 		}
-		return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", payload.Type, event)), nil
+		return fmt.Appendf(nil, "event: %s\ndata: %s\n\n", payload.Type, event), nil
 	case protocol.Gemini:
 		// Gemini 分支只做字节拼接，没有后续解码兜底，所以这里是唯一一道语法防线：
 		// 不校验就会把上游的残帧原样封进 data: 发给下游。Anthropic 分支的 Unmarshal

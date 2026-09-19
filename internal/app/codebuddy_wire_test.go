@@ -83,6 +83,6 @@ func TestInjectCodeBuddyHeadersRewritesWorkBuddyIssuer(t *testing.T) {
 
 func jwtWithIssuer(iss string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"iss":%q}`, iss)))
+	payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"iss":%q}`, iss))
 	return header + "." + payload + ".sig"
 }

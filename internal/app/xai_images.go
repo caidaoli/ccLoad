@@ -423,7 +423,7 @@ func translateXAIImagesResponsesStreamEventWithState(
 			return nil, false, nil
 		}
 		state.collectOutputItem(event.OutputIndex, event.Item)
-		if state != nil && state.completed != nil {
+		if state.completed != nil {
 			response := *state.completed
 			response.Output = mergeXAIImageOutputs(response.Output, state.outputs())
 			if hasXAIImageGenerationOutput(response.Output) {

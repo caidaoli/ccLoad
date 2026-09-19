@@ -257,7 +257,6 @@ func buildProxyLogEntry(
 
 func (s *Server) updateTokenStatsForProxy(
 	reqCtx *proxyRequestContext,
-	cfg *model.Config,
 	isSuccess bool,
 	duration float64,
 	res *fwResult,
@@ -306,7 +305,7 @@ func (s *Server) handleOperatorAbort(cfg *model.Config, actualModel, selectedKey
 		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, status, duration, res, errOperatorAbort.Error())
 	}
 	if res != nil && hasConsumedTokens(res) {
-		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
 	}
 	return &proxyResult{
 		status: status, body: []byte(errOperatorAbort.Error()), channelID: &cfg.ID,
@@ -357,7 +356,7 @@ func (s *Server) handleNetworkError(
 	// [FIX] 2026-01: 499（客户端取消）不计入 failure_count，与 logs 表聚合逻辑保持一致
 	if statusCode != 499 && res != nil && hasConsumedTokens(res) {
 		// isSuccess=false 表示请求失败，但仍记录已消耗的 token
-		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
 	}
 
 	if !shouldRetry {
@@ -613,7 +612,7 @@ func (s *Server) handleProxySuccess(
 	s.AddLogAsync(entry)
 
 	// 异步更新Token统计
-	s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, res, actualModel)
+	s.updateTokenStatsForProxy(reqCtx, true, duration, res, actualModel)
 
 	return &proxyResult{
 		status:           res.Status,
@@ -681,7 +680,7 @@ func (s *Server) handleUncommittedWebsocketTransportFailure(
 		res,
 		res.StreamDiagMsg,
 	)
-	s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+	s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
 
 	return &proxyResult{
 		status:                 res.Status,
@@ -728,7 +727,7 @@ func (s *Server) handleProxyErrorResponse(
 	// [FIX] 2026-01: 499（客户端取消）不计入成功/失败统计，与 logs 表聚合逻辑保持一致
 	if res.Status != 499 {
 		// 异步更新Token统计（失败请求不计费）
-		s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
 	}
 
 	failure := &proxyResult{

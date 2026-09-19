@@ -6577,10 +6577,10 @@ func TestAdminTestNativeAnthropicDoesNotDoubleAppendHeaderRules(t *testing.T) {
 		apiKey:           "oauth-access",
 		fullURL:          "https://api.anthropic.com/v1/messages",
 		endpointPath:     "/v1/messages",
-		requestBody: []byte(fmt.Sprintf(
+		requestBody: fmt.Appendf(nil,
 			`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`,
 			userID,
-		)),
+		),
 		headers: http.Header{
 			"Accept": {"application/json"}, "Accept-Encoding": {"gzip"}, "Content-Type": {"application/json"},
 			"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {helperBetas},

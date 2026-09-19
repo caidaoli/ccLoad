@@ -53,7 +53,7 @@ func testZedOAuthManagerCompletesNativeLogin(t *testing.T, systemID string) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	expiresAt := time.Now().Add(time.Hour).Unix()
-	jwt := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".sig"
+	jwt := "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, expiresAt)) + ".sig"
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/client/llm_tokens":
@@ -201,8 +201,8 @@ func TestZedRejectedOldTokenDoesNotRefreshNewWinner(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	expiresAt := time.Now().Add(time.Hour).Unix()
-	oldToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".old"
-	newToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt))) + ".new"
+	oldToken := "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, expiresAt)) + ".old"
+	newToken := "e30." + base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, expiresAt)) + ".new"
 	mintCount := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/client/llm_tokens" {

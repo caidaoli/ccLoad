@@ -210,7 +210,7 @@ func (s *Server) buildProxyRequest(
 	baseURL string,
 ) (*http.Request, error) {
 	// 1. 构建完整 URL
-	upstreamProtocol := protocol.Protocol(runtimeUpstreamProtocol(reqCtx, cfg))
+	upstreamProtocol := protocol.Protocol(runtimeUpstreamProtocol(reqCtx))
 	upstreamStreaming := reqCtx != nil && reqCtx.isStreaming
 	var sourceBody []byte
 	if reqCtx != nil {
@@ -256,7 +256,7 @@ func (s *Server) buildProxyRequest(
 
 	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
-		if err = validateAnthropicLegacySystemRequestForUpstream(body, cfg, apiKey, hdr, parsedUpstreamURL); err != nil {
+		if err = validateAnthropicLegacySystemRequestForUpstream(body, hdr, parsedUpstreamURL); err != nil {
 			return nil, err
 		}
 	}
@@ -296,12 +296,12 @@ func (s *Server) buildProxyRequest(
 	// 4. 注入普通渠道的静态认证头。Codex 的认证与官方客户端身份必须在
 	// 自定义 Header 规则之后重建，否则规则可以篡改渠道身份。
 	if !cfg.UsesOAuth() && upstreamProtocol != protocol.Codex {
-		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
+		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx))
 	}
 
 	// 5. 本地协议转换到 Anthropic 上游时，OpenAI/Codex/Gemini 客户端不会携带
 	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
-	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx, cfg))
+	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx))
 
 	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）
 	ensureCodexSessionHeader(req.Header, codexSessionID)
@@ -354,7 +354,7 @@ func (s *Server) buildProxyRequest(
 
 	// 6.2 anyrouter 渠道：确保 anthropic-beta 包含 context-1m。必须排在指纹重建
 	// 之后——重建清空了整个请求头，之前注入的 beta flag 会随之丢失。
-	if runtimeUpstreamProtocol(reqCtx, cfg) == util.ProtocolAnthropic &&
+	if runtimeUpstreamProtocol(reqCtx) == util.ProtocolAnthropic &&
 		isAnyrouterChannel(cfg) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
@@ -366,7 +366,7 @@ func (s *Server) buildProxyRequest(
 		ensureOpenCodeSessionHeader(req.Header, hdr, executionIdentity)
 	}
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
-	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx, cfg))
+	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx))
 
 	if reqCtx != nil {
 		if anthropicClaudeCodeWire {
@@ -501,7 +501,7 @@ func upstreamQueryForAttempt(reqCtx *requestContext, rawQuery string) string {
 	return rawQuery
 }
 
-func runtimeUpstreamProtocol(reqCtx *requestContext, cfg *model.Config) string {
+func runtimeUpstreamProtocol(reqCtx *requestContext) string {
 	if reqCtx != nil {
 		if reqCtx.transformPlan.UpstreamProtocol != "" {
 			return string(reqCtx.transformPlan.UpstreamProtocol)
@@ -4215,7 +4215,7 @@ func oauthCredentialUnavailableResult(cfg *model.Config, provider string) *proxy
 	channelID := cfg.ID
 	return &proxyResult{
 		status:     http.StatusServiceUnavailable,
-		body:       []byte(fmt.Sprintf(`{"error":{"message":"%s channel credential is unavailable","type":"upstream_auth_error"}}`, provider)),
+		body:       fmt.Appendf(nil, `{"error":{"message":"%s channel credential is unavailable","type":"upstream_auth_error"}}`, provider),
 		channelID:  &channelID,
 		succeeded:  false,
 		nextAction: cooldown.ActionRetryChannel,

@@ -36,7 +36,7 @@ func BenchmarkSmoothWeightedRRSelect3000(b *testing.B) {
 	rr := NewSmoothWeightedRR()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		benchmarkBalancedChannelsSink = rrSelect(rr, channels, weights)
 	}
 }
@@ -50,7 +50,7 @@ func BenchmarkSmoothWeightedRRSelectWithCooldownInPlace3000(b *testing.B) {
 	rr := NewSmoothWeightedRR()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		benchmarkBalancedChannelsSink = rr.selectWithCooldownInPlace(channels, nil, time.Now())
 	}
 }

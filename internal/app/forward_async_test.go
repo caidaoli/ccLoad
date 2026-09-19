@@ -19,7 +19,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, body []byte) protocol.TransformPlan {
+func mustBuildTestTransformPlan(t testing.TB, _ *model.Config, body []byte) protocol.TransformPlan {
 	t.Helper()
 
 	const requestPath = "/v1/messages"
@@ -963,7 +963,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 		// 如果连接被关闭，Write会失败
 		for i := 2; i <= 100; i++ {
 			time.Sleep(50 * time.Millisecond)
-			data := []byte(fmt.Sprintf("data: chunk%d\n\n", i))
+			data := fmt.Appendf(nil, "data: chunk%d\n\n", i)
 			_, err := w.Write(data)
 			if err != nil {
 				// 连接已关闭！这是我们期望的结果

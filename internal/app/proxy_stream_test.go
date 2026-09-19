@@ -147,7 +147,7 @@ func BenchmarkCodexSSEFramingReader(b *testing.B) {
 	input := []byte(strings.Repeat(event, 128))
 	b.SetBytes(int64(len(input)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reader := newCodexSSEFramingReader(bytes.NewReader(input))
 		if _, err := io.Copy(io.Discard, reader); err != nil {
 			b.Fatal(err)

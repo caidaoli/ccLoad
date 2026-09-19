@@ -555,7 +555,7 @@ func TestFinalizeZedAnthropicMaxTokensVisibleBudgetByEffort(t *testing.T) {
 			t.Parallel()
 			body, _, err := finalizeZedResponsesBody(
 				registry,
-				[]byte(fmt.Sprintf(`{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":%q}}`, tc.effort)),
+				fmt.Appendf(nil, `{"model":"claude-haiku-4-5","input":"hello","reasoning":{"effort":%q}}`, tc.effort),
 				nil,
 			)
 			if err != nil {
