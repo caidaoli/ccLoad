@@ -3030,7 +3030,7 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 			}
 			replayed, err := server.prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", finalized, finalized,
-				"sk-ant-key", headers, true, testCase.target)
+				"sk-ant-key", headers, true, testCase.target, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3058,6 +3058,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 	got, err := (&Server{}).prepareTranslatedUpstreamBody(
 		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)

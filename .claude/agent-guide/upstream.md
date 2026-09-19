@@ -20,7 +20,7 @@
 - **Codex 凭证两种形态**(`codexauth/credential.go`+`admin_codex_auth.go:HandleCreateCodexPersonalAccessToken`,`POST /admin/codex/personal-access-token`):OAuth 与个人访问令牌(PAT)共用 `auth_type=codex_oauth`,靠凭证内 `AuthMode=personalAccessToken` 区分,别新造 auth_type。PAT 必须 `at-` 前缀,导入时走 `whoami` 端点校验并解析账号身份,按账号复用或新建渠道(上游 401/403 返回 400,其余网络/服务端错误返回 502);PAT 是静态令牌,`Refresh` 直接返回 `ErrPersonalAccessTokenCannotRefresh`,一旦被上游拒绝即终态,触发上面的渠道禁用
 - **Responses 路径别名**(`protocol/types.go`+`server.go`+`codex_wire.go:normalizeCodexClientPath`):下游 `/v1/responses`、`/v1/codex/responses`、`/backend-api/codex/responses` 是同一 canonical 端点,GET 走 WebSocket 升级、POST 走 SSE fallback,`DetectRequestFamily` 一律识别为 Responses。上游协议为 Codex 时转发前把别名归一回 `/v1/responses`,避免别名泄漏进上游 URL;`Exact` 标记的 OAuth 官方 URL 不拼接路径,不受影响。新增 Responses 入口路径必须同时登记这三处
 - **Codex 上游 TLS**(`codex_utls_transport.go`):普通 HTTP 请求仅对 `https://chatgpt.com` 使用 Chrome uTLS,按 HTTP/2 → uTLS HTTP/1.1 → 标准 HTTP/1.1 降级并保留请求体重放;其他 Host 走标准 Transport。uTLS 继承环境/渠道代理、Host 覆盖、证书校验和握手超时,连接池跟随 `upstream_connection_reuse_limit_seconds` 整代轮换;原生 WebSocket 保持独立 Dialer
-- **Codex 多代理 v2**(`codex_multi_agent_v2.go`):对官方 Codex 客户端(User-Agent 判定)默认启用,有意不设配置开关;请求侧把 collaboration 工具命名空间(spawn_agent/send_message/followup_task)改写为 `collaboration-optimize__*`,响应侧还原命名;不改写任意 OpenAI 兼容调用方。改 `proxy_forward`/`codex_wire`/`responses_execution_session` 前先认清这层改写-还原对
+- **Codex 多代理 v2**(`codex_multi_agent_v2.go`):只有一条规则——**Codex 协议 → 非 Codex 协议**的 `agent_message` 与 collaboration 工具可移植性改写,按官方 Codex 客户端 User-Agent(`isCodexMultiAgentClient`)门控,其他调用方一律原样透传,避免把网关模型目录写进第三方请求体。Codex → Codex 透明直通。不存在命名空间改写-还原对:非 Codex 源协议转成 Codex 后是扁平 `tools` 数组,不携带 `type=namespace` 包装,无从改写
 
 ## Cursor
 

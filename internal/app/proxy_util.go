@@ -149,42 +149,40 @@ type ForwardObserver struct {
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
 type proxyRequestContext struct {
-	abortChannel               context.CancelCauseFunc // 覆盖当前渠道所有 Key/URL 和重试等待
-	antigravityCreditsTried    map[string]bool
-	antigravityRateRetried     map[string]bool
-	clientModel                string // 客户端请求的原始模型基名；仅用于日志，避免被回退/重定向覆盖
-	originalModel              string // 当前用于选路的模型基名，可能已被多模态回退替换
-	requestedModel             string // 当前用于选路的字面模型名，可能带思考后缀
-	clientProtocol             protocol.Protocol
-	codexClient                bool
-	upstreamProtocol           protocol.Protocol
-	requestMethod              string
-	requestPath                string
-	rawQuery                   string
-	body                       []byte
-	translatedBody             []byte
-	header                     http.Header
-	isStreaming                bool
-	tokenHash                  string               // Token哈希值（用于统计）
-	tokenID                    int64                // Token ID（用于日志记录，0表示未使用token）
-	clientIP                   string               // 客户端IP地址（用于日志记录）
-	activeReqID                int64                // 活跃请求ID（用于更新渠道信息）
-	observer                   *ForwardObserver     // 转发观测回调（可选）
-	startTime                  time.Time            // 请求开始时间（用于统计）
-	channelStartTime           time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
-	attemptStartTime           time.Time            // 渠道内单次 Key/URL 尝试开始时间
-	attemptActualModel         string               // 上次尝试实际发往上游的模型（含后缀剥离/重定向后的结果）
-	attemptSelectedKey         string               // 上次尝试选中的 Key 或 OAuth access token
-	baseURL                    string               // 当前尝试使用的上游URL（多URL场景）
-	attemptCostMultiplier      float64              // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
-	debugData                  *model.DebugLogEntry // Debug日志数据（debug开启时填充）
-	skipProxyLog               bool                 // 管理测试等外层会统一持久化日志的调用路径
-	thinkingEffort             string
-	routingSession             *responsesExecutionSession // 当前 Responses execution session 的首选渠道
-	nativeCodexWS              *codexUpstreamWebsocketSession
-	nativeCodexBody            []byte
-	codexMultiAgentV2Optimized bool
-	codexMultiAgentV2Conflict  bool
+	abortChannel            context.CancelCauseFunc // 覆盖当前渠道所有 Key/URL 和重试等待
+	antigravityCreditsTried map[string]bool
+	antigravityRateRetried  map[string]bool
+	clientModel             string // 客户端请求的原始模型基名；仅用于日志，避免被回退/重定向覆盖
+	originalModel           string // 当前用于选路的模型基名，可能已被多模态回退替换
+	requestedModel          string // 当前用于选路的字面模型名，可能带思考后缀
+	clientProtocol          protocol.Protocol
+	codexClient             bool
+	upstreamProtocol        protocol.Protocol
+	requestMethod           string
+	requestPath             string
+	rawQuery                string
+	body                    []byte
+	translatedBody          []byte
+	header                  http.Header
+	isStreaming             bool
+	tokenHash               string               // Token哈希值（用于统计）
+	tokenID                 int64                // Token ID（用于日志记录，0表示未使用token）
+	clientIP                string               // 客户端IP地址（用于日志记录）
+	activeReqID             int64                // 活跃请求ID（用于更新渠道信息）
+	observer                *ForwardObserver     // 转发观测回调（可选）
+	startTime               time.Time            // 请求开始时间（用于统计）
+	channelStartTime        time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
+	attemptStartTime        time.Time            // 渠道内单次 Key/URL 尝试开始时间
+	attemptActualModel      string               // 上次尝试实际发往上游的模型（含后缀剥离/重定向后的结果）
+	attemptSelectedKey      string               // 上次尝试选中的 Key 或 OAuth access token
+	baseURL                 string               // 当前尝试使用的上游URL（多URL场景）
+	attemptCostMultiplier   float64              // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
+	debugData               *model.DebugLogEntry // Debug日志数据（debug开启时填充）
+	skipProxyLog            bool                 // 管理测试等外层会统一持久化日志的调用路径
+	thinkingEffort          string
+	routingSession          *responsesExecutionSession // 当前 Responses execution session 的首选渠道
+	nativeCodexWS           *codexUpstreamWebsocketSession
+	nativeCodexBody         []byte
 }
 
 func (r *proxyRequestContext) requestLogModel() string {

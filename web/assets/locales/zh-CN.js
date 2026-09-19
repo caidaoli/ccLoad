@@ -1906,6 +1906,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.table.enabled': '启用',
   'channels.table.actions': '操作',
   'channels.status.channelCooldown': '渠道冷却 · {time}',
+  'channels.status.channelCooldownLabel': '渠道冷却',
   'channels.status.keyCooldowns': 'Key冷却：{count} · {time}',
   'channels.status.modelCooldownsCount': '{count}模型冷却',
   'channels.status.protocolProbeRetries': '协议待重探：{count} · {time}',

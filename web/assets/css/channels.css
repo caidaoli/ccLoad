@@ -2001,6 +2001,7 @@
     .ch-runtime-status--channel {
       border-left: 3px solid var(--channel-runtime-status-channel-accent);
       color: var(--channel-runtime-status-channel-fg);
+      gap: 4px;
     }
 
     .ch-runtime-status--keys {

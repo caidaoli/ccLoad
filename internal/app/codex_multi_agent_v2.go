@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -15,9 +14,6 @@ import (
 const (
 	codexSpawnAgentDescriptionMarker = "Spawns an agent"
 	codexSpawnAgentModelsHeading     = "Available model overrides (optional; inherited parent model is preferred):"
-	codexCollaborationNamespace      = "collaboration"
-	codexOptimizedCollaboration      = "collaboration-optimize"
-	codexOptimizedNamePrefix         = codexOptimizedCollaboration + "__"
 )
 
 var codexCollaborationMessageTools = map[string]struct{}{
@@ -26,26 +22,9 @@ var codexCollaborationMessageTools = map[string]struct{}{
 	"followup_task": {},
 }
 
-type codexMultiAgentV2RequestContextKey struct{}
-
-func withCodexMultiAgentV2RequestContext(ctx context.Context, reqCtx *proxyRequestContext) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, codexMultiAgentV2RequestContextKey{}, reqCtx)
-}
-
-func codexMultiAgentV2RequestContextFromContext(ctx context.Context) *proxyRequestContext {
-	if ctx == nil {
-		return nil
-	}
-	requestContext, _ := ctx.Value(codexMultiAgentV2RequestContextKey{}).(*proxyRequestContext)
-	return requestContext
-}
-
-// codexMultiAgentV2Enabled is intentionally a code default. ccLoad has no
-// CLIProxyAPI runtime config tree; the feature is enabled for official Codex
-// clients and never rewrites arbitrary OpenAI-compatible callers.
+// codexMultiAgentV2Enabled gates the Codex-originating cross-protocol
+// portability rewrite. Only official Codex clients carry the multi-agent
+// wire shapes this rewrite understands; arbitrary callers are never touched.
 func codexMultiAgentV2Enabled(headers http.Header) bool {
 	return isCodexMultiAgentClient(codexMultiAgentUserAgent(headers))
 }
@@ -78,26 +57,8 @@ func isCodexMultiAgentClient(userAgent string) bool {
 		strings.HasPrefix(userAgent, "codex_cli_rs/")
 }
 
-// optimizeCodexMultiAgentV2Request prepares a Codex Responses request for a
-// provider that does not understand the reserved collaboration namespace.
-// The bool reports whether the namespace was renamed and therefore must be
-// restored on the response path.
-func optimizeCodexMultiAgentV2Request(headers http.Header, payload []byte, models []string) ([]byte, bool) {
-	if !codexMultiAgentV2Enabled(headers) {
-		return payload, false
-	}
-
-	updated := rewriteCodexAgentMessageContent(payload)
-	updated = prepareCodexMultiAgentV2Tools(headers, updated, models)
-	spawnPaths := codexSpawnAgentToolPaths(updated)
-	if len(spawnPaths) == 0 || hasCodexOptimizedCollaborationConflict(updated) {
-		return updated, false
-	}
-	return optimizeCodexCollaborationNamespace(updated, spawnPaths)
-}
-
-// prepareCodexMultiAgentV2Tools performs the shared tool-definition cleanup
-// used before either native Codex forwarding or cross-protocol translation.
+// prepareCodexMultiAgentV2Tools performs the collaboration tool-definition
+// cleanup applied before a Codex request is translated to another protocol.
 // It intentionally keeps the collaboration namespace unchanged.
 func prepareCodexMultiAgentV2Tools(headers http.Header, payload []byte, models []string) []byte {
 	if !codexMultiAgentV2Enabled(headers) {
@@ -105,7 +66,7 @@ func prepareCodexMultiAgentV2Tools(headers http.Header, payload []byte, models [
 	}
 	updated := removeCodexCollaborationMessageEncryption(payload, codexCollaborationMessageToolPaths(payload))
 	spawnPaths := codexSpawnAgentToolPaths(updated)
-	if len(spawnPaths) == 0 || hasCodexOptimizedCollaborationConflict(updated) {
+	if len(spawnPaths) == 0 {
 		return updated
 	}
 	return rewriteCodexSpawnAgentTools(updated, spawnPaths, models)
@@ -314,166 +275,6 @@ func removeCodexSpawnAgentModelSections(description string) (string, string) {
 	return cleaned.String(), indent
 }
 
-func hasCodexOptimizedCollaborationConflict(payload []byte) bool {
-	return codexToolsHaveOptimizedConflict(gjson.GetBytes(payload, "tools")) || func() bool {
-		input := gjson.GetBytes(payload, "input")
-		if !input.IsArray() {
-			return false
-		}
-		for _, item := range input.Array() {
-			if strings.TrimSpace(item.Get("type").String()) == "additional_tools" && codexToolsHaveOptimizedConflict(item.Get("tools")) {
-				return true
-			}
-		}
-		return false
-	}()
-}
-
-func codexToolsHaveOptimizedConflict(tools gjson.Result) bool {
-	if !tools.IsArray() {
-		return false
-	}
-	for _, tool := range tools.Array() {
-		name := strings.TrimSpace(tool.Get("name").String())
-		if name == codexOptimizedCollaboration || strings.HasPrefix(name, codexOptimizedNamePrefix) {
-			return true
-		}
-		if strings.TrimSpace(tool.Get("type").String()) == "namespace" && codexToolsHaveOptimizedConflict(tool.Get("tools")) {
-			return true
-		}
-	}
-	return false
-}
-
-func optimizeCodexCollaborationNamespace(payload []byte, paths []string) ([]byte, bool) {
-	updated := payload
-	optimized := false
-	for _, path := range paths {
-		separator := strings.LastIndex(path, ".tools.")
-		if separator < 0 {
-			continue
-		}
-		namespacePath := path[:separator]
-		namespace := gjson.GetBytes(updated, namespacePath)
-		if strings.TrimSpace(namespace.Get("type").String()) != "namespace" || strings.TrimSpace(namespace.Get("name").String()) != codexCollaborationNamespace {
-			continue
-		}
-		var err error
-		updated, err = sjson.SetBytes(updated, namespacePath+".name", codexOptimizedCollaboration)
-		if err != nil {
-			return payload, false
-		}
-		optimized = true
-	}
-	return updated, optimized
-}
-
-// restoreCodexMultiAgentV2Response restores only tool identity carriers. It
-// deliberately does not walk arguments/input/output because those fields can
-// contain user data that happens to mention the reserved names.
-func restoreCodexMultiAgentV2Response(payload []byte, optimized bool) []byte {
-	if !optimized || len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return payload
-	}
-	type update struct {
-		path  string
-		value string
-	}
-	updates := make([]update, 0, 2)
-	var walk func(gjson.Result, string, int)
-	walk = func(value gjson.Result, prefix string, depth int) {
-		if depth > jsonWalkMaxDepth {
-			return
-		}
-		if value.IsArray() {
-			for index, child := range value.Array() {
-				walk(child, sjsonPathJoin(prefix, fmt.Sprintf("%d", index)), depth+1)
-			}
-			return
-		}
-		if !value.IsObject() {
-			return
-		}
-
-		itemType := strings.TrimSpace(value.Get("type").String())
-		isToolCall := itemType == "function_call" || itemType == "custom_tool_call"
-		if namespace := value.Get("namespace"); isToolCall && namespace.Type == gjson.String && namespace.String() == codexOptimizedCollaboration {
-			updates = append(updates, update{
-				path:  sjsonObjectPathJoin(prefix, "namespace"),
-				value: codexCollaborationNamespace,
-			})
-		}
-		if name := value.Get("name"); name.Type == gjson.String {
-			newName := ""
-			switch {
-			case itemType == "namespace" && name.String() == codexOptimizedCollaboration:
-				newName = codexCollaborationNamespace
-			case isToolCall && strings.HasPrefix(name.String(), codexOptimizedNamePrefix):
-				newName = codexCollaborationNamespace + "__" + strings.TrimPrefix(name.String(), codexOptimizedNamePrefix)
-			}
-			if newName != "" {
-				updates = append(updates, update{
-					path:  sjsonObjectPathJoin(prefix, "name"),
-					value: newName,
-				})
-			}
-		}
-
-		value.ForEach(func(key, child gjson.Result) bool {
-			keyName := key.String()
-			if keyName == "arguments" || keyName == "input" || (keyName == "output" && (itemType == "function_call_output" || itemType == "custom_tool_call_output")) {
-				return true
-			}
-			walk(child, sjsonObjectPathJoin(prefix, keyName), depth+1)
-			return true
-		})
-	}
-	walk(gjson.ParseBytes(payload), "", 0)
-	if len(updates) == 0 {
-		return payload
-	}
-	updated := payload
-	for _, item := range updates {
-		var err error
-		updated, err = sjson.SetBytes(updated, item.path, item.value)
-		if err != nil {
-			return payload
-		}
-	}
-	return updated
-}
-
-// restoreCodexMultiAgentV2SSEEvent applies response restoration to the JSON
-// data line while keeping SSE framing, event names, and blank-line delimiters.
-func restoreCodexMultiAgentV2SSEEvent(raw []byte, optimized bool) []byte {
-	if !optimized || len(raw) == 0 {
-		return raw
-	}
-	lines := bytes.SplitAfter(raw, []byte("\n"))
-	changed := false
-	for index, line := range lines {
-		trimmed := bytes.TrimRight(line, "\r\n")
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
-			continue
-		}
-		data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !gjson.ValidBytes(data) {
-			continue
-		}
-		restored := restoreCodexMultiAgentV2Response(data, true)
-		if bytes.Equal(restored, data) {
-			continue
-		}
-		newline := line[len(trimmed):]
-		lines[index] = append(append([]byte("data: "), restored...), newline...)
-		changed = true
-	}
-	if !changed {
-		return raw
-	}
-	return bytes.Join(lines, nil)
-}
-
 // codexMultiAgentV2Models returns the currently visible model names. Model
 // lookup is advisory; inability to read it must never break a proxy request.
 func (s *Server) codexMultiAgentV2Models(ctx context.Context) []string {
@@ -485,17 +286,4 @@ func (s *Server) codexMultiAgentV2Models(ctx context.Context) []string {
 		return nil
 	}
 	return models
-}
-
-func (s *Server) updateCodexMultiAgentV2SessionState(
-	session *responsesExecutionSession,
-	reqCtx *proxyRequestContext,
-) {
-	if session == nil || reqCtx == nil {
-		return
-	}
-	if !reqCtx.codexMultiAgentV2Conflict && !reqCtx.codexMultiAgentV2Optimized {
-		return
-	}
-	session.setCodexMultiAgentV2State(reqCtx.codexMultiAgentV2Optimized)
 }

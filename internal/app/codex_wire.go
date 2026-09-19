@@ -158,11 +158,6 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	parser := newSSEUsageParser(string(protocol.Codex))
 	collector := newCodexNonStreamCollector(parser)
 	consume := collector.consume
-	if reqCtx.codexMultiAgentV2Optimized {
-		consume = func(rawEvent []byte) error {
-			return collector.consume(restoreCodexMultiAgentV2SSEEvent(rawEvent, true))
-		}
-	}
 	stopAfterEvent := collector.done
 	if isImagesResponsesPlan(reqCtx.transformPlan) {
 		stopAfterEvent = collector.doneForImages
@@ -220,9 +215,6 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), fmt.Errorf("responses terminal event is missing response")
 	}
 	responseBody := []byte(response.Raw)
-	if reqCtx.codexMultiAgentV2Optimized {
-		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
-	}
 	if isImagesResponsesPlan(reqCtx.transformPlan) {
 		translatedBody, err := buildOpenAIImagesResponseFromResponses(
 			responseBody,

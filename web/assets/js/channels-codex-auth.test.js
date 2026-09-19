@@ -1031,6 +1031,7 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
   };
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
+  const loadedScriptPaths = [];
   let openedChannelID = null;
   let oauthSetupCalls = 0;
   let scriptFailed = false;
@@ -1067,6 +1068,7 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
           return;
         }
         const path = new URL(script.src, global.window.location.origin).pathname;
+        loadedScriptPaths.push(path);
         if (path === '/web/assets/js/channels-codex-auth.js') {
           global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
         }
@@ -1107,6 +1109,10 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
     }
 
     assert.equal(openedChannelID, 42);
+    const renderIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-render.js');
+    const modalsIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-modals.js');
+    assert.notEqual(renderIndex, -1);
+    assert.ok(renderIndex < modalsIndex);
     assert.equal(oauthSetupCalls, 1);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);

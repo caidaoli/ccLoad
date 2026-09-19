@@ -1283,14 +1283,15 @@ function buildManagementAccountStatusHtml(channel) {
   </div>`;
 }
 
-const MODEL_COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 
 function buildChannelRuntimeStatusHtml(channel) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
   if (channelCooldownMS > 0) {
-    const text = window.t('channels.status.channelCooldown', { time: formatCooldownRecoveryTime(channelCooldownMS, 'channels.status.daysHoursUntilRecovery') });
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--channel">${escapeChannelRefreshText(text)}</div>`);
+    const label = escapeChannelRefreshText(window.t('channels.status.channelCooldownLabel'));
+    const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(channelCooldownMS, 'channels.status.daysHoursUntilRecovery'));
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--channel"><span>${label}</span><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
   }
 
   const coolingKeys = (Array.isArray(channel.key_cooldowns) ? channel.key_cooldowns : [])
@@ -1313,7 +1314,7 @@ function buildChannelRuntimeStatusHtml(channel) {
     const nextRecoveryMS = Math.min(...coolingModels);
     const countText = escapeChannelRefreshText(window.t('channels.status.modelCooldownsCount', { count: coolingModels.length }));
     const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery'));
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span>${countText}</span><span class="ch-runtime-status__clock">${MODEL_COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span>${countText}</span><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
   }
 
   const protocolProbeRetryCount = Number(channel.protocol_probe_retry_count || 0);

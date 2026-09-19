@@ -1969,6 +1969,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
+		false,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)

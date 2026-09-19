@@ -90,22 +90,7 @@ type responsesExecutionSession struct {
 	subjectFingerprint string
 	sessionFingerprint string
 
-	transcriptBytes            atomic.Int64
-	codexMultiAgentV2Optimized atomic.Bool
-}
-
-func (s *responsesExecutionSession) codexMultiAgentV2StateSnapshot() bool {
-	if s == nil {
-		return false
-	}
-	return s.codexMultiAgentV2Optimized.Load()
-}
-
-func (s *responsesExecutionSession) setCodexMultiAgentV2State(optimized bool) {
-	if s == nil {
-		return
-	}
-	s.codexMultiAgentV2Optimized.Store(optimized)
+	transcriptBytes atomic.Int64
 }
 
 func newResponsesExecutionSession(

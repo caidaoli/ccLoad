@@ -8,29 +8,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestOptimizeCodexMultiAgentV2RequestRenamesAndSanitizesTools(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{
-		"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","description":"Spawns an agent to work on a task.","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}]}]}]
-	}`)
-	headers := http.Header{"User-Agent": []string{"codex_cli_rs/0.145.0"}}
-	got, optimized := optimizeCodexMultiAgentV2Request(headers, payload, []string{"gpt-5.5", "claude-sonnet-4-6"})
-	if !optimized {
-		t.Fatal("request was not optimized")
-	}
-	if name := gjsonString(got, "input.0.tools.0.name"); name != codexOptimizedCollaboration {
-		t.Fatalf("namespace = %q, want %q", name, codexOptimizedCollaboration)
-	}
-	if gjsonExists(got, "input.0.tools.0.tools.0.parameters.properties.message.encrypted") {
-		t.Fatal("collaboration message encrypted marker was not removed")
-	}
-	description := gjsonString(got, "input.0.tools.0.tools.0.description")
-	if !strings.Contains(description, "`gpt-5.5`") || !strings.Contains(description, "`claude-sonnet-4-6`") {
-		t.Fatalf("model overrides missing from description: %q", description)
-	}
-}
-
 func TestRewriteCodexMultiAgentV2InputConvertsAgentMessages(t *testing.T) {
 	t.Parallel()
 
@@ -52,8 +29,8 @@ func TestPrepareCodexMultiAgentV2ToolsKeepsNamespace(t *testing.T) {
 
 	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","description":"Spawns an agent.","parameters":{"properties":{"message":{"encrypted":true}}}}]}]}`)
 	got := prepareCodexMultiAgentV2Tools(http.Header{"User-Agent": []string{"codex-tui/0.145.0"}}, payload, []string{"gpt-5.5"})
-	if namespace := gjsonString(got, "tools.0.name"); namespace != codexCollaborationNamespace {
-		t.Fatalf("namespace = %q, want %q", namespace, codexCollaborationNamespace)
+	if namespace := gjsonString(got, "tools.0.name"); namespace != "collaboration" {
+		t.Fatalf("namespace = %q, want collaboration", namespace)
 	}
 	if gjsonExists(got, "tools.0.tools.0.parameters.properties.message.encrypted") {
 		t.Fatal("collaboration message encrypted marker was not removed")
@@ -63,48 +40,21 @@ func TestPrepareCodexMultiAgentV2ToolsKeepsNamespace(t *testing.T) {
 	}
 }
 
-func TestRestoreCodexMultiAgentV2ResponseRestoresToolIdentity(t *testing.T) {
+// 非官方 Codex 客户端的请求必须原样保留：spawn_agent 不是保留名，第三方编排
+// 框架也会用它，改写会篡改调用方语义并把网关模型目录写进请求体。
+func TestPrepareCodexMultiAgentV2ToolsLeavesNonCodexCallersUntouched(t *testing.T) {
 	t.Parallel()
 
-	payload := []byte(`{"type":"function_call","namespace":"collaboration-optimize","name":"collaboration-optimize__send_message","arguments":"{\"namespace\":\"collaboration-optimize\"}"}`)
-	got := string(restoreCodexMultiAgentV2Response(payload, true))
-	want := `{"type":"function_call","namespace":"collaboration","name":"collaboration__send_message","arguments":"{\"namespace\":\"collaboration-optimize\"}"}`
-	if got != want {
-		t.Fatalf("response was re-encoded or tool identity changed unexpectedly: got %s, want %s", got, want)
-	}
-	if !strings.Contains(got, `"namespace":"collaboration"`) || !strings.Contains(got, `"name":"collaboration__send_message"`) {
-		t.Fatalf("tool identity was not restored: %s", got)
-	}
-	if !strings.Contains(got, `collaboration-optimize`) {
-		t.Fatal("arguments were unexpectedly rewritten")
-	}
-
-	event := restoreCodexMultiAgentV2SSEEvent([]byte("event: response.output_item.done\ndata: "+string(payload)+"\n\n"), true)
-	if !strings.Contains(string(event), `"name":"collaboration__send_message"`) {
-		t.Fatalf("SSE tool identity was not restored: %s", event)
-	}
-}
-
-func TestRestoreCodexMultiAgentV2ResponsePreservesNestedOutputOrder(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{"response":{"output":[{"id":"call-1","type":"function_call","arguments":"{\"name\":\"collaboration-optimize\"}","namespace":"collaboration-optimize","name":"collaboration-optimize__spawn_agent"}]},"trace_id":"trace-1"}`)
-	got := restoreCodexMultiAgentV2Response(payload, true)
-	want := `{"response":{"output":[{"id":"call-1","type":"function_call","arguments":"{\"name\":\"collaboration-optimize\"}","namespace":"collaboration","name":"collaboration__spawn_agent"}]},"trace_id":"trace-1"}`
-	if string(got) != want {
-		t.Fatalf("nested response was re-encoded or restored incorrectly: got %s, want %s", got, want)
-	}
-}
-
-func TestCodexMultiAgentV2SkipsNonCodexClientsAndReservedNamespace(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{"tools":[{"type":"namespace","name":"collaboration-optimize","tools":[{"type":"function","name":"send_message"}]}]}`)
-	if got, optimized := optimizeCodexMultiAgentV2Request(http.Header{"User-Agent": []string{"curl/8.0"}}, payload, []string{"gpt-5.5"}); optimized || string(got) != string(payload) {
-		t.Fatalf("non-Codex caller changed payload: optimized=%v payload=%s", optimized, got)
-	}
-	if got, optimized := optimizeCodexMultiAgentV2Request(http.Header{"User-Agent": []string{"codex_cli_rs"}}, payload, []string{"gpt-5.5"}); optimized || string(got) != string(payload) {
-		t.Fatalf("reserved namespace conflict changed payload: optimized=%v payload=%s", optimized, got)
+	payload := []byte(`{"tools":[{"type":"function","name":"spawn_agent","description":"Spawn a worker in my own orchestrator.","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}]}`)
+	for _, userAgent := range []string{"curl/8.0", "openai-python/1.0", ""} {
+		headers := http.Header{}
+		if userAgent != "" {
+			headers.Set("User-Agent", userAgent)
+		}
+		got := prepareCodexMultiAgentV2Tools(headers, payload, []string{"gpt-5.5", "internal-only-model"})
+		if string(got) != string(payload) {
+			t.Fatalf("User-Agent %q: payload was rewritten: %s", userAgent, got)
+		}
 	}
 }
 

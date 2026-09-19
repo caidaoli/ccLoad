@@ -276,6 +276,52 @@ func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
 	}
 }
 
+func TestProxy_SuccessResetsExpiredModelCooldownHistory(t *testing.T) {
+	const modelName = "gpt-test"
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "expired-model-cooldown", upstreamProtocol: "openai", models: modelName,
+	}}, map[int]string{0: upstream.URL})
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+
+	// Reproduce a completed cooldown that still retains its backoff duration.
+	// The channel is selectable again, but the next failure must start fresh
+	// after any successful request for the same actual model.
+	past := time.Now().Add(-2 * time.Minute)
+	duration, err := env.store.BumpModelCooldown(ctx, configs[0].ID, modelName, past, util.StatusFirstByteTimeout)
+	if err != nil {
+		t.Fatalf("seed expired model cooldown: %v", err)
+	}
+	if duration != util.TimeoutErrorCooldown {
+		t.Fatalf("seed duration=%v, want %v", duration, util.TimeoutErrorCooldown)
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": modelName, "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	duration, err = env.store.BumpModelCooldown(ctx, configs[0].ID, modelName, time.Now(), util.StatusFirstByteTimeout)
+	if err != nil {
+		t.Fatalf("bump model cooldown after success: %v", err)
+	}
+	if duration != util.TimeoutErrorCooldown {
+		t.Fatalf("cooldown after success=%v, want fresh %v", duration, util.TimeoutErrorCooldown)
+	}
+}
+
 func TestProxy_APIKeyCostMultiplierSnapshotsPerKeyInLogs(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

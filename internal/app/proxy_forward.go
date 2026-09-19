@@ -242,30 +242,10 @@ func (s *Server) buildProxyRequest(
 	body, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, body, sourceBody, apiKey, hdr,
 		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
+		reqCtx != nil && reqCtx.replayBodyRulesApplied,
 	)
 	if err != nil {
 		return nil, err
-	}
-	// Official Codex clients use a collaboration namespace that several
-	// upstream Responses implementations reject. Rename it only on the Codex
-	// wire and remember the decision for the matching response stream.
-	if reqCtx != nil && upstreamProtocol == protocol.Codex {
-		enabled := codexMultiAgentV2Enabled(hdr)
-		conflict := enabled && hasCodexOptimizedCollaborationConflict(body)
-		var models []string
-		if enabled && len(codexSpawnAgentToolPaths(body)) > 0 {
-			models = s.codexMultiAgentV2Models(reqCtx.ctx)
-		}
-		optimizedBody, optimized := optimizeCodexMultiAgentV2Request(
-			hdr, body, models,
-		)
-		body = optimizedBody
-		reqCtx.codexMultiAgentV2Optimized = enabled && !conflict &&
-			(optimized || reqCtx.codexMultiAgentV2Optimized)
-		if outer := codexMultiAgentV2RequestContextFromContext(reqCtx.ctx); outer != nil {
-			outer.codexMultiAgentV2Optimized = reqCtx.codexMultiAgentV2Optimized
-			outer.codexMultiAgentV2Conflict = conflict
-		}
 	}
 	if xaiResponsesRequest {
 		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
@@ -411,6 +391,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	headers http.Header,
 	anthropicAlreadyFinalized bool,
 	target *url.URL,
+	wireBodyRulesApplied bool,
 ) ([]byte, error) {
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
@@ -419,12 +400,22 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
 	// Codex OAuth 的契约归一化会删除上游不接受的字段。这类请求的自定义
 	// 规则必须最后执行，才能真正覆盖内置值。
-	if !codexOAuthResponsesRequest {
+	// wireBodyRulesApplied：重试路径的 wire body 已经过规则处理，跳过避免
+	// 数组索引规则（如 remove input.0）因元素移位导致二次删除丢失历史。
+	if !wireBodyRulesApplied && !codexOAuthResponsesRequest {
 		body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
 	}
-	body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
-	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
-	if codexOAuthResponsesRequest {
+	if !wireBodyRulesApplied {
+		body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
+	}
+	// A retry replay starts from the wire body that already passed the Codex
+	// finalizers and the channel BodyRules. Running them again can
+	// resurrect fields deliberately removed or overridden by those rules (for
+	// example instructions, reasoning.effort, or parallel_tool_calls).
+	if !wireBodyRulesApplied {
+		body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
+	}
+	if !wireBodyRulesApplied && codexOAuthResponsesRequest {
 		body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
 	}
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
@@ -1200,7 +1191,7 @@ func (s *Server) handleSuccessResponse(
 
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.codexMultiAgentV2Optimized) &&
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
 		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
@@ -1208,7 +1199,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.codexMultiAgentV2Optimized) {
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -1368,9 +1359,6 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	}
 	responseBody := rawBody
 	translatedRequestBody := reqCtx.transformPlan.TranslatedBody
-	if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
-		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
-	}
 	if reqCtx.antigravityOAuth {
 		responseBody, err = unwrapAntigravityResponse(rawBody)
 		if err != nil {
@@ -1503,9 +1491,6 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		if reqCtx.codeBuddyOAuth {
 			rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
 		}
-		if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
-			rawEvent = restoreCodexMultiAgentV2SSEEvent(rawEvent, true)
-		}
 		translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 		if reqCtx.antigravityOAuth {
 			providerEvent, err := antigravitySSEData(rawEvent)
@@ -1563,9 +1548,6 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if reqCtx.codeBuddyOAuth {
 				codeBuddyDone = bytes.Equal(sseEventData(parserEvent), sseDoneMarker)
 				parserEvent = normalizeCodeBuddySSEEvent(parserEvent)
-			}
-			if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
-				parserEvent = restoreCodexMultiAgentV2SSEEvent(parserEvent, true)
 			}
 			if reqCtx.antigravityOAuth {
 				var err error
@@ -2070,12 +2052,14 @@ func (s *Server) handleResponse(
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	return s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
+		false,
 	)
 }
 
 type nativeCodexWebsocketAttempt struct {
-	session         *codexUpstreamWebsocketSession
-	incrementalBody []byte
+	session                     *codexUpstreamWebsocketSession
+	incrementalBody             []byte
+	incrementalBodyRulesApplied bool
 }
 
 func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
@@ -2092,15 +2076,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	native *nativeCodexWebsocketAttempt,
 	executionIdentity string,
 	translatedRequestOverride []byte,
+	replayBodyRulesApplied bool,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))
 	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) {
 		reqCtx.isStreaming = plan.Streaming
-	}
-	if outer := codexMultiAgentV2RequestContextFromContext(ctx); outer != nil {
-		reqCtx.codexMultiAgentV2Optimized = outer.codexMultiAgentV2Optimized
 	}
 	reqCtx.transformPlan = plan
 	reqCtx.clientProtocol = plan.ClientProtocol
@@ -2111,6 +2093,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
 	reqCtx.anthropicClaudeCodeWire = translatedRequestOverride != nil &&
 		isAnthropicClaudeCodeMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
+	reqCtx.replayBodyRulesApplied = replayBodyRulesApplied
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
@@ -2201,10 +2184,20 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		replayReq := cloneRequestWithBody(httpReq, wsReplayBody)
 		prepareCodexWebsocketInputHeaders(replayReq.Header, hdr, cfg.HeaderRules())
 		incrementalSourceBody := bytes.Clone(native.incrementalBody)
-		incrementalReq, errBuild := s.buildProxyRequest(
-			reqCtx, cfg, apiKey, method, incrementalSourceBody, hdr, rawQuery,
-			reqCtx.transformPlan.UpstreamPath, baseURL,
-		)
+		// The replay request and the incremental request do not necessarily share
+		// the same body provenance. A retry replay is built from an already
+		// finalized wire body, while native.incrementalBody is the normalized
+		// session body and may still need channel BodyRules. Keep the state local
+		// to this build so the replay flag cannot suppress incremental rules.
+		incrementalReq, errBuild := func() (*http.Request, error) {
+			previous := reqCtx.replayBodyRulesApplied
+			reqCtx.replayBodyRulesApplied = native.incrementalBodyRulesApplied
+			defer func() { reqCtx.replayBodyRulesApplied = previous }()
+			return s.buildProxyRequest(
+				reqCtx, cfg, apiKey, method, incrementalSourceBody, hdr, rawQuery,
+				reqCtx.transformPlan.UpstreamPath, baseURL,
+			)
+		}()
 		if errBuild != nil {
 			return nil, 0, errBuild
 		}
@@ -2371,6 +2364,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity, nil,
+			false,
 		)
 	}
 	if res != nil {
@@ -2797,8 +2791,9 @@ func (s *Server) forwardAttempt(
 		incrementalBody = replaceJSONRequestModel(incrementalBody, actualModel)
 		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
 		nativeAttempt = &nativeCodexWebsocketAttempt{
-			session:         reqCtx.nativeCodexWS,
-			incrementalBody: incrementalBody,
+			session:                     reqCtx.nativeCodexWS,
+			incrementalBody:             incrementalBody,
+			incrementalBodyRulesApplied: false,
 		}
 	} else if reqCtx.nativeCodexWS != nil {
 		// The conversation state belongs to the execution session, not the socket.
@@ -2812,8 +2807,8 @@ func (s *Server) forwardAttempt(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
 		plan, forwardHeaders, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 		translatedRequestOverride,
+		false,
 	)
-
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
 	if res != nil && res.DebugData != nil {
 		reqCtx.debugData = res.DebugData
@@ -2834,7 +2829,8 @@ func (s *Server) forwardAttempt(
 				}
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				res, _, err = s.forwardOnceAsyncWithNativeCodexWebsocket(ctx, cfg, selectedKey, reqCtx.requestMethod,
-					plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride)
+					plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride,
+					false)
 				duration = time.Since(reqCtx.attemptStartTime).Seconds()
 			}
 		}
@@ -2843,11 +2839,12 @@ func (s *Server) forwardAttempt(
 	missingStoredItemRetries := 0
 	for !cfg.AntigravityCredits && ctx.Err() == nil {
 		retrySourcePlan := plan
-		// Rebuild an optimized Codex multi-agent request from the original plan on
-		// retry. Reusing the wire body would make collaboration-optimize look like
-		// a user-defined reserved namespace and permanently disable restoration.
-		if res != nil && len(res.upstreamRequestBody) > 0 && !reqCtx.codexMultiAgentV2Optimized {
+		retryBodyRulesApplied := false
+		// Use the last wire body so retry strategies see the upstream-protocol
+		// shape (not the client-protocol body which may be Anthropic/OpenAI).
+		if res != nil && len(res.upstreamRequestBody) > 0 {
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
+			retryBodyRulesApplied = true
 		}
 		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
@@ -2868,12 +2865,15 @@ func (s *Server) forwardAttempt(
 		retryAttempt := nativeAttempt
 		if nativeAttempt != nil && res.UpstreamWebsocket {
 			incrementalRetryBody := retryBody
+			incrementalBodyRulesApplied := retryBodyRulesApplied
 			if retryStrategy == stripUnknownInputParameterStrategy {
 				incrementalRetryBody = stripResponsesInputItemStatus(nativeAttempt.incrementalBody)
+				incrementalBodyRulesApplied = nativeAttempt.incrementalBodyRulesApplied
 			}
 			retryAttempt = &nativeCodexWebsocketAttempt{
-				session:         nativeAttempt.session,
-				incrementalBody: incrementalRetryBody,
+				session:                     nativeAttempt.session,
+				incrementalBody:             incrementalRetryBody,
+				incrementalBodyRulesApplied: incrementalBodyRulesApplied,
 			}
 		}
 		s.activeRequests.Retry(reqCtx.activeReqID)
@@ -2881,6 +2881,7 @@ func (s *Server) forwardAttempt(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, retryAttempt, executionIdentity,
 			retryBody,
+			retryBodyRulesApplied,
 		)
 		plan = retryPlan
 		if res != nil && res.DebugData != nil {

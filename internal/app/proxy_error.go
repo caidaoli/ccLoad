@@ -588,7 +588,7 @@ func (s *Server) handleProxySuccess(
 				}
 			}
 		}
-		if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
+		if actualModel != "" {
 			if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
 				count := cooldownClearModelFailCount.Add(1)
 				if count%100 == 1 {

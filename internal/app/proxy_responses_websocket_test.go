@@ -5538,8 +5538,8 @@ func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay
 
 	first := <-requests
 	replay := <-requests
-	if gjson.GetBytes(first, "tools.0.name").String() != codexOptimizedCollaboration {
-		t.Fatalf("first request did not enter Codex multi-agent response path: %s", first)
+	if gjson.GetBytes(first, "tools.0.name").String() != "collaboration" {
+		t.Fatalf("native Codex request changed the collaboration namespace: %s", first)
 	}
 	if !bytes.Contains(first, []byte(`"encrypted_content"`)) {
 		t.Fatalf("first upstream request dropped encrypted content too early: %s", first)
