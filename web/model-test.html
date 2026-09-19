@@ -20,6 +20,7 @@
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/test-content.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/merged-response-client.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
@@ -264,7 +265,24 @@
               <div class="model-test-control model-test-control--content">
                 <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>
                 <div class="model-test-content-row">
-                  <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
+                  <div class="filter-combobox-wrapper model-test-content-combobox">
+                    <input
+                      id="modelTestContent"
+                      class="filter-select filter-combobox"
+                      type="text"
+                      autocomplete="off"
+                      spellcheck="false"
+                      data-i18n-placeholder="modelTest.inputPlaceholder"
+                      placeholder="输入测试内容..."
+                    >
+                    <div
+                      id="modelTestContentDropdown"
+                      class="filter-dropdown"
+                      role="listbox"
+                      data-i18n-aria-label="modelTest.content"
+                      aria-label="内容"
+                    ></div>
+                  </div>
                 </div>
               </div>
               <div class="model-test-run-controls">

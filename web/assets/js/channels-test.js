@@ -1,10 +1,20 @@
 async function loadDefaultTestContent() {
   try {
     const setting = await fetchDataWithAuth('/admin/settings/channel_test_content');
-    if (setting && setting.value) defaultTestContent = setting.value;
+    const firstContent = getFirstConfiguredTestContent(setting?.value);
+    if (firstContent) defaultTestContent = firstContent;
   } catch (error) {
     console.warn('Failed to load default test content, using built-in default', error);
   }
+}
+
+function getFirstConfiguredTestContent(value) {
+  const firstContent = window.TestContent?.firstPipeSeparatedTestContent;
+  if (typeof firstContent === 'function') return firstContent(value);
+  return String(value ?? '')
+    .split('|')
+    .map((content) => content.trim())
+    .find(Boolean) || '';
 }
 
 async function testChannel(channel, initialModel = '') {
@@ -407,5 +417,5 @@ function displayTestResult(result) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { testChannel, runChannelTest, runBatchTest };
+  module.exports = { loadDefaultTestContent, testChannel, runChannelTest, runBatchTest };
 }

@@ -18,11 +18,13 @@ func configuredChannelTestContent(configService *ConfigService) string {
 	if configService == nil {
 		return config.DefaultChannelTestContent
 	}
-	content := strings.TrimSpace(configService.GetString("channel_test_content", config.DefaultChannelTestContent))
-	if content == "" {
-		return config.DefaultChannelTestContent
+	configured := configService.GetString("channel_test_content", config.DefaultChannelTestContent)
+	for _, content := range strings.Split(configured, "|") {
+		if content = strings.TrimSpace(content); content != "" {
+			return content
+		}
 	}
-	return content
+	return config.DefaultChannelTestContent
 }
 
 func (s *Server) startScheduledChannelCheckLoop() {

@@ -3374,6 +3374,11 @@ body {
   flex: 0 1 115px;
 }
 
+.model-test-content-combobox {
+  width: 100%;
+  min-width: 0;
+}
+
 .model-test-key-combobox {
   width: 170px;
   min-width: 140px;
@@ -8095,7 +8100,8 @@ body.web-role-api-token .filter-group--auth-token {
   .model-test-control--content,
   .model-test-control--key,
   .model-test-model-combobox,
-  .model-test-protocol-combobox {
+  .model-test-protocol-combobox,
+  .model-test-content-combobox {
     width: 100%;
     min-width: 0;
   }

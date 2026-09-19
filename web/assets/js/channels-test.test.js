@@ -15,7 +15,7 @@ function createClassList() {
   };
 }
 
-function installTestChannelGlobals() {
+function installTestChannelGlobals(defaultContent = 'hello') {
   const requests = [];
   const updates = [];
   const elements = new Map();
@@ -49,6 +49,7 @@ function installTestChannelGlobals() {
     testingClientProtocol: 'anthropic',
     defaultTestContent: 'hello',
     fetchDataWithAuth: async (url, options) => {
+      if (url === '/admin/settings/channel_test_content') return { value: defaultContent };
       if (!options) return [];
       requests.push({ url, body: JSON.parse(options.body) });
       return { success: true, status_code: 200, duration_ms: 1 };
@@ -97,6 +98,24 @@ test('渠道测试无需渠道列表即可预选模型、提交请求并刷新�
       body: { model: 'requested-model', content: 'hello', stream: false, client_protocol: 'anthropic' }
     }]);
     assert.deepEqual(fixture.updates, [{ savedChannelId: 7 }]);
+  } finally {
+    delete require.cache[modulePath];
+    fixture.restore();
+  }
+});
+
+test('渠道测试配置含多个内容时使用第一个内容作为默认请求体', async () => {
+  const fixture = installTestChannelGlobals(' first prompt | second prompt ');
+  const modulePath = require.resolve('./channels-test.js');
+  delete require.cache[modulePath];
+
+  try {
+    const { loadDefaultTestContent, testChannel, runChannelTest } = require(modulePath);
+    await loadDefaultTestContent();
+    await testChannel({ id: 8, name: 'test-channel', models: ['test-model'] });
+    await runChannelTest();
+
+    assert.equal(fixture.requests[0].body.content, 'first prompt');
   } finally {
     delete require.cache[modulePath];
     fixture.restore();

@@ -60,6 +60,8 @@ let channelSelectCombobox = null;
 let channelKeyCombobox = null;
 let modelSelectCombobox = null;
 let clientProtocolCombobox = null;
+let modelTestContentCombobox = null;
+let modelTestContentOptions = [];
 
 const headRow = document.getElementById('model-test-head-row');
 const tbody = document.getElementById('model-test-tbody');
@@ -68,6 +70,7 @@ const channelSelectorLabel = document.getElementById('channelSelectorLabel');
 const keySelectorLabel = document.getElementById('keySelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
 const clientProtocolSelect = document.getElementById('clientProtocolSelect');
+const modelTestContentInput = document.getElementById('modelTestContent');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
 const chatToolbar = document.getElementById('chatToolbar');
@@ -1519,6 +1522,38 @@ function selectClientProtocol(value) {
   }
 }
 
+function splitModelTestContentOptions(value) {
+  const splitter = window.TestContent?.splitPipeSeparatedTestContents;
+  if (typeof splitter === 'function') return splitter(value);
+  return [...new Set(String(value ?? '')
+    .split('|')
+    .map((content) => content.trim())
+    .filter(Boolean))];
+}
+
+function syncModelTestContentCombobox() {
+  if (!modelTestContentInput || typeof window.createSearchableCombobox !== 'function') return;
+
+  if (!modelTestContentCombobox) {
+    const initialValue = modelTestContentInput.value.trim();
+    modelTestContentCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'modelTestContent',
+      dropdownId: 'modelTestContentDropdown',
+      initialValue,
+      initialLabel: initialValue,
+      allowCustomInput: true,
+      showAllOptionsOnOpen: true,
+      getOptions: () => modelTestContentOptions.map((content) => ({
+        value: content,
+        label: content
+      }))
+    });
+  }
+
+  modelTestContentCombobox?.refresh();
+}
+
 function isModelSupported(channel, modelName) {
   if (!channel || !modelName || !Array.isArray(channel.models)) return false;
   return channel.models.some(entry => {
@@ -2122,7 +2157,7 @@ async function fetchModelTestWithRPMWait(target, payload) {
 
 async function runBatchTests(targets) {
   const streamEnabled = document.getElementById('streamEnabled').checked;
-  const content = document.getElementById('modelTestContent').value.trim() || 'hi';
+  const content = modelTestContentInput?.value.trim() || modelTestContentOptions[0] || 'hi';
   const concurrency = parseInt(document.getElementById('concurrency').value, 10) || 5;
 
   targets.forEach(({ row }) => resetRowStatus(row));
@@ -3134,11 +3169,16 @@ async function loadDefaultTestContent() {
     if (!Array.isArray(settings)) return;
 
     const setting = settings.find(s => s.key === 'channel_test_content');
-    if (!setting) return;
+    modelTestContentOptions = splitModelTestContentOptions(setting?.value);
+    if (!modelTestContentInput) return;
 
-    const input = document.getElementById('modelTestContent');
-    input.value = setting.value;
-    input.placeholder = '';
+    const initialContent = modelTestContentOptions[0] || '';
+    modelTestContentInput.value = initialContent;
+    modelTestContentInput.placeholder = initialContent
+      ? ''
+      : i18nText('modelTest.inputPlaceholder', '输入测试内容...');
+    modelTestContentCombobox?.setValue(initialContent, initialContent);
+    syncModelTestContentCombobox();
   } catch (e) {
     console.error('加载默认测试内容失败:', e);
   }
@@ -3147,6 +3187,7 @@ async function loadDefaultTestContent() {
 function bindEvents() {
   ensureModelSelectCombobox();
   syncClientProtocolCombobox();
+  syncModelTestContentCombobox();
   window.addEventListener('localechange', () => {
     syncClientProtocolCombobox();
     syncChatClientProtocolCombobox();

@@ -17,6 +17,15 @@ let logsExactModelValue = '';
 let logsDefaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|navigate
 
+function firstConfiguredLogsTestContent(value) {
+  const firstContent = window.TestContent?.firstPipeSeparatedTestContent;
+  if (typeof firstContent === 'function') return firstContent(value, logsDefaultTestContent);
+  return String(value ?? '')
+    .split('|')
+    .map((content) => content.trim())
+    .find(Boolean) || logsDefaultTestContent;
+}
+
 let latestActiveRequests = []; // 缓存 ui.js 最近一次推送的活动请求，供 load() 即时刷新
 let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
 let logsLoadInFlight = false;
@@ -1899,7 +1908,9 @@ window.initPageBootstrap({
 
   // 从 bootstrap 数据应用设置（bootstrap 失败时各字段回退到原有 fetch 路径）
   if (bootstrap) {
-    if (bootstrap.channel_test_content) logsDefaultTestContent = bootstrap.channel_test_content;
+    if (bootstrap.channel_test_content) {
+      logsDefaultTestContent = firstConfiguredLogsTestContent(bootstrap.channel_test_content);
+    }
     const clickAction = String(bootstrap.log_channel_click_action || '').trim().toLowerCase();
     logChannelClickAction = clickAction === 'navigate' ? 'navigate' : 'edit';
     window.availableLogsModels = [...new Set(bootstrap.models || [])];

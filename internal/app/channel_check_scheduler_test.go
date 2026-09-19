@@ -47,6 +47,16 @@ func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, k
 	return created
 }
 
+func TestConfiguredChannelTestContentUsesFirstPipeSeparatedValue(t *testing.T) {
+	srv := newInMemoryServerWithSettings(t, map[string]string{
+		"channel_test_content": " first prompt | second prompt ",
+	})
+
+	if got := configuredChannelTestContent(srv.configService); got != "first prompt" {
+		t.Fatalf("configuredChannelTestContent() = %q, want %q", got, "first prompt")
+	}
+}
+
 func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 	for _, mode := range []string{model.ProtocolTransformModeAuto, model.ProtocolTransformModeLocal, model.ProtocolTransformModeUpstream} {
 		for _, tc := range []struct {
