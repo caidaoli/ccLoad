@@ -1634,7 +1634,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		result["is_streaming"] = testReq.Stream
 		return attachTestDebugData(requestPlan, nil, result)
 	}
-	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp)
+	s.persistDetectionCodexPassiveUsage(ctx, cfg, resp, gjson.GetBytes(requestPlan.requestBody, "model").String())
 	s.persistDetectionAnthropicPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if cfg.UsesZedOAuth() {
@@ -1789,7 +1789,7 @@ func (s *Server) doChannelTestCodexWebsocket(
 			s.persistCodexPassiveUsage(ctx, cfg, &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     headers,
-			})
+			}, gjson.GetBytes(body, "model").String())
 		},
 	)
 	if err != nil || resp == nil || resp.Body == nil {

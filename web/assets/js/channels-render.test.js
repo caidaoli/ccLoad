@@ -396,8 +396,6 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
     // 同为 604800 秒的两行必须各贴各的值，不能共用同一个累计成本。
     assert.match(html, /Gemini周额度[\s\S]*?\$0\.3/);
     assert.match(html, /Gemini5小时额度[\s\S]*?\$0\.1/);
-    assert.match(html, /Claude周额度[\s\S]*?\$0\.0/);
-    assert.match(html, /Claude5小时额度[\s\S]*?\$0\.0/);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

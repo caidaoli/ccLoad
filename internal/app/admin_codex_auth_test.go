@@ -4311,6 +4311,105 @@ func TestCodexPassiveSparkRollbackDoesNotResetCodexWeeklyCost(t *testing.T) {
 	}
 }
 
+func TestCodexReserveResponsePreservesMainQuotaCost(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, model, headerIdentity, eventIdentity string
+	}{
+		{name: "reserve_request_without_identities", model: "gpt-reserve"},
+		{name: "reserve_header_with_unidentified_event", model: "gpt-5.6-luna", headerIdentity: "base_model_inference"},
+		{name: "explicit_reserve_event", model: "gpt-reserve", eventIdentity: "gpt-reserve"},
+		{name: "unknown_header_with_unidentified_event", model: "gpt-reserve", headerIdentity: "unknown-quota"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			ctx := context.Background()
+			now := time.Now().UTC().Truncate(time.Second)
+			base := now.Add(-time.Minute)
+			credential := &codexauth.Credential{
+				Type: "codex", AccessToken: "at-reserve", RefreshToken: "rt-reserve", AccountID: "reserve-account",
+				Expired: now.Add(time.Hour).Format(time.RFC3339),
+				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{
+					{Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 18000,
+						StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(4 * time.Hour).Unix(),
+						SampledUpstreamUsedPercent: float64Pointer(99), SampledUpstreamAtUnixNano: base.UnixNano(), StandardCostMicroUSD: 15_000_000},
+					{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
+						StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+						SampledUpstreamUsedPercent: float64Pointer(31), SampledUpstreamAtUnixNano: base.UnixNano(), StandardCostMicroUSD: 31_000_000},
+					// Legacy credentials may still label the reserve window as codex.
+					{Key: "gpt-reserve|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
+						StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(167 * time.Hour).Unix(),
+						SampledUpstreamUsedPercent: float64Pointer(0), SampledUpstreamAtUnixNano: base.UnixNano()},
+				}},
+			}
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &Server{store: store, codexCredentials: newCodexCredentialManager(nil, store, nil, nil)}
+			headers := http.Header{}
+			headers.Set("X-Codex-Active-Limit", test.headerIdentity)
+			headers.Set("X-Codex-Primary-Used-Percent", "2")
+			headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+			headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(167*time.Hour).Unix(), 10))
+			payload := fmt.Sprintf("data: {\"type\":\"codex.rate_limits\",\"metered_limit_name\":%q,\"rate_limits\":{\"primary\":{\"used_percent\":2,\"window_minutes\":10080,\"reset_at\":%d}}}\n\n", test.eventIdentity, now.Add(167*time.Hour).Unix())
+			resp := &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(payload))}
+			s.persistDetectionCodexPassiveUsage(ctx, channel, resp, test.model)
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatal(err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range []*model.LogEntry{
+				{Time: model.JSONTime{Time: now}, ChannelID: channel.ID, Model: "gpt-5.6-luna", ActualModel: "gpt-reserve", StatusCode: 200, Cost: 0.25},
+				{Time: model.JSONTime{Time: now}, ChannelID: channel.ID, Model: "gpt-5.6-luna", StatusCode: 200, Cost: 0.5},
+			} {
+				if err := store.AddLog(ctx, entry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			persisted, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]int64{"codex|primary": 15_500_000, "codex|secondary": 31_500_000, "gpt-reserve|primary": 250_000} {
+				w := oauthcost.Find(got.QuotaCostUsage, key)
+				if w == nil || w.StandardCostMicroUSD != want || w.CountFromAt != 0 {
+					t.Fatalf("%s persisted cost = %#v, want %d without reset", key, w, want)
+				}
+			}
+			for _, key := range []string{"codex|primary", "codex|secondary"} {
+				before, after := oauthcost.Find(credential.QuotaCostUsage, key), oauthcost.Find(got.QuotaCostUsage, key)
+				if before.StartedAt != after.StartedAt || before.ResetAt != after.ResetAt || *before.SampledUpstreamUsedPercent != *after.SampledUpstreamUsedPercent {
+					t.Fatalf("reserve response changed main window: %#v", after)
+				}
+			}
+			if err := store.ResetOAuthQuotaCostUsage(ctx, channel.ID, base); err != nil {
+				t.Fatal(err)
+			}
+			persisted, err = store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]int64{"codex|primary": 500_000, "codex|secondary": 500_000, "gpt-reserve|primary": 250_000} {
+				w := oauthcost.Find(got.QuotaCostUsage, key)
+				if w == nil || w.StandardCostMicroUSD != want || w.CountFromAt != base.Unix() {
+					t.Fatalf("%s reset cost = %#v, want %d", key, w, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -4356,7 +4455,7 @@ func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 			}
 			if test.passive {
 				payload := fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":5,"window_minutes":10080,"reset_at":%d},"secondary":null}}`, weeklyResetAt)
-				update, ok := sampleCodexPassiveUsageEvent([]byte(payload), sampledAt)
+				update, ok := sampleCodexPassiveUsageEvent([]byte(payload), sampledAt, "")
 				if !ok {
 					t.Fatal("Codex quota event was not accepted")
 				}
@@ -5245,7 +5344,7 @@ func TestCodexPassiveUsageSimulationMatchesUpstreamEvent(t *testing.T) {
 		"credits":{"has_credits":false,"unlimited":false,"balance":"0"},
 		"promo":null
 	}`)
-	update, ok := sampleCodexPassiveUsageEvent(payload, sampledAt)
+	update, ok := sampleCodexPassiveUsageEvent(payload, sampledAt, "")
 	if !ok {
 		t.Fatal("Codex rate-limit event should produce a passive usage update")
 	}
@@ -5295,7 +5394,7 @@ func TestCodexPassiveUsageActiveLimitHeaderDropsDuplicateFields(t *testing.T) {
 		"X-Codex-Bengalfox-Secondary-Window-Minutes": []string{"10080"},
 		"X-Codex-Bengalfox-Secondary-Reset-At":       []string{"1788532795"},
 	}
-	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt, "")
 	if !ok || len(update.Windows) != 2 {
 		t.Fatalf("header usage = (%#v, %t), want one Spark primary and one secondary window", update, ok)
 	}
@@ -5336,7 +5435,7 @@ func TestCodexPassiveUsagePremiumHeaderReplacesMissingSecondary(t *testing.T) {
 		"X-Codex-Secondary-Window-Minutes": []string{"0"},
 		"X-Codex-Secondary-Reset-At":       []string{""},
 	}
-	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt, "")
 	if !ok || len(update.Windows) != 1 || oauthcost.Key(update.Windows[0].LimitName, update.Windows[0].Kind) != "codex|primary" {
 		t.Fatalf("premium Pro header usage = (%#v, %t), want only codex primary", update, ok)
 	}
@@ -5371,7 +5470,7 @@ func TestCodexPassiveUsagePremiumTeamHeaderKeepsBothMainWindows(t *testing.T) {
 		"X-Codex-Secondary-Window-Minutes": []string{"10080"},
 		"X-Codex-Secondary-Reset-At":       []string{"1788671803"},
 	}
-	update, ok := sampleCodexPassiveUsage(headers, sampledAt)
+	update, ok := sampleCodexPassiveUsage(headers, sampledAt, "")
 	if !ok || len(update.Windows) != 2 {
 		t.Fatalf("premium Team header usage = (%#v, %t), want two main windows", update, ok)
 	}
@@ -5400,7 +5499,7 @@ func TestCodexPassiveUsageCompleteEventRemovesMissingWindow(t *testing.T) {
 			{Scope: "gpt-5.3-codex-spark", LimitName: "GPT-5.3-Codex-Spark", Kind: "secondary", UsedPercent: 1, LimitWindowSeconds: 604800, ResetAt: 1788532795, SampledAt: oldSampledAt.Format(time.RFC3339Nano)},
 		},
 	}
-	update, ok := sampleCodexPassiveUsageEvent([]byte(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":16,"window_minutes":10080,"reset_at":1788504406},"secondary":null},"additional_rate_limits":{"GPT-5.3-Codex-Spark":{"primary":{"used_percent":3,"window_minutes":300,"reset_at":1788023956},"secondary":{"used_percent":2,"window_minutes":10080,"reset_at":1788532795}}}}`), newSampledAt)
+	update, ok := sampleCodexPassiveUsageEvent([]byte(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":16,"window_minutes":10080,"reset_at":1788504406},"secondary":null},"additional_rate_limits":{"GPT-5.3-Codex-Spark":{"primary":{"used_percent":3,"window_minutes":300,"reset_at":1788023956},"secondary":{"used_percent":2,"window_minutes":10080,"reset_at":1788532795}}}}`), newSampledAt, "")
 	if !ok {
 		t.Fatal("complete Codex event should produce an update")
 	}

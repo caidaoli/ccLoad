@@ -632,14 +632,14 @@ function formatOAuthUsagePercent(value) {
 // 累计标准成本按美元显示，与渠道日消费同一形状，无需本地化前缀。
 function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   const microUSD = Number(standardCostMicroUSD);
-  if (!Number.isFinite(microUSD) || microUSD < 0) return '';
+  if (!Number.isFinite(microUSD) || microUSD <= 0) return '';
   return `$${(microUSD / 1_000_000).toFixed(1)}`;
 }
 
 function formatOAuthEstimatedTotalCost(standardCostMicroUSD, remainingPercent) {
   const microUSD = Number(standardCostMicroUSD);
   const remaining = Number(remainingPercent);
-  if (!Number.isFinite(microUSD) || microUSD < 0 || !Number.isFinite(remaining) || remaining >= 100) {
+  if (!Number.isFinite(microUSD) || microUSD <= 0 || !Number.isFinite(remaining) || remaining >= 100) {
     return '';
   }
   const usedRatio = 1 - Math.min(100, Math.max(0, remaining)) / 100;

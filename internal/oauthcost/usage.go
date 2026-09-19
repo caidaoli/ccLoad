@@ -147,11 +147,11 @@ func FamilyMatches(family, modelName string) bool {
 	case FamilySpark:
 		return strings.Contains(modelName, "spark")
 	case FamilyCodex:
-		// 保留旧日志中可能缺失模型名的累计语义；只有明确识别为 Spark
-		// 时才从主 Codex 窗口排除。
-		return !strings.Contains(modelName, "spark")
+		// Reserve and Spark consume independent quotas; response model names
+		// cannot determine this, so callers must use the actual request model.
+		return modelName != "gpt-reserve" && !strings.Contains(modelName, "spark")
 	case FamilyCodexReserve:
-		return false
+		return modelName == "gpt-reserve"
 	default:
 		return false
 	}
@@ -170,19 +170,17 @@ func validFamily(family string) bool {
 // 旧版本把 Codex 主窗口持久化为 FamilyAll；按 key 识别并按新的 Codex
 // 族规则匹配，避免历史窗口在下一次刷新前继续吞掉 Spark 成本。
 func WindowMatchesModel(window *Window, modelName string) bool {
-	if window == nil || NeverAccumulates(window) {
+	if window == nil {
 		return false
 	}
-	return FamilyMatches(windowFamily(window), modelName)
+	return FamilyMatches(WindowModelFamily(window), modelName)
 }
 
-// NeverAccumulates 报告窗口是否永不累计请求成本。
-// gpt-reserve 是上游独立的保留额度槽位，没有可归属的请求模型。
-func NeverAccumulates(window *Window) bool {
-	return window != nil && isCodexReserveKey(window.Key)
-}
-
-func windowFamily(window *Window) string {
+// WindowModelFamily resolves historical family values from the quota identity.
+func WindowModelFamily(window *Window) string {
+	if isCodexReserveKey(window.Key) {
+		return FamilyCodexReserve
+	}
 	family := window.Family
 	if family == FamilyAll && strings.EqualFold(strings.TrimSpace(strings.SplitN(window.Key, "|", 2)[0]), ProviderCodex) {
 		family = FamilyCodex
@@ -205,11 +203,12 @@ func Families(usage *Usage) []string {
 		if window == nil {
 			continue
 		}
-		if _, ok := seen[window.Family]; ok {
+		family := WindowModelFamily(window)
+		if _, ok := seen[family]; ok {
 			continue
 		}
-		seen[window.Family] = struct{}{}
-		families = append(families, window.Family)
+		seen[family] = struct{}{}
+		families = append(families, family)
 	}
 	return families
 }
@@ -596,7 +595,7 @@ func firstNonZeroTime(primary, fallback time.Time) time.Time {
 }
 
 // Reset starts new local counters immediately after an upstream manual reset.
-// costByFamily 给出各模型族自 resetAt 起的已落盘成本；缺失的族按零处理。
+// costByFamily 按 WindowModelFamily 给出各族自 resetAt 起的已落盘成本；缺失的族按零处理。
 // The next upstream quota sample reconciles the provisional boundaries.
 func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Usage {
 	next := Clone(current)
@@ -615,12 +614,8 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		// 手动重置是已确认的计数起点，不是本地按截止时间猜出来的边界：
 		// 后续采样不得改写 StartedAt，否则会把重置后已计入的日志排除在外。
 		window.LocallyAdvanced = false
-		if isCodexReserveKey(window.Key) {
-			window.Family = FamilyCodexReserve
-			window.StandardCostMicroUSD = 0
-		} else {
-			window.StandardCostMicroUSD = costByFamily[window.Family]
-		}
+		window.Family = WindowModelFamily(window)
+		window.StandardCostMicroUSD = costByFamily[window.Family]
 		// costByFamily 正是自计数起点起的已落盘成本，已计入区间随之确定。
 		MarkAccounted(window, CountFrom(window), window.ResetAt)
 	}

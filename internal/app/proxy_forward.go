@@ -2224,7 +2224,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
-			s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
+			s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 			_ = resp.Body.Close()
 			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
@@ -2244,7 +2244,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if err == nil && cfg.UsesZedOAuth() {
 			err = prepareZedResponsesResponse(resp, reqCtx.zedWire, s.protocolRegistry)
 		}
-		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
+		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 		s.persistAnthropicPassiveUsage(cfg, resp)
 		// Claude Code 的 Accept-Encoding 声明了 br/zstd，Go transport 只会自动解 gzip，
 		// 剩下的必须自己解——发了那个头就得负责解码。

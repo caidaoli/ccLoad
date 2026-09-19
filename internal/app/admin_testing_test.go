@@ -2554,9 +2554,7 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 	for _, tc := range []struct {
 		name, active, group, transport string
 		weeklySecondary                bool
-		// noReserveBlock omits the named reserve block so only the generic
-		// fields plus the active identity arrive; the reserve slot then keeps
-		// its prior official sample instead of being fed from the alias.
+		// Generic reserve fields are sufficient when the active identity is known.
 		noReserveBlock bool
 		// genericResetSkew shifts the generic reset_at away from the named
 		// block so the two are no longer byte-identical.
@@ -2567,6 +2565,8 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 		{name: "header limit name", active: "gpt-reserve", group: "reserve", transport: "header"},
 		{name: "header keeps main secondary", active: "gpt-reserve", group: "reserve", transport: "header", weeklySecondary: true},
 		{name: "header active without group headers", active: "gpt-reserve", transport: "header", noReserveBlock: true},
+		{name: "header reserve metered feature", active: "base_model_inference", transport: "header", noReserveBlock: true},
+		{name: "header named reserve overrides generic alias", active: "base_model_inference", group: "reserve", transport: "header", genericResetSkew: 1},
 		{name: "SSE metered limit", active: "gpt-reserve", transport: "sse"},
 		{name: "SSE metered without additional block", active: "gpt-reserve", transport: "sse", noReserveBlock: true},
 		{name: "SSE metered with skewed generic reset", active: "gpt-reserve", transport: "sse", genericResetSkew: 1},
@@ -2578,10 +2578,10 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 			// reserve 刚进入新周期：reset 比主窗口晚约一天，使用率远低于主额度。
 			reserveReset := mainReset + 24*3600
 			mainKind := "primary"
-			mainEvent := fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, mainReset)
+			mainEvent := fmt.Sprintf(`{"type":"codex.rate_limits","metered_limit_name":"premium","rate_limits":{"primary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, mainReset)
 			if tc.weeklySecondary {
 				mainKind = "secondary"
-				mainEvent = fmt.Sprintf(`{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":20,"window_minutes":300,"reset_at":%d},"secondary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, base.Add(4*time.Hour).Unix(), mainReset)
+				mainEvent = fmt.Sprintf(`{"type":"codex.rate_limits","metered_limit_name":"premium","rate_limits":{"primary":{"used_percent":20,"window_minutes":300,"reset_at":%d},"secondary":{"used_percent":50,"window_minutes":10080,"reset_at":%d}}}`, base.Add(4*time.Hour).Unix(), mainReset)
 			}
 			reserveBlock := fmt.Sprintf(`,"additional_rate_limits":{"gpt-reserve":{"primary":{"used_percent":8,"window_minutes":10080,"reset_at":%d}}}`, reserveReset)
 			if tc.noReserveBlock {
@@ -2594,7 +2594,7 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 					w.Header().Set("X-Codex-Active-Limit", tc.active)
 					w.Header().Set("X-Codex-Primary-Used-Percent", "8")
 					w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
-					w.Header().Set("X-Codex-Primary-Reset-At", strconv.FormatInt(reserveReset, 10))
+					w.Header().Set("X-Codex-Primary-Reset-At", strconv.FormatInt(reserveReset+tc.genericResetSkew, 10))
 					if !tc.noReserveBlock {
 						prefix := "X-Codex-" + tc.group
 						w.Header().Set(prefix+"-Limit-Name", "gpt-reserve")
@@ -2629,9 +2629,6 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 			}
 			lastCost := int64(12_000_000)
 			wantReserveUsed := 8.0
-			if tc.noReserveBlock {
-				wantReserveUsed = 6
-			}
 			channelID := strconv.FormatInt(created.ID, 10)
 			for attempt := range 2 {
 				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{

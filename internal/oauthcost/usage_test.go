@@ -58,7 +58,7 @@ func TestManualResetCutoffSurvivesQuotaRefresh(t *testing.T) {
 		StartedAt: periodStart.Unix(), ResetAt: periodStart.Add(7 * 24 * time.Hour).Unix(),
 		SampledUpstreamUsedPercent: float64Pointer(80), StandardCostMicroUSD: 10_000_000,
 	}}}
-	usage = Reset(usage, manualReset, map[string]int64{FamilyAll: 250_000})
+	usage = Reset(usage, manualReset, map[string]int64{FamilyCodex: 250_000})
 	upstreamReset := manualReset.Add(7 * 24 * time.Hour)
 	usage = Reconcile(usage, []Sample{{
 		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,

@@ -74,12 +74,6 @@ func (s *SQLStore) reconcileOAuthQuotaWindow(
 	ctx context.Context, tx *sql.Tx, channelID int64, window *oauthcost.Window,
 ) error {
 	from, until := oauthcost.CountFrom(window), window.ResetAt
-	if oauthcost.NeverAccumulates(window) {
-		// 上游独立的保留额度槽位没有可归属的请求模型，任何区间的成本都是零。
-		window.StandardCostMicroUSD = 0
-		oauthcost.MarkAccounted(window, from, until)
-		return nil
-	}
 	if !oauthcost.Accounted(window) {
 		// 已计入区间未知：按当前边界重算一次。重算只能看到保留期内的日志，
 		// 与累计值同为下界，取较大者，绝不会因日志过期抹掉真实成本。
@@ -393,15 +387,16 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 			if window == nil {
 				continue
 			}
-			if _, matched := matchedFamilies[window.Family]; matched {
+			family := oauthcost.WindowModelFamily(window)
+			if _, matched := matchedFamilies[family]; matched {
 				continue
 			}
 			if oauthcost.WindowMatchesModel(window, modelName) {
-				if costByFamily[window.Family] > math.MaxInt64-costMicroUSD {
+				if costByFamily[family] > math.MaxInt64-costMicroUSD {
 					return nil, errOAuthQuotaCostOverflow
 				}
-				costByFamily[window.Family] += costMicroUSD
-				matchedFamilies[window.Family] = struct{}{}
+				costByFamily[family] += costMicroUSD
+				matchedFamilies[family] = struct{}{}
 			}
 		}
 	}

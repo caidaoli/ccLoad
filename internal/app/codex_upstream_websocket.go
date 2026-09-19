@@ -1551,7 +1551,7 @@ func (s *Server) doCodexWebsocketRequest(
 			s.persistCodexPassiveUsage(ctx, cfg, &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     headers,
-			})
+			}, gjson.GetBytes(replayBody, "model").String())
 		},
 	)
 	if err != nil {
