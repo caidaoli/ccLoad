@@ -712,7 +712,9 @@ function buildCooldownHtml(index) {
       + `${window.t('channels.statusDisabled')}</span>`;
   }
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
-    const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
+    const cooldownText = typeof formatCooldownRecoveryTime === 'function'
+      ? formatCooldownRecoveryTime(keyCooldown.cooldown_remaining_ms, 'channels.status.daysHoursUntilRecovery')
+      : humanizeMS(keyCooldown.cooldown_remaining_ms);
     const tpl = document.getElementById('tpl-cooldown-badge');
     return tpl ? tpl.innerHTML.replaceAll('{{text}}', cooldownText) : window.t('channels.cooldownBadge', { time: cooldownText });
   }

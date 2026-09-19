@@ -3534,6 +3534,91 @@ func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 	}
 }
 
+func TestReauthorizationResetsQuotaCostOnPlanTierChange(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+
+	team := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-team", RefreshToken: "rt-team", Expired: expiresAt,
+		ChatGPTUserID: "user-plan-change", AccountID: "account-plan-change",
+		Email: "plan-change@example.com", PlanType: "team",
+	}
+	team.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
+		StartedAt:            time.Now().Add(-7 * 24 * time.Hour).Unix(),
+		ResetAt:              time.Now().Add(23 * 24 * time.Hour).Unix(),
+		StandardCostMicroUSD: 351_000_000,
+		AccountedFrom:        time.Now().Add(-7 * 24 * time.Hour).Unix(),
+		AccountedUntil:       time.Now().Add(23 * 24 * time.Hour).Unix(),
+	}}}
+
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, team)
+	if err != nil || !wasCreated {
+		t.Fatalf("team import = (%#v, %v, %v)", created, wasCreated, err)
+	}
+
+	// Reauthorize as free — plan tier changed, quota cost must be cleared.
+	free := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-free", RefreshToken: "rt-free", Expired: expiresAt,
+		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
+		Email: "plan-change@example.com", PlanType: "free",
+	}
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, free)
+	if err != nil || wasCreated {
+		t.Fatalf("free reimport = (%#v, %v, %v)", updated, wasCreated, err)
+	}
+	updatedCredential, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse updated credential: %v", err)
+	}
+	if updatedCredential.QuotaCostUsage != nil {
+		t.Fatalf("plan tier changed team→free but QuotaCostUsage not cleared: %+v", updatedCredential.QuotaCostUsage)
+	}
+	if updatedCredential.PassiveUsage != nil {
+		t.Fatalf("plan tier changed but PassiveUsage not cleared: %+v", updatedCredential.PassiveUsage)
+	}
+
+	// Same-tier reauthorization preserves quota cost.
+	teamAgain := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-team2", RefreshToken: "rt-team2", Expired: expiresAt,
+		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
+		Email: "plan-change@example.com", PlanType: "free",
+	}
+	teamAgain.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
+		StartedAt:            time.Now().Add(-3 * 24 * time.Hour).Unix(),
+		ResetAt:              time.Now().Add(27 * 24 * time.Hour).Unix(),
+		StandardCostMicroUSD: 5_000_000,
+		AccountedFrom:        time.Now().Add(-3 * 24 * time.Hour).Unix(),
+		AccountedUntil:       time.Now().Add(27 * 24 * time.Hour).Unix(),
+	}}}
+	// Inject quota cost into the stored credential so the next update can inherit it.
+	storedCred, _ := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+	storedCred.QuotaCostUsage = oauthcost.Clone(teamAgain.QuotaCostUsage)
+	storedJSON, _ := storedCred.JSON()
+	_, _ = store.CompareAndSwapOAuthCredential(context.Background(), updated.ID, model.AuthTypeCodexOAuth, updated.OAuthCredential, storedJSON)
+
+	sameReauth := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-free3", RefreshToken: "rt-free3", Expired: expiresAt,
+		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
+		Email: "plan-change@example.com", PlanType: "free",
+	}
+	preserved, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, sameReauth)
+	if err != nil || wasCreated {
+		t.Fatalf("same-tier reimport = (%#v, %v, %v)", preserved, wasCreated, err)
+	}
+	preservedCredential, err := codexauth.ParseCredential([]byte(preserved.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse preserved credential: %v", err)
+	}
+	if preservedCredential.QuotaCostUsage == nil || len(preservedCredential.QuotaCostUsage.Windows) == 0 {
+		t.Fatalf("same-tier reauth erased QuotaCostUsage")
+	}
+	if preservedCredential.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 5_000_000 {
+		t.Fatalf("same-tier reauth cost = %d, want 5000000", preservedCredential.QuotaCostUsage.Windows[0].StandardCostMicroUSD)
+	}
+}
+
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	tests := []struct {
 		plan              string

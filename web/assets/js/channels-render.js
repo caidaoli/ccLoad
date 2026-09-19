@@ -1289,7 +1289,7 @@ function buildChannelRuntimeStatusHtml(channel) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
   if (channelCooldownMS > 0) {
-    const text = window.t('channels.status.channelCooldown', { time: formatCooldownRecoveryTime(channelCooldownMS) });
+    const text = window.t('channels.status.channelCooldown', { time: formatCooldownRecoveryTime(channelCooldownMS, 'channels.status.daysHoursUntilRecovery') });
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--channel">${escapeChannelRefreshText(text)}</div>`);
   }
 
@@ -1300,7 +1300,7 @@ function buildChannelRuntimeStatusHtml(channel) {
     const nextRecoveryMS = Math.min(...coolingKeys);
     const text = window.t('channels.status.keyCooldowns', {
       count: coolingKeys.length,
-      time: formatCooldownRecoveryTime(nextRecoveryMS)
+      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
     });
     const label = window.t('channels.status.viewKeyCooldowns', { count: coolingKeys.length });
     statuses.push(`<button type="button" class="ch-runtime-status ch-runtime-status--keys channel-action-btn" data-action="edit-cooling-keys" data-channel-id="${channel.id}" aria-label="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(text)}</button>`);

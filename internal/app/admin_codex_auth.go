@@ -674,9 +674,22 @@ func updateExistingCodexChannel(
 		// Quota snapshots are channel runtime state. Reauthorization replaces
 		// secrets, but must neither erase that state nor lose the new credential
 		// when a concurrent quota sample wins the first CAS.
-		next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
-		next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
-		next.QuotaCostUsage = oauthcost.Clone(current.QuotaCostUsage)
+		//
+		// Plan tier change (e.g. team→free) invalidates accumulated cost: the
+		// old cost was counted against a different upstream limit, and keeping
+		// it produces nonsensical estimates. Clear all quota state so the next
+		// upstream sample bootstraps fresh windows under the new plan.
+		planTierChanged := codexOAuthPlanTier(current.PlanType) != codexOAuthPlanTier(credential.PlanType) &&
+			credential.PlanType != ""
+		if planTierChanged {
+			next.PassiveUsage = nil
+			next.OAuthUsage = nil
+			next.QuotaCostUsage = nil
+		} else {
+			next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
+			next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
+			next.QuotaCostUsage = oauthcost.Clone(current.QuotaCostUsage)
+		}
 		if next.Email == "" {
 			next.Email = current.Email
 		}
