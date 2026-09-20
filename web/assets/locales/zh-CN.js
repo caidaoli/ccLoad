@@ -82,6 +82,9 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   // 登录页
   // ============================================================
+  'settings.group.apiTokenLogin': 'API Token 登录',
+  'settings.desc.api_token_login_enabled': '允许 API Token 登录网页 （保存后重启生效）',
+  'settings.desc.api_token_show_channels': '启用渠道名显示 （禁用时隐藏渠道名称，保存后重启生效）',
   'login.title': '登录 - ccLoad',
   'login.brandSubtitle': '智能API代理管理系统',
   'login.adminLogin': '管理员登录',
@@ -1621,6 +1624,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.nav.cooldown': '冷却策略',
   'settings.nav.log': '日志',
   'settings.nav.access': '访问控制',
+  'settings.nav.api-token-login': 'API Token 登录',
   'settings.nav.update': '程序更新',
   'settings.nav.advanced': '高级',
 

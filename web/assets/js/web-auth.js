@@ -36,6 +36,10 @@
     return getWebRole(storage) === API_TOKEN_ROLE;
   }
 
+  function canShowChannels(role, session) {
+    return role !== API_TOKEN_ROLE || session?.show_channels === true;
+  }
+
   function filterNavigation(navKeys, role) {
     if (role !== API_TOKEN_ROLE) return [...navKeys];
     return navKeys.filter((key) => API_TOKEN_NAV.has(key));
@@ -64,6 +68,7 @@
     getWebRole,
     isAPITokenRole,
     filterNavigation,
+    canShowChannels,
     getSafeRedirectPath
   };
 });

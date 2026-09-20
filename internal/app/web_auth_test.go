@@ -43,7 +43,7 @@ func TestAPITokenLoginCreatesScopedWebSession(t *testing.T) {
 
 	limiter := util.NewLoginRateLimiter()
 	t.Cleanup(limiter.Stop)
-	svc := NewAuthService("admin-pass", limiter, store)
+	svc := newEnabledTokenAuthService(limiter, store)
 	t.Cleanup(svc.Close)
 
 	req := newJSONRequestBytes(http.MethodPost, "/login", []byte(`{"mode":"api_token","token":"sk-dashboard-owner"}`))
@@ -196,7 +196,7 @@ func TestAPITokenLoginAcceptsStoredTokenHash(t *testing.T) {
 
 	limiter := util.NewLoginRateLimiter()
 	t.Cleanup(limiter.Stop)
-	svc := NewAuthService("admin-pass", limiter, store)
+	svc := newEnabledTokenAuthService(limiter, store)
 	t.Cleanup(svc.Close)
 
 	body := []byte(`{"mode":"api_token","token":"` + authToken.Token + `"}`)
@@ -220,6 +220,7 @@ func TestAPITokenLoginAcceptsStoredTokenHash(t *testing.T) {
 
 func TestAPITokenWebSessionCannotUseAdminMiddleware(t *testing.T) {
 	svc := newTestAuthService(t)
+	svc.apiTokenLoginEnabled = true
 	plainSession := "readonly-session"
 	svc.validTokens[model.HashToken(plainSession)] = model.WebSession{
 		TokenHash:   model.HashToken(plainSession),
@@ -268,6 +269,8 @@ func TestAdminWebIdentityCarriesOnlySessionHash(t *testing.T) {
 
 func TestAPITokenChannelRoutesAreReadOnly(t *testing.T) {
 	server := newInMemoryServer(t)
+	server.authService.apiTokenLoginEnabled = true
+	server.authService.apiTokenShowChannels = true
 	plainSession := "readonly-channel-session"
 	sessionHash := model.HashToken(plainSession)
 	server.authService.validTokens[sessionHash] = model.WebSession{
@@ -300,6 +303,7 @@ func TestAPITokenChannelRoutesAreReadOnly(t *testing.T) {
 
 func TestAPITokenWebSessionAttachesProxyIdentity(t *testing.T) {
 	svc := newTestAuthService(t)
+	svc.apiTokenLoginEnabled = true
 	plainSession := "proxy-web-session"
 	sessionHash := model.HashToken(plainSession)
 	svc.validTokens[sessionHash] = model.WebSession{
@@ -368,7 +372,7 @@ func TestReloadAuthTokensRevokesPersistedWebSessions(t *testing.T) {
 
 	limiter := util.NewLoginRateLimiter()
 	t.Cleanup(limiter.Stop)
-	svc := NewAuthService("admin-pass", limiter, store)
+	svc := newEnabledTokenAuthService(limiter, store)
 	t.Cleanup(svc.Close)
 
 	req := newJSONRequestBytes(http.MethodPost, "/login", []byte(`{"mode":"api_token","token":"sk-revoked-owner"}`))
@@ -445,7 +449,7 @@ func setupAPITokenLoginService(t *testing.T, plainToken string) (*AuthService, s
 
 	limiter := util.NewLoginRateLimiter()
 	t.Cleanup(limiter.Stop)
-	svc := NewAuthService("admin-pass", limiter, store)
+	svc := newEnabledTokenAuthService(limiter, store)
 	t.Cleanup(svc.Close)
 	return svc, store
 }
@@ -458,4 +462,10 @@ func runLoginHandler(t testing.TB, svc *AuthService, body, remoteAddr string) *h
 	c, w := newTestContext(t, req)
 	svc.HandleLogin(c)
 	return w
+}
+
+func newEnabledTokenAuthService(limiter *util.LoginRateLimiter, store storage.Store) *AuthService {
+	cfg := NewConfigService(store)
+	cfg.cache["api_token_login_enabled"] = &model.SystemSetting{Value: "true"}
+	return NewAuthService("admin-pass", limiter, store, cfg)
 }

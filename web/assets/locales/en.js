@@ -82,6 +82,9 @@ window.I18N_LOCALES['en'] = {
   // ============================================================
   // Login Page
   // ============================================================
+  'settings.group.apiTokenLogin': 'API Token Login',
+  'settings.desc.api_token_login_enabled': 'Allow API Token web login (restart required after saving)',
+  'settings.desc.api_token_show_channels': 'Show channel names (hidden when disabled; restart required after saving)',
   'login.title': 'Login - ccLoad',
   'login.brandSubtitle': 'Intelligent API Proxy Management System',
   'login.adminLogin': 'Admin Login',
@@ -1621,6 +1624,7 @@ window.I18N_LOCALES['en'] = {
   'settings.nav.cooldown': 'Cooldown',
   'settings.nav.log': 'Logging',
   'settings.nav.access': 'Access',
+  'settings.nav.api-token-login': 'API Token Login',
   'settings.nav.update': 'Updates',
   'settings.nav.advanced': 'Advanced',
 

@@ -197,6 +197,9 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	if statusCodes == nil {
 		statusCodes = make([]int, 0)
 	}
+	if hideTokenChannels(c) {
+		channels = make([]model.ChannelNameID, 0)
+	}
 	RespondJSON(c, http.StatusOK, LogsBootstrapResponse{
 		AuthTokens:  make([]*model.AuthToken, 0),
 		Models:      models,

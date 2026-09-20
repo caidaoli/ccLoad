@@ -338,7 +338,7 @@ func TestDashboardChannelsForceTokenScopeAndHideSensitiveConfig(t *testing.T) {
 	entry := response.Data[0]
 	assertJSONNumber(t, entry, "id", float64(ownerChannel.ID))
 	assertJSONString(t, entry, "name", "owner-channel")
-	for _, key := range []string{"url", "proxy_url", "custom_request_rules", "key_strategy", "key_cooldowns"} {
+	for _, key := range []string{"url", "urls", "models", "priority", "protocol_transform_mode", "proxy_url", "custom_request_rules", "key_strategy", "key_cooldowns"} {
 		if _, ok := entry[key]; ok {
 			t.Fatalf("dashboard channel exposed %q", key)
 		}

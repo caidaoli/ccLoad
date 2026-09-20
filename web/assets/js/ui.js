@@ -8,6 +8,7 @@ window.WebAuth = window.WebAuth || {
   },
   getWebRole() { return 'admin'; },
   isAPITokenRole() { return false; },
+  canShowChannels(role, session) { return role !== 'api_token' || session?.show_channels === true; },
   filterNavigation(keys) { return [...keys]; }
 };
 
@@ -70,6 +71,7 @@ window.WebAuth = window.WebAuth || {
   window.fetchWithAuth = fetchWithAuth;
   window.getWebRole = () => window.WebAuth.getWebRole(localStorage);
   window.isAPITokenRole = () => window.WebAuth.isAPITokenRole(localStorage);
+  window.shouldHideChannels = () => !window.WebAuth.canShowChannels(window.getWebRole(), window.webSession);
 })();
 
 // ============================================================
@@ -1128,6 +1130,8 @@ window.WebAuth = window.WebAuth || {
     const execute = async () => {
 	  const session = await window.fetchDataWithAuth('/dashboard/session');
 	  if (session && session.role) localStorage.setItem(window.WebAuth.ROLE_KEY, session.role);
+      window.webSession = session;
+      document.body.classList.toggle('web-hide-channels', window.shouldHideChannels());
 	  const restrictedPages = new Set(['channels', 'tokens', 'settings']);
 	  if (window.isAPITokenRole() && restrictedPages.has(options.topbarKey)) {
 	    window.location.replace('/web/index.html');

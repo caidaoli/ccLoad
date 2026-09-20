@@ -13,9 +13,10 @@ const webIdentityContextKey = "ccLoad.webIdentity"
 
 // WebIdentity is the authorization scope attached to an authenticated web request.
 type WebIdentity struct {
-	Role        model.WebRole `json:"role"`
-	AuthTokenID int64         `json:"auth_token_id,omitempty"`
-	SessionHash string        `json:"-"`
+	HideChannels bool          `json:"-"`
+	Role         model.WebRole `json:"role"`
+	AuthTokenID  int64         `json:"auth_token_id,omitempty"`
+	SessionHash  string        `json:"-"`
 }
 
 // WebIdentityFromContext returns the authenticated Web identity.
@@ -58,6 +59,7 @@ func (s *AuthService) HandleWebSession(c *gin.Context) {
 		allowedModels = make([]string, 0)
 	}
 	RespondJSON(c, http.StatusOK, gin.H{
+		"show_channels":   !identity.HideChannels,
 		"role":            model.WebRoleAPIToken,
 		"auth_token_id":   token.ID,
 		"description":     token.Description,

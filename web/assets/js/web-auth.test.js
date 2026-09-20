@@ -157,3 +157,32 @@ test('login redirect stays on the current origin', () => {
   assert.equal(WebAuth.getSafeRedirectPath('//evil.example/steal', origin), '/web/index.html');
   assert.equal(WebAuth.getSafeRedirectPath('javascript:alert(1)', origin), '/web/index.html');
 });
+
+
+test('channel visibility only restricts API Token sessions and defaults to hidden', () => {
+  assert.equal(WebAuth.canShowChannels('admin', { show_channels: false }), true);
+  assert.equal(WebAuth.canShowChannels('api_token', undefined), false);
+  assert.equal(WebAuth.canShowChannels('api_token', { show_channels: false }), false);
+  assert.equal(WebAuth.canShowChannels('api_token', { show_channels: true }), true);
+});
+
+
+test('hidden-channel requests discard stale and manually supplied channel filters', () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const window = { shouldHideChannels: () => true };
+  vm.runInNewContext(fs.readFileSync(require.resolve('./filter-query.js'), 'utf8'), { window, URLSearchParams });
+  const fields = [
+    { key: 'channelName', queryKey: 'channel_name_like' },
+    { key: 'model', queryKey: 'model' }
+  ];
+  const values = { channelName: 'private', model: 'test-model' };
+  const options = { baseParams: { channel_id: 7, channel_name: 'private-exact' } };
+  const hidden = window.FilterQuery.buildRequestParams(values, fields, options);
+  assert.equal(hidden.toString(), 'model=test-model');
+  window.shouldHideChannels = () => false;
+  const visible = window.FilterQuery.buildRequestParams(values, fields, options);
+  assert.equal(visible.get('channel_id'), '7');
+  assert.equal(visible.get('channel_name'), 'private-exact');
+  assert.equal(visible.get('channel_name_like'), 'private');
+});

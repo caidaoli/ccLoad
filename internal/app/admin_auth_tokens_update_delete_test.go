@@ -400,6 +400,7 @@ func TestHandleDeleteAuthToken_ReloadFailureFailsClosed(t *testing.T) {
 	}
 
 	svc := newTestAuthService(t)
+	svc.apiTokenLoginEnabled = true
 	injectAPIToken(svc, plainToken, 0, token.ID)
 	sessionToken := "web-session-for-deleted-token"
 	sessionHash := model.HashToken(sessionToken)

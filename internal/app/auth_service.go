@@ -30,6 +30,8 @@ import (
 //
 // 遵循 SRP 原则：仅负责认证授权，不涉及代理、日志、管理 API
 type AuthService struct {
+	apiTokenLoginEnabled bool
+	apiTokenShowChannels bool
 	// Token 认证（管理界面使用的动态 Token）
 	// [INFO] 安全修复：存储SHA256哈希而非明文(2025-12)
 	passwordHash []byte                      // 管理员密码bcrypt哈希
@@ -152,6 +154,7 @@ func NewAuthService(
 	password string,
 	loginRateLimiter *util.LoginRateLimiter,
 	store storage.Store,
+	webConfig ...*ConfigService,
 ) *AuthService {
 	// 密码bcrypt哈希（安全存储）
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), authPasswordHashCost)
@@ -175,6 +178,11 @@ func NewAuthService(
 		store:                  store,
 		lastUsedCh:             make(chan string, 256), // 带缓冲，避免阻塞请求
 		done:                   make(chan struct{}),
+	}
+
+	if len(webConfig) > 0 && webConfig[0] != nil {
+		s.apiTokenLoginEnabled = webConfig[0].GetBool(config.APITokenLoginEnabledSettingKey, false)
+		s.apiTokenShowChannels = webConfig[0].GetBool(config.APITokenShowChannelsSettingKey, false)
 	}
 
 	// 启动 last_used_at 更新 worker
@@ -202,6 +210,16 @@ func (s *AuthService) loadSessionsFromDB() error {
 	sessions, err := s.store.LoadWebSessions(ctx)
 	if err != nil {
 		return err
+	}
+	if !s.apiTokenLoginEnabled {
+		for hash, session := range sessions {
+			if session.Role == model.WebRoleAPIToken {
+				if err := s.store.DeleteWebSessionsByAuthTokenID(ctx, session.AuthTokenID); err != nil {
+					return err
+				}
+				delete(sessions, hash)
+			}
+		}
 	}
 
 	s.tokensMux.Lock()
@@ -324,6 +342,9 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool, error) {
 
 	validIdentity := session.Role == model.WebRoleAdmin && session.AuthTokenID == 0
 	if session.Role == model.WebRoleAPIToken {
+		if !s.apiTokenLoginEnabled {
+			return model.WebSession{}, false, nil
+		}
 		var err error
 		validIdentity, err = s.isActiveAuthTokenID(session.AuthTokenID)
 		if err != nil {
@@ -419,7 +440,7 @@ func (s *AuthService) RequireWebAuth() gin.HandlerFunc {
 					return
 				}
 				if ok {
-					c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, AuthTokenID: session.AuthTokenID, SessionHash: session.TokenHash})
+					c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, AuthTokenID: session.AuthTokenID, SessionHash: session.TokenHash, HideChannels: session.Role == model.WebRoleAPIToken && !s.apiTokenShowChannels})
 					c.Next()
 					return
 				}
@@ -720,6 +741,10 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		s.loginRateLimiter.RecordSuccess(adminRateKey)
 		session.Role = model.WebRoleAdmin
 	case model.WebRoleAPIToken:
+		if !s.apiTokenLoginEnabled {
+			RespondErrorMsg(c, http.StatusForbidden, "未开启API Token登陆，请联系管理员")
+			return
+		}
 		if err := s.refreshAuthTokensIfStale(); err != nil {
 			RespondErrorMsg(c, http.StatusServiceUnavailable, "authorization backend unavailable")
 			return

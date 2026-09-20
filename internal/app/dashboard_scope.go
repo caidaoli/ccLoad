@@ -23,8 +23,8 @@ type tokenLogChannelMetadata struct {
 type tokenLogEntry struct {
 	ID                       int64                       `json:"id"`
 	Time                     model.JSONTime              `json:"time"`
-	ChannelID                int64                       `json:"channel_id"`
-	ChannelName              string                      `json:"channel_name"`
+	ChannelID                int64                       `json:"channel_id,omitempty"`
+	ChannelName              string                      `json:"channel_name,omitempty"`
 	ClientProtocol           string                      `json:"client_protocol,omitempty"`
 	UpstreamProtocol         string                      `json:"upstream_protocol,omitempty"`
 	LogSource                string                      `json:"log_source"`
@@ -182,6 +182,16 @@ func ApplyWebIdentityScope(c *gin.Context, filter *model.LogFilter) {
 		tokenID = 1<<63 - 1
 	}
 	filter.AuthTokenID = &tokenID
+	if identity.HideChannels {
+		filter.ChannelID = nil
+		filter.ChannelName = ""
+		filter.ChannelNameLike = ""
+	}
+}
+
+func hideTokenChannels(c *gin.Context) bool {
+	identity, ok := WebIdentityFromContext(c)
+	return ok && identity.Role == model.WebRoleAPIToken && identity.HideChannels
 }
 
 func isAPITokenWebRequest(c *gin.Context) bool {

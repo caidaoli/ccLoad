@@ -9619,3 +9619,13 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
 .channels-readonly #importCsvBtn {
   display: none !important;
 }
+
+/* Channel visibility is supplied by the authenticated Token session. */
+body.web-hide-channels .logs-col-channel,
+body.web-hide-channels .stats-col-channel,
+body.web-hide-channels th[data-column="channel_name"],
+body.web-hide-channels .filter-group--channel-name,
+body.web-hide-channels .channel-filter-container,
+body.web-hide-channels .chart-card--channel {
+  display: none !important;
+}
