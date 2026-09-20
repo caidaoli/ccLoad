@@ -283,3 +283,57 @@ func TestMergeRefreshObservesQuotaIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2030, 3, 4, 5, 0, 0, 0, time.UTC)
+	for _, account := range []string{"account-1", "account-2"} {
+		t.Run(account, func(t *testing.T) {
+			current := &Credential{
+				Type: ChannelType, AccessToken: "old-at", RefreshToken: "rt", AccountID: "account-1",
+				PlanType: "plus", Expired: at.Add(time.Hour).Format(time.RFC3339),
+			}
+			current.RestartQuotaEpochFromPoll(at)
+			current.RestartQuotaEpochFromPoll(at.Add(time.Second))
+			epoch := current.QuotaCostUsage.EpochTime()
+			current.QuotaCostUsage.Windows = []*oauthcost.Window{{
+				Key: "codex|primary", WindowSeconds: 18000, StartedAt: at.Unix(),
+				ResetAt: at.Add(5 * time.Hour).Unix(), StandardCostMicroUSD: 500_000,
+			}}
+			for i, plan := range []string{"plus", "", "plus", "pro"} {
+				raw, err := current.JSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err = ParseCredential([]byte(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err = current.MergeRefresh(&Credential{
+					Type: ChannelType, AccessToken: "new-at", AccountID: "account-1", PlanType: plan,
+					Expired: at.Add(time.Hour).Format(time.RFC3339),
+				}, at.Add(time.Duration(i+2)*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !current.QuotaCostUsage.EpochTime().Equal(epoch) || len(current.QuotaCostUsage.Windows) != 1 || current.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 500_000 {
+					t.Fatalf("claims %q restarted poll epoch: %#v", plan, current.QuotaCostUsage)
+				}
+			}
+			if current.QuotaCostUsage.Identity != "account-1|pro" || current.QuotaIdentityBeforePoll != "" {
+				t.Fatalf("new claims were not adopted: %#v", current.QuotaCostUsage)
+			}
+			// 完成补记后，下一次真实身份变化仍重置；等待期间换账号也一样。
+			if account == "account-2" {
+				current.RestartQuotaEpochFromPoll(at.Add(10 * time.Second))
+			}
+			plan := "team"
+			if account == "account-2" {
+				plan = ""
+			}
+			if !current.ObserveQuotaIdentity(account, plan, at.Add(11*time.Second)) || len(current.QuotaCostUsage.Windows) != 0 || current.QuotaIdentityBeforePoll != "" {
+				t.Fatal("later identity change did not restart epoch")
+			}
+		})
+	}
+}

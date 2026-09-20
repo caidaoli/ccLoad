@@ -42,6 +42,8 @@ type Credential struct {
 	PassiveUsage   *PassiveUsage    `json:"passive_usage,omitempty"`
 	OAuthUsage     json.RawMessage  `json:"oauth_usage,omitempty"`
 	QuotaCostUsage *oauthcost.Usage `json:"quota_cost_usage,omitempty"`
+	// QuotaIdentityBeforePoll 保留轮询重置前的声明身份，等待 id_token 追上这次变化。
+	QuotaIdentityBeforePoll string `json:"quota_identity_before_poll,omitempty"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Codex upstream
@@ -220,6 +222,14 @@ func (c *Credential) ObserveQuotaIdentity(accountID, planType string, at time.Ti
 	if observed == "" {
 		return false
 	}
+	if c.QuotaIdentityBeforePoll != "" {
+		if observed == c.QuotaIdentityBeforePoll {
+			return false
+		}
+		c.QuotaIdentityBeforePoll = ""
+		c.QuotaCostUsage.Identity = observed
+		return false
+	}
 	switch c.QuotaCostUsage.Identity {
 	case "":
 		c.QuotaCostUsage.Identity = observed
@@ -249,6 +259,34 @@ func (c *Credential) RestartQuotaEpoch(identity string, at time.Time) {
 		EpochAt: at.UTC().Unix(), EpochAtUnixNano: at.UTC().UnixNano()}
 	c.OAuthUsage = nil
 	c.PassiveUsage = nil
+	c.QuotaIdentityBeforePoll = ""
+}
+
+// RestartQuotaEpochFromPoll 重置计数，但保留旧声明身份，避免滞后的声明被补记后再次重置。
+// 这里只比较同来源的身份，不把 usage API 的套餐名称与 id_token 混用。
+func (c *Credential) RestartQuotaEpochFromPoll(at time.Time) {
+	if c == nil || at.Before(c.QuotaCostUsage.EpochTime()) {
+		return
+	}
+	previous := c.QuotaIdentityBeforePoll
+	if previous == "" {
+		previous = c.QuotaIdentity()
+		if c.QuotaCostUsage != nil && c.QuotaCostUsage.Identity != "" {
+			previous = c.QuotaCostUsage.Identity
+		}
+	}
+	c.RestartQuotaEpoch("", at)
+	c.QuotaIdentityBeforePoll = previous
+}
+
+// InheritQuotaState 继承计数状态并为升级前的数据补记原凭证身份。
+func (c *Credential) InheritQuotaState(previous *Credential) {
+	c.QuotaCostUsage = oauthcost.Clone(previous.QuotaCostUsage)
+	if c.QuotaCostUsage == nil {
+		c.QuotaCostUsage = &oauthcost.Usage{}
+	}
+	adoptLegacyQuotaIdentity(c.QuotaCostUsage, previous.QuotaIdentity(), previous.AccountID)
+	c.QuotaIdentityBeforePoll = previous.QuotaIdentityBeforePoll
 }
 
 // adoptLegacyQuotaIdentity 给升级前的额度状态补记身份：既没记录身份也没有过纪元，说明它累计的
@@ -373,11 +411,7 @@ func (c *Credential) MergeRefresh(refreshed *Credential, now time.Time) (*Creden
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
 	}
 	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
-	merged.QuotaCostUsage = oauthcost.Clone(c.QuotaCostUsage)
-	if merged.QuotaCostUsage == nil {
-		merged.QuotaCostUsage = &oauthcost.Usage{}
-	}
-	adoptLegacyQuotaIdentity(merged.QuotaCostUsage, c.QuotaIdentity(), c.AccountID)
+	merged.InheritQuotaState(c)
 	merged.ObserveQuotaIdentity(refreshed.AccountID, refreshed.PlanType, now)
 	if err := merged.Normalize(); err != nil {
 		return nil, err

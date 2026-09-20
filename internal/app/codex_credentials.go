@@ -353,7 +353,10 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	usageLock := &m.passiveLocks[uint64(cfg.ID)%uint64(len(m.passiveLocks))]
 	usageLock.Lock()
 	defer usageLock.Unlock()
-	update.Windows = m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime, false)
+	// 完整作用域需要保留全部成员；过滤已见窗口会把它们误判为已删除。
+	if len(update.ReplaceScopes) == 0 {
+		update.Windows = m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime, false)
+	}
 	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return false, nil
 	}
@@ -401,6 +404,8 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		quotaCostChanged := !reflect.DeepEqual(current.QuotaCostUsage, nextQuotaCostUsage)
 		updatedCredential.QuotaCostUsage = nextQuotaCostUsage
 		if !changed && !quotaCostChanged {
+			// 数据库已包含本次采样，无需写入也可以记住去重水位。
+			m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime, true)
 			return false, nil
 		}
 		payload, err := updatedCredential.JSON()

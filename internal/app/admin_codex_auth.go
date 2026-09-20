@@ -17,7 +17,6 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
-	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -674,10 +673,7 @@ func updateExistingCodexChannel(
 		// 先继承当前运行态，再观察新凭证；poll 去重不能吞掉独立的账号切换。
 		next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
 		next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
-		next.QuotaCostUsage = oauthcost.Clone(current.QuotaCostUsage)
-		if next.QuotaCostUsage == nil {
-			next.QuotaCostUsage = &oauthcost.Usage{AccountID: current.AccountID, Identity: current.QuotaIdentity()}
-		}
+		next.InheritQuotaState(current)
 		next.ObserveQuotaIdentity(credential.AccountID, credential.PlanType, time.Now().UTC())
 		if next.Email == "" {
 			next.Email = current.Email

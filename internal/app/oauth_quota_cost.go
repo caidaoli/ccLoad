@@ -65,7 +65,7 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
 			accountID: credential.AccountID,
 			restartQuotaEpoch: func(at time.Time) *oauthcost.Usage {
-				credential.RestartQuotaEpoch("", at)
+				credential.RestartQuotaEpochFromPoll(at)
 				return credential.QuotaCostUsage
 			},
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {

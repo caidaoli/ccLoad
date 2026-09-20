@@ -68,6 +68,16 @@ type snapshotBarrierStore struct {
 	release chan struct{}
 }
 
+type codexUsageReadCountingStore struct {
+	storage.Store
+	reads atomic.Int32
+}
+
+func (s *codexUsageReadCountingStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
+	s.reads.Add(1)
+	return s.Store.GetConfig(ctx, id)
+}
+
 type anthropicMetadataChurnStore struct {
 	storage.Store
 	remaining atomic.Int32
@@ -4197,6 +4207,38 @@ func TestCodexPassiveUsageKeepsLatestResultPerQuotaGroup(t *testing.T) {
 		persistedCredential.PassiveUsage.Windows[1].UsedPercent != 30 {
 		t.Fatalf("header and SSE quota were not merged by limit name: (%#v, %v)", persistedCredential, err)
 	}
+	// 新进程首次重放库中已有的采样无需写入，后续重放也不应再次读库。
+	countingStore := &codexUsageReadCountingStore{Store: store}
+	coldManager := newCodexCredentialManager(nil, countingStore, nil, nil)
+	duplicate := codexPassiveUsageUpdate{
+		SampledAt: sseTime.Format(time.RFC3339Nano),
+		Windows:   []codexauth.PassiveUsageWindow{window("gpt-5.3-codex-spark", "GPT-5.3-Codex-Spark", 30, sseTime)},
+	}
+	for range 2 {
+		if updated, err := coldManager.updatePassiveUsage(context.Background(), channel, duplicate); err != nil || updated {
+			t.Fatalf("replayed persisted sample = (%v, %v)", updated, err)
+		}
+	}
+	if reads := countingStore.reads.Load(); reads != 1 {
+		t.Fatalf("duplicate sample caused %d reads, want 1", reads)
+	}
+	// 完整作用域重复携带同一窗口时，去重不能把该窗口当成缺失。
+	duplicate.ReplaceScopes = []string{"gpt-5.3-codex-spark"}
+	duplicate.SampledAt = sseTime.Add(time.Second).Format(time.RFC3339Nano)
+	if _, err := coldManager.updatePassiveUsage(context.Background(), channel, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err = store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persistedCredential.PassiveUsage.Windows) != 2 || oauthcost.Find(persistedCredential.QuotaCostUsage, oauthcost.Key("GPT-5.3-Codex-Spark", "primary")) == nil {
+		t.Fatal("deduplication removed a window present in the complete scope")
+	}
 }
 
 func TestCodexPassiveUsageDoesNotResetCostFromStaleMergedWindow(t *testing.T) {
@@ -4363,7 +4405,11 @@ func TestCodexReserveResponsePreservesMainQuotaCost(t *testing.T) {
 			headers.Set("X-Codex-Primary-Reset-At", strconv.FormatInt(now.Add(167*time.Hour).Unix(), 10))
 			payload := fmt.Sprintf("data: {\"type\":\"codex.rate_limits\",\"metered_limit_name\":%q,\"rate_limits\":{\"primary\":{\"used_percent\":2,\"window_minutes\":10080,\"reset_at\":%d}}}\n\n", test.eventIdentity, now.Add(167*time.Hour).Unix())
 			resp := &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(payload))}
-			s.persistDetectionCodexPassiveUsage(ctx, channel, resp, test.model)
+			runtimeCfg := channel.Clone()
+			runtimeCfg.CodexAccessToken = credential.AccessToken
+			runtimeCfg.CodexAccountID = credential.AccountID
+			runtimeCfg.CodexQuotaEpochAt = credential.QuotaCostUsage.EpochTime()
+			s.persistDetectionCodexPassiveUsage(ctx, runtimeCfg, resp, test.model)
 			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 				t.Fatal(err)
 			}
@@ -7877,7 +7923,22 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 		t.Fatal("fresh request after credential refresh was discarded")
 	}
 
-	// poll 开过纪元且 Identity 仍为空；换到同套餐的另一个账号必须重新计数。
+	// 重新授权先收到旧声明，再收到新声明，均不得重置轮询后的累计。
+	for _, plan := range []string{"free", "pro"} {
+		_, _, err := createOrUpdateCodexChannel(ctx, store, &codexauth.Credential{
+			Type: "codex", AccessToken: "at-plan-poll", RefreshToken: "rt-plan-poll",
+			ChatGPTUserID: "user-plan-poll", AccountID: "account-plan-poll", PlanType: plan,
+			Expired: time.Now().Add(time.Hour).Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = load()
+		if !got.QuotaCostUsage.EpochTime().Equal(resetAt) || oauthcost.Find(got.QuotaCostUsage, "codex|primary").StandardCostMicroUSD != 500_000 {
+			t.Fatalf("claims %q reset costs after poll: %#v", plan, got.QuotaCostUsage)
+		}
+	}
+	// 换到同套餐的另一个账号必须重新计数。
 	updated, created, err := createOrUpdateCodexChannel(ctx, store, &codexauth.Credential{
 		Type: "codex", AccessToken: "at-account-b", RefreshToken: "rt-account-b",
 		ChatGPTUserID: "user-plan-poll", AccountID: "account-b", PlanType: "pro",
@@ -7909,7 +7970,6 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 	if before != after {
 		t.Fatal("rejected poll mutated credential")
 	}
-
 }
 
 func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {

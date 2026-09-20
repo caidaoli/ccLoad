@@ -199,6 +199,7 @@ type oauthUsageSummary struct {
 	// 请求元数据来自实际使用的凭证，不持久化，也不暴露给客户端。
 	codexAccountID   string
 	codexRequestedAt time.Time
+	// UpstreamPlanType 是上游原始套餐，持久化用于比较，也随管理 API 响应返回。
 	UpstreamPlanType string                   `json:"upstream_plan_type,omitempty"`
 	Credits          *antigravityauth.Credits `json:"credits,omitempty"`
 	// CodeBuddyCredits is the absolute remaining balance returned by the
