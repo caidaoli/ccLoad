@@ -60,6 +60,9 @@
       params.set(requestKey, String(serializedValue));
     });
 
+    if (window.shouldHideChannels?.()) {
+      ['channel_id', 'channel_name', 'channel_name_like'].forEach(key => params.delete(key));
+    }
     return params;
   }
 

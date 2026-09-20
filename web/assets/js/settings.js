@@ -1510,6 +1510,7 @@ function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
 
   const defs = [
+    { id: 'api-token-login', nameKey: 'settings.group.apiTokenLogin', order: 61, match: () => ['api_token_login_enabled', 'api_token_show_channels'].includes(k) },
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
 

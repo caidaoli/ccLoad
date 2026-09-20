@@ -13,6 +13,11 @@
 
 - **上游 HTTP/2 健康探测**(`server.go:buildHTTPTransport`+`codex_utls_transport.go:newCodexUTLSH2Transport`):普通 HTTPS 与专用 uTLS H2 连接共用 30 秒无入站帧后发 PING、15 秒无应答关闭连接的策略。只作用于实际使用 H2 的连接,不改变 H1/代理协议选择;这是连接级探测,不替代首字节/流式总超时、下游 SSE 心跳或 WebSocket 心跳,也不恢复已中断的生成。
 
+## API Token 网页登录
+
+- 系统设置 `api_token_login_enabled`、`api_token_show_channels` 均默认关闭，保存后重启生效。登录页始终保留 Token 入口；关闭时 `/login` 的 `api_token` 模式返回 403 和「未开启API Token登陆，请联系管理员」。启动时清除持久化 Token 网页会话，重新开启必须重新登录；管理员密码登录与普通 API 认证不受影响。
+- 渠道显示只作用于 API Token 网页身份，管理员与未登录公开摘要保持原行为。隐藏时后端清空渠道筛选，裁剪渠道名称/ID、渠道选项及趋势中的渠道序列，前端隐藏相应列、筛选和图表。统计保留原有行和计算口径，不合并不同渠道的同名模型；投影不能修改缓存中的原始统计。开启显示也仅返回 Token 自身调用中的渠道身份，不返回渠道 URL、Key 或管理配置。
+
 ## 渠道管理与定时检测
 
 - **渠道管理账户**(`channel_management_service.go`+`admin_channel_management.go`+`model/channel_management.go`):仅限 `auth_type=api_key` 渠道,在 `oauth_credential` 字段存放版本化私有封套(`ChannelManagementEnvelope`,kind=`channel_management`,version=1)。三种 profile:`new_api`(New API,含 `user_id`、支持签到+余额)、`sub2api`(Sub2API,仅余额)、`sub2api_pro`(Sub2API Pro,签到+余额)。所有写入走 `CompareAndSwapChannelManagement` CAS,并发安全;`acquireChannel` 渠道级互斥保证同一渠道的余额刷新/签到/设置修改序列化。每日自动签到由 `channel_management_scheduler.go` 驱动:启动立即补偿扫描+每分钟定时扫描,按服务器本地时间 `HH:MM` 判到期,`LastScheduledDay` CAS claim 保证幂等;4 worker 并发执行,签到结果写 `log_source=checkin` 审计日志。手动签到/余额刷新走 Admin API `POST /admin/channels/:id/management-account/{checkin,balance}`。请求体写出后拒绝 uTLS 重放(`errManagementRequestAlreadySent`),POST 结果不确定时回读状态判定(`uncertain`)。CSV 导入导出支持 `management_daily_checkin_enabled`/`management_daily_checkin_time` 列,`oauth_credential` 列同时承载 OAuth 凭证和管理封套。编辑器端点 `GET /admin/channels/:id/editor` 回填凭据(`channelManagementEditorView`)供前端渠道编辑弹窗的管理账户区显示

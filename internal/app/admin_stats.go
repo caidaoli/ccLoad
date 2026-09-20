@@ -39,7 +39,14 @@ func (s *Server) HandleErrors(c *gin.Context) {
 			RespondErrorMsg(c, http.StatusInternalServerError, "读取日志脱敏元数据失败")
 			return
 		}
-		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, channels), total)
+		projected := projectTokenLogs(logs, channels)
+		if hideTokenChannels(c) {
+			for i := range projected {
+				projected[i].ChannelID = 0
+				projected[i].ChannelName = ""
+			}
+		}
+		RespondJSONWithCount(c, http.StatusOK, projected, total)
 		return
 	}
 	RespondJSONWithCount(c, http.StatusOK, projectDashboardLogs(logs), total)
@@ -102,6 +109,11 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	if hideTokenChannels(c) {
+		for i := range pts {
+			pts[i].Channels = nil
+		}
+	}
 	RespondJSON(c, http.StatusOK, pts)
 }
 
@@ -140,6 +152,13 @@ func (s *Server) HandleStats(c *gin.Context) {
 	}
 
 	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+	if hideTokenChannels(c) {
+		channelHealth = nil
+		for i := range stats {
+			stats[i].ChannelID = nil
+			stats[i].ChannelName = ""
+		}
+	}
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
@@ -155,6 +174,9 @@ func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
 	copy(projected, stats)
 	for i := range projected {
 		projected[i].LastRequestMessage = ""
+		projected[i].ChannelPriority = nil
+		projected[i].CostMultiplierMin = nil
+		projected[i].CostMultiplierMax = nil
 	}
 	return projected
 }
@@ -257,6 +279,9 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		"by_auth_type":       byAuthType,
 	}
 
+	if hideTokenChannels(c) {
+		delete(response, "by_auth_type")
+	}
 	RespondJSON(c, http.StatusOK, response)
 }
 
@@ -345,6 +370,9 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 		statusCodes = make([]int, 0)
 	}
 
+	if hideTokenChannels(c) {
+		channels = make([]model.ChannelNameID, 0)
+	}
 	RespondJSON(c, http.StatusOK, ModelsChannelsResponse{Models: models, Channels: channels, StatusCodes: statusCodes})
 }
 
@@ -563,6 +591,9 @@ func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
 		return
 	}
 
+	if hideTokenChannels(c) {
+		channels = nil
+	}
 	channelNames := make([]string, 0, len(channels))
 	for _, ch := range channels {
 		if ch.Name != "" {

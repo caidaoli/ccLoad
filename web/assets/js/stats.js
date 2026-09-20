@@ -142,14 +142,14 @@
     function renderStatsLoading() {
       const tbody = document.getElementById('stats_tbody');
       tbody.innerHTML = '';
-      const row = TemplateEngine.render('tpl-stats-loading', { colspan: STATS_TABLE_COLUMNS });
+      const row = TemplateEngine.render('tpl-stats-loading', { colspan: STATS_TABLE_COLUMNS - (window.shouldHideChannels?.() ? 1 : 0) });
       if (row) tbody.appendChild(row);
     }
 
     function renderStatsError() {
       const tbody = document.getElementById('stats_tbody');
       tbody.innerHTML = '';
-      const row = TemplateEngine.render('tpl-stats-error', { colspan: STATS_TABLE_COLUMNS });
+      const row = TemplateEngine.render('tpl-stats-error', { colspan: STATS_TABLE_COLUMNS - (window.shouldHideChannels?.() ? 1 : 0) });
       if (row) tbody.appendChild(row);
     }
 
@@ -353,7 +353,7 @@
 
       if (!statsData || !statsData.stats || statsData.stats.length === 0) {
         tbody.innerHTML = '';
-        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS });
+        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS - (window.shouldHideChannels?.() ? 1 : 0) });
         if (emptyRow) tbody.appendChild(emptyRow);
         return;
       }
@@ -365,7 +365,7 @@
 
       if (filteredStats.length === 0) {
         tbody.innerHTML = '';
-        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS });
+        const emptyRow = TemplateEngine.render('tpl-stats-empty', { colspan: STATS_TABLE_COLUMNS - (window.shouldHideChannels?.() ? 1 : 0) });
         if (emptyRow) tbody.appendChild(emptyRow);
         return;
       }

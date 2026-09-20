@@ -142,6 +142,7 @@ func TestRequireAPIAuth_RefreshesStaleTokenCache(t *testing.T) {
 
 func TestRequireWebAuth_RefreshFailureDoesNotRevokeSession(t *testing.T) {
 	svc := newTestAuthService(t)
+	svc.apiTokenLoginEnabled = true
 	failingStore := &failingAuthReloadStore{}
 	svc.store = failingStore
 	apiTokenID := int64(42)

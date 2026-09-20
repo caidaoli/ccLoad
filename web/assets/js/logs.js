@@ -1045,7 +1045,8 @@ function getTableColspan() {
   const table = document.getElementById('tbody')?.closest('table')
     || document.querySelector('.logs-table');
   const headerCells = table ? table.querySelectorAll('thead th') : [];
-  return headerCells.length || 16; // fallback到16列（日志页默认列数）
+  const visibleCount = Array.from(headerCells).filter(cell => !window.getComputedStyle || window.getComputedStyle(cell).display !== 'none').length;
+  return visibleCount || 16; // fallback到16列（日志页默认列数）
 }
 
 function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {

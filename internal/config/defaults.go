@@ -5,6 +5,8 @@ import "time"
 
 // OAuth 上游地址设置键。键名是用户可见配置契约，保持既有大小写。
 const (
+	APITokenLoginEnabledSettingKey      = "api_token_login_enabled"
+	APITokenShowChannelsSettingKey      = "api_token_show_channels"
 	CodexBaseURLSettingKey              = "CODEX_BASE_URL"
 	XAIBaseURLSettingKey                = "XAI_BASE_URL"
 	AntigravityURLSettingKey            = "ANTIGRAVITY_URL"

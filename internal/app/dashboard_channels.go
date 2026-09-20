@@ -67,6 +67,30 @@ func (s *Server) tokenScopedChannelConfigs(c *gin.Context) ([]*model.Config, map
 
 // HandleDashboardChannels returns the current web session's visible channel configurations.
 func (s *Server) HandleDashboardChannels(c *gin.Context) {
+	if isAPITokenWebRequest(c) {
+		if hideTokenChannels(c) {
+			RespondErrorMsg(c, http.StatusForbidden, "渠道信息已隐藏")
+			return
+		}
+		params := ParsePaginationParams(c)
+		since, until := params.GetTimeRange()
+		filter := BuildLogFilter(c)
+		filter.LogSource = model.LogSourceProxy
+		channels, err := s.store.GetDistinctChannels(c.Request.Context(), since, until, &filter)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if channels == nil {
+			channels = make([]model.ChannelNameID, 0)
+		}
+		total := len(channels)
+		start := min(params.Offset, total)
+		end := min(start+params.Limit, total)
+		RespondPaginated(c, http.StatusOK, channels[start:end], total)
+		return
+	}
+
 	configs, cooldowns, err := s.tokenScopedChannelConfigs(c)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -119,6 +143,15 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 
 // HandleDashboardChannelFilterOptions returns filter options for visible dashboard channels.
 func (s *Server) HandleDashboardChannelFilterOptions(c *gin.Context) {
+	if isAPITokenWebRequest(c) {
+		if hideTokenChannels(c) {
+			RespondErrorMsg(c, http.StatusForbidden, "渠道信息已隐藏")
+			return
+		}
+		s.HandleStatsFilterOptions(c)
+		return
+	}
+
 	configs, cooldowns, err := s.tokenScopedChannelConfigs(c)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)

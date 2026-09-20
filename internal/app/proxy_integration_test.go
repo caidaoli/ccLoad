@@ -5282,6 +5282,7 @@ func doProxyRequest(t testing.TB, engine *gin.Engine, path string, body any, hea
 
 func createDashboardSession(t testing.TB, env *proxyTestEnv, plainToken string, authToken *model.AuthToken) string {
 	t.Helper()
+	env.server.authService.apiTokenLoginEnabled = true
 	authToken.Token = model.HashToken(plainToken)
 	authToken.CreatedAt = time.Now()
 	authToken.IsActive = true

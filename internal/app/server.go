@@ -459,6 +459,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		password,
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
+		s.configService,
 	)
 	s.authService.RegisterWebSessionRevokeHook(s.xaiOAuth.cancelByAdmin)
 
