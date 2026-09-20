@@ -160,29 +160,26 @@ func WindowFamily(provider, limitName, kind string) string {
 	return FamilyAll
 }
 
-// BootstrapFromSnapshot 从凭证里已持久化的 oauth_usage 采样重建窗口边界。
-// 窗口边界只能来自上游额度采样，但采样一旦落盘就必须立刻可用于累加——
+// BootstrapFromSnapshot 从凭证里已持久化的 oauth_usage 采样重建窗口边界，并保留 base 上的
+// 身份与纪元。窗口边界只能来自上游额度采样，但采样一旦落盘就必须立刻可用于累加——
 // 否则渠道要等下一次人工刷新才开始计数，中间的消耗全部静默丢失。
-// 采样缺失或无有效窗口时返回 nil，调用方按"没有窗口"处理。
-func BootstrapFromSnapshot(rawSnapshot []byte) *Usage {
+// 采样缺失或无有效窗口时返回 Clone(base)：base 为 nil 时即 nil，调用方按"没有窗口"处理；
+// base 只带纪元时原样返回，手动重置先于任何采样发生时纪元不能因此丢失。
+func BootstrapFromSnapshot(base *Usage, rawSnapshot []byte) *Usage {
 	if len(rawSnapshot) == 0 {
-		return nil
+		return Clone(base)
 	}
 	var snapshot Snapshot
 	if err := json.Unmarshal(rawSnapshot, &snapshot); err != nil {
-		return nil
+		return Clone(base)
 	}
 	samples := snapshot.Summary.Samples()
 	if len(samples) == 0 {
-		return nil
+		return Clone(base)
 	}
 	// sampledAt 缺失时按零值观测：窗口保持采样周期，后续 AddStandardCost
 	// 会按日志时间推进，不会把成本记进错误的周期。
-	usage := Reconcile(nil, samples, parseSnapshotTime(snapshot.SampledAt))
-	if usage == nil || len(usage.Windows) == 0 {
-		return nil
-	}
-	return usage
+	return Reconcile(base, samples, parseSnapshotTime(snapshot.SampledAt))
 }
 
 func parseSnapshotTime(raw string) time.Time {

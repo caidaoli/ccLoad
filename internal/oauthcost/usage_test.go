@@ -1174,3 +1174,117 @@ func TestReconcileUsageDropAtEpsilonBoundary(t *testing.T) {
 		t.Fatalf("post-reset cost = %d, want 500", got)
 	}
 }
+
+func TestEpochFloorsCountingStartForEveryWindowGeneration(t *testing.T) {
+	t.Parallel()
+	epochAt := time.Date(2030, time.May, 10, 12, 0, 0, 0, time.UTC)
+	weeklyResetAt := epochAt.Add(3 * 24 * time.Hour)
+	weekly := Sample{
+		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+		ResetAt: weeklyResetAt, UsedPercent: float64Pointer(10), SampledAt: epochAt.Add(time.Minute),
+	}
+
+	// 纪元之前开始的周期：新建窗口只从纪元起计数。
+	usage := Reconcile(&Usage{Identity: "account-1|plus", EpochAt: epochAt.Unix()}, []Sample{weekly}, epochAt.Add(time.Minute))
+	if usage == nil || usage.Identity != "account-1|plus" || usage.EpochAt != epochAt.Unix() {
+		t.Fatalf("Reconcile dropped identity or epoch: %#v", usage)
+	}
+	window := Find(usage, "codex|primary")
+	if window == nil || CountFrom(window) != epochAt.Unix() {
+		t.Fatalf("bootstrapped window = %#v, want count from epoch %d", window, epochAt.Unix())
+	}
+	if changed, err := AddStandardCost(usage, epochAt.Add(-time.Minute), "gpt-5.6-sol", 1_000_000); err != nil || changed {
+		t.Fatalf("pre-epoch log = (%t, %v), want ignored", changed, err)
+	}
+	if changed, err := AddStandardCost(usage, epochAt.Add(time.Minute), "gpt-5.6-sol", 400_000); err != nil || !changed {
+		t.Fatalf("post-epoch log = (%t, %v), want counted", changed, err)
+	}
+	if window.StandardCostMicroUSD != 400_000 {
+		t.Fatalf("cost after epoch = %d, want 400000", window.StandardCostMicroUSD)
+	}
+
+	// 时长变化重建的窗口同样从纪元起计数。
+	fiveHour := Sample{
+		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 5 * 60 * 60,
+		ResetAt: epochAt.Add(2 * time.Hour), UsedPercent: float64Pointer(1), SampledAt: epochAt.Add(2 * time.Minute),
+	}
+	usage = Reconcile(usage, []Sample{fiveHour}, epochAt.Add(2*time.Minute))
+	window = Find(usage, "codex|primary")
+	if window == nil || window.WindowSeconds != 18000 || CountFrom(window) != epochAt.Unix() {
+		t.Fatalf("duration-changed window = %#v, want 5h window counting from epoch", window)
+	}
+	if clone := Clone(usage); clone.Identity != "account-1|plus" || clone.EpochAt != epochAt.Unix() {
+		t.Fatalf("Clone dropped identity or epoch: %#v", clone)
+	}
+
+	// 滚过纪元之后的周期不再钉住 CountFromAt，否则周期切换分支会无限期沿用旧成本。
+	rolled := Reconcile(&Usage{EpochAt: epochAt.Unix()}, []Sample{weekly}, epochAt.Add(time.Minute))
+	nextWeek := weekly
+	nextWeek.ResetAt, nextWeek.SampledAt = weeklyResetAt.Add(7*24*time.Hour), weeklyResetAt.Add(time.Hour)
+	rolled = Reconcile(rolled, []Sample{nextWeek}, weeklyResetAt.Add(time.Hour))
+	window = Find(rolled, "codex|primary")
+	if window == nil || window.CountFromAt != 0 || window.StartedAt != weeklyResetAt.Unix() {
+		t.Fatalf("window after rolling past the epoch = %#v, want plain period from %d", window, weeklyResetAt.Unix())
+	}
+
+	if err := Validate(&Usage{EpochAt: -1}); err == nil {
+		t.Fatal("Validate accepted a negative epoch")
+	}
+}
+
+func TestResetStartsQuotaEpoch(t *testing.T) {
+	t.Parallel()
+	resetAt := time.Date(2030, time.June, 1, 9, 30, 0, 0, time.UTC)
+
+	// 没有窗口也要开纪元：之后 bootstrap 出的窗口不能把重置前的日志算进来。
+	bare := Reset(nil, resetAt, nil)
+	if bare == nil || bare.EpochAt != resetAt.Unix() || len(bare.Windows) != 0 {
+		t.Fatalf("Reset(nil) = %#v, want bare epoch at %d", bare, resetAt.Unix())
+	}
+	weekly := Sample{
+		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+		ResetAt: resetAt.Add(2 * 24 * time.Hour), UsedPercent: float64Pointer(3), SampledAt: resetAt.Add(-time.Hour),
+	}
+	usage := Reconcile(bare, []Sample{weekly}, resetAt.Add(-time.Hour))
+	window := Find(usage, "codex|primary")
+	if window == nil || CountFrom(window) != resetAt.Unix() {
+		t.Fatalf("window bootstrapped after a bare reset = %#v, want count from %d", window, resetAt.Unix())
+	}
+	if changed, err := AddStandardCost(usage, resetAt.Add(-time.Minute), "gpt-5.6-sol", 1); err != nil || changed {
+		t.Fatalf("pre-reset log = (%t, %v), want ignored", changed, err)
+	}
+
+	// 有窗口时保留身份、记录纪元、按 resetAt 重新计数，且不改写输入。
+	current := &Usage{Identity: "account-1|plus", Windows: []*Window{{
+		Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+		StartedAt: resetAt.Add(-24 * time.Hour).Unix(), ResetAt: resetAt.Add(6 * 24 * time.Hour).Unix(),
+		StandardCostMicroUSD: 9_000_000,
+	}}}
+	next := Reset(current, resetAt, map[string]int64{FamilyCodex: 1_000_000})
+	window = Find(next, "codex|primary")
+	if next.Identity != "account-1|plus" || next.EpochAt != resetAt.Unix() || window == nil ||
+		window.CountFromAt != resetAt.Unix() || window.StandardCostMicroUSD != 1_000_000 {
+		t.Fatalf("Reset with windows = %#v", next)
+	}
+	if current.EpochAt != 0 || current.Windows[0].StandardCostMicroUSD != 9_000_000 {
+		t.Fatalf("Reset mutated its input: %#v", current)
+	}
+}
+
+func TestQuotaEpochPreservesEventOrderWithinOneSecond(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2030, 6, 1, 12, 0, 0, 500_000_000, time.UTC)
+	usage := Reset(&Usage{Identity: "account|pro", AccountID: "account"}, at, nil)
+	older := Reset(usage, at.Add(-time.Millisecond), nil)
+	if !older.EpochTime().Equal(at) || older.AccountID != "account" {
+		t.Fatalf("old reset changed epoch: %#v", older)
+	}
+	sample := Sample{Key: "codex|primary", Family: FamilyCodex, WindowSeconds: 604800, ResetAt: at.Add(24 * time.Hour)}
+	next := Reconcile(usage, []Sample{sample}, at.Add(time.Second))
+	if !next.EpochTime().Equal(at) || next.AccountID != "account" || next.Identity != usage.Identity {
+		t.Fatalf("reconciliation dropped epoch metadata: %#v", next)
+	}
+	if err := Validate(&Usage{EpochAt: at.Unix(), EpochAtUnixNano: at.Add(time.Second).UnixNano()}); err == nil {
+		t.Fatal("accepted inconsistent epoch clocks")
+	}
+}

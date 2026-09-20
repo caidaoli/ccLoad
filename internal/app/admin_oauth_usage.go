@@ -196,7 +196,11 @@ type oauthUsageWindow struct {
 }
 
 type oauthUsageSummary struct {
-	Credits *antigravityauth.Credits `json:"credits,omitempty"`
+	// 请求元数据来自实际使用的凭证，不持久化，也不暴露给客户端。
+	codexAccountID   string
+	codexRequestedAt time.Time
+	UpstreamPlanType string                   `json:"upstream_plan_type,omitempty"`
+	Credits          *antigravityauth.Credits `json:"credits,omitempty"`
 	// CodeBuddyCredits is the absolute remaining balance returned by the
 	// billing meter. CodeBuddy does not expose a percentage window like the
 	// other OAuth providers, so retain the provider-native value.
@@ -444,9 +448,10 @@ func normalizeCodexUsage(payload *codexUsagePayload, fallbackPlanType string) (*
 		return nil, errors.New("usage: Codex response is invalid")
 	}
 	summary := &oauthUsageSummary{
-		Provider: codexauth.ChannelType,
-		PlanType: strings.TrimSpace(payload.PlanType),
-		Windows:  make([]oauthUsageWindow, 0, 2+2*len(payload.AdditionalRateLimits)),
+		Provider:         codexauth.ChannelType,
+		PlanType:         strings.TrimSpace(payload.PlanType),
+		UpstreamPlanType: strings.TrimSpace(payload.PlanType),
+		Windows:          make([]oauthUsageWindow, 0, 2+2*len(payload.AdditionalRateLimits)),
 	}
 	if summary.PlanType == "" {
 		summary.PlanType = strings.TrimSpace(fallbackPlanType)
@@ -688,6 +693,7 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 		return nil, errors.New("usage: Codex request is unavailable")
 	}
 
+	requestedAt := time.Now().UTC()
 	body, err := executeOAuthUsageRequest(client, req, "Codex")
 	if err != nil {
 		return nil, err
@@ -700,6 +706,7 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 	if err != nil {
 		return nil, err
 	}
+	summary.codexAccountID, summary.codexRequestedAt = credential.AccountID, requestedAt
 	usageSampledAt := time.Now().UTC()
 	for i := range summary.Windows {
 		summary.Windows[i].SampledAt = usageSampledAt
@@ -1605,6 +1612,11 @@ func (s *Server) persistOAuthUsage(
 		return summary, nil
 	}
 
+	// 凭证刷新可能先开纪元；采用刷新完成后真正发出的额度请求时间。
+	if !summary.codexRequestedAt.IsZero() {
+		requestedAt = summary.codexRequestedAt
+	}
+
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1622,15 +1634,45 @@ func (s *Server) persistOAuthUsage(
 			return nil, errors.New("OAuth credential changed provider while persisting usage")
 		}
 		persisted, _, persistedRequestAt := persistedOAuthUsage(state.oauthUsage, summary.Provider)
+		if state.restartQuotaEpoch != nil {
+			epoch := state.quotaCostUsage.EpochTime()
+			stale := requestedAt.Before(epoch) || sampledAt.Before(epoch) ||
+				(summary.codexAccountID != "" && summary.codexAccountID != state.accountID)
+			for _, window := range summary.Windows {
+				if !window.SampledAt.IsZero() && window.SampledAt.Before(epoch) {
+					stale = true
+				}
+			}
+			if stale {
+				// 必须在每次 CAS 重试检查；重新读取状态不代表旧采样也变新。
+				if persisted != nil {
+					return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
+				}
+				return nil, errors.New("usage: Codex quota epoch changed during request")
+			}
+		}
 		if persisted != nil && !persistedRequestAt.Before(requestedAt) {
 			s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 			s.InvalidateChannelListCache()
 			return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
 		}
 
+		baseCostUsage := state.quotaCostUsage
+		if state.restartQuotaEpoch != nil && persisted != nil &&
+			persisted.UpstreamPlanType != "" && summary.UpstreamPlanType != "" &&
+			!strings.EqualFold(persisted.UpstreamPlanType, summary.UpstreamPlanType) {
+			// 辅助 reset credits 请求不能把额度采样的实际时间向后挪。
+			changedAt := sampledAt
+			for _, window := range summary.Windows {
+				if !window.SampledAt.IsZero() && window.SampledAt.Before(changedAt) {
+					changedAt = window.SampledAt
+				}
+			}
+			baseCostUsage = state.restartQuotaEpoch(changedAt)
+		}
 		var nextQuotaCostUsage *oauthcost.Usage
 		if state.tracksQuotaCost() {
-			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(state.quotaCostUsage, summary, sampledAt)
+			nextQuotaCostUsage = reconcileOAuthQuotaCostUsage(baseCostUsage, summary, sampledAt)
 		}
 		storedSummary := *summary
 		storedSummary.QuotaCostUsage = nil

@@ -57,7 +57,21 @@ func (s *Server) observeCodexPassiveUsage(ctx context.Context, cfg *model.Config
 	if strings.TrimSpace(identity) == "" && strings.EqualFold(strings.TrimSpace(upstreamModel), "gpt-reserve") {
 		identity = "gpt-reserve"
 	}
+	// SSE 异步队列也要保留实际请求账号，不能用工作线程重读到的新账号替代。
+	accountID := cfg.CodexAccountID
+	var sourceEpoch *time.Time
+	if cfg.CodexAccessToken != "" {
+		epoch := cfg.CodexQuotaEpochAt
+		sourceEpoch = &epoch
+	} else if cfg.OAuthCredential != "" {
+		if credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential)); err == nil {
+			accountID = credential.AccountID
+			epoch := credential.QuotaCostUsage.EpochTime()
+			sourceEpoch = &epoch
+		}
+	}
 	if update, ok := sampleCodexPassiveUsage(resp.Header, time.Now().UTC(), identity); ok {
+		update.AccountID, update.SourceEpoch = accountID, sourceEpoch
 		s.persistCodexPassiveUsageUpdate(ctx, cfg, update)
 	}
 	if resp.Body == nil {
@@ -65,8 +79,13 @@ func (s *Server) observeCodexPassiveUsage(ctx context.Context, cfg *model.Config
 	}
 	resp.Body = &codexPassiveUsageReadCloser{
 		ReadCloser: resp.Body,
-		onUpdate:   onUpdate,
-		identity:   identity,
+		onUpdate: func(update codexPassiveUsageUpdate) {
+			update.AccountID, update.SourceEpoch = accountID, sourceEpoch
+			if onUpdate != nil {
+				onUpdate(update)
+			}
+		},
+		identity: identity,
 	}
 }
 

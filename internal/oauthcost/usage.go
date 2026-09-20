@@ -46,7 +46,13 @@ const (
 // 每个上游额度窗口一个槽位，槽位身份是上游的 (limit_name, kind)，而不是窗口时长——
 // 同一时长可以对应多个互不相干的上游窗口。
 type Usage struct {
-	Windows []*Window `json:"windows,omitempty"`
+	// 套餐观察可以暂时未知，但账号主体不能随之丢失。
+	Identity  string `json:"identity,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	EpochAt   int64  `json:"epoch_at,omitempty"`
+	// 成本窗口以秒计数；事件屏障保留纳秒，避免同秒旧采样越过重置。
+	EpochAtUnixNano int64     `json:"epoch_at_unix_nano,omitempty"`
+	Windows         []*Window `json:"windows,omitempty"`
 }
 
 // Window is one persisted quota period and its accumulated standard cost.
@@ -218,7 +224,7 @@ func Clone(usage *Usage) *Usage {
 	if usage == nil {
 		return nil
 	}
-	clone := &Usage{}
+	clone := &Usage{Identity: usage.Identity, AccountID: usage.AccountID, EpochAt: usage.EpochAt, EpochAtUnixNano: usage.EpochAtUnixNano}
 	if usage.Windows != nil {
 		clone.Windows = make([]*Window, 0, len(usage.Windows))
 		for _, window := range usage.Windows {
@@ -249,6 +255,10 @@ func cloneFloat64(value *float64) *float64 {
 func Validate(usage *Usage) error {
 	if usage == nil {
 		return nil
+	}
+	if usage.EpochAt < 0 || usage.EpochAtUnixNano < 0 ||
+		(usage.EpochAtUnixNano != 0 && usage.EpochAtUnixNano/int64(time.Second) != usage.EpochAt) {
+		return errors.New("OAuth quota epoch is invalid")
 	}
 	keys := make(map[string]struct{}, len(usage.Windows))
 	for _, window := range usage.Windows {
@@ -324,7 +334,11 @@ func ReconcilePartial(current *Usage, samples []Sample, observedAt time.Time) *U
 
 func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial bool) *Usage {
 	current, staleCodexLayout := reconcileCodexWeeklyKey(current, samples, observedAt)
-	next := &Usage{}
+	next := Clone(current)
+	if next == nil {
+		next = &Usage{}
+	}
+	next.Windows = nil
 	seen := make(map[string]struct{}, len(samples))
 	snapshotAtNano := sampleTimeUnixNano(observedAt)
 	for _, sample := range samples {
@@ -387,6 +401,7 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 	if len(next.Windows) == 0 {
 		return Clone(current)
 	}
+	applyEpoch(next)
 	return next
 }
 
@@ -428,7 +443,8 @@ func reconcileCodexWeeklyKey(current *Usage, samples []Sample, observedAt time.T
 				return current, true
 			}
 		}
-		next := &Usage{Windows: make([]*Window, 0, len(current.Windows))}
+		next := Clone(current)
+		next.Windows = make([]*Window, 0, len(current.Windows))
 		for _, window := range current.Windows {
 			if window != nil && window.Key == key {
 				continue
@@ -600,9 +616,13 @@ func firstNonZeroTime(primary, fallback time.Time) time.Time {
 func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Usage {
 	next := Clone(current)
 	if next == nil {
-		return nil
+		next = &Usage{}
 	}
 	resetAt = resetAt.UTC()
+	if resetAt.Before(next.EpochTime()) {
+		return next
+	}
+	next.EpochAt, next.EpochAtUnixNano = resetAt.Unix(), resetAt.UnixNano()
 	for _, window := range next.Windows {
 		if window == nil {
 			continue
@@ -713,4 +733,26 @@ func addMonthsClamped(value time.Time, months, anchorDay int) time.Time {
 
 func daysInMonth(year int, month time.Month, location *time.Location) int {
 	return time.Date(year, month+1, 0, 0, 0, 0, 0, location).Day()
+}
+
+// EpochTime 保留事件的先后顺序；仅有秒级纪元的状态仍可读。
+func (usage *Usage) EpochTime() time.Time {
+	if usage == nil || usage.EpochAt == 0 {
+		return time.Time{}
+	}
+	if usage.EpochAtUnixNano != 0 {
+		return time.Unix(0, usage.EpochAtUnixNano).UTC()
+	}
+	return time.Unix(usage.EpochAt, 0).UTC()
+}
+
+func applyEpoch(usage *Usage) {
+	if usage == nil || usage.EpochAt <= 0 {
+		return
+	}
+	for _, window := range usage.Windows {
+		if window != nil && window.StartedAt < usage.EpochAt {
+			window.CountFromAt = max(window.CountFromAt, usage.EpochAt)
+		}
+	}
 }

@@ -20,11 +20,13 @@ import (
 )
 
 type oauthUsageCredentialState struct {
-	provider       string
-	authType       string
-	oauthUsage     json.RawMessage
-	quotaCostUsage *oauthcost.Usage
-	encode         func(json.RawMessage, *oauthcost.Usage) (string, error)
+	accountID         string
+	restartQuotaEpoch func(time.Time) *oauthcost.Usage
+	provider          string
+	authType          string
+	oauthUsage        json.RawMessage
+	quotaCostUsage    *oauthcost.Usage
+	encode            func(json.RawMessage, *oauthcost.Usage) (string, error)
 }
 
 // tracksQuotaCost 与存储层事务读同一份真值表，避免两边各写一份 switch 后
@@ -61,6 +63,11 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return &oauthUsageCredentialState{
 			provider: codexauth.ChannelType, authType: model.AuthTypeCodexOAuth,
 			oauthUsage: credential.OAuthUsage, quotaCostUsage: credential.QuotaCostUsage,
+			accountID: credential.AccountID,
+			restartQuotaEpoch: func(at time.Time) *oauthcost.Usage {
+				credential.RestartQuotaEpoch("", at)
+				return credential.QuotaCostUsage
+			},
 			encode: func(usage json.RawMessage, costUsage *oauthcost.Usage) (string, error) {
 				credential.OAuthUsage = append(json.RawMessage(nil), usage...)
 				credential.QuotaCostUsage = oauthcost.Clone(costUsage)

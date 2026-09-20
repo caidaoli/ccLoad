@@ -803,7 +803,7 @@ func completeImportedCodexCredential(
 	if err != nil {
 		return nil, fmt.Errorf("%w: Codex refresh failed: %v", errOAuthCredentialUnusable, err)
 	}
-	merged, err := credential.MergeRefresh(refreshed)
+	merged, err := credential.MergeRefresh(refreshed, time.Now().UTC())
 	if err != nil {
 		return nil, fmt.Errorf("%w: Codex refresh response was invalid: %v", errOAuthCredentialUnusable, err)
 	}

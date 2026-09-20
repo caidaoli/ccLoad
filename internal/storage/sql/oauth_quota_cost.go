@@ -35,7 +35,7 @@ func quotaCostWindows(envelope *oauthQuotaCostCredentialEnvelope) *oauthcost.Usa
 	if envelope.QuotaCostUsage != nil && len(envelope.QuotaCostUsage.Windows) > 0 {
 		return oauthcost.Clone(envelope.QuotaCostUsage)
 	}
-	return oauthcost.BootstrapFromSnapshot(envelope.OAuthUsage)
+	return oauthcost.BootstrapFromSnapshot(envelope.QuotaCostUsage, envelope.OAuthUsage)
 }
 
 // The channel row is already locked by the credential CAS. Logs committed
@@ -314,14 +314,12 @@ func (s *SQLStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64
 	if err := json.Unmarshal([]byte(credentialJSON), &envelope); err != nil {
 		return fmt.Errorf("decode OAuth quota cost credential for channel %d: %w", channelID, err)
 	}
-	if envelope.QuotaCostUsage == nil {
-		return tx.Commit()
-	}
-	costByFamily, err := s.sumOAuthQuotaCostByFamily(ctx, tx, channelID, resetAt, envelope.QuotaCostUsage)
+	usage := quotaCostWindows(&envelope)
+	costByFamily, err := s.sumOAuthQuotaCostByFamily(ctx, tx, channelID, resetAt, usage)
 	if err != nil {
 		return err
 	}
-	next := oauthcost.Reset(envelope.QuotaCostUsage, resetAt, costByFamily)
+	next := oauthcost.Reset(usage, resetAt, costByFamily)
 	if err := oauthcost.Validate(next); err != nil {
 		return err
 	}

@@ -554,12 +554,13 @@ type Config struct {
 
 	// OAuthCredential is the private CLIProxy-compatible OAuth JSON stored in
 	// the channels table. It must never be serialized by an API response.
-	OAuthCredential        string `json:"-"`
-	CodexAccessToken       string `json:"-"`
-	CodexAccountID         string `json:"-"`
-	CodexAccountFedRAMP    bool   `json:"-"`
-	AntigravityAccessToken string `json:"-"`
-	AntigravityProjectID   string `json:"-"`
+	OAuthCredential        string    `json:"-"`
+	CodexAccessToken       string    `json:"-"`
+	CodexAccountID         string    `json:"-"`
+	CodexQuotaEpochAt      time.Time `json:"-"`
+	CodexAccountFedRAMP    bool      `json:"-"`
+	AntigravityAccessToken string    `json:"-"`
+	AntigravityProjectID   string    `json:"-"`
 	// ZAIDeviceID is the ZCode device fingerprint reported in metadata.user_id.
 	ZAIDeviceID string `json:"-"`
 
@@ -613,6 +614,7 @@ func (c *Config) Clone() *Config {
 		OAuthCredential:               c.OAuthCredential,
 		CodexAccessToken:              c.CodexAccessToken,
 		CodexAccountID:                c.CodexAccountID,
+		CodexQuotaEpochAt:             c.CodexQuotaEpochAt,
 		CodexAccountFedRAMP:           c.CodexAccountFedRAMP,
 		AntigravityAccessToken:        c.AntigravityAccessToken,
 		AntigravityProjectID:          c.AntigravityProjectID,

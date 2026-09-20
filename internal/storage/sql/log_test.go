@@ -1197,3 +1197,96 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 		})
 	}
 }
+
+func TestLog_OAuthQuotaEpochSurvivesBootstrapAndManualReset(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "oauth-quota-epoch.db")
+	ctx := context.Background()
+	base := time.Date(2030, time.July, 1, 12, 0, 0, 0, time.UTC)
+	epochAt := base.Add(time.Hour)
+	snapshot, err := json.Marshal(oauthcost.Snapshot{
+		SampledAt: base.Format(time.RFC3339Nano),
+		Summary: oauthcost.SnapshotSummary{
+			Provider: oauthcost.ProviderCodex,
+			Windows: []oauthcost.SnapshotWindow{{
+				LimitName: "codex", Kind: "primary", LimitWindowSeconds: 7 * 24 * 60 * 60,
+				ResetAt: base.Add(6 * 24 * time.Hour).Unix(),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newChannel := func(name string, oauthUsage json.RawMessage) int64 {
+		t.Helper()
+		credential := &codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
+			Expired: base.Add(24 * time.Hour).Format(time.RFC3339), AccountID: "account-" + name, PlanType: "plus",
+			OAuthUsage: oauthUsage,
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name: name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+			URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api"}}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created.ID
+	}
+	load := func(channelID int64) *oauthcost.Usage {
+		t.Helper()
+		cfg, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return credential.QuotaCostUsage
+	}
+	addLog := func(channelID int64, at time.Time, cost float64) {
+		t.Helper()
+		if err := store.AddLog(ctx, &model.LogEntry{
+			Time: newJSONTime(at), ChannelID: channelID, Model: "gpt-5.6-sol", StatusCode: http.StatusOK, Cost: cost,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 只有采样快照、还没有计数器：手动重置要按快照建窗并从 resetAt 起计数。
+	sampled := newChannel("sampled", snapshot)
+	if err := store.ResetOAuthQuotaCostUsage(ctx, sampled, epochAt); err != nil {
+		t.Fatal(err)
+	}
+	usage := load(sampled)
+	window := oauthcost.Find(usage, "codex|primary")
+	if usage == nil || usage.EpochAt != epochAt.Unix() || window == nil ||
+		oauthcost.CountFrom(window) != epochAt.Unix() || window.StandardCostMicroUSD != 0 {
+		t.Fatalf("usage after reset over a bare snapshot = %#v", usage)
+	}
+	addLog(sampled, epochAt.Add(-time.Minute), 0.75)
+	if got := oauthcost.Find(load(sampled), "codex|primary"); got == nil || got.StandardCostMicroUSD != 0 {
+		t.Fatalf("pre-epoch log was counted: %#v", got)
+	}
+	addLog(sampled, epochAt.Add(time.Minute), 1.25)
+	usage = load(sampled)
+	if window = oauthcost.Find(usage, "codex|primary"); usage.EpochAt != epochAt.Unix() ||
+		window == nil || window.StandardCostMicroUSD != 1_250_000 {
+		t.Fatalf("usage after post-epoch log = %#v", usage)
+	}
+
+	// 什么都没有也要把纪元落盘。
+	bare := newChannel("bare", nil)
+	if err := store.ResetOAuthQuotaCostUsage(ctx, bare, epochAt); err != nil {
+		t.Fatal(err)
+	}
+	if usage = load(bare); usage == nil || usage.EpochAt != epochAt.Unix() || len(usage.Windows) != 0 {
+		t.Fatalf("usage after reset without windows = %#v", usage)
+	}
+}

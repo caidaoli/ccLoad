@@ -90,8 +90,10 @@ func newCodexCredentialRefreshError(cfg *model.Config, cause error) error {
 }
 
 type codexPassiveUsageUpdate struct {
-	Windows   []codexauth.PassiveUsageWindow
-	SampledAt string
+	AccountID   string
+	SourceEpoch *time.Time
+	Windows     []codexauth.PassiveUsageWindow
+	SampledAt   string
 	// ReplaceScopes marks complete upstream groups; windows missing from one
 	// such group are stale and may be removed during the merge.
 	ReplaceScopes []string
@@ -241,7 +243,7 @@ func (m *codexCredentialManager) persistRefreshResult(
 			m.cache(currentCfg.ID, current)
 			return cloneCodexCredential(current), nil
 		}
-		merged, err := current.MergeRefresh(refreshed)
+		merged, err := current.MergeRefresh(refreshed, m.now())
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +353,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 	usageLock := &m.passiveLocks[uint64(cfg.ID)%uint64(len(m.passiveLocks))]
 	usageLock.Lock()
 	defer usageLock.Unlock()
-	update.Windows = m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime)
+	update.Windows = m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime, false)
 	if len(update.Windows) == 0 && len(update.ReplaceScopes) == 0 {
 		return false, nil
 	}
@@ -369,6 +371,11 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		current, err := codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
 		if err != nil {
 			return false, fmt.Errorf("parse Codex passive usage: %w", err)
+		}
+		if updateTime.Before(current.QuotaCostUsage.EpochTime()) ||
+			(update.SourceEpoch != nil && !update.SourceEpoch.Equal(current.QuotaCostUsage.EpochTime())) ||
+			(update.AccountID != "" && update.AccountID != current.AccountID) {
+			return false, nil
 		}
 		updatedCredential := *current
 		var changed bool
@@ -415,6 +422,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		// A concurrent token refresh may have committed and cached a newer
 		// credential after this CAS. Dropping the cache is always safe; caching the
 		// local snapshot here could resurrect the old access token in memory.
+		m.observePassiveUsageWindows(cfg.ID, update.Windows, updateTime, true)
 		m.invalidateCredentialCache(currentCfg.ID)
 		return true, nil
 	}
@@ -424,6 +432,7 @@ func (m *codexCredentialManager) observePassiveUsageWindows(
 	channelID int64,
 	windows []codexauth.PassiveUsageWindow,
 	fallbackTime time.Time,
+	remember bool,
 ) []codexauth.PassiveUsageWindow {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -443,7 +452,9 @@ func (m *codexCredentialManager) observePassiveUsageWindows(
 		if previous, ok := observed[key]; ok && !sampledAt.After(previous) {
 			continue
 		}
-		observed[key] = sampledAt
+		if remember {
+			observed[key] = sampledAt
+		}
 		accepted = append(accepted, window)
 	}
 	return accepted

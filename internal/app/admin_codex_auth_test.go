@@ -3534,94 +3534,103 @@ func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 	}
 }
 
-func TestReauthorizationResetsQuotaCostOnPlanTierChange(t *testing.T) {
+func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
 	store := newCodexAuthTestStore(t)
+	ctx := context.Background()
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-
-	team := &codexauth.Credential{
-		Type: "codex", AccessToken: "at-team", RefreshToken: "rt-team", Expired: expiresAt,
-		ChatGPTUserID: "user-plan-change", AccountID: "account-plan-change",
-		Email: "plan-change@example.com", PlanType: "team",
+	window := func(cost int64) *oauthcost.Usage {
+		return &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
+			StartedAt:            time.Now().Add(-7 * 24 * time.Hour).Unix(),
+			ResetAt:              time.Now().Add(23 * 24 * time.Hour).Unix(),
+			StandardCostMicroUSD: cost,
+			AccountedFrom:        time.Now().Add(-7 * 24 * time.Hour).Unix(),
+			AccountedUntil:       time.Now().Add(23 * 24 * time.Hour).Unix(),
+		}}}
 	}
-	team.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
-		Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
-		StartedAt:            time.Now().Add(-7 * 24 * time.Hour).Unix(),
-		ResetAt:              time.Now().Add(23 * 24 * time.Hour).Unix(),
-		StandardCostMicroUSD: 351_000_000,
-		AccountedFrom:        time.Now().Add(-7 * 24 * time.Hour).Unix(),
-		AccountedUntil:       time.Now().Add(23 * 24 * time.Hour).Unix(),
-	}}}
+	credential := func(suffix, accountID, planType string) *codexauth.Credential {
+		return &codexauth.Credential{
+			Type: "codex", AccessToken: "at-" + suffix, RefreshToken: "rt-" + suffix, Expired: expiresAt,
+			ChatGPTUserID: "user-plan-change", AccountID: accountID,
+			Email: "plan-change@example.com", PlanType: planType,
+		}
+	}
+	reauthorize := func(next *codexauth.Credential) (*codexauth.Credential, int64, int64) {
+		t.Helper()
+		before := time.Now().Unix()
+		updated, wasCreated, err := createOrUpdateCodexChannel(ctx, store, next)
+		after := time.Now().Unix()
+		if err != nil || wasCreated {
+			t.Fatalf("reauthorization = (%#v, %v, %v)", updated, wasCreated, err)
+		}
+		parsed, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+		if err != nil {
+			t.Fatalf("parse updated credential: %v", err)
+		}
+		return parsed, before, after
+	}
+	assertNewEpoch := func(got *codexauth.Credential, wantIdentity string, before, after int64) {
+		t.Helper()
+		usage := got.QuotaCostUsage
+		if usage == nil || usage.Identity != wantIdentity || usage.EpochAt < before || usage.EpochAt > after || len(usage.Windows) != 0 {
+			t.Fatalf("quota cost usage = %#v, want fresh epoch for %q within [%d, %d]", usage, wantIdentity, before, after)
+		}
+		if got.PassiveUsage != nil || len(got.OAuthUsage) != 0 {
+			t.Fatalf("old quota snapshots survived the new epoch: passive=%#v oauth_usage=%s", got.PassiveUsage, got.OAuthUsage)
+		}
+	}
+	injectCost := func(channelID int64, cost int64) {
+		t.Helper()
+		channel, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := codexauth.ParseCredential([]byte(channel.OAuthCredential))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored.QuotaCostUsage = window(cost)
+		storedJSON, err := stored.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		swapped, err := store.CompareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeCodexOAuth, channel.OAuthCredential, storedJSON)
+		if err != nil || !swapped {
+			t.Fatalf("inject quota cost = (%v, %v)", swapped, err)
+		}
+	}
 
-	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, team)
+	team := credential("team", "account-plan-change", "team")
+	team.QuotaCostUsage = window(351_000_000)
+	created, wasCreated, err := createOrUpdateCodexChannel(ctx, store, team)
 	if err != nil || !wasCreated {
 		t.Fatalf("team import = (%#v, %v, %v)", created, wasCreated, err)
 	}
 
-	// Reauthorize as free — plan tier changed, quota cost must be cleared.
-	free := &codexauth.Credential{
-		Type: "codex", AccessToken: "at-free", RefreshToken: "rt-free", Expired: expiresAt,
-		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
-		Email: "plan-change@example.com", PlanType: "free",
+	// team→free：套餐变了，旧成本对着另一份上游额度，开新纪元。
+	free := credential("free", "account-plan-change", "free")
+	got, before, after := reauthorize(free)
+	if got.AccessToken != free.AccessToken || got.RefreshToken != free.RefreshToken || got.PlanType != free.PlanType {
+		t.Fatalf("free reauthorization did not persist the new credential: %#v", got)
 	}
-	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, free)
-	if err != nil || wasCreated {
-		t.Fatalf("free reimport = (%#v, %v, %v)", updated, wasCreated, err)
-	}
-	updatedCredential, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
-	if err != nil {
-		t.Fatalf("parse updated credential: %v", err)
-	}
-	if updatedCredential.Type != free.Type ||
-		updatedCredential.AccessToken != free.AccessToken ||
-		updatedCredential.RefreshToken != free.RefreshToken ||
-		updatedCredential.Expired != free.Expired ||
-		updatedCredential.ChatGPTUserID != free.ChatGPTUserID ||
-		updatedCredential.AccountID != free.AccountID ||
-		updatedCredential.Email != free.Email ||
-		updatedCredential.PlanType != free.PlanType {
-		t.Fatalf("free reauthorization did not persist credential identity: got %#v want %#v", updatedCredential, free)
-	}
-	if updatedCredential.QuotaCostUsage != nil {
-		t.Fatalf("plan tier changed team→free but QuotaCostUsage not cleared: %+v", updatedCredential.QuotaCostUsage)
-	}
-	if updatedCredential.PassiveUsage != nil {
-		t.Fatalf("plan tier changed but PassiveUsage not cleared: %+v", updatedCredential.PassiveUsage)
+	assertNewEpoch(got, "account-plan-change|free", before, after)
+
+	// 同一身份重新授权：原样继承累计成本（注入的旧格式状态由 Normalize 补记身份）。
+	injectCost(created.ID, 5_000_000)
+	got, _, _ = reauthorize(credential("free2", "account-plan-change", "free"))
+	if got.QuotaCostUsage == nil || got.QuotaCostUsage.Identity != "account-plan-change|free" ||
+		len(got.QuotaCostUsage.Windows) != 1 || got.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 5_000_000 {
+		t.Fatalf("same-identity reauthorization changed quota cost: %#v", got.QuotaCostUsage)
 	}
 
-	// Same-tier reauthorization preserves quota cost.
-	quotaCostUsage := &oauthcost.Usage{Windows: []*oauthcost.Window{{
-		Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 2592000,
-		StartedAt:            time.Now().Add(-3 * 24 * time.Hour).Unix(),
-		ResetAt:              time.Now().Add(27 * 24 * time.Hour).Unix(),
-		StandardCostMicroUSD: 5_000_000,
-		AccountedFrom:        time.Now().Add(-3 * 24 * time.Hour).Unix(),
-		AccountedUntil:       time.Now().Add(27 * 24 * time.Hour).Unix(),
-	}}}
-	// Inject quota cost into the stored credential so the next update can inherit it.
-	storedCred, _ := codexauth.ParseCredential([]byte(updated.OAuthCredential))
-	storedCred.QuotaCostUsage = oauthcost.Clone(quotaCostUsage)
-	storedJSON, _ := storedCred.JSON()
-	_, _ = store.CompareAndSwapOAuthCredential(context.Background(), updated.ID, model.AuthTypeCodexOAuth, updated.OAuthCredential, storedJSON)
+	// free→business：再次开新纪元。
+	got, before, after = reauthorize(credential("business", "account-plan-change", "business"))
+	assertNewEpoch(got, "account-plan-change|business", before, after)
 
-	sameReauth := &codexauth.Credential{
-		Type: "codex", AccessToken: "at-free3", RefreshToken: "rt-free3", Expired: expiresAt,
-		ChatGPTUserID: team.ChatGPTUserID, AccountID: "account-plan-change",
-		Email: "plan-change@example.com", PlanType: "free",
-	}
-	preserved, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, sameReauth)
-	if err != nil || wasCreated {
-		t.Fatalf("same-tier reimport = (%#v, %v, %v)", preserved, wasCreated, err)
-	}
-	preservedCredential, err := codexauth.ParseCredential([]byte(preserved.OAuthCredential))
-	if err != nil {
-		t.Fatalf("parse preserved credential: %v", err)
-	}
-	if preservedCredential.QuotaCostUsage == nil || len(preservedCredential.QuotaCostUsage.Windows) == 0 {
-		t.Fatalf("same-tier reauth erased QuotaCostUsage")
-	}
-	if preservedCredential.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 5_000_000 {
-		t.Fatalf("same-tier reauth cost = %d, want 5000000", preservedCredential.QuotaCostUsage.Windows[0].StandardCostMicroUSD)
-	}
+	// 同一用户换 account_id（例如换团队席位）：账号变了，同样开新纪元。
+	injectCost(created.ID, 7_000_000)
+	got, before, after = reauthorize(credential("seat", "account-plan-change-2", "business"))
+	assertNewEpoch(got, "account-plan-change-2|business", before, after)
 }
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
@@ -7753,5 +7762,232 @@ func TestAnthropicLegacySampleTimeMigratesBeforePartialUpdate(t *testing.T) {
 	}, base.Add(2*time.Minute).Format(time.RFC3339Nano))
 	if !changed || mergedWeekly.Utilization == nil || *mergedWeekly.Utilization != delayedWeeklyUtilization {
 		t.Fatalf("delayed sibling was compared against aggregate time: %#v, %t", mergedWeekly, changed)
+	}
+}
+
+func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	weeklyResetAt := base.Add(6 * 24 * time.Hour).Unix()
+	channel, _, err := createOrUpdateCodexChannel(ctx, store, &codexauth.Credential{
+		Type: "codex", AccessToken: "at-plan-poll", RefreshToken: "rt-plan-poll",
+		ChatGPTUserID: "user-plan-poll", Expired: base.Add(2 * time.Hour).Format(time.RFC3339), AccountID: "account-plan-poll", PlanType: "free",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newCodexCredentialManager(nil, store, nil, nil)
+	server := &Server{store: store, codexCredentials: manager}
+	poll := func(at time.Time, upstreamPlan string) {
+		t.Helper()
+		if _, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
+			Provider: codexauth.ChannelType, PlanType: upstreamPlan, UpstreamPlanType: upstreamPlan,
+			Windows: []oauthUsageWindow{{
+				LimitName: "codex", Kind: "primary", UsedPercent: 5, LimitWindowSeconds: 604800, ResetAt: weeklyResetAt, SampledAt: at,
+			}},
+		}, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addLog := func(at time.Time) {
+		t.Helper()
+		if err := store.AddLog(ctx, &model.LogEntry{
+			Time: model.JSONTime{Time: at}, ChannelID: channel.ID, Model: "gpt-5.6-sol", StatusCode: http.StatusOK, Cost: 0.5,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load := func() *codexauth.Credential {
+		t.Helper()
+		cfg, err := store.GetConfig(ctx, channel.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return credential
+	}
+
+	poll(base, "free")
+	addLog(base.Add(time.Minute))
+	poll(base.Add(2*time.Minute), "free")
+	got := load()
+	if window := oauthcost.Find(got.QuotaCostUsage, "codex|primary"); got.QuotaCostUsage.EpochAt != 0 ||
+		window == nil || window.StandardCostMicroUSD != 500_000 {
+		t.Fatalf("same upstream plan must keep counting: %#v", got.QuotaCostUsage)
+	}
+
+	// /wham/usage 报告的套餐变了：旧成本作废，从这次采样起重新计数；身份留空等 id_token 补记。
+	changedAt := base.Add(10 * time.Minute)
+	poll(changedAt, "pro")
+	got = load()
+	window := oauthcost.Find(got.QuotaCostUsage, "codex|primary")
+	if got.QuotaCostUsage.EpochAt != changedAt.Unix() || got.QuotaCostUsage.Identity != "" ||
+		window == nil || oauthcost.CountFrom(window) != changedAt.Unix() || window.StandardCostMicroUSD != 0 {
+		t.Fatalf("upstream plan change did not start a new epoch: %#v", got.QuotaCostUsage)
+	}
+	if persisted, _, _ := persistedOAuthUsage(got.OAuthUsage, codexauth.ChannelType); persisted == nil || persisted.UpstreamPlanType != "pro" {
+		t.Fatalf("persisted snapshot = %#v, want upstream_plan_type pro", persisted)
+	}
+
+	// 同一套餐继续采样：纪元不变，纪元后的日志正常累计。
+	addLog(changedAt.Add(time.Minute))
+	poll(changedAt.Add(2*time.Minute), "pro")
+	got = load()
+	if window = oauthcost.Find(got.QuotaCostUsage, "codex|primary"); got.QuotaCostUsage.EpochAt != changedAt.Unix() ||
+		window == nil || window.StandardCostMicroUSD != 500_000 {
+		t.Fatalf("second sample under the new plan must not restart the epoch: %#v", got.QuotaCostUsage)
+	}
+	// 同秒旧请求的响应晚于手动重置，不能把纪元倒退或重新计入旧日志。
+	resetAt := changedAt.Add(3*time.Minute + 500*time.Millisecond)
+	if err := store.ResetOAuthQuotaCostUsage(ctx, channel.ID, resetAt); err != nil {
+		t.Fatal(err)
+	}
+	addLog(resetAt.Add(time.Second))
+	if _, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
+		Provider: codexauth.ChannelType, UpstreamPlanType: "free",
+		Windows: []oauthUsageWindow{{LimitName: "codex", Kind: "primary", UsedPercent: 5, LimitWindowSeconds: 604800, ResetAt: weeklyResetAt}},
+	}, resetAt.Add(-time.Millisecond), resetAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	got = load()
+	if !got.QuotaCostUsage.EpochTime().Equal(resetAt) || oauthcost.Find(got.QuotaCostUsage, "codex|primary").StandardCostMicroUSD != 500_000 {
+		t.Fatalf("stale poll overwrote manual reset: %#v", got.QuotaCostUsage)
+	}
+	persisted, _, _ := persistedOAuthUsage(got.OAuthUsage, codexauth.ChannelType)
+	if persisted.UpstreamPlanType != "pro" {
+		t.Fatalf("stale plan persisted: %#v", persisted)
+	}
+
+	// 外层操作早于纪元，但凭证刷新后真正发出的额度请求属于新纪元，应正常落盘。
+	actualRequestAt := resetAt.Add(2 * time.Second)
+	if _, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
+		Provider: codexauth.ChannelType, UpstreamPlanType: "pro",
+		codexAccountID: "account-plan-poll", codexRequestedAt: actualRequestAt,
+		Windows: []oauthUsageWindow{{LimitName: "codex", Kind: "primary", UsedPercent: 5, LimitWindowSeconds: 604800, ResetAt: weeklyResetAt}},
+	}, resetAt.Add(-time.Millisecond), actualRequestAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, persistedRequestAt := persistedOAuthUsage(load().OAuthUsage, codexauth.ChannelType)
+	if !persistedRequestAt.Equal(actualRequestAt) {
+		t.Fatal("fresh request after credential refresh was discarded")
+	}
+
+	// poll 开过纪元且 Identity 仍为空；换到同套餐的另一个账号必须重新计数。
+	updated, created, err := createOrUpdateCodexChannel(ctx, store, &codexauth.Credential{
+		Type: "codex", AccessToken: "at-account-b", RefreshToken: "rt-account-b",
+		ChatGPTUserID: "user-plan-poll", AccountID: "account-b", PlanType: "pro",
+		Expired: time.Now().Add(time.Hour).Format(time.RFC3339),
+	})
+	if err != nil || created || updated.ID != channel.ID {
+		t.Fatalf("reauthorization: created=%v err=%v", created, err)
+	}
+	got = load()
+	if got.QuotaCostUsage.AccountID != "account-b" || got.QuotaCostUsage.Identity != "account-b|pro" ||
+		len(got.QuotaCostUsage.Windows) != 0 || !got.QuotaCostUsage.EpochTime().After(resetAt) {
+		t.Fatalf("account change inherited old costs: %#v", got.QuotaCostUsage)
+	}
+	// 清空快照后也必须拒绝旧账号在途响应，不能靠快照的 requested_at 挡旧数据。
+	before, err := got.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
+		Provider: codexauth.ChannelType, codexAccountID: "account-plan-poll", UpstreamPlanType: "pro",
+		Windows: []oauthUsageWindow{{LimitName: "codex", Kind: "primary", UsedPercent: 5, LimitWindowSeconds: 604800, ResetAt: weeklyResetAt}},
+	}, time.Now(), time.Now()); err == nil {
+		t.Fatal("accepted old-account sample")
+	}
+	after, err := load().JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("rejected poll mutated credential")
+	}
+
+}
+
+func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {
+	for _, passive := range []bool{false, true} {
+		name := "active"
+		if passive {
+			name = "passive"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			store := newCodexAuthTestStore(t)
+			base := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+			requestAt, resetAt, sampledAt := base.Add(100*time.Millisecond), base.Add(500*time.Millisecond), base.Add(900*time.Millisecond)
+			credential := &codexauth.Credential{
+				Type: "codex", AccessToken: "at-epoch-cas", RefreshToken: "rt-epoch-cas",
+				AccountID: "epoch-cas", PlanType: "pro", Expired: base.Add(time.Hour).Format(time.RFC3339),
+			}
+			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			winner := *credential
+			winner.QuotaCostUsage = oauthcost.Reset(nil, resetAt, nil)
+			winnerJSON, err := winner.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			raceStore := &concurrentOAuthWinnerStore{Store: store, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON}
+			if passive {
+				manager := newCodexCredentialManager(nil, raceStore, nil, nil)
+				oldEpoch := time.Time{}
+				updated, err := manager.updatePassiveUsage(ctx, channel, codexPassiveUsageUpdate{
+					AccountID: credential.AccountID, SourceEpoch: &oldEpoch, SampledAt: sampledAt.Format(time.RFC3339Nano),
+					Windows: []codexauth.PassiveUsageWindow{{Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 5,
+						LimitWindowSeconds: 604800, ResetAt: base.Add(24 * time.Hour).Unix(), SampledAt: sampledAt.Format(time.RFC3339Nano)}},
+				})
+				if err != nil || updated {
+					t.Fatalf("old passive response updated=%v err=%v", updated, err)
+				}
+				// 被拒绝的旧样本不能占用去重水位；同时间的新纪元样本仍能入库。
+				freshChannel, err := store.GetConfig(ctx, channel.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fresh, err := manager.updatePassiveUsage(ctx, freshChannel, codexPassiveUsageUpdate{
+					AccountID: credential.AccountID, SourceEpoch: &resetAt, SampledAt: sampledAt.Format(time.RFC3339Nano),
+					Windows: []codexauth.PassiveUsageWindow{{Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 5,
+						LimitWindowSeconds: 604800, ResetAt: base.Add(24 * time.Hour).Unix(), SampledAt: sampledAt.Format(time.RFC3339Nano)}},
+				})
+				if err != nil || !fresh {
+					t.Fatalf("fresh passive response updated=%v err=%v", fresh, err)
+				}
+			} else {
+				server := &Server{store: raceStore}
+				_, err := server.persistOAuthUsage(ctx, channel, &oauthUsageSummary{
+					Provider: "codex", UpstreamPlanType: "free", codexAccountID: credential.AccountID,
+					Windows: []oauthUsageWindow{{LimitName: "codex", Kind: "primary", UsedPercent: 5,
+						LimitWindowSeconds: 604800, ResetAt: base.Add(24 * time.Hour).Unix(), SampledAt: sampledAt}},
+				}, requestAt, sampledAt)
+				if err == nil {
+					t.Fatal("accepted stale active request after CAS retry")
+				}
+			}
+			cfg, err := store.GetConfig(ctx, channel.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.QuotaCostUsage.EpochTime().Equal(resetAt) || len(got.OAuthUsage) != 0 {
+				t.Fatalf("stale observation overwrote epoch or snapshot: %#v", got.QuotaCostUsage)
+			}
+			if !passive && cfg.OAuthCredential != winnerJSON {
+				t.Fatal("rejected active sample changed winner credential")
+			}
+		})
 	}
 }

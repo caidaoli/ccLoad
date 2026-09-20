@@ -843,6 +843,7 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.CodexAccessToken = credential.AccessToken
 		runtimeCfg.CodexAccountID = credential.AccountID
+		runtimeCfg.CodexQuotaEpochAt = credential.QuotaCostUsage.EpochTime()
 		runtimeCfg.CodexAccountFedRAMP = credential.AccountFedRAMP
 		if err != nil {
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)

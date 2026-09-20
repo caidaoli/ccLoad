@@ -104,7 +104,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		t.Fatalf("NeedsRefresh() = (%v, %v), want (true, nil)", needsRefresh, err)
 	}
 	refreshed := &Credential{AccessToken: "new-at", Type: ChannelType, Expired: now.Add(time.Hour).Format(time.RFC3339)}
-	merged, err := current.MergeRefresh(refreshed)
+	merged, err := current.MergeRefresh(refreshed, now)
 	if err != nil {
 		t.Fatalf("MergeRefresh() error = %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPersonalAccessTokenCredentialHasNoOAuthRefreshLifecycle(t *testing.T) {
 	if err != nil || needsRefresh {
 		t.Fatalf("NeedsRefresh() = (%v, %v), want (false, nil)", needsRefresh, err)
 	}
-	if _, err := credential.MergeRefresh(&Credential{}); err == nil {
+	if _, err := credential.MergeRefresh(&Credential{}, time.Now()); err == nil {
 		t.Fatal("MergeRefresh() accepted a personal access token")
 	}
 }
@@ -179,5 +179,107 @@ func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 		if _, err := ParseCredential([]byte(raw)); err == nil {
 			t.Fatalf("ParseCredential(%q) succeeded", raw)
 		}
+	}
+}
+
+func TestMergeRefreshObservesQuotaIdentity(t *testing.T) {
+	now := time.Date(2030, time.March, 4, 5, 0, 0, 0, time.UTC)
+	window := func() *oauthcost.Window {
+		return &oauthcost.Window{
+			Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
+			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+			StandardCostMicroUSD: 2_500_000,
+		}
+	}
+	newCurrent := func(usage *oauthcost.Usage) *Credential {
+		return &Credential{
+			AccessToken: "old-at", RefreshToken: "old-rt", Type: ChannelType,
+			ChatGPTUserID: "user-1", AccountID: "account-1", PlanType: "plus",
+			Expired:        now.Add(time.Minute).Format(time.RFC3339),
+			OAuthUsage:     json.RawMessage(`{"sampled_at":"2030-03-04T04:00:00Z"}`),
+			PassiveUsage:   &PassiveUsage{SampledAt: now.Format(time.RFC3339Nano)},
+			QuotaCostUsage: usage,
+		}
+	}
+	refreshed := func(accountID, planType string) *Credential {
+		return &Credential{
+			AccessToken: "new-at", Type: ChannelType, AccountID: accountID, PlanType: planType,
+			Expired: now.Add(time.Hour).Format(time.RFC3339),
+		}
+	}
+	for _, tc := range []struct {
+		name         string
+		usage        *oauthcost.Usage
+		refreshed    *Credential
+		wantIdentity string
+		wantEpochAt  int64
+		wantCost     int64 // <0 表示窗口必须被丢弃
+		wantSnapshot bool  // oauth_usage 与 passive_usage 是否保留
+	}{
+		{
+			name:      "same identity keeps everything",
+			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-1", "plus"), wantIdentity: "account-1|plus", wantCost: 2_500_000, wantSnapshot: true,
+		},
+		{
+			name:      "plan change starts a new epoch",
+			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(), wantCost: -1,
+		},
+		{
+			name:      "account change starts a new epoch",
+			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-2", "plus"), wantIdentity: "account-2|plus", wantEpochAt: now.Unix(), wantCost: -1,
+		},
+		{
+			name:      "legacy state adopts the old identity before comparing",
+			usage:     &oauthcost.Usage{Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(), wantCost: -1,
+		},
+		{
+			name:      "refresh without claims only inherits",
+			usage:     &oauthcost.Usage{Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("", ""), wantIdentity: "account-1|plus", wantCost: 2_500_000, wantSnapshot: true,
+		},
+		{
+			name:      "epoch opened by the usage poll only records the identity",
+			usage:     &oauthcost.Usage{EpochAt: now.Add(-time.Hour).Unix(), Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Add(-time.Hour).Unix(), wantCost: 2_500_000, wantSnapshot: true,
+		},
+		{
+			name:      "poll epoch does not hide a later account change",
+			usage:     &oauthcost.Usage{AccountID: "account-1", EpochAt: now.Add(-time.Hour).Unix(), Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-2", "pro"), wantIdentity: "account-2|pro", wantEpochAt: now.Unix(), wantCost: -1,
+		},
+		{
+			name:      "account change without plan claims still starts an epoch",
+			usage:     &oauthcost.Usage{AccountID: "account-1", Windows: []*oauthcost.Window{window()}},
+			refreshed: refreshed("account-2", ""), wantIdentity: "", wantEpochAt: now.Unix(), wantCost: -1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged, err := newCurrent(tc.usage).MergeRefresh(tc.refreshed, now)
+			if err != nil {
+				t.Fatalf("MergeRefresh() error = %v", err)
+			}
+			usage := merged.QuotaCostUsage
+			if usage == nil || usage.Identity != tc.wantIdentity || usage.EpochAt != tc.wantEpochAt {
+				t.Fatalf("quota cost usage = %#v, want identity %q epoch %d", usage, tc.wantIdentity, tc.wantEpochAt)
+			}
+			got := oauthcost.Find(usage, "codex|primary")
+			if tc.wantCost < 0 {
+				if got != nil {
+					t.Fatalf("window survived a new epoch: %#v", got)
+				}
+			} else if got == nil || got.StandardCostMicroUSD != tc.wantCost {
+				t.Fatalf("window = %#v, want cost %d", got, tc.wantCost)
+			}
+			if tc.wantSnapshot && (len(merged.OAuthUsage) == 0 || merged.PassiveUsage == nil) {
+				t.Fatalf("snapshots were dropped without a new epoch: oauth_usage=%s passive_usage=%#v", merged.OAuthUsage, merged.PassiveUsage)
+			}
+			if !tc.wantSnapshot && (len(merged.OAuthUsage) != 0 || merged.PassiveUsage != nil) {
+				t.Fatalf("snapshots survived a new epoch: oauth_usage=%s passive_usage=%#v", merged.OAuthUsage, merged.PassiveUsage)
+			}
+		})
 	}
 }
