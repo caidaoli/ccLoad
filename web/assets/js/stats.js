@@ -549,6 +549,7 @@
       }
 
       const totalRow = TemplateEngine.render('tpl-stats-total', {
+        colspan: window.shouldHideChannels?.() ? 1 : 2,
         successDisplay: totalSuccessDisplay,
         errorCount: formatNumber(totalError),
         rpm: totalRpmHtml,

@@ -250,7 +250,7 @@
   <!-- 合计行模板 -->
   <template id="tpl-stats-total">
     <tr class="mobile-card-row stats-total-row">
-      <td colspan="2" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
+      <td colspan="{{colspan}}" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
       <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
