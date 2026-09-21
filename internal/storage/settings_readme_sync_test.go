@@ -20,7 +20,8 @@ var readmeSettingHeader = regexp.MustCompile(`^\| (Setting|配置项) \|`)
 // 设置表格的数据行，首列是反引号包裹的配置键。
 var readmeSettingRow = regexp.MustCompile("^\\| `([^`]+)`")
 
-// readmeSettingKeys 提取 README 设置表格里列出的配置键。
+// readmeSettingKeys 提取 README 第一张设置表格里列出的配置键。
+// 扫完第一张表即停，避免后续同表头的渠道字段表被当成系统设置。
 func readmeSettingKeys(t *testing.T, name string) map[string]struct{} {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", name))
@@ -29,15 +30,19 @@ func readmeSettingKeys(t *testing.T, name string) map[string]struct{} {
 	}
 	keys := make(map[string]struct{})
 	inTable := false
+lines:
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimRight(line, "\r")
 		switch {
 		case readmeSettingHeader.MatchString(line):
+			if inTable {
+				break lines
+			}
 			inTable = true
 		case !inTable:
 			// 表格之外的内容忽略。
 		case !strings.HasPrefix(line, "|"):
-			inTable = false
+			break lines
 		default:
 			if m := readmeSettingRow.FindStringSubmatch(line); m != nil {
 				keys[m[1]] = struct{}{}

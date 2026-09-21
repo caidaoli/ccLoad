@@ -226,10 +226,11 @@ func prepareAntigravityRequestBody(
 	request = restoreAntigravityAnthropicToolIDs(request, sourceBody)
 	request = normalizeAntigravitySchemas(request, modelName)
 	request = normalizeAntigravityThinkingLevel(request)
-	if strings.Contains(strings.ToLower(modelName), "claude") {
+	lookupID := strings.ToLower(strings.TrimSpace(modelName))
+	if strings.Contains(lookupID, "claude") {
 		// The translator preserves client limits; cap them for the actual upstream model.
-		if maxOut := gjson.GetBytes(request, "generationConfig.maxOutputTokens"); maxOut.Type == gjson.Number {
-			if info := cliproxyregistry.LookupModelInfo(modelName, "antigravity"); info != nil && info.MaxCompletionTokens > 0 && maxOut.Int() > int64(info.MaxCompletionTokens) {
+		if maxOut, ok := jsonIntegerValue(gjson.GetBytes(request, "generationConfig.maxOutputTokens")); ok {
+			if info := cliproxyregistry.LookupModelInfo(lookupID, "antigravity"); info != nil && info.MaxCompletionTokens > 0 && maxOut > int64(info.MaxCompletionTokens) {
 				request = setJSONValue(request, "generationConfig.maxOutputTokens", info.MaxCompletionTokens)
 			}
 		}

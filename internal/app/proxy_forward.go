@@ -239,8 +239,12 @@ func (s *Server) buildProxyRequest(
 		return nil, err
 	}
 
+	requestModel := ""
+	if reqCtx != nil {
+		requestModel = reqCtx.transformPlan.RequestModel()
+	}
 	body, err = s.prepareTranslatedUpstreamBody(
-		cfg, upstreamProtocol, requestPath, body, sourceBody, apiKey, hdr,
+		cfg, upstreamProtocol, requestPath, requestModel, body, sourceBody, apiKey, hdr,
 		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
 		reqCtx != nil && reqCtx.replayBodyRulesApplied,
 	)
@@ -381,10 +385,12 @@ func (s *Server) buildProxyRequest(
 
 // prepareTranslatedUpstreamBody 是协议转换后的统一 body 最终化入口。
 // 正常代理和管理测试必须共用它，否则同一转换器会产生两套实际上游契约。
+// requestModel 是实际上游模型（TransformPlan.RequestModel）；Antigravity 用它查目录上限，禁止从路径刮名。
 func (s *Server) prepareTranslatedUpstreamBody(
 	cfg *model.Config,
 	upstreamProtocol protocol.Protocol,
 	requestPath string,
+	requestModel string,
 	body []byte,
 	sourceBody []byte,
 	apiKey string,
@@ -463,7 +469,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	if cfg != nil && cfg.UsesAntigravityOAuth() {
 		var err error
 		body, err = prepareAntigravityRequestBody(
-			cfg, extractModelFromPath(requestPath), body, sourceBody, headers, s.antigravityPromptMatcher,
+			cfg, requestModel, body, sourceBody, headers, s.antigravityPromptMatcher,
 		)
 		if err != nil {
 			return nil, err

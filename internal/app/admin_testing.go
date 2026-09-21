@@ -1968,7 +1968,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		return nil, nil, fmt.Errorf("parse test upstream URL: %w", err)
 	}
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody,
+		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, requestPlan.clientBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
 		false,
 	)

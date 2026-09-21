@@ -110,7 +110,7 @@ func TestCodexOAuthRetryPreservesFinalBodyRules(t *testing.T) {
 	original := []byte(`{"model":"gpt-5.6-sol","input":[]}`)
 
 	wire, err := (&Server{}).prepareTranslatedUpstreamBody(
-		cfg, protocol.Codex, "/v1/responses", original, original,
+		cfg, protocol.Codex, "/v1/responses", "", original, original,
 		"", headers, false, nil, false,
 	)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestCodexOAuthRetryPreservesFinalBodyRules(t *testing.T) {
 	}
 
 	replayed, err := (&Server{}).prepareTranslatedUpstreamBody(
-		cfg, protocol.Codex, "/v1/responses", wire, wire,
+		cfg, protocol.Codex, "/v1/responses", "", wire, wire,
 		"", headers, false, nil, true,
 	)
 	if err != nil {

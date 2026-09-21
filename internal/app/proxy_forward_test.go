@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/util"
 
 	"github.com/andybalholm/brotli"
@@ -3029,7 +3030,7 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
 			}
 			replayed, err := server.prepareTranslatedUpstreamBody(
-				cfg, protocol.Anthropic, "/v1/messages", finalized, finalized,
+				cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
 				"sk-ant-key", headers, true, testCase.target, false)
 			if err != nil {
 				t.Fatal(err)
@@ -3056,7 +3057,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 	}
 
 	got, err := (&Server{}).prepareTranslatedUpstreamBody(
-		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages",
+		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages", "",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
 		false,
 	)
@@ -3071,6 +3072,32 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 		if name := gjson.GetBytes(got, fmt.Sprintf("tools.%d.name", index)).String(); name != want {
 			t.Fatalf("tools.%d.name = %q, want %q; body = %s", index, name, want, got)
 		}
+	}
+}
+
+func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *testing.T) {
+	t.Parallel()
+	const modelName = "claude-opus-4-6-thinking"
+	info := cliproxyregistry.LookupModelInfo(modelName, "antigravity")
+	if info == nil || info.MaxCompletionTokens <= 0 {
+		t.Fatalf("antigravity catalog missing MaxCompletionTokens for %s", modelName)
+	}
+	want := int64(info.MaxCompletionTokens)
+	body := []byte(fmt.Sprintf(
+		`{"model":%q,"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":%d}}}`,
+		modelName, want*2,
+	))
+	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
+	got, err := (&Server{}).prepareTranslatedUpstreamBody(
+		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,
+		body, body, "", http.Header{}, false, nil, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxOut := gjson.GetBytes(got, "request.generationConfig.maxOutputTokens")
+	if maxOut.Type != gjson.Number || maxOut.Int() != want {
+		t.Fatalf("maxOutputTokens=%s, want %d (path must not be the model identity)", maxOut.Raw, want)
 	}
 }
 

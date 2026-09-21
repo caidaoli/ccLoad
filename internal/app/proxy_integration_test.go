@@ -30,6 +30,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -2115,18 +2116,45 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func antigravityCatalogMaxOutputTokens(t testing.TB, modelName string) int64 {
+	t.Helper()
+	info := cliproxyregistry.LookupModelInfo(modelName, "antigravity")
+	if info == nil || info.MaxCompletionTokens <= 0 {
+		t.Fatalf("antigravity catalog missing MaxCompletionTokens for %s", modelName)
+	}
+	return int64(info.MaxCompletionTokens)
+}
+
 func TestProxy_AntigravityMaxOutputTokens(t *testing.T) {
+	const opus = "claude-opus-4-6-thinking"
+	opusCap := antigravityCatalogMaxOutputTokens(t, opus)
+	overLimit := int(opusCap * 2)
+	if int64(overLimit) <= opusCap {
+		t.Fatalf("catalog cap %d too large to construct an over-limit input", opusCap)
+	}
+	belowLimit := 4096
+	if int64(belowLimit) >= opusCap {
+		belowLimit = int(opusCap) - 1
+		if belowLimit <= 0 {
+			t.Fatalf("catalog cap %d too small to construct a below-limit input", opusCap)
+		}
+	}
+	atLimit := int(opusCap)
+	unknownLimit := overLimit
+
 	for _, tc := range []struct {
-		name  string
-		model string
-		limit int
-		want  int64
+		name      string
+		model     string
+		maxTokens *int
+		want      int64
 	}{
-		{"above limit", "claude-opus-4-6-thinking", 128000, 64000},
-		{"at limit", "claude-opus-4-6-thinking", 64000, 64000},
-		{"below limit", "claude-opus-4-6-thinking", 4096, 4096},
-		{"unknown model preserved", "claude-custom", 128000, 128000},
-		{"gemini limit removed", "gemini-3-flash", 128000, 0},
+		{name: "above limit", model: opus, maxTokens: &overLimit, want: opusCap},
+		{name: "at limit", model: opus, maxTokens: &atLimit, want: opusCap},
+		{name: "below limit", model: opus, maxTokens: &belowLimit, want: int64(belowLimit)},
+		{name: "mixed-case catalog id", model: "Claude-Opus-4-6-thinking", maxTokens: &overLimit, want: opusCap},
+		{name: "unknown model preserved", model: "claude-custom", maxTokens: &unknownLimit, want: int64(unknownLimit)},
+		{name: "missing max_tokens not filled", model: opus, want: 0},
+		{name: "gemini limit removed", model: "gemini-3-flash", maxTokens: &overLimit, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2147,8 +2175,11 @@ func TestProxy_AntigravityMaxOutputTokens(t *testing.T) {
 				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-output-limit"),
 			}}, map[int]string{0: upstream.URL})
 			body := map[string]any{
-				"model": tc.model, "max_tokens": tc.limit,
+				"model":    tc.model,
 				"messages": []map[string]any{{"role": "user", "content": "hello"}},
+			}
+			if tc.maxTokens != nil {
+				body["max_tokens"] = *tc.maxTokens
 			}
 			response := doProxyRequest(t, env.engine, "/v1/messages", body, nil)
 			if response.Code != http.StatusOK {
