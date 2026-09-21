@@ -136,6 +136,9 @@ func ApplyCredentialHeaders(h http.Header, c *Credential) {
 	base := BaseURL
 	if c != nil {
 		base = c.Endpoint()
+		if c.IsInternational() {
+			base = ChatBaseURL(c)
+		}
 	}
 	ApplySourceHeadersForBaseURL(h, base)
 	h.Set("Authorization", "Bearer "+c.AccessToken)

@@ -59,6 +59,34 @@ func TestFetchModelsLiveCatalog(t *testing.T) {
 	}
 }
 
+func TestInternationalFetchModelsUsesWorkBuddyFingerprint(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "www.workbuddy.ai" {
+			return nil, fmt.Errorf("request host=%q, want www.workbuddy.ai", r.URL.Host)
+		}
+		if r.Header.Get("Origin") != WorkBuddyBaseURL || r.Header.Get("Referer") != WorkBuddyBaseURL+"/" {
+			return nil, fmt.Errorf("origin=%q referer=%q, want WorkBuddy", r.Header.Get("Origin"), r.Header.Get("Referer"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":0,"data":{"agents":[{"name":"cli","models":["work-model"]}],"models":[{"id":"work-model"}]}}`)),
+		}, nil
+	})}
+	service := NewService(client)
+	names, err := service.FetchModels(context.Background(), &Credential{
+		AccessToken: "opaque-access",
+		BaseURL:     InternationalBaseURL,
+	})
+	if err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if strings.Join(names, ",") != "work-model" {
+		t.Fatalf("models=%v, want work-model", names)
+	}
+}
+
 func TestFetchModelsUsesCLIAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name, selection, want string
