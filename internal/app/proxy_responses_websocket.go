@@ -840,7 +840,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			w.failed = true
 			w.failedPayload = bytes.Clone(payload)
 			w.closedForMessageTooBig = true
-			continue
+			return 0, nil
 		}
 		if eventType == "error" || eventType == "response.failed" {
 			w.failed = true
