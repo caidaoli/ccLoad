@@ -1450,6 +1450,14 @@ func (s *Server) testCursorOAuthChannel(
 		result["success"] = true
 		result["message"] = "API测试成功"
 		if testReq.Stream {
+			usageParser := newSSEUsageParser(clientProtocol)
+			_ = usageParser.Feed(bodyBytes)
+			populateTestNormalizedUsageAndCost(
+				result,
+				&attemptReq,
+				requestBodyServiceTier(protocol.Protocol(clientProtocol), body),
+				usageParser,
+			)
 			result["response_text"] = string(proxyRes.body)
 			result["raw_response"] = rec.Body.String()
 			result["upstream_response_body"] = rec.Body.String()
@@ -1469,6 +1477,14 @@ func (s *Server) testCursorOAuthChannel(
 			result["upstream_response_body"] = string(bodyBytes)
 			return result
 		}
+		usageParser := newJSONUsageParser(clientProtocol)
+		_ = usageParser.Feed(bodyBytes)
+		populateTestNormalizedUsageAndCost(
+			result,
+			&attemptReq,
+			requestBodyServiceTier(protocol.Protocol(clientProtocol), body),
+			usageParser,
+		)
 		result["success"] = true
 		result["message"] = "API测试成功"
 		result["upstream_response_body"] = string(bodyBytes)

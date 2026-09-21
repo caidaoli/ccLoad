@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -6650,6 +6651,31 @@ func TestAdminTestCursorOAuthUsesSDKBridgeInsteadOfHTTP(t *testing.T) {
 	}
 	if body, _ := result["upstream_request_body"].(string); !strings.Contains(body, `"messages"`) || strings.Contains(body, "chat/completions") {
 		t.Fatalf("client body must stay Anthropic messages, got %s", body)
+	}
+}
+
+func TestAdminTestCursorOAuthBillsChannelModelPricing(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
+			cfg.ModelEntries[0].Pricing = channelPrice(1, 2)
+			srv.cursorRunner = &fakeCursorRunner{
+				text:  "ok from sdk bridge",
+				usage: &cursorauth.Usage{InputTokens: 1000, OutputTokens: 2000, TotalTokens: 3000},
+			}
+
+			result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
+				Model: "grok-4.6", ClientProtocol: util.ProtocolAnthropic, Content: "hello", Stream: stream,
+			}, true)
+			if success, _ := result["success"].(bool); !success {
+				t.Fatalf("cursor admin test result=%+v", result)
+			}
+			want := 1000*1.0/1e6 + 2000*2.0/1e6
+			if cost, _ := result["cost_usd"].(float64); math.Abs(cost-want) > 1e-12 {
+				t.Fatalf("stream=%v cost_usd=%v, want %v; result=%+v", stream, result["cost_usd"], want, result)
+			}
+		})
 	}
 }
 
