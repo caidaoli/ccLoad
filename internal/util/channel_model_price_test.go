@@ -26,7 +26,7 @@ func TestCalculateCostWithPriceReplacesGlobalPricing(t *testing.T) {
 		{"nil keeps global custom", "gpt-4o", nil, 18},
 		{"unknown model priced by channel", "relay-private-model", channelPrice, 3},
 		// 绕过校验的脏价格回退全局价格，而不是按负数或 0 计费。
-		{"invalid falls back", "gpt-4o", &util.CustomModelPrice{InputPrice: priceOf(-1)}, 18},
+		{"invalid falls back", "gpt-4o", &util.CustomModelPrice{InputPrice: priceOf(-1), OutputPrice: priceOf(2)}, 18},
 	} {
 		if got := util.CalculateCostDetailedWithPrice(tc.model, tc.price, 1_000_000, 1_000_000, 0, 0, 0); math.Abs(got-tc.want) > 1e-12 {
 			t.Errorf("%s: cost=%v, want %v", tc.name, got, tc.want)
@@ -64,5 +64,31 @@ func TestCustomModelPriceDistinguishesExplicitZero(t *testing.T) {
 	*clone.InputPrice = 5
 	if !(&util.CustomModelPrice{}).IsEmpty() || *withZero.InputPrice != 1 {
 		t.Fatal("empty detection or clone isolation is broken")
+	}
+}
+
+func TestCustomModelPriceRequiresInputAndOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		price util.CustomModelPrice
+		ok    bool
+	}{
+		{"input and output", util.CustomModelPrice{InputPrice: priceOf(1), OutputPrice: priceOf(0)}, true},
+		{"cache only", util.CustomModelPrice{CacheReadPrice: priceOf(0.1)}, false},
+		{"missing output", util.CustomModelPrice{InputPrice: priceOf(1), CacheWritePrice: priceOf(1.25)}, false},
+		{"full high context", util.CustomModelPrice{
+			InputPrice: priceOf(1), OutputPrice: priceOf(2), InputPriceHigh: priceOf(2), OutputPriceHigh: priceOf(4),
+		}, true},
+		// 任一高上下文价格都要求高上下文输入/输出成对填写，与渠道价格编辑器一致。
+		{"high cache only", util.CustomModelPrice{
+			InputPrice: priceOf(1), OutputPrice: priceOf(2), CacheReadPriceHigh: priceOf(0.2),
+		}, false},
+		{"missing high output", util.CustomModelPrice{
+			InputPrice: priceOf(1), OutputPrice: priceOf(2), InputPriceHigh: priceOf(2),
+		}, false},
+	} {
+		if _, err := tc.price.ModelPricing(); (err == nil) != tc.ok {
+			t.Errorf("%s: err=%v, want ok=%v", tc.name, err, tc.ok)
+		}
 	}
 }

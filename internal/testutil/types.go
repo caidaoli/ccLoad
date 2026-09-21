@@ -55,6 +55,7 @@ type TestChannelRequest struct {
 	UseURLProtocol    bool                    `json:"-"`                         // 定时检测按 URL 声明选择原生协议，未声明时优先 OpenAI
 	ImageGeneration   *ImageGenerationOptions `json:"-"`                         // 生图 Tab 的 Chat Completions 请求选项
 	ChannelModelPrice *util.CustomModelPrice  `json:"-"`                         // 渠道此模型的价格（nil 按全局价格计费）
+	RequestModel      string                  `json:"-"`                         // 重定向前的请求模型；Model 改写为上游模型后仍供计费模型回退
 	resolvedSessionID string
 }
 

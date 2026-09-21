@@ -143,8 +143,9 @@ func TestModelEntry_Validate(t *testing.T) {
 			t.Fatalf("empty pricing must normalize to nil: err=%v pricing=%#v", err, empty.Pricing)
 		}
 		for _, entry := range []*ModelEntry{
-			{Model: "gpt-4", Pricing: &util.CustomModelPrice{InputPrice: testPrice(-1)}},
-			{Model: "*", Pricing: &util.CustomModelPrice{InputPrice: testPrice(1)}},
+			{Model: "gpt-4", Pricing: &util.CustomModelPrice{InputPrice: testPrice(-1), OutputPrice: testPrice(1)}},
+			{Model: "gpt-4", Pricing: &util.CustomModelPrice{CacheReadPrice: testPrice(0.1)}},
+			{Model: "*", Pricing: &util.CustomModelPrice{InputPrice: testPrice(1), OutputPrice: testPrice(1)}},
 		} {
 			if err := entry.Validate(); err == nil {
 				t.Fatalf("expected pricing error for %q", entry.Model)

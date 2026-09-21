@@ -169,6 +169,14 @@ type channelTestRequestPlan struct {
 	antigravityOAuth bool
 }
 
+// requestedServiceTier 读取本次测试上游请求体声明的计费档位，与代理 requestedServiceTier 同源。
+func (p *channelTestRequestPlan) requestedServiceTier() string {
+	if p == nil {
+		return ""
+	}
+	return requestBodyServiceTier(protocol.Protocol(p.upstreamProtocol), p.requestBody)
+}
+
 type channelTestTimeout struct {
 	cancel                     context.CancelFunc
 	firstByteTimeout           time.Duration
@@ -554,6 +562,7 @@ func parseTestStreamResponseBytes(
 	statusCode int,
 	result map[string]any,
 	testReq *testutil.TestChannelRequest,
+	requestedServiceTier string,
 ) map[string]any {
 	collector := newTestSSECollector()
 	usageParser := newSSEUsageParser(parseProtocol)
@@ -578,7 +587,7 @@ func parseTestStreamResponseBytes(
 		return result
 	}
 	collector.applyResult(result)
-	populateTestSSEUsageAndCost(result, testReq, usageParser, collector.lastUsage)
+	populateTestSSEUsageAndCost(result, testReq, requestedServiceTier, usageParser, collector.lastUsage)
 
 	if collector.lastErrMsg != "" {
 		result["success"] = false
@@ -1216,10 +1225,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = configuredChannelTestContent(s.configService)
 	}
-	if cfg != nil {
-		// 与代理计费同源：价格挂在重定向前的渠道逻辑模型上。
-		testReq.ChannelModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, testReq.Model))
-	}
+	s.bindChannelTestBilling(cfg, testReq)
 	if cfg != nil && cfg.UsesCursorOAuth() {
 		return s.testCursorOAuthChannel(reqCtx, cfg, apiKey, testReq)
 	}
@@ -1892,7 +1898,7 @@ func (s *Server) parseTestNonStreamResponse(
 
 		usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
 		_ = usageParser.Feed(upstreamBody)
-		populateTestNormalizedUsageAndCost(result, testReq, usageParser)
+		populateTestNormalizedUsageAndCost(result, testReq, requestPlan.requestedServiceTier(), usageParser)
 
 		result["upstream_response_body"] = string(bodyBytes)
 
@@ -2251,7 +2257,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 
 	result["duration_ms"] = time.Since(start).Milliseconds()
 	result["upstream_response_body"] = rawUpstreamBuf.String()
-	return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq)
+	return parseTestStreamResponseBytes(recorder.Body.Bytes(), requestPlan.clientProtocol, resp.StatusCode, result, testReq, requestPlan.requestedServiceTier())
 }
 
 // extractSSEDeltaText 从 SSE 单事件 JSON 对象提取增量文本（覆盖 OpenAI/Gemini/Anthropic/Codex）。
@@ -2421,6 +2427,7 @@ func (c *testSSECollector) rawResponse() string {
 func populateTestSSEUsageAndCost(
 	result map[string]any,
 	testReq *testutil.TestChannelRequest,
+	requestedServiceTier string,
 	usageParser *sseUsageParser,
 	lastUsage map[string]any,
 ) {
@@ -2434,7 +2441,7 @@ func populateTestSSEUsageAndCost(
 			result["api_response"] = map[string]any{"usage": usage}
 		}
 	}
-	populateTestNormalizedUsageAndCost(result, testReq, usageParser)
+	populateTestNormalizedUsageAndCost(result, testReq, requestedServiceTier, usageParser)
 }
 
 func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
@@ -2455,7 +2462,8 @@ func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
 	}, true
 }
 
-func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, parser usageParser) {
+// populateTestNormalizedUsageAndCost 写入用量与成本；testReq.Model 此时已是实际上游模型。
+func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, requestedServiceTier string, parser usageParser) {
 	usage, ok := normalizedTestUsage(parser)
 	if ok {
 		result["usage"] = usage
@@ -2463,22 +2471,47 @@ func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil
 	if effort := parser.GetThinkingEffort(); effort != "" {
 		result["thinking_effort"] = effort
 	}
-
-	billableInput, output, cacheRead, _ := parser.GetUsage()
-	cache5m, cache1h, _ := parser.GetCacheBreakdown()
-	if billableInput+output+cacheRead > 0 {
-		result["cost_usd"] = util.CalculateCostDetailedWithPrice(
-			model.RoutingModelName(testReq.Model),
-			testReq.ChannelModelPrice,
-			billableInput,
-			output,
-			cacheRead,
-			cache5m,
-			cache1h,
-		) + parser.GetToolCostUSD()
-	} else if toolCost := parser.GetToolCostUSD(); toolCost > 0 {
-		result["cost_usd"] = toolCost
+	if cost, ok := channelTestCostUSD(testReq, testReq.Model, requestedServiceTier, parser); ok {
+		result["cost_usd"] = cost
 	}
+}
+
+// bindChannelTestBilling 快照与代理同源的计费输入：价格挂在重定向前的渠道逻辑模型上，
+// 请求模型留给计费模型回退（实际上游模型没有目录价格时按请求模型定价）。
+func (s *Server) bindChannelTestBilling(cfg *model.Config, testReq *testutil.TestChannelRequest) {
+	if cfg == nil || testReq == nil {
+		return
+	}
+	testReq.RequestModel = testReq.Model
+	testReq.ChannelModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, testReq.Model))
+}
+
+// channelTestCostUSD 与代理 computeRequestCostWithPrice 同一口径计算测试成本：计费模型由
+// ResolveBillingModel 在实际上游模型与请求模型间选择，service_tier 合并请求声明与上游回显，
+// 渠道模型价格整份替换标准价格。没有 token 用量时只计工具费用；ok=false 表示无可计费用量。
+func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, requestedServiceTier string, parser usageParser) (float64, bool) {
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	cache5m, cache1h, observedServiceTier := parser.GetCacheBreakdown()
+	toolCost := parser.GetToolCostUSD()
+	if input+output+cacheRead+cacheCreation <= 0 {
+		return toolCost, toolCost > 0
+	}
+	requestModel := testReq.RequestModel
+	if requestModel == "" {
+		requestModel = testReq.Model
+	}
+	billingModel := util.ResolveBillingModel(model.RoutingModelName(actualModel), model.RoutingModelName(requestModel))
+	serviceTier := resolveBillingServiceTier(requestedServiceTier, observedServiceTier)
+	return computeRequestCostWithPrice(billingModel, serviceTier, testReq.ChannelModelPrice, &fwResult{
+		InputTokens:              input,
+		OutputTokens:             output,
+		CacheReadInputTokens:     cacheRead,
+		CacheCreationInputTokens: cacheCreation,
+		Cache5mInputTokens:       cache5m,
+		Cache1hInputTokens:       cache1h,
+		ServiceTier:              serviceTier,
+		ToolCostUSD:              toolCost,
+	}), true
 }
 
 func testRequestThinkingEffort(testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan) string {
@@ -2568,7 +2601,7 @@ func (s *Server) parseTestNativeSSEResponse(
 	collector.applyResult(result)
 	result["raw_response"] = collector.rawResponse()
 	result["upstream_response_body"] = collector.rawResponse()
-	populateTestSSEUsageAndCost(result, testReq, usageParser, collector.lastUsage)
+	populateTestSSEUsageAndCost(result, testReq, requestPlan.requestedServiceTier(), usageParser, collector.lastUsage)
 
 	if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, ctx.Err()); ok {
 		result["success"] = false

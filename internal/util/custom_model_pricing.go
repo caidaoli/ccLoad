@@ -90,10 +90,26 @@ func (p *CustomModelPrice) Equal(other *CustomModelPrice) bool {
 	return true
 }
 
-// ModelPricing validates the prices and converts them to the calculator representation.
+// ModelPricing validates a channel model price and converts it to the calculator representation.
+// 与渠道价格编辑器同一规则：输入/输出价必填（留空会按 0 计费，几乎总是漏填）；填写任一高上下文
+// 价格时，高上下文输入/输出价也必填。API、CSV、批量导入与存储读写都经过这里，前端之外同样拦截。
 func (p *CustomModelPrice) ModelPricing() (ModelPricing, error) {
 	if p == nil {
 		return ModelPricing{}, fmt.Errorf("pricing is empty")
+	}
+	type requiredField struct {
+		name  string
+		value *float64
+	}
+	required := []requiredField{{"input_price", p.InputPrice}, {"output_price", p.OutputPrice}}
+	if p.InputPriceHigh != nil || p.OutputPriceHigh != nil || p.CacheReadPriceHigh != nil || p.CacheWritePriceHigh != nil {
+		required = append(required,
+			requiredField{"input_price_high", p.InputPriceHigh}, requiredField{"output_price_high", p.OutputPriceHigh})
+	}
+	for _, field := range required {
+		if field.value == nil {
+			return ModelPricing{}, fmt.Errorf("%s is required", field.name)
+		}
 	}
 	return normalizeCustomModelPricing(*p)
 }

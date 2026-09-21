@@ -1169,10 +1169,15 @@ func requestedServiceTier(reqCtx *proxyRequestContext) string {
 	if len(body) == 0 {
 		body = reqCtx.body
 	}
+	return requestBodyServiceTier(reqCtx.upstreamProtocol, body)
+}
+
+// requestBodyServiceTier 读取上游请求体声明的计费档位：Anthropic 用 speed，其余协议用 service_tier。
+func requestBodyServiceTier(upstreamProtocol protocol.Protocol, body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
-	if reqCtx.upstreamProtocol == protocol.Anthropic {
+	if upstreamProtocol == protocol.Anthropic {
 		return normalizeBillingServiceTier(gjson.GetBytes(body, "speed").String())
 	}
 	return normalizeBillingServiceTier(gjson.GetBytes(body, "service_tier").String())

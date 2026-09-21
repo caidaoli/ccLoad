@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func channelPrice(input, output float64) *util.CustomModelPrice {
@@ -108,6 +111,97 @@ func TestProxy_ChannelModelPricingBillsLogsAndTokenStats(t *testing.T) {
 	}
 }
 
+// 管理端非流式测试、流式对话与真实代理请求必须按同一口径计费：同一份渠道价格、同一个计费模型。
+// 重定向目标没有目录价格时计费模型回退到请求模型 gpt-5.4，其高上下文阈值是 272K；
+// 若按重定向目标计费会落到默认 200K 阈值，250K 输入就被错算成高上下文价。
+func TestChannelTestsBillLikeProxyWithRedirectAndHighContextPrice(t *testing.T) {
+	t.Parallel()
+	const usage = `{"prompt_tokens":250000,"completion_tokens":1000,"total_tokens":251000}`
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if gjson.GetBytes(body, "stream").Bool() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"ok"}}]}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"id":"chat-1","choices":[],"usage":`+usage+`}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":`+usage+`}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	urls := channelURLsForTest(upstream.URL)
+	for i := range urls {
+		urls[i].Protocols = []string{util.ProtocolOpenAI}
+	}
+	price := channelPrice(1, 2)
+	inputHigh, outputHigh := 10.0, 20.0
+	price.InputPriceHigh, price.OutputPriceHigh = &inputHigh, &outputHigh
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "channel-test-billing", AuthType: model.AuthTypeAPIKey, URLs: urls,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal, Priority: 100, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.4", RedirectModel: "vendor-x-alpha", Pricing: price}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-priced"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+	injectAPIToken(srv.authService, "test-api-key", 0, 0)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	want := 250_000*1.0/1e6 + 1000*2.0/1e6
+
+	started := time.Now()
+	response := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-5.4", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+	}
+	time.Sleep(srv.logService.batchTimeout + 250*time.Millisecond)
+	proxyLogs, err := srv.store.ListLogs(ctx, started.Add(-time.Second), 10, 0, &model.LogFilter{ChannelID: &created.ID})
+	if err != nil || len(proxyLogs) != 1 || math.Abs(proxyLogs[0].Cost-want) > 1e-12 {
+		t.Fatalf("proxy logs=%+v err=%v, want one log costing %v", proxyLogs, err, want)
+	}
+
+	cfg, err := srv.store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	result := srv.testChannelAPI(ctx, cfg, "sk-priced", &testutil.TestChannelRequest{Model: "gpt-5.4", ClientProtocol: "openai", Content: "hi"})
+	if cost, _ := result["cost_usd"].(float64); math.Abs(cost-want) > 1e-12 {
+		t.Fatalf("non-stream test cost_usd=%v, want %v; result=%+v", result["cost_usd"], want, result)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "gpt-5.4", "client_protocol": "openai", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelChat(c)
+	summary := ""
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if data, ok := strings.CutPrefix(line, "data: "); ok && gjson.Get(data, "summary").Exists() {
+			summary = data
+		}
+	}
+	if cost := gjson.Get(summary, "summary.cost_usd").Float(); math.Abs(cost-want) > 1e-12 {
+		t.Fatalf("stream summary=%s, want cost_usd %v; body:\n%s", summary, want, w.Body.String())
+	}
+	chatLogs, err := srv.store.ListLogsRange(ctx, started.Add(-time.Second), time.Now().Add(time.Second), 10, 0,
+		&model.LogFilter{ChannelID: &created.ID, LogSource: model.LogSourceDetection})
+	if err != nil || len(chatLogs) != 1 || math.Abs(chatLogs[0].Cost-want) > 1e-12 {
+		t.Fatalf("chat detection logs=%+v err=%v, want one log costing %v", chatLogs, err, want)
+	}
+}
+
 func TestReplaceModelEntriesCarriesChannelPricing(t *testing.T) {
 	t.Parallel()
 	price := channelPrice(1, 2)
@@ -141,7 +235,12 @@ func TestCSVModelPricingRoundTripAndCarry(t *testing.T) {
 	if message != "" || !channel.Config.ModelEntries[0].Pricing.Equal(price) || channel.Config.ModelEntries[1].Pricing != nil {
 		t.Fatalf("imported pricing: channel=%#v message=%q", channel, message)
 	}
-	for _, invalid := range []string{`{"unknown-model":{"input_price":1}}`, `{"model-a":{"input_price":-1}}`} {
+	for _, invalid := range []string{
+		`{"unknown-model":{"input_price":1,"output_price":2}}`,
+		`{"model-a":{"input_price":-1,"output_price":2}}`,
+		// 只填缓存价会让输入/输出按 0 计费；后端与编辑器同样要求必填。
+		`{"model-a":{"cache_read_price":0.1}}`,
+	} {
 		if _, message := parse(invalid, true, nil); !strings.Contains(message, "model_pricing") {
 			t.Fatalf("model_pricing %s accepted: %q", invalid, message)
 		}
