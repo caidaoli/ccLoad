@@ -10,7 +10,7 @@ ccLoad 是 Claude/OpenAI/Gemini/Codex 多协议 API 网关，负责渠道选择�
 
 ## 命令与验证
 
-Go 构建和测试必须带 `-tags sonic`（Makefile 已处理）。环境变量定义见 `.env`。
+Go 构建和测试必须带 `-tags sonic`（Makefile 已处理）。环境变量契约见 `.env.example`（容器部署见 `.env.docker.example`）；本地 `.env` 被 gitignore，仅作个人覆盖。
 
 ```bash
 make build                    # 构建并注入版本

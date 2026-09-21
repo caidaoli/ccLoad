@@ -6,7 +6,7 @@
 
 **English | [简体中文](README.zh-CN.md)**
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
@@ -28,7 +28,7 @@ During OpenAI Build Week, Codex powered by GPT-5.6 was the primary engineering a
 
 GPT-5.6 is also integrated into the product itself: ccLoad exposes GPT-5.6 through OpenAI-compatible and Codex Responses endpoints, includes Sol, Terra, and Luna model presets, calculates their standard, priority, flex, cached-token, and long-context costs, and applies routing and model-scoped cooldown decisions to them like any other configured upstream model.
 
-The repository's `AGENTS.md` and `CLAUDE.md` provide persistent engineering constraints so Codex works against the same KISS-first review and testing rules in every session.
+The repository's `CLAUDE.md` provides persistent engineering constraints so agents work against the same KISS-first review and testing rules in every session.
 
 ## 🎯 What ccLoad Solves
 
@@ -868,12 +868,12 @@ Check out the awesome admin dashboard 👇
 
 | Component | Version | Purpose | Performance Advantage |
 |-----------|---------|---------|----------------------|
-| **Go** | 1.26.0+ | Runtime | Native concurrency, modern toolchain |
+| **Go** | 1.27.0+ | Runtime | Native concurrency, modern toolchain |
 | **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
-| **modernc/sqlite** | v1.57.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
-| **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
-| **PostgreSQL (pgx)** | v5.10.0 | RDBMS | Optional, supports URL and libpq DSNs |
-| **Sonic** | v1.15.2 | JSON Library | 2-3x faster than stdlib |
+| **modernc/sqlite** | v1.59.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **MySQL** | v1.10.1 | RDBMS | Optional, for high-concurrency production |
+| **PostgreSQL (pgx)** | v5.11.0 | RDBMS | Optional, supports URL and libpq DSNs |
+| **Sonic** | v1.15.4 | JSON Library | 2-3x faster than stdlib |
 | **gjson / sjson** | v1.19.0 / v1.2.5 | Protocol JSON transforms | Targeted reads and writes without generic map conversion |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
@@ -1047,6 +1047,10 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `cooldown_fallback_enabled` | `true` | When every channel is cooling down, fall back to the channel that recovers soonest instead of failing (keys follow the same earliest-recovery rule); set to `false` to reject the request outright |
 | `global_cooldown_detection_rules` | `{}` | Global cooldown detection rules, inherited by channels that define no `cooldown_detection_rules` of their own |
 | `upstream_connection_reuse_limit_seconds` | `0` | Maximum upstream connection reuse time in seconds (`0` = unlimited); applies to HTTP/1.1, HTTP/2, and WebSocket, drains active requests, then reconnects on demand |
+| `antigravity_connection_reuse_enabled` | `true` | Reuse upstream connections for Antigravity channels |
+| `antigravity_max_idle_conns_per_host` | `2` | Idle connections per host for Antigravity channels (1–100) |
+| `antigravity_idle_conn_timeout_seconds` | `30` | Idle connection timeout for Antigravity channels (1–210 seconds) |
+| `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON string array of words replaced with zero-width characters in Antigravity `systemInstruction` and CodeBuddy system/developer message text |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
 | `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
@@ -1067,12 +1071,13 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `ttfb_penalty_weight` | `20` | TTFB penalty when average first-byte latency is 2× the candidate median at full confidence |
 | `ttfb_max_slow_ratio` | `2` | Upper bound for relative TTFB slowness (`avg_ttfb / median_ttfb - 1`) |
 | `ttfb_min_confident_sample` | `10` | TTFB confidence sample threshold |
-| `channel_check_interval_hours` | `5` | Scheduled channel check interval (hours, supports decimals, 0=disabled) |
+| `channel_test_content` | `sonnet 4.0的发布日期是什么` | Default prompt for manual channel tests and scheduled checks; separate multiple contents with `\|` to have one picked per test. Cannot be empty |
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
 | `auto_update_interval_hours` | `12` | Non-container release check interval (hours, 0=disabled, minimum enabled value is 1); unavailable in containers |
 | `auto_update_channel` | `stable` | Non-container release channel: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer; unavailable in containers |
 | `model_multimodal_fallback` | `{}` | JSON map `{"non-vision model":"fallback model"}` (max 64 mappings / 8 KB); the only setting applied immediately without a process restart |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
+| `model_custom_pricing` | `{}` | JSON object overriding model prices (USD per million tokens); takes precedence over the models.dev catalog and the embedded pricing |
 | `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process; `0` uses the built-in default |
 | `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token; `0` uses the built-in default |
 | `responses_ws_max_sessions` | `256` | Max retained Responses WebSocket execution sessions across the process; `0` uses the built-in default |
@@ -1080,12 +1085,20 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `responses_ws_max_transcript_bytes` | `268435456` | Process-wide retained transcript payload budget (256 MiB); `0` uses the built-in default |
 | `debug_log_enabled` | `false` | Capture upstream request/response debug logs |
 | `debug_log_retention_minutes` | `2` | Debug log retention in minutes |
+| `api_token_login_enabled` | `false` | Allow an API access token to sign in to the Web admin interface; does not affect API calls |
+| `api_token_show_channels` | `false` | Show channel names and call statistics to token-authenticated Web users; channel configuration stays closed to them |
+| `log_channel_click_action` | `edit` | What clicking a channel name on the logs page does (`edit` opens the channel editor, `filter` filters by that channel) |
+| `channel_stats_range` | `today` | Cost statistics range on the channel management page (`today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`) |
+| `auto_refresh_interval_seconds` | `0` | Web page auto-refresh interval in seconds (`0` = disabled, `>= 30` recommended); a refresh is skipped while a dialog is open |
+| `active_request_title_enabled` | `false` | Show the in-flight request count in the browser title bar and flash it while requests are running |
 | `CODEX_BASE_URL` | Empty | Global upstream address for Codex OAuth channels (complete Responses URL; official default `https://chatgpt.com/backend-api/codex/responses`) |
 | `ANTHROPIC_BASE_URL` | Empty | Global API root for Anthropic OAuth channels (official default `https://api.anthropic.com`) |
 | `XAI_BASE_URL` | Empty | Global API root for xAI OAuth channels (usually ends with `/v1`; official default `https://cli-chat-proxy.grok.com/v1`) |
 | `ANTIGRAVITY_URL` | Empty | Global upstream address for Antigravity OAuth channels (official default `https://daily-cloudcode-pa.googleapis.com`, backup `https://cloudcode-pa.googleapis.com`) |
 
 Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
+
+Scheduled channel checks are configured per channel rather than globally. The channel editor owns `scheduled_check_enabled`, `scheduled_check_interval_minutes` (1–1440, default `300`), and `scheduled_check_start_time` (`HH:MM`, default `00:00`), so each channel can run on its own cadence. The legacy global `channel_check_interval_hours` setting was removed: the first startup after upgrading converts its value into every channel's interval and deletes the row.
 
 The four global OAuth upstream addresses default to empty, meaning each provider's official address is used. When set, the matching OAuth channels use only that global address for data requests, model discovery, channel tests, and quota queries, ignoring the channel URL; OAuth authorization and token exchange/refresh still use the provider's official endpoints, and API-key channels are unaffected.
 
@@ -1199,27 +1212,16 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 **Storage Architecture (Factory Pattern)**:
 ```
 storage/
-├── store.go         # Store interface (unified contract)
-├── factory.go       # NewStore() auto-selects database
-├── schema/          # Unified schema definition layer
-│   ├── tables.go    # Table definitions (DefineXxxTable functions)
-│   └── builder.go   # Schema builder (supports SQLite/MySQL/PostgreSQL differences)
-├── sql/             # Common SQL implementation layer (eliminated 467 lines)
-│   ├── store_impl.go      # SQLStore core implementation
-│   ├── config.go          # Channel config CRUD
-│   ├── apikey.go          # API key CRUD
-│   ├── cooldown.go        # Cooldown management
-│   ├── log.go             # Log storage
-│   ├── metrics.go             # Metrics stats
-│   ├── metrics_filter.go      # Filter intersection support
-│   ├── metrics_aggregate_rows.go  # Aggregate row processing
-│   ├── metrics_finalize.go    # Finalization processing
-│   ├── auth_tokens.go         # API access tokens
-│   ├── auth_token_stats.go    # Token statistics
-│   ├── web_sessions.go    # Role-aware Web sessions
-│   ├── system_settings.go # System settings
-│   └── helpers.go         # Helper functions
-└── sqlite/          # SQLite specific (test files only)
+├── store.go     # Store interface (unified contract)
+├── factory.go   # NewStore() auto-selects database
+├── migrate*.go  # Startup schema/column/data migrations
+├── hybrid_*.go  # Authoritative SQLite + async primary replication
+├── cache.go     # Channel/API-key read caches
+├── schema/      # Table definitions (DefineXxxTable) and the SQLite/MySQL/PostgreSQL schema builder
+├── sql/         # Shared SQL implementation for all three databases: channel config, API keys,
+│                # cooldowns, URL states, logs, debug logs, metrics, auth tokens and their stats,
+│                # Web sessions, system settings, OAuth quota cost, transactions, replica writes
+└── sqlite/      # SQLite-specific tests only
 ```
 
 **Database Selection Logic**:
@@ -1231,10 +1233,11 @@ storage/
 **Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
 - `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with multi-protocol handling config, scheduled check config, RPM/concurrency limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies, `allowed_models` allowlist)
+- `channel_models` - Per-channel model list with per-model redirect target and disabled flag
 - `channel_model_cooldowns` - Model-level runtime cooldown keyed by channel and actual upstream model
+- `channel_url_states` - Per-URL enable/disable state for multi-URL channels, keyed by channel and URL hash
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
-- `key_rr` - Round-robin pointers (channel_id → idx)
 - `auth_tokens` - Auth tokens (with cost limits, model/channel restrictions, concurrency limits, first byte time tracking)
 - `web_sessions` - Role-aware Web sessions bound to an optional API token
 - `system_settings` - System config (database-backed, applied after automatic restart)

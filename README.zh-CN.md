@@ -6,7 +6,7 @@
 
 **[English](README.md) | 简体中文**
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
@@ -28,7 +28,7 @@ ccLoad 用一个 Go 服务接住多上游 AI API 的复杂度：Claude Code、Co
 
 GPT-5.6 也直接集成在产品中：ccLoad 可通过 OpenAI 兼容接口和 Codex Responses 接口代理 GPT-5.6，提供 Sol、Terra、Luna 模型预设，计算标准、priority、flex、缓存 Token 和长上下文费用，并像处理其他上游模型一样对其执行路由与模型级冷却。
 
-仓库中的 `AGENTS.md` 和 `CLAUDE.md` 固化了工程约束，确保 Codex 在每次会话中遵循同一套 KISS 优先的审查与测试规则。
+仓库中的 `CLAUDE.md` 固化了工程约束，确保智能体在每次会话中遵循同一套 KISS 优先的审查与测试规则。
 
 ## 🎯 解决什么问题
 
@@ -885,12 +885,12 @@ ccLoad 使用的核心技术栈：
 
 | 组件 | 版本 | 用途 | 性能优势 |
 |------|------|------|----------|
-| **Go** | 1.26.0+ | 运行时环境 | 原生并发支持，现代工具链 |
+| **Go** | 1.27.0+ | 运行时环境 | 原生并发支持，现代工具链 |
 | **Gin** | v1.12.0 | Web框架 | 高性能HTTP路由 |
-| **modernc/sqlite** | v1.57.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
-| **MySQL** | v1.10.0 | 关系型数据库 | 可选，适合高并发生产环境 |
-| **PostgreSQL (pgx)** | v5.10.0 | 关系型数据库 | 可选，支持 URL 和 libpq DSN |
-| **Sonic** | v1.15.2 | JSON库 | 比标准库快2-3倍 |
+| **modernc/sqlite** | v1.59.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
+| **MySQL** | v1.10.1 | 关系型数据库 | 可选，适合高并发生产环境 |
+| **PostgreSQL (pgx)** | v5.11.0 | 关系型数据库 | 可选，支持 URL 和 libpq DSN |
+| **Sonic** | v1.15.4 | JSON库 | 比标准库快2-3倍 |
 | **gjson / sjson** | v1.19.0 / v1.2.5 | 协议 JSON 转换 | 定向读写字段，避免通用 map 转换 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
@@ -1068,6 +1068,10 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `cooldown_fallback_enabled` | `true` | 所有渠道都在冷却时，兜底选取「最早恢复」的渠道继续服务（Key 同样选最早恢复的）；设为 `false` 则直接拒绝请求 |
 | `global_cooldown_detection_rules` | `{}` | 全局冷却探测规则，渠道未配置自身 `cooldown_detection_rules` 时继承 |
 | `upstream_connection_reuse_limit_seconds` | `0` | 上游连接最长复用时间（秒，`0`=不限制）；统一约束 HTTP/1.1、HTTP/2 和 WebSocket，达到时限后不再接收新请求，在途请求跑完再关闭，下次按需重连 |
+| `antigravity_connection_reuse_enabled` | `true` | Antigravity 渠道复用上游连接 |
+| `antigravity_max_idle_conns_per_host` | `2` | Antigravity 渠道每主机空闲连接数（1–100） |
+| `antigravity_idle_conn_timeout_seconds` | `30` | Antigravity 渠道空闲连接超时（1–210 秒） |
+| `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON 字符串数组；命中的词在 Antigravity `systemInstruction` 和 CodeBuddy system/developer 消息文本中用零宽字符替换 |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
 | `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
 | `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
@@ -1088,12 +1092,13 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `ttfb_penalty_weight` | `20` | 首字惩罚权重（平均首字为候选中位数 2 倍且满置信度时的惩罚值） |
 | `ttfb_max_slow_ratio` | `2` | 首字相对慢速比上限（`平均首字 / 候选中位首字 - 1`） |
 | `ttfb_min_confident_sample` | `10` | 首字置信样本量阈值 |
-| `channel_check_interval_hours` | `5` | 渠道定时检测间隔（小时，支持小数，0=禁用） |
+| `channel_test_content` | `sonnet 4.0的发布日期是什么` | 渠道手动测试与定时检测的默认内容；多个内容用竖线 `\|` 分隔，每次测试取其中一个；不能为空 |
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
 | `auto_update_interval_hours` | `12` | 非容器部署的版本检查间隔（小时，0=禁用，启用时最低 1 小时）；容器中不可用 |
 | `auto_update_channel` | `stable` | 非容器部署的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者；容器中不可用 |
 | `model_multimodal_fallback` | `{}` | JSON 映射 `{"非视觉模型":"回退模型"}`（最多 64 条 / 8 KB）；唯一保存后立即生效、无需重启的设置 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
+| `model_custom_pricing` | `{}` | JSON 对象，覆盖模型价格（单位：美元/百万 Token）；优先级高于 models.dev 目录和内嵌定价 |
 | `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数；`0` 使用内建默认值 |
 | `responses_ws_max_sessions` | `256` | 整个进程保留的 Responses WebSocket 执行会话数上限；`0` 使用内建默认值 |
@@ -1101,12 +1106,20 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `responses_ws_max_transcript_bytes` | `268435456` | 整个进程保留的 transcript 有效载荷总预算（256 MiB）；`0` 使用内建默认值 |
 | `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
 | `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
+| `api_token_login_enabled` | `false` | 允许 API 访问令牌登录 Web 管理界面；不影响 API 调用 |
+| `api_token_show_channels` | `false` | 向令牌登录的 Web 用户显示渠道名称和调用统计；不向其开放渠道配置 |
+| `log_channel_click_action` | `edit` | 日志页点击渠道名后的操作（`edit` 打开渠道编辑器，`filter` 按该渠道过滤） |
+| `channel_stats_range` | `today` | 渠道管理页费用统计时间范围（`today`/`yesterday`/`day_before_yesterday`/`this_week`/`last_week`/`this_month`/`last_month`） |
+| `auto_refresh_interval_seconds` | `0` | Web 页面自动刷新间隔（秒，`0`=禁用，建议 `>= 30`）；有对话框打开时跳过本次刷新 |
+| `active_request_title_enabled` | `false` | 有请求处理时在浏览器标题栏显示请求数量并闪烁 |
 | `CODEX_BASE_URL` | 空 | Codex OAuth 渠道的全局上游地址（完整 Responses URL；官方默认 `https://chatgpt.com/backend-api/codex/responses`） |
 | `ANTHROPIC_BASE_URL` | 空 | Anthropic OAuth 渠道的全局 API 根地址（官方默认 `https://api.anthropic.com`） |
 | `XAI_BASE_URL` | 空 | xAI OAuth 渠道的全局 API 根地址（通常以 `/v1` 结尾；官方默认 `https://cli-chat-proxy.grok.com/v1`） |
 | `ANTIGRAVITY_URL` | 空 | Antigravity OAuth 渠道的全局上游地址（官方默认 `https://daily-cloudcode-pa.googleapis.com`，备用 `https://cloudcode-pa.googleapis.com`） |
 
 分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
+
+渠道定时检测是渠道级配置而非全局配置：渠道编辑器持有 `scheduled_check_enabled`、`scheduled_check_interval_minutes`（1–1440，默认 `300`）和 `scheduled_check_start_time`（`HH:MM`，默认 `00:00`），每个渠道可按各自节奏检测。旧的全局设置 `channel_check_interval_hours` 已移除：升级后首次启动会把它的值折算进每个渠道的间隔，并删除该行记录。
 
 四个 OAuth 全局上游地址默认为空，表示使用各提供商官方地址。设置后，对应 OAuth 渠道的数据请求、模型发现、渠道测试和额度查询只使用该全局地址并忽略渠道 URL；OAuth 授权和 Token 交换/刷新仍走提供商官方地址，API Key 渠道不受影响。
 
@@ -1234,27 +1247,16 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 **存储架构（工厂模式）**:
 ```
 storage/
-├── store.go         # Store 接口（统一契约）
-├── factory.go       # NewStore() 自动选择数据库
-├── schema/          # 统一 Schema 定义层
-│   ├── tables.go    # 表结构定义（DefineXxxTable 函数）
-│   └── builder.go   # Schema 构建器（支持 SQLite/MySQL/PostgreSQL 差异）
-├── sql/             # 通用 SQL 实现层（消除 467 行重复代码）
-│   ├── store_impl.go      # SQLStore 核心实现
-│   ├── config.go          # 渠道配置 CRUD
-│   ├── apikey.go          # API 密钥 CRUD
-│   ├── cooldown.go        # 冷却管理
-│   ├── log.go             # 日志存储
-│   ├── metrics.go             # 指标统计
-│   ├── metrics_filter.go      # 过滤条件交集支持
-│   ├── metrics_aggregate_rows.go  # 聚合行处理
-│   ├── metrics_finalize.go    # 终结化处理
-│   ├── auth_tokens.go         # API 访问令牌
-│   ├── auth_token_stats.go    # 令牌统计
-│   ├── web_sessions.go    # 带角色与 Token 作用域的 Web 会话
-│   ├── system_settings.go # 系统设置
-│   └── helpers.go         # 辅助函数
-└── sqlite/          # SQLite 特定（仅测试文件）
+├── store.go     # Store 接口（统一契约）
+├── factory.go   # NewStore() 自动选择数据库
+├── migrate*.go  # 启动时的表结构/列/数据迁移
+├── hybrid_*.go  # 权威 SQLite + 异步主库复制
+├── cache.go     # 渠道/API 密钥读缓存
+├── schema/      # 表结构定义（DefineXxxTable）与 SQLite/MySQL/PostgreSQL 差异化 Schema 构建器
+├── sql/         # 三种数据库共用的 SQL 实现：渠道配置、API 密钥、冷却、URL 状态、日志、
+│                # 调试日志、指标统计、认证令牌及其统计、Web 会话、系统设置、
+│                # OAuth 额度费用、事务、副本写入
+└── sqlite/      # 仅 SQLite 专属测试
 ```
 
 **数据库选择逻辑**:
@@ -1266,10 +1268,11 @@ storage/
 **核心表结构**（SQLite / MySQL / PostgreSQL 共用）:
 - `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含上游协议、定时检测配置、RPM/并发限制配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略与 `allowed_models` 模型白名单）
+- `channel_models` - 渠道模型列表，含每个模型的重定向目标与禁用标记
 - `channel_model_cooldowns` - 模型级运行时冷却，主键为渠道和实际上游模型
+- `channel_url_states` - 多 URL 渠道的单 URL 启用/禁用状态，主键为渠道和 URL 哈希
 - `logs` - 请求日志（含base_url上游URL追踪）
 - `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
-- `key_rr` - 轮询指针（channel_id → idx）
 - `auth_tokens` - 认证令牌（支持费用限额、模型/渠道限制、并发限制、首字节时间记录）
 - `web_sessions` - 可绑定 API Token 的角色化 Web 会话
 - `system_settings` - 系统配置（数据库存储，保存后自动重启生效）
