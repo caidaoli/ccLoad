@@ -3,6 +3,8 @@ package model
 import (
 	"testing"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 func TestConfigDailyScheduledCheck(t *testing.T) {
@@ -134,6 +136,54 @@ func TestModelEntry_Validate(t *testing.T) {
 			t.Fatal("expected error for illegal chars in redirect_model")
 		}
 	})
+
+	t.Run("pricing", func(t *testing.T) {
+		empty := &ModelEntry{Model: "gpt-4", Pricing: &util.CustomModelPrice{}}
+		if err := empty.Validate(); err != nil || empty.Pricing != nil {
+			t.Fatalf("empty pricing must normalize to nil: err=%v pricing=%#v", err, empty.Pricing)
+		}
+		for _, entry := range []*ModelEntry{
+			{Model: "gpt-4", Pricing: &util.CustomModelPrice{InputPrice: testPrice(-1)}},
+			{Model: "*", Pricing: &util.CustomModelPrice{InputPrice: testPrice(1)}},
+		} {
+			if err := entry.Validate(); err == nil {
+				t.Fatalf("expected pricing error for %q", entry.Model)
+			}
+		}
+	})
+}
+
+func testPrice(value float64) *float64 { return &value }
+
+func TestConfig_ModelPricingMatchesEnabledChannelModel(t *testing.T) {
+	t.Parallel()
+	price := &util.CustomModelPrice{InputPrice: testPrice(1)}
+	suffixed := &util.CustomModelPrice{InputPrice: testPrice(3)}
+	cfg := &Config{ModelEntries: []ModelEntry{
+		{Model: "claude-sonnet", RedirectModel: "upstream-sonnet", Pricing: price},
+		{Model: "gpt-5.6-luna(max)", Pricing: suffixed},
+		{Model: "disabled-model", Disabled: true, Pricing: price},
+	}}
+	if cfg.ModelPricing("claude-sonnet") != price || cfg.ModelPricing("gpt-5.6-luna") != suffixed {
+		t.Fatal("pricing must match the channel model and its routing base name")
+	}
+	// 价格挂在渠道逻辑模型上：重定向目标不是查找键，停用条目不参与。
+	if cfg.ModelPricing("upstream-sonnet") != nil || cfg.ModelPricing("disabled-model") != nil {
+		t.Fatal("redirect targets and disabled entries must not match pricing")
+	}
+}
+
+func TestCarryModelPricingKeepsPricesForRetainedModels(t *testing.T) {
+	t.Parallel()
+	price := &util.CustomModelPrice{InputPrice: testPrice(1)}
+	explicit := &util.CustomModelPrice{InputPrice: testPrice(9)}
+	got := CarryModelPricing(
+		[]ModelEntry{{Model: "GPT-5", Pricing: price}, {Model: "removed", Pricing: price}},
+		[]ModelEntry{{Model: "gpt-5"}, {Model: "added"}, {Model: "removed", Pricing: explicit}},
+	)
+	if got[0].Pricing != price || got[1].Pricing != nil || got[2].Pricing != explicit {
+		t.Fatalf("carried pricing = %#v", got)
+	}
 }
 
 func TestConfig_SupportsModel(t *testing.T) {

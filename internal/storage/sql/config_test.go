@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/util"
 
 	_ "modernc.org/sqlite"
 )
@@ -1719,5 +1720,48 @@ func TestConfig_ChannelManagementCompareAndSwapRejectsOAuthChannel(t *testing.T)
 	got, err := store.GetConfig(ctx, created.ID)
 	if err != nil || got.OAuthCredential != credential || !got.UsesCodexOAuth() {
 		t.Fatalf("OAuth channel changed = (%#v, %v)", got, err)
+	}
+}
+
+func TestConfig_ModelPricingPersistsAcrossWritePaths(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "model-pricing.db")
+	ctx := context.Background()
+	price := func(value float64) *float64 { return &value }
+	sonnetPrice := &util.CustomModelPrice{InputPrice: price(1.5), OutputPrice: price(7.5), CacheReadPrice: price(0)}
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "pricing-channel", URLs: model.ChannelURLs{{URL: "https://pricing.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet", Pricing: sonnetPrice}, {Model: "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil || !got.ModelEntries[0].Pricing.Equal(sonnetPrice) || got.ModelEntries[1].Pricing != nil {
+		t.Fatalf("created pricing = (%+v, %v)", got, err)
+	}
+
+	// 批量替换导入不表达价格：保留下来的模型沿用原渠道价格，新模型没有价格。
+	result, err := store.BatchPatchConfigs(ctx, []int64{created.ID}, model.BatchConfigPatch{
+		ModelImportMode: model.ModelImportModeReplace,
+		ModelEntries:    []model.ModelEntry{{Model: "CLAUDE-SONNET"}, {Model: "new-model"}},
+	})
+	if err != nil || result.Updated != 1 {
+		t.Fatalf("BatchPatchConfigs replace = (%+v, %v)", result, err)
+	}
+	replaced, err := store.GetConfig(ctx, created.ID)
+	if err != nil || !replaced.ModelEntries[0].Pricing.Equal(sonnetPrice) || replaced.ModelEntries[1].Pricing != nil {
+		t.Fatalf("replaced pricing = (%+v, %v)", replaced, err)
+	}
+
+	// 损坏的价格必须让读取失败，不能静默按全局价格计费。
+	if _, err := store.(*sqlstore.SQLStore).ExecContext(ctx,
+		`UPDATE channel_models SET pricing = ? WHERE channel_id = ? AND model = ?`,
+		`{"input_price":-1}`, created.ID, "new-model"); err != nil {
+		t.Fatalf("corrupt pricing: %v", err)
+	}
+	if _, err := store.GetConfig(ctx, created.ID); err == nil || !strings.Contains(err.Error(), "new-model") {
+		t.Fatalf("GetConfig with corrupt pricing error = %v, want model-scoped failure", err)
 	}
 }

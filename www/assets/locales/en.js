@@ -31,7 +31,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.monitoring.title': 'Real-time Monitoring',
   'www.home.features.monitoring.desc': 'Seven-day service health, client-protocol statistics, cost analysis, trends, and live request monitoring.',
   'www.home.features.cost.title': 'Cost Control',
-  'www.home.features.cost.desc': 'Custom model prices, per-key multipliers, daily channel limits, and token total/daily/monthly limits. Track OAuth quota windows against upstream reset times.',
+  'www.home.features.cost.desc': 'Global and per-channel custom model prices, per-key multipliers, daily channel limits, and token total/daily/monthly limits. Track OAuth quota windows against upstream reset times.',
   'www.home.features.oauth.title': 'OAuth Channels',
   'www.home.features.oauth.desc': 'Connect Codex, Anthropic, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, and Zed accounts. Refresh quotas and balances from the channel list.',
   'www.home.features.websocket.title': 'Responses WebSocket',

@@ -12,6 +12,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/util"
 )
 
 // ==================== Config CRUD 实现 ====================
@@ -931,7 +932,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	if withModels {
-		modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled
+		modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled, pricing
 			FROM channel_models WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
 			ORDER BY channel_id, created_at ASC, model ASC`), normalizeSQLArgs(args)...)
 		if err != nil {
@@ -939,8 +940,8 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 		}
 		for modelRows.Next() {
 			var channelID int64
-			var entry model.ModelEntry
-			if err := modelRows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+			entry, err := scanModelEntry(modelRows, &channelID)
+			if err != nil {
 				_ = modelRows.Close()
 				return nil, fmt.Errorf("scan model for batch patch: %w", err)
 			}
@@ -989,7 +990,8 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 
 func importedModelEntries(existing, imported []model.ModelEntry, mode string) []model.ModelEntry {
 	if mode == model.ModelImportModeReplace {
-		return append([]model.ModelEntry(nil), imported...)
+		// 替换只重建模型列表：导入格式不表达价格，保留模型的渠道价格沿用原值。
+		return model.CarryModelPricing(existing, imported)
 	}
 	result := append([]model.ModelEntry(nil), existing...)
 	seen := make(map[string]struct{}, len(existing)+len(imported))
@@ -1012,11 +1014,71 @@ func modelEntrySlicesEqual(left, right []model.ModelEntry) bool {
 		return false
 	}
 	for i := range left {
-		if left[i] != right[i] {
+		if !left[i].Equal(right[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+type modelEntryScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanModelEntry 读取 channel_models 的 model, redirect_model, disabled, pricing 列；
+// channelID 非 nil 时先读取前置的 channel_id 列。
+func scanModelEntry(row modelEntryScanner, channelID *int64) (model.ModelEntry, error) {
+	var entry model.ModelEntry
+	var pricing sql.NullString
+	dest := []any{&entry.Model, &entry.RedirectModel, &entry.Disabled, &pricing}
+	if channelID != nil {
+		dest = append([]any{channelID}, dest...)
+	}
+	if err := row.Scan(dest...); err != nil {
+		return model.ModelEntry{}, err
+	}
+	decoded, err := decodeModelEntryPricing(pricing)
+	if err != nil {
+		return model.ModelEntry{}, fmt.Errorf("model %q: %w", entry.Model, err)
+	}
+	entry.Pricing = decoded
+	return entry, nil
+}
+
+// modelEntryPricingValue 编码 channel_models.pricing；未配置价格写 NULL。
+func modelEntryPricingValue(pricing *util.CustomModelPrice) (any, error) {
+	if pricing.IsEmpty() {
+		return nil, nil
+	}
+	if _, err := pricing.ModelPricing(); err != nil {
+		return nil, fmt.Errorf("invalid pricing: %w", err)
+	}
+	encoded, err := json.Marshal(pricing)
+	if err != nil {
+		return nil, fmt.Errorf("marshal pricing: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// decodeModelEntryPricing 解析 channel_models.pricing。损坏的价格直接报错，
+// 不能静默回退全局价格——那样渠道会在无人察觉时按另一套价格计费。
+func decodeModelEntryPricing(raw sql.NullString) (*util.CustomModelPrice, error) {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw.String))
+	decoder.DisallowUnknownFields()
+	var pricing util.CustomModelPrice
+	if err := decoder.Decode(&pricing); err != nil {
+		return nil, fmt.Errorf("decode pricing: %w", err)
+	}
+	if pricing.IsEmpty() {
+		return nil, nil
+	}
+	if _, err := pricing.ModelPricing(); err != nil {
+		return nil, fmt.Errorf("invalid pricing: %w", err)
+	}
+	return &pricing, nil
 }
 
 func reconciledScheduledCheckModel(current string, entries []model.ModelEntry) string {
@@ -1338,7 +1400,7 @@ func (s *SQLStore) loadConfigSnapshotForUpdate(
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, s.q(`
-		SELECT model, redirect_model, disabled
+		SELECT model, redirect_model, disabled, pricing
 		FROM channel_models
 		WHERE channel_id = ?
 		ORDER BY created_at ASC, model ASC
@@ -1348,8 +1410,8 @@ func (s *SQLStore) loadConfigSnapshotForUpdate(
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var entry model.ModelEntry
-		if err := rows.Scan(&entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+		entry, err := scanModelEntry(rows, nil)
+		if err != nil {
 			return nil, err
 		}
 		cfg.ModelEntries = append(cfg.ModelEntries, entry)
@@ -1554,7 +1616,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 
 	//nolint:gosec // G201: placeholders 由内部构建的 "?" 占位符组成，安全可控
 	query := fmt.Sprintf(
-		`SELECT channel_id, model, redirect_model, disabled FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
+		`SELECT channel_id, model, redirect_model, disabled, pricing FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -1566,8 +1628,8 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 
 	for rows.Next() {
 		var channelID int64
-		var entry model.ModelEntry
-		if err := rows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+		entry, err := scanModelEntry(rows, &channelID)
+		if err != nil {
 			return fmt.Errorf("scan model entry: %w", err)
 		}
 		if cfg, ok := idToConfig[channelID]; ok {
@@ -1600,7 +1662,7 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec sqlExecutor, c
 		return nil
 	}
 
-	// 多值 INSERT 分块提交：单批最多 200 行（800 占位符），兼容 SQLite 默认上限。
+	// 多值 INSERT 分块提交：单批最多 200 行（1200 占位符），兼容 SQLite 默认上限。
 	// created_at 使用递增值保留用户输入顺序，避免同秒写入时被 model 字典序打乱。
 	const batchSize = 200
 	baseCreatedAt := time.Now().UnixMilli()
@@ -1610,14 +1672,18 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec sqlExecutor, c
 		chunk := entries[offset:end]
 
 		var b strings.Builder
-		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, disabled, created_at) VALUES `)
-		args := make([]any, 0, len(chunk)*5)
+		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, disabled, pricing, created_at) VALUES `)
+		args := make([]any, 0, len(chunk)*6)
 		for i, entry := range chunk {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.WriteString("(?, ?, ?, ?, ?)")
-			args = append(args, channelID, entry.Model, entry.RedirectModel, entry.Disabled, baseCreatedAt+int64(offset+i))
+			pricing, err := modelEntryPricingValue(entry.Pricing)
+			if err != nil {
+				return fmt.Errorf("model %q: %w", entry.Model, err)
+			}
+			b.WriteString("(?, ?, ?, ?, ?, ?)")
+			args = append(args, channelID, entry.Model, entry.RedirectModel, entry.Disabled, pricing, baseCreatedAt+int64(offset+i))
 		}
 		if _, err := s.execWith(ctx, exec, b.String(), args...); err != nil {
 			return fmt.Errorf("save model entries (offset %d): %w", offset, err)

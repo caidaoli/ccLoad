@@ -19,15 +19,83 @@ const (
 
 var customModelIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*$`)
 
-type customModelPricingJSON struct {
-	InputPrice          *float64 `json:"input_price"`
-	OutputPrice         *float64 `json:"output_price"`
-	CacheReadPrice      *float64 `json:"cache_read_price"`
-	CacheReadPriceHigh  *float64 `json:"cache_read_price_high"`
-	CacheWritePrice     *float64 `json:"cache_write_price"`
-	CacheWritePriceHigh *float64 `json:"cache_write_price_high"`
-	InputPriceHigh      *float64 `json:"input_price_high"`
-	OutputPriceHigh     *float64 `json:"output_price_high"`
+// CustomModelPrice 是自定义价格的对外契约（美元/百万 Token）：全局 model_custom_pricing
+// 的单个模型条目与渠道模型条目的 pricing 共用。nil 字段表示未填写，与显式 0 语义不同。
+type CustomModelPrice struct {
+	InputPrice          *float64 `json:"input_price,omitempty"`
+	OutputPrice         *float64 `json:"output_price,omitempty"`
+	CacheReadPrice      *float64 `json:"cache_read_price,omitempty"`
+	CacheReadPriceHigh  *float64 `json:"cache_read_price_high,omitempty"`
+	CacheWritePrice     *float64 `json:"cache_write_price,omitempty"`
+	CacheWritePriceHigh *float64 `json:"cache_write_price_high,omitempty"`
+	InputPriceHigh      *float64 `json:"input_price_high,omitempty"`
+	OutputPriceHigh     *float64 `json:"output_price_high,omitempty"`
+}
+
+func (p *CustomModelPrice) fields() [8]*float64 {
+	return [8]*float64{
+		p.InputPrice, p.OutputPrice, p.CacheReadPrice, p.CacheReadPriceHigh,
+		p.CacheWritePrice, p.CacheWritePriceHigh, p.InputPriceHigh, p.OutputPriceHigh,
+	}
+}
+
+// IsEmpty reports whether no price field is set.
+func (p *CustomModelPrice) IsEmpty() bool {
+	if p == nil {
+		return true
+	}
+	for _, value := range p.fields() {
+		if value != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// Clone returns an independent copy.
+func (p *CustomModelPrice) Clone() *CustomModelPrice {
+	if p == nil {
+		return nil
+	}
+	clonePrice := func(value *float64) *float64 {
+		if value == nil {
+			return nil
+		}
+		copied := *value
+		return &copied
+	}
+	return &CustomModelPrice{
+		InputPrice:          clonePrice(p.InputPrice),
+		OutputPrice:         clonePrice(p.OutputPrice),
+		CacheReadPrice:      clonePrice(p.CacheReadPrice),
+		CacheReadPriceHigh:  clonePrice(p.CacheReadPriceHigh),
+		CacheWritePrice:     clonePrice(p.CacheWritePrice),
+		CacheWritePriceHigh: clonePrice(p.CacheWritePriceHigh),
+		InputPriceHigh:      clonePrice(p.InputPriceHigh),
+		OutputPriceHigh:     clonePrice(p.OutputPriceHigh),
+	}
+}
+
+// Equal compares field presence and values.
+func (p *CustomModelPrice) Equal(other *CustomModelPrice) bool {
+	if p.IsEmpty() || other.IsEmpty() {
+		return p.IsEmpty() == other.IsEmpty()
+	}
+	left, right := p.fields(), other.fields()
+	for i := range left {
+		if (left[i] == nil) != (right[i] == nil) || (left[i] != nil && *left[i] != *right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// ModelPricing validates the prices and converts them to the calculator representation.
+func (p *CustomModelPrice) ModelPricing() (ModelPricing, error) {
+	if p == nil {
+		return ModelPricing{}, fmt.Errorf("pricing is empty")
+	}
+	return normalizeCustomModelPricing(*p)
 }
 
 // ParseCustomModelPricing parses and normalizes the model_custom_pricing setting.
@@ -102,7 +170,7 @@ func ParseCustomModelPricing(value string) (map[string]ModelPricing, error) {
 		}
 		objectDecoder := json.NewDecoder(bytes.NewReader(objectData))
 		objectDecoder.DisallowUnknownFields()
-		var object customModelPricingJSON
+		var object CustomModelPrice
 		if err := objectDecoder.Decode(&object); err != nil {
 			return nil, fmt.Errorf("model %q must be a JSON object: %w", id, err)
 		}
@@ -141,7 +209,7 @@ func ParseModelCustomPricingJSON(value string) (map[string]ModelPricing, error) 
 	return ParseCustomModelPricing(value)
 }
 
-func normalizeCustomModelPricing(raw customModelPricingJSON) (ModelPricing, error) {
+func normalizeCustomModelPricing(raw CustomModelPrice) (ModelPricing, error) {
 	pricing := ModelPricing{}
 	assignPrice := func(name string, value *float64, dst *float64) error {
 		if value == nil {

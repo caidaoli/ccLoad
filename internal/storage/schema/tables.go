@@ -67,6 +67,7 @@ func DefineChannelModelsTable() *TableBuilder {
 		Column("model VARCHAR(191) NOT NULL").
 		Column("redirect_model VARCHAR(191) NOT NULL DEFAULT ''"). // 重定向目标模型（空表示不重定向）
 		Column("disabled TINYINT NOT NULL DEFAULT 0").
+		Column("pricing TEXT"). // 渠道模型价格 JSON（NULL 表示沿用全局价格）
 		Column("created_at BIGINT NOT NULL DEFAULT 0").
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").

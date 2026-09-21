@@ -165,20 +165,21 @@ type proxyRequestContext struct {
 	translatedBody          []byte
 	header                  http.Header
 	isStreaming             bool
-	tokenHash               string               // Token哈希值（用于统计）
-	tokenID                 int64                // Token ID（用于日志记录，0表示未使用token）
-	clientIP                string               // 客户端IP地址（用于日志记录）
-	activeReqID             int64                // 活跃请求ID（用于更新渠道信息）
-	observer                *ForwardObserver     // 转发观测回调（可选）
-	startTime               time.Time            // 请求开始时间（用于统计）
-	channelStartTime        time.Time            // 当前渠道尝试开始时间（每次切换渠道时重置）
-	attemptStartTime        time.Time            // 渠道内单次 Key/URL 尝试开始时间
-	attemptActualModel      string               // 上次尝试实际发往上游的模型（含后缀剥离/重定向后的结果）
-	attemptSelectedKey      string               // 上次尝试选中的 Key 或 OAuth access token
-	baseURL                 string               // 当前尝试使用的上游URL（多URL场景）
-	attemptCostMultiplier   float64              // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
-	debugData               *model.DebugLogEntry // Debug日志数据（debug开启时填充）
-	skipProxyLog            bool                 // 管理测试等外层会统一持久化日志的调用路径
+	tokenHash               string                 // Token哈希值（用于统计）
+	tokenID                 int64                  // Token ID（用于日志记录，0表示未使用token）
+	clientIP                string                 // 客户端IP地址（用于日志记录）
+	activeReqID             int64                  // 活跃请求ID（用于更新渠道信息）
+	observer                *ForwardObserver       // 转发观测回调（可选）
+	startTime               time.Time              // 请求开始时间（用于统计）
+	channelStartTime        time.Time              // 当前渠道尝试开始时间（每次切换渠道时重置）
+	attemptStartTime        time.Time              // 渠道内单次 Key/URL 尝试开始时间
+	attemptActualModel      string                 // 上次尝试实际发往上游的模型（含后缀剥离/重定向后的结果）
+	attemptSelectedKey      string                 // 上次尝试选中的 Key 或 OAuth access token
+	baseURL                 string                 // 当前尝试使用的上游URL（多URL场景）
+	attemptCostMultiplier   float64                // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
+	attemptModelPrice       *util.CustomModelPrice // 当前渠道此模型的价格（nil 按全局价格计费）
+	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
+	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
 	routingSession          *responsesExecutionSession // 当前 Responses execution session 的首选渠道
 	nativeCodexWS           *codexUpstreamWebsocketSession
@@ -976,9 +977,10 @@ type logEntryParams struct {
 	BaseURL          string // 请求使用的上游URL
 	Result           *fwResult
 	ErrMsg           string
-	StartTime        time.Time            // 渠道尝试开始时间（用于日志记录）
-	DebugData        *model.DebugLogEntry // Debug日志数据
-	CostMultiplier   float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
+	StartTime        time.Time              // 渠道尝试开始时间（用于日志记录）
+	DebugData        *model.DebugLogEntry   // Debug日志数据
+	CostMultiplier   float64                // 渠道成本倍率快照（0=免费，<0 视为 1）
+	ModelPrice       *util.CustomModelPrice // 渠道模型价格（nil 按全局价格计费）
 	ThinkingEffort   string
 }
 
@@ -1098,7 +1100,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
 			// alpha/search 固定按 search_call 计费。
-			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res)
+			entry.Cost = computeRequestCostWithPrice(billingModel, res.ServiceTier, p.ModelPrice, res)
 		}
 	} else {
 		entry.Message = "unknown"
@@ -1133,6 +1135,12 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 // OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
 // 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
 func computeRequestCost(model string, serviceTier string, res *fwResult) float64 {
+	return computeRequestCostWithPrice(model, serviceTier, nil, res)
+}
+
+// computeRequestCostWithPrice 在 price 非空时用渠道模型价格替代标准 token 价格；
+// 图像工具费率只来自系统目录，不受渠道价格影响。
+func computeRequestCostWithPrice(model string, serviceTier string, price *util.CustomModelPrice, res *fwResult) float64 {
 	if res == nil {
 		return 0
 	}
@@ -1141,9 +1149,10 @@ func computeRequestCost(model string, serviceTier string, res *fwResult) float64
 			return cost
 		}
 	}
-	return util.CalculateStandardCostBreakdown(
+	return util.CalculateStandardCostBreakdownWithPrice(
 		model,
 		serviceTier,
+		price,
 		res.InputTokens,
 		res.OutputTokens,
 		res.CacheReadInputTokens,

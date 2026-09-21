@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,7 +101,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
+	header := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time", "model_pricing"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -174,6 +175,11 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 				modelRedirectsJSON = string(jsonBytes)
 			}
 		}
+		modelPricingJSON, err := exportChannelModelPricing(cfg.ModelEntries)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize model pricing for channel %d: %w", cfg.ID, err))
+			return
+		}
 		cooldownDetectionRulesJSON := ""
 		if cfg.CooldownDetectionRules != nil && !cfg.CooldownDetectionRules.IsEmpty() {
 			jsonBytes, err := sonic.Marshal(cfg.CooldownDetectionRules)
@@ -228,6 +234,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.FormatBool(cfg.Websockets),
 			strconv.Itoa(cfg.ScheduledCheckIntervalMinutes),
 			cfg.ScheduledCheckStartTime,
+			modelPricingJSON,
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -295,6 +302,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasAPIKeyPrioritiesColumn := columnIndex["api_key_priorities"]
 	_, hasAPIKeyCostMultipliersColumn := columnIndex["api_key_cost_multipliers"]
 	_, hasAPIKeyModelScopeEmptyColumn := columnIndex["api_key_model_scope_empty"]
+	_, hasModelPricingColumn := columnIndex["model_pricing"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
 	existingSchedulesByName := make(map[string]*model.Config)
@@ -304,7 +312,8 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
 	existingWebsocketsByName := make(map[string]bool)
 	existingAPIKeysByName := make(map[string][]*model.APIKey)
-	if !hasInterval || !hasStart || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn {
+	existingModelEntriesByName := make(map[string][]model.ModelEntry)
+	if !hasInterval || !hasStart || !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn || !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn || !hasModelPricingColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -317,6 +326,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
 			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
 			existingWebsocketsByName[cfg.Name] = cfg.Websockets
+			existingModelEntriesByName[cfg.Name] = cfg.ModelEntries
 		}
 		if !hasAPIKeyAllowedModelsColumn || !hasAPIKeyCostMultipliersColumn || !hasAPIKeyPrioritiesColumn || !hasAPIKeyModelScopeEmptyColumn {
 			allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
@@ -362,6 +372,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			hasAPIKeyCostMultipliersColumn,
 			hasAPIKeyPrioritiesColumn,
 			hasAPIKeyModelScopeEmptyColumn,
+			hasModelPricingColumn,
 			existingScheduledCheckByName,
 			existingScheduledCheckModelByName,
 			existingCooldownDetectionRulesByName,
@@ -369,6 +380,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingWebsocketsByName,
 			existingAPIKeysByName,
 			existingSchedulesByName,
+			existingModelEntriesByName,
 		)
 		if skip {
 			if errMsg != "" {
@@ -505,6 +517,7 @@ func (s *Server) parseChannelImportRow(
 	hasAPIKeyCostMultipliersColumn bool,
 	hasAPIKeyPrioritiesColumn bool,
 	hasAPIKeyModelScopeEmptyColumn bool,
+	hasModelPricingColumn bool,
 	existingScheduledCheckByName map[string]bool,
 	existingScheduledCheckModelByName map[string]string,
 	existingCooldownDetectionRulesByName map[string]*model.CooldownDetectionRules,
@@ -512,6 +525,7 @@ func (s *Server) parseChannelImportRow(
 	existingWebsocketsByName map[string]bool,
 	existingAPIKeysByName map[string][]*model.APIKey,
 	existingSchedulesByName map[string]*model.Config,
+	existingModelEntriesByName map[string][]model.ModelEntry,
 ) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
 	if isCSVRecordEmpty(record) {
 		return nil, "", true
@@ -541,6 +555,7 @@ func (s *Server) parseChannelImportRow(
 	urlsRaw := fetch("urls")
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
+	modelPricingRaw := fetch("model_pricing")
 	rawProtocolTransformMode := fetch("protocol_transform_mode")
 	keyStrategy := fetch("key_strategy")
 
@@ -768,6 +783,14 @@ func (s *Server) parseChannelImportRow(
 			entry.RedirectModel = redirect
 		}
 		modelEntries = append(modelEntries, entry)
+	}
+	if hasModelPricingColumn {
+		if err := applyImportedModelPricing(modelEntries, modelPricingRaw); err != nil {
+			return nil, fmt.Sprintf("第%d行 model_pricing 无效: %v", lineNo, err), true
+		}
+	} else {
+		// 旧版 CSV 没有价格列：更新已有渠道时沿用同名模型的渠道价格。
+		modelEntries = model.CarryModelPricing(existingModelEntriesByName[name], modelEntries)
 	}
 	if scheduledCheckModel != "" {
 		declared := false
@@ -1261,6 +1284,58 @@ func buildCSVColumnIndex(header []string) map[string]int {
 		index[norm] = i
 	}
 	return index
+}
+
+// exportChannelModelPricing 把渠道模型价格序列化为 {模型名: 价格} JSON；没有价格时输出 "{}"。
+func exportChannelModelPricing(entries []model.ModelEntry) (string, error) {
+	pricing := make(map[string]*util.CustomModelPrice)
+	for _, entry := range entries {
+		if !entry.Pricing.IsEmpty() {
+			pricing[entry.Model] = entry.Pricing
+		}
+	}
+	if len(pricing) == 0 {
+		return "{}", nil
+	}
+	encoded, err := sonic.Marshal(pricing)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// applyImportedModelPricing 解析 model_pricing 列并写入对应模型条目；键必须是本行 models 中的模型。
+func applyImportedModelPricing(entries []model.ModelEntry, raw string) error {
+	if raw == "" || raw == "{}" {
+		return nil
+	}
+	var byModel map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &byModel); err != nil {
+		return fmt.Errorf("JSON 无效: %w", err)
+	}
+	indexByModel := make(map[string]int, len(entries))
+	for i, entry := range entries {
+		indexByModel[entry.Model] = i
+	}
+	for modelName, rawPricing := range byModel {
+		index, ok := indexByModel[modelName]
+		if !ok {
+			return fmt.Errorf("模型 %q 不在 models 中", modelName)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(rawPricing))
+		decoder.DisallowUnknownFields()
+		var pricing util.CustomModelPrice
+		if err := decoder.Decode(&pricing); err != nil {
+			return fmt.Errorf("模型 %q: %w", modelName, err)
+		}
+		entry := entries[index]
+		entry.Pricing = &pricing
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("模型 %q: %w", modelName, err)
+		}
+		entries[index] = entry
+	}
+	return nil
 }
 
 // normalizeCSVHeader 规范化CSV列名

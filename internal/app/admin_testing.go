@@ -1216,6 +1216,10 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = configuredChannelTestContent(s.configService)
 	}
+	if cfg != nil {
+		// 与代理计费同源：价格挂在重定向前的渠道逻辑模型上。
+		testReq.ChannelModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, testReq.Model))
+	}
 	if cfg != nil && cfg.UsesCursorOAuth() {
 		return s.testCursorOAuthChannel(reqCtx, cfg, apiKey, testReq)
 	}
@@ -2463,8 +2467,9 @@ func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil
 	billableInput, output, cacheRead, _ := parser.GetUsage()
 	cache5m, cache1h, _ := parser.GetCacheBreakdown()
 	if billableInput+output+cacheRead > 0 {
-		result["cost_usd"] = util.CalculateCostDetailed(
+		result["cost_usd"] = util.CalculateCostDetailedWithPrice(
 			model.RoutingModelName(testReq.Model),
+			testReq.ChannelModelPrice,
 			billableInput,
 			output,
 			cacheRead,

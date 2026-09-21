@@ -91,7 +91,7 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 			}
 			break
 		}
-		cfg.ModelEntries = antigravityOAuthModelEntries()
+		cfg.ModelEntries = model.CarryModelPricing(cfg.ModelEntries, antigravityOAuthModelEntries())
 		cfg.MaxConcurrency = antigravityOAuthMaxConcurrency
 		updated, err := store.UpdateConfig(ctx, cfg.ID, cfg)
 		if err != nil {

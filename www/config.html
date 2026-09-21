@@ -323,6 +323,7 @@
             <h3>Custom model prices</h3>
             <p>Open the custom pricing editor in Settings to set input, output, cache-read and cache-write prices in USD per million tokens, plus optional high-context prices. <code>model_custom_pricing</code> replaces the model's system price entry as a whole. Enter <code>0</code> for a free cache rate; leaving a cache rate blank uses the model-family fallback. High-context thresholds follow the system model rules.</p>
             <p>Saving prices from the editor applies immediately without a restart. Catalog refreshes preserve your overrides. Remove an override to restore the system price. Models with pricing tiers that cannot fit the two-level editor are rejected; image-specific and per-request prices remain managed by the system catalog.</p>
+            <p>When the same model costs different amounts on different channels, open the <strong>$</strong> button on a model row in the channel editor to set a channel price with the same fields. It applies only to that model on that channel, takes precedence over the global override and the system price, and is still multiplied by the channel or key cost multiplier. Clear it to fall back to the global price.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⬆️</span>

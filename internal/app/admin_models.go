@@ -1410,7 +1410,7 @@ func modelEntriesEqual(left, right []model.ModelEntry) bool {
 		return false
 	}
 	for i := range left {
-		if left[i] != right[i] {
+		if !left[i].Equal(right[i]) {
 			return false
 		}
 	}
@@ -1497,9 +1497,18 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 		return false
 	}
 
+	// 上游模型目录不表达价格：刷新后仍存在的模型沿用原渠道价格（按同一组别名身份匹配）。
+	pricingByIdentity := make(map[string]*util.CustomModelPrice, len(oldEntries))
 	for _, entry := range oldEntries {
 		key := strings.ToLower(entry.Model)
 		oldSet[key] = struct{}{}
+		if entry.Pricing != nil {
+			for _, identity := range modelIdentities(entry.Model) {
+				if _, exists := pricingByIdentity[identity]; !exists {
+					pricingByIdentity[identity] = entry.Pricing
+				}
+			}
+		}
 		if !entry.Disabled {
 			continue
 		}
@@ -1511,6 +1520,14 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 		newSet[key] = struct{}{}
 		disabled := isDisabled(fetched[i].Model) || isDisabled(fetched[i].RedirectModel)
 		fetched[i].Disabled = fetched[i].Disabled || disabled
+		if fetched[i].Pricing == nil && fetched[i].Model != "*" {
+			for _, identity := range modelIdentities(fetched[i].Model) {
+				if pricing := pricingByIdentity[identity]; pricing != nil {
+					fetched[i].Pricing = pricing
+					break
+				}
+			}
+		}
 	}
 	for key := range oldSet {
 		if _, exists := newSet[key]; !exists {

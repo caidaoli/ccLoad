@@ -871,6 +871,10 @@ func ensureChannelModelsDisabled(ctx context.Context, db *sql.DB, dialect Dialec
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func ensureChannelModelsPricing(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channel_models", "pricing", "TEXT", "TEXT")
+}
+
 func ensureAPIKeysDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "api_keys", "disabled",
 		"TINYINT NOT NULL DEFAULT 0",

@@ -1590,6 +1590,23 @@ test('model submit payload includes disabled state', () => {
   ]);
 });
 
+test('model rows keep channel pricing through fetch merge and submit', () => {
+  const previousWindow = global.window;
+  global.window = { ChannelModelPricing: require('./channels-model-pricing.js') };
+  try {
+    const { areModelRowsEqual, collectModelsForSubmit, mergeModelRowsWithFetchedModels } = loadChannelsModals();
+    const pricing = { input_price: 1, output_price: 2 };
+    const merged = mergeModelRowsWithFetchedModels([{ model: 'priced', pricing }], [{ model: 'priced' }, { model: 'fresh' }]);
+    assert.deepEqual(collectModelsForSubmit(merged.rows), [
+      { model: 'fresh', redirect_model: 'fresh', disabled: false },
+      { model: 'priced', redirect_model: '', disabled: false, pricing }
+    ]);
+    assert.equal(areModelRowsEqual(merged.rows, merged.rows.map(row => ({ ...row, pricing: null }))), false);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
 test('fetchModelsFromAPI sends every available API key', async () => {
   let requestBody;
   const restore = installFetchModelsGlobals({

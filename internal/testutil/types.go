@@ -54,6 +54,7 @@ type TestChannelRequest struct {
 	WaitForCapacity   bool                    `json:"-"`                         // 后台批任务等待渠道配额；交互式测试仍快速失败
 	UseURLProtocol    bool                    `json:"-"`                         // 定时检测按 URL 声明选择原生协议，未声明时优先 OpenAI
 	ImageGeneration   *ImageGenerationOptions `json:"-"`                         // 生图 Tab 的 Chat Completions 请求选项
+	ChannelModelPrice *util.CustomModelPrice  `json:"-"`                         // 渠道此模型的价格（nil 按全局价格计费）
 	resolvedSessionID string
 }
 

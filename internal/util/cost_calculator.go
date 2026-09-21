@@ -225,7 +225,15 @@ func selectTokenPricingTier(tiers []TokenPricingTier, inputTokens int) TokenPric
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
-	return calculateCostBreakdownDetailed(model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
+	return CalculateCostDetailedWithPrice(model, nil, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+}
+
+// CalculateCostDetailedWithPrice 与 CalculateCostDetailed 相同；price 非空时整份替换模型价格。
+func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
+	return calculateCostBreakdownDetailed(
+		model, resolveModelPriceOverride(model, price),
+		inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
+	).Total
 }
 
 // CalculateStandardCostBreakdown 返回日志页展示所需的标准成本计算过程。
@@ -234,11 +242,32 @@ func CalculateStandardCostBreakdown(
 	model, serviceTier string,
 	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
 ) StandardCostBreakdown {
+	return CalculateStandardCostBreakdownWithPrice(
+		model, serviceTier, nil, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
+	)
+}
+
+// CalculateStandardCostBreakdownWithPrice 在 price 非空时用它整份替换目录与全局自定义价格
+// （渠道模型价格）。model 仍决定长上下文阈值、缓存倍率回退与 service_tier 倍率；
+// Anthropic fast 模式按该价格的 input/output 翻倍，缓存仍按基础价，与官方 fast 定价同构。
+func CalculateStandardCostBreakdownWithPrice(
+	model, serviceTier string,
+	price *CustomModelPrice,
+	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
+) StandardCostBreakdown {
+	override := resolveModelPriceOverride(model, price)
 	if serviceTier == "fast" && IsFastModeModel(model) {
-		return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+		if override == nil {
+			return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+		}
+		breakdown := calculateCostBreakdownDetailed(
+			model, override, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
+		)
+		return scaleFastModeInputOutput(breakdown)
 	}
 	breakdown := calculateCostBreakdownDetailed(
 		model,
+		override,
 		inputTokens,
 		outputTokens,
 		cacheReadTokens,
@@ -252,7 +281,29 @@ func CalculateStandardCostBreakdown(
 	return scaleCostBreakdown(breakdown, multiplier)
 }
 
-func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
+// resolveModelPriceOverride 把渠道模型价格转换为计费价目。自定义只替换价目，
+// 缓存读是否参与分档仍由系统目录中该计费模型的语义决定（与全局自定义价格一致）。
+func resolveModelPriceOverride(model string, price *CustomModelPrice) *ModelPricing {
+	if price.IsEmpty() {
+		return nil
+	}
+	pricing, err := price.ModelPricing()
+	if err != nil {
+		// 写库前已校验；这里只可能是绕过校验的脏数据，回退目录价格而不是按 0 计费。
+		log.Printf("[ERROR] 忽略无效的模型价格覆盖（model=%s）: %v", model, err)
+		return nil
+	}
+	if snapshot := activeModelPricing.Load(); snapshot != nil {
+		if system, ok := lookupModelPricingWithFallback(
+			snapshot.systemPricing, snapshot.systemAliases, snapshot.systemPrefixBuckets, model,
+		); ok {
+			pricing.CacheReadCountsTowardTier = system.CacheReadCountsTowardTier
+		}
+	}
+	return &pricing
+}
+
+func calculateCostBreakdownDetailed(model string, override *ModelPricing, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	// 防御性检查:拒绝负数token
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
 		log.Printf("[ERROR] 检测到负数 token（model=%s）: input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
@@ -260,12 +311,18 @@ func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cac
 		return StandardCostBreakdown{}
 	}
 
-	pricing, ok := getPricing(model)
-	if !ok {
-		// 尝试模糊匹配(例如:claude-3-opus-xxx → claude-3-opus)
-		pricing, ok = fuzzyMatchModel(model)
+	var pricing ModelPricing
+	if override != nil {
+		pricing = *override
+	} else {
+		var ok bool
+		pricing, ok = getPricing(model)
 		if !ok {
-			return StandardCostBreakdown{} // 未知模型
+			// 尝试模糊匹配(例如:claude-3-opus-xxx → claude-3-opus)
+			pricing, ok = fuzzyMatchModel(model)
+			if !ok {
+				return StandardCostBreakdown{} // 未知模型
+			}
 		}
 	}
 
@@ -554,6 +611,21 @@ func IsFastModeModel(model string) bool {
 // 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
+}
+
+// anthropicFastModeMultiplier 是 fast 模式 input/output 相对基础价的倍率（$10/$50 对 $5/$25）。
+const anthropicFastModeMultiplier = 2.0
+
+// scaleFastModeInputOutput 把按基础价算出的明细换算为 fast 模式：只放大 input/output，缓存保持基础价。
+func scaleFastModeInputOutput(breakdown StandardCostBreakdown) StandardCostBreakdown {
+	for _, component := range []*CostComponent{&breakdown.Input, &breakdown.Output} {
+		component.PricePerMillion *= anthropicFastModeMultiplier
+		component.Cost *= anthropicFastModeMultiplier
+	}
+	breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
+		breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
+	breakdown.ServiceTierMultiplier = anthropicFastModeMultiplier
+	return breakdown
 }
 
 func calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
