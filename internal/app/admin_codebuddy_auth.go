@@ -27,6 +27,9 @@ func codeBuddyChannelBaseName(credential *codebuddyauth.Credential) string {
 	}
 	digest := sha256.Sum256([]byte(identity))
 	label := "CodeBuddy"
+	if credential.IsInternational() {
+		label = "WorkBuddy"
+	}
 	if credential.Nickname != "" {
 		label += "-" + credential.Nickname
 	}
@@ -56,7 +59,7 @@ func (s *Server) prepareCodeBuddyChannel(ctx context.Context, name, credential s
 }
 
 func codeBuddyIdentityMatches(a, b *codebuddyauth.Credential) bool {
-	if a.Endpoint() != b.Endpoint() {
+	if !codebuddyauth.SameProductSite(a.Endpoint(), b.Endpoint()) {
 		return false
 	}
 	if a.UID != "" && b.UID != "" {
@@ -137,7 +140,7 @@ func (s *Server) handleImportCodeBuddyCredential(c *gin.Context, baseURL string)
 				RespondError(c, http.StatusBadRequest, err)
 				return
 			}
-		} else if credential.Endpoint() != strings.TrimRight(strings.TrimSpace(baseURL), "/") {
+		} else if !codebuddyauth.SameProductSite(credential.Endpoint(), baseURL) {
 			RespondErrorMsg(c, http.StatusBadRequest, "CodeBuddy credential belongs to a different edition")
 			return
 		}
@@ -157,7 +160,7 @@ func (s *Server) HandleImportCodeBuddyCredential(c *gin.Context) {
 
 // HandleImportCodeBuddyInternationalCredential imports an international CLI credential.
 func (s *Server) HandleImportCodeBuddyInternationalCredential(c *gin.Context) {
-	s.handleImportCodeBuddyCredential(c, codebuddyauth.InternationalBaseURL)
+	s.handleImportCodeBuddyCredential(c, codebuddyauth.WorkBuddyBaseURL)
 }
 
 // HandleRefreshCodeBuddyCredential refreshes and persists a channel credential.
@@ -291,7 +294,7 @@ func (s *Server) HandleStartCodeBuddyOAuth(c *gin.Context) {
 
 // HandleStartCodeBuddyInternationalOAuth starts the international authorization flow.
 func (s *Server) HandleStartCodeBuddyInternationalOAuth(c *gin.Context) {
-	s.handleStartCodeBuddyOAuth(c, codebuddyauth.InternationalBaseURL)
+	s.handleStartCodeBuddyOAuth(c, codebuddyauth.WorkBuddyBaseURL)
 }
 
 func (m *codeBuddyOAuthManager) run(ctx context.Context, session *codeBuddyLoginSession, login *codebuddyauth.Login) {

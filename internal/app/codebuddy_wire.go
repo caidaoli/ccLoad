@@ -129,6 +129,13 @@ func finalizeCodeBuddyThinking(request map[string]json.RawMessage) {
 	request["reasoning"] = json.RawMessage(`{"effort":"high"}`)
 }
 
+func rewriteCodeBuddyPublicErrorURLs(req *http.Request, body []byte) []byte {
+	if req == nil || req.URL == nil {
+		return body
+	}
+	return codebuddyauth.RewritePublicErrorURLs(body, req.URL.Hostname())
+}
+
 func injectCodeBuddyHeaders(req *http.Request, cfg *model.Config, accessToken string) error {
 	credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {

@@ -1,6 +1,7 @@
 package codebuddyauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -241,16 +242,16 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	var requests []string
 	client := &http.Client{Transport: codeBuddyRoundTripper(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
-		if r.URL.Host != "www.codebuddy.ai" {
-			t.Fatalf("request host=%q, want international host", r.URL.Host)
+		if r.URL.Host != "www.workbuddy.ai" {
+			t.Fatalf("request host=%q, want workbuddy host", r.URL.Host)
 		}
-		if r.Header.Get("Origin") != InternationalBaseURL {
-			t.Fatalf("origin=%q, want %q", r.Header.Get("Origin"), InternationalBaseURL)
+		if r.Header.Get("Origin") != WorkBuddyBaseURL {
+			t.Fatalf("origin=%q, want %q", r.Header.Get("Origin"), WorkBuddyBaseURL)
 		}
 		var body string
 		switch r.URL.Path {
 		case "/v2/plugin/auth/state":
-			body = `{"code":0,"data":{"state":"intl-state","authUrl":"https://www.codebuddy.ai/login"}}`
+			body = `{"code":0,"data":{"state":"intl-state","authUrl":"https://www.workbuddy.ai/login"}}`
 		case "/v2/plugin/auth/token":
 			body = `{"code":0,"data":{"accessToken":"intl-access","refreshToken":"intl-refresh","expiresIn":3600}}`
 		case "/v2/plugin/login/account":
@@ -264,7 +265,7 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	})}
 	service := NewService(client)
 	service.Now = func() time.Time { return time.Unix(1000, 0) }
-	login, err := service.StartAt(context.Background(), InternationalBaseURL)
+	login, err := service.StartAt(context.Background(), WorkBuddyBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,15 +273,15 @@ func TestInternationalOAuthUsesInternationalEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.BaseURL != InternationalBaseURL || credential.UID != "intl-user" {
-		t.Fatalf("credential=%+v, want international endpoint and identity", credential)
+	if credential.BaseURL != WorkBuddyBaseURL || credential.UID != "intl-user" {
+		t.Fatalf("credential=%+v, want workbuddy endpoint and identity", credential)
 	}
 	refreshed, err := service.Refresh(context.Background(), credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.BaseURL != InternationalBaseURL || refreshed.AccessToken != "intl-new-access" {
-		t.Fatalf("refreshed=%+v, want international endpoint", refreshed)
+	if refreshed.BaseURL != WorkBuddyBaseURL || refreshed.AccessToken != "intl-new-access" {
+		t.Fatalf("refreshed=%+v, want workbuddy endpoint", refreshed)
 	}
 	if len(requests) != 4 {
 		t.Fatalf("requests=%v, want state/token/account/refresh", requests)
@@ -491,8 +492,8 @@ func TestChatHostFollowsJWTIssuer(t *testing.T) {
 		intl              bool
 	}{
 		{jwtWithIssuer("https://www.workbuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.workbuddy.ai", true},
-		{jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.codebuddy.ai", true},
-		{"not-a-jwt", InternationalBaseURL, "www.codebuddy.ai", true},
+		{jwtWithIssuer("https://www.codebuddy.ai/auth/realms/copilot"), InternationalBaseURL, "www.workbuddy.ai", true},
+		{"not-a-jwt", InternationalBaseURL, "www.workbuddy.ai", true},
 		{"not-a-jwt", "", "copilot.tencent.com", false},
 		{"access", WorkBuddyBaseURL, "www.workbuddy.ai", true},
 	}
@@ -507,6 +508,28 @@ func TestChatHostFollowsJWTIssuer(t *testing.T) {
 		if c.IsInternational() != tc.intl {
 			t.Errorf("IsInternational()=%v want %v host=%s", c.IsInternational(), tc.intl, ChatHost(c))
 		}
+	}
+	if CompletionsURLForBaseURL(InternationalBaseURL) != WorkBuddyCompletionsURL {
+		t.Fatalf("international completions URL=%s", CompletionsURLForBaseURL(InternationalBaseURL))
+	}
+	if !SameProductSite(InternationalBaseURL, WorkBuddyBaseURL) || SameProductSite(InternationalBaseURL, BaseURL) {
+		t.Fatal("codebuddy.ai and workbuddy.ai must be one international site")
+	}
+}
+
+func TestRewritePublicErrorURLsMapsWorkBuddyUsageLink(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"error":{"data":{"code":14018,"msg":"Please visit https://www.codebuddy.ai/profile/usage "}}}`)
+	got := RewritePublicErrorURLs(body, "www.workbuddy.ai")
+	if !bytes.Contains(got, []byte("https://www.workbuddy.ai/profile/usage")) {
+		t.Fatalf("workbuddy host: %s", got)
+	}
+	if bytes.Contains(got, []byte("codebuddy.ai")) {
+		t.Fatalf("codebuddy link leaked: %s", got)
+	}
+	same := RewritePublicErrorURLs(body, "www.codebuddy.ai")
+	if !bytes.Equal(same, body) {
+		t.Fatalf("codebuddy host must keep upstream copy, got %s", same)
 	}
 }
 

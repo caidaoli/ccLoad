@@ -39,7 +39,7 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
     callbackPlaceholder: '', pollOnly: true
   }),
   'codebuddy-international': Object.freeze({
-    provider: 'codebuddy-international', label: 'CodeBuddy International', i18n: 'channels.codebuddyInternational',
+    provider: 'codebuddy-international', label: 'WorkBuddy International', i18n: 'channels.codebuddyInternational',
     callbackPlaceholder: '', pollOnly: true
   }),
   codex: Object.freeze({
