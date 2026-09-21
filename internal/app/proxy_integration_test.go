@@ -2115,6 +2115,49 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityMaxOutputTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+		limit int
+		want  int64
+	}{
+		{"above limit", "claude-opus-4-6-thinking", 128000, 64000},
+		{"at limit", "claude-opus-4-6-thinking", 64000, 64000},
+		{"below limit", "claude-opus-4-6-thinking", 4096, 4096},
+		{"unknown model preserved", "claude-custom", 128000, 128000},
+		{"gemini limit removed", "gemini-3-flash", 128000, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := gjson.GetBytes(wire, "request.generationConfig.maxOutputTokens")
+				if tc.want == 0 && got.Exists() || tc.want != 0 && (got.Type != gjson.Number || got.Int() != tc.want) {
+					t.Errorf("maxOutputTokens=%s, want %d (0 means absent)", got.Raw, tc.want)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			t.Cleanup(upstream.Close)
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-output-limit", upstreamProtocol: "gemini", models: tc.model, priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-output-limit"),
+			}}, map[int]string{0: upstream.URL})
+			body := map[string]any{
+				"model": tc.model, "max_tokens": tc.limit,
+				"messages": []map[string]any{{"role": "user", "content": "hello"}},
+			}
+			response := doProxyRequest(t, env.engine, "/v1/messages", body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"claude-sonnet-4-6", "gemini-3-flash"} {

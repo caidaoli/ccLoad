@@ -23,6 +23,7 @@ import (
 	antigravitygemini "ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
 	antigravitychat "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/chat-completions"
 	antigravityresponses "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/responses"
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
 
@@ -226,6 +227,12 @@ func prepareAntigravityRequestBody(
 	request = normalizeAntigravitySchemas(request, modelName)
 	request = normalizeAntigravityThinkingLevel(request)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
+		// The translator preserves client limits; cap them for the actual upstream model.
+		if maxOut := gjson.GetBytes(request, "generationConfig.maxOutputTokens"); maxOut.Type == gjson.Number {
+			if info := cliproxyregistry.LookupModelInfo(modelName, "antigravity"); info != nil && info.MaxCompletionTokens > 0 && maxOut.Int() > int64(info.MaxCompletionTokens) {
+				request = setJSONValue(request, "generationConfig.maxOutputTokens", info.MaxCompletionTokens)
+			}
+		}
 		request = normalizeAntigravityClaudeToolResultOrder(request)
 		request = ensureAntigravityValidatedToolMode(request)
 	} else {

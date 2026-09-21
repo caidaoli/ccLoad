@@ -38,6 +38,8 @@
 
 ## Antigravity
 
+- **输出上限**：Claude 目标在 `prepareAntigravityRequestBody` 按实际目标模型的 Antigravity 静态目录 `MaxCompletionTokens` 裁剪超限的 `generationConfig.maxOutputTokens`；未知模型或未登记上限时保留原值，不补写缺失字段。非 Claude 目标继续删除该字段。该规则对齐 CLIProxyAPI executor 的发送前处理，不能只同步转换器而遗漏此边界。
+
 - **Antigravity 上游契约**(`server.go`+`antigravityauth/service.go`+`antigravity_wire.go`+`upstream_connection_age.go`):启动时以 `electron-builder` UA 从官方 Hub manifest 读取三段式版本,失败回退 `antigravity/hub/2.9.1 darwin/arm64`;非流请求走 `/v1internal:generateContent`,流式请求走 `/v1internal:streamGenerateContent?alt=sse`,但两者共用 daily → daily sandbox 的地址回退策略;Cloud Code 数据请求及项目/模型/额度查询共用该 UA 和独立的标准 HTTP/1.1 连接池,OAuth Token 端点仍按原生契约使用 `Go-http-client/2.0`;不用 uTLS、不先试 HTTP/2,避免在 Google Cloud Code 内部端点上重放失败的 POST;无代理与渠道代理池都和普通渠道按传输配置隔离,并继续服从 `upstream_connection_reuse_limit_seconds`。Claude 目标请求必须在每个 model turn 的首个 `functionCall` 写入 `skip_thought_signature_validator`,同 turn 的并行 sibling 不带签名;所有已支持入口统一在 provider finalizer 收敛,禁止依赖 400 后剥离工具历史的降级重试
 - **Antigravity 签名恢复**(`antigravity_replay.go`):由 app 持有有界内存缓存，纯转换器不持有跨请求状态。恢复 Anthropic thinking signature、Responses reasoning encrypted_content 及文本签名载体；按调用方凭证、会话、渠道账号、模型、上游地址和入口协议隔离，缺少调用方或稳定会话标识时不恢复，不用 prompt_cache_key 代替会话。仅完整成功响应入缓存，显式签名优先；thinking 有效期 3h，Responses 为 1h，总上限 1024 条/8MiB。签名 400 使当前作用域失效，不剥离思考或工具历史后重试。
 - **Antigravity Claude 工具结果顺序**(`antigravity_wire.go:prepareAntigravityRequestBody`):四种客户端入口统一在 provider finalizer 将 user turn 的 `functionResponse` 稳定排列到普通内容之前，保留工具 ID、结果载荷、嵌套图片及其相对顺序，不改 model turn 或跨 turn 顺序。中途 system/developer reminder 合并后也必须遵守此规则；共享 Gemini/Vertex 的文本优先规则保持不变。
