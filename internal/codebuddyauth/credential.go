@@ -2,6 +2,7 @@
 package codebuddyauth
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,12 @@ func CompletionsURLForBaseURL(baseURL string) string {
 	if baseURL == "" {
 		baseURL = BaseURL
 	}
+	if u, err := url.Parse(baseURL); err == nil {
+		switch canonicalProductHost(u.Hostname()) {
+		case "www.codebuddy.ai", "www.workbuddy.ai":
+			return WorkBuddyCompletionsURL
+		}
+	}
 	return baseURL + "/v2/chat/completions"
 }
 
@@ -74,21 +81,51 @@ func (c *Credential) IsInternational() bool {
 	return host == "www.codebuddy.ai" || host == "www.workbuddy.ai"
 }
 
-// ChatHost is the host the official CLI uses for chat. International OAuth
-// tokens often store base_url=www.codebuddy.ai while JWT iss is workbuddy.ai;
-// sending that token to the wrong site is upstream 403 code 11140.
+// ChatHost is the host used for chat. International public accounts
+// (codebuddy.ai or workbuddy.ai) talk to WorkBuddy; the two brands share
+// tokens. Sending a WorkBuddy-issued token to codebuddy.ai is upstream 403
+// code 11140. Codebuddy-issued international tokens are accepted on WorkBuddy.
 func ChatHost(c *Credential) string {
-	if host := canonicalProductHost(issuerHost(c)); isKnownProductHost(host) {
-		return host
-	}
-	if c != nil {
+	host := ""
+	if h := canonicalProductHost(issuerHost(c)); isKnownProductHost(h) {
+		host = h
+	} else if c != nil {
 		if u, err := url.Parse(c.Endpoint()); err == nil {
-			if host := canonicalProductHost(u.Hostname()); host != "" {
-				return host
-			}
+			host = canonicalProductHost(u.Hostname())
 		}
 	}
-	return "copilot.tencent.com"
+	switch host {
+	case "www.codebuddy.ai", "www.workbuddy.ai":
+		return "www.workbuddy.ai"
+	case "copilot.tencent.com", "www.codebuddy.cn":
+		return "copilot.tencent.com"
+	default:
+		return "copilot.tencent.com"
+	}
+}
+
+// SameProductSite reports whether two control-plane URLs are the same edition.
+// codebuddy.ai and workbuddy.ai are one international site.
+func SameProductSite(a, b string) bool {
+	a = strings.TrimRight(strings.TrimSpace(a), "/")
+	b = strings.TrimRight(strings.TrimSpace(b), "/")
+	if a == b {
+		return true
+	}
+	return internationalProductSite(a) && internationalProductSite(b)
+}
+
+func internationalProductSite(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	switch canonicalProductHost(u.Hostname()) {
+	case "www.codebuddy.ai", "www.workbuddy.ai":
+		return true
+	default:
+		return false
+	}
 }
 
 // ChatBaseURL is the https origin for ChatHost.
@@ -106,6 +143,23 @@ func RewriteChatRequest(req *http.Request, c *Credential) {
 	req.URL.Scheme = "https"
 	req.URL.Host = host
 	req.Host = host
+}
+
+// RewritePublicErrorURLs maps canned CodeBuddy profile/usage links onto the
+// host we actually called. WorkBuddy's 14018 copy still says codebuddy.ai.
+func RewritePublicErrorURLs(body []byte, host string) []byte {
+	if len(body) == 0 || !bytes.Contains(body, []byte("codebuddy.ai")) {
+		return body
+	}
+	if canonicalProductHost(host) != "www.workbuddy.ai" {
+		return body
+	}
+	replacer := strings.NewReplacer(
+		"https://www.codebuddy.ai", "https://www.workbuddy.ai",
+		"http://www.codebuddy.ai", "http://www.workbuddy.ai",
+		"//www.codebuddy.ai", "//www.workbuddy.ai",
+	)
+	return []byte(replacer.Replace(string(body)))
 }
 
 // SupportsDailyCheckin reports whether the credential's edition supports the

@@ -598,6 +598,9 @@ func (s *Server) handleErrorResponse(
 		// 不要创建“孤儿日志”（StatusCode=0），而是把诊断信息合并到本次请求的日志中（KISS）。
 		diagMsg = fmt.Sprintf("error reading upstream body: %v", readErr)
 	}
+	if reqCtx != nil && reqCtx.codeBuddyOAuth && resp != nil {
+		rb = rewriteCodeBuddyPublicErrorURLs(resp.Request, rb)
+	}
 
 	duration := reqCtx.Duration().Seconds()
 

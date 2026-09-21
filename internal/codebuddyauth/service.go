@@ -296,6 +296,9 @@ func (s *Service) billingBaseURL() string {
 }
 
 func (s *Service) credentialBaseURL(c *Credential) string {
+	if c != nil && c.IsInternational() {
+		return ChatBaseURL(c)
+	}
 	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
 		return c.Endpoint()
 	}
@@ -306,6 +309,9 @@ func (s *Service) credentialBaseURL(c *Credential) string {
 }
 
 func (s *Service) billingBaseURLForCredential(c *Credential) string {
+	if c != nil && c.IsInternational() {
+		return ChatBaseURL(c)
+	}
 	if c != nil && strings.TrimSpace(c.BaseURL) != "" {
 		return c.Endpoint()
 	}
