@@ -247,6 +247,7 @@ func buildProxyLogEntry(
 		StartTime:        reqCtx.attemptStartTime,
 		DebugData:        reqCtx.debugData,
 		CostMultiplier:   reqCtx.attemptCostMultiplier,
+		ModelPrice:       reqCtx.attemptModelPrice,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
 	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
@@ -269,7 +270,7 @@ func (s *Server) updateTokenStatsForProxy(
 		requestPath = reqCtx.requestPath
 	}
 	billingModel := resolveProxyBillingModel(requestPath, actualModel, requestModel)
-	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, reqCtx.attemptCostMultiplier, reqCtx.attemptModelPrice, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 
 // newOperatorAbortResult 构造"未向下游提交响应"时的中断结果：跳过当前渠道，不施加冷却。
@@ -472,7 +473,8 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 //   - isStreaming: 是否流式请求
 //   - res: 转发结果（成功时用于提取token数量，失败时传nil）
 //   - actualModel: 实际模型名称（用于计费）
-func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
+//   - modelPrice: 渠道模型价格（nil 按全局价格计费），须与日志成本同源
+func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64, modelPrice *util.CustomModelPrice, isSuccess bool, duration float64, isStreaming bool, res *fwResult, actualModel string) {
 	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
@@ -490,7 +492,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 		completionTokens = int64(res.OutputTokens)
 		cacheReadTokens = int64(res.CacheReadInputTokens)
 		cacheCreationTokens = int64(res.CacheCreationInputTokens)
-		costUSD = computeRequestCost(actualModel, res.ServiceTier, res)
+		costUSD = computeRequestCostWithPrice(actualModel, res.ServiceTier, modelPrice, res)
 
 		// 财务安全检查：费用为0但有token消耗时告警（可能是定价缺失）
 		if costUSD == 0.0 && (res.InputTokens > 0 || res.OutputTokens > 0) {

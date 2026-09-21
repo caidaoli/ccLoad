@@ -71,7 +71,8 @@ func modelPricingForAdmin(pricing util.ModelPricing) adminModelPricing {
 func pricePointer(value float64) *float64 { return &value }
 
 // HandleGetModelPricing 返回系统内置/远端目录中的模型价格，不包含自定义覆盖。
-// GET /admin/model-pricing?model=<model-id>
+// effective=1 时返回当前实际计费价格（含全局自定义覆盖），供渠道模型价格预填。
+// GET /admin/model-pricing?model=<model-id>[&effective=1]
 func (s *Server) HandleGetModelPricing(c *gin.Context) {
 	modelID := strings.TrimSpace(c.Query("model"))
 	if modelID == "" {
@@ -79,8 +80,13 @@ func (s *Server) HandleGetModelPricing(c *gin.Context) {
 		return
 	}
 
-	pricing, found := util.LookupSystemModelPricing(modelID)
-	c.Header("Cache-Control", "private, max-age=300")
+	lookup, cacheControl := util.LookupSystemModelPricing, "private, max-age=300"
+	if c.Query("effective") == "1" {
+		// 全局自定义价格保存后立即生效，预填不能读到浏览器缓存里的旧值。
+		lookup, cacheControl = util.LookupEffectiveModelPricing, "no-store"
+	}
+	pricing, found := lookup(modelID)
+	c.Header("Cache-Control", cacheControl)
 	RespondJSON(c, http.StatusOK, gin.H{
 		"model":   modelID,
 		"found":   found,

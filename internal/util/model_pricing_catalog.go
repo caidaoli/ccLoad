@@ -1011,6 +1011,20 @@ func LookupSystemModelPricing(model string) (ModelPricing, bool) {
 	return ModelPricing{}, false
 }
 
+// LookupEffectiveModelPricing 返回计费当前实际使用的模型价格（含全局自定义覆盖），
+// 用于渠道模型价格编辑器预填；隐式缓存价同样展开为可编辑的显式值。
+func LookupEffectiveModelPricing(model string) (ModelPricing, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	pricing, ok := getPricing(model)
+	if !ok {
+		pricing, ok = fuzzyMatchModel(model)
+	}
+	if !ok {
+		return ModelPricing{}, false
+	}
+	return withEffectiveSystemDefaults(model, pricing), true
+}
+
 func lookupModelPricingWithFallback(
 	pricing map[string]ModelPricing,
 	aliases map[string]string,

@@ -47,6 +47,14 @@ func TestHandleGetModelPricingReturnsSystemDefaults(t *testing.T) {
 		t.Fatalf("high-context cache creation defaults = %#v", resp.Pricing)
 	}
 
+	// effective=1 给渠道价格编辑器预填当前实际计费价格，包含全局自定义覆盖。
+	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=gpt-5.4&effective=1", nil))
+	(&Server{}).HandleGetModelPricing(c)
+	effective := mustParseAPIResponse[payload](t, w.Body.Bytes()).Data
+	if !effective.Found || effective.Pricing.InputPrice != 99 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("effective response payload=%#v cache=%q, want uncached custom override", effective, w.Header().Get("Cache-Control"))
+	}
+
 	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/model-pricing?model=unknown-custom-model", nil))
 	(&Server{}).HandleGetModelPricing(c)
 	unknown := mustParseAPIResponse[payload](t, w.Body.Bytes()).Data

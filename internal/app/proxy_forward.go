@@ -3949,6 +3949,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	reqCtx.attemptSelectedKey = ""
 	// 倍率默认取渠道级：OAuth 凭证 1:1，渠道级即权威；api_key 渠道稍后按选中 Key 覆盖。
 	reqCtx.attemptCostMultiplier = cfg.CostMultiplier
+	// 渠道模型价格挂在渠道逻辑模型（重定向前）上，随本次渠道尝试快照。
+	reqCtx.attemptModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, reqCtx.originalModel))
 
 	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
 	if ctxErr := ctx.Err(); ctxErr != nil {

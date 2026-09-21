@@ -980,6 +980,7 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
     'channelModal',
     'quickAddChannelModal',
     'commonModelsModal',
+    'channelModelPricingModal',
     'keyImportModal',
     'keyExportModal',
     'keySortModal',

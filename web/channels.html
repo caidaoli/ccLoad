@@ -38,6 +38,7 @@
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-model-pricing.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
@@ -1297,6 +1298,44 @@
     </div>
   </div>
 
+  <!-- 渠道模型价格（输入框由 channels-model-pricing.js 按字段生成） -->
+  <div id="channelModelPricingModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="channelModelPricingTitle" aria-describedby="channelModelPricingDescription" aria-hidden="true">
+    <div class="modal-content modal-content--md">
+      <div class="modal-header">
+        <h2 id="channelModelPricingTitle" class="modal-title" data-i18n="channels.modelPricing.title">渠道模型价格</h2>
+        <button type="button" class="close-btn" data-pricing-action="close"
+          data-i18n-aria-label="common.close" aria-label="关闭">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true" focusable="false">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+      <p class="common-models-description">
+        <span data-i18n="channels.modelPricing.model">模型</span> <code id="channelModelPricingModelName"></code>
+      </p>
+      <p id="channelModelPricingDescription" class="common-models-description"
+        data-i18n="channels.modelPricing.description">仅对本渠道的此模型生效，整份替换全局价格；成本仍会乘以渠道/Key 倍率。缓存价留空时按输入价和模型系列倍率计算；全部留空并确认即恢复使用全局价格。</p>
+      <div class="channel-model-pricing-grid" data-pricing-group="basic"></div>
+      <p class="custom-pricing-high-label" data-i18n="settings.customPricing.highContextPricing">高上下文价格</p>
+      <p class="common-models-description" data-i18n="settings.customPricing.highContextDescription">超过该模型长上下文阈值后改用下列单价；阈值由系统按模型内置，无需填写。</p>
+      <div class="channel-model-pricing-grid" data-pricing-group="high"></div>
+      <p id="channelModelPricingStatus" class="custom-pricing-model-status" role="status" aria-live="polite"></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" data-pricing-action="load-defaults"
+          data-i18n="channels.modelPricing.loadDefaults">加载当前价格</button>
+        <button type="button" class="btn btn-secondary" data-pricing-action="clear"
+          data-i18n="channels.modelPricing.clear">清空</button>
+        <button type="button" class="btn btn-secondary" data-pricing-action="close"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-pricing-action="apply"
+          data-i18n="common.confirm">确定</button>
+      </div>
+    </div>
+  </div>
+
   <!-- API Key 模型范围 -->
   <div id="keyModelScopeModal" class="modal" role="dialog" aria-modal="true"
     aria-labelledby="keyModelScopeModalTitle" aria-describedby="keyModelScopeDescription" aria-hidden="true">
@@ -2309,6 +2348,14 @@
             placeholder="{{toPlaceholder}}">
           <div class="redirect-row-actions">
             <button type="button" class="redirect-model-toggle-btn" data-index="{{index}}"></button>
+            <button type="button" class="redirect-model-price-btn" data-index="{{index}}"
+              title="设置渠道价格" aria-label="设置渠道价格">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true" focusable="false">
+                <path d="M12 2V22M17 5H9.5C7.57 5 6 6.57 6 8.5C6 10.43 7.57 12 9.5 12H14.5C16.43 12 18 13.57 18 15.5C18 17.43 16.43 19 14.5 19H6"
+                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
             <button type="button" class="redirect-model-test-btn" data-index="{{index}}"
               title="测试此模型" aria-label="测试此模型">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"

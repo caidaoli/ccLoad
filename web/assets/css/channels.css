@@ -1554,6 +1554,22 @@
       margin-top: 20px;
     }
 
+    .channel-model-pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 12px;
+    }
+
+    .channel-model-pricing-grid input[aria-invalid="true"] {
+      border-color: var(--error-500);
+    }
+
+    @media (max-width: 560px) {
+      .channel-model-pricing-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
     .channel-editor-footer-fields {
       display: flex;
       align-items: center;
@@ -4114,6 +4130,13 @@
       font-weight: 500;
     }
 
+    .redirect-model-status--pricing {
+      display: flex;
+      margin-top: 2px;
+      color: var(--success-600);
+      font-weight: 500;
+    }
+
     .redirect-row-actions {
       display: inline-flex;
       flex: 0 0 auto;
@@ -4122,6 +4145,7 @@
     }
 
     .redirect-model-toggle-btn,
+    .redirect-model-price-btn,
     .redirect-model-test-btn,
     .redirect-delete-btn {
       display: inline-flex;
@@ -4141,18 +4165,27 @@
     }
 
     .redirect-model-toggle-btn:focus-visible,
+    .redirect-model-price-btn:focus-visible,
     .redirect-model-test-btn:focus-visible,
     .redirect-delete-btn:focus-visible {
       outline-offset: 2px;
     }
 
     .redirect-model-toggle-btn:hover,
+    .redirect-model-price-btn:hover,
     .redirect-model-test-btn:hover {
       color: var(--primary-600);
       background: var(--primary-50);
       border-color: var(--primary-300);
     }
 
+    .redirect-model-price-btn.is-active {
+      color: var(--success-600);
+      background: var(--success-50);
+      border-color: var(--success-400);
+    }
+
+    .redirect-model-price-btn:disabled,
     .redirect-model-test-btn:disabled {
       color: var(--neutral-400);
       background: var(--surface-bg);
@@ -5963,6 +5996,11 @@
         min-width: 0;
         max-width: 100%;
         justify-self: start;
+      }
+
+      .redirect-model-table .mobile-inline-row .redirect-model-status--pricing {
+        grid-column: 2;
+        margin-top: 0;
       }
 
       .redirect-model-table .mobile-inline-row .redirect-model-status--performance {

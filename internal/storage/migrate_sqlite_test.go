@@ -1311,6 +1311,28 @@ func TestMigrateSQLite_AddsChannelModelsDisabled(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLite_AddsChannelModelsPricing(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channel_models (
+			channel_id INTEGER NOT NULL, model TEXT NOT NULL, redirect_model TEXT NOT NULL DEFAULT '',
+			disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (channel_id, model)
+		);
+		INSERT INTO channel_models (channel_id, model) VALUES (1, 'legacy-model');
+	`); err != nil {
+		t.Fatalf("create legacy channel_models: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy channel_models: %v", err)
+	}
+	var pricing sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT pricing FROM channel_models WHERE model = 'legacy-model'`).Scan(&pricing); err != nil || pricing.Valid {
+		t.Fatalf("legacy pricing = (%v, %v), want NULL", pricing, err)
+	}
+}
+
 func TestNeedChannelModelsMigration_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

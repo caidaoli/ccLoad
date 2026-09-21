@@ -26,8 +26,8 @@ func TestCSVImportAPIKeyManagementEnvelopeValidation(t *testing.T) {
 				[]string{
 					"managed input", "sk-imported", `[{"url":"https://api.example.com"}]`, "gpt-5",
 					model.AuthTypeAPIKey, tc.credential,
-				}, columns, 2, false, false, false, false, false, false, false, false, false,
-				nil, nil, nil, nil, nil, nil, nil,
+				}, columns, 2, false, false, false, false, false, false, false, false, false, false,
+				nil, nil, nil, nil, nil, nil, nil, nil,
 			)
 			if skipped != tc.wantSkipped {
 				t.Fatalf("skipped=%v, want %v (channel=%#v error=%q)", skipped, tc.wantSkipped, channel, errMessage)
@@ -58,8 +58,8 @@ func TestCSVImportBlankAPIKeyCostMultiplierDefaultsToOne(t *testing.T) {
 		[]string{
 			"blank multiplier", "sk-imported", `[{"url":"https://api.example.com"}]`, "gpt-5",
 			model.AuthTypeAPIKey, "",
-		}, columns, 2, false, false, false, false, false, false, true, false, false,
-		nil, nil, nil, nil, nil, nil, nil,
+		}, columns, 2, false, false, false, false, false, false, true, false, false, false,
+		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	if skipped || errMessage != "" {
 		t.Fatalf("blank multiplier row rejected: skipped=%v error=%q", skipped, errMessage)
@@ -82,8 +82,8 @@ func TestCSVImportDailyScheduleValidation(t *testing.T) {
 	} {
 		channel, message, skipped := (&Server{}).parseChannelImportRow(
 			[]string{"schedule", "sk-test", `[{"url":"https://example.com"}]`, "gpt-5", tc.minutes, tc.start, tc.enabled},
-			columns, 2, true, false, false, false, false, false, false, false, false,
-			nil, nil, nil, nil, nil, nil, nil,
+			columns, 2, true, false, false, false, false, false, false, false, false, false,
+			nil, nil, nil, nil, nil, nil, nil, nil,
 		)
 		if skipped == tc.valid {
 			t.Fatalf("row %v: skipped=%v, error=%q", tc, skipped, message)

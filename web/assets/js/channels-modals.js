@@ -582,6 +582,7 @@ async function editChannel(id) {
       model: modelName,
       redirect_model: redirectModel,
       disabled: !!m.disabled,
+      ...rowPricingField(m.pricing),
       cooldown_until: cooldown?.cooldown_until || '',
       cooldown_remaining_ms: cooldown?.cooldown_remaining_ms || 0,
       model_stats: stats || null,
@@ -752,14 +753,32 @@ function setChannelSavePending(pending) {
   saveBtn.disabled = Boolean(pending);
 }
 
+function normalizeRowPricing(pricing) {
+  const api = typeof window !== 'undefined' ? window.ChannelModelPricing : undefined;
+  if (api) return api.normalizeChannelModelPricing(pricing);
+  // 价格脚本未加载时原样保留，避免保存渠道时静默丢掉已配置的价格；后端负责校验。
+  return pricing && typeof pricing === 'object' ? pricing : null;
+}
+
+// 仅在配置了渠道价格时携带 pricing 键，未配置的行保持原有形状。
+function rowPricingField(pricing) {
+  const normalized = normalizeRowPricing(pricing);
+  return normalized ? { pricing: normalized } : {};
+}
+
 function collectModelsForSubmit(rows) {
   return (rows || [])
     .filter(r => r.model && r.model.trim())
-    .map(r => ({
-      model: r.model.trim(),
-      redirect_model: (r.redirect_model || '').trim(),
-      disabled: !!r.disabled
-    }));
+    .map(r => {
+      const entry = {
+        model: r.model.trim(),
+        redirect_model: (r.redirect_model || '').trim(),
+        disabled: !!r.disabled
+      };
+      const pricing = normalizeRowPricing(r.pricing);
+      if (pricing) entry.pricing = pricing;
+      return entry;
+    });
 }
 
 function validateChannelScheduledCheckSchedule() {
@@ -1951,7 +1970,8 @@ async function copyChannel(id, name) {
   redirectTableData = (channel.models || []).map(m => ({
     model: m.model || '',
     redirect_model: m.redirect_model || '',
-    disabled: !!m.disabled
+    disabled: !!m.disabled,
+    ...rowPricingField(m.pricing)
   }));
   selectedModelIndices.clear();
   currentModelFilter = '';
@@ -2490,9 +2510,29 @@ function renderRedirectModelStatus(statusCell, redirect) {
   } else {
     renderActiveRedirectModelStatus(statusCell, redirect);
   }
+  const pricingSummary = window.ChannelModelPricing?.formatChannelModelPricingSummary(redirect.pricing);
+  if (pricingSummary) {
+    appendRedirectModelStatus(statusCell, 'pricing', [pricingSummary]);
+  }
+}
+
+function configureRedirectModelPriceAction(row, redirect, index) {
+  const priceButton = row.querySelector('.redirect-model-price-btn');
+  if (!priceButton) return;
+  const modelName = String(redirect.model || '').trim();
+  const summary = window.ChannelModelPricing?.formatChannelModelPricingSummary(redirect.pricing) || '';
+  const title = modelName === '*'
+    ? window.t('channels.modelPricing.wildcardUnsupported')
+    : summary || window.t('channels.modelPricing.setPrice');
+  priceButton.dataset.index = String(index);
+  priceButton.title = title;
+  priceButton.setAttribute('aria-label', title);
+  priceButton.disabled = !modelName || modelName === '*';
+  priceButton.classList.toggle('is-active', Boolean(summary));
 }
 
 function configureRedirectModelActions(row, redirect, index) {
+  configureRedirectModelPriceAction(row, redirect, index);
   const toggleButton = row.querySelector('.redirect-model-toggle-btn');
   if (!toggleButton) return;
   toggleButton.dataset.index = String(index);
@@ -2672,6 +2712,13 @@ function initRedirectTableEventDelegation() {
     if (toggleBtn) {
       const index = parseInt(toggleBtn.dataset.index, 10);
       toggleRedirectModelDisabled(index);
+      return;
+    }
+
+    const priceBtn = e.target.closest('.redirect-model-price-btn');
+    if (priceBtn) {
+      const index = parseInt(priceBtn.dataset.index, 10);
+      window.openChannelModelPricingModal?.(index, priceBtn);
       return;
     }
 
@@ -2965,7 +3012,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
     rows.push({
       model,
       redirect_model: redirectModel,
-      disabled: !!row?.disabled
+      disabled: !!row?.disabled,
+      ...rowPricingField(row?.pricing)
     });
   });
 
@@ -3001,7 +3049,8 @@ function areModelRowsEqual(left, right) {
     const other = right[index] || {};
     return (row.model || '') === (other.model || '') &&
       (row.redirect_model || '') === (other.redirect_model || '') &&
-      !!row.disabled === !!other.disabled;
+      !!row.disabled === !!other.disabled &&
+      JSON.stringify(normalizeRowPricing(row.pricing)) === JSON.stringify(normalizeRowPricing(other.pricing));
   });
 }
 
@@ -3276,7 +3325,8 @@ function applyQuickAddChannelSetup(setup) {
   redirectTableData = setup.models.map(row => ({
     model: row.model || '',
     redirect_model: row.redirect_model || '',
-    disabled: !!row.disabled
+    disabled: !!row.disabled,
+    ...rowPricingField(row.pricing)
   }));
   selectedModelIndices.clear();
   updateModelBatchDeleteButton();
@@ -3506,7 +3556,8 @@ async function fetchModelsFromAPI() {
     const previousRows = redirectTableData.map(row => ({
       model: row.model || '',
       redirect_model: row.redirect_model || '',
-      disabled: !!row.disabled
+      disabled: !!row.disabled,
+      ...rowPricingField(row.pricing)
     }));
     const replacement = mergeModelRowsWithFetchedModels(redirectTableData, data.models);
     if (replacement.rows.length === 0) {
@@ -3868,6 +3919,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getModelsForExport,
     initModelNormalizationOptions,
     mergeModelRowsWithFetchedModels,
+    areModelRowsEqual,
     openBatchModelImportModal,
     parseQuickAddChannelInfo,
     proposeFetchedKeyModelScopes,

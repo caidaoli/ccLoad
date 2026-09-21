@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // Channel authentication mechanisms and protocol transformation modes.
@@ -246,6 +248,47 @@ type ModelEntry struct {
 	Model         string `json:"model"`                    // 模型名称
 	RedirectModel string `json:"redirect_model,omitempty"` // 重定向目标模型（空表示不重定向）
 	Disabled      bool   `json:"disabled,omitempty"`       // 是否停用该渠道的此模型
+	// Pricing 是该渠道此模型的价格，整份替换系统目录与全局自定义价格；nil 表示沿用全局价格。
+	Pricing *util.CustomModelPrice `json:"pricing,omitempty"`
+}
+
+// Equal compares every persisted field, including pricing values.
+func (e ModelEntry) Equal(other ModelEntry) bool {
+	return e.Model == other.Model &&
+		e.RedirectModel == other.RedirectModel &&
+		e.Disabled == other.Disabled &&
+		e.Pricing.Equal(other.Pricing)
+}
+
+// CarryModelPricing 返回 next 的副本，未携带价格的条目沿用 previous 中同名模型（大小写不敏感）的价格。
+// 用于模型列表整体替换（批量导入、上游刷新），这些入口不表达价格，不能顺手清掉已配置的渠道价格。
+func CarryModelPricing(previous, next []ModelEntry) []ModelEntry {
+	pricingByModel := make(map[string]*util.CustomModelPrice, len(previous))
+	for _, entry := range previous {
+		if entry.Pricing != nil {
+			pricingByModel[strings.ToLower(entry.Model)] = entry.Pricing
+		}
+	}
+	result := append([]ModelEntry(nil), next...)
+	for i := range result {
+		if result[i].Pricing == nil && result[i].Model != "*" {
+			result[i].Pricing = pricingByModel[strings.ToLower(result[i].Model)]
+		}
+	}
+	return result
+}
+
+// CloneModelEntries returns a deep copy, including pricing pointers.
+func CloneModelEntries(entries []ModelEntry) []ModelEntry {
+	if entries == nil {
+		return nil
+	}
+	cloned := make([]ModelEntry, len(entries))
+	for i, entry := range entries {
+		entry.Pricing = entry.Pricing.Clone()
+		cloned[i] = entry
+	}
+	return cloned
 }
 
 const (
@@ -371,6 +414,17 @@ func (e *ModelEntry) Validate() error {
 	e.RedirectModel = strings.TrimSpace(e.RedirectModel)
 	if strings.ContainsAny(e.RedirectModel, "\x00\r\n") {
 		return errors.New("redirect_model contains illegal characters")
+	}
+	if e.Pricing.IsEmpty() {
+		e.Pricing = nil
+		return nil
+	}
+	// 通配条目不对应具体模型，挂价格会把一份价目套到任意模型上。
+	if e.Model == "*" {
+		return errors.New("wildcard model cannot have pricing")
+	}
+	if _, err := e.Pricing.ModelPricing(); err != nil {
+		return fmt.Errorf("pricing: %w", err)
 	}
 	return nil
 }
@@ -624,10 +678,7 @@ func (c *Config) Clone() *Config {
 		KeyCount:                      c.KeyCount,
 		CooldownFallback:              c.CooldownFallback,
 	}
-	if c.ModelEntries != nil {
-		dst.ModelEntries = make([]ModelEntry, len(c.ModelEntries))
-		copy(dst.ModelEntries, c.ModelEntries)
-	}
+	dst.ModelEntries = CloneModelEntries(c.ModelEntries)
 	return dst
 }
 
@@ -822,6 +873,21 @@ func (c *Config) GetRedirectModel(model string) (string, bool) {
 		return entry.RedirectModel, true
 	}
 	return "", false
+}
+
+// ModelPricing 返回渠道逻辑模型（重定向前，见 resolveChannelRoutingModel）条目上配置的价格。
+// 只认精确命中的已启用条目；通配条目不携带价格。未配置时返回 nil，由全局价格计费。
+func (c *Config) ModelPricing(channelModel string) *util.CustomModelPrice {
+	if c == nil || channelModel == "" {
+		return nil
+	}
+	c.buildIndexIfNeeded()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
+	if entry, exists := c.modelIndex[channelModel]; exists {
+		return entry.Pricing
+	}
+	return nil
 }
 
 // SupportsModel 检查渠道是否支持指定模型
