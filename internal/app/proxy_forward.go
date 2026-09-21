@@ -1297,6 +1297,7 @@ func (s *Server) handleSuccessResponse(
 		result.ImageUsage = &usage
 	}
 	result.ThinkingEffort = parser.GetThinkingEffort()
+	result.CodexHasCredits = parser.GetCodexHasCredits()
 
 	if errorEvent := parser.GetLastError(); errorEvent != nil {
 		result.SSEErrorEvent = errorEvent
@@ -1451,6 +1452,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
+	result.CodexHasCredits = parser.GetCodexHasCredits()
 
 	return result, reqCtx.Duration().Seconds(), headerErr
 }
@@ -1623,6 +1625,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
+	result.CodexHasCredits = parser.GetCodexHasCredits()
 	result.SSEErrorEvent = parser.GetLastError()
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	streamComplete := parser.IsStreamComplete() || translatedComplete
@@ -2375,6 +2378,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	if res != nil {
 		res.UpstreamWebsocket = usedNativeWebsocket
+		res.CodexHasCredits = cfg.UsesCodexOAuth() && res.CodexHasCredits
 		var transportErr *codexWebsocketTransportError
 		res.UpstreamWebsocketTransportFailure = usedNativeWebsocket && errors.As(err, &transportErr)
 	}

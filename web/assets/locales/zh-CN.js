@@ -1959,6 +1959,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.antigravity_idle_conn_timeout_seconds': 'Antigravity 空闲连接超时（1–210 秒，重启生效）',
   'channels.oauth.usageReset': '重置 {time}',
   'channels.oauth.usageCompactAmount': '{used}/预估{estimated}',
+  'channels.oauth.codexPurchasedCreditCost': 'Credit 累计标准成本：{cost}',
   'channels.oauth.usageCompactUsed': '{used}',
   'channels.oauth.usageCompactRemaining': '{percent}%',
   'channels.oauth.usageDetailAmount': '已用 {used} / 预估总额 {estimated}',

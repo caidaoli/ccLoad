@@ -160,6 +160,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs cost_multiplier: %w", err)
 			}
+			if err := ensureColumn(ctx, db, dialect, "logs", "codex_has_credits", "TINYINT NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate logs codex_has_credits: %w", err)
+			}
 			if err := ensureLogsUpstreamWebsocket(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_websocket: %w", err)
 			}

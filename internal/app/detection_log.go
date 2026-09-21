@@ -42,6 +42,7 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		Cost:             getResultFloat64OrDefault(result, "cost_usd", 0),
 		IsStreaming:      getResultBoolOrDefault(result, "is_streaming", false),
 		ThinkingEffort:   detectionThinkingEffort(requestThinkingEffort, result),
+		CodexHasCredits:  cfg != nil && cfg.UsesCodexOAuth() && result["codex_has_credits"] == true,
 	}
 	if cfg != nil {
 		entry.ChannelID = cfg.ID

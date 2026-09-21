@@ -3,6 +3,7 @@ package sql_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -1288,5 +1289,100 @@ func TestLog_OAuthQuotaEpochSurvivesBootstrapAndManualReset(t *testing.T) {
 	}
 	if usage = load(bare); usage == nil || usage.EpochAt != epochAt.Unix() || len(usage.Windows) != 0 {
 		t.Fatalf("usage after reset without windows = %#v", usage)
+	}
+}
+
+func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
+	t.Parallel()
+	for _, withWindows := range []bool{false, true} {
+		t.Run(fmt.Sprint("windows=", withWindows), func(t *testing.T) {
+			store := newTestStore(t, "codex-credit.db")
+			ctx := context.Background()
+			now := time.Now().UTC().Truncate(time.Second)
+			samples := []oauthcost.Sample{
+				{Key: "codex|primary", WindowSeconds: 18000, ResetAt: now.Add(time.Hour)},
+				{Key: "codex|secondary", WindowSeconds: 604800, ResetAt: now.Add(time.Hour)},
+				{Key: "codex|monthly", WindowSeconds: 2592000, ResetAt: now.Add(time.Hour)},
+			}
+			credential := &codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh", Expired: now.Add(24 * time.Hour).Format(time.RFC3339)}
+			if withWindows {
+				credential.QuotaCostUsage = oauthcost.Reconcile(nil, samples, now)
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(ctx, &model.Config{Name: "credit", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := []*model.LogEntry{
+				{Time: newJSONTime(now), ChannelID: channel.ID, Model: "gpt-5.5", Cost: 1.25, CostMultiplier: 10, CodexHasCredits: true},
+				{Time: newJSONTime(now.Add(time.Second)), ChannelID: channel.ID, Model: "gpt-reserve", Cost: 0.75, CodexHasCredits: true},
+				{Time: newJSONTime(now.Add(2 * time.Second)), ChannelID: channel.ID, Model: "gpt-5.5", Cost: 0.5},
+			}
+			if err := store.BatchAddLogs(ctx, entries); err != nil {
+				t.Fatal(err)
+			}
+			read := func() (*model.Config, *codexauth.Credential) {
+				t.Helper()
+				cfg, err := store.GetConfig(ctx, channel.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.QuotaCostUsage == nil || got.QuotaCostUsage.CreditStandardCostMicroUSD != 2000000 {
+					t.Fatalf("credit cost=%+v", got.QuotaCostUsage)
+				}
+				return cfg, got
+			}
+			cfg, got := read()
+			// Refresh also bootstraps windows when the first credit request preceded any quota sample.
+			got.QuotaCostUsage = oauthcost.Reconcile(got.QuotaCostUsage, samples, now)
+			raw, err = got.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, _, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, raw)
+			if err != nil || !updated {
+				t.Fatalf("refresh=%t, %v", updated, err)
+			}
+			_, got = read()
+			for _, window := range got.QuotaCostUsage.Windows {
+				if window.StandardCostMicroUSD != 500000 {
+					t.Fatalf("window %s cost=%d", window.Key, window.StandardCostMicroUSD)
+				}
+			}
+			if err := store.ResetOAuthQuotaCostUsage(ctx, channel.ID, now); err != nil {
+				t.Fatal(err)
+			}
+			_, got = read()
+			for _, window := range got.QuotaCostUsage.Windows {
+				if window.StandardCostMicroUSD != 500000 {
+					t.Fatalf("reset window %s cost=%d", window.Key, window.StandardCostMicroUSD)
+				}
+			}
+			logs, err := store.ListLogs(ctx, now.Add(-time.Second), 10, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var credits int
+			for _, entry := range logs {
+				if entry.CodexHasCredits {
+					credits++
+				}
+			}
+			if len(logs) != 3 || credits != 2 {
+				t.Fatalf("persisted logs=%d credit logs=%d", len(logs), credits)
+			}
+			// A new quota cycle cannot reset the independent credit counter.
+			if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(now.Add(2 * time.Hour)), ChannelID: channel.ID, Model: "gpt-5.5", Cost: 0.1}); err != nil {
+				t.Fatal(err)
+			}
+			read()
+		})
 	}
 }

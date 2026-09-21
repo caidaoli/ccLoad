@@ -337,3 +337,24 @@ func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
 		})
 	}
 }
+
+func TestQuotaEpochPreservesPurchasedCreditsForSameAccount(t *testing.T) {
+	for _, account := range []string{"account-1", "account-2"} {
+		for _, plan := range []string{"", "pro"} {
+			t.Run(account+"/"+plan, func(t *testing.T) {
+				at := time.Now().UTC()
+				current := &Credential{AccountID: "account-1", QuotaCostUsage: &oauthcost.Usage{
+					AccountID: "account-1", Identity: "account-1|team", CreditStandardCostMicroUSD: 1234567,
+				}}
+				current.ObserveQuotaIdentity(account, plan, at)
+				want := int64(0)
+				if account == "account-1" {
+					want = 1234567
+				}
+				if current.QuotaCostUsage.CreditStandardCostMicroUSD != want {
+					t.Fatalf("credit cost=%d, want %d", current.QuotaCostUsage.CreditStandardCostMicroUSD, want)
+				}
+			})
+		}
+	}
+}

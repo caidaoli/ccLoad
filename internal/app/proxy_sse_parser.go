@@ -36,6 +36,7 @@ type usageAccumulator struct {
 	ImageUsage               util.ImageGenerationToolUsage // Native Images usage, distinct from Responses tool usage.
 	ServiceTier              string                        // 上游实际声明的 service_tier/speed
 	ThinkingEffort           string
+	CodexHasCredits          bool
 	ResponseModel            string // 上游原始响应声明的模型；只用于日志观测
 	usageVersion             int
 	imageGenerationToolModel string
@@ -122,6 +123,7 @@ type usageParser interface {
 	GetThinkingEffort() string
 	GetReasoningTokens() int
 	GetResponseModel() string
+	GetCodexHasCredits() bool
 	GetLastError() []byte       // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool     // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 	HasStreamOutput() bool      // 语义输出，提交给客户端后不可再内部切渠道
@@ -140,6 +142,10 @@ func (u *usageAccumulator) GetToolCostUSD() float64 {
 
 func (u *usageAccumulator) GetImageUsage() util.ImageGenerationToolUsage {
 	return u.ImageUsage
+}
+
+func (u *usageAccumulator) GetCodexHasCredits() bool {
+	return u.CodexHasCredits
 }
 
 func (u *usageAccumulator) GetThinkingEffort() string {
@@ -549,6 +555,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		}
 		markSSETerminalFromRaw(p, eventType, data)
 		return fmt.Errorf("json unmarshal failed: %w", err)
+	}
+	if event["type"] == codexPassiveUsageSSEEventType || eventType == codexPassiveUsageSSEEventType {
+		if credits, ok := event["credits"].(map[string]any); ok {
+			if hasCredits, ok := credits["has_credits"].(bool); ok {
+				p.CodexHasCredits = hasCredits
+			}
+		}
 	}
 	p.captureResponseModel(event, p.upstreamProtocol)
 	if usage := extractUsage(event); usage != nil {
@@ -1201,6 +1214,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
 			p.ImageUsage = sseParser.GetImageUsage()
 			p.ResponseModel = sseParser.GetResponseModel()
+			p.CodexHasCredits = sseParser.GetCodexHasCredits()
 			return sseParser.GetUsage()
 		}
 	}

@@ -51,8 +51,10 @@ type Usage struct {
 	AccountID string `json:"account_id,omitempty"`
 	EpochAt   int64  `json:"epoch_at,omitempty"`
 	// 成本窗口以秒计数；事件屏障保留纳秒，避免同秒旧采样越过重置。
-	EpochAtUnixNano int64     `json:"epoch_at_unix_nano,omitempty"`
-	Windows         []*Window `json:"windows,omitempty"`
+	EpochAtUnixNano int64 `json:"epoch_at_unix_nano,omitempty"`
+	// 独立购买额度的标准成本，不属于任何周期窗口。
+	CreditStandardCostMicroUSD int64     `json:"credit_standard_cost_microusd,omitempty"`
+	Windows                    []*Window `json:"windows,omitempty"`
 }
 
 // Window is one persisted quota period and its accumulated standard cost.
@@ -224,7 +226,7 @@ func Clone(usage *Usage) *Usage {
 	if usage == nil {
 		return nil
 	}
-	clone := &Usage{Identity: usage.Identity, AccountID: usage.AccountID, EpochAt: usage.EpochAt, EpochAtUnixNano: usage.EpochAtUnixNano}
+	clone := &Usage{CreditStandardCostMicroUSD: usage.CreditStandardCostMicroUSD, Identity: usage.Identity, AccountID: usage.AccountID, EpochAt: usage.EpochAt, EpochAtUnixNano: usage.EpochAtUnixNano}
 	if usage.Windows != nil {
 		clone.Windows = make([]*Window, 0, len(usage.Windows))
 		for _, window := range usage.Windows {
@@ -253,6 +255,9 @@ func cloneFloat64(value *float64) *float64 {
 
 // Validate rejects corrupt quota periods before they can enter a credential.
 func Validate(usage *Usage) error {
+	if usage != nil && usage.CreditStandardCostMicroUSD < 0 {
+		return errors.New("OAuth credit standard cost cannot be negative")
+	}
 	if usage == nil {
 		return nil
 	}

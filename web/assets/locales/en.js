@@ -1959,6 +1959,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.antigravity_idle_conn_timeout_seconds': 'Antigravity idle connection timeout (1–210 seconds; requires restart)',
   'channels.oauth.usageReset': 'Reset {time}',
   'channels.oauth.usageCompactAmount': '{used}/{estimated}',
+  'channels.oauth.codexPurchasedCreditCost': 'Credit accumulated standard cost: {cost}',
   'channels.oauth.usageCompactUsed': '{used}',
   'channels.oauth.usageCompactRemaining': '{percent}%',
   'channels.oauth.usageDetailAmount': 'Used {used} / estimated total {estimated}',

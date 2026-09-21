@@ -118,6 +118,7 @@ type fwResult struct {
 	// false 表示本次尝试仍可在同一请求内切换到其他Key/渠道
 	ResponseCommitted bool
 	// UpstreamWebsocket 只表示本次实际上游请求采用了WebSocket，不表示下游协议或渠道配置。
+	CodexHasCredits   bool
 	UpstreamWebsocket bool
 	// UpstreamWebsocketTransportFailure 表示原生上游 WebSocket 以 close 1006
 	// 或心跳传输错误结束。该故障按物理连接连续计数，不得升级为模型冷却。
@@ -1012,6 +1013,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		Duration:          p.Duration,
 		IsStreaming:       p.IsStreaming,
 		UpstreamWebsocket: p.Result != nil && p.Result.UpstreamWebsocket,
+		CodexHasCredits:   p.Result != nil && p.Result.CodexHasCredits,
 		APIKeyUsed:        p.APIKeyUsed,
 		AuthTokenID:       p.AuthTokenID,
 		ClientProtocol:    string(p.ClientProtocol),

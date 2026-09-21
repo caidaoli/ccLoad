@@ -2453,6 +2453,7 @@ func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
 
 func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil.TestChannelRequest, parser usageParser) {
 	usage, ok := normalizedTestUsage(parser)
+	result["codex_has_credits"] = parser.GetCodexHasCredits()
 	if ok {
 		result["usage"] = usage
 	}

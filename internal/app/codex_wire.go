@@ -268,6 +268,7 @@ func populateFWResultFromUsageParser(result *fwResult, parser *sseUsageParser) {
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
+	result.CodexHasCredits = parser.GetCodexHasCredits()
 	result.SSEErrorEvent = parser.GetLastError()
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 }

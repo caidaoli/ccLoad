@@ -216,6 +216,7 @@ func (c *Credential) ObserveQuotaIdentity(accountID, planType string, at time.Ti
 	if c.QuotaCostUsage.AccountID != "" && c.QuotaCostUsage.AccountID != accountID {
 		c.RestartQuotaEpoch(observed, at)
 		c.QuotaCostUsage.AccountID = accountID
+		c.QuotaCostUsage.CreditStandardCostMicroUSD = 0
 		return true
 	}
 	c.QuotaCostUsage.AccountID = accountID
@@ -255,7 +256,12 @@ func (c *Credential) RestartQuotaEpoch(identity string, at time.Time) {
 	if identity != "" {
 		accountID, _, _ = strings.Cut(identity, "|")
 	}
-	c.QuotaCostUsage = &oauthcost.Usage{Identity: identity, AccountID: accountID,
+	// 购买额度不随同账号套餐窗口重置；更换账号时不得继承另一账号的累计。
+	var creditCost int64
+	if c.QuotaCostUsage != nil && c.QuotaCostUsage.AccountID == accountID {
+		creditCost = c.QuotaCostUsage.CreditStandardCostMicroUSD
+	}
+	c.QuotaCostUsage = &oauthcost.Usage{Identity: identity, AccountID: accountID, CreditStandardCostMicroUSD: creditCost,
 		EpochAt: at.UTC().Unix(), EpochAtUnixNano: at.UTC().UnixNano()}
 	c.OAuthUsage = nil
 	c.PassiveUsage = nil

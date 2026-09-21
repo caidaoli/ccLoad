@@ -830,6 +830,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	}
 	if sr.usageParser != nil {
 		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
+		result["codex_has_credits"] = sr.usageParser.GetCodexHasCredits()
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
 		reasoningTokens := sr.usageParser.GetReasoningTokens()
 		if input+output+cacheRead+cacheCreation+reasoningTokens > 0 {

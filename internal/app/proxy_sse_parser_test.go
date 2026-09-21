@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -2033,5 +2034,36 @@ func TestSSEJSONObjectMapErrorCarriesOffset(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "offset 38") {
 		t.Fatalf("error = %q, want it to locate the offending byte", err)
+	}
+}
+
+func TestCodexCreditsUsageProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		name, credits string
+		allowed, want bool
+	}{
+		{"purchased_with_window_available", `{"has_credits":true,"balance":null}`, true, true},
+		{"purchased_with_window_exhausted", `{"has_credits":true,"balance":null}`, false, true},
+		{"no_purchased_credits", `{"has_credits":false}`, false, false},
+		{"missing_credits", `null`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{"type": "codex.rate_limits", "credits": json.RawMessage(tc.credits), "rate_limits": map[string]any{"allowed": tc.allowed, "limit_reached": !tc.allowed}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := "data: " + string(payload) + "\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n\n"
+			for _, parser := range []usageParser{newSSEUsageParser("codex"), newJSONUsageParser("codex")} {
+				for i := 0; i < len(body); i += 7 {
+					if err := parser.Feed([]byte(body[i:min(i+7, len(body))])); err != nil {
+						t.Fatal(err)
+					}
+				}
+				input, output, _, _ := parser.GetUsage()
+				if input != 100 || output != 20 || parser.GetCodexHasCredits() != tc.want {
+					t.Fatalf("usage=%d/%d credit=%t, want 100/20 credit=%t", input, output, parser.GetCodexHasCredits(), tc.want)
+				}
+			}
+		})
 	}
 }

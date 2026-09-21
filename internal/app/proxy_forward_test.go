@@ -3241,3 +3241,24 @@ func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexPurchasedCreditsReachProxyLog(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, hasCredits := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/credits=%t", streaming, hasCredits), func(t *testing.T) {
+				body := fmt.Sprintf("data: {\"type\":\"codex.rate_limits\",\"plan_type\":\"team\",\"rate_limits\":{\"allowed\":false,\"limit_reached\":true,\"primary\":{\"used_percent\":100,\"window_minutes\":300,\"reset_after_seconds\":13419,\"reset_at\":1789995625},\"secondary\":{\"used_percent\":16,\"window_minutes\":10080,\"reset_after_seconds\":600219,\"reset_at\":1790582425}},\"credits\":{\"has_credits\":%t,\"unlimited\":false,\"balance\":null}}\n\n", hasCredits) +
+					"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-credits\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n\n"
+				reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: streaming, responsesSSEUpstreamNonStream: !streaming}
+				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
+				result, _, err := (&Server{}).handleSuccessResponse(reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry := buildLogEntry(logEntryParams{RequestModel: "gpt-5.5", StatusCode: http.StatusOK, Result: result, CostMultiplier: 1})
+				if entry.CodexHasCredits != hasCredits || entry.InputTokens != 100 || entry.OutputTokens != 20 || entry.Cost <= 0 {
+					t.Fatalf("proxy log lost credit attribution or usage: %+v", entry)
+				}
+			})
+		}
+	}
+}

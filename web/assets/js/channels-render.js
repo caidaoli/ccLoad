@@ -981,6 +981,13 @@ function buildXAIUsageRows(data) {
   return rows;
 }
 
+function buildCodexPurchasedCreditsHtml(data) {
+  const cost = formatOAuthAccumulatedCost(data?.quota_cost_usage?.credit_standard_cost_microusd);
+  if (!cost) return '';
+  const text = window.t('channels.oauth.codexPurchasedCreditCost', { cost });
+  return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
+}
+
 function buildAntigravityCreditsHtml(credits) {
   if (!credits || typeof credits.balance !== 'number' || !Number.isFinite(credits.balance)) return '';
   const text = window.t('channels.oauth.antigravityCredits', { balance: credits.balance.toLocaleString() });
@@ -1116,6 +1123,7 @@ function buildOAuthUsageStatusHtml(channel) {
   return `<div class="ch-oauth-usage">
     ${buildOAuthUsageToolbar(channel, state)}
     ${rows.join('')}
+    ${isCodex ? buildCodexPurchasedCreditsHtml(state.data) : ''}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
     ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits) : ''}

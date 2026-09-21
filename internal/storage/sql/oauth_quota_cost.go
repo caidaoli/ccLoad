@@ -171,7 +171,7 @@ func (s *SQLStore) sumOAuthQuotaLogCost(
 		return 0, nil
 	}
 	rows, err := s.queryTx(ctx, tx, fmt.Sprintf(`SELECT model, actual_model, %s FROM logs
-		WHERE channel_id = ? AND time >= ? AND time < ? AND cost > 0
+		WHERE channel_id = ? AND time >= ? AND time < ? AND cost > 0 AND codex_has_credits = 0
 		GROUP BY model, actual_model`, s.microUSDSumExpr()),
 		channelID, time.Unix(from, 0).UnixMilli(), time.Unix(until, 0).UnixMilli())
 	if err != nil {
@@ -252,7 +252,7 @@ func (s *SQLStore) updateOAuthQuotaCostsTx(
 		}
 		next := quotaCostWindows(&envelope)
 		if next == nil {
-			continue
+			next = &oauthcost.Usage{}
 		}
 		if err := oauthcost.Validate(next); err != nil {
 			return nil, fmt.Errorf("validate OAuth quota cost credential for channel %d: %w", channelID, err)
@@ -266,6 +266,14 @@ func (s *SQLStore) updateOAuthQuotaCostsTx(
 			costMicroUSD, err := util.USDToMicroUSDSafe(entry.Cost)
 			if err != nil {
 				return nil, fmt.Errorf("convert OAuth quota standard cost for channel %d: %w", channelID, err)
+			}
+			if entry.CodexHasCredits && authType == model.AuthTypeCodexOAuth {
+				if next.CreditStandardCostMicroUSD > math.MaxInt64-costMicroUSD {
+					return nil, errOAuthQuotaCostOverflow
+				}
+				next.CreditStandardCostMicroUSD += costMicroUSD
+				changed = true
+				continue
 			}
 			entryChanged, err := oauthcost.AddStandardCost(next, entry.Time.Time, quotaCostModel(entry), costMicroUSD)
 			if err != nil {
@@ -358,7 +366,7 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 	}
 	rows, err := s.queryTx(ctx, tx, fmt.Sprintf(`
 		SELECT model, actual_model, %s FROM logs
-		WHERE channel_id = ? AND time >= ? AND cost > 0
+		WHERE channel_id = ? AND time >= ? AND cost > 0 AND codex_has_credits = 0
 		GROUP BY model, actual_model
 	`, s.microUSDSumExpr()), channelID, resetAt.UnixMilli())
 	if err != nil {
