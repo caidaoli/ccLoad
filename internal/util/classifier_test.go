@@ -1262,19 +1262,28 @@ func TestShouldFallbackProtocol(t *testing.T) {
 			name:       "ordinary responses validation error",
 			statusCode: http.StatusBadRequest,
 			body:       `{"error":{"message":"input is required","type":"invalid_request_error","code":"invalid_request_error"}}`,
-			want:       true,
+			want:       false,
 		},
 		{
 			name:       "ordinary anthropic beta validation error",
 			statusCode: http.StatusBadRequest,
 			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-beta must be a string"}}`,
-			want:       true,
+			want:       false,
 		},
 		{
 			name:       "malformed bad request",
 			statusCode: http.StatusBadRequest,
 			body:       `{"error":`,
-			want:       true,
+			want:       false,
+		},
+		{
+			name:       "invalid tool arguments are not a protocol capability failure",
+			statusCode: http.StatusBadRequest,
+			body:       "{\"model\":\"muse-spark-1.3-contributor\",\"error\":{\"param\":\"arguments\",\"type\":\"invalid_request_error\",\"message\":\"Upstream request failed: [invalid_request_error] `arguments` must be valid JSON\"}}",
+		},
+		{
+			name:       "empty bad request",
+			statusCode: http.StatusBadRequest,
 		},
 	}
 

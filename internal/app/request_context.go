@@ -32,6 +32,7 @@ type requestContext struct {
 	anthropicClaudeCodeWire       bool
 	replayBodyRulesApplied        bool // 完整回放体已经过 applyBodyRules；增量体单独判定
 	zedWire                       *zedWirePlan
+	openCodeResponses             *openCodeResponsesPlan
 	executionIdentity             string
 	firstByteTimer                *time.Timer
 	streamTimer                   *time.Timer

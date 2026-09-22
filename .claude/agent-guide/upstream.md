@@ -12,6 +12,11 @@
 - Bearer 和 X-Refresh-Token / 账号身份头由渠道凭证生成，刷新令牌禁止自定义规则覆盖并在调试输出脱敏；计费签到/余额请求使用独立头部，绝不携带 `X-Refresh-Token`。“获取模型”通过官方 CLI 的 `GET /v3/config` 读取 `data.models[].id`，使用账号凭证和渠道代理；已保存渠道在 401 时刷新后重试一次，失败或空目录直接报错，不回退内置列表。浏览器 OAuth、认证文件及批量凭证导入新建渠道共用该模型查询、过滤和排序逻辑，查询失败不创建渠道；已有渠道重新授权保留自定义模型配置。余额通过 `www.codebuddy.cn` 的 `daily-checkin` / `get-user-resource` 接口查询，结果进入 OAuth 用量快照并纳入单个、批量和活跃渠道额度刷新；管理端可通过 `POST /admin/channels/:id/codebuddy-checkin` 立即签到并同步余额。
 - 来源及许可见 `internal/codebuddyauth/UPSTREAM.md`。未修改 CLIProxyAPI 核心快照。
 
+## OpenCode Go
+
+- `opencode_responses.go` 的 namespace 兼容仅用于实际目标 URL 属于 `https://opencode.ai/zen/go`、实际上游模型为 `muse-spark-1.3-contributor` 的 Responses 请求。请求体规则之后展开顶层及动态工具声明的 namespace，同步映射工具历史和 tool_choice，保留 schema、参数和 call_id；直接工具名优先保留，名称冲突或超过 64 字节时生成稳定别名。JSON/SSE 返回恢复原工具身份，同请求局部重试保留映射。其他模型、URL 和协议不触发。
+- 上游最终工具参数无效、缺少声明的必填参数或终结事件参数矛盾时记录不含参数内容的 WARN；保留上游参数和状态，不将空参数伪造成 `{}`。Debug 捕获保留上游原始响应与下游恢复后的响应。
+
 ## Codex
 
 - **Codex 图片模型**(`codex_images.go`、`admin_testing_image.go`):`gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 的公开 `/v1/images/generations`、`/v1/images/edits` 在 auto/local 模式按渠道 Codex 能力接入原生 OpenAI Images wire，使用 Codex OAuth 认证，URL 从 Responses 端点切到同 base 的 `/images/generations`、`/images/edits`。顶层 model 保留图片模型并去除路由/思考后缀；管理页共用模型归一、URL 和 JSON 请求构造。编辑 JSON 保留图片引用和 mask，multipart 的 image/image[]、mask 文件转 data URL；不下载远程图片，不创建临时文件。保留 JSON/SSE 响应与正整数 n，不在网关做多次生图展开。两款 `-2026-09-08` 快照继续仅在 generations 使用原有 Luna Responses 工具桥接；原生 Responses 文本主模型不替换。`gpt-image-1.5`、`gpt-image-2` 的管理页直连维持原状。参考 CLIProxyAPI `d1a024e9400bc65bd78ccd908945cf2eacc2835e`（checkout `e8399ffe8aeb48917df1730db93e5b5071c05cd1`）；这是 app 层移植，不更新转换核心快照。

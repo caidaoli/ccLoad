@@ -158,15 +158,16 @@ type channelTestRequestPlan struct {
 	fullURL           string
 	// endpointPath 是下游端点路径，协议族判定一律用它，不能用 fullURL 的完整
 	// 路径——渠道基础 URL 带子路径时两者不等，见 downstreamEndpointPath。
-	endpointPath     string
-	headers          http.Header
-	upstreamHeaders  http.Header
-	requestBody      []byte
-	clientBody       []byte
-	zedWire          *zedWirePlan
-	timeout          *channelTestTimeout
-	debugCapture     *debugCapture
-	antigravityOAuth bool
+	endpointPath      string
+	headers           http.Header
+	upstreamHeaders   http.Header
+	requestBody       []byte
+	clientBody        []byte
+	zedWire           *zedWirePlan
+	openCodeResponses *openCodeResponsesPlan
+	timeout           *channelTestTimeout
+	debugCapture      *debugCapture
+	antigravityOAuth  bool
 }
 
 // requestedServiceTier 读取本次测试上游请求体声明的计费档位，与代理 requestedServiceTier 同源。
@@ -1702,6 +1703,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		})
 	}
 	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isEventStream)
+	prepareOpenCodeResponsesResponse(resp, requestPlan.openCodeResponses, requestPlan.upstreamStreaming)
 
 	// 通用结果初始化
 	result = map[string]any{
@@ -2001,6 +2003,9 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
 	}
+	requestPlan.requestBody, requestPlan.openCodeResponses = prepareOpenCodeResponsesRequest(
+		parsedTestURL, upstreamProtocolValue, requestPath, requestPlan.requestBody, nil,
+	)
 	if xaiResponsesRequest {
 		requestPlan.xaiConversationID = testReq.ResolveSessionID()
 		requestPlan.requestBody, err = finalizeXAIResponsesBody(

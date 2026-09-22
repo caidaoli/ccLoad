@@ -2039,16 +2039,27 @@ func TestSSEJSONObjectMapErrorCarriesOffset(t *testing.T) {
 
 func TestCodexCreditsUsageProtocol(t *testing.T) {
 	for _, tc := range []struct {
-		name, credits string
-		allowed, want bool
+		name, credits      string
+		primary, secondary any
+		allowed, want      bool
 	}{
-		{"purchased_with_window_available", `{"has_credits":true,"balance":null}`, true, true},
-		{"purchased_with_window_exhausted", `{"has_credits":true,"balance":null}`, false, true},
-		{"no_purchased_credits", `{"has_credits":false}`, false, false},
-		{"missing_credits", `null`, true, false},
+		{"purchased_with_window_available", `{"has_credits":true,"balance":null}`, 22, 19, true, false},
+		{"primary_exhausted", `{"has_credits":true,"balance":null}`, 100, 19, false, true},
+		{"secondary_exhausted", `{"has_credits":true}`, 22, 100, true, true},
+		{"both_exhausted", `{"has_credits":true}`, 100, 100, false, true},
+		{"below_boundary", `{"has_credits":true}`, 99.99, 99.99, false, false},
+		{"above_boundary", `{"has_credits":true}`, 101, 19, true, true},
+		{"missing_windows", `{"has_credits":true}`, nil, nil, false, false},
+		{"invalid_percentage", `{"has_credits":true}`, "100", nil, false, false},
+		{"no_purchased_credits", `{"has_credits":false}`, 100, 100, false, false},
+		{"missing_credits", `null`, 100, 100, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload, err := json.Marshal(map[string]any{"type": "codex.rate_limits", "credits": json.RawMessage(tc.credits), "rate_limits": map[string]any{"allowed": tc.allowed, "limit_reached": !tc.allowed}})
+			payload, err := json.Marshal(map[string]any{"type": "codex.rate_limits", "credits": json.RawMessage(tc.credits), "rate_limits": map[string]any{"allowed": tc.allowed, "limit_reached": !tc.allowed,
+				"primary": map[string]any{"used_percent": tc.primary}, "secondary": map[string]any{"used_percent": tc.secondary}},
+				"code_review_rate_limits": map[string]any{"primary": map[string]any{"used_percent": 100}},
+				"additional_rate_limits":  map[string]any{"other": map[string]any{"primary": map[string]any{"used_percent": 100}}},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

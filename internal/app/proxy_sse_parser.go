@@ -557,9 +557,18 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 	if event["type"] == codexPassiveUsageSSEEventType || eventType == codexPassiveUsageSSEEventType {
-		if credits, ok := event["credits"].(map[string]any); ok {
-			if hasCredits, ok := credits["has_credits"].(bool); ok {
-				p.CodexHasCredits = hasCredits
+		// Owning credits does not mean this request consumed them. The active
+		// quota must first exhaust either its primary or secondary window.
+		credits, _ := event["credits"].(map[string]any)
+		hasCredits, _ := credits["has_credits"].(bool)
+		limits, _ := event["rate_limits"].(map[string]any)
+		p.CodexHasCredits = false
+		for _, slot := range []string{"primary", "secondary"} {
+			window, _ := limits[slot].(map[string]any)
+			used, _ := window["used_percent"].(float64)
+			if hasCredits && used >= 100 {
+				p.CodexHasCredits = true
+				break
 			}
 		}
 	}

@@ -84,9 +84,10 @@ type fwResult struct {
 	Status              int
 	UpstreamStatus      int // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
 	Header              http.Header
-	Body                []byte  // filled for non-2xx or when needed
-	upstreamRequestBody []byte  // 实际发送的 provider wire body，仅用于同请求内安全降级重试
-	FirstByteTime       float64 // 首字节响应时间（秒）
+	Body                []byte                 // filled for non-2xx or when needed
+	upstreamRequestBody []byte                 // 实际发送的 provider wire body，仅用于同请求内安全降级重试
+	openCodeResponses   *openCodeResponsesPlan // 同请求重试保留 wire 工具身份映射
+	FirstByteTime       float64                // 首字节响应时间（秒）
 
 	// Token统计（2025-11新增，从SSE响应中提取）
 	InputTokens              int

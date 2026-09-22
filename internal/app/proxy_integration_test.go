@@ -2720,8 +2720,8 @@ func TestProxy_AntigravityOAuthRejectsSignatureWithoutRewritingHistory(t *testin
 		t.Fatalf("status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
 	}
 	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
-	if err != nil || len(cooldowns) != 0 {
-		t.Fatalf("signature error cooled model: %v %v", cooldowns, err)
+	if err != nil || len(cooldowns) != 1 {
+		t.Fatalf("signature validation 400 must use normal model cooldown: %v %v", cooldowns, err)
 	}
 }
 
@@ -7997,9 +7997,9 @@ func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailur
 		wantUpstreamAttempts int64
 	}{
 		{
-			name:                 "request-specific 400 is retried next request",
+			name:                 "explicit capability 400 is retried next request",
 			statuses:             []int{http.StatusBadRequest},
-			errorText:            "request shape rejected",
+			errorText:            "unsupported anthropic-beta",
 			wantUpstreamAttempts: 8,
 		},
 		{
@@ -8009,14 +8009,14 @@ func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailur
 			wantUpstreamAttempts: 4,
 		},
 		{
-			name: "mixed request and endpoint failures are not cached",
+			name: "mixed capability 400 and endpoint failures are not cached",
 			statuses: []int{
 				http.StatusBadRequest,
 				http.StatusMethodNotAllowed,
 				http.StatusMethodNotAllowed,
 				http.StatusMethodNotAllowed,
 			},
-			errorText:            "mixed protocol rejection",
+			errorText:            "unsupported anthropic-beta",
 			wantUpstreamAttempts: 8,
 		},
 	}

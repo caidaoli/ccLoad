@@ -257,6 +257,10 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
+	if reqCtx != nil {
+		// Complete replay and incremental WS bodies must share the same aliases.
+		body, reqCtx.openCodeResponses = prepareOpenCodeResponsesRequest(parsedUpstreamURL, upstreamProtocol, requestPath, body, reqCtx.openCodeResponses)
+	}
 
 	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
@@ -1136,6 +1140,10 @@ func (s *Server) handleSuccessResponse(
 	}
 	if isSSE && isCodexResponses {
 		resp.Body = wrapCodexSSEBody(resp.Body)
+	}
+	prepareOpenCodeResponsesResponse(resp, reqCtx.openCodeResponses, reqCtx.isStreaming)
+	if reqCtx.openCodeResponses != nil {
+		hdrClone.Del("Content-Length")
 	}
 	if isResponsesSSE && isSSE {
 		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
@@ -2064,7 +2072,7 @@ func (s *Server) handleResponse(
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	return s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
-		false,
+		false, nil,
 	)
 }
 
@@ -2089,6 +2097,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	executionIdentity string,
 	translatedRequestOverride []byte,
 	replayBodyRulesApplied bool,
+	openCodeResponses *openCodeResponsesPlan,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
@@ -2106,6 +2115,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.anthropicClaudeCodeWire = translatedRequestOverride != nil &&
 		isAnthropicClaudeCodeMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 	reqCtx.replayBodyRulesApplied = replayBodyRulesApplied
+	reqCtx.openCodeResponses = openCodeResponses
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
@@ -2292,7 +2302,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
 	dc.captureUpstreamError(err)
-	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() {
+	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.openCodeResponses != nil {
 		originalReqURL := reqCtx.transformPlan.OriginalPath
 		if rawQuery != "" {
 			separator := "?"
@@ -2353,13 +2363,14 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	cancelableWriter, stopWrites := newCancelableResponseWriter(reqCtx.ctx, w)
 	defer stopWrites()
 	var responseWriter http.ResponseWriter = cancelableWriter
-	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth()) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.openCodeResponses != nil) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		responseWriter = dc.wrapTranslatedResponseWriter(cancelableWriter)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && res.Status == http.StatusBadRequest {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
+		res.openCodeResponses = reqCtx.openCodeResponses
 	}
 	if usedNativeWebsocket {
 		// Reconnects happen while handleResponse drains the upstream frames. Take
@@ -2376,7 +2387,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity, nil,
-			false,
+			false, nil,
 		)
 	}
 	if res != nil {
@@ -2820,7 +2831,7 @@ func (s *Server) forwardAttempt(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
 		plan, forwardHeaders, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 		translatedRequestOverride,
-		false,
+		false, nil,
 	)
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
 	if res != nil && res.DebugData != nil {
@@ -2843,7 +2854,7 @@ func (s *Server) forwardAttempt(
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				res, _, err = s.forwardOnceAsyncWithNativeCodexWebsocket(ctx, cfg, selectedKey, reqCtx.requestMethod,
 					plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, translatedRequestOverride,
-					false)
+					false, nil)
 				duration = time.Since(reqCtx.attemptStartTime).Seconds()
 			}
 		}
@@ -2895,6 +2906,7 @@ func (s *Server) forwardAttempt(
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, retryAttempt, executionIdentity,
 			retryBody,
 			retryBodyRulesApplied,
+			res.openCodeResponses,
 		)
 		plan = retryPlan
 		if res != nil && res.DebugData != nil {

@@ -1165,13 +1165,12 @@ func isModelUnavailableResponse(responseBody []byte) bool {
 // from cooldown classification: a non-model 404 can be a broken base URL or
 // deployment and still means the native protocol probe did not succeed. Some
 // compatible gateways report an unsupported native request shape as a
-// structured 500 instead of an endpoint status. An uncommitted 400 or a
-// Cloudflare block page is also safe to replay through another protocol because
-// the request was rejected before model execution.
+// structured 500 instead of an endpoint status. A 400 needs explicit capability
+// evidence: rejection before execution alone does not establish incompatibility.
 func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	switch statusCode {
 	case http.StatusBadRequest:
-		return true
+		return isUnsupportedProtocolRequest(responseBody)
 	case http.StatusForbidden:
 		return isCloudflareBlockPage(responseBody)
 	case 405:
@@ -1183,6 +1182,27 @@ func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	default:
 		return false
 	}
+}
+
+func isUnsupportedProtocolRequest(responseBody []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+	if strings.EqualFold(payload.Error.Code, "RESPONSES_MODEL_NOT_SUPPORTED") || isProtocolConversionNotImplemented(responseBody) {
+		return true
+	}
+	message := strings.ToLower(payload.Error.Message)
+	// A malformed beta value is a data error; only an explicitly unsupported
+	// beta capability permits trying another protocol.
+	return strings.Contains(message, "anthropic-beta") &&
+		(strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") ||
+			strings.Contains(message, "不支持"))
 }
 
 // firstHeaderValueFold 大小写无关地取首个 header 值。
