@@ -200,7 +200,8 @@ func responsesBodyWithoutInputIndex(body []byte, index int) ([]byte, bool) {
 
 // responsesRetryBodyForMissingStoredInputItem 在上游按 ID 找不到 reasoning 项时
 // （store=false 的典型 404，也可能落在 SSE/WS 的 HTTP 200 错误事件里），
-// 丢掉该 id 对应的 reasoning 项，供同渠道重试。assistant message 和工具项的
+// 仅当该项没有有效加密内容时，一次清理所有带 ID 的不可移植 reasoning，供同渠道重试。
+// 有效加密 reasoning 必须保留。assistant message 和工具项的
 // id 是完整 replay 的 wire contract，不能删除。响应已提交则不能换 body。
 func responsesRetryBodyForMissingStoredInputItem(
 	plan protocol.TransformPlan,
@@ -217,11 +218,30 @@ func responsesRetryBodyForMissingStoredInputItem(
 	if !ok {
 		return nil, "", false
 	}
-	retryBody, ok := responsesBodyWithoutMissingReasoningID(plan.TranslatedBody, id)
+	matched := false
+	for _, item := range gjson.GetBytes(plan.TranslatedBody, "input").Array() {
+		if item.Get("id").String() == id && isNonPortableResponsesReasoning(item) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil, "", false
+	}
+	retryBody, ok := deleteCodexInputItems(plan.TranslatedBody, isNonPortableResponsesReasoning)
 	if !ok {
 		return nil, "", false
 	}
-	return retryBody, stripMissingStoredInputItemStrategy + ":" + id, true
+	removed := gjson.GetBytes(plan.TranslatedBody, "input.#").Int() - gjson.GetBytes(retryBody, "input.#").Int()
+	return retryBody, fmt.Sprintf("%s:%s:removed=%d", stripMissingStoredInputItemStrategy, id, removed), true
+}
+
+func isNonPortableResponsesReasoning(item gjson.Result) bool {
+	id := item.Get("id")
+	encrypted := item.Get("encrypted_content")
+	return item.Get("type").String() == "reasoning" && id.Type == gjson.String &&
+		strings.TrimSpace(id.String()) != "" &&
+		(encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "")
 }
 
 func forwardResultErrorPayload(res *fwResult) ([]byte, int) {

@@ -421,10 +421,7 @@ func responsesReplayWithoutNonPortableReasoning(payload []byte) []byte {
 	filtered := make([]json.RawMessage, 0, len(items))
 	changed := false
 	for _, item := range items {
-		itemID := strings.TrimSpace(item.Get("id").String())
-		encrypted := item.Get("encrypted_content")
-		if item.Get("type").String() == "reasoning" && itemID != "" &&
-			(encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "") {
+		if isNonPortableResponsesReasoning(item) {
 			changed = true
 			continue
 		}

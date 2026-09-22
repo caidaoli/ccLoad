@@ -13,6 +13,8 @@
 
 ## 故障切换(`util/classifier.go` + `cooldown/detection.go`)
 
+- **Responses 缺失历史 reasoning**：HTTP 400/404 或未提交响应的 SSE 错误明确指出某个 reasoning ID 不存在，且该项没有有效 `encrypted_content` 时，基于实际发送的请求体一次删除所有带字符串 ID、加密内容缺失/null/空/纯空白的 reasoning，同渠道只重试一次。有效加密 reasoning、无 ID reasoning、正文及工具调用/结果保持原样；不重复应用渠道请求规则。成功和失败均记录恢复策略及删除数量。原生 WebSocket 的按 ID 重连恢复保持原有契约。
+
 - **Anthropic 工具错误**(`anthropic_retry.go`):仅在未提交响应的 validation 400 明确给出 `tools.N...` / `messages.N.content.M...` 位置（error.param 或 message 前缀）时允许一次 `downgrade_anthropic_tools` 局部重试。定义被拒绝只删除该工具及指向它的 tool_choice，并文本化该工具关联的完整历史调用对；历史块明确不受支持时只文本化该 ID 的一对，保留定义及同名其他调用。调用 ID 必须唯一且调用/结果相邻配对；保留图片、结果错误标记与缓存字段，剩余 tool_result 必须先于普通内容。未知位置、冲突位置、配对/顺序错误、不支持的结果内容或重排破坏缓存 TTL 顺序时走原错误/换渠流程，禁止全量降级；换渠仍使用原请求。思考预算修复和 thinking 兼容重试独立。
 - **Anyrouter Responses 元数据兼容**:上游协议为 Codex、请求属于 Responses 且渠道名称包含 `anyrouter`（忽略大小写）时，转发前仅删除 `input[*].internal_chat_message_metadata_passthrough.content_item_kinds`，保留正文及其他元数据；仅 URL 包含 anyrouter 不触发此规则。
 

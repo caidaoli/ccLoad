@@ -1738,7 +1738,7 @@ func TestResponsesRetryBodyForMissingStoredInputItem_StripsNamedReasoning(t *tes
 	if !ok {
 		t.Fatal("expected SSE 404 missing-item retry")
 	}
-	if strategy != stripMissingStoredInputItemStrategy+":"+missingID {
+	if strategy != stripMissingStoredInputItemStrategy+":"+missingID+":removed=1" {
 		t.Fatalf("strategy=%q", strategy)
 	}
 	if gjson.GetBytes(got, "input.#").Int() != 2 {
@@ -1758,7 +1758,7 @@ func TestResponsesRetryBodyForMissingStoredInputItem_StripsNamedReasoning(t *tes
 	if !ok {
 		t.Fatal("retryBodyForRejectedRequest returned ok=false for HTTP 404")
 	}
-	if strategy != stripMissingStoredInputItemStrategy+":"+missingID {
+	if strategy != stripMissingStoredInputItemStrategy+":"+missingID+":removed=1" {
 		t.Fatalf("strategy=%q", strategy)
 	}
 	if gjson.GetBytes(got, "input.#").Int() != 2 {
@@ -1808,11 +1808,11 @@ func TestResponsesRetryBodyForMissingStoredInputItem_IgnoresNonMatchingErrors(t 
 		})
 	}
 
-	for _, itemType := range []string{"message", "function_call", "custom_tool_call"} {
+	for _, itemType := range []string{"message", "function_call", "custom_tool_call", "reasoning"} {
 		t.Run("preserve "+itemType, func(t *testing.T) {
 			t.Parallel()
 			const itemID = "item_must_survive"
-			body := []byte(`{"input":[{"type":"` + itemType + `","id":"` + itemID + `"}]}`)
+			body := []byte(`{"input":[{"type":"` + itemType + `","id":"` + itemID + `","encrypted_content":"opaque"}]}`)
 			res := &fwResult{
 				Status: http.StatusNotFound,
 				Body:   []byte(`{"error":{"message":"Item with id '` + itemID + `' not found"}}`),

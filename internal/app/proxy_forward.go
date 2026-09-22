@@ -2368,7 +2368,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	reqCtx.antigravityReplay.finish(res, err)
-	if res != nil && res.Status == http.StatusBadRequest {
+	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
+		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
 		res.openCodeResponses = reqCtx.openCodeResponses
 	}
@@ -2913,7 +2914,6 @@ func (s *Server) forwardAttempt(
 			reqCtx.debugData = res.DebugData
 		}
 		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
-			res.RetryStrategy = strings.Join(retryStrategies, ",")
 			if len(res.SSEErrorEvent) == 0 {
 				break
 			}
@@ -2930,6 +2930,9 @@ func (s *Server) forwardAttempt(
 	// default/standard 都不能把它降档。resolveBillingServiceTier 仍允许更贵的
 	// ultrafast 以及非 priority 请求的真实终态覆盖请求值。
 	if res != nil {
+		if len(retryStrategies) > 0 {
+			res.RetryStrategy = strings.Join(retryStrategies, ",")
+		}
 		res.ServiceTier = resolveBillingServiceTier(requestedServiceTier(reqCtx), res.ServiceTier)
 	}
 	if res != nil && antigravityCapacityRetries > 0 {

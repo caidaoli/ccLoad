@@ -13325,7 +13325,93 @@ func TestProxy_ResponsesSSEMissingStoredItemRetriesOnceWithStrippedBody(t *testi
 	}
 }
 
-func TestProxy_ResponsesSSEMissingStoredItemRetriesOnce(t *testing.T) {
+func TestProxy_ResponsesMissingStoredItemsPreserveWireHistory(t *testing.T) {
+	for _, sseError := range []bool{false, true} {
+		for _, rejectedAgain := range []bool{false, true} {
+			t.Run(fmt.Sprintf("sse=%t/rejected_again=%t", sseError, rejectedAgain), func(t *testing.T) {
+				t.Parallel()
+				input := []any{
+					map[string]any{"type": "message", "role": "user", "content": "removed by channel rule"},
+					map[string]any{"type": "reasoning", "id": "rs_original", "encrypted_content": nil},
+					map[string]any{"type": "reasoning", "id": "rs_empty", "encrypted_content": ""},
+					map[string]any{"type": "reasoning", "id": "rs_blank", "encrypted_content": " \t"},
+					map[string]any{"type": "reasoning", "id": "rs_absent"},
+					map[string]any{"type": "reasoning", "summary": []any{}},
+					map[string]any{"type": "message", "role": "user", "content": "keep"},
+					map[string]any{"type": "reasoning", "id": "rs_encrypted", "encrypted_content": "opaque"},
+					map[string]any{"type": "function_call", "id": "fc_keep", "call_id": "call_keep", "name": "lookup", "arguments": "{}"},
+					map[string]any{"type": "function_call_output", "call_id": "call_keep", "output": "result"},
+					map[string]any{"type": "message", "id": "msg_keep", "role": "assistant", "content": "done"},
+				}
+				var requests [][]byte
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read request: %v", err)
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					requests = append(requests, body)
+					if len(requests) == 1 || rejectedAgain {
+						payload := `{"type":"error","status":404,"error":{"type":"invalid_request_error","param":"input","message":"Item with id 'rs_wire' not found. Items are not persisted when store is set to false."}}`
+						if sseError {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							w.WriteHeader(http.StatusNotFound)
+							_, _ = io.WriteString(w, payload)
+						}
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-recovered\",\"status\":\"completed\",\"output\":[]}}\n\n")
+				}))
+				defer upstream.Close()
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: "codex-recovery", upstreamProtocol: "codex", models: "gpt-test", authType: model.AuthTypeCodexOAuth,
+					oauthCredential: codexProxyTestCredential(t, "at-recovery", "rt-recovery", "account-recovery"),
+					customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{
+						{Action: model.RuleActionRemove, Path: "input.0"},
+						{Action: model.RuleActionOverride, Path: "input.0.id", Value: json.RawMessage(`"rs_wire"`)},
+					}},
+				}}, map[int]string{0: upstream.URL})
+				response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+					"model": "gpt-test", "stream": true, "store": false, "input": input,
+				}, nil)
+				if len(requests) != 2 {
+					t.Fatalf("upstream calls=%d, want exactly one retry; response=%s", len(requests), response.Body.String())
+				}
+				if gjson.GetBytes(requests[0], "input.0.id").String() != "rs_wire" || gjson.GetBytes(requests[0], "input.#").Int() != int64(len(input)-1) {
+					t.Fatalf("initial wire rules not applied: %s", requests[0])
+				}
+				var first, second map[string]any
+				if err := json.Unmarshal(requests[0], &first); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(requests[1], &second); err != nil {
+					t.Fatal(err)
+				}
+				first["input"] = input[5:]
+				if !reflect.DeepEqual(first, second) {
+					t.Fatalf("retry changed retained history or reapplied channel rules: %s", requests[1])
+				}
+				if !rejectedAgain {
+					_, payload := parseSSEEventChunk(response.Body.Bytes())
+					if response.Code != http.StatusOK || gjson.GetBytes(payload, "response.status").String() != "completed" {
+						t.Fatalf("recovery failed: status=%d body=%s", response.Code, response.Body.String())
+					}
+				}
+				entry := waitForProxyLog(t, env, "gpt-test")
+				if !strings.Contains(entry.Message, "strip_missing_stored_input_item:rs_wire:removed=4") {
+					t.Fatalf("recovery strategy missing from log: %s", entry.Message)
+				}
+			})
+		}
+	}
+}
+
+func TestProxy_ResponsesSSEMissingStoredItemsRecoverTogether(t *testing.T) {
 	t.Parallel()
 
 	var calls atomic.Int32
@@ -13370,16 +13456,16 @@ func TestProxy_ResponsesSSEMissingStoredItemRetriesOnce(t *testing.T) {
 		t.Fatalf("upstream calls=%d, want initial request plus %d retries (%d total); status=%d body=%s",
 			calls.Load(), responsesMissingStoredItemRetryLimit, wantCalls, w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "resp-after-unbounded-retries") {
-		t.Fatalf("retry loop stripped beyond the fixed limit: %s", w.Body.String())
+	_, completed := parseSSEEventChunk(w.Body.Bytes())
+	if gjson.GetBytes(completed, "response.status").String() != "completed" {
+		t.Fatalf("expected completed response after batch recovery: %s", w.Body.String())
 	}
 	var last []byte
 	for range wantCalls {
 		last = <-requests
 	}
-	if gjson.GetBytes(last, "input.#").Int() != 1 ||
-		gjson.GetBytes(last, "input.0.id").String() != fmt.Sprintf("rs_item_missing_%02d", responsesMissingStoredItemRetryLimit) {
-		t.Fatalf("last bounded retry body=%s, want final unstripped item", last)
+	if gjson.GetBytes(last, "input.#").Int() != 0 {
+		t.Fatalf("batch recovery retained missing reasoning: %s", last)
 	}
 }
 
@@ -13429,9 +13515,11 @@ func TestProxy_ResponsesHTTPMissingStoredItemRetriesOnce(t *testing.T) {
 	for range wantCalls {
 		last = <-requests
 	}
-	if gjson.GetBytes(last, "input.#").Int() != 1 ||
-		gjson.GetBytes(last, "input.0.id").String() != fmt.Sprintf("rs_item_missing_%02d", responsesMissingStoredItemRetryLimit) {
-		t.Fatalf("last bounded retry body=%s, want final unstripped item", last)
+	if gjson.GetBytes(last, "input.#").Int() != 0 {
+		t.Fatalf("batch recovery retained missing reasoning: %s", last)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("failed recovery status=%d, want 404", w.Code)
 	}
 }
 
