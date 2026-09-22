@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
@@ -63,11 +64,11 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	upstream.StartTLS()
 	t.Cleanup(upstream.Close)
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	maxAge := 100 * time.Millisecond
 	server := &Server{
 		client:            newUpstreamHTTPClient(base, maxAge),
-		antigravityClient: newAntigravityHTTPClient(base, maxAge, antigravityPoolConfig{}),
+		antigravityClient: newAntigravityHTTPClient(base, maxAge),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
@@ -130,57 +131,10 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	}
 }
 
-func TestAntigravityConnectionReuseSettings(t *testing.T) {
-	for _, disabled := range []bool{false, true} {
-		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
-			addresses := make(chan string, 3)
-			closed := make(chan struct{}, 3)
-			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				addresses <- r.RemoteAddr
-				_, _ = io.WriteString(w, "ok")
-			}))
-			upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-				if state == http.StateClosed {
-					select {
-					case closed <- struct{}{}:
-					default:
-					}
-				}
-			}
-			upstream.Start()
-			t.Cleanup(upstream.Close)
-			client := newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour, antigravityPoolConfig{DisableReuse: disabled, IdleTimeout: time.Second, MaxIdleConnsPerHost: 2})
-			t.Cleanup(func() { closeUpstreamHTTPClient(client) })
-			request := func() string {
-				t.Helper()
-				response, err := client.Get(upstream.URL)
-				if err != nil {
-					t.Fatal(err)
-				}
-				_, _ = io.Copy(io.Discard, response.Body)
-				_ = response.Body.Close()
-				return <-addresses
-			}
-			first, second := request(), request()
-			if (first != second) != disabled {
-				t.Fatalf("disabled=%v connections=%s/%s", disabled, first, second)
-			}
-			select {
-			case <-closed:
-			case <-time.After(3 * time.Second):
-				t.Fatal("idle connection was not reclaimed")
-			}
-			if third := request(); third == second {
-				t.Fatal("closed idle connection reused")
-			}
-		})
-	}
-}
-
 func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
 	server := &Server{
 		client:            http.DefaultClient,
-		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true), 0, antigravityPoolConfig{}),
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true, 1), 0),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
@@ -218,7 +172,7 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 	t.Cleanup(upstream.Close)
 	server := &Server{
 		client:            http.DefaultClient,
-		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false), 0, antigravityPoolConfig{}),
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false, 1), 0),
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
@@ -286,7 +240,7 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	}
 	agingCache := newAntigravityHTTPClientCache(1)
 	agingClient, err := agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "aging"}, func() (*http.Client, error) {
-		return newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour, antigravityPoolConfig{}), nil
+		return newAntigravityHTTPClient(buildHTTPTransport(false, 1), time.Hour), nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -338,22 +292,52 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	}
 }
 
-func TestAntigravityPoolLimitsMatchNativeReuseProfile(t *testing.T) {
-	base := &http.Transport{MaxIdleConns: 20, MaxIdleConnsPerHost: 20, IdleConnTimeout: 90 * time.Second}
-	client := newAntigravityHTTPClient(base, 0, antigravityPoolConfig{})
+func TestAntigravityPoolMatchesSharedTransportPolicy(t *testing.T) {
+	base := &http.Transport{
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	client := newAntigravityHTTPClient(base, 0)
 	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
 	}
-	if transport.MaxIdleConnsPerHost != antigravityMaxIdleConnsPerHost ||
-		transport.MaxIdleConns < transport.MaxIdleConnsPerHost ||
-		transport.IdleConnTimeout != antigravityIdleConnTimeout {
-		t.Fatalf("Antigravity pool limits = idle %d per-host %d timeout %v",
-			transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
+	if transport.DisableKeepAlives != base.DisableKeepAlives ||
+		transport.MaxIdleConns != base.MaxIdleConns ||
+		transport.MaxIdleConnsPerHost != base.MaxIdleConnsPerHost ||
+		transport.IdleConnTimeout != base.IdleConnTimeout {
+		t.Fatalf("Antigravity pool policy = keepalive-disabled %t, idle %d, per-host %d, timeout %v",
+			transport.DisableKeepAlives, transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
 	}
-	if base.MaxIdleConnsPerHost != 20 || base.IdleConnTimeout != 90*time.Second {
-		t.Fatal("Antigravity pool tuning mutated the shared base transport")
+	if base.MaxIdleConns != 1000 || base.MaxIdleConnsPerHost != config.HTTPMaxIdleConnsPerHost || base.IdleConnTimeout != 90*time.Second {
+		t.Fatal("Antigravity client mutated the shared base transport")
+	}
+}
+
+func TestBuildHTTPTransportSizesIdlePoolByChannelCount(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		channelCount int
+		want         int
+	}{
+		{name: "empty", channelCount: 0, want: 2},
+		{name: "single", channelCount: 1, want: 2},
+		{name: "five_hundred", channelCount: 500, want: 1000},
+		{name: "at_limit", channelCount: 512, want: 1024},
+		{name: "above_limit", channelCount: 513, want: 1024},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := buildHTTPTransport(false, tt.channelCount)
+			t.Cleanup(transport.CloseIdleConnections)
+			if transport.MaxIdleConns != tt.want {
+				t.Fatalf("MaxIdleConns=%d, want %d", transport.MaxIdleConns, tt.want)
+			}
+			if transport.DisableKeepAlives {
+				t.Fatal("connection reuse is disabled")
+			}
+		})
 	}
 }
 
@@ -490,7 +474,7 @@ func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true), 50*time.Millisecond)
+	transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true, 1), 50*time.Millisecond)
 	client := &http.Client{Transport: transport}
 	t.Cleanup(transport.Close)
 
@@ -547,7 +531,7 @@ func TestUpstreamHTTPTransportClosesIdleCodexUTLSConnectionAtMaxAge(t *testing.T
 	server.StartTLS()
 	defer server.Close()
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, server.Listener.Addr().String())
@@ -665,7 +649,7 @@ func TestUpstreamHTTPTransportDrainsActiveResponsesAndRotatesNewRequests(t *test
 			server.StartTLS()
 			defer server.Close()
 
-			transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true), 50*time.Millisecond)
+			transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true, 1), 50*time.Millisecond)
 			client := &http.Client{Transport: transport}
 			t.Cleanup(transport.Close)
 

@@ -298,3 +298,27 @@ test('model filter options contain request models but not redirected models', as
     assert.deepEqual(global.window.availableLogsModels, ['requested-model']);
   });
 });
+
+test('Jev audit messages use the shared debug-log entry and expose the decision summary', async () => {
+  await withLoadedLogsPage({
+    logSource: 'jev',
+    entries: [{
+      id: 42,
+      time: Date.now(),
+      model: 'jev-latest',
+      status_code: 200,
+      duration: 0.2,
+      log_source: 'jev',
+      message: JSON.stringify({
+        call_id: 'audit-42',
+        adopted: { category: 'quota' },
+        fallback: { reset: 'no_valid_reset' }
+      })
+    }]
+  }, ({ tbody }) => {
+    assert.match(tbody.innerHTML, /log-source-badge[^>]*>Jev<\/span>/);
+    assert.match(tbody.innerHTML, /debug-log-link has-upstream-detail[^>]*data-log-id="42"/);
+    assert.match(tbody.innerHTML, /call_id=audit-42, category=quota, fallback\.reset=no_valid_reset/);
+    assert.doesNotMatch(tbody.innerHTML, /<details>|jev-log-detail/);
+  });
+});

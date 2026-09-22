@@ -5,13 +5,14 @@ import "time"
 
 // OAuth 上游地址设置键。键名是用户可见配置契约，保持既有大小写。
 const (
-	APITokenLoginEnabledSettingKey      = "api_token_login_enabled"
-	APITokenShowChannelsSettingKey      = "api_token_show_channels"
-	CodexBaseURLSettingKey              = "CODEX_BASE_URL"
-	XAIBaseURLSettingKey                = "XAI_BASE_URL"
-	AntigravityURLSettingKey            = "ANTIGRAVITY_URL"
-	AnthropicBaseURLSettingKey          = "ANTHROPIC_BASE_URL"
-	ActiveRequestTitleEnabledSettingKey = "active_request_title_enabled"
+	TypeSafeEnabledSettingKey      = "TypeSafe_enabled"
+	TypeSafeAPIKeySettingKey       = "TypeSafe_api_key"
+	APITokenLoginEnabledSettingKey = "api_token_login_enabled"
+	APITokenShowChannelsSettingKey = "api_token_show_channels"
+	CodexBaseURLSettingKey         = "CODEX_BASE_URL"
+	XAIBaseURLSettingKey           = "XAI_BASE_URL"
+	AntigravityURLSettingKey       = "ANTIGRAVITY_URL"
+	AnthropicBaseURLSettingKey     = "ANTHROPIC_BASE_URL"
 	// HTTPReadTimeoutSettingKey 控制下游请求读取超时（0 = 内建默认值）。
 	HTTPReadTimeoutSettingKey  = "http_read_timeout_seconds"
 	CodexMap429To503SettingKey = "codex_map_429_to_503"
@@ -94,8 +95,11 @@ const (
 	// 10秒：更快失败，上游TLS异常时尽快返回/切换（代价：握手慢时更容易超时）
 	HTTPTLSHandshakeTimeout = 10 * time.Second
 
-	// HTTPMaxIdleConns 全局空闲连接池大小
-	HTTPMaxIdleConns = 200
+	// HTTPIdleConnsPerChannel 按启动时渠道数为每个 Transport 预留的空闲连接数
+	HTTPIdleConnsPerChannel = 2
+
+	// HTTPMaxIdleConnsLimit 单个 Transport 的全局空闲连接池上限
+	HTTPMaxIdleConnsLimit = 1024
 
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
 	// 20：允许更多连接复用，减少连接建立延迟

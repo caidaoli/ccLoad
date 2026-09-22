@@ -2367,6 +2367,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		responseWriter = dc.wrapTranslatedResponseWriter(cancelableWriter)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
+	if res != nil {
+		res.errorReceivedAt = time.Now()
+	}
 	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
@@ -2593,6 +2596,9 @@ func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
 // ============================================================================
 
 func markSSEErrorForwardResult(res *fwResult) {
+	if res.errorReceivedAt.IsZero() {
+		res.errorReceivedAt = time.Now()
+	}
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
 	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {

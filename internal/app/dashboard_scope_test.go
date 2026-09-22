@@ -47,6 +47,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 
 	now := model.JSONTime{Time: time.Now()}
 	for _, entry := range []*model.LogEntry{
+		{Time: now, Model: "jev-latest", LogSource: model.LogSourceJev, StatusCode: 200, AuthTokenID: 42, Message: "private audit"},
 		{
 			Time:                     now,
 			Model:                    "gpt-5.6",
@@ -87,7 +88,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 		}
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today&auth_token_id=99", nil))
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today&auth_token_id=99&log_source=all", nil))
 	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
 	server.HandleErrors(c)
 	if w.Code != http.StatusOK {

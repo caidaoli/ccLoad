@@ -44,6 +44,10 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
       this.attributes.delete(name);
     }
   };
+  const typeSafeButton = {
+    ...updateButton, attributes: new Map(),
+    closest(selector) { return selector === '[data-action="test-typesafe"]' ? this : null; }
+  };
   const settingsBody = {
     dataset: {},
     innerHTML: '',
@@ -234,6 +238,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
       continue;
     }
     const input = {
+      dataset: {},
       id: key,
       type: definitions.get(key)?.value_type === 'string' ? 'text' : 'number',
       value,
@@ -341,6 +346,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
       nextSaveError = null;
       throw error;
     }
+    if (url === '/admin/typesafe/test') return { valid: true };
     return { message: 'saved' };
   };
 
@@ -376,6 +382,8 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
     requests,
     saveButton,
     updateButton,
+    typeSafeButton,
+    clickTypeSafe() { bodyListeners.get('click')?.({ target: typeSafeButton }); },
     clickUpdate() {
       bodyListeners.get('click')?.({ target: updateButton });
     },
@@ -965,12 +973,6 @@ test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
     }
   ], {});
 
-  const updateGroup = page.renderCalls.find(({ template, data }) => (
-    template === 'tpl-setting-group-row' && data.groupId === 'update'
-  ));
-  assert.ok(updateGroup, '应将自动更新设置放入独立分组');
-  assert.match(updateGroup.data.groupNoticeHtml, /role="note"/);
-
   const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
   assert.equal(settingRows.length, 2);
   for (const { data } of settingRows) {
@@ -980,4 +982,57 @@ test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   const channelRow = settingRows.find(({ data }) => data.key === 'auto_update_channel');
   assert.ok(channelRow);
   assert.doesNotMatch(channelRow.data.inputHtml, /data-action="check-for-updates"/);
+});
+
+
+test('TypeSafe secret is omitted unless changed and explicit reset disables the service', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'TypeSafe_api_key', value: '', default_value: '', value_type: 'string', configured: true },
+    { key: 'TypeSafe_enabled', value: 'true', default_value: 'false', value_type: 'bool' },
+    { key: 'auto_refresh_interval_seconds', value: '10', value_type: 'int' }
+  ], { TypeSafe_api_key: '', TypeSafe_enabled: 'true', auto_refresh_interval_seconds: '20' });
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(saveRequests(page)[0].options.body), { auto_refresh_interval_seconds: '20' });
+  page.clickReset('TypeSafe_api_key');
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(saveRequests(page)[1].options.body), { TypeSafe_api_key: '', TypeSafe_enabled: 'false' });
+  page.inputs.TypeSafe_api_key.value = 'replacement-key';
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(saveRequests(page)[2].options.body), { TypeSafe_api_key: 'replacement-key' });
+  assert.equal(page.inputs.TypeSafe_api_key.value, '');
+});
+
+test('TypeSafe test sends entered or saved key without saving and restores button after errors', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'TypeSafe_api_key', value: '', default_value: '', value_type: 'string', configured: true }
+  ], { TypeSafe_api_key: ' entered-key ' });
+  page.clickTypeSafe();
+  page.clickTypeSafe();
+  assert.equal(page.typeSafeButton.disabled, true);
+  await flushAsyncWork();
+  const calls = () => page.requests.filter(r => r.url === '/admin/typesafe/test');
+  assert.equal(calls().length, 1);
+  assert.deepEqual(JSON.parse(calls()[0].options.body), { api_key: 'entered-key' });
+  assert.equal(page.inputs.TypeSafe_api_key.value, ' entered-key ');
+  page.inputs.TypeSafe_api_key.value = '';
+  page.clickTypeSafe();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(calls()[1].options.body), {});
+  page.clickReset('TypeSafe_api_key');
+  page.clickTypeSafe();
+  await flushAsyncWork();
+  assert.deepEqual(JSON.parse(calls()[2].options.body), { api_key: '' });
+  assert.equal(page.typeSafeButton.disabled, false);
+  assert.equal(page.requests.filter(r => r.url === '/admin/settings/batch').length, 0);
+  assert.equal(page.prompts.length, 0);
+  assert.equal(page.successes.length, 3);
+  page.failNextSave('connection failed');
+  page.clickTypeSafe();
+  await flushAsyncWork();
+  assert.equal(page.typeSafeButton.disabled, false);
+  assert.match(page.errors.at(-1), /connection failed/);
 });

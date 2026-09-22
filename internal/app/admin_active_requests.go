@@ -12,11 +12,10 @@ import (
 )
 
 type activeRequestsResponse struct {
-	Success                   bool             `json:"success"`
-	Data                      []*ActiveRequest `json:"data"`
-	Error                     string           `json:"error"`
-	Count                     int              `json:"count"`
-	ActiveRequestTitleEnabled bool             `json:"active_request_title_enabled"`
+	Success bool             `json:"success"`
+	Data    []*ActiveRequest `json:"data"`
+	Error   string           `json:"error"`
+	Count   int              `json:"count"`
 }
 
 type processRuntimeMetrics struct {
@@ -74,10 +73,9 @@ func (s *Server) HandleActiveRequests(c *gin.Context) {
 		requests = s.activeRequests.List()
 	}
 	c.JSON(http.StatusOK, activeRequestsResponse{
-		Success:                   true,
-		Data:                      requests,
-		Count:                     len(requests),
-		ActiveRequestTitleEnabled: s.activeRequestTitleEnabled,
+		Success: true,
+		Data:    requests,
+		Count:   len(requests),
 	})
 }
 

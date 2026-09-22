@@ -1,13 +1,21 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -391,5 +399,340 @@ func TestCooldownWriteContext_DetachesCancelButPreservesValues(t *testing.T) {
 
 	if got := ctx.Value(key); got != "v" {
 		t.Fatalf("cooldownWriteContext 应保留 ctx.Value: got=%v", got)
+	}
+}
+
+// Exercises the proxy boundary, persisted audit and prepared deferred decision together.
+func TestProxyJevAnalysis(t *testing.T) {
+	offsetReset := time.Now().In(time.FixedZone("UTC+8", 8*3600)).Add(24 * time.Hour).Format("2006-01-02 15:04:05")
+	cases := []struct {
+		name                            string
+		status                          int
+		body, category, reset, outcome  string
+		confidence                      float64
+		want                            cooldown.Action
+		calls                           int
+		configured, disabled, committed bool
+	}{
+		{name: "unknown", status: 404, body: `{"error":{"message":"unrecognized failure sk-upstream-secret"},"messages":["private conversation"]}`, category: "channel", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
+		{name: "5xx classification", status: 500, body: `{"error":{"message":"unknown"}}`, category: "channel", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
+		{name: "request", status: 597, body: `{"error":{"type":"unrecognized","message":"invalid shape"}}`, category: "request", confidence: 1, want: cooldown.ActionReturnClient, calls: 1},
+		{name: "oauth credential", status: 401, body: `{"error":{"message":"unrecognized rejection"}}`, category: "credential", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
+		{name: "low confidence", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "request", confidence: 0.9, want: cooldown.ActionRetryChannel, calls: 1, outcome: "low_confidence"},
+		{name: "invalid choice", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "delete_credential", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1, outcome: "invalid_choice"},
+		{name: "configured priority", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "request", confidence: 1, want: cooldown.ActionRetryModel, calls: 0, configured: true},
+		{name: "disabled", status: 404, body: `{"error":{"message":"unrecognized"}}`, want: cooldown.ActionRetryChannel, disabled: true},
+		{name: "known context limit", status: 400, body: `{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}`, want: cooldown.ActionReturnClient},
+		{name: "time only", status: 429, body: `{"error":{"message":"retry in 2 hours; previous reset 2020-01-01T00:00:00Z"}}`, reset: "2 hours", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "ambiguous timezone", status: 429, body: `{"error":{"message":"reset 2099-01-01 12:00:00"}}`, reset: "2099-01-01 12:00:00", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "explicit UTC offset", status: 429, body: fmt.Sprintf(`{"error":{"message":"reset %s UTC+8"}}`, offsetReset), reset: offsetReset + " UTC+8", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "past reset", status: 429, body: `{"error":{"message":"reset 2020-01-01T00:00:00Z"}}`, reset: "2020-01-01T00:00:00Z", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "reset overflow", status: 429, body: `{"error":{"message":"retry in 999999999999999999999999 hours"}}`, reset: "999999999999999999999999 hours", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "committed SSE", status: 597, body: `{"error":{"type":"new_failure","message":"model temporarily unavailable"}}`, category: "model", confidence: 1, want: cooldown.ActionReturnClient, calls: 1, committed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jevAdmission.Lock()
+			jevAdmission.starts = nil
+			jevAdmission.Unlock()
+			srv := newInMemoryServerWithSettings(t, map[string]string{config.TypeSafeEnabledSettingKey: strconv.FormatBool(!tc.disabled), config.TypeSafeAPIKeySettingKey: "test-typesafe-secret", "debug_log_enabled": "false"})
+			ctx := context.Background()
+			cfg, err := srv.store.CreateConfig(ctx, &model.Config{Name: "jev-test", Enabled: true, URLs: model.ChannelURLs{{URL: "https://upstream.invalid"}}, ModelEntries: []model.ModelEntry{{Model: "test-model"}, {Model: "other-model"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.configured {
+				cfg.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{Enabled: true, Name: "test rule", Priority: 1, StatusCodes: []int{404}, Scope: "model", Mode: "fixed", CooldownSeconds: 20}}}
+			}
+			calls := 0
+			srv.jevClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if request.URL.String() != jevEndpoint || request.Header.Get("Authorization") != "Bearer test-typesafe-secret" {
+					t.Errorf("invalid endpoint/auth")
+				}
+				raw, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				if strings.Contains(string(raw), "sk-upstream-secret") || strings.Contains(string(raw), "private conversation") {
+					t.Errorf("sensitive request: %s", raw)
+				}
+				var sent jevRequest
+				if err := json.Unmarshal(raw, &sent); err != nil {
+					t.Fatal(err)
+				}
+				if sent.Model != "jev-latest" {
+					t.Errorf("model=%s", sent.Model)
+				}
+				answers := map[string]jevAnswer{}
+				for key, question := range sent.Questions {
+					choice := tc.category
+					if key == "reset" {
+						if _, ok := sent.Questions["category"]; ok && tc.status == 429 {
+							t.Error("known classification sent for replacement")
+						}
+						choice = "none"
+						for _, candidate := range sent.State.Candidates {
+							if candidate.Value == tc.reset {
+								choice = candidate.ID
+							}
+						}
+					}
+					probabilities := map[string]float64{}
+					for option := range question.Criteria {
+						probabilities[option] = 0
+					}
+					probabilities[choice] = 1
+					answers[key] = jevAnswer{Type: "choice", Choice: choice, Probabilities: probabilities, Confidence: tc.confidence}
+				}
+				reply := jevResponse{Model: "jev-1.13.0", Answers: answers}
+				reply.Usage.InputTokens = 23
+				data, err := json.Marshal(reply)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: make(http.Header)}, nil
+			})}
+			received := time.Now().Add(-time.Second)
+			res := &fwResult{Status: tc.status, Body: []byte(tc.body), ResponseCommitted: tc.committed, errorReceivedAt: received}
+			reqCtx := &proxyRequestContext{originalModel: "test-model", channelStartTime: received, attemptStartTime: received}
+			result, action := srv.handleCommittedAwareProxyError(ctx, cfg, cooldown.NoKeyIndex, "test-model", "sk-upstream-secret", res, 0.1, reqCtx, true)
+			if action != tc.want {
+				t.Fatalf("action=%v want=%v", action, tc.want)
+			}
+			if result.deferredCooldown != nil {
+				_ = srv.decideCooldownAction(ctx, cfg, *result.deferredCooldown)
+				_ = srv.cooldownManager.CanFallbackToOtherKey(*result.deferredCooldown)
+				_ = srv.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
+			}
+			if calls != tc.calls {
+				t.Fatalf("calls=%d want=%d", calls, tc.calls)
+			}
+			if calls == 0 {
+				return
+			}
+			var logs []*model.LogEntry
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				logs, err = srv.store.ListLogs(ctx, received.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceAll})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(logs) >= 2 {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			var audit jevAudit
+			proxyMessage := ""
+			auditCount := 0
+			for _, entry := range logs {
+				if entry.LogSource == model.LogSourceJev {
+					auditCount++
+					if err := json.Unmarshal([]byte(entry.Message), &audit); err != nil {
+						t.Fatal(err)
+					}
+					if entry.InputTokens != 23 || entry.ResponseModel != "jev-1.13.0" {
+						t.Fatalf("audit fields: %+v", entry)
+					}
+					wantCost := util.CalculateCostDetailed("jev-latest", 23, 0, 0, 0, 0)
+					if math.Abs(entry.Cost-wantCost) > 1e-12 {
+						t.Fatalf("audit cost = %.12f, want %.12f", entry.Cost, wantCost)
+					}
+					debug, debugErr := srv.store.GetDebugLogByLogID(ctx, entry.ID)
+					if debugErr != nil || debug == nil || debug.ReqURL != jevEndpoint || !strings.Contains(string(debug.RespBody), audit.CallID) {
+						t.Fatalf("audit debug data missing: debug=%+v err=%v", debug, debugErr)
+					}
+				} else {
+					proxyMessage = entry.Message
+				}
+			}
+			if auditCount != 1 || audit.CallID == "" || !strings.Contains(proxyMessage, audit.CallID) {
+				t.Fatalf("audit=%+v proxy=%q count=%d", audit, proxyMessage, auditCount)
+			}
+			for key, value := range audit.Adopted {
+				if !strings.Contains(proxyMessage, key+"="+value) {
+					t.Fatalf("proxy log omitted Jev adopted result %s=%s: %q", key, value, proxyMessage)
+				}
+			}
+			for key, value := range audit.Fallback {
+				if !strings.Contains(proxyMessage, "fallback."+key+"="+value) {
+					t.Fatalf("proxy log omitted Jev fallback result %s=%s: %q", key, value, proxyMessage)
+				}
+			}
+			if tc.outcome != "" {
+				data, _ := json.Marshal(audit.Fallback)
+				if !strings.Contains(string(data), tc.outcome) {
+					t.Fatalf("fallback=%s", data)
+				}
+			}
+			if tc.name == "explicit UTC offset" && audit.Adopted["reset"] == "" {
+				t.Fatalf("explicit timezone reset not adopted: %+v", audit)
+			}
+			if tc.name == "time only" {
+				cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
+				if err != nil || cooldowns[cfg.ID]["test-model"].Sub(received.Add(2*time.Hour)).Abs() > time.Second {
+					t.Fatalf("precise reset was not persisted: %v err=%v", cooldowns, err)
+				}
+				until, err := time.Parse(time.RFC3339Nano, audit.Adopted["reset"])
+				if err != nil || !until.Equal(received.Add(2*time.Hour)) {
+					t.Fatalf("reset=%v err=%v", until, err)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyJevBudgetAndCancellation(t *testing.T) {
+	jevAdmission.Lock()
+	jevAdmission.starts = nil
+	jevAdmission.Unlock()
+	srv := newInMemoryServerWithSettings(t, map[string]string{config.TypeSafeEnabledSettingKey: "true", config.TypeSafeAPIKeySettingKey: "test-key"})
+	calls := 0
+	srv.jevClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	cfg := &model.Config{ID: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}}
+	reqCtx := &proxyRequestContext{jevWait: jevWaitBudget - 40*time.Millisecond}
+	res := &fwResult{Status: 500, Body: []byte(`{"error":{"message":"unknown"}}`)}
+	input := cooldownInputForModel(httpErrorInput(1, 0, res), "m")
+	start := time.Now()
+	prepared := srv.prepareJevError(context.Background(), cfg, reqCtx, res, input, "")
+	if time.Since(start) > time.Second || calls != 1 {
+		t.Fatalf("elapsed=%v calls=%d", time.Since(start), calls)
+	}
+	_ = srv.decideCooldownAction(context.Background(), cfg, prepared)
+	second := &fwResult{Status: 500, Body: res.Body}
+	_ = srv.prepareJevError(context.Background(), cfg, reqCtx, second, input, "")
+	if calls != 1 || second.jevNote != "skipped:budget_exhausted" {
+		t.Fatalf("calls=%d note=%s", calls, second.jevNote)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = srv.prepareJevError(ctx, cfg, &proxyRequestContext{}, &fwResult{Status: 500}, input, "")
+	if calls != 1 {
+		t.Fatal("canceled request called TypeSafe")
+	}
+	// Database persistence retains its own full budget even after remote timeout/cancellation.
+	writeCtx, writeCancel := cooldownWriteContext(ctx)
+	defer writeCancel()
+	deadline, ok := writeCtx.Deadline()
+	if !ok || time.Until(deadline) < 2*time.Second || writeCtx.Err() != nil {
+		t.Fatal("database budget inherited analysis cancellation")
+	}
+}
+
+func TestProxyJevAdmissionAndFailureAudits(t *testing.T) {
+	jevAdmission.Lock()
+	jevAdmission.starts = nil
+	jevAdmission.Unlock()
+	srv := newInMemoryServerWithSettings(t, map[string]string{config.TypeSafeEnabledSettingKey: "true", config.TypeSafeAPIKeySettingKey: "typesafe-key"})
+	entered := make(chan struct{}, 10)
+	release := make(chan struct{})
+	srv.jevClient = &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		entered <- struct{}{}
+		<-release
+		return &http.Response{StatusCode: 502, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"Bearer typesafe-key"}`))}, nil
+	})}
+	cfg := &model.Config{ID: 1}
+	run := func() *fwResult {
+		res := &fwResult{Status: 500, Body: []byte(`{"error":{"message":"unknown"}}`)}
+		_ = srv.prepareJevError(context.Background(), cfg, &proxyRequestContext{}, res, httpErrorInput(1, 0, res), "")
+		return res
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() { defer wg.Done(); run() }()
+	}
+	for range 8 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("calls did not start")
+		}
+	}
+	if res := run(); res.jevNote != "skipped:capacity" {
+		t.Fatalf("concurrent admission=%q", res.jevNote)
+	}
+	close(release)
+	wg.Wait()
+	run()
+	run()
+	if res := run(); res.jevNote != "skipped:capacity" {
+		t.Fatalf("rate admission=%q", res.jevNote)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var logs []*model.LogEntry
+	for time.Now().Before(deadline) {
+		var err error
+		logs, err = srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceJev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logs) == 10 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(logs) != 10 {
+		t.Fatalf("actual call audits=%d want=10", len(logs))
+	}
+	for _, entry := range logs {
+		var audit jevAudit
+		if err := json.Unmarshal([]byte(entry.Message), &audit); err != nil {
+			t.Fatal(err)
+		}
+		if audit.Fallback["call"] != "http_error" || strings.Contains(entry.Message, "typesafe-key") {
+			t.Fatalf("invalid error audit=%s", entry.Message)
+		}
+	}
+}
+
+func TestProxyJevInvalidResponseAudits(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, reason string
+		truncated          bool
+	}{
+		{"malformed", `{"answers":`, "invalid_response", false},
+		{"oversized", strings.Repeat("\x00", jevMaxResponseBytes+100), "incomplete_response", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jevAdmission.Lock()
+			jevAdmission.starts = nil
+			jevAdmission.Unlock()
+			srv := newInMemoryServerWithSettings(t, map[string]string{config.TypeSafeEnabledSettingKey: "true", config.TypeSafeAPIKeySettingKey: "test-typesafe-secret"})
+			srv.jevClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			})}
+			res := &fwResult{Status: 404, Body: []byte(`{"error":{"message":"unknown"}}`)}
+			cfg := &model.Config{ID: 1}
+			input := srv.prepareJevError(context.Background(), cfg, &proxyRequestContext{}, res, httpErrorInput(1, 0, res), "")
+			if action := srv.decideCooldownAction(context.Background(), cfg, input); action != cooldown.ActionRetryChannel {
+				t.Fatalf("invalid output changed action: %v", action)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				entries, err := srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceJev})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) == 0 {
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+				var audit jevAudit
+				if err := json.Unmarshal([]byte(entries[0].Message), &audit); err != nil {
+					t.Fatal(err)
+				}
+				if len(entries[0].Message) > jevMaxAuditBytes || audit.Fallback["call"] != tc.reason || audit.Truncated != tc.truncated {
+					t.Fatalf("audit size=%d fallback=%v truncated=%v", len(entries[0].Message), audit.Fallback, audit.Truncated)
+				}
+				return
+			}
+			t.Fatal("actual invalid-response call missing audit")
+		})
 	}
 }

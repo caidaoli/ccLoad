@@ -217,6 +217,7 @@ func ApplyWebIdentityScope(c *gin.Context, filter *model.LogFilter) {
 		tokenID = 1<<63 - 1
 	}
 	filter.AuthTokenID = &tokenID
+	filter.LogSource = model.LogSourceProxy
 	if identity.HideChannels {
 		filter.ChannelID = nil
 		filter.ChannelName = ""

@@ -1601,7 +1601,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"health_score_update_interval",
 		"health_min_confident_sample",
 		"cooldown_fallback_enabled",
-		"active_request_title_enabled",
 		"responses_ws_max_sessions",
 		"responses_ws_session_ttl_minutes",
 		"responses_ws_max_transcript_bytes",
@@ -1631,9 +1630,6 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		}
 		if strings.HasPrefix(key, "responses_ws_") && (val != "0" || defaultValue != "0") {
 			t.Errorf("setting %q initial/default value = %q/%q, want 0/0", key, val, defaultValue)
-		}
-		if key == "active_request_title_enabled" && (val != "false" || defaultValue != "false") {
-			t.Errorf("setting %q initial/default value = %q/%q, want false/false", key, val, defaultValue)
 		}
 		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL" || key == "ANTHROPIC_BASE_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
@@ -1924,23 +1920,38 @@ func TestCleanupRemovedSettings_SQLite(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// 插入一个应该被清理的旧设置
-	_, err := db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES ('model_lookup_strip_date_suffix', 'true', 'bool', 'old', 'true', unixepoch())")
-	if err != nil {
-		t.Fatalf("insert old setting: %v", err)
+	removedKeys := []string{
+		"skip_tls_verify",
+		"model_lookup_strip_date_suffix",
+		"active_request_title_enabled",
+		"antigravity_connection_reuse_enabled",
+		"antigravity_max_idle_conns_per_host",
+		"antigravity_idle_conn_timeout_seconds",
+	}
+	for _, key := range removedKeys {
+		_, err := db.ExecContext(ctx,
+			"INSERT OR REPLACE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, 'true', 'bool', 'old', 'true', unixepoch())",
+			key,
+		)
+		if err != nil {
+			t.Fatalf("insert old setting %s: %v", key, err)
+		}
 	}
 
 	if err := cleanupRemovedSettings(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("cleanupRemovedSettings: %v", err)
 	}
 
-	var cnt int
-	_ = db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM system_settings WHERE key='model_lookup_strip_date_suffix'",
-	).Scan(&cnt)
-	if cnt != 0 {
-		t.Fatal("expected model_lookup_strip_date_suffix to be removed")
+	for _, key := range removedKeys {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM system_settings WHERE key=?", key,
+		).Scan(&count); err != nil {
+			t.Fatalf("count removed setting %s: %v", key, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s to be removed", key)
+		}
 	}
 }
 

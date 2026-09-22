@@ -600,6 +600,8 @@ websocat \
 
 原生 WS 的同一上游内部重连把 `response.created`、`response.queued` 和 `response.in_progress` 视为非语义事件，因此在这些事件之后仍可重连一次；其他事件都越过该重连边界。注意，这三个生命周期事件仍是已经提交给下游的可见事件，不能据此承诺继续跨候选切换。一旦文本、推理、工具调用或其他实际输出已经转发，ccLoad 不再切换或重放，避免重复输出、工具调用和费用。消息过大使用 close code `1009`，也不会故障切换。
 
+所有渠道上游 HTTP Transport（包括 Antigravity 按凭证隔离的 HTTP/1.1 连接池）统一开启连接复用：每主机最多保留 20 条空闲连接，空闲 90 秒后关闭。启动时按持久化渠道总数为每个 Transport 设置总空闲连接容量，即渠道数的 2 倍，最少 2、最多 1024。渠道代理和 Antigravity 凭证仍拥有隔离的 Transport，因此 1024 是单个 Transport 的上限，不是整个进程的套接字硬上限。
+
 重连时必须使用相同的 API 令牌和稳定的 execution 请求头。`Session-Id` 表示顶层 Codex 会话；存在 `Thread-Id` 时，ccLoad 组合两个请求头建立身份，使主代理和每个子代理线程分别拥有独立的 transcript、Response ID 和 turn lock。没有 `Thread-Id` 的客户端继续使用原 `Session-Id` 契约。`prompt_cache_key`、请求体 `session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：新安装默认最多保留 256 个会话，进程级 transcript 有效载荷总预算为 256 MiB；已有数据库记录不迁移。空闲 TTL 继续默认 15 分钟（小内存机器可设为 10 分钟）。下游全部断开 5 分钟后，每分钟运行的清理器会关闭上游物理连接，因此实际回收时间约为 5–6 分钟，但会话 transcript 会继续保留到 TTL。稳定会话及其已提交 transcript 在 TTL 到期前绝不会因会话容量或内存预算压力被逐出。会话数达到上限时只拒绝新的会话身份，已有稳定会话仍可继续。已提交载荷超预算后，包括已有会话在内的所有新回合都会在触达上游前被拒绝。两类限制都通过 WebSocket `429/rate_limit_error/rate_limit` 事件返回；客户端应等待 TTL 回收后重试，或修改设置并重启。重启会丢失内存会话，因此客户端随后必须发送不带 `previous_response_id` 的完整会话输入。
 
 Transcript 预算是新工作准入阈值，不是严格分配上限：已经准入的回合允许完成并提交。除已配置预算外，有限的最坏超量为 `responses_ws_max_sessions × max_body_bytes`。进程重启不会恢复会话或累计会话指标。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。会话数、TTL 和 transcript 预算可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes`、`responses_ws_max_transcript_bytes` 调整。`GET /admin/runtime-metrics` 的 `transcript_bytes` 表示当前有效载荷字节数，不包含 Go 运行时、WebSocket 缓冲区和请求处理中临时对象的开销；同一响应还提供 WebSocket 拒绝、日志队列/落库失败，以及混合存储主库同步积压、失败、丢弃和最后成功时间。
@@ -981,7 +983,7 @@ ccLoad 使用的核心技术栈：
 
 **连接池优化**:
 - SQLite: 内存模式10个连接/文件模式5个连接，5分钟生命周期
-- HTTP客户端: 100最大连接，30秒超时，keepalive优化
+- HTTP客户端: 开启 keepalive；按启动时每渠道 2 条计算单 Transport 空闲容量（2–1024），每主机最多 20 条，空闲超时 90 秒
 - TLS: 会话缓存（1024容量），减少握手耗时
 
 ## 🔧 配置说明
@@ -1067,10 +1069,9 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `cooldown_max_seconds` | `1800` | 指数退避冷却上限（秒；下限大于上限时整对回退默认值） |
 | `cooldown_fallback_enabled` | `true` | 所有渠道都在冷却时，兜底选取「最早恢复」的渠道继续服务（Key 同样选最早恢复的）；设为 `false` 则直接拒绝请求 |
 | `global_cooldown_detection_rules` | `{}` | 全局冷却探测规则，渠道未配置自身 `cooldown_detection_rules` 时继承 |
+| `TypeSafe_enabled` | `false` | 启用 TypeSafe（Jev）错误分析兜底；需配置密钥，保存后重启生效 |
+| `TypeSafe_api_key` | 空 | TypeSafe API 密钥；设置接口不回显，不修改则保留，重置时清除并关闭 TypeSafe |
 | `upstream_connection_reuse_limit_seconds` | `0` | 上游连接最长复用时间（秒，`0`=不限制）；统一约束 HTTP/1.1、HTTP/2 和 WebSocket，达到时限后不再接收新请求，在途请求跑完再关闭，下次按需重连 |
-| `antigravity_connection_reuse_enabled` | `true` | Antigravity 渠道复用上游连接 |
-| `antigravity_max_idle_conns_per_host` | `2` | Antigravity 渠道每主机空闲连接数（1–100） |
-| `antigravity_idle_conn_timeout_seconds` | `30` | Antigravity 渠道空闲连接超时（1–210 秒） |
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON 字符串数组；命中的词在 Antigravity `systemInstruction` 和 CodeBuddy system/developer 消息文本中用零宽字符替换 |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
 | `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
@@ -1111,7 +1112,6 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `log_channel_click_action` | `edit` | 日志页点击渠道名后的操作（`edit` 打开渠道编辑器，`filter` 按该渠道过滤） |
 | `channel_stats_range` | `today` | 渠道管理页费用统计时间范围（`today`/`yesterday`/`day_before_yesterday`/`this_week`/`last_week`/`this_month`/`last_month`） |
 | `auto_refresh_interval_seconds` | `0` | Web 页面自动刷新间隔（秒，`0`=禁用，建议 `>= 30`）；有对话框打开时跳过本次刷新 |
-| `active_request_title_enabled` | `false` | 有请求处理时在浏览器标题栏显示请求数量并闪烁 |
 | `CODEX_BASE_URL` | 空 | Codex OAuth 渠道的全局上游地址（完整 Responses URL；官方默认 `https://chatgpt.com/backend-api/codex/responses`） |
 | `ANTHROPIC_BASE_URL` | 空 | Anthropic OAuth 渠道的全局 API 根地址（官方默认 `https://api.anthropic.com`） |
 | `XAI_BASE_URL` | 空 | xAI OAuth 渠道的全局 API 根地址（通常以 `/v1` 结尾；官方默认 `https://cli-chat-proxy.grok.com/v1`） |

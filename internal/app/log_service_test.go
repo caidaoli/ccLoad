@@ -451,3 +451,22 @@ func TestStartCleanupLoop_DoesNotBlockWhileTruncatingDisabledDebugLogs(t *testin
 		t.Fatalf("truncate calls=%d, want 1", calls)
 	}
 }
+
+func TestJevAuditPersistsWhenLogQueueCannotAccept(t *testing.T) {
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	stopped := &atomic.Bool{}
+	var wg sync.WaitGroup
+	service := NewLogService(store, 1, 0, 7, make(chan struct{}), stopped, &wg)
+	service.AddLogAsync(&model.LogEntry{Model: "queued-proxy"})
+	service.AddLogAsync(&model.LogEntry{LogSource: model.LogSourceJev, Model: "jev-latest", StatusCode: 200, Message: `{"call_id":"full-queue"}`})
+	stopped.Store(true)
+	service.AddLogAsync(&model.LogEntry{LogSource: model.LogSourceJev, Model: "jev-latest", StatusCode: 504, Message: `{"call_id":"shutdown"}`})
+	logs, err := store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceJev})
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("audit logs=%d err=%v", len(logs), err)
+	}
+}

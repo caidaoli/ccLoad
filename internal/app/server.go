@@ -136,22 +136,23 @@ type Server struct {
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
 	upstreamConnectionMaxAge time.Duration
-	antigravityPool          antigravityPoolConfig
+	upstreamChannelCount     int // 启动时持久化渠道数，用于后续隔离 Transport 的连接池容量
 	// 仅供测试注入（缩短下游与上游 WebSocket 的 idle/ping 间隔以覆盖保活路径）；
 	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
 	responsesWebsocketPingIntervalOverride time.Duration
 	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelFuzzyMatch           bool // 未命中时启用模糊匹配（子串匹配+版本排序）
-	activeRequestTitleEnabled bool
-	codexMap429To503          bool
+	modelFuzzyMatch  bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	codexMap429To503 bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 	// 多模态回退映射使用不可变快照热更新；更新锁保证持久化顺序与运行态发布顺序一致。
 	multimodalFallbackModels   atomic.Pointer[multimodalFallbackSnapshot]
 	multimodalFallbackUpdateMu sync.Mutex
 	modelPricingUpdateMu       sync.Mutex
+	settingsUpdateMu           sync.Mutex
+	jevClient                  *http.Client
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -235,9 +236,17 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		log.Print("[WARN] 已禁用上游 TLS 证书校验（InsecureSkipVerify=true）：仅用于临时排障/受控内网环境")
 	}
 
-	// 构建HTTP Transport（使用统一函数，消除DRY违反）
-	transport := buildHTTPTransport(skipTLSVerify)
-	log.Print("[INFO] HTTP/2已启用（HTTPS自动协商）；Antigravity 固定使用 HTTP/1.1")
+	channelLoadCtx, channelLoadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	channels, err := store.ListConfigs(channelLoadCtx)
+	channelLoadCancel()
+	if err != nil {
+		log.Fatalf("[FATAL] 加载渠道配置失败: %v", err)
+	}
+	log.Printf("[INFO] 已加载渠道配置（%d项）", len(channels))
+
+	// 所有上游 Transport 使用同一连接池策略；按启动时渠道数为每个池预留容量。
+	transport := buildHTTPTransport(skipTLSVerify, len(channels))
+	log.Printf("[INFO] HTTP/2已启用（HTTPS自动协商）；Antigravity 固定使用 HTTP/1.1；单 Transport 空闲连接上限=%d", transport.MaxIdleConns)
 	logHostOverrides(getHostOverrides())
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
@@ -256,17 +265,16 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		streamTimeout:            runtimeCfg.StreamTimeout,
 		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
-		antigravityPool:          runtimeCfg.AntigravityPool,
+		upstreamChannelCount:     len(channels),
 		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
-		activeRequestTitleEnabled:    runtimeCfg.ActiveRequestTitleEnabled,
 		codexMap429To503:             runtimeCfg.CodexMap429To503,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
 		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge, runtimeCfg.AntigravityPool),
+		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
 		antigravityTransports: newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity),
 		xaiSSOClient:          newXAISSOHTTPClient(transport),
 		skipTLSVerify:         skipTLSVerify,
@@ -314,13 +322,6 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
-	channelLoadCtx, channelLoadCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	channels, err := store.ListConfigs(channelLoadCtx)
-	channelLoadCancel()
-	if err != nil {
-		log.Fatalf("[FATAL] 加载渠道配置失败: %v", err)
-	}
-	log.Printf("[INFO] 已加载渠道配置（%d项）", len(channels))
 	s.cursorBridgeRequired.Store(hasCursorChannel(channels))
 
 	codexOAuthService := codexauth.NewService(s.client)
@@ -656,11 +657,9 @@ type serverRuntimeConfig struct {
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
 	UpstreamConnectionMaxAge     time.Duration
-	AntigravityPool              antigravityPoolConfig
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
-	ActiveRequestTitleEnabled    bool
 	CodexMap429To503             bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
 	MultimodalFallbackModels     map[string]string
@@ -783,24 +782,18 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 
 	return serverRuntimeConfig{
-		MaxKeyRetries:            maxKeyRetries,
-		MaxConcurrency:           loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
-		MaxBodyBytes:             loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
-		MaxImageBodyBytes:        loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
-		HTTPReadTimeout:          loadHTTPReadTimeout(cs),
-		FirstByteTimeout:         firstByteTimeout,
-		StreamTimeout:            streamTimeout,
-		NonStreamTimeout:         nonStreamTimeout,
-		UpstreamConnectionMaxAge: upstreamConnectionMaxAge,
-		AntigravityPool: (antigravityPoolConfig{
-			DisableReuse:        !cs.GetBool("antigravity_connection_reuse_enabled", true),
-			MaxIdleConnsPerHost: cs.GetInt("antigravity_max_idle_conns_per_host", antigravityMaxIdleConnsPerHost),
-			IdleTimeout:         cs.GetDuration("antigravity_idle_conn_timeout_seconds", antigravityIdleConnTimeout),
-		}).normalized(),
+		MaxKeyRetries:                maxKeyRetries,
+		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
+		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
+		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
+		FirstByteTimeout:             firstByteTimeout,
+		StreamTimeout:                streamTimeout,
+		NonStreamTimeout:             nonStreamTimeout,
+		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
-		ActiveRequestTitleEnabled:    cs.GetBool(config.ActiveRequestTitleEnabledSettingKey, false),
 		CodexMap429To503:             cs.GetBool(config.CodexMap429To503SettingKey, false),
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
 		MultimodalFallbackModels:     loadMultimodalFallbackModels(cs),
@@ -1051,11 +1044,16 @@ var getHostOverrides = sync.OnceValue(func() map[string]string {
 	return overrides
 })
 
-// buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
-// 参数:
-//   - skipTLSVerify: 是否跳过TLS证书验证
-func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
+// buildHTTPTransport 构建统一连接池策略的 HTTP Transport。
+func buildHTTPTransport(skipTLSVerify bool, channelCount int) *http.Transport {
 	overrides := getHostOverrides()
+	if channelCount < 1 {
+		channelCount = 1
+	}
+	maxIdleConns := config.HTTPMaxIdleConnsLimit
+	if channelCount <= config.HTTPMaxIdleConnsLimit/config.HTTPIdleConnsPerChannel {
+		maxIdleConns = channelCount * config.HTTPIdleConnsPerChannel
+	}
 	dialer := &net.Dialer{
 		Timeout:   config.HTTPDialTimeout,
 		KeepAlive: config.HTTPKeepAliveInterval,
@@ -1072,7 +1070,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
-		MaxIdleConns:        config.HTTPMaxIdleConns,
+		MaxIdleConns:        maxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
 		IdleConnTimeout:     90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
@@ -1246,9 +1244,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
 	if antigravityHTTP11Only {
 		defaultClient = s.antigravityClient
-		clientFactory = func(base *http.Transport, maxAge time.Duration) *http.Client {
-			return newAntigravityHTTPClient(base, maxAge, s.antigravityPool)
-		}
+		clientFactory = newAntigravityHTTPClient
 		// Tests and embedders may inject a semantic RoundTripper. It already is
 		// the transport boundary; replacing it with a network transport would
 		// silently bypass the injected behavior.
@@ -1274,9 +1270,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 				var transport *http.Transport
 				var err error
 				if proxyURL == "" {
-					transport = buildHTTPTransport(s.skipTLSVerify)
+					transport = buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)
 				} else {
-					transport, err = buildChannelProxyTransport(proxyURL, s.skipTLSVerify)
+					transport, err = buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
 				}
 				if err != nil {
 					return nil, err
@@ -1290,7 +1286,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 			fallbackKey := key
 			fallbackKey.proxyURL = ""
 			fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
-				return clientFactory(buildHTTPTransport(s.skipTLSVerify), s.upstreamConnectionMaxAge), nil
+				return clientFactory(buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount), s.upstreamConnectionMaxAge), nil
 			})
 			if fallbackErr == nil {
 				return fallback
@@ -1308,7 +1304,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		return v.(*http.Client)
 	}
 
-	t, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify)
+	t, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify, s.upstreamChannelCount)
 	if err != nil {
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		return defaultClient
@@ -1323,13 +1319,13 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 }
 
 // buildChannelProxyTransport 构建带代理的 Transport（HTTP/HTTPS 直连，SOCKS5 用自定义 Dialer）。
-func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool) (*http.Transport, error) {
+func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool, channelCount int) (*http.Transport, error) {
 	u, err := neturl.Parse(rawProxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy url: %w", err)
 	}
 
-	base := buildHTTPTransport(skipTLSVerify)
+	base := buildHTTPTransport(skipTLSVerify, channelCount)
 
 	switch u.Scheme {
 	case "http", "https":
@@ -1716,6 +1712,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 		// 系统配置管理
 		admin.GET("/model-pricing", s.HandleGetModelPricing)
+		admin.POST("/typesafe/test", s.AdminTestTypeSafe)
 		admin.GET("/settings", s.AdminListSettings)
 		admin.GET("/settings/:key", s.AdminGetSetting)
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)
@@ -1837,7 +1834,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 }
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
-	if s == nil || s.urlSelector == nil || entry == nil {
+	if s == nil || s.urlSelector == nil || entry == nil || entry.LogSource == model.LogSourceJev {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

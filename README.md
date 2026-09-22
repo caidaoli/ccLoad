@@ -585,6 +585,8 @@ For the same-upstream native WebSocket reconnect, `response.created`, `response.
 
 `upstream_connection_reuse_limit_seconds` limits how long upstream HTTP/1.1, HTTP/2, and WebSocket connections remain reusable, including connections in channel proxy pools. The default `0` leaves reuse unlimited. When a connection reaches a positive limit, it stops accepting new requests; an idle connection closes immediately, while an active request or turn finishes before closure. The next request opens a new physical connection. A native WebSocket reconnect replays the complete session transcript because an upstream Response ID is scoped to the physical WebSocket connection; this planned rotation is not reported as a request failure and does not cool down the channel.
 
+All channel-upstream HTTP transports, including Antigravity's credential-isolated HTTP/1.1 pools, enable connection reuse with up to 20 idle connections per host and a 90-second idle timeout. At startup, each transport's total idle-connection capacity is sized to twice the persisted channel count, with a minimum of 2 and a maximum of 1024. Channel proxies and Antigravity credentials own isolated transports, so 1024 is a per-transport limit rather than a process-wide socket cap.
+
 Reconnects must use the same API token and stable execution headers. `Session-Id` identifies the top-level Codex session; when `Thread-Id` is present, ccLoad combines both headers so the parent and every subagent thread own independent transcripts, Response IDs, and turn locks. Clients without `Thread-Id` retain the `Session-Id`-only contract. `prompt_cache_key`, body `session_id`, and other cache-routing hints do not identify an execution session and never serialize or share local conversation state. An execution session is in-memory and process-local: new installations retain at most 256 sessions with a process-wide transcript payload budget of 256 MiB. Existing database records are not migrated. The idle TTL remains 15 minutes by default (10 minutes is suitable for small-memory hosts). After all downstream attachments have been gone for five minutes, the one-minute cleanup loop closes the physical upstream connection, so actual reclamation takes about 5–6 minutes while the transcript remains until the session TTL. A stable session and its committed transcript are never evicted by session-capacity or memory-budget pressure before that TTL expires. When the session ceiling is full, only a new session identity is rejected; an existing stable session may continue. Once the committed payload is over budget, every new turn, including turns on existing sessions, is rejected before upstream work starts. Both limits use a WebSocket `429/rate_limit_error/rate_limit` event; retry after TTL reclamation, or change the setting and restart. A restart loses in-memory sessions, so the client must then resend the complete conversation input without `previous_response_id`.
 
 The transcript budget is an admission threshold, not a strict allocation cap: turns already admitted are allowed to complete and commit. The finite worst-case overshoot is `responses_ws_max_sessions × max_body_bytes` in addition to the configured budget. Process restarts do not restore sessions or cumulative session metrics. Multi-instance deployments need sticky routing so reconnects reach the same instance. Otherwise, the client must send the complete conversation input without `previous_response_id`. Adjust session count, TTL, and transcript budget with `responses_ws_max_sessions`, `responses_ws_session_ttl_minutes`, and `responses_ws_max_transcript_bytes` in system settings. `GET /admin/runtime-metrics` reports the current effective payload as `transcript_bytes`; it excludes the Go runtime, WebSocket buffers, and temporary request-processing objects. The same response exposes WebSocket rejection counters, log queue/drop/persistence-failure counters, and—when hybrid storage is enabled—primary-sync backlog, failures, dropped tasks, and the last successful sync time.
@@ -962,7 +964,7 @@ Check out the awesome admin dashboard 👇
 
 **Connection Pool Optimization**:
 - SQLite: 10 connections for memory mode / 5 for file mode, 5-minute lifetime
-- HTTP client: 100 max connections, 30s timeout, keepalive optimization
+- HTTP clients: keepalive enabled; idle capacity is 2 per startup channel (2–1024 per transport), 20 per host, with a 90-second idle timeout
 - TLS: Session cache (1024 capacity), reduces handshake latency
 
 ## 🔧 Configuration
@@ -1046,10 +1048,9 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `cooldown_max_seconds` | `1800` | Exponential backoff cooldown ceiling in seconds (an inverted floor/ceiling pair falls back to both defaults) |
 | `cooldown_fallback_enabled` | `true` | When every channel is cooling down, fall back to the channel that recovers soonest instead of failing (keys follow the same earliest-recovery rule); set to `false` to reject the request outright |
 | `global_cooldown_detection_rules` | `{}` | Global cooldown detection rules, inherited by channels that define no `cooldown_detection_rules` of their own |
+| `TypeSafe_enabled` | `false` | Enable TypeSafe (Jev) error analysis fallback; requires an API key and restart |
+| `TypeSafe_api_key` | empty | TypeSafe API key; never returned by the settings API. Reset clears the key and disables TypeSafe |
 | `upstream_connection_reuse_limit_seconds` | `0` | Maximum upstream connection reuse time in seconds (`0` = unlimited); applies to HTTP/1.1, HTTP/2, and WebSocket, drains active requests, then reconnects on demand |
-| `antigravity_connection_reuse_enabled` | `true` | Reuse upstream connections for Antigravity channels |
-| `antigravity_max_idle_conns_per_host` | `2` | Idle connections per host for Antigravity channels (1–100) |
-| `antigravity_idle_conn_timeout_seconds` | `30` | Idle connection timeout for Antigravity channels (1–210 seconds) |
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON string array of words replaced with zero-width characters in Antigravity `systemInstruction` and CodeBuddy system/developer message text |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
@@ -1090,7 +1091,6 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `log_channel_click_action` | `edit` | What clicking a channel name on the logs page does (`edit` opens the channel editor, `filter` filters by that channel) |
 | `channel_stats_range` | `today` | Cost statistics range on the channel management page (`today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`) |
 | `auto_refresh_interval_seconds` | `0` | Web page auto-refresh interval in seconds (`0` = disabled, `>= 30` recommended); a refresh is skipped while a dialog is open |
-| `active_request_title_enabled` | `false` | Show the in-flight request count in the browser title bar and flash it while requests are running |
 | `CODEX_BASE_URL` | Empty | Global upstream address for Codex OAuth channels (complete Responses URL; official default `https://chatgpt.com/backend-api/codex/responses`) |
 | `ANTHROPIC_BASE_URL` | Empty | Global API root for Anthropic OAuth channels (official default `https://api.anthropic.com`) |
 | `XAI_BASE_URL` | Empty | Global API root for xAI OAuth channels (usually ends with `/v1`; official default `https://cli-chat-proxy.grok.com/v1`) |

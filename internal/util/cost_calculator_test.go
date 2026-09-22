@@ -1504,6 +1504,14 @@ func TestCalculateCost_Gpt4oLegacyFuzzy(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_JevLatest(t *testing.T) {
+	// Jev 1.13.0 按输入 token 计费，输出 token 免费：$0.042 / 1M input tokens。
+	cost := CalculateCostDetailed("jev-latest", 2_000_000, 1_000_000, 0, 0, 0)
+	if !floatEquals(cost, 0.084, 0.000000001) {
+		t.Fatalf("jev-latest成本 = %.9f, 期望 %.9f", cost, 0.084)
+	}
+}
+
 // TestCalculateCostDetailed_5mVs1hCache 验证5分钟和1小时缓存的定价差异
 // 参考: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 // - 5m缓存写入: 基础价格 × 1.25

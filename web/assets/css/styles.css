@@ -4005,9 +4005,13 @@ body {
 
 .global-cooldown-rules-control {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px 12px;
+  min-width: 0;
+  text-align: end;
 }
 
 .global-cooldown-rules-summary {
@@ -9628,4 +9632,18 @@ body.web-hide-channels .filter-group--channel-name,
 body.web-hide-channels .channel-filter-container,
 body.web-hide-channels .chart-card--channel {
   display: none !important;
+}
+
+.settings-typesafe-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-typesafe-control input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-typesafe-control button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }

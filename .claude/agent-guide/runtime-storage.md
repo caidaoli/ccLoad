@@ -10,8 +10,16 @@
 - **下游请求读取超时**(`config/defaults.go`+`server.go:loadHTTPReadTimeout`+`main.go`):系统设置 `http_read_timeout_seconds`(秒,0=内建默认 120 秒,负数回退默认),启动读一次注入 `http.Server.ReadTimeout`,改后重启生效。它覆盖**请求头+请求体的整段读取**,和 `max_body_bytes` 是两件事:体积超限立即 413(`errBodyTooLarge`),读取超时是 408(`errBodyReadTimeout`),两条错误文案分别点名对应设置,别再互相误判——注意调大体积上限反而会让原本快速 413 的请求改为等到读取超时才失败
 - **上游超时**(`server.go:loadProtocolTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`stream_timeout`(0=禁用,流式总时长)、`non_stream_timeout`(120s),首字节与非流式超时可按实际上游协议 `{protocol}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
 - **上游连接最长复用时间**(`upstream_connection_age.go`+`codex_upstream_websocket.go`):`upstream_connection_reuse_limit_seconds`(默认 0=不限制)统一约束直连及渠道代理池中的 HTTP/1.1、HTTP/2、WebSocket 物理连接;达到时限后不再接收新请求,空闲连接立即关闭,在途请求/turn 完成后关闭,新请求自动建连。原生 WS 重连语义见「Responses WebSocket 会话与资源」;计划轮换不记失败、不触发冷却
+- **上游 HTTP 连接池**(`server.go:buildHTTPTransport`+`upstream_connection_age.go`):所有渠道统一开启连接复用,每主机最多保留 20 条空闲连接,空闲超时 90 秒;Antigravity 只保留标准 HTTP/1.1 与按 refresh token 隔离 Transport 的协议/身份边界,不再覆盖连接池参数。启动时以持久化渠道总数计算每个 Transport 的 `MaxIdleConns=min(max(渠道数,1)×2,1024)`;渠道代理和 Antigravity 凭证各有隔离 Transport,所以该值不是进程级套接字硬上限,运行期增删渠道不会改写已在用的 Transport
 
 - **上游 HTTP/2 健康探测**(`server.go:buildHTTPTransport`+`codex_utls_transport.go:newCodexUTLSH2Transport`):普通 HTTPS 与专用 uTLS H2 连接共用 30 秒无入站帧后发 PING、15 秒无应答关闭连接的策略。只作用于实际使用 H2 的连接,不改变 H1/代理协议选择;这是连接级探测,不替代首字节/流式总超时、下游 SSE 心跳或 WebSocket 心跳,也不恢复已中断的生成。
+
+## TypeSafe 设置
+
+- 密钥框右侧的测试按钮调用管理员接口 `POST /admin/typesafe/test`：显式 `api_key` 验证输入值，省略则读取持久化密钥；不修改设置或重启。使用独立 Jev 客户端、3 秒超时和共享限流，调用以 `credential_test` 用途写入脱敏 Jev 日志，并关联脱敏 Debug 数据供管理端查看。
+
+- `TypeSafe_enabled` 默认 false；启用前必须保存 `TypeSafe_api_key`。设置查询和单项写入响应只暴露已配置状态，不回显密钥；未提交密钥则保留，显式提交空值或重置密钥会原子关闭开关。沿用保存后重启契约。
+- 设置页将 API Token 登录和程序更新并入高级，按全局冷却规则、TypeSafe 开关/密钥、Token 登录/渠道显示、更新间隔/渠道/检查按钮排序；容器说明紧邻只读更新控件。
 
 ## API Token 网页登录
 

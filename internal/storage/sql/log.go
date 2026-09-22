@@ -190,7 +190,7 @@ func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuo
 	if e == nil {
 		return nil, nil
 	}
-	if s.isChannelDeleted(e.ChannelID) {
+	if e.LogSource != model.LogSourceJev && s.isChannelDeleted(e.ChannelID) {
 		return nil, nil
 	}
 	if e.Time.IsZero() {
@@ -309,7 +309,7 @@ func (s *SQLStore) batchAddLogs(
 func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.LogEntry {
 	out := make([]*model.LogEntry, 0, len(logs))
 	for _, e := range logs {
-		if e == nil || s.isChannelDeleted(e.ChannelID) {
+		if e == nil || (e.LogSource != model.LogSourceJev && s.isChannelDeleted(e.ChannelID)) {
 			continue
 		}
 		out = append(out, e)
@@ -617,6 +617,7 @@ func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Ti
 		WHERE time >= ?
 			AND channel_id > 0
 			AND base_url <> ''
+			AND log_source <> 'jev'
 		GROUP BY channel_id, base_url
 		ORDER BY channel_id ASC, base_url ASC
 	`

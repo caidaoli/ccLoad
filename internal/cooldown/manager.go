@@ -30,6 +30,9 @@ const NoKeyIndex = -1
 
 // ErrorInput 包含错误处理所需的输入信息。
 type ErrorInput struct {
+	ReceivedAt         time.Time
+	prepared           *cooldownDecision
+	classification     *util.HTTPResponseClassification
 	ChannelID          int64
 	Model              string   // 实际发送给上游的模型名
 	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
@@ -84,7 +87,32 @@ func NewManager(store storage.Store, configGetter ConfigGetter) *Manager {
 	}
 }
 
+// PrepareError resolves a failure once, before database write budgets begin.
+// The callback can only refine built-in classification; configured rules remain authoritative.
+func (m *Manager) PrepareError(in ErrorInput, refine func(util.HTTPResponseClassification) util.HTTPResponseClassification) ErrorInput {
+	if in.prepared != nil {
+		return in
+	}
+	if !in.IsNetworkError {
+		if configured, ok := configuredCooldownDecision(in, time.Now()); ok && (!in.ModelScoped || configured.modelScoped) {
+			in.prepared = &configured
+			return in
+		}
+		classification := util.ClassifyHTTPResponseWithMeta(in.StatusCode, in.Headers, in.ErrorBody)
+		if refine != nil {
+			classification = refine(classification)
+		}
+		in.classification = &classification
+	}
+	decision := m.classifyDecision(in)
+	in.prepared = &decision
+	return in
+}
+
 func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
+	if in.prepared != nil {
+		return *in.prepared
+	}
 	var errLevel util.ErrorLevel
 
 	statusCode := in.StatusCode
@@ -120,7 +148,12 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		}
 	} else {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
-		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
+		classification := util.HTTPResponseClassification{}
+		if in.classification != nil {
+			classification = *in.classification
+		} else {
+			classification = util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
+		}
 		errLevel = classification.Level
 		decision.keyCooldownUntil = classification.KeyCooldownUntil
 		decision.hasKeyCooldownUntil = classification.HasKeyCooldownUntil

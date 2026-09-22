@@ -1064,9 +1064,9 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 }
 
 func (s *Server) codexWebsocketDialer(cfg *model.Config) *websocket.Dialer {
-	transport := buildHTTPTransport(s.skipTLSVerify)
+	transport := buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)
 	if cfg.ProxyURL != "" {
-		proxied, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify)
+		proxied, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify, s.upstreamChannelCount)
 		if err != nil {
 			log.Printf("[WARN] 渠道 %d WebSocket 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		} else {

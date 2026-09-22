@@ -171,7 +171,7 @@ func (s *SQLStore) sumOAuthQuotaLogCost(
 		return 0, nil
 	}
 	rows, err := s.queryTx(ctx, tx, fmt.Sprintf(`SELECT model, actual_model, %s FROM logs
-		WHERE channel_id = ? AND time >= ? AND time < ? AND cost > 0 AND codex_has_credits = 0
+		WHERE channel_id = ? AND time >= ? AND time < ? AND cost > 0 AND codex_has_credits = 0 AND log_source <> 'jev'
 		GROUP BY model, actual_model`, s.microUSDSumExpr()),
 		channelID, time.Unix(from, 0).UnixMilli(), time.Unix(until, 0).UnixMilli())
 	if err != nil {
@@ -223,7 +223,7 @@ func (s *SQLStore) updateOAuthQuotaCostsTx(
 ) ([]int64, error) {
 	byChannel := make(map[int64][]*model.LogEntry)
 	for _, entry := range logs {
-		if entry == nil || entry.ChannelID <= 0 || entry.Cost <= 0 {
+		if entry == nil || entry.ChannelID <= 0 || entry.Cost <= 0 || entry.LogSource == model.LogSourceJev {
 			continue
 		}
 		byChannel[entry.ChannelID] = append(byChannel[entry.ChannelID], entry)
@@ -366,7 +366,7 @@ func (s *SQLStore) sumOAuthQuotaCostByFamily(
 	}
 	rows, err := s.queryTx(ctx, tx, fmt.Sprintf(`
 		SELECT model, actual_model, %s FROM logs
-		WHERE channel_id = ? AND time >= ? AND cost > 0 AND codex_has_credits = 0
+		WHERE channel_id = ? AND time >= ? AND cost > 0 AND codex_has_credits = 0 AND log_source <> 'jev'
 		GROUP BY model, actual_model
 	`, s.microUSDSumExpr()), channelID, resetAt.UnixMilli())
 	if err != nil {

@@ -212,6 +212,10 @@ func TestLog_OAuthQuotaResetUsesIncrementalRounding(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+
+			if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(base.Add(time.Second)), ChannelID: cfg.ID, Model: "gpt-5.6-sol", LogSource: model.LogSourceJev, StatusCode: 200, Cost: 50}); err != nil {
+				t.Fatal(err)
+			}
 			assertCost := func() {
 				t.Helper()
 				gotCfg, err := store.GetConfig(ctx, cfg.ID)
@@ -1384,5 +1388,65 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 			}
 			read()
 		})
+	}
+}
+
+func TestJevLogsAreAuditsNotChannelUsage(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "jev-logs.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "jev-origin")
+	now := time.Now()
+	for _, entry := range []*model.LogEntry{
+		{Time: newJSONTime(now), LogSource: model.LogSourceProxy, ChannelID: channelID, BaseURL: "https://upstream.example", Model: "m", StatusCode: 200, Duration: 1},
+		{Time: newJSONTime(now), LogSource: model.LogSourceJev, ChannelID: channelID, BaseURL: "https://upstream.example", Model: "jev-latest", StatusCode: 500, Duration: 10, Cost: 12, InputTokens: 100, Message: `{"version":1,"call_id":"first"}`},
+	} {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceJev})
+	if err != nil || len(logs) != 1 || logs[0].LogSource != model.LogSourceJev {
+		t.Fatalf("logs=%v err=%v", logs, err)
+	}
+	stats, err := store.GetTodayChannelURLStats(ctx, now.Add(-time.Minute))
+	if err != nil || len(stats) != 1 || stats[0].Failures != 0 || stats[0].Requests != 1 {
+		t.Fatalf("url stats=%+v err=%v", stats, err)
+	}
+	health, err := store.GetChannelSuccessRates(ctx, now.Add(-time.Minute))
+	if err != nil || health[channelID].SampleCount != 1 || health[channelID].SuccessRate != 1 {
+		t.Fatalf("health=%v err=%v", health, err)
+	}
+	costs, err := store.GetTodayChannelCosts(ctx, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if costs[channelID] != 0 {
+		t.Fatalf("Jev affected channel cost: %v", costs)
+	}
+	if err := store.DeleteConfig(ctx, channelID); err != nil {
+		t.Fatal(err)
+	}
+	// An in-flight audit remains recordable after its associated channel is removed.
+	entry := &model.LogEntry{Time: newJSONTime(now), LogSource: model.LogSourceJev, ChannelID: channelID, Model: "jev-latest", StatusCode: 200, Message: `{"version":1,"call_id":"after-delete"}`}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{entry}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err = store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceJev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range logs {
+		var message map[string]any
+		if err := json.Unmarshal([]byte(entry.Message), &message); err != nil {
+			t.Fatal(err)
+		}
+		if message["call_id"] == "after-delete" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("deleted channel silently discarded TypeSafe audit")
 	}
 }

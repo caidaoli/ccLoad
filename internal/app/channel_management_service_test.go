@@ -597,7 +597,7 @@ func TestManagementCheckinPOSTSurvivesUTLSFallback(t *testing.T) {
 		_, _ = io.WriteString(w, `{"success":true}`)
 	}))
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())

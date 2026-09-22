@@ -130,6 +130,7 @@ func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.Error
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
 	}
 	in := httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
+	in.ReceivedAt = res.errorReceivedAt
 	if res.UpstreamStatus != 0 {
 		in.UpstreamStatusCode = res.UpstreamStatus
 	}
@@ -250,6 +251,9 @@ func buildProxyLogEntry(
 		ModelPrice:       reqCtx.attemptModelPrice,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
+	if res != nil && res.jevNote != "" {
+		entry.Message += " [jev " + res.jevNote + "]"
+	}
 	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
 		entry.Message += " [credits]"
 	}
@@ -644,13 +648,17 @@ func (s *Server) handleStreamingErrorNoRetry(
 	duration float64,
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
+	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	if !res.UpstreamWebsocketTransportFailure {
+		input = s.prepareJevError(ctx, cfg, reqCtx, res, input, selectedKey)
+	}
 	// 记录错误日志
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
 	// 原生 WS close 1006/心跳传输错误按“两个新物理连接连续失败”冷却具体目标。
 	// 这里再做模型冷却会把网络抖动错误扩大到同渠道的整个模型。
 	if !res.UpstreamWebsocketTransportFailure {
-		_ = s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
+		_ = s.applyCooldownDecision(ctx, cfg, input)
 	}
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
@@ -713,6 +721,13 @@ func (s *Server) handleProxyErrorResponse(
 	forceReturnClient bool,
 	modelCapacityRateLimited bool,
 ) (*proxyResult, cooldown.Action) {
+	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
+		input.ModelScoped = true
+	}
+	if !forceReturnClient && !modelCapacityRateLimited {
+		input = s.prepareJevError(ctx, cfg, reqCtx, res, input, selectedKey)
+	}
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
 	if res.Status == 499 {
@@ -754,10 +769,6 @@ func (s *Server) handleProxyErrorResponse(
 		return failure, cooldown.ActionReturnClient
 	}
 
-	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
-	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
-		input.ModelScoped = true
-	}
 	if modelCapacityRateLimited {
 		// The original 503 already installed the model cooldown before URL retry.
 		// Only decide where to continue; applying this converted 429 again would

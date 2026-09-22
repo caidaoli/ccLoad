@@ -367,13 +367,18 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 }
 
 func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	// skip_tls_verify 已移除：仅允许通过环境变量 CCLOAD_ALLOW_INSECURE_TLS 控制
-	if err := deleteSystemSetting(ctx, db, dialect, "skip_tls_verify"); err != nil {
-		return err
-	}
-	// model_lookup_strip_date_suffix 已移除：不再提供日期后缀回退匹配开关（避免行为分叉）
-	if err := deleteSystemSetting(ctx, db, dialect, "model_lookup_strip_date_suffix"); err != nil {
-		return err
+	// 清理已移除或已统一到其他策略的历史配置，避免旧数据库继续向管理界面暴露。
+	for _, key := range []string{
+		"skip_tls_verify",
+		"model_lookup_strip_date_suffix",
+		"active_request_title_enabled",
+		"antigravity_connection_reuse_enabled",
+		"antigravity_max_idle_conns_per_host",
+		"antigravity_idle_conn_timeout_seconds",
+	} {
+		if err := deleteSystemSetting(ctx, db, dialect, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -500,6 +505,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	settings := []struct {
 		key, value, valueType, desc, defaultVal string
 	}{
+		{config.TypeSafeEnabledSettingKey, "false", "bool", "TypeSafe 错误分析兜底（需配置密钥，保存后重启生效）", "false"},
+		{config.TypeSafeAPIKeySettingKey, "", "string", "TypeSafe API Key（留空保留；重置可清除并关闭 TypeSafe）", ""},
 		{config.APITokenLoginEnabledSettingKey, "false", "bool", "允许 API Token 登录网页（保存后重启生效，不影响 API 调用）", "false"},
 		{config.APITokenShowChannelsSettingKey, "false", "bool", "向 API Token 登录用户显示渠道名称和调用统计（不开放渠道配置）", "false"},
 		{config.CodexBaseURLSettingKey, "", "string", "Codex OAuth 完整 Responses URL(留空使用渠道URL；填写后覆盖渠道URL)", ""},
@@ -525,9 +532,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON, "json", "Antigravity systemInstruction 和 CodeBuddy system/developer 消息文本中使用零宽字符替换的敏感词 JSON 字符串数组", config.DefaultAntigravitySensitiveWordsJSON},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"upstream_connection_reuse_limit_seconds", "0", "duration", "上游连接最长复用时间(秒,0=不限制;达到时限后不接收新请求,在途请求完成后关闭)", "0"},
-		{"antigravity_connection_reuse_enabled", "true", "bool", "Antigravity 连接复用（重启生效）", "true"},
-		{"antigravity_max_idle_conns_per_host", "2", "int", "Antigravity 每主机空闲连接数（1–100，重启生效）", "2"},
-		{"antigravity_idle_conn_timeout_seconds", "30", "duration", "Antigravity 空闲连接超时（1–210 秒，重启生效）", "30"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"anthropic_first_byte_timeout", "0", "duration", "Anthropic流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
@@ -562,7 +566,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"debug_log_retention_minutes", strconv.Itoa(config.DefaultDebugLogRetentionMinutes), "int", "Debug日志保留时长(分钟,1-1440)", strconv.Itoa(config.DefaultDebugLogRetentionMinutes)},
 		// 前端自动刷新
 		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,>=0;0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
-		{config.ActiveRequestTitleEnabledSettingKey, "false", "bool", "有请求处理时在浏览器标题栏显示请求数量并闪烁", "false"},
 		// Responses WebSocket
 		{"responses_ws_max_sessions", "0", "int", responsesWSMaxSessionsDescription, "0"},
 		{"responses_ws_session_ttl_minutes", "0", "int", responsesWSSessionTTLDescription, "0"},

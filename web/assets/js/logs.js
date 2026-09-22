@@ -557,6 +557,8 @@ function buildLogTokenDescDisplay(label) {
 
 function renderLogSourceBadge(logSource) {
   switch (logSource) {
+    case 'jev':
+      return '<span class="log-source-badge log-source-badge--manual">Jev</span>';
     case 'scheduled_check':
       return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceScheduledCheckBadge'))}</span>`;
     case 'manual_test':
@@ -572,12 +574,22 @@ function renderLogSourceBadge(logSource) {
 
 function canInspectDebugLog(entry) {
   const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
-  return !isTokenSession && Number(entry?.channel_id) > 0;
+  const isJevAudit = entry?.log_source === 'jev';
+  return !isTokenSession && (Number(entry?.channel_id) > 0 || (isJevAudit && Number(entry?.id) > 0));
 }
 
 function buildLogMessageContent(entry) {
   const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
-  const messageText = escapeHtml(entry.message || '');
+  let messageText = entry.message || '';
+  if (entry.log_source === 'jev') {
+    try {
+      const audit = JSON.parse(messageText);
+      const adopted = Object.entries(audit.adopted || {}).map(([key, value]) => `${key}=${value}`).join(', ');
+      const fallback = Object.entries(audit.fallback || {}).map(([key, value]) => `fallback.${key}=${value}`).join(', ');
+      messageText = [audit.call_id && `call_id=${audit.call_id}`, adopted, fallback].filter(Boolean).join(', ');
+    } catch (_) { /* keep the stored message when old audit data is not JSON */ }
+  }
+  messageText = escapeHtml(messageText);
   if (!sourceBadge && !messageText) {
     return '';
   }

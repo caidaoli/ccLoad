@@ -42,9 +42,9 @@ function projectCustomPricingDefaults(pricing) {
 
 const containerImageManagedDisabledReason = 'container_image_managed';
 const advancedSettingKeys = new Set([
-  globalCooldownRulesSettingKey,
+  'typesafe_enabled', 'typesafe_api_key', 'api_token_login_enabled', 'api_token_show_channels',
+  'auto_update_interval_hours', 'auto_update_channel',
   'auto_refresh_interval_seconds',
-  'active_request_title_enabled',
   'codex_map_429_to_503',
   'model_catalog_sync_interval_hours',
   'model_fuzzy_match'
@@ -93,8 +93,6 @@ const selectSettingOptions = new Map([
 ]);
 
 const numericSettingConstraints = new Map([
-  ['antigravity_max_idle_conns_per_host', { min: 1, max: 100 }],
-  ['antigravity_idle_conn_timeout_seconds', { min: 1, max: 210 }],
   ['max_key_retries', { min: 1 }],
   ['max_concurrency', { min: 1 }],
   ['max_body_bytes', { min: 1 / bytesPerMiB }],
@@ -1510,21 +1508,19 @@ function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
 
   const defs = [
-    { id: 'api-token-login', nameKey: 'settings.group.apiTokenLogin', order: 61, match: () => ['api_token_login_enabled', 'api_token_show_channels'].includes(k) },
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
 
-    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || ['antigravity_connection_reuse_enabled', 'antigravity_max_idle_conns_per_host', 'antigravity_idle_conn_timeout_seconds'].includes(k) || oauthBaseURLSettingKeys.has(k) },
+    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
     { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('_first_byte_timeout') },
     { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
     { id: 'limits', nameKey: 'settings.group.limits', order: 26, match: () => k === 'max_concurrency' || k.endsWith('_body_bytes') || k === 'http_read_timeout_seconds' },
     { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k.includes('ttfb') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'billing', nameKey: 'settings.group.billing', order: 35, match: () => k === modelCustomPricingSettingKey },
-    { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
+    { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') || k === globalCooldownRulesSettingKey },
     { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
     { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
-    { id: 'update', nameKey: 'settings.group.update', order: 65, match: () => k.startsWith('auto_update_') },
   ];
 
   for (const d of defs) {
@@ -1536,13 +1532,10 @@ function getSettingGroupInfo(key) {
 function getSettingOrder(key) {
   const orders = {
     upstream_connection_reuse_limit_seconds: 90,
-    antigravity_connection_reuse_enabled: 91,
-    antigravity_max_idle_conns_per_host: 92,
-    antigravity_idle_conn_timeout_seconds: 93,
-    codex_base_url: 91,
-    xai_base_url: 92,
-    antigravity_url: 93,
-    anthropic_base_url: 94,
+    antigravity_url: 100,
+    anthropic_base_url: 110,
+    codex_base_url: 120,
+    xai_base_url: 130,
     upstream_first_byte_timeout: 100,
     stream_timeout: 101,
     non_stream_timeout: 102,
@@ -1565,7 +1558,13 @@ function getSettingOrder(key) {
     cooldown_rate_limit_seconds: 304,
     cooldown_min_seconds: 305,
     cooldown_max_seconds: 306,
-    global_cooldown_detection_rules: 700,
+    global_cooldown_detection_rules: 307,
+    auto_update_interval_hours: 700,
+    auto_update_channel: 701,
+    api_token_login_enabled: 702,
+    api_token_show_channels: 703,
+    typesafe_enabled: 705,
+    typesafe_api_key: 706,
     model_custom_pricing: 710
   };
   const normalizedKey = String(key || '').toLowerCase();
@@ -1703,7 +1702,7 @@ function renderSettings(settings) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
       groupName: g.name,
-      groupNoticeHtml: renderSettingGroupNotice(g)
+      groupNoticeHtml: ''
     });
     if (groupRow) tbody.appendChild(groupRow);
 
@@ -1716,7 +1715,7 @@ function renderSettings(settings) {
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
         description: description,
-        inputHtml: renderInput({ ...s, value: displayValue }),
+        inputHtml: renderInput({ ...s, value: displayValue }) + (s.key === 'auto_update_channel' ? renderSettingGroupNotice(g) : ''),
         resetDisabledAttributes: settingDisabledAttributes(s),
         mobileLabelDescription: t('settings.configItem'),
         mobileLabelValue: t('settings.currentValue'),
@@ -1728,7 +1727,7 @@ function renderSettings(settings) {
 }
 
 function renderSettingGroupNotice(group) {
-  const containerManaged = group.id === 'update' && group.settings.some((setting) => (
+  const containerManaged = group.settings.some((setting) => (
     setting.editable === false && setting.disabled_reason === containerImageManagedDisabledReason
   ));
   if (!containerManaged) return '';
@@ -1760,6 +1759,11 @@ function initSettingsEventDelegation() {
     const editGlobalRulesBtn = e.target.closest('[data-action="edit-global-cooldown-rules"]');
     if (editGlobalRulesBtn) {
       openGlobalCooldownRulesModal(editGlobalRulesBtn);
+      return;
+    }
+    const typeSafeTestBtn = e.target.closest('[data-action="test-typesafe"]');
+    if (typeSafeTestBtn) {
+      testTypeSafeKey(typeSafeTestBtn);
       return;
     }
     const updateCheckBtn = e.target.closest('[data-action="check-for-updates"]');
@@ -1802,6 +1806,29 @@ async function checkForUpdates(button) {
   }
 }
 
+async function testTypeSafeKey(button) {
+  if (button.disabled) return;
+  const input = document.getElementById('TypeSafe_api_key');
+  const key = input.value.trim();
+  const payload = key || input.dataset.clearSecret === 'true' ? { api_key: key } : {};
+  button.disabled = true;
+  button.setAttribute?.('aria-busy', 'true');
+  button.textContent = t('settings.typeSafeTest.testing');
+  try {
+    const result = await fetchDataWithAuth('/admin/typesafe/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    if (result.valid) showSuccess(t('settings.typeSafeTest.success'));
+    else showError(t('settings.typeSafeTest.failed') + ': ' + result.message);
+  } catch (err) {
+    showError(t('settings.typeSafeTest.failed') + ': ' + err.message);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute?.('aria-busy');
+    button.textContent = t('settings.typeSafeTest.test');
+  }
+}
+
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
@@ -1823,6 +1850,14 @@ function renderInput(setting) {
           ${escapeHtml(t('settings.globalCooldownRules.ruleCount', { count }))}
         </span>
       </div>`;
+  }
+
+  if (setting.key === 'TypeSafe_api_key') {
+    const hint = t(setting.configured ? 'settings.secretConfigured' : 'settings.secretUnconfigured');
+    return `<div class="settings-typesafe-control">
+      <input type="text" id="${safeKey}" value="" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(hint)}" aria-label="TypeSafe API Key" class="settings-input settings-input--text" ${disabledAttributes}>
+      <button type="button" class="btn btn-secondary" data-action="test-typesafe" title="${escapeHtml(t('settings.typeSafeTest.hint'))}" ${disabledAttributes}>${escapeHtml(t('settings.typeSafeTest.test'))}</button>
+    </div>`;
   }
 
   const selectOptions = selectSettingOptions.get(setting.key);
@@ -1888,7 +1923,7 @@ function markChanged(input) {
     currentValue = input.value;
   }
 
-  if (currentValue !== originalSettings[key]) {
+  if (currentValue !== originalSettings[key] || (key === 'TypeSafe_api_key' && input.dataset.clearSecret === 'true')) {
     row.style.background = 'rgba(59, 130, 246, 0.08)';
   } else {
     row.style.background = '';
@@ -1949,6 +1984,11 @@ function setSettingControlValue(key, value) {
 }
 
 function syncSettingState(key, value) {
+  if (key === 'TypeSafe_api_key') {
+    const input = document.getElementById(key);
+    if (input) delete input.dataset.clearSecret;
+    value = '';
+  }
   const normalizedValue = settingValueForDisplay(key, value);
   const control = setSettingControlValue(key, value);
 
@@ -1967,7 +2007,7 @@ async function saveAllSettings() {
     if (!control) continue;
 
     const currentValue = control.value;
-    if (currentValue !== originalSettings[key]) {
+    if (currentValue !== originalSettings[key] || (key === 'TypeSafe_api_key' && control.input.dataset.clearSecret === 'true')) {
       const setting = settingDefinitions.get(key);
       const validationError = setting ? validateSettingInput(setting, currentValue) : '';
       if (validationError) {
@@ -2025,6 +2065,11 @@ function resetSetting(key) {
   }
 
   const control = setSettingControlValue(key, setting.default_value ?? '');
+  if (key === 'TypeSafe_api_key' && control?.input) {
+    control.input.dataset.clearSecret = 'true';
+    const enabled = setSettingControlValue('TypeSafe_enabled', 'false');
+    if (enabled?.input) markChanged(enabled.input);
+  }
   if (control?.input) markChanged(control.input);
 }
 

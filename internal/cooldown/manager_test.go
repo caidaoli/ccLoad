@@ -123,14 +123,17 @@ func TestHandleErrorCallerConfirmedModelScopedHTTP(t *testing.T) {
 	defer cleanup()
 	manager := NewManager(store, nil)
 	cfg := createTestChannel(t, store, "test-provider-model-scope")
-	action := manager.DecideAction(context.Background(), ErrorInput{
+	input := manager.PrepareError(ErrorInput{
 		ChannelID: cfg.ID, KeyIndex: NoKeyIndex, Model: "test-model",
 		StatusCode: 403, ErrorBody: []byte(`{"error":"model is not in plan"}`), ModelScoped: true,
 		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 			Enabled: true, Name: "generic forbidden", Priority: 0, StatusCodes: []int{403},
 			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
 		}}},
+	}, func(local util.HTTPResponseClassification) util.HTTPResponseClassification {
+		return util.HTTPResponseClassification{Level: util.ErrorLevelChannel, ChannelCooldownReason: "jev_channel"}
 	})
+	action := manager.DecideAction(context.Background(), input)
 	if action != ActionRetryModel {
 		t.Fatalf("action = %v, want ActionRetryModel", action)
 	}

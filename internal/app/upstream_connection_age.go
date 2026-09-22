@@ -9,27 +9,6 @@ import (
 
 var errUpstreamConnectionAgeTransportClosed = errors.New("upstream connection age transport is closed")
 
-const (
-	antigravityMaxIdleConnsPerHost = 2
-	antigravityIdleConnTimeout     = 30 * time.Second
-)
-
-type antigravityPoolConfig struct {
-	DisableReuse        bool
-	MaxIdleConnsPerHost int
-	IdleTimeout         time.Duration
-}
-
-func (c antigravityPoolConfig) normalized() antigravityPoolConfig {
-	if c.MaxIdleConnsPerHost < 1 || c.MaxIdleConnsPerHost > 100 {
-		c.MaxIdleConnsPerHost = antigravityMaxIdleConnsPerHost
-	}
-	if c.IdleTimeout < time.Second || c.IdleTimeout > 210*time.Second {
-		c.IdleTimeout = antigravityIdleConnTimeout
-	}
-	return c
-}
-
 // upstreamConnectionAgeTransport rotates complete HTTP transport generations.
 // That is the only safe boundary shared by HTTP/1.1 and multiplexed HTTP/2:
 // an expired generation receives no new requests, while active responses drain
@@ -84,13 +63,8 @@ func newUpstreamHTTPClient(base *http.Transport, maxAge time.Duration) *http.Cli
 	return newHTTPClientWithRoundTripperFactory(base, maxAge, newDefaultUpstreamRoundTripper)
 }
 
-func newAntigravityHTTPClient(base *http.Transport, maxAge time.Duration, pool antigravityPoolConfig) *http.Client {
-	clone := base.Clone()
-	pool = pool.normalized()
-	clone.DisableKeepAlives = pool.DisableReuse
-	clone.MaxIdleConnsPerHost = pool.MaxIdleConnsPerHost
-	clone.IdleConnTimeout = pool.IdleTimeout
-	return newHTTPClientWithRoundTripperFactory(clone, maxAge, newAntigravityUpstreamRoundTripper)
+func newAntigravityHTTPClient(base *http.Transport, maxAge time.Duration) *http.Client {
+	return newHTTPClientWithRoundTripperFactory(base.Clone(), maxAge, newAntigravityUpstreamRoundTripper)
 }
 
 func newHTTPClientWithRoundTripperFactory(

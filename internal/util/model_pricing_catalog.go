@@ -677,6 +677,9 @@ var basePricing = map[string]ModelPricing{
 	"gpt-oss-120b":          {InputPrice: 0.039, OutputPrice: 0.18, CacheReadPrice: 0.055, HasCacheReadPrice: true},
 	"gpt-oss-120b:exacto":   {InputPrice: 0.039, OutputPrice: 0.19, CacheReadPrice: 0.04, HasCacheReadPrice: true},
 	"gpt-oss-safeguard-20b": {InputPrice: 0.075, OutputPrice: 0.30, CacheReadPrice: 0.037, HasCacheReadPrice: true},
+
+	// Typesafe Jev 1.13.0：仅输入 token 计费，输出 token 免费。
+	"jev-latest": {InputPrice: 0.042, OutputPrice: 0.00},
 }
 
 // modelAliases 模型别名映射（多对一）

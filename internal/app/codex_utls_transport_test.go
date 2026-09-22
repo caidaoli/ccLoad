@@ -34,7 +34,7 @@ func TestUpstreamHTTP2KeepAlive(t *testing.T) {
 				upstream.StartTLS()
 				defer upstream.Close()
 
-				base := buildHTTPTransport(true)
+				base := buildHTTPTransport(true, 1)
 				base.Proxy = nil
 				if base.HTTP2 == nil || base.HTTP2.SendPingTimeout <= 0 || base.HTTP2.PingTimeout <= 0 {
 					t.Fatal("upstream HTTP/2 health checks are disabled")
@@ -154,7 +154,7 @@ func TestUpstreamHTTPClientUsesChromeUTLSForProtectedWebOrigins(t *testing.T) {
 				_, _ = io.WriteString(w, "ok")
 			}))
 
-			base := buildHTTPTransport(true)
+			base := buildHTTPTransport(true, 1)
 			dialer := &net.Dialer{}
 			base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -191,7 +191,7 @@ func TestChromeUTLSManagementRequestUsesChromeForArbitraryHTTPS(t *testing.T) {
 	upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -218,7 +218,7 @@ func TestChromeUTLSUnmarkedManagementHostUsesFallback(t *testing.T) {
 	upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -246,7 +246,7 @@ func TestChromeUTLSMarkedHTTPManagementRequestDoesNotEnterTLS(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer upstream.Close()
-	base := buildHTTPTransport(false)
+	base := buildHTTPTransport(false, 1)
 	tlsCalls := 0
 	base.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
 		tlsCalls++
@@ -277,7 +277,7 @@ func TestUpstreamHTTPClientUsesNodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -318,7 +318,7 @@ func TestProtectedWebOriginsIsolateHTTP2Fallback(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		target := chatGPTUpstream.Listener.Addr().String()
@@ -372,7 +372,7 @@ func TestUpstreamHTTPClientFallsBackToUTLSHTTP11WithBodyReplay(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -419,7 +419,7 @@ func TestUpstreamHTTPClientCancellationDoesNotDegradeUTLSHTTP2(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 
-	base := buildHTTPTransport(true)
+	base := buildHTTPTransport(true, 1)
 	dialer := &net.Dialer{}
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
@@ -512,7 +512,7 @@ func TestUpstreamHTTPClientUsesUTLSThroughHTTPProxy(t *testing.T) {
 	defer proxy.Close()
 
 	proxyURL := strings.Replace(proxy.URL, "http://", "http://codex:secret@", 1)
-	base, err := buildChannelProxyTransport(proxyURL, true)
+	base, err := buildChannelProxyTransport(proxyURL, true, 1)
 	if err != nil {
 		t.Fatalf("build channel proxy transport: %v", err)
 	}
