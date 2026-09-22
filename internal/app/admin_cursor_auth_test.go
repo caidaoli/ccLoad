@@ -77,6 +77,9 @@ func TestNewCursorOAuthChannelUsesCLIOrigin(t *testing.T) {
 	if len(channel.ModelEntries) != len(cursorauth.DefaultModels) {
 		t.Fatalf("models = %+v", channel.ModelEntries)
 	}
+	if !channel.SupportsModel("grok-4.7") || !channel.SupportsModel("grok-4.7-fast") {
+		t.Fatalf("fallback models = %+v, want grok-4.7 and grok-4.7-fast", channel.ModelEntries)
+	}
 }
 
 func TestFetchCursorOAuthModelsUsesSDKCatalog(t *testing.T) {

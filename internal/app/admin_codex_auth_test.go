@@ -633,7 +633,8 @@ func TestHandleImportOAuthCredentialsDetectsXAIAndExpandsCredentialsMap(t *testi
 	}
 	wantPriority := map[string]int{"xAI-a@example.com": 10, "xAI-b@example.com": 20}
 	for _, channel := range channels {
-		if !channel.UsesXAIOAuth() || channel.Priority != wantPriority[channel.Name] || len(channel.ModelEntries) != len(xaiOAuthDefaultModels) {
+		if !channel.UsesXAIOAuth() || channel.Priority != wantPriority[channel.Name] ||
+			len(channel.ModelEntries) != len(xaiOAuthDefaultModels) || !channel.SupportsModel("grok-4.7") {
 			t.Fatalf("unexpected xAI channel: %#v", channel)
 		}
 	}

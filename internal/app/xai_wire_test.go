@@ -289,6 +289,7 @@ func TestFinalizeXAIResponsesBodyNormalizesImageGenerationByModel(t *testing.T) 
 		{name: "grok 4.20 stays on old product line", model: "grok-4.20-0309-reasoning", wantCount: 1},
 		{name: "grok 4.20 with unknown suffix stays old", model: "grok-4.20(foo)", wantCount: 1},
 		{name: "grok 4.6 keeps", model: "grok-4.6", wantImage: true, wantCount: 2},
+		{name: "grok 4.7 keeps", model: "grok-4.7", wantImage: true, wantCount: 2},
 		{name: "provider prefix and thinking suffix", model: "xai/grok-4.6(high)", wantImage: true, wantCount: 2},
 		{name: "future major keeps", model: "grok-5", wantImage: true, wantCount: 2},
 	}
@@ -326,6 +327,21 @@ func TestFinalizeXAIResponsesBodyNormalizesImageGenerationByModel(t *testing.T) 
 				t.Fatalf("allowed tools length = %d, want %d; body=%s", gotCount, test.wantCount, got)
 			}
 		})
+	}
+}
+
+func TestFinalizeXAIResponsesBodyPreservesGrok47XHighReasoning(t *testing.T) {
+	t.Parallel()
+
+	got, err := finalizeXAIResponsesBody(
+		[]byte(`{"reasoning":{"effort":"xhigh"},"input":"hello"}`),
+		"grok-4.7", "conv",
+	)
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+	}
+	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh: %s", effort, got)
 	}
 }
 

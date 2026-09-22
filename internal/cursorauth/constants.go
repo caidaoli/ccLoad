@@ -55,4 +55,6 @@ var requiredBridgeCapabilities = []string{
 // catalog is unavailable. Do not invent model variants here.
 var DefaultModels = []string{
 	"default",
+	"grok-4.7",
+	"grok-4.7-fast",
 }

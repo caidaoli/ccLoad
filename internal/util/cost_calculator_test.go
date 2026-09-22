@@ -1110,6 +1110,8 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 	}{
 		{"grok-build-0.1", 1.00, 2.00},
 		{"grok-code-fast-1", 1.00, 2.00},
+		{"grok-4.7", 2.00, 6.00},
+		{"grok-4.7-fast", 4.00, 12.00},
 		{"grok-4.6", 2.00, 6.00},
 		{"grok-4.5", 2.00, 6.00},
 		{"grok-4.3", 1.25, 2.50},
@@ -1218,6 +1220,18 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 	expectedLongContextGrok46 := 250_000*1.00/1_000_000 + 1_000*12.00/1_000_000
 	if !floatEquals(longContextGrok46, expectedLongContextGrok46, 0.000001) {
 		t.Errorf("grok-4.6 长上下文缓存成本 = %.6f, 期望 %.6f", longContextGrok46, expectedLongContextGrok46)
+	}
+
+	longContextGrok47 := CalculateCostDetailed("grok-4.7", 0, 1_000, 250_000, 0, 0)
+	expectedLongContextGrok47 := 250_000*1.00/1_000_000 + 1_000*12.00/1_000_000
+	if !floatEquals(longContextGrok47, expectedLongContextGrok47, 0.000001) {
+		t.Errorf("grok-4.7 长上下文缓存成本 = %.6f, 期望 %.6f", longContextGrok47, expectedLongContextGrok47)
+	}
+
+	longContextGrok47Fast := CalculateCostDetailed("grok-4.7-fast", 0, 1_000, 250_000, 0, 0)
+	expectedLongContextGrok47Fast := 250_000*1.50/1_000_000 + 1_000*18.00/1_000_000
+	if !floatEquals(longContextGrok47Fast, expectedLongContextGrok47Fast, 0.000001) {
+		t.Errorf("grok-4.7-fast 长上下文缓存成本 = %.6f, 期望 %.6f", longContextGrok47Fast, expectedLongContextGrok47Fast)
 	}
 
 	buildLongContext := CalculateCostDetailed("grok-build-0.1", 250_000, 1_000, 0, 0, 0)

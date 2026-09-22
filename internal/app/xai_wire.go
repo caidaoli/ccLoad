@@ -77,7 +77,11 @@ func normalizeXAIReasoning(body []byte, modelName string) []byte {
 	switch effort {
 	case "minimal":
 		effort = "low"
-	case "xhigh", "max":
+	case "xhigh":
+		if _, supported := allowed["xhigh"]; !supported {
+			effort = "high"
+		}
+	case "max":
 		effort = "high"
 	}
 	if _, valid := allowed[effort]; valid {
@@ -120,6 +124,8 @@ func xaiReasoningEfforts(modelName string) map[string]struct{} {
 	}
 	var efforts []string
 	switch modelName {
+	case "grok-4.7":
+		efforts = []string{"low", "medium", "high", "xhigh"}
 	case "grok-4.3":
 		efforts = []string{"none", "low", "medium", "high"}
 	case "grok-4.5", "grok-4.20-multi-agent-0309", "grok-3-mini", "grok-3-mini-fast":

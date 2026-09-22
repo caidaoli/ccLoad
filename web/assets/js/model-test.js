@@ -2606,21 +2606,24 @@ function appendModelsToChannelCache(channel, modelEntries) {
 function getVisibleChannelTargetsForAdd() {
   if (testMode !== TEST_MODE_MODEL) return [];
 
-  return Array.from(document.querySelectorAll('#model-test-tbody tr[data-channel-id][data-model]'))
+  const targets = new Map();
+  Array.from(document.querySelectorAll('#model-test-tbody tr[data-channel-id][data-model]'))
     .filter(row => isDataRowVisible(row))
-    .map(row => {
+    .forEach(row => {
       const checkbox = row.querySelector('.row-checkbox');
-      if (!checkbox || !checkbox.checked) return null;
+      if (!checkbox || !checkbox.checked) return;
 
       const channelId = parseInt(row.dataset.channelId, 10);
-      if (!Number.isFinite(channelId)) return null;
+      if (!Number.isFinite(channelId) || targets.has(channelId)) return;
 
       const channel = channelsList.find(ch => ch.id === channelId);
-      if (!channel) return null;
+      if (!channel) return;
 
-      return { channelId, channel, row };
-    })
-    .filter(Boolean);
+      // 模型模式下同一渠道可能因模糊匹配出现多行；一次批量添加只需要提交一次渠道。
+      targets.set(channelId, { channelId, channel, row });
+    });
+
+  return Array.from(targets.values());
 }
 
 function formatAddFailDetails(failed, maxItems = 5) {
@@ -2629,38 +2632,63 @@ function formatAddFailDetails(failed, maxItems = 5) {
 
 async function executeAddModelsToChannels(modelEntries, targets) {
   const failed = [];
-  let successCount = 0;
-  let addedModelCount = 0;
+  if (targets.length === 0) {
+    return { failed, successCount: 0, addedModelCount: 0, totalChannelCount: 0 };
+  }
 
-  for (const target of targets) {
-    try {
-      const resp = await fetchAPIWithAuth(`/admin/channels/${target.channelId}/models`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ models: modelEntries })
-      });
+  const channelIDs = targets.map(target => target.channelId);
+  let resp;
+  try {
+    // 后端批量接口在一个事务中读取并更新所有渠道，避免 500 个渠道产生 500 次串行请求。
+    resp = await fetchAPIWithAuth('/admin/channels/batch-advanced', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel_ids: channelIDs,
+        model_import_mode: 'append',
+        models: modelEntries
+      })
+    });
+  } catch (error) {
+    const message = error?.message || i18nText('modelTest.saveModelsFailed', '保存模型失败');
+    return {
+      failed: targets.map(target => ({ channelId: target.channelId, error: message })),
+      successCount: 0,
+      addedModelCount: 0,
+      totalChannelCount: targets.length
+    };
+  }
 
-      if (!resp.success) {
-        failed.push({
-          channelId: target.channelId,
-          error: resp.error || i18nText('modelTest.saveModelsFailed', '保存模型失败')
-        });
-        continue;
-      }
+  if (!resp.success) {
+    const message = resp.error || i18nText('modelTest.saveModelsFailed', '保存模型失败');
+    return {
+      failed: targets.map(target => ({ channelId: target.channelId, error: message })),
+      successCount: 0,
+      addedModelCount: 0,
+      totalChannelCount: targets.length
+    };
+  }
 
-      successCount++;
-      addedModelCount += appendModelsToChannelCache(target.channel, modelEntries);
-    } catch (error) {
+  const notFoundIDs = new Set((resp.data?.not_found || []).map(channelID => Number(channelID)));
+  targets.forEach(target => {
+    if (notFoundIDs.has(target.channelId)) {
       failed.push({
         channelId: target.channelId,
-        error: error?.message || i18nText('modelTest.saveModelsFailed', '保存模型失败')
+        error: i18nText('channels.test.channelNotFound', '渠道不存在')
       });
     }
-  }
+  });
+
+  let addedModelCount = 0;
+  targets.forEach(target => {
+    if (!notFoundIDs.has(target.channelId)) {
+      addedModelCount += appendModelsToChannelCache(target.channel, modelEntries);
+    }
+  });
 
   return {
     failed,
-    successCount,
+    successCount: targets.length - failed.length,
     addedModelCount,
     totalChannelCount: targets.length
   };
