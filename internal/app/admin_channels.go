@@ -1854,6 +1854,62 @@ func (s *Server) HandleDeleteModels(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"remaining": len(remaining)})
 }
 
+// HandleBatchDeleteModels 批量删除多个渠道中的指定模型。
+// POST /admin/channels/models/batch-delete
+func (s *Server) HandleBatchDeleteModels(c *gin.Context) {
+	var req struct {
+		Operations []struct {
+			ChannelID int64    `json:"channel_id"`
+			Models    []string `json:"models"`
+		} `json:"operations"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Operations) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "operations cannot be empty")
+		return
+	}
+
+	operations := make([]model.BatchModelDeleteOperation, 0, len(req.Operations))
+	for i, operation := range req.Operations {
+		if operation.ChannelID <= 0 {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("operations[%d].channel_id is invalid", i))
+			return
+		}
+		if len(operation.Models) == 0 {
+			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("operations[%d].models cannot be empty", i))
+			return
+		}
+		operations = append(operations, model.BatchModelDeleteOperation{
+			ChannelID: operation.ChannelID,
+			Models:    operation.Models,
+		})
+	}
+
+	result, err := s.store.BatchDeleteModels(c.Request.Context(), operations)
+	if err != nil {
+		log.Printf("批量删除渠道模型失败: %v", err)
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	for _, operation := range operations {
+		s.InvalidateAPIKeysCache(operation.ChannelID)
+	}
+	if result.Updated > 0 {
+		s.InvalidateChannelListCache()
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"total":           len(operations),
+		"updated":         result.Updated,
+		"unchanged":       result.Unchanged,
+		"not_found":       result.NotFound,
+		"not_found_count": len(result.NotFound),
+	})
+}
+
 // HandleBatchUpdatePriority 批量更新渠道优先级
 // POST /admin/channels/batch-priority
 // 使用单条批量 UPDATE 语句更新多个渠道优先级

@@ -325,6 +325,20 @@ func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64,
 	return result, nil
 }
 
+func (h *HybridStore) BatchDeleteModels(ctx context.Context, operations []model.BatchModelDeleteOperation) (model.BatchModelDeleteResult, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	result, err := h.sqlite.BatchDeleteModels(ctx, operations)
+	if err != nil {
+		return model.BatchModelDeleteResult{}, err
+	}
+	for _, operation := range operations {
+		h.markChannelDirty(operation.ChannelID, false)
+	}
+	return result, nil
+}
+
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()

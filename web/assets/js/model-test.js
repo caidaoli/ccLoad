@@ -2481,9 +2481,7 @@ function showDeletePreviewModal(previewText, onConfirmAsync) {
 
 async function executeDeletePlan(deletePlan, progress = null) {
   const failed = [];
-  let successCount = 0;
   const totalChannelCount = deletePlan.size;
-  let completed = 0;
 
   const notifyProgress = (text) => {
     if (progress && typeof progress.setProgress === 'function') {
@@ -2503,75 +2501,99 @@ async function executeDeletePlan(deletePlan, progress = null) {
     { completed: 0, total: totalChannelCount }
   ));
 
-  for (const [channelId, modelSet] of deletePlan.entries()) {
-    const models = Array.from(modelSet);
-    if (models.length === 0) continue;
-
-    const channel = channelsList.find(ch => ch.id === channelId);
-    const channelName = channel ? channel.name : i18nText('common.unknown', '未知渠道');
-    appendLog(i18nText('modelTest.deleteProgressChannelStart', `开始处理 ${channelName}(#${channelId})`, {
-      channel_name: channelName,
-      channel_id: channelId
+  const operations = Array.from(deletePlan.entries())
+    .filter(([, modelSet]) => modelSet.size > 0)
+    .map(([channelId, modelSet]) => ({
+      channel_id: channelId,
+      models: Array.from(modelSet)
     }));
-
-    try {
-      const resp = await fetchAPIWithAuth(`/admin/channels/${channelId}/models`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ models })
-      });
-
-      if (!resp.success) {
-        failed.push({ channelId, error: resp.error || i18nText('common.deleteFailed', '删除失败') });
-        appendLog(i18nText('modelTest.deleteProgressChannelFailed', `${channelName}(#${channelId}) 删除失败`, {
-          channel_name: channelName,
-          channel_id: channelId,
-          error: resp.error || i18nText('common.deleteFailed', '删除失败')
-        }));
-        completed++;
-        notifyProgress(i18nText(
-          'modelTest.deleteProgressRunning',
-          `删除中 ${completed}/${totalChannelCount}`,
-          { completed, total: totalChannelCount }
-        ));
-        continue;
-      }
-
-      successCount++;
-      if (channel) {
-        channel.models = (channel.models || []).filter(entry => !modelSet.has(getModelName(entry)));
-      }
-      if (selectedChannel && selectedChannel.id === channelId && channel) {
-        selectedChannel = channel;
-      }
-      appendLog(i18nText('modelTest.deleteProgressChannelDone', `${channelName}(#${channelId}) 删除完成`, {
-        channel_name: channelName,
-        channel_id: channelId
-      }));
-    } catch (e) {
-      failed.push({ channelId, error: e.message || i18nText('common.deleteFailed', '删除失败') });
-      appendLog(i18nText('modelTest.deleteProgressChannelFailed', `${channelName}(#${channelId}) 删除失败`, {
-        channel_name: channelName,
-        channel_id: channelId,
-        error: e.message || i18nText('common.deleteFailed', '删除失败')
-      }));
-    }
-
-    completed++;
+  if (operations.length === 0) {
     notifyProgress(i18nText(
-      'modelTest.deleteProgressRunning',
-      `删除中 ${completed}/${totalChannelCount}`,
-      { completed, total: totalChannelCount }
+      'modelTest.deleteProgressDone',
+      `删除完成 ${totalChannelCount}/${totalChannelCount}`,
+      { completed: totalChannelCount, total: totalChannelCount }
     ));
+    return { failed, successCount: 0, totalChannelCount };
   }
 
+  appendLog(i18nText(
+    'modelTest.deleteProgressBatchStart',
+    `正在批量处理 ${operations.length} 个渠道`,
+    { total: operations.length }
+  ));
+
+  let resp;
+  try {
+    // 每个渠道的模型集合不同，使用按渠道分组的批量接口，避免串行发起 N 次 DELETE 请求。
+    resp = await fetchAPIWithAuth('/admin/channels/models/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operations })
+    });
+  } catch (error) {
+    const message = error?.message || i18nText('common.deleteFailed', '删除失败');
+    operations.forEach(operation => failed.push({ channelId: operation.channel_id, error: message }));
+    appendLog(message);
+    notifyProgress(i18nText(
+      'modelTest.deleteProgressDone',
+      `删除完成 ${totalChannelCount}/${totalChannelCount}`,
+      { completed: totalChannelCount, total: totalChannelCount }
+    ));
+    return { failed, successCount: 0, totalChannelCount };
+  }
+
+  if (!resp.success) {
+    const message = resp.error || i18nText('common.deleteFailed', '删除失败');
+    operations.forEach(operation => failed.push({ channelId: operation.channel_id, error: message }));
+    appendLog(message);
+    notifyProgress(i18nText(
+      'modelTest.deleteProgressDone',
+      `删除完成 ${totalChannelCount}/${totalChannelCount}`,
+      { completed: totalChannelCount, total: totalChannelCount }
+    ));
+    return { failed, successCount: 0, totalChannelCount };
+  }
+
+  const notFoundIDs = new Set((resp.data?.not_found || []).map(channelId => Number(channelId)));
+  operations.forEach(operation => {
+    const channelId = operation.channel_id;
+    if (notFoundIDs.has(channelId)) {
+      failed.push({
+        channelId,
+        error: i18nText('channels.test.channelNotFound', '渠道不存在')
+      });
+      return;
+    }
+
+    const channel = channelsList.find(item => item.id === channelId);
+    if (!channel) return;
+    const modelSet = new Set(operation.models.map(modelName => modelName.toLowerCase()));
+    channel.models = (channel.models || []).filter(entry => {
+      const modelName = getModelName(entry);
+      return !modelName || !modelSet.has(modelName.toLowerCase());
+    });
+    if (selectedChannel && selectedChannel.id === channelId) {
+      selectedChannel = channel;
+    }
+  });
+
+  notFoundIDs.forEach(channelId => appendLog(i18nText(
+    'modelTest.deleteProgressChannelFailed',
+    `渠道 #${channelId} 删除失败`,
+    { channel_id: channelId, error: i18nText('channels.test.channelNotFound', '渠道不存在') }
+  )));
+  notifyProgress(i18nText(
+    'modelTest.deleteProgressRunning',
+    `删除中 ${totalChannelCount}/${totalChannelCount}`,
+    { completed: totalChannelCount, total: totalChannelCount }
+  ));
   notifyProgress(i18nText(
     'modelTest.deleteProgressDone',
     `删除完成 ${totalChannelCount}/${totalChannelCount}`,
     { completed: totalChannelCount, total: totalChannelCount }
   ));
 
-  return { failed, successCount, totalChannelCount };
+  return { failed, successCount: operations.length - failed.length, totalChannelCount };
 }
 
 function appendModelsToChannelCache(channel, modelEntries) {

@@ -859,6 +859,72 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 	return result, nil
 }
 
+// BatchDeleteModels atomically removes selected models from multiple channels.
+func (s *SQLStore) BatchDeleteModels(ctx context.Context, operations []model.BatchModelDeleteOperation) (model.BatchModelDeleteResult, error) {
+	operations = normalizeBatchModelDeleteOperations(operations)
+	if len(operations) == 0 {
+		return model.BatchModelDeleteResult{}, nil
+	}
+
+	channelIDs := make([]int64, len(operations))
+	for i, operation := range operations {
+		channelIDs[i] = operation.ChannelID
+	}
+
+	result := model.BatchModelDeleteResult{}
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		states, err := s.loadBatchConfigPatchStates(ctx, tx, channelIDs, true, false)
+		if err != nil {
+			return err
+		}
+
+		for _, operation := range operations {
+			state, ok := states[operation.ChannelID]
+			if !ok {
+				result.NotFound = append(result.NotFound, operation.ChannelID)
+				continue
+			}
+
+			toDelete := make(map[string]struct{}, len(operation.Models))
+			for _, name := range operation.Models {
+				toDelete[strings.ToLower(name)] = struct{}{}
+			}
+			remaining := make([]model.ModelEntry, 0, len(state.modelEntries))
+			for _, entry := range state.modelEntries {
+				if _, remove := toDelete[strings.ToLower(entry.Model)]; !remove {
+					remaining = append(remaining, entry)
+				}
+			}
+			if len(remaining) == len(state.modelEntries) {
+				result.Unchanged++
+				continue
+			}
+
+			updatedAtUnix := timeToUnix(time.Now())
+			scheduledCheckModel := reconciledScheduledCheckModel(state.scheduledCheckModel, remaining)
+			if _, err := s.execTx(ctx, tx, `
+				UPDATE channels
+				SET scheduled_check_model = ?, updated_at = ?
+				WHERE id = ?
+			`, scheduledCheckModel, updatedAtUnix, operation.ChannelID); err != nil {
+				return fmt.Errorf("delete models from channel %d: %w", operation.ChannelID, err)
+			}
+			if err := s.saveModelEntriesTx(ctx, tx, operation.ChannelID, remaining); err != nil {
+				return fmt.Errorf("save models after deleting from channel %d: %w", operation.ChannelID, err)
+			}
+			if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, operation.ChannelID, remaining, updatedAtUnix); err != nil {
+				return fmt.Errorf("prune API key model scopes for channel %d: %w", operation.ChannelID, err)
+			}
+			result.Updated++
+		}
+		return nil
+	})
+	if err != nil {
+		return model.BatchModelDeleteResult{}, err
+	}
+	return result, nil
+}
+
 type batchConfigPatchState struct {
 	priority              int
 	costMultiplier        float64
@@ -884,6 +950,26 @@ func normalizeBatchPatchChannelIDs(channelIDs []int64) []int64 {
 		}
 		seen[channelID] = struct{}{}
 		result = append(result, channelID)
+	}
+	return result
+}
+
+func normalizeBatchModelDeleteOperations(operations []model.BatchModelDeleteOperation) []model.BatchModelDeleteOperation {
+	positions := make(map[int64]int, len(operations))
+	result := make([]model.BatchModelDeleteOperation, 0, len(operations))
+	for _, operation := range operations {
+		if operation.ChannelID <= 0 {
+			continue
+		}
+		if index, ok := positions[operation.ChannelID]; ok {
+			result[index].Models = append(result[index].Models, operation.Models...)
+			continue
+		}
+		positions[operation.ChannelID] = len(result)
+		result = append(result, model.BatchModelDeleteOperation{
+			ChannelID: operation.ChannelID,
+			Models:    append([]string(nil), operation.Models...),
+		})
 	}
 	return result
 }

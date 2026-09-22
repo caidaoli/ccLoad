@@ -1510,6 +1510,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.deletePreviewProcessing': '删除中...',
   'modelTest.deleteProgressRunning': '删除中 {completed}/{total}',
   'modelTest.deleteProgressDone': '删除完成 {completed}/{total}',
+  'modelTest.deleteProgressBatchStart': '正在批量处理 {total} 个渠道',
   'modelTest.deleteProgressChannelStart': '开始处理 {channel_name}(#{channel_id})',
   'modelTest.deleteProgressChannelDone': '{channel_name}(#{channel_id}) 删除完成',
   'modelTest.deleteProgressChannelFailed': '{channel_name}(#{channel_id}) 删除失败：{error}',

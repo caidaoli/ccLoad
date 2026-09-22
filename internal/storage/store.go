@@ -30,6 +30,7 @@ type Store interface {
 	UpdateOAuthModelStateIfCredentialMatches(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string, modelEntries []model.ModelEntry, scheduledCheckModel string) (bool, error)
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
 	BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error)
+	BatchDeleteModels(ctx context.Context, operations []model.BatchModelDeleteOperation) (model.BatchModelDeleteResult, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {

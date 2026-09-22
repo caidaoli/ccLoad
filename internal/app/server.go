@@ -1682,6 +1682,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/billing/fetch", s.HandleFetchKeyRate)
 		admin.POST("/channels/websocket-probe", s.HandleChannelWebsocketProbe)
 		admin.POST("/channels/models/refresh-batch", s.HandleBatchRefreshModels)
+		admin.POST("/channels/models/batch-delete", s.HandleBatchDeleteModels)
 		admin.GET("/channels/:id/models/fetch", s.HandleFetchModels) // 获取渠道可用模型列表(新增)
 		admin.POST("/channels/:id/models", s.HandleAddModels)        // 添加渠道模型
 		admin.DELETE("/channels/:id/models", s.HandleDeleteModels)   // 删除渠道模型

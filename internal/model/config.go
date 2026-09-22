@@ -318,6 +318,19 @@ type BatchConfigPatchResult struct {
 	NotFound  []int64
 }
 
+// BatchModelDeleteOperation 描述一个渠道需要删除的模型集合。
+type BatchModelDeleteOperation struct {
+	ChannelID int64
+	Models    []string
+}
+
+// BatchModelDeleteResult 汇总一次批量模型删除的结果。
+type BatchModelDeleteResult struct {
+	Updated   int
+	Unchanged int
+	NotFound  []int64
+}
+
 // Normalize validates a batch patch and returns an independent normalized copy.
 func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
 	if p.Priority == nil && p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
