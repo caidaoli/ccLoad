@@ -45,12 +45,22 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 
+	persistedCfg := cfg
+	routedModel := model.RoutingModelName(testReq.Model)
+	if !cfg.SupportsModel(routedModel) {
+		// Admin chat may probe a disabled model without enabling normal routing.
+		cfg = cfg.Clone()
+		if !enableDisabledChannelTestModel(cfg, routedModel) {
+			writeChatErrorEvent(c, "模型 "+testReq.Model+" 不在此渠道的支持列表中")
+			return
+		}
+	}
+
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil {
 		writeChatErrorEvent(c, "failed to load api keys")
 		return
 	}
-	persistedCfg := cfg
 	cfg, keySelection, err := s.prepareChannelTestAuth(
 		c.Request.Context(), cfg, apiKeys, testReq.Model, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
 		oauthCredentialRefreshIfNeeded,
@@ -60,10 +70,6 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 
-	if !cfg.SupportsModel(model.RoutingModelName(testReq.Model)) {
-		writeChatErrorEvent(c, "模型 "+testReq.Model+" 不在此渠道的支持列表中")
-		return
-	}
 	s.bindChannelTestBilling(cfg, &testReq)
 
 	if strings.TrimSpace(testReq.Content) == "" && len(testReq.Messages) == 0 {

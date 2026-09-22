@@ -1351,6 +1351,102 @@ func TestChatRequestErrorResultClassifiesLimitAndNetworkFailures(t *testing.T) {
 	}
 }
 
+func TestHandleChannelChatDisabledModel(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested, redirect string
+		stream, rejected          bool
+	}{
+		{name: "non-stream", requested: "disabled-model"},
+		{name: "stream", requested: "disabled-model", stream: true},
+		{name: "suffix-and-redirect", requested: "disabled-model(high)", redirect: "gpt-4o-mini"},
+		{name: "unconfigured", requested: "missing-model", rejected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotModel string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+				}
+				gotModel = payload.Model
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+				}
+			}))
+			defer upstream.Close()
+			srv := newInMemoryServer(t)
+			srv.client = upstream.Client()
+			srv.modelFuzzyMatch = true
+			ctx := context.Background()
+			created, err := srv.store.CreateConfig(ctx, &model.Config{
+				Name: "disabled-chat", URLs: model.ChannelURLs{{URL: upstream.URL}}, Enabled: true,
+				ModelEntries: []model.ModelEntry{
+					{Model: "disabled-model", Disabled: true, RedirectModel: tc.redirect},
+					{Model: "disabled-model-backup"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+				t.Fatal(err)
+			}
+			channelID := fmt.Sprint(created.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+				"model": tc.requested, "client_protocol": "openai", "content": "hi", "stream": tc.stream,
+			}))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelChat(c)
+			var answer, chatError string
+			scanner := bufio.NewScanner(w.Body)
+			for scanner.Scan() {
+				data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+				if !ok || data == "[DONE]" {
+					continue
+				}
+				var event struct {
+					Delta string `json:"delta"`
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(data), &event); err != nil {
+					t.Fatal(err)
+				}
+				answer += event.Delta
+				chatError += event.Error
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if tc.rejected {
+				if chatError != "模型 "+tc.requested+" 不在此渠道的支持列表中" || gotModel != "" {
+					t.Fatalf("unconfigured model: error=%q upstream model=%q", chatError, gotModel)
+				}
+			} else {
+				wantModel := "disabled-model"
+				if tc.redirect != "" {
+					wantModel = tc.redirect
+				}
+				if answer != "ok" || chatError != "" || gotModel != wantModel {
+					t.Fatalf("answer=%q error=%q upstream model=%q, want %q", answer, chatError, gotModel, wantModel)
+				}
+			}
+			persisted, err := srv.store.GetConfig(ctx, created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !persisted.ModelEntries[0].Disabled || persisted.SupportsModel("disabled-model") {
+				t.Fatal("chat must preserve disabled state and exclude the model from normal routing")
+			}
+		})
+	}
+}
+
 func TestHandleChannelChatRespectsNonStreamFlag(t *testing.T) {
 	var upstreamBody string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
