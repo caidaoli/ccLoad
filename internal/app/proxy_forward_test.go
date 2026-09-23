@@ -3051,7 +3051,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 
 	const body = `{"model":"claude-fable-5-1","messages":[{"role":"user","content":"title"}],"tools":[]}`
 	headers := http.Header{
-		"User-Agent":     {"claude-cli/2.1.236 (external, cli)"},
+		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":          {"cli"},
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}

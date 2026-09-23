@@ -1591,7 +1591,7 @@ func TestInjectAnyrouterClaudeCodeFallbackTools(t *testing.T) {
 
 	cfg := anyrouterAnthropicCfg()
 	nativeHeaders := http.Header{
-		"User-Agent":     {"claude-cli/2.1.236 (external, cli)"},
+		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":          {"cli"},
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
