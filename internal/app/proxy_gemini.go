@@ -107,6 +107,11 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	models = s.filterVisibleModelsForRequest(c, clientProtocol, models)
 	sort.Strings(models)
 
+	if c.Query("client_version") != "" {
+		handleListCodexModels(c, models, clientProtocol == "codex")
+		return
+	}
+
 	if clientProtocol == "anthropic" {
 		type ModelInfo struct {
 			ID          string `json:"id"`

@@ -28,6 +28,8 @@ type ModelInfo struct {
 	NativeCapabilities  *NativeCapabilities `json:"native_capabilities,omitempty"`
 	ID                  string              `json:"id"`
 	Name                string              `json:"name,omitempty"`
+	ContextLength       int                 `json:"context_length,omitempty"`
+	InputModalities     []string            `json:"supportedInputModalities,omitempty"`
 	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
 	Thinking            *ThinkingSupport    `json:"thinking,omitempty"`
 }
@@ -92,6 +94,7 @@ func modelsForProvider(provider string) [][]*ModelInfo {
 
 func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	clone := *model
+	clone.InputModalities = append([]string(nil), model.InputModalities...)
 	if model.NativeCapabilities != nil {
 		capabilities := *model.NativeCapabilities
 		if capabilities.WebSearch != nil {

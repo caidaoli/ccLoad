@@ -15,7 +15,7 @@ file|source|internal/registry/models/models.json|internal/protocol/cliproxy/regi
 
 # ccLoad-owned pure wire helpers with no direct upstream source file.
 local|source|internal/protocol/cliproxy/common/anthropic_response.go|ccload-native-anthropic-wire|bf4c9849f523f5519e9d1fa3104c33700d4c31a6
-local|source|internal/protocol/cliproxy/registry/models.go|static-catalog-loader|0f86fbf4b1c32b78f36b587aafc68cfb0f7e388e
+local|source|internal/protocol/cliproxy/registry/models.go|static-catalog-loader|ce0286da16fb878eeafc9daf4c8d80575c3aedb9
 local|source|internal/protocol/cliproxy/util/function_name.go|ccload-function-name-normalization|a08a75d94b772b9fe3b79a9cd3b2e9288196f39b
 local|test|internal/protocol/cliproxy/openai/openai/responses/openai_openai-responses_tool_search_test.go|ccload-native-tool-search-test|01cb82cae9f9099edbf16b52eb81889b6cb3b6ac
 local|source|internal/protocol/cliproxy/openai/openai/responses/openai_openai-responses_tool_search.go|ccload-native-tool-search-adapter|2eebdc99bf6df64f9c4e6b98cb818964001b65a8

@@ -2,11 +2,140 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"ccLoad/internal/model"
 )
+
+func TestProxyGemini_CodexModelsManifest(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	allowed, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "codex-manifest-allowed", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}, {Model: "gpt-6-sol"}, {Model: "gpt-4o"}, {Model: "claude-opus-5"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateConfig(context.Background(), &model.Config{
+		Name: "codex-manifest-denied", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-secret"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.authService = newTestAuthService(t)
+	tokenHash := model.HashToken("codex-manifest-token")
+	otherTokenHash := model.HashToken("other-codex-manifest-token")
+	restriction := mustChannelRestriction(t, model.ChannelRestrictionModeAllow, allowed.ID)
+	server.authService.authTokensMux.Lock()
+	server.authService.authTokenModels[tokenHash] = []string{"gpt-5.5", "gpt-6-sol", "claude-opus-5", "gpt-secret"}
+	server.authService.authTokenChannels[tokenHash] = restriction
+	server.authService.authTokenModels[otherTokenHash] = []string{"gpt-4o"}
+	server.authService.authTokensMux.Unlock()
+
+	requestModels := func(hash, ifNoneMatch string) *httptest.ResponseRecorder {
+		req := newRequest(http.MethodGet, "/v1/models?client_version=0.155.0", nil)
+		req.Header.Set("User-Agent", "codex-cli/0.155.0")
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		client, response := newTestContext(t, req)
+		client.Set("token_hash", hash)
+		server.handleListOpenAIModels(client)
+		return response
+	}
+
+	response := requestModels(tokenHash, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Models []struct {
+			Slug                  string   `json:"slug"`
+			DefaultReasoningLevel string   `json:"default_reasoning_level"`
+			Visibility            string   `json:"visibility"`
+			SupportedInAPI        bool     `json:"supported_in_api"`
+			ContextWindow         int64    `json:"context_window"`
+			MaxContextWindow      *int64   `json:"max_context_window"`
+			MultiAgentVersion     string   `json:"multi_agent_version"`
+			InputModalities       []string `json:"input_modalities"`
+			ModelMessages         struct {
+				InstructionsTemplate string `json:"instructions_template"`
+			} `json:"model_messages"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+		Data json.RawMessage `json:"data"`
+	}
+	mustUnmarshalJSON(t, response.Body.Bytes(), &payload)
+	if len(payload.Models) != 3 || len(payload.Data) != 0 {
+		t.Fatalf("unexpected manifest: %+v", payload)
+	}
+	for index, expected := range []struct {
+		slug          string
+		contextWindow int64
+		defaultEffort string
+	}{
+		{slug: "claude-opus-5", contextWindow: 1000000, defaultEffort: "none"},
+		{slug: "gpt-5.5", contextWindow: 272000, defaultEffort: "medium"},
+		{slug: "gpt-6-sol", contextWindow: 272000, defaultEffort: "medium"},
+	} {
+		entry := payload.Models[index]
+		if entry.Slug != expected.slug || entry.Visibility != "list" || !entry.SupportedInAPI || entry.ContextWindow != expected.contextWindow || entry.MaxContextWindow != nil || entry.ModelMessages.InstructionsTemplate == "" || entry.MultiAgentVersion != "v2" || !slices.Contains(entry.InputModalities, "image") {
+			t.Fatalf("incomplete Codex model: %+v", entry)
+		}
+		if entry.DefaultReasoningLevel != expected.defaultEffort || len(entry.SupportedReasoningLevels) == 0 {
+			t.Fatalf("incorrect reasoning metadata: %+v", entry)
+		}
+	}
+
+	etag := response.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing manifest ETag")
+	}
+	if cached := requestModels(tokenHash, etag); cached.Code != http.StatusNotModified || cached.Body.Len() != 0 {
+		t.Fatalf("conditional request: status=%d, body=%s", cached.Code, cached.Body.String())
+	}
+	if cached := requestModels(tokenHash, `"old", W/`+etag); cached.Code != http.StatusNotModified {
+		t.Fatalf("weak conditional request: status=%d, body=%s", cached.Code, cached.Body.String())
+	}
+	if other := requestModels(otherTokenHash, etag); other.Code != http.StatusOK {
+		t.Fatalf("different visible models reused ETag: status=%d, body=%s", other.Code, other.Body.String())
+	} else {
+		var visible struct {
+			Models []struct {
+				Slug            string   `json:"slug"`
+				InputModalities []string `json:"input_modalities"`
+			} `json:"models"`
+		}
+		mustUnmarshalJSON(t, other.Body.Bytes(), &visible)
+		if len(visible.Models) != 1 || visible.Models[0].Slug != "gpt-4o" || !slices.Contains(visible.Models[0].InputModalities, "image") {
+			t.Fatalf("other token models=%+v", visible.Models)
+		}
+	}
+
+	client, ordinary := newTestContext(t, newRequest(http.MethodGet, "/v1/models?client_version=", nil))
+	client.Set("token_hash", tokenHash)
+	server.handleListOpenAIModels(client)
+	var ordinaryList struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, ordinary.Body.Bytes(), &ordinaryList)
+	if ordinary.Code != http.StatusOK || ordinaryList.Object != "list" || len(ordinaryList.Data) != 3 {
+		t.Fatalf("empty client_version changed ordinary list: status=%d, body=%s", ordinary.Code, ordinary.Body.String())
+	}
+}
 
 func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
