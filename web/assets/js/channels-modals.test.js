@@ -21,14 +21,17 @@ const {
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
-function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key' }) {
+function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '' }) {
 	const globals = {
 		window: {
 			t: key => key,
       showError: onError,
       showWarning: onWarning
     },
-    document: { querySelector: () => null },
+    document: {
+      querySelector: () => null,
+      getElementById: id => id === 'channelProxyURL' ? { value: proxyURL } : null
+    },
     getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }],
     getInlineKeyRows: () => rows,
     currentChannelKeyCooldowns: states,
@@ -471,9 +474,11 @@ test('per-Key model detection ignores stale sessions and populates wildcard chan
     keyModelScopeModalTitle: { textContent: '' },
     keyModelScopeStatus: status,
     detectKeyModelScopeBtn: detectButton,
-    channelModal: { setAttribute() {}, removeAttribute() {} }
+    channelModal: { setAttribute() {}, removeAttribute() {} },
+    channelProxyURL: { value: ' socks5://127.0.0.1:1080 ' }
   };
   const pending = [];
+  const detectedBodies = [];
   const globals = {
     window: { t: key => key },
     document: {
@@ -494,7 +499,10 @@ test('per-Key model detection ignores stale sessions and populates wildcard chan
       { model: 'model-new', redirect_model: '', disabled: false }
     ],
     getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: [] }],
-    fetchAPIWithAuth: () => new Promise(resolve => pending.push(resolve))
+    fetchAPIWithAuth: (_url, options) => {
+      detectedBodies.push(JSON.parse(options.body));
+      return new Promise(resolve => pending.push(resolve));
+    }
   };
   const previous = new Map();
   for (const [name, value] of Object.entries(globals)) {
@@ -505,6 +513,7 @@ test('per-Key model detection ignores stale sessions and populates wildcard chan
   try {
     assert.equal(openKeyModelScopeModal(0), true);
     const staleDetection = detectKeyModelScope();
+    assert.equal(detectedBodies[0]?.proxy_url, 'socks5://127.0.0.1:1080');
     closeKeyModelScopeModal(false);
     assert.equal(openKeyModelScopeModal(0), true);
     const currentDetection = detectKeyModelScope();
@@ -1638,7 +1647,30 @@ test('fetchModelsFromAPI sends every available API key', async () => {
   assert.deepEqual(requestBody.api_keys, ['enabled-key-1', 'enabled-key-2']);
   assert.equal(requestBody.api_key, undefined);
   assert.equal(requestBody.per_key, true);
+  assert.equal(requestBody.proxy_url, undefined);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
+});
+
+test('fetchModelsFromAPI sends the channel proxy', async () => {
+  let requestBody;
+  const restore = installFetchModelsGlobals({
+    rows: [{ api_key: 'enabled-key' }],
+    states: [{ key_index: 0, disabled: false }],
+    proxyURL: ' http://127.0.0.1:8080 ',
+    onFetch: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.equal(requestBody.proxy_url, 'http://127.0.0.1:8080');
 });
 
 test('fetchModelsFromAPI uses the earliest recovery key when all enabled keys are cooling', async () => {

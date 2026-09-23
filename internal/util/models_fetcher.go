@@ -17,19 +17,19 @@ type ModelsFetcher interface {
 }
 
 // NewModelsFetcher 根据上游协议创建对应的 Fetcher。
-// [FIX] P2-9: 删除口号式注释，代码已经够清晰
-func NewModelsFetcher(upstreamProtocol string) ModelsFetcher {
+// client 为空时使用包内默认客户端；渠道代理由调用方传入已配置好的客户端。
+func NewModelsFetcher(upstreamProtocol string, client *http.Client) ModelsFetcher {
 	switch NormalizeProtocol(upstreamProtocol) {
 	case ProtocolAnthropic:
-		return &AnthropicModelsFetcher{}
+		return &AnthropicModelsFetcher{client: client}
 	case ProtocolOpenAI:
-		return &OpenAIModelsFetcher{}
+		return &OpenAIModelsFetcher{client: client}
 	case ProtocolGemini:
-		return &GeminiModelsFetcher{}
+		return &GeminiModelsFetcher{client: client}
 	case ProtocolCodex:
-		return &CodexModelsFetcher{}
+		return &CodexModelsFetcher{client: client}
 	default:
-		return &AnthropicModelsFetcher{} // 默认使用Anthropic格式
+		return &AnthropicModelsFetcher{client: client}
 	}
 }
 

@@ -38,6 +38,7 @@ type FetchModelsRequest struct {
 	URLs                   model.ChannelURLs `json:"urls" binding:"required,min=1"`
 	Protocol               string            `json:"protocol,omitempty"`
 	APIKeys                []string          `json:"api_keys" binding:"required,min=1"`
+	ProxyURL               string            `json:"proxy_url,omitempty"`
 	PerKey                 bool              `json:"per_key,omitempty"`
 	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
 	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
@@ -163,12 +164,18 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "urls无效: "+err.Error())
 		return
 	}
+	req.ProxyURL, err = normalizeChannelProxyURL(req.ProxyURL)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var response *FetchModelsResponse
+	client := s.modelDiscoveryClient(&model.Config{ProxyURL: req.ProxyURL})
 	if req.PerKey {
-		response, err = s.fetchModelsPerKeyWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, perKeyAPIKeys)
+		response, err = s.fetchModelsPerKeyWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, perKeyAPIKeys, client)
 	} else {
-		response, err = s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys)
+		response, err = s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys, client)
 	}
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
@@ -583,18 +590,19 @@ func (s *Server) fetchModelsForChannel(
 	if err != nil {
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
+	client := s.modelDiscoveryClient(cfg)
 	if perKey {
 		availableKeys := availableModelFetchAPIKeys(keys, time.Now())
 		if len(availableKeys) == 0 {
 			return nil, fmt.Errorf("该渠道没有可用的API Key")
 		}
-		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, availableKeys)
+		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, availableKeys, client)
 	}
 	apiKeys := availableModelFetchKeys(keys, time.Now())
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
-	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
+	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys, client)
 }
 
 // OAuth 模型目录由系统生成，不能把上游或静态表的偶然顺序当成展示顺序。
@@ -730,7 +738,7 @@ func (s *Server) fetchZAIOAuthModels(
 	if err != nil {
 		return nil, fmt.Errorf("模型发现: 解析 Z.ai 凭证失败: %w", err)
 	}
-	if live, listErr := s.zaiCodingPlanModels(ctx, credential.APIKey); listErr != nil {
+	if live, listErr := s.zaiCodingPlanModels(ctx, cfg, credential.APIKey); listErr != nil {
 		log.Printf("[WARN] Z.ai 模型目录不可用，回退内置列表 (channel=%d): %v", cfg.ID, listErr)
 	} else {
 		names, source = live, "api"
@@ -756,16 +764,22 @@ func (s *Server) fetchZAIOAuthModels(
 // zaiCodingPlanModels resolves the Coding Plan lineup, newest source first:
 // the account catalog (authoritative), then models.dev (keyless, tracks the
 // plan without a ccLoad release), and only then the built-in lineup.
-func (s *Server) zaiCodingPlanModels(ctx context.Context, apiKey string) ([]string, error) {
+func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, apiKey string) ([]string, error) {
 	if s == nil || s.zaiService == nil {
 		return nil, errors.New("z.ai model discovery is unavailable")
 	}
-	models, err := s.zaiService.ListModels(ctx, apiKey)
+	service := s.zaiService
+	if client := s.modelDiscoveryClient(cfg); client != nil {
+		proxied := *s.zaiService
+		proxied.Client = client
+		service = &proxied
+	}
+	models, err := service.ListModels(ctx, apiKey)
 	if err == nil && len(models) > 0 {
 		return models, nil
 	}
 	accountErr := err
-	models, err = s.zaiService.ListCommunityModels(ctx)
+	models, err = service.ListCommunityModels(ctx)
 	if err == nil && len(models) > 0 {
 		log.Printf("[INFO] Z.ai 账号目录不可用，改用 models.dev 目录: %v", accountErr)
 		return models, nil
@@ -1021,6 +1035,14 @@ func (s *Server) fetchAntigravityModelsWithURLFallback(
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
 }
 
+// modelDiscoveryClient 返回渠道代理客户端。未配置代理时返回 nil，调用方继续使用默认客户端。
+func (s *Server) modelDiscoveryClient(cfg *model.Config) *http.Client {
+	if s == nil || cfg == nil || strings.TrimSpace(cfg.ProxyURL) == "" {
+		return nil
+	}
+	return s.getClientForChannel(cfg)
+}
+
 // fetchModelsWithURLFallback 按URL排序顺序抓取模型列表。
 // 设计目标：多URL渠道下，单个URL异常不应导致整个管理操作失败。
 func (s *Server) fetchModelsWithURLFallback(
@@ -1029,6 +1051,7 @@ func (s *Server) fetchModelsWithURLFallback(
 	configuredURLs model.ChannelURLs,
 	overrideProtocol string,
 	apiKeys []string,
+	client *http.Client,
 ) (*FetchModelsResponse, error) {
 	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
@@ -1077,7 +1100,7 @@ func (s *Server) fetchModelsWithURLFallback(
 		for _, upstreamProtocol := range protocols {
 			for _, apiKey := range apiKeys {
 				start := time.Now()
-				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
+				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey, client)
 				if err == nil {
 					if selectorEnabled {
 						latency := time.Since(start)
@@ -1116,6 +1139,7 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 	configuredURLs model.ChannelURLs,
 	overrideProtocol string,
 	apiKeys []*model.APIKey,
+	client *http.Client,
 ) (*FetchModelsResponse, error) {
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("API Key为空")
@@ -1134,7 +1158,7 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 		}
 		item := FetchKeyModelsItem{KeyIndex: apiKey.KeyIndex, Models: make([]model.ModelEntry, 0)}
 		fetched, err := s.fetchModelsWithURLFallback(
-			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey},
+			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client,
 		)
 		if err != nil {
 			item.Error = publicFetchModelsError(err)
@@ -1256,7 +1280,7 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 	return code, strings.TrimSpace(body), true
 }
 
-func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string) (*FetchModelsResponse, error) {
+func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client) (*FetchModelsResponse, error) {
 	normalizedProtocol := util.NormalizeProtocol(upstreamProtocol)
 	source := determineSource(upstreamProtocol)
 
@@ -1277,7 +1301,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
-		fetcher := util.NewModelsFetcher(upstreamProtocol)
+		fetcher := util.NewModelsFetcher(upstreamProtocol, client)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
 		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey)

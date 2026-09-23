@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -277,6 +278,124 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+}
+
+func TestAdminModels_FetchModelsUsesChannelProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-proxy" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"proxied-model"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	var proxyHits atomic.Int32
+	direct := &http.Transport{Proxy: nil}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		if r.URL == nil || !r.URL.IsAbs() {
+			http.Error(w, "expected absolute-form proxy request", http.StatusBadGateway)
+			return
+		}
+		out, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		out.Header = r.Header.Clone()
+		out.Header.Del("Proxy-Connection")
+		resp, err := direct.RoundTrip(out)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(proxy.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	t.Cleanup(func() {
+		server.proxyTransports.Range(func(_, value any) bool {
+			closeUpstreamHTTPClient(value.(*http.Client))
+			return true
+		})
+	})
+
+	t.Run("preview", func(t *testing.T) {
+		before := proxyHits.Load()
+		payload := map[string]any{
+			"protocol":  "openai",
+			"urls":      []map[string]any{{"url": upstream.URL, "protocols": []string{"openai"}}},
+			"api_keys":  []string{"sk-proxy"},
+			"proxy_url": proxy.URL,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if w.Code != http.StatusOK || !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "proxied-model" {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if proxyHits.Load() <= before {
+			t.Fatal("model discovery did not use the channel proxy")
+		}
+	})
+
+	t.Run("saved channel", func(t *testing.T) {
+		server.channelCache = storage.NewChannelCache(store, time.Minute)
+		cfg, err := store.CreateConfig(context.Background(), &model.Config{
+			Name:     "proxied",
+			URLs:     model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			ProxyURL: proxy.URL,
+			Enabled:  true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-proxy"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := proxyHits.Load()
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/models/fetch", nil))
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+		server.HandleFetchModels(c)
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if w.Code != http.StatusOK || !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "proxied-model" {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if proxyHits.Load() <= before {
+			t.Fatal("saved channel model discovery did not use proxy_url")
+		}
+	})
+
+	t.Run("invalid preview proxy", func(t *testing.T) {
+		payload := map[string]any{
+			"protocol":  "openai",
+			"urls":      []map[string]any{{"url": upstream.URL}},
+			"api_keys":  []string{"sk-proxy"},
+			"proxy_url": "ftp://127.0.0.1:9",
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid proxy_url") {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {

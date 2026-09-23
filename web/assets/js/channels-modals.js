@@ -3529,13 +3529,15 @@ async function fetchModelsFromAPI() {
     }
 
     endpoint = '/admin/channels/models/fetch';
+    const proxyURL = String(document.getElementById?.('channelProxyURL')?.value || '').trim();
     fetchOptions = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         urls,
         api_keys: availableKeys,
-        per_key: true
+        per_key: true,
+        ...(proxyURL ? { proxy_url: proxyURL } : {})
       })
     };
   }

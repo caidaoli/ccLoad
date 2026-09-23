@@ -463,10 +463,16 @@ async function detectKeyModelScope() {
   }
   setKeyModelScopeStatus(window.t('channels.keyModelsDetecting'));
   try {
+    const proxyURL = String(document.getElementById?.('channelProxyURL')?.value || '').trim();
     const response = await fetchAPIWithAuth('/admin/channels/models/fetch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ urls, api_keys: [row.api_key], per_key: true })
+      body: JSON.stringify({
+        urls,
+        api_keys: [row.api_key],
+        per_key: true,
+        ...(proxyURL ? { proxy_url: proxyURL } : {})
+      })
     });
     if (!isCurrentDetection()) return;
     if (!response.success) throw new Error(response.error || window.t('channels.fetchModelsFailed', { error: '' }));

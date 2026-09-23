@@ -179,7 +179,7 @@ func (s *Server) commitZAICredential(
 // zaiChannelModels seeds a new channel from the live Coding Plan catalog so it
 // starts with whatever the account can actually call today.
 func (s *Server) zaiChannelModels(ctx context.Context, apiKey string) []string {
-	models, err := s.zaiCodingPlanModels(ctx, apiKey)
+	models, err := s.zaiCodingPlanModels(ctx, nil, apiKey)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			log.Printf("[WARN] Z.ai 模型目录不可用，新渠道使用内置列表: %v", err)
