@@ -105,6 +105,13 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 		return
 	}
 	models = s.filterVisibleModelsForRequest(c, clientProtocol, models)
+	if c.Query("client_version") != "" {
+		models, err = s.filterCodexResponsesModels(c, models)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
+			return
+		}
+	}
 	sort.Strings(models)
 
 	if c.Query("client_version") != "" {

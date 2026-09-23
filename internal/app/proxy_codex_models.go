@@ -7,10 +7,114 @@ import (
 	"net/http"
 	"strings"
 
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
+
+// filterCodexResponsesModels uses configured route capabilities without probing upstreams.
+func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []string) ([]string, error) {
+	if len(visibleModels) == 0 {
+		return visibleModels, nil
+	}
+	channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
+	if err != nil {
+		return nil, err
+	}
+
+	visible := make(map[string]struct{}, len(visibleModels))
+	for _, modelID := range visibleModels {
+		visible[modelID] = struct{}{}
+	}
+
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashStr, _ := tokenHash.(string)
+	var restriction model.ChannelRestriction
+	var hasRestriction bool
+	if s.authService != nil && tokenHashStr != "" {
+		restriction, hasRestriction = s.authService.getChannelRestriction(tokenHashStr)
+	}
+
+	available := make(map[string]struct{}, len(visibleModels))
+	for _, cfg := range channels {
+		if cfg == nil || (hasRestriction && !restriction.Allows(cfg.ID)) {
+			continue
+		}
+		upstreamProtocols := s.codexResponsesUpstreamProtocols(cfg)
+		if len(upstreamProtocols) == 0 {
+			continue
+		}
+		for _, modelID := range cfg.GetModels() {
+			if modelID == "*" {
+				continue
+			}
+			if _, ok := visible[modelID]; !ok {
+				continue
+			}
+			for _, upstream := range upstreamProtocols {
+				actualModel := s.resolveFinalUpstreamModel(cfg, modelID, string(upstream))
+				if codexResponsesTextModel(actualModel) {
+					available[modelID] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+
+	filtered := make([]string, 0, len(visibleModels))
+	for _, modelID := range visibleModels {
+		if _, ok := available[modelID]; ok {
+			filtered = append(filtered, modelID)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *Server) codexResponsesUpstreamProtocols(cfg *model.Config) []protocol.Protocol {
+	seen := make(map[protocol.Protocol]struct{})
+	var protocols []protocol.Protocol
+	order := localUpstreamProtocolOrder(cfg.URLs)
+	for _, candidateURL := range orderChannelAttemptURLs(s.urlSelector, cfg, cfg.GetURLs()) {
+		entry := cfg.URLs[candidateURL.idx]
+		candidates, _ := protocolCandidatesForURL(
+			entry, cfg.GetProtocolTransformMode(), protocol.Codex, protocol.RequestFamilyResponses, order,
+		)
+		for _, candidate := range candidates {
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			protocols = append(protocols, candidate)
+		}
+	}
+	return protocols
+}
+
+func codexResponsesTextModel(modelID string) bool {
+	if _, imageOnly := canonicalCodexImageModel(modelID); imageOnly {
+		return false
+	}
+	baseModelID := modelID
+	if slash := strings.LastIndexByte(baseModelID, '/'); slash >= 0 {
+		baseModelID = baseModelID[slash+1:]
+	}
+	if util.ModelFamily(modelID) == "text-embedding" || strings.HasPrefix(strings.ToLower(baseModelID), "text-embedding-") {
+		return false
+	}
+	if modalities, known := util.ModelOutputModalities(modelID); known {
+		for _, modality := range modalities {
+			if modality == "text" {
+				return true
+			}
+		}
+		return false
+	}
+	// Unknown custom aliases keep the administrator's configured route semantics.
+	return true
+}
 
 func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool) {
 	models := make([]map[string]any, 0, len(modelIDs))

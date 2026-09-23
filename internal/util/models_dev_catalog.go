@@ -31,6 +31,7 @@ var modelsDevProviderPriority = func() map[string]int {
 type ModelCatalogEntry struct {
 	ID               string       `json:"id"`
 	Provider         string       `json:"provider"`
+	Family           string       `json:"family,omitempty"`
 	ReleaseDate      string       `json:"release_date,omitempty"`
 	LastUpdated      string       `json:"last_updated,omitempty"`
 	Status           string       `json:"status,omitempty"`
@@ -55,6 +56,7 @@ type modelsDevProvider struct {
 
 type modelsDevModel struct {
 	ID          string              `json:"id"`
+	Family      string              `json:"family"`
 	ReleaseDate string              `json:"release_date"`
 	LastUpdated string              `json:"last_updated"`
 	Status      string              `json:"status"`
@@ -198,6 +200,7 @@ func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogE
 	return ModelCatalogEntry{
 		ID:               id,
 		Provider:         provider,
+		Family:           strings.ToLower(strings.TrimSpace(raw.Family)),
 		ReleaseDate:      raw.ReleaseDate,
 		LastUpdated:      raw.LastUpdated,
 		Status:           raw.Status,
@@ -281,6 +284,29 @@ func (s *ModelCatalogSnapshot) Model(id string) (ModelCatalogEntry, bool) {
 		}
 	}
 	return ModelCatalogEntry{}, false
+}
+
+// ModelOutputModalities returns known output modalities for an exact model ID.
+// An absent entry or empty modalities means the catalog cannot classify it.
+func ModelOutputModalities(id string) ([]string, bool) {
+	snapshot := activeModelPricing.Load()
+	if snapshot == nil {
+		return nil, false
+	}
+	entry, ok := snapshot.metadata[strings.ToLower(strings.TrimSpace(id))]
+	if !ok || len(entry.OutputModalities) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), entry.OutputModalities...), true
+}
+
+// ModelFamily returns the known model family for an exact model ID.
+func ModelFamily(id string) string {
+	snapshot := activeModelPricing.Load()
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.metadata[strings.ToLower(strings.TrimSpace(id))].Family
 }
 
 func cloneModelCatalogEntry(entry ModelCatalogEntry) ModelCatalogEntry {

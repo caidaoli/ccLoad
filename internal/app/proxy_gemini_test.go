@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 func TestProxyGemini_CodexModelsManifest(t *testing.T) {
@@ -134,6 +135,100 @@ func TestProxyGemini_CodexModelsManifest(t *testing.T) {
 	mustUnmarshalJSON(t, ordinary.Body.Bytes(), &ordinaryList)
 	if ordinary.Code != http.StatusOK || ordinaryList.Object != "list" || len(ordinaryList.Data) != 3 {
 		t.Fatalf("empty client_version changed ordinary list: status=%d, body=%s", ordinary.Code, ordinary.Body.String())
+	}
+}
+
+func TestProxyGemini_CodexModelsOnlyResponsesCapable(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	if err := util.InstallModelCatalog(&util.ModelCatalogSnapshot{
+		Version: util.ModelCatalogSchemaVersion,
+		Models: []util.ModelCatalogEntry{
+			{ID: "gpt-5.5", Provider: "openai", OutputModalities: []string{"text"}},
+			{ID: "text-embedding-3-large", Provider: "openai", Family: "text-embedding", OutputModalities: []string{"text"}},
+		},
+	}, "models.dev"); err != nil {
+		t.Fatal(err)
+	}
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.urlSelector = NewURLSelector()
+	ctx := context.Background()
+	compatible, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-responses-compatible", Enabled: true,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		URLs:                  model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"anthropic"}}},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-5.5"},
+			{Model: "claude-opus-5"},
+			{Model: "coding-alias", RedirectModel: "claude-opus-5"},
+			{Model: "gpt-image-2.5"},
+			{Model: "image-alias", RedirectModel: "gpt-image-2.5"},
+			{Model: "text-embedding-3-large"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	incompatible, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-responses-incompatible", Enabled: true,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		URLs:                  model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"openai"}}},
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-unroutable"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-responses-disabled-url", Enabled: true,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		URLs: model.ChannelURLs{
+			{URL: "https://codex.example.com", Protocols: []string{"codex"}},
+			{URL: "https://openai.example.com", Protocols: []string{"openai"}},
+		},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-disabled-route"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.urlSelector.DisableURL(disabled.ID, disabled.URLs[0].RuntimeURL())
+	_, err = store.CreateConfig(ctx, &model.Config{
+		Name: "codex-responses-denied", Enabled: true,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		URLs:                  model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"anthropic"}}},
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-unroutable"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.authService = newTestAuthService(t)
+	tokenHash := model.HashToken("codex-responses-model-token")
+	server.authService.authTokensMux.Lock()
+	server.authService.authTokenChannels[tokenHash] = mustChannelRestriction(t, model.ChannelRestrictionModeAllow, compatible.ID, incompatible.ID, disabled.ID)
+	server.authService.authTokensMux.Unlock()
+
+	req := newRequest(http.MethodGet, "/v1/models?client_version=0.155.0", nil)
+	req.Header.Set("User-Agent", "codex-cli/0.155.0")
+	client, response := newTestContext(t, req)
+	client.Set("token_hash", tokenHash)
+	server.handleListOpenAIModels(client)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Models []struct {
+			Slug string `json:"slug"`
+		} `json:"models"`
+	}
+	mustUnmarshalJSON(t, response.Body.Bytes(), &payload)
+	slugs := make([]string, 0, len(payload.Models))
+	for _, entry := range payload.Models {
+		slugs = append(slugs, entry.Slug)
+	}
+	if want := []string{"claude-opus-5", "coding-alias", "gpt-5.5"}; !slices.Equal(slugs, want) {
+		t.Fatalf("Codex Responses models = %v, want %v", slugs, want)
 	}
 }
 

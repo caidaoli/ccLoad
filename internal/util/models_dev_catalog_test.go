@@ -15,6 +15,7 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	now := time.Date(2026, 7, 10, 6, 0, 0, 0, time.UTC)
 	raw := validModelsDevFixture(t, "openai", "gpt-next", map[string]any{
 		"id":           "openai/gpt-next",
+		"family":       "gpt",
 		"release_date": "2026-07-09",
 		"last_updated": "2026-07-10",
 		"status":       "active",
@@ -39,7 +40,7 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	if !ok || entry.Provider != "openai" {
 		t.Fatalf("entry = %#v", entry)
 	}
-	if entry.ReleaseDate != "2026-07-09" || entry.LastUpdated != "2026-07-10" || entry.Status != "active" || !reflect.DeepEqual(entry.OutputModalities, []string{"text"}) {
+	if entry.ReleaseDate != "2026-07-09" || entry.LastUpdated != "2026-07-10" || entry.Status != "active" || entry.Family != "gpt" || !reflect.DeepEqual(entry.OutputModalities, []string{"text"}) {
 		t.Fatalf("metadata = %#v", entry)
 	}
 	if entry.Pricing.InputPrice != 2.5 || entry.Pricing.OutputPrice != 15 || entry.Pricing.CacheReadPrice != 0.25 || !entry.Pricing.HasCacheReadPrice {
