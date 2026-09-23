@@ -3672,10 +3672,13 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 			if !channel.SupportsModel("gpt-5.5") {
 				t.Fatalf("plan %q lost the shared model", tt.plan)
 			}
-			for _, name := range []string{"gpt-6-astra", "gpt-5.6-sol"} {
+			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"} {
 				if channel.SupportsModel(name) != tt.paidModelsAllowed {
 					t.Fatalf("plan %q allows %q = %v, want %v", tt.plan, name, channel.SupportsModel(name), tt.paidModelsAllowed)
 				}
+			}
+			if !channel.SupportsModel("gpt-6-luna") {
+				t.Fatalf("plan %q does not allow gpt-6-luna", tt.plan)
 			}
 		})
 	}
@@ -7091,6 +7094,7 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 			}
 			channel, getErr := store.GetConfig(context.Background(), status.ChannelID)
 			if getErr != nil || !channel.UsesAnthropicOAuth() || !channel.SupportsModel("claude-fable-5-1") ||
+				!channel.SupportsModel("claude-opus-5-5") ||
 				len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
 				t.Fatalf("created channel=%+v err=%v", channel, getErr)
 			}

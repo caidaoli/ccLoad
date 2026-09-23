@@ -258,7 +258,7 @@ func CalculateStandardCostBreakdownWithPrice(
 	override := resolveModelPriceOverride(model, price)
 	if serviceTier == "fast" && IsFastModeModel(model) {
 		if override == nil {
-			return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+			return calculateFastModeCostBreakdown(model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
 		}
 		breakdown := calculateCostBreakdownDetailed(
 			model, override, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
@@ -490,10 +490,12 @@ func isOpenAIModel(model string) bool {
 }
 
 // serviceTierModels 列出支持 priority/flex service_tier 的 OpenAI 模型。
-// 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-6 Astra 模型页另明确支持 Fast/Flex。
+// 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-6 模型页另明确支持 Fast/Flex。
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
 	"gpt-6-astra":       true,
+	"gpt-6-sol":         true,
+	"gpt-6-luna":        true,
 	"gpt-5.6":           true,
 	"gpt-5.6-sol":       true,
 	"gpt-5.6-terra":     true,
@@ -549,7 +551,7 @@ func modelSupportsTier(model string) bool {
 
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
 // Codex 的 auto/priority 表示 Fast 模式：GPT-5.6/5.5=2.5x，
-// GPT-5.4=2x；其他 priority 模型=2x，ultrafast=10x，flex=0.5x，
+// GPT-6 Sol/Luna 和 GPT-5.4=2x；其他 priority 模型=2x，ultrafast=10x，flex=0.5x，
 // default/standard/""=1x（标准）。
 func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
@@ -581,6 +583,8 @@ func openAIFastModeMultiplier(model string) float64 {
 	switch {
 	case strings.HasPrefix(lowerModel, "gpt-6-astra"), strings.HasPrefix(lowerModel, "gpt-5.6"), strings.HasPrefix(lowerModel, "gpt-5.5"):
 		return 2.5
+	case strings.HasPrefix(lowerModel, "gpt-6-sol"), strings.HasPrefix(lowerModel, "gpt-6-luna"):
+		return 2.0
 	case strings.HasPrefix(lowerModel, "gpt-5.4"):
 		return 2.0
 	default:
@@ -597,7 +601,7 @@ func isOpusModel(model string) bool {
 }
 
 // IsFastModeModel 判断模型是否支持 Anthropic fast mode。
-// 当前支持 Claude Opus 5 和 Claude Opus 4.8；Opus 4.6 已降级为标准速度。
+// 当前支持 Claude Opus 5.x 和 Claude Opus 4.8；Opus 4.6 已降级为标准速度。
 func IsFastModeModel(model string) bool {
 	lowerModel := strings.ToLower(model)
 	return strings.HasPrefix(lowerModel, "claude-opus-5") ||
@@ -607,13 +611,13 @@ func IsFastModeModel(model string) bool {
 // CalculateFastModeCost 计算 Anthropic fast mode 的独立费用
 // Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
 // 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
-// 故缓存成本基于基础价 $5 而非 fast 价 $10，与标准路径 CalculateCostDetailed 一致。
+// 故缓存成本基于模型基础价而非 fast 价，与标准路径 CalculateCostDetailed 一致。
 // 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
-	return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
+	return calculateFastModeCostBreakdown("claude-opus-5", inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
 }
 
-// anthropicFastModeMultiplier 是 fast 模式 input/output 相对基础价的倍率（$10/$50 对 $5/$25）。
+// anthropicFastModeMultiplier 是 fast 模式 input/output 相对基础价的倍率。
 const anthropicFastModeMultiplier = 2.0
 
 // scaleFastModeInputOutput 把按基础价算出的明细换算为 fast 模式：只放大 input/output，缓存保持基础价。
@@ -628,28 +632,18 @@ func scaleFastModeInputOutput(breakdown StandardCostBreakdown) StandardCostBreak
 	return breakdown
 }
 
-func calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
+func calculateFastModeCostBreakdown(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
 		return StandardCostBreakdown{}
 	}
-
-	// Fast mode 固定价格（全上下文统一，无 >200K 分段）
-	const inputPrice = 10.0  // $10/MTok（仅 input/output）
-	const outputPrice = 50.0 // $50/MTok
-	// 缓存倍率常量相对「基础 input 价」定义，缓存成本须基于基础价而非 fast 价
-	const baseInputPrice = 5.0 // Claude Opus 5/4.8 基础 input 价 $5/MTok
-
-	breakdown := StandardCostBreakdown{
-		Input:                 newCostComponent(inputTokens, inputPrice),
-		Output:                newCostComponent(outputTokens, outputPrice),
-		CacheRead:             newCostComponent(cacheReadTokens, baseInputPrice*cacheReadMultiplierOpus),
-		ServiceTierMultiplier: inputPrice / baseInputPrice,
+	pricing, ok := LookupSystemModelPricing(model)
+	if !ok {
+		return StandardCostBreakdown{}
 	}
-
-	breakdown.CacheWrite = newCacheWriteCostComponent(cache5mTokens, cache1hTokens, baseInputPrice, 0, false)
-	breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
-		breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
-	return breakdown
+	breakdown := calculateCostBreakdownDetailed(
+		model, &pricing, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
+	)
+	return scaleFastModeInputOutput(breakdown)
 }
 
 // getOpenAICacheMultiplier 获取OpenAI模型的缓存价格倍数

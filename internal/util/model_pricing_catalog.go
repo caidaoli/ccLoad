@@ -171,6 +171,11 @@ var basePricing = map[string]ModelPricing{
 	"claude-opus-4-7":  {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
 	"claude-opus-4-8":  {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
 	"claude-opus-5":    {InputPrice: 5.00, OutputPrice: 25.00}, // 全1M窗口统一价格
+	"claude-opus-5-5": {
+		InputPrice: 4.00, OutputPrice: 20.00,
+		CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		CacheWritePrice: 5.00, HasCacheWritePrice: true,
+	},
 	"claude-fable-5-1": {
 		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 0.25, HasCacheReadPrice: true,
 	},
@@ -195,6 +200,17 @@ var basePricing = map[string]ModelPricing{
 	"gpt-6-astra": {
 		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 1.00, HasCacheReadPrice: true,
 		InputPriceHigh: 20.00, OutputPriceHigh: 75.00, CacheReadPriceHigh: 2.00, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
+	// GPT-6 Sol/Luna 官方价格：缓存读为输入价格的 10%，缓存写按输入价格的 1.25×计费。
+	"gpt-6-sol": {
+		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		InputPriceHigh: 4.00, OutputPriceHigh: 15.00, CacheReadPriceHigh: 0.40, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
+	"gpt-6-luna": {
+		InputPrice: 0.10, OutputPrice: 0.50, CacheReadPrice: 0.01, HasCacheReadPrice: true,
+		InputPriceHigh: 0.20, OutputPriceHigh: 0.75, CacheReadPriceHigh: 0.02, // >272K context
 		CacheReadCountsTowardTier: true,
 	},
 	"gpt-5.6": {
