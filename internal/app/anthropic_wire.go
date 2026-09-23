@@ -24,8 +24,8 @@ import (
 
 const (
 	// anthropicCLIVersion 是伪造官方 Anthropic 线路时写入的 Claude Code UA/账单版本。
-	// Fable 5.1（claude-fable-5-1）会拒绝低于 2.1.251 的客户端。
-	anthropicCLIVersion  = "2.1.258"
+	// opus-5-5 / 新模型会拒绝低于 2.1.280 的客户端。
+	anthropicCLIVersion  = "2.1.280"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
@@ -625,9 +625,18 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 // 同一个判据同时服务入站与出站：网关自己产出的 body 一样通过检测，不存在「自己不认
 // 自己」的自指。
 func isNativeAnthropicClaudeCodeRequest(headers http.Header) bool {
-	return validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) &&
-		anthropicHeaderValue(headers, "X-App") == "cli" &&
-		slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219")
+	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
+		anthropicHeaderValue(headers, "X-App") != "cli" ||
+		!slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219") {
+		return false
+	}
+	// 过旧的官方 CLI 直通会被 Anthropic 以 400 拒绝新模型。版本低于伪造钉时走重写，
+	// 把 UA/账单升到 anthropicCLIVersion；不低于钉的原生请求仍直通，避免拆 cache。
+	if version := anthropicUserAgentVersion(headers); version != "" &&
+		!anthropicCLIVersionGTE(version, anthropicCLIVersion) {
+		return false
+	}
+	return true
 }
 
 func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
@@ -1170,15 +1179,53 @@ func anthropicBillingHeader(firstUserText, clientVersion string) string {
 	return "x-anthropic-billing-header: cc_version=" + clientVersion + "." + fingerprint + "; cc_entrypoint=cli;"
 }
 
-// anthropicClientVersion keeps the caller's real Claude Code version when its
-// User-Agent has the documented CLI shape. Other clients receive the built-in
-// fallback so arbitrary User-Agent text cannot leak into the billing block.
-func anthropicClientVersion(headers http.Header) string {
+func anthropicUserAgentVersion(headers http.Header) string {
 	matches := anthropicClaudeCLIUserAgentPattern.FindStringSubmatch(
 		strings.TrimSpace(anthropicHeaderValue(headers, "User-Agent")),
 	)
 	if len(matches) > 1 {
 		return matches[1]
+	}
+	return ""
+}
+
+func anthropicCLIVersionGTE(version, min string) bool {
+	v, vok := parseAnthropicCLIVersion(version)
+	m, mok := parseAnthropicCLIVersion(min)
+	if !vok || !mok {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if v[i] != m[i] {
+			return v[i] > m[i]
+		}
+	}
+	return true
+}
+
+func parseAnthropicCLIVersion(version string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// anthropicClientVersion keeps a current Claude Code version on the wire.
+// Callers older than anthropicCLIVersion are raised to the pin so Anthropic
+// does not 400 new models; newer official CLIs keep their real version.
+func anthropicClientVersion(headers http.Header) string {
+	if version := anthropicUserAgentVersion(headers); version != "" &&
+		anthropicCLIVersionGTE(version, anthropicCLIVersion) {
+		return version
 	}
 	return anthropicCLIVersion
 }

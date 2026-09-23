@@ -687,7 +687,7 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	if got := headerValueFold(upstreamHeaders, "x-api-key"); got != "sk-ant-official" {
 		t.Fatalf("official Anthropic x-api-key=%q", got)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/"+anthropicCLIVersion+" (external, cli)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
 	betas := headerValueFold(upstreamHeaders, "Anthropic-Beta")
@@ -880,7 +880,7 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 2048},
 		"max_tokens": 4096,
 	}, map[string]string{
-		"User-Agent":               "claude-cli/2.1.220 (external, cli)",
+		"User-Agent":               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 		"X-App":                    "cli",
 		"Anthropic-Beta":           "claude-code-20250219",
 		"X-Claude-Code-Session-Id": "e03895ad-8b34-4a84-bbf6-002e8909b17b",
@@ -1014,7 +1014,7 @@ func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 		"max_tokens": 1024,
 	}, map[string]string{
 		"anthropic-version":        "2023-06-01",
-		"User-Agent":               "claude-cli/2.1.220 (external, cli)",
+		"User-Agent":               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 		"X-App":                    "cli",
 		"Anthropic-Beta":           "claude-code-20250219",
 		"X-Claude-Code-Session-Id": nativeSessionID,

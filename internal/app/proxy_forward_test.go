@@ -2362,7 +2362,7 @@ func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
 		t.Fatalf("finalizeAnthropicClaudeCodeMessagesBody(, anthropicOfficialTestURL) error = %v", err)
 	}
 	if got := gjson.GetBytes(body, "system.0.text").String(); got == "x-anthropic-billing-header: attacker-controlled" ||
-		!strings.Contains(got, "cc_version=2.1.258.") {
+		!strings.Contains(got, "cc_version="+anthropicCLIVersion+".") {
 		t.Fatalf("forged billing block survived: %q", got)
 	}
 	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nx-anthropic-billing-header: attacker-controlled" {
@@ -2420,7 +2420,7 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
 	}`, parsedCredential.DeviceID)
 	nativeHeaders := http.Header{
-		"User-Agent": {"claude-cli/2.1.220 (external, cli)"},
+		"User-Agent": {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":      {"cli"}, "Anthropic-Beta": {"claude-code-20250219"},
 		"X-Claude-Code-Session-Id": {"e03895ad-8b34-4a84-bbf6-002e8909b17b"},
 	}
@@ -2641,7 +2641,7 @@ func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version=2.1.258.") {
+	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version="+anthropicCLIVersion+".") {
 		t.Fatalf("forged native fingerprint bypassed cloaking: %q", got)
 	}
 	identity := gjson.GetBytes(body, "metadata.user_id").String()
@@ -3239,6 +3239,32 @@ func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 					testCase.userAgent, got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestAnthropicClientVersionFloorsOldCLI(t *testing.T) {
+	t.Parallel()
+	old := http.Header{"User-Agent": {"claude-cli/2.1.209 (external, cli)"}}
+	if got := anthropicClientVersion(old); got != anthropicCLIVersion {
+		t.Fatalf("old client version=%q, want pin %q", got, anthropicCLIVersion)
+	}
+	newer := "2.1.999"
+	fresh := http.Header{"User-Agent": {"claude-cli/" + newer + " (external, cli)"}}
+	if got := anthropicClientVersion(fresh); got != newer {
+		t.Fatalf("newer client version=%q, want %q", got, newer)
+	}
+	nativeOK := http.Header{
+		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
+		"X-App":          {"cli"},
+		"Anthropic-Beta": {"claude-code-20250219"},
+	}
+	if !isNativeAnthropicClaudeCodeRequest(nativeOK) {
+		t.Fatal("current pin must still be native")
+	}
+	nativeOld := nativeOK.Clone()
+	nativeOld.Set("User-Agent", "claude-cli/2.1.209 (external, cli)")
+	if isNativeAnthropicClaudeCodeRequest(nativeOld) {
+		t.Fatal("CLI older than the pin must not passthrough")
 	}
 }
 
