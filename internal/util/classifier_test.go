@@ -884,6 +884,83 @@ func TestParseRetryAfterSecondsCooldownUntil(t *testing.T) {
 	}
 }
 
+func TestInferenceCapErrorCooldown(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name            string
+		body            string
+		wantLevel       ErrorLevel
+		wantHasCooldown bool
+		wantDurationMin int // 允许 ±1 分钟误差
+		wantReason      string
+	}{
+		{
+			name:            "deepseek_daily_limit_2h18m",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Error 429: Daily free limit reached on model deepseek/deepseek-v4.1-flash. Try again in 2h 18m"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 138,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+		{
+			name:            "try_again_hours_only",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Limit reached. Try again in 3h"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 180,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+		{
+			name:            "try_again_minutes_only",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Try again in 45m"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 45,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+		{
+			name:            "no_parseable_time_defaults_30min",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Daily limit reached"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 30,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyHTTPResponseWithMetaAt(429, nil, []byte(tt.body), now)
+			if result.Level != tt.wantLevel {
+				t.Fatalf("level=%d, want %d", result.Level, tt.wantLevel)
+			}
+			hasCooldown := result.HasKeyCooldownUntil || result.HasModelCooldownUntil
+			if hasCooldown != tt.wantHasCooldown {
+				t.Fatalf("hasCooldown=%v, want %v (key=%v model=%v)", hasCooldown, tt.wantHasCooldown, result.HasKeyCooldownUntil, result.HasModelCooldownUntil)
+			}
+			if !hasCooldown {
+				return
+			}
+			var cooldownUntil time.Time
+			if result.HasKeyCooldownUntil {
+				cooldownUntil = result.KeyCooldownUntil
+			} else {
+				cooldownUntil = result.ModelCooldownUntil
+			}
+			gotMin := int(cooldownUntil.Sub(now).Minutes())
+			if gotMin < tt.wantDurationMin-1 || gotMin > tt.wantDurationMin+1 {
+				t.Fatalf("cooldown duration=%dm, want ~%dm", gotMin, tt.wantDurationMin)
+			}
+			reason := result.KeyCooldownReason
+			if reason == "" {
+				reason = result.ModelCooldownReason
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason=%q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPResponseWithMeta_CodexRollingSpendLimit(t *testing.T) {
 	body := []byte(`{"error":{"message":"Codex rolling spend limit exceeded. Used $20.03 in the last 3 hours, limit is $20.00. Please retry after 2196 seconds.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`)
 

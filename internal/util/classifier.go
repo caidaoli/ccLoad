@@ -39,6 +39,9 @@ var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|�
 // retryInDurationRegex 匹配 Gemini RESOURCE_EXHAUSTED 中的 “Please retry in 59.409754061s”。
 var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*)`)
 
+// tryAgainInHMRegex 匹配 “Try again in 2h 18m” 等空格分隔时长。
+var tryAgainInHMRegex = regexp.MustCompile(`(?i)\bagain\s+in\s+(\d+h)?\s*(\d+m)?\s*(\d+s)?`)
+
 // retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
 var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
 
@@ -811,6 +814,12 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 			return until, "ROLLING_FREE_ALLOWANCE_RESET", ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
+	case code == "INFERENCE_CAP_ERROR":
+		if until, ok := parseTryAgainInCooldownUntil(message, now); ok {
+			return until, "INFERENCE_CAP_ERROR", ErrorLevelKey, true
+		}
+		// 没有可解析的精确时间，给一个保守默认值
+		return now.Add(30 * time.Minute), "INFERENCE_CAP_ERROR", ErrorLevelKey, true
 	case code == "USAGE_LIMIT_REACHED":
 		// 上游 usage limit（如 Claude Plus 计划限额），优先用 resets_in_seconds / resets_at
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
@@ -1055,6 +1064,29 @@ func parseRollingFreeAllowanceCooldownUntil(message string, now time.Time) (time
 		return time.Time{}, false
 	}
 	return until, true
+}
+
+// parseTryAgainInCooldownUntil 解析 "Try again in 2h 18m" 等空格分隔的时长。
+func parseTryAgainInCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := tryAgainInHMRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+	var d time.Duration
+	for _, group := range matches[1:] {
+		if group == "" {
+			continue
+		}
+		part, err := time.ParseDuration(group)
+		if err != nil {
+			continue
+		}
+		d += part
+	}
+	if d <= 0 {
+		return time.Time{}, false
+	}
+	return now.Add(d), true
 }
 
 func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (time.Time, bool) {
