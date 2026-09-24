@@ -38,10 +38,14 @@ var jevSensitivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)https?://[^\s"'<>]+`),
 	regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`),
 }
-var jevTimePattern = regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}|\s+UTC(?:[+-]\d{1,2}(?::?\d{2})?)?)?|\d+(?:\.\d+)?\s*(?:milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d)\b|\d+(?:\.\d+)?\s*(?:秒|分钟|小时|天)|\b\d{10,13}\b`)
+
+const jevDurationPart = `(\d+(?:\.\d+)?)\s*((?:milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d)\b|秒|分钟|小时|天)`
+
+// 复合时长（"2h 18m"、"2小时18分钟"）必须作为一个候选：拆开后 Jev 只能选中其中一段。
+var jevTimePattern = regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}|\s+UTC(?:[+-]\d{1,2}(?::?\d{2})?)?)?|` + jevDurationPart + `(?:\s*` + jevDurationPart + `)*|\b\d{10,13}\b`)
 var jevUTCTimePattern = regexp.MustCompile(`(?i)^(.+?)\s+UTC([+-])(\d{1,2})(?::?(\d{2}))?$`)
 var jevSecondsPattern = regexp.MustCompile(`(?i)retry_after(?:_seconds)?:\s*(\d+(?:\.\d+)?)`)
-var jevRelativeTimePattern = regexp.MustCompile(`(?i)^(\d+(?:\.\d+)?)\s*(milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d|秒|分钟|小时|天)$`)
+var jevDurationPartPattern = regexp.MustCompile(`(?i)` + jevDurationPart)
 
 func sanitizeJevText(value string, secrets []string, limit int) string {
 	// Redact before truncation so a known credential cannot be cut into an unrecognized prefix.
@@ -187,13 +191,39 @@ func parseJevTime(value string, received time.Time) time.Time {
 	if duration, err := time.ParseDuration(value); err == nil && duration > 0 && duration <= 366*24*time.Hour {
 		return received.Add(duration)
 	}
-	if match := jevRelativeTimePattern.FindStringSubmatch(value); match != nil {
-		number, err := strconv.ParseFloat(match[1], 64)
+	if duration, ok := parseJevDuration(value); ok {
+		return received.Add(duration)
+	}
+	if len(value) == 10 || len(value) == 13 {
+		if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
+			if len(value) == 13 {
+				return time.UnixMilli(unix)
+			}
+			return time.Unix(unix, 0)
+		}
+	}
+	return time.Time{}
+}
+
+// parseJevDuration 把完全由时长片段组成的文本（"90s"、"2h 18m"、"2小时18分钟"）求和。
+func parseJevDuration(value string) (time.Duration, bool) {
+	matches := jevDurationPartPattern.FindAllStringSubmatchIndex(value, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	var total time.Duration
+	end := 0
+	for _, match := range matches {
+		if strings.TrimSpace(value[end:match[0]]) != "" {
+			return 0, false
+		}
+		end = match[1]
+		number, err := strconv.ParseFloat(value[match[2]:match[3]], 64)
 		if err != nil {
-			return time.Time{}
+			return 0, false
 		}
 		var unit time.Duration
-		switch strings.ToLower(match[2]) {
+		switch strings.ToLower(value[match[4]:match[5]]) {
 		case "ms", "millisecond", "milliseconds":
 			unit = time.Millisecond
 		case "s", "second", "seconds", "秒":
@@ -205,17 +235,14 @@ func parseJevTime(value string, received time.Time) time.Time {
 		case "d", "day", "days", "天":
 			unit = 24 * time.Hour
 		}
-		if duration, ok := settingDurationFromFloat64(number, unit); ok && duration <= 366*24*time.Hour {
-			return received.Add(duration)
+		part, ok := settingDurationFromFloat64(number, unit)
+		if !ok || part > 366*24*time.Hour-total {
+			return 0, false
 		}
+		total += part
 	}
-	if len(value) == 10 || len(value) == 13 {
-		if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
-			if len(value) == 13 {
-				return time.UnixMilli(unix)
-			}
-			return time.Unix(unix, 0)
-		}
+	if strings.TrimSpace(value[end:]) != "" || total <= 0 {
+		return 0, false
 	}
-	return time.Time{}
+	return total, true
 }
