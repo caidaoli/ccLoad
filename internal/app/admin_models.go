@@ -29,6 +29,14 @@ var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 // but cannot hold an admin request indefinitely when keys or endpoints hang.
 const batchModelRefreshTimeout = 30 * time.Second
 
+type modelFetchKeyMode int
+
+const (
+	modelFetchFirstAvailableKey modelFetchKeyMode = iota
+	modelFetchPerAvailableKey
+	modelFetchAllKeys
+)
+
 // ============================================================
 // Admin API: 获取渠道可用模型列表
 // ============================================================
@@ -122,7 +130,11 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 			return
 		}
 	}
-	response, err := s.fetchModelsForChannel(c.Request.Context(), channel, c.Query("protocol"), perKey)
+	keyMode := modelFetchFirstAvailableKey
+	if perKey {
+		keyMode = modelFetchPerAvailableKey
+	}
+	response, err := s.fetchModelsForChannel(c.Request.Context(), channel, c.Query("protocol"), keyMode)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -247,8 +259,13 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 		item.ChannelName = cfg.Name
+		previousModels := cfg.ModelEntries
 
-		resp, err := s.fetchModelsForChannel(fetchCtx, cfg, overrideProtocol, true)
+		keyMode := modelFetchPerAvailableKey
+		if mode == "replace" {
+			keyMode = modelFetchAllKeys
+		}
+		resp, err := s.fetchModelsForChannel(fetchCtx, cfg, overrideProtocol, keyMode)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -284,9 +301,11 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		}
 
 		modelEntriesChanged := false
+		normalizedExistingChanged := false
 		if (req.LowercaseModels || req.StripModelSourcePrefix) && mode == "merge" {
 			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, normalization)
-			modelEntriesChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
+			normalizedExistingChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
+			modelEntriesChanged = normalizedExistingChanged
 			cfg.ModelEntries = normalizedExisting
 		}
 
@@ -308,9 +327,33 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		}
 
 		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
+		if normalizedExistingChanged && cfg.GetAuthType() == model.AuthTypeAPIKey {
+			keys, err = s.store.GetAPIKeys(ctx, channelID)
+			if err != nil {
+				item.Status = "failed"
+				item.Error = "读取 API Key 失败: " + err.Error()
+				failed++
+				results = append(results, item)
+				continue
+			}
+		}
 		var scopeUpdates map[int]model.APIKeyModelScope
-		if mode == "replace" && cfg.GetAuthType() == model.AuthTypeAPIKey {
-			scopeUpdates = buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, resp.KeyModels)
+		if len(keys) > 0 {
+			scopeUpdates = remapNormalizedAPIKeyScopes(keys, previousModels, cfg.ModelEntries, normalization)
+			if mode == "replace" {
+				// Successful probes own their scope even if it matches the old value.
+				for _, result := range resp.KeyModels {
+					if strings.TrimSpace(result.Error) == "" {
+						delete(scopeUpdates, result.KeyIndex)
+					}
+				}
+				for index, scope := range buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, resp.KeyModels) {
+					if scopeUpdates == nil {
+						scopeUpdates = make(map[int]model.APIKeyModelScope)
+					}
+					scopeUpdates[index] = scope
+				}
+			}
 		}
 		scopeChanged := len(scopeUpdates) > 0
 		configChanged := modelEntriesChanged || scheduledCheckChanged
@@ -402,12 +445,12 @@ func modelsRetainedFromFailedProbes(
 			break
 		}
 		for _, name := range key.AllowedModels {
-			allowed[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+			allowed[strings.ToLower(strings.TrimSpace(model.RoutingModelName(name)))] = struct{}{}
 		}
 	}
 	candidates := make([]model.ModelEntry, 0, len(channelModels))
 	for _, entry := range channelModels {
-		if _, ok := allowed[strings.ToLower(entry.Model)]; keepAll || ok {
+		if _, ok := allowed[strings.ToLower(model.RoutingModelName(entry.Model))]; keepAll || ok {
 			candidates = append(candidates, entry)
 		}
 	}
@@ -437,6 +480,88 @@ func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
 		}
 	}
 	return false
+}
+
+// remapNormalizedAPIKeyScopes keeps restricted Keys attached to existing
+// logical models when batch normalization changes their names. A target is
+// safe only when the final row still points at the same upstream model.
+func remapNormalizedAPIKeyScopes(
+	keys []*model.APIKey,
+	previous, current []model.ModelEntry,
+	options modelNormalizationOptions,
+) map[int]model.APIKeyModelScope {
+	if !options.lowercaseModels && !options.stripModelSourcePrefix {
+		return nil
+	}
+	currentByName := make(map[string]model.ModelEntry, len(current))
+	configured := make(map[string]struct{}, len(current))
+	wildcard := false
+	for _, entry := range current {
+		currentByName[strings.ToLower(entry.Model)] = entry
+		name := strings.ToLower(model.RoutingModelName(entry.Model))
+		configured[name] = struct{}{}
+		wildcard = wildcard || name == "*"
+	}
+	upstreamModel := func(entry model.ModelEntry) string {
+		name := entry.RedirectModel
+		if name == "" {
+			name = entry.Model
+		}
+		return model.RoutingModelName(name)
+	}
+	renamed := make(map[string]string, len(previous))
+	for _, entry := range previous {
+		alias, _ := normalizeModelAlias(entry.Model, options)
+		if alias == entry.Model {
+			continue
+		}
+		after, exists := currentByName[strings.ToLower(alias)]
+		if !exists || upstreamModel(entry) != upstreamModel(after) {
+			continue
+		}
+		oldName := strings.ToLower(model.RoutingModelName(entry.Model))
+		target := model.RoutingModelName(after.Model)
+		if existing, exists := renamed[oldName]; exists && !strings.EqualFold(existing, target) {
+			renamed[oldName] = ""
+		} else if !exists {
+			renamed[oldName] = target
+		}
+	}
+	if len(renamed) == 0 {
+		return nil
+	}
+
+	updates := make(map[int]model.APIKeyModelScope)
+	for _, key := range keys {
+		if key == nil || key.ModelScopeEmpty || len(key.AllowedModels) == 0 {
+			continue
+		}
+		allowed := make([]string, 0, len(key.AllowedModels))
+		changed := false
+		for _, name := range key.AllowedModels {
+			identity := strings.ToLower(strings.TrimSpace(model.RoutingModelName(name)))
+			if replacement := renamed[identity]; replacement != "" {
+				changed = changed || name != replacement
+				name = replacement
+				identity = strings.ToLower(model.RoutingModelName(name))
+			}
+			if _, exists := configured[identity]; exists || wildcard {
+				allowed = append(allowed, name)
+			}
+		}
+		if !changed {
+			continue
+		}
+		scopeEmpty := len(allowed) == 0
+		scope := model.APIKeyModelScope{
+			AllowedModels: allowed, ModelScopeEmpty: scopeEmpty,
+			Disabled: key.Disabled || scopeEmpty,
+		}
+		if !apiKeyModelScopeEqual(key, scope) {
+			updates[key.KeyIndex] = scope
+		}
+	}
+	return updates
 }
 
 // buildFetchedAPIKeyModelScopes converts per-Key discovery results into the
@@ -640,7 +765,7 @@ func (s *Server) fetchModelsForChannel(
 	ctx context.Context,
 	cfg *model.Config,
 	overrideProtocol string,
-	perKey bool,
+	keyMode modelFetchKeyMode,
 ) (*FetchModelsResponse, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
@@ -677,8 +802,13 @@ func (s *Server) fetchModelsForChannel(
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	client := s.modelDiscoveryClient(cfg)
-	if perKey {
-		probeKeys := modelScopeProbeAPIKeys(keys, time.Now())
+	if keyMode != modelFetchFirstAvailableKey {
+		var probeKeys []*model.APIKey
+		if keyMode == modelFetchAllKeys {
+			probeKeys = modelScopeProbeAPIKeys(keys, time.Now())
+		} else {
+			probeKeys = availableModelFetchAPIKeys(keys, time.Now())
+		}
 		if len(probeKeys) == 0 {
 			return nil, fmt.Errorf("该渠道没有可用的API Key")
 		}

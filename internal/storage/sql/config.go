@@ -1237,7 +1237,8 @@ func (s *SQLStore) pruneAPIKeyAllowedModelsTx(
 		}
 		kept := make([]string, 0, len(allowedModels))
 		for _, allowedModel := range allowedModels {
-			if _, ok := configured[strings.ToLower(strings.TrimSpace(allowedModel))]; ok {
+			name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(allowedModel)))
+			if _, ok := configured[name]; ok {
 				kept = append(kept, allowedModel)
 			}
 		}

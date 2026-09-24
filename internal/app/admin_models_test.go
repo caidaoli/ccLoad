@@ -1671,6 +1671,10 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			if auth == "Bearer other-k1" {
+				_, _ = w.Write([]byte(`{"data":[{"id":"m3"}]}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"data":[{"id":"m1"},{"id":"m2"}]}`))
 		}))
 		t.Cleanup(upstream1.Close)
@@ -1725,6 +1729,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			{ChannelID: c1.ID, KeyIndex: 0, APIKey: "disabled-k1", KeyStrategy: model.KeyStrategySequential, Disabled: true},
 			{ChannelID: c1.ID, KeyIndex: 1, APIKey: "bad-k1", KeyStrategy: model.KeyStrategySequential},
 			{ChannelID: c1.ID, KeyIndex: 2, APIKey: "k1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: c1.ID, KeyIndex: 3, APIKey: "other-k1", KeyStrategy: model.KeyStrategySequential},
 			{ChannelID: c2.ID, KeyIndex: 0, APIKey: "k2", KeyStrategy: model.KeyStrategySequential},
 		}); err != nil {
 			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
@@ -1755,7 +1760,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if resp.Data.Updated != 1 || resp.Data.Unchanged != 1 || resp.Data.Failed != 1 {
 			t.Fatalf("unexpected summary: %+v", resp.Data)
 		}
-		wantAuth := []string{"Bearer bad-k1", "Bearer k1"}
+		wantAuth := []string{"Bearer bad-k1", "Bearer k1", "Bearer other-k1"}
 		if !reflect.DeepEqual(upstream1Auth, wantAuth) {
 			t.Fatalf("Authorization sequence=%v, want %v", upstream1Auth, wantAuth)
 		}
@@ -1768,11 +1773,91 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig c2 failed: %v", err)
 		}
-		if len(got1.ModelEntries) != 2 {
-			t.Fatalf("c1 model count=%d, want 2", len(got1.ModelEntries))
+		if !reflect.DeepEqual(got1.ModelEntries, []model.ModelEntry{{Model: "m1"}, {Model: "m2"}, {Model: "m3"}}) {
+			t.Fatalf("c1 models=%#v, want m1, m2, m3", got1.ModelEntries)
 		}
 		if len(got2.ModelEntries) != 1 {
 			t.Fatalf("c2 model count=%d, want 1", len(got2.ModelEntries))
+		}
+	})
+
+	t.Run("merge mode skips cooling keys and refreshes later channels", func(t *testing.T) {
+		var coolingCalls atomic.Int32
+		upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer cooling" {
+				coolingCalls.Add(1)
+				<-r.Context().Done()
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"first-new"}]}`))
+		}))
+		t.Cleanup(upstream1.Close)
+		upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"second-new"}]}`))
+		}))
+		t.Cleanup(upstream2.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		first, err := store.CreateConfig(ctx, &model.Config{
+			Name: "first", URLs: model.ChannelURLs{{URL: upstream1.URL, Protocols: []string{"openai"}}},
+			ModelEntries: []model.ModelEntry{{Model: "first-old"}}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig first failed: %v", err)
+		}
+		second, err := store.CreateConfig(ctx, &model.Config{
+			Name: "second", URLs: model.ChannelURLs{{URL: upstream2.URL, Protocols: []string{"openai"}}},
+			ModelEntries: []model.ModelEntry{{Model: "second-old"}}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig second failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: first.ID, KeyIndex: 0, APIKey: "ready"},
+			{ChannelID: first.ID, KeyIndex: 1, APIKey: "cooling", CooldownUntil: time.Now().Add(time.Hour).Unix()},
+			{ChannelID: second.ID, KeyIndex: 0, APIKey: "ready"},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		request := newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{first.ID, second.ID}, "mode": "merge",
+		}).WithContext(requestCtx)
+		c, w := newTestContext(t, request)
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+		}
+		var response struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Updated int `json:"updated"`
+				Failed  int `json:"failed"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+		if !response.Success || response.Data.Updated != 2 || response.Data.Failed != 0 {
+			t.Fatalf("later channel was not refreshed: %s", w.Body.String())
+		}
+		if got := coolingCalls.Load(); got != 0 {
+			t.Fatalf("merge probed cooling key %d times", got)
+		}
+		stored, err := store.GetConfig(ctx, second.ID)
+		if err != nil {
+			t.Fatalf("GetConfig second failed: %v", err)
+		}
+		if !reflect.DeepEqual(stored.ModelEntries, []model.ModelEntry{{Model: "second-old"}, {Model: "second-new"}}) {
+			t.Fatalf("second models=%#v", stored.ModelEntries)
 		}
 	})
 
@@ -2074,7 +2159,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("CreateConfig failed: %v", err)
 		}
 		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", AllowedModels: []string{"legacy/ExistingModel"}, KeyStrategy: model.KeyStrategySequential},
 		}); err != nil {
 			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 		}
@@ -2103,6 +2188,13 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if got.ScheduledCheckModel != "existingmodel" {
 			t.Fatalf("ScheduledCheckModel=%q, want %q", got.ScheduledCheckModel, "existingmodel")
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if len(keys) != 1 || !reflect.DeepEqual(keys[0].AllowedModels, []string{"existingmodel"}) || !keys[0].AllowsModel("existingmodel") || keys[0].Disabled {
+			t.Fatalf("normalized merge model lost its restricted key: %+v", keys)
 		}
 	})
 
@@ -2323,6 +2415,109 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if !reflect.DeepEqual(keys[1].AllowedModels, []string{"model-b"}) || keys[1].ModelScopeEmpty || keys[1].Disabled {
 			t.Fatalf("failed key must keep its previous scope: %+v", keys[1])
+		}
+	})
+
+	t.Run("replace mode keeps failed key models routable", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			oldModels    []model.ModelEntry
+			allowed      []string
+			wantRetained []model.ModelEntry
+			wantAllowed  []string
+			routingModel string
+			stripPrefix  bool
+		}{
+			{
+				name: "source prefix normalization with another alias",
+				oldModels: []model.ModelEntry{
+					{Model: "vendor/Foo"}, {Model: "alias", RedirectModel: "vendor/Foo"},
+				},
+				allowed: []string{"vendor/Foo", "alias"},
+				wantRetained: []model.ModelEntry{
+					{Model: "Foo", RedirectModel: "vendor/Foo"}, {Model: "alias", RedirectModel: "vendor/Foo"},
+				},
+				wantAllowed: []string{"Foo", "alias"}, routingModel: "Foo", stripPrefix: true,
+			},
+			{
+				name: "source prefix normalization with thinking suffix",
+				oldModels: []model.ModelEntry{
+					{Model: "vendor/Foo"}, {Model: "vendor/Foo(max)"},
+				},
+				allowed: []string{"vendor/Foo"},
+				wantRetained: []model.ModelEntry{
+					{Model: "Foo", RedirectModel: "vendor/Foo"},
+					{Model: "Foo(max)", RedirectModel: "vendor/Foo(max)"},
+				},
+				wantAllowed: []string{"Foo"}, routingModel: "Foo", stripPrefix: true,
+			},
+			{
+				name: "thinking suffix identity", oldModels: []model.ModelEntry{{Model: "foo(max)"}},
+				allowed: []string{"foo"}, wantRetained: []model.ModelEntry{{Model: "foo(max)"}},
+				wantAllowed: []string{"foo"}, routingModel: "foo",
+			},
+			{
+				name: "thinking suffix scope", oldModels: []model.ModelEntry{{Model: "foo(max)"}},
+				allowed: []string{"foo(max)"}, wantRetained: []model.ModelEntry{{Model: "foo(max)"}},
+				wantAllowed: []string{"foo(max)"}, routingModel: "foo",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/v1/models" {
+						http.NotFound(w, r)
+						return
+					}
+					if r.Header.Get("Authorization") == "Bearer broken" {
+						http.Error(w, "rate limited", http.StatusTooManyRequests)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"data":[{"id":"other"}]}`))
+				}))
+				t.Cleanup(upstream.Close)
+
+				server, store, cleanup := setupAdminTestServer(t)
+				defer cleanup()
+				ctx := context.Background()
+				oldModels := append(append([]model.ModelEntry{}, tc.oldModels...), model.ModelEntry{Model: "stale"})
+				cfg, err := store.CreateConfig(ctx, &model.Config{
+					Name: "failed-key-routing", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+					ModelEntries: oldModels, Enabled: true,
+				})
+				if err != nil {
+					t.Fatalf("CreateConfig failed: %v", err)
+				}
+				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+					{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy", AllowedModels: []string{"other"}},
+					{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: tc.allowed},
+				}); err != nil {
+					t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+				}
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+					"channel_ids": []int64{cfg.ID}, "mode": "replace", "strip_model_source_prefix": tc.stripPrefix,
+				}))
+				server.HandleBatchRefreshModels(c)
+				if w.Code != http.StatusOK {
+					t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+				}
+				stored, err := store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatalf("GetConfig failed: %v", err)
+				}
+				wantModels := append([]model.ModelEntry{{Model: "other"}}, tc.wantRetained...)
+				if !reflect.DeepEqual(stored.ModelEntries, wantModels) {
+					t.Fatalf("models=%#v, want %#v", stored.ModelEntries, wantModels)
+				}
+				keys, err := store.GetAPIKeys(ctx, cfg.ID)
+				if err != nil {
+					t.Fatalf("GetAPIKeys failed: %v", err)
+				}
+				if !reflect.DeepEqual(keys[1].AllowedModels, tc.wantAllowed) || !keys[1].AllowsModel(tc.routingModel) || keys[1].Disabled || keys[1].ModelScopeEmpty {
+					t.Fatalf("failed key cannot serve %q after replace: %+v", tc.routingModel, keys[1])
+				}
+			})
 		}
 	})
 
