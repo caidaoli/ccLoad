@@ -487,9 +487,9 @@ func detectedChannelModelNames(modelRows, fetched []model.ModelEntry) []string {
 	return nil
 }
 
-// availableModelFetchAPIKeys 选出可用于只读模型探测的 Key。
+// availableModelFetchAPIKeys 选出单结果模型探测（逐个尝试、首个成功即返回）的候选 Key。
 // 手动禁用的 Key 始终排除；作用域被裁剪空而自动禁用的 Key（model_scope_empty=true）
-// 凭据仍有效，降级参与探测，使其分组模型能回到并集。正常可用 Key 优先。
+// 凭据仍有效，降级作为后备。正常可用 Key 优先，全部冷却时只取最早恢复的一个。
 func availableModelFetchAPIKeys(keys []*model.APIKey, now time.Time) []*model.APIKey {
 	available := make([]*model.APIKey, 0, len(keys))
 	scopeEmpty := make([]*model.APIKey, 0, len(keys))
@@ -522,6 +522,26 @@ func availableModelFetchAPIKeys(keys []*model.APIKey, now time.Time) []*model.AP
 		return append([]*model.APIKey{cooldownFallback}, scopeEmpty...)
 	}
 	return scopeEmpty
+}
+
+// modelScopeProbeAPIKeys 选出逐 Key 模型探测的 Key。探测结果会写回每个 Key 的作用域，
+// 覆盖刷新还以结果并集删除渠道模型，所以除手动禁用外的 Key 都必须参与：冷却只影响路由，
+// 跳过冷却 Key 会让它的作用域停留在旧值，且只有它能提供的模型被删掉。
+// 可路由的 Key 先探测，批量刷新的共享超时不会先耗在冷却或作用域为空的 Key 上。
+func modelScopeProbeAPIKeys(keys []*model.APIKey, now time.Time) []*model.APIKey {
+	ready := make([]*model.APIKey, 0, len(keys))
+	deferred := make([]*model.APIKey, 0, len(keys))
+	for _, key := range keys {
+		if key == nil || strings.TrimSpace(key.APIKey) == "" || (key.Disabled && !key.ModelScopeEmpty) {
+			continue
+		}
+		if key.Disabled || key.IsCoolingDown(now) {
+			deferred = append(deferred, key)
+			continue
+		}
+		ready = append(ready, key)
+	}
+	return append(ready, deferred...)
 }
 
 func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
@@ -592,11 +612,11 @@ func (s *Server) fetchModelsForChannel(
 	}
 	client := s.modelDiscoveryClient(cfg)
 	if perKey {
-		availableKeys := availableModelFetchAPIKeys(keys, time.Now())
-		if len(availableKeys) == 0 {
+		probeKeys := modelScopeProbeAPIKeys(keys, time.Now())
+		if len(probeKeys) == 0 {
 			return nil, fmt.Errorf("该渠道没有可用的API Key")
 		}
-		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, availableKeys, client)
+		return s.fetchModelsPerKeyWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, probeKeys, client)
 	}
 	apiKeys := availableModelFetchKeys(keys, time.Now())
 	if len(apiKeys) == 0 {

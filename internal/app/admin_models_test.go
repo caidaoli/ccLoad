@@ -2326,6 +2326,91 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
+	t.Run("replace mode probes cooling keys and skips manually disabled keys", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer ready", "Bearer cooling-empty":
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2"}]}`))
+			case "Bearer cooling":
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2"},{"id":"glm-5.2-air"}]}`))
+			case "Bearer manual-off":
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-hidden"}]}`))
+			default:
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "cooling-key-channel",
+			URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Priority:     1,
+			ModelEntries: []model.ModelEntry{{Model: "glm-5.2"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		cooldownUntil := time.Now().Add(time.Hour).Unix()
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "ready", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "cooling", KeyStrategy: model.KeyStrategySequential,
+				CooldownUntil: cooldownUntil, CooldownDurationMs: time.Hour.Milliseconds()},
+			{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "cooling-empty", KeyStrategy: model.KeyStrategySequential,
+				Disabled: true, ModelScopeEmpty: true, CooldownUntil: cooldownUntil, CooldownDurationMs: time.Hour.Milliseconds()},
+			{ChannelID: cfg.ID, KeyIndex: 3, APIKey: "manual-off", KeyStrategy: model.KeyStrategySequential,
+				Disabled: true, AllowedModels: []string{"glm-5.2"}},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{{Model: "glm-5.2"}, {Model: "glm-5.2-air"}}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v (cooling keys stay in the union, manually disabled keys stay out)", got.ModelEntries, wantModels)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if !reflect.DeepEqual(keys[0].AllowedModels, []string{"glm-5.2"}) || keys[0].ModelScopeEmpty || keys[0].Disabled {
+			t.Fatalf("ready key scope=%+v, want [glm-5.2]", keys[0])
+		}
+		if !reflect.DeepEqual(keys[1].AllowedModels, []string{"glm-5.2", "glm-5.2-air"}) || keys[1].ModelScopeEmpty || keys[1].Disabled {
+			t.Fatalf("cooling key scope must be refreshed, got %+v", keys[1])
+		}
+		if keys[1].CooldownUntil == 0 {
+			t.Fatalf("scope refresh must not clear key cooldown: %+v", keys[1])
+		}
+		if !reflect.DeepEqual(keys[2].AllowedModels, []string{"glm-5.2"}) || keys[2].ModelScopeEmpty || keys[2].Disabled {
+			t.Fatalf("cooling scope-empty key must recover, got %+v", keys[2])
+		}
+		if !reflect.DeepEqual(keys[3].AllowedModels, []string{"glm-5.2"}) || keys[3].ModelScopeEmpty || !keys[3].Disabled {
+			t.Fatalf("manually disabled key must stay untouched, got %+v", keys[3])
+		}
+	})
+
 	t.Run("invalid mode", func(t *testing.T) {
 		server, _, cleanup := setupAdminTestServer(t)
 		defer cleanup()
