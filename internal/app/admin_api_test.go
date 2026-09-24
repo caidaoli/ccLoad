@@ -1953,3 +1953,50 @@ func TestAdminAPI_CSVKeyPriorityValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminAPI_CSVReorderedKeysRetainDiscovery(t *testing.T) {
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+	cfg, err := server.store.CreateConfig(ctx, &model.Config{Name: "review-reordered", URLs: model.ChannelURLs{{URL: "https://example.com"}}, ModelEntries: []model.ModelEntry{{Model: "auto", RedirectModel: "a"}, {Model: "auto", RedirectModel: "b"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "key-a", AllowedModels: []string{"auto"}, DetectedModels: []string{"a"}}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "key-b", AllowedModels: []string{"auto"}, DetectedModels: []string{"b"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data bytes.Buffer
+	csvWriter := csv.NewWriter(&data)
+	if err := csvWriter.WriteAll([][]string{{"name", "urls", "api_key", "model_entries_json"}, {"review-reordered", `[{"url":"https://example.com"}]`, "key-b,key-a", `[{"model":"auto","redirect_model":"a"},{"model":"auto","redirect_model":"b"}]`}}); err != nil {
+		t.Fatal(err)
+	}
+	csvContent := data.String()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "old.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.WriteString(part, csvContent); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := newRequest(http.MethodPost, "/admin/channels/import", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, w := newTestContext(t, req)
+	server.HandleImportChannelsCSV(c)
+	var summary ChannelImportSummary
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Updated != 1 {
+		t.Fatalf("import: %s", w.Body.String())
+	}
+	keys, err := server.store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || !slices.Equal(keys[0].DetectedModels, []string{"b"}) || !slices.Equal(keys[1].DetectedModels, []string{"a"}) {
+		t.Fatalf("lost detection: key0=%+v key1=%+v", keys[0], keys[1])
+	}
+}

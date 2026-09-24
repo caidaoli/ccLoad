@@ -3283,3 +3283,119 @@ func TestAvailableModelFetchAPIKeysScopeEmptyFallback(t *testing.T) {
 		t.Fatalf("all-cooling keys=%v, want %v", gotNames, want)
 	}
 }
+
+func TestBatchRefreshNormalizedAliasDoesNotGrantUpstreamCapability(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := "foo"
+		if r.Header.Get("Authorization") == "Bearer vendor-key" {
+			id = "vendor/foo"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":%q}]}`, id)
+	}))
+	defer upstream.Close()
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "normalized", Enabled: true, URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "old"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "vendor-key"}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "plain-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "replace", "strip_model_source_prefix": true}))
+	server.HandleBatchRefreshModels(c)
+	var summary struct {
+		Updated int `json:"updated"`
+	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+	if summary.Updated != 1 {
+		t.Fatalf("refresh failed: %s", w.Body.String())
+	}
+	got, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("response=%s models=%+v vendor allowed=%v detected=%v", w.Body.String(), got.ModelEntries, keys[0].AllowedModels, keys[0].DetectedModels)
+	if !reflect.DeepEqual(keys[0].DetectedModels, []string{"vendor/foo"}) {
+		t.Fatal("normalized logical alias was incorrectly persisted as an upstream capability")
+	}
+}
+
+func TestBatchRefreshMergeNormalizationKeepsOriginalTargetScope(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		t.Run(fmt.Sprintf("body_override=%v", override), func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id := "other"
+				if r.Header.Get("Authorization") == "Bearer vendor-key" {
+					id = "vendor/foo"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"data":[{"id":%q}]}`, id)
+			}))
+			defer upstream.Close()
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			cfg, err := store.CreateConfig(ctx, &model.Config{Name: "normalized", Enabled: true, URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "vendor/foo"}, {Model: "foo", RedirectModel: "other"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "vendor-key", AllowedModels: []string{"vendor/foo"}, CooldownUntil: time.Now().Add(time.Hour).Unix()}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "plain-key"}, {ChannelID: cfg.ID, KeyIndex: 2, APIKey: "other-key", AllowedModels: []string{"foo"}, CooldownUntil: time.Now().Add(time.Hour).Unix()}}); err != nil {
+				t.Fatal(err)
+			}
+			if override {
+				cfg.CustomRequestRules = &model.CustomRequestRules{Body: []model.CustomBodyRule{{Action: model.RuleActionOverride, Path: "model", Value: []byte(`"forced"`)}}}
+				if _, err := store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.UpdateAPIKeyModelScopes(ctx, cfg.ID, map[int]model.APIKeyModelScope{
+					0: {AllowedModels: []string{"vendor/foo"}, DetectedModels: []string{"forced"}},
+					2: {AllowedModels: []string{"foo"}, DetectedModels: []string{"forced"}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "merge", "strip_model_source_prefix": true}))
+			server.HandleBatchRefreshModels(c)
+			var summary struct {
+				Updated int `json:"updated"`
+			}
+			mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+			if summary.Updated != 1 {
+				t.Fatalf("refresh failed: %s", w.Body.String())
+			}
+			got, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys, err := store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("response=%s models=%+v vendor allowed=%v detected=%v", w.Body.String(), got.ModelEntries, keys[0].AllowedModels, keys[0].DetectedModels)
+			if override {
+				for _, index := range []int{0, 2} {
+					if keys[index].Disabled || !keys[index].AllowsModel("foo") || !reflect.DeepEqual(keys[index].DetectedModels, []string{"forced"}) {
+						t.Fatalf("custom model rule lost scope: %+v", keys[index])
+					}
+				}
+				return
+			}
+
+			if !keys[0].AllowsModel("foo") || !keys[0].AllowsUpstreamModel("vendor/foo") || keys[0].AllowsUpstreamModel("other") {
+				t.Fatal("merge broadened a cooling key from vendor/foo to another upstream")
+			}
+			if !keys[2].AllowsModel("foo") || !keys[2].AllowsUpstreamModel("other") || keys[2].AllowsUpstreamModel("vendor/foo") {
+				t.Fatal("merge broadened the unchanged group scope")
+			}
+
+		})
+	}
+}

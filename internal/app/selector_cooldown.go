@@ -141,8 +141,52 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		}
 	}
 
+	// Compute actual row/Key combinations once for both filtering and fallback.
+	rowReadiness := make(map[int64]time.Time, len(channels))
+	if requestModel != "" && requestModel != "*" {
+		eligible := channels[:0]
+		for _, cfg := range channels {
+			var keys []*modelpkg.APIKey
+			if !cfg.UsesOAuth() {
+				keys, err = s.getAPIKeys(ctx, cfg.ID)
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+					log.Printf("[ERROR] 获取渠道 %d 的 Key 失败，跳过该渠道: %v", cfg.ID, err)
+					continue
+				}
+				// Channels without credentials retain model-only candidate
+				// selection; the forwarding boundary reports the missing Key.
+				if len(keys) == 0 {
+					keys = nil
+				}
+			}
+			found := false
+			var earliest time.Time
+			for _, row := range s.enumerateModelRows(cfg, requestModel) {
+				if row.entry.Disabled || (cfg.AntigravityCredits && !s.modelRowApplicable(cfg, row, now)) {
+					continue
+				}
+				readyAt, authorized := s.modelRowWithKeysReadyAt(cfg, row, requestProtocol, modelCooldowns[cfg.ID], keys, now)
+				if !authorized {
+					continue
+				}
+				if !found || readyAt.Before(earliest) {
+					earliest = readyAt
+				}
+				found = true
+			}
+			if found {
+				rowReadiness[cfg.ID] = earliest
+				eligible = append(eligible, cfg)
+			}
+		}
+		channels = eligible
+	}
+
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooledChannels(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
+	filtered := s.filterCooledChannels(channels, requestModel, channelCooldowns, keyCooldowns, rowReadiness, now)
 	if len(filtered) == 0 {
 		if !allowAllCooledFallback {
 			return nil, nil
@@ -158,7 +202,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 			return nil, nil
 		}
 
-		best, readyIn := s.pickBestChannelWhenAllCooled(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
+		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, rowReadiness, now)
 		if best != nil {
 			log.Printf("[INFO] 所有渠道冷却中，兜底使用渠道 %d（%.1fs 后就绪）", best.ID, readyIn.Seconds())
 			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
@@ -199,11 +243,9 @@ func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
 // 选择规则：最早恢复 > 有效优先级高 > 基础优先级高
 func (s *Server) pickBestChannelWhenAllCooled(
 	channels []*modelpkg.Config,
-	requestModel string,
-	requestProtocol string,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,
-	modelCooldowns map[int64]map[string]time.Time,
+	rowReadiness map[int64]time.Time,
 	now time.Time,
 ) (*modelpkg.Config, time.Duration) {
 	if len(channels) == 0 {
@@ -222,8 +264,11 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		if until, ok := channelCooldowns[ch.ID]; ok && until.After(readyAt) {
 			readyAt = until
 		}
-		if until, ok := s.modelCooldownUntil(ch, requestModel, requestProtocol, modelCooldowns); ok && until.After(readyAt) {
-			readyAt = until
+		if until, ok := rowReadiness[ch.ID]; ok {
+			if until.After(readyAt) {
+				readyAt = until
+			}
+			return readyAt
 		}
 		// Key全冷却时，取最早解禁时间
 		if ch.KeyCount > 0 {
@@ -307,10 +352,9 @@ func (s *Server) pickBestChannelWhenAllCooled(
 func (s *Server) filterCooledChannels(
 	channels []*modelpkg.Config,
 	requestModel string,
-	requestProtocol string,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,
-	modelCooldowns map[int64]map[string]time.Time,
+	rowReadiness map[int64]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
 	filtered := channels[:0]
@@ -325,8 +369,11 @@ func (s *Server) filterCooledChannels(
 			}
 		}
 
-		// 2. 检查当前请求在该渠道映射到的实际模型是否冷却
-		if cooldownUntil, exists := s.modelCooldownUntil(cfg, requestModel, requestProtocol, modelCooldowns); exists && cooldownUntil.After(now) {
+		// 2. 检查当前请求是否存在模型、协议与 Key 均可用的组合
+		if until, exists := rowReadiness[cfg.ID]; exists {
+			if !until.After(now) {
+				filtered = append(filtered, cfg)
+			}
 			continue
 		}
 
@@ -350,37 +397,6 @@ func (s *Server) filterCooledChannels(
 		filtered = append(filtered, cfg)
 	}
 	return filtered
-}
-
-func (s *Server) modelCooldownUntil(
-	cfg *modelpkg.Config,
-	requestModel string,
-	requestProtocol string,
-	modelCooldowns map[int64]map[string]time.Time,
-) (time.Time, bool) {
-	if cfg == nil || requestModel == "" || requestModel == "*" {
-		return time.Time{}, false
-	}
-	models := modelCooldowns[cfg.ID]
-	if len(models) == 0 {
-		return time.Time{}, false
-	}
-	possibleModels := s.possibleActualModels(cfg, requestModel, requestProtocol)
-	if len(possibleModels) == 0 {
-		return time.Time{}, false
-	}
-
-	var earliest time.Time
-	for _, actualModel := range possibleModels {
-		until, ok := models[actualModel]
-		if !ok || !until.After(time.Now()) {
-			return time.Time{}, false
-		}
-		if earliest.IsZero() || until.Before(earliest) {
-			earliest = until
-		}
-	}
-	return earliest, true
 }
 
 func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
@@ -429,21 +445,48 @@ func (s *Server) modelRowApplicable(cfg *modelpkg.Config, selected modelRoutingS
 	return cfg.CooldownFallback || !quotaUntil.After(now)
 }
 
-// modelRowReadyAt is zero if at least one possible protocol can send this row now.
-func (s *Server) modelRowReadyAt(cfg *modelpkg.Config, selected modelRoutingSelection, requestProtocol string, cooldowns map[string]time.Time, now time.Time) time.Time {
+// modelRowWithKeysReadyAt evaluates complete protocol/Key combinations. A
+// zero time means ready now; false means no authorized combination exists.
+func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRoutingSelection, requestProtocol string, cooldowns map[string]time.Time, keys []*modelpkg.APIKey, now time.Time) (time.Time, bool) {
 	protocols := possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol)))
 	var earliest time.Time
+	found := false
 	for _, upstream := range protocols {
 		actual := s.resolveFinalUpstreamModel(cfg, selected, string(upstream))
-		until := cooldowns[actual]
-		if !until.After(now) {
-			return time.Time{}
+		modelUntil := cooldowns[actual]
+		if !modelUntil.After(now) {
+			modelUntil = time.Time{}
 		}
-		if earliest.IsZero() || until.Before(earliest) {
+		if keys == nil {
+			if !found || modelUntil.Before(earliest) {
+				earliest = modelUntil
+			}
+			found = true
+			continue
+		}
+		for _, key := range keys {
+			if key == nil || key.Disabled || !key.AllowsModel(selected.logicalModel) || !key.AllowsUpstreamModel(actual) {
+				continue
+			}
+			readyAt := modelUntil
+			if key.IsCoolingDown(now) {
+				if until := time.Unix(key.CooldownUntil, 0); until.After(readyAt) {
+					readyAt = until
+				}
+			}
+			if !found || readyAt.Before(earliest) {
+				earliest = readyAt
+			}
+			found = true
+		}
+	}
+	if found && !cfg.AntigravityCredits && !cfg.CooldownFallback {
+		actual := s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Gemini))
+		if until := s.antigravityCredentials.standardQuotaUntil(cfg, actual); until.After(now) && until.After(earliest) {
 			earliest = until
 		}
 	}
-	return earliest
+	return earliest, found
 }
 
 func (s *Server) keyAllowsModelRow(cfg *modelpkg.Config, key *modelpkg.APIKey, selected modelRoutingSelection, requestProtocol string) bool {
@@ -489,34 +532,13 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 	bestFallback := -1
 	var earliest time.Time
 	for i, selected := range rows {
-		keyReadyAt := time.Time{}
-		if apiKeys != nil {
-			authorized := false
-			for _, key := range apiKeys {
-				if !s.keyAllowsModelRow(cfg, key, selected, requestProtocol) {
-					continue
-				}
-				authorized = true
-				if !key.IsCoolingDown(now) {
-					keyReadyAt = time.Time{}
-					break
-				}
-				until := time.Unix(key.CooldownUntil, 0)
-				if keyReadyAt.IsZero() || until.Before(keyReadyAt) {
-					keyReadyAt = until
-				}
-			}
-			if !authorized {
-				continue
-			}
+		readyAt, authorized := s.modelRowWithKeysReadyAt(cfg, selected, requestProtocol, cooldowns, apiKeys, now)
+		if !authorized {
+			continue
 		}
 		hasAuthorized = true
 		if !s.modelRowApplicable(cfg, selected, now) {
 			continue
-		}
-		readyAt := s.modelRowReadyAt(cfg, selected, requestProtocol, cooldowns, now)
-		if keyReadyAt.After(readyAt) {
-			readyAt = keyReadyAt
 		}
 		available[i] = readyAt.IsZero()
 		hasAvailable = hasAvailable || available[i]

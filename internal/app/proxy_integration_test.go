@@ -14436,3 +14436,122 @@ func TestProxy_AntigravityResponsesSignatureRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestProxy_MixedModelKeyCooldownFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		fallback      bool
+		secondChannel bool
+		wantStatus    int
+		wantKey       string
+	}{
+		{"enabled", true, false, http.StatusOK, "Bearer only-x"},
+		{"disabled", false, false, http.StatusServiceUnavailable, ""},
+		{"earlier channel", true, true, http.StatusOK, "Bearer second-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := make(chan string, 4)
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if body.Model != "x" {
+					t.Errorf("upstream model=%q, want x", body.Model)
+				}
+				called <- r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			defer upstream.Close()
+			channels := []testChannel{{name: "mixed", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{{Model: "a", RedirectModel: "x"}, {Model: "a", RedirectModel: "y"}}}}
+			if tc.secondChannel {
+				channels = append(channels, testChannel{name: "second", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{{Model: "a", RedirectModel: "x"}}})
+			}
+			env := setupProxyTestEnvWithSettings(t, channels, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{"cooldown_fallback_enabled": strconv.FormatBool(tc.fallback)})
+			ctx := context.Background()
+			if err := env.store.DeleteAllAPIKeys(ctx, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: 1, KeyIndex: 0, APIKey: "only-x", DetectedModels: []string{"x"}}, {ChannelID: 1, KeyIndex: 1, APIKey: "only-y", DetectedModels: []string{"y"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.SetModelCooldown(ctx, 1, "x", time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.SetKeyCooldown(ctx, 1, 1, time.Now().Add(2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.secondChannel {
+				if err := env.store.DeleteAllAPIKeys(ctx, 2); err != nil {
+					t.Fatal(err)
+				}
+				if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: 2, KeyIndex: 0, APIKey: "second-key"}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := env.store.SetModelCooldown(ctx, 2, "x", time.Now().Add(30*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				env.server.InvalidateAPIKeysCache(2)
+			}
+			env.server.InvalidateChannelListCache()
+			env.server.InvalidateAPIKeysCache(1)
+			env.server.invalidateCooldownCache()
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, nil)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d: %s", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if tc.wantKey != "" {
+				select {
+				case got := <-called:
+					if got != tc.wantKey {
+						t.Errorf("key=%q, want %q", got, tc.wantKey)
+					}
+				default:
+					t.Fatal("upstream not called")
+				}
+			} else if len(called) != 0 {
+				t.Fatal("disabled fallback called upstream")
+			}
+		})
+	}
+}
+
+func TestProxy_MixedStandardQuotaAndModelCooldownFallback(t *testing.T) {
+	const actualModel = "claude-sonnet-4-6"
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var wire struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+			t.Error(err)
+		}
+		if wire.Model != actualModel {
+			t.Errorf("upstream model=%q, want %q", wire.Model, actualModel)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`)
+	}))
+	defer upstream.Close()
+	credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "mixed-quota-token")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.StandardQuota = map[string]time.Time{actualModel: time.Now().Add(30 * time.Minute)}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "quota-mixed", upstreamProtocol: "gemini", authType: model.AuthTypeAntigravityOAuth, oauthCredential: raw, modelEntries: []model.ModelEntry{{Model: "auto", RedirectModel: actualModel}, {Model: "auto", RedirectModel: "claude-opus-4-6-thinking"}}}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "true"})
+	env.server.antigravityService.DailyAPIBaseURL = upstream.URL
+	if err := env.store.SetModelCooldown(context.Background(), 1, "claude-opus-4-6-thinking", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}

@@ -858,11 +858,13 @@ func (s *Server) parseChannelImportRow(
 	apiKeyModelScopeEmpty := make([]bool, len(apiKeyList))
 	_, hasAPIKeyDetectedModelsColumn := columnIndex["api_key_detected_models"]
 	if !hasAPIKeyDetectedModelsColumn {
-		existing := existingAPIKeysByName[name]
-		for i := range apiKeyDetectedModels {
-			if i < len(existing) && existing[i] != nil && existing[i].APIKey == apiKeyList[i] {
-				apiKeyDetectedModels[i] = append([]string(nil), existing[i].DetectedModels...)
-			}
+		submitted := make([]ChannelAPIKeyRequest, len(apiKeyList))
+		for i, key := range apiKeyList {
+			submitted[i].APIKey = key
+		}
+		preserveOmittedAPIKeyMetadata(submitted, existingAPIKeysByName[name])
+		for i := range submitted {
+			apiKeyDetectedModels[i] = submitted[i].DetectedModels
 		}
 	} else if apiKeyDetectedModelsRaw != "" {
 		if err := sonic.Unmarshal([]byte(apiKeyDetectedModelsRaw), &apiKeyDetectedModels); err != nil {

@@ -466,7 +466,7 @@ func (s *Server) applyFetchedModels(
 		}
 		item.Total = len(cfg.ModelEntries)
 		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
-		scopeUpdates := remapNormalizedAPIKeyScopes(keys, expected.ModelEntries, cfg.ModelEntries, normalization)
+		scopeUpdates := s.remapNormalizedAPIKeyScopes(keys, expected, cfg, normalization)
 		if mode == "replace" {
 			for _, result := range keyModels {
 				if strings.TrimSpace(result.Error) == "" {
@@ -523,14 +523,15 @@ func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
 // remapNormalizedAPIKeyScopes keeps restricted Keys attached to existing
 // logical models when batch normalization changes their names. A target is
 // safe only when the final row still points at the same upstream model.
-func remapNormalizedAPIKeyScopes(
+func (s *Server) remapNormalizedAPIKeyScopes(
 	keys []*model.APIKey,
-	previous, current []model.ModelEntry,
+	previousConfig, currentConfig *model.Config,
 	options modelNormalizationOptions,
 ) map[int]model.APIKeyModelScope {
 	if !options.lowercaseModels && !options.stripModelSourcePrefix {
 		return nil
 	}
+	previous, current := previousConfig.ModelEntries, currentConfig.ModelEntries
 	currentByName := make(map[string][]model.ModelEntry, len(current))
 	configured := make(map[string]struct{}, len(current))
 	wildcard := false
@@ -579,6 +580,13 @@ func remapNormalizedAPIKeyScopes(
 		return nil
 	}
 
+	upstreams := func(cfg *model.Config, entry model.ModelEntry) []string {
+		selected := modelRoutingSelection{logicalModel: entry.Model, entry: entry}
+		return []string{
+			s.resolveFinalUpstreamModel(cfg, selected, string(protocol.OpenAI)),
+			s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Gemini)),
+		}
+	}
 	updates := make(map[int]model.APIKeyModelScope)
 	for _, key := range keys {
 		if key == nil || key.ModelScopeEmpty || len(key.AllowedModels) == 0 {
@@ -597,12 +605,55 @@ func remapNormalizedAPIKeyScopes(
 				allowed = append(allowed, name)
 			}
 		}
+		// A renamed group may now contain targets that this Key's old logical
+		// scope excluded. Preserve that boundary even for an unchanged group
+		// name when another normalized group merges into it.
+		oldTargets := make([]string, 0, len(previous))
+		for _, entry := range previous {
+			if !key.AllowsModel(entry.Model) {
+				continue
+			}
+			for _, actual := range upstreams(previousConfig, entry) {
+				if key.AllowsUpstreamModel(actual) {
+					oldTargets = append(oldTargets, actual)
+				}
+			}
+		}
+		for _, entry := range previous {
+			if entry.Model == "*" {
+				for _, name := range key.AllowedModels {
+					if key.AllowsUpstreamModel(name) {
+						oldTargets = append(oldTargets, model.RoutingModelName(name))
+					}
+				}
+			}
+		}
+		detected := slices.Clone(key.DetectedModels)
+		candidateKey := *key
+		candidateKey.AllowedModels = allowed
+		for _, entry := range current {
+			if !candidateKey.AllowsModel(entry.Model) {
+				continue
+			}
+			for _, actual := range upstreams(currentConfig, entry) {
+				if key.AllowsUpstreamModel(actual) && !slices.ContainsFunc(oldTargets, func(old string) bool {
+					return strings.EqualFold(old, actual)
+				}) {
+					detected = normalizeDetectedModels(oldTargets)
+					changed = true
+					break
+				}
+			}
+		}
 		if !changed {
 			continue
 		}
-		scopeEmpty := len(allowed) == 0
+		scopeEmpty := len(allowed) == 0 || len(oldTargets) == 0
+		if scopeEmpty {
+			allowed = nil
+		}
 		scope := model.APIKeyModelScope{
-			AllowedModels: allowed, DetectedModels: slices.Clone(key.DetectedModels), ModelScopeEmpty: scopeEmpty,
+			AllowedModels: allowed, DetectedModels: detected, ModelScopeEmpty: scopeEmpty,
 			Disabled: key.Disabled || scopeEmpty,
 		}
 		if !apiKeyModelScopeEqual(key, scope) {
@@ -680,18 +731,20 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 	detectedNames := make([]string, 0, len(fetched)*2)
 	detected := make(map[string]struct{}, len(fetched)*2)
 	for _, entry := range fetched {
-		for _, value := range []string{entry.Model, entry.RedirectModel} {
-			name := model.RoutingModelName(strings.TrimSpace(value))
-			key := strings.ToLower(name)
-			if name == "" {
-				continue
-			}
-			if _, exists := detected[key]; exists {
-				continue
-			}
-			detected[key] = struct{}{}
-			detectedNames = append(detectedNames, name)
+		value := entry.RedirectModel
+		if value == "" {
+			value = entry.Model
 		}
+		name := model.RoutingModelName(strings.TrimSpace(value))
+		key := strings.ToLower(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := detected[key]; exists {
+			continue
+		}
+		detected[key] = struct{}{}
+		detectedNames = append(detectedNames, name)
 	}
 
 	matched := make([]string, 0, len(modelRows))
