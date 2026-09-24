@@ -919,12 +919,16 @@ func TestInferenceCapErrorCooldown(t *testing.T) {
 			wantReason:      "INFERENCE_CAP_ERROR",
 		},
 		{
-			name:            "no_parseable_time_defaults_30min",
+			name:            "no_parseable_time",
 			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Daily limit reached"}}`,
 			wantLevel:       ErrorLevelKey,
-			wantHasCooldown: true,
-			wantDurationMin: 30,
-			wantReason:      "INFERENCE_CAP_ERROR",
+			wantHasCooldown: false,
+		},
+		{
+			name:            "milliseconds_are_not_minutes",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Try again in 5ms"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: false,
 		},
 	}
 	for _, tt := range tests {
@@ -933,29 +937,24 @@ func TestInferenceCapErrorCooldown(t *testing.T) {
 			if result.Level != tt.wantLevel {
 				t.Fatalf("level=%d, want %d", result.Level, tt.wantLevel)
 			}
-			hasCooldown := result.HasKeyCooldownUntil || result.HasModelCooldownUntil
-			if hasCooldown != tt.wantHasCooldown {
-				t.Fatalf("hasCooldown=%v, want %v (key=%v model=%v)", hasCooldown, tt.wantHasCooldown, result.HasKeyCooldownUntil, result.HasModelCooldownUntil)
+			if result.HasKeyCooldownUntil {
+				t.Fatalf("inference cap must not cool the whole key: %+v", result)
 			}
-			if !hasCooldown {
+			if result.HasModelCooldownUntil != tt.wantHasCooldown {
+				t.Fatalf("hasModelCooldown=%v, want %v", result.HasModelCooldownUntil, tt.wantHasCooldown)
+			}
+			if !tt.wantHasCooldown {
 				return
 			}
-			var cooldownUntil time.Time
-			if result.HasKeyCooldownUntil {
-				cooldownUntil = result.KeyCooldownUntil
-			} else {
-				cooldownUntil = result.ModelCooldownUntil
+			if !result.ModelScoped {
+				t.Fatal("inference cap must be model scoped")
 			}
-			gotMin := int(cooldownUntil.Sub(now).Minutes())
+			gotMin := int(result.ModelCooldownUntil.Sub(now).Minutes())
 			if gotMin < tt.wantDurationMin-1 || gotMin > tt.wantDurationMin+1 {
 				t.Fatalf("cooldown duration=%dm, want ~%dm", gotMin, tt.wantDurationMin)
 			}
-			reason := result.KeyCooldownReason
-			if reason == "" {
-				reason = result.ModelCooldownReason
-			}
-			if reason != tt.wantReason {
-				t.Fatalf("reason=%q, want %q", reason, tt.wantReason)
+			if result.ModelCooldownReason != tt.wantReason {
+				t.Fatalf("reason=%q, want %q", result.ModelCooldownReason, tt.wantReason)
 			}
 		})
 	}

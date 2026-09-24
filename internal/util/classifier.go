@@ -39,8 +39,8 @@ var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|�
 // retryInDurationRegex 匹配 Gemini RESOURCE_EXHAUSTED 中的 “Please retry in 59.409754061s”。
 var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*)`)
 
-// tryAgainInHMRegex 匹配 “Try again in 2h 18m” 等空格分隔时长。
-var tryAgainInHMRegex = regexp.MustCompile(`(?i)\bagain\s+in\s+(\d+h)?\s*(\d+m)?\s*(\d+s)?`)
+// tryAgainInHMRegex 匹配 “Try again in 2h 18m”。至少一段 h/m/s，且停在词边界，避免把 5ms 读成 5m。
+var tryAgainInHMRegex = regexp.MustCompile(`(?i)\bagain\s+in\s+(?:(\d+h)(?:\s*(\d+m))?(?:\s*(\d+s))?|(\d+m)(?:\s*(\d+s))?|(\d+s))\b`)
 
 // retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
 var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
@@ -418,7 +418,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 				Level: level,
 				Model: strings.TrimSpace(quotaErr.model),
 			}
-			if reason == "model_cooldown" || reason == codexUsageFrequencyLimitReason {
+			if reason == "model_cooldown" || reason == codexUsageFrequencyLimitReason || reason == "INFERENCE_CAP_ERROR" {
 				classification.ModelScoped = true
 				classification.ModelCooldownReason = reason
 				if cooldownUntil.After(now) {
@@ -815,11 +815,11 @@ func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) 
 		}
 		return time.Time{}, "", ErrorLevelNone, false
 	case code == "INFERENCE_CAP_ERROR":
+		// 文案指向单个模型。解析不到时长时不要编一个 Key 冷却，留给后续模型级处理。
 		if until, ok := parseTryAgainInCooldownUntil(message, now); ok {
 			return until, "INFERENCE_CAP_ERROR", ErrorLevelKey, true
 		}
-		// 没有可解析的精确时间，给一个保守默认值
-		return now.Add(30 * time.Minute), "INFERENCE_CAP_ERROR", ErrorLevelKey, true
+		return time.Time{}, "", ErrorLevelNone, false
 	case code == "USAGE_LIMIT_REACHED":
 		// 上游 usage limit（如 Claude Plus 计划限额），优先用 resets_in_seconds / resets_at
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {

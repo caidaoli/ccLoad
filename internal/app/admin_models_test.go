@@ -2310,9 +2310,9 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
-		want := []model.ModelEntry{{Model: "model-a"}}
+		want := []model.ModelEntry{{Model: "model-a"}, {Model: "model-b"}}
 		if !reflect.DeepEqual(got.ModelEntries, want) {
-			t.Fatalf("models=%#v, want %#v (successful model should apply despite failed key)", got.ModelEntries, want)
+			t.Fatalf("models=%#v, want %#v (failed key keeps the models it already serves; stale models still drop)", got.ModelEntries, want)
 		}
 		keys, err := store.GetAPIKeys(ctx, cfg.ID)
 		if err != nil {
@@ -2321,8 +2321,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if !reflect.DeepEqual(keys[0].AllowedModels, []string{"model-a"}) || keys[0].ModelScopeEmpty || keys[0].Disabled {
 			t.Fatalf("healthy key scope=%+v, want model-a and enabled", keys[0])
 		}
-		if len(keys[1].AllowedModels) != 0 || !keys[1].ModelScopeEmpty || !keys[1].Disabled {
-			t.Fatalf("failed key must become an explicit empty scope: %+v", keys[1])
+		if !reflect.DeepEqual(keys[1].AllowedModels, []string{"model-b"}) || keys[1].ModelScopeEmpty || keys[1].Disabled {
+			t.Fatalf("failed key must keep its previous scope: %+v", keys[1])
 		}
 	})
 
@@ -2408,6 +2408,80 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if !reflect.DeepEqual(keys[3].AllowedModels, []string{"glm-5.2"}) || keys[3].ModelScopeEmpty || !keys[3].Disabled {
 			t.Fatalf("manually disabled key must stay untouched, got %+v", keys[3])
+		}
+	})
+
+	t.Run("replace mode keeps cooling key scope when probe fails", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			switch r.Header.Get("Authorization") {
+			case "Bearer ready":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2"}]}`))
+			case "Bearer cooling":
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+			default:
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:     "cooling-probe-failure",
+			URLs:     model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Priority: 1,
+			ModelEntries: []model.ModelEntry{
+				{Model: "glm-5.2"},
+				{Model: "glm-5.2-air"},
+				{Model: "stale-model"},
+			},
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		cooldownUntil := time.Now().Add(time.Hour).Unix()
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "ready", KeyStrategy: model.KeyStrategySequential, AllowedModels: []string{"glm-5.2"}},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "cooling", KeyStrategy: model.KeyStrategySequential,
+				AllowedModels: []string{"glm-5.2", "glm-5.2-air"}, CooldownUntil: cooldownUntil, CooldownDurationMs: time.Hour.Milliseconds()},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{{Model: "glm-5.2"}, {Model: "glm-5.2-air"}}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if !reflect.DeepEqual(keys[1].AllowedModels, []string{"glm-5.2", "glm-5.2-air"}) || keys[1].ModelScopeEmpty || keys[1].Disabled {
+			t.Fatalf("failed cooling key scope must stay unchanged, got %+v", keys[1])
+		}
+		if keys[1].CooldownUntil != cooldownUntil {
+			t.Fatalf("cooldown=%d, want %d", keys[1].CooldownUntil, cooldownUntil)
 		}
 	})
 

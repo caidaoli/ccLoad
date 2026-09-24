@@ -281,7 +281,16 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		switch mode {
 		case "replace":
 			if partialKeyFailure {
-				item.Warning = "部分 API Key 模型探测失败，已使用成功 Key 的模型结果覆盖"
+				item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
+				retained, retainErr := s.modelsRetainedFromFailedProbes(ctx, channelID, cfg.ModelEntries, resp.KeyModels, fetched)
+				if retainErr != nil {
+					item.Status = "failed"
+					item.Error = "读取 API Key 失败: " + retainErr.Error()
+					failed++
+					results = append(results, item)
+					continue
+				}
+				fetched = append(fetched, retained...)
 			}
 			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
 			item.Removed = removed
@@ -363,6 +372,63 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 	})
 }
 
+// modelsRetainedFromFailedProbes 把探测失败的 Key 仍被允许的渠道模型留在覆盖结果里。
+// 失败不代表这些模型消失；丢掉它们会让只有该 Key 能提供的模型从渠道中被删掉。
+func (s *Server) modelsRetainedFromFailedProbes(
+	ctx context.Context,
+	channelID int64,
+	channelModels []model.ModelEntry,
+	keyModels []FetchKeyModelsItem,
+	alreadyFetched []model.ModelEntry,
+) ([]model.ModelEntry, error) {
+	failed := make(map[int]struct{})
+	for _, result := range keyModels {
+		if strings.TrimSpace(result.Error) != "" {
+			failed[result.KeyIndex] = struct{}{}
+		}
+	}
+	if len(failed) == 0 {
+		return nil, nil
+	}
+	keys, err := s.store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]model.ModelEntry, len(channelModels))
+	for _, entry := range channelModels {
+		present[strings.ToLower(entry.Model)] = entry
+	}
+	seen := make(map[string]struct{}, len(alreadyFetched))
+	for _, entry := range alreadyFetched {
+		seen[strings.ToLower(entry.Model)] = struct{}{}
+	}
+	retained := make([]model.ModelEntry, 0)
+	for _, key := range keys {
+		if key == nil || key.ModelScopeEmpty {
+			continue
+		}
+		if _, ok := failed[key.KeyIndex]; !ok {
+			continue
+		}
+		for _, name := range key.AllowedModels {
+			modelName := strings.ToLower(strings.TrimSpace(name))
+			if modelName == "" {
+				continue
+			}
+			if _, dup := seen[modelName]; dup {
+				continue
+			}
+			entry, ok := present[modelName]
+			if !ok {
+				continue
+			}
+			seen[modelName] = struct{}{}
+			retained = append(retained, entry)
+		}
+	}
+	return retained, nil
+}
+
 func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
 	if response == nil {
 		return true
@@ -376,9 +442,11 @@ func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
 }
 
 // buildFetchedAPIKeyModelScopes converts per-Key discovery results into the
-// persisted scope state. A successful Key with no configured-model match is
-// explicitly marked empty; an empty allowlist without ModelScopeEmpty means
-// unrestricted and would silently route that Key to every model.
+// persisted scope state. A probe error leaves the Key unchanged: a 429 or
+// timeout must not wipe a cooling Key's scope. A successful Key with no
+// configured-model match is explicitly marked empty; an empty allowlist
+// without ModelScopeEmpty means unrestricted and would silently route that
+// Key to every model.
 func buildFetchedAPIKeyModelScopes(
 	keys []*model.APIKey,
 	modelEntries []model.ModelEntry,
@@ -394,12 +462,12 @@ func buildFetchedAPIKeyModelScopes(
 	updates := make(map[int]model.APIKeyModelScope)
 	for _, result := range keyModels {
 		key := keysByIndex[result.KeyIndex]
-		if key == nil {
+		if key == nil || strings.TrimSpace(result.Error) != "" {
 			continue
 		}
 
 		allowedModels := []string(nil)
-		scopeEmpty := strings.TrimSpace(result.Error) != "" || len(result.Models) == 0
+		scopeEmpty := len(result.Models) == 0
 		if !scopeEmpty {
 			allowedModels = detectedChannelModelNames(modelEntries, result.Models)
 			scopeEmpty = len(allowedModels) == 0
