@@ -762,7 +762,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		view.Events[len(view.Events)-1].Processed != 7 {
 		t.Fatalf("second cleanup view=%+v", view)
 	}
-	createChannel("cleanup-wildcard", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "*"}}, "")
+	createChannel("cleanup-extra", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "gpt-extra"}}, "")
 	wildcardOptionsContext, wildcardOptionsResponse := newTestContext(t, newRequest(
 		http.MethodGet, "/admin/oauth/credentials/cleanup/options?auth_type=codex_oauth", nil,
 	))

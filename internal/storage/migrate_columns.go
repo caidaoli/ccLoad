@@ -949,10 +949,41 @@ func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Diale
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func deleteWildcardChannelModels(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM channel_models WHERE model = '*'`); err != nil {
+		return fmt.Errorf("delete wildcard channel models: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE channels SET scheduled_check_model = '' WHERE scheduled_check_model = '*'`); err != nil {
+		return fmt.Errorf("clear wildcard scheduled_check_model: %w", err)
+	}
+	return nil
+}
+
 func ensureAPIKeysDetectedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "api_keys", "detected_models",
-		"VARCHAR(8000) NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
+	// TEXT 不占满 65535 的行长上限。MySQL 的 TEXT 不能带字面默认值，读取时 COALESCE。
+	if err := ensureColumn(ctx, db, dialect, "api_keys", "detected_models",
+		"TEXT",
+		"TEXT"); err != nil {
+		return err
+	}
+	if dialect != DialectMySQL {
+		return nil
+	}
+	var dataType string
+	err := db.QueryRowContext(ctx, `
+		SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='api_keys' AND COLUMN_NAME='detected_models'
+	`).Scan(&dataType)
+	if err != nil {
+		return fmt.Errorf("query api_keys.detected_models column info: %w", err)
+	}
+	if strings.EqualFold(dataType, "text") {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE api_keys MODIFY COLUMN detected_models TEXT"); err != nil {
+		return fmt.Errorf("convert detected_models to TEXT: %w", err)
+	}
+	return nil
 }
 
 // ensureAPIKeysCostMultiplier 确保api_keys表有cost_multiplier字段（Key级成本倍率，api_key渠道的权威存储）

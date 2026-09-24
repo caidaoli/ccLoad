@@ -242,14 +242,15 @@ func TestValidateModelEntriesAllowsDistinctTargetsAndRejectsAmbiguousGroups(t *t
 	}
 }
 
-func TestConfig_WildcardModelSupportsAnyModelWithoutRedirect(t *testing.T) {
+func TestConfig_WildcardModelDoesNotMatchOtherModels(t *testing.T) {
 	t.Parallel()
-	cfg := &Config{ModelEntries: []ModelEntry{{Model: "*"}}}
-	if !cfg.SupportsModel("gpt-5.4") || !cfg.SupportsModel("future-codex-model") {
-		t.Fatal("wildcard channel must support arbitrary models")
+	entry := &ModelEntry{Model: "*"}
+	if err := entry.Validate(); err == nil {
+		t.Fatal("wildcard model must be rejected")
 	}
-	if entries := cfg.EnabledModelEntries("gpt-5.4"); len(entries) != 0 {
-		t.Fatalf("wildcard must not create an exact model redirect, got %+v", entries)
+	cfg := &Config{ModelEntries: []ModelEntry{{Model: "*"}}}
+	if cfg.SupportsModel("gpt-5.4") || cfg.SupportsModel("future-codex-model") {
+		t.Fatal("a stored * row must not match other models")
 	}
 }
 
@@ -424,6 +425,21 @@ func TestAPIKey_AllowsModel(t *testing.T) {
 	empty := &APIKey{ModelScopeEmpty: true}
 	if empty.AllowsModel("gpt-5") || empty.AllowsModel("*") {
 		t.Fatal("explicit empty model scope must reject every model")
+	}
+}
+
+func TestAPIKey_AllowsUpstreamModelWildcard(t *testing.T) {
+	t.Parallel()
+
+	probed := &APIKey{DetectedModels: []string{"gpt-5"}}
+	if !probed.AllowsUpstreamModel("") || !probed.AllowsUpstreamModel("*") {
+		t.Fatal("model-less and wildcard requests must stay usable after discovery")
+	}
+	if !probed.AllowsUpstreamModel("GPT-5") || probed.AllowsUpstreamModel("other") {
+		t.Fatal("named upstream models must still match discovery")
+	}
+	if (&APIKey{}).AllowsUpstreamModel("anything") != true {
+		t.Fatal("keys without discovery data stay usable")
 	}
 }
 

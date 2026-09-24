@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -363,7 +364,7 @@ func modelsRetainedFromFailedProbes(
 	candidates := make([]model.ModelEntry, 0, len(channelModels))
 	for _, entry := range channelModels {
 		name := strings.ToLower(model.RoutingModelName(entry.Model))
-		if _, ok := allowed[name]; keepAll || ok || (name == "*" && len(allowed) > 0) {
+		if _, ok := allowed[name]; keepAll || ok {
 			candidates = append(candidates, entry)
 		}
 	}
@@ -387,18 +388,8 @@ func modelsRetainedFromFailedProbes(
 	replaceModelEntries(final, combined, normalization)
 	candidateConfig := &model.Config{ModelEntries: candidates}
 	names := candidateConfig.GetModels()
-	if len(candidateConfig.EnabledModelEntries("*")) > 0 {
-		for _, name := range final.GetModels() {
-			if _, restricted := allowed[strings.ToLower(name)]; keepAll || restricted {
-				names = append(names, name)
-			}
-		}
-	}
 	upstreams := func(cfg *model.Config, name string) []string {
 		entries := cfg.EnabledModelEntries(name)
-		if len(entries) == 0 && len(cfg.EnabledModelEntries("*")) > 0 {
-			return []string{name}
-		}
 		result := make([]string, 0, len(entries))
 		for _, entry := range entries {
 			result = append(result, resolveActualModel(cfg, modelRoutingSelection{logicalModel: name, entry: entry}))
@@ -473,7 +464,12 @@ func (s *Server) applyFetchedModels(
 					delete(scopeUpdates, result.KeyIndex)
 				}
 			}
-			for index, scope := range buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, keyModels) {
+			fetchedScopes, scopeErr := buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, keyModels)
+			if scopeErr != nil {
+				item.Status, item.Error = "failed", scopeErr.Error()
+				return item, false
+			}
+			for index, scope := range fetchedScopes {
 				if scopeUpdates == nil {
 					scopeUpdates = make(map[int]model.APIKeyModelScope)
 				}
@@ -534,12 +530,10 @@ func (s *Server) remapNormalizedAPIKeyScopes(
 	previous, current := previousConfig.ModelEntries, currentConfig.ModelEntries
 	currentByName := make(map[string][]model.ModelEntry, len(current))
 	configured := make(map[string]struct{}, len(current))
-	wildcard := false
 	for _, entry := range current {
 		currentByName[strings.ToLower(entry.Model)] = append(currentByName[strings.ToLower(entry.Model)], entry)
 		name := strings.ToLower(model.RoutingModelName(entry.Model))
 		configured[name] = struct{}{}
-		wildcard = wildcard || name == "*"
 	}
 	upstreamModel := func(entry model.ModelEntry) string {
 		name := entry.RedirectModel
@@ -601,7 +595,7 @@ func (s *Server) remapNormalizedAPIKeyScopes(
 				name = replacement
 				identity = strings.ToLower(model.RoutingModelName(name))
 			}
-			if _, exists := configured[identity]; exists || wildcard {
+			if _, exists := configured[identity]; exists {
 				allowed = append(allowed, name)
 			}
 		}
@@ -616,15 +610,6 @@ func (s *Server) remapNormalizedAPIKeyScopes(
 			for _, actual := range upstreams(previousConfig, entry) {
 				if key.AllowsUpstreamModel(actual) {
 					oldTargets = append(oldTargets, actual)
-				}
-			}
-		}
-		for _, entry := range previous {
-			if entry.Model == "*" {
-				for _, name := range key.AllowedModels {
-					if key.AllowsUpstreamModel(name) {
-						oldTargets = append(oldTargets, model.RoutingModelName(name))
-					}
 				}
 			}
 		}
@@ -673,7 +658,7 @@ func buildFetchedAPIKeyModelScopes(
 	keys []*model.APIKey,
 	modelEntries []model.ModelEntry,
 	keyModels []FetchKeyModelsItem,
-) map[int]model.APIKeyModelScope {
+) (map[int]model.APIKeyModelScope, error) {
 	keysByIndex := make(map[int]*model.APIKey, len(keys))
 	for _, key := range keys {
 		if key != nil {
@@ -698,6 +683,12 @@ func buildFetchedAPIKeyModelScopes(
 		if scopeEmpty {
 			allowedModels = nil
 		}
+		if encoded, err := json.Marshal(detectedModels); err != nil || len(encoded) > maxAPIKeyAllowedModelsJSONLength {
+			return nil, fmt.Errorf("api key %d detected_models is too long (max %d bytes)", key.KeyIndex, maxAPIKeyAllowedModelsJSONLength)
+		}
+		if encoded, err := json.Marshal(allowedModels); err != nil || len(encoded) > maxAPIKeyAllowedModelsJSONLength {
+			return nil, fmt.Errorf("api key %d allowed_models is too long (max %d bytes)", key.KeyIndex, maxAPIKeyAllowedModelsJSONLength)
+		}
 		scope := model.APIKeyModelScope{
 			AllowedModels:   allowedModels,
 			DetectedModels:  detectedModels,
@@ -711,7 +702,7 @@ func buildFetchedAPIKeyModelScopes(
 		}
 		updates[result.KeyIndex] = scope
 	}
-	return updates
+	return updates, nil
 }
 
 func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool {
@@ -728,23 +719,15 @@ func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool
 }
 
 func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string, []string) {
-	detectedNames := make([]string, 0, len(fetched)*2)
 	detected := make(map[string]struct{}, len(fetched)*2)
 	for _, entry := range fetched {
 		value := entry.RedirectModel
 		if value == "" {
 			value = entry.Model
 		}
-		name := model.RoutingModelName(strings.TrimSpace(value))
-		key := strings.ToLower(name)
-		if name == "" {
-			continue
+		if name := model.RoutingModelName(strings.TrimSpace(value)); name != "" {
+			detected[strings.ToLower(name)] = struct{}{}
 		}
-		if _, exists := detected[key]; exists {
-			continue
-		}
-		detected[key] = struct{}{}
-		detectedNames = append(detectedNames, name)
 	}
 
 	matched := make([]string, 0, len(modelRows))
@@ -754,7 +737,7 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 	lookup := &model.Config{ModelEntries: modelRows}
 	for _, row := range modelRows {
 		logicalModel := strings.TrimSpace(row.Model)
-		if logicalModel == "" || logicalModel == "*" {
+		if logicalModel == "" {
 			continue
 		}
 		actual := resolveActualModel(lookup, modelRoutingSelection{logicalModel: logicalModel, entry: row})
@@ -772,22 +755,6 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 		}
 		seen[key] = struct{}{}
 		matched = append(matched, logicalModel)
-	}
-	for _, row := range modelRows {
-		if strings.TrimSpace(row.Model) == "*" {
-			for _, name := range detectedNames {
-				key := strings.ToLower(name)
-				if _, exists := seen[key]; !exists {
-					seen[key] = struct{}{}
-					matched = append(matched, name)
-				}
-				if _, exists := seenActual[key]; !exists {
-					seenActual[key] = struct{}{}
-					actualModels = append(actualModels, name)
-				}
-			}
-			break
-		}
 	}
 	return matched, actualModels
 }
@@ -1905,7 +1872,7 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 			disabled = disabled || isDisabled(fetched[i].Model) || isDisabled(fetched[i].RedirectModel)
 		}
 		fetched[i].Disabled = fetched[i].Disabled || disabled
-		if fetched[i].Pricing == nil && fetched[i].Model != "*" {
+		if fetched[i].Pricing == nil {
 			fetched[i].Pricing = pricingByRow[rowIdentity]
 			if fetched[i].Pricing == nil && oneToOne {
 				for _, identity := range modelIdentities(fetched[i].Model) {

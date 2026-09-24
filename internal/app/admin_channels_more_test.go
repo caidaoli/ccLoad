@@ -1219,6 +1219,38 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 	})
 }
 
+func TestHandleBatchPatchChannelsRejectsSecondThinkingSuffixTarget(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "suffix-group", URLs: model.ChannelURLs{{URL: "https://suffix.example.com"}},
+		Enabled: true, Priority: 3,
+		ModelEntries: []model.ModelEntry{{Model: "foo(max)", RedirectModel: "up-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priority := 9
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", map[string]any{
+		"channel_ids":       []int64{cfg.ID},
+		"priority":          priority,
+		"model_import_mode": model.ModelImportModeAppend,
+		"models":            []model.ModelEntry{{Model: "foo(max)", RedirectModel: "up-b"}},
+	}))
+	server.HandleBatchPatchChannels(c)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "cannot have multiple rows") {
+		t.Fatalf("status=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+	got, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Priority != 3 || len(got.ModelEntries) != 1 || got.ModelEntries[0].RedirectModel != "up-a" {
+		t.Fatalf("rejected append changed channel: priority=%d models=%+v", got.Priority, got.ModelEntries)
+	}
+}
+
 func TestHandleBatchDeleteChannels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

@@ -107,13 +107,25 @@ test('inline Key rows preserve and normalize model scopes', () => {
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-bad', cost_multiplier: -3 }).cost_multiplier, 1);
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-nan', cost_multiplier: 'abc' }).cost_multiplier, 1);
   assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
-    [{ model: '*', disabled: false }]
-  ), ['gpt-5']);
-  assert.deepEqual(selectModelsForInlineKeyTest(
     { api_key: 'sk-disabled', allowed_models: ['gpt-5'] },
     [{ model: 'gpt-5', disabled: true }]
   ), ['gpt-5']);
+  const modelRows = [
+    { model: 'GPT-5(max)', disabled: true },
+    { model: 'claude-opus', disabled: false }
+  ];
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-disabled', allowed_models: ['gpt-5'] }, modelRows
+  ), ['GPT-5']);
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-both', allowed_models: ['gpt-5', 'claude-opus'] }, modelRows
+  ), ['claude-opus']);
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-unrestricted', allowed_models: [] }, modelRows
+  ), ['claude-opus']);
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-unmatched', allowed_models: ['other'] }, modelRows
+  ), []);
 });
 
 test('removing configured models prunes every restricted Key scope', () => {
@@ -124,10 +136,6 @@ test('removing configured models prunes every restricted Key scope', () => {
 
   assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: 'gpt-5' }]), [
     { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5'], priority: 0, cost_multiplier: 1 },
-    { api_key: 'sk-unrestricted', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 }
-  ]);
-  assert.deepEqual(pruneKeyAllowedModels(rows, [{ model: '*' }]), [
-    { api_key: 'sk-primary', note: '', allowed_models: ['GPT-5', 'claude-opus'], priority: 0, cost_multiplier: 1 },
     { api_key: 'sk-unrestricted', note: '', allowed_models: [], priority: 0, cost_multiplier: 1 }
   ]);
   assert.deepEqual(pruneKeyAllowedModels(
@@ -450,7 +458,7 @@ test('Escape closes only the topmost Key model scope modal', () => {
   }
 });
 
-test('per-Key model detection handles stale sessions, model variants, and wildcard candidates', async () => {
+test('per-Key model detection handles stale sessions, model variants, redirect misses, and illegal model names', async () => {
   const checkboxes = [];
   const makeClassList = () => ({
     add() {},
@@ -589,19 +597,38 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     assert.deepEqual(global.inlineKeyTableData[0].allowed_models, ['A', 'B']);
     assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['C']);
 
+    // 命中只看最终上游目标：上游有逻辑名 gpt-5、没有重定向目标 gpt-5-2026 时判未命中，
+    // 与后端 detectedChannelModelScope 同源，避免写出 allowed 含 gpt-5 而 detected 不含其目标的矛盾范围。
+    global.inlineKeyTableData = [{ api_key: 'sk-test', note: '', allowed_models: [] }];
+    global.redirectTableData = [
+      { model: 'gpt-5', redirect_model: 'gpt-5-2026', disabled: false },
+      { model: 'hit', redirect_model: '', disabled: false }
+    ];
+    assert.equal(openKeyModelScopeModal(0), true);
+    const redirectMissDetection = detectKeyModelScope();
+    pending[4]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'gpt-5' }, { model: 'hit' }] }] }
+    });
+    await redirectMissDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['gpt-5', 'hit']);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [false, true]);
+    assert.equal(confirmKeyModelScope(), true);
+    assert.deepEqual(global.inlineKeyTableData[0].allowed_models, ['hit']);
+    assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['hit']);
+
     global.inlineKeyTableData = [{ api_key: 'sk-test', note: '', allowed_models: [] }];
     global.redirectTableData = [{ model: '*', redirect_model: '', disabled: false }];
     assert.equal(openKeyModelScopeModal(0), true);
     assert.deepEqual(checkboxes, []);
     const wildcardDetection = detectKeyModelScope();
-    pending[4]({
+    pending[5]({
       success: true,
       data: { key_models: [{ models: [{ model: 'gpt-wildcard' }] }] }
     });
     await wildcardDetection;
-    assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['gpt-wildcard']);
-    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true]);
-    assert.equal(allowAll.checked, false);
+    assert.deepEqual(checkboxes, []);
+    assert.equal(allowAll.checked, true);
   } finally {
     closeKeyModelScopeModal(false);
     for (const [name, descriptor] of previous) {

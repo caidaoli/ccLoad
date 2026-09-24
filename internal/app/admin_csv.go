@@ -958,10 +958,9 @@ func (s *Server) parseChannelImportRow(
 	for _, entry := range modelEntries {
 		canonicalModels[strings.ToLower(model.RoutingModelName(entry.Model))] = model.RoutingModelName(entry.Model)
 	}
-	wildcardModels := canonicalModels["*"] != ""
 	apiKeys := make([]model.APIKey, len(apiKeyList))
 	for i, key := range apiKeyList {
-		allowedModels, err := normalizeAPIKeyAllowedModels(apiKeyAllowedModels[i], canonicalModels, wildcardModels)
+		allowedModels, err := normalizeAPIKeyAllowedModels(apiKeyAllowedModels[i], canonicalModels)
 		if err != nil {
 			return nil, fmt.Sprintf("第%d行 api_key_allowed_models[%d] 无效: %v", lineNo, i, err), true
 		}

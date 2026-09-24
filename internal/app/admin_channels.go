@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1591,19 +1592,11 @@ func preserveOmittedAPIKeyMetadata(submitted []ChannelAPIKeyRequest, existing []
 // key rebuild must not reintroduce a model deleted from the channel.
 func normalizeAPIKeyScopesForModels(keys []ChannelAPIKeyRequest, entries []model.ModelEntry) {
 	configured := make(map[string]struct{}, len(entries))
-	wildcard := false
 	for _, entry := range entries {
 		name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(entry.Model)))
-		if name == "*" {
-			wildcard = true
-			continue
-		}
 		if name != "" {
 			configured[name] = struct{}{}
 		}
-	}
-	if wildcard {
-		return
 	}
 	for i := range keys {
 		if keys[i].ModelScopeEmpty || len(keys[i].AllowedModels) == 0 {
@@ -2135,6 +2128,10 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 	result, err := s.store.BatchPatchConfigs(c.Request.Context(), channelIDs, patch)
 	if err != nil {
 		log.Printf("批量更新渠道高级配置失败: %v", err)
+		if errors.Is(err, model.ErrInvalidModelEntries) {
+			RespondError(c, http.StatusBadRequest, err)
+			return
+		}
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}

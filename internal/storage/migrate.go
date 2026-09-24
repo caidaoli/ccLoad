@@ -247,11 +247,13 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysNote(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys note: %w", err)
 			}
-			if err := ensureAPIKeysAllowedModels(ctx, db, dialect); err != nil {
-				return fmt.Errorf("migrate api_keys allowed_models: %w", err)
-			}
+			// 先把 detected_models 转成 TEXT，再放宽 allowed_models。
+			// 反过来会在「allowed 仍是 VARCHAR(2000)、detected 已是 VARCHAR(8000)」的半迁移库上再次超行长。
 			if err := ensureAPIKeysDetectedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys detected_models: %w", err)
+			}
+			if err := ensureAPIKeysAllowedModels(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys allowed_models: %w", err)
 			}
 			if err := ensureAPIKeysModelScopeEmpty(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys model_scope_empty: %w", err)
@@ -321,6 +323,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureChannelModelsVariants(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channel_models variants: %w", err)
+			}
+			if err := deleteWildcardChannelModels(ctx, db); err != nil {
+				return fmt.Errorf("delete wildcard channel models: %w", err)
 			}
 			if err := repairLegacyChannelModelOrder(ctx, db, dialect); err != nil {
 				return fmt.Errorf("repair legacy channel_models order: %w", err)

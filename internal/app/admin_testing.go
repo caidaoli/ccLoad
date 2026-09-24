@@ -797,9 +797,6 @@ func (s *Server) selectChannelTestModelWithAvailability(cfg *model.Config, req *
 		}
 	}
 	selected := rows[chosen]
-	if selected.wildcard {
-		return cfg, nil
-	}
 	clone := cfg.Clone()
 	clone.ModelEntries = clone.ModelEntries[:0]
 	for _, entry := range cfg.ModelEntries {

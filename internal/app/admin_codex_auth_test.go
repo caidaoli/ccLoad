@@ -3322,7 +3322,7 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		t.Fatalf("first import = (%#v, %v, %v)", created, wasCreated, err)
 	}
 	legacy := created.Clone()
-	legacy.ModelEntries = []model.ModelEntry{{Model: "*"}}
+	legacy.ModelEntries = []model.ModelEntry{{Model: "gpt-5"}}
 	if _, err := store.UpdateConfig(context.Background(), created.ID, legacy); err != nil {
 		t.Fatalf("prepare legacy wildcard channel: %v", err)
 	}
@@ -3337,8 +3337,8 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	if updated.ID != created.ID || !strings.Contains(updated.OAuthCredential, `"access_token":"at-2"`) {
 		t.Fatalf("updated channel = %#v", updated)
 	}
-	if got := updated.GetModels(); !slices.Equal(got, []string{"*"}) {
-		t.Fatalf("reimported legacy channel models = %v, want wildcard preserved", got)
+	if got := updated.GetModels(); !slices.Equal(got, []string{"gpt-5"}) {
+		t.Fatalf("reimported channel models = %v, want gpt-5 preserved", got)
 	}
 	channels, err := store.ListConfigs(context.Background())
 	if err != nil || len(channels) != 1 {
@@ -4015,7 +4015,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	engine.PUT("/channels/:id", server.HandleChannelByID)
 	engine.DELETE("/channels/:id/keys/:keyIndex", server.HandleDeleteAPIKey)
 
-	update := fmt.Sprintf(`{"name":%q,"auth_type":"codex_oauth","urls":[{"url":%q,"exact":true,"protocols":["codex"]}],"api_key":"forbidden","models":[{"model":"*"}],"enabled":true,"websockets":true}`, channel.Name, codexUpstreamURL)
+	update := fmt.Sprintf(`{"name":%q,"auth_type":"codex_oauth","urls":[{"url":%q,"exact":true,"protocols":["codex"]}],"api_key":"forbidden","models":[{"model":"gpt-5"}],"enabled":true,"websockets":true}`, channel.Name, codexUpstreamURL)
 	updateRequest := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/channels/%d", channel.ID), strings.NewReader(update))
 	updateRequest.Header.Set("Content-Type", "application/json")
 	updateResponse := httptest.NewRecorder()

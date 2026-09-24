@@ -725,7 +725,7 @@ func TestResponsesGetWithoutWebsocketUpgradeDoesNotReachUpstream(t *testing.T) {
 				w.WriteHeader(http.StatusInternalServerError)
 			}))
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: "codex-plain-get", upstreamProtocol: "codex", models: "*", priority: 100,
+				name: "codex-plain-get", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 			}}, map[int]string{0: upstream.URL})
 
 			req := httptest.NewRequest(http.MethodGet, path, nil)

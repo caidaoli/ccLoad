@@ -333,9 +333,8 @@ func (cr *ChannelRequest) Validate() error {
 		routingModel := model.RoutingModelName(entry.Model)
 		canonicalModels[strings.ToLower(routingModel)] = routingModel
 	}
-	wildcardModels := canonicalModels["*"] != ""
 	for i := range apiKeys {
-		allowedModels, err := normalizeAPIKeyAllowedModels(apiKeys[i].AllowedModels, canonicalModels, wildcardModels)
+		allowedModels, err := normalizeAPIKeyAllowedModels(apiKeys[i].AllowedModels, canonicalModels)
 		if err != nil {
 			return fmt.Errorf("api_keys[%d].allowed_models: %w", i, err)
 		}
@@ -432,7 +431,7 @@ func (cr *ChannelRequest) Validate() error {
 	return nil
 }
 
-func normalizeAPIKeyAllowedModels(values []string, canonicalModels map[string]string, wildcard bool) ([]string, error) {
+func normalizeAPIKeyAllowedModels(values []string, canonicalModels map[string]string) ([]string, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
@@ -451,7 +450,7 @@ func normalizeAPIKeyAllowedModels(values []string, canonicalModels map[string]st
 			continue
 		}
 		canonical, exists := canonicalModels[key]
-		if !exists && !wildcard {
+		if !exists {
 			return nil, fmt.Errorf("model %q must exist in channel models", modelName)
 		}
 		if exists {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -125,4 +126,22 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 		}
 	})
+}
+
+func TestPreserveOmittedDetectedModels(t *testing.T) {
+	old := []*model.APIKey{{APIKey: "k", AllowedModels: []string{"gpt-5"}, DetectedModels: []string{"up-a"}}}
+	submitted := []ChannelAPIKeyRequest{{APIKey: "k", AllowedModels: []string{"gpt-5", "other"}, allowedModelsSet: true}}
+	preserveOmittedAPIKeyMetadata(submitted, old)
+	if !slices.Equal(submitted[0].DetectedModels, []string{"up-a"}) {
+		t.Fatalf("omitted detected_models was cleared: %v", submitted[0].DetectedModels)
+	}
+	if !slices.Equal(submitted[0].AllowedModels, []string{"gpt-5", "other"}) {
+		t.Fatalf("explicit allowlist was replaced: %v", submitted[0].AllowedModels)
+	}
+
+	reset := []ChannelAPIKeyRequest{{APIKey: "k", DetectedModels: nil, detectedModelsSet: true, allowedModelsSet: true}}
+	preserveOmittedAPIKeyMetadata(reset, old)
+	if reset[0].DetectedModels != nil {
+		t.Fatalf("explicit empty detected_models was preserved: %v", reset[0].DetectedModels)
+	}
 }

@@ -848,7 +848,11 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			modelsChanged := false
 			if patch.ModelImportMode != "" {
 				// Model imports are independent of the channel authentication type.
-				nextModels = importedModelEntries(state.modelEntries, patch.ModelEntries, patch.ModelImportMode)
+				var importErr error
+				nextModels, importErr = importedModelEntries(state.modelEntries, patch.ModelEntries, patch.ModelImportMode)
+				if importErr != nil {
+					return fmt.Errorf("channel %d: %w", channelID, importErr)
+				}
 				modelsChanged = !modelEntrySlicesEqual(state.modelEntries, nextModels)
 				nextScheduledCheckModel = reconciledScheduledCheckModel(nextScheduledCheckModel, nextModels)
 			}
@@ -1118,12 +1122,12 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	return states, nil
 }
 
-func importedModelEntries(existing, imported []model.ModelEntry, mode string) []model.ModelEntry {
+func importedModelEntries(existing, imported []model.ModelEntry, mode string) ([]model.ModelEntry, error) {
 	if mode == model.ModelImportModeReplace {
 		// 替换只重建模型列表：导入格式不表达价格，保留模型的渠道价格沿用原值。
-		return model.CarryModelPricing(existing, imported)
+		return model.CarryModelPricing(existing, imported), nil
 	}
-	result := append([]model.ModelEntry(nil), existing...)
+	merged := append([]model.ModelEntry(nil), existing...)
 	seen := make(map[model.ModelEntryIdentity]struct{}, len(existing)+len(imported))
 	for _, entry := range existing {
 		seen[entry.Identity()] = struct{}{}
@@ -1134,9 +1138,10 @@ func importedModelEntries(existing, imported []model.ModelEntry, mode string) []
 			continue
 		}
 		seen[key] = struct{}{}
-		result = append(result, entry)
+		merged = append(merged, entry)
 	}
-	return result
+	// 大小写、多行、思考后缀全部交给同一条规则，与单渠道 HandleAddModels 一致。
+	return model.ValidateModelEntries(merged)
 }
 
 func modelEntrySlicesEqual(left, right []model.ModelEntry) bool {
@@ -1258,9 +1263,6 @@ func (s *SQLStore) pruneAPIKeyAllowedModelsTx(
 	configured := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		name := strings.ToLower(strings.TrimSpace(model.RoutingModelName(entry.Model)))
-		if name == "*" {
-			return nil
-		}
 		if name != "" {
 			configured[name] = struct{}{}
 		}

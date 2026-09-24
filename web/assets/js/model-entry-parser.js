@@ -19,6 +19,7 @@
       const separatorIndex = entry.search(/[|｜]/);
       const model = (separatorIndex < 0 ? entry : entry.slice(0, separatorIndex)).trim();
       if (!model) continue;
+      if (model === '*') throw modelEntryParseError('invalid_model');
 
       const redirectModel = separatorIndex < 0
         ? ''
@@ -89,7 +90,7 @@
       if (!model) {
         throw modelEntryParseError('model_required', index);
       }
-      if (/\x00|[\r\n]/.test(model)) {
+      if (model === '*' || /\x00|[\r\n]/.test(model)) {
         throw modelEntryParseError('invalid_model', index);
       }
 

@@ -617,6 +617,39 @@ func TestScheduledCheckSkipsModelVariantWithoutCompatibleKey(t *testing.T) {
 	}
 }
 
+func TestScheduledCheckRotatesEnabledModelVariants(t *testing.T) {
+	var upstreamModels []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		upstreamModels = append(upstreamModels, body.Model)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	createScheduledCheckChannel(t, srv, &model.Config{
+		Name: "rotating-variants", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		Enabled:               true, ScheduledCheckEnabled: true, ScheduledCheckModel: "A",
+		ModelEntries: []model.ModelEntry{{Model: "A", RedirectModel: "x"}, {Model: "A", RedirectModel: "y"}},
+	}, &model.APIKey{APIKey: "sk-both", AllowedModels: []string{"A"}})
+	ctx := context.Background()
+	for range 2 {
+		if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Join(upstreamModels, ","); got != "x,y" {
+		t.Fatalf("upstream models=%q, want x,y", got)
+	}
+}
+
 func TestScheduledChannelCheckDoesNotProbeDisabledModelRowsThroughWildcard(t *testing.T) {
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +663,6 @@ func TestScheduledChannelCheckDoesNotProbeDisabledModelRowsThroughWildcard(t *te
 		ModelEntries: []model.ModelEntry{
 			{Model: "auto", RedirectModel: "target-a", Disabled: true},
 			{Model: "auto", RedirectModel: "target-b", Disabled: true},
-			{Model: "*"},
 		},
 	}, &model.APIKey{APIKey: "sk-test"})
 	keys, err := srv.store.GetAPIKeys(context.Background(), cfg.ID)

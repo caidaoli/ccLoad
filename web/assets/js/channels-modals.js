@@ -92,10 +92,16 @@ function setScheduledCheckModelHint(i18nKey) {
 let scheduledCheckModelCombobox = null;
 
 function getScheduledCheckModelNames() {
+  const seen = new Set();
   return redirectTableData
     .filter(entry => entry && !entry.disabled)
     .map(entry => (entry.model ? entry.model.trim() : ''))
-    .filter(Boolean);
+    .filter(name => {
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function getScheduledCheckModelDefaultLabel() {
@@ -3090,21 +3096,6 @@ function detectedChannelModelScope(modelRows, entries) {
     if (seen.has(key)) continue;
     seen.add(key);
     matched.push(logicalModel);
-  }
-  const wildcard = (Array.isArray(modelRows) ? modelRows : [])
-    .some(row => String(row?.model || '').trim() === '*');
-  if (wildcard) {
-    for (const name of detectedNames) {
-      const key = name.toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        matched.push(name);
-      }
-      if (!seenActual.has(key)) {
-        seenActual.add(key);
-        actualModels.push(name);
-      }
-    }
   }
   return { allowedModels: matched, detectedModels: actualModels };
 }

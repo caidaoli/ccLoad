@@ -197,11 +197,8 @@ func TestChannelRequestValidate_NormalizesAPIKeyAllowedModels(t *testing.T) {
 		URLs:    model.ChannelURLs{{URL: "https://example.com"}},
 		Models:  []model.ModelEntry{{Model: "*"}},
 	}
-	if err := wildcard.Validate(); err != nil {
-		t.Fatalf("wildcard Validate() error = %v", err)
-	}
-	if got := wildcard.APIKeys[0].AllowedModels; len(got) != 1 || got[0] != "discovered-model" {
-		t.Fatalf("wildcard allowed_models=%v, want discovered-model", got)
+	if err := wildcard.Validate(); err == nil || !strings.Contains(err.Error(), "wildcard model is not supported") {
+		t.Fatalf("wildcard Validate() error = %v, want rejection", err)
 	}
 
 	invalidEmptiedScope := ChannelRequest{

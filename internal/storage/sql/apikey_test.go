@@ -447,7 +447,7 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name: "codex-immutable", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
 		URLs:    model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
-		Enabled: true, Websockets: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+		Enabled: true, Websockets: true, ModelEntries: []model.ModelEntry{{Model: "gpt-5"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig() error = %v", err)

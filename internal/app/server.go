@@ -1380,6 +1380,18 @@ func (s *Server) getEnabledChannelsSnapshotByModel(ctx context.Context, modelNam
 	)
 }
 
+func (s *Server) getAPIKeysSnapshot(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*model.APIKey, error) {
+			return cache.GetAPIKeysSnapshot(ctx, channelID)
+		},
+		func() ([]*model.APIKey, error) {
+			return s.store.GetAPIKeys(ctx, channelID)
+		},
+	)
+}
+
 func (s *Server) getAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	return readThroughChannelCache(
 		s,

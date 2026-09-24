@@ -639,6 +639,7 @@ window.I18N_LOCALES['en'] = {
   'channels.keyModelsDetectNoMatch': 'The upstream models do not match any configured channel model.',
   'channels.keyModelsDetected': 'Matched {count} channel models. Confirm and save to apply.',
   'channels.keyModelsDetectFailed': 'Detection failed: {error}',
+  'channels.keyModelsDetectTooLong': 'Too many matched upstream models to save. Narrow the channel model list.',
   'channels.applyFetchedKeyModelsConfirm': 'Detected model scope changes for {count} Keys. Apply them? Failed Keys keep their current scope; unmatched Keys will be marked as empty scope.',
   'channels.appliedFetchedKeyModels': 'Updated model scopes for {count} Keys.',
   'channels.fetchModelsPartialFailed': '{failed} Keys failed detection; their scopes are unchanged.',

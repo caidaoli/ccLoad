@@ -388,7 +388,7 @@ func TestProxy_DetectedKeyTargetUsesSendableURLProtocolAndTriesAnotherKey(t *tes
 	}
 }
 
-func TestProxy_ModelGroupMatchPrecedesWildcardAndFuzzy(t *testing.T) {
+func TestProxy_ExactModelMatchPrecedesFuzzy(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,7 +406,7 @@ func TestProxy_ModelGroupMatchPrecedesWildcardAndFuzzy(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{name: "match-priority", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
-		{Model: "*"}, {Model: "foo-v2"},
+		{Model: "foo-v2"},
 	}}}, map[int]string{0: upstream.URL})
 	env.server.modelFuzzyMatch = true
 	cfg, err := env.store.GetConfig(context.Background(), 1)
@@ -430,20 +430,18 @@ func TestProxy_ModelGroupMatchPrecedesWildcardAndFuzzy(t *testing.T) {
 		}
 		env.server.InvalidateChannelListCache()
 	}
-	request("foo") // wildcard beats fuzzy foo-v2
-	update([]model.ModelEntry{{Model: "*", Disabled: true}, {Model: "foo-v2"}})
-	request("foo") // fuzzy only after wildcard is unavailable
-	update([]model.ModelEntry{{Model: "*"}, {Model: "foo-v2"}, {Model: "foo", RedirectModel: "exact-target"}, {Model: "bar(max)", RedirectModel: "alias-target"}})
-	request("foo") // exact beats wildcard
-	request("bar") // thinking-suffix base alias beats wildcard
+	request("foo")
+	update([]model.ModelEntry{{Model: "foo-v2"}, {Model: "foo", RedirectModel: "exact-target"}, {Model: "bar(max)", RedirectModel: "alias-target"}})
+	request("foo")
+	request("bar")
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"foo", "foo-v2", "exact-target", "alias-target"}; !slices.Equal(sent, want) {
+	if want := []string{"foo-v2", "exact-target", "alias-target"}; !slices.Equal(sent, want) {
 		t.Fatalf("upstream models=%v, want %v", sent, want)
 	}
 }
 
-func TestProxy_WildcardRemainsAvailableAfterExplicitModelCooldown(t *testing.T) {
+func TestProxy_UnconfiguredModelIsNotServedAfterExplicitModelFailure(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Model string `json:"model"`
@@ -461,8 +459,8 @@ func TestProxy_WildcardRemainsAvailableAfterExplicitModelCooldown(t *testing.T) 
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnvWithSettings(t, []testChannel{{
-		name: "wildcard-with-explicit-model", upstreamProtocol: "openai",
-		modelEntries: []model.ModelEntry{{Model: "*"}, {Model: "a"}},
+		name: "explicit-model-only", upstreamProtocol: "openai",
+		modelEntries: []model.ModelEntry{{Model: "a"}},
 	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
 	request := func(name string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -473,8 +471,8 @@ func TestProxy_WildcardRemainsAvailableAfterExplicitModelCooldown(t *testing.T) 
 	if response := request("a"); response.Code == http.StatusOK {
 		t.Fatalf("expected model a to fail, body=%s", response.Body.String())
 	}
-	if response := request("b"); response.Code != http.StatusOK {
-		t.Fatalf("wildcard model b status=%d body=%s", response.Code, response.Body.String())
+	if response := request("b"); response.Code == http.StatusOK {
+		t.Fatalf("unconfigured model b was served, body=%s", response.Body.String())
 	}
 }
 

@@ -19,7 +19,7 @@ import (
 func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, detected_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
@@ -86,7 +86,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int) (*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, detected_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
@@ -777,7 +777,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey, error) {
 	query := `
 		SELECT id, channel_id, key_index, api_key, key_strategy,
-		       note, allowed_models, detected_models, model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
+		       note, allowed_models, COALESCE(detected_models, ''), model_scope_empty, cooldown_until, cooldown_duration_ms, disabled, cost_multiplier, priority, created_at, updated_at
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`

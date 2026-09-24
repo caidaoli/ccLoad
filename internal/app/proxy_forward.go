@@ -4096,6 +4096,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
 		}
 		if selectErr != nil {
+			if lastFailure != nil && errors.Is(selectErr, ErrAllKeysUnavailable) {
+				return lastFailure, nil
+			}
 			if skippedTargetErr != nil && errors.Is(selectErr, ErrAllKeysUnavailable) {
 				return nil, skippedTargetErr
 			}

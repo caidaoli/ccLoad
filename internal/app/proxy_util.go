@@ -688,7 +688,6 @@ type modelRoutingSelection struct {
 }
 
 // enumerateModelRows resolves one logical group without advancing its cursor.
-// An enabled wildcard takes precedence over fuzzy matching.
 func (s *Server) enumerateModelRows(cfg *model.Config, requested string) []modelRoutingSelection {
 	if cfg == nil {
 		return nil
@@ -696,9 +695,6 @@ func (s *Server) enumerateModelRows(cfg *model.Config, requested string) []model
 	name := model.RoutingModelName(requested)
 	entries := cfg.EnabledModelEntries(name)
 	fuzzyMatched := false
-	if len(entries) == 0 && name != "*" && len(cfg.EnabledModelEntries("*")) > 0 {
-		return []modelRoutingSelection{{logicalModel: name, entry: model.ModelEntry{Model: name}, wildcard: true}}
-	}
 	if len(entries) == 0 && s.modelFuzzyMatch {
 		if matched, ok := cfg.FuzzyMatchModel(name); ok {
 			name = model.RoutingModelName(matched)
@@ -717,7 +713,7 @@ func (s *Server) enumerateModelRows(cfg *model.Config, requested string) []model
 // while temporary availability changes.
 func (s *Server) configuredModelRows(cfg *model.Config, requested string) []modelRoutingSelection {
 	enabled := s.enumerateModelRows(cfg, requested)
-	if len(enabled) == 0 || enabled[0].wildcard {
+	if len(enabled) == 0 {
 		return enabled
 	}
 	name := enabled[0].entry.Model

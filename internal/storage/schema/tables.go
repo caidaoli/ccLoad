@@ -46,7 +46,7 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("api_key VARCHAR(255) NOT NULL").
 		Column("note VARCHAR(512) NOT NULL DEFAULT ''").
 		Column("allowed_models VARCHAR(2000) NOT NULL DEFAULT ''").
-		Column("detected_models VARCHAR(8000) NOT NULL DEFAULT ''").
+		Column("detected_models TEXT"). // 可空 TEXT：MySQL utf8mb4 下两个 VARCHAR(8000) 会超过 65535 行长上限
 		Column("model_scope_empty TINYINT NOT NULL DEFAULT 0").
 		Column("key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential'").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").

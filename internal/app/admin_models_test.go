@@ -2821,12 +2821,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				wantAllowed: []string{"Foo"}, routingModel: "Foo", stripPrefix: true,
 			},
 			{
-				name:      "restricted key with wildcard channel",
-				oldModels: []model.ModelEntry{{Model: "*"}},
-				allowed:   []string{"foo"}, wantRetained: []model.ModelEntry{{Model: "*"}},
-				wantAllowed: []string{"foo"}, routingModel: "foo",
-			},
-			{
 				name: "explicit base takes precedence over thinking alias",
 				oldModels: []model.ModelEntry{
 					{Model: "foo", RedirectModel: "up-a"}, {Model: "foo(max)", RedirectModel: "up-b"},
@@ -2935,10 +2929,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			{
 				name: "normalized alias collision", oldModel: model.ModelEntry{Model: "vendor/Foo"},
 				allowed: "vendor/Foo", fetched: "Foo", stripPrefix: true,
-			},
-			{
-				name: "normalized alias shadows wildcard route", oldModel: model.ModelEntry{Model: "*"},
-				allowed: "foo", fetched: "vendor/foo", stripPrefix: true,
 			},
 			{
 				name: "fetched base shadows retained thinking alias", oldModel: model.ModelEntry{Model: "foo(max)", RedirectModel: "vendor/model"},

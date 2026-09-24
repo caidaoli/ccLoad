@@ -140,7 +140,7 @@ func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name: "codex-user@example.com", AuthType: model.AuthTypeCodexOAuth,
 		OAuthCredential: credential, URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex", Protocols: []string{"codex"}}},
-		Websockets: true, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+		Websockets: true, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-5"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig() error = %v", err)
@@ -1490,15 +1490,8 @@ func TestConfig_UpdatePrunesAPIKeyModelScopes(t *testing.T) {
 		t.Fatalf("UpdateAPIKeyModelScopes: %v", err)
 	}
 	cfg.ModelEntries = []model.ModelEntry{{Model: "*"}}
-	if _, err := store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
-		t.Fatalf("UpdateConfig wildcard: %v", err)
-	}
-	key, err := store.GetAPIKey(ctx, cfg.ID, 0)
-	if err != nil {
-		t.Fatalf("GetAPIKey wildcard: %v", err)
-	}
-	if !slices.Equal(key.AllowedModels, []string{"dynamic-model"}) {
-		t.Fatalf("wildcard key model scope=%v, want preserved dynamic model", key.AllowedModels)
+	if _, err := store.UpdateConfig(ctx, cfg.ID, cfg); err == nil || !strings.Contains(err.Error(), "wildcard model is not supported") {
+		t.Fatalf("UpdateConfig wildcard error = %v, want rejection", err)
 	}
 }
 

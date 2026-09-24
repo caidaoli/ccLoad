@@ -207,21 +207,42 @@ func (c *ChannelCache) InvalidateCache() {
 	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
 }
 
+// GetAPIKeysSnapshot 返回缓存中的 Key 指针。调用方只能读取，不能修改 Key 或其切片字段。
+func (c *ChannelCache) GetAPIKeysSnapshot(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
+	keys, err := c.cachedAPIKeys(ctx, channelID)
+	if err != nil || keys == nil {
+		return keys, err
+	}
+	result := make([]*modelpkg.APIKey, len(keys))
+	copy(result, keys)
+	return result, nil
+}
+
 // GetAPIKeys 缓存优先的API Keys查询
 func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
-	// 检查缓存
+	keys, err := c.cachedAPIKeys(ctx, channelID)
+	if err != nil || keys == nil {
+		return keys, err
+	}
+	result := make([]*modelpkg.APIKey, len(keys))
+	for i, key := range keys {
+		if key == nil {
+			continue
+		}
+		keyCopy := *key
+		keyCopy.AllowedModels = append([]string(nil), key.AllowedModels...)
+		keyCopy.DetectedModels = append([]string(nil), key.DetectedModels...)
+		result[i] = &keyCopy
+	}
+	return result, nil
+}
+
+func (c *ChannelCache) cachedAPIKeys(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
 	c.mutex.RLock()
 	keys, exists := c.apiKeysByChannelID[channelID]
 	if exists && time.Since(c.apiKeysLastUpdate[channelID]) <= c.ttl {
 		c.mutex.RUnlock()
-		// 深拷贝: 防止调用方修改污染缓存
-		result := make([]*modelpkg.APIKey, len(keys))
-		for i, key := range keys {
-			keyCopy := *key // 拷贝对象本身
-			keyCopy.AllowedModels = append([]string(nil), key.AllowedModels...)
-			result[i] = &keyCopy
-		}
-		return result, nil
+		return keys, nil
 	}
 	channelGeneration := c.apiKeysGeneration[channelID]
 	allGeneration := c.apiKeysAllGen
@@ -240,14 +261,7 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 		c.apiKeysLastUpdate[channelID] = time.Now()
 	}
 	c.mutex.Unlock()
-
-	result := make([]*modelpkg.APIKey, len(keys))
-	for i, key := range keys {
-		keyCopy := *key // 拷贝对象本身
-		keyCopy.AllowedModels = append([]string(nil), key.AllowedModels...)
-		result[i] = &keyCopy
-	}
-	return result, nil
+	return keys, nil
 }
 
 // GetAllChannelCooldowns 缓存优先的渠道冷却查询

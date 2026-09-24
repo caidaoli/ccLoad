@@ -148,7 +148,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		for _, cfg := range channels {
 			var keys []*modelpkg.APIKey
 			if !cfg.UsesOAuth() {
-				keys, err = s.getAPIKeys(ctx, cfg.ID)
+				keys, err = s.getAPIKeysSnapshot(ctx, cfg.ID)
 				if err != nil {
 					if ctx.Err() != nil {
 						return nil, ctx.Err()
@@ -171,6 +171,11 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 				readyAt, authorized := s.modelRowWithKeysReadyAt(cfg, row, requestProtocol, modelCooldowns[cfg.ID], keys, now)
 				if !authorized {
 					continue
+				}
+				if readyAt.IsZero() {
+					earliest = readyAt
+					found = true
+					break
 				}
 				if !found || readyAt.Before(earliest) {
 					earliest = readyAt
@@ -473,6 +478,11 @@ func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRou
 				if until := time.Unix(key.CooldownUntil, 0); until.After(readyAt) {
 					readyAt = until
 				}
+			}
+			// OAuth 渠道 (AntigravityCredits) 不走 Key 循环，CooldownFallback 需尾部
+			// standardQuotaUntil 合并；此守卫只对普通 API Key 渠道生效。
+			if readyAt.IsZero() && !cfg.AntigravityCredits && !cfg.CooldownFallback {
+				return readyAt, true
 			}
 			if !found || readyAt.Before(earliest) {
 				earliest = readyAt

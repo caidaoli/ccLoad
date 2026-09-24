@@ -267,6 +267,9 @@ func (e ModelEntry) Identity() ModelEntryIdentity {
 	return ModelEntryIdentity{Model: strings.ToLower(e.Model), Target: strings.ToLower(RoutingModelName(target))}
 }
 
+// ErrInvalidModelEntries 标记模型行校验失败，管理接口据此返回 400 而非 500。
+var ErrInvalidModelEntries = errors.New("invalid model entries")
+
 // ValidateModelEntries validates one channel's complete model list and returns
 // normalized copies. A request model may have several distinct upstream targets.
 func ValidateModelEntries(entries []ModelEntry) ([]ModelEntry, error) {
@@ -276,11 +279,11 @@ func ValidateModelEntries(entries []ModelEntry) ([]ModelEntry, error) {
 	for i := range result {
 		entry := &result[i]
 		if err := entry.Validate(); err != nil {
-			return nil, fmt.Errorf("models[%d]: %w", i, err)
+			return nil, fmt.Errorf("%w: models[%d]: %w", ErrInvalidModelEntries, i, err)
 		}
 		group := strings.ToLower(entry.Model)
 		if original, ok := spelling[group]; ok && original != entry.Model {
-			return nil, fmt.Errorf("models[%d]: duplicate model %q differs in case from %q", i, entry.Model, original)
+			return nil, fmt.Errorf("%w: models[%d]: duplicate model %q differs in case from %q", ErrInvalidModelEntries, i, entry.Model, original)
 		}
 		spelling[group] = entry.Model
 		if entry.RedirectModel == entry.Model {
@@ -291,10 +294,10 @@ func ValidateModelEntries(entries []ModelEntry) ([]ModelEntry, error) {
 			targets[group] = make(map[string]struct{})
 		}
 		if _, exists := targets[group][identity.Target]; exists {
-			return nil, fmt.Errorf("models[%d]: duplicate model target %q for %q", i, entry.RedirectModel, entry.Model)
+			return nil, fmt.Errorf("%w: models[%d]: duplicate model target %q for %q", ErrInvalidModelEntries, i, entry.RedirectModel, entry.Model)
 		}
-		if len(targets[group]) > 0 && (entry.Model == "*" || RoutingModelName(entry.Model) != entry.Model) {
-			return nil, fmt.Errorf("models[%d]: model %q cannot have multiple rows", i, entry.Model)
+		if len(targets[group]) > 0 && RoutingModelName(entry.Model) != entry.Model {
+			return nil, fmt.Errorf("%w: models[%d]: model %q cannot have multiple rows", ErrInvalidModelEntries, i, entry.Model)
 		}
 		targets[group][identity.Target] = struct{}{}
 	}
@@ -320,7 +323,7 @@ func CarryModelPricing(previous, next []ModelEntry) []ModelEntry {
 	}
 	result := append([]ModelEntry(nil), next...)
 	for i := range result {
-		if result[i].Pricing == nil && result[i].Model != "*" {
+		if result[i].Pricing == nil {
 			result[i].Pricing = pricingByModel[result[i].Identity()]
 		}
 	}
@@ -457,6 +460,9 @@ func (e *ModelEntry) Validate() error {
 	if e.Model == "" {
 		return errors.New("model cannot be empty")
 	}
+	if e.Model == "*" {
+		return errors.New("wildcard model is not supported")
+	}
 	if strings.ContainsAny(e.Model, "\x00\r\n") {
 		return errors.New("model contains illegal characters")
 	}
@@ -468,10 +474,6 @@ func (e *ModelEntry) Validate() error {
 	if e.Pricing.IsEmpty() {
 		e.Pricing = nil
 		return nil
-	}
-	// 通配条目不对应具体模型，挂价格会把一份价目套到任意模型上。
-	if e.Model == "*" {
-		return errors.New("wildcard model cannot have pricing")
 	}
 	if _, err := e.Pricing.ModelPricing(); err != nil {
 		return fmt.Errorf("pricing: %w", err)
@@ -951,11 +953,8 @@ func (c *Config) SupportsModel(model string) bool {
 	c.buildIndexIfNeeded()
 	c.indexMu.RLock()
 	defer c.indexMu.RUnlock()
-	if _, exists := c.modelIndex[model]; exists {
-		return true
-	}
-	_, wildcard := c.modelIndex["*"]
-	return wildcard
+	_, exists := c.modelIndex[model]
+	return exists
 }
 
 // IsCoolingDown 检查渠道是否处于冷却状态
@@ -1038,7 +1037,8 @@ func (k *APIKey) AllowsUpstreamModel(actual string) bool {
 	if k == nil {
 		return false
 	}
-	if len(k.DetectedModels) == 0 {
+	actual = RoutingModelName(actual)
+	if len(k.DetectedModels) == 0 || actual == "" || actual == "*" {
 		return true
 	}
 	for _, detected := range k.DetectedModels {

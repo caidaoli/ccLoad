@@ -638,6 +638,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.keyModelsDetectNoMatch': '上游返回的模型与当前渠道模型没有匹配项。',
   'channels.keyModelsDetected': '已匹配 {count} 个渠道模型，请确认后保存。',
   'channels.keyModelsDetectFailed': '探测失败：{error}',
+  'channels.keyModelsDetectTooLong': '匹配到的上游模型过多，无法保存，请缩小渠道模型范围。',
   'channels.applyFetchedKeyModelsConfirm': '已分别探测到 {count} 个 Key 的模型范围变化。是否应用到对应 Key？探测失败的 Key 保持原范围，无匹配结果的 Key 将被标记为范围为空。',
   'channels.appliedFetchedKeyModels': '已更新 {count} 个 Key 的模型范围。',
   'channels.fetchModelsPartialFailed': '{failed} 个 Key 探测失败，其范围保持不变。',
