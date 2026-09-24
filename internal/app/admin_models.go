@@ -271,6 +271,18 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		}
 		item.Fetched = len(fetched)
 
+		var keys []*model.APIKey
+		if mode == "replace" && cfg.GetAuthType() == model.AuthTypeAPIKey {
+			keys, err = s.store.GetAPIKeys(ctx, channelID)
+			if err != nil {
+				item.Status = "failed"
+				item.Error = "读取 API Key 失败: " + err.Error()
+				failed++
+				results = append(results, item)
+				continue
+			}
+		}
+
 		modelEntriesChanged := false
 		if (req.LowercaseModels || req.StripModelSourcePrefix) && mode == "merge" {
 			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, normalization)
@@ -282,15 +294,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		case "replace":
 			if partialKeyFailure {
 				item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
-				retained, retainErr := s.modelsRetainedFromFailedProbes(ctx, channelID, cfg.ModelEntries, resp.KeyModels, fetched)
-				if retainErr != nil {
-					item.Status = "failed"
-					item.Error = "读取 API Key 失败: " + retainErr.Error()
-					failed++
-					results = append(results, item)
-					continue
-				}
-				fetched = append(fetched, retained...)
+				fetched = append(fetched, modelsRetainedFromFailedProbes(keys, cfg.ModelEntries, fetched, resp.KeyModels, normalization)...)
 			}
 			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
 			item.Removed = removed
@@ -306,14 +310,6 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
 		var scopeUpdates map[int]model.APIKeyModelScope
 		if mode == "replace" && cfg.GetAuthType() == model.AuthTypeAPIKey {
-			keys, keyErr := s.store.GetAPIKeys(ctx, channelID)
-			if keyErr != nil {
-				item.Status = "failed"
-				item.Error = "读取 API Key 失败: " + keyErr.Error()
-				failed++
-				results = append(results, item)
-				continue
-			}
 			scopeUpdates = buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, resp.KeyModels)
 		}
 		scopeChanged := len(scopeUpdates) > 0
@@ -374,13 +370,15 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 
 // modelsRetainedFromFailedProbes 把探测失败的 Key 仍被允许的渠道模型留在覆盖结果里。
 // 失败不代表这些模型消失；丢掉它们会让只有该 Key 能提供的模型从渠道中被删掉。
-func (s *Server) modelsRetainedFromFailedProbes(
-	ctx context.Context,
-	channelID int64,
+// 不受限的失败 Key 可能提供任意渠道模型，此时保留全部现有模型。
+// 保留条目与 fetched 走同一归一化，并按归一化后的名字去重。
+func modelsRetainedFromFailedProbes(
+	keys []*model.APIKey,
 	channelModels []model.ModelEntry,
-	keyModels []FetchKeyModelsItem,
 	alreadyFetched []model.ModelEntry,
-) ([]model.ModelEntry, error) {
+	keyModels []FetchKeyModelsItem,
+	normalization modelNormalizationOptions,
+) []model.ModelEntry {
 	failed := make(map[int]struct{})
 	for _, result := range keyModels {
 		if strings.TrimSpace(result.Error) != "" {
@@ -388,21 +386,10 @@ func (s *Server) modelsRetainedFromFailedProbes(
 		}
 	}
 	if len(failed) == 0 {
-		return nil, nil
+		return nil
 	}
-	keys, err := s.store.GetAPIKeys(ctx, channelID)
-	if err != nil {
-		return nil, err
-	}
-	present := make(map[string]model.ModelEntry, len(channelModels))
-	for _, entry := range channelModels {
-		present[strings.ToLower(entry.Model)] = entry
-	}
-	seen := make(map[string]struct{}, len(alreadyFetched))
-	for _, entry := range alreadyFetched {
-		seen[strings.ToLower(entry.Model)] = struct{}{}
-	}
-	retained := make([]model.ModelEntry, 0)
+	allowed := make(map[string]struct{})
+	keepAll := false
 	for _, key := range keys {
 		if key == nil || key.ModelScopeEmpty {
 			continue
@@ -410,23 +397,34 @@ func (s *Server) modelsRetainedFromFailedProbes(
 		if _, ok := failed[key.KeyIndex]; !ok {
 			continue
 		}
+		if len(key.AllowedModels) == 0 {
+			keepAll = true
+			break
+		}
 		for _, name := range key.AllowedModels {
-			modelName := strings.ToLower(strings.TrimSpace(name))
-			if modelName == "" {
-				continue
-			}
-			if _, dup := seen[modelName]; dup {
-				continue
-			}
-			entry, ok := present[modelName]
-			if !ok {
-				continue
-			}
-			seen[modelName] = struct{}{}
-			retained = append(retained, entry)
+			allowed[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 		}
 	}
-	return retained, nil
+	candidates := make([]model.ModelEntry, 0, len(channelModels))
+	for _, entry := range channelModels {
+		if _, ok := allowed[strings.ToLower(entry.Model)]; keepAll || ok {
+			candidates = append(candidates, entry)
+		}
+	}
+	seen := make(map[string]struct{}, len(alreadyFetched))
+	for _, entry := range alreadyFetched {
+		seen[strings.ToLower(entry.Model)] = struct{}{}
+	}
+	retained := make([]model.ModelEntry, 0, len(candidates))
+	for _, entry := range normalizeModelEntriesForSave(candidates, normalization) {
+		name := strings.ToLower(entry.Model)
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		retained = append(retained, entry)
+	}
+	return retained
 }
 
 func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {

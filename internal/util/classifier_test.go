@@ -919,6 +919,22 @@ func TestInferenceCapErrorCooldown(t *testing.T) {
 			wantReason:      "INFERENCE_CAP_ERROR",
 		},
 		{
+			name:            "try_again_fractional_hours",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Try again in 1.5h"}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 90,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+		{
+			name:            "try_again_unit_words",
+			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Try again in 2 hours and 5 minutes."}}`,
+			wantLevel:       ErrorLevelKey,
+			wantHasCooldown: true,
+			wantDurationMin: 125,
+			wantReason:      "INFERENCE_CAP_ERROR",
+		},
+		{
 			name:            "no_parseable_time",
 			body:            `{"error":{"code":"INFERENCE_CAP_ERROR","message":"Daily limit reached"}}`,
 			wantLevel:       ErrorLevelKey,

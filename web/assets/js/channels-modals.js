@@ -3124,8 +3124,13 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
       changedCount++;
     };
 
-    if (!result || result.error || !Array.isArray(result.models) || result.models.length === 0) {
+    // 探测失败（429、超时等）不代表模型范围变化，与后端一致保持原范围。
+    if (!result || result.error) {
       failedCount++;
+      continue;
+    }
+    if (!Array.isArray(result.models) || result.models.length === 0) {
+      unmatchedCount++;
       setScope([], true);
       continue;
     }

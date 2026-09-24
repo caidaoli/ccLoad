@@ -41,8 +41,11 @@ var jevSensitivePatterns = []*regexp.Regexp{
 
 const jevDurationPart = `(\d+(?:\.\d+)?)\s*((?:milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d)\b|秒|分钟|小时|天)`
 
-// 复合时长（"2h 18m"、"2小时18分钟"）必须作为一个候选：拆开后 Jev 只能选中其中一段。
-var jevTimePattern = regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}|\s+UTC(?:[+-]\d{1,2}(?::?\d{2})?)?)?|` + jevDurationPart + `(?:\s*` + jevDurationPart + `)*|\b\d{10,13}\b`)
+// Go 风格紧凑时长（"2h18m"、"1h30m0s"）：片段之间没有词边界，jevDurationPart 会把它拆开。
+const jevCompactDuration = `\d+(?:\.\d+)?(?:ms|h|m|s)(?:\d+(?:\.\d+)?(?:ms|h|m|s))+\b`
+
+// 复合时长（"2h 18m"、"2h18m"、"2小时18分钟"）必须作为一个候选：拆开后 Jev 只能选中其中一段。
+var jevTimePattern = regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}|\s+UTC(?:[+-]\d{1,2}(?::?\d{2})?)?)?|` + jevCompactDuration + `|` + jevDurationPart + `(?:\s*` + jevDurationPart + `)*|\b\d{10,13}\b`)
 var jevUTCTimePattern = regexp.MustCompile(`(?i)^(.+?)\s+UTC([+-])(\d{1,2})(?::?(\d{2}))?$`)
 var jevSecondsPattern = regexp.MustCompile(`(?i)retry_after(?:_seconds)?:\s*(\d+(?:\.\d+)?)`)
 var jevDurationPartPattern = regexp.MustCompile(`(?i)` + jevDurationPart)

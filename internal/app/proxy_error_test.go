@@ -410,6 +410,7 @@ func TestProxyJevAnalysis(t *testing.T) {
 		status                          int
 		body, category, reset, outcome  string
 		confidence                      float64
+		resetAfter                      time.Duration
 		want                            cooldown.Action
 		calls                           int
 		configured, disabled, committed bool
@@ -423,8 +424,9 @@ func TestProxyJevAnalysis(t *testing.T) {
 		{name: "configured priority", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "request", confidence: 1, want: cooldown.ActionRetryModel, calls: 0, configured: true},
 		{name: "disabled", status: 404, body: `{"error":{"message":"unrecognized"}}`, want: cooldown.ActionRetryChannel, disabled: true},
 		{name: "known context limit", status: 400, body: `{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}`, want: cooldown.ActionReturnClient},
-		{name: "time only", status: 429, body: `{"error":{"message":"retry in 2 hours; previous reset 2020-01-01T00:00:00Z"}}`, reset: "2 hours", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
-		{name: "compound duration", status: 429, body: `{"error":{"message":"Daily free limit reached. Try again in 2h 18m"}}`, reset: "2h 18m", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "time only", status: 429, body: `{"error":{"message":"retry in 2 hours; previous reset 2020-01-01T00:00:00Z"}}`, reset: "2 hours", confidence: 1, resetAfter: 2 * time.Hour, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "compound duration", status: 429, body: `{"error":{"message":"Daily free limit reached. Try again in 2h 18m"}}`, reset: "2h 18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "compact compound duration", status: 429, body: `{"error":{"message":"Daily free limit reached. Try again in 2h18m"}}`, reset: "2h18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
 		{name: "ambiguous timezone", status: 429, body: `{"error":{"message":"reset 2099-01-01 12:00:00"}}`, reset: "2099-01-01 12:00:00", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
 		{name: "explicit UTC offset", status: 429, body: fmt.Sprintf(`{"error":{"message":"reset %s UTC+8"}}`, offsetReset), reset: offsetReset + " UTC+8", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
 		{name: "past reset", status: 429, body: `{"error":{"message":"reset 2020-01-01T00:00:00Z"}}`, reset: "2020-01-01T00:00:00Z", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
@@ -570,8 +572,7 @@ func TestProxyJevAnalysis(t *testing.T) {
 			if tc.name == "explicit UTC offset" && audit.Adopted["reset"] == "" {
 				t.Fatalf("explicit timezone reset not adopted: %+v", audit)
 			}
-			wantReset := map[string]time.Duration{"time only": 2 * time.Hour, "compound duration": 2*time.Hour + 18*time.Minute}
-			if duration, ok := wantReset[tc.name]; ok {
+			if duration := tc.resetAfter; duration > 0 {
 				cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
 				if err != nil || cooldowns[cfg.ID]["test-model"].Sub(received.Add(duration)).Abs() > time.Second {
 					t.Fatalf("precise reset was not persisted: %v err=%v", cooldowns, err)

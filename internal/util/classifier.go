@@ -39,8 +39,12 @@ var beijingTomorrowResetRegex = regexp.MustCompile(`明天\s*(?:凌晨|早上|�
 // retryInDurationRegex 匹配 Gemini RESOURCE_EXHAUSTED 中的 “Please retry in 59.409754061s”。
 var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))*)`)
 
-// tryAgainInHMRegex 匹配 “Try again in 2h 18m”。至少一段 h/m/s，且停在词边界，避免把 5ms 读成 5m。
-var tryAgainInHMRegex = regexp.MustCompile(`(?i)\bagain\s+in\s+(?:(\d+h)(?:\s*(\d+m))?(?:\s*(\d+s))?|(\d+m)(?:\s*(\d+s))?|(\d+s))\b`)
+// tryAgainInHMRegex 匹配 “Try again in 2h 18m” / “1.5h” / “2 hours 5 minutes”。
+// 末尾词边界避免把 5ms 读成 5m。
+const tryAgainInPart = `\d+(?:\.\d+)?\s*(?:hours?|minutes?|seconds?|h|m|s)`
+
+var tryAgainInHMRegex = regexp.MustCompile(`(?i)\bagain\s+in\s+(` + tryAgainInPart + `(?:\s*(?:and\s+)?` + tryAgainInPart + `)*)\b`)
+var tryAgainInPartRegex = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(hours?|minutes?|seconds?|h|m|s)`)
 
 // retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
 var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
@@ -1066,27 +1070,31 @@ func parseRollingFreeAllowanceCooldownUntil(message string, now time.Time) (time
 	return until, true
 }
 
-// parseTryAgainInCooldownUntil 解析 "Try again in 2h 18m" 等空格分隔的时长。
+// parseTryAgainInCooldownUntil 解析 "Try again in 2h 18m"、"1.5h"、"2 hours 5 minutes" 等时长。
 func parseTryAgainInCooldownUntil(message string, now time.Time) (time.Time, bool) {
-	matches := tryAgainInHMRegex.FindStringSubmatch(message)
-	if matches == nil {
+	match := tryAgainInHMRegex.FindStringSubmatch(message)
+	if match == nil {
 		return time.Time{}, false
 	}
-	var d time.Duration
-	for _, group := range matches[1:] {
-		if group == "" {
-			continue
-		}
-		part, err := time.ParseDuration(group)
+	var total float64
+	for _, part := range tryAgainInPartRegex.FindAllStringSubmatch(match[1], -1) {
+		number, err := strconv.ParseFloat(part[1], 64)
 		if err != nil {
-			continue
+			return time.Time{}, false
 		}
-		d += part
+		unit := time.Second
+		switch strings.ToLower(part[2])[0] {
+		case 'h':
+			unit = time.Hour
+		case 'm':
+			unit = time.Minute
+		}
+		total += number * float64(unit)
 	}
-	if d <= 0 {
+	if total <= 0 || total > float64(366*24*time.Hour) {
 		return time.Time{}, false
 	}
-	return now.Add(d), true
+	return now.Add(time.Duration(total)), true
 }
 
 func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (time.Time, bool) {

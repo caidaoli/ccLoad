@@ -2326,6 +2326,67 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
+	t.Run("replace mode keeps all models when an unrestricted key probe fails", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "Bearer healthy" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.2"}]}`))
+				return
+			}
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "unrestricted-probe-channel",
+			URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Priority:     1,
+			ModelEntries: []model.ModelEntry{{Model: "glm-5.2"}, {Model: "vendor/Only-B"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "cooling", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids":               []int64{cfg.ID},
+			"mode":                      "replace",
+			"lowercase_models":          true,
+			"strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		// 保留的条目走同一归一化：别名去前缀并小写，上游名保留为重定向。
+		want := []model.ModelEntry{{Model: "glm-5.2"}, {Model: "only-b", RedirectModel: "vendor/Only-B"}}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, want)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if len(keys[1].AllowedModels) != 0 || keys[1].ModelScopeEmpty || keys[1].Disabled {
+			t.Fatalf("failed unrestricted key must stay unrestricted: %+v", keys[1])
+		}
+	})
+
 	t.Run("replace mode probes cooling keys and skips manually disabled keys", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {

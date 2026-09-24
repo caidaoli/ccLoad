@@ -1802,11 +1802,11 @@ test('per-Key discovery clears scope-empty marker when a scope is recovered', ()
   }]);
 });
 
-test('per-Key discovery marks failed Keys empty while applying successful Keys', () => {
+test('per-Key discovery keeps failed Keys unchanged while applying successful Keys', () => {
   const { proposeFetchedKeyModelScopes } = loadChannelsModals();
   const result = proposeFetchedKeyModelScopes([
     { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
-    { api_key: 'sk-a', note: '', allowed_models: [] },
+    { api_key: 'sk-a', note: '', allowed_models: ['logical-a'] },
     { api_key: 'sk-cooling', note: '', allowed_models: ['keep-cooling'] },
     { api_key: 'sk-b', note: '', allowed_models: [] }
   ], [
@@ -1814,21 +1814,21 @@ test('per-Key discovery marks failed Keys empty while applying successful Keys',
     { model: 'common', redirect_model: '' },
     { model: 'logical-b', redirect_model: 'upstream-b' }
   ], [
-    { key_index: 1, error: 'invalid api key', models: [] },
+    { key_index: 1, error: 'HTTP 429', models: [] },
     { key_index: 3, models: [{ model: 'upstream-b' }, { model: 'common' }] }
   ], [
     { keyIndex: 1, apiKey: 'sk-a' },
     { keyIndex: 3, apiKey: 'sk-b' }
   ]);
 
-  assert.equal(result.changedCount, 2);
+  assert.equal(result.changedCount, 1);
   assert.equal(result.matchedCount, 1);
   assert.equal(result.unmatchedCount, 0);
   assert.equal(result.failedCount, 1);
   assert.equal(result.complete, false);
   assert.deepEqual(result.rows, [
     { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
-    { api_key: 'sk-a', note: '', allowed_models: [], model_scope_empty: true },
+    { api_key: 'sk-a', note: '', allowed_models: ['logical-a'] },
     { api_key: 'sk-cooling', note: '', allowed_models: ['keep-cooling'] },
     { api_key: 'sk-b', note: '', allowed_models: ['common', 'logical-b'] }
   ]);
