@@ -106,6 +106,11 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 				matches++
 			}
 		}
+		if matches == 0 && cfg.UsesAntigravityOAuth() && strings.EqualFold(actual, antigravityWebSearchFallbackModel) {
+			// Web Search replaces the routed model after row selection. Its log retains
+			// the selected row's price, which cannot be recovered from this model name.
+			return nil, false
+		}
 		return matched, true
 	}
 }

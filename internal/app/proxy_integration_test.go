@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -219,7 +220,7 @@ func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
 		name: "per-target-key", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
 			{Model: "a", RedirectModel: "b"}, {Model: "a", RedirectModel: "d"}, {Model: "b", RedirectModel: "c"},
 		},
-	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "true"})
 	ctx := context.Background()
 	if err := env.store.DeleteAllAPIKeys(ctx, 1); err != nil {
 		t.Fatal(err)
@@ -237,7 +238,8 @@ func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
 	if w.Code != http.StatusOK || !gjson.GetBytes(w.Body.Bytes(), "success").Bool() {
 		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
 	}
-	for range 4 {
+	request := func() {
+		t.Helper()
 		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 			"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
 		}, nil)
@@ -245,9 +247,24 @@ func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
+	for range 4 {
+		request()
+	}
+	if err := env.store.SetKeyCooldown(ctx, 1, 0, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	for range 2 {
+		request()
+	}
+	if err := env.store.SetKeyCooldown(ctx, 1, 1, time.Now().Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	request() // 全冷却时选择最早恢复的 Key 和对应目标。
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"c/Bearer only-c", "d/Bearer only-d", "c/Bearer only-c", "d/Bearer only-d"}; !slices.Equal(sent, want) {
+	if want := []string{"c/Bearer only-c", "d/Bearer only-d", "c/Bearer only-c", "d/Bearer only-d", "d/Bearer only-d", "d/Bearer only-d", "c/Bearer only-c"}; !slices.Equal(sent, want) {
 		t.Fatalf("upstream model/key pairs=%v, want %v", sent, want)
 	}
 }
@@ -311,6 +328,63 @@ func TestProxy_DetectedKeyTargetSkipsIncompatibleProtocolURL(t *testing.T) {
 	defer geminiPathsMu.Unlock()
 	if openAIHits.Load() != 0 || !slices.Equal(geminiPaths, []string{"/v1beta/models/c:generateContent"}) {
 		t.Fatalf("OpenAI hits=%d Gemini paths=%v", openAIHits.Load(), geminiPaths)
+	}
+}
+
+func TestProxy_DetectedKeyTargetUsesSendableURLProtocolAndTriesAnotherKey(t *testing.T) {
+	for _, declared := range [][]string{{"openai"}, {"openai", "gemini"}} {
+		t.Run(strings.Join(declared, "+"), func(t *testing.T) {
+			var sent []string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+				}
+				sent = append(sent, body.Model+"/"+r.Header.Get("Authorization"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "declared-target-key", protocolTransformMode: model.ProtocolTransformModeAuto,
+				modelEntries: []model.ModelEntry{{Model: "a", RedirectModel: "c"}},
+				customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+					Action: model.RuleActionOverride, Path: "model", Value: json.RawMessage(`"d"`),
+				}}},
+			}}, map[int]string{0: upstream.URL})
+			ctx := context.Background()
+			cfg, err := env.store.GetConfig(ctx, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.URLs[0].Protocols = declared
+			if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.DeleteAllAPIKeys(ctx, cfg.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "only-c", Priority: 10, DetectedModels: []string{"c"}},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "only-d", Priority: 0, DetectedModels: []string{"d"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			env.server.InvalidateChannelListCache()
+			env.server.InvalidateAPIKeysCache(cfg.ID)
+
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if want := []string{"d/Bearer only-d"}; !slices.Equal(sent, want) {
+				t.Fatalf("upstream model/key pairs=%v, want %v", sent, want)
+			}
+		})
 	}
 }
 
@@ -3081,13 +3155,14 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 			t.Errorf("Web Search sessionId missing: %s", wireBody)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"search ok"}]},"finishReason":"STOP"}]}}`)
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"search ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":1000,"totalTokenCount":2000}}}`)
 	}))
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "antigravity-web-search", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
-		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-search"),
+		name: "antigravity-web-search", upstreamProtocol: "gemini", priority: 100,
+		modelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-6", Pricing: channelPrice(1, 2)}},
+		authType:     model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-search"),
 	}}, map[int]string{0: upstream.URL})
 
 	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
@@ -3097,6 +3172,31 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 	}, nil)
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "content.0.text").String() != "search ok" {
 		t.Fatalf("Web Search response=%d body=%s", response.Code, response.Body.String())
+	}
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%v err=%v", configs, err)
+	}
+	var logs []*model.LogEntry
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		logs, err = env.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{ChannelID: &configs[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logs) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Web Search log not persisted: %+v", logs)
+		}
+	}
+	entry := logs[0]
+	if entry.ActualModel != antigravityWebSearchFallbackModel || math.Abs(entry.Cost-0.003) > 1e-12 {
+		t.Fatalf("Web Search actual model=%q cost=%v, want %s and 0.003", entry.ActualModel, entry.Cost, antigravityWebSearchFallbackModel)
+	}
+	if projected := projectDashboardLogs(logs, env.server.logModelPrices(ctx, logs)); projected[0].CostBreakdown != nil {
+		t.Fatalf("Web Search cost=%v exposed mismatched breakdown=%+v", entry.Cost, projected[0].CostBreakdown)
 	}
 }
 

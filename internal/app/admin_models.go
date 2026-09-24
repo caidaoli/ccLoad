@@ -462,7 +462,7 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 	lookup := &model.Config{ModelEntries: modelRows}
 	for _, row := range modelRows {
 		logicalModel := strings.TrimSpace(row.Model)
-		if logicalModel == "" || logicalModel == "*" || row.Disabled {
+		if logicalModel == "" || logicalModel == "*" {
 			continue
 		}
 		actual := resolveActualModel(lookup, modelRoutingSelection{logicalModel: logicalModel, entry: row})
@@ -482,7 +482,7 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 		matched = append(matched, logicalModel)
 	}
 	for _, row := range modelRows {
-		if strings.TrimSpace(row.Model) == "*" && !row.Disabled {
+		if strings.TrimSpace(row.Model) == "*" {
 			for _, name := range detectedNames {
 				key := strings.ToLower(name)
 				if _, exists := seen[key]; !exists {

@@ -2061,6 +2061,11 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 	t.Run("replace mode", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/chat/completions" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+				return
+			}
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
@@ -2108,6 +2113,27 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" || !got.ModelEntries[0].Disabled {
 			t.Fatalf("unexpected models after replace: %#v", got.ModelEntries)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if len(keys) != 1 || keys[0].Disabled || keys[0].ModelScopeEmpty ||
+			!reflect.DeepEqual(keys[0].AllowedModels, []string{"new-1"}) ||
+			!reflect.DeepEqual(keys[0].DetectedModels, []string{"new-1"}) {
+			t.Fatalf("disabled model must preserve discovered Key capability: %+v", keys)
+		}
+
+		server.configService = NewConfigService(store)
+		server.keySelector = NewKeySelector()
+		c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", cfg.ID), map[string]any{
+			"model": "new-1", "client_protocol": "openai",
+		}))
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+		server.HandleChannelTest(c)
+		response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if w.Code != http.StatusOK || !response.Success || response.Data["success"] != true {
+			t.Fatalf("disabled model admin test status=%d body=%s", w.Code, w.Body.String())
 		}
 	})
 

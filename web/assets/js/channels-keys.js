@@ -200,7 +200,7 @@ function selectModelsForInlineKeyTest(row, modelRows) {
   const keyRow = normalizeInlineKeyRow(row);
   const allowedModels = new Set(keyRow.allowed_models.map(name => name.toLowerCase()));
   const configuredModels = (Array.isArray(modelRows) ? modelRows : [])
-    .filter(modelRow => modelRow && !modelRow.disabled)
+    .filter(Boolean)
     .map(modelRow => routingKeyModelName(modelRow.model))
     .filter(Boolean);
   if (allowedModels.size > 0 && configuredModels.includes('*')) {
@@ -242,6 +242,19 @@ let keyModelScopeEditingIndex = -1;
 let keyModelScopeTrigger = null;
 let keyModelScopeDetectionGeneration = 0;
 let keyModelScopeExtraModels = [];
+let keyModelScopeDetectedModels = [];
+
+function resolveKeyScopeTarget(rows, row) {
+  const redirect = String(row?.redirect_model || '').trim();
+  let target = redirect || String(row?.model || '').trim();
+  if (redirect) {
+    const enabled = rows.filter(entry => !entry?.disabled);
+    const next = enabled.find(entry => String(entry.model || '').trim() === target) ||
+      enabled.find(entry => routingKeyModelName(entry.model) === target);
+    if (next?.redirect_model) target = String(next.redirect_model).trim();
+  }
+  return routingKeyModelName(target);
+}
 
 function configuredKeyModelScopeOptions() {
   const options = [];
@@ -259,7 +272,7 @@ function configuredKeyModelScopeOptions() {
       byModel.set(key, option);
       options.push(option);
     }
-    const upstream = routingKeyModelName(row?.redirect_model || modelName);
+    const upstream = resolveKeyScopeTarget(rows, row);
     if (!option.upstreamModels.some(name => name.toLowerCase() === upstream.toLowerCase())) {
       option.upstreamModels.push(upstream);
     }
@@ -378,6 +391,7 @@ function openKeyModelScopeModal(index, trigger) {
   keyModelScopeEditingIndex = index;
   keyModelScopeDetectionGeneration++;
   keyModelScopeExtraModels = normalizeKeyAllowedModels(row.allowed_models);
+  keyModelScopeDetectedModels = normalizeKeyAllowedModels(row.detected_models);
   keyModelScopeTrigger = trigger || document.activeElement;
   const scopeWasEmptied = row.model_scope_empty === true;
   renderKeyModelScopeOptions(row.allowed_models, scopeWasEmptied);
@@ -414,6 +428,7 @@ function closeKeyModelScopeModal(restoreFocus = true) {
   keyModelScopeEditingIndex = -1;
   keyModelScopeDetectionGeneration++;
   keyModelScopeExtraModels = [];
+  keyModelScopeDetectedModels = [];
   keyModelScopeTrigger = null;
 }
 
@@ -432,6 +447,8 @@ function confirmKeyModelScope() {
   const index = keyModelScopeEditingIndex;
   const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
   row.allowed_models = normalizeKeyAllowedModels(allowedModels);
+  if (keyModelScopeDetectedModels.length > 0) row.detected_models = [...keyModelScopeDetectedModels];
+  else delete row.detected_models;
   delete row.model_scope_empty;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
@@ -482,18 +499,17 @@ async function detectKeyModelScope() {
     const keyResult = Array.isArray(data.key_models) ? data.key_models[0] : null;
     if (keyResult?.error) throw new Error(keyResult.error);
     const fetchedEntries = Array.isArray(keyResult?.models) ? keyResult.models : data.models || [];
-    const fetched = new Set(fetchedEntries
+    const detectedTargets = normalizeKeyAllowedModels(fetchedEntries
       .flatMap(entry => [entry?.model, entry?.redirect_model])
-      .map(name => String(name || '').trim().toLowerCase())
-      .filter(Boolean));
+      .map(routingKeyModelName));
+    const fetched = new Set(detectedTargets.map(name => name.toLowerCase()));
 
     let matched = 0;
     if (channelUsesWildcardModel()) {
-      const detectedModels = normalizeKeyAllowedModels(fetchedEntries.map(entry => entry?.model || entry?.redirect_model));
-      if (detectedModels.length === 0) throw new Error(window.t('channels.keyModelsDetectNoMatch'));
-      keyModelScopeExtraModels = normalizeKeyAllowedModels([...keyModelScopeExtraModels, ...detectedModels]);
-      renderKeyModelScopeOptions(detectedModels);
-      matched = detectedModels.length;
+      if (detectedTargets.length === 0) throw new Error(window.t('channels.keyModelsDetectNoMatch'));
+      keyModelScopeExtraModels = normalizeKeyAllowedModels([...keyModelScopeExtraModels, ...detectedTargets]);
+      renderKeyModelScopeOptions(detectedTargets);
+      matched = detectedTargets.length;
     } else {
       const targetsByModel = new Map(configuredKeyModelScopeOptions().map(option =>
         [option.model.toLowerCase(), option.upstreamModels]));
@@ -505,6 +521,7 @@ async function detectKeyModelScope() {
       }
     }
     if (matched === 0) throw new Error(window.t('channels.keyModelsDetectNoMatch'));
+    keyModelScopeDetectedModels = detectedTargets;
     const allowAll = document.getElementById('keyModelScopeAll');
     if (allowAll) allowAll.checked = false;
     syncKeyModelScopeControls();
@@ -1808,6 +1825,7 @@ if (typeof module !== 'undefined' && module.exports) {
     selectModelsForInlineKeyTest,
     openKeyModelScopeModal,
     closeKeyModelScopeModal,
+    confirmKeyModelScope,
     detectKeyModelScope,
     initKeyModelScopeModalEvents,
     setVisibleKeyModelScopeChecked,

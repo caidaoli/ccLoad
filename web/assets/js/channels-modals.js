@@ -3079,7 +3079,7 @@ function detectedChannelModelScope(modelRows, entries) {
   const seenActual = new Set();
   for (const row of Array.isArray(modelRows) ? modelRows : []) {
     const logicalModel = String(row?.model || '').trim();
-    if (!logicalModel || logicalModel === '*' || row?.disabled) continue;
+    if (!logicalModel || logicalModel === '*') continue;
     const actualModel = resolveEditorActualModel(modelRows, row);
     if (!detected.has(actualModel.toLowerCase())) continue;
     if (!seenActual.has(actualModel.toLowerCase())) {
@@ -3092,7 +3092,7 @@ function detectedChannelModelScope(modelRows, entries) {
     matched.push(logicalModel);
   }
   const wildcard = (Array.isArray(modelRows) ? modelRows : [])
-    .some(row => String(row?.model || '').trim() === '*' && !row?.disabled);
+    .some(row => String(row?.model || '').trim() === '*');
   if (wildcard) {
     for (const name of detectedNames) {
       const key = name.toLowerCase();

@@ -4665,6 +4665,20 @@ func TestHandleChannelTest_HonorsRequestedKeyIndexEvenIfCooled(t *testing.T) {
 	if gotIndex, _ := resp.Data["tested_key_index"].(float64); gotIndex != 0 {
 		t.Fatalf("tested_key_index=%v, want 0", resp.Data["tested_key_index"])
 	}
+	if err := srv.store.SetAPIKeyDisabled(ctx, created.ID, 0, true); err != nil {
+		t.Fatalf("SetAPIKeyDisabled failed: %v", err)
+	}
+	gotAuth = ""
+	c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "claude-3-5-sonnet", "client_protocol": "anthropic",
+		"key_index": 0, "api_key": "sk-cooled",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+	resp = mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if w.Code != http.StatusOK || resp.Data["success"] != true || gotAuth != "Bearer sk-cooled" {
+		t.Fatalf("explicit disabled Key test status=%d auth=%q body=%s", w.Code, gotAuth, w.Body.String())
+	}
 }
 
 func TestHandleChannelTest_OmittedKeyIndexSelectsModelCompatibleKey(t *testing.T) {

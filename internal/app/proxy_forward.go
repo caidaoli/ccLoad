@@ -4070,6 +4070,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
 	var lastFailure *proxyResult
+	var skippedTargetErr error
 
 	// 获取渠道URL列表（单URL时退化为单元素切片）
 	urls := cfg.GetURLs()
@@ -4079,7 +4080,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	selector := s.urlSelector
 
 	// Key重试循环
-	for range maxKeyRetries {
+	for attemptedKeys := 0; attemptedKeys < maxKeyRetries && len(triedKeys) < actualKeyCount; {
 		// 检查context是否已取消/超时
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return buildCtxDoneResult(cfg, ctxErr), nil
@@ -4095,6 +4096,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
 		}
 		if selectErr != nil {
+			if skippedTargetErr != nil && errors.Is(selectErr, ErrAllKeysUnavailable) {
+				return nil, skippedTargetErr
+			}
 			if modelScoped && errors.Is(selectErr, ErrAllKeysUnavailable) {
 				return nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, channelModel)
 			}
@@ -4114,8 +4118,13 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			ctx, cfg, urls, selector,
 			keyIndex, selectedKey, keyByIndex(apiKeys, keyIndex), reqCtx, w)
 		if attemptErr != nil {
+			if errors.Is(attemptErr, ErrNoAPIKeyForModel) {
+				skippedTargetErr = attemptErr
+				continue
+			}
 			return nil, attemptErr
 		}
+		attemptedKeys++
 		if immediate != nil {
 			return immediate, nil
 		}
@@ -4134,6 +4143,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// Key重试循环结束：返回最后一次失败结果
 	if lastFailure != nil {
 		return lastFailure, nil
+	}
+	if skippedTargetErr != nil {
+		return nil, skippedTargetErr
 	}
 
 	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）

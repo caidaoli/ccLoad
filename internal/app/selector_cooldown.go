@@ -447,10 +447,17 @@ func (s *Server) modelRowReadyAt(cfg *modelpkg.Config, selected modelRoutingSele
 }
 
 func (s *Server) keyAllowsModelRow(cfg *modelpkg.Config, key *modelpkg.APIKey, selected modelRoutingSelection, requestProtocol string) bool {
-	if key == nil || key.Disabled || !key.AllowsModel(selected.logicalModel) {
+	if key == nil || key.Disabled {
 		return false
 	}
-	for _, upstream := range possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol))) {
+	return s.keyModelScopeAllowsRow(cfg, key, selected, possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol))))
+}
+
+func (s *Server) keyModelScopeAllowsRow(cfg *modelpkg.Config, key *modelpkg.APIKey, selected modelRoutingSelection, protocols []protocol.Protocol) bool {
+	if key == nil || !key.AllowsModel(selected.logicalModel) {
+		return false
+	}
+	for _, upstream := range protocols {
 		if key.AllowsUpstreamModel(s.resolveFinalUpstreamModel(cfg, selected, string(upstream))) {
 			return true
 		}
@@ -482,12 +489,21 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 	bestFallback := -1
 	var earliest time.Time
 	for i, selected := range rows {
+		keyReadyAt := time.Time{}
 		if apiKeys != nil {
 			authorized := false
 			for _, key := range apiKeys {
-				if s.keyAllowsModelRow(cfg, key, selected, requestProtocol) {
-					authorized = true
+				if !s.keyAllowsModelRow(cfg, key, selected, requestProtocol) {
+					continue
+				}
+				authorized = true
+				if !key.IsCoolingDown(now) {
+					keyReadyAt = time.Time{}
 					break
+				}
+				until := time.Unix(key.CooldownUntil, 0)
+				if keyReadyAt.IsZero() || until.Before(keyReadyAt) {
+					keyReadyAt = until
 				}
 			}
 			if !authorized {
@@ -499,6 +515,9 @@ func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config
 			continue
 		}
 		readyAt := s.modelRowReadyAt(cfg, selected, requestProtocol, cooldowns, now)
+		if keyReadyAt.After(readyAt) {
+			readyAt = keyReadyAt
+		}
 		available[i] = readyAt.IsZero()
 		hasAvailable = hasAvailable || available[i]
 		if cfg.CooldownFallback {
@@ -555,7 +574,7 @@ func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) [
 	seen := make(map[protocol.Protocol]struct{})
 	result := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
 	appendProtocol := func(candidate protocol.Protocol) {
-		if !protocol.IsValid(candidate) {
+		if !configCanUseUpstreamProtocol(cfg, candidate) {
 			return
 		}
 		if _, exists := seen[candidate]; exists {

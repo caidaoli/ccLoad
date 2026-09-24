@@ -717,6 +717,10 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 // selectChannelTestModel binds one configured row on a request-private config.
 // Manual tests ignore model cooldown; scheduled checks call this only for enabled groups.
 func (s *Server) selectChannelTestModel(cfg *model.Config, req *testutil.TestChannelRequest, requireEnabled bool) (*model.Config, error) {
+	return s.selectChannelTestModelWithAvailability(cfg, req, requireEnabled, nil)
+}
+
+func (s *Server) selectChannelTestModelWithAvailability(cfg *model.Config, req *testutil.TestChannelRequest, requireEnabled bool, rowAvailable func(modelRoutingSelection) bool) (*model.Config, error) {
 	if cfg == nil || req == nil {
 		return nil, errors.New("channel test model is missing")
 	}
@@ -771,7 +775,7 @@ func (s *Server) selectChannelTestModel(cfg *model.Config, req *testutil.TestCha
 	} else {
 		available := make([]bool, len(rows))
 		for i, row := range rows {
-			available[i] = !row.entry.Disabled
+			available[i] = !row.entry.Disabled && (rowAvailable == nil || rowAvailable(row))
 		}
 		if s.keySelector != nil {
 			if index, ok := s.keySelector.SelectModelRow(cfg.ID, rows[0].logicalModel, available); ok {
@@ -786,6 +790,9 @@ func (s *Server) selectChannelTestModel(cfg *model.Config, req *testutil.TestCha
 			}
 		}
 		if chosen < 0 {
+			if rowAvailable != nil {
+				return nil, fmt.Errorf("模型 %s 没有可用的 API Key", req.Model)
+			}
 			chosen = 0
 		}
 	}
@@ -860,7 +867,8 @@ func (s *Server) prepareChannelTestAuth(
 	if requestAPIKey != "" {
 		if requestedKeyIndex != nil {
 			if persisted, ok := findAPIKeyByIndex(apiKeys, *requestedKeyIndex); ok &&
-				persisted.APIKey == requestAPIKey && !s.keyAllowsModelRow(cfg, persisted, selected, requestProtocol) {
+				persisted.APIKey == requestAPIKey && !s.keyModelScopeAllowsRow(cfg, persisted, selected,
+				possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol)))) {
 				return nil, channelTestKeySelection{}, fmt.Errorf("key #%d 不允许模型 %s", *requestedKeyIndex, requestedModel)
 			}
 		}

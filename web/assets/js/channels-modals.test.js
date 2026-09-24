@@ -11,6 +11,7 @@ const {
   selectModelsForInlineKeyTest,
   openKeyModelScopeModal,
   closeKeyModelScopeModal,
+  confirmKeyModelScope,
   detectKeyModelScope,
   initKeyModelScopeModalEvents,
   setVisibleKeyModelScopeChecked,
@@ -105,6 +106,10 @@ test('inline Key rows preserve and normalize model scopes', () => {
   assert.deepEqual(selectModelsForInlineKeyTest(
     { api_key: 'sk-wildcard', allowed_models: ['gpt-5'] },
     [{ model: '*', disabled: false }]
+  ), ['gpt-5']);
+  assert.deepEqual(selectModelsForInlineKeyTest(
+    { api_key: 'sk-disabled', allowed_models: ['gpt-5'] },
+    [{ model: 'gpt-5', disabled: true }]
   ), ['gpt-5']);
 });
 
@@ -454,7 +459,7 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     appendChild(label) { checkboxes.push(label.children[0]); },
     setAttribute() {}
   };
-  const modal = { classList: makeClassList(), setAttribute() {} };
+  const modal = { dataset: { bound: 'true' }, classList: makeClassList(), setAttribute() {} };
   const allowAll = { checked: true, focus() {} };
   const detectButton = {
     disabled: false,
@@ -471,6 +476,8 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     keyModelScopeModalTitle: { textContent: '' },
     keyModelScopeStatus: status,
     detectKeyModelScopeBtn: detectButton,
+    inlineKeyTableBody: { dataset: { delegated: 'true' }, innerHTML: '', appendChild() {} },
+    inlineKeyCount: { textContent: '' },
     channelModal: { setAttribute() {}, removeAttribute() {} }
   };
   const pending = [];
@@ -479,6 +486,7 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     document: {
       activeElement: { focus() {} },
       getElementById: id => elements[id] || null,
+      querySelector: () => null,
       querySelectorAll: selector => selector === '#keyModelScopeList input[name="keyAllowedModel"]' ? checkboxes : [],
       createElement: tagName => ({
         tagName,
@@ -488,7 +496,14 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
       })
     },
     editingChannelAuthType: 'api_key',
-    inlineKeyTableData: [{ api_key: 'sk-test', note: '', allowed_models: [] }],
+    currentKeyStatusFilter: 'disabled',
+    currentChannelKeyCooldowns: [],
+    virtualScrollState: {},
+    TemplateEngine: { render: () => null },
+    inlineKeyTableData: [{ api_key: 'sk-test', note: '', allowed_models: [], detected_models: ['target-a'] }],
+    markChannelFormDirty: () => {},
+    renderInlineKeyTable: () => {},
+    requestAnimationFrame: callback => callback(),
     redirectTableData: [
       { model: 'model-old', redirect_model: '', disabled: false },
       { model: 'model-new', redirect_model: '', disabled: false }
@@ -515,6 +530,7 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     });
     await staleDetection;
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true]);
+    assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['target-a']);
     assert.equal(detectButton.disabled, true);
 
     pending[1]({
@@ -541,13 +557,35 @@ test('per-Key model detection handles stale sessions, model variants, and wildca
     await variantDetection;
     assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['auto', 'other']);
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true]);
+    assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['target-a']);
+    assert.equal(confirmKeyModelScope(), true);
+    assert.deepEqual(global.inlineKeyTableData[0].allowed_models, ['auto', 'other']);
+    assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['target-b', 'other']);
 
-    closeKeyModelScopeModal(false);
+    global.inlineKeyTableData = [{ api_key: 'sk-test', note: '', allowed_models: [] }];
+    global.redirectTableData = [
+      { model: 'A', redirect_model: 'B', disabled: false },
+      { model: 'B', redirect_model: 'C', disabled: false }
+    ];
+    assert.equal(openKeyModelScopeModal(0), true);
+    const chainedDetection = detectKeyModelScope();
+    pending[3]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'C' }] }] }
+    });
+    await chainedDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['A', 'B']);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true]);
+    assert.equal(confirmKeyModelScope(), true);
+    assert.deepEqual(global.inlineKeyTableData[0].allowed_models, ['A', 'B']);
+    assert.deepEqual(global.inlineKeyTableData[0].detected_models, ['C']);
+
+    global.inlineKeyTableData = [{ api_key: 'sk-test', note: '', allowed_models: [] }];
     global.redirectTableData = [{ model: '*', redirect_model: '', disabled: false }];
     assert.equal(openKeyModelScopeModal(0), true);
     assert.deepEqual(checkboxes, []);
     const wildcardDetection = detectKeyModelScope();
-    pending[3]({
+    pending[4]({
       success: true,
       data: { key_models: [{ models: [{ model: 'gpt-wildcard' }] }] }
     });
@@ -1837,6 +1875,23 @@ test('per-Key discovery clears scope-empty marker when a scope is recovered', ()
     allowed_models: ['logical-model'],
     detected_models: ['logical-model']
   }]);
+});
+
+test('per-Key discovery retains the capability of a disabled model row', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes(
+    [{ api_key: 'sk-disabled-model', allowed_models: [], model_scope_empty: true }],
+    [{ model: 'logical-model', redirect_model: 'upstream-model', disabled: true }],
+    [{ key_index: 0, models: [{ model: 'upstream-model' }] }],
+    [{ keyIndex: 0, apiKey: 'sk-disabled-model' }]
+  );
+
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.rows[0], {
+    api_key: 'sk-disabled-model',
+    allowed_models: ['logical-model'],
+    detected_models: ['upstream-model']
+  });
 });
 
 test('per-Key discovery marks failed Keys empty while applying successful Keys', () => {
