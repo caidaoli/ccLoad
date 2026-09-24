@@ -572,6 +572,32 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 	}
 }
 
+func TestScheduledChannelCheckDoesNotProbeDisabledModelRowsThroughWildcard(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createScheduledCheckChannel(t, srv, &model.Config{
+		Name: "disabled-variants", URLs: model.ChannelURLs{{URL: upstream.URL}}, Enabled: true,
+		ScheduledCheckEnabled: true, ScheduledCheckModel: "auto",
+		ModelEntries: []model.ModelEntry{
+			{Model: "auto", RedirectModel: "target-a", Disabled: true},
+			{Model: "auto", RedirectModel: "target-b", Disabled: true},
+			{Model: "*"},
+		},
+	}, &model.APIKey{APIKey: "sk-test"})
+	keys, err := srv.store.GetAPIKeys(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.runScheduledChannelCheck(context.Background(), cfg, keys, "hello")
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("scheduled check probed disabled model row %d times", got)
+	}
+}
+
 func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *testing.T) {
 	called := 0
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

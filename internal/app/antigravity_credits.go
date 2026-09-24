@@ -57,18 +57,28 @@ func (s *Server) appendAntigravityCreditsCandidates(ctx context.Context, ordinar
 		if cfg == nil || !cfg.Enabled || !cfg.UsesAntigravityOAuth() || !s.configSupportsModelWithFuzzyMatch(cfg, modelName) {
 			continue
 		}
-		if !antigravityClaudeModel(s.resolveFinalUpstreamModel(cfg, modelName, string(protocol.Gemini))) {
+		eligible := false
+		for _, row := range s.enumerateModelRows(cfg, modelName) {
+			if antigravityClaudeModel(s.resolveFinalUpstreamModel(cfg, row, string(protocol.Gemini))) {
+				eligible = true
+				break
+			}
+		}
+		if !eligible {
 			continue
 		}
 		clone := cfg.Clone()
-		clone.AntigravityCredits = true
-		clone.CooldownFallback = false
+		clone.CooldownFallback = true
 		paid = append(paid, clone)
 	}
 	paid, err = s.filterCooldownChannelsStrict(ctx, paid, modelName, clientProtocol)
 	if err != nil {
 		log.Printf("[WARN] Antigravity credits cooldown check failed: %v", err)
 		return ordinary
+	}
+	for _, cfg := range paid {
+		cfg.AntigravityCredits = true
+		cfg.CooldownFallback = false
 	}
 	return append(ordinary, paid...)
 }
@@ -126,7 +136,7 @@ func (s *Server) prepareAntigravityCredits(ctx context.Context, cfg *model.Confi
 	if credential == nil {
 		return nil, errAntigravityCreditsUnavailable
 	}
-	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Gemini))
+	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.attemptModel, string(protocol.Gemini))
 	if !antigravityClaudeModel(actualModel) || wantsAntigravityWebSearch(reqCtx.body) || !credential.StandardQuota[actualModel].After(time.Now()) {
 		return credential, errAntigravityCreditsUnavailable
 	}

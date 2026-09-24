@@ -1026,6 +1026,18 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 			wantModel:     "gemini-3-flash-preview-0719", // 模糊匹配后再重定向
 			wantBodyModel: "gemini-3-flash-preview-0719",
 		},
+		{
+			name:            "模糊匹配后不多跟随一层重定向",
+			modelFuzzyMatch: true,
+			configModels: []model.ModelEntry{
+				{Model: "provider-alias", RedirectModel: "middle"},
+				{Model: "middle", RedirectModel: "final"},
+			},
+			originalModel: "alias",
+			requestBody:   `{"model":"alias","messages":[]}`,
+			wantModel:     "middle",
+			wantBodyModel: "middle",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1084,9 +1096,6 @@ func TestAPIKeyModelScopeUsesLogicalModelBeforeRedirect(t *testing.T) {
 	logicalModel := s.resolveChannelRoutingModel(cfg, "gemini-3-flash")
 	if logicalModel != "gemini-3-flash-preview" {
 		t.Fatalf("logical model=%q, want gemini-3-flash-preview", logicalModel)
-	}
-	if actualModel := s.resolveActualModel(cfg, "gemini-3-flash"); actualModel != "alias" {
-		t.Fatalf("actual model=%q, want historical single redirect to alias", actualModel)
 	}
 	filtered, scoped := filterAPIKeysForModel(keys, logicalModel)
 	if !scoped || len(filtered) != 1 || filtered[0].APIKey != "sk-logical" {

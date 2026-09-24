@@ -42,7 +42,7 @@ func (s *Server) codexDirectImagesModel(cfg *model.Config, reqCtx *proxyRequestC
 	if path != openAIImagesGenerationsPath && path != "/v1/images/edits" {
 		return "", false
 	}
-	actual := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Codex))
+	actual := s.resolveFinalUpstreamModel(cfg, reqCtx.attemptModel, string(protocol.Codex))
 	canonical, _ := canonicalCodexImageModel(actual)
 	switch canonical {
 	case "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst":

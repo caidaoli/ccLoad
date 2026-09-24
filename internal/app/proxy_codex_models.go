@@ -54,11 +54,13 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 			if _, ok := visible[modelID]; !ok {
 				continue
 			}
-			for _, upstream := range upstreamProtocols {
-				actualModel := s.resolveFinalUpstreamModel(cfg, modelID, string(upstream))
-				if codexResponsesTextModel(actualModel) {
-					available[modelID] = struct{}{}
-					break
+			for _, selected := range s.enumerateModelRows(cfg, modelID) {
+				for _, upstream := range upstreamProtocols {
+					actualModel := s.resolveFinalUpstreamModel(cfg, selected, string(upstream))
+					if codexResponsesTextModel(actualModel) {
+						available[modelID] = struct{}{}
+						break
+					}
 				}
 			}
 		}

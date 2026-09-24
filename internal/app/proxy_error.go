@@ -111,7 +111,8 @@ func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
 			if entry.Disabled {
 				continue
 			}
-			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, entry.Model, string(upstreamProtocol)))
+			selected := modelRoutingSelection{logicalModel: model.RoutingModelName(entry.Model), entry: entry}
+			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, selected, string(upstreamProtocol)))
 			if modelName == "" {
 				continue
 			}

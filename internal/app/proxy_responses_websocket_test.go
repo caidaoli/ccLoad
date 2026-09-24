@@ -5239,6 +5239,96 @@ func TestNativeCodexWebsocketPriorityKeyFailbackReplaysBetweenTurns(t *testing.T
 	}
 }
 
+func TestNativeCodexWebsocketModelRowBindingAndSwitchReplaysTranscript(t *testing.T) {
+	var handshakes, responses atomic.Int32
+	requests := make(chan map[string]any, 3)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade upstream websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		for {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				return
+			}
+			requests <- request
+			number := responses.Add(1)
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id":     fmt.Sprintf("resp-%d", number),
+					"output": []any{map[string]any{"type": "message", "role": "assistant", "content": "ok"}},
+					"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{name: "model-rows-native", upstreamProtocol: "codex", websockets: true, models: "auto", apiKey: "sk-test", priority: 100}}, map[int]string{0: upstream.URL})
+	cfg, err := env.store.GetConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ModelEntries = []model.ModelEntry{{Model: "auto", RedirectModel: "gpt-target-a"}, {Model: "auto", RedirectModel: "gpt-target-b"}}
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	writeTurn := func(input, previous string) map[string]any {
+		t.Helper()
+		request := map[string]any{"type": "response.create", "model": "auto", "input": []any{map[string]any{"role": "user", "content": input}}}
+		if previous != "" {
+			request["previous_response_id"] = previous
+		}
+		if err := downstream.WriteJSON(request); err != nil {
+			t.Fatal(err)
+		}
+		readWebsocketUntilType(t, downstream, "response.completed")
+		return <-requests
+	}
+	first := writeTurn("one", "")
+	second := writeTurn("two", "resp-1")
+	if first["model"] != "gpt-target-a" || second["model"] != "gpt-target-a" || handshakes.Load() != 1 {
+		t.Fatalf("session row was not bound: first=%v second=%v handshakes=%d", first["model"], second["model"], handshakes.Load())
+	}
+	cfg, err = env.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ModelEntries[0].Disabled = true
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	third := writeTurn("three", "resp-2")
+	if third["model"] != "gpt-target-b" || handshakes.Load() != 2 {
+		t.Fatalf("session did not switch target: model=%v handshakes=%d", third["model"], handshakes.Load())
+	}
+	if _, exists := third["previous_response_id"]; exists {
+		t.Fatalf("switched target received stale response ID: %+v", third)
+	}
+	if input, ok := third["input"].([]any); !ok || len(input) != 5 {
+		t.Fatalf("switched target received incomplete transcript: %+v", third["input"])
+	}
+}
+
 func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *testing.T) {
 	requests := make(chan map[string]any, 3)
 	var handshakes atomic.Int32

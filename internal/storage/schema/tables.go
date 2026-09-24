@@ -46,6 +46,7 @@ func DefineAPIKeysTable() *TableBuilder {
 		Column("api_key VARCHAR(255) NOT NULL").
 		Column("note VARCHAR(512) NOT NULL DEFAULT ''").
 		Column("allowed_models VARCHAR(2000) NOT NULL DEFAULT ''").
+		Column("detected_models VARCHAR(8000) NOT NULL DEFAULT ''").
 		Column("model_scope_empty TINYINT NOT NULL DEFAULT 0").
 		Column("key_strategy VARCHAR(32) NOT NULL DEFAULT 'sequential'").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
@@ -67,7 +68,8 @@ func DefineChannelModelsTable() *TableBuilder {
 		Column("model VARCHAR(191) NOT NULL").
 		Column("redirect_model VARCHAR(191) NOT NULL DEFAULT ''"). // 重定向目标模型（空表示不重定向）
 		Column("disabled TINYINT NOT NULL DEFAULT 0").
-		Column("pricing TEXT"). // 渠道模型价格 JSON（NULL 表示沿用全局价格）
+		Column("pricing TEXT").        // 渠道模型价格 JSON（NULL 表示沿用全局价格）
+		Column("model_variants TEXT"). // 同名模型的完整有序配置；NULL 表示单行
 		Column("created_at BIGINT NOT NULL DEFAULT 0").
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").

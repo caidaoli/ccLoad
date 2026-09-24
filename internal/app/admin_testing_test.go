@@ -1877,7 +1877,7 @@ func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testi
 }
 
 func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing.T) {
-	const sentModel = "model-c"
+	const sentModel = "model-b"
 
 	var upstreamModel string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1889,7 +1889,7 @@ func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"model-c","reset_seconds":300}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"model-b","reset_seconds":300}}`))
 	}))
 	defer upstream.Close()
 
@@ -5470,6 +5470,24 @@ func TestHandleChannelImageGeneration_ForwardsImagesWireContract(t *testing.T) {
 	if _, exists := response.Data["upstream_response_body"]; exists {
 		t.Fatal("successful base64 response must not be duplicated in upstream_response_body")
 	}
+	updated, err := srv.store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.ModelEntries = append(updated.ModelEntries, model.ModelEntry{Model: "image-alias", RedirectModel: "gpt-image-3"})
+	if _, err := srv.store.UpdateConfig(ctx, created.ID, updated); err != nil {
+		t.Fatal(err)
+	}
+	req = newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "image-alias", "redirect_model": "gpt-image-3", "prompt": "A white cat", "size": "auto",
+	})
+	c, w = newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+	if gotBody["model"] != "gpt-image-3" || w.Code != http.StatusOK {
+		t.Fatalf("selected image target=%v status=%d body=%s", gotBody["model"], w.Code, w.Body.String())
+	}
 }
 
 func TestHandleChannelImageGeneration_RejectsUnsupportedOAuthChannel(t *testing.T) {
@@ -6787,13 +6805,13 @@ func TestPrepareChannelTestAuthEnforcesPersistedKeyModelScope(t *testing.T) {
 	key1 := 1
 
 	if _, _, err := srv.prepareChannelTestAuth(
-		context.Background(), cfg, keys, "qwen3", &key0, "sk-gpt", oauthCredentialUseCurrent,
+		context.Background(), cfg, keys, "qwen3", "openai", &key0, "sk-gpt", oauthCredentialUseCurrent,
 	); err == nil || !strings.Contains(err.Error(), "不允许模型") {
 		t.Fatalf("explicit incompatible key error=%v", err)
 	}
 
 	_, selected, err := srv.prepareChannelTestAuth(
-		context.Background(), cfg, keys, "qwen3", &key1, "", oauthCredentialUseCurrent,
+		context.Background(), cfg, keys, "qwen3", "openai", &key1, "", oauthCredentialUseCurrent,
 	)
 	if err != nil {
 		t.Fatalf("prepare compatible key: %v", err)

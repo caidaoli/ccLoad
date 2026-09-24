@@ -62,6 +62,9 @@ function normalizeInlineKeyRow(row) {
       cost_multiplier: normalizeKeyCostMultiplier(row.cost_multiplier),
       priority: Number(row.priority ?? 0)
     };
+    if (Array.isArray(row.detected_models) && row.detected_models.length > 0) {
+      normalized.detected_models = normalizeKeyAllowedModels(row.detected_models);
+    }
     if (row.model_scope_empty === true) normalized.model_scope_empty = true;
     return normalized;
   }
@@ -222,6 +225,7 @@ function setInlineKeyTableDataFromAPI(apiKeys) {
         api_key: item.api_key || '',
         note: item.note || '',
         allowed_models: item.allowed_models || [],
+        detected_models: item.detected_models || [],
         model_scope_empty: item.model_scope_empty === true,
         cost_multiplier: item.cost_multiplier,
         priority: item.priority
@@ -241,26 +245,31 @@ let keyModelScopeExtraModels = [];
 
 function configuredKeyModelScopeOptions() {
   const options = [];
-  const seen = new Set();
+  const byModel = new Map();
   const rows = typeof redirectTableData !== 'undefined' && Array.isArray(redirectTableData)
     ? redirectTableData
     : [];
   for (const row of rows) {
     const modelName = routingKeyModelName(row?.model);
     const key = modelName.toLowerCase();
-    if (!modelName || modelName === '*' || seen.has(key)) continue;
-    seen.add(key);
-    options.push({
-      model: modelName,
-      upstreamModel: routingKeyModelName(row?.redirect_model || modelName),
-      disabled: Boolean(row?.disabled)
-    });
+    if (!modelName || modelName === '*') continue;
+    let option = byModel.get(key);
+    if (!option) {
+      option = { model: modelName, upstreamModels: [], disabled: true };
+      byModel.set(key, option);
+      options.push(option);
+    }
+    const upstream = routingKeyModelName(row?.redirect_model || modelName);
+    if (!option.upstreamModels.some(name => name.toLowerCase() === upstream.toLowerCase())) {
+      option.upstreamModels.push(upstream);
+    }
+    option.disabled = option.disabled && Boolean(row?.disabled);
   }
   for (const modelName of normalizeKeyAllowedModels(keyModelScopeExtraModels)) {
     const key = modelName.toLowerCase();
-    if (modelName === '*' || seen.has(key)) continue;
-    seen.add(key);
-    options.push({ model: modelName, upstreamModel: modelName, disabled: false });
+    if (modelName === '*' || byModel.has(key)) continue;
+    byModel.set(key, { model: modelName, upstreamModels: [modelName], disabled: false });
+    options.push(byModel.get(key));
   }
   return options;
 }
@@ -337,13 +346,12 @@ function renderKeyModelScopeOptions(allowedModels, selectNone = false) {
   for (const option of configuredKeyModelScopeOptions()) {
     const label = document.createElement('label');
     label.className = 'key-model-scope-option';
-    label.dataset.searchText = `${option.model} ${option.upstreamModel}`.toLowerCase();
+    label.dataset.searchText = `${option.model} ${option.upstreamModels.join(' ')}`.toLowerCase();
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.name = 'keyAllowedModel';
     checkbox.value = option.model;
-    checkbox.dataset.upstreamModel = option.upstreamModel;
     checkbox.checked = !selectNone && (unrestricted || allowed.has(option.model.toLowerCase()));
 
     const name = document.createElement('span');
@@ -487,10 +495,12 @@ async function detectKeyModelScope() {
       renderKeyModelScopeOptions(detectedModels);
       matched = detectedModels.length;
     } else {
+      const targetsByModel = new Map(configuredKeyModelScopeOptions().map(option =>
+        [option.model.toLowerCase(), option.upstreamModels]));
       for (const checkbox of getKeyModelScopeCheckboxes()) {
         const logical = checkbox.value.toLowerCase();
-        const upstream = String(checkbox.dataset.upstreamModel || '').toLowerCase();
-        checkbox.checked = fetched.has(logical) || fetched.has(upstream);
+        const upstreamModels = targetsByModel.get(logical) || [];
+        checkbox.checked = fetched.has(logical) || upstreamModels.some(name => fetched.has(name.toLowerCase()));
         if (checkbox.checked) matched++;
       }
     }
@@ -1244,6 +1254,7 @@ function updateInlineKey(index, value) {
   if (row.api_key === nextValue) return;
 
   row.api_key = nextValue;
+  delete row.detected_models;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
   updateInlineKeyHiddenInput();

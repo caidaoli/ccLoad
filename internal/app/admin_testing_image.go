@@ -35,6 +35,7 @@ const (
 type imageGenerationTestRequest struct {
 	GenerationAPI string `json:"generation_api"`
 	Model         string `json:"model"`
+	TargetModel   string `json:"redirect_model,omitempty"`
 	Prompt        string `json:"prompt"`
 	Size          string `json:"size,omitempty"`
 	Quality       string `json:"quality,omitempty"`
@@ -48,6 +49,7 @@ func (r *imageGenerationTestRequest) Validate() error {
 		return errors.New("request is required")
 	}
 	r.Model = strings.TrimSpace(r.Model)
+	r.TargetModel = strings.TrimSpace(r.TargetModel)
 	r.Prompt = strings.TrimSpace(r.Prompt)
 	r.GenerationAPI = strings.ToLower(strings.TrimSpace(r.GenerationAPI))
 	r.Size = strings.ToLower(strings.TrimSpace(r.Size))
@@ -56,6 +58,9 @@ func (r *imageGenerationTestRequest) Validate() error {
 	r.OutputFormat = strings.ToLower(strings.TrimSpace(r.OutputFormat))
 	if r.Model == "" || len(r.Model) > 191 {
 		return errors.New("model is required and must not exceed 191 characters")
+	}
+	if len(r.TargetModel) > 191 {
+		return errors.New("redirect_model must not exceed 191 characters")
 	}
 	if r.Prompt == "" || len(r.Prompt) > 32*1024 {
 		return errors.New("prompt is required and must not exceed 32 KiB")
@@ -147,6 +152,11 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
+	modelLookup, _ := imageGenerationModelLookup(cfg, imageReq.Model)
+	selectedCfg, selectErr := s.selectChannelTestModel(cfg, &testutil.TestChannelRequest{Model: modelLookup, TargetModel: imageReq.TargetModel}, false)
+	if selectErr == nil {
+		cfg = selectedCfg
+	}
 	if imageReq.GenerationAPI == imageGenerationAPIImages && cfg.UsesOAuth() && !cfg.UsesXAIOAuth() && !cfg.UsesCodexOAuth() {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success": false,
@@ -156,7 +166,8 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 	}
 	if imageReq.GenerationAPI == imageGenerationAPIImages {
 		if cfg.UsesXAIOAuth() {
-			responsesImage := xaiSupportsImageGeneration(s.resolveFinalUpstreamModel(cfg, imageReq.Model, util.ProtocolOpenAI))
+			selected, _ := s.firstModelRow(cfg, imageReq.Model)
+			responsesImage := xaiSupportsImageGeneration(s.resolveFinalUpstreamModel(cfg, selected, util.ProtocolOpenAI))
 			if !responsesImage && !validChatImageGenerationSize(imageReq.Size) {
 				RespondErrorMsg(c, http.StatusBadRequest, "xAI Images API size must use an aspect-ratio and 1K/2K value")
 				return
@@ -170,6 +181,14 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 			return
 		}
 	}
+	if selectErr != nil {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"success": false,
+			"error":   selectErr.Error(),
+			"model":   imageReq.Model,
+		})
+		return
+	}
 	modelLookup, modelSupported := imageGenerationModelLookup(cfg, imageReq.Model)
 	if !modelSupported {
 		RespondJSON(c, http.StatusOK, gin.H{
@@ -181,7 +200,8 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 		return
 	}
 	if imageReq.GenerationAPI == imageGenerationAPIImages && (cfg.UsesXAIOAuth() || cfg.UsesCodexOAuth()) {
-		actualModel := s.resolveFinalUpstreamModel(cfg, modelLookup, util.ProtocolOpenAI)
+		selected, _ := s.firstModelRow(cfg, modelLookup)
+		actualModel := s.resolveFinalUpstreamModel(cfg, selected, util.ProtocolOpenAI)
 		if cfg.UsesXAIOAuth() {
 			if !xaiSupportsImageGeneration(actualModel) {
 				if _, supported := canonicalXAIImageModel(actualModel); supported {
@@ -213,7 +233,7 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 		return
 	}
 	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, imageReq.Model, imageReq.KeyIndex, "", oauthCredentialUseCurrent,
+		c.Request.Context(), cfg, apiKeys, imageReq.Model, string(protocol.OpenAI), imageReq.KeyIndex, "", oauthCredentialUseCurrent,
 	)
 	if err != nil {
 		RespondJSON(c, http.StatusOK, gin.H{
@@ -296,6 +316,7 @@ func (s *Server) testChannelImageGenerationByAPI(
 func imageGenerationChannelTestRequest(imageReq *imageGenerationTestRequest) *testutil.TestChannelRequest {
 	testReq := &testutil.TestChannelRequest{
 		Model:          imageReq.Model,
+		TargetModel:    imageReq.TargetModel,
 		Content:        imageReq.Prompt,
 		ClientProtocol: util.ProtocolOpenAI,
 		Stream:         false,
@@ -582,7 +603,8 @@ func (s *Server) testChannelImageGenerationWithURL(
 ) map[string]any {
 	start := time.Now()
 	modelLookup, _ := imageGenerationModelLookup(cfg, imageReq.Model)
-	actualModel := s.resolveFinalUpstreamModel(cfg, modelLookup, util.ProtocolOpenAI)
+	selected, _ := s.firstModelRow(cfg, modelLookup)
+	actualModel := s.resolveFinalUpstreamModel(cfg, selected, util.ProtocolOpenAI)
 	if cfg.UsesCodexOAuth() {
 		canonicalModel, supported := canonicalCodexImageModel(actualModel)
 		if !supported {

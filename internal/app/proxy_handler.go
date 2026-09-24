@@ -712,8 +712,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			cfg = current.Clone()
 			cfg.AntigravityCredits = true
 			cfg.CooldownFallback = false
-			actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Gemini))
-			if !s.antigravityCredentials.standardQuotaUntil(cfg, actualModel).After(time.Now()) {
+			if len(s.applicableModelRows(cfg, reqCtx.originalModel, time.Now())) == 0 {
 				continue
 			}
 			eligible, filterErr := s.filterCooldownChannelsStrict(ctx, []*model.Config{cfg}, reqCtx.originalModel, string(reqCtx.clientProtocol))
@@ -722,6 +721,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			}
 		}
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+		if errors.Is(err, errNoAvailableModelRow) {
+			continue
+		}
 		if err != nil && errors.Is(err, ErrNoAPIKeyForModel) {
 			log.Printf("[INFO] 渠道 %s (ID=%d) 没有可用于模型 %s 的 Key，跳过该渠道", cfg.Name, cfg.ID, reqCtx.originalModel)
 			continue

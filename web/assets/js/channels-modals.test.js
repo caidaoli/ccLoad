@@ -442,7 +442,7 @@ test('Escape closes only the topmost Key model scope modal', () => {
   }
 });
 
-test('per-Key model detection ignores stale sessions and populates wildcard channel candidates', async () => {
+test('per-Key model detection handles stale sessions, model variants, and wildcard candidates', async () => {
   const checkboxes = [];
   const makeClassList = () => ({
     add() {},
@@ -527,11 +527,27 @@ test('per-Key model detection ignores stale sessions and populates wildcard chan
     assert.equal(detectButton.disabled, false);
 
     closeKeyModelScopeModal(false);
+    global.redirectTableData = [
+      { model: 'auto', redirect_model: 'target-a', disabled: false },
+      { model: 'auto', redirect_model: 'target-b', disabled: false },
+      { model: 'other', redirect_model: '', disabled: false }
+    ];
+    assert.equal(openKeyModelScopeModal(0), true);
+    const variantDetection = detectKeyModelScope();
+    pending[2]({
+      success: true,
+      data: { key_models: [{ models: [{ model: 'target-b' }, { model: 'other' }] }] }
+    });
+    await variantDetection;
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.value), ['auto', 'other']);
+    assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true]);
+
+    closeKeyModelScopeModal(false);
     global.redirectTableData = [{ model: '*', redirect_model: '', disabled: false }];
     assert.equal(openKeyModelScopeModal(0), true);
     assert.deepEqual(checkboxes, []);
     const wildcardDetection = detectKeyModelScope();
-    pending[2]({
+    pending[3]({
       success: true,
       data: { key_models: [{ models: [{ model: 'gpt-wildcard' }] }] }
     });
@@ -1367,8 +1383,8 @@ test('saving an API Key channel submits per-Key model scopes', async () => {
 
     await saveChannel({ preventDefault() {} });
 	assert.deepEqual(submitted.api_keys, [
-		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], model_scope_empty: false, priority: -7, cost_multiplier: 2 },
-      { api_key: 'sk-emptied', note: '', allowed_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 }
+		{ api_key: 'sk-scoped', note: 'primary', allowed_models: ['gpt-5'], detected_models: [], model_scope_empty: false, priority: -7, cost_multiplier: 2 },
+      { api_key: 'sk-emptied', note: '', allowed_models: [], detected_models: [], model_scope_empty: true, priority: 0, cost_multiplier: 1 }
     ]);
     for (const priority of [1.5, -100000, 10000000, NaN]) {
       submitted = undefined;
@@ -1555,7 +1571,7 @@ test('model row test opens the existing test flow for the current model and runs
         id: 7,
         name: 'test-channel',
         models: [{ model: 'requested-model', redirect_model: 'upstream-model', disabled: false }]
-      }, 'requested-model'] },
+      }, 'requested-model', 'upstream-model'] },
       { type: 'run' }
     ]);
     assert.equal(fixture.button.disabled, false);
@@ -1573,6 +1589,21 @@ test('model row test rejects unsaved channel changes', async () => {
     assert.equal(await testRedirectModel(0, fixture.button), false);
     assert.deepEqual(fixture.calls, []);
     assert.deepEqual(fixture.notifications, ['channels.saveBeforeModelTest']);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('model row test can probe a saved disabled target without enabling it', async () => {
+  const fixture = installModelRequestTestGlobals();
+  global.redirectTableData[0].disabled = true;
+  try {
+    const { testRedirectModel } = loadChannelsModals();
+    assert.equal(await testRedirectModel(0, fixture.button), true);
+    assert.deepEqual(fixture.calls.map(call => call.type), ['open', 'run']);
+    assert.equal(global.redirectTableData[0].disabled, true);
+    assert.equal(fixture.button.disabled, false);
+    assert.deepEqual(fixture.notifications, []);
   } finally {
     fixture.restore();
   }
@@ -1605,6 +1636,42 @@ test('model rows keep channel pricing through fetch merge and submit', () => {
   } finally {
     global.window = previousWindow;
   }
+});
+
+test('fetch merge keeps both targets in one model group with their state and price', () => {
+  const previousWindow = global.window;
+  global.window = { ChannelModelPricing: require('./channels-model-pricing.js') };
+  try {
+    const { collectModelsForSubmit, mergeModelRowsWithFetchedModels } = loadChannelsModals();
+    const current = [
+      { model: 'auto', redirect_model: 'target-b', disabled: true, pricing: { input_price: 1, output_price: 2 } },
+      { model: 'auto', redirect_model: 'target-a', disabled: false, pricing: { input_price: 3, output_price: 4 } }
+    ];
+    const merged = mergeModelRowsWithFetchedModels(current, [{ model: 'AUTO' }, { model: 'fresh' }]);
+    assert.equal(merged.added, 1);
+    assert.deepEqual(collectModelsForSubmit(merged.rows).filter(row => row.model === 'auto'), current);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('quick add keeps every fetched target for the same normalized model', async () => {
+  const { discoverQuickAddChannelSetup } = loadChannelsModals();
+  const setup = await discoverQuickAddChannelSetup(
+    'URL=https://gateway.example.com\nAPI_KEY=sk-test',
+    async () => ({
+      success: true,
+      data: { protocol: 'openai', models: [
+        { model: 'auto', redirect_model: 'vendor-a/auto' },
+        { model: 'auto', redirect_model: 'vendor-b/auto' }
+      ] }
+    }),
+    { stripModelSourcePrefix: true }
+  );
+  assert.deepEqual(setup.models, [
+    { model: 'auto', redirect_model: 'vendor-a/auto', disabled: false },
+    { model: 'auto', redirect_model: 'vendor-b/auto', disabled: false }
+  ]);
 });
 
 test('fetchModelsFromAPI sends every available API key', async () => {
@@ -1744,7 +1811,8 @@ test('per-Key discovery applies each provider scope independently', () => {
   assert.deepEqual(result.rows, [
     {
       api_key: 'micu-codex',
-      allowed_models: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra']
+      allowed_models: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+      detected_models: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra']
     },
     { api_key: 'micu-claude', allowed_models: [], model_scope_empty: true }
   ]);
@@ -1766,7 +1834,8 @@ test('per-Key discovery clears scope-empty marker when a scope is recovered', ()
   assert.equal(result.changedCount, 1);
   assert.deepEqual(result.rows, [{
     api_key: 'sk-scope-empty',
-    allowed_models: ['logical-model']
+    allowed_models: ['logical-model'],
+    detected_models: ['logical-model']
   }]);
 });
 
@@ -1782,8 +1851,8 @@ test('per-Key discovery marks failed Keys empty while applying successful Keys',
     { model: 'common', redirect_model: '' },
     { model: 'logical-b', redirect_model: 'upstream-b' }
   ], [
-    { key_index: 1, error: 'invalid api key', models: [] },
-    { key_index: 3, models: [{ model: 'upstream-b' }, { model: 'common' }] }
+    { key_index: 0, error: 'invalid api key', models: [] },
+    { key_index: 1, models: [{ model: 'upstream-b' }, { model: 'common' }] }
   ], [
     { keyIndex: 1, apiKey: 'sk-a' },
     { keyIndex: 3, apiKey: 'sk-b' }
@@ -1798,7 +1867,7 @@ test('per-Key discovery marks failed Keys empty while applying successful Keys',
     { api_key: 'sk-disabled', note: '', allowed_models: ['keep-disabled'] },
     { api_key: 'sk-a', note: '', allowed_models: [], model_scope_empty: true },
     { api_key: 'sk-cooling', note: '', allowed_models: ['keep-cooling'] },
-    { api_key: 'sk-b', note: '', allowed_models: ['common', 'logical-b'] }
+    { api_key: 'sk-b', note: '', allowed_models: ['common', 'logical-b'], detected_models: ['common', 'upstream-b'] }
   ]);
 });
 
@@ -1828,7 +1897,7 @@ test('per-Key discovery keeps skipped manual Keys unchanged', () => {
   ], [
     { model: 'logical-a', redirect_model: 'upstream-a' }
   ], [
-    { key_index: 1, models: [{ model: 'upstream-a' }] }
+    { key_index: 0, models: [{ model: 'upstream-a' }] }
   ], [
     { keyIndex: 1, apiKey: 'sk-a' }
   ]);
@@ -1836,6 +1905,59 @@ test('per-Key discovery keeps skipped manual Keys unchanged', () => {
   assert.deepEqual(result.rows.map(row => row.allowed_models), [
     ['keep-disabled'],
     ['logical-a']
+  ]);
+});
+
+test('per-Key discovery maps compact request indices to original Key rows', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'sk-disabled', allowed_models: ['old'] },
+    { api_key: 'sk-a', allowed_models: [] },
+    { api_key: 'sk-b', allowed_models: [] }
+  ], [
+    { model: 'a' }, { model: 'b' }
+  ], [
+    { key_index: 1, models: [{ model: 'b' }] },
+    { key_index: 0, models: [{ model: 'a' }] }
+  ], [
+    { keyIndex: 1, apiKey: 'sk-a' },
+    { keyIndex: 2, apiKey: 'sk-b' }
+  ]);
+
+  assert.deepEqual(result.rows.map(row => ({
+    api_key: row.api_key,
+    allowed_models: row.allowed_models,
+    model_scope_empty: row.model_scope_empty
+  })), [
+    { api_key: 'sk-disabled', allowed_models: ['old'], model_scope_empty: undefined },
+    { api_key: 'sk-a', allowed_models: ['a'], model_scope_empty: undefined },
+    { api_key: 'sk-b', allowed_models: ['b'], model_scope_empty: undefined }
+  ]);
+});
+
+test('per-Key discovery keeps final targets separate for chained variants', () => {
+  const { proposeFetchedKeyModelScopes } = loadChannelsModals();
+  const result = proposeFetchedKeyModelScopes([
+    { api_key: 'only-c', allowed_models: [] },
+    { api_key: 'only-d', allowed_models: [] }
+  ], [
+    { model: 'a', redirect_model: 'b' },
+    { model: 'a', redirect_model: 'd' },
+    { model: 'b', redirect_model: 'c' }
+  ], [
+    { key_index: 0, models: [{ model: 'c' }] },
+    { key_index: 1, models: [{ model: 'd' }] }
+  ], [
+    { keyIndex: 0, apiKey: 'only-c' },
+    { keyIndex: 1, apiKey: 'only-d' }
+  ]);
+
+  assert.deepEqual(result.rows.map(row => ({
+    allowed_models: row.allowed_models,
+    detected_models: row.detected_models
+  })), [
+    { allowed_models: ['a', 'b'], detected_models: ['c'] },
+    { allowed_models: ['a'], detected_models: ['d'] }
   ]);
 });
 

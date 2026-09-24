@@ -2,6 +2,7 @@ package sql_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -1319,7 +1320,7 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		ProtocolTransformMode: &mode,
 		ModelImportMode:       model.ModelImportModeAppend,
 		ModelEntries: []model.ModelEntry{
-			{Model: "ALIAS-A", RedirectModel: "ignored-duplicate"},
+			{Model: "alias-a", RedirectModel: "upstream-a"},
 			{Model: "model-b", RedirectModel: "upstream-b"},
 		},
 	})
@@ -1358,7 +1359,7 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 			if len(got.ModelEntries) != 2 || got.ModelEntries[0].Model != "alias-a" || !got.ModelEntries[0].Disabled || got.ModelEntries[1].Model != "model-b" {
 				t.Fatalf("channel %d models=%+v", channelID, got.ModelEntries)
 			}
-		} else if len(got.ModelEntries) != 3 || got.ModelEntries[1].Model != "ALIAS-A" || got.ModelEntries[2].Model != "model-b" || got.ModelEntries[2].RedirectModel != "upstream-b" {
+		} else if len(got.ModelEntries) != 3 || got.ModelEntries[1].Model != "alias-a" || got.ModelEntries[2].Model != "model-b" || got.ModelEntries[2].RedirectModel != "upstream-b" {
 			t.Fatalf("channel %d models=%+v", channelID, got.ModelEntries)
 		}
 	}
@@ -1763,5 +1764,67 @@ func TestConfig_ModelPricingPersistsAcrossWritePaths(t *testing.T) {
 	}
 	if _, err := store.GetConfig(ctx, created.ID); err == nil || !strings.Contains(err.Error(), "new-model") {
 		t.Fatalf("GetConfig with corrupt pricing error = %v, want model-scoped failure", err)
+	}
+}
+
+func TestConfig_ModelVariantsPersistAndProject(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "model-variants.db")
+	ctx := context.Background()
+	priceValue := 3.0
+	price := &util.CustomModelPrice{InputPrice: &priceValue, OutputPrice: &priceValue}
+	entries := []model.ModelEntry{
+		{Model: "auto", RedirectModel: "upstream-a", Disabled: true},
+		{Model: "auto", RedirectModel: "upstream-b", Pricing: price},
+		{Model: "auto", RedirectModel: "upstream-c"},
+	}
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "variants", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		ModelEntries: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want []model.ModelEntry, redirect string, disabled bool, wantVariants bool) {
+		t.Helper()
+		got, err := store.GetConfig(ctx, created.ID)
+		if err != nil || len(got.ModelEntries) != len(want) {
+			t.Fatalf("GetConfig = (%+v, %v), want %d rows", got, err, len(want))
+		}
+		for i := range want {
+			if !got.ModelEntries[i].Equal(want[i]) {
+				t.Fatalf("row %d = %+v, want %+v", i, got.ModelEntries[i], want[i])
+			}
+		}
+		var actualRedirect string
+		var actualDisabled bool
+		var variants sql.NullString
+		err = store.(*sqlstore.SQLStore).QueryRowContext(ctx,
+			`SELECT redirect_model, disabled, model_variants FROM channel_models WHERE channel_id = ? AND model = ?`,
+			created.ID, "auto").Scan(&actualRedirect, &actualDisabled, &variants)
+		if err != nil || actualRedirect != redirect || actualDisabled != disabled || variants.Valid != wantVariants {
+			t.Fatalf("projection = (%q, %v, variants=%v, %v), want (%q, %v, variants=%v)", actualRedirect, actualDisabled, variants.Valid, err, redirect, disabled, wantVariants)
+		}
+	}
+	check(entries, "upstream-b", false, true)
+	for i := range entries {
+		entries[i].Disabled = true
+	}
+	if _, err := store.UpdateConfig(ctx, created.ID, &model.Config{Name: "variants", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true, ModelEntries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	check(entries, "upstream-a", true, true)
+	entries = []model.ModelEntry{{Model: "auto", RedirectModel: "upstream-c"}}
+	if _, err := store.UpdateConfig(ctx, created.ID, &model.Config{Name: "variants", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true, ModelEntries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	check(entries, "upstream-c", false, false)
+	if _, err := store.(*sqlstore.SQLStore).ExecContext(ctx,
+		`UPDATE channel_models SET model_variants = ? WHERE channel_id = ? AND model = ?`,
+		`[{"model":"other"},{"model":"other"}]`, created.ID, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetConfig(ctx, created.ID); err == nil {
+		t.Fatal("mismatched model_variants must fail to load")
 	}
 }

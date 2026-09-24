@@ -183,6 +183,7 @@ type proxyRequestContext struct {
 	baseURL                 string                 // 当前尝试使用的上游URL（多URL场景）
 	attemptCostMultiplier   float64                // 当前 attempt 的成本倍率（api_key 渠道取 Key 级，OAuth 取渠道级）
 	attemptModelPrice       *util.CustomModelPrice // 当前渠道此模型的价格（nil 按全局价格计费）
+	attemptModel            modelRoutingSelection  // 本次渠道尝试固定的配置行
 	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
@@ -679,49 +680,92 @@ func buildCodexResponsesPath() string {
 	return "/v1/responses"
 }
 
-// resolveChannelRoutingModel returns the logical model configured on the channel,
-// before redirecting it to an upstream model. API Key scopes use this identity.
-func (s *Server) resolveChannelRoutingModel(cfg *model.Config, originalModel string) string {
-	routedModel := model.RoutingModelName(originalModel)
-	if !cfg.SupportsModel(routedModel) && s.modelFuzzyMatch {
-		if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
-			return model.RoutingModelName(matched)
-		}
-	}
-	return routedModel
+type modelRoutingSelection struct {
+	logicalModel string
+	entry        model.ModelEntry
+	wildcard     bool
+	fuzzyMatched bool
 }
 
-// resolveActualModel preserves the historical redirect/fuzzy-match order used for upstream requests.
-func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
-	routedModel := model.RoutingModelName(originalModel)
-	actualModel := routedModel
-	// 1. 精确匹配的重定向优先。
-	if redirectModel, ok := cfg.GetRedirectModel(routedModel); ok && redirectModel != "" {
-		actualModel = redirectModel
+// enumerateModelRows resolves one logical group without advancing its cursor.
+// An enabled wildcard takes precedence over fuzzy matching.
+func (s *Server) enumerateModelRows(cfg *model.Config, requested string) []modelRoutingSelection {
+	if cfg == nil {
+		return nil
 	}
-
-	// 2. 仅在未触发精确重定向时做模糊匹配。
-	if actualModel == routedModel && s.modelFuzzyMatch && !cfg.SupportsModel(routedModel) {
-		if matched, ok := cfg.FuzzyMatchModel(routedModel); ok {
-			actualModel = matched
+	name := model.RoutingModelName(requested)
+	entries := cfg.EnabledModelEntries(name)
+	fuzzyMatched := false
+	if len(entries) == 0 && name != "*" && len(cfg.EnabledModelEntries("*")) > 0 {
+		return []modelRoutingSelection{{logicalModel: name, entry: model.ModelEntry{Model: name}, wildcard: true}}
+	}
+	if len(entries) == 0 && s.modelFuzzyMatch {
+		if matched, ok := cfg.FuzzyMatchModel(name); ok {
+			name = model.RoutingModelName(matched)
+			entries = cfg.EnabledModelEntries(name)
+			fuzzyMatched = true
 		}
 	}
+	result := make([]modelRoutingSelection, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, modelRoutingSelection{logicalModel: name, entry: entry, fuzzyMatched: fuzzyMatched})
+	}
+	return result
+}
 
-	// 3. 历史行为只对上一步得到的模型再解析一次重定向。
-	if actualModel != routedModel {
-		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
-			actualModel = redirectModel
+// configuredModelRows includes disabled rows so cursor positions remain stable
+// while temporary availability changes.
+func (s *Server) configuredModelRows(cfg *model.Config, requested string) []modelRoutingSelection {
+	enabled := s.enumerateModelRows(cfg, requested)
+	if len(enabled) == 0 || enabled[0].wildcard {
+		return enabled
+	}
+	name := enabled[0].entry.Model
+	rows := make([]modelRoutingSelection, 0, len(enabled))
+	for _, entry := range cfg.ModelEntries {
+		if entry.Model == name {
+			rows = append(rows, modelRoutingSelection{logicalModel: enabled[0].logicalModel, entry: entry, fuzzyMatched: enabled[0].fuzzyMatched})
 		}
 	}
-	// 渠道条目或重定向目标可能字面带思考后缀，但后缀绝不能出现在发往上游的模型名里。
-	return model.RoutingModelName(actualModel)
+	return rows
+}
+
+func (s *Server) firstModelRow(cfg *model.Config, requested string) (modelRoutingSelection, bool) {
+	entries := s.enumerateModelRows(cfg, requested)
+	if len(entries) == 0 {
+		name := model.RoutingModelName(requested)
+		return modelRoutingSelection{logicalModel: name, entry: model.ModelEntry{Model: name}}, false
+	}
+	return entries[0], true
+}
+
+// resolveChannelRoutingModel returns the model identity used by Key scopes.
+func (s *Server) resolveChannelRoutingModel(cfg *model.Config, originalModel string) string {
+	if selected, ok := s.firstModelRow(cfg, originalModel); ok {
+		return selected.logicalModel
+	}
+	return model.RoutingModelName(originalModel)
+}
+
+func resolveActualModel(cfg *model.Config, selected modelRoutingSelection) string {
+	target := selected.entry.RedirectModel
+	if target == "" || selected.wildcard {
+		target = selected.logicalModel
+	} else if !selected.fuzzyMatched {
+		// Preserve the historical second lookup after an exact redirect.
+		// A fuzzy match already consumed that lookup by selecting its configured row.
+		if next, ok := cfg.GetRedirectModel(target); ok {
+			target = next
+		}
+	}
+	return model.RoutingModelName(target)
 }
 
 // resolveFinalUpstreamModel 返回真正发送给上游的模型身份。
 // 协议转换使用 resolved model 构造上游 body，随后 custom_request_rules 可能再次覆盖 body.model。
 // Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
-func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
-	actualModel := s.resolveActualModel(cfg, originalModel)
+func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, selected modelRoutingSelection, upstreamProtocol string) string {
+	actualModel := resolveActualModel(cfg, selected)
 	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) != protocol.Gemini {
 		actualModel = resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
 	}
@@ -735,7 +779,11 @@ func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel stri
 }
 
 func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext, upstreamProtocol protocol.Protocol) (actualModel string, bodyToSend []byte) {
-	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
+	selected := reqCtx.attemptModel
+	if selected.logicalModel == "" && reqCtx.originalModel != "" {
+		selected, _ = s.firstModelRow(cfg, reqCtx.originalModel)
+	}
+	actualModel = s.resolveFinalUpstreamModel(cfg, selected, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
 	requestedModel := reqCtx.requestedModel

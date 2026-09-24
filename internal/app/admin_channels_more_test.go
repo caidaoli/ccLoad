@@ -1140,7 +1140,7 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 				t.Fatalf("channel %d limits=(%v, %d, %d), want (12.5, 60, 3)",
 					channelID, cfg.DailyCostLimit, cfg.RPMLimit, cfg.MaxConcurrency)
 			}
-			if len(cfg.ModelEntries) != 2 || cfg.ModelEntries[1].Model != "new-model" || cfg.ModelEntries[1].RedirectModel != "upstream-model" {
+			if len(cfg.ModelEntries) != 3 || cfg.ModelEntries[1].Model != "m" || cfg.ModelEntries[1].RedirectModel != "ignored-duplicate" || cfg.ModelEntries[2].Model != "new-model" || cfg.ModelEntries[2].RedirectModel != "upstream-model" {
 				t.Fatalf("channel %d models=%+v", channelID, cfg.ModelEntries)
 			}
 		}

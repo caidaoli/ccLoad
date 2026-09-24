@@ -226,13 +226,25 @@ func updateExistingZedChannel(ctx context.Context, store storage.Store, cfg *mod
 			return nil, false, err
 		}
 		if updated {
-			entries := zedModelEntries(models)
-			modelUpdated, err := store.UpdateOAuthModelStateIfCredentialMatches(ctx, cfg.ID, model.AuthTypeZedOAuth, payload, entries, cfg.ScheduledCheckModel)
-			if err != nil {
-				return nil, false, fmt.Errorf("update Zed model catalog: %w", err)
-			}
-			if !modelUpdated {
-				return nil, false, errors.New("zed credential changed while updating model catalog")
+			for {
+				current, loadErr := store.GetConfig(ctx, cfg.ID)
+				if loadErr != nil {
+					return nil, false, fmt.Errorf("load Zed models after reauthorization: %w", loadErr)
+				}
+				if !current.UsesZedOAuth() || current.OAuthCredential != payload {
+					return nil, false, errors.New("zed credential changed while updating model catalog")
+				}
+				expected := current.Clone()
+				options := modelNormalizationOptions{}
+				replaceModelEntries(current, zedModelEntries(models), options)
+				reconcileScheduledCheckModel(current, options)
+				modelUpdated, updateErr := store.UpdateModelStateIfSnapshotMatches(ctx, expected, current.ModelEntries, current.ScheduledCheckModel, nil)
+				if updateErr != nil {
+					return nil, false, fmt.Errorf("update Zed model catalog: %w", updateErr)
+				}
+				if modelUpdated {
+					break
+				}
 			}
 			if err := store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
 				return nil, false, fmt.Errorf("clear Zed channel cooldown after reauthorization: %w", err)

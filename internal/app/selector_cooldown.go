@@ -3,8 +3,10 @@ package app
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	modelpkg "ccLoad/internal/model"
@@ -13,6 +15,8 @@ import (
 )
 
 type channelRestrictionTokenContextKey struct{}
+
+var errNoAvailableModelRow = errors.New("no available model row for channel")
 
 type channelRestrictionState struct {
 	tokenHash string
@@ -311,7 +315,7 @@ func (s *Server) filterCooledChannels(
 ) []*modelpkg.Config {
 	filtered := channels[:0]
 	for _, cfg := range channels {
-		if !cfg.AntigravityCredits && s.antigravityCredentials.standardQuotaUntil(cfg, s.resolveFinalUpstreamModel(cfg, requestModel, "gemini")).After(now) {
+		if requestModel != "*" && requestModel != "" && len(s.applicableModelRows(cfg, requestModel, now)) == 0 {
 			continue
 		}
 		// 1. 检查渠道级冷却
@@ -385,18 +389,163 @@ func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, reques
 
 	seen := make(map[string]struct{}, len(protocols))
 	models := make([]string, 0, len(protocols))
-	for _, upstreamProtocol := range protocols {
-		actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, string(upstreamProtocol))
-		if actualModel == "" {
-			continue
+	for _, selected := range s.applicableModelRows(cfg, requestModel, time.Now()) {
+		for _, upstreamProtocol := range protocols {
+			actualModel := s.resolveFinalUpstreamModel(cfg, selected, string(upstreamProtocol))
+			if actualModel == "" {
+				continue
+			}
+			if _, ok := seen[actualModel]; ok {
+				continue
+			}
+			seen[actualModel] = struct{}{}
+			models = append(models, actualModel)
 		}
-		if _, ok := seen[actualModel]; ok {
-			continue
-		}
-		seen[actualModel] = struct{}{}
-		models = append(models, actualModel)
 	}
 	return models
+}
+
+func (s *Server) applicableModelRows(cfg *modelpkg.Config, requested string, now time.Time) []modelRoutingSelection {
+	rows := s.enumerateModelRows(cfg, requested)
+	result := rows[:0]
+	for _, selected := range rows {
+		if !s.modelRowApplicable(cfg, selected, now) {
+			continue
+		}
+		result = append(result, selected)
+	}
+	return result
+}
+
+func (s *Server) modelRowApplicable(cfg *modelpkg.Config, selected modelRoutingSelection, now time.Time) bool {
+	if selected.entry.Disabled {
+		return false
+	}
+	geminiModel := s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Gemini))
+	quotaUntil := s.antigravityCredentials.standardQuotaUntil(cfg, geminiModel)
+	if cfg.AntigravityCredits {
+		return antigravityClaudeModel(geminiModel) && quotaUntil.After(now)
+	}
+	return cfg.CooldownFallback || !quotaUntil.After(now)
+}
+
+// modelRowReadyAt is zero if at least one possible protocol can send this row now.
+func (s *Server) modelRowReadyAt(cfg *modelpkg.Config, selected modelRoutingSelection, requestProtocol string, cooldowns map[string]time.Time, now time.Time) time.Time {
+	protocols := possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol)))
+	var earliest time.Time
+	for _, upstream := range protocols {
+		actual := s.resolveFinalUpstreamModel(cfg, selected, string(upstream))
+		until := cooldowns[actual]
+		if !until.After(now) {
+			return time.Time{}
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest
+}
+
+func (s *Server) keyAllowsModelRow(cfg *modelpkg.Config, key *modelpkg.APIKey, selected modelRoutingSelection, requestProtocol string) bool {
+	if key == nil || key.Disabled || !key.AllowsModel(selected.logicalModel) {
+		return false
+	}
+	for _, upstream := range possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol))) {
+		if key.AllowsUpstreamModel(s.resolveFinalUpstreamModel(cfg, selected, string(upstream))) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) selectChannelModelRow(ctx context.Context, cfg *modelpkg.Config, requested, requestProtocol string, session *responsesExecutionSession, apiKeys []*modelpkg.APIKey) (modelRoutingSelection, error) {
+	if requested == "" || requested == "*" {
+		return modelRoutingSelection{logicalModel: requested, entry: modelpkg.ModelEntry{Model: requested}, wildcard: true}, nil
+	}
+	rows := s.configuredModelRows(cfg, requested)
+	if len(rows) == 0 {
+		return modelRoutingSelection{}, errNoAvailableModelRow
+	}
+	allCooldowns, err := s.getAllModelCooldowns(ctx)
+	if err != nil {
+		if cfg.AntigravityCredits {
+			return modelRoutingSelection{}, err
+		}
+		log.Printf("[ERROR] 获取模型冷却状态失败，跳过选行冷却过滤: %v", err)
+		allCooldowns = nil
+	}
+	cooldowns := allCooldowns[cfg.ID]
+	now := time.Now()
+	available := make([]bool, len(rows))
+	hasAvailable := false
+	hasAuthorized := false
+	bestFallback := -1
+	var earliest time.Time
+	for i, selected := range rows {
+		if apiKeys != nil {
+			authorized := false
+			for _, key := range apiKeys {
+				if s.keyAllowsModelRow(cfg, key, selected, requestProtocol) {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				continue
+			}
+		}
+		hasAuthorized = true
+		if !s.modelRowApplicable(cfg, selected, now) {
+			continue
+		}
+		readyAt := s.modelRowReadyAt(cfg, selected, requestProtocol, cooldowns, now)
+		available[i] = readyAt.IsZero()
+		hasAvailable = hasAvailable || available[i]
+		if cfg.CooldownFallback {
+			if bestFallback < 0 || readyAt.Before(earliest) {
+				bestFallback, earliest = i, readyAt
+			}
+			continue
+		}
+	}
+	if apiKeys != nil && !hasAuthorized {
+		return modelRoutingSelection{}, ErrNoAPIKeyForModel
+	}
+	if session != nil {
+		if bound, ok := session.boundModelRow(cfg.ID, rows[0].logicalModel); ok {
+			for i, selected := range rows {
+				if available[i] && selected.entry.Model == bound.entry.Model &&
+					strings.EqualFold(selected.entry.RedirectModel, bound.entry.RedirectModel) {
+					return selected, nil
+				}
+			}
+			session.forgetModelRow(cfg.ID, rows[0].logicalModel)
+		}
+	}
+	remember := func(selected modelRoutingSelection) (modelRoutingSelection, error) {
+		if session != nil {
+			session.rememberModelRow(cfg.ID, selected)
+		}
+		return selected, nil
+	}
+	if cfg.CooldownFallback && !hasAvailable && bestFallback >= 0 {
+		return remember(rows[bestFallback])
+	}
+	if len(rows) == 1 && available[0] {
+		return remember(rows[0])
+	}
+	if s.keySelector != nil {
+		if index, ok := s.keySelector.SelectModelRow(cfg.ID, rows[0].logicalModel, available); ok {
+			return remember(rows[index])
+		}
+	} else {
+		for i, ok := range available {
+			if ok {
+				return remember(rows[i])
+			}
+		}
+	}
+	return modelRoutingSelection{}, errNoAvailableModelRow
 }
 
 func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) []protocol.Protocol {

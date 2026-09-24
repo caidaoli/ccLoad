@@ -719,6 +719,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			APIKey:          entry.APIKey,
 			Note:            entry.Note,
 			AllowedModels:   append([]string(nil), entry.AllowedModels...),
+			DetectedModels:  append([]string(nil), entry.DetectedModels...),
 			ModelScopeEmpty: entry.ModelScopeEmpty,
 			KeyStrategy:     keyStrategy,
 			Disabled:        entry.ModelScopeEmpty,
@@ -1105,6 +1106,7 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		// discovery will not treat this key as a usable fallback later.
 		scope := model.APIKeyModelScope{
 			AllowedModels:   append([]string(nil), key.AllowedModels...),
+			DetectedModels:  append([]string(nil), key.DetectedModels...),
 			ModelScopeEmpty: false,
 			Disabled:        true,
 		}
@@ -1119,6 +1121,7 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		// if one exists (the normal empty-scope state has none).
 		scope := model.APIKeyModelScope{
 			AllowedModels:   append([]string(nil), key.AllowedModels...),
+			DetectedModels:  append([]string(nil), key.DetectedModels...),
 			ModelScopeEmpty: false,
 			Disabled:        false,
 		}
@@ -1152,24 +1155,27 @@ func (s *Server) handleUpdateChannelModelDisabled(c *gin.Context, id int64, mode
 		return
 	}
 
-	found := -1
+	found := false
+	changed := false
 	for i := range cfg.ModelEntries {
 		if strings.EqualFold(cfg.ModelEntries[i].Model, modelName) {
-			found = i
-			break
+			found = true
+			if cfg.ModelEntries[i].Disabled != disabled {
+				cfg.ModelEntries[i].Disabled = disabled
+				changed = true
+			}
 		}
 	}
-	if found < 0 {
+	if !found {
 		RespondErrorMsg(c, http.StatusNotFound, "model not found")
 		return
 	}
 
-	if cfg.ModelEntries[found].Disabled == disabled {
+	if !changed {
 		RespondJSON(c, http.StatusOK, cfg)
 		return
 	}
 
-	cfg.ModelEntries[found].Disabled = disabled
 	upd, err := s.store.UpdateConfig(ctx, id, cfg)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -1382,9 +1388,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			if newKeys[i].CostMultiplier != nil && *newKeys[i].CostMultiplier != oldKey.CostMultiplier {
 				multipliersByIndex[oldKey.KeyIndex] = *newKeys[i].CostMultiplier
 			}
-			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty {
+			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) ||
+				!slices.Equal(oldKey.DetectedModels, newKeys[i].DetectedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty {
 				scopesByIndex[oldKey.KeyIndex] = model.APIKeyModelScope{
 					AllowedModels:   append([]string(nil), newKeys[i].AllowedModels...),
+					DetectedModels:  append([]string(nil), newKeys[i].DetectedModels...),
 					ModelScopeEmpty: newKeys[i].ModelScopeEmpty,
 					// Only preserve a manually disabled key. A key disabled because
 					// its previous scope became empty is re-enabled by an explicit
@@ -1466,6 +1474,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				APIKey:          key.APIKey,
 				Note:            key.Note,
 				AllowedModels:   append([]string(nil), key.AllowedModels...),
+				DetectedModels:  append([]string(nil), key.DetectedModels...),
 				ModelScopeEmpty: key.ModelScopeEmpty,
 				KeyStrategy:     keyStrategy,
 				Disabled:        wasDisabled || key.ModelScopeEmpty,
@@ -1564,6 +1573,9 @@ func preserveOmittedAPIKeyMetadata(submitted []ChannelAPIKeyRequest, existing []
 			if submitted[i].Priority == nil {
 				priority := oldKey.Priority
 				submitted[i].Priority = &priority
+			}
+			if !submitted[i].detectedModelsSet {
+				submitted[i].DetectedModels = append([]string(nil), oldKey.DetectedModels...)
 			}
 			if submitted[i].allowedModelsSet {
 				continue
@@ -1752,7 +1764,7 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	})
 }
 
-// HandleAddModels 添加模型到渠道（去重）
+// HandleAddModels 按请求模型和目标身份追加配置行。
 // POST /admin/channels/:id/models
 func (s *Server) HandleAddModels(c *gin.Context) {
 	channelID, err := ParseInt64Param(c, "id")
@@ -1784,17 +1796,23 @@ func (s *Server) HandleAddModels(c *gin.Context) {
 		}
 	}
 
-	// 去重合并（大小写不敏感，兼容 MySQL utf8mb4_general_ci 排序规则）
-	existing := make(map[string]bool)
+	// 已存在的完整配置行不重复追加；同名不同目标是独立行。
+	existing := make(map[model.ModelEntryIdentity]bool)
 	for _, e := range cfg.ModelEntries {
-		existing[strings.ToLower(e.Model)] = true
+		existing[e.Identity()] = true
 	}
 	for _, e := range req.Models {
-		key := strings.ToLower(e.Model)
+		key := e.Identity()
 		if !existing[key] {
 			cfg.ModelEntries = append(cfg.ModelEntries, e)
 			existing[key] = true
 		}
+	}
+	if normalized, err := model.ValidateModelEntries(cfg.ModelEntries); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	} else {
+		cfg.ModelEntries = normalized
 	}
 
 	if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {

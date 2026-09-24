@@ -56,6 +56,7 @@ type testChannel struct {
 	cooldownDetectionRules  *model.CooldownDetectionRules
 	retryOtherKeysOnFailure bool
 	models                  string // 逗号分隔的模型列表
+	modelEntries            []model.ModelEntry
 	apiKey                  string
 	authType                string
 	oauthCredential         string
@@ -67,6 +68,340 @@ type proxyTestEnv struct {
 	server *Server
 	store  storage.Store
 	engine *gin.Engine
+}
+
+func TestProxy_SameChannelModelVariantsRotateAndSkipCooldown(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var sent []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		mu.Lock()
+		sent = append(sent, body.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "variants", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+			{Model: "auto", RedirectModel: "upstream-a"},
+			{Model: "auto", RedirectModel: "upstream-b"},
+		},
+	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "true"})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs = (%v, %v)", configs, err)
+	}
+	request := func() {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	for range 3 {
+		request()
+	}
+	if err := env.store.SetModelCooldown(context.Background(), configs[0].ID, "upstream-a", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	for range 2 {
+		request()
+	}
+	if err := env.store.ResetModelCooldown(context.Background(), configs[0].ID, "upstream-a"); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	request()
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"upstream-a", "upstream-b", "upstream-a", "upstream-b", "upstream-b", "upstream-a"}
+	if !slices.Equal(sent, want) {
+		t.Fatalf("upstream models = %v, want %v", sent, want)
+	}
+}
+
+func TestProxy_ModelVariantsPreserveSecondRedirect(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		mu.Lock()
+		sent = append(sent, body.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "chained-variants", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+			{Model: "a", RedirectModel: "b"},
+			{Model: "a", RedirectModel: "d"},
+			{Model: "b", RedirectModel: "c"},
+			{Model: "b", RedirectModel: "other"},
+			{Model: "c", RedirectModel: "e"},
+		},
+	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+	request := func(name string) {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": name, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("model=%s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	request("a") // a -> b -> c; c -> e is not a third hop.
+	request("a") // a -> d.
+	request("b") // A's second lookup did not advance B's cursor: b -> c -> e.
+	request("b") // B's own requests rotate to its other target.
+	if err := env.store.SetModelCooldown(context.Background(), 1, "c", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.server.invalidateCooldownCache()
+	request("a") // The a -> b row resolves to cooled model c, so use a -> d.
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"c", "d", "e", "other", "d"}; !slices.Equal(sent, want) {
+		t.Fatalf("upstream models=%v, want %v", sent, want)
+	}
+}
+
+func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.Header.Get("Authorization") {
+			case "Bearer only-c":
+				_, _ = io.WriteString(w, `{"data":[{"id":"c"}]}`)
+			case "Bearer only-d":
+				_, _ = io.WriteString(w, `{"data":[{"id":"d"}]}`)
+			default:
+				http.Error(w, "unknown key", http.StatusUnauthorized)
+			}
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		pair := body.Model + "/" + r.Header.Get("Authorization")
+		mu.Lock()
+		sent = append(sent, pair)
+		mu.Unlock()
+		if pair != "c/Bearer only-c" && pair != "d/Bearer only-d" {
+			http.Error(w, "key does not support model", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "per-target-key", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+			{Model: "a", RedirectModel: "b"}, {Model: "a", RedirectModel: "d"}, {Model: "b", RedirectModel: "c"},
+		},
+	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+	ctx := context.Background()
+	if err := env.store.DeleteAllAPIKeys(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: 1, KeyIndex: 0, APIKey: "only-c"},
+		{ChannelID: 1, KeyIndex: 1, APIKey: "only-d"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+		"channel_ids": []int64{1}, "mode": "replace",
+	}))
+	env.server.HandleBatchRefreshModels(c)
+	if w.Code != http.StatusOK || !gjson.GetBytes(w.Body.Bytes(), "success").Bool() {
+		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+	}
+	for range 4 {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"c/Bearer only-c", "d/Bearer only-d", "c/Bearer only-c", "d/Bearer only-d"}; !slices.Equal(sent, want) {
+		t.Fatalf("upstream model/key pairs=%v, want %v", sent, want)
+	}
+}
+
+func TestProxy_DetectedKeyTargetSkipsIncompatibleProtocolURL(t *testing.T) {
+	var openAIHits atomic.Int64
+	openAI := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		openAIHits.Add(1)
+		http.Error(w, "unsupported model for key", http.StatusBadRequest)
+	}))
+	defer openAI.Close()
+	var geminiPaths []string
+	var geminiPathsMu sync.Mutex
+	gemini := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		geminiPathsMu.Lock()
+		geminiPaths = append(geminiPaths, r.URL.Path)
+		geminiPathsMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"c"}`)
+	}))
+	defer gemini.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "protocol-target-key", upstreamProtocol: "openai", protocolTransformMode: model.ProtocolTransformModeLocal,
+		modelEntries: []model.ModelEntry{{Model: "a", RedirectModel: "c"}},
+		customRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+			Action: model.RuleActionOverride, Path: "model", Value: json.RawMessage(`"body-rule-target"`),
+		}}},
+	}}, map[int]string{0: openAI.URL})
+	ctx := context.Background()
+	cfg, err := env.store.GetConfig(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.URLs = model.ChannelURLs{
+		{URL: openAI.URL, Protocols: []string{"openai"}},
+		{URL: gemini.URL, Protocols: []string{"gemini"}},
+	}
+	if _, err := env.store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.DeleteAllAPIKeys(ctx, cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: cfg.ID, KeyIndex: 0, APIKey: "only-c", DetectedModels: []string{"c"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	env.server.InvalidateAPIKeysCache(cfg.ID)
+	env.server.urlSelector = nil
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "a", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	geminiPathsMu.Lock()
+	defer geminiPathsMu.Unlock()
+	if openAIHits.Load() != 0 || !slices.Equal(geminiPaths, []string{"/v1beta/models/c:generateContent"}) {
+		t.Fatalf("OpenAI hits=%d Gemini paths=%v", openAIHits.Load(), geminiPaths)
+	}
+}
+
+func TestProxy_ModelGroupMatchPrecedesWildcardAndFuzzy(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		sent = append(sent, body.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "match-priority", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+		{Model: "*"}, {Model: "foo-v2"},
+	}}}, map[int]string{0: upstream.URL})
+	env.server.modelFuzzyMatch = true
+	cfg, err := env.store.GetConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(name string) {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": name, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("model=%s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	update := func(entries []model.ModelEntry) {
+		t.Helper()
+		cfg.ModelEntries = entries
+		if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+			t.Fatal(err)
+		}
+		env.server.InvalidateChannelListCache()
+	}
+	request("foo") // wildcard beats fuzzy foo-v2
+	update([]model.ModelEntry{{Model: "*", Disabled: true}, {Model: "foo-v2"}})
+	request("foo") // fuzzy only after wildcard is unavailable
+	update([]model.ModelEntry{{Model: "*"}, {Model: "foo-v2"}, {Model: "foo", RedirectModel: "exact-target"}, {Model: "bar(max)", RedirectModel: "alias-target"}})
+	request("foo") // exact beats wildcard
+	request("bar") // thinking-suffix base alias beats wildcard
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"foo", "foo-v2", "exact-target", "alias-target"}; !slices.Equal(sent, want) {
+		t.Fatalf("upstream models=%v, want %v", sent, want)
+	}
+}
+
+func TestProxy_WildcardRemainsAvailableAfterExplicitModelCooldown(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if body.Model == "a" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "wildcard-with-explicit-model", upstreamProtocol: "openai",
+		modelEntries: []model.ModelEntry{{Model: "*"}, {Model: "a"}},
+	}}, map[int]string{0: upstream.URL}, map[string]string{"cooldown_fallback_enabled": "false"})
+	request := func(name string) *httptest.ResponseRecorder {
+		t.Helper()
+		return doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": name, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, nil)
+	}
+	if response := request("a"); response.Code == http.StatusOK {
+		t.Fatalf("expected model a to fail, body=%s", response.Body.String())
+	}
+	if response := request("b"); response.Code != http.StatusOK {
+		t.Fatalf("wildcard model b status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
@@ -463,6 +798,9 @@ func setupProxyTestEnvWithSettings(
 			if m != "" {
 				modelEntries = append(modelEntries, model.ModelEntry{Model: m})
 			}
+		}
+		if ch.modelEntries != nil {
+			modelEntries = model.CloneModelEntries(ch.modelEntries)
 		}
 
 		urls := channelURLsForTest(upURL)
@@ -1694,6 +2032,65 @@ func TestProxy_AntigravityCreditsFallback(t *testing.T) {
 				t.Fatal("terminal metadata-triggered refresh rejection did not disable matching credential")
 			}
 		})
+	}
+}
+
+func TestProxy_AntigravityCreditsFallbackKeepsExhaustedModelRow(t *testing.T) {
+	var mu sync.Mutex
+	var standardModel, paidModel string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var wire struct {
+			Model   string   `json:"model"`
+			Credits []string `json:"enabledCreditTypes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+			t.Error(err)
+			return
+		}
+		mu.Lock()
+		if len(wire.Credits) == 0 {
+			standardModel = wire.Model
+		} else {
+			paidModel = wire.Model
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if len(wire.Credits) == 0 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"paid ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`)
+	}))
+	credential, err := antigravityauth.ParseCredential([]byte(antigravityProxyTestCredential(t, "credits-multi-token")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	balance, minimum := 50.0, 1.0
+	credential.Credits = &antigravityauth.Credits{Balance: &balance, Minimum: &minimum, SampledAt: time.Now()}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "credits-multi", upstreamProtocol: "gemini", models: "auto", priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: raw}}, map[int]string{0: upstream.URL}, nil)
+	env.server.antigravityService.DailyAPIBaseURL = upstream.URL
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs[0].ModelEntries = []model.ModelEntry{{Model: "auto", RedirectModel: "claude-sonnet-4-6"}, {Model: "auto", RedirectModel: "claude-opus-4-6"}}
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatal(err)
+	}
+	env.server.InvalidateChannelListCache()
+	requestBody := map[string]any{"contents": []any{
+		map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}},
+	}}
+	response := doProxyRequest(t, env.engine, "/v1beta/models/auto:generateContent", requestBody, nil)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || standardModel == "" || paidModel != standardModel {
+		t.Fatalf("status=%d standard=%q paid=%q body=%s", response.Code, standardModel, paidModel, response.Body.String())
 	}
 }
 

@@ -13,13 +13,14 @@ test('批量模型输入支持用竖线分隔请求模型和重定向模型', ()
     parseModelEntries(`
       gpt-4o | gpt-4.1,
       claude-3-5-sonnet
-      GPT-4O | ignored-duplicate
+      gpt-4o | alternate-upstream
       | missing-request
       gemini-2.5-pro |
     `),
     [
       { model: 'gpt-4o', redirect_model: 'gpt-4.1' },
       { model: 'claude-3-5-sonnet', redirect_model: '' },
+      { model: 'gpt-4o', redirect_model: 'alternate-upstream' },
       { model: 'gemini-2.5-pro', redirect_model: '' }
     ]
   );
@@ -48,11 +49,12 @@ test('JSON 批量模型输入接受模型名和完整模型条目', () => {
     parseJSONModelEntries(`[
       " gpt-4o ",
       {"model":"claude-3-5-sonnet","redirect_model":" claude-3-7-sonnet ","disabled":true},
-      {"model":"GPT-4O","redirect_model":"ignored-duplicate"}
+      {"model":"gpt-4o","redirect_model":"alternate-upstream"}
     ]`),
     [
       { model: 'gpt-4o', redirect_model: '', disabled: false },
-      { model: 'claude-3-5-sonnet', redirect_model: 'claude-3-7-sonnet', disabled: true }
+      { model: 'claude-3-5-sonnet', redirect_model: 'claude-3-7-sonnet', disabled: true },
+      { model: 'gpt-4o', redirect_model: 'alternate-upstream', disabled: false }
     ]
   );
 });
@@ -152,7 +154,7 @@ test('模型规范化只改别名并保留原始上游模型名', () => {
   );
 });
 
-test('模型规范化发生别名冲突时优先保留无需重定向的精确模型', () => {
+test('模型规范化保留同名不同目标并维持顺序', () => {
   assert.deepEqual(
     normalizeModelEntries([
       { model: 'source/GPT-4O', redirect_model: '' },
@@ -163,8 +165,29 @@ test('模型规范化发生别名冲突时优先保留无需重定向的精确�
       strip_model_source_prefix: true
     }),
     [
-      { model: 'gpt-4o', redirect_model: '' },
-      { model: 'claude-sonnet', redirect_model: 'vendor/Claude-SONNET' }
+      { model: 'gpt-4o', redirect_model: 'source/GPT-4O' },
+      { model: 'claude-sonnet', redirect_model: 'vendor/Claude-SONNET' },
+      { model: 'gpt-4o', redirect_model: '' }
+    ]
+  );
+});
+
+test('仅去来源前缀时同组目标使用相同别名拼写', () => {
+  assert.deepEqual(normalizeModelEntries([
+    { model: 'provider-a/Foo' },
+    { model: 'provider-b/foo' }
+  ], { strip_model_source_prefix: true }), [
+    { model: 'Foo', redirect_model: 'provider-a/Foo' },
+    { model: 'Foo', redirect_model: 'provider-b/foo' }
+  ]);
+});
+
+test('同名多目标导入开启小写规范化后保留两行', () => {
+  assert.deepEqual(
+    normalizeModelEntries(parseModelEntries('Auto|target-a\nAuto|target-b'), { lowercase_models: true }),
+    [
+      { model: 'auto', redirect_model: 'target-a' },
+      { model: 'auto', redirect_model: 'target-b' }
     ]
   );
 });

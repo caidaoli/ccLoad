@@ -115,8 +115,16 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 		s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, skipReason))
 		return
 	}
+	if len(s.enumerateModelRows(cfg, modelName)) == 0 {
+		return
+	}
+	selectedCfg, selectErr := s.selectChannelTestModel(cfg, &testutil.TestChannelRequest{Model: modelName}, true)
+	if selectErr != nil {
+		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, selectErr)
+		return
+	}
 
-	runtimeCfg, keySelection, err := s.prepareScheduledChannelCheckAuth(ctx, cfg, apiKeys, modelName)
+	runtimeCfg, keySelection, err := s.prepareScheduledChannelCheckAuth(ctx, selectedCfg, apiKeys, modelName)
 	if err != nil {
 		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, err)
 		if !isExpectedScheduledCheckStop(err) {
@@ -143,7 +151,8 @@ func (s *Server) prepareScheduledChannelCheckAuth(ctx context.Context, cfg *mode
 		return runtimeCfg, selection, err
 	}
 
-	apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
+	selected, _ := s.firstModelRow(cfg, modelName)
+	apiKeys, _ = s.filterAPIKeysForModelRow(cfg, apiKeys, selected, string(protocol.OpenAI))
 	if len(apiKeys) == 0 {
 		return nil, channelTestKeySelection{}, errors.New("该模型未配置可用 Key")
 	}

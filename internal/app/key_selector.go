@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,36 @@ type rrCounterScope struct {
 type rrCounter struct {
 	counter    atomic.Uint32
 	lastAccess atomic.Int64 // UnixNano: 最后一次访问时间，用于后台清理
+}
+
+// SelectModelRow advances the cursor only after a usable row has been chosen.
+// available has one position per configured row, including disabled/cooling rows.
+func (ks *KeySelector) SelectModelRow(channelID int64, group string, available []bool) (int, bool) {
+	if ks == nil || len(available) == 0 {
+		return 0, false
+	}
+	counter := ks.getOrCreateCounter(rrCounterScope{channelID: channelID, keySetID: "model:" + group})
+	counter.lastAccess.Store(time.Now().UnixNano())
+	for {
+		previous := counter.counter.Load()
+		start := 0
+		if previous > 0 && previous <= uint32(len(available)) { //nolint:gosec // row count is bounded by channel config size
+			start = int(previous) % len(available)
+		}
+		for step := range available {
+			index := (start + step) % len(available)
+			if !available[index] {
+				continue
+			}
+			if counter.counter.CompareAndSwap(previous, uint32(index+1)) { //nolint:gosec // index is within slice bounds
+				return index, true
+			}
+			break
+		}
+		if !slices.Contains(available, true) {
+			return 0, false
+		}
+	}
 }
 
 // NewKeySelector 创建Key选择器

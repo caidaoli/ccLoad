@@ -111,6 +111,106 @@ func TestProxy_ChannelModelPricingBillsLogsAndTokenStats(t *testing.T) {
 	}
 }
 
+func TestProxy_ModelVariantPriceMatchesSelectedUpstreamTarget(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":1000,"total_tokens":2000}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "priced-variants", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+		{Model: "auto", RedirectModel: "priced-a", Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "priced-b", Pricing: channelPrice(3, 4)},
+	}}}, map[int]string{0: upstream.URL})
+	for range 2 {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	time.Sleep(env.server.logService.batchTimeout + 250*time.Millisecond)
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%v err=%v", configs, err)
+	}
+	logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{ChannelID: &configs[0].ID})
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("logs=%v err=%v", logs, err)
+	}
+	want := map[string]float64{"priced-a": 0.003, "priced-b": 0.007}
+	prices := env.server.logModelPrices(context.Background(), logs)
+	for _, entry := range logs {
+		expected, ok := want[entry.ActualModel]
+		if !ok || math.Abs(entry.Cost-expected) > 1e-12 {
+			t.Fatalf("actual=%s cost=%v, want=%v", entry.ActualModel, entry.Cost, expected)
+		}
+		if breakdown := buildLogCostBreakdown(entry, prices); breakdown == nil || math.Abs(breakdown.Total-expected) > 1e-12 {
+			t.Fatalf("actual=%s breakdown=%+v, want=%v", entry.ActualModel, breakdown, expected)
+		}
+		delete(want, entry.ActualModel)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing targets: %v", want)
+	}
+}
+
+func TestProxy_ModelVariantLogOmitsAmbiguousPriceBreakdown(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":1000,"total_tokens":2000}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{name: "ambiguous-priced-variants", upstreamProtocol: "openai", modelEntries: []model.ModelEntry{
+		{Model: "auto", RedirectModel: "middle", Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "final", Pricing: channelPrice(3, 4)},
+		{Model: "middle", RedirectModel: "final"},
+	}}}, map[int]string{0: upstream.URL})
+	for range 2 {
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	time.Sleep(env.server.logService.batchTimeout + 250*time.Millisecond)
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%v err=%v", configs, err)
+	}
+	logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{ChannelID: &configs[0].ID})
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("logs=%v err=%v", logs, err)
+	}
+	wantCosts := map[float64]bool{0.003: false, 0.007: false}
+	for _, entry := range logs {
+		if entry.ActualModel != "final" {
+			t.Fatalf("actual model=%q, want final", entry.ActualModel)
+		}
+		matched := false
+		for want := range wantCosts {
+			if math.Abs(entry.Cost-want) < 1e-12 {
+				wantCosts[want] = true
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatalf("unexpected persisted cost=%v", entry.Cost)
+		}
+	}
+	for cost, seen := range wantCosts {
+		if !seen {
+			t.Fatalf("missing persisted cost=%v", cost)
+		}
+	}
+	for _, projected := range projectDashboardLogs(logs, env.server.logModelPrices(context.Background(), logs)) {
+		if projected.CostBreakdown != nil {
+			t.Fatalf("ambiguous log cost=%v exposed misleading breakdown=%+v", projected.Cost, projected.CostBreakdown)
+		}
+	}
+}
+
 // 管理端非流式测试、流式对话与真实代理请求必须按同一口径计费：同一份渠道价格、同一个计费模型。
 // 重定向目标没有目录价格时计费模型回退到请求模型 gpt-5.4，其高上下文阈值是 272K；
 // 若按重定向目标计费会落到默认 200K 阈值，250K 输入就被错算成高上下文价。
@@ -248,7 +348,7 @@ func TestCSVModelPricingRoundTripAndCarry(t *testing.T) {
 
 	// 旧版 CSV 没有 model_pricing 列：沿用已有同名渠道的模型价格。
 	channel, message = parse("", false, map[string][]model.ModelEntry{"priced": {{Model: "model-b", Pricing: price}}})
-	if message != "" || channel.Config.ModelEntries[0].Pricing != nil || channel.Config.ModelEntries[1].Pricing != price {
+	if message != "" || channel.Config.ModelEntries[0].Pricing != nil || !channel.Config.ModelEntries[1].Pricing.Equal(price) {
 		t.Fatalf("carried pricing: channel=%#v message=%q", channel, message)
 	}
 }

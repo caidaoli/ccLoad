@@ -24,6 +24,32 @@ func (s tokenLogMetadataErrorStore) GetAllAPIKeys(context.Context) (map[int64][]
 	return nil, s.err
 }
 
+func TestLogModelPricesUsesFuzzyMatchedRow(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.modelFuzzyMatch = true
+	ctx := context.Background()
+	price := channelPrice(1, 2)
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "fuzzy-price", URLs: model.ChannelURLs{{URL: "https://example.invalid"}},
+		Enabled: true, ModelEntries: []model.ModelEntry{
+			{Model: "gemini-3-flash-preview", RedirectModel: "middle", Pricing: price},
+			{Model: "middle", RedirectModel: "final"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, ok := server.firstModelRow(cfg, "gemini-3-flash")
+	if !ok || selected.logicalModel != "gemini-3-flash-preview" {
+		t.Fatalf("fuzzy route = %+v, ok=%v", selected, ok)
+	}
+	entry := &model.LogEntry{ChannelID: cfg.ID, Model: "gemini-3-flash", ActualModel: "middle", Cost: 1}
+	if got, ok := server.logModelPrices(ctx, []*model.LogEntry{entry})(entry); !ok || !got.Equal(price) {
+		t.Fatalf("log price = %+v, identifiable=%v, want %+v", got, ok, price)
+	}
+}
+
 func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
