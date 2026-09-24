@@ -85,19 +85,33 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 			if !credentialUpdated {
 				continue
 			}
-			cfg, err = store.GetConfig(ctx, currentCfg.ID)
-			if err != nil {
-				return nil, err
+			for {
+				cfg, err = store.GetConfig(ctx, currentCfg.ID)
+				if err != nil {
+					return nil, err
+				}
+				currentCredential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+				if !cfg.UsesAntigravityOAuth() || parseErr != nil ||
+					!sameAntigravityIdentity(currentCredential, merged) ||
+					currentCredential.AccessToken != merged.AccessToken ||
+					currentCredential.RefreshToken != merged.RefreshToken {
+					return nil, errors.New("antigravity credential changed during model update")
+				}
+				expected := cfg.Clone()
+				cfg.ModelEntries = preserveConfiguredVariants(cfg.ModelEntries,
+					model.CarryModelPricing(cfg.ModelEntries, antigravityOAuthModelEntries()))
+				maxConcurrency := antigravityOAuthMaxConcurrency
+				matched, saveErr := store.UpdateModelStateIfSnapshotMatches(
+					ctx, expected, cfg.ModelEntries, cfg.ScheduledCheckModel, &maxConcurrency,
+				)
+				if saveErr != nil {
+					return nil, fmt.Errorf("update Antigravity channel: %w", saveErr)
+				}
+				if matched {
+					return store.GetConfig(ctx, cfg.ID)
+				}
 			}
-			break
 		}
-		cfg.ModelEntries = model.CarryModelPricing(cfg.ModelEntries, antigravityOAuthModelEntries())
-		cfg.MaxConcurrency = antigravityOAuthMaxConcurrency
-		updated, err := store.UpdateConfig(ctx, cfg.ID, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("update Antigravity channel: %w", err)
-		}
-		return updated, nil
 	}
 	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel(uniqueAntigravityChannelName(configs, credential), credentialJSON))
 	if err != nil {

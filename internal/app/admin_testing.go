@@ -640,23 +640,21 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		}
 		testReq.BaseURL = normalizedBaseURL
 	}
-	routedModel := model.RoutingModelName(testReq.Model)
-	testCfg := cfg
-	if !cfg.SupportsModel(routedModel) {
-		// Disabled models remain excluded from normal routing, but the admin test
-		// endpoint must be able to probe the configured upstream model explicitly.
-		testCfg = cfg.Clone()
-		if !enableDisabledChannelTestModel(testCfg, routedModel) {
+	testCfg, selectErr := s.selectChannelTestModel(cfg, &testReq, false)
+	if selectErr != nil {
+		if strings.TrimSpace(testReq.TargetModel) != "" {
+			RespondErrorMsg(c, http.StatusBadRequest, selectErr.Error())
+		} else {
 			RespondJSON(c, http.StatusOK, gin.H{
 				"success":          false,
-				"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
+				"error":            selectErr.Error(),
 				"model":            testReq.Model,
 				"supported_models": cfg.GetModels(),
 			})
-			return
 		}
-		cfg = testCfg
+		return
 	}
+	cfg = testCfg
 
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
 	if err != nil {
@@ -664,7 +662,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, testReq.Model, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+		c.Request.Context(), cfg, apiKeys, testReq.Model, resolveClientProtocol(&testReq), testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
 		oauthCredentialUseCurrent,
 	)
 	if err != nil {
@@ -716,20 +714,105 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	RespondJSON(c, http.StatusOK, testResult)
 }
 
-// enableDisabledChannelTestModel enables one configured model on a cloned
-// config so the admin test can exercise it without changing normal routing.
-func enableDisabledChannelTestModel(cfg *model.Config, routedModel string) bool {
-	if cfg == nil || routedModel == "" {
-		return false
+// selectChannelTestModel binds one configured row on a request-private config.
+// Manual tests ignore model cooldown; scheduled checks call this only for enabled groups.
+func (s *Server) selectChannelTestModel(cfg *model.Config, req *testutil.TestChannelRequest, requireEnabled bool) (*model.Config, error) {
+	return s.selectChannelTestModelWithAvailability(cfg, req, requireEnabled, nil)
+}
+
+func (s *Server) selectChannelTestModelWithAvailability(cfg *model.Config, req *testutil.TestChannelRequest, requireEnabled bool, rowAvailable func(modelRoutingSelection) bool) (*model.Config, error) {
+	if cfg == nil || req == nil {
+		return nil, errors.New("channel test model is missing")
 	}
-	for index := range cfg.ModelEntries {
-		entry := &cfg.ModelEntries[index]
-		if entry.Disabled && model.RoutingModelName(entry.Model) == routedModel {
-			entry.Disabled = false
-			return true
+	name := model.RoutingModelName(req.Model)
+	if requireEnabled {
+		configured, enabled := false, false
+		for _, entry := range cfg.ModelEntries {
+			if model.RoutingModelName(entry.Model) != name {
+				continue
+			}
+			configured = true
+			enabled = enabled || !entry.Disabled
+		}
+		if configured && !enabled {
+			return nil, fmt.Errorf("模型 %s 的配置行均已停用", req.Model)
 		}
 	}
-	return false
+	var rows []modelRoutingSelection
+	for _, entry := range cfg.ModelEntries {
+		if entry.Model == name && (!requireEnabled || !entry.Disabled) {
+			rows = append(rows, modelRoutingSelection{logicalModel: name, entry: entry})
+		}
+	}
+	if len(rows) == 0 {
+		rows = s.configuredModelRows(cfg, name)
+	}
+	if len(rows) == 0 {
+		for _, entry := range cfg.ModelEntries {
+			if model.RoutingModelName(entry.Model) == name && (!requireEnabled || !entry.Disabled) {
+				rows = append(rows, modelRoutingSelection{logicalModel: name, entry: entry})
+			}
+		}
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("模型 %s 不在此渠道的支持列表中", req.Model)
+	}
+	chosen := -1
+	if target := strings.TrimSpace(req.TargetModel); target != "" {
+		for i, row := range rows {
+			effective := row.entry.RedirectModel
+			if effective == "" {
+				effective = row.logicalModel
+			}
+			if strings.EqualFold(model.RoutingModelName(effective), model.RoutingModelName(target)) {
+				chosen = i
+				break
+			}
+		}
+		if chosen < 0 {
+			return nil, fmt.Errorf("模型 %q 未配置目标 %q", req.Model, target)
+		}
+	} else {
+		available := make([]bool, len(rows))
+		for i, row := range rows {
+			available[i] = !row.entry.Disabled && (rowAvailable == nil || rowAvailable(row))
+		}
+		if s.keySelector != nil {
+			if index, ok := s.keySelector.SelectModelRow(cfg.ID, rows[0].logicalModel, available); ok {
+				chosen = index
+			}
+		} else {
+			for i, ok := range available {
+				if ok {
+					chosen = i
+					break
+				}
+			}
+		}
+		if chosen < 0 {
+			if rowAvailable != nil {
+				return nil, fmt.Errorf("模型 %s 没有可用的 API Key", req.Model)
+			}
+			chosen = 0
+		}
+	}
+	selected := rows[chosen]
+	if selected.wildcard {
+		return cfg, nil
+	}
+	clone := cfg.Clone()
+	clone.ModelEntries = clone.ModelEntries[:0]
+	for _, entry := range cfg.ModelEntries {
+		if entry.Model != selected.entry.Model {
+			clone.ModelEntries = append(clone.ModelEntries, entry)
+			continue
+		}
+		if entry.Identity() == selected.entry.Identity() {
+			entry.Disabled = false
+			clone.ModelEntries = append(clone.ModelEntries, entry)
+		}
+	}
+	return clone, nil
 }
 
 func channelTestActualModel(result map[string]any, fallback string) string {
@@ -767,6 +850,7 @@ func (s *Server) prepareChannelTestAuth(
 	cfg *model.Config,
 	apiKeys []*model.APIKey,
 	requestedModel string,
+	requestProtocol string,
 	requestedKeyIndex *int,
 	requestAPIKey string,
 	oauthMode oauthCredentialLoadMode,
@@ -779,16 +863,17 @@ func (s *Server) prepareChannelTestAuth(
 	if len(apiKeys) == 0 && requestAPIKey == "" {
 		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
 	}
-	channelModel := s.resolveChannelRoutingModel(cfg, requestedModel)
+	selected, _ := s.firstModelRow(cfg, requestedModel)
 	if requestAPIKey != "" {
 		if requestedKeyIndex != nil {
 			if persisted, ok := findAPIKeyByIndex(apiKeys, *requestedKeyIndex); ok &&
-				persisted.APIKey == requestAPIKey && !persisted.AllowsModel(channelModel) {
+				persisted.APIKey == requestAPIKey && !s.keyModelScopeAllowsRow(cfg, persisted, selected,
+				possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol)))) {
 				return nil, channelTestKeySelection{}, fmt.Errorf("key #%d 不允许模型 %s", *requestedKeyIndex, requestedModel)
 			}
 		}
 	} else {
-		apiKeys, _ = filterAPIKeysForModel(apiKeys, channelModel)
+		apiKeys, _ = s.filterAPIKeysForModelRow(cfg, apiKeys, selected, requestProtocol)
 		if len(apiKeys) == 0 {
 			return nil, channelTestKeySelection{}, fmt.Errorf("模型 %s 没有可用的 API Key", requestedModel)
 		}
@@ -1382,7 +1467,8 @@ func (s *Server) testCursorOAuthChannel(
 
 	requestedModel := testReq.Model
 	attemptReq := *testReq
-	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, requestedModel, clientProtocol)
+	selected, _ := s.firstModelRow(cfg, requestedModel)
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, clientProtocol)
 	result["actual_model"] = attemptReq.Model
 
 	if testReq.WaitForCapacity {
@@ -1520,7 +1606,8 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 ) (result map[string]any) {
 	requestedModel := testReq.Model
 	attemptReq := *testReq
-	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, requestedModel, upstreamProtocol)
+	selected, _ := s.firstModelRow(cfg, requestedModel)
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	if attemptReq.Model != requestedModel {
 		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, attemptReq.Model)
 	}
@@ -2505,7 +2592,9 @@ func (s *Server) bindChannelTestBilling(cfg *model.Config, testReq *testutil.Tes
 		return
 	}
 	testReq.RequestModel = testReq.Model
-	testReq.ChannelModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, testReq.Model))
+	if selected, ok := s.firstModelRow(cfg, testReq.Model); ok {
+		testReq.ChannelModelPrice = selected.entry.Pricing
+	}
 }
 
 // channelTestCostUSD 与代理 computeRequestCostWithPrice 同一口径计算测试成本：计费模型由

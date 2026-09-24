@@ -57,8 +57,8 @@ type dashboardLogEntry struct {
 	CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
 }
 
-// logModelPriceFunc 返回日志所属渠道当前配置的模型价格（nil 按全局价格）。
-type logModelPriceFunc func(entry *model.LogEntry) *util.CustomModelPrice
+// logModelPriceFunc 返回当前可确定的渠道价格；无法辨别选中行时不展示重算明细。
+type logModelPriceFunc func(entry *model.LogEntry) (*util.CustomModelPrice, bool)
 
 // logModelPrices 为一页日志预加载渠道配置，按渠道当前的模型价格重算成本明细。
 // 渠道已删除或读取失败时明细回退全局价格——明细只用于展示，日志成本已在写入时定格。
@@ -77,12 +77,41 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 		}
 		configs[entry.ChannelID] = cfg
 	}
-	return func(entry *model.LogEntry) *util.CustomModelPrice {
+	return func(entry *model.LogEntry) (*util.CustomModelPrice, bool) {
 		cfg := configs[entry.ChannelID]
 		if cfg == nil {
-			return nil
+			return nil, true
 		}
-		return cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, entry.Model))
+		actual := entry.ActualModel
+		if actual == "" {
+			actual = model.RoutingModelName(entry.Model)
+		}
+		logical := s.resolveChannelRoutingModel(cfg, entry.Model)
+		var matched *util.CustomModelPrice
+		matches := 0
+		for _, row := range cfg.ModelEntries {
+			if !strings.EqualFold(model.RoutingModelName(row.Model), logical) {
+				continue
+			}
+			selected := modelRoutingSelection{
+				logicalModel: logical,
+				entry:        row,
+				fuzzyMatched: !strings.EqualFold(model.RoutingModelName(entry.Model), logical),
+			}
+			if strings.EqualFold(s.resolveFinalUpstreamModel(cfg, selected, entry.UpstreamProtocol), actual) {
+				if matches > 0 && !matched.Equal(row.Pricing) {
+					return nil, false
+				}
+				matched = row.Pricing
+				matches++
+			}
+		}
+		if matches == 0 && cfg.UsesAntigravityOAuth() && strings.EqualFold(actual, antigravityWebSearchFallbackModel) {
+			// Web Search replaces the routed model after row selection. Its log retains
+			// the selected row's price, which cannot be recovered from this model name.
+			return nil, false
+		}
+		return matched, true
 	}
 }
 
@@ -92,7 +121,11 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 	}
 	var price *util.CustomModelPrice
 	if modelPrice != nil {
-		price = modelPrice(entry)
+		var identifiable bool
+		price, identifiable = modelPrice(entry)
+		if !identifiable {
+			return nil
+		}
 	}
 	billingModel := util.ResolveBillingModel(entry.ActualModel, entry.Model)
 	cache5mTokens := entry.Cache5mInputTokens

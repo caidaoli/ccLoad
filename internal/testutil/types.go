@@ -36,6 +36,7 @@ type ImageGenerationOptions struct {
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
 	Model             string                  `json:"model" binding:"required"`
+	TargetModel       string                  `json:"redirect_model,omitempty"`  // 可选：只测试指定配置行的目标
 	MaxTokens         int                     `json:"max_tokens,omitempty"`      // 可选，默认512
 	Temperature       *float64                `json:"temperature,omitempty"`     // 可选，采样温度
 	TopP              *float64                `json:"top_p,omitempty"`           // 可选，核采样阈值

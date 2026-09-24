@@ -700,7 +700,7 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **Multi-URL Note**: `urls` is an ordered array of `{url, exact, protocols}` objects. `exact: true` means the URL is already the complete upstream request URL. The system uses latency-weighted selection and independent URL cooldown; local mode first partitions explicitly declared URLs ahead of automatic ones while preserving order inside each group.
 
-> **Model Entry Note**: each `models` element is `{model, redirect_model, disabled}`. `redirect_model` rewrites the model name sent upstream while clients keep requesting the original name. `disabled: true` removes that model from the channel entirely — it stops being advertised, matched (exact or fuzzy), and cooled down, without deleting the entry. When you refresh the model list in `replace` mode, existing disabled flags are carried over to the newly fetched entries by original name, normalized alias, and redirect target, so a refresh does not silently re-enable models you turned off.
+> **Model Entry Note**: each `models` element is `{model, redirect_model, disabled, pricing}`. A channel may configure the same `model` on multiple rows with distinct `redirect_model` targets. Enabled, uncooled rows rotate in order, each with its own disabled state and price; retries across keys, URLs, and protocols keep the selected row. After an exact redirect, the target's first enabled row may supply one further redirect (`A→B→C` sends A to C); the lookup stops there and does not advance B's rotation cursor. The model disappears from the channel only when every row is disabled. Admin tests may specify `redirect_model` to test one row; scheduled checks use enabled rows only.
 
 > **Per-key model allowlist**: each `api_keys` entry may carry an `allowed_models` string array restricting which models that Key serves. Omitting it, leaving it empty, or passing `"*"` means unrestricted, preserving the previous behavior. Every listed model must already exist in the channel's `models` (unless the channel declares a wildcard model), otherwise the save is rejected; on save the names are normalized to the channel's canonical casing, deduplicated, and capped at 2000 encoded bytes. Matching runs on the **channel-side logical model**: fuzzy matching happens first, the allowlist is checked next, and `redirect_model` rewriting happens afterwards, so list channel model names rather than upstream ones. Keys are filtered by model before the key-retry loop; when no Key in a channel serves the requested model, that channel is skipped without cooldown and without recording a failure. In the web UI use **Model Scope** on the Key row, and **Detect This Key** to probe the upstream models and match them against the channel models. This fits relays where different Keys carry different model entitlements.
 
@@ -819,9 +819,8 @@ curl -X POST -H "Authorization: Bearer your_token" \
 
 **CSV Format Example**:
 ```csv
-name,api_key,urls,priority,models,enabled
-Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,claude-sonnet-4-6,true
-Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opus-4-6,true
+name,api_key,urls,priority,model_entries_json,enabled
+Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,"[{""model"":""auto"",""redirect_model"":""claude-sonnet-4-6""},{""model"":""auto"",""redirect_model"":""claude-opus-4-6""}]",true
 ```
 
 **Features**:
@@ -830,6 +829,8 @@ Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opu
 - Incremental import and overwrite update
 - UTF-8 encoding, Excel compatible
 - `oauth_credential` includes both OAuth credentials and API-key channel management envelopes for cross-instance migration; treat exported CSV files as sensitive and delete them after use
+
+Upgrade note: new CSV exports use only `model_entries_json` for ordered model rows, disabled states, and prices. Legacy `models`/`model_redirects`/`model_pricing` columns remain importable on their own; mixing them with the new column is rejected. The existing two-step `A→B→C` redirect remains available alongside multiple A targets; a third redirect is not followed.
 
 ## 📊 Monitoring Metrics
 

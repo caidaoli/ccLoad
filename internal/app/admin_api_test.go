@@ -62,11 +62,12 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 
 		// 创建API Key
 		apiKey := &model.APIKey{
-			ChannelID:     created.ID,
-			KeyIndex:      0,
-			APIKey:        "sk-test-key-" + created.Name,
-			AllowedModels: []string{cfg.ModelEntries[0].Model},
-			KeyStrategy:   model.KeyStrategySequential,
+			ChannelID:      created.ID,
+			KeyIndex:       0,
+			APIKey:         "sk-test-key-" + created.Name,
+			AllowedModels:  []string{cfg.ModelEntries[0].Model},
+			DetectedModels: []string{cfg.ModelEntries[0].Model},
+			KeyStrategy:    model.KeyStrategySequential,
 		}
 		if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{apiKey}); err != nil {
 			t.Fatalf("创建API Key失败: %v", err)
@@ -113,7 +114,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time", "model_pricing"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -134,6 +135,10 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	allowedModelsIndex := slices.Index(header, "api_key_allowed_models")
 	if allowedModelsIndex < 0 || records[1][allowedModelsIndex] != `[["model-1"]]` {
 		t.Errorf("api_key_allowed_models 导出值错误: row=%v", records[1])
+	}
+	detectedModelsIndex := slices.Index(header, "api_key_detected_models")
+	if detectedModelsIndex < 0 || records[1][detectedModelsIndex] != `[["model-1"]]` {
+		t.Errorf("api_key_detected_models 导出值错误: row=%v", records[1])
 	}
 	websocketsIndex := slices.Index(header, "websockets")
 	if websocketsIndex < 0 || records[1][websocketsIndex] != "true" {
@@ -495,8 +500,8 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	if err := source.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5, Priority: -8},
-		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-double", CostMultiplier: 2.0, Priority: 20},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5, Priority: -8, DetectedModels: []string{"upstream-half"}},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-double", CostMultiplier: 2.0, Priority: 20, DetectedModels: []string{"upstream-double"}},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
 	}
@@ -547,12 +552,69 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 	}
 	want := map[int]float64{0: 0.5, 1: 2.0}
 	wantPriority := map[int]int{0: -8, 1: 20}
+	wantDetected := map[int][]string{0: {"upstream-half"}, 1: {"upstream-double"}}
 	for _, key := range keys {
+		if !slices.Equal(key.DetectedModels, wantDetected[key.KeyIndex]) {
+			t.Fatalf("detected model targets lost: %+v", key)
+		}
 		if key.Priority != wantPriority[key.KeyIndex] {
 			t.Fatalf("priority lost: %+v", key)
 		}
 		if got, ok := want[key.KeyIndex]; !ok || key.CostMultiplier != got {
 			t.Fatalf("restored key %d multiplier=%v, want %v", key.KeyIndex, key.CostMultiplier, got)
+		}
+	}
+}
+
+func TestAdminAPI_CSVRoundTripsModelVariants(t *testing.T) {
+	source := newInMemoryServer(t)
+	ctx := context.Background()
+	entries := []model.ModelEntry{
+		{Model: "auto", RedirectModel: "upstream-a", Disabled: true, Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "upstream-b", Pricing: channelPrice(3, 4)},
+	}
+	created, err := source.store.CreateConfig(ctx, &model.Config{
+		Name: "variant CSV", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		ModelEntries: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-variant"}}); err != nil {
+		t.Fatal(err)
+	}
+	exportC, exportW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
+	source.HandleExportChannelsCSV(exportC)
+	if exportW.Code != http.StatusOK {
+		t.Fatalf("export status=%d", exportW.Code)
+	}
+	target := newInMemoryServer(t)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "variants.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(exportW.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	importC, importW := newTestContext(t, request)
+	target.HandleImportChannelsCSV(importC)
+	if importW.Code != http.StatusOK {
+		t.Fatalf("import status=%d body=%s", importW.Code, importW.Body.String())
+	}
+	restored, err := target.store.ListConfigs(ctx)
+	if err != nil || len(restored) != 1 || len(restored[0].ModelEntries) != len(entries) {
+		t.Fatalf("restored = (%+v, %v)", restored, err)
+	}
+	for i, want := range entries {
+		if !restored[0].ModelEntries[i].Equal(want) {
+			t.Fatalf("row %d = %+v, want %+v", i, restored[0].ModelEntries[i], want)
 		}
 	}
 }
@@ -1062,12 +1124,13 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		t.Fatalf("创建现有渠道失败: %v", err)
 	}
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID:     created.ID,
-		KeyIndex:      0,
-		APIKey:        "sk-old-key",
-		Priority:      -19,
-		AllowedModels: []string{"old-model"},
-		KeyStrategy:   model.KeyStrategySequential,
+		ChannelID:      created.ID,
+		KeyIndex:       0,
+		APIKey:         "sk-old-key",
+		Priority:       -19,
+		AllowedModels:  []string{"old-model"},
+		DetectedModels: []string{"old-upstream-model"},
+		KeyStrategy:    model.KeyStrategySequential,
 	}}); err != nil {
 		t.Fatalf("创建现有 key 失败: %v", err)
 	}
@@ -1137,7 +1200,7 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	if err != nil {
 		t.Fatalf("查询更新后的 key 失败: %v", err)
 	}
-	if len(keys) != 1 || keys[0].Priority != -19 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) {
+	if len(keys) != 1 || keys[0].Priority != -19 || keys[0].APIKey != "sk-old-key" || !slices.Equal(keys[0].AllowedModels, []string{"old-model"}) || !slices.Equal(keys[0].DetectedModels, []string{"old-upstream-model"}) {
 		t.Fatalf("旧 CSV 缺少 api_key_allowed_models 列时应保留范围，实际为 %+v", keys)
 	}
 }

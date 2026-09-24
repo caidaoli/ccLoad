@@ -1434,6 +1434,11 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 	}
 	existingConfig := newAntigravityOAuthChannel("Antigravity-existing@example.com", existingPayload)
 	existingConfig.MaxConcurrency = 0
+	variants := []model.ModelEntry{
+		{Model: "auto", RedirectModel: "claude-sonnet-4-6", Disabled: true, Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "claude-opus-4-6", Pricing: channelPrice(3, 4)},
+	}
+	existingConfig.ModelEntries = append(existingConfig.ModelEntries, variants...)
 	existing, err := store.CreateConfig(context.Background(), existingConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -1460,6 +1465,124 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 		oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|secondary") == nil ||
 		oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 9_500_000 {
 		t.Fatalf("persisted Antigravity channel = %#v", persisted)
+	}
+	var preserved []model.ModelEntry
+	for _, entry := range persisted.ModelEntries {
+		if entry.Model == "auto" {
+			preserved = append(preserved, entry)
+		}
+	}
+	if !reflect.DeepEqual(preserved, variants) {
+		t.Fatalf("reauthorization changed Antigravity model variants: got=%+v want=%+v", preserved, variants)
+	}
+}
+
+func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	ctx := context.Background()
+	oldCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "old-project",
+	}
+	oldPayload, err := oldCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := newAntigravityOAuthChannel("original", oldPayload)
+	initial.ModelEntries = append(initial.ModelEntries, model.ModelEntry{Model: "auto", RedirectModel: "target-a"})
+	created, err := store.CreateConfig(ctx, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interleaved := &modelStateEditStore{Store: store}
+	interleaved.edit = func(ctx context.Context) error {
+		current, err := store.GetConfig(ctx, created.ID)
+		if err != nil {
+			return err
+		}
+		current.Name = "admin-edited"
+		current.ModelEntries = append(current.ModelEntries, model.ModelEntry{
+			Model: "auto", RedirectModel: "target-b", Disabled: true, Pricing: channelPrice(3, 4),
+		})
+		current.ScheduledCheckModel = "auto"
+		_, err = store.UpdateConfig(ctx, created.ID, current)
+		return err
+	}
+	newCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
+		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
+	}
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var variants []model.ModelEntry
+	for _, entry := range updated.ModelEntries {
+		if entry.Model == "auto" {
+			variants = append(variants, entry)
+		}
+	}
+	if updated.Name != "admin-edited" || updated.MaxConcurrency != antigravityOAuthMaxConcurrency ||
+		updated.ScheduledCheckModel != "auto" || !reflect.DeepEqual(variants, []model.ModelEntry{
+		{Model: "auto", RedirectModel: "target-a"},
+		{Model: "auto", RedirectModel: "target-b", Disabled: true, Pricing: channelPrice(3, 4)},
+	}) {
+		t.Fatalf("reauthorization lost concurrent edit: %+v", updated)
+	}
+}
+
+func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	ctx := context.Background()
+	oldCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "project",
+	}
+	oldPayload, err := oldCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel("original", oldPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	interleaved := &modelStateEditStore{Store: store}
+	interleaved.edit = func(ctx context.Context) error {
+		current, err := store.GetConfig(ctx, created.ID)
+		if err != nil {
+			return err
+		}
+		credential, err := antigravityauth.ParseCredential([]byte(current.OAuthCredential))
+		if err != nil {
+			return err
+		}
+		credential.QuotaCostUsage = testQuotaCostUsage(4_250_000)
+		updatedJSON, err := credential.JSON()
+		if err != nil {
+			return err
+		}
+		updated, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeAntigravityOAuth, current.OAuthCredential, updatedJSON)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return errors.New("concurrent quota cost update lost credential race")
+		}
+		return nil
+	}
+	newCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
+		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "project",
+	}
+	updated, err := createAntigravityChannel(ctx, interleaved, newCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := antigravityauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" ||
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 4_250_000 {
+		t.Fatalf("reauthorization lost concurrent quota cost update: (%+v, %v)", persisted, err)
 	}
 }
 

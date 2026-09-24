@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -259,7 +260,6 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 		item.ChannelName = cfg.Name
-		previousModels := cfg.ModelEntries
 
 		keyMode := modelFetchPerAvailableKey
 		if mode == "replace" {
@@ -287,118 +287,22 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 		item.Fetched = len(fetched)
-
-		var keys []*model.APIKey
-		if mode == "replace" && cfg.GetAuthType() == model.AuthTypeAPIKey {
-			keys, err = s.store.GetAPIKeys(ctx, channelID)
-			if err != nil {
-				item.Status = "failed"
-				item.Error = "读取 API Key 失败: " + err.Error()
-				failed++
-				results = append(results, item)
-				continue
-			}
+		item, persisted := s.applyFetchedModels(ctx, item, fetched, resp.KeyModels, mode, normalization)
+		if partialKeyFailure {
+			item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
 		}
-
-		modelEntriesChanged := false
-		normalizedExistingChanged := false
-		if (req.LowercaseModels || req.StripModelSourcePrefix) && mode == "merge" {
-			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, normalization)
-			normalizedExistingChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
-			modelEntriesChanged = normalizedExistingChanged
-			cfg.ModelEntries = normalizedExisting
-		}
-
-		switch mode {
-		case "replace":
-			if partialKeyFailure {
-				retained, retainErr := modelsRetainedFromFailedProbes(keys, cfg.ModelEntries, fetched, resp.KeyModels, normalization)
-				if retainErr != nil {
-					item.Status = "failed"
-					item.Error = retainErr.Error()
-					failed++
-					results = append(results, item)
-					continue
-				}
-				item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
-				fetched = append(fetched, retained...)
-			}
-			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
-			item.Removed = removed
-			item.Total = len(cfg.ModelEntries)
-			modelEntriesChanged = hasChange
-		default: // merge
-			added, hasChange := mergeModelEntries(cfg, fetched)
-			item.Added = added
-			item.Total = len(cfg.ModelEntries)
-			modelEntriesChanged = modelEntriesChanged || hasChange
-		}
-
-		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
-		if normalizedExistingChanged && cfg.GetAuthType() == model.AuthTypeAPIKey {
-			keys, err = s.store.GetAPIKeys(ctx, channelID)
-			if err != nil {
-				item.Status = "failed"
-				item.Error = "读取 API Key 失败: " + err.Error()
-				failed++
-				results = append(results, item)
-				continue
-			}
-		}
-		var scopeUpdates map[int]model.APIKeyModelScope
-		if len(keys) > 0 {
-			scopeUpdates = remapNormalizedAPIKeyScopes(keys, previousModels, cfg.ModelEntries, normalization)
-			if mode == "replace" {
-				// Successful probes own their scope even if it matches the old value.
-				for _, result := range resp.KeyModels {
-					if strings.TrimSpace(result.Error) == "" {
-						delete(scopeUpdates, result.KeyIndex)
-					}
-				}
-				for index, scope := range buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, resp.KeyModels) {
-					if scopeUpdates == nil {
-						scopeUpdates = make(map[int]model.APIKeyModelScope)
-					}
-					scopeUpdates[index] = scope
-				}
-			}
-		}
-		scopeChanged := len(scopeUpdates) > 0
-		configChanged := modelEntriesChanged || scheduledCheckChanged
-		if !configChanged && !scopeChanged {
-			item.Status = "unchanged"
+		switch item.Status {
+		case "updated":
+			updated++
+		case "unchanged":
 			unchanged++
-			results = append(results, item)
-			continue
+		default:
+			failed++
 		}
-
-		if configChanged {
-			if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
-				item.Status = "failed"
-				item.Error = "保存模型失败: " + err.Error()
-				failed++
-				results = append(results, item)
-				continue
-			}
+		if persisted {
+			changed = true
+			changedChannelIDs = append(changedChannelIDs, channelID)
 		}
-		if scopeChanged {
-			if err := s.store.UpdateAPIKeyModelScopes(ctx, channelID, scopeUpdates); err != nil {
-				item.Status = "failed"
-				item.Error = "保存 API Key 模型范围失败: " + err.Error()
-				failed++
-				if configChanged {
-					changed = true
-					changedChannelIDs = append(changedChannelIDs, channelID)
-				}
-				results = append(results, item)
-				continue
-			}
-		}
-
-		item.Status = "updated"
-		updated++
-		changed = true
-		changedChannelIDs = append(changedChannelIDs, channelID)
 		results = append(results, item)
 	}
 
@@ -463,62 +367,145 @@ func modelsRetainedFromFailedProbes(
 			candidates = append(candidates, entry)
 		}
 	}
-	seen := make(map[string]struct{}, len(alreadyFetched))
+	seen := make(map[model.ModelEntryIdentity]struct{}, len(alreadyFetched))
 	for _, entry := range alreadyFetched {
-		seen[strings.ToLower(entry.Model)] = struct{}{}
+		seen[entry.Identity()] = struct{}{}
 	}
 	retained := make([]model.ModelEntry, 0, len(candidates))
-	for _, entry := range normalizeModelEntriesForSave(candidates, normalization) {
-		name := strings.ToLower(entry.Model)
-		if _, exists := seen[name]; exists {
+	for _, entry := range normalizeExistingModelEntriesForRefresh(candidates, normalization) {
+		identity := entry.Identity()
+		if _, exists := seen[identity]; exists {
 			continue
 		}
-		seen[name] = struct{}{}
+		seen[identity] = struct{}{}
 		retained = append(retained, entry)
 	}
-	// Compare effective routes: an explicit base entry takes precedence over
-	// thinking-suffix aliases, including when their redirects differ.
-	routingUpstreams := func(entries []model.ModelEntry) map[string]string {
-		cfg := &model.Config{ModelEntries: entries}
-		routes := make(map[string]string, len(entries))
-		for _, name := range cfg.GetModels() {
-			upstream := name
-			if redirect, ok := cfg.GetRedirectModel(name); ok {
-				upstream = redirect
+	// Validate the final replacement, including preserved multi-target groups.
+	previous := &model.Config{ModelEntries: channelModels}
+	final := previous.Clone()
+	combined := append(model.CloneModelEntries(alreadyFetched), retained...)
+	replaceModelEntries(final, combined, normalization)
+	candidateConfig := &model.Config{ModelEntries: candidates}
+	names := candidateConfig.GetModels()
+	if len(candidateConfig.EnabledModelEntries("*")) > 0 {
+		for _, name := range final.GetModels() {
+			if _, restricted := allowed[strings.ToLower(name)]; keepAll || restricted {
+				names = append(names, name)
 			}
-			routes[strings.ToLower(name)] = model.RoutingModelName(upstream)
-		}
-		return routes
-	}
-	combined := append(append([]model.ModelEntry(nil), alreadyFetched...), retained...)
-	finalRoutes := routingUpstreams(combined)
-	previousRoutes := routingUpstreams(candidates)
-	if _, wildcard := previousRoutes["*"]; wildcard {
-		// A newly explicit alias can also shadow a model previously served by *.
-		previous := &model.Config{ModelEntries: channelModels}
-		current := &model.Config{ModelEntries: combined}
-		for _, name := range current.GetModels() {
-			identity := strings.ToLower(name)
-			if _, restricted := allowed[identity]; !keepAll && !restricted {
-				continue
-			}
-			if _, exists := previousRoutes[identity]; exists {
-				continue
-			}
-			upstream := name
-			if redirect, ok := previous.GetRedirectModel(name); ok {
-				upstream = redirect
-			}
-			previousRoutes[identity] = model.RoutingModelName(upstream)
 		}
 	}
-	for name, upstream := range previousRoutes {
+	upstreams := func(cfg *model.Config, name string) []string {
+		entries := cfg.EnabledModelEntries(name)
+		if len(entries) == 0 && len(cfg.EnabledModelEntries("*")) > 0 {
+			return []string{name}
+		}
+		result := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			result = append(result, resolveActualModel(cfg, modelRoutingSelection{logicalModel: name, entry: entry}))
+		}
+		slices.Sort(result)
+		return slices.Compact(result)
+	}
+	groupCounts := make(map[string]int, len(channelModels))
+	for _, entry := range channelModels {
+		groupCounts[strings.ToLower(entry.Model)]++
+	}
+	for _, name := range names {
 		alias, _ := normalizeModelAlias(name, normalization)
-		if existing, exists := finalRoutes[alias]; exists && existing != upstream {
-			return nil, fmt.Errorf("模型刷新冲突: %q 对应不同上游模型 %q 和 %q", alias, existing, upstream)
+		// Existing multi-target groups retain their names, including disabled rows.
+		if groupCounts[strings.ToLower(name)] > 1 {
+			alias = name
+		}
+		before, after := upstreams(previous, name), upstreams(final, alias)
+		if !slices.Equal(before, after) {
+			return nil, fmt.Errorf("模型刷新冲突: %q 对应不同上游模型 %q 和 %q", alias, after, before)
 		}
 	}
 	return retained, nil
+}
+
+func (s *Server) applyFetchedModels(
+	ctx context.Context, item BatchRefreshModelsItem, fetched []model.ModelEntry,
+	keyModels []FetchKeyModelsItem, mode string, normalization modelNormalizationOptions,
+) (BatchRefreshModelsItem, bool) {
+	for {
+		cfg, err := s.store.GetConfig(ctx, item.ChannelID)
+		if err != nil {
+			item.Status, item.Error = "failed", "读取渠道失败: "+err.Error()
+			return item, false
+		}
+		expected := cfg.Clone()
+		var keys []*model.APIKey
+		if cfg.GetAuthType() == model.AuthTypeAPIKey &&
+			(mode == "replace" || normalization.lowercaseModels || normalization.stripModelSourcePrefix) {
+			keys, err = s.store.GetAPIKeys(ctx, item.ChannelID)
+			if err != nil {
+				item.Status, item.Error = "failed", "读取 API Key 失败: "+err.Error()
+				return item, false
+			}
+		}
+		modelEntriesChanged := false
+		if (normalization.lowercaseModels || normalization.stripModelSourcePrefix) && mode == "merge" {
+			normalizedExisting := normalizeExistingModelEntriesForRefresh(cfg.ModelEntries, normalization)
+			modelEntriesChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
+			cfg.ModelEntries = normalizedExisting
+		}
+		if mode == "replace" {
+			replacement := model.CloneModelEntries(fetched)
+			retained, retainErr := modelsRetainedFromFailedProbes(keys, cfg.ModelEntries, replacement, keyModels, normalization)
+			if retainErr != nil {
+				item.Status, item.Error = "failed", retainErr.Error()
+				return item, false
+			}
+			replacement = append(replacement, retained...)
+			item.Removed, modelEntriesChanged = replaceModelEntries(cfg, replacement, normalization)
+		} else {
+			var added bool
+			item.Added, added = mergeModelEntries(cfg, fetched)
+			modelEntriesChanged = modelEntriesChanged || added
+		}
+		item.Total = len(cfg.ModelEntries)
+		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
+		scopeUpdates := remapNormalizedAPIKeyScopes(keys, expected.ModelEntries, cfg.ModelEntries, normalization)
+		if mode == "replace" {
+			for _, result := range keyModels {
+				if strings.TrimSpace(result.Error) == "" {
+					delete(scopeUpdates, result.KeyIndex)
+				}
+			}
+			for index, scope := range buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, keyModels) {
+				if scopeUpdates == nil {
+					scopeUpdates = make(map[int]model.APIKeyModelScope)
+				}
+				scopeUpdates[index] = scope
+			}
+		}
+		configChanged := modelEntriesChanged || scheduledCheckChanged
+		if !configChanged && len(scopeUpdates) == 0 {
+			item.Status = "unchanged"
+			return item, false
+		}
+		if configChanged {
+			matched, saveErr := s.store.UpdateModelStateIfSnapshotMatches(
+				ctx, expected, cfg.ModelEntries, cfg.ScheduledCheckModel, nil,
+			)
+			if saveErr != nil {
+				item.Status, item.Error = "failed", "保存模型失败: "+saveErr.Error()
+				return item, false
+			}
+			if !matched {
+				continue
+			}
+		}
+		if len(scopeUpdates) > 0 {
+			if err := s.store.UpdateAPIKeyModelScopes(ctx, item.ChannelID, scopeUpdates); err != nil {
+				item.Status, item.Error = "failed", "保存 API Key 模型范围失败: "+err.Error()
+				return item, configChanged
+			}
+		}
+		item.Status = "updated"
+		return item, true
+	}
 }
 
 func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
@@ -544,11 +531,11 @@ func remapNormalizedAPIKeyScopes(
 	if !options.lowercaseModels && !options.stripModelSourcePrefix {
 		return nil
 	}
-	currentByName := make(map[string]model.ModelEntry, len(current))
+	currentByName := make(map[string][]model.ModelEntry, len(current))
 	configured := make(map[string]struct{}, len(current))
 	wildcard := false
 	for _, entry := range current {
-		currentByName[strings.ToLower(entry.Model)] = entry
+		currentByName[strings.ToLower(entry.Model)] = append(currentByName[strings.ToLower(entry.Model)], entry)
 		name := strings.ToLower(model.RoutingModelName(entry.Model))
 		configured[name] = struct{}{}
 		wildcard = wildcard || name == "*"
@@ -566,10 +553,20 @@ func remapNormalizedAPIKeyScopes(
 		if alias == entry.Model {
 			continue
 		}
-		after, exists := currentByName[strings.ToLower(alias)]
-		if !exists || upstreamModel(entry) != upstreamModel(after) {
+		unchanged := slices.ContainsFunc(currentByName[strings.ToLower(entry.Model)], func(candidate model.ModelEntry) bool {
+			return candidate.Model == entry.Model && upstreamModel(entry) == upstreamModel(candidate)
+		})
+		if unchanged {
 			continue
 		}
+		matches := currentByName[strings.ToLower(alias)]
+		index := slices.IndexFunc(matches, func(candidate model.ModelEntry) bool {
+			return upstreamModel(entry) == upstreamModel(candidate)
+		})
+		if index < 0 {
+			continue
+		}
+		after := matches[index]
 		oldName := strings.ToLower(model.RoutingModelName(entry.Model))
 		target := model.RoutingModelName(after.Model)
 		if existing, exists := renamed[oldName]; exists && !strings.EqualFold(existing, target) {
@@ -605,7 +602,7 @@ func remapNormalizedAPIKeyScopes(
 		}
 		scopeEmpty := len(allowed) == 0
 		scope := model.APIKeyModelScope{
-			AllowedModels: allowed, ModelScopeEmpty: scopeEmpty,
+			AllowedModels: allowed, DetectedModels: slices.Clone(key.DetectedModels), ModelScopeEmpty: scopeEmpty,
 			Disabled: key.Disabled || scopeEmpty,
 		}
 		if !apiKeyModelScopeEqual(key, scope) {
@@ -641,9 +638,10 @@ func buildFetchedAPIKeyModelScopes(
 		}
 
 		allowedModels := []string(nil)
+		detectedModels := []string(nil)
 		scopeEmpty := len(result.Models) == 0
 		if !scopeEmpty {
-			allowedModels = detectedChannelModelNames(modelEntries, result.Models)
+			allowedModels, detectedModels = detectedChannelModelScope(modelEntries, result.Models)
 			scopeEmpty = len(allowedModels) == 0
 		}
 		if scopeEmpty {
@@ -651,6 +649,7 @@ func buildFetchedAPIKeyModelScopes(
 		}
 		scope := model.APIKeyModelScope{
 			AllowedModels:   allowedModels,
+			DetectedModels:  detectedModels,
 			ModelScopeEmpty: scopeEmpty,
 			// A manually disabled Key is never probed, but preserve that
 			// state if a caller supplies one in a future fetch path.
@@ -666,7 +665,7 @@ func buildFetchedAPIKeyModelScopes(
 
 func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool {
 	if key == nil || key.ModelScopeEmpty != scope.ModelScopeEmpty || key.Disabled != scope.Disabled ||
-		len(key.AllowedModels) != len(scope.AllowedModels) {
+		!slices.Equal(key.DetectedModels, scope.DetectedModels) || len(key.AllowedModels) != len(scope.AllowedModels) {
 		return false
 	}
 	for i := range key.AllowedModels {
@@ -677,12 +676,12 @@ func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool
 	return true
 }
 
-func detectedChannelModelNames(modelRows, fetched []model.ModelEntry) []string {
+func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string, []string) {
 	detectedNames := make([]string, 0, len(fetched)*2)
 	detected := make(map[string]struct{}, len(fetched)*2)
 	for _, entry := range fetched {
 		for _, value := range []string{entry.Model, entry.RedirectModel} {
-			name := strings.TrimSpace(value)
+			name := model.RoutingModelName(strings.TrimSpace(value))
 			key := strings.ToLower(name)
 			if name == "" {
 				continue
@@ -696,20 +695,23 @@ func detectedChannelModelNames(modelRows, fetched []model.ModelEntry) []string {
 	}
 
 	matched := make([]string, 0, len(modelRows))
+	actualModels := make([]string, 0, len(modelRows))
 	seen := make(map[string]struct{}, len(modelRows))
+	seenActual := make(map[string]struct{}, len(modelRows))
+	lookup := &model.Config{ModelEntries: modelRows}
 	for _, row := range modelRows {
 		logicalModel := strings.TrimSpace(row.Model)
 		if logicalModel == "" || logicalModel == "*" {
 			continue
 		}
-		upstreamModel := strings.TrimSpace(row.RedirectModel)
-		if upstreamModel == "" {
-			upstreamModel = logicalModel
+		actual := resolveActualModel(lookup, modelRoutingSelection{logicalModel: logicalModel, entry: row})
+		if _, ok := detected[strings.ToLower(actual)]; !ok {
+			continue
 		}
-		if _, ok := detected[strings.ToLower(logicalModel)]; !ok {
-			if _, ok := detected[strings.ToLower(upstreamModel)]; !ok {
-				continue
-			}
+		actualKey := strings.ToLower(actual)
+		if _, exists := seenActual[actualKey]; !exists {
+			seenActual[actualKey] = struct{}{}
+			actualModels = append(actualModels, actual)
 		}
 		key := strings.ToLower(logicalModel)
 		if _, exists := seen[key]; exists {
@@ -718,15 +720,23 @@ func detectedChannelModelNames(modelRows, fetched []model.ModelEntry) []string {
 		seen[key] = struct{}{}
 		matched = append(matched, logicalModel)
 	}
-	if len(matched) > 0 {
-		return matched
-	}
 	for _, row := range modelRows {
 		if strings.TrimSpace(row.Model) == "*" {
-			return detectedNames
+			for _, name := range detectedNames {
+				key := strings.ToLower(name)
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					matched = append(matched, name)
+				}
+				if _, exists := seenActual[key]; !exists {
+					seenActual[key] = struct{}{}
+					actualModels = append(actualModels, name)
+				}
+			}
+			break
 		}
 	}
-	return nil
+	return matched, actualModels
 }
 
 // availableModelFetchAPIKeys 选出单结果模型探测（逐个尝试、首个成功即返回）的候选 Key。
@@ -1627,7 +1637,8 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry, options modelNorma
 		return nil
 	}
 
-	seen := make(map[string]int, len(entries))
+	seen := make(map[model.ModelEntryIdentity]int, len(entries))
+	spelling := make(map[string]string, len(entries))
 	candidates := make([]normalizedModelCandidate, 0, len(entries))
 	normalized := make([]model.ModelEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -1644,6 +1655,12 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry, options modelNorma
 			upstreamModel = clean.Model
 		}
 		alias, sourcePrefixed := normalizeModelAlias(clean.Model, options)
+		group := strings.ToLower(alias)
+		if chosen, exists := spelling[group]; exists {
+			alias = chosen
+		} else {
+			spelling[group] = alias
+		}
 		clean.Model = alias
 		if upstreamModel == alias {
 			clean.RedirectModel = ""
@@ -1656,7 +1673,7 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry, options modelNorma
 			sourcePrefixed:  sourcePrefixed,
 			exactAliasMatch: upstreamModel == alias,
 		}
-		key := strings.ToLower(clean.Model)
+		key := clean.Identity()
 		if index, exists := seen[key]; exists {
 			if preferNormalizedModelCandidate(candidate, candidates[index]) {
 				candidates[index] = candidate
@@ -1730,27 +1747,26 @@ func reconcileScheduledCheckModel(cfg *model.Config, options modelNormalizationO
 }
 
 func mergeModelEntries(cfg *model.Config, fetched []model.ModelEntry) (added int, changed bool) {
-	occupied := make(map[string]struct{}, len(cfg.ModelEntries)*2)
+	configured := make(map[string]struct{}, len(cfg.ModelEntries)*2)
+	seen := make(map[model.ModelEntryIdentity]struct{}, len(cfg.ModelEntries)+len(fetched))
 	for _, entry := range cfg.ModelEntries {
-		occupied[strings.ToLower(entry.Model)] = struct{}{}
+		configured[strings.ToLower(entry.Model)] = struct{}{}
 		if entry.RedirectModel != "" {
-			occupied[strings.ToLower(entry.RedirectModel)] = struct{}{}
+			configured[strings.ToLower(entry.RedirectModel)] = struct{}{}
 		}
+		seen[entry.Identity()] = struct{}{}
 	}
 
 	for _, entry := range fetched {
-		modelKey := strings.ToLower(entry.Model)
-		_, modelExists := occupied[modelKey]
-		redirectKey := strings.ToLower(entry.RedirectModel)
-		_, redirectExists := occupied[redirectKey]
-		if modelExists || (entry.RedirectModel != "" && redirectExists) {
+		if _, exists := configured[strings.ToLower(entry.Model)]; exists {
+			continue
+		}
+		key := entry.Identity()
+		if _, exists := seen[key]; exists {
 			continue
 		}
 		cfg.ModelEntries = append(cfg.ModelEntries, entry)
-		occupied[modelKey] = struct{}{}
-		if entry.RedirectModel != "" {
-			occupied[redirectKey] = struct{}{}
-		}
+		seen[key] = struct{}{}
 		added++
 	}
 
@@ -1788,12 +1804,29 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 		return false
 	}
 
-	// 上游模型目录不表达价格：刷新后仍存在的模型沿用原渠道价格（按同一组别名身份匹配）。
+	// A normalized alias can contain several upstream targets. Carry row state by
+	// target first; alias fallback is safe only for one-to-one groups.
 	pricingByIdentity := make(map[string]*util.CustomModelPrice, len(oldEntries))
+	pricingByRow := make(map[model.ModelEntryIdentity]*util.CustomModelPrice, len(oldEntries))
+	disabledByRow := make(map[model.ModelEntryIdentity]bool, len(oldEntries))
+	oldAliasCounts := make(map[string]int, len(oldEntries))
+	fetchedGroupCounts := make(map[string]int, len(fetched))
+	oldRoutingCounts := make(map[string]int, len(oldEntries))
+	fetchedRoutingCounts := make(map[string]int, len(fetched))
+	for _, entry := range fetched {
+		fetchedGroupCounts[strings.ToLower(entry.Model)]++
+		fetchedRoutingCounts[strings.ToLower(model.RoutingModelName(entry.Model))]++
+	}
 	for _, entry := range oldEntries {
 		key := strings.ToLower(entry.Model)
 		oldSet[key] = struct{}{}
+		alias, _ := normalizeModelAlias(entry.Model, options)
+		oldAliasCounts[strings.ToLower(alias)]++
+		oldRoutingCounts[strings.ToLower(model.RoutingModelName(alias))]++
+		rowIdentity := entry.Identity()
+		rowIdentity.Model = strings.ToLower(alias)
 		if entry.Pricing != nil {
+			pricingByRow[rowIdentity] = entry.Pricing
 			for _, identity := range modelIdentities(entry.Model) {
 				if _, exists := pricingByIdentity[identity]; !exists {
 					pricingByIdentity[identity] = entry.Pricing
@@ -1803,22 +1836,37 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 		if !entry.Disabled {
 			continue
 		}
+		disabledByRow[rowIdentity] = true
 		rememberDisabled(entry.Model)
 		rememberDisabled(entry.RedirectModel)
 	}
 	for i := range fetched {
 		key := strings.ToLower(fetched[i].Model)
 		newSet[key] = struct{}{}
-		disabled := isDisabled(fetched[i].Model) || isDisabled(fetched[i].RedirectModel)
+		rowIdentity := fetched[i].Identity()
+		disabled := disabledByRow[rowIdentity]
+		routingKey := strings.ToLower(model.RoutingModelName(fetched[i].Model))
+		oneToOne := (oldAliasCounts[key] == 1 && fetchedGroupCounts[key] == 1) ||
+			(oldRoutingCounts[routingKey] == 1 && fetchedRoutingCounts[routingKey] == 1)
+		if oneToOne {
+			disabled = disabled || isDisabled(fetched[i].Model) || isDisabled(fetched[i].RedirectModel)
+		}
 		fetched[i].Disabled = fetched[i].Disabled || disabled
 		if fetched[i].Pricing == nil && fetched[i].Model != "*" {
-			for _, identity := range modelIdentities(fetched[i].Model) {
-				if pricing := pricingByIdentity[identity]; pricing != nil {
-					fetched[i].Pricing = pricing
-					break
+			fetched[i].Pricing = pricingByRow[rowIdentity]
+			if fetched[i].Pricing == nil && oneToOne {
+				for _, identity := range modelIdentities(fetched[i].Model) {
+					if pricing := pricingByIdentity[identity]; pricing != nil {
+						fetched[i].Pricing = pricing
+						break
+					}
 				}
 			}
 		}
+	}
+	fetched = preserveConfiguredVariants(oldEntries, fetched)
+	for _, entry := range fetched {
+		newSet[strings.ToLower(entry.Model)] = struct{}{}
 	}
 	for key := range oldSet {
 		if _, exists := newSet[key]; !exists {
@@ -1832,4 +1880,111 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options 
 
 	cfg.ModelEntries = fetched
 	return removed, true
+}
+
+// A discovery response cannot express an administrator's multi-target group.
+// Keep those groups intact through replacement refreshes, including their order.
+func preserveConfiguredVariants(existing, fetched []model.ModelEntry) []model.ModelEntry {
+	counts := make(map[string]int, len(existing))
+	for _, entry := range existing {
+		counts[strings.ToLower(entry.Model)]++
+	}
+	protected := make(map[string]bool, len(counts))
+	for name, count := range counts {
+		protected[name] = count > 1
+	}
+	// A preserved variant can depend on one exact second-hop redirect. Keep that
+	// bridge as configured, even when discovery lists its name as a direct model.
+	lookup := &model.Config{ModelEntries: existing}
+	for _, entry := range existing {
+		if counts[strings.ToLower(entry.Model)] < 2 || entry.RedirectModel == "" {
+			continue
+		}
+		if next := lookup.EnabledModelEntries(entry.RedirectModel); len(next) > 0 && next[0].RedirectModel != "" {
+			protected[strings.ToLower(next[0].Model)] = true
+		}
+	}
+	groups := make(map[string][]model.ModelEntry)
+	order := make([]string, 0)
+	for _, entry := range existing {
+		key := strings.ToLower(entry.Model)
+		if !protected[key] {
+			continue
+		}
+		if len(groups[key]) == 0 {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], entry)
+	}
+	result := make([]model.ModelEntry, 0, len(existing)+len(fetched))
+	inserted := make(map[string]bool, len(groups))
+	for _, entry := range fetched {
+		key := strings.ToLower(entry.Model)
+		if group := groups[key]; len(group) > 0 {
+			if !inserted[key] {
+				result = append(result, group...)
+				inserted[key] = true
+			}
+			continue
+		}
+		result = append(result, entry)
+	}
+	for _, key := range order {
+		if !inserted[key] {
+			result = append(result, groups[key]...)
+		}
+	}
+	return result
+}
+
+// Existing single rows that normalize into a configured group remain distinct by target.
+// Only newly discovered rows may be replaced wholesale by that group's configuration.
+func normalizeExistingModelEntriesForRefresh(existing []model.ModelEntry, options modelNormalizationOptions) []model.ModelEntry {
+	counts := make(map[string]int, len(existing))
+	for _, entry := range existing {
+		counts[strings.ToLower(entry.Model)]++
+	}
+	singles := make([]model.ModelEntry, 0, len(existing))
+	groupSpelling := make(map[string]string)
+	groupRows := make(map[model.ModelEntryIdentity]struct{})
+	for _, entry := range existing {
+		key := strings.ToLower(entry.Model)
+		if counts[key] == 1 {
+			singles = append(singles, entry)
+		} else {
+			groupSpelling[key] = entry.Model
+			groupRows[entry.Identity()] = struct{}{}
+		}
+	}
+	normalizedSingles := make(map[model.ModelEntryIdentity]model.ModelEntry, len(singles))
+	for _, entry := range normalizeModelEntriesForSave(singles, options) {
+		if spelling, exists := groupSpelling[strings.ToLower(entry.Model)]; exists {
+			entry.Model = spelling
+		}
+		normalizedSingles[entry.Identity()] = entry
+	}
+	result := make([]model.ModelEntry, 0, len(existing))
+	seenSingles := make(map[model.ModelEntryIdentity]struct{}, len(singles))
+	for _, entry := range existing {
+		if counts[strings.ToLower(entry.Model)] > 1 {
+			result = append(result, entry)
+			continue
+		}
+		one := normalizeModelEntriesForSave([]model.ModelEntry{entry}, options)
+		if len(one) == 0 {
+			continue
+		}
+		identity := one[0].Identity()
+		if _, exists := groupRows[identity]; exists {
+			continue
+		}
+		if _, exists := seenSingles[identity]; exists {
+			continue
+		}
+		if normalized, exists := normalizedSingles[identity]; exists {
+			result = append(result, normalized)
+			seenSingles[identity] = struct{}{}
+		}
+	}
+	return result
 }

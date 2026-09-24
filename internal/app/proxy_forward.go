@@ -2701,6 +2701,9 @@ func (s *Server) forwardAttempt(
 	if cfg.UsesAntigravityOAuth() && (wantsAntigravityWebSearch(reqCtx.body) || wantsAntigravityWebSearch(bodyToSend)) {
 		actualModel = antigravityWebSearchFallbackModel
 	}
+	if reqCtx.routingSession != nil {
+		reqCtx.routingSession.noteActualModel(actualModel)
+	}
 	requestPath := rewriteUpstreamRequestPath(reqCtx.requestPath, actualModel)
 	forwardHeaders := reqCtx.header
 	if directModel, direct := s.codexDirectImagesModel(cfg, reqCtx); direct && upstreamProtocol == protocol.Codex {
@@ -3639,6 +3642,16 @@ func filterAPIKeysForModel(apiKeys []*model.APIKey, modelName string) ([]*model.
 	return filtered, len(filtered) != len(apiKeys)
 }
 
+func (s *Server) filterAPIKeysForModelRow(cfg *model.Config, apiKeys []*model.APIKey, selected modelRoutingSelection, requestProtocol string) ([]*model.APIKey, bool) {
+	filtered := make([]*model.APIKey, 0, len(apiKeys))
+	for _, key := range apiKeys {
+		if s.keyAllowsModelRow(cfg, key, selected, requestProtocol) {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered, len(filtered) != len(apiKeys)
+}
+
 // recordSuccessTTFBToSelector 在2xx响应里把TTFB回报给URLSelector。
 // 非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
 func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlStr string, result *proxyResult) {
@@ -3670,6 +3683,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	selector *URLSelector,
 	keyIndex int,
 	selectedKey string,
+	selectedAPIKey *model.APIKey,
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
@@ -3698,6 +3712,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	urlsCount := len(sortedURLs)
 	var urlPolicy channelURLAttemptPolicy
 	var deferredFallbackLog *model.LogEntry
+	var keyTargetSkipped bool
 	defer func() {
 		if deferredFallbackLog != nil {
 			s.AddLogAsync(deferredFallbackLog)
@@ -3765,6 +3780,20 @@ func (s *Server) attemptKeyAcrossURLs(
 					protocolCandidates = prioritizeProtocolCandidate(protocolCandidates, cachedProtocol)
 				}
 			}
+		}
+		if selectedAPIKey != nil && len(selectedAPIKey.DetectedModels) > 0 {
+			eligible := protocolCandidates[:0]
+			for _, upstreamProtocol := range protocolCandidates {
+				if selectedAPIKey.AllowsUpstreamModel(s.resolveFinalUpstreamModel(cfg, reqCtx.attemptModel, string(upstreamProtocol))) {
+					eligible = append(eligible, upstreamProtocol)
+				}
+			}
+			if len(eligible) == 0 && len(protocolCandidates) > 0 {
+				keyTargetSkipped = true
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				continue
+			}
+			protocolCandidates = eligible
 		}
 		if len(protocolCandidates) == 0 {
 			urlLastFailure = &proxyResult{
@@ -3928,6 +3957,9 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 单URL：保持原有行为
 		break
 	}
+	if urlLastFailure == nil && keyTargetSkipped {
+		return nil, nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, reqCtx.attemptModel.logicalModel)
+	}
 	return nil, urlLastFailure, nil
 }
 
@@ -3968,10 +4000,30 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// 换渠道即清空上一渠道的尝试上下文，避免中断日志写入别的渠道的模型/Key。
 	reqCtx.attemptActualModel = ""
 	reqCtx.attemptSelectedKey = ""
+	reqCtx.attemptModel = modelRoutingSelection{}
+	reqCtx.attemptModelPrice = nil
 	// 倍率默认取渠道级：OAuth 凭证 1:1，渠道级即权威；api_key 渠道稍后按选中 Key 覆盖。
 	reqCtx.attemptCostMultiplier = cfg.CostMultiplier
-	// 渠道模型价格挂在渠道逻辑模型（重定向前）上，随本次渠道尝试快照。
-	reqCtx.attemptModelPrice = cfg.ModelPricing(s.resolveChannelRoutingModel(cfg, reqCtx.originalModel))
+	// 已结束的请求不查询冷却状态，也不推进轮转游标。
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return buildCtxDoneResult(cfg, ctxErr), nil
+	}
+	var apiKeys []*model.APIKey
+	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+		apiKeys, err = s.getAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get API keys: %w", err)
+		}
+		if len(apiKeys) == 0 {
+			return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
+		}
+	}
+	selectedModel, selectErr := s.selectChannelModelRow(ctx, cfg, reqCtx.originalModel, string(reqCtx.clientProtocol), reqCtx.routingSession, apiKeys)
+	if selectErr != nil {
+		return nil, selectErr
+	}
+	reqCtx.attemptModel = selectedModel
+	reqCtx.attemptModelPrice = selectedModel.entry.Pricing.Clone()
 
 	// Fail-fast：ctx 已结束（客户端断开/请求超时）时不要再做任何 I/O（查库、选Key、发请求）。
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -4002,16 +4054,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		return s.tryZedOAuthChannel(ctx, cfg, reqCtx, w)
 	}
 
-	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
-	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get API keys: %w", err)
-	}
-	if len(apiKeys) == 0 {
-		return nil, fmt.Errorf("no API keys configured for channel %d", cfg.ID)
-	}
-	channelModel := s.resolveChannelRoutingModel(cfg, reqCtx.originalModel)
-	apiKeys, modelScoped := filterAPIKeysForModel(apiKeys, channelModel)
+	channelModel := reqCtx.attemptModel.logicalModel
+	apiKeys, modelScoped := s.filterAPIKeysForModelRow(cfg, apiKeys, selectedModel, string(reqCtx.clientProtocol))
 	if len(apiKeys) == 0 {
 		return nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, channelModel)
 	}
@@ -4026,6 +4070,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
 	var lastFailure *proxyResult
+	var skippedTargetErr error
 
 	// 获取渠道URL列表（单URL时退化为单元素切片）
 	urls := cfg.GetURLs()
@@ -4035,7 +4080,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	selector := s.urlSelector
 
 	// Key重试循环
-	for range maxKeyRetries {
+	for attemptedKeys := 0; attemptedKeys < maxKeyRetries && len(triedKeys) < actualKeyCount; {
 		// 检查context是否已取消/超时
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return buildCtxDoneResult(cfg, ctxErr), nil
@@ -4051,6 +4096,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
 		}
 		if selectErr != nil {
+			if skippedTargetErr != nil && errors.Is(selectErr, ErrAllKeysUnavailable) {
+				return nil, skippedTargetErr
+			}
 			if modelScoped && errors.Is(selectErr, ErrAllKeysUnavailable) {
 				return nil, fmt.Errorf("%w: channel %d model %q", ErrNoAPIKeyForModel, cfg.ID, channelModel)
 			}
@@ -4068,10 +4116,15 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
 			ctx, cfg, urls, selector,
-			keyIndex, selectedKey, reqCtx, w)
+			keyIndex, selectedKey, keyByIndex(apiKeys, keyIndex), reqCtx, w)
 		if attemptErr != nil {
+			if errors.Is(attemptErr, ErrNoAPIKeyForModel) {
+				skippedTargetErr = attemptErr
+				continue
+			}
 			return nil, attemptErr
 		}
+		attemptedKeys++
 		if immediate != nil {
 			return immediate, nil
 		}
@@ -4090,6 +4143,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	// Key重试循环结束：返回最后一次失败结果
 	if lastFailure != nil {
 		return lastFailure, nil
+	}
+	if skippedTargetErr != nil {
+		return nil, skippedTargetErr
 	}
 
 	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）
@@ -4161,7 +4217,7 @@ func (s *Server) tryOAuthChannel(
 		}
 
 		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
-			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, accessToken, reqCtx, w,
+			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, accessToken, nil, reqCtx, w,
 		)
 		if err != nil {
 			return nil, err

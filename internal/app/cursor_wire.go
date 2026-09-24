@@ -126,7 +126,11 @@ func (s *Server) forwardCursorAgent(
 	if requested == "" {
 		requested = reqCtx.originalModel
 	}
-	modelID := s.resolveFinalUpstreamModel(cfg, requested, string(reqCtx.clientProtocol))
+	selected := reqCtx.attemptModel
+	if selected.logicalModel == "" && requested != "" {
+		selected, _ = s.firstModelRow(cfg, requested)
+	}
+	modelID := s.resolveFinalUpstreamModel(cfg, selected, string(reqCtx.clientProtocol))
 	started := time.Now()
 	reqCtx.attemptStartTime = started
 	if s.activeRequests != nil {

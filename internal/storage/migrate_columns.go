@@ -875,6 +875,10 @@ func ensureChannelModelsPricing(ctx context.Context, db *sql.DB, dialect Dialect
 	return ensureColumn(ctx, db, dialect, "channel_models", "pricing", "TEXT", "TEXT")
 }
 
+func ensureChannelModelsVariants(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channel_models", "model_variants", "TEXT", "TEXT")
+}
+
 func ensureAPIKeysDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "api_keys", "disabled",
 		"TINYINT NOT NULL DEFAULT 0",
@@ -943,6 +947,12 @@ func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Diale
 	return ensureColumn(ctx, db, dialect, "api_keys", "model_scope_empty",
 		"TINYINT NOT NULL DEFAULT 0",
 		"INTEGER NOT NULL DEFAULT 0")
+}
+
+func ensureAPIKeysDetectedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "api_keys", "detected_models",
+		"VARCHAR(8000) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
 }
 
 // ensureAPIKeysCostMultiplier 确保api_keys表有cost_multiplier字段（Key级成本倍率，api_key渠道的权威存储）

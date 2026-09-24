@@ -82,6 +82,8 @@ type responsesExecutionSession struct {
 	upstream           *codexUpstreamWebsocketSession
 	routeMu            sync.RWMutex
 	preferredChannelID int64
+	modelRows          map[sessionModelGroup]modelRoutingSelection
+	lastActualModel    string
 	lastAccess         time.Time
 	active             int
 	storeKey           string
@@ -91,6 +93,55 @@ type responsesExecutionSession struct {
 	sessionFingerprint string
 
 	transcriptBytes atomic.Int64
+}
+
+type sessionModelGroup struct {
+	channelID int64
+	name      string
+}
+
+func (s *responsesExecutionSession) boundModelRow(channelID int64, name string) (modelRoutingSelection, bool) {
+	if s == nil {
+		return modelRoutingSelection{}, false
+	}
+	s.routeMu.RLock()
+	defer s.routeMu.RUnlock()
+	selected, ok := s.modelRows[sessionModelGroup{channelID: channelID, name: name}]
+	return selected, ok
+}
+
+func (s *responsesExecutionSession) rememberModelRow(channelID int64, selected modelRoutingSelection) {
+	if s == nil || selected.wildcard {
+		return
+	}
+	s.routeMu.Lock()
+	if s.modelRows == nil {
+		s.modelRows = make(map[sessionModelGroup]modelRoutingSelection)
+	}
+	s.modelRows[sessionModelGroup{channelID: channelID, name: selected.logicalModel}] = selected
+	s.routeMu.Unlock()
+}
+
+func (s *responsesExecutionSession) forgetModelRow(channelID int64, name string) {
+	if s == nil {
+		return
+	}
+	s.routeMu.Lock()
+	delete(s.modelRows, sessionModelGroup{channelID: channelID, name: name})
+	s.routeMu.Unlock()
+}
+
+func (s *responsesExecutionSession) noteActualModel(actual string) {
+	if s == nil || actual == "" {
+		return
+	}
+	s.routeMu.Lock()
+	changed := s.lastActualModel != "" && s.lastActualModel != actual
+	s.lastActualModel = actual
+	s.routeMu.Unlock()
+	if changed {
+		s.upstream.CloseTransport()
+	}
 }
 
 func newResponsesExecutionSession(

@@ -1193,7 +1193,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 			checkSuccess:   true,
 		},
 		{
-			name:      "重复模型应被提前拦截",
+			name:      "同名不同目标允许轮转",
 			channelID: "1",
 			payload: ChannelRequest{
 				Name:     "Updated-Name",
@@ -1206,8 +1206,8 @@ func TestHandleUpdateChannel(t *testing.T) {
 				},
 				Enabled: true,
 			},
-			expectedStatus: http.StatusBadRequest,
-			checkSuccess:   false,
+			expectedStatus: http.StatusOK,
+			checkSuccess:   true,
 		},
 		{
 			name:      "更新不存在的渠道",
@@ -1849,7 +1849,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 		Name: "key-notes",
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
-			{APIKey: "sk-primary", Note: "primary", AllowedModels: []string{"model-1"}},
+			{APIKey: "sk-primary", Note: "primary", AllowedModels: []string{"model-1"}, DetectedModels: []string{"model-1"}},
 			{APIKey: "sk-backup", Note: "backup"},
 		},
 		Priority: 10,
@@ -1880,6 +1880,9 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	if !slices.Equal(readResp.Data[0].AllowedModels, []string{"model-1"}) || len(readResp.Data[1].AllowedModels) != 0 {
 		t.Fatalf("created key model scopes = %#v, want [model-1]/unrestricted", readResp.Data)
 	}
+	if !slices.Equal(readResp.Data[0].DetectedModels, []string{"model-1"}) || len(readResp.Data[1].DetectedModels) != 0 {
+		t.Fatalf("created key detected targets = %#v", readResp.Data)
+	}
 
 	cooldownUntil := time.Now().Add(15 * time.Minute).Truncate(time.Second)
 	if err := store.SetKeyCooldown(ctx, channelID, 1, cooldownUntil); err != nil {
@@ -1891,7 +1894,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
 			{APIKey: "sk-primary", Note: "primary-renamed"},
-			{APIKey: "sk-backup", Note: "backup-renamed", AllowedModels: []string{"model-1"}},
+			{APIKey: "sk-backup", Note: "backup-renamed", AllowedModels: []string{"model-1"}, DetectedModels: []string{"model-1"}},
 		},
 		Priority: 10,
 		Models:   []model.ModelEntry{{Model: "model-1"}},
@@ -1920,6 +1923,9 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	if !slices.Equal(keys[0].AllowedModels, []string{"model-1"}) || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
 		t.Fatalf("key model scopes after omitted/explicit update = [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
 	}
+	if !slices.Equal(keys[0].DetectedModels, []string{"model-1"}) || !slices.Equal(keys[1].DetectedModels, []string{"model-1"}) {
+		t.Fatalf("key detected targets after omitted/explicit update = [%v, %v]", keys[0].DetectedModels, keys[1].DetectedModels)
+	}
 	if keys[1].CooldownUntil != cooldownUntil.Unix() {
 		t.Fatalf("key cooldown after note-only update=%d, want %d", keys[1].CooldownUntil, cooldownUntil.Unix())
 	}
@@ -1945,11 +1951,14 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	if !slices.Equal(keys[0].AllowedModels, []string{"model-1"}) || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
 		t.Fatalf("legacy update cleared model scopes: [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
 	}
+	if !slices.Equal(keys[0].DetectedModels, []string{"model-1"}) || !slices.Equal(keys[1].DetectedModels, []string{"model-1"}) {
+		t.Fatalf("legacy update cleared detected targets: [%v, %v]", keys[0].DetectedModels, keys[1].DetectedModels)
+	}
 
 	clearPayload := map[string]any{
 		"name": "key-notes",
 		"api_keys": []map[string]any{
-			{"api_key": "sk-primary", "allowed_models": []string{}},
+			{"api_key": "sk-primary", "allowed_models": []string{}, "detected_models": []string{}},
 			{"api_key": "sk-backup"},
 		},
 		"urls":     model.ChannelURLs{{URL: "https://api.example.com"}},
@@ -1969,6 +1978,9 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	}
 	if len(keys[0].AllowedModels) != 0 || !slices.Equal(keys[1].AllowedModels, []string{"model-1"}) {
 		t.Fatalf("explicit clear result = [%v, %v]", keys[0].AllowedModels, keys[1].AllowedModels)
+	}
+	if len(keys[0].DetectedModels) != 0 || !slices.Equal(keys[1].DetectedModels, []string{"model-1"}) {
+		t.Fatalf("explicit clear detected targets = [%v, %v]", keys[0].DetectedModels, keys[1].DetectedModels)
 	}
 }
 

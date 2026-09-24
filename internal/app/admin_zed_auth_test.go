@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/zedauth"
 )
 
@@ -171,6 +173,19 @@ func TestCreateOrUpdateZedChannelPreservesInstallationAndUsage(t *testing.T) {
 	if err != nil || !wasCreated {
 		t.Fatalf("create channel: created=%v err=%v", wasCreated, err)
 	}
+	configured, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured.ModelEntries = []model.ModelEntry{
+		{Model: "gpt-old"},
+		{Model: "auto", RedirectModel: "target-b", Disabled: true, Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "target-a", Pricing: channelPrice(3, 4)},
+		{Model: "gpt-new", Pricing: channelPrice(5, 6)},
+	}
+	if _, err := store.UpdateConfig(ctx, created.ID, configured); err != nil {
+		t.Fatal(err)
+	}
 	replacement, err := zedauth.NewCredential("user-1", "system-foreign", []byte(`{"github_user_login":"octocat","access_token":"native-new"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +208,96 @@ func TestCreateOrUpdateZedChannelPreservesInstallationAndUsage(t *testing.T) {
 	}
 	if !persisted.SupportsModel("gpt-new") || persisted.SupportsModel("gpt-old") {
 		t.Fatalf("model catalog was not replaced: %+v", persisted.ModelEntries)
+	}
+	var variants []model.ModelEntry
+	var newModel *model.ModelEntry
+	for i := range persisted.ModelEntries {
+		entry := persisted.ModelEntries[i]
+		if entry.Model == "auto" {
+			variants = append(variants, entry)
+		}
+		if entry.Model == "gpt-new" {
+			newModel = &entry
+		}
+	}
+	if want := configured.ModelEntries[1:3]; !reflect.DeepEqual(variants, want) {
+		t.Fatalf("reauthorization changed model variants: got=%+v want=%+v", variants, want)
+	}
+	if newModel == nil || !newModel.Pricing.Equal(configured.ModelEntries[3].Pricing) {
+		t.Fatalf("reauthorization dropped retained model price: %+v", newModel)
+	}
+}
+
+type modelStateEditStore struct {
+	storage.Store
+	edit func(context.Context) error
+}
+
+func (s *modelStateEditStore) UpdateModelStateIfSnapshotMatches(
+	ctx context.Context, expected *model.Config,
+	entries []model.ModelEntry, scheduledCheckModel string, maxConcurrency *int,
+) (bool, error) {
+	if s.edit != nil {
+		edit := s.edit
+		s.edit = nil
+		if err := edit(ctx); err != nil {
+			return false, err
+		}
+	}
+	return s.Store.UpdateModelStateIfSnapshotMatches(ctx, expected, entries, scheduledCheckModel, maxConcurrency)
+}
+
+func TestCreateOrUpdateZedChannelPreservesConcurrentModelEdit(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	first, err := zedauth.NewCredential("user-1", "system-original", []byte(`{"github_user_login":"octocat","access_token":"native-old"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.AccessToken = "old.jwt.token"
+	created, _, err := createOrUpdateZedChannel(ctx, store, first, []string{"gpt-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := zedauth.NewCredential("user-1", "system-foreign", []byte(`{"github_user_login":"octocat","access_token":"native-new"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement.AccessToken = "new.jwt.token"
+	variants := []model.ModelEntry{
+		{Model: "auto", RedirectModel: "target-b", Disabled: true, Pricing: channelPrice(1, 2)},
+		{Model: "auto", RedirectModel: "target-a", Pricing: channelPrice(3, 4)},
+	}
+	interleaved := &modelStateEditStore{Store: store}
+	interleaved.edit = func(ctx context.Context) error {
+		current, err := store.GetConfig(ctx, created.ID)
+		if err != nil {
+			return err
+		}
+		current.ModelEntries = append(current.ModelEntries, variants...)
+		current.ScheduledCheckModel = "auto"
+		_, err = store.UpdateConfig(ctx, created.ID, current)
+		return err
+	}
+	if _, _, err := createOrUpdateZedChannel(ctx, interleaved, replacement, []string{"gpt-new"}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedVariants []model.ModelEntry
+	for _, entry := range persisted.ModelEntries {
+		if entry.Model == "auto" {
+			persistedVariants = append(persistedVariants, entry)
+		}
+	}
+	if !reflect.DeepEqual(persistedVariants, variants) || persisted.ScheduledCheckModel != "auto" {
+		t.Fatalf("concurrent model edit lost: entries=%+v scheduled=%q", persisted.ModelEntries, persisted.ScheduledCheckModel)
+	}
+	if !persisted.SupportsModel("gpt-new") || persisted.SupportsModel("gpt-old") {
+		t.Fatalf("model catalog was not refreshed: %+v", persisted.ModelEntries)
 	}
 }
 

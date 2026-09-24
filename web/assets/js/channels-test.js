@@ -17,14 +17,17 @@ function getFirstConfiguredTestContent(value) {
     .find(Boolean) || '';
 }
 
-async function testChannel(channel, initialModel = '') {
+let testingTargetModel = '';
+let testingTargetGroup = '';
+
+async function testChannel(channel, initialModel = '', targetModel = '') {
   if (!channel) return false;
   const { id, name } = channel;
 
-  const modelNames = (channel.models || [])
+  const modelNames = [...new Set((channel.models || [])
     .map(entry => typeof entry === 'string' ? entry : entry.model)
     .map(model => String(model || '').trim())
-    .filter(Boolean);
+    .filter(Boolean))];
   if (modelNames.length === 0) {
     if (window.showError) window.showError(window.t('channels.test.noModels') || 'No models configured for this channel');
     return false;
@@ -37,9 +40,12 @@ async function testChannel(channel, initialModel = '') {
   }
 
   testingChannelId = id;
+  testingTargetModel = String(targetModel || '').trim();
+  testingTargetGroup = requestedModel;
   document.getElementById('testChannelName').textContent = name;
 
   const modelSelect = document.getElementById('channelTestModelSelect');
+  modelSelect.onchange = () => { testingTargetModel = ''; };
   modelSelect.innerHTML = '';
   modelNames.forEach(modelName => {
     const option = document.createElement('option');
@@ -99,6 +105,8 @@ function closeTestModal() {
   document.getElementById('testModal').classList.remove('show');
   testingChannelId = null;
   testingClientProtocol = 'anthropic';
+  testingTargetModel = '';
+  testingTargetGroup = '';
 }
 
 function resetTestModal() {
@@ -142,6 +150,9 @@ async function runChannelTest() {
       content: testContent,
       client_protocol: testingClientProtocol
     };
+    if (testingTargetModel && selectedModel === testingTargetGroup) {
+      testRequest.redirect_model = testingTargetModel;
+    }
 
     if (keySelect && keySelectGroup && !keySelectGroup.classList.contains('hidden')) {
       testRequest.key_index = parseInt(keySelect.value) || 0;
@@ -233,6 +244,9 @@ async function runBatchTest() {
         client_protocol: testingClientProtocol,
         key_index: keyIndex
       };
+      if (testingTargetModel && selectedModel === testingTargetGroup) {
+        testRequest.redirect_model = testingTargetModel;
+      }
 
       const testResult = await fetchDataWithAuth(`/admin/channels/${testingChannelId}/test`, {
         method: 'POST',

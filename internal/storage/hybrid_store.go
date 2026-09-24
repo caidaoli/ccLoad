@@ -276,18 +276,18 @@ func (h *HybridStore) DisableOAuthChannelIfCredentialMatches(
 	return true, nil
 }
 
-func (h *HybridStore) UpdateOAuthModelStateIfCredentialMatches(
+func (h *HybridStore) UpdateModelStateIfSnapshotMatches(
 	ctx context.Context,
-	channelID int64,
-	expectedAuthType, expectedCredential string,
+	expected *model.Config,
 	modelEntries []model.ModelEntry,
 	scheduledCheckModel string,
+	maxConcurrency *int,
 ) (bool, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
 
-	updated, err := h.sqlite.UpdateOAuthModelStateIfCredentialMatches(
-		ctx, channelID, expectedAuthType, expectedCredential, modelEntries, scheduledCheckModel,
+	updated, err := h.sqlite.UpdateModelStateIfSnapshotMatches(
+		ctx, expected, modelEntries, scheduledCheckModel, maxConcurrency,
 	)
 	if err != nil {
 		return updated, err
@@ -295,7 +295,7 @@ func (h *HybridStore) UpdateOAuthModelStateIfCredentialMatches(
 	if !updated {
 		return false, nil
 	}
-	h.markChannelDirty(channelID, false)
+	h.markChannelDirty(expected.ID, false)
 	return true, nil
 }
 

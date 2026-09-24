@@ -1656,6 +1656,345 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 }
 
 func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
+	t.Run("merge normalization keeps a single row joining an existing variant group", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"new-model"}]}`)
+		}))
+		t.Cleanup(upstream.Close)
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "variant-collision", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Enabled: true, ModelEntries: []model.ModelEntry{
+				{Model: "foo", RedirectModel: "target-a"},
+				{Model: "foo", RedirectModel: "target-b"},
+				{Model: "provider/foo", Pricing: channelPrice(3, 4)},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
+			t.Fatal(err)
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID}, "mode": "merge", "strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+		}
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.ModelEntry{
+			{Model: "foo", RedirectModel: "target-a"},
+			{Model: "foo", RedirectModel: "target-b"},
+			{Model: "foo", RedirectModel: "provider/foo", Pricing: channelPrice(3, 4)},
+			{Model: "new-model"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("normalized models=%+v, want %+v", got.ModelEntries, want)
+		}
+	})
+	t.Run("normalization preserves distinct targets and prices", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"new-model"}]}`)
+		}))
+		t.Cleanup(upstream.Close)
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "normalized-targets", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Enabled: true, ModelEntries: []model.ModelEntry{
+				{Model: "provider-a/Foo", Pricing: channelPrice(1, 2)},
+				{Model: "provider-b/foo", Pricing: channelPrice(3, 4)},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
+			t.Fatal(err)
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID}, "mode": "merge", "strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+		}
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.ModelEntry{
+			{Model: "Foo", RedirectModel: "provider-a/Foo", Pricing: channelPrice(1, 2)},
+			{Model: "Foo", RedirectModel: "provider-b/foo", Pricing: channelPrice(3, 4)},
+			{Model: "new-model"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("normalized models=%+v, want %+v", got.ModelEntries, want)
+		}
+	})
+	t.Run("replace preserves each normalized target state", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"provider-a/foo"},{"id":"provider-b/foo"}]}`)
+		}))
+		t.Cleanup(upstream.Close)
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "replace-targets", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Enabled: true, ModelEntries: []model.ModelEntry{
+				{Model: "provider-a/foo", Disabled: true, Pricing: channelPrice(1, 2)},
+				{Model: "provider-b/foo", Pricing: channelPrice(3, 4)},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
+			t.Fatal(err)
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID}, "mode": "replace", "strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+		}
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.ModelEntry{
+			{Model: "foo", RedirectModel: "provider-a/foo", Disabled: true, Pricing: channelPrice(1, 2)},
+			{Model: "foo", RedirectModel: "provider-b/foo", Pricing: channelPrice(3, 4)},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("replace changed target state: got %+v, want %+v", got.ModelEntries, want)
+		}
+	})
+	t.Run("refresh keeps edits committed during upstream fetch", func(t *testing.T) {
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		var channelID int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			current, err := store.GetConfig(ctx, channelID)
+			if err != nil {
+				t.Error(err)
+				http.Error(w, "load failed", http.StatusInternalServerError)
+				return
+			}
+			current.ModelEntries = append(current.ModelEntries, model.ModelEntry{Model: "auto", RedirectModel: "target-b", Pricing: channelPrice(3, 4)})
+			if _, err := store.UpdateConfig(ctx, channelID, current); err != nil {
+				t.Error(err)
+				http.Error(w, "save failed", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"new-model"}]}`)
+		}))
+		t.Cleanup(upstream.Close)
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "concurrent-refresh", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Enabled: true, ModelEntries: []model.ModelEntry{{Model: "auto", RedirectModel: "target-a", Pricing: channelPrice(1, 2)}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		channelID = cfg.ID
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: channelID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
+			t.Fatal(err)
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{channelID}, "mode": "merge",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+		}
+		got, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.ModelEntry{
+			{Model: "auto", RedirectModel: "target-a", Pricing: channelPrice(1, 2)},
+			{Model: "auto", RedirectModel: "target-b", Pricing: channelPrice(3, 4)},
+			{Model: "new-model"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, want) {
+			t.Fatalf("refresh lost concurrent model edit: got %+v, want %+v", got.ModelEntries, want)
+		}
+	})
+	t.Run("refresh retries an edit at model commit", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"new-model"}]}`)
+		}))
+		t.Cleanup(upstream.Close)
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "commit-race", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+			Enabled: true, ModelEntries: []model.ModelEntry{{Model: "auto", RedirectModel: "target-a"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
+			t.Fatal(err)
+		}
+		interleaved := &modelStateEditStore{Store: store}
+		interleaved.edit = func(ctx context.Context) error {
+			current, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				return err
+			}
+			current.ModelEntries = append(current.ModelEntries, model.ModelEntry{Model: "auto", RedirectModel: "target-b", Pricing: channelPrice(3, 4)})
+			_, err = store.UpdateConfig(ctx, cfg.ID, current)
+			return err
+		}
+		server.store = interleaved
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID}, "mode": "merge",
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+		}
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.ModelEntries) != 3 || got.ModelEntries[1].RedirectModel != "target-b" ||
+			!got.ModelEntries[1].Pricing.Equal(channelPrice(3, 4)) || !got.SupportsModel("new-model") {
+			t.Fatalf("refresh lost edit at commit: %+v", got.ModelEntries)
+		}
+	})
+	for _, mode := range []string{"merge", "replace"} {
+		t.Run(mode+" preserves configured variants", func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"AUTO"},{"id":"new-model"}]}`))
+			}))
+			t.Cleanup(upstream.Close)
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			variants := []model.ModelEntry{
+				{Model: "auto", RedirectModel: "target-b", Disabled: true, Pricing: channelPrice(1, 2)},
+				{Model: "auto", RedirectModel: "target-a", Pricing: channelPrice(3, 4)},
+			}
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "variant-refresh", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+				Enabled: true, ModelEntries: append(model.CloneModelEntries(variants), model.ModelEntry{Model: "old-only"}),
+				ScheduledCheckModel: "auto",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-refresh"}}); err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+				"channel_ids": []int64{cfg.ID}, "mode": mode, "lowercase_models": true,
+			}))
+			server.HandleBatchRefreshModels(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			got, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotVariants []model.ModelEntry
+			for _, entry := range got.ModelEntries {
+				if entry.Model == "auto" {
+					gotVariants = append(gotVariants, entry)
+				}
+			}
+			if !reflect.DeepEqual(gotVariants, variants) || !got.SupportsModel("new-model") || got.ScheduledCheckModel != "auto" ||
+				got.SupportsModel("old-only") != (mode == "merge") {
+				t.Fatalf("mode=%s models=%+v scheduled=%q", mode, got.ModelEntries, got.ScheduledCheckModel)
+			}
+		})
+	}
+	for _, catalog := range []struct {
+		name string
+		body string
+	}{
+		{name: "bridge absent from catalog", body: `{"data":[{"id":"c"},{"id":"d"}]}`},
+		{name: "catalog lists bridge as direct model", body: `{"data":[{"id":"b"},{"id":"c"},{"id":"d"}]}`},
+	} {
+		t.Run("replace preserves second redirect when "+catalog.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, catalog.body)
+			}))
+			t.Cleanup(upstream.Close)
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			bridge := model.ModelEntry{Model: "b", RedirectModel: "c", Pricing: channelPrice(3, 4)}
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "chained-variant-refresh", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+				Enabled: true, ModelEntries: []model.ModelEntry{
+					{Model: "a", RedirectModel: "b"},
+					{Model: "a", RedirectModel: "d"},
+					bridge,
+					{Model: "old-only"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-refresh"}}); err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+				"channel_ids": []int64{cfg.ID}, "mode": "replace",
+			}))
+			server.HandleBatchRefreshModels(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+			}
+			got, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if actual, ok := got.GetRedirectModel("b"); !ok || actual != "c" || got.SupportsModel("old-only") {
+				t.Fatalf("refresh broke chain or retained unrelated alias: %+v", got.ModelEntries)
+			}
+			var bridges []model.ModelEntry
+			for _, entry := range got.ModelEntries {
+				if entry.Model == "b" {
+					bridges = append(bridges, entry)
+				}
+			}
+			if !reflect.DeepEqual(bridges, []model.ModelEntry{bridge}) {
+				t.Fatalf("bridge=%+v, want %+v", bridges, bridge)
+			}
+		})
+	}
 	t.Run("merge mode partial success", func(t *testing.T) {
 		// channel1: 返回 m1,m2（新增1个）
 		var upstream1Auth []string
@@ -1926,6 +2265,11 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 	t.Run("replace mode", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/chat/completions" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+				return
+			}
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
@@ -1973,6 +2317,27 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" || !got.ModelEntries[0].Disabled {
 			t.Fatalf("unexpected models after replace: %#v", got.ModelEntries)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys failed: %v", err)
+		}
+		if len(keys) != 1 || keys[0].Disabled || keys[0].ModelScopeEmpty ||
+			!reflect.DeepEqual(keys[0].AllowedModels, []string{"new-1"}) ||
+			!reflect.DeepEqual(keys[0].DetectedModels, []string{"new-1"}) {
+			t.Fatalf("disabled model must preserve discovered Key capability: %+v", keys)
+		}
+
+		server.configService = NewConfigService(store)
+		server.keySelector = NewKeySelector()
+		c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", cfg.ID), map[string]any{
+			"model": "new-1", "client_protocol": "openai",
+		}))
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+		server.HandleChannelTest(c)
+		response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if w.Code != http.StatusOK || !response.Success || response.Data["success"] != true {
+			t.Fatalf("disabled model admin test status=%d body=%s", w.Code, w.Body.String())
 		}
 	})
 
@@ -2079,7 +2444,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
-	t.Run("replace mode strips source prefixes with stable collision handling", func(t *testing.T) {
+	t.Run("replace mode keeps distinct targets after stripping source prefixes", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":[{"id":"cloudcompile/Grok-4.5"},{"id":"z-source/Other-Model"},{"id":"x-ai/grok-4.5"},{"id":"a-source/Other-Model"},{"id":"grok-4.5"}]}`))
@@ -2124,7 +2489,10 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
 		wantModels := []model.ModelEntry{
-			{Model: "grok-4.5", Disabled: true},
+			{Model: "grok-4.5", RedirectModel: "cloudcompile/Grok-4.5", Disabled: true},
+			{Model: "grok-4.5", RedirectModel: "x-ai/grok-4.5"},
+			{Model: "grok-4.5"},
+			{Model: "other-model", RedirectModel: "z-source/Other-Model"},
 			{Model: "other-model", RedirectModel: "a-source/Other-Model"},
 		}
 		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
@@ -2423,6 +2791,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			name         string
 			oldModels    []model.ModelEntry
 			allowed      []string
+			detected     []string
 			wantRetained []model.ModelEntry
 			wantAllowed  []string
 			routingModel string
@@ -2433,7 +2802,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				oldModels: []model.ModelEntry{
 					{Model: "vendor/Foo"}, {Model: "alias", RedirectModel: "vendor/Foo"},
 				},
-				allowed: []string{"vendor/Foo", "alias"},
+				allowed: []string{"vendor/Foo", "alias"}, detected: []string{"vendor/Foo"},
 				wantRetained: []model.ModelEntry{
 					{Model: "Foo", RedirectModel: "vendor/Foo"}, {Model: "alias", RedirectModel: "vendor/Foo"},
 				},
@@ -2467,6 +2836,20 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 					{Model: "foo", RedirectModel: "up-a"}, {Model: "foo(max)", RedirectModel: "up-b"},
 				},
 				wantAllowed: []string{"foo"}, routingModel: "foo",
+			},
+			{
+				name:      "failed key retains all configured targets",
+				oldModels: []model.ModelEntry{{Model: "foo", RedirectModel: "up-a"}, {Model: "foo", RedirectModel: "up-b"}},
+				allowed:   []string{"foo"}, detected: []string{"up-a"},
+				wantRetained: []model.ModelEntry{{Model: "foo", RedirectModel: "up-a"}, {Model: "foo", RedirectModel: "up-b"}},
+				wantAllowed:  []string{"foo"}, routingModel: "foo",
+			},
+			{
+				name:      "normalization preserves group with disabled target",
+				oldModels: []model.ModelEntry{{Model: "vendor/Foo", RedirectModel: "up-a"}, {Model: "vendor/Foo", RedirectModel: "up-b", Disabled: true}},
+				allowed:   []string{"vendor/Foo"}, detected: []string{"up-a"},
+				wantRetained: []model.ModelEntry{{Model: "vendor/Foo", RedirectModel: "up-a"}, {Model: "vendor/Foo", RedirectModel: "up-b", Disabled: true}},
+				wantAllowed:  []string{"vendor/Foo"}, routingModel: "vendor/Foo", stripPrefix: true,
 			},
 			{
 				name: "thinking suffix identity", oldModels: []model.ModelEntry{{Model: "foo(max)"}},
@@ -2508,7 +2891,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				}
 				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 					{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy", AllowedModels: []string{"other"}},
-					{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: tc.allowed},
+					{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: tc.allowed, DetectedModels: tc.detected},
 				}); err != nil {
 					t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 				}
@@ -2530,6 +2913,9 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 				keys, err := store.GetAPIKeys(ctx, cfg.ID)
 				if err != nil {
 					t.Fatalf("GetAPIKeys failed: %v", err)
+				}
+				if !reflect.DeepEqual(keys[1].DetectedModels, tc.detected) {
+					t.Fatalf("failed key detected models changed: got %v, want %v", keys[1].DetectedModels, tc.detected)
 				}
 				if !reflect.DeepEqual(keys[1].AllowedModels, tc.wantAllowed) || !keys[1].AllowsModel(tc.routingModel) || keys[1].Disabled || keys[1].ModelScopeEmpty {
 					t.Fatalf("failed key cannot serve %q after replace: %+v", tc.routingModel, keys[1])

@@ -717,7 +717,7 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **多URL说明**：`urls` 是有序的 `{url, exact, protocols}` 对象数组。`exact: true` 表示该地址已经是完整上游请求 URL。系统按延迟加权选择 URL，并对故障 URL 独立冷却；local 模式会先把显式声明协议的 URL 稳定排到自动 URL 前面，各组内部顺序不变。
 
-> **模型条目说明**：`models` 的每个元素是 `{model, redirect_model, disabled}`。`redirect_model` 只改写发往上游的模型名，客户端仍按原名请求。`disabled: true` 表示该渠道彻底不提供这个模型——不再对外暴露、不参与精确/模糊匹配、也不再写入模型冷却，但条目本身保留。用 `replace` 模式刷新模型列表时，已有的停用标记会按原名、归一化别名和重定向目标三种方式回填到新拉取的条目上，因此刷新不会把手动停用的模型悄悄改回启用。
+> **模型条目说明**：`models` 的每个元素是 `{model, redirect_model, disabled, pricing}`。同一渠道可多次填写同一个 `model`，用不同 `redirect_model` 作为轮转目标；每行可独立停用、定价。请求按组内启用且未冷却的行轮转，Key/URL/协议重试保持同一目标；全部冷却时选择最早恢复的行。精确重定向后允许再查找目标模型的首个启用行一次（`A→B→C` 会发送到 C），不会推进 B 组的轮转游标，也不会继续查找第三层。`disabled: true` 仅停用该行，组内全停用时模型才从对外列表消失。管理测试可用 `redirect_model` 指定目标，省略时按组轮转；定时检测只使用启用行。
 
 > **Key 模型白名单**：`api_keys` 的每个元素可带 `allowed_models` 字符串数组，限定这个 Key 只服务哪些模型；省略、留空或写 `"*"` 都表示不限制，保持原有行为。列出的模型必须已存在于该渠道的 `models` 中（渠道声明通配模型时除外），否则保存被拒；保存时按渠道模型名归一大小写并去重，编码后不超过 2000 字节。匹配的是**渠道逻辑模型**：先模糊匹配、再比对白名单，`redirect_model` 重定向在这之后发生，所以白名单填渠道模型名而不是上游模型名。请求先按模型过滤 Key 再进入 Key 重试；某渠道所有 Key 都不服务该模型时直接跳过该渠道，不冷却也不记失败。Web 界面在 Key 行的 **模型范围** 中勾选，并可用 **检测此 Key** 探测上游实际支持的模型再自动匹配渠道模型。适合同一中转站下不同 Key 拥有不同模型权限的场景。
 
@@ -836,9 +836,8 @@ curl -X POST -H "Authorization: Bearer your_token" \
 
 **CSV格式示例**:
 ```csv
-name,api_key,urls,priority,models,enabled
-Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,claude-sonnet-4-6,true
-Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opus-4-6,true
+name,api_key,urls,priority,model_entries_json,enabled
+Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,"[{""model"":""auto"",""redirect_model"":""claude-sonnet-4-6""},{""model"":""auto"",""redirect_model"":""claude-opus-4-6""}]",true
 ```
 
 **特性**:
@@ -847,6 +846,8 @@ Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opu
 - 增量导入和覆盖更新
 - UTF-8编码，Excel兼容
 - `oauth_credential` 同时包含 OAuth 凭据和 API Key 渠道管理账号封套，可用于跨实例迁移；CSV 属于敏感文件，使用后应立即妥善删除
+
+升级说明：新导出的 CSV 只使用 `model_entries_json` 保存有序模型行及停用、价格配置。旧 `models`/`model_redirects`/`model_pricing` 列仍可单独导入；新旧模型列混用会被拒绝。原有的两步链式重定向 `A→B→C` 可与 A 的多目标轮转同时使用；不会继续跟随第三层。
 
 ## 📊 监控指标
 

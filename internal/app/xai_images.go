@@ -160,7 +160,7 @@ func (s *Server) imagesResponsesModel(cfg *model.Config, reqCtx *proxyRequestCon
 		!isOpenAIImagesGenerationRequest(reqCtx.requestMethod, reqCtx.requestPath, reqCtx.clientProtocol) {
 		return "", false
 	}
-	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(protocol.Codex))
+	actualModel := s.resolveFinalUpstreamModel(cfg, reqCtx.attemptModel, string(protocol.Codex))
 	if cfg.UsesCodexOAuth() {
 		return actualModel, codexImageUsesResponses(actualModel)
 	}

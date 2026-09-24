@@ -76,6 +76,7 @@ type ChannelAPIKeyRequest struct {
 	APIKey          string   `json:"api_key"`
 	Note            string   `json:"note,omitempty"`
 	AllowedModels   []string `json:"allowed_models,omitempty"`
+	DetectedModels  []string `json:"detected_models,omitempty"`
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"`
 	// CostMultiplier 用指针区分「未提交」：nil 保留现值（Key 更新）或取默认 1（创建）；
 	// 0 是合法的「免费 Key」。OAuth 渠道的合成 Key 行也用它携带渠道倍率。
@@ -83,7 +84,8 @@ type ChannelAPIKeyRequest struct {
 	Priority       *int     `json:"priority,omitempty"`
 	// allowedModelsSet distinguishes an omitted field from an explicit empty list.
 	// Updates preserve an existing scope when old clients do not send the new field.
-	allowedModelsSet bool
+	allowedModelsSet  bool
+	detectedModelsSet bool
 }
 
 // UnmarshalJSON records whether allowed_models was submitted so updates can preserve omitted scopes.
@@ -92,6 +94,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 		APIKey          string          `json:"api_key"`
 		Note            string          `json:"note,omitempty"`
 		AllowedModels   json.RawMessage `json:"allowed_models"`
+		DetectedModels  json.RawMessage `json:"detected_models"`
 		ModelScopeEmpty bool            `json:"model_scope_empty,omitempty"`
 		CostMultiplier  *float64        `json:"cost_multiplier"`
 		Priority        *int            `json:"priority"`
@@ -106,7 +109,14 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	r.CostMultiplier = raw.CostMultiplier
 	r.Priority = raw.Priority
 	r.AllowedModels = nil
+	r.DetectedModels = nil
 	r.allowedModelsSet = raw.AllowedModels != nil
+	r.detectedModelsSet = raw.DetectedModels != nil
+	if r.detectedModelsSet && string(raw.DetectedModels) != "null" {
+		if err := json.Unmarshal(raw.DetectedModels, &r.DetectedModels); err != nil {
+			return err
+		}
+	}
 	if !r.allowedModelsSet || string(raw.AllowedModels) == "null" {
 		return nil
 	}
@@ -142,13 +152,15 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				continue
 			}
 			keys = append(keys, ChannelAPIKeyRequest{
-				APIKey:           apiKey,
-				Note:             strings.TrimSpace(item.Note),
-				AllowedModels:    append([]string(nil), item.AllowedModels...),
-				ModelScopeEmpty:  item.ModelScopeEmpty,
-				CostMultiplier:   item.CostMultiplier,
-				Priority:         item.Priority,
-				allowedModelsSet: item.allowedModelsSet,
+				APIKey:            apiKey,
+				Note:              strings.TrimSpace(item.Note),
+				AllowedModels:     append([]string(nil), item.AllowedModels...),
+				DetectedModels:    append([]string(nil), item.DetectedModels...),
+				ModelScopeEmpty:   item.ModelScopeEmpty,
+				CostMultiplier:    item.CostMultiplier,
+				Priority:          item.Priority,
+				allowedModelsSet:  item.allowedModelsSet,
+				detectedModelsSet: item.detectedModelsSet,
 			})
 		}
 		return keys
@@ -311,22 +323,14 @@ func (cr *ChannelRequest) Validate() error {
 	if len(cr.Models) == 0 {
 		return fmt.Errorf("models cannot be empty")
 	}
-	// 验证模型条目（DRY: 使用 ModelEntry.Validate()）
-	for i := range cr.Models {
-		if err := cr.Models[i].Validate(); err != nil {
-			return fmt.Errorf("models[%d]: %w", i, err)
-		}
+	normalizedModels, validationErr := model.ValidateModelEntries(cr.Models)
+	if validationErr != nil {
+		return validationErr
 	}
-	// Fail-Fast: 同一渠道内模型名必须唯一（大小写不敏感，匹配数据库唯一约束语义）
-	seenModels := make(map[string]int, len(cr.Models))
+	cr.Models = normalizedModels
 	canonicalModels := make(map[string]string, len(cr.Models))
-	for i := range cr.Models {
-		literalKey := strings.ToLower(cr.Models[i].Model)
-		if firstIdx, exists := seenModels[literalKey]; exists {
-			return fmt.Errorf("models[%d]: duplicate model %q (already defined at models[%d])", i, cr.Models[i].Model, firstIdx)
-		}
-		seenModels[literalKey] = i
-		routingModel := model.RoutingModelName(cr.Models[i].Model)
+	for _, entry := range cr.Models {
+		routingModel := model.RoutingModelName(entry.Model)
 		canonicalModels[strings.ToLower(routingModel)] = routingModel
 	}
 	wildcardModels := canonicalModels["*"] != ""
@@ -336,12 +340,17 @@ func (cr *ChannelRequest) Validate() error {
 			return fmt.Errorf("api_keys[%d].allowed_models: %w", i, err)
 		}
 		apiKeys[i].AllowedModels = allowedModels
+		apiKeys[i].DetectedModels = normalizeDetectedModels(apiKeys[i].DetectedModels)
 		encoded, err := json.Marshal(allowedModels)
 		if err != nil {
 			return fmt.Errorf("api_keys[%d].allowed_models: %w", i, err)
 		}
 		if len(encoded) > maxAPIKeyAllowedModelsJSONLength {
 			return fmt.Errorf("api_keys[%d].allowed_models is too long (max %d bytes)", i, maxAPIKeyAllowedModelsJSONLength)
+		}
+		encoded, err = json.Marshal(apiKeys[i].DetectedModels)
+		if err != nil || len(encoded) > maxAPIKeyAllowedModelsJSONLength {
+			return fmt.Errorf("api_keys[%d].detected_models is too long or invalid", i)
 		}
 	}
 	cr.APIKeys = apiKeys
@@ -452,6 +461,24 @@ func normalizeAPIKeyAllowedModels(values []string, canonicalModels map[string]st
 		result = append(result, modelName)
 	}
 	return result, nil
+}
+
+func normalizeDetectedModels(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		name := model.RoutingModelName(strings.TrimSpace(value))
+		if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, name)
+	}
+	return result
 }
 
 func (cr *ChannelRequest) scheduledCheckSchedule() (int, string) {

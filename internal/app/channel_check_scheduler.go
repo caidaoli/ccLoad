@@ -115,8 +115,33 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 		s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, skipReason))
 		return
 	}
+	if len(s.enumerateModelRows(cfg, modelName)) == 0 {
+		return
+	}
+	var rowAvailable func(modelRoutingSelection) bool
+	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+		protocols := scheduledCheckUpstreamProtocols(cfg)
+		now := time.Now()
+		rowAvailable = func(selected modelRoutingSelection) bool {
+			for _, key := range apiKeys {
+				if key != nil && !key.Disabled && !key.IsCoolingDown(now) &&
+					s.keyModelScopeAllowsRow(cfg, key, selected, protocols) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	selectedCfg, selectErr := s.selectChannelTestModelWithAvailability(cfg, &testutil.TestChannelRequest{Model: modelName}, true, rowAvailable)
+	if selectErr != nil {
+		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, selectErr)
+		if !isExpectedScheduledCheckStop(selectErr) {
+			s.persistDetectionLog(ctx, detectionSkipLog(cfg, model.LogSourceScheduledCheck, modelName, selectErr.Error()))
+		}
+		return
+	}
 
-	runtimeCfg, keySelection, err := s.prepareScheduledChannelCheckAuth(ctx, cfg, apiKeys, modelName)
+	runtimeCfg, keySelection, err := s.prepareScheduledChannelCheckAuth(ctx, selectedCfg, apiKeys, modelName)
 	if err != nil {
 		log.Printf("[WARN] [channel-check] 跳过渠道 #%d %s：%v", cfg.ID, cfg.Name, err)
 		if !isExpectedScheduledCheckStop(err) {
@@ -143,8 +168,15 @@ func (s *Server) prepareScheduledChannelCheckAuth(ctx context.Context, cfg *mode
 		return runtimeCfg, selection, err
 	}
 
-	apiKeys, _ = filterAPIKeysForModel(apiKeys, s.resolveChannelRoutingModel(cfg, modelName))
-	if len(apiKeys) == 0 {
+	selected, _ := s.firstModelRow(cfg, modelName)
+	protocols := scheduledCheckUpstreamProtocols(cfg)
+	compatible := make([]*model.APIKey, 0, len(apiKeys))
+	for _, key := range apiKeys {
+		if key != nil && !key.Disabled && s.keyModelScopeAllowsRow(cfg, key, selected, protocols) {
+			compatible = append(compatible, key)
+		}
+	}
+	if len(compatible) == 0 {
 		return nil, channelTestKeySelection{}, errors.New("该模型未配置可用 Key")
 	}
 
@@ -153,13 +185,43 @@ func (s *Server) prepareScheduledChannelCheckAuth(ctx context.Context, cfg *mode
 	if selector == nil {
 		selector = NewKeySelector()
 	}
-	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, apiKeys, nil)
+	keyIndex, apiKey, err := selector.SelectAvailableKey(cfg.ID, compatible, nil)
 	return cfg, channelTestKeySelection{
 		keyIndex:                keyIndex,
 		apiKey:                  apiKey,
 		requestCredential:       apiKey,
 		updatePersistedCooldown: true,
 	}, err
+}
+
+func scheduledCheckUpstreamProtocols(cfg *model.Config) []protocol.Protocol {
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[protocol.Protocol]struct{})
+	protocols := make([]protocol.Protocol, 0, len(automaticFallbackProtocolOrder))
+	appendProtocol := func(candidate protocol.Protocol) {
+		if !protocol.IsValid(candidate) {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		protocols = append(protocols, candidate)
+	}
+	for _, url := range cfg.URLs {
+		if len(url.Protocols) == 0 {
+			for _, candidate := range automaticFallbackProtocolOrder {
+				appendProtocol(candidate)
+			}
+			continue
+		}
+		for _, declared := range url.Protocols {
+			appendProtocol(protocol.Protocol(declared))
+		}
+	}
+	return protocols
 }
 
 func logScheduledChannelCheckResult(cfg *model.Config, keyIndex int, modelName string, result map[string]any) {

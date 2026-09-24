@@ -121,3 +121,25 @@ test('渠道测试配置含多个内容时使用第一个内容作为默认请�
     fixture.restore();
   }
 });
+
+test('逐行测试固定目标，重新打开普通测试恢复组轮转', async () => {
+  const fixture = installTestChannelGlobals();
+  const modulePath = require.resolve('./channels-test.js');
+  delete require.cache[modulePath];
+  try {
+    const { testChannel, runChannelTest } = require(modulePath);
+    const channel = { id: 9, name: 'variants', models: [
+      { model: 'auto', redirect_model: 'target-a' },
+      { model: 'auto', redirect_model: 'target-b' }
+    ] };
+    await testChannel(channel, 'auto', 'target-b');
+    await runChannelTest();
+    assert.equal(fixture.requests[0].body.redirect_model, 'target-b');
+    await testChannel(channel, 'auto');
+    await runChannelTest();
+    assert.equal(fixture.requests[1].body.redirect_model, undefined);
+  } finally {
+    delete require.cache[modulePath];
+    fixture.restore();
+  }
+});

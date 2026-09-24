@@ -46,14 +46,10 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	}
 
 	persistedCfg := cfg
-	routedModel := model.RoutingModelName(testReq.Model)
-	if !cfg.SupportsModel(routedModel) {
-		// Admin chat may probe a disabled model without enabling normal routing.
-		cfg = cfg.Clone()
-		if !enableDisabledChannelTestModel(cfg, routedModel) {
-			writeChatErrorEvent(c, "模型 "+testReq.Model+" 不在此渠道的支持列表中")
-			return
-		}
+	cfg, err = s.selectChannelTestModel(cfg, &testReq, false)
+	if err != nil {
+		writeChatErrorEvent(c, err.Error())
+		return
 	}
 
 	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
@@ -62,7 +58,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 	cfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, testReq.Model, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+		c.Request.Context(), cfg, apiKeys, testReq.Model, resolveClientProtocol(&testReq), testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
 		oauthCredentialRefreshIfNeeded,
 	)
 	if err != nil {
@@ -288,7 +284,8 @@ func (s *Server) streamCursorChannelChat(
 ) {
 	start := time.Now()
 	attemptReq := *testReq
-	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, originalModel, clientProtocol)
+	selected, _ := s.firstModelRow(cfg, originalModel)
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, clientProtocol)
 	// The admin endpoint always speaks SSE to the browser. The SDK itself also
 	// streams, so emitting a native streaming envelope avoids buffering a
 	// nominally non-streaming test before it is normalized for the frontend.
@@ -467,7 +464,8 @@ func (s *Server) streamChatWithURLForProtocol(
 	originalModel string,
 ) (out chatURLAttemptResult) {
 	attemptReq := *testReq
-	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, originalModel, upstreamProtocol)
+	selected, _ := s.firstModelRow(cfg, originalModel)
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, selected, upstreamProtocol)
 	testReq = &attemptReq
 	defer func() {
 		out.actualModel = attemptReq.Model

@@ -250,6 +250,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysAllowedModels(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys allowed_models: %w", err)
 			}
+			if err := ensureAPIKeysDetectedModels(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys detected_models: %w", err)
+			}
 			if err := ensureAPIKeysModelScopeEmpty(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys model_scope_empty: %w", err)
 			}
@@ -315,6 +318,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureChannelModelsPricing(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channel_models pricing: %w", err)
+			}
+			if err := ensureChannelModelsVariants(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channel_models variants: %w", err)
 			}
 			if err := repairLegacyChannelModelOrder(ctx, db, dialect); err != nil {
 				return fmt.Errorf("repair legacy channel_models order: %w", err)

@@ -572,10 +572,11 @@ async function editChannel(id) {
   const modelCooldowns = new Map(
     (channel.model_cooldowns || []).map(cooldown => [cooldown.model, cooldown])
   );
-  redirectTableData = (channel.models || []).map(m => {
+  const configuredModels = channel.models || [];
+  redirectTableData = configuredModels.map(m => {
     const modelName = m.model || '';
     const redirectModel = m.redirect_model || '';
-    const actualModel = redirectModel || modelName;
+    const actualModel = resolveEditorActualModel(configuredModels, m);
     const cooldown = modelCooldowns.get(actualModel);
     const stats = modelStats?.get(normalizeModelStatsKey(modelName));
     return {
@@ -846,26 +847,6 @@ async function saveChannel(event) {
 
   // 构建模型配置（新格式：models 数组）
   const models = collectModelsForSubmit(redirectTableData);
-  const seenModels = new Set();
-  const duplicateModels = [];
-  for (const entry of models) {
-    const modelKey = entry.model.toLowerCase();
-    if (seenModels.has(modelKey)) {
-      duplicateModels.push(entry.model);
-      continue;
-    }
-    seenModels.add(modelKey);
-  }
-  if (duplicateModels.length > 0) {
-    const uniqueDuplicates = [...new Set(duplicateModels)];
-    const msg = window.t('channels.duplicateModelsNotAllowed', { models: uniqueDuplicates.join(', ') });
-    if (window.showError) {
-      window.showError(msg);
-    } else {
-      alert(msg);
-    }
-    return;
-  }
 
 
   const formData = {
@@ -877,6 +858,7 @@ async function saveChannel(event) {
       api_key: row.api_key,
       note: row.note || '',
       allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : [],
+      detected_models: Array.isArray(row.detected_models) ? [...row.detected_models] : [],
       model_scope_empty: row.model_scope_empty === true,
       cost_multiplier: row.cost_multiplier,
       priority: row.priority
@@ -2277,21 +2259,22 @@ async function confirmModelImport() {
     return;
   }
 
-  // 获取现有模型名称用于去重（忽略大小写）
+  // 同名不同目标是独立配置行；只跳过完全相同的行。
   const existingModels = new Set(
     redirectTableData
-      .map(r => (r.model || '').trim().toLowerCase())
+      .map(r => `${(r.model || '').trim().toLowerCase()}\u0000${(r.redirect_model || r.model || '').trim().toLowerCase()}`)
       .filter(Boolean)
   );
   let addedCount = 0;
 
   newModels.forEach(entry => {
-    const modelKey = entry.model.toLowerCase();
+    const modelKey = `${entry.model.toLowerCase()}\u0000${(entry.redirect_model || entry.model).toLowerCase()}`;
     if (!existingModels.has(modelKey)) {
       redirectTableData.push({
         model: entry.model,
         redirect_model: entry.redirect_model,
-        disabled: !!entry.disabled
+        disabled: !!entry.disabled,
+        ...(entry.pricing ? { pricing: entry.pricing } : {})
       });
       existingModels.add(modelKey);
       addedCount++;
@@ -2429,11 +2412,6 @@ async function testRedirectModel(index, button) {
     if (window.showWarning) window.showWarning(window.t('channels.saveBeforeModelTest'));
     return false;
   }
-  if (redirect.disabled) {
-    if (window.showWarning) window.showWarning(window.t('channels.enableBeforeModelTest'));
-    return false;
-  }
-
   if (button) {
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
@@ -2443,7 +2421,7 @@ async function testRedirectModel(index, button) {
       id: editingChannelId,
       name: document.getElementById('channelName').value,
       models: redirectTableData
-    }, modelName);
+    }, modelName, String(redirect.redirect_model || modelName).trim());
     if (!opened) return false;
     await runChannelTest();
     return true;
@@ -2456,7 +2434,7 @@ async function testRedirectModel(index, button) {
   } finally {
     if (button?.isConnected) {
       const currentRedirect = redirectTableData[index];
-      button.disabled = Boolean(currentRedirect?.disabled) || !String(currentRedirect?.model || '').trim();
+      button.disabled = !String(currentRedirect?.model || '').trim();
       button.removeAttribute('aria-busy');
     }
   }
@@ -2548,15 +2526,13 @@ function configureRedirectModelActions(row, redirect, index) {
   const testButton = row.querySelector('.redirect-model-test-btn');
   if (!testButton) return;
   const modelName = String(redirect.model || '').trim();
-  const testTitle = redirect.disabled
-    ? window.t('channels.enableBeforeModelTest')
-    : modelName
-      ? window.t('channels.testThisModel')
-      : window.t('channels.modelNameRequiredForTest');
+  const testTitle = modelName
+    ? window.t('channels.testThisModel')
+    : window.t('channels.modelNameRequiredForTest');
   testButton.dataset.index = String(index);
   testButton.title = testTitle;
   testButton.setAttribute('aria-label', testTitle);
-  testButton.disabled = redirect.disabled || !modelName;
+  testButton.disabled = !modelName;
 }
 
 function renderActiveRedirectModelStatus(statusCell, redirect) {
@@ -2999,15 +2975,17 @@ function batchDeleteSelectedModels() {
 function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
   const existingModelKeys = new Set();
   const occupiedModelKeys = new Set();
+  const fetchedIdentities = new Set();
   const rows = [];
   (currentRows || []).forEach(row => {
     const model = (row?.model || '').trim();
     if (!model) return;
-    const modelKey = model.toLowerCase();
-    if (existingModelKeys.has(modelKey)) return;
-    existingModelKeys.add(modelKey);
-    occupiedModelKeys.add(modelKey);
     const redirectModel = (row?.redirect_model || '').trim();
+    const modelKey = model.toLowerCase();
+    const identity = `${modelKey}\u0000${(redirectModel || model).toLowerCase()}`;
+    if (existingModelKeys.has(identity)) return;
+    existingModelKeys.add(identity);
+    occupiedModelKeys.add(modelKey);
     if (redirectModel) occupiedModelKeys.add(redirectModel.toLowerCase());
     rows.push({
       model,
@@ -3027,9 +3005,10 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
       ? String(entry.redirect_model).trim()
       : modelName;
     const redirectKey = fetchedRedirect.toLowerCase();
-    if (occupiedModelKeys.has(modelKey) || occupiedModelKeys.has(redirectKey)) continue;
-    occupiedModelKeys.add(modelKey);
-    occupiedModelKeys.add(redirectKey);
+    const identity = `${modelKey}\u0000${redirectKey}`;
+    if (occupiedModelKeys.has(modelKey) || occupiedModelKeys.has(redirectKey) ||
+        existingModelKeys.has(identity) || fetchedIdentities.has(identity)) continue;
+    fetchedIdentities.add(identity);
     rows.push({
       model: modelName,
       redirect_model: fetchedRedirect,
@@ -3069,16 +3048,44 @@ function normalizeDetectedModelNames(entries) {
   return names;
 }
 
-function detectedChannelModels(modelRows, entries) {
+function routingModelNameForEditor(value) {
+  const name = String(value || '').trim();
+  const match = name.match(/^(.*?)\(([^()]*)\)$/);
+  if (!match) return name;
+  const suffix = match[2].trim().toLowerCase();
+  if (!['none', 'auto', '-1', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(suffix) &&
+      !/^\d+$/.test(suffix)) return name;
+  return match[1].trim() || name;
+}
+
+function resolveEditorActualModel(modelRows, row) {
+  const redirect = String(row?.redirect_model || '').trim();
+  let target = redirect || String(row?.model || '').trim();
+  if (redirect) {
+    const enabled = (Array.isArray(modelRows) ? modelRows : []).filter(entry => !entry?.disabled);
+    const next = enabled.find(entry => entry.model === target) ||
+      enabled.find(entry => routingModelNameForEditor(entry.model) === target);
+    if (next?.redirect_model) target = String(next.redirect_model).trim();
+  }
+  return routingModelNameForEditor(target);
+}
+
+function detectedChannelModelScope(modelRows, entries) {
   const detectedNames = normalizeDetectedModelNames(entries);
-  const detected = new Set(detectedNames.map(name => name.toLowerCase()));
+  const detected = new Set(detectedNames.map(name => routingModelNameForEditor(name).toLowerCase()));
   const matched = [];
   const seen = new Set();
+  const actualModels = [];
+  const seenActual = new Set();
   for (const row of Array.isArray(modelRows) ? modelRows : []) {
     const logicalModel = String(row?.model || '').trim();
     if (!logicalModel || logicalModel === '*') continue;
-    const upstreamModel = String(row?.redirect_model || logicalModel).trim();
-    if (!detected.has(logicalModel.toLowerCase()) && !detected.has(upstreamModel.toLowerCase())) continue;
+    const actualModel = resolveEditorActualModel(modelRows, row);
+    if (!detected.has(actualModel.toLowerCase())) continue;
+    if (!seenActual.has(actualModel.toLowerCase())) {
+      seenActual.add(actualModel.toLowerCase());
+      actualModels.push(actualModel);
+    }
     const key = logicalModel.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -3086,15 +3093,33 @@ function detectedChannelModels(modelRows, entries) {
   }
   const wildcard = (Array.isArray(modelRows) ? modelRows : [])
     .some(row => String(row?.model || '').trim() === '*');
-  return matched.length > 0 || !wildcard ? matched : detectedNames;
+  if (wildcard) {
+    for (const name of detectedNames) {
+      const key = name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        matched.push(name);
+      }
+      if (!seenActual.has(key)) {
+        seenActual.add(key);
+        actualModels.push(name);
+      }
+    }
+  }
+  return { allowedModels: matched, detectedModels: actualModels };
 }
 
 function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntries) {
   const originalRows = (Array.isArray(keyRows) ? keyRows : []).map(row => ({
     ...row,
-    allowed_models: Array.isArray(row?.allowed_models) ? [...row.allowed_models] : []
+    allowed_models: Array.isArray(row?.allowed_models) ? [...row.allowed_models] : [],
+    ...(Array.isArray(row?.detected_models) && row.detected_models.length > 0
+      ? { detected_models: [...row.detected_models] } : {})
   }));
-  const rows = originalRows.map(row => ({ ...row, allowed_models: [...row.allowed_models] }));
+  const rows = originalRows.map(row => ({
+    ...row, allowed_models: [...row.allowed_models],
+    ...(row.detected_models ? { detected_models: [...row.detected_models] } : {})
+  }));
   const results = new Map(
     (Array.isArray(keyModels) ? keyModels : [])
       .filter(Boolean)
@@ -3104,21 +3129,26 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
   let matchedCount = 0;
   let unmatchedCount = 0;
   let failedCount = 0;
-  for (const requestEntry of (Array.isArray(requestEntries) ? requestEntries : [])) {
+  for (const [requestIndex, requestEntry] of (Array.isArray(requestEntries) ? requestEntries : []).entries()) {
     const rowIndex = Number(requestEntry?.keyIndex);
     const row = rows[rowIndex];
     if (!row || String(row.api_key || '').trim() !== String(requestEntry?.apiKey || '').trim()) continue;
 
-    const result = results.get(rowIndex);
-    const setScope = (allowedModels, scopeEmpty) => {
+    const result = results.get(requestIndex);
+    const setScope = (allowedModels, scopeEmpty, detectedModels) => {
       const current = (row.allowed_models || []).map(name => String(name).toLowerCase());
       const next = allowedModels.map(name => name.toLowerCase());
+      const currentDetected = (row.detected_models || []).map(name => String(name).toLowerCase());
+      const nextDetected = detectedModels.map(name => name.toLowerCase());
       const currentEmpty = row.model_scope_empty === true;
       if (current.length === next.length && current.every((name, index) => name === next[index]) &&
-          currentEmpty === scopeEmpty) {
+          currentDetected.length === nextDetected.length &&
+          currentDetected.every((name, index) => name === nextDetected[index]) && currentEmpty === scopeEmpty) {
         return;
       }
       row.allowed_models = allowedModels;
+      if (detectedModels.length > 0) row.detected_models = detectedModels;
+      else delete row.detected_models;
       if (scopeEmpty) row.model_scope_empty = true;
       else delete row.model_scope_empty;
       changedCount++;
@@ -3131,18 +3161,18 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
     }
     if (!Array.isArray(result.models) || result.models.length === 0) {
       unmatchedCount++;
-      setScope([], true);
+      setScope([], true, []);
       continue;
     }
 
-    const allowedModels = detectedChannelModels(modelRows, result.models);
+    const { allowedModels, detectedModels } = detectedChannelModelScope(modelRows, result.models);
     if (allowedModels.length === 0) {
       unmatchedCount++;
-      setScope([], true);
+      setScope([], true, detectedModels);
       continue;
     }
     matchedCount++;
-    setScope(allowedModels, false);
+    setScope(allowedModels, false, detectedModels);
   }
   const complete = matchedCount === (Array.isArray(requestEntries) ? requestEntries.length : 0);
   return {

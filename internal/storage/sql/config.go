@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
@@ -661,48 +662,91 @@ func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config
 	return nil
 }
 
-// UpdateOAuthModelStateIfCredentialMatches conditionally commits model state
-// derived from one exact OAuth credential snapshot.
-func (s *SQLStore) UpdateOAuthModelStateIfCredentialMatches(
+// UpdateModelStateIfSnapshotMatches commits only model state, after checking
+// the credential and the complete model snapshot in one transaction.
+func (s *SQLStore) UpdateModelStateIfSnapshotMatches(
 	ctx context.Context,
-	channelID int64,
-	expectedAuthType, expectedCredential string,
+	expected *model.Config,
 	modelEntries []model.ModelEntry,
 	scheduledCheckModel string,
+	maxConcurrency *int,
 ) (bool, error) {
-	authType := model.NormalizeAuthType(expectedAuthType)
-	if authType == "" || authType == model.AuthTypeAPIKey {
-		return false, errors.New("OAuth auth type is invalid")
+	if expected == nil || expected.ID <= 0 {
+		return false, errors.New("expected model state is required")
 	}
-	if strings.TrimSpace(expectedCredential) == "" {
+	authType := expected.GetAuthType()
+	if authType != model.AuthTypeAPIKey && strings.TrimSpace(expected.OAuthCredential) == "" {
 		return false, errors.New("expected OAuth credential cannot be empty")
 	}
 	matched := false
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		matched = false
-		currentAuthType, currentCredential, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
+		currentAuthType, currentCredential, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, expected.ID)
 		if errors.Is(loadErr, sql.ErrNoRows) {
 			return nil
 		}
 		if loadErr != nil {
 			return loadErr
 		}
-		if currentAuthType != authType || currentCredential != expectedCredential {
+		if model.NormalizeAuthType(currentAuthType) != authType || currentCredential != expected.OAuthCredential {
 			return nil
 		}
-		if err := s.saveModelEntriesTx(ctx, tx, channelID, modelEntries); err != nil {
-			return fmt.Errorf("save OAuth model state: %w", err)
+		var currentScheduledCheckModel string
+		if err := s.queryRowTx(ctx, tx, `SELECT scheduled_check_model FROM channels WHERE id = ?`, expected.ID).Scan(&currentScheduledCheckModel); err != nil {
+			return err
 		}
-		if _, updateErr := s.execTx(ctx, tx, `
-			UPDATE channels SET scheduled_check_model = ?, updated_at = ? WHERE id = ?
-		`, scheduledCheckModel, timeToUnix(time.Now()), channelID); updateErr != nil {
+		if currentScheduledCheckModel != expected.ScheduledCheckModel {
+			return nil
+		}
+		rows, err := s.queryTx(ctx, tx, `
+			SELECT model, redirect_model, disabled, pricing, model_variants
+			FROM channel_models WHERE channel_id = ? ORDER BY created_at ASC, model ASC
+		`, expected.ID)
+		if err != nil {
+			return fmt.Errorf("load current OAuth models: %w", err)
+		}
+		var currentEntries []model.ModelEntry
+		for rows.Next() {
+			entries, scanErr := scanModelEntry(rows, nil)
+			if scanErr != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan current OAuth models: %w", scanErr)
+			}
+			currentEntries = append(currentEntries, entries...)
+		}
+		readErr := rows.Err()
+		_ = rows.Close()
+		if readErr != nil {
+			return fmt.Errorf("read current OAuth models: %w", readErr)
+		}
+		if !modelEntrySlicesEqual(currentEntries, expected.ModelEntries) {
+			return nil
+		}
+		if err := s.saveModelEntriesTx(ctx, tx, expected.ID, modelEntries); err != nil {
+			return fmt.Errorf("save model state: %w", err)
+		}
+		updatedAt := timeToUnix(time.Now())
+		if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, expected.ID, modelEntries, updatedAt); err != nil {
+			return fmt.Errorf("prune API key model scopes: %w", err)
+		}
+		var updateErr error
+		if maxConcurrency == nil {
+			_, updateErr = s.execTx(ctx, tx, `
+				UPDATE channels SET scheduled_check_model = ?, updated_at = ? WHERE id = ?
+			`, scheduledCheckModel, updatedAt, expected.ID)
+		} else {
+			_, updateErr = s.execTx(ctx, tx, `
+				UPDATE channels SET scheduled_check_model = ?, max_concurrency = ?, updated_at = ? WHERE id = ?
+			`, scheduledCheckModel, *maxConcurrency, updatedAt, expected.ID)
+		}
+		if updateErr != nil {
 			return updateErr
 		}
 		matched = true
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("update OAuth model state: %w", err)
+		return false, fmt.Errorf("update model state: %w", err)
 	}
 	return matched, nil
 }
@@ -1018,7 +1062,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	if withModels {
-		modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled, pricing
+		modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled, pricing, model_variants
 			FROM channel_models WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
 			ORDER BY channel_id, created_at ASC, model ASC`), normalizeSQLArgs(args)...)
 		if err != nil {
@@ -1026,13 +1070,13 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 		}
 		for modelRows.Next() {
 			var channelID int64
-			entry, err := scanModelEntry(modelRows, &channelID)
+			entries, err := scanModelEntry(modelRows, &channelID)
 			if err != nil {
 				_ = modelRows.Close()
 				return nil, fmt.Errorf("scan model for batch patch: %w", err)
 			}
 			if state := states[channelID]; state != nil {
-				state.modelEntries = append(state.modelEntries, entry)
+				state.modelEntries = append(state.modelEntries, entries...)
 			}
 		}
 		if err := modelRows.Err(); err != nil {
@@ -1080,12 +1124,12 @@ func importedModelEntries(existing, imported []model.ModelEntry, mode string) []
 		return model.CarryModelPricing(existing, imported)
 	}
 	result := append([]model.ModelEntry(nil), existing...)
-	seen := make(map[string]struct{}, len(existing)+len(imported))
+	seen := make(map[model.ModelEntryIdentity]struct{}, len(existing)+len(imported))
 	for _, entry := range existing {
-		seen[strings.ToLower(entry.Model)] = struct{}{}
+		seen[entry.Identity()] = struct{}{}
 	}
 	for _, entry := range imported {
-		key := strings.ToLower(entry.Model)
+		key := entry.Identity()
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1111,24 +1155,49 @@ type modelEntryScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanModelEntry 读取 channel_models 的 model, redirect_model, disabled, pricing 列；
+// scanModelEntry expands one channel_models record into its ordered model rows.
 // channelID 非 nil 时先读取前置的 channel_id 列。
-func scanModelEntry(row modelEntryScanner, channelID *int64) (model.ModelEntry, error) {
+func scanModelEntry(row modelEntryScanner, channelID *int64) ([]model.ModelEntry, error) {
 	var entry model.ModelEntry
-	var pricing sql.NullString
-	dest := []any{&entry.Model, &entry.RedirectModel, &entry.Disabled, &pricing}
+	var pricing, variants sql.NullString
+	dest := []any{&entry.Model, &entry.RedirectModel, &entry.Disabled, &pricing, &variants}
 	if channelID != nil {
 		dest = append([]any{channelID}, dest...)
 	}
 	if err := row.Scan(dest...); err != nil {
-		return model.ModelEntry{}, err
+		return nil, err
+	}
+	if variants.Valid {
+		decoder := json.NewDecoder(strings.NewReader(variants.String))
+		decoder.DisallowUnknownFields()
+		var entries []model.ModelEntry
+		if err := decoder.Decode(&entries); err != nil {
+			return nil, fmt.Errorf("model %q: decode model_variants: %w", entry.Model, err)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return nil, fmt.Errorf("model %q: trailing model_variants data", entry.Model)
+		}
+		if len(entries) < 2 {
+			return nil, fmt.Errorf("model %q: model_variants must contain multiple rows", entry.Model)
+		}
+		normalized, err := model.ValidateModelEntries(entries)
+		if err != nil {
+			return nil, fmt.Errorf("model %q: invalid model_variants: %w", entry.Model, err)
+		}
+		for _, variant := range normalized {
+			if variant.Model != entry.Model {
+				return nil, fmt.Errorf("model %q: model_variants contains model %q", entry.Model, variant.Model)
+			}
+		}
+		return normalized, nil
 	}
 	decoded, err := decodeModelEntryPricing(pricing)
 	if err != nil {
-		return model.ModelEntry{}, fmt.Errorf("model %q: %w", entry.Model, err)
+		return nil, fmt.Errorf("model %q: %w", entry.Model, err)
 	}
 	entry.Pricing = decoded
-	return entry, nil
+	return []model.ModelEntry{entry}, nil
 }
 
 // modelEntryPricingValue 编码 channel_models.pricing；未配置价格写 NULL。
@@ -1487,7 +1556,7 @@ func (s *SQLStore) loadConfigSnapshotForUpdate(
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, s.q(`
-		SELECT model, redirect_model, disabled, pricing
+		SELECT model, redirect_model, disabled, pricing, model_variants
 		FROM channel_models
 		WHERE channel_id = ?
 		ORDER BY created_at ASC, model ASC
@@ -1497,11 +1566,11 @@ func (s *SQLStore) loadConfigSnapshotForUpdate(
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		entry, err := scanModelEntry(rows, nil)
+		entries, err := scanModelEntry(rows, nil)
 		if err != nil {
 			return nil, err
 		}
-		cfg.ModelEntries = append(cfg.ModelEntries, entry)
+		cfg.ModelEntries = append(cfg.ModelEntries, entries...)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1703,7 +1772,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 
 	//nolint:gosec // G201: placeholders 由内部构建的 "?" 占位符组成，安全可控
 	query := fmt.Sprintf(
-		`SELECT channel_id, model, redirect_model, disabled, pricing FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
+		`SELECT channel_id, model, redirect_model, disabled, pricing, model_variants FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -1715,12 +1784,12 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 
 	for rows.Next() {
 		var channelID int64
-		entry, err := scanModelEntry(rows, &channelID)
+		entries, err := scanModelEntry(rows, &channelID)
 		if err != nil {
 			return fmt.Errorf("scan model entry: %w", err)
 		}
 		if cfg, ok := idToConfig[channelID]; ok {
-			cfg.ModelEntries = append(cfg.ModelEntries, entry)
+			cfg.ModelEntries = append(cfg.ModelEntries, entries...)
 		}
 	}
 
@@ -1738,14 +1807,25 @@ func (s *SQLStore) saveModelEntriesTx(ctx context.Context, tx *sql.Tx, channelID
 }
 
 // saveModelEntriesImpl 保存渠道模型数据的统一实现
-// 注意：调用方必须保证 entries 中没有重复的模型名，否则会因 PRIMARY KEY 冲突而失败（Fail-Fast）
 func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec sqlExecutor, channelID int64, entries []model.ModelEntry) error {
+	normalized, err := model.ValidateModelEntries(entries)
+	if err != nil {
+		return err
+	}
+	groups := make(map[string][]model.ModelEntry, len(normalized))
+	order := make([]string, 0, len(normalized))
+	for _, entry := range normalized {
+		if _, ok := groups[entry.Model]; !ok {
+			order = append(order, entry.Model)
+		}
+		groups[entry.Model] = append(groups[entry.Model], entry)
+	}
 	// 先删除旧的记录（Postgres 需 rebind 占位符）
 	if _, err := s.execWith(ctx, exec, `DELETE FROM channel_models WHERE channel_id = ?`, channelID); err != nil {
 		return fmt.Errorf("delete old model entries: %w", err)
 	}
 
-	if len(entries) == 0 {
+	if len(order) == 0 {
 		return nil
 	}
 
@@ -1754,23 +1834,39 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec sqlExecutor, c
 	const batchSize = 200
 	baseCreatedAt := time.Now().UnixMilli()
 
-	for offset := 0; offset < len(entries); offset += batchSize {
-		end := min(offset+batchSize, len(entries))
-		chunk := entries[offset:end]
+	for offset := 0; offset < len(order); offset += batchSize {
+		end := min(offset+batchSize, len(order))
+		chunk := order[offset:end]
 
 		var b strings.Builder
-		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, disabled, pricing, created_at) VALUES `)
-		args := make([]any, 0, len(chunk)*6)
-		for i, entry := range chunk {
+		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, disabled, pricing, model_variants, created_at) VALUES `)
+		args := make([]any, 0, len(chunk)*7)
+		for i, name := range chunk {
 			if i > 0 {
 				b.WriteByte(',')
+			}
+			group := groups[name]
+			entry := group[0]
+			for _, candidate := range group {
+				if !candidate.Disabled {
+					entry = candidate
+					break
+				}
 			}
 			pricing, err := modelEntryPricingValue(entry.Pricing)
 			if err != nil {
 				return fmt.Errorf("model %q: %w", entry.Model, err)
 			}
-			b.WriteString("(?, ?, ?, ?, ?, ?)")
-			args = append(args, channelID, entry.Model, entry.RedirectModel, entry.Disabled, pricing, baseCreatedAt+int64(offset+i))
+			var variants any
+			if len(group) > 1 {
+				encoded, err := json.Marshal(group)
+				if err != nil {
+					return fmt.Errorf("model %q: encode model_variants: %w", name, err)
+				}
+				variants = string(encoded)
+			}
+			b.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+			args = append(args, channelID, name, entry.RedirectModel, entry.Disabled, pricing, variants, baseCreatedAt+int64(offset+i))
 		}
 		if _, err := s.execWith(ctx, exec, b.String(), args...); err != nil {
 			return fmt.Errorf("save model entries (offset %d): %w", offset, err)

@@ -34,10 +34,12 @@ func createScheduledCheckChannel(t *testing.T, srv *Server, cfg *model.Config, k
 	prepared := make([]*model.APIKey, 0, len(keys))
 	for i, key := range keys {
 		prepared = append(prepared, &model.APIKey{
-			ChannelID:   created.ID,
-			KeyIndex:    i,
-			APIKey:      key.APIKey,
-			KeyStrategy: key.KeyStrategy,
+			ChannelID:      created.ID,
+			KeyIndex:       i,
+			APIKey:         key.APIKey,
+			KeyStrategy:    key.KeyStrategy,
+			AllowedModels:  key.AllowedModels,
+			DetectedModels: key.DetectedModels,
 		})
 	}
 	if err := srv.store.CreateAPIKeysBatch(context.Background(), prepared); err != nil {
@@ -69,6 +71,9 @@ func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 			{name: "declared_openai", protocols: []string{"openai"}, paths: []string{"/v1/chat/completions"}},
 			{name: "declared_anthropic_first", protocols: []string{"anthropic", "openai"}, paths: []string{"/v1/messages"}},
 			{name: "declared_codex_first", protocols: []string{"codex", "openai"}, paths: []string{"/v1/responses"}},
+			{name: "declared_anthropic_only", protocols: []string{"anthropic"}, paths: []string{"/v1/messages"}},
+			{name: "declared_codex_only", protocols: []string{"codex"}, paths: []string{"/v1/responses"}},
+			{name: "declared_gemini_only", protocols: []string{"gemini"}, paths: []string{"/v1beta/models/test-model:generateContent"}},
 			{name: "undeclared_fallback", paths: []string{"/v1/chat/completions", "/v1/messages"}},
 			{name: "next_url_uses_own_protocol", multiURL: true, paths: []string{"/first/v1/messages", "/v1/chat/completions"}},
 		} {
@@ -80,12 +85,15 @@ func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 						t.Errorf("decode request: %v", err)
 					}
-					if body["model"] != "test-model" {
+					if r.URL.Path != "/v1beta/models/test-model:generateContent" && body["model"] != "test-model" {
 						t.Errorf("model = %v", body["model"])
 					}
 					field := "messages"
-					if r.URL.Path == "/v1/responses" {
+					switch r.URL.Path {
+					case "/v1/responses":
 						field = "input"
+					case "/v1beta/models/test-model:generateContent":
+						field = "contents"
 					}
 					if _, ok := body[field]; !ok {
 						t.Errorf("request missing %s: %v", field, body)
@@ -96,6 +104,8 @@ func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "application/json")
 					switch r.URL.Path {
+					case "/v1beta/models/test-model:generateContent":
+						_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
 					case "/v1/messages":
 						_, _ = io.WriteString(w, `{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 					case "/v1/responses":
@@ -115,7 +125,7 @@ func TestScheduledCheckUsesURLProtocol(t *testing.T) {
 					Name: "protocol-check", Enabled: true, ScheduledCheckEnabled: true,
 					URLs:                  urls,
 					ProtocolTransformMode: mode, ModelEntries: []model.ModelEntry{{Model: "test-model"}},
-				}, &model.APIKey{APIKey: "sk-test"})
+				}, &model.APIKey{APIKey: "sk-test", DetectedModels: []string{"test-model"}})
 				ctx := context.Background()
 				if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
 					t.Fatal(err)
@@ -569,6 +579,67 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 	}
 	if eligibleAuth != "Bearer sk-available" {
 		t.Fatalf("expected available key selected, got %q", eligibleAuth)
+	}
+}
+
+func TestScheduledCheckSkipsModelVariantWithoutCompatibleKey(t *testing.T) {
+	var upstreamModels []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		upstreamModels = append(upstreamModels, body.Model+"/"+r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	createScheduledCheckChannel(t, srv, &model.Config{
+		Name: "scoped-variants", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		Enabled:               true, ScheduledCheckEnabled: true, ScheduledCheckModel: "A",
+		ModelEntries: []model.ModelEntry{{Model: "A", RedirectModel: "x"}, {Model: "A", RedirectModel: "y"}},
+	}, &model.APIKey{APIKey: "only-y", AllowedModels: []string{"A"}, DetectedModels: []string{"y"}})
+	ctx := context.Background()
+	if err := srv.runScheduledChannelChecks(ctx, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(upstreamModels, ","); got != "y/Bearer only-y" {
+		t.Fatalf("upstream model/key pairs=%q, want y/Bearer only-y", got)
+	}
+	logs, err := srv.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceScheduledCheck})
+	if err != nil || len(logs) != 1 || logs[0].StatusCode != http.StatusOK {
+		t.Fatalf("scheduled check logs=%+v err=%v", logs, err)
+	}
+}
+
+func TestScheduledChannelCheckDoesNotProbeDisabledModelRowsThroughWildcard(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createScheduledCheckChannel(t, srv, &model.Config{
+		Name: "disabled-variants", URLs: model.ChannelURLs{{URL: upstream.URL}}, Enabled: true,
+		ScheduledCheckEnabled: true, ScheduledCheckModel: "auto",
+		ModelEntries: []model.ModelEntry{
+			{Model: "auto", RedirectModel: "target-a", Disabled: true},
+			{Model: "auto", RedirectModel: "target-b", Disabled: true},
+			{Model: "*"},
+		},
+	}, &model.APIKey{APIKey: "sk-test"})
+	keys, err := srv.store.GetAPIKeys(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.runScheduledChannelCheck(context.Background(), cfg, keys, "hello")
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("scheduled check probed disabled model row %d times", got)
 	}
 }
 
