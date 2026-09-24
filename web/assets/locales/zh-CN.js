@@ -642,7 +642,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.appliedFetchedKeyModels': '已更新 {count} 个 Key 的模型范围。',
   'channels.fetchModelsPartialFailed': '{failed} 个 Key 探测失败，其范围保持不变。',
   'channels.fetchModelsSkippedKeys': '{count} 个禁用或冷却中的 Key 未参与探测，其范围保持不变。',
-  'channels.fetchModelsUnmatchedKeys': '{count} 个 Key 的探测结果未匹配渠道模型，已标记为范围为空。',
+  'channels.fetchModelsUnmatchedKeys': '{count} 个 Key 的探测结果未匹配渠道模型。',
   'channels.keyStatusAll': '全部',
   'channels.keyStatusNormal': '正常',
   'channels.keyStatusCooldown': '冷却中',

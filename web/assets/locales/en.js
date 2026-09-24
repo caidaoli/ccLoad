@@ -643,7 +643,7 @@ window.I18N_LOCALES['en'] = {
   'channels.appliedFetchedKeyModels': 'Updated model scopes for {count} Keys.',
   'channels.fetchModelsPartialFailed': '{failed} Keys failed detection; their scopes are unchanged.',
   'channels.fetchModelsSkippedKeys': '{count} disabled or cooling Keys were not probed; their scopes are unchanged.',
-  'channels.fetchModelsUnmatchedKeys': '{count} Keys did not match any channel model and were marked as empty scope.',
+  'channels.fetchModelsUnmatchedKeys': '{count} Keys did not match any channel model.',
   'channels.keyStatusAll': 'All',
   'channels.keyStatusNormal': 'Normal',
   'channels.keyStatusCooldown': 'Cooldown',

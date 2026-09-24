@@ -458,28 +458,9 @@ func modelsRetainedFromFailedProbes(
 	}
 	candidates := make([]model.ModelEntry, 0, len(channelModels))
 	for _, entry := range channelModels {
-		if _, ok := allowed[strings.ToLower(model.RoutingModelName(entry.Model))]; keepAll || ok {
+		name := strings.ToLower(model.RoutingModelName(entry.Model))
+		if _, ok := allowed[name]; keepAll || ok || (name == "*" && len(allowed) > 0) {
 			candidates = append(candidates, entry)
-		}
-	}
-	upstreamModel := func(entry model.ModelEntry) string {
-		if entry.RedirectModel != "" {
-			return model.RoutingModelName(entry.RedirectModel)
-		}
-		return model.RoutingModelName(entry.Model)
-	}
-	routingUpstreams := make(map[string]string, len(alreadyFetched)+len(candidates))
-	for _, entry := range alreadyFetched {
-		routingUpstreams[strings.ToLower(model.RoutingModelName(entry.Model))] = upstreamModel(entry)
-	}
-	for _, candidate := range candidates {
-		for _, entry := range normalizeModelEntriesForSave([]model.ModelEntry{candidate}, normalization) {
-			routingName := strings.ToLower(model.RoutingModelName(entry.Model))
-			upstream := upstreamModel(entry)
-			if existing, exists := routingUpstreams[routingName]; exists && existing != upstream {
-				return nil, fmt.Errorf("模型刷新冲突: %q 对应不同上游模型 %q 和 %q", routingName, existing, upstream)
-			}
-			routingUpstreams[routingName] = upstream
 		}
 	}
 	seen := make(map[string]struct{}, len(alreadyFetched))
@@ -494,6 +475,48 @@ func modelsRetainedFromFailedProbes(
 		}
 		seen[name] = struct{}{}
 		retained = append(retained, entry)
+	}
+	// Compare effective routes: an explicit base entry takes precedence over
+	// thinking-suffix aliases, including when their redirects differ.
+	routingUpstreams := func(entries []model.ModelEntry) map[string]string {
+		cfg := &model.Config{ModelEntries: entries}
+		routes := make(map[string]string, len(entries))
+		for _, name := range cfg.GetModels() {
+			upstream := name
+			if redirect, ok := cfg.GetRedirectModel(name); ok {
+				upstream = redirect
+			}
+			routes[strings.ToLower(name)] = model.RoutingModelName(upstream)
+		}
+		return routes
+	}
+	combined := append(append([]model.ModelEntry(nil), alreadyFetched...), retained...)
+	finalRoutes := routingUpstreams(combined)
+	previousRoutes := routingUpstreams(candidates)
+	if _, wildcard := previousRoutes["*"]; wildcard {
+		// A newly explicit alias can also shadow a model previously served by *.
+		previous := &model.Config{ModelEntries: channelModels}
+		current := &model.Config{ModelEntries: combined}
+		for _, name := range current.GetModels() {
+			identity := strings.ToLower(name)
+			if _, restricted := allowed[identity]; !keepAll && !restricted {
+				continue
+			}
+			if _, exists := previousRoutes[identity]; exists {
+				continue
+			}
+			upstream := name
+			if redirect, ok := previous.GetRedirectModel(name); ok {
+				upstream = redirect
+			}
+			previousRoutes[identity] = model.RoutingModelName(upstream)
+		}
+	}
+	for name, upstream := range previousRoutes {
+		alias, _ := normalizeModelAlias(name, normalization)
+		if existing, exists := finalRoutes[alias]; exists && existing != upstream {
+			return nil, fmt.Errorf("模型刷新冲突: %q 对应不同上游模型 %q 和 %q", alias, existing, upstream)
+		}
 	}
 	return retained, nil
 }
