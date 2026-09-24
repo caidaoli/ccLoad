@@ -312,8 +312,16 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		switch mode {
 		case "replace":
 			if partialKeyFailure {
+				retained, retainErr := modelsRetainedFromFailedProbes(keys, cfg.ModelEntries, fetched, resp.KeyModels, normalization)
+				if retainErr != nil {
+					item.Status = "failed"
+					item.Error = retainErr.Error()
+					failed++
+					results = append(results, item)
+					continue
+				}
 				item.Warning = "部分 API Key 模型探测失败，失败 Key 保留原范围，其已有模型仍留在渠道中"
-				fetched = append(fetched, modelsRetainedFromFailedProbes(keys, cfg.ModelEntries, fetched, resp.KeyModels, normalization)...)
+				fetched = append(fetched, retained...)
 			}
 			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
 			item.Removed = removed
@@ -414,14 +422,14 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 // modelsRetainedFromFailedProbes 把探测失败的 Key 仍被允许的渠道模型留在覆盖结果里。
 // 失败不代表这些模型消失；丢掉它们会让只有该 Key 能提供的模型从渠道中被删掉。
 // 不受限的失败 Key 可能提供任意渠道模型，此时保留全部现有模型。
-// 保留条目与 fetched 走同一归一化，并按归一化后的名字去重。
+// 保留条目与 fetched 走同一归一化；同名条目指向不同上游时拒绝覆盖，避免失败 Key 被错误重定向。
 func modelsRetainedFromFailedProbes(
 	keys []*model.APIKey,
 	channelModels []model.ModelEntry,
 	alreadyFetched []model.ModelEntry,
 	keyModels []FetchKeyModelsItem,
 	normalization modelNormalizationOptions,
-) []model.ModelEntry {
+) ([]model.ModelEntry, error) {
 	failed := make(map[int]struct{})
 	for _, result := range keyModels {
 		if strings.TrimSpace(result.Error) != "" {
@@ -429,7 +437,7 @@ func modelsRetainedFromFailedProbes(
 		}
 	}
 	if len(failed) == 0 {
-		return nil
+		return nil, nil
 	}
 	allowed := make(map[string]struct{})
 	keepAll := false
@@ -454,6 +462,26 @@ func modelsRetainedFromFailedProbes(
 			candidates = append(candidates, entry)
 		}
 	}
+	upstreamModel := func(entry model.ModelEntry) string {
+		if entry.RedirectModel != "" {
+			return model.RoutingModelName(entry.RedirectModel)
+		}
+		return model.RoutingModelName(entry.Model)
+	}
+	routingUpstreams := make(map[string]string, len(alreadyFetched)+len(candidates))
+	for _, entry := range alreadyFetched {
+		routingUpstreams[strings.ToLower(model.RoutingModelName(entry.Model))] = upstreamModel(entry)
+	}
+	for _, candidate := range candidates {
+		for _, entry := range normalizeModelEntriesForSave([]model.ModelEntry{candidate}, normalization) {
+			routingName := strings.ToLower(model.RoutingModelName(entry.Model))
+			upstream := upstreamModel(entry)
+			if existing, exists := routingUpstreams[routingName]; exists && existing != upstream {
+				return nil, fmt.Errorf("模型刷新冲突: %q 对应不同上游模型 %q 和 %q", routingName, existing, upstream)
+			}
+			routingUpstreams[routingName] = upstream
+		}
+	}
 	seen := make(map[string]struct{}, len(alreadyFetched))
 	for _, entry := range alreadyFetched {
 		seen[strings.ToLower(entry.Model)] = struct{}{}
@@ -461,13 +489,13 @@ func modelsRetainedFromFailedProbes(
 	retained := make([]model.ModelEntry, 0, len(candidates))
 	for _, entry := range normalizeModelEntriesForSave(candidates, normalization) {
 		name := strings.ToLower(entry.Model)
-		if _, dup := seen[name]; dup {
+		if _, exists := seen[name]; exists {
 			continue
 		}
 		seen[name] = struct{}{}
 		retained = append(retained, entry)
 	}
-	return retained
+	return retained, nil
 }
 
 func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {

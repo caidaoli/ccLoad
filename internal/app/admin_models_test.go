@@ -2521,6 +2521,91 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
+	t.Run("replace mode rejects conflicting models from failed keys", func(t *testing.T) {
+		cases := []struct {
+			name        string
+			oldModel    model.ModelEntry
+			allowed     string
+			fetched     string
+			stripPrefix bool
+		}{
+			{
+				name: "normalized alias collision", oldModel: model.ModelEntry{Model: "vendor/Foo"},
+				allowed: "vendor/Foo", fetched: "Foo", stripPrefix: true,
+			},
+			{
+				name: "redirect collision", oldModel: model.ModelEntry{Model: "alias", RedirectModel: "vendor/model"},
+				allowed: "alias", fetched: "alias",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/v1/models" {
+						http.NotFound(w, r)
+						return
+					}
+					if r.Header.Get("Authorization") == "Bearer broken" {
+						http.Error(w, "rate limited", http.StatusTooManyRequests)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"data":[{"id":%q}]}`, tc.fetched)
+				}))
+				t.Cleanup(upstream.Close)
+
+				server, store, cleanup := setupAdminTestServer(t)
+				defer cleanup()
+				ctx := context.Background()
+				cfg, err := store.CreateConfig(ctx, &model.Config{
+					Name: "conflicting-failed-key", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+					ModelEntries: []model.ModelEntry{tc.oldModel}, Enabled: true,
+				})
+				if err != nil {
+					t.Fatalf("CreateConfig failed: %v", err)
+				}
+				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+					{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy"},
+					{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: []string{tc.allowed}},
+				}); err != nil {
+					t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+				}
+
+				c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+					"channel_ids": []int64{cfg.ID}, "mode": "replace", "strip_model_source_prefix": tc.stripPrefix,
+				}))
+				server.HandleBatchRefreshModels(c)
+				var response struct {
+					Success bool `json:"success"`
+					Data    struct {
+						Updated int                      `json:"updated"`
+						Failed  int                      `json:"failed"`
+						Results []BatchRefreshModelsItem `json:"results"`
+					} `json:"data"`
+				}
+				mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+				if w.Code != http.StatusOK || !response.Success || response.Data.Updated != 0 || response.Data.Failed != 1 ||
+					len(response.Data.Results) != 1 || response.Data.Results[0].Status != "failed" {
+					t.Fatalf("conflicting refresh must fail: %s", w.Body.String())
+				}
+				stored, err := store.GetConfig(ctx, cfg.ID)
+				if err != nil {
+					t.Fatalf("GetConfig failed: %v", err)
+				}
+				if !reflect.DeepEqual(stored.ModelEntries, []model.ModelEntry{tc.oldModel}) {
+					t.Fatalf("channel models changed after rejected refresh: %#v", stored.ModelEntries)
+				}
+				keys, err := store.GetAPIKeys(ctx, cfg.ID)
+				if err != nil {
+					t.Fatalf("GetAPIKeys failed: %v", err)
+				}
+				if !reflect.DeepEqual(keys[1].AllowedModels, []string{tc.allowed}) || keys[1].Disabled || keys[1].ModelScopeEmpty {
+					t.Fatalf("failed key scope changed after rejected refresh: %+v", keys[1])
+				}
+			})
+		}
+	})
+
 	t.Run("replace mode keeps all models when an unrestricted key probe fails", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") == "Bearer healthy" {
