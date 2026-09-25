@@ -1,4 +1,5 @@
 # kind|provider|field1|field2[|field3]
+# skip-test rows persist one reviewed upstream test symbol that is intentionally not ported.
 provider|antigravity|internal/translator/antigravity|internal/protocol/cliproxy/providers/antigravity
 exclude|antigravity|internal/translator/antigravity/*/init.go
 exclude|antigravity|internal/translator/antigravity/*/noop_optimization_test.go
@@ -31,3 +32,7 @@ wiring|antigravity|ccLoad/internal/protocol/cliproxy/providers/antigravity/opena
 contract|antigravity|internal/app/proxy_integration_test.go|TestProxy_AntigravityProviderAdapterRequest
 contract|antigravity|internal/app/proxy_integration_test.go|TestProxy_AntigravityProviderAdapterNonStreamResponse
 contract|antigravity|internal/app/proxy_integration_test.go|TestProxy_AntigravityProviderAdapterStreamResponse
+skip-test|antigravity|internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go|TestConvertOpenAIResponsesRequestEnvelopeToAntigravity|excluded-sdk-request-envelope
+skip-test|antigravity|internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go|TestConvertOpenAIResponsesRequestToAntigravity_DoesNotBorrowNativeCapabilityFromGemini|excluded-dynamic-registry-capability
+skip-test|antigravity|internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go|TestConvertOpenAIResponsesRequestToAntigravity_LocalWebSearchCapability|excluded-dynamic-registry-capability
+skip-test|antigravity|internal/translator/antigravity/openai/responses/antigravity_openai-responses_request_test.go|TestConvertOpenAIResponsesRequestToAntigravity_IgnoresOtherProviderSearchVeto|excluded-dynamic-registry-capability

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -878,25 +879,40 @@ func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64, int64) {
 	inputTokens := usage.Get("prompt_tokens").Int()
 	outputTokens := usage.Get("completion_tokens").Int()
 	cachedTokens := usage.Get("prompt_tokens_details.cached_tokens").Int()
-	cacheCreation := usage.Get("cache_creation_input_tokens")
-	if !cacheCreation.Exists() {
-		cacheCreation = usage.Get("prompt_tokens_details.cached_creation_tokens")
-	}
-	if !cacheCreation.Exists() {
-		cacheCreation = usage.Get("prompt_tokens_details.cache_write_tokens")
-		if cacheCreation.Int() == 0 {
-			cacheCreation = usage.Get("prompt_tokens_details.cache_creation_tokens")
+	// ccLoad: explicit top-level and cached_creation aliases win over the details fields.
+	var cacheWriteTokens int64
+	if cacheCreation := usage.Get("cache_creation_input_tokens"); cacheCreation.Exists() {
+		cacheWriteTokens = cacheCreation.Int()
+	} else if cacheCreation := usage.Get("prompt_tokens_details.cached_creation_tokens"); cacheCreation.Exists() {
+		cacheWriteTokens = cacheCreation.Int()
+	} else {
+		cacheWriteTokens = usage.Get("prompt_tokens_details.cache_write_tokens").Int()
+		if cacheWriteTokens <= 0 {
+			cacheWriteTokens = usage.Get("prompt_tokens_details.cache_creation_tokens").Int()
 		}
 	}
-	cacheWriteTokens := cacheCreation.Int()
 
-	// Anthropic separates uncached input from both cache reads and cache writes.
-	if includedCacheTokens := cachedTokens + cacheWriteTokens; includedCacheTokens > 0 {
-		if inputTokens >= includedCacheTokens {
-			inputTokens -= includedCacheTokens
+	deductTokens := int64(0)
+	if cachedTokens > 0 {
+		deductTokens += cachedTokens
+	}
+	if cacheWriteTokens > 0 {
+		if math.MaxInt64-deductTokens < cacheWriteTokens {
+			deductTokens = math.MaxInt64
+		} else {
+			deductTokens += cacheWriteTokens
+		}
+	}
+
+	if deductTokens > 0 {
+		if inputTokens >= deductTokens {
+			inputTokens -= deductTokens
 		} else {
 			inputTokens = 0
 		}
+	}
+	if inputTokens < 0 {
+		inputTokens = 0
 	}
 
 	return inputTokens, outputTokens, cachedTokens, cacheWriteTokens

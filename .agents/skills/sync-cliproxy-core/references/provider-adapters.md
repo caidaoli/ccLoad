@@ -11,7 +11,7 @@
   - `internal/translator/antigravity/openai/responses`
 - 本地目标：`internal/protocol/cliproxy/providers/antigravity/...`
 - 同步 request、stream response、non-stream response、直接依赖的纯 helper 及对应行为测试。
-- 排除每个目录的 `init.go`、`noop_optimization_test.go`、benchmark，以及 `internal/translator/antigravity/interactions`。Claude 上游的 request/response 大测试直接操纵签名缓存、动态 Registry 和 runtime logger，也明确排除；其纯 wire 契约由本地 provider 与 `internal/app` 集成测试覆盖，不能为了照搬测试把运行时副作用重新引入转换层。
+- 排除每个目录的 `init.go`、`noop_optimization_test.go`、benchmark，以及 `internal/translator/antigravity/interactions`。Claude 上游的 request/response 大测试直接操纵签名缓存、动态 Registry 和 runtime logger，也明确排除；其纯 wire 契约由本地 provider 与 `internal/app` 集成测试覆盖，不能为了照搬测试把运行时副作用重新引入转换层。已映射测试文件中个别依赖 SDK envelope 或动态能力探测的上游用例，用 manifest `skip-test` 行逐符号登记理由；该行长期有效，符号在本地出现或上游消失即判为陈旧。不要为凑符号名写语义不同的同名测试。
 - 保留 web-search grounding、tool ID、thinking/tool signature、usage/cache、错误 envelope 和 SSE 状态语义。
 - 去除 `internal/cache`、runtime logger 等副作用依赖；使用本地纯 `common`、`signature`、`util`，或把必要逻辑收敛为 provider 包内纯函数。不要同步签名缓存服务。
 

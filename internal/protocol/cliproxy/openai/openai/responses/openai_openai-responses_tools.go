@@ -4,8 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
-
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -206,45 +204,33 @@ func disambiguateResponsesChatToolNames(declarations []responsesToolDeclaration)
 // "additional_tools" copy. Chat Completions requires tool names to be unique;
 // strict upstreams reject the whole request otherwise.
 func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
+	return responsesRequestChatTools(root, newResponsesToolIndex(root))
+}
+
+// responsesRequestChatTools emits the indexed declarations behind ccLoad's
+// reserved client tool_search function. A client-executed tool_search is
+// exposed to Chat Completions as one ordinary function; its call and output
+// are translated back to Responses tool_search items by the response
+// converter. It leads the list so the request-level declaration keeps its
+// canonical position, and it wins the reserved name over ordinary tools.
+func responsesRequestChatTools(root gjson.Result, idx *responsesToolIndex) [][]byte {
 	var merged [][]byte
-	seenToolNames := make(map[string]struct{})
-	hasSearchDeclaration := false
-	// A client-executed tool_search is exposed to Chat Completions as one
-	// reserved ordinary function. Its call and output are translated back to
-	// Responses tool_search items by the response converter. Emit it before
-	// ordinary declarations so the request-level declaration keeps its
-	// canonical leading position when present.
 	walkResponsesToolSearchDeclarations(root, func(declaration responsesToolSearchDeclaration) bool {
-		hasSearchDeclaration = true
-		name := responsesChatToolSearchFunctionName
-		if _, duplicate := seenToolNames[name]; duplicate {
-			return true
-		}
-		chatTool := convertResponsesToolSearchToOpenAIChat(declaration.tool, name)
-		seenToolNames[name] = struct{}{}
-		merged = append(merged, chatTool)
-		return true
+		merged = append(merged, convertResponsesToolSearchToOpenAIChat(declaration.tool, responsesChatToolSearchFunctionName))
+		return false
 	})
-	if !hasSearchDeclaration && responsesRequestHasToolSearch(root) {
+	if len(merged) == 0 && responsesRequestHasToolSearch(root) {
 		// A complete replay may omit the original search declaration. Keep
 		// the reserved function available for its paired search history.
-		seenToolNames[responsesChatToolSearchFunctionName] = struct{}{}
 		merged = append(merged, convertResponsesToolSearchToOpenAIChat(gjson.Result{}, responsesChatToolSearchFunctionName))
 	}
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		if _, duplicate := seenToolNames[declaration.chatName]; duplicate {
-			return true
+	hasSearch := len(merged) > 0
+	for _, chatTool := range idx.chatTools() {
+		if hasSearch && gjson.GetBytes(chatTool, "function.name").String() == responsesChatToolSearchFunctionName {
+			continue
 		}
-		convert := convertResponsesFunctionToolToOpenAIChat
-		if declaration.custom {
-			convert = convertResponsesCustomToolToOpenAIChat
-		}
-		if chatTool, ok := convert(declaration.tool, declaration.chatName); ok {
-			seenToolNames[declaration.chatName] = struct{}{}
-			merged = append(merged, chatTool)
-		}
-		return true
-	})
+		merged = append(merged, chatTool)
+	}
 	return merged
 }
 
@@ -365,35 +351,11 @@ func responsesToolOutputText(output gjson.Result) string {
 // a discarded custom declaration must not turn a surviving ordinary function
 // into a custom_tool_call.
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
-	names := make(map[string]struct{})
-	seenToolNames := make(map[string]struct{})
-	walkResponsesToolDeclarations(gjson.ParseBytes(requestRawJSON), func(declaration responsesToolDeclaration) bool {
-		if _, duplicate := seenToolNames[declaration.chatName]; duplicate {
-			return true
-		}
-		seenToolNames[declaration.chatName] = struct{}{}
-		if declaration.custom {
-			names[declaration.chatName] = struct{}{}
-		}
-		return true
-	})
-	return names
+	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).custom
 }
 
 func responsesSingleCustomToolName(requestRawJSON []byte) (string, bool) {
-	customToolNames := responsesCustomToolNames(requestRawJSON)
-	if len(customToolNames) != 1 {
-		return "", false
-	}
-
-	// Count the tools actually emitted, which are deduplicated by name, so a
-	// tool delivered through both "tools" and "additional_tools" still counts
-	// once and freeform unwrapping stays enabled.
-	toolCount := len(mergeResponsesRequestChatTools(gjson.ParseBytes(requestRawJSON)))
-	for name := range customToolNames {
-		return name, toolCount == 1
-	}
-	return "", false
+	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).singleCustomName()
 }
 
 // unwrapCustomToolInput extracts the freeform input from the {"input": "..."}
@@ -465,39 +427,8 @@ func capResponsesChatToolName(name string) string {
 // flat top-level tool named "editor__apply_patch" therefore stays flat even
 // when a later namespace declares a child qualifying to the same name.
 func resolveResponsesQualifiedToolIdentity(root gjson.Result, qualifiedName string) (name, namespace string, found bool) {
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		if declaration.chatName != qualifiedName {
-			return true
-		}
-		name, namespace, found = declaration.localName, declaration.namespace, true
-		return false
-	})
-	return name, namespace, found
-}
-
-// chatNameForResponsesNamespaceToolCall returns the Chat Completions name the
-// request's declarations assign to the (namespace, localName) identity of a
-// replayed or forced tool call. Declaration-derived names carry the same
-// 64-character cap and disambiguation as the outgoing tools array, so replayed
-// calls stay consistent with their declarations even when a collision renamed
-// the tool. Unknown identities fall back to plain namespace qualification.
-func chatNameForResponsesNamespaceToolCall(requestRawJSON []byte, namespace, localName string) string {
-	root := gjson.ParseBytes(requestRawJSON)
-	qualified := ""
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		if declaration.namespace == namespace && declaration.localName == localName {
-			qualified = declaration.chatName
-			return false
-		}
-		return true
-	})
-	if qualified != "" {
-		return qualified
-	}
-	// An identity no current declaration backs (history from an older build,
-	// or a foreign client) still needs a chat-legal name, but not one that a
-	// real declaration owns — that would attribute the call to that tool.
-	return avoidResponsesDeclaredChatAliases(root, qualifyResponsesNamespaceToolName(namespace, localName))
+	d, found := newResponsesToolIndex(root).byChat[qualifiedName]
+	return d.localName, d.namespace, found
 }
 
 // canonicalResponsesToolName resolves a name carried by a replayed call or
@@ -510,76 +441,7 @@ func chatNameForResponsesNamespaceToolCall(requestRawJSON []byte, namespace, loc
 // also another namespace's declared child. Ambiguous names remain unresolved
 // rather than being dispatched to another tool.
 func canonicalResponsesToolName(requestRawJSON []byte, name string) string {
-	root := gjson.ParseBytes(requestRawJSON)
-	if _, _, found := resolveResponsesQualifiedToolIdentity(root, name); found {
-		return name
-	}
-	// A replayed call may carry the fully-qualified uncapped name of a long
-	// declaration (history recorded by an older build, or a foreign client
-	// that flattened the qualified name itself). Resolve it to that
-	// declaration's emitted chat name before the bare local-name lookup, which
-	// could otherwise hand the call to a different declaration that happens to
-	// use the whole qualified name as its own child name, and before the blind
-	// cap, which could collide with a declaration whose original name equals
-	// the long declaration's capped tail.
-	chatName := ""
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		if rawResponsesNamespaceQualifiedName(declaration.namespace, declaration.localName) == name {
-			chatName = declaration.chatName
-			return false
-		}
-		return true
-	})
-	if chatName != "" {
-		return chatName
-	}
-	seen := make(map[string]struct{})
-	candidate := ""
-	ambiguous := false
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		if _, duplicate := seen[declaration.chatName]; duplicate {
-			return true
-		}
-		seen[declaration.chatName] = struct{}{}
-		if declaration.localName == name {
-			if candidate != "" {
-				ambiguous = true
-			}
-			candidate = declaration.chatName
-		}
-		return true
-	})
-	if candidate != "" && !ambiguous {
-		return candidate
-	}
-	// A name that no current declaration produced (unresolved or ambiguous
-	// local-name matches above, or history from an older build): still enforce
-	// the chat tool name limit, but never land on a declared alias — that
-	// would attribute the call to whichever declaration happens to own the
-	// capped value.
-	return avoidResponsesDeclaredChatAliases(root, capResponsesChatToolName(name))
-}
-
-// avoidResponsesDeclaredChatAliases keeps a fallback name (the blind cap of an
-// unresolved or ambiguous name) from colliding with any alias the request's
-// declarations actually emit. Dispatching such a call to a real declaration
-// would silently invoke the wrong tool; a distinct name keeps the identity
-// unresolved instead, which upstreams and clients can surface properly.
-func avoidResponsesDeclaredChatAliases(root gjson.Result, candidate string) string {
-	claimed := make(map[string]struct{})
-	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
-		claimed[declaration.chatName] = struct{}{}
-		return true
-	})
-	if _, taken := claimed[candidate]; !taken {
-		return candidate
-	}
-	for suffix := 1; ; suffix++ {
-		variant := capResponsesChatToolName(candidate + "_" + strconv.Itoa(suffix))
-		if _, taken := claimed[variant]; !taken {
-			return variant
-		}
-	}
+	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).canonicalName(name)
 }
 
 func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
@@ -602,9 +464,4 @@ func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
 		return requestRawJSON
 	}
 	return nil
-}
-
-func applyResponsesFunctionCallNamespaceFields(item []byte, requestRawJSON []byte, qualifiedName string, itemPath string) []byte {
-	name, namespace := splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON, qualifiedName)
-	return translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, itemPath)
 }

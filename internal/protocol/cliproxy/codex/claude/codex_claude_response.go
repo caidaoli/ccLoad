@@ -9,6 +9,7 @@ package claude
 import (
 	"bytes"
 	"context"
+	"math"
 	"strings"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
@@ -162,14 +163,14 @@ func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalR
 		output = append(output, stopCodexTextBlock(params)...)
 		template, _ = sjson.SetBytes(template, "delta.stop_reason", mapCodexStopReasonToClaude(codexStopReason(responseData), params.HasEmittedToolUse))
 		template = setClaudeStopSequence(template, "delta.stop_sequence", responseData)
-		inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
+		inputTokens, outputTokens, cachedTokens, reasoningTokens, cacheWriteTokens := extractResponsesUsageWithReasoning(responseData.Get("usage"))
 		template, _ = sjson.SetBytes(template, "usage.input_tokens", inputTokens)
 		template, _ = sjson.SetBytes(template, "usage.output_tokens", outputTokens)
 		if cachedTokens > 0 {
 			template, _ = sjson.SetBytes(template, "usage.cache_read_input_tokens", cachedTokens)
 		}
-		if cacheCreationTokens > 0 {
-			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokens)
+		if cacheWriteTokens > 0 {
+			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheWriteTokens)
 		}
 		if reasoningTokens > 0 {
 			template, _ = sjson.SetBytes(template, "usage.thinking_tokens", reasoningTokens)
@@ -408,14 +409,14 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", responseData.Get("id").String())
 	out, _ = sjson.SetBytes(out, "model", responseData.Get("model").String())
-	inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens := extractResponsesUsage(responseData.Get("usage"))
+	inputTokens, outputTokens, cachedTokens, reasoningTokens, cacheWriteTokens := extractResponsesUsageWithReasoning(responseData.Get("usage"))
 	out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
 	out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
 	if cachedTokens > 0 {
 		out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", cachedTokens)
 	}
-	if cacheCreationTokens > 0 {
-		out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", cacheCreationTokens)
+	if cacheWriteTokens > 0 {
+		out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", cacheWriteTokens)
 	}
 	if reasoningTokens > 0 {
 		out, _ = sjson.SetBytes(out, "usage.thinking_tokens", reasoningTokens)
@@ -848,7 +849,12 @@ func resolveCodexClaudeToolUseName(originalRequestRawJSON []byte, name string) s
 	return name
 }
 
-func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens int64) {
+func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cachedTokens, cacheWriteTokens int64) {
+	inputTokens, outputTokens, cachedTokens, _, cacheWriteTokens = extractResponsesUsageWithReasoning(usage)
+	return inputTokens, outputTokens, cachedTokens, cacheWriteTokens
+}
+
+func extractResponsesUsageWithReasoning(usage gjson.Result) (inputTokens, outputTokens, cachedTokens, reasoningTokens, cacheWriteTokens int64) {
 	if !usage.Exists() || usage.Type == gjson.Null {
 		return 0, 0, 0, 0, 0
 	}
@@ -856,31 +862,46 @@ func extractResponsesUsage(usage gjson.Result) (inputTokens, outputTokens, cache
 	inputTokens = usage.Get("input_tokens").Int()
 	outputTokens = usage.Get("output_tokens").Int()
 	cachedTokens = usage.Get("input_tokens_details.cached_tokens").Int()
-	cacheCreation := usage.Get("cache_creation_input_tokens")
-	if !cacheCreation.Exists() {
-		cacheCreation = usage.Get("input_tokens_details.cache_write_tokens")
-		if cacheCreation.Int() == 0 {
-			cacheCreation = usage.Get("input_tokens_details.cache_creation_tokens")
-		}
-	}
-	cacheCreationTokens = cacheCreation.Int()
 	// Responses-style (xAI/Codex): output_tokens_details.reasoning_tokens.
 	// Chat Completions-style fallback: completion_tokens_details.reasoning_tokens.
 	reasoningTokens = usage.Get("output_tokens_details.reasoning_tokens").Int()
 	if reasoningTokens == 0 {
 		reasoningTokens = usage.Get("completion_tokens_details.reasoning_tokens").Int()
 	}
+	// ccLoad: an explicit top-level Anthropic-style alias wins over the details fields.
+	if cacheCreation := usage.Get("cache_creation_input_tokens"); cacheCreation.Exists() {
+		cacheWriteTokens = cacheCreation.Int()
+	} else {
+		cacheWriteTokens = usage.Get("input_tokens_details.cache_write_tokens").Int()
+		if cacheWriteTokens <= 0 {
+			cacheWriteTokens = usage.Get("input_tokens_details.cache_creation_tokens").Int()
+		}
+	}
 
-	includedCacheTokens := cachedTokens + cacheCreationTokens
-	if includedCacheTokens > 0 {
-		if inputTokens >= includedCacheTokens {
-			inputTokens -= includedCacheTokens
+	deductTokens := int64(0)
+	if cachedTokens > 0 {
+		deductTokens += cachedTokens
+	}
+	if cacheWriteTokens > 0 {
+		if math.MaxInt64-deductTokens < cacheWriteTokens {
+			deductTokens = math.MaxInt64
+		} else {
+			deductTokens += cacheWriteTokens
+		}
+	}
+
+	if deductTokens > 0 {
+		if inputTokens >= deductTokens {
+			inputTokens -= deductTokens
 		} else {
 			inputTokens = 0
 		}
 	}
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
 
-	return inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens
+	return inputTokens, outputTokens, cachedTokens, reasoningTokens, cacheWriteTokens
 }
 
 // setClaudeReasoningUsage maps Codex reasoning usage to Claude's thinking usage

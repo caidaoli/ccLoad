@@ -277,7 +277,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						toolUse, _ = sjson.SetBytes(toolUse, "id", toolID)
 
 						if name := fc.Get("name"); name.Exists() {
-							toolUse, _ = sjson.SetBytes(toolUse, "name", name.String())
+							toolUse, _ = sjson.SetBytes(toolUse, "name", util.SanitizeClaudeFunctionName(name.String()))
 						}
 						if args := fc.Get("args"); args.Exists() && args.IsObject() {
 							toolUse, _ = sjson.SetRawBytes(toolUse, "input", []byte(args.Raw))
@@ -357,10 +357,10 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		tools.ForEach(func(_, tool gjson.Result) bool {
 			if funcDecls := tool.Get("functionDeclarations"); funcDecls.Exists() && funcDecls.IsArray() {
 				funcDecls.ForEach(func(_, funcDecl gjson.Result) bool {
-					anthropicTool := []byte(`{"name":"","description":"","input_schema":{}}`)
+					anthropicTool := []byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{}}}`)
 
 					if name := funcDecl.Get("name"); name.Exists() {
-						anthropicTool, _ = sjson.SetBytes(anthropicTool, "name", name.String())
+						anthropicTool, _ = sjson.SetBytes(anthropicTool, "name", util.SanitizeClaudeFunctionName(name.String()))
 					}
 					if desc := funcDecl.Get("description"); desc.Exists() {
 						anthropicTool, _ = sjson.SetBytes(anthropicTool, "description", desc.String())
@@ -371,6 +371,8 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					} else if params = funcDecl.Get("parametersJsonSchema"); params.Exists() {
 						cleaned := normalizeClaudeToolSchema(params)
 						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", cleaned)
+					} else {
+						anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", []byte(`{"type":"object","properties":{}}`))
 					}
 
 					anthropicTool = lowercaseClaudeToolSchemaTypes(anthropicTool)
@@ -447,7 +449,7 @@ func setClaudeToolChoiceFromGeminiToolConfig(out []byte, funcCalling gjson.Resul
 		allowedNameItems := allowedNames.Array()
 		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
 			choice := []byte(`{"type":"tool","name":""}`)
-			choice, _ = sjson.SetBytes(choice, "name", allowedNameItems[0].String())
+			choice, _ = sjson.SetBytes(choice, "name", util.SanitizeClaudeFunctionName(allowedNameItems[0].String()))
 			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
 		} else {
 			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"any"}`))

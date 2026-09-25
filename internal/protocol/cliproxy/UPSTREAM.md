@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `6c1d872f4f1e4693a611edbbad3c0ccbb9e8141a` (`fork/v8.90.0`)
-- Synchronized at: `2026-09-17`
+- Last synchronized commit: `21d26a07a39316f94c6ebc370a92222bca89aaac` (`fork/v8.97.0`)
+- Synchronized at: `2026-09-25`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -22,13 +22,26 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
-## Local model capability backport (2026-09-25)
+## Synchronization adaptations (2026-09-25)
 
-`registry/models/models.json` includes the `claude-opus-5-5` capability entry
-from CLIProxyAPI `21d26a07a39316f94c6ebc370a92222bca89aaac` so OpenAI
-reasoning effort converts to adaptive thinking for that model. This one-entry
-compatibility fix does not advance the atomic core/provider synchronization
-commit above. The next full synchronization should absorb this entry.
+The earlier one-entry `claude-opus-5-5` catalog backport is absorbed by the full
+`models.json` sync. Claude-to-OpenAI Chat Completions now follows upstream for
+`tool_result` media: the tool message keeps the text, and images/documents are
+relayed in the immediately following user message. Gemini Responses input files
+use camelCase `fileData` with the upstream `file_id` fallback; Codex/OpenAI cache
+aliases and the `fast` to `priority` service tier follow upstream precedence.
+
+Responses-to-Chat adopts upstream's request-scoped `responsesToolIndex` for
+declaration, namespace, and custom-tool lookup. ccLoad's native client
+`tool_search` bridge is layered on top of that index instead of keeping a second
+scan. Upstream's `thinking.ApplyTranslatedSummaryToClaude` call sites in the
+Claude-target request converters stay excluded: summary visibility depends on the
+excluded dynamic registry and remains an application runtime policy. The new
+Antigravity Responses `RequestEnvelope` entry point and its dynamic web-search
+capability probes are SDK/runtime code and stay excluded; its pure media tests are
+synchronized. Upstream gemini sanitizer log-suppression tests require the
+excluded logrus runtime. Helpers left without callers by upstream's
+`responsesToolIndex` refactor are dropped locally so lint stays clean.
 
 ## Synchronization adaptations (2026-09-17)
 
@@ -74,27 +87,27 @@ Antigravity is the first eligible provider adapter:
 - Local destination: `internal/protocol/cliproxy/providers/antigravity`
 - Snapshot status: synchronized at shared commit
 - Excluded: dynamic `init.go` registration, noop/allocation tests, runtime cache/logging services, executors, auth, Interactions, and the two Claude request/response suites coupled to those runtime services
-- Pure provider tests synchronized: 8; ccLoad HTTP wire contracts cover request, non-stream response, and stream response for Claude, Codex, Gemini, and OpenAI clients
+- Pure provider test files synchronized: 8; ccLoad HTTP wire contracts cover request, non-stream response, and stream response for Claude, Codex, Gemini, and OpenAI clients
 
 ## Synchronized tests
 
-The core snapshot includes 65 `_test.go` files from the same commit as the
+The core snapshot includes 71 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
 - `claude/openai/chat-completions`: 3
-- `claude/openai/responses`: 7
+- `claude/openai/responses`: 8
 - `codex/claude`: 4
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 9
+- `common`: 10
 - `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
 - `gemini/openai/responses`: 4
 - `openai/claude`: 3
 - `openai/gemini`: 2
-- `openai/openai/responses`: 4
+- `openai/openai/responses`: 8
 - `signature`: 8
 - `util`: 6
 
@@ -118,9 +131,10 @@ the upstream SDK translator Registry and its summary test. The OpenAI-to-OpenAI
 Chat Completions no-op converter and its post-`[DONE]` tests are excluded because
 ccLoad's Registry defines same-protocol traffic as byte-for-byte passthrough and
 never registers same-protocol converters.
-The new `common/antigravity_tools.go` and its tests are also excluded: their
-tool-name collision mapping is used exclusively by the unsupported Interactions
-translators, not the registered Antigravity generateContent adapters. Gemini
+The `common/antigravity_tools.go` and `common/devin_tools.go` helpers and their
+tests are also excluded: their tool-name mapping is used exclusively by the
+unsupported Interactions translators, not the registered generateContent or
+Chat Completions adapters. Gemini
 Responses `trailing_signature.go` and its tests are excluded because they bind
 the converter to the runtime reasoning replay cache; ccLoad keeps the explicit
 pure-wire signature carrier and removes it before emitting Gemini wire data.
@@ -161,9 +175,9 @@ documented adaptations:
   `cache_creation_input_tokens` alongside upstream's cache-write aliases, in
   streaming and native non-stream JSON. Upstream's tests are adapted to avoid
   counting cache writes twice.
-- Claude-to-OpenAI keeps image and document parts inside structured tool-message
-  content. The upstream user-message image relay changes the Registry-visible role
-  sequence, so its tests are adapted to the ccLoad wire contract.
+- Claude-to-OpenAI relays `tool_result` images and documents in the following
+  user message, matching upstream; OpenAI-compatible providers reject media parts
+  inside `role: tool` content.
 - Claude-to-OpenAI streaming emits the trailing empty-choices usage chunk only
   when the original request sets `stream_options.include_usage=true`; otherwise
   `message_stop` maps directly to the terminal `[DONE]` frame.
@@ -186,11 +200,8 @@ documented adaptations:
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
   broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
   `input` array for instructions-only requests.
-- Claude-target Responses requests carry a local string-`input` branch: the
-  upstream converter only reads array `input`, so a plain string (legal in the
-  Responses API) would silently translate to an empty message list. ccLoad maps
-  it to a single user message, matching the Gemini- and OpenAI-target
-  converters; the shared ccLoad request validator likewise accepts both shapes.
+- Claude-target Responses requests map a plain string `input` to a single user
+  message. The former local branch was adopted upstream and removed locally.
 - Claude/OpenAI Responses now preserves server-side web search as a replayable
   `web_search_call`, including encrypted result carriers and citation indices.
   Streaming and non-streaming output keep text/search/text order and contiguous

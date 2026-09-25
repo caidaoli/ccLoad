@@ -204,6 +204,7 @@ duplicate_manifest_keys="$(awk -F '|' '
   $1 == "exclude" { key = $1 FS $2 FS $3 }
   $1 == "wiring" { key = $1 FS $2 FS $3 FS $4 }
   $1 == "contract" { key = $1 FS $2 FS $3 FS $4 }
+  $1 == "skip-test" { key = $1 FS $2 FS $3 FS $4 }
   key != "" { count[key]++; key = "" }
   END { for (key in count) if (count[key] > 1) print key }
 ' "$provider_manifest")"
@@ -229,6 +230,10 @@ while IFS='|' read -r kind provider field1 field2 extra; do
       ;;
     contract)
       [[ -n "$provider" && -n "$field1" && "$field2" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && -z "$extra" ]] || fail "invalid contract manifest row for provider: $provider"
+      ;;
+    skip-test)
+      [[ -n "$provider" && "$field2" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && -n "$extra" && "$extra" != *"|"* ]] || fail "invalid skip-test manifest row for provider: $provider"
+      awk -F '|' -v provider="$provider" -v upstream_file="$field1" '$1 == "file" && $2 == provider && $3 == "test" && $4 == upstream_file { found = 1 } END { exit !found }' "$provider_manifest" || fail "skip-test row references an unmapped provider test: $provider ($field1)"
       ;;
     *)
       fail "unknown provider manifest row kind: $kind"
@@ -578,10 +583,19 @@ if [[ -n "$upstream_repo" ]]; then
         fi
         while IFS= read -r test_symbol; do
           [[ -n "$test_symbol" ]] || continue
-          if ! printf '%s\n' "$local_test_symbols" | grep -Fxq -- "$test_symbol"; then
-            fail "mapped provider test lost an upstream test symbol: $provider ($upstream_test_file: $test_symbol)"
+          if printf '%s\n' "$local_test_symbols" | grep -Fxq -- "$test_symbol"; then
+            continue
           fi
+          if awk -F '|' -v provider="$provider" -v upstream_file="$upstream_test_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $2 == provider && $3 == upstream_file && $4 == test_symbol { found = 1 } END { exit !found }' "$provider_manifest"; then
+            continue
+          fi
+          fail "mapped provider test lost an upstream test symbol: $provider ($upstream_test_file: $test_symbol)"
         done <<< "$upstream_test_symbols"
+        while IFS='|' read -r _ _ _ test_symbol _; do
+          if ! printf '%s\n' "$upstream_test_symbols" | grep -Fxq -- "$test_symbol" || printf '%s\n' "$local_test_symbols" | grep -Fxq -- "$test_symbol"; then
+            fail "stale provider skip-test row: $provider ($upstream_test_file: $test_symbol)"
+          fi
+        done < <(awk -F '|' -v provider="$provider" -v upstream_file="$upstream_test_file" '$1 == "skip-test" && $2 == provider && $3 == upstream_file { print }' "$provider_manifest")
       done < <(awk -F '|' -v provider="$provider" '$1 == "file" && $2 == provider && $3 == "test" { print }' "$provider_manifest")
 
       while IFS= read -r upstream_file; do

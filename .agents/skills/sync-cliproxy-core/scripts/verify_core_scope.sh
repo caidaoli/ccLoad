@@ -447,6 +447,10 @@ audit_new_test_symbols() {
     if awk -F '|' -v upstream_file="$upstream_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $2 == upstream_file && $3 == test_symbol { found = 1 } END { exit !found }' "$core_manifest"; then
       continue
     fi
+    # Provider skips persist in the provider manifest because verify.sh audits every provider test symbol.
+    if awk -F '|' -v upstream_file="$upstream_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $3 == upstream_file && $4 == test_symbol { found = 1 } END { exit !found }' "$provider_manifest"; then
+      continue
+    fi
     die "new upstream core test is neither synchronized nor explicitly skipped: $upstream_file ($test_symbol)"
   done <<< "$target_symbols"
 }
