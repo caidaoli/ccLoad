@@ -22,6 +22,14 @@ fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
 
+## Local model capability backport (2026-09-25)
+
+`registry/models/models.json` includes the `claude-opus-5-5` capability entry
+from CLIProxyAPI `21d26a07a39316f94c6ebc370a92222bca89aaac` so OpenAI
+reasoning effort converts to adaptive thinking for that model. This one-entry
+compatibility fix does not advance the atomic core/provider synchronization
+commit above. The next full synchronization should absorb this entry.
+
 ## Synchronization adaptations (2026-09-17)
 
 The earlier scoped Antigravity search/reminder backport is now included in the

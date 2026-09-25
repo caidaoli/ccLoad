@@ -216,12 +216,30 @@ func (s *Server) buildProxyRequest(
 	if reqCtx != nil {
 		sourceBody = reqCtx.transformPlan.OriginalBody
 	}
-	// 上游 URL 必须在 body 最终化之前解析：Anthropic 的 CCH 签名按上游 origin 分流
-	// （见 anthropicCCHSigningEnabled），签名点拿不到 origin 就只能退化成按凭证判断。
+	callerBody := sourceBody
+	if len(callerBody) == 0 {
+		callerBody = body
+	}
+	callerBodyIsAnthropic := reqCtx == nil || !reqCtx.transformPlan.NeedsTransform
+	var callerWire anthropicCallerWire
+	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		callerWire = classifyAnthropicRequestCallerWire(callerBody, hdr, upstreamProtocol, requestPath, callerBodyIsAnthropic)
+	}
+	callerOwnsAnthropicWire := callerWire.ownsWire()
+	var oauthFingerprint *anthropicOAuthFingerprint
+	if cfg.UsesAnthropicOAuth() {
+		fingerprintSource := http.Header(nil)
+		if callerWire.nativeClaudeCode {
+			fingerprintSource = hdr
+		}
+		oauthFingerprint = s.getAnthropicOAuthFingerprint(reqCtx.ctx, cfg, fingerprintSource)
+	}
+	// 上游 URL 在 body 最终化前解析，供旧版 Haiku helper 的 CCH 策略使用。
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
-	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
+	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) ||
+		isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
 		upstreamURL = buildAnthropicOAuthURL(baseURL, requestPath, upstreamQuery)
 	}
 	if xaiResponsesRequest {
@@ -242,14 +260,38 @@ func (s *Server) buildProxyRequest(
 	requestModel := ""
 	if reqCtx != nil {
 		requestModel = reqCtx.transformPlan.RequestModel()
+		// 协议转换器生成的 metadata.user_id 不属于下游 Anthropic 调用方。
+		// OAuth 模拟路径只保留调用方明确提供的值；否则由账号指纹生成会话身份。
+		if reqCtx.transformPlan.NeedsTransform && cfg.UsesAnthropicOAuth() &&
+			upstreamProtocol == protocol.Anthropic &&
+			!gjson.GetBytes(sourceBody, "metadata.user_id").Exists() {
+			body = deleteJSONPath(body, "metadata.user_id")
+		}
 	}
 	body, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, requestModel, body, sourceBody, apiKey, hdr,
 		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
 		reqCtx != nil && reqCtx.replayBodyRulesApplied,
+		callerBodyIsAnthropic,
 	)
 	if err != nil {
 		return nil, err
+	}
+	mappedAnthropicSessionID := ""
+	if cfg.UsesAnthropicOAuth() &&
+		(isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {
+		identityHeaders := hdr
+		if oauthFingerprint != nil {
+			identityHeaders = cloneHeaders(hdr)
+			identityHeaders.Set("User-Agent", oauthFingerprint.UserAgent)
+		}
+		body, mappedAnthropicSessionID, err = rebaseAnthropicNativeOAuthIdentity(body, callerBody, cfg, callerWire, identityHeaders)
+		if err != nil {
+			return nil, err
+		}
+		if callerWire.nativeClaudeCode && oauthFingerprint != nil {
+			body = syncAnthropicOAuthBillingVersion(body, oauthFingerprint.UserAgent)
+		}
 	}
 	if xaiResponsesRequest {
 		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
@@ -261,10 +303,14 @@ func (s *Server) buildProxyRequest(
 		// Complete replay and incremental WS bodies must share the same aliases.
 		body, reqCtx.openCodeResponses = prepareOpenCodeResponsesRequest(parsedUpstreamURL, upstreamProtocol, requestPath, body, reqCtx.openCodeResponses)
 	}
+	body, err = refreshAnthropicCallerCCH(body, callerBody, callerWire)
+	if err != nil {
+		return nil, err
+	}
 
 	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
-		if err = validateAnthropicLegacySystemRequestForUpstream(body, hdr, parsedUpstreamURL); err != nil {
+		if err = validateAnthropicLegacySystemRequestForUpstream(body, callerOwnsAnthropicWire, parsedUpstreamURL); err != nil {
 			return nil, err
 		}
 	}
@@ -341,23 +387,39 @@ func (s *Server) buildProxyRequest(
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
 		wireRebuilt = true
+	} else if isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		injectAnthropicCountTokensHeadersWithFingerprint(req, cfg, apiKey, body, callerOwnsAnthropicWire, oauthFingerprint, hdr)
+		wireRebuilt = true
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
-		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
+		injectAnthropicOAuthHeadersWithFingerprint(req, cfg, apiKey, body, callerOwnsAnthropicWire, oauthFingerprint, hdr)
 		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 		injectZAICodingPlanHeaders(req, cfg, apiKey, body, hdr)
 		wireRebuilt = true
 	} else if anthropicClaudeCodeWire {
-		injectAnthropicAPIKeyHeaders(req, cfg, apiKey, body, hdr)
+		injectAnthropicAPIKeyHeaders(req, cfg, apiKey, body, callerOwnsAnthropicWire, hdr)
 		wireRebuilt = true
+	}
+	if mappedAnthropicSessionID != "" && anthropicHeaderValue(hdr, "X-Claude-Code-Session-Id") != "" &&
+		anthropicSessionIDFromBody(body) == mappedAnthropicSessionID {
+		setRawHeader(req.Header, "X-Claude-Code-Session-Id", mappedAnthropicSessionID)
+	}
+	if isAnthropicCountTokensRequest(upstreamProtocol, requestPath) && isOfficialAnthropicURL(parsedUpstreamURL) {
+		req.Header.Del("X-Claude-Code-Session-Id")
 	}
 
 	// 6.1 Claude Code CLI / ZCode / Antigravity 指纹路径清空（或整体替换）了请求头再
-	// 重建，步骤 6 的规则产物随之丢失。渠道自定义 header 规则必须最终生效，所以在重建
-	// 之后重跑一次：认证头仍由 authHeaderBlacklist 拦下，override/remove 幂等，append
-	// 也不会重复（前一次的产物已被清空）。
+	// 重建，步骤 6 的规则产物随之丢失。原生 OAuth 请求继续使用账号指纹；
+	// 模拟请求保留与 billing 版本一致的 User-Agent 和 Stainless 头。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfg.HeaderRules())
+		if cfg.UsesAnthropicOAuth() {
+			if callerOwnsAnthropicWire {
+				applyAnthropicOAuthFingerprint(req, oauthFingerprint)
+			} else {
+				applyAnthropicOAuthMimicFingerprint(req, body)
+			}
+		}
 	}
 
 	// 6.2 anyrouter 渠道：确保 anthropic-beta 包含 context-1m。必须排在指纹重建
@@ -372,6 +434,14 @@ func (s *Server) buildProxyRequest(
 			executionIdentity = reqCtx.executionIdentity
 		}
 		ensureOpenCodeSessionHeader(req.Header, hdr, executionIdentity)
+	}
+	if anthropicClaudeCodeWire || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		// Header rules have the last word on anthropic-beta. Strip fields gated by
+		// absent tokens from the actual wire body, then refresh any legacy CCH.
+		body, err = applyFinalAnthropicBetaBodyPolicy(req, body)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
 	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx))
@@ -402,7 +472,21 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	anthropicAlreadyFinalized bool,
 	target *url.URL,
 	wireBodyRulesApplied bool,
+	callerBodyIsAnthropic bool,
 ) ([]byte, error) {
+	callerBody := sourceBody
+	if len(callerBody) == 0 {
+		callerBody = body
+	}
+	var callerWire anthropicCallerWire
+	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		callerWire = classifyAnthropicRequestCallerWire(callerBody, headers, upstreamProtocol, requestPath, callerBodyIsAnthropic)
+		if callerBodyIsAnthropic {
+			if err := validateAnthropicOpus55Request(callerBody, requestModel); err != nil {
+				return nil, err
+			}
+		}
+	}
 	codexOAuthResponsesRequest := isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
 		body = prepareCodeBuddyDefaults(body, sourceBody)
@@ -428,39 +512,33 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	if !wireBodyRulesApplied && codexOAuthResponsesRequest {
 		body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
 	}
-	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+	if isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		var err error
+		body, err = finalizeAnthropicCountTokensBody(body, cfg, target, callerWire.nativeClaudeCode)
+		if err != nil {
+			return nil, err
+		}
+	} else if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
 		switch {
 		case !isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath):
 			// Z.ai Coding Plan 自带 ZCode 指纹，只做 Anthropic 线协议归一。
 			body, err = normalizeAnthropicMessagesBody(body)
 		case anthropicAlreadyFinalized:
-			// 重试重放：body 已在首次尝试时最终化过。这里的判据必须是出站身份判据
-			// （不含 CCH），否则「本渠道策略不签名」会让网关自己的产物被判为非原生，
-			// 平白多跑一轮归一。
-			cchSigning := anthropicCCHSigningEnabled(cfg, target)
-			if isAnthropicJSONObject(body) {
-				helperShape := nativeAnthropicHaikuHelperShape(body, headers)
-				if helperShape == anthropicHaikuHelperMinimal {
-					return finishAnthropicPassthrough(body, false)
-				}
-				if helperShape == anthropicHaikuHelperStructured ||
-					isNativeAnthropicClaudeCodeRequest(headers) {
-					return finishAnthropicPassthrough(body, cchSigning)
-				}
+			// 重试重放已经是完整 wire，请求修复后的 body 不再重判原生身份。
+			if !isAnthropicJSONObject(body) {
+				return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 			}
-			body, err = normalizeAnthropicMessagesBody(body)
-			if err == nil {
-				body, err = finishAnthropicPassthrough(body, cchSigning)
-			}
+			body, err = finishAnthropicPassthrough(body,
+				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target))
 		default:
-			body, err = finalizeAnthropicClaudeCodeMessagesBody(body, cfg, apiKey, headers, target)
+			body, err = finalizeAnthropicClaudeCodeMessagesBodyForCaller(body, cfg, apiKey, headers, target, callerWire)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	body = injectAnyrouterClaudeCodeFallbackTools(cfg, upstreamProtocol, requestPath, headers, body)
+	body = injectAnyrouterClaudeCodeFallbackTools(cfg, upstreamProtocol, requestPath, headers, callerBody, body)
 	// Z.ai Coding Plan 的 ZCode 设备指纹走 body 的 metadata.user_id。必须留在这个
 	// 共享入口里：挂在代理链路的独立分支上，管理测试就会发出没有指纹的请求。
 	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
@@ -483,6 +561,34 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		return finalizeCodeBuddyBody(body, s.antigravityPromptMatcher)
 	}
 	return body, nil
+}
+
+func refreshAnthropicCallerCCH(body, callerBody []byte, callerWire anthropicCallerWire) ([]byte, error) {
+	if !callerWire.ownsWire() || bytes.Equal(body, callerBody) {
+		return body, nil
+	}
+	if _, signed := anthropicCCHDigitsOffset(body); !signed {
+		return body, nil
+	}
+	return finalizeAnthropicCCH(body)
+}
+
+func applyFinalAnthropicBetaBodyPolicy(req *http.Request, body []byte) ([]byte, error) {
+	sanitized := sanitizeAnthropicBodyForBetaTokens(body, normalizedAnthropicBetaHeader(req.Header))
+	if bytes.Equal(sanitized, body) {
+		return body, nil
+	}
+	if _, signed := anthropicCCHDigitsOffset(sanitized); signed {
+		var err error
+		sanitized, err = finalizeAnthropicCCH(sanitized)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req.Body = io.NopCloser(bytes.NewReader(sanitized))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(sanitized)), nil }
+	req.ContentLength = int64(len(sanitized))
+	return sanitized, nil
 }
 
 func ensureCodexSessionHeader(headers http.Header, sessionID string) {
@@ -3855,7 +3961,9 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		if result != nil && result.succeeded {
 			// 成功：记录TTFB到URLSelector，供单URL和多URL统一展示实时统计。
-			recordSuccessTTFBToSelector(selector, cfg.ID, urlEntry.url, result)
+			if requestFamily != protocol.RequestFamilyCountTokens {
+				recordSuccessTTFBToSelector(selector, cfg.ID, urlEntry.url, result)
+			}
 			return result, nil, nil
 		}
 
@@ -3948,7 +4056,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				}
 				break
 			}
-			if selector != nil {
+			if selector != nil && requestFamily != protocol.RequestFamilyCountTokens {
 				selector.CooldownURL(cfg.ID, urlEntry.url)
 			}
 

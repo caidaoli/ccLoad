@@ -116,6 +116,7 @@ func main() {
 		log.Printf("[INFO] Antigravity User-Agent: %s", antigravityUserAgent)
 	}
 	srv.StartModelCatalogSync()
+	srv.StartAnthropicCLIVersionSync()
 
 	// 注入重启函数（避免循环依赖）
 	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。

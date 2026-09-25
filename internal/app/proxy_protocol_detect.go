@@ -57,7 +57,7 @@ func clientRequestMetadata(c *gin.Context) (protocol.Protocol, string) {
 
 func detectClientProtocolFromPath(path string) protocol.Protocol {
 	switch protocol.DetectRequestFamily(path) {
-	case protocol.RequestFamilyMessages:
+	case protocol.RequestFamilyMessages, protocol.RequestFamilyCountTokens:
 		return protocol.Anthropic
 	case protocol.RequestFamilyResponses, protocol.RequestFamilyAlphaSearch:
 		return protocol.Codex

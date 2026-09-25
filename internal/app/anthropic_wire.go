@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
@@ -23,8 +26,8 @@ import (
 )
 
 const (
-	// anthropicCLIVersion 是伪造官方 Anthropic 线路时写入的 Claude Code UA/账单版本。
-	// opus-5-5 / 新模型会拒绝低于 2.1.280 的客户端。
+	// anthropicCLIVersion 是 Claude Code wire 的内置最低版本/离线回退值。
+	// 运行中的服务会由 anthropic_cli_version_sync.go 向前同步官方稳定版。
 	anthropicCLIVersion  = "2.1.280"
 	anthropicBillingSalt = "59cf53e54c78"
 
@@ -32,18 +35,25 @@ const (
 	anthropicClaudeCodeIdentityPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
-// anthropicClaudeCLIUserAgentPattern 对齐上游 claudeCodeNativeUserAgentPattern，
-// 捕获组 1 是版本、2 是 entrypoint。
+// anthropicClaudeCLIUserAgentPattern 对齐 sub2api 的 Claude Code UA 判定：只要求
+// claude-cli/X.Y.Z 前缀，入口后缀由客户端版本和宿主环境决定，不绑定固定枚举。
 var anthropicClaudeCLIUserAgentPattern = regexp.MustCompile(
-	`(?i)^claude-cli/([0-9]+\.[0-9]+\.[0-9]+)\s+\(external,\s*([^,)]+?)\s*(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+\s*)?\)$`)
+	`(?i)^claude-cli/([0-9]+\.[0-9]+\.[0-9]+)`)
 
-// nativeAnthropicClaudeEntrypoints 对齐上游 nativeClaudeEntrypoints：只有 wire 形态
-// 被实测确认过的第一方入口才允许直通。
-var nativeAnthropicClaudeEntrypoints = map[string]bool{
-	"cli":           true,
-	"sdk-cli":       true,
-	"claude-vscode": true,
-}
+// anthropicFingerprintUserAgentPattern is the stricter form used when a UA is
+// allowed to become an account-level fingerprint. The version must be followed
+// by whitespace or the end of the value, matching sub2api's cache guard.
+var anthropicFingerprintUserAgentPattern = regexp.MustCompile(
+	`(?i)^(claude-cli/)([0-9]+\.[0-9]+\.[0-9]+)(\s.*)?$`)
+
+var anthropicBillingVersionPattern = regexp.MustCompile(`cc_version=([0-9]+\.[0-9]+\.[0-9]+)`)
+var anthropicBillingFingerprintPattern = regexp.MustCompile(`cc_version=[0-9]+\.[0-9]+\.[0-9]+\.[0-9a-fA-F]{3}\b`)
+
+// anthropicClaudeCodeLegacyMetadataUserIDPattern 对齐 sub2api 的 legacy
+// metadata.user_id 格式。新版 Claude Code 使用 JSON 字符串格式，见
+// validAnthropicClaudeCodeMetadataUserID。
+var anthropicClaudeCodeLegacyMetadataUserIDPattern = regexp.MustCompile(
+	`^user_[a-fA-F0-9]{64}_account_[a-fA-F0-9-]*_session_[a-fA-F0-9-]{36}$`)
 
 const anthropicClaudeCodePrompt = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -64,7 +74,7 @@ func isAnthropicOAuthMessagesRequest(cfg *model.Config, upstream protocol.Protoc
 // isAnthropicClaudeCodeMessagesRequest 判断本次请求要不要套 Claude Code CLI 指纹。
 //
 // 判据只有「是不是 Anthropic Messages 上游」——OAuth、第一方 API Key、第三方网关
-// 共用 CLI wire 形状；CCH 另由 Claude OAuth 凭证边界决定。唯一例外是 Z.ai Coding Plan：它也走 anthropic
+// 都生成 CLI body；OAuth 的 beta/Header 使用 sub2api 模拟 profile。唯一例外是 Z.ai Coding Plan：它也走 anthropic
 // 协议，却有自己的 ZCode 设备指纹契约，两套指纹叠加会互相破坏（ZCode 覆盖
 // metadata.user_id，而 Claude Code 的 1h cache TTL 配不上 ZCode 的 beta 头）。
 func isAnthropicClaudeCodeMessagesRequest(cfg *model.Config, upstream protocol.Protocol, requestPath string) bool {
@@ -77,6 +87,38 @@ func isAnthropicMessagesRequest(upstream protocol.Protocol, requestPath string) 
 	}
 	path := strings.TrimSuffix(strings.TrimSpace(requestPath), "/")
 	return path == "/v1/messages" || path == "/messages"
+}
+
+func isAnthropicCountTokensRequest(upstream protocol.Protocol, requestPath string) bool {
+	if upstream != protocol.Anthropic {
+		return false
+	}
+	path := strings.TrimSuffix(strings.TrimSpace(requestPath), "/")
+	return path == "/v1/messages/count_tokens" || path == "/messages/count_tokens"
+}
+
+// finalizeAnthropicCountTokensBody keeps the caller's wire where the target
+// accepts it. Anthropic's first-party count_tokens endpoint rejects metadata,
+// context_management and diagnostics for both OAuth and API keys.
+func finalizeAnthropicCountTokensBody(body []byte, cfg *model.Config, target *url.URL, nativeCaller bool) ([]byte, error) {
+	if !isAnthropicJSONObject(body) {
+		return nil, errors.New("finalize Anthropic count_tokens request: invalid JSON body")
+	}
+	body = sanitizeAnthropicEmptyTextBlocks(body)
+	if cfg != nil && cfg.UsesAnthropicOAuth() && !nativeCaller {
+		body = normalizeAnthropicOAuthModel(body)
+		body = encodeNormalizedAnthropicRequest(body)
+	}
+	fields := []string{
+		"temperature", "top_p", "top_k", "stream", "stop_sequences", "stop", "max_tokens",
+	}
+	if isOfficialAnthropicURL(target) {
+		fields = append(fields, "metadata", "context_management", "diagnostics")
+	}
+	for _, field := range fields {
+		body = deleteJSONPath(body, field)
+	}
+	return body, nil
 }
 
 func isOfficialAnthropicURL(target *url.URL) bool {
@@ -93,7 +135,7 @@ func isOfficialAnthropicURL(target *url.URL) bool {
 // compatible gateways and confirmed native Claude Code callers own their wire.
 func validateAnthropicLegacySystemRequestForUpstream(
 	body []byte,
-	headers http.Header,
+	callerOwnsWire bool,
 	target *url.URL,
 ) error {
 	if !isOfficialAnthropicURL(target) {
@@ -102,11 +144,43 @@ func validateAnthropicLegacySystemRequestForUpstream(
 	if !isAnthropicJSONObject(body) {
 		return nil
 	}
-	if nativeAnthropicHaikuHelperShape(body, headers) != anthropicHaikuHelperNone ||
-		isNativeAnthropicClaudeCodeRequest(headers) {
+	if callerOwnsWire {
 		return nil
 	}
 	return validateAnthropicLegacySystemMessages(body)
+}
+
+// validateAnthropicOpus55Request mirrors Claude Code's request guard for the
+// Opus 5.5 contract. It must run before the CLI finalizer normalizes thinking
+// or tool_choice, otherwise an invalid caller request would be silently turned
+// into a different request instead of receiving the same 400 as the native API.
+func validateAnthropicOpus55Request(body []byte, requestModel string) error {
+	modelName := strings.ToLower(strings.TrimSpace(requestModel))
+	if modelName == "" && isAnthropicJSONObject(body) {
+		modelName = strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "model"))))
+	}
+	if slash := strings.LastIndexByte(modelName, '/'); slash >= 0 {
+		modelName = modelName[slash+1:]
+	}
+	if !strings.HasPrefix(modelName, "claude-opus-5-5") {
+		return nil
+	}
+
+	thinkingType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type"))))
+	if thinkingType == "disabled" || thinkingType == "enabled" {
+		return &anthropicRequestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
+	}
+	toolChoice := gjson.GetBytes(body, "tool_choice")
+	if strings.EqualFold(strings.TrimSpace(jsonStringValue(toolChoice)), "required") {
+		return &anthropicRequestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
+	}
+	choiceType := strings.ToLower(strings.TrimSpace(jsonStringValue(toolChoice.Get("type"))))
+	switch choiceType {
+	case "any", "tool", "function", "custom", "namespace":
+		return &anthropicRequestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
+	default:
+		return nil
+	}
 }
 
 func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
@@ -121,24 +195,8 @@ func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
 	return parsed.String()
 }
 
-// anthropicCCHSigningEnabled 是 CCH 签名策略的唯一判据，对齐上游 CLIProxyAPI 的
-// claudeCCHSigningEnabled（internal/runtime/executor/claude_signing.go）。
-//
-// 原生 gate（Claude Code 2.1.220–2.1.234）：
-//
-//	s = (provider === "firstParty" && isFirstPartyBaseURL()) || provider === "vertex"
-//	      ? " cch=00000;" : ""
-//
-// 映射到两条判据：
-//
-//   - Claude OAuth 凭证：任何上游都签。ccLoad 是恢复第一方形态的那一跳——下游
-//     Claude Code 指向 ccLoad 时看到的是非第一方 base URL，因此自己省略了 cch，
-//     这个值必须在这里重新生成，而不是继承。理由是指纹保真，不是缓存。
-//   - 其余凭证：ccLoad 无条件为 Anthropic 渠道套 CLI 指纹（等价上游
-//     cliFingerprint=true），因此只在第一方 origin 签。第三方网关把 billing block
-//     当普通 prompt 文本，每请求变化的 cch 会打散它的 prompt cache。
-//
-// 上游的 Vertex 分支不适用：ccLoad 没有 Anthropic Vertex 上游。
+// anthropicCCHSigningEnabled 仅保留旧版 Haiku helper 的签名策略。新生成的
+// Claude Code billing block 跟随 sub2api 当前模拟路径，不再注入 CCH。
 func anthropicCCHSigningEnabled(cfg *model.Config, target *url.URL) bool {
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
 		return true
@@ -147,9 +205,8 @@ func anthropicCCHSigningEnabled(cfg *model.Config, target *url.URL) bool {
 }
 
 // finalizeAnthropicClaudeCodeMessagesBody 是 Anthropic Messages 上游 body 的唯一
-// 最终化入口。OAuth 与 API Key 共用同一套 CLI wire 形状与 anthropic-beta 集合；
-// 唯一按凭证/origin 条件化的字段是 billing block 里的 CCH，判据见
-// anthropicCCHSigningEnabled。
+// 最终化入口。原生 Claude Code 请求保留调用方 body/CCH；模拟请求生成无 CCH
+// 的 billing block。
 func finalizeAnthropicClaudeCodeMessagesBody(
 	body []byte,
 	cfg *model.Config,
@@ -157,16 +214,28 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	headers http.Header,
 	target *url.URL,
 ) ([]byte, error) {
+	return finalizeAnthropicClaudeCodeMessagesBodyForCaller(
+		body, cfg, apiKey, headers, target, classifyAnthropicCallerWire(body, headers))
+}
+
+func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
+	body []byte,
+	cfg *model.Config,
+	apiKey string,
+	headers http.Header,
+	target *url.URL,
+	callerWire anthropicCallerWire,
+) ([]byte, error) {
 	if !isAnthropicJSONObject(body) {
 		return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 	}
-	cchSigning := anthropicCCHSigningEnabled(cfg, target)
-	helperShape := nativeAnthropicHaikuHelperShape(body, headers)
+	helperShape := callerWire.haikuHelper
 	if helperShape != anthropicHaikuHelperNone {
-		return finishAnthropicPassthrough(body, helperShape == anthropicHaikuHelperStructured && cchSigning)
+		return finishAnthropicPassthrough(body,
+			helperShape == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target))
 	}
-	if isNativeAnthropicClaudeCodeRequest(headers) {
-		return finishAnthropicPassthrough(body, cchSigning)
+	if callerWire.nativeClaudeCode {
+		return finishAnthropicPassthrough(body, false)
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -178,18 +247,26 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	if anthropicRequestHasCacheControl(body, anthropicCacheControlIsLongTTL) {
 		cloakCacheTTL = "1h"
 	}
-	// 新增的顶层键按 sjson 的插入顺序落在对象尾部，所以这里的写入次序就是线上键序。
-	// 顺序取自原生 Claude Code 请求：system → tools → metadata。采样参数不在其中：
-	// normalizeAnthropicSampling 会无条件删掉 temperature/top_p，在这里补默认值是
-	// 写完即被抹掉的死操作。
+	// 新增的顶层键按 sjson 的插入顺序落在对象尾部。
 	originalSystem := anthropicSystemText(gjson.GetBytes(body, "system"))
 	firstUserText := anthropicFirstUserText(gjson.GetBytes(body, "messages"))
 	clientVersion := anthropicClientVersion(headers)
-	body = setJSONRaw(body, "system", "["+strings.Join([]string{
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		// sub2api 的模拟 UA 与 billing 同取本次运行期版本，不继承下游 UA。
+		clientVersion = anthropicEffectiveCLIVersion()
+	}
+	systemBlocks := []string{
 		anthropicTextBlockRaw(anthropicBillingHeader(firstUserText, clientVersion), ""),
 		anthropicTextBlockRaw(anthropicClaudeCodeIdentityPrompt, ""),
-		anthropicTextBlockRaw(anthropicClaudeCodePrompt, anthropicCloakCacheControl(cloakCacheTTL)),
-	}, ",")+"]")
+	}
+	// sub2api keeps only billing + identity for Fable: its generic CLI expansion
+	// prompt can cause an otherwise valid request to be refused.
+	if cfg == nil || !cfg.UsesAnthropicOAuth() ||
+		!strings.Contains(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "fable") {
+		systemBlocks = append(systemBlocks,
+			anthropicTextBlockRaw(anthropicClaudeCodePrompt, anthropicCloakCacheControl(cloakCacheTTL)))
+	}
+	body = setJSONRaw(body, "system", "["+strings.Join(systemBlocks, ",")+"]")
 
 	messagePrefixCount := 0
 	if originalSystem != "" {
@@ -220,6 +297,9 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 			`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`)
 		autoContextManagement = true
 	}
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		body = ensureAnthropicMimicToolCacheBreakpoint(body, cloakCacheTTL)
+	}
 	body = ensureAnthropicCloakedCacheBreakpoints(body, messagePrefixCount, cloakCacheTTL)
 	// Forced tool choice strips thinking during normalization. Only withdraw
 	// the object ccLoad injected; caller-owned context_management keeps its
@@ -230,15 +310,31 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 		body = deleteJSONPath(body, "context_management")
 	}
 
-	return finishAnthropicPassthrough(encodeNormalizedAnthropicRequest(body), cchSigning)
+	// Shared normalization removes temperature; OAuth mimic restores the caller's
+	// value (or Claude Code's default) immediately below.
+	callerTemperature := gjson.GetBytes(body, "temperature")
+	body = encodeNormalizedAnthropicRequest(body)
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		if !gjson.GetBytes(body, "max_tokens").Exists() {
+			body = setJSONRaw(body, "max_tokens", "128000")
+		}
+		if !strings.HasPrefix(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "claude-opus-5-5") {
+			temperature := "1"
+			if callerTemperature.Exists() {
+				temperature = callerTemperature.Raw
+			}
+			body = setJSONRaw(body, "temperature", temperature)
+		}
+	}
+	return finishAnthropicPassthrough(body, false)
 }
 
 // finishAnthropicPassthrough is the single Anthropic Messages outbound exit.
 // Fingerprint rewrite (system cloak, sampling, cache stamps) happens before
 // this, or is skipped for native Claude Code / Haiku helper. This layer only
-// applies API-contract invariants and optional CCH, so new Anthropic 400
-// guards extend applyAnthropicMessagesAPIInvariants instead of growing every
-// early-return branch.
+// applies API-contract invariants and optional CCH, so new Anthropic 400 guards
+// extend applyAnthropicMessagesAPIInvariants instead of growing every early-
+// return branch.
 func finishAnthropicPassthrough(body []byte, signCCH bool) ([]byte, error) {
 	body = applyAnthropicMessagesAPIInvariants(body)
 	if !signCCH {
@@ -594,54 +690,67 @@ func normalizeAnthropicOAuthModel(body []byte) []byte {
 	}
 }
 
-// isNativeAnthropicClaudeCodeRequest 判断这组请求头是否就是原生 Claude Code 的线协议
-// 形态。入站命中即整体直通：不重建 system、不重排 cache_control、不改采样。唯一的
-// 出站改写是丢掉 Anthropic 会 400 的空 text 块。出站分派（anthropicRequestOwnsItsWire、
-// 重试重放）同样用它判断「这份 wire 已经是对的，网关只补认证头」。
+// isNativeAnthropicClaudeCodeRequest 判断请求是否应按原生 Claude Code wire 直通。
 //
-// 判据只有三个请求头信号：
+// 直接请求对齐 sub2api 的最终转发判定：合法 Claude Code UA + 可解析的
+// metadata.user_id。X-App 与 anthropic-beta 不参与这条判定；sub2api 仅在单独的
+// Claude Code 请求验证器中要求它们非空，最终 OAuth 透传还有此简化分支。
 //
-//	X-App=cli && CLI UA 形态 && anthropic-beta 含 claude-code-20250219
-//
-// 刻意不加条件。每加严一条就多一条静默假阴性通道，而假阴性不报错——它把真实 Claude
-// Code 请求降级进重写路径，system 被重建成 CLI 三段式、客户端 system block 上的
-// cache_control 随 anthropicSystemText 降级整段丢弃、剩余断点再被
-// enforceAnthropicCacheControlLimit 裁剪，客户端自管的 prompt cache 就此失效。这类
-// 故障只能靠命中率异常反推，排查成本极高。已经逐条踩过并移除的加严条件：
-//   - ` cch=` 存在性——签名不是身份。下游指向 ccLoad 时 base URL 非第一方，native
-//     gate 直接省略 cch。上游也只在 measuredClaudeCodeHelperSystemMatches 那个窄的
-//     Haiku helper profile 里校验它（实测命中率掉到 7.6%）；
-//   - metadata.user_id 的 account_uuid 非空——API Key + 非第一方 base URL 没有
-//     Anthropic 账号，这一格本就是空串（掉到 16%）；
-//   - metadata.user_id 整体存在性——即本条，见下；
-//   - CLI 版本号相等——上游基线随观测流量自升级，ccLoad 是常量，客户端一升级就复发；
-//   - UA 后缀写死 " (external, cli)"——带 Agent SDK 的 CLI 与 VSCode 扩展被整条拒掉；
-//   - system[0] 的 billing 前缀、header 与 body 的 session id 等式；
-//   - OAuth 凭证身份逐字段比对——网关侧身份本就是合成的，下游带的才可信。
-//
-// 代价是明确的：刻意复制这三个头的第三方客户端也会被原样直通，网关不再为它补 CLI
-// 指纹、billing header 与合成身份。这是有意的取舍——真实 Claude Code 的缓存保真优先。
-//
-// 同一个判据同时服务入站与出站：网关自己产出的 body 一样通过检测，不存在「自己不认
-// 自己」的自指。
-func isNativeAnthropicClaudeCodeRequest(headers http.Header) bool {
-	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
-		anthropicHeaderValue(headers, "X-App") != "cli" ||
-		!slices.Contains(strings.Split(normalizedAnthropicBetaHeader(headers), ","), "claude-code-20250219") {
-		return false
+// 如果请求经过其他网关，UA 可能被替换成 Go-http-client。此时沿用 sub2api 的恢复规则：
+// body 仍带非空 metadata.user_id，且 system 中保留 billing attribution block，就认为
+// 它仍是调用方拥有 wire 的 Claude Code 请求。该分支只用于恢复 UA 丢失场景，不会单凭
+// billing block 识别没有 metadata 的请求。
+func isNativeAnthropicClaudeCodeRequest(body []byte, headers http.Header) bool {
+	userID := anthropicMetadataUserID(body)
+	if validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) &&
+		validAnthropicClaudeCodeMetadataUserID(userID) {
+		return true
 	}
-	// 过旧的官方 CLI 直通会被 Anthropic 以 400 拒绝新模型。版本低于伪造钉时走重写，
-	// 把 UA/账单升到 anthropicCLIVersion；不低于钉的原生请求仍直通，避免拆 cache。
-	if version := anthropicUserAgentVersion(headers); version != "" &&
-		!anthropicCLIVersionGTE(version, anthropicCLIVersion) {
-		return false
-	}
-	return true
+	return strings.TrimSpace(userID) != "" && anthropicSystemHasBillingAttributionBlock(body)
 }
 
 func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
-	matches := anthropicClaudeCLIUserAgentPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
-	return matches != nil && nativeAnthropicClaudeEntrypoints[strings.ToLower(matches[2])]
+	return anthropicClaudeCLIUserAgentPattern.MatchString(strings.TrimSpace(userAgent))
+}
+
+func anthropicMetadataUserID(body []byte) string {
+	if !isAnthropicJSONObject(body) {
+		return ""
+	}
+	userID := gjson.GetBytes(body, "metadata.user_id")
+	if userID.Type != gjson.String {
+		return ""
+	}
+	return strings.TrimSpace(userID.String())
+}
+
+func validAnthropicClaudeCodeMetadataUserID(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(raw, "{") && gjson.Valid(raw) {
+		identity := gjson.Parse(raw)
+		deviceID := identity.Get("device_id")
+		sessionID := identity.Get("session_id")
+		return deviceID.Type == gjson.String && deviceID.String() != "" &&
+			sessionID.Type == gjson.String && sessionID.String() != ""
+	}
+	return anthropicClaudeCodeLegacyMetadataUserIDPattern.MatchString(raw)
+}
+
+func anthropicSystemHasBillingAttributionBlock(body []byte) bool {
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
+		return false
+	}
+	for _, item := range system.Array() {
+		text := jsonStringValue(item.Get("text"))
+		if strings.HasPrefix(text, "x-anthropic-billing-header") && strings.Contains(text, "cc_entrypoint=") {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicFirstSystemBlockText(system gjson.Result) string {
@@ -665,6 +774,10 @@ func injectAnthropicClaudeCodeMetadata(
 	apiKey string,
 	headers http.Header,
 ) ([]byte, error) {
+	// sub2api 的 OAuth 模拟路径只在缺失时注入 metadata.user_id。
+	if cfg != nil && cfg.UsesAnthropicOAuth() && anthropicMetadataUserID(body) != "" {
+		return body, nil
+	}
 	credential := anthropicCredentialForWire(cfg, apiKey)
 	if credential == nil {
 		return nil, errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
@@ -676,14 +789,23 @@ func injectAnthropicClaudeCodeMetadata(
 	if credential.DeviceID == "" || identitySeed == "" {
 		return nil, errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
 	}
+	deviceID := credential.DeviceID
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		// 原生与模拟请求共用同一个账号级 ClientID。
+		deviceID = anthropicSub2APIClientID(cfg.ID, identitySeed)
+	}
 	sessionID := anthropicSessionIDFromHeaders(headers)
 	if sessionID == "" {
-		sessionID = anthropicStableSessionID(identitySeed, anthropicFirstUserText(gjson.GetBytes(body, "messages")))
+		seed := identitySeed
+		if cfg != nil && cfg.UsesAnthropicOAuth() {
+			seed = strconv.FormatInt(cfg.ID, 10) + "\x00" + deviceID
+		}
+		sessionID = anthropicStableSessionID(seed, anthropicFirstUserText(gjson.GetBytes(body, "messages")))
 	}
 	identity := "{}"
 	var err error
 	for _, field := range []struct{ key, value string }{
-		{"device_id", credential.DeviceID},
+		{"device_id", deviceID},
 		{"account_uuid", credential.AccountUUID},
 		{"session_id", sessionID},
 	} {
@@ -700,10 +822,8 @@ func injectAnthropicClaudeCodeMetadata(
 
 // anthropicCredentialForWire 解析 Claude Code 指纹使用的凭证身份。
 //
-// OAuth 渠道用凭证里真实的账号与设备；API Key 渠道（含第三方网关）没有这两个字段，
-// 按 Key 稳定派生一份。身份必须随 Key 稳定：每次请求换设备，上游看到的就是一台
-// 反复重装的机器。合成身份复用 anthropicauth.Credential，下游所有身份逻辑因此只有
-// 一份实现。
+// OAuth 渠道从凭证取账号身份，再按渠道稳定派生模拟客户端 ID；API Key 渠道
+// （含第三方网关）按 Key 稳定派生身份。合成身份复用 anthropicauth.Credential。
 func anthropicCredentialForWire(cfg *model.Config, apiKey string) *anthropicauth.Credential {
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
 		if strings.TrimSpace(cfg.OAuthCredential) == "" {
@@ -716,6 +836,135 @@ func anthropicCredentialForWire(cfg *model.Config, apiKey string) *anthropicauth
 		return credential
 	}
 	return synthesizeAnthropicAPIKeyCredential(apiKey)
+}
+
+// rebaseAnthropicNativeOAuthIdentity applies the account identity policy used by
+// sub2api to a confirmed native Claude Code request. The selected OAuth account
+// owns the device/client id, account UUID and session namespace; the caller's
+// session tail is retained so retries and subsequent turns stay in one logical
+// conversation while account switching cannot leak the source account.
+func rebaseAnthropicNativeOAuthIdentity(
+	body, callerBody []byte,
+	cfg *model.Config,
+	callerWire anthropicCallerWire,
+	incoming http.Header,
+) ([]byte, string, error) {
+	if cfg == nil || !cfg.UsesAnthropicOAuth() || !callerWire.nativeClaudeCode {
+		return body, "", nil
+	}
+	credential := anthropicCredentialForWire(cfg, "")
+	if credential == nil {
+		return body, "", nil
+	}
+	targetAccount := strings.TrimSpace(credential.AccountUUID)
+	if targetAccount == "" {
+		return body, "", nil
+	}
+	current, currentValid := parseAnthropicSub2APIUserIdentity(anthropicMetadataUserID(body))
+	if !currentValid {
+		// An explicit body rule can remove metadata.user_id. sub2api only
+		// rewrites an identity that is present in the final body, so do not
+		// recreate a field the caller deliberately removed.
+		return body, "", nil
+	}
+
+	// sub2api keeps a random 64-hex ClientID in an account fingerprint cache.
+	// ccLoad has no equivalent external cache, so derive the same account-scoped
+	// value deterministically from the stable channel/account identity.
+	clientID := anthropicSub2APIClientID(cfg.ID, targetAccount)
+	parsed := current
+	if source, sourceValid := parseAnthropicSub2APIUserIdentity(anthropicMetadataUserID(callerBody)); sourceValid {
+		// A retry may start from an already rewritten upstream body. Reuse the
+		// original session only when the current identity is exactly the mapping
+		// we produced; otherwise honor a caller/body-rule change in the final body.
+		if current.deviceID == clientID && current.accountUUID == targetAccount &&
+			current.sessionID == anthropicSub2APISessionID(cfg.ID, source.sessionID) {
+			parsed = source
+		}
+	}
+
+	// sub2api derives UUID(v4-shaped) sessions from accountID::originalSession.
+	mappedSession := anthropicSub2APISessionID(cfg.ID, parsed.sessionID)
+
+	version := anthropicUserAgentVersion(incoming)
+	if version == "" {
+		version = anthropicBillingVersion(body)
+	}
+	if version == "" {
+		version = anthropicEffectiveCLIVersion()
+	}
+	identity := anthropicFormatSub2APIUserIdentity(clientID, targetAccount, mappedSession, version)
+	updated, err := sjson.SetBytes(body, "metadata.user_id", identity)
+	if err != nil {
+		return nil, "", errors.New("rebase Anthropic native identity: encode user_id")
+	}
+	return updated, mappedSession, nil
+}
+
+func anthropicSub2APIClientID(channelID int64, accountUUID string) string {
+	seed := "ccload:anthropic:sub2api-client-id\x00" + strconv.FormatInt(channelID, 10) + "\x00" + accountUUID
+	digest := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(digest[:])
+}
+
+func anthropicSub2APISessionID(channelID int64, originalSession string) string {
+	seed := strconv.FormatInt(channelID, 10) + "::" + originalSession
+	digest := sha256.Sum256([]byte(seed))
+	var mapped uuid.UUID
+	copy(mapped[:], digest[:len(mapped)])
+	mapped[6] = (mapped[6] & 0x0f) | 0x40
+	mapped[8] = (mapped[8] & 0x3f) | 0x80
+	return mapped.String()
+}
+
+type anthropicSub2APIUserIdentity struct {
+	deviceID    string
+	accountUUID string
+	sessionID   string
+}
+
+// parseAnthropicSub2APIUserIdentity mirrors sub2api's parser: JSON identities
+// only require non-empty device/session values, while the legacy form keeps its
+// 64-hex device and 36-character session contract.
+func parseAnthropicSub2APIUserIdentity(raw string) (anthropicSub2APIUserIdentity, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return anthropicSub2APIUserIdentity{}, false
+	}
+	if strings.HasPrefix(raw, "{") && gjson.Valid(raw) {
+		identity := gjson.Parse(raw)
+		deviceID := jsonStringValue(identity.Get("device_id"))
+		sessionID := jsonStringValue(identity.Get("session_id"))
+		if deviceID == "" || sessionID == "" {
+			return anthropicSub2APIUserIdentity{}, false
+		}
+		return anthropicSub2APIUserIdentity{
+			deviceID:    deviceID,
+			accountUUID: jsonStringValue(identity.Get("account_uuid")),
+			sessionID:   sessionID,
+		}, true
+	}
+	if !anthropicClaudeCodeLegacyMetadataUserIDPattern.MatchString(raw) {
+		return anthropicSub2APIUserIdentity{}, false
+	}
+	accountAt := strings.Index(raw, "_account_")
+	sessionAt := strings.LastIndex(raw, "_session_")
+	return anthropicSub2APIUserIdentity{
+		deviceID:    raw[len("user_"):accountAt],
+		accountUUID: raw[accountAt+len("_account_") : sessionAt],
+		sessionID:   raw[sessionAt+len("_session_"):],
+	}, true
+}
+
+func anthropicFormatSub2APIUserIdentity(deviceID, accountUUID, sessionID, version string) string {
+	if anthropicCLIVersionGTE(version, "2.1.78") {
+		identity := "{}"
+		identity, _ = sjson.Set(identity, "device_id", deviceID)
+		identity, _ = sjson.Set(identity, "account_uuid", accountUUID)
+		identity, _ = sjson.Set(identity, "session_id", sessionID)
+		return identity
+	}
+	return "user_" + deviceID + "_account_" + accountUUID + "_session_" + sessionID
 }
 
 func synthesizeAnthropicAPIKeyCredential(apiKey string) *anthropicauth.Credential {
@@ -865,8 +1114,8 @@ func stripEmptyAnthropicTextBlocks(blocks gjson.Result) (string, bool) {
 }
 
 // ensureAnthropicCloakedCacheBreakpoints mirrors Claude Code's independent
-// system and rolling-message selectors. Tools remain unstamped because cloaking
-// always installs a usable system prompt that already covers the shared prefix.
+// system and rolling-message selectors. OAuth tool breakpoints are handled
+// separately to cover stable tool declarations as sub2api does.
 // cacheTTL 跟随调用方声明的缓存窗口（空即默认 5m），见 anthropicCloakCacheControl。
 func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, cacheTTL string) []byte {
 	cacheControl := anthropicCloakCacheControl(cacheTTL)
@@ -939,6 +1188,32 @@ func ensureAnthropicCloakedCacheBreakpoints(body []byte, skipMessagePrefix int, 
 		}
 	}
 	return body
+}
+
+func ensureAnthropicMimicToolCacheBreakpoint(body []byte, cacheTTL string) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body
+	}
+	lastEligible := -1
+	for index, tool := range tools.Array() {
+		if !tool.IsObject() {
+			continue
+		}
+		if tool.Get("defer_loading").Bool() || tool.Get("custom.defer_loading").Bool() {
+			body = deleteJSONPath(body, "tools."+strconv.Itoa(index)+".cache_control")
+			continue
+		}
+		lastEligible = index
+	}
+	if lastEligible < 0 {
+		return body
+	}
+	path := "tools." + strconv.Itoa(lastEligible) + ".cache_control"
+	if gjson.GetBytes(body, path).Exists() {
+		return body
+	}
+	return setJSONRaw(body, path, anthropicCloakCacheControl(cacheTTL))
 }
 
 func anthropicMessageEligibleForRollingCache(message gjson.Result, role string) bool {
@@ -1172,11 +1447,54 @@ func anthropicFirstUserText(messages gjson.Result) string {
 }
 
 func anthropicBillingHeader(firstUserText, clientVersion string) string {
+	return "x-anthropic-billing-header: cc_version=" + clientVersion + "." + anthropicBillingFingerprint(firstUserText, clientVersion) + "; cc_entrypoint=cli;"
+}
+
+func anthropicBillingFingerprint(firstUserText, clientVersion string) string {
 	padded := []byte(firstUserText + strings.Repeat("0", 21))
 	selected := []byte{padded[4], padded[7], padded[20]}
 	digest := sha256.Sum256(append([]byte(anthropicBillingSalt), append(selected, []byte(clientVersion)...)...))
-	fingerprint := hex.EncodeToString(digest[:])[:3]
-	return "x-anthropic-billing-header: cc_version=" + clientVersion + "." + fingerprint + "; cc_entrypoint=cli;"
+	return hex.EncodeToString(digest[:])[:3]
+}
+
+func anthropicBillingVersion(body []byte) string {
+	billing := jsonStringValue(gjson.GetBytes(body, "system.0.text"))
+	if !strings.HasPrefix(billing, "x-anthropic-billing-header:") {
+		return ""
+	}
+	match := anthropicBillingVersionPattern.FindStringSubmatch(billing)
+	if len(match) == 2 {
+		return match[1]
+	}
+	return ""
+}
+
+// syncAnthropicOAuthBillingVersion keeps native billing attribution in step
+// with the account fingerprint applied to the outgoing User-Agent header.
+func syncAnthropicOAuthBillingVersion(body []byte, userAgent string) []byte {
+	version := anthropicUserAgentVersion(http.Header{"User-Agent": {userAgent}})
+	if version == "" {
+		return body
+	}
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
+		return body
+	}
+	fingerprint := anthropicBillingFingerprint(anthropicFirstUserText(gjson.GetBytes(body, "messages")), version)
+	for index, block := range system.Array() {
+		field := block.Get("text")
+		if field.Type != gjson.String || !strings.HasPrefix(field.String(), "x-anthropic-billing-header") {
+			continue
+		}
+		updated := anthropicBillingFingerprintPattern.ReplaceAllString(field.String(), "cc_version="+version+"."+fingerprint)
+		updated = anthropicBillingVersionPattern.ReplaceAllString(updated, "cc_version="+version)
+		if updated != field.String() {
+			if rewritten, err := sjson.SetBytes(body, "system."+strconv.Itoa(index)+".text", updated); err == nil {
+				body = rewritten
+			}
+		}
+	}
+	return body
 }
 
 func anthropicUserAgentVersion(headers http.Header) string {
@@ -1223,26 +1541,347 @@ func parseAnthropicCLIVersion(version string) ([3]int, bool) {
 // Callers older than anthropicCLIVersion are raised to the pin so Anthropic
 // does not 400 new models; newer official CLIs keep their real version.
 func anthropicClientVersion(headers http.Header) string {
+	floor := anthropicEffectiveCLIVersion()
 	if version := anthropicUserAgentVersion(headers); version != "" &&
-		anthropicCLIVersionGTE(version, anthropicCLIVersion) {
+		anthropicCLIVersionGTE(version, floor) {
 		return version
 	}
-	return anthropicCLIVersion
+	return floor
 }
 
-func injectAnthropicOAuthHeaders(
+// OAuth fingerprints are persisted with the private credential and cached per server.
+type anthropicOAuthFingerprint = anthropicauth.Fingerprint
+
+func defaultAnthropicOAuthFingerprint() anthropicOAuthFingerprint {
+	return anthropicOAuthFingerprint{
+		UserAgent:               "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
+		StainlessLang:           "js",
+		StainlessPackageVersion: "0.94.0",
+		StainlessOS:             "Linux",
+		StainlessArch:           "arm64",
+		StainlessRuntime:        "node",
+		StainlessRuntimeVersion: "v24.3.0",
+	}
+}
+
+func anthropicOAuthFingerprintKey(cfg *model.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	identity := ""
+	if credential := anthropicCredentialForWire(cfg, ""); credential != nil {
+		identity = strings.TrimSpace(credential.AccountUUID)
+		if identity == "" {
+			identity = strings.ToLower(strings.TrimSpace(credential.EmailAddress))
+		}
+	}
+	if identity == "" {
+		identity = strings.TrimSpace(cfg.Name)
+	}
+	return strconv.FormatInt(cfg.ID, 10) + "\x00" + identity
+}
+
+func anthropicAcceptableFingerprintUserAgent(userAgent string) bool {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" || len(userAgent) > 256 {
+		return false
+	}
+	matches := anthropicFingerprintUserAgentPattern.FindStringSubmatch(userAgent)
+	if len(matches) != 4 {
+		return false
+	}
+	version, ok := parseAnthropicCLIVersion(matches[2])
+	if !ok {
+		return false
+	}
+	current, currentOK := parseAnthropicCLIVersion(anthropicEffectiveCLIVersion())
+	if !currentOK {
+		return true
+	}
+	return anthropicFingerprintVersionPlausible(version, current)
+}
+
+// anthropicFingerprintMaxPatchLead bounds how far a client may lead the runtime
+// version. A genuine client leads it only by releases the hourly sync has not
+// seen yet; an adopted sentinel such as 2.999.0 would otherwise pin the account
+// forever, because the floor only ever raises a stored version.
+const anthropicFingerprintMaxPatchLead = 100
+
+func anthropicFingerprintVersionPlausible(version, current [3]int) bool {
+	switch {
+	case version[0] != current[0]:
+		return false
+	case version[1] < current[1]:
+		return true
+	case version[1] == current[1]:
+		return version[2] <= current[2]+anthropicFingerprintMaxPatchLead
+	case version[1] == current[1]+1:
+		return version[2] <= anthropicFingerprintMaxPatchLead
+	default:
+		return false
+	}
+}
+
+func normalizeAnthropicFingerprintUserAgent(userAgent string) string {
+	userAgent = strings.TrimSpace(userAgent)
+	matches := anthropicFingerprintUserAgentPattern.FindStringSubmatch(userAgent)
+	if len(matches) != 4 {
+		return defaultAnthropicOAuthFingerprint().UserAgent
+	}
+	effective := anthropicEffectiveCLIVersion()
+	if anthropicCLIVersionGTE(matches[2], effective) {
+		return userAgent
+	}
+	return matches[1] + effective + matches[3]
+}
+
+func anthropicFingerprintVersionIsNewer(candidate, cached string) bool {
+	candidateVersion := anthropicUserAgentVersion(http.Header{"User-Agent": []string{candidate}})
+	cachedVersion := anthropicUserAgentVersion(http.Header{"User-Agent": []string{cached}})
+	return candidateVersion != "" && cachedVersion != "" &&
+		candidateVersion != cachedVersion && anthropicCLIVersionGTE(candidateVersion, cachedVersion)
+}
+
+func anthropicFingerprintHeadersFromIncoming(fp *anthropicOAuthFingerprint, incoming http.Header) bool {
+	if fp == nil {
+		return false
+	}
+	ua := anthropicHeaderValue(incoming, "User-Agent")
+	if !anthropicAcceptableFingerprintUserAgent(ua) {
+		return false
+	}
+	fp.UserAgent = normalizeAnthropicFingerprintUserAgent(ua)
+	mergeAnthropicOAuthFingerprintHeaders(fp, incoming)
+	return true
+}
+
+func mergeAnthropicOAuthFingerprintHeaders(fp *anthropicOAuthFingerprint, incoming http.Header) {
+	if fp == nil {
+		return
+	}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"X-Stainless-Lang", &fp.StainlessLang},
+		{"X-Stainless-Package-Version", &fp.StainlessPackageVersion},
+		{"X-Stainless-OS", &fp.StainlessOS},
+		{"X-Stainless-Arch", &fp.StainlessArch},
+		{"X-Stainless-Runtime", &fp.StainlessRuntime},
+		{"X-Stainless-Runtime-Version", &fp.StainlessRuntimeVersion},
+	} {
+		if value := strings.TrimSpace(anthropicHeaderValue(incoming, field.name)); value != "" {
+			*field.value = value
+		}
+	}
+}
+
+// getAnthropicOAuthFingerprint keeps one account identity across requests and
+// restarts. Only a newer, well-formed Claude CLI UA may replace it.
+func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Config, incoming http.Header) *anthropicOAuthFingerprint {
+	fallback := defaultAnthropicOAuthFingerprint()
+	if s == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
+		return &fallback
+	}
+	key := anthropicOAuthFingerprintKey(cfg)
+	s.anthropicOAuthFingerprintMu.Lock()
+	if s.anthropicOAuthFingerprints == nil {
+		s.anthropicOAuthFingerprints = make(map[string]anthropicOAuthFingerprint)
+	}
+	if s.anthropicOAuthFingerprintDirty == nil {
+		s.anthropicOAuthFingerprintDirty = make(map[string]bool)
+	}
+	if s.anthropicOAuthFingerprintSaving == nil {
+		s.anthropicOAuthFingerprintSaving = make(map[string]bool)
+	}
+	if s.anthropicOAuthFingerprintRetryAt == nil {
+		s.anthropicOAuthFingerprintRetryAt = make(map[string]time.Time)
+	}
+	cached, exists := s.anthropicOAuthFingerprints[key]
+	if !exists {
+		if credential := anthropicCredentialForWire(cfg, ""); credential != nil && credential.Fingerprint != nil {
+			cached = *credential.Fingerprint
+			exists = true
+		}
+	}
+	previous := cached
+	if !exists || !anthropicAcceptableFingerprintUserAgent(cached.UserAgent) {
+		cached = fallback
+		anthropicFingerprintHeadersFromIncoming(&cached, incoming)
+	} else {
+		// Raise an older stored version to the runtime floor without changing its
+		// suffix. The floor is re-applied on every read, so raising it is not an
+		// account change: persisting it would rewrite every OAuth credential and
+		// flush the channel cache once per account after each version sync.
+		cached.UserAgent = normalizeAnthropicFingerprintUserAgent(cached.UserAgent)
+		previous.UserAgent = cached.UserAgent
+		if candidate := strings.TrimSpace(anthropicHeaderValue(incoming, "User-Agent")); anthropicAcceptableFingerprintUserAgent(candidate) {
+			candidate = normalizeAnthropicFingerprintUserAgent(candidate)
+			if anthropicFingerprintVersionIsNewer(candidate, cached.UserAgent) || cached == fallback {
+				cached.UserAgent = candidate
+				mergeAnthropicOAuthFingerprintHeaders(&cached, incoming)
+			} else if candidate == cached.UserAgent {
+				// A native client at the same version can correct stale header metadata.
+				mergeAnthropicOAuthFingerprintHeaders(&cached, incoming)
+			}
+		}
+	}
+	cached = completeAnthropicOAuthFingerprint(cached, fallback)
+	s.anthropicOAuthFingerprints[key] = cached
+	changed := !exists || cached != previous
+	save := (changed || s.anthropicOAuthFingerprintDirty[key]) &&
+		!s.anthropicOAuthFingerprintSaving[key] &&
+		(changed || !time.Now().Before(s.anthropicOAuthFingerprintRetryAt[key]))
+	if save {
+		s.anthropicOAuthFingerprintSaving[key] = true
+	}
+	s.anthropicOAuthFingerprintMu.Unlock()
+
+	if save {
+		persisted, err := s.persistAnthropicOAuthFingerprint(ctx, cfg, cached)
+		s.anthropicOAuthFingerprintMu.Lock()
+		delete(s.anthropicOAuthFingerprintSaving, key)
+		latest := s.anthropicOAuthFingerprints[key]
+		if err != nil {
+			s.anthropicOAuthFingerprintDirty[key] = true
+			s.anthropicOAuthFingerprintRetryAt[key] = time.Now().Add(time.Minute)
+		} else {
+			delete(s.anthropicOAuthFingerprintRetryAt, key)
+			if anthropicFingerprintVersionIsNewer(persisted.UserAgent, latest.UserAgent) || latest == cached {
+				latest = persisted
+				s.anthropicOAuthFingerprints[key] = latest
+			}
+			if latest == persisted {
+				delete(s.anthropicOAuthFingerprintDirty, key)
+			} else {
+				s.anthropicOAuthFingerprintDirty[key] = true
+			}
+		}
+		s.anthropicOAuthFingerprintMu.Unlock()
+		if err != nil {
+			log.Printf("[WARN] persist Anthropic OAuth fingerprint for channel %d: %v", cfg.ID, err)
+		}
+		cached = latest
+	}
+	copy := cached
+	return &copy
+}
+
+func completeAnthropicOAuthFingerprint(fp, fallback anthropicOAuthFingerprint) anthropicOAuthFingerprint {
+	if fp.StainlessLang == "" {
+		fp.StainlessLang = fallback.StainlessLang
+	}
+	if fp.StainlessPackageVersion == "" {
+		fp.StainlessPackageVersion = fallback.StainlessPackageVersion
+	}
+	if fp.StainlessOS == "" {
+		fp.StainlessOS = fallback.StainlessOS
+	}
+	if fp.StainlessArch == "" {
+		fp.StainlessArch = fallback.StainlessArch
+	}
+	if fp.StainlessRuntime == "" {
+		fp.StainlessRuntime = fallback.StainlessRuntime
+	}
+	if fp.StainlessRuntimeVersion == "" {
+		fp.StainlessRuntimeVersion = fallback.StainlessRuntimeVersion
+	}
+	return fp
+}
+
+func (s *Server) persistAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Config, proposed anthropicOAuthFingerprint) (anthropicOAuthFingerprint, error) {
+	if s.store == nil || cfg.ID <= 0 || cfg.OAuthCredential == "" {
+		return proposed, nil
+	}
+	currentCfg := cfg
+	for attempts := 0; attempts < 3; attempts++ {
+		if err := ctx.Err(); err != nil {
+			return proposed, err
+		}
+		credential, err := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+		if err != nil {
+			return proposed, err
+		}
+		chosen := proposed
+		if credential.Fingerprint != nil && anthropicAcceptableFingerprintUserAgent(credential.Fingerprint.UserAgent) {
+			stored := completeAnthropicOAuthFingerprint(*credential.Fingerprint, defaultAnthropicOAuthFingerprint())
+			stored.UserAgent = normalizeAnthropicFingerprintUserAgent(stored.UserAgent)
+			if anthropicFingerprintVersionIsNewer(stored.UserAgent, proposed.UserAgent) {
+				chosen = stored
+			}
+		}
+		if credential.Fingerprint != nil && *credential.Fingerprint == chosen {
+			return chosen, nil
+		}
+		credential.Fingerprint = &chosen
+		payload, err := credential.JSON()
+		if err != nil {
+			return proposed, err
+		}
+		updated, err := s.store.CompareAndSwapOAuthCredential(ctx, currentCfg.ID, model.AuthTypeAnthropicOAuth, currentCfg.OAuthCredential, payload)
+		if err != nil {
+			return proposed, err
+		}
+		if updated {
+			s.InvalidateChannelListCache()
+			return chosen, nil
+		}
+		currentCfg, err = s.store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			return proposed, err
+		}
+		if !currentCfg.UsesAnthropicOAuth() {
+			return proposed, errors.New("anthropic OAuth channel changed while saving fingerprint")
+		}
+		if anthropicOAuthFingerprintKey(currentCfg) != anthropicOAuthFingerprintKey(cfg) {
+			return proposed, errors.New("anthropic OAuth account changed while saving fingerprint")
+		}
+	}
+	return proposed, errors.New("anthropic OAuth fingerprint changed during save")
+}
+
+func applyAnthropicOAuthFingerprint(req *http.Request, fingerprint *anthropicOAuthFingerprint) {
+	if req == nil {
+		return
+	}
+	if fingerprint == nil {
+		fallback := defaultAnthropicOAuthFingerprint()
+		fingerprint = &fallback
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"User-Agent", fingerprint.UserAgent},
+		{"X-Stainless-Lang", fingerprint.StainlessLang},
+		{"X-Stainless-Package-Version", fingerprint.StainlessPackageVersion},
+		{"X-Stainless-OS", fingerprint.StainlessOS},
+		{"X-Stainless-Arch", fingerprint.StainlessArch},
+		{"X-Stainless-Runtime", fingerprint.StainlessRuntime},
+		{"X-Stainless-Runtime-Version", fingerprint.StainlessRuntimeVersion},
+	} {
+		if strings.TrimSpace(field.value) != "" {
+			setRawHeader(req.Header, field.name, field.value)
+		}
+	}
+}
+
+func injectAnthropicOAuthHeadersWithFingerprint(
 	req *http.Request,
 	cfg *model.Config,
 	accessToken string,
 	body []byte,
+	callerOwnsWire bool,
+	fingerprint *anthropicOAuthFingerprint,
 	incomingHeaders ...http.Header,
 ) {
 	if req == nil {
 		return
 	}
 	incoming := anthropicIncomingHeaders(req, incomingHeaders)
-	if anthropicRequestOwnsItsWire(body, incoming) {
+	if callerOwnsWire {
 		applyAnthropicNativeHeaders(req, incoming)
+		applyAnthropicNativeOAuthDefaults(req, body, fingerprint)
 		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
 		return
 	}
@@ -1250,10 +1889,24 @@ func injectAnthropicOAuthHeaders(
 		delete(req.Header, name)
 	}
 	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	clientVersion := anthropicBillingVersion(body)
+	if clientVersion == "" {
+		clientVersion = anthropicEffectiveCLIVersion()
+	}
 	applyAnthropicClaudeCodeHeaders(
-		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, "", incoming),
-		anthropicClientVersion(incoming),
+		req, anthropicOAuthMimicBetas(), "", clientVersion,
+		anthropicRequestIsStreaming(body), true,
 	)
+}
+
+// Header rules run after the wire headers are rebuilt. Restore only the
+// identity fields so custom rules can still control unrelated headers.
+func applyAnthropicOAuthMimicFingerprint(req *http.Request, body []byte) {
+	fingerprint := defaultAnthropicOAuthFingerprint()
+	if version := anthropicBillingVersion(body); version != "" {
+		fingerprint.UserAgent = "claude-cli/" + version + " (external, cli)"
+	}
+	applyAnthropicOAuthFingerprint(req, &fingerprint)
 }
 
 // injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头。
@@ -1263,13 +1916,14 @@ func injectAnthropicAPIKeyHeaders(
 	cfg *model.Config,
 	apiKey string,
 	body []byte,
+	callerOwnsWire bool,
 	incomingHeaders ...http.Header,
 ) {
 	if req == nil {
 		return
 	}
 	incoming := anthropicIncomingHeaders(req, incomingHeaders)
-	if anthropicRequestOwnsItsWire(body, incoming) {
+	if callerOwnsWire {
 		applyAnthropicNativeHeaders(req, incoming)
 		applyAnthropicAPIKeyAuth(req, apiKey)
 		return
@@ -1280,8 +1934,53 @@ func injectAnthropicAPIKeyHeaders(
 	applyAnthropicAPIKeyAuth(req, apiKey)
 	applyAnthropicClaudeCodeHeaders(
 		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, apiKey, incoming),
-		anthropicClientVersion(incoming),
+		anthropicClientVersion(incoming), anthropicRequestIsStreaming(body), false,
 	)
+}
+
+func injectAnthropicCountTokensHeadersWithFingerprint(req *http.Request, cfg *model.Config, apiKey string, body []byte, callerOwnsWire bool, fingerprint *anthropicOAuthFingerprint, incoming http.Header) {
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		if callerOwnsWire {
+			applyAnthropicNativeHeaders(req, incoming)
+			if normalizedAnthropicBetaHeader(incoming) == "" {
+				setRawHeader(req.Header, "Anthropic-Beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14")
+			}
+			applyAnthropicNativeOAuthDefaults(req, body, fingerprint)
+			betas := normalizedAnthropicBetaHeader(req.Header)
+			setRawHeader(req.Header, "Anthropic-Beta", appendAnthropicBeta(betas, "token-counting-2024-11-01"))
+		} else {
+			for name := range req.Header {
+				delete(req.Header, name)
+			}
+			betas := anthropicOAuthMimicBetas()
+			for _, beta := range strings.Split(normalizedAnthropicBetaHeader(incoming), ",") {
+				betas = appendAnthropicBeta(betas, beta)
+			}
+			applyAnthropicClaudeCodeHeaders(req, appendAnthropicBeta(betas, "token-counting-2024-11-01"),
+				"", anthropicEffectiveCLIVersion(), false, true)
+		}
+		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(apiKey))
+		return
+	}
+	applyAnthropicNativeHeaders(req, incoming)
+	if anthropicHeaderValue(req.Header, "Content-Type") == "" {
+		setRawHeader(req.Header, "Content-Type", "application/json")
+	}
+	if anthropicHeaderValue(req.Header, "Anthropic-Version") == "" {
+		setRawHeader(req.Header, "Anthropic-Version", "2023-06-01")
+	}
+	applyAnthropicAPIKeyAuth(req, apiKey)
+}
+
+func appendAnthropicBeta(betas, token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" || slices.Contains(strings.Split(betas, ","), token) {
+		return betas
+	}
+	if betas == "" {
+		return token
+	}
+	return betas + "," + token
 }
 
 func anthropicIncomingHeaders(req *http.Request, override []http.Header) http.Header {
@@ -1291,15 +1990,44 @@ func anthropicIncomingHeaders(req *http.Request, override []http.Header) http.He
 	return req.Header.Clone()
 }
 
-// anthropicRequestOwnsItsWire 判断这个 body 配套的 header 就是正确的指纹，网关只做
-// 透传。它跑在**出站** body 上（已经过最终化），所以用不含 CCH 的身份判据：签名与否
-// 是策略决定的，掺进来会让「网关自己产出的 body 通不过自己的检测器」。
-func anthropicRequestOwnsItsWire(body []byte, incoming http.Header) bool {
+type anthropicCallerWire struct {
+	haikuHelper      anthropicHaikuHelperShape
+	nativeClaudeCode bool
+}
+
+func (wire anthropicCallerWire) ownsWire() bool {
+	return wire.haikuHelper != anthropicHaikuHelperNone || wire.nativeClaudeCode
+}
+
+// classifyAnthropicCallerWire 只读取改写前的调用方 body，避免把网关注入的
+// metadata/billing 或 BodyRules 的修改重新解释为另一种调用方身份。
+func classifyAnthropicCallerWire(body []byte, incoming http.Header) anthropicCallerWire {
 	if !isAnthropicJSONObject(body) {
-		return false
+		return anthropicCallerWire{}
 	}
-	return nativeAnthropicHaikuHelperShape(body, incoming) != anthropicHaikuHelperNone ||
-		isNativeAnthropicClaudeCodeRequest(incoming)
+	return anthropicCallerWire{
+		haikuHelper:      nativeAnthropicHaikuHelperShape(body, incoming),
+		nativeClaudeCode: isNativeAnthropicClaudeCodeRequest(body, incoming),
+	}
+}
+
+// classifyAnthropicRequestCallerWire is the single caller-wire classification
+// shared by the proxy and admin-test paths. Claude Code sends count_tokens
+// without a billing block, so there an untransformed Anthropic body with a
+// Claude CLI UA is the native signal.
+func classifyAnthropicRequestCallerWire(
+	body []byte,
+	incoming http.Header,
+	upstreamProtocol protocol.Protocol,
+	requestPath string,
+	callerBodyIsAnthropic bool,
+) anthropicCallerWire {
+	wire := classifyAnthropicCallerWire(body, incoming)
+	if callerBodyIsAnthropic && isAnthropicCountTokensRequest(upstreamProtocol, requestPath) &&
+		validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(incoming, "User-Agent")) {
+		wire.nativeClaudeCode = true
+	}
+	return wire
 }
 
 // anthropicAPIKeyAuthorizationAllowed 判断 x-api-key 之外能否再带 Bearer。第一方
@@ -1326,10 +2054,11 @@ func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header) {
 		delete(req.Header, name)
 	}
 	for _, name := range []string{
-		"Accept", "Accept-Encoding", "Content-Type", "User-Agent", "X-App", "Anthropic-Beta", "Anthropic-Version",
+		"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Sec-Fetch-Mode", "User-Agent", "X-App", "Anthropic-Beta", "Anthropic-Version",
 		"Anthropic-Dangerous-Direct-Browser-Access", "X-Claude-Code-Session-Id", "X-Client-Request-Id",
 		"X-Stainless-Async", "X-Stainless-Lang", "X-Stainless-Runtime", "X-Stainless-Package-Version",
 		"X-Stainless-Runtime-Version", "X-Stainless-OS", "X-Stainless-Arch", "X-Stainless-Retry-Count", "X-Stainless-Timeout",
+		"X-Stainless-Helper-Method",
 	} {
 		if value := anthropicHeaderValue(incoming, name); value != "" {
 			setRawHeader(req.Header, name, value)
@@ -1337,32 +2066,66 @@ func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header) {
 	}
 }
 
-// anthropicClaudeCodeBetas 组装 Claude Code CLI 的 Anthropic-Beta 集合。
-//
-// 这里没有「OAuth 版」和「API Key 版」两套集合：betas 必须与
-// finalizeAnthropicClaudeCodeMessagesBody 产出的 body 形态严格对应，拆成两套就会
-// 出现 body 用了某能力、header 没声明对应 beta 的 400。CCH 是独立的凭证签名边界，
-// 不参与 beta 集合分支。同源是双向的：extended-cache-ttl-2025-04-11 跟随 body 里
-// 实际存在的 cache_control.ttl——缓存窗口由调用方的原始请求决定，网关不主动升级
-// 到 1h，也就不替它声明这个 beta。
+// applyAnthropicNativeOAuthDefaults 与 sub2api 的 OAuth 透传路径一样，只补调用方
+// 缺失的必需头。UA 被中间网关替换时恢复 CLI UA；已有的原生值保持不动。
+func applyAnthropicNativeOAuthDefaults(req *http.Request, body []byte, fingerprint *anthropicOAuthFingerprint) {
+	// sub2api applies the cached account fingerprint before filling generic
+	// Claude OAuth defaults. This deliberately overrides a native client's
+	// per-request UA/Stainless values after the account fingerprint is known.
+	applyAnthropicOAuthFingerprint(req, fingerprint)
+	for _, header := range [][2]string{
+		{"Accept", "application/json"}, {"Content-Type", "application/json"},
+		{"Anthropic-Version", "2023-06-01"}, {"X-App", "cli"},
+		{"X-Stainless-Lang", "js"}, {"X-Stainless-Package-Version", "0.94.0"},
+		{"X-Stainless-OS", "Linux"}, {"X-Stainless-Arch", "arm64"},
+		{"X-Stainless-Runtime", "node"}, {"X-Stainless-Runtime-Version", "v24.3.0"},
+		{"X-Stainless-Retry-Count", "0"}, {"X-Stainless-Timeout", "600"},
+		{"Anthropic-Dangerous-Direct-Browser-Access", "true"},
+	} {
+		if anthropicHeaderValue(req.Header, header[0]) == "" {
+			setRawHeader(req.Header, header[0], header[1])
+		}
+	}
+	betas := normalizedAnthropicBetaHeader(req.Header)
+	if betas == "" {
+		if strings.Contains(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "haiku") {
+			betas = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+		} else {
+			betas = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+		}
+	} else if !slices.Contains(strings.Split(betas, ","), "oauth-2025-04-20") {
+		parts := strings.Split(betas, ",")
+		if index := slices.Index(parts, "claude-code-20250219"); index >= 0 {
+			parts = slices.Insert(parts, index+1, "oauth-2025-04-20")
+		} else {
+			parts = append([]string{"oauth-2025-04-20"}, parts...)
+		}
+		betas = strings.Join(parts, ",")
+	}
+	setRawHeader(req.Header, "Anthropic-Beta", betas)
+}
+
+// anthropicOAuthMimicBetas 与 sub2api 的 FullClaudeCodeMimicryBetas 保持
+// 相同集合和顺序。OAuth 模拟请求不继承第三方客户端的 beta。
+func anthropicOAuthMimicBetas() string {
+	return "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
+		"prompt-caching-scope-2026-01-05,effort-2025-11-24,context-management-2025-06-27," +
+		"thinking-binding-controls-2026-08-01,mid-conversation-output-config-2026-07-01," +
+		"extended-cache-ttl-2025-04-11"
+}
+
+// anthropicClaudeCodeBetas 为 API Key 模拟请求按实际使用的能力声明 beta。
 func anthropicClaudeCodeBetas(body []byte) string {
-	betas := make([]string, 0, 14)
-	betas = append(betas, "claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14")
-	if strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.display"))) == "" {
-		betas = append(betas, "redact-thinking-2026-02-12")
+	betas := []string{
+		"claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14",
+		"prompt-caching-scope-2026-01-05", "effort-2025-11-24", "context-management-2025-06-27",
 	}
-	betas = append(betas,
-		"thinking-token-count-2026-05-13",
-		"context-management-2025-06-27",
-		"prompt-caching-scope-2026-01-05",
-	)
-	if !anthropicUsesLegacySystemReminder(jsonStringValue(gjson.GetBytes(body, "model"))) {
-		betas = append(betas, "mid-conversation-system-2026-04-07")
+	if gjson.GetBytes(body, "thinking.block_binding").Exists() {
+		betas = append(betas, "thinking-binding-controls-2026-08-01")
 	}
-	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && jsonMemberCount(tools) > 0 {
-		betas = append(betas, "advanced-tool-use-2025-11-20")
+	if anthropicHasMessageOutputConfig(body) {
+		betas = append(betas, "mid-conversation-output-config-2026-07-01")
 	}
-	betas = append(betas, "effort-2025-11-24", "fallback-credit-2026-06-01")
 	if strings.EqualFold(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "speed"))), "fast") {
 		betas = append(betas, "fast-mode-2026-02-01")
 	}
@@ -1373,6 +2136,16 @@ func anthropicClaudeCodeBetas(body []byte) string {
 		betas = append(betas, "cache-diagnosis-2026-04-07")
 	}
 	return strings.Join(betas, ",")
+}
+
+func anthropicHasMessageOutputConfig(body []byte) bool {
+	for _, message := range gjson.GetBytes(body, "messages").Array() {
+		if strings.EqualFold(strings.TrimSpace(jsonStringValue(message.Get("role"))), "system") &&
+			message.Get("output_config").IsObject() {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicUsesLegacySystemReminder(modelName string) bool {
@@ -1395,26 +2168,41 @@ func anthropicUsesLegacySystemReminder(modelName string) bool {
 	}
 }
 
-func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, clientVersion string) {
+func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, clientVersion string, isStreaming, oauthMimic bool) {
 	setRawHeader(req.Header, "Accept", "application/json")
+	if isStreaming {
+		setRawHeader(req.Header, "x-stainless-helper-method", "stream")
+	}
 	setRawHeader(req.Header, "Content-Type", "application/json")
 	setRawHeader(req.Header, "User-Agent", "claude-cli/"+clientVersion+" (external, cli)")
-	setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
-	setRawHeader(req.Header, "X-Stainless-Arch", anthropicStainlessArch())
+	if !oauthMimic {
+		setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
+	}
+	arch, operatingSystem, runtimeVersion := anthropicStainlessArch(), anthropicStainlessOS(), "v26.3.0"
+	if oauthMimic {
+		arch, operatingSystem, runtimeVersion = "arm64", "Linux", "v24.3.0"
+	}
+	setRawHeader(req.Header, "X-Stainless-Arch", arch)
 	setRawHeader(req.Header, "X-Stainless-Lang", "js")
-	setRawHeader(req.Header, "X-Stainless-OS", anthropicStainlessOS())
+	setRawHeader(req.Header, "X-Stainless-OS", operatingSystem)
 	setRawHeader(req.Header, "X-Stainless-Package-Version", "0.94.0")
 	setRawHeader(req.Header, "X-Stainless-Retry-Count", "0")
 	setRawHeader(req.Header, "X-Stainless-Runtime", "node")
-	setRawHeader(req.Header, "X-Stainless-Runtime-Version", "v26.3.0")
+	setRawHeader(req.Header, "X-Stainless-Runtime-Version", runtimeVersion)
 	setRawHeader(req.Header, "X-Stainless-Timeout", "600")
 	setRawHeader(req.Header, "anthropic-beta", betas)
 	setRawHeader(req.Header, "anthropic-dangerous-direct-browser-access", "true")
 	setRawHeader(req.Header, "anthropic-version", "2023-06-01")
 	setRawHeader(req.Header, "x-app", "cli")
 	setRawHeader(req.Header, "x-client-request-id", uuid.NewString())
-	setRawHeader(req.Header, "Connection", "keep-alive")
-	setRawHeader(req.Header, "Accept-Encoding", "gzip, deflate, br, zstd")
+	if !oauthMimic {
+		setRawHeader(req.Header, "Connection", "keep-alive")
+		setRawHeader(req.Header, "Accept-Encoding", "gzip, deflate, br, zstd")
+	}
+}
+
+func anthropicRequestIsStreaming(body []byte) bool {
+	return gjson.GetBytes(body, "stream").Bool()
 }
 
 // setRawHeader 以给定大小写写入请求头。Claude Code CLI 的线上头名全部小写，Go 的
@@ -1437,8 +2225,7 @@ func deleteRawHeader(headers http.Header, name string) {
 //
 // 优先级：下游显式声明的 header → body 的 metadata.user_id.session_id → 凭证身份
 // 与首条用户消息稳定派生 → 随机。body 这一级不能省：finalizeAnthropicOAuthMessages
-// Body 先把 session_id 写进 metadata.user_id，这里读回来才能保证 header 与 body 同值，
-// 而 isNativeAnthropicClaudeCodeRequest 正是按这个等式识别原生 Claude Code 请求的。
+// Body 先把 session_id 写进 metadata.user_id，这里读回来才能保证 header 与 body 同值。
 func resolveAnthropicSessionID(body []byte, cfg *model.Config, apiKey string, headers http.Header) string {
 	if sessionID := anthropicSessionIDFromHeaders(headers); sessionID != "" {
 		return sessionID

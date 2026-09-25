@@ -189,7 +189,18 @@ func (s *Server) logProxyResult(
 	res *fwResult,
 	errMsg string,
 ) {
+	if reqCtx.countTokens() {
+		return
+	}
 	s.AddLogAsync(buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, statusCode, duration, res, errMsg))
+}
+
+// logCountTokensUpstreamFailure keeps a failed first-party count_tokens visible.
+// It stays out of the request log on purpose: that log feeds channel health
+// scores, and an auxiliary request must not rank channels for generation.
+func logCountTokensUpstreamFailure(cfg *model.Config, status int, detail string) {
+	log.Printf("[WARN] count_tokens 上游失败，回退本地估算: channel=%s(id=%d) status=%d detail=%s",
+		cfg.Name, cfg.ID, status, truncateErr(detail))
 }
 
 // logProtocolCapabilityFallback 记录一次真实发生的协议能力探测失败。
@@ -363,6 +374,11 @@ func (s *Server) handleNetworkError(
 	if statusCode != 499 && res != nil && hasConsumedTokens(res) {
 		// isSuccess=false 表示请求失败，但仍记录已消耗的 token
 		s.updateTokenStatsForProxy(reqCtx, false, duration, res, actualModel)
+	}
+	if reqCtx.countTokens() && !failure.isClientCanceled {
+		logCountTokensUpstreamFailure(cfg, statusCode, err.Error())
+		failure.nextAction = cooldown.ActionRetryChannel
+		return failure, cooldown.ActionRetryChannel
 	}
 
 	if !shouldRetry {
@@ -579,7 +595,7 @@ func (s *Server) handleProxySuccess(
 
 	// 使用 cooldownManager 清除冷却状态
 	// 设计原则: 清除失败不应影响用户请求成功
-	if !cfg.AntigravityCredits {
+	if !cfg.AntigravityCredits && !reqCtx.countTokens() {
 		if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
 			count := cooldownClearChannelFailCount.Add(1)
 			if count%100 == 1 {
@@ -615,11 +631,12 @@ func (s *Server) handleProxySuccess(
 		reqCtx.routingSession.rememberPreferredChannel(cfg.ID)
 	}
 
-	entry := buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
-	s.AddLogAsync(entry)
-
-	// 异步更新Token统计
-	s.updateTokenStatsForProxy(reqCtx, true, duration, res, actualModel)
+	if !reqCtx.countTokens() {
+		entry := buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
+		s.AddLogAsync(entry)
+		// 异步更新Token统计
+		s.updateTokenStatsForProxy(reqCtx, true, duration, res, actualModel)
+	}
 
 	return &proxyResult{
 		status:           res.Status,
@@ -706,6 +723,28 @@ func (s *Server) handleUncommittedWebsocketTransportFailure(
 	}, cooldown.ActionRetryChannel
 }
 
+// countTokensUpstreamErrorResult ends a failed count_tokens attempt without
+// cooldown, token stats, or a request log. A rejected body fails the same way on
+// every official channel, so 400/413 stop the fan-out; the handler then answers
+// with the local estimate either way.
+func countTokensUpstreamErrorResult(cfg *model.Config, res *fwResult, duration float64) (*proxyResult, cooldown.Action) {
+	logCountTokensUpstreamFailure(cfg, res.Status, string(res.Body))
+	action := cooldown.ActionRetryChannel
+	if res.Status == http.StatusBadRequest || res.Status == http.StatusRequestEntityTooLarge {
+		action = cooldown.ActionReturnClient
+	}
+	return &proxyResult{
+		status:          res.Status,
+		header:          res.Header,
+		body:            res.Body,
+		channelID:       &cfg.ID,
+		duration:        duration,
+		succeeded:       false,
+		nextAction:      action,
+		proxyLogWritten: true,
+	}, action
+}
+
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）
 // 从proxy.go提取，遵循SRP原则
 // 注意：与 handleErrorResponse（HTTP层）不同
@@ -722,6 +761,9 @@ func (s *Server) handleProxyErrorResponse(
 	forceReturnClient bool,
 	modelCapacityRateLimited bool,
 ) (*proxyResult, cooldown.Action) {
+	if reqCtx.countTokens() {
+		return countTokensUpstreamErrorResult(cfg, res, duration)
+	}
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
 	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
 		input.ModelScoped = true

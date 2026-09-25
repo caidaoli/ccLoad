@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -302,11 +303,41 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol)
 }
 
+// Only Anthropic's first-party origin has a measured native count_tokens wire.
+// A channel with mixed targets is left to the local estimator so URL fallback
+// cannot silently send this auxiliary request to a third-party gateway.
+func (s *Server) officialAnthropicCountTokensCandidates(cands []*model.Config) []*model.Config {
+	selected := make([]*model.Config, 0, len(cands))
+	for _, cfg := range cands {
+		runtimeCfg := s.withOAuthBaseURLOverride(cfg)
+		if len(runtimeCfg.URLs) == 0 {
+			continue
+		}
+		allOfficial := true
+		for _, entry := range runtimeCfg.URLs {
+			parsed, err := url.Parse(model.StripExactUpstreamURLMarker(entry.URL))
+			if err != nil || !entry.SupportsProtocol(string(protocol.Anthropic)) || !isOfficialAnthropicURL(parsed) {
+				allOfficial = false
+				break
+			}
+		}
+		if allOfficial {
+			selected = append(selected, cfg)
+		}
+	}
+	return selected
+}
+
+func (s *Server) handleLocalCountTokens(c *gin.Context, body []byte) {
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	s.handleCountTokens(c)
+}
+
 // ============================================================================
 // 主请求处理器
 // ============================================================================
 
-// handleSpecialRoutes 处理特殊路由（模型列表、token计数等）
+// handleSpecialRoutes 处理不需要上游渠道的特殊路由。
 // 返回 true 表示已处理，调用方应直接返回
 func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 	path := c.Request.URL.Path
@@ -318,9 +349,6 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 		return true
 	case method == http.MethodGet && path == "/v1beta/models":
 		s.handleListGeminiModels(c)
-		return true
-	case method == http.MethodPost && path == "/v1/messages/count_tokens":
-		s.handleCountTokens(c)
 		return true
 	}
 	return false
@@ -378,7 +406,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyAlphaSearch {
+	requestFamily := protocol.DetectRequestFamily(effectiveRequestPath)
+	countTokensRequest := requestFamily == protocol.RequestFamilyCountTokens
+	if requestFamily == protocol.RequestFamilyAlphaSearch {
 		all = sanitizeCodexAlphaSearchBody(all)
 	}
 
@@ -404,7 +434,15 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
 
-	if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
+	// count_tokens is an auxiliary, non-billable endpoint: an exhausted budget
+	// still gets an estimate. A model outside the token's whitelist must not
+	// reach a first-party account either, so it gets the local estimate too.
+	if countTokensRequest {
+		if !s.tokenModelAllowed(tokenHashStr, incoming.authorizationModel()) {
+			s.handleLocalCountTokens(c, all)
+			return
+		}
+	} else if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
 		return
 	}
 
@@ -422,7 +460,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	var executionSessionRequestBody []byte
 	var nativeRequestBody []byte
 	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
-		protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyResponses {
+		requestFamily == protocol.RequestFamilyResponses {
 		sessionID := responsesExecutionSessionID(c.Request.Header)
 		// Ordinary HTTP requests only need process-local state when the client supplied
 		// the explicit Session-Id contract. Cache routing hints are not conversation IDs.
@@ -462,7 +500,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
-	if err == nil && requestMethod == http.MethodPost && protocol.DetectRequestFamily(effectiveRequestPath) != protocol.RequestFamilyAlphaSearch {
+	if err == nil && requestMethod == http.MethodPost && requestFamily != protocol.RequestFamilyAlphaSearch {
 		cands = s.appendAntigravityCreditsCandidates(ctx, cands, originalModel, string(clientProtocol), all)
 	}
 	if err != nil {
@@ -473,9 +511,16 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
+	if countTokensRequest {
+		cands = s.officialAnthropicCountTokensCandidates(cands)
+		if len(cands) == 0 {
+			s.handleLocalCountTokens(c, all)
+			return
+		}
+	}
 
 	if len(cands) == 0 {
-		if protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyAlphaSearch {
+		if requestFamily == protocol.RequestFamilyAlphaSearch {
 			writeEmptyAlphaSearchResponse(c.Writer)
 			return
 		}
@@ -572,6 +617,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 		return
 	}
+	if countTokensRequest && (lastResult == nil || !lastResult.isClientCanceled) {
+		s.handleLocalCountTokens(c, all)
+		return
+	}
 
 	channelIDs := make(map[int64]struct{}, len(cands))
 	for _, cfg := range cands {
@@ -618,17 +667,20 @@ func shouldStopTryingChannels(result *proxyResult) bool {
 	return result.nextAction == cooldown.ActionReturnClient
 }
 
+// tokenModelAllowed 报告令牌模型白名单是否放行该模型；无令牌或无模型时不受限。
+func (s *Server) tokenModelAllowed(tokenHash, modelName string) bool {
+	return tokenHash == "" || modelName == "" || s.authService.IsModelAllowed(tokenHash, modelName)
+}
+
 // enforceTokenLimits 检查 token 的模型限制与费用限额。
 // 违规时已写响应并返回 false，调用方应直接 return。
 func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel string) bool {
 	// 检查令牌模型限制（2026-01新增）
-	if tokenHash != "" && originalModel != "" {
-		if !s.authService.IsModelAllowed(tokenHash, originalModel) {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
-			})
-			return false
-		}
+	if !s.tokenModelAllowed(tokenHash, originalModel) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
+		})
+		return false
 	}
 
 	// 检查令牌费用限额（2026-01新增）
@@ -733,7 +785,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		// 使用 cooldownManager.HandleError 统一处理（DRY原则）
 		if err != nil && errors.Is(err, ErrAllKeysUnavailable) {
 			// 统一走 applyCooldownDecision：断开取消链+按决策执行缓存失效
-			s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
+			if !reqCtx.countTokens() {
+				s.applyCooldownDecision(ctx, cfg, httpErrorInputFromParts(cfg.ID, cooldown.NoKeyIndex, 503, nil, nil))
+			}
 			continue
 		}
 

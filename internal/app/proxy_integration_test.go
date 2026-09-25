@@ -976,9 +976,8 @@ func antigravityProxyClaudeThoughtSignature(modelName string) string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
-// 身份 fixture 必须是真实形态：device_id 是 64 位小写 hex，account_uuid 是 UUID。
-// isNativeAnthropicClaudeCodeRequest 按上游 isValidUserID 校验这两处，占位串会让
-// 本该直通的原生请求在测试里被误判成第三方调用方。
+// 使用真实 Claude Code 身份形态作为代理测试 fixture：64 位 hex device_id
+// 和 UUID account_uuid；新版 metadata.user_id 的原生判定只要求 JSON 结构可解析。
 const (
 	anthropicProxyTestDeviceID    = "b7c1d0e9f28a34556677889900aabbccddeeff00112233445566778899aabbcc"
 	anthropicProxyTestAccountUUID = "5c9e1a2b-3d4f-4a5b-8c6d-7e8f90a1b2c3"
@@ -1104,8 +1103,9 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	// 指纹只由「是不是 Claude Code CLI 线协议」决定，与凭证形态无关：API Key 渠道
 	// 同样声明 OAuth 三件套。
 	for _, required := range []string{
-		"claude-code-20250219", "oauth-2025-04-20", "fallback-credit-2026-06-01",
-		"advanced-tool-use-2025-11-20", "fast-mode-2026-02-01", "cache-diagnosis-2026-04-07",
+		"claude-code-20250219", "oauth-2025-04-20", "prompt-caching-scope-2026-01-05",
+		"effort-2025-11-24", "context-management-2025-06-27", "fast-mode-2026-02-01",
+		"cache-diagnosis-2026-04-07",
 	} {
 		if !strings.Contains(betas, required) {
 			t.Fatalf("Anthropic-Beta=%q missing %q", betas, required)
@@ -1127,11 +1127,10 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	if got := gjson.GetBytes(upstreamBody, "messages.0.content").String(); !strings.Contains(got, "keep this native prompt") {
 		t.Fatalf("caller system prompt was dropped: %s", upstreamBody)
 	}
-	// 第一方 origin：真实 Claude Code 在这里发 cch，所以 API Key 渠道也必须签（见
-	// anthropicCCHSigningEnabled）。签名值不能是占位哨兵 00000。
+	// 新生成的 CLI billing block 跟随 sub2api 当前模拟路径，不写 CCH。
 	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") ||
-		!strings.Contains(got, " cch=") || strings.Contains(got, "cch=00000;") {
-		t.Fatalf("API-key billing on first-party origin must be signed: %q", got)
+		strings.Contains(got, " cch=") {
+		t.Fatalf("API-key mimic billing contains CCH: %q", got)
 	}
 	if gjson.GetBytes(upstreamBody, "temperature").Exists() || gjson.GetBytes(upstreamBody, "top_p").Exists() ||
 		gjson.GetBytes(upstreamBody, "top_k").Exists() {
@@ -1175,8 +1174,9 @@ func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			type capturedRequest struct {
-				sessionID string
-				body      []byte
+				sessionID       string
+				headerSessionID string
+				body            []byte
 			}
 			var captured []capturedRequest
 			env := setupProxyTestEnv(t, []testChannel{{
@@ -1189,8 +1189,9 @@ func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
 					return nil, err
 				}
 				captured = append(captured, capturedRequest{
-					sessionID: r.Header.Get("X-Claude-Code-Session-Id"),
-					body:      body,
+					sessionID:       anthropicSessionIDFromBody(body),
+					headerSessionID: r.Header.Get("X-Claude-Code-Session-Id"),
+					body:            body,
 				})
 				return &http.Response{
 					StatusCode: http.StatusOK,
@@ -1227,10 +1228,11 @@ func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
 				if _, err := uuid.Parse(request.sessionID); err != nil {
 					t.Fatalf("Anthropic session ID=%q, want UUID: %v", request.sessionID, err)
 				}
-				// header 与 body 的会话身份必须同值，OAuth 与 API Key 同构：
-				// isNativeAnthropicClaudeCodeRequest 正是按这个等式识别原生请求。
-				if bodySessionID := anthropicSessionIDFromBody(request.body); bodySessionID != request.sessionID {
-					t.Fatalf("body session=%q header session=%q body=%s", bodySessionID, request.sessionID, request.body)
+				if test.authType == model.AuthTypeAnthropicOAuth && request.headerSessionID != "" {
+					t.Fatalf("OAuth mimic added session header=%q", request.headerSessionID)
+				}
+				if test.authType != model.AuthTypeAnthropicOAuth && request.headerSessionID != request.sessionID {
+					t.Fatalf("API-key body session=%q header session=%q body=%s", request.sessionID, request.headerSessionID, request.body)
 				}
 			}
 		})
@@ -1240,27 +1242,39 @@ func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
 func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 	t.Parallel()
 
+	const clientAccountUUID = "8b6a103d-024e-45a9-b9c5-313708184fd1"
+	const clientSessionID = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
+	const clientParentSessionID = "11111111-2222-4333-8444-555555555555"
 	credentialJSON := anthropicProxyTestCredential(t, "oauth-anthropic-token")
 	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity, err := json.Marshal(map[string]string{
-		"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID,
-		"session_id": "e03895ad-8b34-4a84-bbf6-002e8909b17b",
+		"device_id": credential.DeviceID, "account_uuid": clientAccountUUID,
+		"session_id": clientSessionID, "parent_session_id": clientParentSessionID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var attempts atomic.Int32
 	var bodies [][]byte
+	var headers []http.Header
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "native-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
 		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
 	}}, map[int]string{0: "https://api.anthropic.com"})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list Anthropic OAuth configs: (%v, %v)", err, len(configs))
+	}
+	channelID := configs[0].ID
+	wantDeviceID := anthropicSub2APIClientID(channelID, credential.AccountUUID)
+	wantSessionID := anthropicSub2APISessionID(channelID, clientSessionID)
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, body)
+		headers = append(headers, r.Header.Clone())
 		if attempts.Add(1) == 1 {
 			return &http.Response{
 				StatusCode: http.StatusBadRequest,
@@ -1293,12 +1307,13 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		"User-Agent":               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 		"X-App":                    "cli",
 		"Anthropic-Beta":           "claude-code-20250219",
-		"X-Claude-Code-Session-Id": "e03895ad-8b34-4a84-bbf6-002e8909b17b",
+		"X-Claude-Code-Session-Id": clientSessionID,
 	})
 
-	if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
+	if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 || len(headers) != 2 {
 		t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
 	}
+	mappedSessionID := ""
 	for index, body := range bodies {
 		if got := gjson.GetBytes(body, "system.#").Int(); got != 2 {
 			t.Fatalf("attempt %d system blocks=%d body=%s", index+1, got, body)
@@ -1309,9 +1324,685 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		if got := gjson.GetBytes(body, "messages.#").Int(); got != 1 {
 			t.Fatalf("attempt %d messages=%d body=%s", index+1, got, body)
 		}
+		userID := gjson.GetBytes(body, "metadata.user_id").String()
+		identity := gjson.Parse(userID)
+		sessionID := identity.Get("session_id").String()
+		parentSessionID := identity.Get("parent_session_id").String()
+		if identity.Get("account_uuid").String() != credential.AccountUUID ||
+			identity.Get("device_id").String() != wantDeviceID ||
+			sessionID != wantSessionID || parentSessionID != "" ||
+			headerValueFold(headers[index], "X-Claude-Code-Session-Id") != sessionID {
+			t.Fatalf("attempt %d account/session mismatch: header=%v body=%s", index+1, headers[index], body)
+		}
+		if index == 0 {
+			mappedSessionID = sessionID
+		} else if sessionID != mappedSessionID {
+			t.Fatalf("retry changed mapped session: first=%q second=%q", mappedSessionID, sessionID)
+		}
+		resigned, signErr := finalizeAnthropicCCH(body)
+		if signErr != nil || !bytes.Equal(resigned, body) {
+			t.Fatalf("attempt %d CCH mismatch: err=%v body=%s", index+1, signErr, body)
+		}
 	}
 	if !gjson.GetBytes(bodies[0], "thinking").Exists() || gjson.GetBytes(bodies[1], "thinking").Exists() {
 		t.Fatalf("thinking downgrade failed: first=%s second=%s", bodies[0], bodies[1])
+	}
+	simulated := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if simulated.Code != http.StatusOK {
+		t.Fatalf("simulated status=%d body=%s", simulated.Code, simulated.Body.String())
+	}
+	simulatedID := gjson.Parse(gjson.GetBytes(bodies[len(bodies)-1], "metadata.user_id").String())
+	if got := simulatedID.Get("device_id").String(); got != wantDeviceID {
+		t.Fatalf("simulated device_id=%q, native device_id=%q", got, wantDeviceID)
+	}
+}
+
+func TestProxy_AnthropicOAuthPreservesRelayedClaudeCodeRequest(t *testing.T) {
+	t.Parallel()
+
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-anthropic-token")
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "relayed-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var capturedBody []byte
+	var capturedHeaders http.Header
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		capturedHeaders = r.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	const billingBlock = "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=claude-vscode;"
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"metadata": map[string]any{"user_id": "relayed-client-id"},
+		"system": []any{
+			map[string]any{"type": "text", "text": billingBlock},
+			map[string]any{"type": "text", "text": "caller prompt", "cache_control": map[string]any{"type": "ephemeral"}},
+		},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, map[string]string{"User-Agent": "Go-http-client/1.1"})
+
+	if response.Code != http.StatusOK || capturedHeaders == nil {
+		t.Fatalf("status=%d upstream_headers=%v body=%s", response.Code, capturedHeaders, response.Body.String())
+	}
+	if got, want := gjson.GetBytes(capturedBody, "system.0.text").String(),
+		"x-anthropic-billing-header: cc_version="+anthropicCLIVersion+".790; cc_entrypoint=claude-vscode;"; got != want {
+		t.Fatalf("billing block=%q, want %q; body=%s", got, want, capturedBody)
+	}
+	if got := gjson.GetBytes(capturedBody, "system.1.text").String(); got != "caller prompt" ||
+		gjson.GetBytes(capturedBody, "system.1.cache_control.type").String() != "ephemeral" ||
+		gjson.GetBytes(capturedBody, "metadata.user_id").String() != "relayed-client-id" {
+		t.Fatalf("caller wire changed: %s", capturedBody)
+	}
+	if got := headerValueFold(capturedHeaders, "User-Agent"); got != "claude-cli/"+anthropicCLIVersion+" (external, cli)" {
+		t.Fatalf("upstream User-Agent=%q, want sub2api account fingerprint", got)
+	}
+	if headerValueFold(capturedHeaders, "X-App") != "cli" ||
+		!strings.Contains(headerValueFold(capturedHeaders, "Anthropic-Beta"), "oauth-2025-04-20") ||
+		headerValueFold(capturedHeaders, "Authorization") != "Bearer oauth-anthropic-token" {
+		t.Fatalf("upstream headers=%v", capturedHeaders)
+	}
+}
+
+func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "fingerprint-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-fingerprint-token"),
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	type capturedRequest struct {
+		headers http.Header
+		body    []byte
+	}
+	var captured []capturedRequest
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		captured = append(captured, capturedRequest{headers: r.Header.Clone(), body: body})
+		payload := `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			payload = `{"input_tokens":37}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(payload))}, nil
+	})}
+
+	const originalSession = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
+	body := map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"metadata": map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"` + originalSession + `"}`},
+		"system":   []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	send := func(path string, headers map[string]string) capturedRequest {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, path, body, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+		}
+		return captured[len(captured)-1]
+	}
+	baseVersion := anthropicEffectiveCLIVersion()
+	baseUA := "claude-cli/" + baseVersion + " (external, claude-vscode)"
+	foreign := send("/v1/messages", map[string]string{
+		"User-Agent": "OpenAI/Python 2.0", "X-Stainless-Lang": "python", "X-Stainless-OS": "Windows",
+	})
+	if headerValueFold(foreign.headers, "X-Stainless-Lang") != "js" ||
+		headerValueFold(foreign.headers, "X-Stainless-OS") != "Linux" {
+		t.Fatalf("foreign SDK poisoned account fingerprint: %v", foreign.headers)
+	}
+	first := send("/v1/messages", map[string]string{
+		"User-Agent": "claude-cli/2.1.220 (external, claude-vscode)", "X-App": "cli",
+		"X-Stainless-OS": "Darwin", "X-Stainless-Package-Version": "0.99.0",
+	})
+	if got := headerValueFold(first.headers, "User-Agent"); got != baseUA {
+		t.Fatalf("first UA=%q, want %q", got, baseUA)
+	}
+	if got := headerValueFold(first.headers, "X-Stainless-OS"); got != "Darwin" {
+		t.Fatalf("first Stainless OS=%q", got)
+	}
+	second := send("/v1/messages", map[string]string{
+		"User-Agent": "claude-cli/2.1.100 (external, cli)", "X-App": "cli",
+		"X-Stainless-OS": "Windows", "X-Stainless-Package-Version": "0.01.0",
+	})
+	if headerValueFold(second.headers, "User-Agent") != baseUA ||
+		headerValueFold(second.headers, "X-Stainless-OS") != "Darwin" ||
+		headerValueFold(second.headers, "X-Stainless-Package-Version") != "0.99.0" {
+		t.Fatalf("older client changed account fingerprint: %v", second.headers)
+	}
+	parts, ok := parseAnthropicCLIVersion(baseVersion)
+	if !ok {
+		t.Fatalf("invalid runtime Claude Code version %q", baseVersion)
+	}
+	newerVersion := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+1)
+	newerUA := "claude-cli/" + newerVersion + " (external, cli)"
+	third := send("/v1/messages", map[string]string{
+		"User-Agent": newerUA, "X-App": "cli", "X-Stainless-OS": "Linux",
+	})
+	if headerValueFold(third.headers, "User-Agent") != newerUA ||
+		headerValueFold(third.headers, "X-Stainless-OS") != "Linux" ||
+		headerValueFold(third.headers, "X-Stainless-Package-Version") != "0.99.0" {
+		t.Fatalf("newer client did not merge account fingerprint: %v", third.headers)
+	}
+	fourth := send("/v1/messages", map[string]string{
+		"User-Agent": "claude-cli/9999.0.0 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
+	})
+	if headerValueFold(fourth.headers, "User-Agent") != newerUA || headerValueFold(fourth.headers, "X-Stainless-OS") != "Linux" {
+		t.Fatalf("implausible UA changed account fingerprint: %v", fourth.headers)
+	}
+	sameMajorSentinel := send("/v1/messages", map[string]string{
+		"User-Agent": fmt.Sprintf("claude-cli/%d.%d.%d (external, cli)", parts[0], parts[1], parts[2]+1000),
+		"X-App":      "cli", "X-Stainless-OS": "Windows",
+	})
+	if headerValueFold(sameMajorSentinel.headers, "User-Agent") != newerUA ||
+		headerValueFold(sameMajorSentinel.headers, "X-Stainless-OS") != "Linux" {
+		t.Fatalf("same-major sentinel UA changed account fingerprint: %v", sameMajorSentinel.headers)
+	}
+	crossMajor := send("/v1/messages", map[string]string{
+		"User-Agent": "claude-cli/4.0.0 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
+	})
+	if headerValueFold(crossMajor.headers, "User-Agent") != newerUA || headerValueFold(crossMajor.headers, "X-Stainless-OS") != "Linux" {
+		t.Fatalf("cross-major UA changed account fingerprint: %v", crossMajor.headers)
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("stored configs=%d err=%v", len(configs), err)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || credential.Fingerprint == nil || credential.Fingerprint.UserAgent != newerUA ||
+		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != "0.99.0" {
+		t.Fatalf("persisted account fingerprint=%+v err=%v", credential, err)
+	}
+	env.server.anthropicOAuthFingerprintMu.Lock()
+	clear(env.server.anthropicOAuthFingerprints)
+	env.server.anthropicOAuthFingerprintMu.Unlock()
+	env.server.InvalidateChannelListCache()
+	count := send("/v1/messages/count_tokens", map[string]string{
+		"User-Agent": "claude-cli/2.1.100 (external, cli)", "X-App": "cli", "X-Stainless-OS": "Windows",
+	})
+	if headerValueFold(count.headers, "User-Agent") != newerUA || headerValueFold(count.headers, "X-Stainless-OS") != "Linux" ||
+		gjson.GetBytes(count.body, "metadata").Exists() || anthropicBillingVersion(count.body) != newerVersion ||
+		gjson.GetBytes(count.body, "system.0.text").String() != anthropicBillingHeader("hello", newerVersion) {
+		t.Fatalf("count_tokens lost persisted fingerprint: headers=%v body=%s", count.headers, count.body)
+	}
+	simulated := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if simulated.Code != http.StatusOK {
+		t.Fatalf("simulated status=%d body=%s", simulated.Code, simulated.Body.String())
+	}
+	simulatedWire := captured[len(captured)-1]
+	if got := headerValueFold(simulatedWire.headers, "User-Agent"); got != "claude-cli/"+baseVersion+" (external, cli)" ||
+		anthropicBillingVersion(simulatedWire.body) != baseVersion ||
+		headerValueFold(simulatedWire.headers, "X-Stainless-OS") != "Linux" {
+		t.Fatalf("simulated identity diverged from billing: headers=%v body=%s", simulatedWire.headers, simulatedWire.body)
+	}
+}
+
+type blockingFingerprintStore struct {
+	storage.Store
+	blockID int64
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingFingerprintStore) CompareAndSwapOAuthCredential(
+	ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	if channelID == s.blockID {
+		s.once.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return s.Store.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+}
+
+type countingFingerprintStore struct {
+	storage.Store
+	writes atomic.Int32
+}
+
+func (s *countingFingerprintStore) CompareAndSwapOAuthCredential(
+	ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	s.writes.Add(1)
+	return s.Store.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+}
+
+// Sequential: it moves the process-wide runtime Claude Code version.
+func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testing.T) {
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "floor", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-floor"),
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("configs=%d err=%v", len(configs), err)
+	}
+	counting := &countingFingerprintStore{Store: env.store}
+	env.server.store = counting
+
+	base := anthropicEffectiveCLIVersion()
+	env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0],
+		http.Header{"User-Agent": {"claude-cli/" + base + " (external, cli)"}})
+	if got := counting.writes.Load(); got != 1 {
+		t.Fatalf("first fingerprint writes=%d, want 1", got)
+	}
+
+	parts, ok := parseAnthropicCLIVersion(base)
+	if !ok {
+		t.Fatalf("invalid runtime Claude Code version %q", base)
+	}
+	raised := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+1)
+	previous := anthropicRuntimeCLIVersion.Load()
+	anthropicRuntimeCLIVersion.Store(&raised)
+	t.Cleanup(func() { anthropicRuntimeCLIVersion.Store(previous) })
+
+	fingerprint := env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0], nil)
+	if fingerprint.UserAgent != "claude-cli/"+raised+" (external, cli)" {
+		t.Fatalf("UA=%q did not follow the raised floor %s", fingerprint.UserAgent, raised)
+	}
+	if got := counting.writes.Load(); got != 1 {
+		t.Fatalf("floor raise rewrote the credential: writes=%d", got)
+	}
+}
+
+func TestAnthropicOAuthFingerprintPersistenceDoesNotBlockOtherAccounts(t *testing.T) {
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-fingerprint")
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "one", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON},
+		{name: "two", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON},
+	}, map[int]string{0: "https://api.anthropic.com", 1: "https://api.anthropic.com"})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 2 {
+		t.Fatalf("configs=%d err=%v", len(configs), err)
+	}
+	blocked := &blockingFingerprintStore{Store: env.store, blockID: configs[0].ID,
+		entered: make(chan struct{}), release: make(chan struct{})}
+	env.server.store = blocked
+	header := http.Header{"User-Agent": {"claude-cli/2.1.280 (external, cli)"}}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0], header)
+	}()
+	select {
+	case <-blocked.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first account did not enter persistence")
+	}
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		env.server.getAnthropicOAuthFingerprint(context.Background(), configs[1], header)
+	}()
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("another account was blocked by fingerprint persistence")
+	}
+	close(blocked.release)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first account did not finish persistence")
+	}
+}
+
+func TestProxy_AnthropicNativeBodyRulesKeepNativeWire(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name string
+		path string
+	}{
+		{name: "messages", path: "/v1/messages"},
+		{name: "count_tokens", path: "/v1/messages/count_tokens"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			credentialJSON := anthropicProxyTestCredential(t, "oauth-native-rule")
+			rules := &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+				Action: model.RuleActionRemove, Path: "metadata.user_id",
+			}}}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "native-rule", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+				authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+				customRequestRules: rules,
+			}}, map[int]string{0: "https://api.anthropic.com"})
+			var capturedBody []byte
+			var capturedHeaders http.Header
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				capturedBody, _ = io.ReadAll(r.Body)
+				capturedHeaders = r.Header.Clone()
+				responseBody := `{"input_tokens":1}`
+				if testCase.path == "/v1/messages" {
+					responseBody = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(responseBody)),
+				}, nil
+			})}
+
+			identity := `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`
+			response := doProxyRequest(t, env.engine, testCase.path, map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 64,
+				"metadata": map[string]any{"user_id": identity},
+				"system": []any{
+					map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli;"},
+					map[string]any{"type": "text", "text": "caller prompt"},
+				},
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, map[string]string{
+				"User-Agent":        "claude-cli/2.1.280 (external, cli)",
+				"X-App":             "cli",
+				"Anthropic-Beta":    "claude-code-20250219",
+				"Accept-Language":   "zh-CN,zh;q=0.9",
+				"Sec-Fetch-Mode":    "cors",
+				"X-Stainless-Async": "false",
+			})
+			if response.Code != http.StatusOK || capturedHeaders == nil {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if gjson.GetBytes(capturedBody, "metadata.user_id").Exists() ||
+				gjson.GetBytes(capturedBody, "system.#").Int() != 2 ||
+				gjson.GetBytes(capturedBody, "system.1.text").String() != "caller prompt" ||
+				gjson.GetBytes(capturedBody, "messages.#").Int() != 1 {
+				t.Fatalf("native body changed after rule: %s", capturedBody)
+			}
+			for name, want := range map[string]string{
+				"User-Agent":        "claude-cli/2.1.280 (external, cli)",
+				"Accept-Language":   "zh-CN,zh;q=0.9",
+				"Sec-Fetch-Mode":    "cors",
+				"X-Stainless-Async": "false",
+				"Authorization":     "Bearer oauth-native-rule",
+			} {
+				if got := headerValueFold(capturedHeaders, name); got != want {
+					t.Fatalf("%s=%q, want %q; headers=%v", name, got, want, capturedHeaders)
+				}
+			}
+		})
+	}
+}
+
+func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
+	t.Parallel()
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-count-token")
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "anthropic-count-tokens", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	type capturedRequest struct {
+		url     string
+		headers http.Header
+		body    []byte
+	}
+	var sent []capturedRequest
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		sent = append(sent, capturedRequest{url: r.URL.String(), headers: r.Header.Clone(), body: body})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":37}`)),
+		}, nil
+	})}
+
+	requestBody := map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024, "temperature": 0.4,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list Anthropic OAuth configs: (%v, %v)", err, len(configs))
+	}
+	channelID := configs[0].ID
+	_ = channelID
+	const originalSessionID = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
+	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", requestBody, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() != 37 || len(sent) != 1 {
+		t.Fatalf("mimic status=%d sent=%d body=%s", response.Code, len(sent), response.Body.String())
+	}
+	mimic := sent[0]
+	if mimic.url != "https://api.anthropic.com/v1/messages/count_tokens?beta=true" ||
+		headerValueFold(mimic.headers, "Authorization") != "Bearer oauth-count-token" ||
+		headerValueFold(mimic.headers, "X-Stainless-Runtime-Version") != "v24.3.0" ||
+		headerValueFold(mimic.headers, "X-Claude-Code-Session-Id") != "" ||
+		!strings.Contains(headerValueFold(mimic.headers, "Anthropic-Beta"), "token-counting-2024-11-01") ||
+		gjson.GetBytes(mimic.body, "metadata").Exists() ||
+		gjson.GetBytes(mimic.body, "max_tokens").Exists() || gjson.GetBytes(mimic.body, "temperature").Exists() {
+		t.Fatalf("mimic wire url=%s headers=%v body=%s", mimic.url, mimic.headers, mimic.body)
+	}
+
+	const userID = `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`
+	requestBody["metadata"] = map[string]any{"user_id": userID}
+	requestBody["system"] = []any{map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli;"}}
+	response = doProxyRequest(t, env.engine, "/v1/messages/count_tokens", requestBody, map[string]string{
+		"User-Agent": "claude-cli/2.1.280 (external, cli)", "X-App": "cli",
+		"Anthropic-Beta": "claude-code-20250219",
+	})
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() != 37 || len(sent) != 2 {
+		t.Fatalf("native status=%d sent=%d body=%s", response.Code, len(sent), response.Body.String())
+	}
+	native := sent[1]
+	if gjson.GetBytes(native.body, "metadata").Exists() ||
+		gjson.GetBytes(native.body, "system.0.text").String() != anthropicBillingHeader("hello", anthropicCLIVersion) ||
+		headerValueFold(native.headers, "User-Agent") != "claude-cli/2.1.280 (external, cli)" ||
+		!strings.Contains(headerValueFold(native.headers, "Anthropic-Beta"), "token-counting-2024-11-01") {
+		t.Fatalf("native wire headers=%v body=%s", native.headers, native.body)
+	}
+
+	const otherAccountUUID = "8b6a103d-024e-45a9-b9c5-313708184fd1"
+	requestBody["metadata"] = map[string]any{"user_id": `{"device_id":"native-device","account_uuid":"` + otherAccountUUID + `","session_id":"` + originalSessionID + `"}`}
+	response = doProxyRequest(t, env.engine, "/v1/messages/count_tokens", requestBody, map[string]string{
+		"User-Agent": "claude-cli/2.1.280 (external, cli)", "X-App": "cli",
+		"Anthropic-Beta": "claude-code-20250219",
+	})
+	if response.Code != http.StatusOK || len(sent) != 3 {
+		t.Fatalf("rebased native status=%d sent=%d body=%s", response.Code, len(sent), response.Body.String())
+	}
+	rebased := sent[2]
+	if gjson.GetBytes(rebased.body, "metadata").Exists() ||
+		headerValueFold(rebased.headers, "X-Claude-Code-Session-Id") != "" ||
+		gjson.GetBytes(rebased.body, "max_tokens").Exists() ||
+		gjson.GetBytes(rebased.body, "temperature").Exists() {
+		t.Fatalf("rebased native wire headers=%v body=%s", rebased.headers, rebased.body)
+	}
+
+	legacyUserID := "user_" + anthropicProxyTestDeviceID + "_account_" + otherAccountUUID + "_session_" + originalSessionID
+	requestBody["metadata"] = map[string]any{"user_id": legacyUserID}
+	response = doProxyRequest(t, env.engine, "/v1/messages/count_tokens", requestBody, map[string]string{
+		"User-Agent": "claude-cli/2.1.280 (external, cli)", "X-App": "cli",
+		"Anthropic-Beta": "claude-code-20250219", "X-Claude-Code-Session-Id": originalSessionID,
+	})
+	if response.Code != http.StatusOK || len(sent) != 4 {
+		t.Fatalf("legacy native status=%d sent=%d body=%s", response.Code, len(sent), response.Body.String())
+	}
+	legacy := sent[3]
+	if gjson.GetBytes(legacy.body, "metadata").Exists() ||
+		headerValueFold(legacy.headers, "X-Claude-Code-Session-Id") != "" {
+		t.Fatalf("legacy native wire headers=%v body=%s", legacy.headers, legacy.body)
+	}
+}
+
+func TestProxy_AnthropicCountTokensAPIKeyUsesUpstream(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "anthropic-count-tokens-key", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		apiKey: "sk-ant-count-token",
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var sentBody []byte
+	var sentURL string
+	var sentHeaders http.Header
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		sentURL = r.URL.String()
+		sentHeaders = r.Header.Clone()
+		sentBody, _ = io.ReadAll(r.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":19}`)),
+		}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 100,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() != 19 ||
+		sentURL != "https://api.anthropic.com/v1/messages/count_tokens?beta=true" ||
+		headerValueFold(sentHeaders, "x-api-key") != "sk-ant-count-token" ||
+		headerValueFold(sentHeaders, "Authorization") != "" ||
+		gjson.GetBytes(sentBody, "max_tokens").Exists() {
+		t.Fatalf("status=%d url=%s headers=%v upstream=%s downstream=%s", response.Code,
+			sentURL, sentHeaders, sentBody, response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCountTokensRecognizesNativeUAWithoutMetadata(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-count", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "native-count"),
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var sentBody []byte
+	var sentHeaders http.Header
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		sentBody, _ = io.ReadAll(r.Body)
+		sentHeaders = r.Header.Clone()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"input_tokens":11}`))}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+		"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools": []any{map[string]any{"name": "work", "input_schema": map[string]any{"type": "object"}}},
+	}, map[string]string{
+		"User-Agent": "claude-cli/2.1.280 (external, cli)", "Anthropic-Beta": "claude-code-20250219,custom-beta",
+	})
+	betas := headerValueFold(sentHeaders, "Anthropic-Beta")
+	if response.Code != http.StatusOK || !strings.Contains(betas, "custom-beta") ||
+		strings.Contains(betas, "prompt-caching-scope-2026-01-05") ||
+		gjson.GetBytes(sentBody, "metadata").Exists() {
+		t.Fatalf("status=%d beta=%q body=%s response=%s", response.Code, betas, sentBody, response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCountTokensCustomOriginUsesLocalEstimate(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "third-party-anthropic", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-test",
+	}}, map[int]string{0: "https://relay.example.com"})
+	var upstreamCalls atomic.Int32
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return nil, errors.New("count_tokens should stay local")
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+		"model":    "claude-sonnet-4-6",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() <= 0 || upstreamCalls.Load() != 0 {
+		t.Fatalf("status=%d upstreamCalls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCountTokensWithoutChannelsUsesLocalEstimate(t *testing.T) {
+	t.Parallel()
+	env := setupProxyTestEnv(t, nil, nil)
+	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+		"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() <= 0 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCountTokensFailureFallsBackWithoutModelCooldown(t *testing.T) {
+	t.Parallel()
+	// A rejected body fails the same way on every official account, so a 400
+	// must not fan out to the second channel before the local estimate.
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "official-anthropic", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test"},
+		{name: "official-anthropic-2", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test-2"},
+	}, map[int]string{0: "https://api.anthropic.com", 1: "https://api.anthropic.com"})
+	var countCalls, messageCalls atomic.Int32
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			countCalls.Add(1)
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": {"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"unsupported"}}`))}, nil
+		}
+		messageCalls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+	})}
+	count := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+		"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	message := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 32,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if count.Code != http.StatusOK || gjson.Get(count.Body.String(), "input_tokens").Int() <= 0 ||
+		message.Code != http.StatusOK || countCalls.Load() != 1 || messageCalls.Load() != 1 {
+		t.Fatalf("count=%d %s, message=%d %s, upstream count=%d messages=%d",
+			count.Code, count.Body.String(), message.Code, message.Body.String(), countCalls.Load(), messageCalls.Load())
+	}
+}
+
+func TestProxy_AnthropicCountTokensTokenRestrictionsUseLocalEstimate(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		restrict func(t *testing.T, env *proxyTestEnv, tokenHash string, channelID int64)
+	}{
+		{name: "model whitelist", restrict: func(_ *testing.T, env *proxyTestEnv, tokenHash string, _ int64) {
+			env.server.authService.authTokenModels[tokenHash] = []string{"claude-opus-4-6"}
+		}},
+		{name: "channel restriction", restrict: func(t *testing.T, env *proxyTestEnv, tokenHash string, channelID int64) {
+			env.server.authService.authTokenChannels[tokenHash] = mustChannelRestriction(t, model.ChannelRestrictionModeDeny, channelID)
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "official-anthropic", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test",
+			}}, map[int]string{0: "https://api.anthropic.com"})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+			env.server.authService.authTokensMux.Lock()
+			testCase.restrict(t, env, model.HashToken("test-api-key"), configs[0].ID)
+			env.server.authService.authTokensMux.Unlock()
+			var upstreamCalls atomic.Int32
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				upstreamCalls.Add(1)
+				return nil, errors.New("restricted count_tokens should stay local")
+			})}
+			response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
+				"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			}, nil)
+			if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() <= 0 ||
+				upstreamCalls.Load() != 0 {
+				t.Fatalf("status=%d upstreamCalls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+			}
+		})
 	}
 }
 

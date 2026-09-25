@@ -112,11 +112,12 @@ func injectAnyrouterClaudeCodeFallbackTools(
 	upstreamProtocol protocol.Protocol,
 	requestPath string,
 	headers http.Header,
+	callerBody []byte,
 	body []byte,
 ) []byte {
 	if cfg == nil || upstreamProtocol != protocol.Anthropic ||
 		!isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
-		!isAnyrouterChannel(cfg) || !isNativeAnthropicClaudeCodeRequest(headers) ||
+		!isAnyrouterChannel(cfg) || !isNativeAnthropicClaudeCodeRequest(callerBody, headers) ||
 		!isAnthropicJSONObject(body) {
 		return body
 	}

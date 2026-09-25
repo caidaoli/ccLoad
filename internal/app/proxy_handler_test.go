@@ -411,22 +411,19 @@ func TestHandleSpecialRoutes_GeminiModels(t *testing.T) {
 	}
 }
 
-// TestHandleSpecialRoutes_CountTokens 测试 POST /v1/messages/count_tokens 路由匹配
-func TestHandleSpecialRoutes_CountTokens(t *testing.T) {
+// TestHandleSpecialRoutes_CountTokensFallsThrough verifies that token counting
+// now enters the regular upstream routing path.
+func TestHandleSpecialRoutes_CountTokensFallsThrough(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hello"}]}`
 	req := newRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	c, w := newTestContext(t, req)
+	c, _ := newTestContext(t, req)
 
 	handled := srv.handleSpecialRoutes(c)
-	if !handled {
-		t.Fatal("POST /v1/messages/count_tokens 应被 handleSpecialRoutes 处理")
-	}
-	// count_tokens 返回 200（成功解析）或 400（解析失败），都是被处理了
-	if w.Code != http.StatusOK {
-		t.Logf("count_tokens 返回非 200 (code=%d)，但路由已匹配", w.Code)
+	if handled {
+		t.Fatal("POST /v1/messages/count_tokens 应进入代理选路")
 	}
 }
 

@@ -28,6 +28,10 @@ const (
 	codexUTLSH2MaxConnsPerHost = 8
 	codexUTLSH2DegradeInitial  = 2 * time.Minute
 	codexUTLSH2DegradeMax      = 30 * time.Minute
+	// CLIProxyAPI keeps a small per-round-tripper cache so Claude Code can use
+	// the same TLS ticket behavior as the native client. Tickets are shared by
+	// accounts on the same proxy until the transport generation rotates.
+	anthropicClaudeCodeSessionCacheCapacity = 32
 )
 
 type codexUTLSRoundTripper struct {
@@ -54,7 +58,7 @@ func newCodexUTLSRoundTripper(base *http.Transport) *codexUTLSRoundTripper {
 		fallback:   base,
 		h2:         newCodexUTLSH2Transport(base),
 		h1:         newCodexUTLSHTTP11Transport(base),
-		anthropic:  newAnthropicNodeHTTP11Transport(base),
+		anthropic:  newAnthropicClaudeCodeHTTP11Transport(base),
 		standardH1: newStandardHTTP11Transport(base),
 		degraded:   make(map[string]h2DegradeState, 2),
 	}
@@ -244,8 +248,9 @@ func newCodexUTLSHTTP11Transport(base *http.Transport) *http.Transport {
 	return transport
 }
 
-func newAnthropicNodeHTTP11Transport(base *http.Transport) *http.Transport {
+func newAnthropicClaudeCodeHTTP11Transport(base *http.Transport) *http.Transport {
 	dialer := newCodexUTLSDialer(base)
+	sessionCache := utls.NewLRUClientSessionCache(anthropicClaudeCodeSessionCacheCapacity)
 	transport := base.Clone()
 	transport.Proxy = nil
 	transport.ForceAttemptHTTP2 = false
@@ -256,7 +261,7 @@ func newAnthropicNodeHTTP11Transport(base *http.Transport) *http.Transport {
 		if err != nil {
 			return nil, err
 		}
-		return dialAnthropicNodeUTLS(ctx, rawConn, addr, base)
+		return dialAnthropicClaudeCodeUTLS(ctx, rawConn, addr, base, sessionCache)
 	}
 	return transport
 }
@@ -295,14 +300,15 @@ func dialCodexUTLS(
 	return dialCustomUTLS(ctx, rawConn, addr, base, alpn, spec, "codex")
 }
 
-func dialAnthropicNodeUTLS(
+func dialAnthropicClaudeCodeUTLS(
 	ctx context.Context,
 	rawConn net.Conn,
 	addr string,
 	base *http.Transport,
+	sessionCache utls.ClientSessionCache,
 ) (net.Conn, error) {
-	conn, err := dialCustomUTLS(
-		ctx, rawConn, addr, base, []string{"http/1.1"}, anthropicNodeClientHelloSpec(), "anthropic",
+	conn, err := dialCustomUTLSWithSessionCache(
+		ctx, rawConn, addr, base, []string{"http/1.1"}, anthropicClaudeCodeClientHelloSpec(), "anthropic", sessionCache,
 	)
 	if err != nil {
 		return nil, err
@@ -335,12 +341,39 @@ var anthropicClaudeCodeMessagesHeaderOrder = []string{
 	"Content-Length",
 }
 
+var anthropicClaudeCodeCountTokensHeaderOrder = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"User-Agent",
+	"X-Claude-Code-Session-Id",
+	"X-Stainless-Arch",
+	"X-Stainless-Lang",
+	"X-Stainless-OS",
+	"X-Stainless-Package-Version",
+	"X-Stainless-Retry-Count",
+	"X-Stainless-Runtime",
+	"X-Stainless-Runtime-Version",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+	"anthropic-version",
+	"x-app",
+	"x-client-request-id",
+	"Connection",
+	"Host",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
 func anthropicClaudeCodeHeaderOrder(_, requestTarget string) []string {
 	requestPath := requestTarget
 	if query := strings.IndexByte(requestPath, '?'); query >= 0 {
 		requestPath = requestPath[:query]
 	}
 	requestPath = strings.TrimSuffix(requestPath, "/")
+	if strings.HasPrefix(requestPath, "/v1/messages/count_tokens") {
+		return anthropicClaudeCodeCountTokensHeaderOrder
+	}
 	if requestPath == "/v1/messages" || requestPath == "/messages" {
 		return anthropicClaudeCodeMessagesHeaderOrder
 	}
@@ -356,15 +389,33 @@ func dialCustomUTLS(
 	spec utls.ClientHelloSpec,
 	provider string,
 ) (net.Conn, error) {
+	return dialCustomUTLSWithSessionCache(ctx, rawConn, addr, base, alpn, spec, provider, nil)
+}
+
+func dialCustomUTLSWithSessionCache(
+	ctx context.Context,
+	rawConn net.Conn,
+	addr string,
+	base *http.Transport,
+	alpn []string,
+	spec utls.ClientHelloSpec,
+	provider string,
+	sessionCache utls.ClientSessionCache,
+) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		_ = rawConn.Close()
 		return nil, fmt.Errorf("split %s uTLS address: %w", provider, err)
 	}
 	utlsConfig := &utls.Config{
-		ServerName: host,
-		NextProtos: append([]string(nil), alpn...),
-		MinVersion: utls.VersionTLS12,
+		ServerName:         host,
+		NextProtos:         append([]string(nil), alpn...),
+		MinVersion:         utls.VersionTLS12,
+		ClientSessionCache: sessionCache,
+	}
+	if sessionCache != nil {
+		utlsConfig.OmitEmptyPsk = true
+		utlsConfig.PreferSkipResumptionOnNilExtension = true
 	}
 	if base.TLSClientConfig != nil {
 		if base.TLSClientConfig.ServerName != "" {
@@ -399,38 +450,59 @@ func dialCustomUTLS(
 	return tlsConn, nil
 }
 
-// anthropicNodeClientHelloSpec is sub2api's built-in Node.js 24.x profile.
-// It is used there when TLS fingerprinting is enabled without an account profile.
-func anthropicNodeClientHelloSpec() utls.ClientHelloSpec {
+// anthropicClaudeCodeClientHelloSpec mirrors CLIProxyAPI's captured Claude Code
+// 2.1.220 Node/OpenSSL profile. The final PSK extension is paired with the
+// transport's session cache so the first and resumed handshakes have the same
+// extension order as the native client.
+func anthropicClaudeCodeClientHelloSpec() utls.ClientHelloSpec {
 	return utls.ClientHelloSpec{
 		CipherSuites: []uint16{
-			0x1301, 0x1302, 0x1303,
-			0xc02b, 0xc02f, 0xc02c, 0xc030,
-			0xcca9, 0xcca8,
-			0xc009, 0xc013, 0xc00a, 0xc014,
-			0x009c, 0x009d, 0x002f, 0x0035,
+			utls.TLS_AES_128_GCM_SHA256,
+			utls.TLS_AES_256_GCM_SHA384,
+			utls.TLS_CHACHA20_POLY1305_SHA256,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_256_CBC_SHA,
 		},
 		CompressionMethods: []uint8{0},
 		Extensions: []utls.TLSExtension{
 			&utls.SNIExtension{},
-			&utls.GREASEEncryptedClientHelloExtension{},
 			&utls.ExtendedMasterSecretExtension{},
-			&utls.RenegotiationInfoExtension{},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
 			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{utls.X25519, utls.CurveP256, utls.CurveP384}},
 			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
 			&utls.SessionTicketExtension{},
 			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
 			&utls.StatusRequestExtension{},
 			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
-				0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201,
+				utls.ECDSAWithP256AndSHA256,
+				utls.PSSWithSHA256,
+				utls.PKCS1WithSHA256,
+				utls.ECDSAWithP384AndSHA384,
+				utls.PSSWithSHA384,
+				utls.PKCS1WithSHA384,
+				utls.PSSWithSHA512,
+				utls.PKCS1WithSHA512,
+				utls.PKCS1WithSHA1,
 			}},
 			&utls.SCTExtension{},
 			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519}}},
 			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{uint8(utls.PskModeDHE)}},
 			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+			&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
+			&utls.UtlsPreSharedKeyExtension{},
 		},
-		TLSVersMax: utls.VersionTLS13,
-		TLSVersMin: utls.VersionTLS10,
 	}
 }
 

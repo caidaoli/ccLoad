@@ -47,6 +47,7 @@ const (
 	RequestFamilyChatCompletions RequestFamily = "chat_completions"
 	RequestFamilyResponses       RequestFamily = "responses"
 	RequestFamilyMessages        RequestFamily = "messages"
+	RequestFamilyCountTokens     RequestFamily = "count_tokens"
 	RequestFamilyGenerateContent RequestFamily = "generate_content"
 	RequestFamilyCompletions     RequestFamily = "completions"
 	RequestFamilyEmbeddings      RequestFamily = "embeddings"
@@ -177,6 +178,8 @@ func DetectRequestFamily(path string) RequestFamily {
 		matchesCanonicalEndpoint(path, "/v1/codex/responses"),
 		matchesCanonicalEndpoint(path, "/backend-api/codex/responses"):
 		return RequestFamilyResponses
+	case matchesCanonicalEndpoint(path, "/v1/messages/count_tokens"):
+		return RequestFamilyCountTokens
 	case matchesCanonicalEndpoint(path, "/v1/messages"):
 		return RequestFamilyMessages
 	case matchesCanonicalEndpoint(path, "/v1/alpha/search"),

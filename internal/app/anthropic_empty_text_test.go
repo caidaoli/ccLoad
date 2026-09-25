@@ -63,7 +63,7 @@ func TestSanitizeAnthropicEmptyTextBlocksDoesNotEmptyAMessage(t *testing.T) {
 
 func TestNativeClaudeCodeFinalizeStripsEmptyTextOnly(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"model":"claude-opus-5","max_tokens":64000,"temperature":0.7,"messages":[{"role":"assistant","content":[{"type":"text","text":""},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}]}],"system":[{"type":"text","text":"keep me"}]}`)
+	body := []byte(`{"model":"claude-opus-5","max_tokens":64000,"temperature":0.7,"messages":[{"role":"assistant","content":[{"type":"text","text":""},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}]}],"system":[{"type":"text","text":"keep me"}],"metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"}}`)
 	out, err := finalizeAnthropicClaudeCodeMessagesBody(body, anthropicGoldenConfig(t, anthropicGoldenCase{oauth: true}), "", anthropicGoldenNativeHeaders(), anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestApplyAnthropicMessagesAPIInvariantsIsTheEmptyTextHook(t *testing.T) {
 
 func TestNativeClaudeCodeFinalizeLeavesCleanBodyBytes(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	body := []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"}}`)
 	out, err := finalizeAnthropicClaudeCodeMessagesBody(body, anthropicGoldenConfig(t, anthropicGoldenCase{oauth: true}), "", anthropicGoldenNativeHeaders(), anthropicOfficialTestURL)
 	if err != nil {
 		t.Fatal(err)

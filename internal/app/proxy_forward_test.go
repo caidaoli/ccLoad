@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -486,6 +487,7 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
 			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
 			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
+			{Action: model.RuleActionOverride, Name: "X-Stainless-OS", Value: "attacker"},
 			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "kept"},
 		}, Body: []model.CustomBodyRule{
 			{Action: model.RuleActionOverride, Path: "service_tier", Value: json.RawMessage(`"ultrafast"`)},
@@ -2312,14 +2314,14 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 	}
 	if got := gjson.GetBytes(body, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") {
 		t.Fatalf("billing block = %q", got)
-	} else if strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
-		t.Fatalf("billing block is not signed = %q", got)
+	} else if strings.Contains(got, " cch=") {
+		t.Fatalf("OAuth mimic billing unexpectedly contains CCH = %q", got)
 	}
 	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nanswer tersely" {
 		t.Fatalf("moved system = %q", got)
 	}
 	if !gjson.GetBytes(body, "tools").IsArray() || gjson.GetBytes(body, "tool_choice").Exists() ||
-		gjson.GetBytes(body, "temperature").Exists() || gjson.GetBytes(body, "max_tokens").Exists() ||
+		gjson.GetBytes(body, "temperature").Float() != 1 || gjson.GetBytes(body, "max_tokens").Int() != 128000 ||
 		gjson.GetBytes(body, "context_management.edits.0.type").String() != "clear_thinking_20251015" ||
 		gjson.GetBytes(body, "metadata.user_id").String() == "" {
 		t.Fatalf("normalized body = %s", body)
@@ -2330,17 +2332,66 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer attacker")
-	injectAnthropicOAuthHeaders(request, cfg, "oauth-access", body)
+	injectAnthropicOAuthHeadersWithFingerprint(request, cfg, "oauth-access", body, false, nil)
 	if headerValueFold(request.Header, "authorization") != "Bearer oauth-access" || headerValueFold(request.Header, "x-api-key") != "" ||
 		headerValueFold(request.Header, "anthropic-version") != "2023-06-01" ||
 		!strings.Contains(headerValueFold(request.Header, "anthropic-beta"), "oauth-2025-04-20") ||
-		headerValueFold(request.Header, "X-Claude-Code-Session-Id") == "" || headerValueFold(request.Header, "x-client-request-id") == "" ||
-		headerValueFold(request.Header, "Accept-Encoding") != "gzip, deflate, br, zstd" ||
-		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != "v26.3.0" {
+		headerValueFold(request.Header, "X-Claude-Code-Session-Id") != "" || headerValueFold(request.Header, "x-client-request-id") == "" ||
+		headerValueFold(request.Header, "X-Stainless-OS") != "Linux" ||
+		headerValueFold(request.Header, "X-Stainless-Arch") != "arm64" ||
+		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != "v24.3.0" {
 		t.Fatalf("Anthropic OAuth headers = %v", request.Header)
+	}
+	if got, want := headerValueFold(request.Header, "User-Agent"), "claude-cli/"+anthropicBillingVersion(body)+" (external, cli)"; got != want {
+		t.Fatalf("UA/billing version mismatch: got %q, want %q", got, want)
 	}
 	if got := buildAnthropicOAuthURL("https://api.anthropic.com", "/v1/messages", "foo=bar"); got != "https://api.anthropic.com/v1/messages?beta=true&foo=bar" {
 		t.Fatalf("upstream URL = %q", got)
+	}
+}
+
+func TestAnthropicOAuthMimicUsesFableSystemAndSamplingDefaults(t *testing.T) {
+	t.Parallel()
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account-uuid",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	for _, test := range []struct {
+		name        string
+		model       string
+		temperature string
+		tools       string
+		wantBlocks  int
+		wantTemp    float64
+	}{
+		{name: "Fable defaults", model: "claude-fable-5-1", wantBlocks: 2, wantTemp: 1,
+			tools: `,"tools":[{"name":"work","input_schema":{"type":"object"}},{"name":"later","defer_loading":true,"cache_control":{"type":"ephemeral"}}]`},
+		{name: "Sonnet caller sampling", model: "claude-sonnet-4-6", temperature: `,"temperature":0.3`, wantBlocks: 3, wantTemp: 0.3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + test.model + `","messages":[{"role":"user","content":"hi"}]` + test.temperature + test.tools + `}`)
+			got, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", http.Header{}, anthropicOfficialTestURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blocks := len(gjson.GetBytes(got, "system").Array()); blocks != test.wantBlocks {
+				t.Fatalf("system blocks = %d, want %d", blocks, test.wantBlocks)
+			}
+			if maxTokens := gjson.GetBytes(got, "max_tokens").Int(); maxTokens != 128000 {
+				t.Fatalf("max_tokens = %d", maxTokens)
+			}
+			if temperature := gjson.GetBytes(got, "temperature").Float(); temperature != test.wantTemp {
+				t.Fatalf("temperature = %v, want %v", temperature, test.wantTemp)
+			}
+			if test.tools != "" && (!gjson.GetBytes(got, "tools.0.cache_control").Exists() ||
+				gjson.GetBytes(got, "tools.1.cache_control").Exists()) {
+				t.Fatalf("tool cache breakpoints = %s", gjson.GetBytes(got, "tools").Raw)
+			}
+		})
 	}
 }
 
@@ -2392,10 +2443,38 @@ func TestAnthropicClaudeCodeWireUsesIncomingClientVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	injectAnthropicAPIKeyHeaders(req, cfg, "sk-ant-key", body, headers)
+	injectAnthropicAPIKeyHeaders(req, cfg, "sk-ant-key", body, false, headers)
 	if got, want := headerValueFold(req.Header, "User-Agent"),
 		"claude-cli/"+clientVersion+" (external, cli)"; got != want {
 		t.Fatalf("User-Agent = %q, want %q", got, want)
+	}
+}
+
+func TestAnthropicClaudeCodeHeadersMarkStreamingRequests(t *testing.T) {
+	t.Parallel()
+	cfg := &model.Config{Name: "anthropic-api-key"}
+	for _, testCase := range []struct {
+		name       string
+		body       string
+		wantHelper bool
+	}{
+		{name: "stream", body: `{"model":"claude-sonnet-4-6","messages":[],"stream":true}`, wantHelper: true},
+		{name: "non-stream", body: `{"model":"claude-sonnet-4-6","messages":[],"stream":false}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), strings.NewReader(testCase.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			injectAnthropicAPIKeyHeaders(req, cfg, "sk-ant-key", []byte(testCase.body), false)
+			got := headerValueFold(req.Header, "x-stainless-helper-method")
+			if testCase.wantHelper && got != "stream" {
+				t.Fatalf("x-stainless-helper-method=%q, want stream", got)
+			}
+			if !testCase.wantHelper && got != "" {
+				t.Fatalf("x-stainless-helper-method=%q, want absent", got)
+			}
+		})
 	}
 }
 
@@ -2415,14 +2494,15 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
 	nativeBody := fmt.Appendf(nil, `{
 		"model":"claude-sonnet-4-6",
-		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"}],
+		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli;"}],
 		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"3f2b7c18-9d4e-4a6b-8c51-7e0a2d9b4f36\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
 		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
 	}`, parsedCredential.DeviceID)
 	nativeHeaders := http.Header{
 		"User-Agent": {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":      {"cli"}, "Anthropic-Beta": {"claude-code-20250219"},
-		"X-Claude-Code-Session-Id": {"e03895ad-8b34-4a84-bbf6-002e8909b17b"},
+		"X-Claude-Code-Session-Id":  {"e03895ad-8b34-4a84-bbf6-002e8909b17b"},
+		"X-Stainless-Helper-Method": {"stream"},
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
 		nativeBody, cfg, "", nativeHeaders, anthropicOfficialTestURL,
@@ -2430,11 +2510,134 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := gjson.GetBytes(finalized, "system.0.text").String(); !strings.Contains(got, "cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000;") {
-		t.Fatalf("native billing block was not preserved and signed: %q", got)
+	if !bytes.Equal(finalized, nativeBody) {
+		t.Fatalf("native body was rewritten or CCH injected:\n got %s\nwant %s", finalized, nativeBody)
 	}
 	if bytes.Contains(finalized, []byte(`"cache_control"`)) || gjson.GetBytes(finalized, "temperature").Exists() {
 		t.Fatalf("native body was normalized instead of preserved: %s", finalized)
+	}
+	req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), bytes.NewReader(finalized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	injectAnthropicOAuthHeadersWithFingerprint(req, cfg, "oauth-access", finalized, true, nil, nativeHeaders)
+	if got := headerValueFold(req.Header, "x-stainless-helper-method"); got != "stream" {
+		t.Fatalf("native helper header=%q, want stream", got)
+	}
+}
+
+func TestValidateAnthropicOpus55Request(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "adaptive thinking", body: `{"model":"claude-opus-5-5","thinking":{"type":"adaptive"}}`},
+		{name: "disabled thinking", body: `{"model":"claude-opus-5-5","thinking":{"type":"disabled"}}`, wantErr: true},
+		{name: "enabled thinking", body: `{"model":"claude-opus-5-5","thinking":{"type":"enabled"}}`, wantErr: true},
+		{name: "required tool", body: `{"model":"claude-opus-5-5","tool_choice":"required"}`, wantErr: true},
+		{name: "any tool", body: `{"model":"claude-opus-5-5","tool_choice":{"type":"any"}}`, wantErr: true},
+		{name: "other model", body: `{"model":"claude-opus-4-6","thinking":{"type":"enabled"}}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateAnthropicOpus55Request([]byte(testCase.body), "")
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("validateAnthropicOpus55Request() error=%v, wantErr=%v", err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+func TestAnthropicCountTokensFinalizerFirstPartyFields(t *testing.T) {
+	const body = `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"metadata":{"user_id":"client"},"context_management":{"edits":[]},"diagnostics":{"source":"client"},"max_tokens":64}`
+	for _, testCase := range []struct {
+		name       string
+		target     *url.URL
+		keepCaller bool
+	}{
+		{name: "official", target: anthropicOfficialTestURL},
+		{name: "third party", target: anthropicThirdPartyTestURL, keepCaller: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, err := finalizeAnthropicCountTokensBody([]byte(body), nil, testCase.target, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"metadata", "context_management", "diagnostics"} {
+				if exists := gjson.GetBytes(got, field).Exists(); exists != testCase.keepCaller {
+					t.Fatalf("%s exists=%v, want %v: %s", field, exists, testCase.keepCaller, got)
+				}
+			}
+			if gjson.GetBytes(got, "max_tokens").Exists() {
+				t.Fatalf("generation field survived: %s", got)
+			}
+		})
+	}
+}
+
+func TestAnthropicOpus55GuardUsesCallerBody(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hello"}],"thinking":{"type":"disabled"}}`)
+	cfg := &model.Config{Name: "anthropic-api-key"}
+	for _, testCase := range []struct {
+		name              string
+		callerIsAnthropic bool
+		wantErr           bool
+	}{
+		{name: "converted OpenAI request", callerIsAnthropic: false},
+		{name: "native Anthropic request", callerIsAnthropic: true, wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, err := (&Server{}).prepareTranslatedUpstreamBody(
+				cfg, protocol.Anthropic, "/v1/messages", "claude-opus-5-5", body, body,
+				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, testCase.callerIsAnthropic,
+			)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, testCase.wantErr)
+			}
+			if err == nil && gjson.GetBytes(got, "thinking.type").String() == "disabled" {
+				t.Fatalf("converted request kept unsupported thinking: %s", got)
+			}
+		})
+	}
+}
+
+func TestAnthropicOAuthNativeClaudeCodeRetryPreservesCallerCCH(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "3f2b7c18-9d4e-4a6b-8c51-7e0a2d9b4f36",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	body := []byte(`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli; cch=4d721;"}],"metadata":{"user_id":"native"},"messages":[{"role":"user","content":"hello"}],"max_tokens":1024}`)
+	headers := http.Header{
+		"User-Agent":     {"claude-cli/2.1.280 (external, cli)"},
+		"X-App":          {"cli"},
+		"Anthropic-Beta": {"claude-code-20250219"},
+	}
+
+	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", headers, anthropicOfficialTestURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(finalized, body) {
+		t.Fatalf("native OAuth body changed before retry:\n got %s\nwant %s", finalized, body)
+	}
+
+	replayed, err := (&Server{}).prepareTranslatedUpstreamBody(
+		cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
+		"", headers, true, anthropicOfficialTestURL, false, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(replayed, body) {
+		t.Fatalf("native OAuth retry changed caller-owned body:\n got %s\nwant %s", replayed, body)
+	}
+	if got := gjson.GetBytes(replayed, "system.0.text").String(); !strings.Contains(got, " cch=4d721;") {
+		t.Fatalf("native OAuth retry changed caller CCH: %q", got)
 	}
 }
 
@@ -2477,7 +2680,7 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	injectAnthropicOAuthHeaders(req, cfg, "oauth-access", finalized, headers)
+	injectAnthropicOAuthHeadersWithFingerprint(req, cfg, "oauth-access", finalized, true, nil, headers)
 	if got := req.Header.Get("Anthropic-Beta"); got != betas {
 		t.Fatalf("helper beta profile = %q, want exact %q", got, betas)
 	}
@@ -2505,8 +2708,8 @@ func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !gjson.GetBytes(cloaked, "system").Exists() {
-		t.Fatalf("non-native helper member order bypassed cloaking: %s", cloaked)
+	if !bytes.Equal(cloaked, reordered) {
+		t.Fatalf("valid Claude Code identity must preserve caller body even when helper member order differs: %s", cloaked)
 	}
 }
 
@@ -2611,19 +2814,18 @@ func TestAnthropicOAuthCloakOwnsSystemAndRollingMessageCache(t *testing.T) {
 	if got := gjson.GetBytes(body, "messages.2.content.0.cache_control.type").String(); got != "ephemeral" {
 		t.Fatalf("rolling message cache_control.type = %q, want ephemeral: %s", got, body)
 	}
-	if bytes.Count(body, []byte(`"cache_control":{"type":"ephemeral"}`)) != 2 {
-		t.Fatalf("cache_control wire order does not match native shape: %s", body)
+	if got := countAnthropicCacheControls(body); got != 3 {
+		t.Fatalf("cache breakpoint count = %d, want 3: %s", got, body)
 	}
-	resigned, err := finalizeAnthropicCCH(body)
-	if err != nil || !bytes.Equal(resigned, body) {
-		t.Fatalf("cache wire rewrite invalidated CCH: err=%v\n got %s\nwant %s", err, resigned, body)
+	if strings.Contains(gjson.GetBytes(body, "system.0.text").String(), " cch=") {
+		t.Fatalf("OAuth mimic billing unexpectedly contains CCH: %s", body)
 	}
-	if gjson.GetBytes(body, "tools.0.cache_control").Exists() {
-		t.Fatalf("tools should remain unstamped when system owns the prefix: %s", body)
+	if got := gjson.GetBytes(body, "tools.0.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("tool cache breakpoint = %q, want ephemeral: %s", got, body)
 	}
 }
 
-func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
+func TestAnthropicOAuthRejectsBillingWithoutEntrypoint(t *testing.T) {
 	credentialJSON, err := (&anthropicauth.Credential{
 		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
 		Expired: "2030-01-01T00:00:00Z", AccountUUID: "real-account",
@@ -2633,7 +2835,7 @@ func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
 	}
 	body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
 		"model":"claude-sonnet-4-6",
-		"system":[{"type":"text","text":"x-anthropic-billing-header: forged; cc_entrypoint=cli; cch=00000;"}],
+		"system":[{"type":"text","text":"x-anthropic-billing-header: forged; cch=00000;"}],
 		"metadata":{"user_id":"x"},
 		"messages":[{"role":"user","content":"hello"}]
 	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON},
@@ -2642,11 +2844,50 @@ func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version="+anthropicCLIVersion+".") {
-		t.Fatalf("forged native fingerprint bypassed cloaking: %q", got)
+		t.Fatalf("billing block without cc_entrypoint bypassed cloaking: %q", got)
 	}
 	identity := gjson.GetBytes(body, "metadata.user_id").String()
-	if gjson.Get(identity, "account_uuid").String() != "real-account" || gjson.Get(identity, "session_id").String() == "" {
-		t.Fatalf("credential identity was not rebuilt: %q", identity)
+	if identity != "x" {
+		t.Fatalf("existing metadata.user_id was overwritten: %q", identity)
+	}
+}
+
+func TestAnthropicOAuthMimicMetadataUsesStableChannelIdentity(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account-uuid", DeviceID: "login-device",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const input = `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`
+	makeWire := func(channelID int64, raw string) []byte {
+		t.Helper()
+		body, finalizeErr := finalizeAnthropicClaudeCodeMessagesBody([]byte(raw),
+			&model.Config{ID: channelID, AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON},
+			"", http.Header{"User-Agent": {"third-party-client"}}, anthropicOfficialTestURL)
+		if finalizeErr != nil {
+			t.Fatal(finalizeErr)
+		}
+		return body
+	}
+	first := makeWire(1, input)
+	again := makeWire(1, input)
+	other := makeWire(2, input)
+	firstID := gjson.GetBytes(first, "metadata.user_id").String()
+	otherID := gjson.GetBytes(other, "metadata.user_id").String()
+	if firstID == "" || firstID != gjson.GetBytes(again, "metadata.user_id").String() ||
+		gjson.Get(firstID, "device_id").String() == "login-device" ||
+		gjson.Get(firstID, "device_id").String() == gjson.Get(otherID, "device_id").String() ||
+		gjson.Get(firstID, "session_id").String() == gjson.Get(otherID, "session_id").String() {
+		t.Fatalf("channel identities first=%q again=%q other=%q", firstID,
+			gjson.GetBytes(again, "metadata.user_id").String(), otherID)
+	}
+
+	const callerID = `{"device_id":"caller-device","session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`
+	withCaller := makeWire(1, `{"model":"claude-sonnet-4-6","metadata":{"user_id":`+strconv.Quote(callerID)+`},"messages":[{"role":"user","content":"hello"}]}`)
+	if got := gjson.GetBytes(withCaller, "metadata.user_id").String(); got != callerID {
+		t.Fatalf("caller metadata.user_id changed: %q", got)
 	}
 }
 
@@ -2717,8 +2958,7 @@ func TestAnthropicOAuthDecodesAdvertisedClaudeCodeResponseEncodings(t *testing.T
 	}
 }
 
-// 指纹路径清空并重建整个请求头，但渠道自定义 header 规则必须最终生效：
-// 只有认证头由黑名单守住，其余头（含 CLI 身份头）允许被渠道配置改写。
+// 指纹路径重建请求头后，渠道规则仍可设置其他头；OAuth 账号身份头最终由指纹决定。
 func TestAnthropicOAuthBuildProxyRequestKeepsCustomHeaderRules(t *testing.T) {
 	srv := newInMemoryServer(t)
 	credentialJSON, err := (&anthropicauth.Credential{
@@ -2754,15 +2994,66 @@ func TestAnthropicOAuthBuildProxyRequestKeepsCustomHeaderRules(t *testing.T) {
 		t.Fatalf("URL = %s", request.URL)
 	}
 	if headerValueFold(request.Header, "Authorization") != "Bearer oauth-access" ||
-		headerValueFold(request.Header, "User-Agent") != "attacker" ||
+		headerValueFold(request.Header, "User-Agent") != "claude-cli/"+anthropicCLIVersion+" (external, cli)" ||
+		headerValueFold(request.Header, "X-Stainless-OS") != "Linux" ||
 		headerValueFold(request.Header, "X-Configured") != "must-drop" ||
 		strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "attacker-beta") ||
 		!strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "oauth-2025-04-20") ||
-		strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "extended-cache-ttl-2025-04-11") {
+		!strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("headers = %v", request.Header)
 	}
 	if !strings.HasPrefix(gjson.GetBytes(reqCtx.translatedBody, "system.0.text").String(), "x-anthropic-billing-header:") {
 		t.Fatalf("translated body = %s", reqCtx.translatedBody)
+	}
+
+	// 渠道的 beta 覆写仍生效；最终请求体必须按覆写后的能力集合发送。
+	cfg.CustomRequestRules.Headers = append(cfg.CustomRequestRules.Headers,
+		model.CustomHeaderRule{Action: model.RuleActionOverride, Name: "Anthropic-Beta", Value: "oauth-2025-04-20"})
+	reqCtx = &requestContext{ctx: context.Background(), startTime: time.Now(),
+		clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic}
+	request, err = srv.buildProxyRequest(reqCtx, cfg, "oauth-access", http.MethodPost,
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello","output_config":{"effort":"high"}}],"thinking":{"type":"adaptive","block_binding":{"type":"all"}},"context_management":{"edits":[]},"fallbacks":["claude-haiku-4-5"],"fallback_credit_token":"credit"}`),
+		http.Header{"Content-Type": {"application/json"}}, "", "/v1/messages", cfg.GetURLs()[0])
+	if err != nil {
+		t.Fatalf("buildProxyRequest() beta override error = %v", err)
+	}
+	if got := headerValueFold(request.Header, "Anthropic-Beta"); got != "oauth-2025-04-20" {
+		t.Fatalf("final beta = %q", got)
+	}
+	wireBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"context_management", "thinking.block_binding", "fallbacks", "fallback_credit_token", "messages.0.output_config"} {
+		if gjson.GetBytes(wireBody, path).Exists() || gjson.GetBytes(reqCtx.translatedBody, path).Exists() {
+			t.Fatalf("beta-gated %s survived: %s", path, wireBody)
+		}
+	}
+	replay, err := request.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayBody, err := io.ReadAll(replay)
+	if err != nil || !bytes.Equal(wireBody, replayBody) || request.ContentLength != int64(len(wireBody)) {
+		t.Fatalf("request replay differs from final wire: %v", err)
+	}
+
+	// append 形成多个 Header 值时也必须读取完整的最终 beta 集合。
+	cfg.CustomRequestRules.Headers = append(cfg.CustomRequestRules.Headers,
+		model.CustomHeaderRule{Action: model.RuleActionAppend, Name: "Anthropic-Beta", Value: "context-management-2025-06-27"})
+	reqCtx = &requestContext{ctx: context.Background(), startTime: time.Now(),
+		clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic}
+	request, err = srv.buildProxyRequest(reqCtx, cfg, "oauth-access", http.MethodPost,
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"context_management":{"edits":[]}}`),
+		http.Header{"Content-Type": {"application/json"}}, "", "/v1/messages", cfg.GetURLs()[0])
+	if err != nil {
+		t.Fatalf("buildProxyRequest() beta append error = %v", err)
+	}
+	if got := normalizedAnthropicBetaHeader(request.Header); !strings.Contains(got, "context-management-2025-06-27") {
+		t.Fatalf("appended beta missing from final header: %q", got)
+	}
+	if !gjson.GetBytes(reqCtx.translatedBody, "context_management").Exists() {
+		t.Fatalf("appended beta did not preserve body capability: %s", reqCtx.translatedBody)
 	}
 }
 
@@ -2800,11 +3091,9 @@ func TestAnthropicAPIKeyAuthenticationUsesOfficialOriginBoundary(t *testing.T) {
 	}
 }
 
-// TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH 守住凭证边界：OAuth 与
-// API Key 共用 CLI wire/beta 形状，差异只落在 CCH 上——OAuth 无条件签，API Key 只在
-// 第一方 origin 签（第三方网关把 billing 块当 prompt 文本，每请求变化会打散 prompt
-// cache）。判据见 anthropicCCHSigningEnabled。
-func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
+// TestAnthropicMimicBillingOmitsCCH verifies the generated billing block on
+// both credential types; OAuth headers follow sub2api's account mimic profile.
+func TestAnthropicMimicBillingOmitsCCH(t *testing.T) {
 	const requestBody = `{
 		"model":"claude-sonnet-4-5","system":"answer tersely",
 		"messages":[{"role":"user","content":"hello world"}],
@@ -2845,11 +3134,11 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 	}
 	oauthBilling := gjson.GetBytes(oauthBody, "system.0.text").String()
 	apiKeyBilling := gjson.GetBytes(apiKeyBody, "system.0.text").String()
-	if !strings.Contains(oauthBilling, " cch=") || strings.Contains(oauthBilling, "cch=00000;") {
-		t.Fatalf("OAuth billing is not signed: %q", oauthBilling)
+	if strings.Contains(oauthBilling, " cch=") {
+		t.Fatalf("OAuth mimic billing contains CCH: %q", oauthBilling)
 	}
-	if !strings.Contains(apiKeyBilling, " cch=") || strings.Contains(apiKeyBilling, "cch=00000;") {
-		t.Fatalf("API-key billing on first-party origin must be signed: %q", apiKeyBilling)
+	if strings.Contains(apiKeyBilling, " cch=") {
+		t.Fatalf("API-key mimic billing contains CCH: %q", apiKeyBilling)
 	}
 	// 同一份请求发往第三方网关时，billing 必须保持无 cch 的稳定形态。
 	thirdPartyBody, err := finalizeAnthropicClaudeCodeMessagesBody(
@@ -2860,11 +3149,6 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 	if got := gjson.GetBytes(thirdPartyBody, "system.0.text").String(); strings.Contains(got, "cch=") {
 		t.Fatalf("API-key billing on a third-party gateway must stay unsigned: %q", got)
 	}
-	if anthropicClaudeCodeBetas(oauthBody) != anthropicClaudeCodeBetas(apiKeyBody) {
-		t.Fatalf("beta sets diverged: OAuth=%q API key=%q",
-			anthropicClaudeCodeBetas(oauthBody), anthropicClaudeCodeBetas(apiKeyBody))
-	}
-
 	oauthRequest, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(string(oauthBody)))
 	if err != nil {
 		t.Fatal(err)
@@ -2873,8 +3157,8 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	injectAnthropicOAuthHeaders(oauthRequest, oauthCfg, "oauth-access", oauthBody, callerHeaders)
-	injectAnthropicAPIKeyHeaders(apiKeyRequest, apiKeyCfg, "sk-ant-key", apiKeyBody, callerHeaders)
+	injectAnthropicOAuthHeadersWithFingerprint(oauthRequest, oauthCfg, "oauth-access", oauthBody, false, nil, callerHeaders)
+	injectAnthropicAPIKeyHeaders(apiKeyRequest, apiKeyCfg, "sk-ant-key", apiKeyBody, false, callerHeaders)
 
 	if headerValueFold(apiKeyRequest.Header, "x-api-key") != "sk-ant-key" ||
 		headerValueFold(apiKeyRequest.Header, "authorization") != "" {
@@ -2884,9 +3168,9 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 		headerValueFold(oauthRequest.Header, "x-api-key") != "" {
 		t.Fatalf("OAuth auth headers = %v", oauthRequest.Header)
 	}
-	// 认证头之外的指纹头必须逐项相同；session/request id 随请求变化，只校验非空。
-	for _, name := range []string{"User-Agent", "anthropic-version", "anthropic-beta", "x-app",
-		"Accept-Encoding", "X-Stainless-Runtime-Version", "X-Stainless-Package-Version", "X-Stainless-Timeout"} {
+	// 两条路径共享基本协议头；OAuth 的 Stainless/beta 使用 sub2api 模拟 profile。
+	for _, name := range []string{"User-Agent", "anthropic-version", "x-app",
+		"X-Stainless-Package-Version", "X-Stainless-Timeout"} {
 		oauthValue := headerValueFold(oauthRequest.Header, name)
 		apiKeyValue := headerValueFold(apiKeyRequest.Header, name)
 		if oauthValue == "" || oauthValue != apiKeyValue {
@@ -2897,6 +3181,11 @@ func TestAnthropicAPIKeyFingerprintMatchesOAuthWireExceptCCH(t *testing.T) {
 		if headerValueFold(apiKeyRequest.Header, name) == "" {
 			t.Fatalf("API key %s is empty: %v", name, apiKeyRequest.Header)
 		}
+	}
+	if headerValueFold(oauthRequest.Header, "X-Claude-Code-Session-Id") != "" ||
+		headerValueFold(oauthRequest.Header, "X-Stainless-Runtime-Version") != "v24.3.0" ||
+		!strings.Contains(headerValueFold(oauthRequest.Header, "Anthropic-Beta"), "extended-cache-ttl-2025-04-11") {
+		t.Fatalf("OAuth mimic headers = %v", oauthRequest.Header)
 	}
 }
 
@@ -2918,6 +3207,15 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 	}
 	if betas := anthropicClaudeCodeBetas(defaultBody); strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("extended-cache-ttl beta declared without any cache TTL in body: %q", betas)
+	}
+	defaultBetas := anthropicClaudeCodeBetas(defaultBody)
+	for _, retired := range []string{
+		"redact-thinking-2026-02-12", "thinking-token-count-2026-05-13",
+		"advanced-tool-use-2025-11-20", "fallback-credit-2026-06-01",
+	} {
+		if strings.Contains(defaultBetas, retired) {
+			t.Fatalf("retired/unused beta %q advertised: %q", retired, defaultBetas)
+		}
 	}
 
 	longBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
@@ -2994,24 +3292,20 @@ func TestZAICodingPlanSkipsClaudeCodeFingerprint(t *testing.T) {
 	}
 }
 
-// TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy 守住重试重放路径：body 已在
-// 首次尝试时最终化，重放只允许按凭证/origin 决定要不要重签 CCH，不允许再跑一轮归一。
-//
-// 这一支是 CCH 条件化之后最容易回归的地方：判据一旦写成 isNativeAnthropicClaudeCodeRequest，
-// 「本渠道不签名」产出的无 cch body 就会被网关判成非原生，自己不认自己。
-func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
+// TestAnthropicClaudeCodeRetryReplaysUnsignedMimicWire verifies that retry
+// preserves a finalized billing block without generating an obsolete CCH.
+func TestAnthropicClaudeCodeRetryReplaysUnsignedMimicWire(t *testing.T) {
 	headers := http.Header{"User-Agent": []string{"third-party-client"}}
 	cfg := &model.Config{Name: "anthropic-api-key"}
 	const requestBody = `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`
 
 	server := &Server{}
 	for _, testCase := range []struct {
-		name     string
-		target   *url.URL
-		wantSign bool
+		name   string
+		target *url.URL
 	}{
 		{name: "third_party_stays_unsigned", target: anthropicThirdPartyTestURL},
-		{name: "first_party_signs", target: anthropicOfficialTestURL, wantSign: true},
+		{name: "first_party_stays_unsigned", target: anthropicOfficialTestURL},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
@@ -3026,12 +3320,12 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 				"Anthropic-Beta":           {"claude-code-20250219"},
 				"X-Claude-Code-Session-Id": {anthropicSessionIDFromRequest(finalized)},
 			}
-			if !isNativeAnthropicClaudeCodeRequest(outboundHeaders) {
+			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders) {
 				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
 			}
 			replayed, err := server.prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
-				"sk-ant-key", headers, true, testCase.target, false)
+				"sk-ant-key", headers, true, testCase.target, false, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3039,8 +3333,8 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 				t.Fatalf("retry replay rewrote an already finalized body:\n got %s\nwant %s", replayed, finalized)
 			}
 			billing := gjson.GetBytes(replayed, "system.0.text").String()
-			if signed := strings.Contains(billing, " cch="); signed != testCase.wantSign {
-				t.Fatalf("signed=%v want %v: %q", signed, testCase.wantSign, billing)
+			if strings.Contains(billing, " cch=") {
+				t.Fatalf("retry added CCH: %q", billing)
 			}
 		})
 	}
@@ -3049,7 +3343,7 @@ func TestAnthropicClaudeCodeRetryReplaysWirePerSigningPolicy(t *testing.T) {
 func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T) {
 	t.Parallel()
 
-	const body = `{"model":"claude-fable-5-1","messages":[{"role":"user","content":"title"}],"tools":[]}`
+	const body = `{"model":"claude-fable-5-1","messages":[{"role":"user","content":"title"}],"metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"},"tools":[]}`
 	headers := http.Header{
 		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
 		"X-App":          {"cli"},
@@ -3059,7 +3353,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 	got, err := (&Server{}).prepareTranslatedUpstreamBody(
 		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages", "",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
-		false,
+		false, true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -3090,7 +3384,7 @@ func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
 	got, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,
-		body, body, "", http.Header{}, false, nil, false,
+		body, body, "", http.Header{}, false, nil, false, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -3123,7 +3417,7 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	}
 	cfg := &model.Config{Name: "anthropic-third-party"}
 
-	if !isNativeAnthropicClaudeCodeRequest(headers) {
+	if !isNativeAnthropicClaudeCodeRequest(body, headers) {
 		t.Fatal("a real Claude Code request without cch was rejected by the native detector")
 	}
 	finalized, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL)
@@ -3149,13 +3443,9 @@ func TestAnthropicNativeClaudeCodeWithoutCCHPassesThrough(t *testing.T) {
 	}
 }
 
-// TestAnthropicNativeClaudeCodeBodyShapeIsIrrelevant 守住判定只看请求头。
-//
-// body 侧曾经有过三道检查（metadata.user_id 存在性与形态、system[0] 的 billing 前缀、
-// header 与 body 的 session id 等式），每一道都是静默假阴性通道：不匹配不会报错，只会
-// 把真实 Claude Code 请求降级进重写路径、打散客户端自管的 cache_control 断点。这里逐个
-// 钉死它们不再参与判定，并且直通是字节级的。
-func TestAnthropicNativeClaudeCodeBodyShapeIsIrrelevant(t *testing.T) {
+// TestAnthropicNativeClaudeCodeDetection 守住 sub2api 的最终转发判定与 UA 丢失恢复。
+// 直接请求依赖 UA + 可解析 metadata；转发请求依赖非空 metadata + billing block。
+func TestAnthropicNativeClaudeCodeDetection(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{
 		"User-Agent":     {"claude-cli/" + anthropicCLIVersion + " (external, cli)"},
@@ -3163,51 +3453,89 @@ func TestAnthropicNativeClaudeCodeBodyShapeIsIrrelevant(t *testing.T) {
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
 	cfg := &model.Config{Name: "anthropic-third-party"}
-
-	const cacheControlBody = `{"model":"claude-opus-5","system":[{"type":"text","text":"custom system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}],"max_tokens":1024,"temperature":0.4}`
-
-	for _, testCase := range []struct{ name, body string }{
-		{"no metadata at all", cacheControlBody},
-		{"empty account_uuid", `{"model":"claude-opus-5","metadata":{"user_id":"{\"device_id\":\"94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1\",\"account_uuid\":\"\",\"session_id\":\"f2e293f7-b6ee-48f7-9258-95be092aae58\"}"},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`},
-		{"non-uuid account_uuid", `{"model":"claude-opus-5","metadata":{"user_id":"{\"device_id\":\"short\",\"account_uuid\":\"not-a-uuid\",\"session_id\":\"nope\"}"},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`},
-		{"no billing prefix in system", cacheControlBody},
+	const validBody = `{"model":"claude-opus-5","metadata":{"user_id":"{\"device_id\":\"device\",\"account_uuid\":\"\",\"session_id\":\"session\"}"},"system":[{"type":"text","text":"custom system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`
+	const billingBody = `{"model":"claude-opus-5","metadata":{"user_id":"relay-user"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=claude-vscode;"}],"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`
+	for _, testCase := range []struct {
+		name    string
+		body    string
+		headers http.Header
+		want    bool
+	}{
+		{name: "direct JSON metadata", body: validBody, headers: headers, want: true},
+		{name: "missing X-App and beta", body: validBody, headers: http.Header{"User-Agent": headers.Values("User-Agent")}, want: true},
+		{name: "missing metadata", body: `{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`, headers: headers},
+		{name: "invalid metadata", body: `{"model":"claude-opus-5","metadata":{"user_id":"invalid"},"messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`, headers: headers},
+		{name: "UA lost in relay", body: billingBody, headers: http.Header{"User-Agent": {"Go-http-client/1.1"}}, want: true},
+		{name: "UA lost without billing", body: validBody, headers: http.Header{"User-Agent": {"Go-http-client/1.1"}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			if !isNativeAnthropicClaudeCodeRequest(headers) {
-				t.Fatal("native detection must not depend on the body")
-			}
 			body := []byte(testCase.body)
+			if got := isNativeAnthropicClaudeCodeRequest(body, testCase.headers); got != testCase.want {
+				t.Fatalf("native detection = %t, want %t", got, testCase.want)
+			}
 			finalized, err := finalizeAnthropicClaudeCodeMessagesBody(
-				body, cfg, "sk-ant-key", headers, anthropicThirdPartyTestURL,
+				body, cfg, "sk-ant-key", testCase.headers, anthropicThirdPartyTestURL,
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(finalized, body) {
-				t.Fatalf("native body was rewritten:\n got %s\nwant %s", finalized, body)
-			}
-		})
-	}
-
-	// 三个头缺任意一个就不是原生请求。
-	for _, missing := range []string{"User-Agent", "X-App", "Anthropic-Beta"} {
-		t.Run("missing "+missing, func(t *testing.T) {
-			t.Parallel()
-			partial := headers.Clone()
-			partial.Del(missing)
-			if isNativeAnthropicClaudeCodeRequest(partial) {
-				t.Fatalf("a request without %s was accepted as native", missing)
+			if bytes.Equal(finalized, body) != testCase.want {
+				t.Fatalf("passthrough = %t, want %t:\n got %s\ninput %s", bytes.Equal(finalized, body), testCase.want, finalized, body)
 			}
 		})
 	}
 }
 
-// TestValidAnthropicClaudeCLIUserAgent 钉死 UA 判据对齐上游
-// claudeCodeNativeUserAgentPattern + nativeClaudeEntrypoints。
-//
-// 写死 " (external, cli)" 后缀会把带 Agent SDK 的 CLI 和 VSCode 扩展整条拒掉，
-// 后果不是报错而是静默降级到重写路径——客户端的 prompt cache 断点被打散。
+func TestAnthropicNativeOAuthHeadersRecoverMissingClientIdentity(t *testing.T) {
+	t.Parallel()
+	const body = `{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hi"}]}`
+	for _, testCase := range []struct {
+		name          string
+		headers       http.Header
+		wantBeta      string
+		wantUserAgent string
+	}{
+		{
+			name:          "direct without X-App or beta",
+			headers:       http.Header{"User-Agent": {"claude-cli/2.1.220 (external, future-desktop)"}},
+			wantBeta:      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+			wantUserAgent: "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+		},
+		{
+			name:          "relay replaced UA",
+			headers:       http.Header{"User-Agent": {"Go-http-client/1.1"}, "Anthropic-Beta": {"claude-code-20250219"}},
+			wantBeta:      "claude-code-20250219,oauth-2025-04-20",
+			wantUserAgent: "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isNativeAnthropicClaudeCodeRequest([]byte(body), testCase.headers) {
+				t.Fatal("caller wire was not recognized")
+			}
+			injectAnthropicOAuthHeadersWithFingerprint(req, &model.Config{AuthType: model.AuthTypeAnthropicOAuth},
+				"oauth-access", []byte(body), true, nil, testCase.headers)
+			if got := headerValueFold(req.Header, "User-Agent"); got != testCase.wantUserAgent {
+				t.Fatalf("User-Agent=%q, want %q", got, testCase.wantUserAgent)
+			}
+			if got := headerValueFold(req.Header, "X-App"); got != "cli" {
+				t.Fatalf("X-App=%q, want cli", got)
+			}
+			if got := headerValueFold(req.Header, "Anthropic-Beta"); got != testCase.wantBeta {
+				t.Fatalf("Anthropic-Beta=%q, want %q", got, testCase.wantBeta)
+			}
+			if got := headerValueFold(req.Header, "Authorization"); got != "Bearer oauth-access" {
+				t.Fatalf("Authorization=%q", got)
+			}
+		})
+	}
+}
+
+// TestValidAnthropicClaudeCLIUserAgent 对齐 sub2api 的 claude-cli/X.Y.Z 前缀判定。
 func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 	t.Parallel()
 	version := anthropicCLIVersion
@@ -3224,11 +3552,11 @@ func TestValidAnthropicClaudeCLIUserAgent(t *testing.T) {
 		// 版本号刻意不参与判定：锁死它等于给客户端每次升级埋一颗静默降级地雷。
 		{"newer version", "claude-cli/9.9.9 (external, cli)", true},
 		{"older version", "claude-cli/1.0.0 (external, cli)", true},
-		{"unknown entrypoint", "claude-cli/" + version + " (external, sdk-ts)", false},
+		{"unknown entrypoint", "claude-cli/" + version + " (external, sdk-ts)", true},
 		{"non-numeric version", "claude-cli/latest (external, cli)", false},
-		{"missing external marker", "claude-cli/" + version + " (cli)", false},
-		{"trailing junk", "claude-cli/" + version + " (external, cli) extra", false},
-		{"malformed agent sdk", "claude-cli/" + version + " (external, cli, agent-sdk/x)", false},
+		{"missing external marker", "claude-cli/" + version + " (cli)", true},
+		{"trailing junk", "claude-cli/" + version + " (external, cli) extra", true},
+		{"malformed agent sdk", "claude-cli/" + version + " (external, cli, agent-sdk/x)", true},
 		{"empty", "", false},
 		{"unrelated client", "python-httpx/0.27.0", false},
 	} {
@@ -3258,13 +3586,13 @@ func TestAnthropicClientVersionFloorsOldCLI(t *testing.T) {
 		"X-App":          {"cli"},
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
-	if !isNativeAnthropicClaudeCodeRequest(nativeOK) {
+	if !isNativeAnthropicClaudeCodeRequest([]byte(`{"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\"}"}}`), nativeOK) {
 		t.Fatal("current pin must still be native")
 	}
 	nativeOld := nativeOK.Clone()
 	nativeOld.Set("User-Agent", "claude-cli/2.1.209 (external, cli)")
-	if isNativeAnthropicClaudeCodeRequest(nativeOld) {
-		t.Fatal("CLI older than the pin must not passthrough")
+	if !isNativeAnthropicClaudeCodeRequest([]byte(`{"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\"}"}}`), nativeOld) {
+		t.Fatal("a valid older Claude CLI must still passthrough without body rewriting")
 	}
 }
 

@@ -322,6 +322,10 @@ func cloneAnthropicCredential(credential *anthropicauth.Credential) *anthropicau
 		return nil
 	}
 	clone := *credential
+	if credential.Fingerprint != nil {
+		fingerprint := *credential.Fingerprint
+		clone.Fingerprint = &fingerprint
+	}
 	clone.PassiveUsage = anthropicauth.ClonePassiveUsage(credential.PassiveUsage)
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)

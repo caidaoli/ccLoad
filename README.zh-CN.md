@@ -1014,6 +1014,8 @@ ccLoad 使用的核心技术栈：
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
 | `CCLOAD_MODEL_CATALOG_CACHE` | 无 | models.dev 模型目录缓存文件路径（默认 `data/model-catalog.json`，默认目录不可写时回退临时目录） |
+| `CCLOAD_ANTHROPIC_CLI_VERSION_SYNC` | `true` | 每小时从 GitHub 同步最新 Claude Code CLI 版本，作为 Anthropic OAuth 指纹的版本下限；设为 `false` 只使用内置与已缓存版本 |
+| `CCLOAD_ANTHROPIC_CLI_VERSION_CACHE` | 无 | Claude Code CLI 版本缓存文件路径（默认与模型目录缓存同目录的 `anthropic-cli-version.json`；容器部署须位于持久化卷） |
 
 > 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
 > 可通过 `GET /admin/runtime-metrics` 查看 Responses WebSocket、日志队列/落库失败，以及混合存储主库待同步、失败、丢弃与最后成功时间。

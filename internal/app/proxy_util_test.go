@@ -1604,6 +1604,7 @@ func TestInjectAnyrouterClaudeCodeFallbackTools(t *testing.T) {
 		"X-App":          {"cli"},
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
+	nativeCallerBody := []byte(`{"metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"}}`)
 	toolNames := func(body []byte) []string {
 		tools := gjson.GetBytes(body, "tools")
 		if !tools.IsArray() {
@@ -1683,14 +1684,14 @@ func TestInjectAnyrouterClaudeCodeFallbackTools(t *testing.T) {
 			if path == "" {
 				path = "/v1/messages"
 			}
-			got := injectAnyrouterClaudeCodeFallbackTools(testCfg, proto, path, headers, []byte(tt.body))
+			got := injectAnyrouterClaudeCodeFallbackTools(testCfg, proto, path, headers, nativeCallerBody, []byte(tt.body))
 			if names := toolNames(got); !slices.Equal(names, tt.want) {
 				t.Fatalf("tool names = %v, want %v; body = %s", names, tt.want, got)
 			}
 		})
 	}
 
-	first := injectAnyrouterClaudeCodeFallbackTools(cfg, protocol.Anthropic, "/v1/messages", nativeHeaders, []byte(`{"model":"claude-fable-5-1","tools":[]}`))
+	first := injectAnyrouterClaudeCodeFallbackTools(cfg, protocol.Anthropic, "/v1/messages", nativeHeaders, nativeCallerBody, []byte(`{"model":"claude-fable-5-1","tools":[]}`))
 	tools := gjson.GetBytes(first, "tools")
 	expectedRequired := map[string][]string{
 		"Edit":  {"file_path", "old_string", "new_string"},
@@ -1711,7 +1712,7 @@ func TestInjectAnyrouterClaudeCodeFallbackTools(t *testing.T) {
 			t.Fatalf("%s required = %v, want %v", name, required, expectedRequired[name])
 		}
 	}
-	second := injectAnyrouterClaudeCodeFallbackTools(cfg, protocol.Anthropic, "/v1/messages", nativeHeaders, first)
+	second := injectAnyrouterClaudeCodeFallbackTools(cfg, protocol.Anthropic, "/v1/messages", nativeHeaders, nativeCallerBody, first)
 	if string(second) != string(first) {
 		t.Fatalf("fallback injection is not idempotent:\nfirst:  %s\nsecond: %s", first, second)
 	}

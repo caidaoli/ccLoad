@@ -217,6 +217,29 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic_MapsXHighToClaudeMax(t *tes
 	}
 }
 
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_Opus55Adaptive(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	for _, testCase := range []struct {
+		effort     string
+		wantEffort string
+	}{
+		{effort: "low", wantEffort: "low"},
+		{effort: "high", wantEffort: "high"},
+	} {
+		raw := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + testCase.effort + `"}`)
+		got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "claude-opus-5-5", raw, false)
+		if err != nil {
+			t.Fatalf("TranslateRequest(%s): %v", testCase.effort, err)
+		}
+		if gjson.GetBytes(got, "thinking.type").String() != "adaptive" ||
+			gjson.GetBytes(got, "output_config.effort").String() != testCase.wantEffort ||
+			gjson.GetBytes(got, "thinking.budget_tokens").Exists() {
+			t.Fatalf("effort=%s translated=%s", testCase.effort, got)
+		}
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_GeminiToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -1922,6 +1945,14 @@ func TestRewriteResponsesPathToAlphaSearch(t *testing.T) {
 func TestDetectRequestFamily_GeminiCountTokens(t *testing.T) {
 	if got := protocol.DetectRequestFamily("/v1beta/models/gemini-3-flash:countTokens"); got != protocol.RequestFamilyGenerateContent {
 		t.Fatalf("DetectRequestFamily(countTokens) = %q, want %q", got, protocol.RequestFamilyGenerateContent)
+	}
+}
+
+func TestDetectRequestFamily_AnthropicCountTokens(t *testing.T) {
+	for _, path := range []string{"/v1/messages/count_tokens", "/prefix/v1/messages/count_tokens"} {
+		if got := protocol.DetectRequestFamily(path); got != protocol.RequestFamilyCountTokens {
+			t.Fatalf("DetectRequestFamily(%q) = %q, want %q", path, got, protocol.RequestFamilyCountTokens)
+		}
 	}
 }
 

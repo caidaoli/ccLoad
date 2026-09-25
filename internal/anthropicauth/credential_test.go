@@ -54,6 +54,7 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		Expired: "2030-01-01T00:00:00Z", Scope: "scope", OrgUUID: "org",
 		AccountUUID: "account", EmailAddress: "user@example.com", PlanType: "Pro",
 		ClaudeCodeTrialEndsAt: "2030-02-03T04:05:06Z",
+		Fingerprint:           &Fingerprint{UserAgent: "claude-cli/2.1.300 (external, cli)", StainlessOS: "Darwin"},
 		OAuthUsage:            []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`),
 		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
 			Key: "|seven_day", WindowSeconds: 7 * 24 * 60 * 60,
@@ -70,10 +71,30 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 	}
 	if merged.RefreshToken != "rotated-refresh" || merged.AccountUUID != "account" || merged.Scope != "scope" ||
 		merged.PlanType != "Pro" || merged.ClaudeCodeTrialEndsAt != "2030-02-03T04:05:06Z" ||
+		merged.Fingerprint == nil || merged.Fingerprint.UserAgent != current.Fingerprint.UserAgent ||
+		merged.Fingerprint.StainlessOS != "Darwin" ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` ||
 		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
 		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 3_500_000 {
 		t.Fatalf("merged = %+v", merged)
+	}
+	merged.Fingerprint.StainlessOS = "Linux"
+	if current.Fingerprint.StainlessOS != "Darwin" {
+		t.Fatal("MergeRefresh shared the old fingerprint pointer")
+	}
+	encoded, err := merged.JSON()
+	if err != nil {
+		t.Fatalf("JSON() error = %v", err)
+	}
+	reloaded, err := ParseCredential([]byte(encoded))
+	if err != nil || reloaded.Fingerprint == nil || reloaded.Fingerprint.StainlessOS != "Linux" {
+		t.Fatalf("reloaded fingerprint=%+v err=%v", reloaded, err)
+	}
+	otherAccount := *refreshed
+	otherAccount.AccountUUID = "other-account"
+	other, err := current.MergeRefresh(&otherAccount)
+	if err != nil || other.Fingerprint != nil {
+		t.Fatalf("new account inherited fingerprint=%+v err=%v", other, err)
 	}
 	needsRefresh, err := merged.NeedsRefresh(time.Date(2030, 1, 1, 23, 56, 0, 0, time.UTC), 5*time.Minute)
 	if err != nil || !needsRefresh {

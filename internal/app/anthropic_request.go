@@ -39,8 +39,7 @@ func isAnthropicJSONObject(body []byte) bool {
 // 入口守卫由调用方（normalizeAnthropicMessagesBody / 最终化边界）负责，这里三步
 // 都不会失败，所以不返回 error。
 //
-// CCH 不在这里签：它按凭证与上游 origin 条件化，必须由持有这两项上下文的最终发送
-// 边界处理，判据见 anthropicCCHSigningEnabled。
+// CCH 不在这里签：模拟请求省略它；旧版结构化 Haiku helper 在专用分支处理。
 func encodeNormalizedAnthropicRequest(body []byte) []byte {
 	body = normalizeAnthropicMessagesRequest(body)
 	body = orderAnthropicCacheControlWireShape(body)
@@ -159,6 +158,46 @@ func normalizeAnthropicSampling(body []byte) []byte {
 	switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type")))) {
 	case "enabled", "adaptive", "auto":
 		body = deleteJSONPath(body, "top_k")
+	}
+	return body
+}
+
+// sanitizeAnthropicBodyForBetaTokens keeps beta-gated request fields in sync
+// with the final upstream header, including channel Header rules.
+func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
+	activeBetas := make(map[string]bool)
+	for _, part := range strings.Split(betaHeader, ",") {
+		if token := strings.TrimSpace(part); token != "" {
+			activeBetas[token] = true
+		}
+	}
+	hasBeta := func(tokens ...string) bool {
+		for _, token := range tokens {
+			if activeBetas[token] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, field := range []struct {
+		path  string
+		betas []string
+	}{
+		{"context_management", []string{"context-management-2025-06-27"}},
+		{"thinking.block_binding", []string{"thinking-binding-controls-2026-08-01"}},
+		{"fallbacks", []string{"server-side-fallback-2026-07-01"}},
+		{"fallback_credit_token", []string{"server-side-fallback-2026-07-01", "fallback-credit-2026-07-01", "fallback-credit-2026-06-01"}},
+	} {
+		if !hasBeta(field.betas...) && gjson.GetBytes(body, field.path).Exists() {
+			body = deleteJSONPath(body, field.path)
+		}
+	}
+	if !hasBeta("mid-conversation-output-config-2026-07-01") {
+		for index, message := range gjson.GetBytes(body, "messages").Array() {
+			if message.Get("output_config").Exists() {
+				body = deleteJSONPath(body, "messages."+strconv.Itoa(index)+".output_config")
+			}
+		}
 	}
 	return body
 }

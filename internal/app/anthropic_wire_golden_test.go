@@ -30,8 +30,7 @@ type anthropicGoldenCase struct {
 	oauth   bool // true 走 OAuth 凭证，false 走 API Key 合成身份
 	apiKey  string
 	headers http.Header
-	// thirdParty 走非第一方 origin：CCH 只在第一方 origin 或 OAuth 凭证下签名，
-	// 两支形态都要进金标准（判据见 anthropicCCHSigningEnabled）。
+	// thirdParty 走非第一方 origin；模拟 billing 在两条路径上都省略 CCH。
 	thirdParty bool
 }
 

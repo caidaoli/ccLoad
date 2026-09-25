@@ -192,6 +192,13 @@ type proxyRequestContext struct {
 	nativeCodexBody         []byte
 }
 
+// countTokens reports the auxiliary count_tokens request: it is never billed,
+// logged to the request log, or allowed to cool down a channel, and any
+// upstream failure falls back to the local estimator.
+func (r *proxyRequestContext) countTokens() bool {
+	return r != nil && protocol.DetectRequestFamily(r.requestPath) == protocol.RequestFamilyCountTokens
+}
+
 func (r *proxyRequestContext) requestLogModel() string {
 	if r == nil {
 		return ""

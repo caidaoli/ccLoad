@@ -41,9 +41,21 @@ type Credential struct {
 	// ClaudeCodeTrialEndsAt is a trial boundary reported by /api/oauth/profile.
 	// It is not a general subscription expiration time.
 	ClaudeCodeTrialEndsAt string           `json:"claude_code_trial_ends_at,omitempty"`
+	Fingerprint           *Fingerprint     `json:"fingerprint,omitempty"`
 	PassiveUsage          *PassiveUsage    `json:"passive_usage,omitempty"`
 	OAuthUsage            json.RawMessage  `json:"oauth_usage,omitempty"`
 	QuotaCostUsage        *oauthcost.Usage `json:"quota_cost_usage,omitempty"`
+}
+
+// Fingerprint is the account-scoped Claude Code identity sent in OAuth headers.
+type Fingerprint struct {
+	UserAgent               string `json:"user_agent"`
+	StainlessLang           string `json:"stainless_lang"`
+	StainlessPackageVersion string `json:"stainless_package_version"`
+	StainlessOS             string `json:"stainless_os"`
+	StainlessArch           string `json:"stainless_arch"`
+	StainlessRuntime        string `json:"stainless_runtime"`
+	StainlessRuntimeVersion string `json:"stainless_runtime_version"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Anthropic model
@@ -97,6 +109,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		DeviceID       *string           `json:"device_id"`
 		PlanType       *string           `json:"plan_type"`
 		TrialEndsAt    *string           `json:"claude_code_trial_ends_at"`
+		Fingerprint    **Fingerprint     `json:"fingerprint"`
 		PassiveUsage   **PassiveUsage    `json:"passive_usage"`
 		OAuthUsage     *json.RawMessage  `json:"oauth_usage"`
 		QuotaCostUsage **oauthcost.Usage `json:"quota_cost_usage"`
@@ -108,8 +121,9 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		AccountUUID: &credential.AccountUUID, EmailAddress: &credential.EmailAddress,
 		Email:    &emailAlias,
 		DeviceID: &credential.DeviceID, PlanType: &credential.PlanType,
-		TrialEndsAt: &credential.ClaudeCodeTrialEndsAt, PassiveUsage: &credential.PassiveUsage,
-		OAuthUsage: &credential.OAuthUsage, QuotaCostUsage: &credential.QuotaCostUsage,
+		TrialEndsAt: &credential.ClaudeCodeTrialEndsAt, Fingerprint: &credential.Fingerprint,
+		PassiveUsage: &credential.PassiveUsage,
+		OAuthUsage:   &credential.OAuthUsage, QuotaCostUsage: &credential.QuotaCostUsage,
 	}); err != nil {
 		return nil, fmt.Errorf("decode Anthropic credential fields: %w", err)
 	}
@@ -295,6 +309,11 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	preserve(&merged.DeviceID, c.DeviceID)
 	preserve(&merged.PlanType, c.PlanType)
 	preserve(&merged.ClaudeCodeTrialEndsAt, c.ClaudeCodeTrialEndsAt)
+	accountChanged := refreshed.AccountUUID != "" && c.AccountUUID != "" && refreshed.AccountUUID != c.AccountUUID
+	if merged.Fingerprint == nil && c.Fingerprint != nil && !accountChanged {
+		fingerprint := *c.Fingerprint
+		merged.Fingerprint = &fingerprint
+	}
 	if merged.PassiveUsage == nil {
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
 	}

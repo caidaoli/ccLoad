@@ -26,9 +26,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Anthropic CCH 签名按上游 origin 分流（见 anthropicCCHSigningEnabled）：第一方 origin
-// 上非 OAuth 凭证也签，第三方网关不签。测试要么钉住第一方形态，要么钉住第三方形态，
-// 所以这里给出两个固定 target，不要在测试里传 nil 让判据退化成「只看凭证」。
+// 固定第一方与第三方 target，覆盖 API Key 认证边界和 Haiku helper 的窄 CCH 策略。
 var (
 	anthropicOfficialTestURL   = mustParseTestURL("https://api.anthropic.com/v1/messages")
 	anthropicThirdPartyTestURL = mustParseTestURL("https://gateway.example.com/v1/messages")

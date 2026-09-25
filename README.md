@@ -993,6 +993,8 @@ Environment variables cover bootstrap configuration only — the values ccLoad n
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_HOST_OVERRIDES` | None | DNS override: pin upstream domains to fixed IPs, bypassing DNS resolution. Format: `host1=ip1,host2=ip2`, e.g. `anyrouter.top=47.246.23.200`. TLS SNI/cert/Host header unaffected |
 | `CCLOAD_MODEL_CATALOG_CACHE` | None | Explicit path for the models.dev catalog cache file (default `data/model-catalog.json`, falls back to a temp path when the default dir is not writable) |
+| `CCLOAD_ANTHROPIC_CLI_VERSION_SYNC` | `true` | Hourly sync of the latest Claude Code CLI version from GitHub, used as the version floor for Anthropic OAuth fingerprints; `false` keeps the built-in and cached version only |
+| `CCLOAD_ANTHROPIC_CLI_VERSION_CACHE` | None | Explicit path for the Claude Code CLI version cache (default `anthropic-cli-version.json` next to the model catalog cache; keep it on a persistent volume in containers) |
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 > Responses WebSocket runtime usage and limits are available from `GET /admin/runtime-metrics`.

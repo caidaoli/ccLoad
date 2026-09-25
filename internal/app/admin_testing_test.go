@@ -6395,7 +6395,7 @@ func TestBuildTestUpstreamRequestPlanAppliesThinkingSuffix(t *testing.T) {
 	}
 
 	_, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "sk-test", testReq, "gpt-5.6-luna(max)",
+		context.Background(), cfg, "sk-test", testReq, "gpt-5.6-luna(max)",
 		util.ProtocolCodex, util.ProtocolCodex, "https://upstream.example.com",
 	)
 	if err != nil {
@@ -6419,7 +6419,7 @@ func TestBuildTestUpstreamRequestPlanKeepsThinkingSuffixAcrossCodexTransform(t *
 	}
 
 	_, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "sk-test", testReq, "claude-opus-4-6(high)",
+		context.Background(), cfg, "sk-test", testReq, "claude-opus-4-6(high)",
 		util.ProtocolAnthropic, util.ProtocolCodex, "https://upstream.example.com",
 	)
 	if err != nil {
@@ -6443,7 +6443,7 @@ func TestBuildTestUpstreamRequestPlanZedHaikuDoesNotInheritCodexThinkingBudget(t
 	}
 
 	_, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "zed-jwt", testReq, testReq.Model,
+		context.Background(), cfg, "zed-jwt", testReq, testReq.Model,
 		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
 	)
 	if err != nil {
@@ -6478,7 +6478,7 @@ func TestBuildTestUpstreamRequestPlanZedPreservesThinkingBodyRule(t *testing.T) 
 	}
 
 	_, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "zed-jwt", testReq, testReq.Model,
+		context.Background(), cfg, "zed-jwt", testReq, testReq.Model,
 		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
 	)
 	if err != nil {
@@ -6503,7 +6503,7 @@ func TestBuildTestUpstreamRequestPlanZedHaikuKeepsExplicitThinkingSuffix(t *test
 	}
 
 	_, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "zed-jwt", testReq, "claude-haiku-4-5(medium)",
+		context.Background(), cfg, "zed-jwt", testReq, "claude-haiku-4-5(medium)",
 		util.ProtocolOpenAI, util.ProtocolCodex, "https://cloud.zed.dev/completions#",
 	)
 	if err != nil {
@@ -6545,7 +6545,7 @@ func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
 	}
 
 	cfgForBuild, plan, err := srv.buildTestUpstreamRequestPlan(
-		cfg, "key-id.secret", testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
+		context.Background(), cfg, "key-id.secret", testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
 	)
 	if err != nil {
 		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
@@ -6643,6 +6643,63 @@ func TestAdminTestNativeAnthropicDoesNotDoubleAppendHeaderRules(t *testing.T) {
 	}
 	if strings.Count(betas, "context-1m-2025-08-07") != 1 {
 		t.Fatalf("anthropic-beta = %q, append rule must not run twice on the native admin-test path", betas)
+	}
+}
+
+func TestAdminTestAnthropicFinalBetaMatchesRequestBody(t *testing.T) {
+	srv := newInMemoryServer(t)
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-admin-beta")
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	userID := `{"device_id":"native-device","account_uuid":"` + anthropicProxyTestAccountUUID + `","session_id":"` + sessionID + `"}`
+	cfg := &model.Config{
+		AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON,
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{
+			Action: model.RuleActionOverride, Name: "Anthropic-Beta", Value: "oauth-2025-04-20",
+		}}},
+	}
+	body := fmt.Appendf(nil,
+		`{"model":"claude-sonnet-4-6","max_tokens":64,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":"hello"}],"metadata":{"user_id":%q},"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}}`,
+		userID,
+	)
+	plan := &channelTestRequestPlan{
+		upstreamProtocol: util.ProtocolAnthropic,
+		apiKey:           "oauth-admin-beta",
+		fullURL:          "https://api.anthropic.com/v1/messages",
+		endpointPath:     "/v1/messages",
+		requestBody:      body,
+		clientBody:       body,
+		headers: http.Header{
+			"User-Agent":     {"claude-cli/2.1.280 (external, cli)"},
+			"X-App":          {"cli"},
+			"Anthropic-Beta": {"claude-code-20250219,oauth-2025-04-20,context-management-2025-06-27"},
+		},
+	}
+	req, cancel, err := srv.newTestUpstreamRequest(context.Background(), cfg,
+		&testutil.TestChannelRequest{Model: "claude-sonnet-4-6"}, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	wireBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(wireBody, "context_management").Exists() ||
+		!bytes.Equal(wireBody, plan.requestBody) || req.ContentLength != int64(len(wireBody)) {
+		t.Fatalf("admin final body=%s plan=%s length=%d", wireBody, plan.requestBody, req.ContentLength)
+	}
+	copyBody, err := req.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := io.ReadAll(copyBody)
+	closeErr := copyBody.Close()
+	if err != nil || closeErr != nil || !bytes.Equal(replayed, wireBody) {
+		t.Fatalf("GetBody=%s readErr=%v closeErr=%v, want %s", replayed, err, closeErr, wireBody)
+	}
+	resigned, err := finalizeAnthropicCCH(wireBody)
+	if err != nil || !bytes.Equal(resigned, wireBody) {
+		t.Fatalf("CCH mismatch: err=%v body=%s", err, wireBody)
 	}
 }
 

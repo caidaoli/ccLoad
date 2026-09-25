@@ -158,16 +158,18 @@ type channelTestRequestPlan struct {
 	fullURL           string
 	// endpointPath 是下游端点路径，协议族判定一律用它，不能用 fullURL 的完整
 	// 路径——渠道基础 URL 带子路径时两者不等，见 downstreamEndpointPath。
-	endpointPath      string
-	headers           http.Header
-	upstreamHeaders   http.Header
-	requestBody       []byte
-	clientBody        []byte
-	zedWire           *zedWirePlan
-	openCodeResponses *openCodeResponsesPlan
-	timeout           *channelTestTimeout
-	debugCapture      *debugCapture
-	antigravityOAuth  bool
+	endpointPath              string
+	headers                   http.Header
+	upstreamHeaders           http.Header
+	requestBody               []byte
+	clientBody                []byte
+	anthropicOAuthFingerprint *anthropicOAuthFingerprint
+	anthropicMappedSessionID  string
+	zedWire                   *zedWirePlan
+	openCodeResponses         *openCodeResponsesPlan
+	timeout                   *channelTestTimeout
+	debugCapture              *debugCapture
+	antigravityOAuth          bool
 }
 
 // requestedServiceTier 读取本次测试上游请求体声明的计费档位，与代理 requestedServiceTier 同源。
@@ -1630,7 +1632,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	if testReq.WaitForCapacity {
 		var cfgForBuild *model.Config
 		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(
-			cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL,
+			reqCtx, cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL,
 		)
 		if err == nil {
 			capacityRelease, err = s.waitForUpstreamRequest(reqCtx, cfg)
@@ -2046,6 +2048,7 @@ func captureImageGenerationFailureDebug(
 }
 
 func (s *Server) buildTestUpstreamRequestPlan(
+	ctx context.Context,
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
@@ -2061,6 +2064,9 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol)
 	if err != nil {
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
+	}
+	for key, value := range testReq.Headers {
+		requestPlan.headers.Set(key, value)
 	}
 
 	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
@@ -2079,17 +2085,52 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse test upstream URL: %w", err)
 	}
+	callerBody := requestPlan.clientBody
+	if len(callerBody) == 0 {
+		callerBody = requestPlan.requestBody
+	}
+	callerBodyIsAnthropic := requestPlan.clientProtocol == string(protocol.Anthropic)
+	callerWire := classifyAnthropicRequestCallerWire(
+		callerBody, requestPlan.headers, upstreamProtocolValue, requestPath, callerBodyIsAnthropic)
+	if cfgForBuild.UsesAnthropicOAuth() {
+		fingerprintSource := http.Header(nil)
+		if callerWire.nativeClaudeCode {
+			fingerprintSource = requestPlan.headers
+		}
+		requestPlan.anthropicOAuthFingerprint = s.getAnthropicOAuthFingerprint(ctx, cfgForBuild, fingerprintSource)
+	}
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, requestPlan.clientBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
-		false,
+		false, callerBodyIsAnthropic,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
 	}
+	if cfgForBuild.UsesAnthropicOAuth() &&
+		(isAnthropicMessagesRequest(upstreamProtocolValue, requestPath) || isAnthropicCountTokensRequest(upstreamProtocolValue, requestPath)) {
+		identityHeaders := requestPlan.headers
+		if requestPlan.anthropicOAuthFingerprint != nil {
+			identityHeaders = cloneHeaders(requestPlan.headers)
+			identityHeaders.Set("User-Agent", requestPlan.anthropicOAuthFingerprint.UserAgent)
+		}
+		requestPlan.requestBody, requestPlan.anthropicMappedSessionID, err = rebaseAnthropicNativeOAuthIdentity(
+			requestPlan.requestBody, callerBody, cfgForBuild, callerWire, identityHeaders)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rebase test request identity: %w", err)
+		}
+		if callerWire.nativeClaudeCode && requestPlan.anthropicOAuthFingerprint != nil {
+			requestPlan.requestBody = syncAnthropicOAuthBillingVersion(
+				requestPlan.requestBody, requestPlan.anthropicOAuthFingerprint.UserAgent)
+		}
+	}
 	requestPlan.requestBody, requestPlan.openCodeResponses = prepareOpenCodeResponsesRequest(
 		parsedTestURL, upstreamProtocolValue, requestPath, requestPlan.requestBody, nil,
 	)
+	requestPlan.requestBody, err = refreshAnthropicCallerCCH(requestPlan.requestBody, callerBody, callerWire)
+	if err != nil {
+		return nil, nil, fmt.Errorf("refresh test request CCH: %w", err)
+	}
 	if xaiResponsesRequest {
 		requestPlan.xaiConversationID = testReq.ResolveSessionID()
 		requestPlan.requestBody, err = finalizeXAIResponsesBody(
@@ -2148,11 +2189,15 @@ func (s *Server) newTestUpstreamRequest(
 	}
 
 	sourceHeaders := cloneHeaders(requestPlan.headers)
-	for key, value := range testReq.Headers {
-		sourceHeaders.Set(key, value)
-	}
 	requestPlan.upstreamHeaders = sourceHeaders
+	callerBody := requestPlan.clientBody
+	if len(callerBody) == 0 {
+		callerBody = requestPlan.requestBody
+	}
 	requestProtocol := protocol.Protocol(requestPlan.upstreamProtocol)
+	callerWire := classifyAnthropicRequestCallerWire(callerBody, sourceHeaders, requestProtocol,
+		requestPlan.endpointPath, requestPlan.clientProtocol == string(protocol.Anthropic))
+	callerOwnsAnthropicWire := callerWire.ownsWire()
 	if requestProtocol == protocol.Codex {
 		copyCodexHTTPHeaders(req.Header, sourceHeaders)
 	} else {
@@ -2164,6 +2209,7 @@ func (s *Server) newTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	wireRebuilt := false
+	oauthFingerprint := requestPlan.anthropicOAuthFingerprint
 	if cfgForBuild.UsesCodeBuddyOAuth() {
 		if err := injectCodeBuddyHeaders(req, cfgForBuild, requestPlan.apiKey); err != nil {
 			timeout.cancelAll()
@@ -2182,20 +2228,40 @@ func (s *Server) newTestUpstreamRequest(
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
 		wireRebuilt = true
+	} else if isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) {
+		injectAnthropicCountTokensHeadersWithFingerprint(req, cfgForBuild, requestPlan.apiKey,
+			requestPlan.requestBody, callerOwnsAnthropicWire, oauthFingerprint, sourceHeaders)
+		wireRebuilt = true
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
-		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
+		injectAnthropicOAuthHeadersWithFingerprint(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody,
+			callerOwnsAnthropicWire, oauthFingerprint, sourceHeaders)
 		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
 		injectZAICodingPlanHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
 		wireRebuilt = true
 	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
-		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
+		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody,
+			callerOwnsAnthropicWire, sourceHeaders)
 		wireRebuilt = true
 	}
-	// 指纹路径清空（或整体替换）并重建了请求头，规则产物随之丢失；与代理链路一样重跑
-	// 一次，渠道测试才能反映真实上游请求头。
+	if requestPlan.anthropicMappedSessionID != "" &&
+		anthropicHeaderValue(sourceHeaders, "X-Claude-Code-Session-Id") != "" &&
+		anthropicSessionIDFromBody(requestPlan.requestBody) == requestPlan.anthropicMappedSessionID {
+		setRawHeader(req.Header, "X-Claude-Code-Session-Id", requestPlan.anthropicMappedSessionID)
+	}
+	if isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) && isOfficialAnthropicURL(req.URL) {
+		req.Header.Del("X-Claude-Code-Session-Id")
+	}
+	// 指纹路径重建请求头；原生 OAuth 使用账号指纹，模拟请求保留 billing 同源的头。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+		if cfgForBuild.UsesAnthropicOAuth() {
+			if callerOwnsAnthropicWire {
+				applyAnthropicOAuthFingerprint(req, oauthFingerprint)
+			} else {
+				applyAnthropicOAuthMimicFingerprint(req, requestPlan.requestBody)
+			}
+		}
 	}
 	// anyrouter 渠道：确保 anthropic-beta 包含 context-1m，与代理链路步骤 6.2 对齐。
 	if requestProtocol == protocol.Anthropic && isAnyrouterChannel(cfgForBuild) {
@@ -2207,6 +2273,14 @@ func (s *Server) newTestUpstreamRequest(
 			executionIdentity = testReq.ResolveSessionID()
 		}
 		ensureOpenCodeSessionHeader(req.Header, sourceHeaders, executionIdentity)
+	}
+	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) ||
+		isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) {
+		requestPlan.requestBody, err = applyFinalAnthropicBetaBodyPolicy(req, requestPlan.requestBody)
+		if err != nil {
+			timeout.cancelAll()
+			return nil, nil, err
+		}
 	}
 	// Some compatibility gateways decompress the response but leave the gzip marker.
 	// Admin tests need the wire body for diagnostics, so never negotiate compression.
@@ -2231,7 +2305,7 @@ func (s *Server) buildTestUpstreamRequestForProtocol(
 	requestedModel string,
 	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
-	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL)
+	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(reqCtx, cfg, apiKey, testReq, requestedModel, clientProtocol, upstreamProtocol, selectedURL)
 	if err != nil {
 		return nil, nil, nil, err
 	}

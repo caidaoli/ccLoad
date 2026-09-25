@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 )
 
@@ -270,7 +272,7 @@ func TestChromeUTLSMarkedHTTPManagementRequestDoesNotEnterTLS(t *testing.T) {
 	}
 }
 
-func TestUpstreamHTTPClientUsesNodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
+func TestUpstreamHTTPClientUsesClaudeCodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
 	protocol := make(chan int, 1)
 	upstream, captured := newCapturedTLSServer(t, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		protocol <- r.ProtoMajor
@@ -302,7 +304,66 @@ func TestUpstreamHTTPClientUsesNodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
 		t.Fatalf("Anthropic protocol = HTTP/%d, want HTTP/1.1", got)
 	}
 	if clientHelloHasGREASECipherSuite(captured.Bytes()) {
-		t.Fatal("Anthropic API used the Chrome cipher profile instead of the Node.js profile")
+		t.Fatal("Anthropic API used the Chrome cipher profile instead of the Claude Code profile")
+	}
+}
+
+func TestAnthropicClaudeCodeTransportMatchesCLIProxyProfile(t *testing.T) {
+	spec := anthropicClaudeCodeClientHelloSpec()
+	wantCiphers := []uint16{
+		utls.TLS_AES_128_GCM_SHA256,
+		utls.TLS_AES_256_GCM_SHA384,
+		utls.TLS_CHACHA20_POLY1305_SHA256,
+		utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		utls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		utls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		utls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		utls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+		utls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		utls.TLS_RSA_WITH_AES_256_CBC_SHA,
+	}
+	if !reflect.DeepEqual(spec.CipherSuites, wantCiphers) {
+		t.Fatalf("Claude Code cipher suites = %v, want CLIProxyAPI profile %v", spec.CipherSuites, wantCiphers)
+	}
+	if len(spec.Extensions) < 2 {
+		t.Fatalf("Claude Code ClientHello has too few extensions: %d", len(spec.Extensions))
+	}
+	if _, ok := spec.Extensions[len(spec.Extensions)-2].(*utls.UtlsPaddingExtension); !ok {
+		t.Fatalf("padding extension is not immediately before PSK: %T", spec.Extensions[len(spec.Extensions)-2])
+	}
+	if _, ok := spec.Extensions[len(spec.Extensions)-1].(*utls.UtlsPreSharedKeyExtension); !ok {
+		t.Fatalf("PSK extension is not final: %T", spec.Extensions[len(spec.Extensions)-1])
+	}
+	if _, ok := spec.Extensions[1].(*utls.GREASEEncryptedClientHelloExtension); ok {
+		t.Fatal("Claude Code profile unexpectedly contains ECH GREASE")
+	}
+
+	wantMessages := []string{
+		"Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id",
+		"X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version",
+		"X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+		"X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access",
+		"anthropic-version", "x-app", "x-client-request-id", "Connection", "Host", "Accept-Encoding", "Content-Length",
+	}
+	if got := anthropicClaudeCodeHeaderOrder("POST", "/v1/messages"); !reflect.DeepEqual(got, wantMessages) {
+		t.Fatalf("messages header order = %v, want %v", got, wantMessages)
+	}
+	wantCountTokens := []string{
+		"Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id",
+		"X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version",
+		"X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+		"anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app",
+		"x-client-request-id", "Connection", "Host", "Accept-Encoding", "Content-Length",
+	}
+	if got := anthropicClaudeCodeHeaderOrder("POST", "/v1/messages/count_tokens?beta=true"); !reflect.DeepEqual(got, wantCountTokens) {
+		t.Fatalf("count_tokens header order = %v, want %v", got, wantCountTokens)
 	}
 }
 
