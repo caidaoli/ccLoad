@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -2396,5 +2397,54 @@ func TestHandleError_CloudflareChallengeCoolsChannelWithoutKeys(t *testing.T) {
 	}
 	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "test-model"); exists {
 		t.Error("cloudflare challenge is IP/fingerprint scoped, it must not cool down the model")
+	}
+}
+
+// OAuth 渠道没有独立 Key：Key 级 403 与 5h/7d 窗口被拒都必须冷却整个渠道。
+func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
+	resetAt := time.Now().Add(3 * time.Hour).Truncate(time.Second)
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		headers   map[string][]string
+		wantUntil time.Time
+	}{
+		{name: "forbidden", status: http.StatusForbidden, body: `{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement"}}`},
+		{name: "unified 7d rejected", status: http.StatusTooManyRequests, body: `{"type":"error","error":{"type":"rate_limit_error"}}`,
+			headers: map[string][]string{
+				"Anthropic-Ratelimit-Unified-7d-Status": {"rejected"},
+				"Anthropic-Ratelimit-Unified-7d-Reset":  {strconv.FormatInt(resetAt.Unix(), 10)},
+			}, wantUntil: resetAt},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			manager := NewManager(store, nil)
+			ctx := context.Background()
+			cfg := createTestChannel(t, store, "test-keyless-"+tc.name)
+
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID: cfg.ID, KeyIndex: NoKeyIndex, Model: "claude-opus-4-6",
+				StatusCode: tc.status, ErrorBody: []byte(tc.body), Headers: tc.headers,
+			})
+			if action != ActionRetryChannel {
+				t.Fatalf("action=%v, want ActionRetryChannel", action)
+			}
+			channelCfg, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			if !channelCfg.IsCoolingDown(time.Now()) {
+				t.Fatal("credential failure must cool the keyless channel")
+			}
+			if !tc.wantUntil.IsZero() && channelCfg.CooldownUntil != tc.wantUntil.Unix() {
+				t.Fatalf("channel cooldown until=%d, want window reset %d", channelCfg.CooldownUntil, tc.wantUntil.Unix())
+			}
+			if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "claude-opus-4-6"); exists {
+				t.Error("credential failure must not be narrowed to a model cooldown")
+			}
+		})
 	}
 }

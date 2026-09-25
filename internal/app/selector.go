@@ -121,6 +121,47 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex))
 }
 
+// fuzzyModelCandidates 返回按模糊匹配支持 model 的全部启用渠道（不做冷却过滤）。
+func (s *Server) fuzzyModelCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
+	if model == "*" {
+		return nil, nil
+	}
+	source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
+	if err != nil {
+		return nil, err
+	}
+	if len(source) == 0 {
+		source, err = s.store.ListConfigs(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	candidates := make([]*modelpkg.Config, 0, len(source))
+	for _, cfg := range source {
+		if cfg == nil || !cfg.Enabled {
+			continue
+		}
+		if s.configSupportsModelWithFuzzyMatch(cfg, model) {
+			candidates = append(candidates, cfg)
+		}
+	}
+	return candidates, nil
+}
+
+// modelConfigured 报告是否有启用渠道（精确或模糊）支持 model；查询失败按已配置处理，
+// 避免把存储故障伪装成“模型不存在”。
+func (s *Server) modelConfigured(ctx context.Context, model string) bool {
+	if model == "" {
+		return true
+	}
+	if channels, err := s.getEnabledChannelsSnapshotByModel(ctx, model); err != nil || len(channels) > 0 {
+		return true
+	}
+	candidates, err := s.fuzzyModelCandidates(ctx, model)
+	return err != nil || len(candidates) > 0
+}
+
 // selectCandidatesByModelAndClientProtocol 按模型选择候选渠道；clientProtocol 仅表示客户端协议，不过滤上游主协议。
 func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
 	normalizedType := normalizeOptionalProtocol(clientProtocol)
@@ -142,28 +183,9 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 	// 兜底：全量查询（用于“模糊匹配回退”以及最终“全冷却兜底”场景）
 	// 注意：此处不能以 len(channels)==0 作为是否回退的条件。
 	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
-	var allCandidates []*modelpkg.Config
-	if model != "*" {
-		source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
-		if err != nil {
-			return nil, err
-		}
-		if len(source) == 0 {
-			source, err = s.store.ListConfigs(ctx)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		allCandidates = make([]*modelpkg.Config, 0, len(source))
-		for _, cfg := range source {
-			if cfg == nil || !cfg.Enabled {
-				continue
-			}
-			if s.configSupportsModelWithFuzzyMatch(cfg, model) {
-				allCandidates = append(allCandidates, cfg)
-			}
-		}
+	allCandidates, err := s.fuzzyModelCandidates(ctx, model)
+	if err != nil {
+		return nil, err
 	}
 
 	// 再次过滤，但仍不触发“全冷却兜底”：先把可用的候选尽可能找出来。

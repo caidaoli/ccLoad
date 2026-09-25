@@ -1061,7 +1061,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
 | `max_concurrency` | `1000` | 最大并发请求数，限制同时处理的代理请求数量 |
 | `http_read_timeout_seconds` | `0` | 下游请求读取超时（秒）；`0` 使用内建 120 秒。覆盖请求头和请求体的完整读取，超时返回 408，与请求体大小限制独立。 |
-| `max_body_bytes` | `10485760` | 请求体最大字节数，默认 10MB |
+| `max_body_bytes` | `33554432` | 请求体最大字节数，默认 32MB |
 | `max_image_body_bytes` | `20971520` | Images API 请求体最大字节数，默认 20MB |
 | `cooldown_auth_seconds` | `300` | 认证错误（401/402/403）初始冷却时间（秒） |
 | `cooldown_server_seconds` | `120` | 服务器错误（5xx）初始冷却时间（秒） |
@@ -1078,9 +1078,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON 字符串数组；命中的词在 Antigravity `systemInstruction` 和 CodeBuddy system/developer 消息文本中用零宽字符替换 |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
 | `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
-| `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
+| `stream_idle_timeout` | `0` | 流式请求上游连续无数据超时，超过即中止本次尝试（秒，0=禁用） |
+| `non_stream_timeout` | `600` | 非流式请求超时（秒，0=禁用） |
 | `anthropic_first_byte_timeout` | `0` | Anthropic 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `anthropic_non_stream_timeout` | `0` | Anthropic 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
+| `anthropic_stream_idle_timeout` | `180` | Anthropic 流式请求上游连续无数据超时（秒，0=使用全局 `stream_idle_timeout`） |
 | `codex_first_byte_timeout` | `0` | Codex 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `codex_non_stream_timeout` | `0` | Codex 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
 | `openai_first_byte_timeout` | `0` | OpenAI 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |

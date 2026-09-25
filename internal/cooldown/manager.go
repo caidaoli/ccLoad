@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -165,7 +166,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 
 		// OAuth 渠道没有独立 Key。结构化配额错误给出的模型和精确 Key 截止时间
 		// 必须落到上游确认的模型；响应未提供模型时才回退请求侧身份。
-		if in.KeyIndex == NoKeyIndex && classification.HasKeyCooldownUntil {
+		if in.KeyIndex == NoKeyIndex && classification.HasKeyCooldownUntil && !classification.CredentialScoped {
 			decision.model = strings.TrimSpace(classification.Model)
 			if decision.model == "" {
 				decision.model = strings.TrimSpace(in.Model)
@@ -216,6 +217,15 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		decision.action = ActionReturnClient
 	case util.ErrorLevelKey:
 		decision.action = ActionRetryKey
+		// OAuth 渠道没有独立 Key，凭证就是渠道：Key 级故障必须落到渠道冷却，
+		// 否则被撤权/耗尽的账号每轮都会先被命中一次。401 除外：OAuth 凭证层
+		// 会强制刷新后重试，最终仍被拒时再做 24h 冷却或终态禁用。
+		if in.KeyIndex == NoKeyIndex && in.StatusCode != http.StatusUnauthorized {
+			decision.action = ActionRetryChannel
+			decision.channelCooldownUntil = decision.keyCooldownUntil
+			decision.hasChannelCooldownUntil = decision.hasKeyCooldownUntil
+			decision.channelCooldownReason = decision.keyCooldownReason
+		}
 	case util.ErrorLevelChannel:
 		decision.action = ActionRetryChannel
 	default:

@@ -64,6 +64,7 @@ type Server struct {
 	healthCache                   *HealthCache               // 渠道健康度缓存
 	costCache                     *CostCache                 // 渠道每日成本缓存
 	channelRPMLimiter             *channelRPMLimiter         // 渠道RPM限制器（内存滑动窗口）
+	sessionAffinity               *sessionAffinityStore      // Anthropic 会话 → 渠道/Key 绑定
 	channelConcurrencyLimiter     *channelConcurrencyLimiter // 渠道并发限制器（内存计数）
 	statsCache                    *StatsCache                // 统计结果缓存层
 	updateManager                 *version.UpdateManager     // 版本检查与可选自动应用的唯一状态源
@@ -133,7 +134,9 @@ type Server struct {
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	httpReadTimeout  time.Duration // 下游请求读取超时（HTTP Server ReadTimeout）
 	streamTimeout    time.Duration // 流式请求总超时
-	nonStreamTimeout time.Duration // 非流式请求超时
+	// 流式请求上游连续无数据超时（可按协议覆盖）
+	streamIdleTimeout time.Duration
+	nonStreamTimeout  time.Duration // 非流式请求超时
 	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
 	upstreamConnectionMaxAge time.Duration
 	upstreamChannelCount     int // 启动时持久化渠道数，用于后续隔离 Transport 的连接池容量
@@ -271,6 +274,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
 		httpReadTimeout:          runtimeCfg.HTTPReadTimeout,
 		streamTimeout:            runtimeCfg.StreamTimeout,
+		streamIdleTimeout:        runtimeCfg.StreamIdleTimeout,
 		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
 		upstreamChannelCount:     len(channels),
@@ -320,6 +324,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		),
 		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
 		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
+		sessionAffinity:           newSessionAffinityStore(),
 	}
 	s.setMultimodalFallbackModels(runtimeCfg.MultimodalFallbackModels)
 
@@ -649,9 +654,10 @@ func (s *Server) StartModelCatalogSync() {
 }
 
 type protocolTimeoutConfig struct {
-	FirstByteTimeout time.Duration
-	StreamTimeout    time.Duration
-	NonStreamTimeout time.Duration
+	FirstByteTimeout  time.Duration
+	StreamTimeout     time.Duration
+	StreamIdleTimeout time.Duration
+	NonStreamTimeout  time.Duration
 }
 
 // serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
@@ -663,6 +669,7 @@ type serverRuntimeConfig struct {
 	HTTPReadTimeout              time.Duration
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
+	StreamIdleTimeout            time.Duration
 	NonStreamTimeout             time.Duration
 	UpstreamConnectionMaxAge     time.Duration
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
@@ -768,10 +775,16 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		streamTimeout = 0
 	}
 
-	nonStreamTimeout := cs.GetDuration("non_stream_timeout", 120*time.Second)
+	streamIdleTimeout := cs.GetDuration("stream_idle_timeout", 0)
+	if streamIdleTimeout < 0 {
+		log.Printf("[WARN] 无效的 stream_idle_timeout=%v（必须 >= 0，0=禁用），已设为 0", streamIdleTimeout)
+		streamIdleTimeout = 0
+	}
+
+	nonStreamTimeout := cs.GetDuration("non_stream_timeout", config.DefaultNonStreamTimeout)
 	if nonStreamTimeout < 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
-		nonStreamTimeout = 120 * time.Second
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, config.DefaultNonStreamTimeout)
+		nonStreamTimeout = config.DefaultNonStreamTimeout
 	}
 
 	upstreamConnectionMaxAge := cs.GetDuration("upstream_connection_reuse_limit_seconds", 0)
@@ -797,6 +810,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
+		StreamIdleTimeout:            streamIdleTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
 		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
 		ProtocolTimeouts:             protocolTimeouts,
@@ -828,9 +842,17 @@ func loadProtocolTimeouts(cs *ConfigService) map[string]protocolTimeoutConfig {
 			nonStreamTimeout = 0
 		}
 
+		streamIdleTimeout := cs.GetDuration(protocolStreamIdleTimeoutSettingKey(name), 0)
+		if streamIdleTimeout < 0 {
+			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局流空闲超时）",
+				protocolStreamIdleTimeoutSettingKey(name), streamIdleTimeout)
+			streamIdleTimeout = 0
+		}
+
 		timeouts[name] = protocolTimeoutConfig{
-			FirstByteTimeout: firstByteTimeout,
-			NonStreamTimeout: nonStreamTimeout,
+			FirstByteTimeout:  firstByteTimeout,
+			StreamIdleTimeout: streamIdleTimeout,
+			NonStreamTimeout:  nonStreamTimeout,
 		}
 	}
 	return timeouts
@@ -868,6 +890,10 @@ func protocolFirstByteTimeoutSettingKey(upstreamProtocol string) string {
 
 func protocolNonStreamTimeoutSettingKey(upstreamProtocol string) string {
 	return util.NormalizeProtocol(upstreamProtocol) + "_non_stream_timeout"
+}
+
+func protocolStreamIdleTimeoutSettingKey(upstreamProtocol string) string {
+	return util.NormalizeProtocol(upstreamProtocol) + "_stream_idle_timeout"
 }
 
 // loadHealthScoreConfig 从 ConfigService 加载健康度配置，无效值兜底为默认值
@@ -1524,9 +1550,10 @@ func (s *Server) GetWriteTimeout() time.Duration {
 
 func (s *Server) resolveProtocolTimeouts(plan protocol.TransformPlan) protocolTimeoutConfig {
 	timeouts := protocolTimeoutConfig{
-		FirstByteTimeout: s.firstByteTimeout,
-		StreamTimeout:    s.streamTimeout,
-		NonStreamTimeout: s.nonStreamTimeout,
+		FirstByteTimeout:  s.firstByteTimeout,
+		StreamTimeout:     s.streamTimeout,
+		StreamIdleTimeout: s.streamIdleTimeout,
+		NonStreamTimeout:  s.nonStreamTimeout,
 	}
 
 	protocolKey := string(plan.UpstreamProtocol)
@@ -1540,6 +1567,9 @@ func (s *Server) resolveProtocolTimeouts(plan protocol.TransformPlan) protocolTi
 	}
 	if override.FirstByteTimeout > 0 {
 		timeouts.FirstByteTimeout = override.FirstByteTimeout
+	}
+	if override.StreamIdleTimeout > 0 {
+		timeouts.StreamIdleTimeout = override.StreamIdleTimeout
 	}
 	if override.NonStreamTimeout > 0 {
 		timeouts.NonStreamTimeout = override.NonStreamTimeout
@@ -1826,6 +1856,7 @@ func (s *Server) stateCleanupLoop() {
 			if s.channelRPMLimiter != nil {
 				s.channelRPMLimiter.CleanupExpired()
 			}
+			s.sessionAffinity.cleanupExpired(time.Now())
 		}
 	}
 }

@@ -1100,16 +1100,21 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 		t.Fatalf("User-Agent=%q", got)
 	}
 	betas := headerValueFold(upstreamHeaders, "Anthropic-Beta")
-	// 指纹只由「是不是 Claude Code CLI 线协议」决定，与凭证形态无关：API Key 渠道
-	// 同样声明 OAuth 三件套。
 	for _, required := range []string{
-		"claude-code-20250219", "oauth-2025-04-20", "prompt-caching-scope-2026-01-05",
+		"claude-code-20250219", "prompt-caching-scope-2026-01-05",
 		"effort-2025-11-24", "context-management-2025-06-27", "fast-mode-2026-02-01",
 		"cache-diagnosis-2026-04-07",
 	} {
 		if !strings.Contains(betas, required) {
 			t.Fatalf("Anthropic-Beta=%q missing %q", betas, required)
 		}
+	}
+	// oauth beta 只属于 OAuth 凭证：真实 CLI 用 API Key 时不发，发了就是破绽。
+	if strings.Contains(betas, "oauth-2025-04-20") {
+		t.Fatalf("Anthropic-Beta=%q declared oauth beta for an API key credential", betas)
+	}
+	if gotOS, gotArch := headerValueFold(upstreamHeaders, "X-Stainless-OS"), headerValueFold(upstreamHeaders, "X-Stainless-Arch"); gotOS != "Linux" || gotArch != "arm64" {
+		t.Fatalf("Stainless platform=%q/%q, want fixed Linux/arm64", gotOS, gotArch)
 	}
 	// 调用方没声明 cache_control.ttl，网关不主动开 1h 窗口，也就不声明对应的 beta。
 	if strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
@@ -1360,6 +1365,64 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 	}
 }
 
+// 只有邮箱、没有账号 UUID 的凭证：调用方自己的 device/account 不能原样发给该账号，
+// 原生与模拟路径共用账号级 device，account_uuid 与真实 CLI 一样发空。
+func TestProxy_AnthropicOAuthWithoutAccountUUIDReplacesCallerIdentity(t *testing.T) {
+	t.Parallel()
+
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "oauth-setup-token", RefreshToken: "rt-anthropic",
+		Expired:      time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+		EmailAddress: "setup@example.com",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "setup-token-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var bodies [][]byte
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	const callerDevice = "94a1bc03ba56d8895e3f6f33010c88d32fc9b3165576727d163261ada4af99d1"
+	const callerAccount = "8b6a103d-024e-45a9-b9c5-313708184fd1"
+	callerIdentity := fmt.Sprintf(`{"device_id":%q,"account_uuid":%q,"session_id":"e03895ad-8b34-4a84-bbf6-002e8909b17b"}`,
+		callerDevice, callerAccount)
+	native := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"metadata": map[string]any{"user_id": callerIdentity},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, map[string]string{"User-Agent": "claude-cli/" + anthropicCLIVersion + " (external, cli)", "X-App": "cli"})
+	simulated := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if native.Code != http.StatusOK || simulated.Code != http.StatusOK || len(bodies) != 2 {
+		t.Fatalf("native=%d simulated=%d upstream=%d", native.Code, simulated.Code, len(bodies))
+	}
+
+	nativeID := gjson.Parse(gjson.GetBytes(bodies[0], "metadata.user_id").String())
+	if nativeID.Get("account_uuid").String() != "" || nativeID.Get("device_id").String() == callerDevice {
+		t.Fatalf("caller identity reached the account: %s", bodies[0])
+	}
+	simulatedID := gjson.Parse(gjson.GetBytes(bodies[1], "metadata.user_id").String())
+	if simulatedID.Get("account_uuid").String() != "" ||
+		simulatedID.Get("device_id").String() != nativeID.Get("device_id").String() {
+		t.Fatalf("native and simulated identities differ: native=%s simulated=%s", bodies[0], bodies[1])
+	}
+}
+
 func TestProxy_AnthropicOAuthPreservesRelayedClaudeCodeRequest(t *testing.T) {
 	t.Parallel()
 
@@ -1463,7 +1526,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	}
 	first := send("/v1/messages", map[string]string{
 		"User-Agent": "claude-cli/2.1.220 (external, claude-vscode)", "X-App": "cli",
-		"X-Stainless-OS": "Darwin", "X-Stainless-Package-Version": "0.99.0",
+		"X-Stainless-OS": "Darwin", "X-Stainless-Package-Version": "0.120.0",
 	})
 	if got := headerValueFold(first.headers, "User-Agent"); got != baseUA {
 		t.Fatalf("first UA=%q, want %q", got, baseUA)
@@ -1477,7 +1540,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	})
 	if headerValueFold(second.headers, "User-Agent") != baseUA ||
 		headerValueFold(second.headers, "X-Stainless-OS") != "Darwin" ||
-		headerValueFold(second.headers, "X-Stainless-Package-Version") != "0.99.0" {
+		headerValueFold(second.headers, "X-Stainless-Package-Version") != "0.120.0" {
 		t.Fatalf("older client changed account fingerprint: %v", second.headers)
 	}
 	parts, ok := parseAnthropicCLIVersion(baseVersion)
@@ -1491,7 +1554,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	})
 	if headerValueFold(third.headers, "User-Agent") != newerUA ||
 		headerValueFold(third.headers, "X-Stainless-OS") != "Linux" ||
-		headerValueFold(third.headers, "X-Stainless-Package-Version") != "0.99.0" {
+		headerValueFold(third.headers, "X-Stainless-Package-Version") != "0.120.0" {
 		t.Fatalf("newer client did not merge account fingerprint: %v", third.headers)
 	}
 	fourth := send("/v1/messages", map[string]string{
@@ -1521,7 +1584,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	}
 	credential, err := anthropicauth.ParseCredential([]byte(configs[0].OAuthCredential))
 	if err != nil || credential.Fingerprint == nil || credential.Fingerprint.UserAgent != newerUA ||
-		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != "0.99.0" {
+		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != "0.120.0" {
 		t.Fatalf("persisted account fingerprint=%+v err=%v", credential, err)
 	}
 	env.server.anthropicOAuthFingerprintMu.Lock()
@@ -1587,9 +1650,25 @@ func (s *countingFingerprintStore) CompareAndSwapOAuthCredential(
 
 // Sequential: it moves the process-wide runtime Claude Code version.
 func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testing.T) {
+	base := anthropicEffectiveCLIVersion()
+	// 旧版本学到的 SDK 配对低于内置配对，与抬升后的 UA 不再匹配。
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "oauth-floor", RefreshToken: "rt-anthropic",
+		Expired:     time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+		AccountUUID: anthropicProxyTestAccountUUID, DeviceID: anthropicProxyTestDeviceID,
+		Fingerprint: &anthropicauth.Fingerprint{
+			UserAgent: "claude-cli/" + base + " (external, cli)", StainlessLang: "js",
+			StainlessPackageVersion: "0.94.0", StainlessOS: "Linux", StainlessArch: "arm64",
+			StainlessRuntime: "node", StainlessRuntimeVersion: "v24.3.0",
+		},
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "floor", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
-		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-floor"),
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
 	}}, map[int]string{0: "https://api.anthropic.com"})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
@@ -1598,11 +1677,13 @@ func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testin
 	counting := &countingFingerprintStore{Store: env.store}
 	env.server.store = counting
 
-	base := anthropicEffectiveCLIVersion()
-	env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0],
-		http.Header{"User-Agent": {"claude-cli/" + base + " (external, cli)"}})
-	if got := counting.writes.Load(); got != 1 {
-		t.Fatalf("first fingerprint writes=%d, want 1", got)
+	stored := env.server.getAnthropicOAuthFingerprint(context.Background(), configs[0], nil)
+	if stored.StainlessPackageVersion != anthropicStainlessPackageVersion ||
+		stored.StainlessRuntimeVersion != anthropicStainlessRuntimeVersion {
+		t.Fatalf("stale SDK pair was sent: %s/%s", stored.StainlessPackageVersion, stored.StainlessRuntimeVersion)
+	}
+	if got := counting.writes.Load(); got != 0 {
+		t.Fatalf("SDK floor rewrote the credential: writes=%d", got)
 	}
 
 	parts, ok := parseAnthropicCLIVersion(base)
@@ -1618,7 +1699,7 @@ func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testin
 	if fingerprint.UserAgent != "claude-cli/"+raised+" (external, cli)" {
 		t.Fatalf("UA=%q did not follow the raised floor %s", fingerprint.UserAgent, raised)
 	}
-	if got := counting.writes.Load(); got != 1 {
+	if got := counting.writes.Load(); got != 0 {
 		t.Fatalf("floor raise rewrote the credential: writes=%d", got)
 	}
 }
@@ -1783,7 +1864,7 @@ func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
 	mimic := sent[0]
 	if mimic.url != "https://api.anthropic.com/v1/messages/count_tokens?beta=true" ||
 		headerValueFold(mimic.headers, "Authorization") != "Bearer oauth-count-token" ||
-		headerValueFold(mimic.headers, "X-Stainless-Runtime-Version") != "v24.3.0" ||
+		headerValueFold(mimic.headers, "X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion ||
 		headerValueFold(mimic.headers, "X-Claude-Code-Session-Id") != "" ||
 		!strings.Contains(headerValueFold(mimic.headers, "Anthropic-Beta"), "token-counting-2024-11-01") ||
 		gjson.GetBytes(mimic.body, "metadata").Exists() ||
@@ -5797,12 +5878,13 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				if response.Code != http.StatusUnauthorized {
 					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 				}
-				if tt.authType == model.AuthTypeCodexOAuth || tt.authType == model.AuthTypeAntigravityOAuth {
+				if tt.authType == model.AuthTypeCodexOAuth || tt.authType == model.AuthTypeAntigravityOAuth ||
+					tt.authType == model.AuthTypeAnthropicOAuth {
 					if configs[0].Enabled {
-						t.Fatal("terminally rejected Codex credential left channel enabled")
+						t.Fatal("terminally rejected credential left channel enabled")
 					}
 					if cooling {
-						t.Fatalf("disabled Codex channel retained cooldown until %s", until)
+						t.Fatalf("disabled channel retained cooldown until %s", until)
 					}
 					_ = doProxyRequest(t, env.engine, tt.path, tt.request, nil)
 					if got := refreshAttempts.Load(); got != 1 {
@@ -15242,5 +15324,430 @@ func TestProxy_MixedStandardQuotaAndModelCooldownFallback(t *testing.T) {
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicLocalErrorsUseAnthropicShape(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "claude", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-1"},
+	}, map[int]string{0: upstream.URL})
+	request := func(model string) *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": model, "max_tokens": 16,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+	}
+
+	w := request("claude-unknown-model")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown model status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := gjson.Get(w.Body.String(), "type").String(); got != "error" {
+		t.Fatalf("type=%q body=%s", got, w.Body.String())
+	}
+	if got := gjson.Get(w.Body.String(), "error.type").String(); got != "not_found_error" {
+		t.Fatalf("error.type=%q body=%s", got, w.Body.String())
+	}
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokenCostLimits[tokenHash] = tokenCostLimit{usedMicroUSD: 200_000, limitMicroUSD: 100_000}
+	env.server.authService.authTokensMux.Unlock()
+
+	w = request("claude-sonnet-4-6")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("cost limit status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("x-should-retry"); got != "false" {
+		t.Fatalf("x-should-retry=%q", got)
+	}
+	if got := gjson.Get(w.Body.String(), "error.type").String(); got != "rate_limit_error" {
+		t.Fatalf("error.type=%q body=%s", got, w.Body.String())
+	}
+	if got := gjson.Get(w.Body.String(), "error.code").String(); got != "cost_limit_exceeded" {
+		t.Fatalf("error.code=%q body=%s", got, w.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCommittedStreamInterruptionEndsWithErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"+
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n")
+		// 没有 message_stop 就结束：模拟上游断流。
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "claude", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-1"},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 16, "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	events := strings.Split(strings.TrimSpace(w.Body.String()), "\n\n")
+	last := events[len(events)-1]
+	eventType, data := parseSSEEventChunk([]byte(last + "\n\n"))
+	if eventType != "error" {
+		t.Fatalf("last event=%q, want error; body=%s", eventType, w.Body.String())
+	}
+	if got := gjson.GetBytes(data, "type").String(); got != "error" {
+		t.Fatalf("data.type=%q data=%s", got, data)
+	}
+	if got := gjson.GetBytes(data, "error.type").String(); got != "api_error" {
+		t.Fatalf("error.type=%q data=%s", got, data)
+	}
+	if !strings.Contains(w.Body.String(), "\"text\":\"hel\"") {
+		t.Fatalf("committed prefix missing: %s", w.Body.String())
+	}
+}
+
+func TestProxy_AnthropicStreamIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	const messageStart = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"
+	const idle = 150 * time.Millisecond
+	tests := []struct {
+		name      string
+		upstream  func(w http.ResponseWriter, r *http.Request)
+		wantError bool
+	}{
+		{
+			name: "silent upstream is cut",
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, messageStart)
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(5 * time.Second):
+				}
+			},
+			wantError: true,
+		},
+		{
+			name: "pings keep stream alive",
+			upstream: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, messageStart)
+				w.(http.Flusher).Flush()
+				for range 4 {
+					time.Sleep(idle / 2)
+					_, _ = io.WriteString(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+					w.(http.Flusher).Flush()
+				}
+				_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				tt.upstream(w, r)
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "claude", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-1"},
+			}, map[int]string{0: upstream.URL})
+			env.server.protocolTimeouts[string(protocol.Anthropic)] = protocolTimeoutConfig{StreamIdleTimeout: idle}
+
+			w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 16, "stream": true,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			events := strings.Split(strings.TrimSpace(w.Body.String()), "\n\n")
+			eventType, _ := parseSSEEventChunk([]byte(events[len(events)-1] + "\n\n"))
+			entry := waitForProxyLog(t, env, "claude-sonnet-4-6")
+			if tt.wantError {
+				if eventType != "error" {
+					t.Fatalf("last event=%q, want error; body=%s", eventType, w.Body.String())
+				}
+				if entry.StatusCode != util.StatusStreamIncomplete || !strings.Contains(entry.Message, "idle timeout") {
+					t.Fatalf("log status=%d message=%q, want 599 idle timeout", entry.StatusCode, entry.Message)
+				}
+				return
+			}
+			if eventType != "message_stop" || entry.StatusCode != http.StatusOK {
+				t.Fatalf("last event=%q log status=%d message=%q; body=%s", eventType, entry.StatusCode, entry.Message, w.Body.String())
+			}
+		})
+	}
+}
+
+// 已向客户端提交后中断的流，上游已为已解析的用量收费：日志成本与令牌费用都要计入，
+// 否则令牌限额、渠道日限额和 OAuth 窗口全部漏计。
+func TestProxy_InterruptedCommittedStreamBillsPartialUsage(t *testing.T) {
+	t.Parallel()
+
+	const streamPrefix = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n"
+	tests := []struct {
+		name         string
+		clientCancel bool
+		wantStatus   int
+		wantFailures int64
+	}{
+		{name: "upstream cut", wantStatus: util.StatusStreamIncomplete, wantFailures: 1},
+		{name: "client cancel", clientCancel: true, wantStatus: StatusClientClosedRequest, wantFailures: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, streamPrefix)
+				w.(http.Flusher).Flush()
+				if tt.clientCancel {
+					select {
+					case <-r.Context().Done():
+					case <-time.After(5 * time.Second):
+					}
+				}
+			}))
+			defer upstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "claude", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-1"},
+			}, map[int]string{0: upstream.URL})
+
+			ctx := context.Background()
+			tokenHash := model.HashToken("test-api-key")
+			if err := env.store.CreateAuthToken(ctx, &model.AuthToken{Token: tokenHash, IsActive: true}); err != nil {
+				t.Fatalf("CreateAuthToken: %v", err)
+			}
+			stored, err := env.store.GetAuthTokenByValue(ctx, tokenHash)
+			if err != nil {
+				t.Fatalf("GetAuthTokenByValue: %v", err)
+			}
+			injectAPIToken(env.server.authService, "test-api-key", 0, stored.ID)
+
+			body, _ := json.Marshal(map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 16, "stream": true,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			})
+			reqCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			w := newAsyncResponseRecorder()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				env.engine.ServeHTTP(w, req)
+			}()
+			if tt.clientCancel {
+				for committed := false; !committed; {
+					select {
+					case chunk := <-w.writes:
+						committed = bytes.Contains(chunk, []byte(`"text":"hel"`))
+					case <-time.After(5 * time.Second):
+						t.Fatal("committed delta never reached the client")
+					}
+				}
+				cancel()
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("proxy request did not finish")
+			}
+
+			entry := waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool { return e.StatusCode == tt.wantStatus })
+			if entry == nil {
+				t.Fatalf("no proxy log with status %d", tt.wantStatus)
+			}
+			if entry.InputTokens != 1000 || entry.Cost <= 0 {
+				t.Fatalf("log input_tokens=%d cost=%v, want 1000 and >0", entry.InputTokens, entry.Cost)
+			}
+			for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				token, err := env.store.GetAuthTokenByValue(ctx, tokenHash)
+				if err == nil && token.TotalCostUSD > 0 {
+					if math.Abs(token.TotalCostUSD-entry.Cost) > 1e-12 || token.PromptTokensTotal != 1000 {
+						t.Fatalf("token cost=%v prompt=%d, want %v and 1000", token.TotalCostUSD, token.PromptTokensTotal, entry.Cost)
+					}
+					if token.SuccessCount != 0 || token.FailureCount != tt.wantFailures {
+						t.Fatalf("token success=%d failure=%d, want 0 and %d", token.SuccessCount, token.FailureCount, tt.wantFailures)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("token stats not billed: token=%+v err=%v", token, err)
+				}
+			}
+		})
+	}
+}
+
+func TestProxy_AnthropicSessionAffinity(t *testing.T) {
+	names := []string{"primary", "peer-a", "peer-b"}
+	var failing sync.Map // name → bool
+	failing.Store("primary", true)
+	served := make(chan string, 64)
+	upstreams := make(map[int]string, len(names))
+	channels := make([]testChannel, 0, len(names))
+	for index, name := range names {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if broken, _ := failing.Load(name); broken == true {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+				return
+			}
+			served <- name
+			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		}))
+		defer upstream.Close()
+		upstreams[index] = upstream.URL
+		priority := 100
+		if name == "primary" {
+			priority = 200
+		}
+		channels = append(channels, testChannel{name: name, upstreamProtocol: "anthropic", models: "claude-test", priority: priority})
+	}
+	env := setupProxyTestEnv(t, channels, upstreams)
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	channelIDs := make(map[string]int64, len(configs))
+	for _, cfg := range configs {
+		channelIDs[cfg.Name] = cfg.ID
+	}
+	heal := func(name string) {
+		t.Helper()
+		failing.Store(name, false)
+		if err := env.server.cooldownManager.ClearAllCooldowns(ctx, channelIDs[name]); err != nil {
+			t.Fatalf("ClearAllCooldowns(%s): %v", name, err)
+		}
+		env.server.invalidateChannelRelatedCache(channelIDs[name])
+	}
+	send := func(sessionID string) string {
+		t.Helper()
+		headers := map[string]string{}
+		if sessionID != "" {
+			headers["X-Claude-Code-Session-Id"] = sessionID
+		}
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "claude-test", "max_tokens": 16,
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		select {
+		case name := <-served:
+			return name
+		default:
+			t.Fatal("request succeeded without reaching an upstream")
+			return ""
+		}
+	}
+
+	// 主渠道故障后，无会话请求在同层两个渠道间轮询：证明粘性不是测试环境的巧合。
+	rotated := map[string]bool{}
+	for range 4 {
+		rotated[send("")] = true
+	}
+	if !rotated["peer-a"] || !rotated["peer-b"] {
+		t.Fatalf("requests without session hit %v, want rotation across peer-a and peer-b", rotated)
+	}
+
+	session := uuid.NewString()
+	bound := send(session)
+	for range 3 {
+		if got := send(session); got != bound {
+			t.Fatalf("session moved from %s to %s while %s stayed healthy", bound, got, bound)
+		}
+	}
+
+	// 绑定渠道失败后切到同层另一渠道；它恢复后会话仍留在新渠道，不回到轮询。
+	other := "peer-a"
+	if bound == other {
+		other = "peer-b"
+	}
+	failing.Store(bound, true)
+	if got := send(session); got != other {
+		t.Fatalf("failover served by %s, want %s", got, other)
+	}
+	heal(bound)
+	for range 3 {
+		if got := send(session); got != other {
+			t.Fatalf("session served by %s after rebinding, want %s", got, other)
+		}
+	}
+
+	// 更高优先级渠道恢复后，主备意图优先于会话粘性。
+	heal("primary")
+	if got := send(session); got != "primary" {
+		t.Fatalf("session served by %s after primary recovered, want primary", got)
+	}
+}
+
+func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
+	servedKeys := make(chan string, 16)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		servedKeys <- r.Header.Get("X-Api-Key") + r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "multi-key", upstreamProtocol: "anthropic", models: "claude-test", apiKey: "sk-ant-first",
+	}}, map[int]string{0: upstream.URL})
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: %v (%d configs)", err, len(configs))
+	}
+	channelID := configs[0].ID
+	if err := env.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-ant-second"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+	env.server.InvalidateAPIKeysCache(channelID)
+
+	send := func(sessionID string) string {
+		t.Helper()
+		headers := map[string]string{}
+		if sessionID != "" {
+			headers["X-Claude-Code-Session-Id"] = sessionID
+		}
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "claude-test", "max_tokens": 16,
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		return <-servedKeys
+	}
+
+	rotated := map[string]bool{}
+	for range 4 {
+		rotated[send("")] = true
+	}
+	if len(rotated) != 2 {
+		t.Fatalf("requests without session used keys %v, want rotation across both keys", rotated)
+	}
+	session := uuid.NewString()
+	bound := send(session)
+	for range 3 {
+		if got := send(session); got != bound {
+			t.Fatalf("session switched key from %s to %s", bound, got)
+		}
 	}
 }

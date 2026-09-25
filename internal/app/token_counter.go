@@ -31,23 +31,8 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 		}})
 		return
 	}
-	if !isValidClaudeModel(req.Model) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-			"type": "invalid_request_error", "message": fmt.Sprintf("Invalid model: %s", req.Model),
-		}})
-		return
-	}
+	// 估算与模型无关：Claude Code 接 GLM/DeepSeek/Kimi 等后端时同样依赖它决定压缩时机，不按模型名拒绝。
 	c.JSON(http.StatusOK, CountTokensResponse{InputTokens: estimateTokens(&req)})
-}
-
-func isValidClaudeModel(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for _, prefix := range []string{"claude-", "gpt-", "chatgpt-", "o1", "o3", "o4", "gemini-", "text-", "anthropic.claude"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // MessageParam 消息参数（简化版本，支持文本内容）
@@ -278,11 +263,28 @@ func estimateTextTokens(text string) int {
 	return tokens
 }
 
+// estimateContentBlocks 估算 string 或内容块数组形式的 content。
+func estimateContentBlocks(content any) int {
+	switch content := content.(type) {
+	case string:
+		return estimateTextTokens(content)
+	case []any:
+		total := 0
+		for _, block := range content {
+			total += estimateContentBlock(block)
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
 // estimateContentBlock 估算单个内容块的token数量
 // 支持的内容类型：
 // - text: 文本块
-// - image: 图片（固定1000 tokens估算）
-// - document: 文档（根据大小估算）
+// - image: 图片（固定1500 tokens估算）
+// - document: 文本/内容块来源按实际内容估算，二进制 PDF 无法离线计页，按固定值估算
+// - tool_result: string 或内容块数组（Claude Code 的读图、读文件结果都是数组）
 func estimateContentBlock(block any) int {
 	blockMap, ok := block.(map[string]any)
 	if !ok {
@@ -305,8 +307,18 @@ func estimateContentBlock(block any) int {
 		return 1500
 
 	case "document":
-		// 文档：根据大小估算（简化处理）
-		return 500
+		source, _ := blockMap["source"].(map[string]any)
+		switch sourceType, _ := source["type"].(string); sourceType {
+		case "text":
+			data, _ := source["data"].(string)
+			title, _ := blockMap["title"].(string)
+			context, _ := blockMap["context"].(string)
+			return estimateTextTokens(data) + estimateTextTokens(title) + estimateTextTokens(context)
+		case "content":
+			return estimateContentBlocks(source["content"])
+		default:
+			return 500
+		}
 
 	case "tool_use":
 		// 工具调用结果
@@ -319,8 +331,8 @@ func estimateContentBlock(block any) int {
 
 	case "tool_result":
 		// 工具执行结果
-		if content, ok := blockMap["content"].(string); ok {
-			return estimateTextTokens(content)
+		if content, ok := blockMap["content"]; ok && content != nil {
+			return estimateContentBlocks(content) + 5
 		}
 		return 50
 

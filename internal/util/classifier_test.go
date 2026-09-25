@@ -1752,3 +1752,52 @@ func TestIsWebsocketConnectionLimitErrorRejectsUnrelatedBodies(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyAnthropicUnifiedWindowRejectionIsCredentialScoped(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	reset5h := now.Add(2 * time.Hour)
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	headers := map[string][]string{
+		"anthropic-ratelimit-unified-status":    {"rejected"},
+		"anthropic-ratelimit-unified-5h-status": {"rejected"},
+		"anthropic-ratelimit-unified-5h-reset":  {strconv.FormatInt(reset5h.Unix(), 10)},
+		"anthropic-ratelimit-unified-7d-status": {"allowed"},
+	}
+
+	got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, headers, body, now)
+
+	if got.ModelScoped || !got.CredentialScoped || got.Level != ErrorLevelKey {
+		t.Fatalf("classification=%+v, want credential-scoped key level", got)
+	}
+	if !got.HasKeyCooldownUntil || !got.KeyCooldownUntil.Equal(reset5h) {
+		t.Fatalf("KeyCooldownUntil=%s, want 5h reset %s", got.KeyCooldownUntil, reset5h)
+	}
+}
+
+func TestClassifyAnthropicOverageOnlyRejectionStaysModelScoped(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	headers := map[string][]string{
+		"anthropic-ratelimit-unified-status":         {"rejected"},
+		"anthropic-ratelimit-unified-5h-status":      {"allowed"},
+		"anthropic-ratelimit-unified-7d-status":      {"allowed"},
+		"anthropic-ratelimit-unified-overage-status": {"rejected"},
+		"anthropic-ratelimit-unified-reset":          {strconv.FormatInt(now.Add(time.Hour).Unix(), 10)},
+	}
+
+	got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, headers, nil, now)
+
+	if got.CredentialScoped || !got.ModelScoped {
+		t.Fatalf("classification=%+v, want model-scoped overage rejection", got)
+	}
+}
+
+func TestClassifyAnthropicFastModeCreditsIsRequestLevel(t *testing.T) {
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`)
+	headers := map[string][]string{"anthropic-ratelimit-unified-reset": {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}}
+
+	got := ClassifyHTTPResponseWithMeta(http.StatusTooManyRequests, headers, body)
+
+	if got.Level != ErrorLevelClient || got.ModelScoped || got.HasModelCooldownUntil {
+		t.Fatalf("classification=%+v, want request-level client error without cooldown", got)
+	}
+}

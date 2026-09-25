@@ -26,6 +26,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 var errUnknownClientProtocol = errors.New("unknown client protocol for path")
@@ -64,10 +65,10 @@ func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool
 		return release, true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		c.JSON(http.StatusGatewayTimeout, gin.H{"error": "request timeout while waiting for slot"})
+		writeLocalProxyError(c, http.StatusGatewayTimeout, "request timeout while waiting for slot")
 		return nil, false
 	}
-	c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
+	writeLocalProxyError(c, StatusClientClosedRequest, "request cancelled while waiting for slot")
 	return nil, false
 }
 
@@ -196,6 +197,15 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	}
 	hasModel := originalModel != ""
 	requestFamily := protocol.DetectRequestFamily(requestPath)
+	if reqModel.Model != "" &&
+		(requestFamily == protocol.RequestFamilyMessages || requestFamily == protocol.RequestFamilyCountTokens) {
+		if normalized := trimClaudeCodeLongContextSuffix(originalModel); normalized != originalModel {
+			if all, err = sjson.SetBytes(all, "model", normalized); err != nil {
+				return incomingRequest{}, fmt.Errorf("normalize model: %w", err)
+			}
+			originalModel = normalized
+		}
+	}
 
 	// GET 请求保留既有通配选路语义；Codex alpha/search 的业务模型保持为空。
 	if originalModel == "" {
@@ -214,6 +224,18 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 		isStreaming:    isStreaming,
 		hasModel:       hasModel,
 	}, nil
+}
+
+const claudeCodeLongContextSuffix = "[1m]"
+
+// trimClaudeCodeLongContextSuffix 去掉泄漏的 [1m]（含重复形式）。Claude Code 把它当客户端
+// 上下文选择器，通常发请求前自行去掉；泄漏时带后缀选路必然落空（对齐 sub2api）。
+func trimClaudeCodeLongContextSuffix(modelName string) string {
+	for len(modelName) > len(claudeCodeLongContextSuffix) &&
+		strings.EqualFold(modelName[len(modelName)-len(claudeCodeLongContextSuffix):], claudeCodeLongContextSuffix) {
+		modelName = modelName[:len(modelName)-len(claudeCodeLongContextSuffix)]
+	}
+	return modelName
 }
 
 // requestBodyLimits 是单个 Server 的不可变请求体上限。
@@ -388,12 +410,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, errBodyTooLarge):
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
+			writeLocalProxyError(c, http.StatusRequestEntityTooLarge, err.Error())
 		case errors.Is(err, errBodyReadTimeout):
 			// 408 而不是 400：请求本身没问题，是客户端没在读取超时内传完。
-			c.JSON(http.StatusRequestTimeout, gin.H{"error": err.Error()})
+			writeLocalProxyError(c, http.StatusRequestTimeout, err.Error())
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeLocalProxyError(c, http.StatusBadRequest, err.Error())
 		}
 		return
 	}
@@ -403,7 +425,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
 	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeLocalProxyError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	requestFamily := protocol.DetectRequestFamily(effectiveRequestPath)
@@ -469,12 +491,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			var errSession error
 			executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, sessionID)
 			if errSession != nil {
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": errSession.Error()})
+				writeLocalProxyError(c, http.StatusTooManyRequests, errSession.Error())
 				return
 			}
 			defer releaseSession()
 			if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
-				c.JSON(http.StatusRequestTimeout, gin.H{"error": errAcquire.Error()})
+				writeLocalProxyError(c, http.StatusRequestTimeout, errAcquire.Error())
 				return
 			}
 			defer executionSession.releaseTurn()
@@ -482,7 +504,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			replayBody, incrementalBody, localContinuation, errNormalize :=
 				executionSession.transcript.normalizeHTTPRequests(all)
 			if errNormalize != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+				writeLocalProxyError(c, http.StatusBadRequest, errNormalize.Error())
 				return
 			}
 			if !localContinuation {
@@ -505,10 +527,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	if err != nil {
 		if errors.Is(err, errUnknownClientProtocol) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "unsupported path"})
+			writeLocalProxyError(c, http.StatusNotFound, "unsupported path")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		writeLocalProxyError(c, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if countTokensRequest {
@@ -525,10 +547,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			return
 		}
 		if channelRestrictionDeniedFromContext(ctx) {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "no allowed upstream channel for this token",
-			})
+			writeLocalProxyError(c, http.StatusForbidden, "no allowed upstream channel for this token")
 			return
+		}
+		status, message := http.StatusServiceUnavailable, "no available upstream (all cooled or none)"
+		// 模型根本没配置时返回 404：Claude Code 对 5xx 会退避重试多次才报错。
+		if clientProtocol == protocol.Anthropic && !s.modelConfigured(ctx, originalModel) {
+			status, message = http.StatusNotFound, fmt.Sprintf("model: %s", originalModel)
 		}
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: time.Now()},
@@ -536,13 +561,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			LogSource:      model.LogSourceProxy,
 			AuthTokenID:    tokenIDInt64,
 			ClientProtocol: string(clientProtocol),
-			StatusCode:     503,
-			Message:        "no available upstream (all cooled or none)",
+			StatusCode:     status,
+			Message:        message,
 			IsStreaming:    isStreaming,
 			ClientIP:       c.ClientIP(),
 			ThinkingEffort: thinkingEffort,
 		})
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available upstream (all cooled or none)"})
+		writeLocalProxyError(c, status, message)
 		return
 	}
 
@@ -551,16 +576,23 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		if restricted {
 			cands = filtered
 			if len(cands) == 0 {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error": "no allowed upstream channel for this token",
-				})
+				writeLocalProxyError(c, http.StatusForbidden, "no allowed upstream channel for this token")
 				return
 			}
 		}
 	}
 	if routingSession != nil {
 		if channelID, ok := routingSession.routeChannelSnapshot(); ok {
-			cands = prioritizePinnedCodexChannel(cands, channelID)
+			cands = prioritizePinnedChannel(cands, channelID)
+		}
+	}
+	var sessionAffinityKey string
+	var sessionAffinity sessionAffinityTarget
+	if clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages {
+		sessionAffinityKey = anthropicSessionAffinityKey(tokenHashStr, c.Request.Header, all)
+		if target, ok := s.sessionAffinity.lookup(sessionAffinityKey, time.Now()); ok {
+			sessionAffinity = target
+			cands = preferSessionAffinityChannel(cands, target.channelID)
 		}
 	}
 
@@ -582,6 +614,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		clientIP:       c.ClientIP(),
 		startTime:      startTime,
 		thinkingEffort: thinkingEffort,
+
+		sessionAffinityKey: sessionAffinityKey,
+		sessionAffinity:    sessionAffinity,
 	}
 	if routingSession != nil {
 		reqCtx.routingSession = routingSession
@@ -677,9 +712,7 @@ func (s *Server) tokenModelAllowed(tokenHash, modelName string) bool {
 func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel string) bool {
 	// 检查令牌模型限制（2026-01新增）
 	if !s.tokenModelAllowed(tokenHash, originalModel) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("model '%s' is not allowed for this token", originalModel),
-		})
+		writeLocalProxyError(c, http.StatusForbidden, fmt.Sprintf("model '%s' is not allowed for this token", originalModel))
 		return false
 	}
 
@@ -704,9 +737,18 @@ func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel str
 			case "total":
 				prefix = "Total cost"
 			}
+			message := fmt.Sprintf("%s limit exceeded: $%.2f used of $%.2f limit", prefix, used, limit)
+			// 额度要等窗口滚动或管理员调整才会恢复，客户端退避重试毫无意义。
+			c.Header("x-should-retry", "false")
+			if clientProtocol, _ := clientRequestMetadata(c); clientProtocol == protocol.Anthropic {
+				body := anthropicErrorBody(http.StatusTooManyRequests, message)
+				body["error"].(gin.H)["code"] = "cost_limit_exceeded"
+				c.JSON(http.StatusTooManyRequests, body)
+				return false
+			}
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error": gin.H{
-					"message": fmt.Sprintf("%s limit exceeded: $%.2f used of $%.2f limit", prefix, used, limit),
+					"message": message,
 					"type":    "insufficient_quota",
 					"code":    "cost_limit_exceeded",
 				},
@@ -898,11 +940,16 @@ func (s *Server) writeFinalProxyResponse(
 	}
 
 	if lastResult != nil && lastResult.status != 0 {
+		body := lastResult.body
+		// 无响应头即网关本地失败（网络错误、凭证不可用等），不是上游原文，需按客户端协议成形。
+		if lastResult.header == nil && reqCtx.clientProtocol == protocol.Anthropic {
+			body = anthropicLocalFailureBody(finalStatus, body)
+		}
 		// 透明代理原则：透传所有上游响应（状态码+header+body）
-		writeResponseWithHeaders(c.Writer, finalStatus, lastResult.header, lastResult.body)
+		writeResponseWithHeaders(c.Writer, finalStatus, lastResult.header, body)
 		return
 	}
 
 	disableResponseWriteTimeout(c.Writer, "最终响应")
-	c.JSON(finalStatus, gin.H{"error": "no upstream available"})
+	writeLocalProxyError(c, finalStatus, "no upstream available")
 }

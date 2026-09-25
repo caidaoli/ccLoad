@@ -29,8 +29,9 @@ type ModelPricing struct {
 	// HasCacheWritePriceHigh 区分高上下文缓存创建价「未配置」与「显式为 0」。
 	HasCacheWritePriceHigh bool
 
-	// 缓存读取 token 是否参与高/低档选择。
-	// OpenAI context tiers、MiMo / Grok 等系列按「input + cache_read」总量分档，需置 true；
+	// 缓存 token（读与写）是否参与高/低档选择。
+	// Claude 长上下文按「input + cache_read + cache_creation」判定 200K；OpenAI context tiers、
+	// MiMo / Grok 等系列按「input + cache_read」总量分档（这些 usage 没有缓存写），均需置 true；
 	// Gemini 长上下文分档只看非缓存 prompt size，缓存读不得推高分档，保持 false。
 	CacheReadCountsTowardTier bool
 
@@ -159,10 +160,12 @@ var basePricing = map[string]ModelPricing{
 	"claude-sonnet-4-5": {
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
+		CacheReadCountsTowardTier: true,
 	},
 	"claude-sonnet-4-0": {
 		InputPrice: 3.00, OutputPrice: 15.00,
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
+		CacheReadCountsTowardTier: true,
 	},
 	"claude-haiku-4-5": {InputPrice: 1.00, OutputPrice: 5.00},
 	"claude-opus-4-1":  {InputPrice: 15.00, OutputPrice: 75.00},

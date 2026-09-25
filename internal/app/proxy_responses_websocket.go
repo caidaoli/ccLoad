@@ -462,7 +462,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
 	if channelID, ok := executionSession.routeChannelSnapshot(); ok {
-		candidates = prioritizePinnedCodexChannel(candidates, channelID)
+		candidates = prioritizePinnedChannel(candidates, channelID)
 	}
 	if allowLocalPrewarm && responsesWebsocketGenerateDisabled(requestBody) &&
 		!isNativeCodexWebsocketCandidate(candidates[0]) {
@@ -726,7 +726,7 @@ func isResponsesWebsocketMessageTooBigPayload(payload []byte) bool {
 	return strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()) == "message_too_big"
 }
 
-func prioritizePinnedCodexChannel(candidates []*model.Config, channelID int64) []*model.Config {
+func prioritizePinnedChannel(candidates []*model.Config, channelID int64) []*model.Config {
 	for index, candidate := range candidates {
 		if candidate == nil || candidate.ID != channelID || index == 0 {
 			continue

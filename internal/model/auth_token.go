@@ -218,6 +218,19 @@ func (t *AuthToken) IsModelAllowed(model string) bool {
 	return false
 }
 
+// TokenStatsOutcome 决定一次请求计入令牌的哪个计数器。
+// token 与费用按调用方传入值累加，与归属无关：是否计费由调用方判定，不计费时传 0。
+type TokenStatsOutcome uint8
+
+// TokenStatsOutcome 取值。
+const (
+	TokenStatsSuccess TokenStatsOutcome = iota
+	TokenStatsFailure
+	// TokenStatsCanceled 客户端取消（499）：不计成功/失败次数与耗时，与 logs 聚合排除 499 一致；
+	// 已提交后才取消的流仍要累加上游已收费的用量。
+	TokenStatsCanceled
+)
+
 // AuthTokenCostPeriodStarts 返回服务器本地日历日/自然月的周期起点（Unix 毫秒）。
 func AuthTokenCostPeriodStarts(now time.Time) (dayStartMs, monthStartMs int64) {
 	loc := now.Location()

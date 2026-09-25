@@ -124,18 +124,21 @@ type StatusCodeMeta struct {
 
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
-	ExplicitMatch           bool
-	DefaultFallback         bool
-	Level                   ErrorLevel
-	Model                   string
-	ModelScoped             bool
-	PreventKeyFallback      bool
-	ModelCooldownUntil      time.Time
-	HasModelCooldownUntil   bool
-	ModelCooldownReason     string
-	KeyCooldownUntil        time.Time
-	HasKeyCooldownUntil     bool
-	KeyCooldownReason       string
+	ExplicitMatch         bool
+	DefaultFallback       bool
+	Level                 ErrorLevel
+	Model                 string
+	ModelScoped           bool
+	PreventKeyFallback    bool
+	ModelCooldownUntil    time.Time
+	HasModelCooldownUntil bool
+	ModelCooldownReason   string
+	KeyCooldownUntil      time.Time
+	HasKeyCooldownUntil   bool
+	KeyCooldownReason     string
+	// CredentialScoped 表示故障属于整个上游凭证（如 Anthropic 5h/7d 窗口被拒）：
+	// 有独立 Key 时冷却该 Key，OAuth 渠道（无独立 Key）冷却整个渠道，而不是收窄到模型。
+	CredentialScoped        bool
 	ChannelCooldownUntil    time.Time
 	HasChannelCooldownUntil bool
 	ChannelCooldownReason   string
@@ -478,7 +481,28 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
-	// 429 无论限流范围如何，都只冷却当前实际模型。
+	// Anthropic 429 先区分三类：共享 5h/7d 窗口被拒属于整个凭证；fast 模式缺少
+	// usage credits 属于这次请求（换号也一样，且账号对普通请求仍健康）；其余只冷却模型。
+	if statusCode == 429 {
+		if anthropicUnifiedWindowRejected(headers) {
+			classification := HTTPResponseClassification{
+				Level:              ErrorLevelKey,
+				CredentialScoped:   true,
+				PreventKeyFallback: true,
+				KeyCooldownReason:  "anthropic_unified_window_rejected",
+			}
+			if until, ok := anthropicRejectedWindowReset(headers, now); ok {
+				classification.KeyCooldownUntil = until
+				classification.HasKeyCooldownUntil = true
+			}
+			return classification
+		}
+		if anthropicFastModeCreditsRequired(responseBody) {
+			return HTTPResponseClassification{Level: ErrorLevelClient}
+		}
+	}
+
+	// 其余 429 无论限流范围如何，都只冷却当前实际模型。
 	if statusCode == 429 {
 		level := ErrorLevelKey
 		if headers != nil {
@@ -670,6 +694,87 @@ func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (t
 		}
 	}
 	return time.Time{}, false
+}
+
+// anthropicUnifiedWindowRejected 判断 Anthropic 是否明确拒绝了共享 5h/7d 订阅窗口。
+// 仅 overage/7d_oi 被拒而共享窗口仍可用时属于模型级，不能冷却整个凭证。
+func anthropicUnifiedWindowRejected(headers map[string][]string) bool {
+	status := func(name string) string {
+		return strings.ToLower(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-"+name+"Status"))
+	}
+	status5h, status7d := status("5h-"), status("7d-")
+	if status5h == "rejected" || status7d == "rejected" {
+		return true
+	}
+	if status("") != "rejected" {
+		return false
+	}
+	return !anthropicOverageOnlyRejection(headers, status5h, status7d, status("7d_oi-"))
+}
+
+func anthropicOverageOnlyRejection(headers map[string][]string, status5h, status7d, status7dOI string) bool {
+	claim := strings.ToLower(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-Representative-Claim"))
+	overageRejected := status7dOI == "rejected" ||
+		strings.EqualFold(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-Overage-Status"), "rejected") ||
+		firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-Overage-Disabled-Reason") != "" ||
+		strings.Contains(claim, "overage")
+	if !overageRejected {
+		return false
+	}
+	allowed := func(status string) bool { return status == "allowed" || status == "allowed_warning" }
+	healthy := func(window string) bool {
+		u, err := strconv.ParseFloat(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-"+window+"-Utilization"), 64)
+		return err == nil && u >= 0 && u < 1
+	}
+	switch {
+	case allowed(status5h) && allowed(status7d):
+		return true
+	case allowed(status7d) && status5h == "":
+		return healthy("5h")
+	case allowed(status5h) && status7d == "":
+		return healthy("7d")
+	}
+	return false
+}
+
+// anthropicRejectedWindowReset 取被拒窗口与统一 reset 中最晚的未来时间。
+func anthropicRejectedWindowReset(headers map[string][]string, now time.Time) (time.Time, bool) {
+	var latest time.Time
+	consider := func(name string) {
+		for _, value := range headerValuesFold(headers, name) {
+			resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil {
+				continue
+			}
+			if until := time.Unix(resetUnix, 0); until.After(now) && until.After(latest) {
+				latest = until
+			}
+		}
+	}
+	for _, window := range []string{"5h", "7d"} {
+		if strings.EqualFold(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-"+window+"-Status"), "rejected") {
+			consider("Anthropic-Ratelimit-Unified-" + window + "-Reset")
+		}
+	}
+	consider(anthropicRateLimitUnifiedResetHeader)
+	return latest, !latest.IsZero()
+}
+
+// anthropicFastModeCreditsRequired 识别 fast 模式缺少 usage credits 的拒绝。
+// 真正的限流从不提 fast，因此不会误伤普通 429。
+func anthropicFastModeCreditsRequired(body []byte) bool {
+	var payload sseErrorResponse
+	message := ""
+	if json.Unmarshal(body, &payload) == nil {
+		message = payload.Error.Message
+	}
+	if message == "" {
+		message = string(body)
+	}
+	message = strings.ToLower(message)
+	return strings.Contains(message, "fast request rejected") ||
+		(strings.Contains(message, "fast") &&
+			(strings.Contains(message, "usage credits") || strings.Contains(message, "credits are required")))
 }
 
 // classifySSEError 分析SSE error事件的具体类型

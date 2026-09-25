@@ -1040,7 +1040,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `max_key_retries` | `3` | Max key retries within single channel |
 | `max_concurrency` | `1000` | Max concurrent proxy requests |
 | `http_read_timeout_seconds` | `0` | Downstream request read timeout in seconds; `0` uses the built-in 120-second default. It covers the complete request header/body read, returns 408 on timeout, and is independent of body-size limits. |
-| `max_body_bytes` | `10485760` | Max request body bytes, 10MB by default |
+| `max_body_bytes` | `33554432` | Max request body bytes, 32MB by default |
 | `max_image_body_bytes` | `20971520` | Max Images API request body bytes, 20MB by default |
 | `cooldown_auth_seconds` | `300` | Auth error (401/402/403) initial cooldown in seconds |
 | `cooldown_server_seconds` | `120` | Server error (5xx) initial cooldown in seconds |
@@ -1057,9 +1057,11 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON string array of words replaced with zero-width characters in Antigravity `systemInstruction` and CodeBuddy system/developer message text |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
-| `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
+| `stream_idle_timeout` | `0` | Stream request upstream idle timeout: no upstream bytes for this long aborts the attempt (seconds, 0=disabled) |
+| `non_stream_timeout` | `600` | Non-stream request timeout (seconds, 0=disabled) |
 | `anthropic_first_byte_timeout` | `0` | Anthropic first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
 | `anthropic_non_stream_timeout` | `0` | Anthropic non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `anthropic_stream_idle_timeout` | `180` | Anthropic stream upstream idle timeout (seconds, 0=use global `stream_idle_timeout`) |
 | `codex_first_byte_timeout` | `0` | Codex first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
 | `codex_non_stream_timeout` | `0` | Codex non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
 | `openai_first_byte_timeout` | `0` | OpenAI first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |

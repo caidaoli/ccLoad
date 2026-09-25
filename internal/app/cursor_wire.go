@@ -225,9 +225,7 @@ func (s *Server) forwardCursorAgent(
 			}
 			duration := time.Since(started).Seconds()
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, err.Error())
-			if status != StatusClientClosedRequest {
-				s.updateTokenStatsForProxy(reqCtx, false, duration, failed, modelID)
-			}
+			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
 		}
 		return result, nil
 	}
@@ -389,12 +387,11 @@ func (s *Server) forwardCursorAgent(
 		if !reqCtx.skipProxyLog && !replayed {
 			failed := &fwResult{
 				Status: status, Body: result.body, FirstByteTime: firstByte.Seconds(),
+				ResponseCommitted: wroteHeader,
 			}
 			applyCursorUsage(failed, billableUsage)
 			s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", status, duration, failed, runErr.Error())
-			if status != StatusClientClosedRequest {
-				s.updateTokenStatsForProxy(reqCtx, false, duration, failed, modelID)
-			}
+			s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(status), duration, failed, modelID)
 		}
 		result.proxyLogWritten = !reqCtx.skipProxyLog && !replayed
 		result.isClientCanceled = clientDisconnected
@@ -485,7 +482,7 @@ func (s *Server) forwardCursorAgent(
 	applyCursorUsage(forwarded, billableUsage)
 	if !reqCtx.skipProxyLog && !replayed {
 		s.logProxyResult(reqCtx, cfg, modelID, "cursor-oauth", http.StatusOK, duration, forwarded, "")
-		s.updateTokenStatsForProxy(reqCtx, true, duration, forwarded, modelID)
+		s.updateTokenStatsForProxy(reqCtx, model.TokenStatsSuccess, duration, forwarded, modelID)
 	}
 	return &proxyResult{
 		status: http.StatusOK, header: header, body: responseBody, channelID: &channelID,

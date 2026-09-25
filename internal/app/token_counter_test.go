@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -17,12 +18,42 @@ func TestHandleCountTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid model", func(t *testing.T) {
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/v1/messages/count_tokens", []byte(`{"model":"bad","messages":[{"role":"user","content":"hi"}]}`)))
+	t.Run("any model name is estimated", func(t *testing.T) {
+		for _, model := range []string{"glm-4.6", "deepseek-v3.2", "kimi-k2", "qwen3-coder-plus"} {
+			c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/v1/messages/count_tokens",
+				[]byte(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`)))
+			srv.handleCountTokens(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("model %s status=%d, want %d, body=%s", model, w.Code, http.StatusOK, w.Body.String())
+			}
+		}
+	})
 
-		srv.handleCountTokens(c)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+	// 数组 tool_result 与文本文档按实际内容估算：Claude Code 读大文件后要能看到上下文涨了。
+	t.Run("array tool_result and text document scale with content", func(t *testing.T) {
+		longText := strings.Repeat("lorem ipsum dolor sit amet ", 800) // ~21.6K 字符，约 5.4K token
+		for name, block := range map[string]any{
+			"tool_result array": map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": []any{
+				map[string]any{"type": "text", "text": longText},
+			}},
+			"text document": map[string]any{"type": "document", "source": map[string]any{
+				"type": "text", "media_type": "text/plain", "data": longText,
+			}},
+			"content document": map[string]any{"type": "document", "source": map[string]any{
+				"type": "content", "content": []any{map[string]any{"type": "text", "text": longText}},
+			}},
+		} {
+			payload := map[string]any{
+				"model":    "claude-sonnet-4-6",
+				"messages": []any{map[string]any{"role": "user", "content": []any{block}}},
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/v1/messages/count_tokens", payload))
+			srv.handleCountTokens(c)
+			var resp CountTokensResponse
+			mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+			if resp.InputTokens < 5_000 {
+				t.Fatalf("%s: InputTokens=%d, want >=5000", name, resp.InputTokens)
+			}
 		}
 	})
 
@@ -64,29 +95,4 @@ func TestHandleCountTokens(t *testing.T) {
 			t.Fatalf("InputTokens=%d, want >0", resp.InputTokens)
 		}
 	})
-}
-
-func TestIsValidClaudeModel(t *testing.T) {
-	tests := []struct {
-		model string
-		want  bool
-	}{
-		{"claude-3-5-sonnet-latest", true},
-		{"gpt-4o", true},
-		{"chatgpt-4o-latest", true},
-		{"o1", true},
-		{"o3-mini", true},
-		{"o4", true},
-		{"gemini-1.5-pro", true},
-		{"text-davinci-003", true},
-		{"anthropic.claude-v2", true},
-		{"", false},
-		{"bad", false},
-	}
-
-	for _, tt := range tests {
-		if got := isValidClaudeModel(tt.model); got != tt.want {
-			t.Fatalf("isValidClaudeModel(%q)=%v, want %v", tt.model, got, tt.want)
-		}
-	}
 }

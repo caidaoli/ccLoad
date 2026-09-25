@@ -62,36 +62,30 @@ const updateTokenStatsQuery = `
 		success_count = success_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
 		failure_count = failure_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
 
-		-- 只有成功请求才累加 token 与费用（与内存费用缓存语义保持一致）
-		prompt_tokens_total = prompt_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		completion_tokens_total = completion_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		cache_read_tokens_total = cache_read_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		cache_creation_tokens_total = cache_creation_tokens_total + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		total_cost_usd = total_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		effective_cost_usd = effective_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
-		cost_used_microusd = cost_used_microusd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		-- token 与费用按传入值累加：是否计费由调用方判定（与内存费用缓存同源），不计费时传 0
+		prompt_tokens_total = prompt_tokens_total + ?,
+		completion_tokens_total = completion_tokens_total + ?,
+		cache_read_tokens_total = cache_read_tokens_total + ?,
+		cache_creation_tokens_total = cache_creation_tokens_total + ?,
+		total_cost_usd = total_cost_usd + ?,
+		effective_cost_usd = effective_cost_usd + ?,
+		cost_used_microusd = cost_used_microusd + ?,
 		cost_daily_used_microusd = CASE
-			WHEN ? = 1 THEN CASE
-				WHEN cost_daily_period_start = ? THEN cost_daily_used_microusd + ?
-				WHEN cost_daily_period_start < ? THEN ?
-				ELSE cost_daily_used_microusd
-			END
+			WHEN cost_daily_period_start = ? THEN cost_daily_used_microusd + ?
+			WHEN cost_daily_period_start < ? THEN ?
 			ELSE cost_daily_used_microusd
 		END,
 		cost_daily_period_start = CASE
-			WHEN ? = 1 AND cost_daily_period_start < ? THEN ?
+			WHEN cost_daily_period_start < ? THEN ?
 			ELSE cost_daily_period_start
 		END,
 		cost_monthly_used_microusd = CASE
-			WHEN ? = 1 THEN CASE
-				WHEN cost_monthly_period_start = ? THEN cost_monthly_used_microusd + ?
-				WHEN cost_monthly_period_start < ? THEN ?
-				ELSE cost_monthly_used_microusd
-			END
+			WHEN cost_monthly_period_start = ? THEN cost_monthly_used_microusd + ?
+			WHEN cost_monthly_period_start < ? THEN ?
 			ELSE cost_monthly_used_microusd
 		END,
 		cost_monthly_period_start = CASE
-			WHEN ? = 1 AND cost_monthly_period_start < ? THEN ?
+			WHEN cost_monthly_period_start < ? THEN ?
 			ELSE cost_monthly_period_start
 		END,
 
@@ -854,17 +848,17 @@ func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, no
 // 使用事务保证原子性，采用增量计算公式避免扫描历史数据
 // 参数:
 //   - tokenHash: Token的SHA256哈希值
-//   - isSuccess: 本次请求是否成功(2xx状态码)
+//   - outcome: 计入成功/失败计数器，取消（499）两者都不计且不更新耗时统计
 //   - duration: 总响应时间(秒)
 //   - isStreaming: 是否为流式请求
 //   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
 //   - promptTokens: 输入token数量
 //   - completionTokens: 输出token数量
-//   - costUSD: 本次请求费用(美元)
+//   - costUSD: 本次请求费用(美元)；token 与费用按传入值累加，不计费的请求传 0
 func (s *SQLStore) UpdateTokenStats(
 	ctx context.Context,
 	tokenHash string,
-	isSuccess bool,
+	outcome model.TokenStatsOutcome,
 	duration float64,
 	isStreaming bool,
 	firstByteTime float64,
@@ -878,27 +872,28 @@ func (s *SQLStore) UpdateTokenStats(
 ) error {
 	// 单条 UPDATE 保证原子性：避免每次请求都做 BEGIN+SELECT+UPDATE+COMMIT
 	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
-	successFlag := isSuccess
-	failureFlag := !isSuccess
-	streamUpdateFlag := isStreaming && firstByteTime > 0
-	nonStreamUpdateFlag := !isStreaming
+	successFlag := outcome == model.TokenStatsSuccess
+	failureFlag := outcome == model.TokenStatsFailure
+	counted := outcome != model.TokenStatsCanceled
+	streamUpdateFlag := counted && isStreaming && firstByteTime > 0
+	nonStreamUpdateFlag := counted && !isStreaming
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
 	dayStartMs, monthStartMs := model.AuthTokenCostPeriodStarts(completedAt)
 
 	result, err := s.ExecContext(ctx, updateTokenStatsQuery,
 		successFlag,
 		failureFlag,
-		successFlag, promptTokens,
-		successFlag, completionTokens,
-		successFlag, cacheReadTokens,
-		successFlag, cacheCreationTokens,
-		successFlag, costUSD,
-		successFlag, effectiveCostUSD,
-		successFlag, costMicroUSD,
-		successFlag, dayStartMs, costMicroUSD, dayStartMs, costMicroUSD,
-		successFlag, dayStartMs, dayStartMs,
-		successFlag, monthStartMs, costMicroUSD, monthStartMs, costMicroUSD,
-		successFlag, monthStartMs, monthStartMs,
+		promptTokens,
+		completionTokens,
+		cacheReadTokens,
+		cacheCreationTokens,
+		costUSD,
+		effectiveCostUSD,
+		costMicroUSD,
+		dayStartMs, costMicroUSD, dayStartMs, costMicroUSD,
+		dayStartMs, dayStartMs,
+		monthStartMs, costMicroUSD, monthStartMs, costMicroUSD,
+		monthStartMs, monthStartMs,
 		streamUpdateFlag, firstByteTime,
 		streamUpdateFlag,
 		nonStreamUpdateFlag, duration,

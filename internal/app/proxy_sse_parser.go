@@ -33,6 +33,7 @@ type usageAccumulator struct {
 	Cache5mInputTokens       int
 	Cache1hInputTokens       int
 	ToolCostUSD              float64
+	WebSearchRequests        int                           // Anthropic server_tool_use 累计快照，GetToolCostUSD 按次折价
 	ImageUsage               util.ImageGenerationToolUsage // Native Images usage, distinct from Responses tool usage.
 	ServiceTier              string                        // 上游实际声明的 service_tier/speed
 	ThinkingEffort           string
@@ -118,7 +119,7 @@ type usageParser interface {
 	Feed([]byte) error
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与上游 service_tier/speed
-	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
+	GetToolCostUSD() float64                                       // 返回服务端工具调用（Responses 图像、Anthropic web_search）的额外费用
 	GetImageUsage() util.ImageGenerationToolUsage
 	GetThinkingEffort() string
 	GetReasoningTokens() int
@@ -137,7 +138,7 @@ func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTie
 }
 
 func (u *usageAccumulator) GetToolCostUSD() float64 {
-	return u.ToolCostUSD
+	return u.ToolCostUSD + util.CalculateWebSearchToolCost(u.WebSearchRequests)
 }
 
 func (u *usageAccumulator) GetImageUsage() util.ImageGenerationToolUsage {
@@ -277,6 +278,7 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
 		p.Cache1hInputTokens = p.scanner.Cache1hInputTokens
+		p.WebSearchRequests = p.scanner.WebSearchRequests
 		p.ImageUsage = p.scanner.ImageUsage
 		p.scanVersion = p.scanner.usageVersion
 	}
@@ -1220,7 +1222,9 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			p.ServiceTier = sseParser.ServiceTier
 			p.ThinkingEffort = sseParser.GetThinkingEffort()
 			p.ReasoningTokens = sseParser.GetReasoningTokens()
-			p.ToolCostUSD = sseParser.GetToolCostUSD()
+			// 复制原始字段而非合计：p 自身的扫描可能已记下 web_search 次数，混用会重复计费。
+			p.ToolCostUSD = sseParser.ToolCostUSD
+			p.WebSearchRequests = sseParser.WebSearchRequests
 			p.ImageUsage = sseParser.GetImageUsage()
 			p.ResponseModel = sseParser.GetResponseModel()
 			p.CodexHasCredits = sseParser.GetCodexHasCredits()
@@ -1670,6 +1674,11 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	}
 	if val, ok := usageTokenCount(usage["cache_read_input_tokens"]); ok && val > 0 {
 		u.CacheReadInputTokens = val
+	}
+	if serverToolUse, ok := usage["server_tool_use"].(map[string]any); ok {
+		if val := usageInt(serverToolUse, "web_search_requests"); val > 0 {
+			u.WebSearchRequests = val
+		}
 	}
 
 	_, hasAggregateCacheCreation := usage["cache_creation_input_tokens"]

@@ -142,7 +142,7 @@ func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
 					return cloneAnthropicCredential(winnerCredential), nil
 				}
 			}
-			return nil, fmt.Errorf("refresh Anthropic credential for channel %d: %w", currentCfg.ID, refreshErr)
+			return nil, newCodexCredentialRefreshError(currentCfg, fmt.Errorf("refresh Anthropic credential for channel %d: %w", currentCfg.ID, refreshErr))
 		}
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})

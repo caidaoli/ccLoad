@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
@@ -661,9 +662,8 @@ func (s *Server) handleRequestError(
 		log.Printf("[TIMEOUT] [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, durationSec)
 	} else if reqCtx.streamTimeoutTriggered() {
 		statusCode = util.StatusStreamIncomplete
-		err = fmt.Errorf("upstream stream timeout after %.2fs (threshold=%v): %w",
-			durationSec, reqCtx.streamTimeout, util.ErrUpstreamStreamTimeout)
-		log.Printf("[TIMEOUT] [流式请求总超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.streamTimeout, durationSec)
+		err = reqCtx.streamTimeoutError(durationSec)
+		log.Printf("[TIMEOUT] [流式请求超时] 渠道ID=%d: %v", cfg.ID, err)
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		if reqCtx.isStreaming {
 			// 流式请求超时
@@ -819,7 +819,8 @@ func isClientDisconnectError(err error) bool {
 }
 
 // buildStreamDiagnostics 生成流诊断消息
-// 触发条件：流传输错误且未检测到流完成语义（原始结束标志或已转译终态）
+// 触发条件：流传输错误且未检测到流完成语义（原始结束标志或已转译终态）；
+// Anthropic 上游即使干净 EOF，缺少 message_stop 也算不完整。
 // streamComplete: 是否已确认流完成（比 hasUsage 更可靠，因为不是所有请求都有 usage）
 func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, upstreamProtocol string, contentType string) string {
 	if readStats == nil {
@@ -839,6 +840,15 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 流结束标志=%v | 渠道=%s | Content-Type=%s | %s",
 			streamErr, bytesRead, readCount, streamComplete, upstreamProtocol, contentType,
 			streamTimingDiagnostics(readStats))
+	}
+
+	// Anthropic 流必以 message_stop 收尾：干净 EOF 却没有终止事件，说明上游半路断了。
+	// 其他协议存在合法省略终止标记的上游，只按传输错误判定。
+	if streamErr == nil && !streamComplete && bytesRead > 0 &&
+		upstreamProtocol == string(protocol.Anthropic) &&
+		strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但缺少message_stop | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | %s",
+			bytesRead, readCount, upstreamProtocol, contentType, streamTimingDiagnostics(readStats))
 	}
 
 	return ""
@@ -1845,6 +1855,7 @@ func attachFirstByteDetector(
 			}
 		},
 		onBytesRead: func(n int64) {
+			reqCtx.touchStreamIdle()
 			if observer != nil && observer.OnBytesRead != nil {
 				observer.OnBytesRead(n)
 			}
@@ -2524,12 +2535,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		res.Status = util.StatusFirstByteTimeout
 		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
 	} else if err != nil && reqCtx.streamTimeoutTriggered() {
-		err = fmt.Errorf("upstream stream timeout after %.2fs (threshold=%v): %w",
-			duration, reqCtx.streamTimeout, util.ErrUpstreamStreamTimeout)
+		err = reqCtx.streamTimeoutError(duration)
 		if res != nil {
 			res.Status = util.StatusStreamIncomplete
 		}
-		log.Printf("[TIMEOUT] [流式请求总超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.streamTimeout, duration)
+		log.Printf("[TIMEOUT] [流式请求超时-流传输中断] 渠道ID=%d: %v", cfg.ID, err)
 	} else if err != nil {
 		// Cancellation closes the response body to unblock a pending read. Depending
 		// on scheduling, that read may report io.ErrClosedPipe/net.ErrClosed before
@@ -2710,6 +2720,11 @@ func markSSEErrorForwardResult(res *fwResult) {
 	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {
 		res.UpstreamStatus = upstreamStatus
 		res.Header = headers
+	} else if res.Header != nil && looksLikeJSON(res.Body) {
+		// 重试耗尽时 body 是错误事件的 JSON 负载，不能再沿用上游的 text/event-stream。
+		res.Header = res.Header.Clone()
+		res.Header.Set("Content-Type", "application/json")
+		res.Header.Del("Content-Length")
 	}
 	if res.Status == util.StatusQuotaExceeded {
 		res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
@@ -2735,6 +2750,7 @@ func (s *Server) handleCommittedAwareProxyError(
 	res *fwResult,
 	duration float64,
 	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
 	deferChannelCooldown bool,
 ) (*proxyResult, cooldown.Action) {
 	if res.UpstreamWebsocketTransportFailure && !res.ResponseCommitted {
@@ -2748,6 +2764,13 @@ func (s *Server) handleCommittedAwareProxyError(
 			deferChannelCooldown, false, false,
 		)
 	}
+	// 上游断流时 Anthropic 客户端只看到半截流：没有 message_stop 也没有 error，
+	// Claude Code 会把残缺回复当成完成。补一条 error 事件让客户端报错并自行重试；
+	// 上游已经发过 error 事件的不重复补。
+	if reqCtx.isStreaming && reqCtx.clientProtocol == protocol.Anthropic &&
+		len(res.SSEErrorEvent) == 0 && ctx.Err() == nil && w != nil {
+		writeAnthropicStreamErrorEvent(w, "upstream stream interrupted before completion")
+	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 }
 
@@ -2760,13 +2783,14 @@ func (s *Server) handleSuccessfulForwardAnomaly(
 	res *fwResult,
 	duration float64,
 	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
 	deferChannelCooldown bool,
 ) (*proxyResult, cooldown.Action, bool) {
 	if res.SSEErrorEvent != nil {
 		log.Printf("[WARN]  [SSE错误处理] HTTP状态码200但检测到SSE error事件，触发冷却逻辑")
 		markSSEErrorForwardResult(res)
 		result, action := s.handleCommittedAwareProxyError(
-			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, w, deferChannelCooldown,
 		)
 		return result, action, true
 	}
@@ -2775,7 +2799,7 @@ func (s *Server) handleSuccessfulForwardAnomaly(
 		log.Printf("[WARN]  [流响应不完整] HTTP状态码200但检测到流响应不完整，触发冷却逻辑: %s", res.StreamDiagMsg)
 		markIncompleteStreamForwardResult(res)
 		result, action := s.handleCommittedAwareProxyError(
-			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, w, deferChannelCooldown,
 		)
 		return result, action, true
 	}
@@ -3141,7 +3165,7 @@ func (s *Server) forwardAttempt(
 		if res != nil && res.StreamDiagMsg != "" {
 			markIncompleteStreamForwardResult(res)
 			result, action := s.handleCommittedAwareProxyError(
-				ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+				ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, w, deferChannelCooldown,
 			)
 			return result, action, nil
 		}
@@ -3155,7 +3179,7 @@ func (s *Server) forwardAttempt(
 	// 处理成功响应（仅当err==nil且状态码2xx时）
 	if res.Status >= 200 && res.Status < 300 {
 		if result, action, handled := s.handleSuccessfulForwardAnomaly(
-			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, w, deferChannelCooldown,
 		); handled {
 			return result, action, nil
 		}
@@ -4199,6 +4223,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		if !cfg.RetryOtherKeysOnFailure {
 			keyIndex, selectedKey, pinned = selectPinnedCodexWebsocketKey(cfg, apiKeys, triedKeys, reqCtx.nativeCodexWS)
 		}
+		if !pinned && reqCtx.sessionAffinity.channelID == cfg.ID {
+			keyIndex, selectedKey, pinned = selectSessionAffinityKey(apiKeys, triedKeys, reqCtx.sessionAffinity.keyIndex)
+		}
 		var selectErr error
 		if !pinned {
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
@@ -4383,12 +4410,27 @@ func (s *Server) disableTerminalOAuthCredential(
 
 	disableCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
-	disabled, err := s.store.DisableOAuthChannelIfCredentialMatches(
-		disableCtx, cfg.ID, failedRefresh.authType, failedRefresh.credential,
-	)
-	if err != nil {
-		log.Printf("[ERROR] 禁用 OAuth 凭证失效渠道失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
-		return false
+	expected := failedRefresh.credential
+	var disabled bool
+	for attempt := 0; ; attempt++ {
+		var err error
+		disabled, err = s.store.DisableOAuthChannelIfCredentialMatches(
+			disableCtx, cfg.ID, failedRefresh.authType, expected,
+		)
+		if err != nil {
+			log.Printf("[ERROR] 禁用 OAuth 凭证失效渠道失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
+			return false
+		}
+		if disabled || attempt == 2 {
+			break
+		}
+		// 指纹、被动额度等元数据写入也会改变凭证 blob；只有 token 变了才代表别人已刷新。
+		current, getErr := s.store.GetConfig(disableCtx, cfg.ID)
+		if getErr != nil || !current.Enabled || current.OAuthCredential == expected ||
+			!sameOAuthTokens(current.OAuthCredential, expected) {
+			break
+		}
+		expected = current.OAuthCredential
 	}
 	if disabled {
 		log.Printf("[DISABLED] OAuth 凭证已被上游永久拒绝: provider=%s channel_id=%d", provider, cfg.ID)
@@ -4398,6 +4440,11 @@ func (s *Server) disableTerminalOAuthCredential(
 	s.invalidateChannelRelatedCache(cfg.ID)
 	s.InvalidateChannelListCache()
 	return true
+}
+
+func sameOAuthTokens(a, b string) bool {
+	return gjson.Get(a, "access_token").String() == gjson.Get(b, "access_token").String() &&
+		gjson.Get(a, "refresh_token").String() == gjson.Get(b, "refresh_token").String()
 }
 
 func (s *Server) cooldownRejectedOAuthCredential(ctx context.Context, cfg *model.Config, provider string) {
@@ -4479,8 +4526,14 @@ func (s *Server) tryAnthropicOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Anthropic", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
-		credential, err := s.anthropicCredentials.credential(ctx, cfg, forceRefresh)
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Anthropic", true, func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error) {
+		var credential *anthropicauth.Credential
+		var err error
+		if forceRefresh {
+			credential, err = s.anthropicCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		} else {
+			credential, err = s.anthropicCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			return cfg, "", err
 		}

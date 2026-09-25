@@ -1087,7 +1087,7 @@ func TestPostgres(t *testing.T) {
 			if err := store.UpdateTokenLastUsed(ctx, tokenValue, time.Now()); err != nil {
 				t.Fatalf("UpdateTokenLastUsed: %v", err)
 			}
-			if err := store.UpdateTokenStats(ctx, tokenValue, true, 0.5, false, 0, 10, 20, 3, 4, 0.01, 0.02, time.Now()); err != nil {
+			if err := store.UpdateTokenStats(ctx, tokenValue, model.TokenStatsSuccess, 0.5, false, 0, 10, 20, 3, 4, 0.01, 0.02, time.Now()); err != nil {
 				t.Fatalf("UpdateTokenStats: %v", err)
 			}
 

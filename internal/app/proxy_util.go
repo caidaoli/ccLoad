@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -57,6 +58,83 @@ func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header
 	if len(body) > 0 {
 		_, _ = w.Write(body)
 	}
+}
+
+// writeLocalProxyError 写网关自身产生的错误：Anthropic 客户端按官方错误体
+// 返回，便于 SDK 按 error.type 分支；其他协议保持既有 {"error": "..."} 形状。
+func writeLocalProxyError(c *gin.Context, status int, message string) {
+	if clientProtocol, _ := clientRequestMetadata(c); clientProtocol == protocol.Anthropic {
+		c.JSON(status, anthropicErrorBody(status, message))
+		return
+	}
+	c.JSON(status, gin.H{"error": message})
+}
+
+func anthropicErrorBody(status int, message string) gin.H {
+	return gin.H{"type": "error", "error": gin.H{"type": anthropicErrorType(status), "message": message}}
+}
+
+func anthropicErrorType(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusPaymentRequired:
+		return "billing_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return "timeout_error"
+	case http.StatusServiceUnavailable, 529:
+		return "overloaded_error"
+	}
+	if status >= 500 {
+		return "api_error"
+	}
+	return "invalid_request_error"
+}
+
+// writeAnthropicStreamErrorEvent 在已提交的 Anthropic SSE 流末尾追加 error 事件。
+func writeAnthropicStreamErrorEvent(w http.ResponseWriter, message string) {
+	encoded, err := json.Marshal(anthropicErrorBody(http.StatusInternalServerError, message))
+	if err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", encoded); err != nil {
+		return
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// anthropicLocalFailureBody 把没有上游响应头的本地失败（网络错误、凭证不可用等）
+// 改写为 Anthropic 错误体；已是 Anthropic 错误体的保持原样。
+func anthropicLocalFailureBody(status int, body []byte) []byte {
+	if gjson.GetBytes(body, "type").String() == "error" {
+		return body
+	}
+	message := strings.TrimSpace(string(body))
+	if looksLikeJSON(body) {
+		if msg := gjson.GetBytes(body, "error.message").String(); msg != "" {
+			message = msg
+		} else if msg := gjson.GetBytes(body, "error").String(); msg != "" {
+			message = msg
+		}
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	encoded, err := json.Marshal(anthropicErrorBody(status, message))
+	if err != nil {
+		return body
+	}
+	return encoded
 }
 
 // looksLikeJSON 仅扫描首部空白后的第一个非空字符判定 JSON 形状，
@@ -188,6 +266,8 @@ type proxyRequestContext struct {
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
 	routingSession          *responsesExecutionSession // 当前 Responses execution session 的首选渠道
+	sessionAffinityKey      string                     // Anthropic 会话绑定键（令牌+会话 ID），空表示不绑定
+	sessionAffinity         sessionAffinityTarget      // 请求开始时的会话绑定，channelID=0 表示无
 	nativeCodexWS           *codexUpstreamWebsocketSession
 	nativeCodexBody         []byte
 }
@@ -1107,13 +1187,8 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 				msg = fmt.Sprintf("%s: %s", msg, body)
 			}
 		}
-		if p.Result != nil && p.IsStreaming {
-			if p.Result.FirstByteTime > 0 {
-				entry.FirstByteTime = p.Result.FirstByteTime
-			}
-			if p.Result.BytesReceived > 0 {
-				msg = fmt.Sprintf("%s (received %s)", msg, formatBytes(p.Result.BytesReceived))
-			}
+		if p.Result != nil && p.IsStreaming && p.Result.BytesReceived > 0 {
+			msg = fmt.Sprintf("%s (received %s)", msg, formatBytes(p.Result.BytesReceived))
 		}
 		entry.Message = truncateErr(msg)
 	} else if p.Result != nil {
@@ -1136,7 +1211,12 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			}
 			entry.Message = truncateErr(msg)
 		}
+	} else {
+		entry.Message = "unknown"
+	}
 
+	// 用量与消息分支无关：流式中途失败（499/599）也带着已解析的 usage。
+	if res := p.Result; res != nil {
 		// 流式请求记录首字节响应时间
 		if p.IsStreaming && res.FirstByteTime > 0 {
 			entry.FirstByteTime = res.FirstByteTime
@@ -1152,15 +1232,13 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
 		entry.ServiceTier = res.ServiceTier
 
-		if p.StatusCode >= http.StatusOK && p.StatusCode < http.StatusMultipleChoices {
+		if billableResult(p.StatusCode, res) {
 			// 使用实际转发的模型计算成本（重定向时价格可能不同）；
 			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
 			// alpha/search 固定按 search_call 计费。
 			entry.Cost = computeRequestCostWithPrice(billingModel, res.ServiceTier, p.ModelPrice, res)
 		}
-	} else {
-		entry.Message = "unknown"
 	}
 	if p.Result != nil {
 		entry.Message = appendRetryStrategyToMessage(entry.Message, p.Result.RetryStrategy)
@@ -1187,7 +1265,7 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
 }
 
-// computeRequestCost 是请求总成本的唯一口径：标准 token 成本加 Responses 工具成本。
+// computeRequestCost 是请求总成本的唯一口径：标准 token 成本加服务端工具成本（Responses 图像、Anthropic web_search）。
 // fast 模式专用模型走 CalculateFastModeCost（已含 fast 倍率）。
 // OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
 // 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
@@ -1196,7 +1274,7 @@ func computeRequestCost(model string, serviceTier string, res *fwResult) float64
 }
 
 // computeRequestCostWithPrice 在 price 非空时用渠道模型价格替代标准 token 价格；
-// 图像工具费率只来自系统目录，不受渠道价格影响。
+// 工具费率只来自系统目录，不受渠道价格影响。
 func computeRequestCostWithPrice(model string, serviceTier string, price *util.CustomModelPrice, res *fwResult) float64 {
 	if res == nil {
 		return 0

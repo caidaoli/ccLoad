@@ -108,7 +108,7 @@ type failingTokenStatsStore struct {
 func (s *failingTokenStatsStore) UpdateTokenStats(
 	context.Context,
 	string,
-	bool,
+	model.TokenStatsOutcome,
 	float64,
 	bool,
 	float64,
@@ -140,7 +140,7 @@ func TestApplyTokenStatsUpdateAddsCostToCacheWhenStoreFails(t *testing.T) {
 	srv.applyTokenStatsUpdate(tokenStatsUpdate{
 		tokenHash:      tokenHash,
 		completedAt:    time.Now(),
-		isSuccess:      true,
+		outcome:        model.TokenStatsSuccess,
 		costUSD:        0.0002,
 		costMultiplier: 1,
 	})
@@ -499,7 +499,7 @@ func TestProxyJevAnalysis(t *testing.T) {
 			received := time.Now().Add(-time.Second)
 			res := &fwResult{Status: tc.status, Body: []byte(tc.body), ResponseCommitted: tc.committed, errorReceivedAt: received}
 			reqCtx := &proxyRequestContext{originalModel: "test-model", channelStartTime: received, attemptStartTime: received}
-			result, action := srv.handleCommittedAwareProxyError(ctx, cfg, cooldown.NoKeyIndex, "test-model", "sk-upstream-secret", res, 0.1, reqCtx, true)
+			result, action := srv.handleCommittedAwareProxyError(ctx, cfg, cooldown.NoKeyIndex, "test-model", "sk-upstream-secret", res, 0.1, reqCtx, nil, true)
 			if action != tc.want {
 				t.Fatalf("action=%v want=%v", action, tc.want)
 			}

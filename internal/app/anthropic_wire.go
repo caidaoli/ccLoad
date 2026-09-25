@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -604,13 +603,21 @@ func matchesAnthropicHaikuHelperHeaders(headers http.Header, body []byte, shape 
 	expected := map[string]string{
 		"Accept": "application/json", "Content-Type": "application/json", "X-Stainless-Lang": "js",
 		"X-Stainless-Runtime": "node", "X-Stainless-Retry-Count": "0", "X-Stainless-Timeout": "600",
-		"X-Stainless-Package-Version": "0.94.0", "X-Stainless-Runtime-Version": "v26.3.0",
 		"Anthropic-Version": "2023-06-01", "Anthropic-Dangerous-Direct-Browser-Access": "true",
 	}
 	for name, want := range expected {
 		if anthropicHeaderValue(headers, name) != want {
 			return false
 		}
+	}
+	// SDK/运行时版本只校验形态：锁死某个版本会让每次客户端升级都静默丢失 helper 识别。
+	if _, ok := parseAnthropicCLIVersion(anthropicHeaderValue(headers, "X-Stainless-Package-Version")); !ok {
+		return false
+	}
+	if runtimeVersion, ok := strings.CutPrefix(anthropicHeaderValue(headers, "X-Stainless-Runtime-Version"), "v"); !ok {
+		return false
+	} else if _, ok := parseAnthropicCLIVersion(runtimeVersion); !ok {
+		return false
 	}
 	for _, name := range []string{"X-Stainless-OS", "X-Stainless-Arch"} {
 		if anthropicHeaderValue(headers, name) == "" {
@@ -782,10 +789,7 @@ func injectAnthropicClaudeCodeMetadata(
 	if credential == nil {
 		return nil, errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
 	}
-	identitySeed := credential.AccountUUID
-	if identitySeed == "" {
-		identitySeed = strings.ToLower(credential.EmailAddress)
-	}
+	identitySeed := anthropicOAuthIdentitySeed(credential)
 	if credential.DeviceID == "" || identitySeed == "" {
 		return nil, errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
 	}
@@ -856,10 +860,9 @@ func rebaseAnthropicNativeOAuthIdentity(
 	if credential == nil {
 		return body, "", nil
 	}
-	targetAccount := strings.TrimSpace(credential.AccountUUID)
-	if targetAccount == "" {
-		return body, "", nil
-	}
+	// setup-token 等凭证没有账号 UUID 时也要重写：account_uuid 发空（与模拟路径及
+	// 真实 CLI 一致），device 用账号级 ClientID，调用方自己的身份不能原样透传。
+	targetAccount := credential.AccountUUID
 	current, currentValid := parseAnthropicSub2APIUserIdentity(anthropicMetadataUserID(body))
 	if !currentValid {
 		// An explicit body rule can remove metadata.user_id. sub2api only
@@ -871,7 +874,7 @@ func rebaseAnthropicNativeOAuthIdentity(
 	// sub2api keeps a random 64-hex ClientID in an account fingerprint cache.
 	// ccLoad has no equivalent external cache, so derive the same account-scoped
 	// value deterministically from the stable channel/account identity.
-	clientID := anthropicSub2APIClientID(cfg.ID, targetAccount)
+	clientID := anthropicSub2APIClientID(cfg.ID, anthropicOAuthIdentitySeed(credential))
 	parsed := current
 	if source, sourceValid := parseAnthropicSub2APIUserIdentity(anthropicMetadataUserID(callerBody)); sourceValid {
 		// A retry may start from an already rewritten upstream body. Reuse the
@@ -899,6 +902,14 @@ func rebaseAnthropicNativeOAuthIdentity(
 		return nil, "", errors.New("rebase Anthropic native identity: encode user_id")
 	}
 	return updated, mappedSession, nil
+}
+
+// anthropicOAuthIdentitySeed 是账号级身份：优先账号 UUID，setup-token 等只有邮箱的凭证用邮箱。
+func anthropicOAuthIdentitySeed(credential *anthropicauth.Credential) string {
+	if credential.AccountUUID != "" {
+		return credential.AccountUUID
+	}
+	return strings.ToLower(credential.EmailAddress)
 }
 
 func anthropicSub2APIClientID(channelID int64, accountUUID string) string {
@@ -1552,15 +1563,31 @@ func anthropicClientVersion(headers http.Header) string {
 // OAuth fingerprints are persisted with the private credential and cached per server.
 type anthropicOAuthFingerprint = anthropicauth.Fingerprint
 
+// Claude Code 2.1.280（内置 CLI 版本下限）实测随附的 @anthropic-ai/sdk 与运行时版本（对齐 CPA）。
+// CLI 版本只升不降，SDK 版本随之单调，低于这一组的 Stainless 版本不可能与当前 UA 配套。
+const (
+	anthropicStainlessPackageVersion = "0.112.1"
+	anthropicStainlessRuntimeVersion = "v26.3.0"
+)
+
 func defaultAnthropicOAuthFingerprint() anthropicOAuthFingerprint {
 	return anthropicOAuthFingerprint{
 		UserAgent:               "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
 		StainlessLang:           "js",
-		StainlessPackageVersion: "0.94.0",
+		StainlessPackageVersion: anthropicStainlessPackageVersion,
 		StainlessOS:             "Linux",
 		StainlessArch:           "arm64",
 		StainlessRuntime:        "node",
-		StainlessRuntimeVersion: "v24.3.0",
+		StainlessRuntimeVersion: anthropicStainlessRuntimeVersion,
+	}
+}
+
+// resetStaleAnthropicStainlessVersions 把低于内置配对的 SDK/运行时版本换成内置配对。
+// 旧默认值（0.94.0）和旧客户端学到的版本都会随 UA 抬升到下限而失配。
+func resetStaleAnthropicStainlessVersions(fp *anthropicOAuthFingerprint) {
+	if fp.StainlessPackageVersion != "" && !anthropicCLIVersionGTE(fp.StainlessPackageVersion, anthropicStainlessPackageVersion) {
+		fp.StainlessPackageVersion = anthropicStainlessPackageVersion
+		fp.StainlessRuntimeVersion = anthropicStainlessRuntimeVersion
 	}
 }
 
@@ -1570,10 +1597,7 @@ func anthropicOAuthFingerprintKey(cfg *model.Config) string {
 	}
 	identity := ""
 	if credential := anthropicCredentialForWire(cfg, ""); credential != nil {
-		identity = strings.TrimSpace(credential.AccountUUID)
-		if identity == "" {
-			identity = strings.ToLower(strings.TrimSpace(credential.EmailAddress))
-		}
+		identity = anthropicOAuthIdentitySeed(credential)
 	}
 	if identity == "" {
 		identity = strings.TrimSpace(cfg.Name)
@@ -1714,7 +1738,10 @@ func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Co
 		// account change: persisting it would rewrite every OAuth credential and
 		// flush the channel cache once per account after each version sync.
 		cached.UserAgent = normalizeAnthropicFingerprintUserAgent(cached.UserAgent)
+		resetStaleAnthropicStainlessVersions(&cached)
 		previous.UserAgent = cached.UserAgent
+		previous.StainlessPackageVersion = cached.StainlessPackageVersion
+		previous.StainlessRuntimeVersion = cached.StainlessRuntimeVersion
 		if candidate := strings.TrimSpace(anthropicHeaderValue(incoming, "User-Agent")); anthropicAcceptableFingerprintUserAgent(candidate) {
 			candidate = normalizeAnthropicFingerprintUserAgent(candidate)
 			if anthropicFingerprintVersionIsNewer(candidate, cached.UserAgent) || cached == fallback {
@@ -1768,6 +1795,7 @@ func (s *Server) getAnthropicOAuthFingerprint(ctx context.Context, cfg *model.Co
 }
 
 func completeAnthropicOAuthFingerprint(fp, fallback anthropicOAuthFingerprint) anthropicOAuthFingerprint {
+	resetStaleAnthropicStainlessVersions(&fp)
 	if fp.StainlessLang == "" {
 		fp.StainlessLang = fallback.StainlessLang
 	}
@@ -1882,6 +1910,10 @@ func injectAnthropicOAuthHeadersWithFingerprint(
 	if callerOwnsWire {
 		applyAnthropicNativeHeaders(req, incoming)
 		applyAnthropicNativeOAuthDefaults(req, body, fingerprint)
+		setRawHeader(req.Header, "Anthropic-Beta", anthropicNativeOAuthCredentialBetas(
+			normalizedAnthropicBetaHeader(req.Header), normalizedAnthropicBetaHeader(incoming), incoming, body,
+		))
+		applyAnthropicFirstPartyTransportHeaders(req)
 		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
 		return
 	}
@@ -1925,6 +1957,7 @@ func injectAnthropicAPIKeyHeaders(
 	incoming := anthropicIncomingHeaders(req, incomingHeaders)
 	if callerOwnsWire {
 		applyAnthropicNativeHeaders(req, incoming)
+		applyAnthropicFirstPartyTransportHeaders(req)
 		applyAnthropicAPIKeyAuth(req, apiKey)
 		return
 	}
@@ -1946,6 +1979,7 @@ func injectAnthropicCountTokensHeadersWithFingerprint(req *http.Request, cfg *mo
 				setRawHeader(req.Header, "Anthropic-Beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14")
 			}
 			applyAnthropicNativeOAuthDefaults(req, body, fingerprint)
+			applyAnthropicFirstPartyTransportHeaders(req)
 			betas := normalizedAnthropicBetaHeader(req.Header)
 			setRawHeader(req.Header, "Anthropic-Beta", appendAnthropicBeta(betas, "token-counting-2024-11-01"))
 		} else {
@@ -2064,6 +2098,59 @@ func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header) {
 			setRawHeader(req.Header, name, value)
 		}
 	}
+	// Claude Code 的 agent/subagent、remote、请求类别与压缩标记都在这些前缀下；
+	// 丢掉它们，上游就分不清 subagent 与压缩请求。
+	for name, values := range incoming {
+		lower := strings.ToLower(name)
+		passthrough := strings.HasPrefix(lower, "x-claude-code-") || strings.HasPrefix(lower, "x-claude-remote-") ||
+			lower == "x-client-app" || lower == "x-anthropic-additional-protection"
+		if !passthrough || len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+			continue
+		}
+		if anthropicHeaderValue(req.Header, name) == "" {
+			setRawHeader(req.Header, name, strings.TrimSpace(values[0]))
+		}
+	}
+}
+
+// applyAnthropicFirstPartyTransportHeaders 补齐原生客户端直连第一方时才会发的传输头：
+// Claude Code 只对第一方 base URL 生成 x-client-request-id，经网关转发时自然缺失。
+func applyAnthropicFirstPartyTransportHeaders(req *http.Request) {
+	if !isOfficialAnthropicURL(req.URL) {
+		return
+	}
+	if anthropicHeaderValue(req.Header, "X-Client-Request-Id") == "" {
+		setRawHeader(req.Header, "x-client-request-id", uuid.NewString())
+	}
+	setRawHeader(req.Header, "Connection", "keep-alive")
+}
+
+// anthropicNativeOAuthCredentialBetas 补回 OAuth 凭证本身的 beta（对齐 CPA
+// withClaudeOAuthCredentialBetas）。调用方以为连的是 API Key 上游，不会声明
+// oauth/extended-cache-ttl；真实 OAuth 客户端从不以「Bearer + 无这两项」形态出现。
+// 调用方已声明 oauth 的（OAuth 登录的客户端、实测 Haiku helper）原样保留；
+// subagent（未自带 1h ttl）与 max_tokens=1 探针、标题 helper 本来就不带 extended-cache-ttl。
+func anthropicNativeOAuthCredentialBetas(betas, callerBetas string, incoming http.Header, body []byte) string {
+	if callerBetas == "" || slices.Contains(strings.Split(callerBetas, ","), "oauth-2025-04-20") {
+		return betas
+	}
+	if gjson.GetBytes(body, "max_tokens").Int() == 1 || anthropicIsTitleHelperRequest(body) {
+		return betas
+	}
+	subagent := anthropicHeaderValue(incoming, "X-Claude-Code-Agent-Id") != "" ||
+		anthropicHeaderValue(incoming, "X-Claude-Code-Parent-Agent-Id") != "" ||
+		strings.Contains(anthropicMetadataUserID(body), "parent_session_id") ||
+		strings.Contains(anthropicFirstSystemBlockText(gjson.GetBytes(body, "system")), "cc_is_subagent=true")
+	if subagent && !anthropicRequestHasCacheControl(body, anthropicCacheControlIsLongTTL) {
+		return betas
+	}
+	return appendAnthropicBeta(betas, "extended-cache-ttl-2025-04-11")
+}
+
+// anthropicIsTitleHelperRequest 识别 Claude Code 生成会话标题的结构化输出 helper。
+func anthropicIsTitleHelperRequest(body []byte) bool {
+	properties := gjson.GetBytes(body, "output_config.format.schema.properties")
+	return properties.IsObject() && len(properties.Map()) == 1 && properties.Get("title").Exists()
 }
 
 // applyAnthropicNativeOAuthDefaults 与 sub2api 的 OAuth 透传路径一样，只补调用方
@@ -2076,9 +2163,9 @@ func applyAnthropicNativeOAuthDefaults(req *http.Request, body []byte, fingerpri
 	for _, header := range [][2]string{
 		{"Accept", "application/json"}, {"Content-Type", "application/json"},
 		{"Anthropic-Version", "2023-06-01"}, {"X-App", "cli"},
-		{"X-Stainless-Lang", "js"}, {"X-Stainless-Package-Version", "0.94.0"},
+		{"X-Stainless-Lang", "js"}, {"X-Stainless-Package-Version", anthropicStainlessPackageVersion},
 		{"X-Stainless-OS", "Linux"}, {"X-Stainless-Arch", "arm64"},
-		{"X-Stainless-Runtime", "node"}, {"X-Stainless-Runtime-Version", "v24.3.0"},
+		{"X-Stainless-Runtime", "node"}, {"X-Stainless-Runtime-Version", anthropicStainlessRuntimeVersion},
 		{"X-Stainless-Retry-Count", "0"}, {"X-Stainless-Timeout", "600"},
 		{"Anthropic-Dangerous-Direct-Browser-Access", "true"},
 	} {
@@ -2115,9 +2202,10 @@ func anthropicOAuthMimicBetas() string {
 }
 
 // anthropicClaudeCodeBetas 为 API Key 模拟请求按实际使用的能力声明 beta。
+// oauth-2025-04-20 只属于 OAuth 凭证，真实 CLI 用 API Key 时不发。
 func anthropicClaudeCodeBetas(body []byte) string {
 	betas := []string{
-		"claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14",
+		"claude-code-20250219", "interleaved-thinking-2025-05-14",
 		"prompt-caching-scope-2026-01-05", "effort-2025-11-24", "context-management-2025-06-27",
 	}
 	if gjson.GetBytes(body, "thinking.block_binding").Exists() {
@@ -2178,17 +2266,14 @@ func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, client
 	if !oauthMimic {
 		setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
 	}
-	arch, operatingSystem, runtimeVersion := anthropicStainlessArch(), anthropicStainlessOS(), "v26.3.0"
-	if oauthMimic {
-		arch, operatingSystem, runtimeVersion = "arm64", "Linux", "v24.3.0"
-	}
-	setRawHeader(req.Header, "X-Stainless-Arch", arch)
+	// 平台与 OAuth 默认指纹一致固定；取网关宿主机会让同一渠道的指纹随部署机器漂移。
+	setRawHeader(req.Header, "X-Stainless-Arch", "arm64")
 	setRawHeader(req.Header, "X-Stainless-Lang", "js")
-	setRawHeader(req.Header, "X-Stainless-OS", operatingSystem)
-	setRawHeader(req.Header, "X-Stainless-Package-Version", "0.94.0")
+	setRawHeader(req.Header, "X-Stainless-OS", "Linux")
+	setRawHeader(req.Header, "X-Stainless-Package-Version", anthropicStainlessPackageVersion)
 	setRawHeader(req.Header, "X-Stainless-Retry-Count", "0")
 	setRawHeader(req.Header, "X-Stainless-Runtime", "node")
-	setRawHeader(req.Header, "X-Stainless-Runtime-Version", runtimeVersion)
+	setRawHeader(req.Header, "X-Stainless-Runtime-Version", anthropicStainlessRuntimeVersion)
 	setRawHeader(req.Header, "X-Stainless-Timeout", "600")
 	setRawHeader(req.Header, "anthropic-beta", betas)
 	setRawHeader(req.Header, "anthropic-dangerous-direct-browser-access", "true")
@@ -2255,26 +2340,4 @@ func anthropicSessionIDFromBody(body []byte) string {
 		}
 	}
 	return ""
-}
-
-func anthropicStainlessOS() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "MacOS"
-	case "windows":
-		return "Windows"
-	default:
-		return "Linux"
-	}
-}
-
-func anthropicStainlessArch() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x64"
-	case "386":
-		return "x86"
-	default:
-		return runtime.GOARCH
-	}
 }

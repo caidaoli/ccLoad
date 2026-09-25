@@ -39,8 +39,8 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 		t.Fatalf("create auth token: %v", err)
 	}
 
-	// 失败请求：只累加失败次数；平均值仍应更新；token与费用不应累加。
-	if err := store.UpdateTokenStats(ctx, tokenHash, false, 2.0, false, 0, 10, 20, 3, 4, 1.23, 0.25, time.Now()); err != nil {
+	// 失败请求：累加失败次数与平均值；token与费用按调用方传入值累加（已提交流的部分用量）。
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 2.0, false, 0, 10, 20, 3, 4, 1.0, 0.25, time.Now()); err != nil {
 		t.Fatalf("update token stats (failure): %v", err)
 	}
 
@@ -51,20 +51,39 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.SuccessCount != 0 || got.FailureCount != 1 {
 		t.Fatalf("unexpected counts after failure: success=%d failure=%d", got.SuccessCount, got.FailureCount)
 	}
-	if got.PromptTokensTotal != 0 || got.CompletionTokensTotal != 0 || got.CacheReadTokensTotal != 0 || got.CacheCreationTokensTotal != 0 {
+	if got.PromptTokensTotal != 10 || got.CompletionTokensTotal != 20 || got.CacheReadTokensTotal != 3 || got.CacheCreationTokensTotal != 4 {
 		t.Fatalf("unexpected token totals after failure: prompt=%d completion=%d cache_read=%d cache_create=%d",
 			got.PromptTokensTotal, got.CompletionTokensTotal, got.CacheReadTokensTotal, got.CacheCreationTokensTotal)
 	}
-	if got.TotalCostUSD != 0 || got.EffectiveCostUSD != 0 || got.CostUsedMicroUSD != 0 {
+	if got.TotalCostUSD != 1.0 || got.EffectiveCostUSD != 0.25 || got.CostUsedMicroUSD != util.USDToMicroUSD(0.25) {
 		t.Fatalf("unexpected cost after failure: total_cost_usd=%v effective_cost_usd=%v cost_used_microusd=%d", got.TotalCostUSD, got.EffectiveCostUSD, got.CostUsedMicroUSD)
 	}
 	if got.NonStreamCount != 1 || got.NonStreamAvgRT != 2.0 {
 		t.Fatalf("unexpected non-stream stats after failure: count=%d avg=%v", got.NonStreamCount, got.NonStreamAvgRT)
 	}
 
+	// 客户端取消：只累加用量与费用，不计成功/失败次数，也不影响耗时统计。
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsCanceled, 9.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, time.Now()); err != nil {
+		t.Fatalf("update token stats (canceled): %v", err)
+	}
+
+	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.SuccessCount != 0 || got.FailureCount != 1 {
+		t.Fatalf("unexpected counts after cancel: success=%d failure=%d", got.SuccessCount, got.FailureCount)
+	}
+	if got.PromptTokensTotal != 20 || got.EffectiveCostUSD != 0.5 || got.CostUsedMicroUSD != 2*util.USDToMicroUSD(0.25) {
+		t.Fatalf("unexpected usage after cancel: prompt=%d effective_cost_usd=%v cost_used_microusd=%d", got.PromptTokensTotal, got.EffectiveCostUSD, got.CostUsedMicroUSD)
+	}
+	if got.NonStreamCount != 1 || got.NonStreamAvgRT != 2.0 {
+		t.Fatalf("unexpected non-stream stats after cancel: count=%d avg=%v", got.NonStreamCount, got.NonStreamAvgRT)
+	}
+
 	// 成功请求：累加成功次数、token与费用；平均值继续更新。
 	completedAt := time.Now()
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 4.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, completedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 4.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, completedAt); err != nil {
 		t.Fatalf("update token stats (success): %v", err)
 	}
 
@@ -75,17 +94,18 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.SuccessCount != 1 || got.FailureCount != 1 {
 		t.Fatalf("unexpected counts after success: success=%d failure=%d", got.SuccessCount, got.FailureCount)
 	}
-	if got.PromptTokensTotal != 10 || got.CompletionTokensTotal != 20 || got.CacheReadTokensTotal != 3 || got.CacheCreationTokensTotal != 4 {
+	if got.PromptTokensTotal != 30 || got.CompletionTokensTotal != 60 || got.CacheReadTokensTotal != 9 || got.CacheCreationTokensTotal != 12 {
 		t.Fatalf("unexpected token totals after success: prompt=%d completion=%d cache_read=%d cache_create=%d",
 			got.PromptTokensTotal, got.CompletionTokensTotal, got.CacheReadTokensTotal, got.CacheCreationTokensTotal)
 	}
-	if got.TotalCostUSD != 0.5 {
+	if got.TotalCostUSD != 2.0 {
 		t.Fatalf("unexpected total_cost_usd after success: %v", got.TotalCostUSD)
 	}
-	if got.EffectiveCostUSD != 0.25 {
+	if got.EffectiveCostUSD != 0.75 {
 		t.Fatalf("unexpected effective_cost_usd after success: %v", got.EffectiveCostUSD)
 	}
-	if got.CostUsedMicroUSD != util.USDToMicroUSD(0.25) {
+	wantUsed := 3 * util.USDToMicroUSD(0.25)
+	if got.CostUsedMicroUSD != wantUsed {
 		t.Fatalf("unexpected cost_used_microusd after success: %d", got.CostUsedMicroUSD)
 	}
 	if got.NonStreamCount != 2 || got.NonStreamAvgRT != 3.0 {
@@ -94,10 +114,10 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.LastUsedAt == nil || *got.LastUsedAt <= 0 {
 		t.Fatalf("expected last_used_at to be set, got=%v", got.LastUsedAt)
 	}
-	if got.CostDailyUsedMicroUSD != util.USDToMicroUSD(0.25) {
+	if got.CostDailyUsedMicroUSD != wantUsed {
 		t.Fatalf("unexpected cost_daily_used_microusd after success: %d", got.CostDailyUsedMicroUSD)
 	}
-	if got.CostMonthlyUsedMicroUSD != util.USDToMicroUSD(0.25) {
+	if got.CostMonthlyUsedMicroUSD != wantUsed {
 		t.Fatalf("unexpected cost_monthly_used_microusd after success: %d", got.CostMonthlyUsedMicroUSD)
 	}
 	dayStart, monthStart := model.AuthTokenCostPeriodStarts(completedAt)
@@ -134,7 +154,7 @@ func TestUpdateTokenStats_UsesCompletionPeriodWithoutRegressingNewerWindows(t *t
 	oldDayStart, oldMonthStart := model.AuthTokenCostPeriodStarts(oldCompletedAt)
 	currentDayStart, currentMonthStart := model.AuthTokenCostPeriodStarts(now)
 
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
 		t.Fatalf("update old-period token stats: %v", err)
 	}
 
@@ -154,11 +174,11 @@ func TestUpdateTokenStats_UsesCompletionPeriodWithoutRegressingNewerWindows(t *t
 		t.Fatalf("last_used_at=%v, want %d", got.LastUsedAt, oldCompletedAt.UnixMilli())
 	}
 
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 1.0, false, 0, 1, 1, 0, 0, 0.2, 0.2, now); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.2, 0.2, now); err != nil {
 		t.Fatalf("update current-period token stats: %v", err)
 	}
 	// 再迟到一个旧周期事件：总额仍应记账，但当前日/月窗口和 last_used_at 不得倒退。
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.0, false, 0, 1, 1, 0, 0, 0.1, 0.1, oldCompletedAt); err != nil {
 		t.Fatalf("update delayed old-period token stats: %v", err)
 	}
 	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
@@ -209,7 +229,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 第一次流式请求：TTFB = 100ms
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 0, true, 100.0, 10, 20, 0, 0, 0.1, 0.1, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 0, true, 100.0, 10, 20, 0, 0, 0.1, 0.1, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 1): %v", err)
 	}
 
@@ -225,7 +245,7 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 
 	// 第二次流式请求：TTFB = 200ms，期望平均值 = (100+200)/2 = 150
-	if err := store.UpdateTokenStats(ctx, tokenHash, true, 0, true, 200.0, 5, 10, 0, 0, 0.05, 0.05, time.Now()); err != nil {
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 0, true, 200.0, 5, 10, 0, 0, 0.05, 0.05, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 2): %v", err)
 	}
 

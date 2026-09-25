@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
@@ -74,6 +75,8 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 		expectModel  string
 		expectStream bool
 		expectError  bool
+		// expectBody 非空时断言转发给上游的 body 模型名
+		expectBody string
 	}{
 		{
 			name:         "有效JSON-claude模型",
@@ -161,6 +164,27 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			expectStream: false,
 			expectError:  false,
 		},
+		{
+			name:        "Claude Code 上下文后缀-Messages 入口归一",
+			body:        `{"model":"claude-opus-4-6[1m][1M]","messages":[]}`,
+			path:        "/v1/messages",
+			expectModel: "claude-opus-4-6",
+			expectBody:  "claude-opus-4-6",
+		},
+		{
+			name:        "Claude Code 上下文后缀-count_tokens 入口归一",
+			body:        `{"model":"claude-sonnet-4-6[1m]","messages":[]}`,
+			path:        "/v1/messages/count_tokens",
+			expectModel: "claude-sonnet-4-6",
+			expectBody:  "claude-sonnet-4-6",
+		},
+		{
+			name:        "Claude Code 上下文后缀-非 Anthropic 入口不改",
+			body:        `{"model":"deepseek-flash[1m]","messages":[]}`,
+			path:        "/v1/chat/completions",
+			expectModel: "deepseek-flash[1m]",
+			expectBody:  "deepseek-flash[1m]",
+		},
 	}
 
 	for _, tt := range tests {
@@ -191,6 +215,11 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			}
 			if incoming.isStreaming != tt.expectStream {
 				t.Errorf("流式标志错误: 期望%v, 实际%v", tt.expectStream, incoming.isStreaming)
+			}
+			if tt.expectBody != "" {
+				if got := gjson.GetBytes(incoming.body, "model").String(); got != tt.expectBody {
+					t.Errorf("body 模型名错误: 期望%s, 实际%s", tt.expectBody, got)
+				}
 			}
 		})
 	}

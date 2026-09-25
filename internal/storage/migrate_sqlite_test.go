@@ -334,6 +334,43 @@ func TestMigrate_SQLite_AntigravitySensitiveWordsDefault(t *testing.T) {
 	assertSetting(customValue, wantDefault)
 }
 
+func TestMigrate_SQLite_RaisedDefaultsMigrateUntouchedValues(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate new database: %v", err)
+	}
+	legacy := func(key, value, defaultValue string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `UPDATE system_settings SET value = ?, default_value = ? WHERE key = ?`,
+			value, defaultValue, key); err != nil {
+			t.Fatalf("restore legacy %s: %v", key, err)
+		}
+	}
+	assertSetting := func(key, wantValue, wantDefault string) {
+		t.Helper()
+		var value, defaultValue string
+		if err := db.QueryRowContext(ctx, `SELECT value, default_value FROM system_settings WHERE key = ?`, key).
+			Scan(&value, &defaultValue); err != nil {
+			t.Fatalf("query %s: %v", key, err)
+		}
+		if value != wantValue || defaultValue != wantDefault {
+			t.Fatalf("%s value/default=%q/%q, want %q/%q", key, value, defaultValue, wantValue, wantDefault)
+		}
+	}
+
+	assertSetting("max_body_bytes", "33554432", "33554432")
+	assertSetting("non_stream_timeout", "600", "600")
+
+	legacy("max_body_bytes", "10485760", "10485760")
+	legacy("non_stream_timeout", "300", "120")
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy defaults: %v", err)
+	}
+	assertSetting("max_body_bytes", "33554432", "33554432")
+	assertSetting("non_stream_timeout", "300", "600")
+}
+
 func TestMigrateSQLite_BackfillsClientProtocolFromHistoricalModels(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

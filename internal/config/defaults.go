@@ -31,7 +31,12 @@ const (
 	DefaultHTTPReadTimeout = 120 * time.Second
 
 	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
-	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10MB
+	// 与 Anthropic Messages API 上限一致：Claude Code 截图多的长会话与 /compact 请求体经常超过 10MB。
+	DefaultMaxBodyBytes = 32 * 1024 * 1024 // 32MB
+
+	// DefaultNonStreamTimeout 非流式请求整体超时。Claude Code 流式失败后会改发非流式请求，
+	// 长输出生成常超过 2 分钟，与其客户端约 600s 超时对齐。
+	DefaultNonStreamTimeout = 600 * time.Second
 
 	// DefaultMaxImageBodyBytes Images API 默认最大请求体字节数（支持图片上传）
 	DefaultMaxImageBodyBytes = 20 * 1024 * 1024 // 20MB

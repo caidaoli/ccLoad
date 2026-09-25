@@ -357,7 +357,7 @@ func TestHandleListAuthTokens_RangeAll_SkipsStats(t *testing.T) {
 	server := newInMemoryServer(t)
 	token := createTestToken(t, server, "all-token")
 
-	if err := server.store.UpdateTokenStats(context.Background(), token.Token, true, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25, time.Now()); err != nil {
+	if err := server.store.UpdateTokenStats(context.Background(), token.Token, model.TokenStatsSuccess, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25, time.Now()); err != nil {
 		t.Fatalf("UpdateTokenStats failed: %v", err)
 	}
 

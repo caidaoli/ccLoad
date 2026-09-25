@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 )
 
 // requestContext 封装单次请求的上下文和超时控制
@@ -24,6 +26,7 @@ type requestContext struct {
 	translatedBody                []byte
 	firstByteTimeout              time.Duration
 	streamTimeout                 time.Duration
+	streamIdleTimeout             time.Duration
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
 	codeBuddyOAuth                bool
@@ -36,20 +39,23 @@ type requestContext struct {
 	executionIdentity             string
 	firstByteTimer                *time.Timer
 	streamTimer                   *time.Timer
+	streamIdleTimer               *time.Timer
 	firstByteTimedOut             atomic.Bool
 	streamTimedOut                atomic.Bool
+	streamIdleTimedOut            atomic.Bool
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
 // 设计原则：
-// - 流式请求：使用 firstByteTimeout（首字节超时）和 streamTimeout（总超时）
+// - 流式请求：使用 firstByteTimeout（首字节）、streamTimeout（总时长）和 streamIdleTimeout（上游连续无数据）
 // - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
 // [INFO] Go 1.21+ 改进：总是返回非 nil 的 cancel，调用方无需检查（符合 Go 惯用法）
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
 	return s.newRequestContextWithTimeouts(parentCtx, requestPath, body, protocolTimeoutConfig{
-		FirstByteTimeout: s.firstByteTimeout,
-		StreamTimeout:    s.streamTimeout,
-		NonStreamTimeout: s.nonStreamTimeout,
+		FirstByteTimeout:  s.firstByteTimeout,
+		StreamTimeout:     s.streamTimeout,
+		StreamIdleTimeout: s.streamIdleTimeout,
+		NonStreamTimeout:  s.nonStreamTimeout,
 	})
 }
 
@@ -75,18 +81,27 @@ func newRequestContextForStreaming(parentCtx context.Context, isStreaming bool, 
 	}
 
 	reqCtx := &requestContext{
-		ctx:              ctx,
-		cancel:           cancel, // [INFO] 总是非 nil，无需检查
-		startTime:        time.Now(),
-		isStreaming:      isStreaming,
-		firstByteTimeout: timeouts.FirstByteTimeout,
-		streamTimeout:    timeouts.StreamTimeout,
-		nonStreamTimeout: timeouts.NonStreamTimeout,
+		ctx:               ctx,
+		cancel:            cancel, // [INFO] 总是非 nil，无需检查
+		startTime:         time.Now(),
+		isStreaming:       isStreaming,
+		firstByteTimeout:  timeouts.FirstByteTimeout,
+		streamTimeout:     timeouts.StreamTimeout,
+		streamIdleTimeout: timeouts.StreamIdleTimeout,
+		nonStreamTimeout:  timeouts.NonStreamTimeout,
 	}
 
 	if isStreaming && timeouts.StreamTimeout > 0 {
 		reqCtx.streamTimer = time.AfterFunc(timeouts.StreamTimeout, func() {
 			reqCtx.streamTimedOut.Store(true)
+			cancel()
+		})
+	}
+
+	// 从发出请求起计时：响应头迟迟不来也算空闲，读到上游字节时重置。
+	if isStreaming && timeouts.StreamIdleTimeout > 0 {
+		reqCtx.streamIdleTimer = time.AfterFunc(timeouts.StreamIdleTimeout, func() {
+			reqCtx.streamIdleTimedOut.Store(true)
 			cancel()
 		})
 	}
@@ -113,7 +128,24 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 }
 
 func (rc *requestContext) streamTimeoutTriggered() bool {
-	return rc.streamTimedOut.Load()
+	return rc.streamTimedOut.Load() || rc.streamIdleTimedOut.Load()
+}
+
+// touchStreamIdle 在读到上游数据时重置空闲定时器。
+func (rc *requestContext) touchStreamIdle() {
+	if rc.streamIdleTimer != nil && !rc.streamIdleTimedOut.Load() {
+		rc.streamIdleTimer.Reset(rc.streamIdleTimeout)
+	}
+}
+
+// streamTimeoutError 描述已触发的流式超时（总时长或空闲），均归为 ErrUpstreamStreamTimeout。
+func (rc *requestContext) streamTimeoutError(durationSec float64) error {
+	if rc.streamIdleTimedOut.Load() {
+		return fmt.Errorf("upstream stream idle timeout after %.2fs (no data for %v): %w",
+			durationSec, rc.streamIdleTimeout, util.ErrUpstreamStreamTimeout)
+	}
+	return fmt.Errorf("upstream stream timeout after %.2fs (threshold=%v): %w",
+		durationSec, rc.streamTimeout, util.ErrUpstreamStreamTimeout)
 }
 
 // Duration 返回从请求开始到现在的时间
@@ -127,6 +159,9 @@ func (rc *requestContext) cleanup() {
 	rc.stopFirstByteTimer() // 停止首字节超时定时器
 	if rc.streamTimer != nil {
 		rc.streamTimer.Stop()
+	}
+	if rc.streamIdleTimer != nil {
+		rc.streamIdleTimer.Stop()
 	}
 	rc.cancel() // 取消 context（总是非 nil，无需检查）
 }

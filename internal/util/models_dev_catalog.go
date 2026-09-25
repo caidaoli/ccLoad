@@ -195,7 +195,8 @@ func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogE
 		return ModelCatalogEntry{}, false
 	}
 	pricing.TokenPricingTiers = tiers
-	pricing.CacheReadCountsTowardTier = provider == "openai" && len(tiers) > 0
+	// OpenAI 与 Anthropic 的 context tier 按完整 prompt（含缓存）判定；其他 provider 只看非缓存输入。
+	pricing.CacheReadCountsTowardTier = (provider == "openai" || provider == "anthropic") && len(tiers) > 0
 
 	return ModelCatalogEntry{
 		ID:               id,

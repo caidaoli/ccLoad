@@ -64,7 +64,7 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 		CacheCreationInputTokens: 3,
 		ToolCostUSD:              0.125,
 	}
-	srv.updateTokenStatsAsync(tokenHash, 1.0, nil, true, 1.23, false, result, "gpt-5.1-codex")
+	srv.updateTokenStatsAsync(tokenHash, 1.0, nil, model.TokenStatsSuccess, 1.23, false, result, "gpt-5.1-codex")
 
 	got, err := store.GetAuthTokenByValue(ctx, tokenHash)
 	if err != nil {

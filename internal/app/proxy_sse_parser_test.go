@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -597,6 +598,49 @@ data: {"type":"message_stop","usage":{"input_tokens":0,"output_tokens":0,"cache_
 	}
 	if !parser.IsStreamComplete() {
 		t.Fatal("message_stop 仍应标记流完成")
+	}
+}
+
+// web_search 按 $10/1K 次计费；server_tool_use 是累计快照，message_stop 的 0 占位不能抹掉它。
+func TestUsageParser_AnthropicWebSearchRequestsBilledPerCall(t *testing.T) {
+	const sseData = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"server_tool_use":{"web_search_requests":0}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":42,"server_tool_use":{"web_search_requests":2}}}
+
+event: message_stop
+data: {"type":"message_stop","usage":{"input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0}}}
+
+`
+	tests := []struct {
+		name   string
+		parser usageParser
+		body   string
+		want   float64
+	}{
+		{name: "stream", parser: newSSEUsageParser("anthropic"), body: sseData, want: 0.02},
+		{
+			name:   "non-stream",
+			parser: newJSONUsageParser("anthropic"),
+			body:   `{"type":"message","usage":{"input_tokens":10,"output_tokens":42,"server_tool_use":{"web_search_requests":3}}}`,
+			want:   0.03,
+		},
+		// text/plain 回退：JSON 解析器自身扫描与 SSE 回退各见到一次同一快照，只能计一次。
+		{name: "text/plain SSE fallback", parser: newJSONUsageParser("anthropic"), body: sseData, want: 0.02},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.parser.Feed([]byte(tt.body)); err != nil {
+				t.Fatalf("Feed: %v", err)
+			}
+			if in, out, _, _ := tt.parser.GetUsage(); in != 10 || out != 42 {
+				t.Fatalf("usage=%d/%d, want 10/42", in, out)
+			}
+			if got := tt.parser.GetToolCostUSD(); math.Abs(got-tt.want) > 1e-9 {
+				t.Fatalf("tool cost=%v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

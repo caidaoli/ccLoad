@@ -528,7 +528,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
 		{"max_concurrency", "1000", "int", "最大并发请求数(限制同时处理的代理请求数量)", "1000"},
 		{"http_read_timeout_seconds", "0", "duration", "下游请求读取超时(秒,覆盖请求头+请求体的整段读取,0=使用内建默认值120秒)", "0"},
-		{"max_body_bytes", "10485760", "int", "请求体最大字节数(默认10MB)", "10485760"},
+		{"max_body_bytes", "33554432", "int", "请求体最大字节数(默认32MB)", "33554432"},
 		{"max_image_body_bytes", "20971520", "int", "Images API 请求体最大字节数(默认20MB)", "20971520"},
 		{"cooldown_auth_seconds", "300", "int", "认证错误(401/402/403)初始冷却时间(秒)", "300"},
 		{"cooldown_server_seconds", "120", "int", "服务器错误(5xx)初始冷却时间(秒)", "120"},
@@ -544,9 +544,11 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"upstream_connection_reuse_limit_seconds", "0", "duration", "上游连接最长复用时间(秒,0=不限制;达到时限后不接收新请求,在途请求完成后关闭)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
-		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
+		{"stream_idle_timeout", "0", "duration", "流式请求上游连续无数据超时(秒,0=禁用)", "0"},
+		{"non_stream_timeout", "600", "duration", "非流式请求超时(秒,0=禁用)", "600"},
 		{"anthropic_first_byte_timeout", "0", "duration", "Anthropic流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"anthropic_non_stream_timeout", "0", "duration", "Anthropic非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
+		{"anthropic_stream_idle_timeout", "180", "duration", "Anthropic流式请求上游连续无数据超时(秒,0=使用全局stream_idle_timeout)", "180"},
 		{"codex_first_byte_timeout", "0", "duration", "Codex流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"codex_non_stream_timeout", "0", "duration", "Codex非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"openai_first_byte_timeout", "0", "duration", "OpenAI流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
@@ -619,6 +621,26 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), config.DefaultAntigravitySensitiveWordsJSON, "json", "antigravity_sensitive_words"); err != nil {
 			return fmt.Errorf("refresh setting metadata antigravity_sensitive_words: %w", err)
+		}
+	}
+
+	// 上调过的默认值：仅迁移仍停在旧默认值的记录，用户改过的值不动。
+	{
+		keyCol := quoteKeyIdent(dialect)
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		valueSQL := fmt.Sprintf("UPDATE system_settings SET value = ? WHERE %s = ? AND value = default_value AND default_value = ?", keyCol)
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ? WHERE %s = ? AND default_value = ?", keyCol)
+		for _, raised := range []struct{ key, oldDefault, newDefault, desc string }{
+			{"max_body_bytes", "10485760", "33554432", "请求体最大字节数(默认32MB)"},
+			{"non_stream_timeout", "120", "600", "非流式请求超时(秒,0=禁用)"},
+		} {
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, valueSQL), raised.newDefault, raised.key, raised.oldDefault); err != nil {
+				return fmt.Errorf("migrate setting value %s: %w", raised.key, err)
+			}
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), raised.desc, raised.newDefault, raised.key, raised.oldDefault); err != nil {
+				return fmt.Errorf("refresh setting default %s: %w", raised.key, err)
+			}
 		}
 	}
 

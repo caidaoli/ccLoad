@@ -956,11 +956,9 @@ func TestClassifySSEErrorStatus_ContextLengthExceeded(t *testing.T) {
 	}
 }
 
-// TestHandleSuccessResponse_StreamDiagMsg_NormalEOF 测试正常EOF时不触发诊断
-// 新逻辑：只有当 streamErr != nil 且未检测到流结束标志时才触发诊断
-// 正常EOF（streamErr == nil）不触发诊断，即使没有流结束标志
-func TestHandleSuccessResponse_StreamDiagMsg_NormalEOF(t *testing.T) {
-	// 模拟流式响应，无流结束标志但正常EOF
+// TestHandleSuccessResponse_StreamDiagMsg_AnthropicMissingMessageStop
+// Anthropic 上游干净 EOF 但没有 message_stop：视为断流，必须产生诊断。
+func TestHandleSuccessResponse_StreamDiagMsg_AnthropicMissingMessageStop(t *testing.T) {
 	body := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\n"
 	res, _ := runHandleSuccessResponse(
 		t,
@@ -970,9 +968,8 @@ func TestHandleSuccessResponse_StreamDiagMsg_NormalEOF(t *testing.T) {
 		"anthropic",
 	)
 
-	// 正常EOF不应触发诊断（新逻辑：只有 streamErr != nil 才触发）
-	if res.StreamDiagMsg != "" {
-		t.Errorf("expected empty StreamDiagMsg for normal EOF, got: %s", res.StreamDiagMsg)
+	if res.StreamDiagMsg == "" {
+		t.Fatal("expected StreamDiagMsg for Anthropic stream without message_stop")
 	}
 }
 
@@ -1037,12 +1034,20 @@ func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 			reason:           "codex渠道检测到流结束标志也不应触发诊断",
 		},
 		{
-			name:             "no_error_no_stream_complete",
+			name:             "anthropic_clean_eof_without_message_stop",
 			streamErr:        nil,
 			streamComplete:   false,
 			upstreamProtocol: "anthropic",
+			wantDiag:         true,
+			reason:           "Anthropic 流必以 message_stop 收尾，干净 EOF 缺终止事件是断流",
+		},
+		{
+			name:             "openai_clean_eof_without_done",
+			streamErr:        nil,
+			streamComplete:   false,
+			upstreamProtocol: "openai",
 			wantDiag:         false,
-			reason:           "无错误时不触发诊断（正常EOF情况）",
+			reason:           "OpenAI 兼容上游可合法省略 [DONE]，正常EOF不触发诊断",
 		},
 		{
 			name:             "no_error_with_stream_complete",
@@ -2339,7 +2344,7 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 		headerValueFold(request.Header, "X-Claude-Code-Session-Id") != "" || headerValueFold(request.Header, "x-client-request-id") == "" ||
 		headerValueFold(request.Header, "X-Stainless-OS") != "Linux" ||
 		headerValueFold(request.Header, "X-Stainless-Arch") != "arm64" ||
-		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != "v24.3.0" {
+		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion {
 		t.Fatalf("Anthropic OAuth headers = %v", request.Header)
 	}
 	if got, want := headerValueFold(request.Header, "User-Agent"), "claude-cli/"+anthropicBillingVersion(body)+" (external, cli)"; got != want {
@@ -3183,7 +3188,7 @@ func TestAnthropicMimicBillingOmitsCCH(t *testing.T) {
 		}
 	}
 	if headerValueFold(oauthRequest.Header, "X-Claude-Code-Session-Id") != "" ||
-		headerValueFold(oauthRequest.Header, "X-Stainless-Runtime-Version") != "v24.3.0" ||
+		headerValueFold(oauthRequest.Header, "X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion ||
 		!strings.Contains(headerValueFold(oauthRequest.Header, "Anthropic-Beta"), "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("OAuth mimic headers = %v", oauthRequest.Header)
 	}
@@ -3490,37 +3495,106 @@ func TestAnthropicNativeClaudeCodeDetection(t *testing.T) {
 func TestAnthropicNativeOAuthHeadersRecoverMissingClientIdentity(t *testing.T) {
 	t.Parallel()
 	const body = `{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.746; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"hi"}]}`
+	const cliUserAgent = "claude-cli/" + anthropicCLIVersion + " (external, cli)"
+	relayHeaders := func(extra ...string) http.Header {
+		headers := http.Header{"User-Agent": {"Go-http-client/1.1"}, "Anthropic-Beta": {"claude-code-20250219"}}
+		for i := 0; i+1 < len(extra); i += 2 {
+			headers.Set(extra[i], extra[i+1])
+		}
+		return headers
+	}
 	for _, testCase := range []struct {
-		name          string
-		headers       http.Header
-		wantBeta      string
-		wantUserAgent string
+		name        string
+		body        string
+		headers     http.Header
+		wantBeta    string
+		wantHeaders map[string]string
 	}{
 		{
-			name:          "direct without X-App or beta",
-			headers:       http.Header{"User-Agent": {"claude-cli/2.1.220 (external, future-desktop)"}},
-			wantBeta:      "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
-			wantUserAgent: "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+			name:     "direct without X-App or beta",
+			headers:  http.Header{"User-Agent": {"claude-cli/2.1.220 (external, future-desktop)"}},
+			wantBeta: "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
 		},
 		{
-			name:          "relay replaced UA",
-			headers:       http.Header{"User-Agent": {"Go-http-client/1.1"}, "Anthropic-Beta": {"claude-code-20250219"}},
-			wantBeta:      "claude-code-20250219,oauth-2025-04-20",
-			wantUserAgent: "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+			// 调用方按 API Key 上游声明 beta：补回 OAuth 凭证自带的 oauth 与 1h 缓存 beta。
+			name:     "relay replaced UA",
+			headers:  relayHeaders(),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20,extended-cache-ttl-2025-04-11",
+		},
+		{
+			name:     "caller already on OAuth keeps its betas",
+			headers:  http.Header{"User-Agent": {"Go-http-client/1.1"}, "Anthropic-Beta": {"claude-code-20250219,oauth-2025-04-20"}},
+			wantBeta: "claude-code-20250219,oauth-2025-04-20",
+		},
+		{
+			name:     "subagent header without 1h ttl",
+			headers:  relayHeaders("X-Claude-Code-Agent-Id", "agent-1"),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20",
+			wantHeaders: map[string]string{
+				"X-Claude-Code-Agent-Id": "agent-1",
+			},
+		},
+		{
+			name:     "subagent with 1h cache ttl",
+			body:     strings.Replace(body, `"content":"hi"`, `"content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]`, 1),
+			headers:  relayHeaders("X-Claude-Code-Parent-Agent-Id", "parent-1"),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20,extended-cache-ttl-2025-04-11",
+		},
+		{
+			name:     "subagent marker in metadata",
+			body:     strings.Replace(body, `\"session_id\":\"session\"`, `\"session_id\":\"session\",\"parent_session_id\":\"parent\"`, 1),
+			headers:  relayHeaders(),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20",
+		},
+		{
+			name:     "max_tokens probe",
+			body:     strings.Replace(body, `"model":"claude-sonnet-4-6",`, `"model":"claude-sonnet-4-6","max_tokens":1,`, 1),
+			headers:  relayHeaders(),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20",
+		},
+		{
+			name:     "title helper",
+			body:     strings.Replace(body, `"model":"claude-sonnet-4-6",`, `"model":"claude-sonnet-4-6","output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}}}}},`, 1),
+			headers:  relayHeaders(),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20",
+		},
+		{
+			name: "claude code identity headers pass through",
+			headers: relayHeaders(
+				"X-Claude-Code-Request-Category", "compact",
+				"X-Claude-Remote-Container-Id", "container-1",
+				"X-Client-App", "vscode",
+				"X-Anthropic-Additional-Protection", "true",
+				"X-Client-Request-Id", "caller-request-id",
+				"X-Unrelated", "drop-me",
+			),
+			wantBeta: "claude-code-20250219,oauth-2025-04-20,extended-cache-ttl-2025-04-11",
+			wantHeaders: map[string]string{
+				"X-Claude-Code-Request-Category":    "compact",
+				"X-Claude-Remote-Container-Id":      "container-1",
+				"X-Client-App":                      "vscode",
+				"X-Anthropic-Additional-Protection": "true",
+				"X-Client-Request-Id":               "caller-request-id",
+				"X-Unrelated":                       "",
+			},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), strings.NewReader(body))
+			requestBody := body
+			if testCase.body != "" {
+				requestBody = testCase.body
+			}
+			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), strings.NewReader(requestBody))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !isNativeAnthropicClaudeCodeRequest([]byte(body), testCase.headers) {
+			if !isNativeAnthropicClaudeCodeRequest([]byte(requestBody), testCase.headers) {
 				t.Fatal("caller wire was not recognized")
 			}
 			injectAnthropicOAuthHeadersWithFingerprint(req, &model.Config{AuthType: model.AuthTypeAnthropicOAuth},
-				"oauth-access", []byte(body), true, nil, testCase.headers)
-			if got := headerValueFold(req.Header, "User-Agent"); got != testCase.wantUserAgent {
-				t.Fatalf("User-Agent=%q, want %q", got, testCase.wantUserAgent)
+				"oauth-access", []byte(requestBody), true, nil, testCase.headers)
+			if got := headerValueFold(req.Header, "User-Agent"); got != cliUserAgent {
+				t.Fatalf("User-Agent=%q, want %q", got, cliUserAgent)
 			}
 			if got := headerValueFold(req.Header, "X-App"); got != "cli" {
 				t.Fatalf("X-App=%q, want cli", got)
@@ -3530,6 +3604,18 @@ func TestAnthropicNativeOAuthHeadersRecoverMissingClientIdentity(t *testing.T) {
 			}
 			if got := headerValueFold(req.Header, "Authorization"); got != "Bearer oauth-access" {
 				t.Fatalf("Authorization=%q", got)
+			}
+			// 第一方 base URL 上 Claude Code 自己会生成请求 ID 并保持长连接。
+			if got := headerValueFold(req.Header, "X-Client-Request-Id"); got == "" {
+				t.Fatal("X-Client-Request-Id missing on first-party upstream")
+			}
+			if got := headerValueFold(req.Header, "Connection"); got != "keep-alive" {
+				t.Fatalf("Connection=%q, want keep-alive", got)
+			}
+			for name, want := range testCase.wantHeaders {
+				if got := headerValueFold(req.Header, name); got != want {
+					t.Fatalf("%s=%q, want %q", name, got, want)
+				}
 			}
 		})
 	}

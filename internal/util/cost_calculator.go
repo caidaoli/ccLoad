@@ -328,14 +328,14 @@ func calculateCostBreakdownDetailed(model string, override *ModelPricing, inputT
 
 	breakdown := StandardCostBreakdown{}
 
-	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo / MiniMax-M3 系列）
-	// 默认仅按非缓存输入判断；仅 MiMo 这类「input + cache_read 总量分档」的模型
-	// （CacheReadCountsTowardTier=true）才把缓存读计入分档。Gemini 长上下文只看
-	// 非缓存 prompt size，缓存读不得推高分档（否则 256K 缓存读会误触高档 input 价）。
+	// 分段定价逻辑（当前用于 Claude / Gemini / Qwen / MiMo / MiniMax-M3 系列）
+	// 默认仅按非缓存输入判断；按完整 prompt 分档的模型（CacheReadCountsTowardTier=true，
+	// 如 Claude 长上下文、OpenAI context tier、MiMo）把缓存读与缓存写一并计入。
+	// Gemini 长上下文只看非缓存 prompt size，缓存读不得推高分档（否则 256K 缓存读会误触高档 input 价）。
 	tierThreshold := getTierThresholdForModel(model)
 	tierInputTokens := inputTokens
 	if pricing.CacheReadCountsTowardTier {
-		tierInputTokens += cacheReadTokens
+		tierInputTokens += cacheReadTokens + cache5mTokens + cache1hTokens
 	}
 
 	// 选择适用的价格
@@ -401,6 +401,18 @@ func calculateCostBreakdownDetailed(model string, override *ModelPricing, inputT
 	}
 
 	return breakdown
+}
+
+// anthropicWebSearchCostPerRequest 是 Anthropic web_search 服务端工具的官方按次价
+// （$10 / 1K 次，与模型无关），不含搜索结果进入上下文后照常计费的 token。
+const anthropicWebSearchCostPerRequest = 10.0 / 1000
+
+// CalculateWebSearchToolCost 计算 Anthropic usage.server_tool_use.web_search_requests 的费用。
+func CalculateWebSearchToolCost(requests int) float64 {
+	if requests <= 0 {
+		return 0
+	}
+	return float64(requests) * anthropicWebSearchCostPerRequest
 }
 
 // CalculateImageGenerationToolCost 计算 Responses image_generation 工具费用。

@@ -639,6 +639,22 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	}
 }
 
+// Claude 长上下文按 input + cache_read + cache_creation 判定 200K：
+// Claude Code 的大上下文几乎全是缓存读，只看非缓存 input 会让整单漏计高档价。
+func TestCalculateCost_ClaudeLongContextCountsPromptCache(t *testing.T) {
+	high := CalculateCostDetailed("claude-sonnet-4-5-20250929", 1_000, 1_000, 150_000, 40_000, 20_000)
+	wantHigh := (1_000*6.00 + 1_000*22.50 + 150_000*6.00*0.1 + 40_000*6.00*1.25 + 20_000*6.00*2) / 1_000_000
+	if !floatEquals(high, wantHigh, 0.000001) {
+		t.Errorf("sonnet-4-5 211K prompt = %.6f, 期望高档 %.6f", high, wantHigh)
+	}
+
+	low := CalculateCostDetailed("claude-sonnet-4-5-20250929", 1_000, 1_000, 150_000, 49_000, 0)
+	wantLow := (1_000*3.00 + 1_000*15.00 + 150_000*3.00*0.1 + 49_000*3.00*1.25) / 1_000_000
+	if !floatEquals(low, wantLow, 0.000001) {
+		t.Errorf("sonnet-4-5 200K prompt = %.6f, 期望低档 %.6f", low, wantLow)
+	}
+}
+
 // P1-2 回归：Gemini 长上下文分档只看非缓存 prompt size，缓存读 token 不得推高分档。
 // 修复前 cacheRead 被无条件加进 tierInputTokens（条件 CacheReadPriceHigh>0 过宽），
 // 256K 纯缓存读会误触 200K 高档，把 0.20 低档缓存价算成 0.40 高档价。
