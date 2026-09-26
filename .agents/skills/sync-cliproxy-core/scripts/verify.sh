@@ -76,6 +76,9 @@ fail() {
   failures=$((failures + 1))
 }
 
+# Per-item lookups test membership on newline-delimited sets instead of forking grep/awk.
+in_set() { [[ "$1" == *$'\n'"$2"$'\n'* ]]; }
+
 audit_provider_imports() {
   local provider="$1"
   local scope="$2"
@@ -197,6 +200,31 @@ manifest_providers="$(awk -F '|' '$1 == "provider" { print $2 }' "$provider_mani
 if [[ -z "$manifest_providers" ]]; then
   fail "provider manifest contains no providers"
 fi
+provider_set=$'\n'"$manifest_providers"$'\n'
+
+# One pass feeds every per-file and per-symbol lookup below; rows may appear in any order.
+mapped_provider_files=$'\n'
+mapped_provider_tests=$'\n'
+mapped_local_files=$'\n'
+provider_skipped_tests=$'\n'
+provider_exclude_owners=()
+provider_exclude_globs=()
+while IFS='|' read -r kind provider field1 field2 extra; do
+  case "$kind" in
+    file)
+      mapped_provider_files+="$provider|$field2"$'\n'
+      mapped_local_files+="$extra"$'\n'
+      [[ "$field1" != "test" ]] || mapped_provider_tests+="$provider|$field2"$'\n'
+      ;;
+    exclude)
+      provider_exclude_owners+=("$provider")
+      provider_exclude_globs+=("$field1")
+      ;;
+    skip-test)
+      provider_skipped_tests+="$provider|$field1|$field2"$'\n'
+      ;;
+  esac
+done < "$provider_manifest"
 
 duplicate_manifest_keys="$(awk -F '|' '
   $1 == "provider" { key = $1 FS $2 }
@@ -233,18 +261,37 @@ while IFS='|' read -r kind provider field1 field2 extra; do
       ;;
     skip-test)
       [[ -n "$provider" && "$field2" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && -n "$extra" && "$extra" != *"|"* ]] || fail "invalid skip-test manifest row for provider: $provider"
-      awk -F '|' -v provider="$provider" -v upstream_file="$field1" '$1 == "file" && $2 == provider && $3 == "test" && $4 == upstream_file { found = 1 } END { exit !found }' "$provider_manifest" || fail "skip-test row references an unmapped provider test: $provider ($field1)"
+      in_set "$mapped_provider_tests" "$provider|$field1" || fail "skip-test row references an unmapped provider test: $provider ($field1)"
       ;;
     *)
       fail "unknown provider manifest row kind: $kind"
       ;;
   esac
-  if [[ "$kind" != "provider" ]] && ! printf '%s\n' "$manifest_providers" | grep -Fxq -- "$provider"; then
+  if [[ "$kind" != "provider" ]] && ! in_set "$provider_set" "$provider"; then
     fail "provider manifest row references an undeclared provider: $provider"
   fi
 done < "$provider_manifest"
 
+# Parses test declarations without `go test -list`, which relinks and runs the test binary on every call.
+test_lister_dir="$(mktemp -d "${TMPDIR:-/tmp}/list-go-tests.XXXXXX")"
+trap 'rm -rf -- "$test_lister_dir"' EXIT
+provider_test_lister_bin="$test_lister_dir/list_go_tests"
+if ! go build -o "$provider_test_lister_bin" "$provider_test_lister"; then
+  fail "cannot build the Go test symbol lister: $provider_test_lister"
+  provider_test_lister_bin=""
+fi
+
+# These dollar variables belong to Go templates, not the shell.
+# shellcheck disable=SC2016
+build_files_template='{{- $dir := .Dir -}}{{range .GoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}'
+# shellcheck disable=SC2016
+test_build_files_template='{{- $dir := .Dir -}}{{range .TestGoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}{{range .XTestGoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}'
+
 provider_count=0
+# Single-entry caches: rows sharing a wiring root, contract package or contract file reuse one load.
+wiring_root=""
+contract_package=""
+contract_file=""
 while IFS= read -r provider; do
   [[ -n "$provider" ]] || continue
   provider_root="$(awk -F '|' -v provider="$provider" '$1 == "provider" && $2 == provider { print $4 }' "$provider_manifest")"
@@ -344,9 +391,7 @@ while IFS= read -r provider; do
   ((contract_count > 0)) || fail "provider manifest has no public behavior tests: $provider"
 
   while IFS= read -r local_file; do
-    if ! awk -F '|' -v local_file="$local_file" '$1 == "file" && $5 == local_file { found = 1 } END { exit !found }' "$provider_manifest"; then
-      fail "provider Go file is absent from manifest: $local_file"
-    fi
+    in_set "$mapped_local_files" "$local_file" || fail "provider Go file is absent from manifest: $local_file"
   done < <(find "$provider_root" -type f -name '*.go' | sort)
 
   provider_package_pattern="./$provider_root/..."
@@ -360,23 +405,17 @@ while IFS= read -r provider; do
   else
     fail "cannot load provider test packages: $provider"
   fi
-  # These dollar variables belong to Go templates, not the shell.
-  # shellcheck disable=SC2016
-  provider_build_files_template='{{- $dir := .Dir -}}{{range .GoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}'
-  # shellcheck disable=SC2016
-  provider_test_build_files_template='{{- $dir := .Dir -}}{{range .TestGoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}{{range .XTestGoFiles}}{{printf "%s/%s\n" $dir .}}{{end}}'
-  if provider_build_files="$(go list -tags sonic -f "$provider_build_files_template" "$provider_package_pattern")" &&
-     provider_test_build_files="$(go list -tags sonic -f "$provider_test_build_files_template" "$provider_package_pattern")"; then
+  if provider_build_files="$(go list -tags sonic -f "$build_files_template" "$provider_package_pattern")" &&
+     provider_test_build_files="$(go list -tags sonic -f "$test_build_files_template" "$provider_package_pattern")"; then
+    provider_build_files=$'\n'"$provider_build_files"$'\n'
+    provider_test_build_files=$'\n'"$provider_test_build_files"$'\n'
     while IFS='|' read -r _ _ role _ local_file; do
-      expected_build_file="$go_module_root/$local_file"
       if [[ "$role" == "source" ]]; then
         participating_files="$provider_build_files"
       else
         participating_files="$provider_test_build_files"
       fi
-      if ! printf '%s\n' "$participating_files" | grep -Fxq -- "$expected_build_file"; then
-        fail "mapped provider file is ignored by the active Go build: $local_file"
-      fi
+      in_set "$participating_files" "$go_module_root/$local_file" || fail "mapped provider file is ignored by the active Go build: $local_file"
     done < <(awk -F '|' -v provider="$provider" '$1 == "file" && $2 == provider { print }' "$provider_manifest")
   else
     fail "cannot enumerate active provider build files: $provider"
@@ -401,30 +440,51 @@ while IFS= read -r provider; do
       fail "provider wiring search root does not exist: $search_root"
       continue
     fi
-    if ! production_dependencies="$(go list -tags sonic -deps -f '{{.ImportPath}}' "./$search_root/...")"; then
-      fail "cannot load production wiring graph: $search_root"
-      continue
+    if [[ "$search_root" != "$wiring_root" ]]; then
+      if ! wiring_dependencies="$(go list -tags sonic -deps -f '{{.ImportPath}}' "./$search_root/...")"; then
+        wiring_root=""
+        fail "cannot load production wiring graph: $search_root"
+        continue
+      fi
+      wiring_dependencies=$'\n'"$wiring_dependencies"$'\n'
+      wiring_root="$search_root"
     fi
-    if ! printf '%s\n' "$production_dependencies" | grep -Fxq -- "$import_path"; then
-      fail "provider adapter is not connected to production path: $provider ($import_path)"
-    fi
+    in_set "$wiring_dependencies" "$import_path" || fail "provider adapter is not connected to production path: $provider ($import_path)"
   done < <(awk -F '|' -v provider="$provider" '$1 == "wiring" && $2 == provider { print }' "$provider_manifest")
 
+  # A contract test must be declared in its named file and that file must join the active
+  # test build; --tests then compiles the package and runs each contract.
   while IFS='|' read -r _ _ test_file test_symbol; do
     if ! is_clean_relative_path "$test_file"; then
       fail "provider contract test path is not a clean relative path: $test_file"
       continue
     fi
     require_file "$test_file"
-    [[ -f "$test_file" ]] || continue
+    [[ -f "$test_file" && -n "$provider_test_lister_bin" ]] || continue
     test_package="./$(dirname "$test_file")"
-    if ! listed_tests="$(go test -tags sonic "$test_package" -list "^${test_symbol}$")"; then
-      fail "cannot discover provider contract tests: $test_package"
+    if [[ "$test_package" != "$contract_package" ]]; then
+      if ! contract_build_files="$(go list -tags sonic -f "$test_build_files_template" "$test_package")"; then
+        contract_package=""
+        fail "cannot load provider contract test package: $test_package"
+        continue
+      fi
+      contract_build_files=$'\n'"$contract_build_files"$'\n'
+      contract_package="$test_package"
+    fi
+    if ! in_set "$contract_build_files" "$go_module_root/$test_file"; then
+      fail "provider contract test file is ignored by the active Go build: $test_file"
       continue
     fi
-    if ! printf '%s\n' "$listed_tests" | grep -Fxq -- "$test_symbol"; then
-      fail "missing provider contract test: $test_symbol in $test_file"
+    if [[ "$test_file" != "$contract_file" ]]; then
+      if ! contract_symbols="$("$provider_test_lister_bin" -file "$test_file")"; then
+        contract_file=""
+        fail "cannot parse provider contract test: $test_file"
+        continue
+      fi
+      contract_symbols=$'\n'"$contract_symbols"$'\n'
+      contract_file="$test_file"
     fi
+    in_set "$contract_symbols" "$test_symbol" || fail "missing provider contract test: $test_symbol in $test_file"
   done < <(awk -F '|' -v provider="$provider" '$1 == "contract" && $2 == provider { print }' "$provider_manifest")
 
   if ! grep -Fq -- "- Local destination: \`$provider_root\`" "$upstream_doc"; then
@@ -436,9 +496,7 @@ if [[ -d "$providers_snapshot" && ! -L "$providers_snapshot" ]]; then
   for provider_dir in "$providers_snapshot"/*; do
     [[ -e "$provider_dir" ]] || continue
     provider="$(basename "$provider_dir")"
-    if ! printf '%s\n' "$manifest_providers" | grep -Fxq -- "$provider"; then
-      fail "provider adapter is absent from manifest: $provider_dir"
-    fi
+    in_set "$provider_set" "$provider" || fail "provider adapter is absent from manifest: $provider_dir"
   done
 
 fi
@@ -546,7 +604,7 @@ if [[ -n "$upstream_repo" ]]; then
     fail "cannot verify upstream checkout without a recorded commit"
   elif ! git -C "$upstream_repo" cat-file -e "${synchronized_commit}^{commit}" 2>/dev/null; then
     fail "recorded commit $synchronized_commit is absent from $upstream_repo"
-  else
+  elif [[ -n "$provider_test_lister_bin" ]]; then
     core_scope_args=(
       --upstream-repo "$upstream_repo"
       --target-commit "$synchronized_commit"
@@ -565,52 +623,56 @@ if [[ -n "$upstream_repo" ]]; then
     while IFS= read -r provider; do
       [[ -n "$provider" ]] || continue
       provider_root="$(awk -F '|' -v provider="$provider" '$1 == "provider" && $2 == provider { print $4 }' "$provider_manifest")"
+      provider_upstream_root="$(awk -F '|' -v provider="$provider" '$1 == "provider" && $2 == provider { print $3 }' "$provider_manifest")"
       [[ -d "$provider_root" ]] || continue
-      while IFS='|' read -r _ _ _ upstream_file _; do
-        if ! git -C "$upstream_repo" cat-file -e "${synchronized_commit}:${upstream_file}" 2>/dev/null; then
-          fail "recorded commit lacks mapped provider source: $provider ($upstream_file)"
-        fi
-      done < <(awk -F '|' -v provider="$provider" '$1 == "file" && $2 == provider { print }' "$provider_manifest")
+      # batch-check answers input lines in order and prints "<object> missing" for absent paths.
+      if ! provider_objects="$(awk -F '|' -v provider="$provider" -v commit="$synchronized_commit" '$1 == "file" && $2 == provider { print commit ":" $4 }' "$provider_manifest" |
+        git -C "$upstream_repo" cat-file --batch-check='%(objectname)')"; then
+        fail "cannot inspect mapped provider sources at the recorded commit: $provider"
+      fi
+      while IFS= read -r provider_object; do
+        [[ "$provider_object" == *" missing" ]] || continue
+        provider_object="${provider_object% missing}"
+        fail "recorded commit lacks mapped provider source: $provider (${provider_object#"$synchronized_commit":})"
+      done <<< "$provider_objects"
 
       while IFS='|' read -r _ _ _ upstream_test_file local_test_file; do
-        if ! upstream_test_symbols="$(git -C "$upstream_repo" show "${synchronized_commit}:${upstream_test_file}" | go run "$provider_test_lister" -stdin-name "$upstream_test_file")"; then
+        if ! upstream_test_symbols="$(git -C "$upstream_repo" show "${synchronized_commit}:${upstream_test_file}" | "$provider_test_lister_bin" -stdin-name "$upstream_test_file")"; then
           fail "cannot parse mapped upstream provider test: $provider ($upstream_test_file)"
           continue
         fi
-        if ! local_test_symbols="$(go run "$provider_test_lister" -file "$local_test_file")"; then
+        if ! local_test_symbols="$("$provider_test_lister_bin" -file "$local_test_file")"; then
           fail "cannot parse mapped local provider test: $provider ($local_test_file)"
           continue
         fi
+        local_test_symbols=$'\n'"$local_test_symbols"$'\n'
         while IFS= read -r test_symbol; do
           [[ -n "$test_symbol" ]] || continue
-          if printf '%s\n' "$local_test_symbols" | grep -Fxq -- "$test_symbol"; then
-            continue
-          fi
-          if awk -F '|' -v provider="$provider" -v upstream_file="$upstream_test_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $2 == provider && $3 == upstream_file && $4 == test_symbol { found = 1 } END { exit !found }' "$provider_manifest"; then
-            continue
-          fi
+          in_set "$local_test_symbols" "$test_symbol" && continue
+          in_set "$provider_skipped_tests" "$provider|$upstream_test_file|$test_symbol" && continue
           fail "mapped provider test lost an upstream test symbol: $provider ($upstream_test_file: $test_symbol)"
         done <<< "$upstream_test_symbols"
-        while IFS='|' read -r _ _ _ test_symbol _; do
-          if ! printf '%s\n' "$upstream_test_symbols" | grep -Fxq -- "$test_symbol" || printf '%s\n' "$local_test_symbols" | grep -Fxq -- "$test_symbol"; then
+        upstream_test_symbols=$'\n'"$upstream_test_symbols"$'\n'
+        while IFS='|' read -r skip_provider skip_file test_symbol; do
+          [[ "$skip_provider" == "$provider" && "$skip_file" == "$upstream_test_file" ]] || continue
+          if ! in_set "$upstream_test_symbols" "$test_symbol" || in_set "$local_test_symbols" "$test_symbol"; then
             fail "stale provider skip-test row: $provider ($upstream_test_file: $test_symbol)"
           fi
-        done < <(awk -F '|' -v provider="$provider" -v upstream_file="$upstream_test_file" '$1 == "skip-test" && $2 == provider && $3 == upstream_file { print }' "$provider_manifest")
+        done <<< "$provider_skipped_tests"
       done < <(awk -F '|' -v provider="$provider" '$1 == "file" && $2 == provider && $3 == "test" { print }' "$provider_manifest")
 
       while IFS= read -r upstream_file; do
-        if awk -F '|' -v provider="$provider" -v upstream_file="$upstream_file" '$1 == "file" && $2 == provider && $4 == upstream_file { found = 1 } END { exit !found }' "$provider_manifest"; then
-          continue
-        fi
+        in_set "$mapped_provider_files" "$provider|$upstream_file" && continue
         excluded=0
-        while IFS='|' read -r _ _ exclude_pattern _ _; do
+        for ((exclude_index = 0; exclude_index < ${#provider_exclude_globs[@]}; exclude_index++)); do
+          [[ "${provider_exclude_owners[exclude_index]}" == "$provider" ]] || continue
           # The manifest field is deliberately a glob, not a literal path.
           # shellcheck disable=SC2053
-          if [[ "$upstream_file" == $exclude_pattern ]]; then
+          if [[ "$upstream_file" == ${provider_exclude_globs[exclude_index]} ]]; then
             excluded=1
             break
           fi
-        done < <(awk -F '|' -v provider="$provider" '$1 == "exclude" && $2 == provider { print }' "$provider_manifest")
+        done
         if ((excluded == 0)); then
           fail "recorded commit contains an unmapped provider Go file: $provider ($upstream_file)"
         fi
@@ -631,14 +693,25 @@ fi
 printf 'Snapshot audit passed: commit=%s tests=%s providers=%s\n' "$synchronized_commit" "$test_count" "$provider_count"
 
 if ((run_tests == 1)); then
-  go test -tags sonic ./internal/protocol/cliproxy/...
-  go test -tags sonic ./internal/protocol
+  go test -tags sonic ./internal/protocol/cliproxy/... ./internal/protocol
+  # Each go test invocation relinks its test binary, so consecutive contracts in one package share a run.
+  contract_package=""
+  contract_pattern=""
   while IFS= read -r provider; do
     [[ -n "$provider" ]] || continue
     provider_root="$(awk -F '|' -v provider="$provider" '$1 == "provider" && $2 == provider { print $4 }' "$provider_manifest")"
     [[ -d "$provider_root" && ! -L "$provider_root" ]] || continue
     while IFS='|' read -r _ _ test_file test_symbol; do
-      go test -tags sonic "./$(dirname "$test_file")" -run "^${test_symbol}$" -count=1
+      test_package="./$(dirname "$test_file")"
+      if [[ -n "$contract_package" && "$test_package" != "$contract_package" ]]; then
+        go test -tags sonic "$contract_package" -run "^(${contract_pattern})$"
+        contract_pattern=""
+      fi
+      contract_package="$test_package"
+      contract_pattern+="${contract_pattern:+|}$test_symbol"
     done < <(awk -F '|' -v provider="$provider" '$1 == "contract" && $2 == provider { print }' "$provider_manifest")
   done <<< "$manifest_providers"
+  if [[ -n "$contract_package" ]]; then
+    go test -tags sonic "$contract_package" -run "^(${contract_pattern})$"
+  fi
 fi

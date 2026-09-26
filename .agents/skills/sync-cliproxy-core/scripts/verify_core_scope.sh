@@ -7,10 +7,13 @@ base_commit=""
 core_manifest=""
 provider_manifest=""
 run_self_test=0
+run_refresh=0
 
 usage() {
-  printf 'Usage: %s --upstream-repo PATH --target-commit SHA --core-manifest PATH --provider-manifest PATH [--base-commit SHA]\n' "$0"
+  printf 'Usage: %s --upstream-repo PATH --target-commit SHA [--base-commit SHA] [--core-manifest PATH] [--provider-manifest PATH]\n' "$0"
+  printf '       %s --refresh-manifest --upstream-repo PATH --base-commit SHA --target-commit SHA [--core-manifest PATH] [--provider-manifest PATH]\n' "$0"
   printf '       %s --self-test\n' "$0"
+  printf 'Manifests default to the skill references; run from the repository root.\n'
 }
 
 while (($# > 0)); do
@@ -44,6 +47,10 @@ while (($# > 0)); do
       run_self_test=1
       shift
       ;;
+    --refresh-manifest)
+      run_refresh=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -58,6 +65,9 @@ done
 
 script_path="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 test_lister="$(dirname "$script_path")/list_go_tests.go"
+test_lister_bin=""
+work_dir=""
+references_dir="$(dirname "$(dirname "$script_path")")/references"
 
 is_clean_relative_path() {
   case "$1" in
@@ -84,111 +94,163 @@ manifest_row_count() {
   awk -F '|' -v kind="$kind" '$1 == kind { count++ } END { print count + 0 }' "$core_manifest"
 }
 
-provider_classification() {
-  local upstream_file="$1"
-  local exclude_pattern
+file_role() {
+  if [[ "$1" == *_test.go ]]; then
+    printf 'test\n'
+  else
+    printf 'source\n'
+  fi
+}
 
-  if awk -F '|' -v upstream_file="$upstream_file" '$1 == "file" && $4 == upstream_file { found = 1 } END { exit !found }' "$provider_manifest"; then
-    printf 'provider\n'
+manifest_scope_paths() {
+  { awk -F '|' '$1 == "root" { print $2 }' "$core_manifest"; awk -F '|' '$1 == "file" || $1 == "delete" { print $3 }' "$core_manifest"; } | sort -u
+}
+
+delta_paths() {
+  local scope_path
+  local -a scope_paths=()
+
+  while IFS= read -r scope_path; do
+    scope_paths+=("$scope_path")
+  done < <(manifest_scope_paths)
+  ((${#scope_paths[@]} > 0)) || die "core manifest defines no upstream scope"
+  git -C "$upstream_repo" diff --name-only --diff-filter=ACDMRTUXB "$base_commit" "$target_commit" -- "${scope_paths[@]}"
+}
+
+ensure_work_dir() {
+  [[ -z "$work_dir" ]] || return 0
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/verify-core-scope.XXXXXX")"
+  trap 'rm -rf -- "$work_dir"' EXIT
+}
+
+build_test_lister() {
+  [[ -f "$test_lister" ]] || die "missing Go test symbol lister: $test_lister"
+  ensure_work_dir
+  go build -o "$work_dir/list_go_tests" "$test_lister" || die "cannot build Go test symbol lister: $test_lister"
+  test_lister_bin="$work_dir/list_go_tests"
+}
+
+# Every upstream file is classified, so lookups must not fork: load_manifests reads both
+# manifests once into small arrays (scanned linearly) and newline-delimited sets. Only
+# test membership on the sets; bash 3.2 prefix removal on long strings is quadratic.
+load_manifests() {
+  local kind f2 f3 f4 f5
+
+  root_ups=()
+  root_locals=()
+  special_ups=()
+  special_locals=()
+  core_excludes=()
+  provider_ups=()
+  provider_locals=()
+  provider_excludes=()
+  deleted_files=$'\n'
+  reviewed_files=$'\n'
+  skipped_tests=$'\n'
+  # audit_target_tree adds the local file of every target upstream core source.
+  accounted_local_files=$'\n'
+  while IFS='|' read -r kind f2 f3 f4 _ || [[ -n "$kind" ]]; do
+    case "$kind" in
+      root)
+        root_ups+=("$f2")
+        root_locals+=("$f3")
+        ;;
+      file)
+        special_ups+=("$f3")
+        special_locals+=("$f4")
+        accounted_local_files+="$f4"$'\n'
+        ;;
+      local)
+        accounted_local_files+="$f3"$'\n'
+        ;;
+      delete)
+        deleted_files+="$f3"$'\n'
+        ;;
+      exclude)
+        core_excludes+=("$f2")
+        ;;
+      review)
+        reviewed_files+="$f3"$'\n'
+        ;;
+      skip-test)
+        skipped_tests+="$f2|$f3"$'\n'
+        ;;
+    esac
+  done < "$core_manifest"
+  while IFS='|' read -r kind _ f3 f4 f5 _ || [[ -n "$kind" ]]; do
+    case "$kind" in
+      file)
+        provider_ups+=("$f4")
+        provider_locals+=("$f5")
+        ;;
+      exclude)
+        provider_excludes+=("$f3")
+        ;;
+      skip-test)
+        # Provider skips persist in the provider manifest because verify.sh audits every provider test symbol.
+        skipped_tests+="$f3|$f4"$'\n'
+        ;;
+    esac
+  done < "$provider_manifest"
+}
+
+in_set() {
+  [[ "$1" == *$'\n'"$2"$'\n'* ]]
+}
+
+# Sets classification to core, core-deleted, core-excluded, provider or provider-excluded
+# (empty when unclassified) and mapped_local to the synchronized file of core/provider sources.
+classify_upstream_file() {
+  local upstream_file="$1"
+  local i relative
+
+  classification=""
+  mapped_local=""
+  if in_set "$deleted_files" "$upstream_file"; then
+    classification="core-deleted"
     return 0
   fi
-  while IFS='|' read -r _ _ exclude_pattern _ _; do
-    # Manifest exclusions are deliberate globs.
-    # shellcheck disable=SC2053
-    if [[ "$upstream_file" == $exclude_pattern ]]; then
-      printf 'provider-excluded\n'
+  for ((i = 0; i < ${#provider_ups[@]}; i++)); do
+    if [[ "${provider_ups[i]}" == "$upstream_file" ]]; then
+      classification="provider"
+      mapped_local="${provider_locals[i]}"
       return 0
     fi
-  done < <(awk -F '|' '$1 == "exclude" { print }' "$provider_manifest")
-  return 1
-}
-
-special_local_file() {
-  local upstream_file="$1"
-  awk -F '|' -v upstream_file="$upstream_file" '$1 == "file" && $3 == upstream_file { print $4; exit }' "$core_manifest"
-}
-
-provider_local_file() {
-  local upstream_file="$1"
-  awk -F '|' -v upstream_file="$upstream_file" '$1 == "file" && $4 == upstream_file { print $5; exit }' "$provider_manifest"
-}
-
-direct_local_file() {
-  local upstream_file="$1"
-  local upstream_root local_root relative local_file
-
-  while IFS='|' read -r _ upstream_root local_root; do
+  done
+  for ((i = 0; i < ${#provider_excludes[@]}; i++)); do
+    # Manifest exclusions are deliberate globs.
+    # shellcheck disable=SC2053
+    if [[ "$upstream_file" == ${provider_excludes[i]} ]]; then
+      classification="provider-excluded"
+      return 0
+    fi
+  done
+  for ((i = 0; i < ${#special_ups[@]}; i++)); do
+    if [[ "${special_ups[i]}" == "$upstream_file" ]]; then
+      classification="core"
+      mapped_local="${special_locals[i]}"
+      return 0
+    fi
+  done
+  for ((i = 0; i < ${#root_ups[@]}; i++)); do
     case "$upstream_file" in
-      "$upstream_root"/*)
-        relative="${upstream_file#"$upstream_root"/}"
-        local_file="$local_root/$relative"
-        if [[ -f "$local_file" ]]; then
-          printf '%s\n' "$local_file"
+      "${root_ups[i]}"/*)
+        relative="${upstream_file#"${root_ups[i]}"/}"
+        if [[ -f "${root_locals[i]}/$relative" ]]; then
+          classification="core"
+          mapped_local="${root_locals[i]}/$relative"
           return 0
         fi
         ;;
     esac
-  done < <(awk -F '|' '$1 == "root" { print }' "$core_manifest")
-  return 1
-}
-
-core_exclusion() {
-  local upstream_file="$1"
-  local exclude_pattern
-
-  while IFS='|' read -r _ exclude_pattern _; do
-    # Manifest exclusions are deliberate globs.
+  done
+  for ((i = 0; i < ${#core_excludes[@]}; i++)); do
     # shellcheck disable=SC2053
-    if [[ "$upstream_file" == $exclude_pattern ]]; then
+    if [[ "$upstream_file" == ${core_excludes[i]} ]]; then
+      classification="core-excluded"
       return 0
     fi
-  done < <(awk -F '|' '$1 == "exclude" { print }' "$core_manifest")
-  return 1
-}
-
-classify_upstream_file() {
-  local upstream_file="$1"
-  local classification local_file
-
-  if awk -F '|' -v upstream_file="$upstream_file" '$1 == "delete" && $3 == upstream_file { found = 1 } END { exit !found }' "$core_manifest"; then
-    printf 'core-deleted\n'
-    return 0
-  fi
-  if classification="$(provider_classification "$upstream_file")"; then
-    printf '%s\n' "$classification"
-    return 0
-  fi
-  local_file="$(special_local_file "$upstream_file")"
-  if [[ -n "$local_file" ]]; then
-    printf 'core\n'
-    return 0
-  fi
-  if local_file="$(direct_local_file "$upstream_file")"; then
-    printf 'core\n'
-    return 0
-  fi
-  if core_exclusion "$upstream_file"; then
-    printf 'core-excluded\n'
-    return 0
-  fi
-  return 1
-}
-
-local_file_for_upstream() {
-  local upstream_file="$1"
-  local local_file
-
-  local_file="$(provider_local_file "$upstream_file")"
-  if [[ -n "$local_file" ]]; then
-    printf '%s\n' "$local_file"
-    return 0
-  fi
-  local_file="$(special_local_file "$upstream_file")"
-  if [[ -n "$local_file" ]]; then
-    printf '%s\n' "$local_file"
-    return 0
-  fi
-  direct_local_file "$upstream_file"
+  done
 }
 
 validate_role() {
@@ -213,9 +275,6 @@ validate_manifest() {
   local invalid_rows duplicate_keys snapshot_count
   local upstream_root local_root role upstream_file local_file upstream_blob local_blob reason
   local actual_blob snapshot_symlinks
-
-  [[ -f "$core_manifest" ]] || die "missing core manifest: $core_manifest"
-  [[ -f "$provider_manifest" ]] || die "missing provider manifest: $provider_manifest"
 
   invalid_rows="$(awk -F '|' '
     /^($|#)/ { next }
@@ -343,22 +402,41 @@ validate_manifest() {
   done < <(awk -F '|' '$1 == "skip-test" { print }' "$core_manifest")
 }
 
+# Review rows grow with the delta, so blobs are resolved by one git process per tree:
+# cat-file --batch-check and hash-object --stdin-paths both answer in input order.
 validate_review_rows() {
-  local role upstream_file upstream_blob local_blob local_file actual_blob classification
+  local role upstream_file upstream_blob local_blob actual_blob actual_blobs classification index
+  local -a upstream_files=() local_files=() upstream_blobs=() local_blobs=()
 
   while IFS='|' read -r _ role upstream_file upstream_blob local_blob; do
     is_clean_relative_path "$upstream_file" || die "reviewed core path is not clean: $upstream_file"
     is_hash "$upstream_blob" || die "invalid reviewed upstream blob hash: $upstream_file"
     is_hash "$local_blob" || die "invalid reviewed local blob hash: $upstream_file"
-    classification="$(classify_upstream_file "$upstream_file" || true)"
+    classify_upstream_file "$upstream_file"
     [[ "$classification" == "core" || "$classification" == "provider" ]] || die "review row does not reference a mapped atomic-sync source: $upstream_file"
-    local_file="$(local_file_for_upstream "$upstream_file")"
-    validate_role "$role" "$upstream_file" "$local_file"
-    actual_blob="$(git -C "$upstream_repo" rev-parse "$target_commit:$upstream_file" 2>/dev/null || true)"
-    [[ "$actual_blob" == "$upstream_blob" ]] || die "reviewed upstream blob does not match target commit: $upstream_file"
-    actual_blob="$(git hash-object "$local_file")"
-    [[ "$actual_blob" == "$local_blob" ]] || die "reviewed local blob does not match synchronized file: $local_file"
+    validate_role "$role" "$upstream_file" "$mapped_local"
+    [[ -f "$mapped_local" ]] || die "reviewed synchronized file is missing: $mapped_local"
+    upstream_files+=("$upstream_file")
+    local_files+=("$mapped_local")
+    upstream_blobs+=("$upstream_blob")
+    local_blobs+=("$local_blob")
   done < <(awk -F '|' '$1 == "review" { print }' "$core_manifest")
+  ((${#upstream_files[@]} > 0)) || return 0
+
+  actual_blobs="$(printf '%s\n' "${upstream_files[@]/#/$target_commit:}" | git -C "$upstream_repo" cat-file --batch-check='%(objectname)')" ||
+    die "cannot resolve reviewed upstream blobs at the target commit"
+  index=0
+  while IFS= read -r actual_blob; do
+    [[ "$actual_blob" == "${upstream_blobs[index]}" ]] || die "reviewed upstream blob does not match target commit: ${upstream_files[index]}"
+    index=$((index + 1))
+  done <<< "$actual_blobs"
+
+  actual_blobs="$(printf '%s\n' "${local_files[@]}" | git hash-object --stdin-paths)" || die "cannot hash reviewed synchronized files"
+  index=0
+  while IFS= read -r actual_blob; do
+    [[ "$actual_blob" == "${local_blobs[index]}" ]] || die "reviewed local blob does not match synchronized file: ${local_files[index]}"
+    index=$((index + 1))
+  done <<< "$actual_blobs"
 }
 
 audit_target_tree() {
@@ -368,7 +446,7 @@ audit_target_tree() {
   scope_paths=()
   while IFS= read -r scope_path; do
     scope_paths+=("$scope_path")
-  done < <({ awk -F '|' '$1 == "root" { print $2 }' "$core_manifest"; awk -F '|' '$1 == "file" || $1 == "delete" { print $3 }' "$core_manifest"; } | sort -u)
+  done < <(manifest_scope_paths)
   ((${#scope_paths[@]} > 0)) || die "core manifest defines no upstream scope"
 
   while IFS= read -r upstream_file; do
@@ -379,13 +457,18 @@ audit_target_tree() {
         continue
         ;;
     esac
-    classification="$(classify_upstream_file "$upstream_file" || true)"
+    classify_upstream_file "$upstream_file"
     [[ -n "$classification" ]] || die "target commit contains an unclassified core source: $upstream_file"
+    if [[ "$classification" == "core" ]]; then
+      accounted_local_files+="$mapped_local"$'\n'
+    fi
   done < <(git -C "$upstream_repo" ls-tree -r --name-only "$target_commit" -- "${scope_paths[@]}")
 }
 
+# Runs after audit_target_tree: a local core file must be a manifest row or the mapped
+# copy of a target upstream core source.
 audit_local_tree() {
-  local local_file relative upstream_root local_root upstream_file classification found
+  local local_file
 
   while IFS= read -r local_file; do
     case "$local_file" in
@@ -393,83 +476,48 @@ audit_local_tree() {
         continue
         ;;
     esac
-    if awk -F '|' -v local_file="$local_file" '($1 == "file" && $4 == local_file) || ($1 == "local" && $3 == local_file) { found = 1 } END { exit !found }' "$core_manifest"; then
-      continue
-    fi
-    found=0
-    while IFS='|' read -r _ upstream_root local_root; do
-      case "$local_file" in
-        "$local_root"/*)
-          relative="${local_file#"$local_root"/}"
-          upstream_file="$upstream_root/$relative"
-          if git -C "$upstream_repo" cat-file -e "$target_commit:$upstream_file" 2>/dev/null; then
-            classification="$(classify_upstream_file "$upstream_file" || true)"
-            if [[ "$classification" == "core" ]]; then
-              found=1
-              break
-            fi
-          fi
-          ;;
-      esac
-    done < <(awk -F '|' '$1 == "root" { print }' "$core_manifest")
-    ((found == 1)) || die "local core file is absent from the source manifest: $local_file"
+    in_set "$accounted_local_files" "$local_file" || die "local core file is absent from the source manifest: $local_file"
   done < <(find "$snapshot_root" -type f \( -name '*.go' -o -name '*.json' \) | sort)
 }
 
 audit_new_test_symbols() {
   local upstream_file="$1"
   local local_file="$2"
-  local base_symbols target_symbols local_symbols test_symbol
+  local base_symbols target_symbols local_symbols known_symbols test_symbol
 
-  [[ -f "$test_lister" ]] || die "missing Go test symbol lister: $test_lister"
-  if ! target_symbols="$(git -C "$upstream_repo" show "$target_commit:$upstream_file" | go run "$test_lister" -stdin-name "$upstream_file")"; then
+  [[ -n "$test_lister_bin" ]] || build_test_lister
+  if ! target_symbols="$(git -C "$upstream_repo" show "$target_commit:$upstream_file" | "$test_lister_bin" -stdin-name "$upstream_file")"; then
     die "cannot parse target core test: $upstream_file"
   fi
   if git -C "$upstream_repo" cat-file -e "$base_commit:$upstream_file" 2>/dev/null; then
-    if ! base_symbols="$(git -C "$upstream_repo" show "$base_commit:$upstream_file" | go run "$test_lister" -stdin-name "$upstream_file")"; then
+    if ! base_symbols="$(git -C "$upstream_repo" show "$base_commit:$upstream_file" | "$test_lister_bin" -stdin-name "$upstream_file")"; then
       die "cannot parse base core test: $upstream_file"
     fi
   else
     base_symbols=""
   fi
-  if ! local_symbols="$(go run "$test_lister" -file "$local_file")"; then
+  if ! local_symbols="$("$test_lister_bin" -file "$local_file")"; then
     die "cannot parse synchronized core test: $local_file"
   fi
 
+  known_symbols=$'\n'"$base_symbols"$'\n'"$local_symbols"$'\n'
   while IFS= read -r test_symbol; do
     [[ -n "$test_symbol" ]] || continue
-    if printf '%s\n' "$base_symbols" | grep -Fxq -- "$test_symbol"; then
-      continue
-    fi
-    if printf '%s\n' "$local_symbols" | grep -Fxq -- "$test_symbol"; then
-      continue
-    fi
-    if awk -F '|' -v upstream_file="$upstream_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $2 == upstream_file && $3 == test_symbol { found = 1 } END { exit !found }' "$core_manifest"; then
-      continue
-    fi
-    # Provider skips persist in the provider manifest because verify.sh audits every provider test symbol.
-    if awk -F '|' -v upstream_file="$upstream_file" -v test_symbol="$test_symbol" '$1 == "skip-test" && $3 == upstream_file && $4 == test_symbol { found = 1 } END { exit !found }' "$provider_manifest"; then
-      continue
-    fi
+    in_set "$known_symbols" "$test_symbol" && continue
+    in_set "$skipped_tests" "$upstream_file|$test_symbol" && continue
     die "new upstream core test is neither synchronized nor explicitly skipped: $upstream_file ($test_symbol)"
   done <<< "$target_symbols"
 }
 
 audit_delta() {
-  local upstream_file classification scope_path role local_file
+  local upstream_file classification changed_paths changed_files
   local changed_core=0 changed_provider=0 excluded=0
-  local -a scope_paths
-  local changed_paths
 
   [[ -n "$base_commit" ]] || return 0
-  git -C "$upstream_repo" cat-file -e "${base_commit}^{commit}" 2>/dev/null || die "base commit is absent from upstream checkout: $base_commit"
   [[ "$base_commit" != "$target_commit" ]] || die "base commit must differ from target commit for a synchronization audit"
 
-  scope_paths=()
-  while IFS= read -r scope_path; do
-    scope_paths+=("$scope_path")
-  done < <({ awk -F '|' '$1 == "root" { print $2 }' "$core_manifest"; awk -F '|' '$1 == "file" || $1 == "delete" { print $3 }' "$core_manifest"; } | sort -u)
-  changed_paths="$(git -C "$upstream_repo" diff --name-only --diff-filter=ACDMRTUXB "$base_commit" "$target_commit" -- "${scope_paths[@]}")"
+  changed_paths="$(delta_paths)"
+  changed_files=$'\n'"$changed_paths"$'\n'
 
   while IFS= read -r upstream_file; do
     [[ -n "$upstream_file" ]] || continue
@@ -480,32 +528,22 @@ audit_delta() {
         continue
         ;;
     esac
-    classification="$(classify_upstream_file "$upstream_file" || true)"
+    classify_upstream_file "$upstream_file"
     case "$classification" in
-      core)
-        if ! awk -F '|' -v upstream_file="$upstream_file" '$1 == "review" && $3 == upstream_file { found = 1 } END { exit !found }' "$core_manifest"; then
-          die "changed core source lacks a review entry: $upstream_file"
+      core|provider)
+        in_set "$reviewed_files" "$upstream_file" || die "changed $classification source lacks a review entry: $upstream_file"
+        # validate_review_rows already tied every review role to the _test.go suffix.
+        if [[ "$upstream_file" == *_test.go ]]; then
+          audit_new_test_symbols "$upstream_file" "$mapped_local"
         fi
-        role="$(awk -F '|' -v upstream_file="$upstream_file" '$1 == "review" && $3 == upstream_file { print $2; exit }' "$core_manifest")"
-        if [[ "$role" == "test" ]]; then
-          local_file="$(local_file_for_upstream "$upstream_file")"
-          audit_new_test_symbols "$upstream_file" "$local_file"
+        if [[ "$classification" == "core" ]]; then
+          changed_core=$((changed_core + 1))
+        else
+          changed_provider=$((changed_provider + 1))
         fi
-        changed_core=$((changed_core + 1))
         ;;
       core-deleted)
         changed_core=$((changed_core + 1))
-        ;;
-      provider)
-        if ! awk -F '|' -v upstream_file="$upstream_file" '$1 == "review" && $3 == upstream_file { found = 1 } END { exit !found }' "$core_manifest"; then
-          die "changed provider source lacks a review entry: $upstream_file"
-        fi
-        role="$(awk -F '|' -v upstream_file="$upstream_file" '$1 == "review" && $3 == upstream_file { print $2; exit }' "$core_manifest")"
-        if [[ "$role" == "test" ]]; then
-          local_file="$(local_file_for_upstream "$upstream_file")"
-          audit_new_test_symbols "$upstream_file" "$local_file"
-        fi
-        changed_provider=$((changed_provider + 1))
         ;;
       core-excluded|provider-excluded)
         excluded=$((excluded + 1))
@@ -517,33 +555,148 @@ audit_delta() {
   done <<< "$changed_paths"
 
   while IFS='|' read -r _ _ upstream_file _ _; do
-    if ! printf '%s\n' "$changed_paths" | grep -Fxq -- "$upstream_file"; then
-      die "stale core review entry is outside the requested synchronization delta: $upstream_file"
-    fi
+    in_set "$changed_files" "$upstream_file" || die "stale core review entry is outside the requested synchronization delta: $upstream_file"
   done < <(awk -F '|' '$1 == "review" { print }' "$core_manifest")
 
   while IFS='|' read -r _ _ upstream_file _ _; do
-    if ! printf '%s\n' "$changed_paths" | grep -Fxq -- "$upstream_file"; then
-      die "stale core deletion entry is outside the requested synchronization delta: $upstream_file"
-    fi
+    in_set "$changed_files" "$upstream_file" || die "stale core deletion entry is outside the requested synchronization delta: $upstream_file"
   done < <(awk -F '|' '$1 == "delete" { print }' "$core_manifest")
 
   while IFS='|' read -r _ upstream_file test_symbol _; do
-    if ! printf '%s\n' "$changed_paths" | grep -Fxq -- "$upstream_file"; then
-      die "stale skipped core test is outside the requested synchronization delta: $upstream_file ($test_symbol)"
-    fi
+    in_set "$changed_files" "$upstream_file" || die "stale skipped core test is outside the requested synchronization delta: $upstream_file ($test_symbol)"
   done < <(awk -F '|' '$1 == "skip-test" { print }' "$core_manifest")
 
   printf 'Core delta audit passed: core=%d providers=%d excluded=%d\n' "$changed_core" "$changed_provider" "$excluded"
 }
 
-run_audit() {
-  [[ -n "$upstream_repo" && -n "$target_commit" && -n "$core_manifest" && -n "$provider_manifest" ]] || { usage >&2; exit 2; }
+check_inputs() {
+  [[ -n "$upstream_repo" && -n "$target_commit" ]] || { usage >&2; exit 2; }
   [[ "$target_commit" =~ ^[0-9a-f]{40}$ ]] || die "--target-commit must be a full 40-character commit SHA"
   [[ -z "$base_commit" || "$base_commit" =~ ^[0-9a-f]{40}$ ]] || die "--base-commit must be a full 40-character commit SHA"
   git -C "$upstream_repo" rev-parse --git-dir >/dev/null 2>&1 || die "--upstream-repo is not a Git checkout: $upstream_repo"
   git -C "$upstream_repo" cat-file -e "${target_commit}^{commit}" 2>/dev/null || die "target commit is absent from upstream checkout: $target_commit"
+  [[ -z "$base_commit" ]] || git -C "$upstream_repo" cat-file -e "${base_commit}^{commit}" 2>/dev/null || die "base commit is absent from upstream checkout: $base_commit"
+  [[ -f "$core_manifest" ]] || die "missing core manifest: $core_manifest"
+  [[ -f "$provider_manifest" ]] || die "missing provider manifest: $provider_manifest"
+}
 
+refresh_todo() {
+  printf 'TODO: %s\n' "$1" >&2
+  refresh_todos=$((refresh_todos + 1))
+}
+
+# Recomputes every blob-bearing core manifest row from the current trees: the review
+# block for base..target, file/local blobs, and per-delta delete/skip-test rows that
+# fall outside the delta. Files that still need a human decision block the write.
+refresh_manifest() {
+  local upstream_file classification local_file blob changed_paths review_count dropped_count
+  refresh_todos=0
+
+  check_inputs
+  load_manifests
+  [[ -n "$base_commit" ]] || { usage >&2; exit 2; }
+  [[ "$base_commit" != "$target_commit" ]] || die "base commit must differ from target commit for a manifest refresh"
+  ensure_work_dir
+  changed_paths="$(delta_paths)"
+  printf '%s\n' "$changed_paths" > "$work_dir/delta"
+  : > "$work_dir/reviews"
+  : > "$work_dir/blobs"
+
+  while IFS= read -r upstream_file; do
+    case "$upstream_file" in
+      *.go|*.json)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    classify_upstream_file "$upstream_file"
+    if ! blob="$(git -C "$upstream_repo" rev-parse -q --verify "$target_commit:$upstream_file")"; then
+      case "$classification" in
+        core-deleted|core-excluded|provider-excluded)
+          ;;
+        *)
+          refresh_todo "upstream removed $upstream_file: remove its local copy and mapping; core files record delete|$(file_role "$upstream_file")|$upstream_file|<local path>|$(git -C "$upstream_repo" rev-parse "$base_commit:$upstream_file")"
+          ;;
+      esac
+      continue
+    fi
+    case "$classification" in
+      core|provider)
+        local_file="$mapped_local"
+        if [[ ! -f "$local_file" ]]; then
+          refresh_todo "mapped local file is missing: $local_file ($upstream_file)"
+          continue
+        fi
+        printf 'review|%s|%s|%s|%s\n' "$(file_role "$upstream_file")" "$upstream_file" "$blob" "$(git hash-object "$local_file")" >> "$work_dir/reviews"
+        ;;
+      core-excluded|provider-excluded)
+        ;;
+      core-deleted)
+        refresh_todo "delete row names a file that still exists at the target commit: $upstream_file"
+        ;;
+      *)
+        refresh_todo "unclassified upstream file: $upstream_file (port it under a mapped root, or add a file/exclude row)"
+        ;;
+    esac
+  done <<< "$changed_paths"
+
+  while IFS='|' read -r _ _ upstream_file local_file _ _; do
+    blob="$(git -C "$upstream_repo" rev-parse -q --verify "$target_commit:$upstream_file")" || continue
+    if [[ ! -f "$local_file" ]]; then
+      refresh_todo "missing mapped core file: $local_file"
+      continue
+    fi
+    printf 'file|%s|%s|%s\n' "$upstream_file" "$blob" "$(git hash-object "$local_file")" >> "$work_dir/blobs"
+  done < <(awk -F '|' '$1 == "file" { print }' "$core_manifest")
+  while IFS='|' read -r _ _ local_file _ _; do
+    if [[ ! -f "$local_file" ]]; then
+      refresh_todo "missing local-only core file: $local_file"
+      continue
+    fi
+    printf 'local|%s|%s\n' "$local_file" "$(git hash-object "$local_file")" >> "$work_dir/blobs"
+  done < <(awk -F '|' '$1 == "local" { print }' "$core_manifest")
+
+  ((refresh_todos == 0)) || die "$refresh_todos delta item(s) need a manifest decision; $core_manifest left unchanged"
+
+  awk -F '|' -v OFS='|' -v work_dir="$work_dir" -v header="# Reviewed atomic delta: $base_commit -> $target_commit." '
+    BEGIN {
+      while ((getline line < (work_dir "/blobs")) > 0) {
+        split(line, f, "|")
+        if (f[1] == "file") { upstream_blob[f[2]] = f[3]; file_blob[f[2]] = f[4] } else { local_blob[f[2]] = f[3] }
+      }
+      while ((getline line < (work_dir "/delta")) > 0) changed[line] = 1
+    }
+    function emit_reviews(  line) {
+      print header
+      while ((getline line < (work_dir "/reviews")) > 0) print line
+      emitted = 1
+    }
+    $1 == "review" { next }
+    ($1 == "delete" && !($3 in changed)) || ($1 == "skip-test" && !($2 in changed)) { dropped++; next }
+    /^# Reviewed atomic delta:/ { if (!emitted) emit_reviews(); next }
+    $1 == "file" && ($3 in upstream_blob) { $5 = upstream_blob[$3]; $6 = file_blob[$3] }
+    $1 == "local" && ($3 in local_blob) { $5 = local_blob[$3] }
+    { print }
+    END {
+      if (!emitted) { print ""; emit_reviews() }
+      print dropped + 0 > (work_dir "/dropped")
+    }
+  ' "$core_manifest" > "$work_dir/manifest"
+
+  review_count="$(grep -c . "$work_dir/reviews" || true)"
+  dropped_count="$(cat "$work_dir/dropped")"
+  if cmp -s "$work_dir/manifest" "$core_manifest"; then
+    printf 'Core manifest already current: reviews=%s\n' "$review_count"
+    return 0
+  fi
+  cat "$work_dir/manifest" > "$core_manifest"
+  printf 'Refreshed core manifest: reviews=%s dropped-stale=%s; review git diff, then run verify.sh\n' "$review_count" "$dropped_count"
+}
+
+run_audit() {
+  check_inputs
+  load_manifests
   validate_manifest
   validate_review_rows
   audit_target_tree
@@ -553,7 +706,7 @@ run_audit() {
 }
 
 self_test() {
-  local self_test_root upstream_dir local_dir provider_file missing_manifest bad_manifest reviewed_manifest good_manifest delete_manifest
+  local self_test_root upstream_dir local_dir provider_file missing_manifest bad_manifest reviewed_manifest good_manifest delete_manifest refreshed_manifest
   local base target delete_target base_source_blob base_test_blob target_source_blob target_test_blob deleted_blob
   local local_source_blob local_test_blob output
 
@@ -567,6 +720,7 @@ self_test() {
   reviewed_manifest="$local_dir/core-reviewed.manifest"
   good_manifest="$local_dir/core-good.manifest"
   delete_manifest="$local_dir/core-delete.manifest"
+  refreshed_manifest="$local_dir/core-refresh.manifest"
 
   git init -q "$upstream_dir"
   git -C "$upstream_dir" config user.name 'core-scope-self-test'
@@ -647,17 +801,26 @@ self_test() {
   (cd "$local_dir" && bash "$script_path" --upstream-repo "$upstream_dir" --target-commit "$target" --base-commit "$base" --core-manifest "$good_manifest" --provider-manifest "$provider_file") >/dev/null
   (cd "$local_dir" && bash "$script_path" --upstream-repo "$upstream_dir" --target-commit "$target" --core-manifest "$good_manifest" --provider-manifest "$provider_file") >/dev/null
 
+  cp -- "$missing_manifest" "$refreshed_manifest"
+  (cd "$local_dir" && bash "$script_path" --refresh-manifest --upstream-repo "$upstream_dir" --target-commit "$target" --base-commit "$base" --core-manifest "$refreshed_manifest" --provider-manifest "$provider_file") >/dev/null
+  [[ "$(grep '^review|' "$refreshed_manifest")" == "$(grep '^review|' "$good_manifest")" ]] || die "manifest refresh generated unexpected review rows: $(cat "$refreshed_manifest")"
+  (cd "$local_dir" && bash "$script_path" --upstream-repo "$upstream_dir" --target-commit "$target" --base-commit "$base" --core-manifest "$refreshed_manifest" --provider-manifest "$provider_file") >/dev/null
+
   deleted_blob="$(git -C "$upstream_dir" rev-parse "$target:internal/translator/common/request.go")"
   git -C "$upstream_dir" rm -q internal/translator/common/request.go
   git -C "$upstream_dir" commit -q -m delete
   delete_target="$(git -C "$upstream_dir" rev-parse HEAD)"
   rm -- "$local_dir/snapshot/common/request.go"
-  {
-    printf 'snapshot|snapshot\n'
-    printf 'root|internal/translator|snapshot\n'
-    printf 'root|internal/util|snapshot/util\n'
-    printf 'delete|source|internal/translator/common/request.go|snapshot/common/request.go|%s\n' "$deleted_blob"
-  } > "$delete_manifest"
+  cp -- "$good_manifest" "$delete_manifest"
+  printf 'skip-test|internal/util/gemini_schema_test.go|TestConditionalSchema|previous-delta-only\n' >> "$delete_manifest"
+  if output="$(cd "$local_dir" && bash "$script_path" --refresh-manifest --upstream-repo "$upstream_dir" --target-commit "$delete_target" --base-commit "$target" --core-manifest "$delete_manifest" --provider-manifest "$provider_file" 2>&1)"; then
+    die "manifest refresh accepted an unrecorded upstream deletion"
+  fi
+  [[ "$output" == *"TODO: upstream removed internal/translator/common/request.go"* ]] || die "manifest refresh rejected the deletion for the wrong reason: $output"
+  grep -q '^review|' "$delete_manifest" || die "manifest refresh wrote despite unresolved TODOs"
+  printf 'delete|source|internal/translator/common/request.go|snapshot/common/request.go|%s\n' "$deleted_blob" >> "$delete_manifest"
+  (cd "$local_dir" && bash "$script_path" --refresh-manifest --upstream-repo "$upstream_dir" --target-commit "$delete_target" --base-commit "$target" --core-manifest "$delete_manifest" --provider-manifest "$provider_file") >/dev/null
+  ! grep -Eq '^(review|skip-test)\|' "$delete_manifest" || die "manifest refresh kept rows outside the requested delta: $(cat "$delete_manifest")"
   (cd "$local_dir" && bash "$script_path" --upstream-repo "$upstream_dir" --target-commit "$delete_target" --base-commit "$target" --core-manifest "$delete_manifest" --provider-manifest "$provider_file") >/dev/null
 
   rm -rf -- "$self_test_root"
@@ -666,9 +829,15 @@ self_test() {
 }
 
 if ((run_self_test == 1)); then
-  [[ -z "$upstream_repo$target_commit$base_commit$core_manifest$provider_manifest" ]] || { usage >&2; exit 2; }
+  [[ -z "$upstream_repo$target_commit$base_commit$core_manifest$provider_manifest" && "$run_refresh" == 0 ]] || { usage >&2; exit 2; }
   self_test
   exit 0
 fi
 
-run_audit
+core_manifest="${core_manifest:-$references_dir/core-snapshot.manifest}"
+provider_manifest="${provider_manifest:-$references_dir/provider-adapters.manifest}"
+if ((run_refresh == 1)); then
+  refresh_manifest
+else
+  run_audit
+fi

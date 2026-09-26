@@ -7,18 +7,14 @@ description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider 
 
 一次同步 CLIProxyAPI 的四协议纯转换核心、已登记 provider adapters 及其对应测试。保持 ccLoad Registry 和 provider wire 契约，不引入上游运行时系统。
 
-阅读或编辑本技能本身不执行同步。仅审计时固定比较目标、核对来源与 manifest、报告差异和验证结果，不进入集成变更或更新来源步骤。
-
-仅审计当前快照且未指定比较目标时，使用 `UPSTREAM.md` 已记录的 commit；要求对比最新或指定版本时才解析相应目标。下方自动选择最新稳定版的规则适用于同步请求。
-
-默认调用 `$sync-cliproxy-core` 时，自动固定上游最新稳定版本，并在同一次操作中完成 core 与全部已登记 provider adapters 的比较、集成、来源更新和验证。不要把 provider adapters 留给第二次同步。用户明确指定 commit/tag 时使用指定目标；用户明确要求仅审计时保持只读。
+- 默认调用 `$sync-cliproxy-core` 时，自动固定上游最新稳定版本，并在同一次操作中完成 core 与全部已登记 provider adapters 的比较、集成、来源更新和验证；用户明确指定 commit/tag 时使用指定目标。
+- 仅审计时保持只读：固定比较目标、核对来源与 manifest、报告差异和验证结果，不进入集成变更或更新来源步骤；未指定比较目标时使用 `UPSTREAM.md` 已记录的 commit。
+- 阅读或编辑本技能本身不执行同步。
 
 ## 原子同步契约
 
-- core 与 provider adapters 必须来自同一 checkout、同一不可变 commit。
-- 只生成一份变化清单，只更新一次来源 commit 和同步日期，只运行一套完成验证。
-- 任一同步域无法移植、缺少匹配测试或验证失败时，整个同步未完成；不得只更新 core 后声称成功。
-- 不提供隐式 core-only 降级。用户明确缩小范围时可以只审计，但不得把部分写入伪装成完整同步。
+- core 与 provider adapters 必须来自同一 checkout 的同一不可变 commit；只生成一份变化清单，只更新一次来源 commit 和同步日期，只运行一套完成验证。
+- 任一同步域无法移植、缺少匹配测试或验证失败时，整个同步未完成。不提供隐式 core-only 降级；用户明确缩小范围时只能审计，不得把部分写入报告成完整同步。
 
 ## 权威边界
 
@@ -39,18 +35,26 @@ description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider 
 
 ### 2. 固定目标
 
+- 上游 checkout：本机存在 `~/Source/go/CLIProxyAPI` 时优先使用，否则在临时目录克隆 `UPSTREAM.md` 记录的仓库。core、provider 生产源码与测试必须全部来自这个 checkout 的同一个 commit。
 - 用户指定 commit/tag 时，解析成完整不可变 commit SHA。
-- 用户未指定目标或只说“同步最新”时，自动查询 `UPSTREAM.md` 记录仓库的远端 tags。以当前记录 tag 的非版本前缀和 `vMAJOR.MINOR.PATCH` 形状确定稳定 tag 系列，按语义版本选择最高版本；忽略预发布 tag，禁止按字典序或提交时间猜版本。
-- 将选中的 tag 解引用为完整 commit SHA（等价于 `<tag>^{commit}`）。记录并同步该 commit，而不是 annotated tag object；报告目标和变化范围后直接继续，不等待确认。
-- 若无法从当前记录确定 tag 系列、找不到稳定 tag，或 tag 无法解析为 commit，停止并说明原因。禁止退回到浮动分支 HEAD。
+- 用户未指定目标或只说“同步最新”时，以当前记录 tag 去掉 `MAJOR.MINOR.PATCH` 后的前缀作为稳定 tag 系列（记录为 `fork/vX.Y.Z` 时系列为 `fork/v`），按语义版本选最高版本并解引用为 commit；忽略预发布 tag，禁止按字典序或提交时间猜版本：
+
+```bash
+repo=<UPSTREAM.md 的 Repository>; series=<tag 系列>; upstream=<上游 checkout>
+tag="$(git ls-remote --tags --refs "$repo" "refs/tags/${series}*" | sed 's#.*refs/tags/##' \
+  | grep -E "^${series}[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -1)"
+git -C "$upstream" fetch --no-tags "$repo" "refs/tags/$tag:refs/tags/$tag"
+git -C "$upstream" rev-parse "$tag^{commit}"
+```
+
+- 记录并同步解引用后的 commit，而不是 annotated tag object；报告目标和变化范围后直接继续，不等待确认。无法确定 tag 系列、找不到稳定 tag 或 tag 无法解析为 commit 时停止并说明原因，禁止退回到浮动分支 HEAD。
 - 若目标 SHA 与当前同步 SHA 相同，不改写 `UPSTREAM.md` 的同步日期；运行确定性审计和验证后报告已是最新版本。
-- 使用现有上游 checkout，或在临时目录克隆 `UPSTREAM.md` 记录的仓库。core、provider 生产源码与测试必须全部来自这个 checkout 的同一个 commit。
 
 ### 3. 比较范围
 
 - 一次生成目标 commit 相对当前记录 commit 的联合差异：四协议 core、allowlist 中每个 provider 的生产源码及对应 `_test.go`，不要分两次比较。
 - 先生成目录级和文件级变化清单，再确认新增文件是纯转换语义。provider 的 `init.go`、动态 Registry 和 noop/分配实现测试按 allowlist 排除。
-- 每个上游 core 变更必须由 core manifest 分类为直接映射、特殊映射、明确删除、明确排除或已登记 provider，并为本次所有非排除 core/provider 差异刷新 review blob。新增 core 源根或本地特例时更新 core manifest；上游删除已同步文件时登记 `delete` 行并删除本地映射；新增 provider 时更新 provider manifest、语义边界和 `UPSTREAM.md`。脚本只从 manifest 读取这些清单，不复制第二份。审计失败不能靠跳过检查解决。
+- 每个上游 core 变更必须由 core manifest 分类为直接映射、特殊映射、明确删除、明确排除或已登记 provider。新增 core 源根或本地特例时更新 core manifest；上游删除已同步文件时登记 `delete` 行并删除本地映射；新增 provider 时更新 provider manifest、语义边界和 `UPSTREAM.md`。脚本只从 manifest 读取这些清单，不复制第二份。审计失败不能靠跳过检查解决。
 - 明确列出排除的上游包。不要因为编译缺失就搬入 runtime；删除副作用依赖，或在同步包内用已有纯 `common`/`signature`/`util` 能力替代。
 - 上游删除字段注入时，确认行为是否迁移到被排除的 runtime 层；若是，必须在本地转换边界保留，并用 Registry 契约测试验证。
 - 复查 `UPSTREAM.md` 已排除项的排除理由是否仍成立：上游重构可能使旧理由失效（该同步的补回来），也可能采纳了本地契约（删掉过期的本地差异注记）。
@@ -67,7 +71,16 @@ description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider 
 ### 5. 更新来源记录
 
 - 只有 core 和全部已登记 provider 的生产源码、对应测试、生产接线都完成后，才一次性更新 `internal/protocol/cliproxy/UPSTREAM.md` 的完整 commit、标签说明和同步日期。
-- 在 `UPSTREAM.md` 分别记录 core 与 provider 的上游源目录、本地目录和实际落地状态；逐文件事实和本次差异审查 blob 只保留在 manifest。它们共享同一个 commit/date，不在 manifest 维护第二套版本号。
+- 逐文件审完差异后，用脚本重算 core manifest 的全部 blob 行，不要手算：
+
+```bash
+bash .agents/skills/sync-cliproxy-core/scripts/verify_core_scope.sh --refresh-manifest \
+  --upstream-repo <上游 checkout> --base-commit <原同步 commit> --target-commit <目标 commit>
+```
+
+  它按 base..target 重建 review 块，刷新 `file`/`local` 行 blob，并删除差异范围外的旧 `delete`/`skip-test` 行。只要还有未归类的上游文件、未登记的上游删除或缺失的映射文件，就逐条输出 `TODO` 并拒绝写入。它只负责记账，不代替审查：`delete`、`skip-test`、`exclude` 行及其理由仍需人工填写，写入后检查 `git diff`。
+- 两次同步之间若修改了被 blob 固定的快照文件，用 manifest 中 `# Reviewed atomic delta: <base> -> <target>.` 记录的两个 commit 重跑同一命令。
+- 在 `UPSTREAM.md` 分别记录 core 与 provider 的上游源目录、本地目录和实际落地状态；逐文件事实和本次差异审查 blob 只保留在 manifest，二者共享同一个 commit/date。
 - 保留 `internal/protocol/cliproxy/LICENSE`。许可证或上游归属变化必须显式审查。
 - 不在 Skill 中复制 commit、日期或测试数量；这些易变事实只写入 `UPSTREAM.md`。
 
@@ -78,11 +91,11 @@ description: 同步或审计 ccLoad 的 CLIProxyAPI 核心与已登记 provider 
 ```bash
 bash .agents/skills/sync-cliproxy-core/scripts/verify_core_scope.sh --self-test
 bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests --require-providers \
-  --upstream-repo /path/to/CLIProxyAPI \
-  --base-commit <previous-synchronized-commit>
+  --upstream-repo <上游 checkout> \
+  --base-commit <原同步 commit>
 ```
 
-`--require-providers` 是完整同步的完成门禁：它同时要求 `--upstream-repo` 和完整的 `--base-commit`。该 base 必须等于 Git `HEAD` 中修改前 `UPSTREAM.md` 记录的同步 SHA，调用者不能跳过较早变更；脚本随后强制 base 到工作区 `UPSTREAM.md` 目标提交的每个 core/provider 变更都已映射、删除或明确排除。若 base 已等于目标，说明快照本来就是最新版本，脚本改做目标树、review blob 和 provider 的确定性审计，不伪造空同步差异。任一 allowlist provider 尚未落地、review blob 陈旧或出现未知上游文件时必须失败。日常审计历史快照可以省略这些参数，但不得据此报告完整同步成功。
+`--require-providers` 是完整同步的完成门禁，必须同时给出 `--upstream-repo` 和完整的 `--base-commit`。base 必须等于 Git `HEAD` 中修改前 `UPSTREAM.md` 记录的 SHA。脚本据此强制检查 base 到目标之间的每个 core/provider 变更：必须已映射、删除或明确排除，review blob 必须最新，新增的上游测试符号必须已移植或登记为 `skip-test`，allowlist provider 必须全部落地。base 等于目标时，只做目标树、review blob 和 provider 的确定性审计。日常审计可以省略这些参数，但不得据此报告完整同步成功。
 
 完成同步后运行仓库级检查；只读审计根据实际审计范围选择相关检查：
 
