@@ -18,6 +18,46 @@ const CHANNEL_PRIORITY_MIN = -99999;
 const CHANNEL_PRIORITY_MAX = 9999999;
 let channelPrioritySaveTimers = new Map();
 
+function uniqueChannelModelNames(models) {
+  return channelModelDisplayGroups(models).map((group) => group.model);
+}
+
+function channelModelDisplayGroups(models) {
+  const groups = new Map();
+  (Array.isArray(models) ? models : []).forEach((entry) => {
+    const name = String(entry?.model || entry || '').trim();
+    if (!name) return;
+    let group = groups.get(name);
+    if (!group) {
+      group = { model: name, targets: [] };
+      groups.set(name, group);
+    }
+    const redirect = String(entry?.redirect_model || '').trim();
+    const target = redirect || name;
+    if (!group.targets.includes(target)) group.targets.push(target);
+  });
+  return [...groups.values()];
+}
+
+function formatChannelModelLabel(group) {
+  const targets = group.targets.filter((target) => target !== group.model);
+  if (targets.length === 0) return group.model;
+  const visible = targets.slice(0, 2).join(', ');
+  const suffix = targets.length > 2 ? ', ...' : '';
+  return `${group.model}(${visible}${suffix})`;
+}
+
+function formatChannelModelSummary(models) {
+  return channelModelDisplayGroups(models).map(formatChannelModelLabel).join(', ');
+}
+
+function formatChannelModelTitle(models) {
+  return channelModelDisplayGroups(models).map((group) => {
+    const targets = group.targets.filter((target) => target !== group.model);
+    return targets.length > 0 ? `${group.model}(${targets.join(', ')})` : group.model;
+  }).join(', ');
+}
+
 function escapeChannelRefreshText(value) {
   if (value === null || value === undefined) return '';
   return String(value).replace(/[&<>"']/g, c => ({
@@ -1359,10 +1399,9 @@ function createChannelCard(channel) {
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
-  // 模型文本
-  const modelsText = Array.isArray(channel.models)
-    ? channel.models.map(m => m.model || m).join(', ')
-    : '';
+  // 一对多模型显示前两个重定向目标，悬停时显示全部目标。
+  const modelsText = formatChannelModelSummary(channel.models);
+  const modelsTitle = formatChannelModelTitle(channel.models);
 
   const durationHtml = buildChannelTimingHtml(stats);
   const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
@@ -1400,6 +1439,7 @@ function createChannelCard(channel) {
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,
+    modelsTitle: modelsTitle,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
     durationHtml: durationHtml,
@@ -1663,6 +1703,9 @@ function renderChannels(channelsToRender = channels) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    uniqueChannelModelNames,
+    formatChannelModelSummary,
+    formatChannelModelTitle,
     buildChannelRuntimeStatusHtml,
     buildChannelUsageHtml,
     buildOAuthPlanBadge,
