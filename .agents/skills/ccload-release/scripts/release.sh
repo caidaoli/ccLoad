@@ -235,7 +235,7 @@ self_test() {
   local small_beta_output large_beta_output collision_beta_output stable_output stable_publish_output invalid_beta_error
   local stable_commit stable_tree orphan_beta_commit invalid_beta_commit stable_published_head stable_tag_target
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
-  self_test_root=$(mktemp -d)
+  self_test_root=$(mktemp -d "${TMPDIR:-/tmp}/ccload-release.XXXXXX")
   trap 'rm -rf -- "$self_test_root"' EXIT
   remote_dir="$self_test_root/caidaoli/ccLoad.git"
   work_dir="$self_test_root/work"

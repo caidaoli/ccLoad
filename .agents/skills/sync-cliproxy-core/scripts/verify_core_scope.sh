@@ -557,7 +557,7 @@ self_test() {
   local base target delete_target base_source_blob base_test_blob target_source_blob target_test_blob deleted_blob
   local local_source_blob local_test_blob output
 
-  self_test_root="$(mktemp -d)"
+  self_test_root="$(mktemp -d "${TMPDIR:-/tmp}/verify-core-scope.XXXXXX")"
   trap 'rm -rf -- "$self_test_root"' EXIT
   upstream_dir="$self_test_root/upstream"
   local_dir="$self_test_root/local"
