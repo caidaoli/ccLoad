@@ -2372,15 +2372,14 @@ function updateRedirectRow(index, field, value) {
       redirectTableData[index].model_stats_unavailable = false;
     }
 
-    // 当模型名称变化时，更新重定向目标的 placeholder
-    const tbody = document.getElementById('redirectTableBody');
-    const row = tbody?.children[index];
-    if (field === 'model' && row) {
-      const toInput = row.querySelector('.redirect-to-input');
-      if (toInput) {
-        toInput.placeholder = nextValue || window.t('channels.leaveEmptyNoRedirect');
-      }
+    if (field === 'model') {
+      markChannelFormDirty();
+      renderRedirectTable();
+      return;
     }
+
+    const tbody = document.getElementById('redirectTableBody');
+    const row = tbody?.querySelector(`.redirect-from-input[data-index="${index}"]`)?.closest('tr');
     if (row) {
       const statusCell = row.querySelector('.redirect-col-status');
       if (statusCell) {
@@ -2449,14 +2448,15 @@ async function testRedirectModel(index, button) {
 /**
  * 使用模板引擎创建重定向行元素
  * @param {Object} redirect - 重定向数据
- * @param {number} index - 索引
+ * @param {number} index - 配置数组索引
+ * @param {number} displayIndex - 当前表格行号
  * @returns {HTMLElement|null} 表格行元素
  */
-function createRedirectRow(redirect, index) {
+function createRedirectRow(redirect, index, displayIndex) {
   const modelName = redirect.model || '';
   const rowData = {
     index: index,
-    displayIndex: index + 1,
+    displayIndex: displayIndex,
     from: modelName,
     to: redirect.redirect_model || '',
     toPlaceholder: modelName || window.t('channels.leaveEmptyNoRedirect'),
@@ -2733,15 +2733,13 @@ function initRedirectTableEventDelegation() {
 }
 
 /**
- * 获取筛选后的模型索引列表
+ * 按请求模型名称排序显示，保留原数组索引用于编辑和批量操作。
  */
 function getVisibleModelIndices() {
-  if (!currentModelFilter) {
-    return redirectTableData.map((_, index) => index);
-  }
   const keyword = currentModelFilter.toLowerCase();
   return redirectTableData
     .map((item, index) => {
+      if (!keyword) return index;
       const model = (item.model || '').toLowerCase();
       const redirect = (item.redirect_model || '').toLowerCase();
       if (model.includes(keyword) || redirect.includes(keyword)) {
@@ -2749,7 +2747,9 @@ function getVisibleModelIndices() {
       }
       return null;
     })
-    .filter(index => index !== null);
+    .filter(index => index !== null)
+    .sort((left, right) =>
+      (redirectTableData[left].model || '').localeCompare(redirectTableData[right].model || '') || left - right);
 }
 
 /**
@@ -2800,8 +2800,8 @@ function renderRedirectTable() {
 
   // 使用DocumentFragment优化批量DOM操作
   const fragment = document.createDocumentFragment();
-  visibleIndices.forEach(index => {
-    const row = createRedirectRow(redirectTableData[index], index);
+  visibleIndices.forEach((index, position) => {
+    const row = createRedirectRow(redirectTableData[index], index, position + 1);
     if (row) fragment.appendChild(row);
   });
 
