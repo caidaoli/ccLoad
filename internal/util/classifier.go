@@ -377,7 +377,8 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 //
 // 分类策略：
 //   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
-//   - 400/413 固定按模型级处理，避免一个模型的请求约束误伤整个渠道；
+//   - 400/413 默认按模型级处理，避免一个模型的请求约束误伤整个渠道；Anthropic 账号终态
+//     （组织禁用/余额耗尽/需身份验证）的 400 例外，按 Key 级处理；
 //     413 不能当客户端直返：同一份 Claude Code 历史在 Anthropic 能过、在别的网关会 RequestTooLarge，
 //     直返会打断已经开始的渠道 failover
 //   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
@@ -527,6 +528,11 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		if json.Unmarshal(responseBody, &payload) == nil && strings.TrimSpace(payload.Error.Code) == "message_too_big" {
 			return HTTPResponseClassification{Level: ErrorLevelClient}
 		}
+	}
+
+	// 账号终态的 400 属于整个凭证：Key 级退避；OAuth 渠道的凭证即渠道，由冷却层落到渠道。
+	if statusCode == http.StatusBadRequest && anthropicAccountUnusable(responseBody) {
+		return HTTPResponseClassification{Level: ErrorLevelKey}
 	}
 
 	// 400/413 表示当前模型/上游无法接受该请求。切换渠道，但只冷却实际请求的模型。
@@ -760,9 +766,8 @@ func anthropicRejectedWindowReset(headers map[string][]string, now time.Time) (t
 	return latest, !latest.IsZero()
 }
 
-// anthropicFastModeCreditsRequired 识别 fast 模式缺少 usage credits 的拒绝。
-// 真正的限流从不提 fast，因此不会误伤普通 429。
-func anthropicFastModeCreditsRequired(body []byte) bool {
+// upstreamErrorMessageLower 取 error.message（缺失时退回整个响应体）并转小写，供关键字匹配。
+func upstreamErrorMessageLower(body []byte) string {
 	var payload sseErrorResponse
 	message := ""
 	if json.Unmarshal(body, &payload) == nil {
@@ -771,10 +776,25 @@ func anthropicFastModeCreditsRequired(body []byte) bool {
 	if message == "" {
 		message = string(body)
 	}
-	message = strings.ToLower(message)
+	return strings.ToLower(message)
+}
+
+// anthropicFastModeCreditsRequired 识别 fast 模式缺少 usage credits 的拒绝。
+// 真正的限流从不提 fast，因此不会误伤普通 429。
+func anthropicFastModeCreditsRequired(body []byte) bool {
+	message := upstreamErrorMessageLower(body)
 	return strings.Contains(message, "fast request rejected") ||
 		(strings.Contains(message, "fast") &&
 			(strings.Contains(message, "usage credits") || strings.Contains(message, "credits are required")))
+}
+
+// anthropicAccountUnusable 识别 Anthropic 用 400 报告的账号终态：组织被禁用、
+// API 余额耗尽、需完成身份验证。它们与请求和模型无关，换模型重试只会原样失败。
+func anthropicAccountUnusable(body []byte) bool {
+	message := upstreamErrorMessageLower(body)
+	return strings.Contains(message, "organization has been disabled") ||
+		strings.Contains(message, "credit balance") ||
+		strings.Contains(message, "identity verification is required")
 }
 
 // classifySSEError 分析SSE error事件的具体类型

@@ -12,6 +12,7 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,8 +139,8 @@ func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
-		if server.antigravityTransports != nil {
-			server.antigravityTransports.closeAll()
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
 		}
 	})
 
@@ -160,7 +161,7 @@ func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
 	if firstClient == secondClient {
 		t.Fatal("different Antigravity refresh credentials must not share an HTTP client")
 	}
-	if got := server.antigravityTransports.order.Len(); got != 2 {
+	if got := server.credentialTransports.order.Len(); got != 2 {
 		t.Fatalf("cache entries=%d, want 2", got)
 	}
 }
@@ -176,8 +177,8 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.antigravityClient)
-		if server.antigravityTransports != nil {
-			server.antigravityTransports.closeAll()
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
 		}
 	})
 	credential := func(refresh string) string {
@@ -216,8 +217,229 @@ func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) 
 	}
 }
 
-func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
-	cache := newAntigravityHTTPClientCache(2)
+func TestServerIsolatesAnthropicConnectionByAccountAndProxy(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 1 {
+			t.Errorf("Anthropic upstream protocol = HTTP/%d, want HTTP/1.1", r.ProtoMajor)
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+
+	var connectCount atomic.Int32
+	newProxy := func() *httptest.Server {
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodConnect || r.Host != "api.anthropic.com:443" {
+				http.Error(w, "unexpected CONNECT target", http.StatusBadRequest)
+				return
+			}
+			connectCount.Add(1)
+			clientConn, buffered, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack proxy connection: %v", err)
+				return
+			}
+			upstreamConn, err := net.Dial("tcp", upstream.Listener.Addr().String())
+			if err != nil {
+				_ = clientConn.Close()
+				t.Errorf("dial upstream: %v", err)
+				return
+			}
+			if _, err = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
+				err = buffered.Flush()
+			}
+			if err != nil {
+				_ = clientConn.Close()
+				_ = upstreamConn.Close()
+				t.Errorf("write CONNECT response: %v", err)
+				return
+			}
+			go func() {
+				_, _ = io.Copy(upstreamConn, buffered)
+				_ = upstreamConn.Close()
+			}()
+			_, _ = io.Copy(clientConn, upstreamConn)
+			_ = clientConn.Close()
+		}))
+		t.Cleanup(proxy.Close)
+		return proxy
+	}
+	proxy := newProxy()
+
+	server := &Server{
+		client:        newUpstreamHTTPClient(buildHTTPTransport(true, 2), 0),
+		skipTLSVerify: true,
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
+	})
+	credential := func(account, access, refresh string) string {
+		return fmt.Sprintf(`{"type":"anthropic","account_uuid":%q,"access_token":%q,"refresh_token":%q,"expired":"2099-01-01T00:00:00Z"}`, account, access, refresh)
+	}
+	first := &model.Config{ID: 1, AuthType: model.AuthTypeAnthropicOAuth, ProxyURL: proxy.URL,
+		OAuthCredential: credential("account-a", "access-a", "refresh-a")}
+	rotated := first.Clone()
+	rotated.OAuthCredential = credential("account-a", "access-b", "refresh-b")
+	second := &model.Config{ID: 2, AuthType: model.AuthTypeAnthropicOAuth, ProxyURL: proxy.URL,
+		OAuthCredential: credential("account-b", "access-c", "refresh-c")}
+	replaced := first.Clone()
+	replaced.OAuthCredential = credential("account-c", "access-d", "refresh-d")
+
+	request := func(cfg *model.Config) httptrace.GotConnInfo {
+		t.Helper()
+		gotConn := make(chan httptrace.GotConnInfo, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			"https://api.anthropic.com/v1/messages", strings.NewReader(`{"messages":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		}))
+		resp, err := server.getClientForChannel(cfg).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return <-gotConn
+	}
+
+	firstConn := request(first)
+	rotatedConn := request(rotated)
+	secondConn := request(second)
+	replacedConn := request(replaced)
+	if !rotatedConn.Reused || rotatedConn.Conn != firstConn.Conn {
+		t.Fatal("same Anthropic account did not reuse its connection after token rotation")
+	}
+	if secondConn.Conn == firstConn.Conn || replacedConn.Conn == firstConn.Conn || replacedConn.Conn == secondConn.Conn {
+		t.Fatal("different Anthropic accounts reused a physical connection through the same proxy")
+	}
+	otherProxy := first.Clone()
+	otherProxy.ProxyURL = newProxy().URL
+	otherProxyConn := request(otherProxy)
+	if otherProxyConn.Conn == firstConn.Conn {
+		t.Fatal("same Anthropic account reused a physical connection through a different proxy")
+	}
+	if got := connectCount.Load(); got != 4 {
+		t.Fatalf("CONNECT count = %d, want one per account and proxy pool", got)
+	}
+}
+
+func TestServerDoesNotReuseAnthropicDirectConnectionAcrossAccounts(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
+	})
+	request := func(channelID int64) httptrace.GotConnInfo {
+		t.Helper()
+		gotConn := make(chan httptrace.GotConnInfo, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		}))
+		cfg := &model.Config{ID: channelID, AuthType: model.AuthTypeAnthropicOAuth,
+			OAuthCredential: fmt.Sprintf(`{"type":"anthropic","account_uuid":"account-%d","access_token":"access","expired":"2099-01-01T00:00:00Z"}`, channelID)}
+		resp, err := server.getClientForChannel(cfg).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return <-gotConn
+	}
+	first := request(1)
+	second := request(2)
+	reused := request(1)
+	if first.Conn == second.Conn {
+		t.Fatal("different direct Anthropic accounts reused a physical connection")
+	}
+	if !reused.Reused || reused.Conn != first.Conn {
+		t.Fatal("same direct Anthropic account did not reuse its physical connection")
+	}
+}
+
+func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
+	var requests atomic.Int32
+	respond := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	})
+	upstream := httptest.NewServer(respond)
+	t.Cleanup(upstream.Close)
+	proxy := httptest.NewServer(respond)
+	t.Cleanup(proxy.Close)
+
+	server := &Server{
+		client:               newUpstreamHTTPClient(buildHTTPTransport(false, 1), 0),
+		antigravityClient:    newAntigravityHTTPClient(buildHTTPTransport(false, 1), 0),
+		credentialTransports: newCredentialHTTPClientCache(1),
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		closeUpstreamHTTPClient(server.antigravityClient)
+		server.proxyTransports.Range(func(_, value any) bool {
+			closeUpstreamHTTPClient(value.(*http.Client))
+			return true
+		})
+	})
+	server.credentialTransports.closeAll()
+
+	for _, tt := range []struct {
+		name       string
+		authType   string
+		credential string
+		proxyURL   string
+	}{
+		{name: "Anthropic direct", authType: model.AuthTypeAnthropicOAuth,
+			credential: `{"type":"anthropic","account_uuid":"account-a","access_token":"access","expired":"2099-01-01T00:00:00Z"}`},
+		{name: "Anthropic proxy", authType: model.AuthTypeAnthropicOAuth, proxyURL: proxy.URL,
+			credential: `{"type":"anthropic","account_uuid":"account-b","access_token":"access","expired":"2099-01-01T00:00:00Z"}`},
+		{name: "Antigravity direct", authType: model.AuthTypeAntigravityOAuth,
+			credential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh-a","expired":"2099-01-01T00:00:00Z"}`},
+		{name: "Antigravity proxy", authType: model.AuthTypeAntigravityOAuth, proxyURL: proxy.URL,
+			credential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh-b","expired":"2099-01-01T00:00:00Z"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &model.Config{ID: 1, AuthType: tt.authType, OAuthCredential: tt.credential, ProxyURL: tt.proxyURL}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := server.getClientForChannel(cfg).Do(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if !errors.Is(err, errCredentialHTTPClientCacheClosed) {
+				t.Fatalf("request after credential cache close: response=%v err=%v", resp, err)
+			}
+		})
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("shared client sent %d request(s) after credential cache close", got)
+	}
+}
+
+func TestCredentialHTTPClientCacheIsBounded(t *testing.T) {
+	cache := newCredentialHTTPClientCache(2)
 	trackers := make([]*closeIdleTrackingRoundTripper, 0, 3)
 	for _, scope := range []string{"a", "b", "c"} {
 		client, err := cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: scope}, func() (*http.Client, error) {
@@ -238,7 +460,7 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	if got := trackers[0].closeCount(); got != 1 {
 		t.Fatalf("evicted client CloseIdleConnections calls=%d, want 1", got)
 	}
-	agingCache := newAntigravityHTTPClientCache(1)
+	agingCache := newCredentialHTTPClientCache(1)
 	agingClient, err := agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "aging"}, func() (*http.Client, error) {
 		return newAntigravityHTTPClient(buildHTTPTransport(false, 1), time.Hour), nil
 	})
@@ -264,11 +486,11 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	cache.closeAll()
 	if _, err := cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "after-close"}, func() (*http.Client, error) {
 		return &http.Client{Transport: &closeIdleTrackingRoundTripper{}}, nil
-	}); !errors.Is(err, errAntigravityHTTPClientCacheClosed) {
+	}); !errors.Is(err, errCredentialHTTPClientCacheClosed) {
 		t.Fatalf("closed cache accepted a new pool: %v", err)
 	}
 
-	closingCache := newAntigravityHTTPClientCache(1)
+	closingCache := newCredentialHTTPClientCache(1)
 	builderStarted := make(chan struct{})
 	releaseBuilder := make(chan struct{})
 	buildResult := make(chan error, 1)
@@ -284,7 +506,7 @@ func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
 	<-builderStarted
 	closingCache.closeAll()
 	close(releaseBuilder)
-	if err := <-buildResult; !errors.Is(err, errAntigravityHTTPClientCacheClosed) {
+	if err := <-buildResult; !errors.Is(err, errCredentialHTTPClientCacheClosed) {
 		t.Fatalf("in-flight builder resurrected a closed cache: %v", err)
 	}
 	if got := inFlightTracker.closeCount(); got != 1 {

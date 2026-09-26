@@ -18,7 +18,7 @@
 - **Anthropic 工具错误**(`anthropic_retry.go`):仅在未提交响应的 validation 400 明确给出 `tools.N...` / `messages.N.content.M...` 位置（error.param 或 message 前缀）时允许一次 `downgrade_anthropic_tools` 局部重试。定义被拒绝只删除该工具及指向它的 tool_choice，并文本化该工具关联的完整历史调用对；历史块明确不受支持时只文本化该 ID 的一对，保留定义及同名其他调用。调用 ID 必须唯一且调用/结果相邻配对；保留图片、结果错误标记与缓存字段，剩余 tool_result 必须先于普通内容。未知位置、冲突位置、配对/顺序错误、不支持的结果内容或重排破坏缓存 TTL 顺序时走原错误/换渠流程，禁止全量降级；换渠仍使用原请求。思考预算修复和 thinking 兼容重试独立。
 - **Anyrouter Responses 元数据兼容**:上游协议为 Codex、请求属于 Responses 且渠道名称包含 `anyrouter`（忽略大小写）时，转发前仅删除 `input[*].internal_chat_message_metadata_passthrough.content_item_kinds`，保留正文及其他元数据；仅 URL 包含 anyrouter 不触发此规则。
 
-- Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却。OAuth 渠道没有独立 Key(`KeyIndex == NoKeyIndex`,凭证就是渠道),Key 级故障直接改为渠道冷却并切渠道;401 例外,先由 OAuth 凭证层强制刷新重试
+- Key 级(401/403;400 且错误信息含组织已禁用 `organization has been disabled`、余额耗尽 `credit balance`、需身份验证 `identity verification is required`)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却。OAuth 渠道没有独立 Key(`KeyIndex == NoKeyIndex`,凭证就是渠道),Key 级故障直接改为渠道冷却并切渠道;401 例外,先由 OAuth 凭证层强制刷新重试
 - **Anthropic 429 分流**(`util/classifier.go`):响应头明确拒绝共享 5h/7d 订阅窗口 → `CredentialScoped` Key 级冷却(OAuth 即渠道冷却),reset 取自响应头,禁止同渠道 Key 回退;fast 模式缺少 usage credits → 客户端错误,不冷却;其余 429 按模型级
 - 模型级(`model_cooldown`,上游 HTTP 400/413/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道

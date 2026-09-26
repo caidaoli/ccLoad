@@ -2400,7 +2400,7 @@ func TestHandleError_CloudflareChallengeCoolsChannelWithoutKeys(t *testing.T) {
 	}
 }
 
-// OAuth 渠道没有独立 Key：Key 级 403 与 5h/7d 窗口被拒都必须冷却整个渠道。
+// OAuth 渠道没有独立 Key：Key 级 403、账号终态 400 与 5h/7d 窗口被拒都必须冷却整个渠道。
 func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 	resetAt := time.Now().Add(3 * time.Hour).Truncate(time.Second)
 	cases := []struct {
@@ -2411,6 +2411,9 @@ func TestHandleError_KeylessCredentialFailuresCoolChannel(t *testing.T) {
 		wantUntil time.Time
 	}{
 		{name: "forbidden", status: http.StatusForbidden, body: `{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement"}}`},
+		{name: "organization disabled", status: http.StatusBadRequest, body: `{"type":"error","error":{"type":"invalid_request_error","message":"This organization has been disabled."}}`},
+		{name: "credit balance", status: http.StatusBadRequest, body: `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}`},
+		{name: "identity verification", status: http.StatusBadRequest, body: `{"type":"error","error":{"type":"invalid_request_error","message":"Identity verification is required to continue using Claude."}}`},
 		{name: "unified 7d rejected", status: http.StatusTooManyRequests, body: `{"type":"error","error":{"type":"rate_limit_error"}}`,
 			headers: map[string][]string{
 				"Anthropic-Ratelimit-Unified-7d-Status": {"rejected"},

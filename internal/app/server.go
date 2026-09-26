@@ -76,8 +76,8 @@ type Server struct {
 	antigravityClient             *http.Client // Antigravity 专用标准 HTTP/1.1 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
 	proxyTransports               sync.Map     // upstreamHTTPClientCacheKey → *http.Client（渠道级代理缓存）
-	antigravityTransports         *antigravityHTTPClientCache
-	antigravityTransportMu        sync.Mutex
+	credentialTransports          *credentialHTTPClientCache
+	credentialTransportMu         sync.Mutex
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -285,11 +285,11 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
-		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		antigravityTransports: newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity),
-		xaiSSOClient:          newXAISSOHTTPClient(transport),
-		skipTLSVerify:         skipTLSVerify,
+		client:               newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		antigravityClient:    newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		credentialTransports: newCredentialHTTPClientCache(credentialHTTPClientCacheCapacity),
+		xaiSSOClient:         newXAISSOHTTPClient(transport),
+		skipTLSVerify:        skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -1127,14 +1127,22 @@ func buildHTTPTransport(skipTLSVerify bool, channelCount int) *http.Transport {
 	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
 }
 
-const antigravityHTTPClientCacheCapacity = 8192
+const credentialHTTPClientCacheCapacity = 8192
 
-var errAntigravityHTTPClientCacheClosed = errors.New("antigravity HTTP client cache is closed")
+var errCredentialHTTPClientCacheClosed = errors.New("credential HTTP client cache is closed")
 
-// antigravityHTTPClientCache is a bounded LRU of Antigravity clients. A client
+type credentialCacheClosedTransport struct{}
+
+func (credentialCacheClosedTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errCredentialHTTPClientCacheClosed
+}
+
+var closedCredentialHTTPClient = &http.Client{Transport: credentialCacheClosedTransport{}}
+
+// credentialHTTPClientCache is a bounded LRU of OAuth clients. A client
 // owns a transport and therefore a physical connection pool; evicting it must
 // close idle connections or credential/proxy churn would retain sockets forever.
-type antigravityHTTPClientCache struct {
+type credentialHTTPClientCache struct {
 	mu       sync.Mutex
 	capacity int
 	entries  map[upstreamHTTPClientCacheKey]*list.Element
@@ -1142,23 +1150,23 @@ type antigravityHTTPClientCache struct {
 	closed   bool
 }
 
-type antigravityHTTPClientCacheEntry struct {
+type credentialHTTPClientCacheEntry struct {
 	key    upstreamHTTPClientCacheKey
 	client *http.Client
 }
 
-func newAntigravityHTTPClientCache(capacity int) *antigravityHTTPClientCache {
+func newCredentialHTTPClientCache(capacity int) *credentialHTTPClientCache {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &antigravityHTTPClientCache{
+	return &credentialHTTPClientCache{
 		capacity: capacity,
 		entries:  make(map[upstreamHTTPClientCacheKey]*list.Element, capacity),
 		order:    list.New(),
 	}
 }
 
-func (c *antigravityHTTPClientCache) getOrCreate(
+func (c *credentialHTTPClientCache) getOrCreate(
 	key upstreamHTTPClientCacheKey,
 	create func() (*http.Client, error),
 ) (*http.Client, error) {
@@ -1168,11 +1176,11 @@ func (c *antigravityHTTPClientCache) getOrCreate(
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return nil, errAntigravityHTTPClientCacheClosed
+		return nil, errCredentialHTTPClientCacheClosed
 	}
 	if element := c.entries[key]; element != nil {
 		c.order.MoveToFront(element)
-		client := element.Value.(antigravityHTTPClientCacheEntry).client
+		client := element.Value.(credentialHTTPClientCacheEntry).client
 		c.mu.Unlock()
 		return client, nil
 	}
@@ -1187,24 +1195,24 @@ func (c *antigravityHTTPClientCache) getOrCreate(
 	if c.closed {
 		c.mu.Unlock()
 		closeUpstreamHTTPClient(client)
-		return nil, errAntigravityHTTPClientCacheClosed
+		return nil, errCredentialHTTPClientCacheClosed
 	}
 	// Another goroutine may have populated the same key while the transport
 	// was being built. Keep one client and immediately discard the duplicate.
 	if element := c.entries[key]; element != nil {
 		c.order.MoveToFront(element)
-		actual := element.Value.(antigravityHTTPClientCacheEntry).client
+		actual := element.Value.(credentialHTTPClientCacheEntry).client
 		c.mu.Unlock()
 		closeUpstreamHTTPClient(client)
 		return actual, nil
 	}
-	element := c.order.PushFront(antigravityHTTPClientCacheEntry{key: key, client: client})
+	element := c.order.PushFront(credentialHTTPClientCacheEntry{key: key, client: client})
 	c.entries[key] = element
 	var evicted *http.Client
 	if c.order.Len() > c.capacity {
 		oldest := c.order.Back()
 		if oldest != nil {
-			entry := oldest.Value.(antigravityHTTPClientCacheEntry)
+			entry := oldest.Value.(credentialHTTPClientCacheEntry)
 			delete(c.entries, entry.key)
 			c.order.Remove(oldest)
 			evicted = entry.client
@@ -1217,7 +1225,7 @@ func (c *antigravityHTTPClientCache) getOrCreate(
 	return client, nil
 }
 
-func (c *antigravityHTTPClientCache) closeAll() {
+func (c *credentialHTTPClientCache) closeAll() {
 	if c == nil {
 		return
 	}
@@ -1225,7 +1233,7 @@ func (c *antigravityHTTPClientCache) closeAll() {
 	c.closed = true
 	clients := make([]*http.Client, 0, len(c.entries))
 	for _, element := range c.entries {
-		clients = append(clients, element.Value.(antigravityHTTPClientCacheEntry).client)
+		clients = append(clients, element.Value.(credentialHTTPClientCacheEntry).client)
 	}
 	c.entries = make(map[upstreamHTTPClientCacheKey]*list.Element, c.capacity)
 	c.order.Init()
@@ -1241,13 +1249,13 @@ type upstreamHTTPClientCacheKey struct {
 	credentialScope       string
 }
 
-func (s *Server) getAntigravityHTTPClientCache() *antigravityHTTPClientCache {
-	s.antigravityTransportMu.Lock()
-	defer s.antigravityTransportMu.Unlock()
-	if s.antigravityTransports == nil {
-		s.antigravityTransports = newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity)
+func (s *Server) getCredentialHTTPClientCache() *credentialHTTPClientCache {
+	s.credentialTransportMu.Lock()
+	defer s.credentialTransportMu.Unlock()
+	if s.credentialTransports == nil {
+		s.credentialTransports = newCredentialHTTPClientCache(credentialHTTPClientCacheCapacity)
 	}
-	return s.antigravityTransports
+	return s.credentialTransports
 }
 
 // antigravityCredentialPoolScope deliberately uses the refresh token rather
@@ -1269,6 +1277,31 @@ func antigravityCredentialPoolScope(cfg *model.Config) string {
 	return ""
 }
 
+// anthropicCredentialPoolScope follows the account identity used for Claude
+// Code requests. Include the channel ID so separate account records never
+// share a physical connection, even if their credential metadata is incomplete.
+// Access and refresh token rotation must not churn a known account's pool.
+func anthropicCredentialPoolScope(cfg *model.Config) string {
+	if cfg == nil || !cfg.UsesAnthropicOAuth() {
+		return ""
+	}
+	identity := strings.TrimSpace(cfg.OAuthCredential)
+	if credential, err := anthropicauth.ParseCredential([]byte(identity)); err == nil {
+		switch {
+		case credential.AccountUUID != "":
+			identity = "uuid:" + credential.AccountUUID
+		case credential.EmailAddress != "":
+			identity = "email:" + strings.ToLower(credential.EmailAddress)
+		case credential.RefreshToken != "":
+			identity = "refresh:" + credential.RefreshToken
+		case credential.AccessToken != "":
+			identity = "access:" + credential.AccessToken
+		}
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("anthropic:channel:%d:%x", cfg.ID, digest)
+}
+
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg == nil {
 		return s.client
@@ -1276,56 +1309,61 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	defaultClient := s.client
 	clientFactory := newUpstreamHTTPClient
 	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
+	credentialScope := ""
 	if antigravityHTTP11Only {
 		defaultClient = s.antigravityClient
 		clientFactory = newAntigravityHTTPClient
+		credentialScope = antigravityCredentialPoolScope(cfg)
+	} else if cfg.UsesAnthropicOAuth() {
+		credentialScope = anthropicCredentialPoolScope(cfg)
+	}
+	if credentialScope != "" {
 		// Tests and embedders may inject a semantic RoundTripper. It already is
 		// the transport boundary; replacing it with a network transport would
 		// silently bypass the injected behavior.
 		if defaultClient != nil {
 			switch defaultClient.Transport.(type) {
-			case *http.Transport, *upstreamConnectionAgeTransport:
+			case *http.Transport, *codexUTLSRoundTripper, *upstreamConnectionAgeTransport:
 			default:
 				return defaultClient
 			}
 		}
-		credentialScope := antigravityCredentialPoolScope(cfg)
-		// Channels without a parseable credential are retained on the legacy
-		// global client. Real OAuth credentials always receive their own scope.
-		if credentialScope != "" {
-			proxyURL := strings.TrimSpace(cfg.ProxyURL)
-			key := upstreamHTTPClientCacheKey{
-				proxyURL:              proxyURL,
-				antigravityHTTP11Only: true,
-				credentialScope:       credentialScope,
-			}
-			cache := s.getAntigravityHTTPClientCache()
-			client, err := cache.getOrCreate(key, func() (*http.Client, error) {
-				var transport *http.Transport
-				var err error
-				if proxyURL == "" {
-					transport = buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)
-				} else {
-					transport, err = buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
-				}
-				if err != nil {
-					return nil, err
-				}
-				return clientFactory(transport, s.upstreamConnectionMaxAge), nil
-			})
-			if err == nil {
-				return client
-			}
-			log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退凭证隔离的直连池: %v", cfg.ID, cfg.ProxyURL, err)
-			fallbackKey := key
-			fallbackKey.proxyURL = ""
-			fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
-				return clientFactory(buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount), s.upstreamConnectionMaxAge), nil
-			})
-			if fallbackErr == nil {
-				return fallback
-			}
+		proxyURL := strings.TrimSpace(cfg.ProxyURL)
+		key := upstreamHTTPClientCacheKey{
+			proxyURL:              proxyURL,
+			antigravityHTTP11Only: antigravityHTTP11Only,
+			credentialScope:       credentialScope,
 		}
+		cache := s.getCredentialHTTPClientCache()
+		client, err := cache.getOrCreate(key, func() (*http.Client, error) {
+			var transport *http.Transport
+			var err error
+			if proxyURL == "" {
+				transport = buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)
+			} else {
+				transport, err = buildChannelProxyTransport(proxyURL, s.skipTLSVerify, s.upstreamChannelCount)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return clientFactory(transport, s.upstreamConnectionMaxAge), nil
+		})
+		if err == nil {
+			return client
+		}
+		if errors.Is(err, errCredentialHTTPClientCacheClosed) {
+			return closedCredentialHTTPClient
+		}
+		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退凭证隔离的直连池: %v", cfg.ID, cfg.ProxyURL, err)
+		fallbackKey := key
+		fallbackKey.proxyURL = ""
+		fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
+			return clientFactory(buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount), s.upstreamConnectionMaxAge), nil
+		})
+		if fallbackErr == nil {
+			return fallback
+		}
+		return closedCredentialHTTPClient
 	}
 	if cfg.ProxyURL == "" {
 		return defaultClient
@@ -2039,11 +2077,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	closeUpstreamHTTPClient(s.client)
 	closeUpstreamHTTPClient(s.antigravityClient)
 	closeUpstreamHTTPClient(s.xaiSSOClient)
-	s.antigravityTransportMu.Lock()
-	antigravityTransports := s.antigravityTransports
-	s.antigravityTransportMu.Unlock()
-	if antigravityTransports != nil {
-		antigravityTransports.closeAll()
+	s.credentialTransportMu.Lock()
+	credentialTransports := s.credentialTransports
+	s.credentialTransportMu.Unlock()
+	if credentialTransports != nil {
+		credentialTransports.closeAll()
 	}
 	s.proxyTransports.Range(func(_, v any) bool {
 		closeUpstreamHTTPClient(v.(*http.Client))
