@@ -245,27 +245,40 @@ func resolveCodexTurnStateField(object []byte, namespace string) ([]byte, bool) 
 	return next, true
 }
 
-// tagCodexTurnStateHeader 标记上游响应头里的 turn-state（HTTP 响应与 WS 握手）。
+// tagCodexTurnStateHeader 标记响应头里的 turn-state；已升级的下游 WS 不使用这些头。
 func tagCodexTurnStateHeader(h http.Header, namespace string) {
 	if raw := strings.TrimSpace(h.Get(codexTurnStateField)); raw != "" && namespace != "" {
 		h.Set(codexTurnStateField, tagCodexTurnState(raw, namespace))
 	}
 }
 
-// tagCodexTurnStateMetadataEvent 标记 WS metadata 事件 headers 里的 turn-state；
-// 官方客户端同样从这类事件取 turn-state。
+// tagCodexTurnStateMetadataEvent 标记原生 WS metadata 事件 headers 里的 turn-state。
+// 官方客户端只从 response.metadata 取值，但其他客户端可能读 codex.response.metadata，
+// 未打标签的值出站会原样透传，所以两类都打。头名按大小写匹配，数组只沿首项取值。
 func tagCodexTurnStateMetadataEvent(payload []byte, eventType, namespace string) []byte {
 	if namespace == "" || (eventType != "codex.response.metadata" && eventType != "response.metadata") {
 		return payload
 	}
-	path := "headers." + codexTurnStateField
-	field := gjson.GetBytes(payload, path)
-	if field.Type != gjson.String || strings.TrimSpace(field.String()) == "" {
+	headers := gjson.GetBytes(payload, "headers")
+	if !headers.IsObject() {
 		return payload
 	}
-	next, err := sjson.SetBytes(payload, path, tagCodexTurnState(field.String(), namespace))
-	if err != nil {
-		return payload
-	}
-	return next
+	headers.ForEach(func(key, value gjson.Result) bool {
+		if !strings.EqualFold(key.String(), codexTurnStateField) {
+			return true
+		}
+		path := "headers." + gjson.Escape(key.String())
+		for value.IsArray() {
+			value = value.Get("0")
+			path += ".0"
+		}
+		if value.Type != gjson.String || strings.TrimSpace(value.String()) == "" {
+			return true
+		}
+		if next, err := sjson.SetBytes(payload, path, tagCodexTurnState(value.String(), namespace)); err == nil {
+			payload = next
+		}
+		return true
+	})
+	return payload
 }

@@ -2808,6 +2808,14 @@ func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
 				"headers": map[string]any{"x-codex-turn-state": "state-ws"},
 			})
 			_ = conn.WriteJSON(map[string]any{
+				"type": "response.metadata",
+				"headers": map[string]any{
+					"x-codex-turn-state": "state-lower",
+					"X-Codex-Turn-State": "state-upper",
+					"X-CODEX-TURN-STATE": []any{[]any{"state-array"}, "state-ignored"},
+				},
+			})
+			_ = conn.WriteJSON(map[string]any{
 				"type": "response.completed",
 				"response": map[string]any{
 					"id": "resp-turn-state", "output": []any{},
@@ -2852,6 +2860,33 @@ func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
 	if tagged == "state-ws" || !strings.HasSuffix(tagged, "state-ws") {
 		t.Fatalf("relayed metadata turn-state = %q, want account-tagged state-ws", tagged)
 	}
+	metadata = readWebsocketUntilType(t, downstream, "response.metadata")
+	headers, _ = metadata["headers"].(map[string]any)
+	array, _ := headers["X-CODEX-TURN-STATE"].([]any)
+	if len(array) != 2 {
+		t.Fatalf("relayed metadata array = %#v, want two elements", array)
+	}
+	nested, _ := array[0].([]any)
+	if len(nested) != 1 {
+		t.Fatalf("relayed metadata nested array = %#v, want one element", nested)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "lowercase", value: headers["x-codex-turn-state"], want: "state-lower"},
+		{name: "mixed case", value: headers["X-Codex-Turn-State"], want: "state-upper"},
+		{name: "nested array first element", value: nested[0], want: "state-array"},
+	} {
+		value, _ := tc.value.(string)
+		if !strings.HasPrefix(value, "ccl1.") || !strings.HasSuffix(value, "."+tc.want) {
+			t.Errorf("%s turn-state = %q, want account-tagged %s", tc.name, value, tc.want)
+		}
+	}
+	if array[1] != "state-ignored" {
+		t.Errorf("non-first array value = %#v, want unchanged", array[1])
+	}
 	readWebsocketUntilType(t, downstream, "response.completed")
 	if first := <-echoed; first.Exists() {
 		t.Fatalf("first request echoed turn-state %q", first.String())
@@ -2860,11 +2895,115 @@ func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
 	if got := send(tagged); got.String() != "state-ws" {
 		t.Fatalf("issuing account received turn-state %q, want original state-ws", got.Raw)
 	}
+	upperTagged, _ := headers["X-Codex-Turn-State"].(string)
+	if got := send(upperTagged); got.String() != "state-upper" {
+		t.Fatalf("issuing account received mixed-case turn-state %q, want original state-upper", got.Raw)
+	}
+	arrayTagged, _ := nested[0].(string)
+	if got := send(arrayTagged); got.String() != "state-array" {
+		t.Fatalf("issuing account received array turn-state %q, want original state-array", got.Raw)
+	}
 	if got := send("ccl1.0123456789abcdef.state-other"); got.Exists() {
 		t.Fatalf("other account's turn-state reached upstream as %q", got.Raw)
 	}
 	if got := send("untagged-state"); got.String() != "untagged-state" {
 		t.Fatalf("untagged turn-state reached upstream as %q, want unchanged", got.Raw)
+	}
+}
+
+// HTTP 客户端只从响应头取 turn-state；HTTP 续写重拨原生 WS 时，握手头里的令牌
+// 必须经合成响应带标签回到 HTTP 响应头。
+func TestHTTPResponsesTagsNativeCodexWebsocketHandshakeTurnState(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	completeTurn := func(conn *websocket.Conn, responseID string) {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read %s request: %v", responseID, err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": responseID, "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write %s completion: %v", responseID, err)
+		}
+	}
+	serveWebsocket := func(responseID string, handshakeHeader http.Header, handshakes *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !websocket.IsWebSocketUpgrade(r) {
+				t.Errorf("%s upstream received HTTP request, want native websocket", responseID)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			conn, err := upgrader.Upgrade(w, r, handshakeHeader)
+			if err != nil {
+				t.Errorf("upgrade %s websocket: %v", responseID, err)
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			handshakes.Add(1)
+			completeTurn(conn, responseID)
+			_, _, _ = conn.ReadMessage()
+		}))
+	}
+	var firstHandshakes, secondHandshakes atomic.Int32
+	first := serveWebsocket("resp-handshake-1", nil, &firstHandshakes)
+	defer first.Close()
+	second := serveWebsocket("resp-handshake-2", http.Header{"X-Codex-Turn-State": []string{"state-handshake"}}, &secondHandshakes)
+	defer second.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "handshake-first", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{
+			name: "handshake-oauth", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 90,
+			authType:        model.AuthTypeCodexOAuth,
+			oauthCredential: codexProxyTestCredential(t, "at-handshake", "rt-handshake", "account-handshake"),
+		},
+	}, map[int]string{0: first.URL, 1: second.URL})
+
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "handshake-turn-state")
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set handshake downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first handshake turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	_ = downstream.Close()
+
+	// 停用首个渠道：HTTP 续写仍挂着已建立的上游 WS，但目标换成 OAuth 渠道，必须重拨。
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("list handshake channels: %v", err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name == "handshake-first" {
+			cfg.Enabled = false
+			if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+				t.Fatalf("disable first handshake channel: %v", err)
+			}
+		}
+	}
+	env.server.InvalidateChannelListCache()
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "previous_response_id": "resp-handshake-1",
+		"input": []any{map[string]any{"role": "user", "content": "two"}},
+	}, map[string]string{"Session-Id": "handshake-turn-state"})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "resp-handshake-2") {
+		t.Fatalf("HTTP continuation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if firstHandshakes.Load() != 1 || secondHandshakes.Load() != 1 {
+		t.Fatalf("handshakes first=%d second=%d, want 1/1", firstHandshakes.Load(), secondHandshakes.Load())
+	}
+	tagged := response.Header().Get("X-Codex-Turn-State")
+	if !strings.HasPrefix(tagged, "ccl1.") || !strings.HasSuffix(tagged, ".state-handshake") {
+		t.Fatalf("HTTP turn-state header = %q, want account-tagged state-handshake", tagged)
 	}
 }
 
