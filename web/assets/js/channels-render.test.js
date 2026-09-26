@@ -2,12 +2,38 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  uniqueChannelModelNames,
+  formatChannelModelSummary,
+  formatChannelModelTitle,
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
   buildManagementAccountStatusHtml,
   isOpenCodeGoChannel,
   channelShowsOAuthUsage
 } = require('./channels-render.js');
+
+test('渠道模型支持列按模型名去重并保留顺序', () => {
+  assert.deepEqual(uniqueChannelModelNames([
+    { model: 'auto', redirect_model: 'claude-sonnet-4-6' },
+    { model: ' gpt-4o ' },
+    { model: 'auto', redirect_model: 'claude-opus-4-6' },
+    'gpt-4o',
+    { model: '   ' }
+  ]), ['auto', 'gpt-4o']);
+  assert.deepEqual(uniqueChannelModelNames(null), []);
+});
+
+test('一对多模型显示前两个重定向目标并保留完整悬停列表', () => {
+  const models = [
+    { model: 'auto', redirect_model: 'model-a' },
+    { model: 'gpt-4o' },
+    { model: 'auto', redirect_model: 'model-b' },
+    { model: 'auto', redirect_model: 'model-c' },
+    { model: 'alias', redirect_model: 'alias' }
+  ];
+  assert.equal(formatChannelModelSummary(models), 'auto(model-a, model-b, ...), gpt-4o, alias');
+  assert.equal(formatChannelModelTitle(models), 'auto(model-a, model-b, model-c), gpt-4o, alias');
+});
 
 test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
   const previousWindow = global.window;
