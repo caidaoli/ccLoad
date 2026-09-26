@@ -129,6 +129,8 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
         total: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        speedOutputTokens: 0,
+        speedDurationSeconds: 0,
         totalCacheReadInputTokens: 0,
         totalCacheCreationInputTokens: 0,
         totalCost: 0,
@@ -170,6 +172,8 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
 
     stats.totalInputTokens += toSafeNumber(entry.total_input_tokens);
     stats.totalOutputTokens += toSafeNumber(entry.total_output_tokens);
+    stats.speedOutputTokens += toSafeNumber(entry.speed_output_tokens);
+    stats.speedDurationSeconds += toSafeNumber(entry.speed_duration_seconds);
     stats.totalCacheReadInputTokens += toSafeNumber(entry.total_cache_read_input_tokens);
     stats.totalCacheCreationInputTokens += toSafeNumber(entry.total_cache_creation_input_tokens);
     stats.totalCost += toSafeNumber(entry.total_cost);
@@ -205,6 +209,9 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
     }
     if (stats._durationWeight > 0) {
       stats.avgDurationSeconds = stats._durationWeightedSum / stats._durationWeight;
+    }
+    if (stats.speedOutputTokens > 0 && stats.speedDurationSeconds > 0) {
+      stats.outputTokensPerSecond = stats.speedOutputTokens / stats.speedDurationSeconds;
     }
 
     // 使用后端按渠道聚合的健康时间线（无需前端 merge）

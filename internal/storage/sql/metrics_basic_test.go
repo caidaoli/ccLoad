@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -261,6 +262,42 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// CleanupLogsBefore：删除所有日志
 	if err := store.CleanupLogsBefore(ctx, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("CleanupLogsBefore failed: %v", err)
+	}
+}
+
+func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T) {
+	store := newTestStore(t, "metrics_token_speed.db")
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "speed-channel",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now()
+	logs := []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 4, FirstByteTime: 1, OutputTokens: 60, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 2, OutputTokens: 20, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 1.2, FirstByteTime: 0.6, OutputTokens: 12, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, Duration: 1, OutputTokens: 1000, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 1, OutputTokens: 1000, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 1, LogSource: model.LogSourceProxy},
+	}
+	if err := store.BatchAddLogs(ctx, logs); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{LogSource: model.LogSourceProxy}, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 || stats[0].SpeedOutputTokens == nil || *stats[0].SpeedOutputTokens != 92 ||
+		stats[0].SpeedDurationSeconds == nil || math.Abs(*stats[0].SpeedDurationSeconds-6.2) > 1e-9 {
+		t.Fatalf("speed aggregates = %+v, want 92 tokens over 6.2 seconds", stats)
 	}
 }
 

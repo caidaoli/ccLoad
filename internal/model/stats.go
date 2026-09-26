@@ -79,6 +79,8 @@ type StatsEntry struct {
 	// Token统计（2025-11新增）
 	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`                // 总输入Token
 	TotalOutputTokens             *int64   `json:"total_output_tokens,omitempty"`               // 总输出Token
+	SpeedOutputTokens             *int64   `json:"speed_output_tokens,omitempty"`               // 有效成功请求的输出Token，用于渠道速度汇总
+	SpeedDurationSeconds          *float64 `json:"speed_duration_seconds,omitempty"`            // 有效成功请求的生成耗时，用于渠道速度汇总
 	TotalCacheReadInputTokens     *int64   `json:"total_cache_read_input_tokens,omitempty"`     // 总缓存读取Token
 	TotalCacheCreationInputTokens *int64   `json:"total_cache_creation_input_tokens,omitempty"` // 总缓存创建Token
 	TotalCost                     *float64 `json:"total_cost,omitempty"`                        // 标准成本（美元）

@@ -1915,6 +1915,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.stats.calls': '调用',
   'channels.stats.rate': '率',
   'channels.stats.firstByte': '首字',
+  'channels.stats.speed': '速度',
   'channels.stats.cacheRead': '缓读',
   'channels.stats.cacheCreate': '缓建',
   'channels.stats.cost': '成本',

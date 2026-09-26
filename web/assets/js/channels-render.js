@@ -496,6 +496,9 @@ function buildChannelTimingHtml(stats) {
   if (avgDuration > 0) {
     rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('stats.tooltipDuration')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgDuration.toFixed(2)}${window.t('common.seconds')}</span></div>`);
   }
+  if (Number.isFinite(stats.outputTokensPerSecond) && stats.outputTokensPerSecond > 0) {
+    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.speed')}</span><span class="ch-timing-value">${stats.outputTokensPerSecond.toFixed(1)} tok/s</span></div>`);
+  }
   rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.calls')}</span><span class="ch-timing-value"><span style="color: var(--success-600);">${successCount}</span>/<span style="color: var(--error-600);">${failureCount}</span>${window.t('stats.unitTimes')}</span></div>`);
 
   return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';

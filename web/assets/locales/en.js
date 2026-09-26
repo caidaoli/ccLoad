@@ -1915,6 +1915,7 @@ window.I18N_LOCALES['en'] = {
   'channels.stats.calls': 'Calls',
   'channels.stats.rate': 'Rate',
   'channels.stats.firstByte': 'TTFB',
+  'channels.stats.speed': 'Speed',
   'channels.stats.cacheRead': 'Read',
   'channels.stats.cacheCreate': 'Create',
   'channels.stats.cost': 'Cost',

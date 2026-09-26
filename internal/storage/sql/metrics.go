@@ -31,6 +31,11 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END) as avg_duration,
 			` + lastSuccessCol + `SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 AND output_tokens > 0 AND duration > 0 THEN output_tokens ELSE 0 END) as speed_output_tokens,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 AND output_tokens > 0 AND duration > 0 THEN
+				CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND first_byte_time < duration AND duration - first_byte_time >= 1
+					THEN duration - first_byte_time ELSE duration END
+				ELSE 0 END) as speed_duration,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,
 			SUM(COALESCE(cache_creation_input_tokens, 0)) as total_cache_creation_input_tokens,
 			SUM(COALESCE(cost, 0.0)) as total_cost,
@@ -71,7 +76,8 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		var entry model.StatsEntry
 		var avgFirstByteTime, avgDuration sql.NullFloat64
 		var lastSuccessAt sql.NullInt64
-		var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
+		var totalInputTokens, totalOutputTokens, speedOutputTokens, totalCacheReadTokens, totalCacheCreationTokens sql.NullInt64
+		var speedDuration sql.NullFloat64
 		var totalCost, effectiveCost sql.NullFloat64
 
 		scanArgs := []any{
@@ -83,7 +89,8 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			scanArgs = append(scanArgs, &lastSuccessAt)
 		}
 		scanArgs = append(scanArgs,
-			&totalInputTokens, &totalOutputTokens, &totalCacheReadTokens, &totalCacheCreationTokens,
+			&totalInputTokens, &totalOutputTokens, &speedOutputTokens, &speedDuration,
+			&totalCacheReadTokens, &totalCacheCreationTokens,
 			&totalCost, &effectiveCost,
 		)
 
@@ -106,6 +113,10 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		}
 		if totalOutputTokens.Valid && totalOutputTokens.Int64 > 0 {
 			entry.TotalOutputTokens = &totalOutputTokens.Int64
+		}
+		if speedOutputTokens.Valid && speedOutputTokens.Int64 > 0 && speedDuration.Valid && speedDuration.Float64 > 0 {
+			entry.SpeedOutputTokens = &speedOutputTokens.Int64
+			entry.SpeedDurationSeconds = &speedDuration.Float64
 		}
 		if totalCacheReadTokens.Valid && totalCacheReadTokens.Int64 > 0 {
 			entry.TotalCacheReadInputTokens = &totalCacheReadTokens.Int64
