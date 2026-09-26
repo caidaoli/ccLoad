@@ -461,6 +461,11 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if len(candidates) == 0 {
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
+	sessionAffinityKey := codexSessionAffinityKey(tokenHashString, c.Request.Header)
+	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
+	if hasSessionAffinity {
+		candidates = preferSessionAffinityChannel(candidates, sessionAffinity.channelID)
+	}
 	if channelID, ok := executionSession.routeChannelSnapshot(); ok {
 		candidates = prioritizePinnedChannel(candidates, channelID)
 	}
@@ -475,26 +480,28 @@ func (s *Server) executeResponsesWebsocketTurn(
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
 	header.Set("Content-Type", "application/json")
 	reqCtx := &proxyRequestContext{
-		clientModel:     clientModel,
-		originalModel:   modelName,
-		requestedModel:  requestedModel,
-		clientProtocol:  protocol.Codex,
-		codexClient:     isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
-		requestMethod:   http.MethodPost,
-		requestPath:     "/v1/responses",
-		rawQuery:        c.Request.URL.RawQuery,
-		body:            requestBody,
-		translatedBody:  requestBody,
-		header:          header,
-		isStreaming:     true,
-		tokenHash:       tokenHashString,
-		tokenID:         tokenIDInt64,
-		clientIP:        c.ClientIP(),
-		startTime:       startTime,
-		thinkingEffort:  thinkingEffort,
-		routingSession:  executionSession,
-		nativeCodexWS:   nativeCodexWS,
-		nativeCodexBody: bytes.Clone(nativeRequestBody),
+		clientModel:        clientModel,
+		originalModel:      modelName,
+		requestedModel:     requestedModel,
+		clientProtocol:     protocol.Codex,
+		codexClient:        isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
+		requestMethod:      http.MethodPost,
+		requestPath:        "/v1/responses",
+		rawQuery:           c.Request.URL.RawQuery,
+		body:               requestBody,
+		translatedBody:     requestBody,
+		header:             header,
+		isStreaming:        true,
+		tokenHash:          tokenHashString,
+		tokenID:            tokenIDInt64,
+		clientIP:           c.ClientIP(),
+		startTime:          startTime,
+		thinkingEffort:     thinkingEffort,
+		routingSession:     executionSession,
+		nativeCodexWS:      nativeCodexWS,
+		nativeCodexBody:    bytes.Clone(nativeRequestBody),
+		sessionAffinityKey: sessionAffinityKey,
+		sessionAffinity:    sessionAffinity,
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {

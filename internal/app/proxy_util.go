@@ -273,7 +273,7 @@ type proxyRequestContext struct {
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
 	routingSession          *responsesExecutionSession // 当前 Responses execution session 的首选渠道
-	sessionAffinityKey      string                     // Anthropic 会话绑定键（令牌+会话 ID），空表示不绑定
+	sessionAffinityKey      string                     // Anthropic/Codex 会话绑定键（令牌+会话 ID），空表示不绑定
 	sessionAffinity         sessionAffinityTarget      // 请求开始时的会话绑定，channelID=0 表示无
 	nativeCodexWS           *codexUpstreamWebsocketSession
 	nativeCodexBody         []byte

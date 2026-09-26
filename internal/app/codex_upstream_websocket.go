@@ -1255,6 +1255,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	replayBody []byte,
 	timeouts codexWebsocketTimeouts,
 	handshakeHeaders http.Header,
+	turnStateNamespace string,
 	onReconnectHandshake func(http.Header),
 ) *http.Response {
 	reader, writer := io.Pipe()
@@ -1355,6 +1356,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 				// Response.Body.Close cannot invalidate a reusable socket in that race.
 				body.completed.Store(true)
 			}
+			payload = tagCodexTurnStateMetadataEvent(payload, eventType, turnStateNamespace)
 			if err := writeSyntheticSSEFrame(writer, payload); err != nil {
 				s.invalidate(conn)
 				_ = writer.CloseWithError(err)
@@ -1432,6 +1434,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		}
 	}()
 	target := codexWebsocketTargetForRequest(cfg, replayReq, skipTLSVerify, baseURL)
+	turnStateNamespace := codexAccountIdentityNamespace(cfg)
 	if until, cooling := s.failureTracker.cooldown(target.failureTarget(), time.Now()); cooling {
 		return nil, replayReq, replayBody, &codexWebsocketTargetCooldownError{until: until}
 	}
@@ -1496,7 +1499,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 				if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
 					response := s.streamResponse(
 						ctx, connRetry, replayReq, dialer, target, replayReq, replayBody, timeouts, retryHeaders,
-						onReconnectHandshake,
+						turnStateNamespace, onReconnectHandshake,
 					)
 					handedOff = true
 					return response, replayReq, replayBody, nil
@@ -1515,7 +1518,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	}
 	response := s.streamResponse(
 		ctx, conn, usedReq, dialer, target, replayReq, replayBody, timeouts, handshakeHeaders,
-		onReconnectHandshake,
+		turnStateNamespace, onReconnectHandshake,
 	)
 	handedOff = true
 	return response, usedReq, usedBody, nil

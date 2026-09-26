@@ -15988,6 +15988,127 @@ func TestProxy_AnthropicSessionAffinity(t *testing.T) {
 	}
 }
 
+// Codex 会话按 Session-Id 粘在一个账号上；客户端回带的 turn-state 只发回签发它的账号，
+// 故障转移到其他账号时删除，不把 A 账号的 sticky routing 令牌泄露给 B 账号。
+func TestProxy_CodexSessionAffinityScopesTurnState(t *testing.T) {
+	type upstreamHit struct {
+		name      string
+		turnState []string
+	}
+	names := []string{"account-a", "account-b"}
+	var failing sync.Map // name → bool
+	hits := make(chan upstreamHit, 64)
+	upstreams := make(map[int]string, len(names))
+	channels := make([]testChannel, 0, len(names))
+	for index, name := range names {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if broken, _ := failing.Load(name); broken == true {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"error":{"type":"server_error","message":"boom"}}`)
+				return
+			}
+			hits <- upstreamHit{name: name, turnState: r.Header.Values("X-Codex-Turn-State")}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Codex-Turn-State", "state-"+name)
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-`+name+`","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		}))
+		defer upstream.Close()
+		upstreams[index] = upstream.URL
+		channels = append(channels, testChannel{
+			name: name, upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+			authType:        model.AuthTypeCodexOAuth,
+			oauthCredential: codexProxyTestCredential(t, "at-"+name, "rt-"+name, name),
+		})
+	}
+	env := setupProxyTestEnv(t, channels, upstreams)
+	ctx := context.Background()
+	configs, err := env.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	channelIDs := make(map[string]int64, len(configs))
+	for _, cfg := range configs {
+		channelIDs[cfg.Name] = cfg.ID
+	}
+	send := func(sessionID, turnState string) (upstreamHit, string) {
+		t.Helper()
+		headers := map[string]string{}
+		if sessionID != "" {
+			headers["Session-Id"] = sessionID
+		}
+		if turnState != "" {
+			headers["X-Codex-Turn-State"] = turnState
+		}
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": true, "input": "hi",
+		}, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		select {
+		case hit := <-hits:
+			return hit, response.Header().Get("X-Codex-Turn-State")
+		default:
+			t.Fatal("request succeeded without reaching an upstream")
+			return upstreamHit{}, ""
+		}
+	}
+
+	rotated := map[string]bool{}
+	for range 4 {
+		hit, _ := send("", "")
+		rotated[hit.name] = true
+	}
+	if !rotated["account-a"] || !rotated["account-b"] {
+		t.Fatalf("requests without session hit %v, want rotation across both accounts", rotated)
+	}
+
+	session := uuid.NewString()
+	first, boundState := send(session, "")
+	bound := first.name
+	if boundState == "state-"+bound || !strings.HasSuffix(boundState, "state-"+bound) {
+		t.Fatalf("relayed turn-state = %q, want account-tagged state-%s", boundState, bound)
+	}
+	for range 2 {
+		hit, _ := send(session, boundState)
+		if hit.name != bound {
+			t.Fatalf("session moved from %s to %s while %s stayed healthy", bound, hit.name, bound)
+		}
+		if len(hit.turnState) != 1 || hit.turnState[0] != "state-"+bound {
+			t.Fatalf("issuing account received turn-state %q, want original state-%s", hit.turnState, bound)
+		}
+	}
+
+	other := "account-a"
+	if bound == other {
+		other = "account-b"
+	}
+	failing.Store(bound, true)
+	hit, otherState := send(session, boundState)
+	if hit.name != other || len(hit.turnState) != 0 {
+		t.Fatalf("failover hit %s with turn-state %q, want %s without turn-state", hit.name, hit.turnState, other)
+	}
+	if !strings.HasSuffix(otherState, "state-"+other) || otherState == "state-"+other {
+		t.Fatalf("failover relayed turn-state = %q, want account-tagged state-%s", otherState, other)
+	}
+
+	// 原账号恢复后会话留在新账号，客户端本 turn 仍回带旧账号的令牌，照样删除。
+	failing.Store(bound, false)
+	if err := env.server.cooldownManager.ClearAllCooldowns(ctx, channelIDs[bound]); err != nil {
+		t.Fatalf("ClearAllCooldowns(%s): %v", bound, err)
+	}
+	env.server.invalidateChannelRelatedCache(channelIDs[bound])
+	hit, _ = send(session, boundState)
+	if hit.name != other || len(hit.turnState) != 0 {
+		t.Fatalf("rebound session hit %s with turn-state %q, want %s without turn-state", hit.name, hit.turnState, other)
+	}
+	hit, _ = send(session, "untagged-state")
+	if hit.name != other || len(hit.turnState) != 1 || hit.turnState[0] != "untagged-state" {
+		t.Fatalf("untagged turn-state reached %s as %q, want unchanged on %s", hit.name, hit.turnState, other)
+	}
+}
+
 func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
 	servedKeys := make(chan string, 16)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

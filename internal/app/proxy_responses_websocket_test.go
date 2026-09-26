@@ -2787,6 +2787,87 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	}
 }
 
+func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	echoed := make(chan gjson.Result, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade upstream websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			echoed <- gjson.GetBytes(payload, "client_metadata.x-codex-turn-state")
+			_ = conn.WriteJSON(map[string]any{
+				"type":    "codex.response.metadata",
+				"headers": map[string]any{"x-codex-turn-state": "state-ws"},
+			})
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp-turn-state", "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			})
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-codex-turn-state", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-turn-state", "rt-turn-state", "account-turn-state"), priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", nil)
+	send := func(turnState string) gjson.Result {
+		t.Helper()
+		request := map[string]any{
+			"type": "response.create", "model": "gpt-test",
+			"input": []any{map[string]any{"role": "user", "content": "hello"}},
+		}
+		if turnState != "" {
+			request["client_metadata"] = map[string]any{"x-codex-turn-state": turnState}
+		}
+		if err := downstream.WriteJSON(request); err != nil {
+			t.Fatalf("write downstream request: %v", err)
+		}
+		readWebsocketUntilType(t, downstream, "response.completed")
+		return <-echoed
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write downstream request: %v", err)
+	}
+	metadata := readWebsocketUntilType(t, downstream, "codex.response.metadata")
+	headers, _ := metadata["headers"].(map[string]any)
+	tagged, _ := headers["x-codex-turn-state"].(string)
+	if tagged == "state-ws" || !strings.HasSuffix(tagged, "state-ws") {
+		t.Fatalf("relayed metadata turn-state = %q, want account-tagged state-ws", tagged)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if first := <-echoed; first.Exists() {
+		t.Fatalf("first request echoed turn-state %q", first.String())
+	}
+
+	if got := send(tagged); got.String() != "state-ws" {
+		t.Fatalf("issuing account received turn-state %q, want original state-ws", got.Raw)
+	}
+	if got := send("ccl1.0123456789abcdef.state-other"); got.Exists() {
+		t.Fatalf("other account's turn-state reached upstream as %q", got.Raw)
+	}
+	if got := send("untagged-state"); got.String() != "untagged-state" {
+		t.Fatalf("untagged turn-state reached upstream as %q, want unchanged", got.Raw)
+	}
+}
+
 func TestNativeCodexWebsocketWindowHeaderRules(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

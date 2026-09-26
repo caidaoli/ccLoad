@@ -2511,6 +2511,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		return errRes, errDur, errErr
 	}
 
+	tagCodexTurnStateHeader(resp.Header, codexAccountIdentityNamespace(cfg))
+
 	// 4. 处理响应(传递upstreamProtocol用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64

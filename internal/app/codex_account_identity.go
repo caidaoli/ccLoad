@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -141,7 +142,11 @@ func scopeCodexAccountIdentityBody(body []byte, namespace string) []byte {
 		return body
 	}
 	if clientMetadata := gjson.GetBytes(body, "client_metadata"); clientMetadata.IsObject() {
-		if scoped, changed := scopeCodexIdentityObject([]byte(clientMetadata.Raw), namespace, true); changed {
+		scoped, changed := scopeCodexIdentityObject([]byte(clientMetadata.Raw), namespace, true)
+		if next, ok := resolveCodexTurnStateField(scoped, namespace); ok {
+			scoped, changed = next, true
+		}
+		if changed {
 			if next, err := sjson.SetRawBytes(body, "client_metadata", scoped); err == nil {
 				body = next
 			}
@@ -171,4 +176,96 @@ func scopeCodexAccountIdentityHeaders(h http.Header, namespace string) {
 			h.Set(codexTurnMetadataField, scoped)
 		}
 	}
+	if raw := strings.TrimSpace(h.Get(codexTurnStateField)); raw != "" {
+		if value, ok := resolveCodexTurnState(raw, namespace); ok {
+			h.Set(codexTurnStateField, value)
+		} else {
+			h.Del(codexTurnStateField)
+		}
+	}
+}
+
+// x-codex-turn-state 是上游按账号签发的 sticky routing 令牌，客户端每个 turn 只保存
+// 第一次收到的值并在该 turn 内原样回带。账号池故障转移后，客户端仍会把 A 账号的
+// 令牌带给 B 账号。回传给客户端时在令牌前加账号来源标签，回带时只把标签匹配当前
+// 账号的令牌还原发出，其他账号的令牌删除；无标签的令牌（非 OAuth 渠道、链式 ccLoad）
+// 原样保留。标签随令牌本身流转，无需服务端状态，跨重启有效。
+const (
+	codexTurnStateField     = "x-codex-turn-state"
+	codexTurnStateTagPrefix = "ccl1."
+)
+
+func codexTurnStateTag(namespace string) string {
+	digest := sha256.Sum256([]byte("ccload:codex-turn-state:" + codexAccountIdentityVersion + "\x00" + namespace))
+	return codexTurnStateTagPrefix + hex.EncodeToString(digest[:8]) + "."
+}
+
+// tagCodexTurnState 不跳过已带标签的值：嵌套标签逐层还原，结果仍是上游原值。
+func tagCodexTurnState(value, namespace string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || namespace == "" {
+		return value
+	}
+	return codexTurnStateTag(namespace) + value
+}
+
+// resolveCodexTurnState 返回应发往当前账号的值；false 表示令牌属于其他账号，必须删除。
+func resolveCodexTurnState(value, namespace string) (string, bool) {
+	if namespace == "" || !strings.HasPrefix(value, codexTurnStateTagPrefix) {
+		return value, true
+	}
+	tag := codexTurnStateTag(namespace)
+	if !strings.HasPrefix(value, tag) || len(value) == len(tag) {
+		return "", false
+	}
+	return value[len(tag):], true
+}
+
+// resolveCodexTurnStateField 处理 WS 请求 client_metadata 里回带的 turn-state。
+func resolveCodexTurnStateField(object []byte, namespace string) ([]byte, bool) {
+	field := gjson.GetBytes(object, codexTurnStateField)
+	if field.Type != gjson.String {
+		return object, false
+	}
+	raw := strings.TrimSpace(field.String())
+	value, ok := resolveCodexTurnState(raw, namespace)
+	if ok && value == field.String() {
+		return object, false
+	}
+	var next []byte
+	var err error
+	if ok {
+		next, err = sjson.SetBytes(object, codexTurnStateField, value)
+	} else {
+		next, err = sjson.DeleteBytes(object, codexTurnStateField)
+	}
+	if err != nil {
+		return object, false
+	}
+	return next, true
+}
+
+// tagCodexTurnStateHeader 标记上游响应头里的 turn-state（HTTP 响应与 WS 握手）。
+func tagCodexTurnStateHeader(h http.Header, namespace string) {
+	if raw := strings.TrimSpace(h.Get(codexTurnStateField)); raw != "" && namespace != "" {
+		h.Set(codexTurnStateField, tagCodexTurnState(raw, namespace))
+	}
+}
+
+// tagCodexTurnStateMetadataEvent 标记 WS metadata 事件 headers 里的 turn-state；
+// 官方客户端同样从这类事件取 turn-state。
+func tagCodexTurnStateMetadataEvent(payload []byte, eventType, namespace string) []byte {
+	if namespace == "" || (eventType != "codex.response.metadata" && eventType != "response.metadata") {
+		return payload
+	}
+	path := "headers." + codexTurnStateField
+	field := gjson.GetBytes(payload, path)
+	if field.Type != gjson.String || strings.TrimSpace(field.String()) == "" {
+		return payload
+	}
+	next, err := sjson.SetBytes(payload, path, tagCodexTurnState(field.String(), namespace))
+	if err != nil {
+		return payload
+	}
+	return next
 }

@@ -581,18 +581,21 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 		}
 	}
+	var sessionAffinityKey string
+	switch {
+	case clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages:
+		sessionAffinityKey = anthropicSessionAffinityKey(tokenHashStr, c.Request.Header, all)
+	case clientProtocol == protocol.Codex && requestFamily == protocol.RequestFamilyResponses:
+		sessionAffinityKey = codexSessionAffinityKey(tokenHashStr, c.Request.Header)
+	}
+	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
+	if hasSessionAffinity {
+		cands = preferSessionAffinityChannel(cands, sessionAffinity.channelID)
+	}
+	// 执行会话已钉住的渠道（在用的上游 WS 或 RetryOtherKeys 首选渠道）优先于会话粘性。
 	if routingSession != nil {
 		if channelID, ok := routingSession.routeChannelSnapshot(); ok {
 			cands = prioritizePinnedChannel(cands, channelID)
-		}
-	}
-	var sessionAffinityKey string
-	var sessionAffinity sessionAffinityTarget
-	if clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages {
-		sessionAffinityKey = anthropicSessionAffinityKey(tokenHashStr, c.Request.Header, all)
-		if target, ok := s.sessionAffinity.lookup(sessionAffinityKey, time.Now()); ok {
-			sessionAffinity = target
-			cands = preferSessionAffinityChannel(cands, target.channelID)
 		}
 	}
 

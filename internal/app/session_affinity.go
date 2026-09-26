@@ -9,6 +9,7 @@ import (
 )
 
 // sessionAffinityTTL 与 Anthropic 最长的 1h prompt cache 对齐：超过它缓存已失效，绑定没有价值。
+// Codex 会话共用同一 TTL。
 const sessionAffinityTTL = time.Hour
 
 // sessionAffinityTarget 是会话上次成功落到的渠道与 Key。
@@ -84,6 +85,20 @@ func anthropicSessionAffinityKey(tokenHash string, headers http.Header, body []b
 		return ""
 	}
 	return tokenHash + "\x00" + sessionID
+}
+
+// codexSessionAffinityKey 按令牌隔离 Codex 会话，沿用执行会话的 Session-Id/Thread-Id
+// 契约；body 里的 prompt_cache_key 只是缓存路由提示，不作会话标识。键带协议段，
+// 与 Anthropic 会话键不相交。
+func codexSessionAffinityKey(tokenHash string, headers http.Header) string {
+	if tokenHash == "" {
+		return ""
+	}
+	sessionID := responsesExecutionSessionID(headers)
+	if sessionID == "" {
+		return ""
+	}
+	return tokenHash + "\x00codex\x00" + sessionID
 }
 
 // preferSessionAffinityChannel 仅在绑定渠道仍属候选中最高配置优先级时置顶：
