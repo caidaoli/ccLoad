@@ -1269,12 +1269,10 @@ func antigravityCredentialPoolScope(cfg *model.Config) string {
 		digest := sha256.Sum256([]byte(credential.RefreshToken))
 		return "refresh:" + hex.EncodeToString(digest[:])
 	}
-	// A malformed/incomplete credential must not make unrelated channels share
-	// a pool. Channel ID is stable and is only a defensive fallback.
-	if cfg.ID != 0 {
-		return fmt.Sprintf("channel:%d", cfg.ID)
-	}
-	return ""
+	// Incomplete credentials cannot provide a stable account identity. Include
+	// their payload so replacing the account on the same channel splits the pool.
+	digest := sha256.Sum256([]byte(cfg.OAuthCredential))
+	return fmt.Sprintf("antigravity:channel:%d:credential:%x", cfg.ID, digest)
 }
 
 // anthropicCredentialPoolScope follows the account identity used for Claude
@@ -1302,6 +1300,92 @@ func anthropicCredentialPoolScope(cfg *model.Config) string {
 	return fmt.Sprintf("anthropic:channel:%d:%x", cfg.ID, digest)
 }
 
+// otherOAuthCredentialPoolScope isolates one OAuth account's connections from
+// other accounts, including when a channel is reauthorized for a new account.
+// Prefer account identifiers over rotating access tokens to preserve reuse.
+func otherOAuthCredentialPoolScope(cfg *model.Config) string {
+	if cfg == nil || !cfg.UsesOAuth() {
+		return ""
+	}
+	var credential struct {
+		AccountID     string `json:"account_id"`
+		ChatGPTUserID string `json:"chatgpt_user_id"`
+		Email         string `json:"email"`
+		Subject       string `json:"sub"`
+		TeamID        string `json:"team_id"`
+		UserID        string `json:"user_id"`
+		SystemID      string `json:"system_id"`
+		UID           string `json:"uid"`
+		EnterpriseID  string `json:"enterprise_id"`
+		Domain        string `json:"domain"`
+		BaseURL       string `json:"base_url"`
+		APIKey        string `json:"api_key"`
+		RefreshToken  string `json:"refresh_token"`
+		AccessToken   string `json:"access_token"`
+	}
+	identity := "raw:" + cfg.OAuthCredential
+	if json.Unmarshal([]byte(cfg.OAuthCredential), &credential) == nil {
+		first := func(options ...[2]string) string {
+			for _, option := range options {
+				if value := strings.TrimSpace(option[1]); value != "" {
+					return option[0] + ":" + value
+				}
+			}
+			return ""
+		}
+		switch cfg.GetAuthType() {
+		case model.AuthTypeCodexOAuth:
+			if credential.ChatGPTUserID != "" || credential.Email != "" {
+				identity = fmt.Sprintf("account:%q:user:%q:email:%q", credential.AccountID,
+					credential.ChatGPTUserID, strings.ToLower(credential.Email))
+			} else if credential.AccountID != "" {
+				// An account ID alone may identify a workspace shared by users.
+				// Keep the credential as a discriminator until user identity is known.
+				identity = fmt.Sprintf("account:%q:%s", credential.AccountID, first(
+					[2]string{"refresh", credential.RefreshToken},
+					[2]string{"access", credential.AccessToken},
+				))
+			} else if value := first(
+				[2]string{"email", strings.ToLower(credential.Email)},
+				[2]string{"refresh", credential.RefreshToken},
+				[2]string{"access", credential.AccessToken},
+			); value != "" {
+				identity = value
+			}
+		case model.AuthTypeXAIOAuth:
+			if value := first(
+				[2]string{"subject", credential.Subject},
+				[2]string{"email", strings.ToLower(credential.Email)},
+				[2]string{"refresh", credential.RefreshToken},
+			); value != "" {
+				identity = fmt.Sprintf("%s:team:%q", value, credential.TeamID)
+			}
+		case model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth:
+			if value := first(
+				[2]string{"user", credential.UserID},
+				[2]string{"email", strings.ToLower(credential.Email)},
+				[2]string{"api-key", credential.APIKey},
+				[2]string{"refresh", credential.RefreshToken},
+			); value != "" {
+				identity = value
+			}
+		case model.AuthTypeZedOAuth:
+			if credential.UserID != "" {
+				identity = fmt.Sprintf("user:%q:system:%q", credential.UserID, credential.SystemID)
+			}
+		case model.AuthTypeCodeBuddyOAuth:
+			if credential.UID != "" {
+				identity = fmt.Sprintf("uid:%q:enterprise:%q:domain:%q:base:%q",
+					credential.UID, credential.EnterpriseID, credential.Domain, credential.BaseURL)
+			} else if credential.RefreshToken != "" {
+				identity = "refresh:" + credential.RefreshToken
+			}
+		}
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("oauth:%s:channel:%d:%x", cfg.GetAuthType(), cfg.ID, digest)
+}
+
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg == nil {
 		return s.client
@@ -1316,6 +1400,8 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		credentialScope = antigravityCredentialPoolScope(cfg)
 	} else if cfg.UsesAnthropicOAuth() {
 		credentialScope = anthropicCredentialPoolScope(cfg)
+	} else if cfg.UsesOAuth() {
+		credentialScope = otherOAuthCredentialPoolScope(cfg)
 	}
 	if credentialScope != "" {
 		// Tests and embedders may inject a semantic RoundTripper. It already is

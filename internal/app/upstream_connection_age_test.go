@@ -68,12 +68,15 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	base := buildHTTPTransport(true, 1)
 	maxAge := 100 * time.Millisecond
 	server := &Server{
-		client:            newUpstreamHTTPClient(base, maxAge),
-		antigravityClient: newAntigravityHTTPClient(base, maxAge),
+		client:                   newUpstreamHTTPClient(base, maxAge),
+		skipTLSVerify:            true,
+		upstreamConnectionMaxAge: maxAge,
 	}
 	t.Cleanup(func() {
 		closeUpstreamHTTPClient(server.client)
-		closeUpstreamHTTPClient(server.antigravityClient)
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
 	})
 
 	request := func(config *model.Config, path string) httptrace.GotConnInfo {
@@ -99,7 +102,8 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 		return <-gotConn
 	}
 
-	antigravity := &model.Config{AuthType: model.AuthTypeAntigravityOAuth}
+	antigravity := &model.Config{ID: 1, AuthType: model.AuthTypeAntigravityOAuth,
+		OAuthCredential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`}
 	first := request(antigravity, "/antigravity-first")
 	second := request(antigravity, "/antigravity-second")
 	if !second.Reused || first.Conn != second.Conn {
@@ -377,6 +381,107 @@ func TestServerDoesNotReuseAnthropicDirectConnectionAcrossAccounts(t *testing.T)
 	}
 }
 
+func TestServerIsolatesOtherOAuthConnectionsByAccountAndProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(proxy.Close)
+
+	credential := func(authType, account, access string) string {
+		switch authType {
+		case model.AuthTypeCodexOAuth:
+			return fmt.Sprintf(`{"type":"codex","account_id":%q,"access_token":%q,"refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`, account, access)
+		case model.AuthTypeXAIOAuth:
+			return fmt.Sprintf(`{"type":"xai","sub":%q,"access_token":%q,"refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`, account, access)
+		case model.AuthTypeZAIOAuth:
+			return fmt.Sprintf(`{"type":"zai","user_id":%q,"api_key":"key","access_token":%q}`, account, access)
+		case model.AuthTypeCursorOAuth:
+			return fmt.Sprintf(`{"type":"cursor","user_id":%q,"access_token":%q}`, account, access)
+		case model.AuthTypeZedOAuth:
+			return fmt.Sprintf(`{"type":"zed","user_id":%q,"access_token":%q}`, account, access)
+		case model.AuthTypeCodeBuddyOAuth:
+			return fmt.Sprintf(`{"type":"codebuddy","uid":%q,"access_token":%q}`, account, access)
+		default:
+			t.Fatalf("unexpected OAuth auth type %q", authType)
+			return ""
+		}
+	}
+
+	for _, authType := range []string{
+		model.AuthTypeCodexOAuth,
+		model.AuthTypeXAIOAuth,
+		model.AuthTypeZAIOAuth,
+		model.AuthTypeCursorOAuth,
+		model.AuthTypeZedOAuth,
+		model.AuthTypeCodeBuddyOAuth,
+	} {
+		for _, useProxy := range []bool{false, true} {
+			name := authType + "/direct"
+			if useProxy {
+				name = authType + "/proxy"
+			}
+			t.Run(name, func(t *testing.T) {
+				server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+				t.Cleanup(func() {
+					closeUpstreamHTTPClient(server.client)
+					if server.credentialTransports != nil {
+						server.credentialTransports.closeAll()
+					}
+					server.proxyTransports.Range(func(_, value any) bool {
+						closeUpstreamHTTPClient(value.(*http.Client))
+						return true
+					})
+				})
+				first := &model.Config{ID: 1, AuthType: authType, OAuthCredential: credential(authType, "account-a", "access-a")}
+				rotated := first.Clone()
+				rotated.OAuthCredential = credential(authType, "account-a", "access-rotated")
+				second := &model.Config{ID: 2, AuthType: authType, OAuthCredential: credential(authType, "account-b", "access-b")}
+				replaced := first.Clone()
+				replaced.OAuthCredential = credential(authType, "account-c", "access-c")
+				url := upstream.URL
+				if useProxy {
+					first.ProxyURL, rotated.ProxyURL, second.ProxyURL, replaced.ProxyURL = proxy.URL, proxy.URL, proxy.URL, proxy.URL
+					url = "http://oauth.example.test/resource"
+				}
+				request := func(cfg *model.Config) httptrace.GotConnInfo {
+					t.Helper()
+					gotConn := make(chan httptrace.GotConnInfo, 1)
+					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+						GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+					}))
+					resp, err := server.getClientForChannel(cfg).Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
+					if err := resp.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					return <-gotConn
+				}
+				firstConn := request(first)
+				rotatedConn := request(rotated)
+				secondConn := request(second)
+				replacedConn := request(replaced)
+				if !rotatedConn.Reused || rotatedConn.Conn != firstConn.Conn {
+					t.Fatal("access-token rotation did not reuse the same account connection")
+				}
+				if secondConn.Conn == firstConn.Conn || replacedConn.Conn == firstConn.Conn || replacedConn.Conn == secondConn.Conn {
+					t.Fatal("different OAuth accounts reused a physical connection")
+				}
+			})
+		}
+	}
+}
+
 func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 	var requests atomic.Int32
 	respond := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -417,6 +522,20 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 			credential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh-a","expired":"2099-01-01T00:00:00Z"}`},
 		{name: "Antigravity proxy", authType: model.AuthTypeAntigravityOAuth, proxyURL: proxy.URL,
 			credential: `{"type":"antigravity","access_token":"access","refresh_token":"refresh-b","expired":"2099-01-01T00:00:00Z"}`},
+		{name: "Codex direct", authType: model.AuthTypeCodexOAuth,
+			credential: `{"type":"codex","account_id":"account-a","access_token":"access","refresh_token":"refresh"}`},
+		{name: "Codex proxy", authType: model.AuthTypeCodexOAuth, proxyURL: proxy.URL,
+			credential: `{"type":"codex","account_id":"account-b","access_token":"access","refresh_token":"refresh"}`},
+		{name: "xAI direct", authType: model.AuthTypeXAIOAuth,
+			credential: `{"type":"xai","sub":"account-a","access_token":"access","refresh_token":"refresh"}`},
+		{name: "Z.ai direct", authType: model.AuthTypeZAIOAuth,
+			credential: `{"type":"zai","user_id":"account-a","api_key":"key"}`},
+		{name: "Cursor direct", authType: model.AuthTypeCursorOAuth,
+			credential: `{"type":"cursor","user_id":"account-a","access_token":"access"}`},
+		{name: "Zed direct", authType: model.AuthTypeZedOAuth,
+			credential: `{"type":"zed","user_id":"account-a","access_token":"access"}`},
+		{name: "CodeBuddy direct", authType: model.AuthTypeCodeBuddyOAuth,
+			credential: `{"type":"codebuddy","uid":"account-a","access_token":"access"}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &model.Config{ID: 1, AuthType: tt.authType, OAuthCredential: tt.credential, ProxyURL: tt.proxyURL}

@@ -1065,12 +1065,8 @@ func (s *Server) zaiCodingPlanModels(ctx context.Context, cfg *model.Config, api
 	if s == nil || s.zaiService == nil {
 		return nil, errors.New("z.ai model discovery is unavailable")
 	}
-	service := s.zaiService
-	if client := s.modelDiscoveryClient(cfg); client != nil {
-		proxied := *s.zaiService
-		proxied.Client = client
-		service = &proxied
-	}
+	service := *s.zaiService
+	service.Client = s.getClientForChannel(cfg)
 	models, err := service.ListModels(ctx, apiKey)
 	if err == nil && len(models) > 0 {
 		return models, nil
