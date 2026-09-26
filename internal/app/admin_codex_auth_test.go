@@ -170,6 +170,23 @@ func (s *concurrentOAuthWinnerStore) injectWinner(ctx context.Context, channelID
 	return injected, s.winnerErr
 }
 
+// parseTokenRequestForm fills request.Form from either grant encoding: native
+// Codex refreshes with a JSON body, authorization-code exchanges use a form.
+func parseTokenRequestForm(request *http.Request) error {
+	if !strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
+		return request.ParseForm()
+	}
+	var grant map[string]string
+	if err := json.NewDecoder(request.Body).Decode(&grant); err != nil {
+		return err
+	}
+	request.Form = url.Values{}
+	for key, value := range grant {
+		request.Form.Set(key, value)
+	}
+	return nil
+}
+
 func codexTestIDToken(t *testing.T, email, accountID string) string {
 	return codexTestIDTokenForPlan(t, email, accountID, "plus")
 }
@@ -262,7 +279,7 @@ func newAcceptedCodexImportClient() *http.Client {
 				Request:    request,
 			}, nil
 		case request.Method == http.MethodPost && request.URL.String() == codexauth.DefaultTokenURL:
-			if err := request.ParseForm(); err != nil {
+			if err := parseTokenRequestForm(request); err != nil {
 				return nil, fmt.Errorf("parse Codex refresh request: %w", err)
 			}
 			if request.Form.Get("grant_type") != "refresh_token" || request.Form.Get("refresh_token") == "" {
@@ -1953,7 +1970,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 			}
 			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
 		case request.Method == http.MethodPost && request.URL.String() == codexauth.DefaultTokenURL:
-			if err := request.ParseForm(); err != nil {
+			if err := parseTokenRequestForm(request); err != nil {
 				return nil, err
 			}
 			if request.Form.Get("refresh_token") == "rt-refreshable" {
@@ -4084,7 +4101,7 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	freeIDToken := codexTestIDTokenForPlan(t, "refresh@example.com", "account-refresh", "free")
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		refreshCount.Add(1)
-		if err := r.ParseForm(); err != nil {
+		if err := parseTokenRequestForm(r); err != nil {
 			t.Errorf("ParseForm() error = %v", err)
 		}
 		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "rt-old" {
@@ -4169,7 +4186,7 @@ func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 	var refreshCount atomic.Int32
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		refreshCount.Add(1)
-		if err := r.ParseForm(); err != nil {
+		if err := parseTokenRequestForm(r); err != nil {
 			t.Fatal(err)
 		}
 		if got := r.Form.Get("refresh_token"); got != "rt-old" {
@@ -4765,7 +4782,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 		var refreshCount atomic.Int32
 		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			refreshCount.Add(1)
-			if err := r.ParseForm(); err != nil {
+			if err := parseTokenRequestForm(r); err != nil {
 				t.Error(err)
 			}
 			if got := r.Form.Get("refresh_token"); got != "rt-winner" {
@@ -5140,7 +5157,7 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 
 	idToken := codexTestIDTokenForPlan(t, "manual-refresh@example.com", "account-manual-refresh", "team")
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+		if err := parseTokenRequestForm(r); err != nil {
 			t.Errorf("ParseForm() error = %v", err)
 		}
 		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "rt-old" {

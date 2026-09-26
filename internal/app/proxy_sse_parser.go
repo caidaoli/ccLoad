@@ -592,6 +592,12 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 
 	payloadType, _ := event["type"].(string)
 
+	if !p.hasStreamOutput && isEmptyResponsesIncomplete(eventType, payloadType, data) {
+		log.Printf("[WARN]  [SSE错误事件] 上游 response.incomplete 无任何输出(0 tokens)，按流中断处理: %s", data)
+		p.lastError = []byte(responsesEmptyIncompleteErrorPayload)
+		return nil
+	}
+
 	// Responses 元数据事件不构成语义输出：客户端可以在这些事件后重新开始回合，
 	// 与原生 WS 路径的 isCodexWebsocketSemanticEvent 判定对齐。event: 行与
 	// JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的内容
@@ -745,6 +751,33 @@ func isSuccessfulResponsesTerminal(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// responsesEmptyIncompleteErrorPayload 复用流中断错误码：分类为 599，
+// 冷却当前模型并切换候选；候选耗尽时 Responses WS 客户端按中断重放。
+const responsesEmptyIncompleteErrorPayload = `{"type":"error","error":{"type":"server_error","code":"` +
+	responsesWebsocketInterruptedCode + `","message":"upstream terminated with incomplete empty response (0 tokens)"}}`
+
+// isEmptyResponsesIncomplete 识别上游静默中止：response.incomplete 没有任何
+// output 且 usage.output_tokens 明确为数字 0（对齐 CLIProxyAPI
+// IsCodexTerminalEmptyIncomplete）。调用方还须保证此前没有语义输出。
+// content_filter 是确定性结果，换渠道重放只会连带冷却，保持原样返回。
+func isEmptyResponsesIncomplete(eventType, payloadType, data string) bool {
+	if payloadType == "" {
+		payloadType = eventType
+	}
+	if payloadType != "response.incomplete" {
+		return false
+	}
+	response := gjson.Get(data, "response")
+	if response.Get("incomplete_details.reason").String() == "content_filter" {
+		return false
+	}
+	if output := response.Get("output"); output.IsArray() && len(output.Array()) > 0 {
+		return false
+	}
+	outputTokens := response.Get("usage.output_tokens")
+	return outputTokens.Type == gjson.Number && strings.TrimSpace(outputTokens.Raw) == "0"
 }
 
 func isImagesStreamTerminal(eventType string) bool {

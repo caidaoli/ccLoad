@@ -331,6 +331,17 @@ func (s *Server) buildProxyRequest(
 			body = injectCodexPromptCacheKey(body, codexSessionID)
 		}
 	}
+	// 1.9 Codex OAuth 账号作用域身份。重试回放的 wire body 已经映射过，不能再映射；
+	// Session-Id 兜底改为跟随最终 prompt_cache_key，首轮与回放保持一致。
+	codexIdentityNamespace := codexAccountIdentityNamespace(cfg)
+	if codexIdentityNamespace != "" && isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
+		if reqCtx == nil || !reqCtx.replayBodyRulesApplied {
+			body = scopeCodexAccountIdentityBody(body, codexIdentityNamespace)
+		}
+		if codexSessionID != "" {
+			codexSessionID = readCodexPromptCacheKey(body)
+		}
+	}
 	if isZedResponsesRequest(cfg, upstreamProtocol) {
 		body, reqCtx.zedWire, err = finalizeZedResponsesBodyWithOptions(
 			s.protocolRegistry, body, reqCtx.originalBody, zedBodyRulesPreserveThinking(cfg.BodyRules()),
@@ -351,6 +362,8 @@ func (s *Server) buildProxyRequest(
 	if upstreamProtocol == protocol.Codex || (cfg.UsesCodexOAuth() &&
 		(requestPath == "/images/generations" || requestPath == "/images/edits")) {
 		copyCodexHTTPHeaders(req.Header, hdr)
+		// 只映射客户端原始头；自定义规则稍后写入的值按运维配置原样发送。
+		scopeCodexAccountIdentityHeaders(req.Header, codexIdentityNamespace)
 	} else {
 		copyRequestHeaders(req, hdr)
 	}
@@ -367,6 +380,15 @@ func (s *Server) buildProxyRequest(
 
 	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）
 	ensureCodexSessionHeader(req.Header, codexSessionID)
+
+	// 5.6 Codex OAuth 路由提示与 responses-lite 头：由最终 body 派生，早于自定义规则以便
+	// 运维覆盖或删除。WS 客户端的 lite 信号在 client_metadata 里，HTTP 上游只认请求头。
+	if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
+		setCodexRoutingHint(req.Header, body)
+		if codexResponsesLiteRequested(body, req.Header) {
+			req.Header.Set(codexResponsesLiteHeader, "true")
+		}
+	}
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
@@ -2330,7 +2352,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			cfg, replaySourceBody, replayBody,
 		)
 		replayReq := cloneRequestWithBody(httpReq, wsReplayBody)
-		prepareCodexWebsocketInputHeaders(replayReq.Header, hdr, cfg.HeaderRules())
+		// 规则删掉的头会从客户端头补回，补回值也必须是账号作用域映射后的。
+		wsHeaderSource := hdr
+		if namespace := codexAccountIdentityNamespace(cfg); namespace != "" {
+			wsHeaderSource = hdr.Clone()
+			scopeCodexAccountIdentityHeaders(wsHeaderSource, namespace)
+		}
+		prepareCodexWebsocketInputHeaders(replayReq.Header, wsHeaderSource, cfg.HeaderRules())
 		incrementalSourceBody := bytes.Clone(native.incrementalBody)
 		// The replay request and the incremental request do not necessarily share
 		// the same body provenance. A retry replay is built from an already
@@ -2349,7 +2377,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if errBuild != nil {
 			return nil, 0, errBuild
 		}
-		prepareCodexWebsocketInputHeaders(incrementalReq.Header, hdr, cfg.HeaderRules())
+		prepareCodexWebsocketInputHeaders(incrementalReq.Header, wsHeaderSource, cfg.HeaderRules())
 		// buildProxyRequest applies body rules and prompt_cache_key; send the
 		// resulting wire body, not the pre-normalized caller input.
 		incrementalBody := stripInjectedCodexOAuthInstructionsForWebsocket(
@@ -3528,6 +3556,7 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 		return body
 	}
 	body = sanitizeCodexInputItemIDs(body)
+	body = normalizeCodexToolSchemas(body)
 	// Anyrouter rejects Codex's per-content classification metadata.
 	if cfg != nil && strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
 		for index, item := range gjson.GetBytes(body, "input").Array() {
@@ -4502,6 +4531,7 @@ func (s *Server) tryCodexOAuthChannel(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.CodexAccessToken = credential.AccessToken
 		runtimeCfg.CodexAccountID = credential.AccountID
+		runtimeCfg.CodexUserID = credential.ChatGPTUserID
 		runtimeCfg.CodexQuotaEpochAt = credential.QuotaCostUsage.EpochTime()
 		runtimeCfg.CodexAccountFedRAMP = credential.AccountFedRAMP
 		return runtimeCfg, credential.AccessToken, err

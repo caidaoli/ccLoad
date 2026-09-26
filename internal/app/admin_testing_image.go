@@ -663,9 +663,7 @@ func (s *Server) testChannelImageGenerationWithURL(
 	} else if cfg.UsesXAIOAuth() {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	// 部分兼容网关会解压响应体却保留 Content-Encoding: gzip。
-	// 强制请求 identity，避免 net/http 再次自动解压并报 gzip: invalid header。
-	req.Header.Set("Accept-Encoding", "identity")
+	setAdminTestAcceptEncoding(cfg, req)
 
 	debugCapture := s.captureDebugRequest(req, body)
 	resp, err := s.doUpstreamRequest(cfg, req)
@@ -822,7 +820,7 @@ func (s *Server) testResponsesImageGeneration(
 	} else {
 		injectXAIAPIResponsesHeaders(req, apiKey)
 	}
-	req.Header.Set("Accept-Encoding", "identity")
+	setAdminTestAcceptEncoding(cfg, req)
 	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
 		result := imageGenerationErrorResult(start, err)

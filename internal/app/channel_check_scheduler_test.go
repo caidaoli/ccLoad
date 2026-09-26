@@ -394,7 +394,7 @@ func TestRunScheduledChannelChecks_CodexOAuthWithoutAPIKeys(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/oauth/token" {
 					refreshCalls.Add(1)
-					if err := r.ParseForm(); err != nil {
+					if err := parseTokenRequestForm(r); err != nil {
 						t.Errorf("parse refresh request: %v", err)
 					}
 					if r.Form.Get("refresh_token") != "rt-scheduled-current" {

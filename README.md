@@ -537,6 +537,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 `POST /v1/images/generations` is OpenAI Images-compatible, with its own body-size limit controlled by `max_image_body_bytes`. When the channel model is an xAI conversational model at `grok-4.6` or later, ccLoad bridges the request into an xAI Responses `image_generation` tool call: non-streaming requests aggregate into standard Images JSON, and streaming requests emit `partial_image` / `completed` SSE events.
 
+**Codex CLI (recommended configuration)**:
+
+Keep the built-in `openai` provider and change only its address; do not define a custom `[model_providers.*]` entry for ccLoad:
+
+```bash
+# Log in with an API key; use your ccLoad API token as the key
+printenv CCLOAD_API_TOKEN | codex login --with-api-key
+```
+
+```toml
+# ~/.codex/config.toml
+openai_base_url = "http://localhost:8080/v1"
+```
+
+The built-in provider sends the `version` header and enables Responses WebSocket and standalone web search. With API-key login and a custom address, the client uses only its bundled model catalog (per-model instructions, tool shapes and the responses-lite switch ship with each client release) and never fetches ccLoad's synthesized `/models`. Custom providers omit `version` and WebSocket by default, so their wire traffic diverges from a direct official client.
+
 **Codex Responses WebSocket**:
 
 The downstream and upstream WebSockets are independent. Authenticated clients can always upgrade `GET /v1/responses` or the Codex direct-route aliases `GET /v1/codex/responses` and `GET /backend-api/codex/responses`; a channel's `websockets` field only controls whether ccLoad tries a native Codex upstream WebSocket. Channels without that field still participate through the HTTP/SSE bridge and remain eligible for failover.

@@ -873,20 +873,26 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		http.MethodPost,
 		plan,
 		http.Header{
-			"Accept":                                []string{"application/problem+json"},
-			"Authorization":                         []string{"Bearer client-attacker"},
-			"Content-Type":                          []string{"text/plain"},
-			"Originator":                            []string{"client-attacker"},
-			"User-Agent":                            []string{"client-attacker"},
-			"Version":                               []string{"1.2.3"},
-			"X-Api-Key":                             []string{"client-attacker"},
-			"X-Arbitrary-Client":                    []string{"drop-me"},
-			"X-Client-Request-Id":                   []string{"request-1"},
-			"X-Codex-Beta-Features":                 []string{"feature-1"},
-			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
-			"X-Codex-Turn-State":                    []string{"turn-state-1"},
-			"X-Forwarded-For":                       []string{"203.0.113.10"},
-			"X-ResponsesAPI-Include-Timing-Metrics": []string{"http-must-drop"},
+			"Accept":                                 []string{"application/problem+json"},
+			"Authorization":                          []string{"Bearer client-attacker"},
+			"Content-Type":                           []string{"text/plain"},
+			"Originator":                             []string{"client-attacker"},
+			"User-Agent":                             []string{"client-attacker"},
+			"Version":                                []string{"1.2.3"},
+			"X-Api-Key":                              []string{"client-attacker"},
+			"X-Arbitrary-Client":                     []string{"drop-me"},
+			"X-Client-Request-Id":                    []string{"request-1"},
+			"X-Codex-Beta-Features":                  []string{"feature-1"},
+			"X-Codex-Turn-Metadata":                  []string{`{"turn_id":"turn-1"}`},
+			"X-Codex-Turn-State":                     []string{"turn-state-1"},
+			"X-Codex-Parent-Thread-Id":               []string{"parent-thread-1"},
+			"X-Forwarded-For":                        []string{"203.0.113.10"},
+			"X-Oai-Attestation":                      []string{"client-device-proof"},
+			"X-Openai-Internal-Codex-Residency":      []string{"us"},
+			"X-Openai-Internal-Codex-Responses-Lite": []string{"true"},
+			"X-Openai-Memgen-Request":                []string{"true"},
+			"X-Openai-Subagent":                      []string{"review"},
+			"X-ResponsesAPI-Include-Timing-Metrics":  []string{"http-must-drop"},
 		},
 		"",
 		cfg.GetURLs()[0],
@@ -903,7 +909,7 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 	wantHeaders := map[string]string{
 		"Accept":                "application/json",
 		"Authorization":         "Bearer sk-static",
-		"Connection":            "Keep-Alive",
+		"Connection":            "",
 		"Content-Type":          "application/json",
 		"Originator":            "codex-tui",
 		"Session-Id":            "session-1",
@@ -916,6 +922,11 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"X-Codex-Turn-State":    "turn-state-1",
 		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
 		"X-Configured":          "kept",
+		// 官方 Codex 按请求发送的子代理、父线程、记忆整理与 responses-lite 头。
+		"X-Codex-Parent-Thread-Id":               "parent-thread-1",
+		"X-OpenAI-Internal-Codex-Responses-Lite": "true",
+		"X-OpenAI-Memgen-Request":                "true",
+		"X-OpenAI-Subagent":                      "review",
 	}
 	for name, want := range wantHeaders {
 		if got := gotHeaders.Get(name); got != want {
@@ -929,6 +940,9 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"X-Arbitrary-Client",
 		"X-Forwarded-For",
 		"X-ResponsesAPI-Include-Timing-Metrics",
+		// 设备证明与数据驻留声明属于客户端自己的 ChatGPT 账号，不能挂到渠道账号上。
+		"X-Oai-Attestation",
+		"X-OpenAI-Internal-Codex-Residency",
 	} {
 		if got := gotHeaders.Get(name); got != "" {
 			t.Errorf("%s leaked upstream with value %q; headers=%v", name, got, gotHeaders)

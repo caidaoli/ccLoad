@@ -1420,6 +1420,21 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 			antigravityHTTP11Only: antigravityHTTP11Only,
 			credentialScope:       credentialScope,
 		}
+		// Codex OAuth 的 Cloudflare Cookie 跟随账号与出口代理：换代理即换出口 IP，
+		// 旧 Cookie 随旧连接池一起淘汰。WebSocket 握手经 codexWebsocketDialer 共用同一 jar。
+		// 官方 reqwest 未编入任何解压 feature，不发 Accept-Encoding；Go 默认会补 gzip，
+		// 这里关掉，uTLS 的 H2/H1 与代际轮换都从该 Transport 继承。
+		newCredentialClient := func(transport *http.Transport) *http.Client {
+			codexOAuth := cfg.UsesCodexOAuth()
+			if codexOAuth {
+				transport.DisableCompression = true
+			}
+			client := clientFactory(transport, s.upstreamConnectionMaxAge)
+			if codexOAuth {
+				client.Jar = newCodexCloudflareCookieJar()
+			}
+			return client
+		}
 		cache := s.getCredentialHTTPClientCache()
 		client, err := cache.getOrCreate(key, func() (*http.Client, error) {
 			var transport *http.Transport
@@ -1432,7 +1447,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 			if err != nil {
 				return nil, err
 			}
-			return clientFactory(transport, s.upstreamConnectionMaxAge), nil
+			return newCredentialClient(transport), nil
 		})
 		if err == nil {
 			return client
@@ -1444,7 +1459,7 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		fallbackKey := key
 		fallbackKey.proxyURL = ""
 		fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
-			return clientFactory(buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount), s.upstreamConnectionMaxAge), nil
+			return newCredentialClient(buildHTTPTransport(s.skipTLSVerify, s.upstreamChannelCount)), nil
 		})
 		if fallbackErr == nil {
 			return fallback

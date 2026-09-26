@@ -493,7 +493,7 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 			{Action: model.RuleActionOverride, Path: "service_tier", Value: json.RawMessage(`"ultrafast"`)},
 		}},
 	}
-	body := []byte(`{"model":"gpt-5.4-mini","stream":false,"input":[{"role":"system","content":"rules"}],"reasoning":{"effort":"minimal"},"max_output_tokens":12,"temperature":0.2,"truncation":"auto","context_management":{"type":"compaction"},"user":"u","previous_response_id":"resp-old","generate":true,"tools":[{"type":"web_search_preview"}]}`)
+	body := []byte(`{"model":"gpt-5.4-mini","stream":false,"input":[{"role":"system","content":"rules"}],"reasoning":{"effort":"minimal"},"max_output_tokens":12,"temperature":0.2,"truncation":"auto","context_management":{"type":"compaction"},"user":"u","previous_response_id":"resp-old","generate":true,"tools":[{"type":"web_search_preview"}],"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`)
 	reqCtx := &requestContext{
 		ctx: context.Background(), startTime: time.Now(), isStreaming: false,
 		clientProtocol: protocol.Codex, upstreamProtocol: protocol.Codex,
@@ -511,11 +511,19 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 			"X-Forwarded-For":                       []string{"203.0.113.10"},
 			"X-Arbitrary-Client":                    []string{"drop-me"},
 			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
+			"X-Codex-Routing-Hint":                  []string{"model=client-stale"},
 		},
 		"", "/v1/responses", cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest() error = %v", err)
+	}
+	if got := req.Header.Get("X-Codex-Routing-Hint"); got != "model=gpt-5.4-mini;tier=ultrafast" {
+		t.Fatalf("X-Codex-Routing-Hint = %q, want derived from final wire body", got)
+	}
+	// WebSocket 客户端的 responses-lite 信号在 client_metadata 里，HTTP 上游只认请求头。
+	if got := req.Header.Get("X-OpenAI-Internal-Codex-Responses-Lite"); got != "true" {
+		t.Fatalf("X-OpenAI-Internal-Codex-Responses-Lite = %q, want converted from client_metadata", got)
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer at-secret" {
 		t.Fatalf("Authorization = %q", got)
@@ -594,10 +602,154 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		t.Fatalf("BuildTransformPlan() error = %v", err)
 	}
 	httpBody := responsesBodyForHTTPTransport(cfg, plan, wireBody)
-	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+	for _, field := range []string{
+		"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options",
+		"client_metadata.ws_request_header_x_openai_internal_codex_responses_lite",
+	} {
 		if gjson.GetBytes(httpBody, field).Exists() {
 			t.Fatalf("HTTP-only unsupported field %s leaked: %s", field, httpBody)
 		}
+	}
+}
+
+func TestCodexOAuthRequestScopesClientIdentityPerAccount(t *testing.T) {
+	srv := newInMemoryServer(t)
+	const (
+		rawSession      = "019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11" // UUIDv7，同官方 session/thread ID
+		rawInstallation = "4f1c2b7a-3d5e-4a6b-8c9d-0e1f2a3b4c5d" // UUIDv4
+		rawTurn         = "019a3c5e-8a00-7d11-a222-333344445555"
+		rawRequest      = "raw-request-1"
+	)
+	turnMetadata := `{"installation_id":"` + rawInstallation + `","session_id":"` + rawSession +
+		`","thread_id":"` + rawSession + `","turn_id":"` + rawTurn + `","window_id":"` + rawSession + `:0"}`
+	encodedTurnMetadata, _ := json.Marshal(turnMetadata)
+	body := []byte(`{"model":"gpt-5.4","input":[],"prompt_cache_key":"` + rawSession + `","client_metadata":{` +
+		`"x-codex-installation-id":"` + rawInstallation + `","session_id":"` + rawSession + `","thread_id":"` + rawSession +
+		`","x-codex-window-id":"` + rawSession + `:0","x-codex-turn-metadata":` + string(encodedTurnMetadata) + `}}`)
+	header := http.Header{
+		"Session-Id":            []string{rawSession},
+		"Thread-Id":             []string{rawSession},
+		"X-Codex-Window-Id":     []string{rawSession + ":0"},
+		"X-Client-Request-Id":   []string{rawRequest},
+		"X-Codex-Turn-Metadata": []string{turnMetadata},
+	}
+	type wire struct {
+		header http.Header
+		body   []byte
+	}
+	build := func(t *testing.T, accountID string, source []byte, header http.Header, replay bool, rules []model.CustomHeaderRule) wire {
+		t.Helper()
+		cfg := &model.Config{
+			ID: 1, Name: "codex", AuthType: model.AuthTypeCodexOAuth,
+			URLs:             model.ChannelURLs{{URL: "https://chatgpt.example.test/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
+			CodexAccessToken: "at-" + accountID, CodexAccountID: accountID, CodexUserID: "user-1",
+			CustomRequestRules: &model.CustomRequestRules{Headers: rules},
+		}
+		reqCtx := &requestContext{
+			ctx: context.Background(), startTime: time.Now(),
+			clientProtocol: protocol.Codex, upstreamProtocol: protocol.Codex,
+			replayBodyRulesApplied: replay,
+		}
+		req, err := srv.buildProxyRequest(reqCtx, cfg, "", http.MethodPost, source, header.Clone(), "", "/v1/responses", cfg.GetURLs()[0])
+		if err != nil {
+			t.Fatalf("buildProxyRequest() error = %v", err)
+		}
+		return wire{header: req.Header, body: reqCtx.translatedBody}
+	}
+
+	first := build(t, "account-a", body, header, false, nil)
+	for _, raw := range []string{rawSession, rawInstallation, rawTurn, rawRequest} {
+		if bytes.Contains(first.body, []byte(raw)) {
+			t.Fatalf("raw client identity %q reached upstream body: %s", raw, first.body)
+		}
+		for name, values := range first.header {
+			if strings.Contains(strings.Join(values, ","), raw) {
+				t.Fatalf("raw client identity %q reached upstream header %s: %v", raw, name, values)
+			}
+		}
+	}
+	// 客户端原本相等的字段映射后仍相等，窗口 ID 保留代数后缀。
+	session := gjson.GetBytes(first.body, "prompt_cache_key").String()
+	if session == "" {
+		t.Fatalf("prompt_cache_key missing: %s", first.body)
+	}
+	bodyTurnMetadata := gjson.GetBytes(first.body, `client_metadata.x-codex-turn-metadata`).String()
+	headerTurnMetadata := first.header.Get("X-Codex-Turn-Metadata")
+	for name, got := range map[string]string{
+		"body session_id":          gjson.GetBytes(first.body, "client_metadata.session_id").String(),
+		"body thread_id":           gjson.GetBytes(first.body, "client_metadata.thread_id").String(),
+		"body turn session_id":     gjson.Get(bodyTurnMetadata, "session_id").String(),
+		"header Session-Id":        first.header.Get("Session-Id"),
+		"header Thread-Id":         first.header.Get("Thread-Id"),
+		"header turn session_id":   gjson.Get(headerTurnMetadata, "session_id").String(),
+		"body window id":           strings.TrimSuffix(gjson.GetBytes(first.body, "client_metadata.x-codex-window-id").String(), ":0"),
+		"body turn window_id":      strings.TrimSuffix(gjson.Get(bodyTurnMetadata, "window_id").String(), ":0"),
+		"header X-Codex-Window-Id": strings.TrimSuffix(first.header.Get("X-Codex-Window-Id"), ":0"),
+	} {
+		if got != session {
+			t.Errorf("%s = %q, want scoped session %q", name, got, session)
+		}
+	}
+	// UUID 保留版本号；v7 还保留毫秒时间戳，只替换随机位。非 UUID 值整体映射为 v4。
+	scopedSession, err := uuid.Parse(session)
+	if rawSessionID := uuid.MustParse(rawSession); err != nil || scopedSession.Version() != 7 || !bytes.Equal(scopedSession[:6], rawSessionID[:6]) {
+		t.Errorf("scoped session %q must be a v7 UUID keeping the raw timestamp", session)
+	}
+	if id, err := uuid.Parse(first.header.Get("X-Client-Request-Id")); err != nil || id.Version() != 4 {
+		t.Errorf("scoped non-UUID request id = %q, want v4 UUID", first.header.Get("X-Client-Request-Id"))
+	}
+	installation := gjson.GetBytes(first.body, "client_metadata.x-codex-installation-id").String()
+	if id, err := uuid.Parse(installation); err != nil || id.Version() != 4 {
+		t.Errorf("scoped installation id = %q, want v4 UUID", installation)
+	}
+	if installation == "" || installation == session ||
+		gjson.Get(bodyTurnMetadata, "installation_id").String() != installation ||
+		gjson.Get(headerTurnMetadata, "installation_id").String() != installation {
+		t.Errorf("installation ids are not consistently scoped: body=%s header=%s", first.body, headerTurnMetadata)
+	}
+	if turn := gjson.Get(headerTurnMetadata, "turn_id").String(); turn == "" || turn != gjson.Get(bodyTurnMetadata, "turn_id").String() {
+		t.Errorf("turn ids are not consistently scoped: body=%s header=%s", bodyTurnMetadata, headerTurnMetadata)
+	}
+
+	if again := build(t, "account-a", body, header, false, nil); gjson.GetBytes(again.body, "prompt_cache_key").String() != session ||
+		again.header.Get("X-Client-Request-Id") != first.header.Get("X-Client-Request-Id") {
+		t.Fatalf("same account must map identities deterministically: first=%s again=%s", first.body, again.body)
+	}
+	other := build(t, "account-b", body, header, false, nil)
+	if gjson.GetBytes(other.body, "prompt_cache_key").String() == session ||
+		gjson.GetBytes(other.body, "client_metadata.x-codex-installation-id").String() == installation {
+		t.Fatalf("different accounts must not share identities: a=%s b=%s", first.body, other.body)
+	}
+
+	// 同渠道重试回放已映射的 wire body，不得二次映射。
+	replay := build(t, "account-a", first.body, header, true, nil)
+	if gjson.GetBytes(replay.body, "prompt_cache_key").String() != session || replay.header.Get("Session-Id") != session ||
+		gjson.GetBytes(replay.body, "client_metadata.x-codex-installation-id").String() != installation {
+		t.Fatalf("replay re-scoped identities: first=%s replay=%s header=%v", first.body, replay.body, replay.header)
+	}
+
+	// 内部会话（guardian 等）的 prompt_cache_key / Session-Id 为 "<source>:<parent_thread_id>"：
+	// 只映射 UUID 段，映射后仍与父线程头相等。
+	const rawParent = "019a3c5e-6000-7abc-8def-0123456789ab"
+	guardian := build(t, "account-a", []byte(`{"model":"gpt-5.4","input":[],"prompt_cache_key":"guardian:`+rawParent+
+		`","client_metadata":{"x-codex-parent-thread-id":"`+rawParent+`"}}`), http.Header{
+		"Session-Id":               []string{"guardian:" + rawParent},
+		"X-Codex-Parent-Thread-Id": []string{rawParent},
+	}, false, nil)
+	parent := guardian.header.Get("X-Codex-Parent-Thread-Id")
+	if parent == "" || parent == rawParent ||
+		gjson.GetBytes(guardian.body, "client_metadata.x-codex-parent-thread-id").String() != parent ||
+		gjson.GetBytes(guardian.body, "prompt_cache_key").String() != "guardian:"+parent ||
+		guardian.header.Get("Session-Id") != "guardian:"+parent {
+		t.Fatalf("internal session identities are not consistently scoped: body=%s header=%v", guardian.body, guardian.header)
+	}
+
+	// 运维规则写入的值按配置原样发送。
+	ruled := build(t, "account-a", body, header, false, []model.CustomHeaderRule{
+		{Action: model.RuleActionOverride, Name: "X-Codex-Window-Id", Value: "operator-window"},
+	})
+	if got := ruled.header.Get("X-Codex-Window-Id"); got != "operator-window" {
+		t.Fatalf("operator X-Codex-Window-Id = %q, want verbatim rule value", got)
 	}
 }
 
@@ -1981,6 +2133,63 @@ func TestPrepareCodexResponsesBodyForUpstream_KeepsRegularCodexToolSearch(t *tes
 	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	if !strings.Contains(string(got), `"tool_search_call"`) {
 		t.Fatalf("regular codex body should keep tool_search input items, got %s", got)
+	}
+}
+
+func TestPrepareCodexResponsesBodyForUpstream_NormalizesToolSchemas(t *testing.T) {
+	constUnion := func(keyword string, n int) string {
+		branches := make([]string, n)
+		for i := range branches {
+			branches[i] = fmt.Sprintf(`{"const":"v%d","description":"value %d"}`, i, i)
+		}
+		return `"` + keyword + `":[` + strings.Join(branches, ",") + `]`
+	}
+	body := []byte(`{"model":"gpt-5.5","input":[],"tools":[
+		{"type":"function","name":"pick","parameters":{"type":"object","properties":{
+			"mode":{"type":"string",` + constUnion("oneOf", 8) + `},
+			"a.b":{"type":"string",` + constUnion("anyOf", 8) + `},
+			"few":{"type":"string",` + constUnion("oneOf", 7) + `},
+			"same":{"type":"string","enum":["v7","v6","v5","v4","v3","v2","v1","v0"],` + constUnion("oneOf", 8) + `},
+			"diff":{"type":"string","enum":["other"],` + constUnion("oneOf", 8) + `},
+			"name":{"type":"string","pattern":"^\\p{L}+$","default":{"pattern":"\\p{L}"}},
+			"paths":{"type":"array","items":{"type":"string","pattern":"^[^\\0]*$"}},
+			"plain":{"type":"string","pattern":"^[a-z]+$"}
+		}}},
+		{"type":"namespace","name":"mcp","tools":[
+			{"type":"function","name":"inner","parameters":{"type":"object","properties":{"kind":{` + constUnion("anyOf", 8) + `}}}}
+		]},
+		{"type":"web_search"}
+	]}`)
+
+	got := prepareCodexResponsesBodyForUpstream(&model.Config{Name: "codex"}, protocol.Codex, "/v1/responses", body)
+	props := gjson.GetBytes(got, "tools.0.parameters.properties")
+	wantEnum := `["v0","v1","v2","v3","v4","v5","v6","v7"]`
+	for _, path := range []string{"mode", `a\.b`} {
+		prop := props.Get(path)
+		if prop.Get("oneOf").Exists() || prop.Get("anyOf").Exists() || prop.Get("enum").Raw != wantEnum {
+			t.Fatalf("%s should collapse to enum, got %s", path, prop.Raw)
+		}
+	}
+	if inner := gjson.GetBytes(got, "tools.1.tools.0.parameters.properties.kind"); inner.Get("anyOf").Exists() || inner.Get("enum").Raw != wantEnum {
+		t.Fatalf("namespace tool should be normalized, got %s", inner.Raw)
+	}
+	if !props.Get("few.oneOf").Exists() || props.Get("few.enum").Exists() {
+		t.Fatalf("union below threshold must stay, got %s", props.Get("few").Raw)
+	}
+	if props.Get("same.oneOf").Exists() || props.Get("same.enum.#").Int() != 8 {
+		t.Fatalf("union equal to existing enum should be dropped, got %s", props.Get("same").Raw)
+	}
+	if !props.Get("diff.oneOf").Exists() || props.Get("diff.enum").Raw != `["other"]` {
+		t.Fatalf("union conflicting with existing enum must stay, got %s", props.Get("diff").Raw)
+	}
+	if props.Get("name.pattern").Exists() || props.Get("paths.items.pattern").Exists() {
+		t.Fatalf("unsupported regex escapes should be dropped, got %s", props.Raw)
+	}
+	if props.Get("name.default.pattern").String() != `\p{L}` || props.Get("plain.pattern").String() != "^[a-z]+$" {
+		t.Fatalf("user data and supported patterns must stay, got %s", props.Raw)
+	}
+	if gjson.GetBytes(got, "tools.2.type").String() != "web_search" {
+		t.Fatalf("non-function tools must stay, got %s", got)
 	}
 }
 

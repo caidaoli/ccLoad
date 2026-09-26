@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -477,11 +476,10 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	var refreshAttempts atomic.Int32
 	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		refreshAttempts.Add(1)
-		requestBody, _ := io.ReadAll(req.Body)
-		form, _ := url.ParseQuery(string(requestBody))
+		_ = parseTokenRequestForm(req)
 		statusCode := http.StatusBadRequest
 		responseBody := `{"error":"invalid_grant"}`
-		switch form.Get("refresh_token") {
+		switch req.Form.Get("refresh_token") {
 		case "rt-cleanup-rejected-empty-401":
 			statusCode = http.StatusUnauthorized
 			responseBody = ""
@@ -2401,6 +2399,9 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 		if r.Header.Get("X-Api-Key") != "" {
 			t.Errorf("X-Api-Key must be removed: %q", r.Header.Get("X-Api-Key"))
 		}
+		if got := r.Header.Get("Accept-Encoding"); got != "" {
+			t.Errorf("Accept-Encoding = %q, want none like the official Codex client", got)
+		}
 		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" ||
 			(r.Header.Get("Session_id") == "" && r.Header.Get("Session-Id") == "") {
 			t.Errorf("incomplete Codex OAuth headers: %v", r.Header)
@@ -3618,7 +3619,7 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 	}
 	if gotHeaders.Get("User-Agent") != codexUserAgent ||
 		gotHeaders.Get("Originator") != codexOriginator ||
-		gotHeaders.Get("Version") != "" {
+		gotHeaders.Get("Version") != codexVersion {
 		t.Fatalf("Codex identity headers=%v", gotHeaders)
 	}
 	if got := gotHeaders.Get("X-Codex-Turn-State"); got != "turn-state" {
@@ -3627,7 +3628,7 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 	if got := gotHeaders.Get("X-Client-Request-Id"); got != "admin-test-request" {
 		t.Fatalf("X-Client-Request-Id=%q, want allowed downstream value", got)
 	}
-	if gotHeaders.Get("Content-Type") != "application/json" || gotHeaders.Get("Accept") != "application/json" || gotHeaders.Get("Connection") != "Keep-Alive" {
+	if gotHeaders.Get("Content-Type") != "application/json" || gotHeaders.Get("Accept") != "application/json" || gotHeaders.Get("Connection") != "" {
 		t.Fatalf("Codex HTTP transport headers=%v", gotHeaders)
 	}
 	if !strings.Contains(gotBody, `"input"`) {
@@ -5604,8 +5605,9 @@ func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T
 	if gotOriginator != codexOriginator || gotVersion != codexVersion || gotUserAgent != codexUserAgent || gotSessionID == "" {
 		t.Fatalf("Codex identity headers: Originator=%q Version=%q User-Agent=%q Session-Id=%q", gotOriginator, gotVersion, gotUserAgent, gotSessionID)
 	}
-	if gotAcceptEncoding != "identity" {
-		t.Fatalf("Accept-Encoding=%q, want identity", gotAcceptEncoding)
+	// 与官方 Codex 一致：Codex OAuth 不发 Accept-Encoding，管理测试也不例外。
+	if gotAcceptEncoding != "" {
+		t.Fatalf("Accept-Encoding=%q, want none", gotAcceptEncoding)
 	}
 	if gotBody["model"] != "gpt-image-2" || gotBody["prompt"] != "A white cat" || gotBody["size"] != "1024x1024" {
 		t.Fatalf("Codex Images body=%v", gotBody)

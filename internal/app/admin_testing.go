@@ -2282,9 +2282,7 @@ func (s *Server) newTestUpstreamRequest(
 			return nil, nil, err
 		}
 	}
-	// Some compatibility gateways decompress the response but leave the gzip marker.
-	// Admin tests need the wire body for diagnostics, so never negotiate compression.
-	req.Header.Set("Accept-Encoding", "identity")
+	setAdminTestAcceptEncoding(cfgForBuild, req)
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)
@@ -2295,6 +2293,16 @@ func (s *Server) newTestUpstreamRequest(
 	}
 
 	return req, timeout.cancelAll, nil
+}
+
+// setAdminTestAcceptEncoding 让管理测试拿到上游原始响应体：部分兼容网关解压响应后
+// 仍保留 gzip 标记，net/http 再自动解压会报 gzip: invalid header，因此一律请求 identity。
+// Codex OAuth 例外：凭证池已关闭自动解压，官方客户端也不发 Accept-Encoding，保持线上一致。
+func setAdminTestAcceptEncoding(cfg *model.Config, req *http.Request) {
+	if cfg.UsesCodexOAuth() {
+		return
+	}
+	req.Header.Set("Accept-Encoding", "identity")
 }
 
 func (s *Server) buildTestUpstreamRequestForProtocol(

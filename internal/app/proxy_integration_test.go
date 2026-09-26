@@ -5000,6 +5000,10 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 		if got := r.Header.Get("Accept"); got != "text/event-stream" {
 			t.Errorf("Accept = %q, want text/event-stream", got)
 		}
+		// 官方 ChatGPT 登录的 HTTP /responses 请求体为 zstd；401 刷新后的重放同样压缩。
+		if got := r.Header.Get("Content-Encoding"); got != "zstd" {
+			t.Errorf("Content-Encoding = %q, want zstd", got)
+		}
 		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-proxy" {
 			t.Errorf("ChatGPT-Account-ID = %q", got)
 		}
@@ -6333,7 +6337,10 @@ func TestProxy_XAIOAuthDoesNotReplayAfterCommittedSemanticOutput(t *testing.T) {
 }
 
 func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
-	const clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
+	const (
+		clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
+		clientWindowID  = "019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0"
+	)
 	for _, authType := range []string{model.AuthTypeAPIKey, model.AuthTypeCodexOAuth} {
 		t.Run(authType, func(t *testing.T) {
 			for _, version := range []string{"", "0.153.4"} {
@@ -6355,7 +6362,7 @@ func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
 					env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
 					headers := map[string]string{
 						"User-Agent": clientUserAgent, "Originator": "codex-tui",
-						"X-Codex-Window-Id": "client-thread:0",
+						"X-Codex-Window-Id": clientWindowID,
 					}
 					if version != "" {
 						headers["Version"] = version
@@ -6372,12 +6379,26 @@ func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
 					default:
 						t.Fatal("upstream request was not captured")
 					}
+					// Version 与客户端一致：缺失时不从 UA 补写，否则会凭空触发模型版本门控。
 					if got.Get("User-Agent") != clientUserAgent || got.Get("Version") != version {
 						t.Errorf("upstream identity = UA %q Version %q, want UA %q Version %q",
 							got.Get("User-Agent"), got.Get("Version"), clientUserAgent, version)
 					}
-					if windowID := got.Get("X-Codex-Window-Id"); windowID != "client-thread:0" {
-						t.Errorf("upstream X-Codex-Window-Id = %q, want client-thread:0", windowID)
+					windowID := got.Get("X-Codex-Window-Id")
+					if authType == model.AuthTypeAPIKey && windowID != clientWindowID {
+						t.Errorf("upstream X-Codex-Window-Id = %q, want %s", windowID, clientWindowID)
+					}
+					// Codex OAuth 不透传客户端原始 ID，只保留窗口代数后缀。
+					if authType == model.AuthTypeCodexOAuth && (windowID == clientWindowID || !strings.HasSuffix(windowID, ":0")) {
+						t.Errorf("upstream X-Codex-Window-Id = %q, want account-scoped <id>:0", windowID)
+					}
+					// 官方只对 ChatGPT 登录压缩请求体；API Key 渠道原样发送。
+					wantEncoding := ""
+					if authType == model.AuthTypeCodexOAuth {
+						wantEncoding = "zstd"
+					}
+					if got.Get("Content-Encoding") != wantEncoding {
+						t.Errorf("upstream Content-Encoding = %q, want %q", got.Get("Content-Encoding"), wantEncoding)
 					}
 				})
 			}
@@ -14378,6 +14399,65 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("upstream calls first=%d second=%d, want 1/1", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+// 上游静默中止：response.incomplete 无 output 且 output_tokens=0，首包前按流中断切渠道；
+// content_filter 是确定性结果，原样返回不切渠道。
+func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reason     string
+		wantRetry  bool
+		wantInBody string
+	}{
+		{name: "silent abort retries next channel", reason: "max_output_tokens", wantRetry: true, wantInBody: "resp-ch2"},
+		{name: "content filter is returned", reason: "content_filter", wantRetry: false, wantInBody: "resp-ch1-incomplete"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, `data: {"type":"response.created","response":{"id":"resp-ch1-incomplete","status":"in_progress"}}`+"\n\n")
+				_, _ = fmt.Fprint(w, `data: {"type":"response.incomplete","response":{"id":"resp-ch1-incomplete","status":"incomplete","incomplete_details":{"reason":"`+tc.reason+`"},"output":[],"usage":{"input_tokens":5,"output_tokens":0,"total_tokens":5}}}`+"\n\n")
+			}))
+			defer upstream1.Close()
+
+			var secondCalls atomic.Int32
+			upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				secondCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-ch2","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+			}))
+			defer upstream2.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "ch1-empty-incomplete", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1", priority: 100},
+				{name: "ch2-ok", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-2", priority: 50},
+			}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+			w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model":  "gpt-test",
+				"stream": true,
+				"input":  "hi",
+			}, nil)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+			}
+			if body := w.Body.String(); !strings.Contains(body, tc.wantInBody) {
+				t.Fatalf("body missing %q: %s", tc.wantInBody, body)
+			}
+			if got := secondCalls.Load() == 1; got != tc.wantRetry {
+				t.Fatalf("second channel called = %v, want %v", got, tc.wantRetry)
+			}
+		})
 	}
 }
 

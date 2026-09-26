@@ -554,6 +554,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 `POST /v1/images/generations` 兼容 OpenAI Images 接口，请求体上限独立由 `max_image_body_bytes` 控制。渠道模型是 `grok-4.6` 及之后的 xAI 对话模型时，ccLoad 会把请求自动桥接成 xAI Responses 的 `image_generation` 工具调用：非流请求聚合为标准 Images JSON，流式请求输出 `partial_image` / `completed` SSE 事件。
 
+**Codex CLI 接入（推荐配置）**：
+
+沿用官方内置的 `openai` provider，只改地址；不要为 ccLoad 自定义 `[model_providers.*]`：
+
+```bash
+# 以 API Key 方式登录，Key 填 ccLoad 的 API 令牌
+printenv CCLOAD_API_TOKEN | codex login --with-api-key
+```
+
+```toml
+# ~/.codex/config.toml
+openai_base_url = "http://localhost:8080/v1"
+```
+
+内置 provider 会发送 `version` 头、启用 Responses WebSocket 与独立 web search；API Key 登录且设置了地址时，客户端只使用自带模型目录（每个模型的指令、工具形态和 responses-lite 开关都随客户端版本发布），不会拉取 ccLoad 合成的 `/models`。自定义 provider 默认不发 `version`、不启用 WebSocket，线上请求与官方客户端直连不一致。
+
 **Codex Responses WebSocket**：
 
 下游 WebSocket 和上游 WebSocket 是两个独立开关：认证后的客户端始终可以升级 `GET /v1/responses`，也可以使用 Codex 直连别名 `GET /v1/codex/responses` 或 `GET /backend-api/codex/responses`；渠道的 `websockets` 只决定 ccLoad 是否尝试连接原生 Codex 上游 WebSocket。未启用该字段的渠道仍可通过 HTTP/SSE 桥接参与候选和故障切换。

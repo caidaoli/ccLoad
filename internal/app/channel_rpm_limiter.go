@@ -183,6 +183,10 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if err != nil {
 		return nil, err
 	}
+	if errCompress := compressCodexOAuthResponsesBody(cfg, req); errCompress != nil {
+		release()
+		return nil, errCompress
+	}
 	resp, err := s.getClientForChannel(cfg).Do(req)
 	if err != nil {
 		release()

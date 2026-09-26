@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -554,6 +556,132 @@ func TestServerClosedCredentialCacheDoesNotUseSharedClient(t *testing.T) {
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("shared client sent %d request(s) after credential cache close", got)
+	}
+}
+
+func TestServerCodexOAuthCloudflareCookiesPerAccountSharedWithWebsocket(t *testing.T) {
+	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
+	})
+	credential := func(account, access string) string {
+		return fmt.Sprintf(`{"type":"codex","account_id":%q,"access_token":%q,"refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`, account, access)
+	}
+	accountA := &model.Config{ID: 1, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential("account-a", "access-a")}
+	refreshedA := accountA.Clone()
+	refreshedA.OAuthCredential = credential("account-a", "access-refreshed")
+	accountB := &model.Config{ID: 2, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential("account-b", "access-b")}
+	apiKey := &model.Config{ID: 3, AuthType: model.AuthTypeAPIKey}
+
+	mustURL := func(raw string) *url.URL {
+		t.Helper()
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	responses := mustURL("https://chatgpt.com/backend-api/codex/responses")
+	cookieNames := func(jar http.CookieJar, u *url.URL) []string {
+		t.Helper()
+		if jar == nil {
+			t.Fatal("Codex OAuth client has no cookie jar")
+		}
+		var names []string
+		for _, cookie := range jar.Cookies(u) {
+			names = append(names, cookie.Name)
+		}
+		slices.Sort(names)
+		return names
+	}
+
+	jarA := server.getClientForChannel(accountA).Jar
+	if jarA == nil {
+		t.Fatal("Codex OAuth client has no cookie jar")
+	}
+	jarA.SetCookies(responses, []*http.Cookie{
+		{Name: "__cf_bm", Value: "bm"},
+		{Name: "cf_chl_rc_m", Value: "challenge"},
+		{Name: "__oailb", Value: "lb"},
+		{Name: "__Secure-next-auth.session-token", Value: "session"},
+		{Name: "oai-did", Value: "device"},
+	})
+	jarA.SetCookies(mustURL("http://chatgpt.com/backend-api/codex/responses"), []*http.Cookie{{Name: "_cfuvid", Value: "plain-http"}})
+	jarA.SetCookies(mustURL("https://api.openai.com/v1/responses"), []*http.Cookie{{Name: "__cflb", Value: "other-host"}})
+
+	want := []string{"__cf_bm", "__oailb", "cf_chl_rc_m"}
+	// gorilla/websocket 在查询 jar 前把 wss 改写为 https；刷新 access token 不换账号池。
+	if got := cookieNames(server.codexWebsocketDialer(refreshedA).Jar, responses); !slices.Equal(got, want) {
+		t.Fatalf("WebSocket cookies for same account = %v, want %v", got, want)
+	}
+	if got := cookieNames(jarA, mustURL("http://chatgpt.com/backend-api/codex/responses")); len(got) != 0 {
+		t.Fatalf("plain-http ChatGPT cookies = %v, want none", got)
+	}
+	if got := cookieNames(jarA, mustURL("https://api.openai.com/v1/responses")); len(got) != 0 {
+		t.Fatalf("non-ChatGPT host cookies = %v, want none", got)
+	}
+	if got := cookieNames(server.getClientForChannel(accountB).Jar, responses); len(got) != 0 {
+		t.Fatalf("another account sees cookies %v", got)
+	}
+	if server.getClientForChannel(apiKey).Jar != nil || server.codexWebsocketDialer(apiKey).Jar != nil {
+		t.Fatal("Codex API key channel must not carry a ChatGPT cookie jar")
+	}
+}
+
+func TestServerCodexOAuthPoolOmitsAcceptEncoding(t *testing.T) {
+	acceptEncoding := make(chan string, 1)
+	respond := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptEncoding <- r.Header.Get("Accept-Encoding")
+		_, _ = io.WriteString(w, "ok")
+	})
+	upstream := httptest.NewServer(respond)
+	t.Cleanup(upstream.Close)
+	proxy := httptest.NewServer(respond)
+	t.Cleanup(proxy.Close)
+
+	server := &Server{client: newUpstreamHTTPClient(buildHTTPTransport(false, 2), 0)}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		if server.credentialTransports != nil {
+			server.credentialTransports.closeAll()
+		}
+	})
+	codexCredential := `{"type":"codex","account_id":"account-a","access_token":"access","refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`
+	for _, tt := range []struct {
+		name string
+		cfg  *model.Config
+		url  string
+		want string
+	}{
+		// 官方 Codex 不发 Accept-Encoding；其他渠道保持 Go 默认的 gzip 协商。
+		{name: "Codex OAuth direct", url: upstream.URL,
+			cfg: &model.Config{ID: 1, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: codexCredential}},
+		{name: "Codex OAuth proxy", url: "http://chatgpt.example.test/backend-api/codex/responses",
+			cfg: &model.Config{ID: 2, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: codexCredential, ProxyURL: proxy.URL}},
+		{name: "API key", url: upstream.URL, want: "gzip",
+			cfg: &model.Config{ID: 3, AuthType: model.AuthTypeAPIKey}},
+		{name: "xAI OAuth", url: upstream.URL, want: "gzip",
+			cfg: &model.Config{ID: 4, AuthType: model.AuthTypeXAIOAuth,
+				OAuthCredential: `{"type":"xai","sub":"account-x","access_token":"access","refresh_token":"refresh","expired":"2099-01-01T00:00:00Z"}`}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, tt.url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := server.getClientForChannel(tt.cfg).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if got := <-acceptEncoding; got != tt.want {
+				t.Fatalf("Accept-Encoding = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

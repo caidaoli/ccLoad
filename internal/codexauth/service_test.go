@@ -3,10 +3,12 @@ package codexauth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -14,12 +16,33 @@ import (
 func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 	t.Parallel()
 
-	var grants []url.Values
+	type tokenRequest struct {
+		contentType string
+		originator  string
+		userAgent   string
+		grant       map[string]string
+	}
+	var grants []tokenRequest
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("ParseForm: %v", err)
+		got := tokenRequest{
+			contentType: r.Header.Get("Content-Type"),
+			originator:  r.Header.Get("Originator"),
+			userAgent:   r.Header.Get("User-Agent"),
+			grant:       map[string]string{},
 		}
-		grants = append(grants, r.PostForm)
+		if got.contentType == "application/json" {
+			if err := json.NewDecoder(r.Body).Decode(&got.grant); err != nil {
+				t.Errorf("decode JSON grant: %v", err)
+			}
+		} else {
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			for key := range r.PostForm {
+				got.grant[key] = r.PostForm.Get(key)
+			}
+		}
+		grants = append(grants, got)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"access_token":"at-%d","refresh_token":"rt-%d","id_token":%q,"expires_in":3600}`,
 			len(grants), len(grants), testIDToken(t))
@@ -84,17 +107,21 @@ func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 	if len(grants) != 2 {
 		t.Fatalf("token requests = %d, want 2", len(grants))
 	}
-	if got := grants[0].Get("grant_type"); got != "authorization_code" {
-		t.Fatalf("exchange grant_type = %q", got)
+	exchange := grants[0]
+	if exchange.contentType != "application/x-www-form-urlencoded" ||
+		exchange.grant["grant_type"] != "authorization_code" || exchange.grant["code_verifier"] != pkce.Verifier {
+		t.Fatalf("exchange request = %#v", exchange)
 	}
-	if got := grants[0].Get("code_verifier"); got != pkce.Verifier {
-		t.Fatalf("code_verifier = %q", got)
+	// Native Codex refreshes with a JSON body without scope, carrying its client identity.
+	refresh := grants[1]
+	wantRefresh := map[string]string{"client_id": "client-test", "grant_type": "refresh_token", "refresh_token": "rt-1"}
+	if refresh.contentType != "application/json" || !reflect.DeepEqual(refresh.grant, wantRefresh) {
+		t.Fatalf("refresh request = %#v, want JSON grant %#v", refresh, wantRefresh)
 	}
-	if got := grants[1].Get("grant_type"); got != "refresh_token" {
-		t.Fatalf("refresh grant_type = %q", got)
-	}
-	if got := grants[1].Get("refresh_token"); got != "rt-1" {
-		t.Fatalf("refresh_token = %q", got)
+	for _, request := range grants {
+		if request.originator != DefaultOriginator || request.userAgent != DefaultUserAgent {
+			t.Fatalf("token request identity = %q / %q", request.originator, request.userAgent)
+		}
 	}
 }
 

@@ -53,6 +53,9 @@ var codexWebsocketForwardHeaders = []string{
 	"X-Codex-Turn-Metadata",
 	"X-Client-Request-Id",
 	"X-ResponsesAPI-Include-Timing-Metrics",
+	"X-Codex-Parent-Thread-Id",
+	"X-OpenAI-Subagent",
+	"X-OpenAI-Memgen-Request",
 	"Version",
 	"User-Agent",
 	"OpenAI-Beta",
@@ -772,7 +775,9 @@ func codexWebsocketHeaderHash(header http.Header) [sha256.Size]byte {
 		// the caller omits it. Downstream HTTP and WebSocket transports therefore
 		// represent the same effective handshake differently. User-Agent does not
 		// define upstream authorization or routing, so it must not split sessions.
-		if key == "user-agent" {
+		// The routing hint follows each turn's model/tier; native Codex keeps the
+		// handshake value on a reused socket, so a change must not force a redial.
+		if key == "user-agent" || key == "x-codex-routing-hint" {
 			continue
 		}
 		normalized[key] = append(normalized[key], header[name]...)
@@ -872,14 +877,19 @@ func buildCodexWebsocketRequestBody(body []byte) ([]byte, error) {
 	return prepared, nil
 }
 
-func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) []byte {
-	responsesLite := strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true")
-	if !responsesLite {
-		metadata := gjson.GetBytes(body, codexResponsesLiteMetadata)
-		responsesLite = metadata.Type == gjson.True ||
-			metadata.Type == gjson.String && strings.EqualFold(strings.TrimSpace(metadata.String()), "true")
+// normalizeCodexWebsocketResponsesLite carries the responses-lite signal in
+// client_metadata, its WebSocket form (the handshake drops the HTTP header), and
+// disables parallel tool calls as native Codex does in lite mode.
+func normalizeCodexWebsocketResponsesLite(body []byte, headers http.Header) []byte {
+	if !codexResponsesLiteRequested(body, headers) {
+		return body
 	}
-	if !responsesLite || !gjson.GetBytes(body, "parallel_tool_calls").Bool() {
+	if metadata := gjson.GetBytes(body, codexResponsesLiteMetadata); metadata.Type != gjson.String || metadata.String() != "true" {
+		if updated, err := sjson.SetBytes(body, codexResponsesLiteMetadata, "true"); err == nil {
+			body = updated
+		}
+	}
+	if !gjson.GetBytes(body, "parallel_tool_calls").Bool() {
 		return body
 	}
 	updated, err := sjson.SetBytes(body, "parallel_tool_calls", false)
@@ -1039,6 +1049,7 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 		lower := strings.ToLower(key)
 		if lower == "accept" || lower == "connection" || lower == "content-length" ||
 			lower == "content-type" || lower == "upgrade" ||
+			strings.EqualFold(key, codexResponsesLiteHeader) ||
 			strings.HasPrefix(lower, "sec-websocket-") {
 			header.Del(key)
 		}
@@ -1079,12 +1090,18 @@ func (s *Server) codexWebsocketDialer(cfg *model.Config) *websocket.Dialer {
 	} else {
 		tlsConfig = tlsConfig.Clone()
 	}
+	// 官方 HTTP 与 WebSocket 共用 Cloudflare Cookie；这里取同账号 HTTP 客户端的 jar。
+	var jar http.CookieJar
+	if cfg.UsesCodexOAuth() {
+		jar = s.getClientForChannel(cfg).Jar
+	}
 	return &websocket.Dialer{
 		Proxy:             transport.Proxy,
 		NetDialContext:    transport.DialContext,
 		HandshakeTimeout:  config.HTTPTLSHandshakeTimeout,
 		TLSClientConfig:   tlsConfig,
 		EnableCompression: true,
+		Jar:               jar,
 	}
 }
 
@@ -1521,12 +1538,12 @@ func (s *Server) doCodexWebsocketRequest(
 	// （见 forwardOnce 的 nativeAttempt 构造条件），此处 scope 与 HTTP 侧判定等价。
 	if replayReq != nil {
 		replayBody = stripResponsesInputItemStatus(
-			normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header),
+			normalizeCodexWebsocketResponsesLite(replayBody, replayReq.Header),
 		)
 	}
 	if incrementalReq != nil {
 		incrementalBody = stripResponsesInputItemStatus(
-			normalizeCodexWebsocketParallelToolCalls(incrementalBody, incrementalReq.Header),
+			normalizeCodexWebsocketResponsesLite(incrementalBody, incrementalReq.Header),
 		)
 	}
 	release, err := s.reserveUpstreamRequest(cfg)

@@ -3,6 +3,7 @@
 package codexauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -24,7 +25,7 @@ const (
 	DefaultWhoAmIURL        = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 	DefaultClientID         = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultRedirectURI      = "http://localhost:1455/auth/callback"
-	DefaultClientVersion    = "0.156.0"
+	DefaultClientVersion    = "0.157.1"
 	DefaultOriginator       = "codex-tui"
 	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 26.6.2; arm64) iTerm.app/3.7.0beta12 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
 	defaultTokenTimeout     = 30 * time.Second
@@ -260,26 +261,32 @@ func (s *Service) ExchangeCode(ctx context.Context, code string, pkce PKCE) (*Cr
 	if pkce.Verifier == "" {
 		return nil, errors.New("PKCE verifier is required")
 	}
-	return s.requestToken(ctx, url.Values{
+	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {s.ClientID},
 		"code":          {strings.TrimSpace(code)},
 		"redirect_uri":  {s.RedirectURI},
 		"code_verifier": {pkce.Verifier},
-	})
+	}
+	return s.requestToken(ctx, "application/x-www-form-urlencoded", []byte(form.Encode()))
 }
 
-// Refresh exchanges a refresh token for a new access token.
+// Refresh exchanges a refresh token for a new access token. The request matches
+// native Codex (rust-v0.157.1 request_chatgpt_token_refresh): a JSON body
+// without scope, unlike the form-encoded authorization-code exchange.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*Credential, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, errors.New("refresh token is required")
 	}
-	return s.requestToken(ctx, url.Values{
-		"grant_type":    {"refresh_token"},
-		"client_id":     {s.ClientID},
-		"refresh_token": {refreshToken},
-		"scope":         {"openid profile email"},
+	payload, err := json.Marshal(map[string]string{
+		"client_id":     s.ClientID,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("encode Codex refresh request: %w", err)
+	}
+	return s.requestToken(ctx, "application/json", payload)
 }
 
 func (s *Service) validate() error {
@@ -296,7 +303,7 @@ func (s *Service) validate() error {
 	return nil
 }
 
-func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credential, error) {
+func (s *Service) requestToken(ctx context.Context, contentType string, payload []byte) (*Credential, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -306,12 +313,16 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 	tokenCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, s.TokenURL, strings.NewReader(values.Encode()))
+	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, s.TokenURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("build Codex token request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
+	// Native Codex sends token requests through its default client: reqwest's
+	// Accept plus the originator and User-Agent it sends everywhere.
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Originator", DefaultOriginator)
+	req.Header.Set("User-Agent", DefaultUserAgent)
 
 	resp, err := s.Client.Do(req)
 	if err != nil {

@@ -26,6 +26,9 @@ const (
 	codexUserAgent             = codexauth.DefaultUserAgent
 )
 
+// codexHTTPForwardHeaders are the request-scoped headers native Codex sends on
+// HTTP /responses (rust-v0.157.1). Attestation and residency are omitted: they
+// vouch for the client's own ChatGPT account, not the channel account.
 var codexHTTPForwardHeaders = []string{
 	"X-Codex-Beta-Features",
 	"Version",
@@ -33,6 +36,10 @@ var codexHTTPForwardHeaders = []string{
 	"X-Codex-Turn-Metadata",
 	"X-Client-Request-Id",
 	"X-Codex-Window-Id",
+	"X-Codex-Parent-Thread-Id",
+	"X-OpenAI-Subagent",
+	"X-OpenAI-Memgen-Request",
+	codexResponsesLiteHeader,
 	"User-Agent",
 	"Session_id",
 	"Session-Id",
@@ -616,6 +623,25 @@ func copyCodexHTTPHeaders(dst, src http.Header) {
 	}
 }
 
+// applyCodexClientIdentity keeps an official client's User-Agent and Version
+// as sent, pairing Originator with the User-Agent client name as native Codex
+// does. The backend gates each model on its minimal_client_version through the
+// Version header alone (a missing Version is not gated), so the client's own
+// value yields the same result as a direct connection; deriving a Version from
+// the User-Agent would only add a gate. Every other identity is replaced by the
+// canonical triple as a whole.
+func applyCodexClientIdentity(h http.Header) {
+	userAgent := strings.TrimSpace(h.Get("User-Agent"))
+	if isCodexMultiAgentClient(userAgent) {
+		originator, _, _ := strings.Cut(userAgent, "/")
+		h.Set("Originator", originator)
+		return
+	}
+	h.Set("User-Agent", codexUserAgent)
+	h.Set("Version", codexVersion)
+	h.Set("Originator", codexOriginator)
+}
+
 func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, streaming bool) {
 	if req == nil || cfg == nil {
 		return
@@ -633,13 +659,7 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	req.Header.Set("Connection", "Keep-Alive")
-	// Official clients may omit Version; preserve their supplied identity as-is.
-	if !isCodexMultiAgentClient(req.Header.Get("User-Agent")) {
-		req.Header.Set("User-Agent", codexUserAgent)
-		req.Header.Set("Version", codexVersion)
-	}
-	req.Header.Set("Originator", codexOriginator)
+	applyCodexClientIdentity(req.Header)
 	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session-Id", util.NewUUIDv4())
 	}

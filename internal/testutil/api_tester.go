@@ -785,6 +785,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	h.Set("Authorization", "Bearer "+apiKey)
 	h.Set("X-Api-Key", apiKey)
 	h.Set("User-Agent", codexauth.DefaultUserAgent)
+	h.Set("Version", codexauth.DefaultClientVersion)
 	h.Set("Originator", codexauth.DefaultOriginator)
 	h.Set("Session-Id", sessionID)
 	h.Set("Thread-Id", sessionID)

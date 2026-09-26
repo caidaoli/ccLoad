@@ -23,6 +23,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -218,6 +219,15 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 		if clone.Body == nil {
 			clone.Body = http.NoBody
 		}
+		// 与 chatgpt.com 一致：服务端解码 zstd 请求体。Content-Encoding 保留给测试断言线上编码。
+		if strings.EqualFold(clone.Header.Get("Content-Encoding"), "zstd") {
+			body, err := readTestUpstreamRequestBody(clone)
+			if err != nil {
+				panic(err)
+			}
+			clone.Body = io.NopCloser(bytes.NewReader(body))
+			clone.ContentLength = int64(len(body))
+		}
 		clone.RequestURI = clone.URL.RequestURI()
 		if clone.Host == "" {
 			clone.Host = clone.URL.Host
@@ -234,6 +244,20 @@ func dispatchTestHTTPRequest(req *http.Request) (*http.Response, error) {
 		_ = pw.CloseWithError(cause)
 		return nil, cause
 	}
+}
+
+// readTestUpstreamRequestBody 读取测试上游收到的请求体，Codex OAuth 的 zstd 请求体按上游语义解码。
+func readTestUpstreamRequestBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil || !strings.EqualFold(r.Header.Get("Content-Encoding"), "zstd") {
+		return body, err
+	}
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+	return decoder.DecodeAll(body, nil)
 }
 
 func (w *testHTTPResponseWriter) Header() http.Header {

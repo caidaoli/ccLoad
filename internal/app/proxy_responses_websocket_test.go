@@ -2569,7 +2569,8 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 				t.Errorf("native upstream %s=%q, want %q; headers=%v", name, got, want, r.Header)
 			}
 		}
-		for _, name := range []string{"Accept", "Content-Type", "X-Arbitrary-Client", "X-Forwarded-For"} {
+		// responses-lite 在 WebSocket 上只走 client_metadata，握手不带 HTTP 头。
+		for _, name := range []string{"Accept", "Content-Type", "X-Arbitrary-Client", "X-Forwarded-For", "X-Openai-Internal-Codex-Responses-Lite"} {
 			if got := r.Header.Get(name); got != "" {
 				t.Errorf("native upstream unexpected %s=%q; headers=%v", name, got, r.Header)
 			}
@@ -2623,20 +2624,21 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 		env.engine,
 		"test-api-key",
 		http.Header{
-			"Content-Type":                          []string{"text/plain"},
-			"OpenAI-Beta":                           []string{"other-feature"},
-			"Originator":                            []string{"client-attacker"},
-			"Session-Id":                            []string{"ws-session"},
-			"Thread-Id":                             []string{"worker-thread"},
-			"User-Agent":                            []string{"client-attacker"},
-			"Version":                               []string{"1.2.3"},
-			"X-Arbitrary-Client":                    []string{"drop-me"},
-			"X-Client-Request-Id":                   []string{"request-1"},
-			"X-Codex-Beta-Features":                 []string{"feature-1"},
-			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
-			"X-Codex-Turn-State":                    []string{"turn-state-1"},
-			"X-Forwarded-For":                       []string{"203.0.113.10"},
-			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
+			"Content-Type":                           []string{"text/plain"},
+			"OpenAI-Beta":                            []string{"other-feature"},
+			"Originator":                             []string{"client-attacker"},
+			"Session-Id":                             []string{"ws-session"},
+			"Thread-Id":                              []string{"worker-thread"},
+			"User-Agent":                             []string{"client-attacker"},
+			"Version":                                []string{"1.2.3"},
+			"X-Arbitrary-Client":                     []string{"drop-me"},
+			"X-Client-Request-Id":                    []string{"request-1"},
+			"X-Codex-Beta-Features":                  []string{"feature-1"},
+			"X-Codex-Turn-Metadata":                  []string{`{"turn_id":"turn-1"}`},
+			"X-Codex-Turn-State":                     []string{"turn-state-1"},
+			"X-Forwarded-For":                        []string{"203.0.113.10"},
+			"X-Openai-Internal-Codex-Responses-Lite": []string{"true"},
+			"X-ResponsesAPI-Include-Timing-Metrics":  []string{"true"},
 		},
 	)
 	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -2676,6 +2678,11 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 	if !ok || len(secondInput) != 1 {
 		t.Fatalf("native incremental input=%#v, want only the current turn", second["input"])
 	}
+	// 握手头上的 lite 信号转成每个请求的 client_metadata。
+	secondMetadata, _ := second["client_metadata"].(map[string]any)
+	if secondMetadata["ws_request_header_x_openai_internal_codex_responses_lite"] != "true" {
+		t.Fatalf("native incremental client_metadata=%#v, want responses-lite key", second["client_metadata"])
+	}
 	if second["previous_response_id"] != "resp-native-1" {
 		t.Fatalf("native previous_response_id=%#v, want resp-native-1", second["previous_response_id"])
 	}
@@ -2699,7 +2706,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 			t.Errorf("Codex identity headers = %v", r.Header)
 		}
 		if got := r.Header.Get("Version"); got != "" {
-			t.Errorf("Version = %q, want absent for official client without Version", got)
+			t.Errorf("Version = %q, want absent like the client", got)
 		}
 		if got := r.Header.Get("X-Codex-Window-Id"); got != "" {
 			t.Errorf("X-Codex-Window-Id = %q, want omitted from native WebSocket", got)
@@ -2748,7 +2755,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
 		"User-Agent":        {clientUserAgent},
 		"Originator":        {"codex-tui"},
-		"X-Codex-Window-Id": {"client-thread:0"},
+		"X-Codex-Window-Id": {"019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0"},
 	})
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test",
@@ -2825,7 +2832,7 @@ func TestNativeCodexWebsocketWindowHeaderRules(t *testing.T) {
 				customRequestRules: &model.CustomRequestRules{Headers: rules},
 			}}, map[int]string{0: upstream.URL})
 			downstream := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
-				"X-Codex-Window-Id": {"client-thread:0"},
+				"X-Codex-Window-Id": {"019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0"},
 			})
 			if err := downstream.WriteJSON(map[string]any{
 				"type": "response.create", "model": "gpt-test", "input": []any{},
@@ -5945,10 +5952,15 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		if got := r.Header.Get("X-Codex-Turn-State"); got != "turn-state" {
 			t.Errorf("HTTP fallback X-Codex-Turn-State=%q, want %q; headers=%v", got, "turn-state", r.Header)
 		}
-		if got := r.Header.Get("X-Codex-Window-Id"); got != "client-thread:0" {
-			t.Errorf("HTTP fallback X-Codex-Window-Id=%q, want client-thread:0", got)
+		// Codex OAuth 发送账号作用域映射后的窗口 ID，代数后缀保持不变。
+		if got := r.Header.Get("X-Codex-Window-Id"); got == "019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0" || !strings.HasSuffix(got, ":0") {
+			t.Errorf("HTTP fallback X-Codex-Window-Id=%q, want account-scoped <id>:0", got)
 		}
-		body, err := io.ReadAll(r.Body)
+		// WS 降级到 HTTP 后与官方 ChatGPT 登录的 HTTP 请求一致：请求体 zstd 压缩。
+		if got := r.Header.Get("Content-Encoding"); got != "zstd" {
+			t.Errorf("HTTP fallback Content-Encoding=%q, want zstd", got)
+		}
+		body, err := readTestUpstreamRequestBody(r)
 		if err != nil || !json.Valid(body) {
 			t.Errorf("same-channel HTTP replay body=%q err=%v", body, err)
 		}
@@ -6017,7 +6029,7 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		http.Header{
 			"OpenAI-Beta":                           []string{"other-feature"},
 			"X-Codex-Turn-State":                    []string{"turn-state"},
-			"X-Codex-Window-Id":                     []string{"client-thread:0"},
+			"X-Codex-Window-Id":                     []string{"019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0"},
 			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
 		},
 	)

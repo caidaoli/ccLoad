@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -367,51 +368,103 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 }
 
 func TestBuildProxyRequest_CodexIdentityHeadersAndTurnState(t *testing.T) {
-	resetCodexSessionCache()
-	srv := newInMemoryServer(t)
-
-	cfg := &model.Config{
-		ID:   1,
-		Name: "codex-ch",
-		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
-	}
-	reqCtx := &requestContext{
-		ctx:              context.Background(),
-		startTime:        time.Now(),
-		clientProtocol:   protocol.Codex,
-		upstreamProtocol: protocol.Codex,
-		originalModel:    "gpt-5-codex",
-		originalBody:     []byte(`{"model":"gpt-5-codex","input":[]}`),
-	}
-
-	req, err := srv.buildProxyRequest(
-		reqCtx,
-		cfg,
-		"sk-test",
-		http.MethodPost,
-		reqCtx.originalBody,
-		http.Header{
-			"User-Agent":         []string{"codex-tui/9.9.9"},
-			"Originator":         []string{"other-client"},
-			"Version":            []string{"9.9.9"},
-			"X-Codex-Turn-State": []string{"turn-state-token"},
+	cases := []struct {
+		name   string
+		client http.Header
+		want   map[string]string
+	}{
+		{
+			name: "official tui keeps identity",
+			client: http.Header{
+				"User-Agent": []string{"codex-tui/9.9.9"},
+				"Originator": []string{"other-client"},
+				"Version":    []string{"9.9.9"},
+			},
+			want: map[string]string{"User-Agent": "codex-tui/9.9.9", "Originator": "codex-tui", "Version": "9.9.9"},
 		},
-		"",
-		"/v1/responses",
-		cfg.GetURLs()[0],
-	)
-	if err != nil {
-		t.Fatalf("buildProxyRequest failed: %v", err)
+		{
+			name: "cli originator pairs with user agent and missing version stays absent",
+			client: http.Header{
+				"User-Agent": []string{"codex_cli_rs/0.150.0 (Ubuntu 22.4.0; x86_64) xterm-256color"},
+				"Originator": []string{"other-client"},
+			},
+			want: map[string]string{
+				"User-Agent": "codex_cli_rs/0.150.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
+				"Originator": "codex_cli_rs",
+				"Version":    "",
+			},
+		},
+		{
+			name: "desktop originator pairs with user agent",
+			client: http.Header{
+				"User-Agent": []string{"Codex Desktop/0.150.0 (Mac OS 26.0.0; arm64)"},
+				"Originator": []string{"Codex Desktop"},
+				"Version":    []string{"0.150.0"},
+			},
+			want: map[string]string{
+				"User-Agent": "Codex Desktop/0.150.0 (Mac OS 26.0.0; arm64)",
+				"Originator": "Codex Desktop",
+				"Version":    "0.150.0",
+			},
+		},
+		{
+			name: "older official version is not raised",
+			client: http.Header{
+				"User-Agent": []string{"codex_cli_rs/0.120.0"},
+				"Originator": []string{"codex_cli_rs"},
+				"Version":    []string{"0.120.0"},
+			},
+			want: map[string]string{"User-Agent": "codex_cli_rs/0.120.0", "Originator": "codex_cli_rs", "Version": "0.120.0"},
+		},
+		{
+			name:   "third party client uses canonical identity",
+			client: http.Header{"User-Agent": []string{"curl/8.0"}, "Originator": []string{"codex_cli_rs"}},
+			want:   map[string]string{"User-Agent": codexUserAgent, "Originator": codexOriginator, "Version": codexVersion},
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetCodexSessionCache()
+			srv := newInMemoryServer(t)
 
-	for name, want := range map[string]string{
-		"User-Agent":         "codex-tui/9.9.9",
-		"Originator":         codexOriginator,
-		"Version":            "9.9.9",
-		"X-Codex-Turn-State": "turn-state-token",
-	} {
-		if got := req.Header.Get(name); got != want {
-			t.Errorf("%s = %q, want %q", name, got, want)
-		}
+			cfg := &model.Config{
+				ID:   1,
+				Name: "codex-ch",
+				URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+			}
+			reqCtx := &requestContext{
+				ctx:              context.Background(),
+				startTime:        time.Now(),
+				clientProtocol:   protocol.Codex,
+				upstreamProtocol: protocol.Codex,
+				originalModel:    "gpt-5-codex",
+				originalBody:     []byte(`{"model":"gpt-5-codex","input":[]}`),
+			}
+			client := tc.client.Clone()
+			client.Set("X-Codex-Turn-State", "turn-state-token")
+
+			req, err := srv.buildProxyRequest(
+				reqCtx,
+				cfg,
+				"sk-test",
+				http.MethodPost,
+				reqCtx.originalBody,
+				client,
+				"",
+				"/v1/responses",
+				cfg.GetURLs()[0],
+			)
+			if err != nil {
+				t.Fatalf("buildProxyRequest failed: %v", err)
+			}
+
+			want := maps.Clone(tc.want)
+			want["X-Codex-Turn-State"] = "turn-state-token"
+			for name, value := range want {
+				if got := req.Header.Get(name); got != value {
+					t.Errorf("%s = %q, want %q", name, got, value)
+				}
+			}
+		})
 	}
 }

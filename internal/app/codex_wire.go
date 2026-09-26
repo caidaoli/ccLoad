@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"ccLoad/internal/protocol"
 	codexresponses "ccLoad/internal/protocol/cliproxy/codex/openai/responses"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -46,6 +48,39 @@ func isCodexOAuthResponsesRequest(cfg *model.Config, upstreamProtocol protocol.P
 	return strings.HasSuffix(strings.TrimRight(strings.TrimSpace(requestPath), "/"), "/backend-api/codex/responses")
 }
 
+const codexRoutingHintHeader = "X-Codex-Routing-Hint"
+
+// setCodexRoutingHint mirrors native Codex (rust-v0.155.0): every ChatGPT
+// backend request carries model=<slug>[;tier=<service_tier>] so the edge can
+// route before parsing the body. It is derived from the final wire body, never
+// copied from the client, because channel model redirects change the slug.
+func setCodexRoutingHint(h http.Header, body []byte) {
+	h.Del(codexRoutingHintHeader)
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return
+	}
+	hint := "model=" + model
+	if tier := gjson.GetBytes(body, "service_tier"); tier.Type == gjson.String {
+		if value := strings.TrimSpace(tier.String()); value != "" {
+			hint += ";tier=" + value
+		}
+	}
+	h.Set(codexRoutingHintHeader, hint)
+}
+
+// codexResponsesLiteRequested reports the responses-lite signal. Native Codex
+// (rust-v0.157.1) sends it per transport: a request header over HTTP, a
+// client_metadata key over WebSocket. Either form enables it for both.
+func codexResponsesLiteRequested(body []byte, headers http.Header) bool {
+	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
+		return true
+	}
+	metadata := gjson.GetBytes(body, codexResponsesLiteMetadata)
+	return metadata.Type == gjson.True ||
+		metadata.Type == gjson.String && strings.EqualFold(strings.TrimSpace(metadata.String()), "true")
+}
+
 // prepareCodexOAuthResponsesBody applies the mandatory ChatGPT Codex wire
 // contract after any cross-protocol translation. This deliberately lives above
 // the synchronized translator snapshot: it is credential/runtime behavior, not
@@ -77,13 +112,7 @@ func prepareCodexOAuthResponsesBody(
 		)
 	}
 
-	responsesLite := strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true")
-	if !responsesLite {
-		metadata := gjson.GetBytes(body, codexResponsesLiteMetadata)
-		responsesLite = metadata.Type == gjson.True ||
-			metadata.Type == gjson.String && strings.EqualFold(strings.TrimSpace(metadata.String()), "true")
-	}
-	if responsesLite {
+	if codexResponsesLiteRequested(body, headers) {
 		body, _ = sjson.SetBytes(body, "parallel_tool_calls", false)
 	} else {
 		tools := gjson.GetBytes(body, "tools")
@@ -133,8 +162,11 @@ func prepareCodexOAuthHTTPBody(cfg *model.Config, upstreamProtocol protocol.Prot
 		return body
 	}
 	reasoningSummaryDelivery := gjson.GetBytes(body, "stream_options.reasoning_summary_delivery")
+	// The responses-lite metadata key is the WebSocket form of a header that
+	// buildProxyRequest has already set on the HTTP request.
 	for _, field := range []string{
 		"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options",
+		codexResponsesLiteMetadata,
 	} {
 		body, _ = sjson.DeleteBytes(body, field)
 	}
@@ -411,4 +443,40 @@ func (c *codexNonStreamCollector) patchedTerminal() []byte {
 		return c.terminal
 	}
 	return patched
+}
+
+// codexRequestZstdEncoder 对应官方 zstd::stream::encode_all(level 3)：libzstd 默认不写
+// 帧校验和。EncodeAll 可并发调用。
+var codexRequestZstdEncoder, _ = zstd.NewWriter(nil,
+	zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)), zstd.WithEncoderCRC(false))
+
+// compressCodexOAuthResponsesBody 对齐官方 Codex（rust-v0.157.1 core/src/client.rs
+// responses_request_compression）：ChatGPT 登录的流式 /responses HTTP 请求默认以 zstd
+// 压缩请求体（enable_request_compression，Stable 且默认开启）。WebSocket 帧与
+// /responses/compact 不压缩。req 原位替换为压缩字节，uTLS 重试经 GetBody 重放；
+// 调用方保留的明文 body 继续用于调试日志与失败重放。
+func compressCodexOAuthResponsesBody(cfg *model.Config, req *http.Request) error {
+	if cfg == nil || !cfg.UsesCodexOAuth() || req == nil || req.Method != http.MethodPost ||
+		req.GetBody == nil || req.Header.Get("Content-Encoding") != "" ||
+		!strings.HasSuffix(strings.TrimRight(req.URL.Path, "/"), "/responses") {
+		return nil
+	}
+	reader, err := req.GetBody()
+	if err != nil {
+		return fmt.Errorf("read Codex request body for zstd: %w", err)
+	}
+	body, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		return fmt.Errorf("read Codex request body for zstd: %w", err)
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	compressed := codexRequestZstdEncoder.EncodeAll(body, nil)
+	req.Header.Set("Content-Encoding", "zstd")
+	req.Body = io.NopCloser(bytes.NewReader(compressed))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(compressed)), nil }
+	req.ContentLength = int64(len(compressed))
+	return nil
 }
