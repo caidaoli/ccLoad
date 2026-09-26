@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1308,6 +1309,7 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
 		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 2048},
 		"max_tokens": 4096,
+		"tools":      []any{map[string]any{"name": "Bash", "input_schema": map[string]any{"type": "object"}}},
 	}, map[string]string{
 		"User-Agent":               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
 		"X-App":                    "cli",
@@ -1328,6 +1330,9 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		}
 		if got := gjson.GetBytes(body, "messages.#").Int(); got != 1 {
 			t.Fatalf("attempt %d messages=%d body=%s", index+1, got, body)
+		}
+		if got := gjson.GetBytes(body, "tools.0.name").String(); got != "Bash" {
+			t.Fatalf("attempt %d native tool renamed to %q", index+1, got)
 		}
 		userID := gjson.GetBytes(body, "metadata.user_id").String()
 		identity := gjson.Parse(userID)
@@ -1363,6 +1368,211 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 	if got := simulatedID.Get("device_id").String(); got != wantDeviceID {
 		t.Fatalf("simulated device_id=%q, native device_id=%q", got, wantDeviceID)
 	}
+}
+
+// OAuth 模拟路径把客户端工具改名为 Claude Code MCP 形态；同请求重试沿用同一套别名，
+// 响应在透传/协议转换前按结构还原，正文里的同名字符串不动。
+func TestProxy_AnthropicOAuthAliasesClientToolNames(t *testing.T) {
+	t.Parallel()
+
+	aliasPattern := regexp.MustCompile(`^mcp__[a-z]+_[a-z]+__[a-z]+_([A-Za-z0-9_-]+)$`)
+	tools := []any{
+		map[string]any{"name": "read_file", "input_schema": map[string]any{"type": "object"}},
+		map[string]any{"name": "mcp__github__get_issue", "input_schema": map[string]any{"type": "object"}},
+		map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 1},
+		map[string]any{"type": "custom", "name": "apply_patch", "input_schema": map[string]any{"type": "object"}},
+	}
+	history := []any{
+		map[string]any{"role": "user", "content": "read a.go"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_prev", "name": "read_file", "input": map[string]any{"path": "a.go"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_prev", "content": "package a"},
+		}},
+	}
+	message := func(alias string) string {
+		return fmt.Sprintf(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6",`+
+			`"content":[{"type":"text","text":"calling %[1]s"},{"type":"tool_use","id":"toolu_1","name":%[2]q,"input":{"path":"b.go"}},`+
+			`{"type":"tool_use","id":"toolu_2","name":"mcp__github__get_issue","input":{}}],`+
+			`"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`, alias, alias)
+	}
+	stream := func(alias string) string {
+		return "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"" + alias + "\",\"input\":{}}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"b.go\\\"}\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	}
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "mimic-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: anthropicProxyTestCredential(t, "oauth-alias-token"),
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var mu sync.Mutex
+	var bodies [][]byte
+	rejectNext := false
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		bodies = append(bodies, body)
+		reject := rejectNext
+		rejectNext = false
+		mu.Unlock()
+		header := http.Header{"Content-Type": {"application/json"}}
+		if reject {
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: header, Body: io.NopCloser(strings.NewReader(
+				`{"type":"error","error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`))}, nil
+		}
+		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(`{"input_tokens":7}`))}, nil
+		}
+		alias := gjson.GetBytes(body, "tools.0.name").String()
+		if gjson.GetBytes(body, "stream").Bool() {
+			header.Set("Content-Type", "text/event-stream")
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(stream(alias)))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(message(alias)))}, nil
+	})}
+	send := func(path string, request map[string]any, headers map[string]string, reject bool) (*httptest.ResponseRecorder, [][]byte) {
+		t.Helper()
+		mu.Lock()
+		bodies, rejectNext = nil, reject
+		mu.Unlock()
+		response := doProxyRequest(t, env.engine, path, request, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return response, bodies
+	}
+	// 断言首个客户端工具的 wire 形态，返回它的别名。
+	assertWire := func(t *testing.T, body []byte) string {
+		t.Helper()
+		wireTools := gjson.GetBytes(body, "tools").Array()
+		if len(wireTools) != 4 {
+			t.Fatalf("wire tools: %s", body)
+		}
+		readFile, applyPatch := wireTools[0].Get("name").String(), wireTools[3].Get("name").String()
+		for name, semantic := range map[string]string{readFile: "read_file", applyPatch: "apply_patch"} {
+			if match := aliasPattern.FindStringSubmatch(name); match == nil || match[1] != semantic || len(name) > anthropicToolNameMaxLen {
+				t.Fatalf("alias %q does not carry %q: %s", name, semantic, body)
+			}
+		}
+		if strings.Split(readFile, "__")[1] != strings.Split(applyPatch, "__")[1] {
+			t.Fatalf("aliases use different MCP servers: %q %q", readFile, applyPatch)
+		}
+		if wireTools[3].Get("type").Exists() {
+			t.Fatalf("custom tool kept type: %s", wireTools[3].Raw)
+		}
+		if wireTools[1].Get("name").String() != "mcp__github__get_issue" ||
+			wireTools[2].Get("name").String() != "web_search" || wireTools[2].Get("type").String() != "web_search_20250305" {
+			t.Fatalf("MCP/server tools renamed: %s", body)
+		}
+		if strings.Contains(string(body), `"read_file"`) || strings.Contains(string(body), `"apply_patch"`) {
+			t.Fatalf("original tool name leaked to wire: %s", body)
+		}
+		return readFile
+	}
+
+	var messagesAlias string
+	t.Run("json with 400 retry", func(t *testing.T) {
+		response, sent := send("/v1/messages", map[string]any{
+			"model": "claude-sonnet-4-6", "max_tokens": 4096, "tools": tools, "messages": history,
+			"thinking": map[string]any{"type": "enabled", "budget_tokens": 2048},
+		}, nil, true)
+		if len(sent) != 2 || !gjson.GetBytes(sent[0], "thinking").Exists() || gjson.GetBytes(sent[1], "thinking").Exists() {
+			t.Fatalf("expected thinking-downgrade retry, got %d attempts", len(sent))
+		}
+		messagesAlias = assertWire(t, sent[0])
+		if retryAlias := assertWire(t, sent[1]); retryAlias != messagesAlias {
+			t.Fatalf("retry re-aliased: first=%q retry=%q", messagesAlias, retryAlias)
+		}
+		for _, body := range sent {
+			var toolUse gjson.Result
+			gjson.GetBytes(body, "messages").ForEach(func(_, message gjson.Result) bool {
+				message.Get("content").ForEach(func(_, block gjson.Result) bool {
+					if block.Get("type").String() == "tool_use" {
+						toolUse = block
+					}
+					return true
+				})
+				return true
+			})
+			if toolUse.Get("name").String() != messagesAlias || toolUse.Get("id").String() != "toolu_prev" {
+				t.Fatalf("history tool_use not aliased: %s", body)
+			}
+		}
+		out := gjson.Parse(response.Body.String())
+		if out.Get("content.1.name").String() != "read_file" || out.Get("content.2.name").String() != "mcp__github__get_issue" {
+			t.Fatalf("tool names not restored: %s", response.Body.String())
+		}
+		if out.Get("content.0.text").String() != "calling "+messagesAlias {
+			t.Fatalf("text content rewritten: %s", response.Body.String())
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		response, sent := send("/v1/messages", map[string]any{
+			"model": "claude-sonnet-4-6", "max_tokens": 64, "stream": true, "tools": tools, "messages": history,
+			"tool_choice": map[string]any{"type": "tool", "name": "read_file"},
+		}, nil, false)
+		alias := assertWire(t, sent[0])
+		if gjson.GetBytes(sent[0], "tool_choice.name").String() != alias {
+			t.Fatalf("tool_choice not aliased: %s", sent[0])
+		}
+		if strings.Contains(response.Body.String(), alias) {
+			t.Fatalf("alias leaked to client stream: %s", response.Body.String())
+		}
+		restored := false
+		for _, frame := range strings.Split(response.Body.String(), "\n\n") {
+			_, data := parseSSEEventChunk([]byte(frame))
+			if block := gjson.GetBytes(data, "content_block"); block.Get("type").String() == "tool_use" {
+				restored = block.Get("name").String() == "read_file"
+			}
+		}
+		if !restored {
+			t.Fatalf("stream tool_use not restored: %s", response.Body.String())
+		}
+	})
+
+	t.Run("responses client", func(t *testing.T) {
+		response, sent := send("/v1/responses", map[string]any{
+			"model": "claude-sonnet-4-6", "stream": false, "input": "read b.go",
+			"tools": []any{map[string]any{"type": "function", "name": "read_file", "parameters": map[string]any{"type": "object"}}},
+		}, nil, false)
+		alias := gjson.GetBytes(sent[0], "tools.0.name").String()
+		if match := aliasPattern.FindStringSubmatch(alias); match == nil || match[1] != "read_file" {
+			t.Fatalf("converted tool not aliased: %s", sent[0])
+		}
+		var called []string
+		gjson.Get(response.Body.String(), "output").ForEach(func(_, item gjson.Result) bool {
+			if item.Get("type").String() == "function_call" {
+				called = append(called, item.Get("name").String())
+			}
+			return true
+		})
+		if !slices.Equal(called, []string{"read_file", "mcp__github__get_issue"}) {
+			t.Fatalf("function calls=%v body=%s", called, response.Body.String())
+		}
+	})
+
+	t.Run("count_tokens", func(t *testing.T) {
+		response, sent := send("/v1/messages/count_tokens", map[string]any{
+			"model": "claude-sonnet-4-6", "tools": tools, "messages": history,
+		}, nil, false)
+		if alias := assertWire(t, sent[0]); messagesAlias != "" && alias != messagesAlias {
+			t.Fatalf("count_tokens alias %q differs from messages alias %q", alias, messagesAlias)
+		}
+		if gjson.Get(response.Body.String(), "input_tokens").Int() != 7 {
+			t.Fatalf("count_tokens response: %s", response.Body.String())
+		}
+	})
 }
 
 // 只有邮箱、没有账号 UUID 的凭证：调用方自己的 device/account 不能原样发给该账号，

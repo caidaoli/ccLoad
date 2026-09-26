@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -103,7 +104,7 @@ func finalizeAnthropicCountTokensBody(body []byte, cfg *model.Config, target *ur
 	if !isAnthropicJSONObject(body) {
 		return nil, errors.New("finalize Anthropic count_tokens request: invalid JSON body")
 	}
-	body = sanitizeAnthropicEmptyTextBlocks(body)
+	body = applyAnthropicMessagesAPIInvariants(body)
 	if cfg != nil && cfg.UsesAnthropicOAuth() && !nativeCaller {
 		body = normalizeAnthropicOAuthModel(body)
 		body = encodeNormalizedAnthropicRequest(body)
@@ -346,7 +347,49 @@ func finishAnthropicPassthrough(body []byte, signCCH bool) ([]byte, error) {
 // constraints that are independent of CLI fingerprint and session identity.
 // Native passthrough skips fingerprint rewrite but still runs this layer.
 func applyAnthropicMessagesAPIInvariants(body []byte) []byte {
-	return sanitizeAnthropicEmptyTextBlocks(body)
+	body = sanitizeAnthropicEmptyTextBlocks(body)
+	return sanitizeAnthropicCacheControls(body)
+}
+
+// anthropicMaxCacheControls 是 Anthropic 允许的显式缓存断点上限。
+const anthropicMaxCacheControls = 4
+
+// sanitizeAnthropicCacheControls 删除 Anthropic 会以 400 拒收的缓存断点：延迟加载
+// 工具和 thinking/redacted_thinking 块不接受 cache_control，显式断点总数不得超过
+// 上限。非法断点先删、不占名额。原生 Claude Code 请求同样经过这里（对齐 sub2api
+// stripDeferredToolCacheControl + enforceCacheControlLimit）。
+func sanitizeAnthropicCacheControls(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"cache_control"`)) {
+		return body
+	}
+	var rejected []string
+	forEachAnthropicCacheBlock(body, func(path string, block gjson.Result) bool {
+		if block.Get("cache_control").Exists() && anthropicBlockRejectsCacheControl(path, block) {
+			rejected = append(rejected, path+".cache_control")
+		}
+		return true
+	})
+	for _, path := range rejected {
+		body = deleteJSONPath(body, path)
+	}
+	return enforceAnthropicCacheControlLimit(body, anthropicMaxCacheControls)
+}
+
+func anthropicBlockRejectsCacheControl(path string, block gjson.Result) bool {
+	if strings.HasPrefix(path, "tools.") {
+		return isAnthropicDeferredTool(block)
+	}
+	switch jsonStringValue(block.Get("type")) {
+	case "thinking", "redacted_thinking":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAnthropicDeferredTool 只认 JSON 布尔 true，字符串 "true" 不开启延迟加载。
+func isAnthropicDeferredTool(tool gjson.Result) bool {
+	return tool.Get("defer_loading").Type == gjson.True || tool.Get("custom.defer_loading").Type == gjson.True
 }
 
 // anthropicRawArrayItems 取出数组每个元素的原始字节。重建数组时逐个拼回，元素自身
@@ -1211,7 +1254,7 @@ func ensureAnthropicMimicToolCacheBreakpoint(body []byte, cacheTTL string) []byt
 		if !tool.IsObject() {
 			continue
 		}
-		if tool.Get("defer_loading").Bool() || tool.Get("custom.defer_loading").Bool() {
+		if isAnthropicDeferredTool(tool) {
 			body = deleteJSONPath(body, "tools."+strconv.Itoa(index)+".cache_control")
 			continue
 		}

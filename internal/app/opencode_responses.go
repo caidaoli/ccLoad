@@ -1,8 +1,6 @@
 package app
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -160,14 +158,9 @@ func (p *openCodeResponsesPlan) flattenChoice(raw []byte) []byte {
 	return raw
 }
 
-// The reader runs synchronously under the forwarding timeout/Close lifecycle.
-// Only complete SSE events are rewritten; an EOF fragment is passed unchanged.
-type openCodeResponsesReader struct {
-	io.ReadCloser
+// openCodeResponsesRestorer 保存一次响应内跨事件的诊断状态。
+type openCodeResponsesRestorer struct {
 	plan     *openCodeResponsesPlan
-	scanner  *bufio.Scanner
-	pending  []byte
-	jsonRead bool
 	terminal map[string][32]byte
 	warned   bool
 }
@@ -176,80 +169,15 @@ func prepareOpenCodeResponsesResponse(resp *http.Response, plan *openCodeRespons
 	if plan == nil || resp == nil || resp.Body == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
-	isSSE := responseIsSSE(resp, streaming)
-	r := &openCodeResponsesReader{ReadCloser: resp.Body, plan: plan, terminal: make(map[string][32]byte)}
-	if isSSE {
-		r.scanner = bufio.NewScanner(wrapCodexSSEBody(resp.Body))
-		r.scanner.Buffer(make([]byte, SSEBufferSize), maxSSEEventSize)
-		r.scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
-			if end := firstSSEEventEnd(data); end >= 0 {
-				return end, data[:end], nil
-			}
-			if atEOF && len(data) > 0 {
-				return len(data), data, nil
-			}
-			return 0, nil, nil
-		})
+	var events io.Reader
+	if responseIsSSE(resp, streaming) {
+		events = wrapCodexSSEBody(resp.Body)
 	}
-	resp.Body = r
-	resp.ContentLength = -1
-	resp.Header.Del("Content-Length")
+	r := &openCodeResponsesRestorer{plan: plan, terminal: make(map[string][32]byte)}
+	wrapJSONEventRewrite(resp, events, r.rewrite)
 }
 
-func (r *openCodeResponsesReader) Read(dst []byte) (int, error) {
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	for len(r.pending) == 0 {
-		if r.scanner == nil {
-			if r.jsonRead {
-				return 0, io.EOF
-			}
-			r.jsonRead = true
-			body, err := io.ReadAll(r.ReadCloser)
-			if err != nil {
-				return 0, err
-			}
-			r.pending = r.rewrite(body)
-		} else {
-			if !r.scanner.Scan() {
-				if err := r.scanner.Err(); err != nil {
-					return 0, err
-				}
-				return 0, io.EOF
-			}
-			frame := bytes.Clone(r.scanner.Bytes())
-			_, data := parseSSEEventChunk(frame)
-			if firstSSEEventEnd(frame) < 0 || !gjson.ValidBytes(data) {
-				r.pending = frame
-				continue
-			}
-			updated := r.rewrite(data)
-			if bytes.Equal(updated, data) {
-				r.pending = frame
-				continue
-			}
-			wrote := false
-			for _, line := range bytes.SplitAfter(frame, []byte{'\n'}) {
-				if bytes.HasPrefix(line, []byte("data:")) {
-					if !wrote {
-						r.pending = append(r.pending, []byte("data: ")...)
-						r.pending = append(r.pending, updated...)
-						r.pending = append(r.pending, '\n')
-						wrote = true
-					}
-				} else {
-					r.pending = append(r.pending, line...)
-				}
-			}
-		}
-	}
-	n := copy(dst, r.pending)
-	r.pending = r.pending[n:]
-	return n, nil
-}
-
-func (r *openCodeResponsesReader) diagnose(item gjson.Result, key string) {
+func (r *openCodeResponsesRestorer) diagnose(item gjson.Result, key string) {
 	args := item.Get("arguments").String()
 	problem := ""
 	if !gjson.Valid(args) || !gjson.Parse(args).IsObject() {
@@ -278,7 +206,7 @@ func (r *openCodeResponsesReader) diagnose(item gjson.Result, key string) {
 	}
 }
 
-func (r *openCodeResponsesReader) rewrite(body []byte) []byte {
+func (r *openCodeResponsesRestorer) rewrite(body []byte) []byte {
 	root := gjson.ParseBytes(body)
 	typ := root.Get("type").String()
 	if typ == "response.function_call_arguments.done" {

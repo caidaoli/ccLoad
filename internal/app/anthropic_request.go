@@ -58,7 +58,7 @@ func normalizeAnthropicMessagesRequest(body []byte) []byte {
 		body = ensureAnthropicCacheControls(body)
 	}
 	body = normalizeAnthropicCacheControlTTL(body)
-	return enforceAnthropicCacheControlLimit(body, 4)
+	return enforceAnthropicCacheControlLimit(body, anthropicMaxCacheControls)
 }
 
 func validateAnthropicLegacySystemMessages(body []byte) error {
@@ -221,7 +221,7 @@ func ensureAnthropicToolCacheControl(body []byte) []byte {
 		if tool.Get("cache_control").Exists() {
 			return body
 		}
-		if tool.Get("defer_loading").Type != gjson.True {
+		if !isAnthropicDeferredTool(tool) {
 			lastEligible = index
 		}
 	}
