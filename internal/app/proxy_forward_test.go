@@ -3459,6 +3459,86 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 	}
 }
 
+func TestAnthropicMimicPreservesMovedSystemCacheControl(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		cacheControl string
+		wantTTL      string
+	}{
+		{name: "default TTL", cacheControl: `{"type":"ephemeral"}`},
+		{name: "one hour TTL", cacheControl: `{"type":"ephemeral","ttl":"1h"}`, wantTTL: "1h"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"model":"claude-sonnet-4-5","system":[{"type":"text","text":"first"},{"type":"text","text":"second","cache_control":%s}],"messages":[{"role":"user","content":"hello"}]}`, tc.cacheControl)
+			body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(input), &model.Config{Name: "anthropic-api-key"},
+				"sk-ant-key", http.Header{"User-Agent": {"third-party-client"}}, anthropicOfficialTestURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(body, "messages.0.content.0.text").String(); got != "[System Instructions]\nfirst\n\nsecond" {
+				t.Fatalf("moved system text = %q: %s", got, body)
+			}
+			if got := gjson.GetBytes(body, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+				t.Fatalf("moved system cache_control.type = %q: %s", got, body)
+			}
+			if got := gjson.GetBytes(body, "messages.0.content.0.cache_control.ttl").String(); got != tc.wantTTL {
+				t.Fatalf("moved system cache_control.ttl = %q, want %q: %s", got, tc.wantTTL, body)
+			}
+		})
+	}
+}
+
+func TestAnthropicMimicDoesNotRepeatClaudeCodeBanner(t *testing.T) {
+	for _, banner := range []string{
+		"You are Claude Code, Anthropic's official CLI for Claude.",
+		"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+		"You are a file search specialist for Claude Code.",
+		"You are a helpful AI assistant tasked with summarizing conversations.",
+	} {
+		t.Run(banner, func(t *testing.T) {
+			input := fmt.Sprintf(`{"model":"claude-sonnet-4-5","system":%q,"messages":[{"role":"user","content":"hello"}]}`, banner)
+			body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(input), &model.Config{Name: "anthropic-api-key"},
+				"sk-ant-key", http.Header{"User-Agent": {"third-party-client"}}, anthropicOfficialTestURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := gjson.GetBytes(body, "messages").Array()
+			if len(messages) != 1 || messages[0].Get("content.0.text").String() != "hello" {
+				t.Fatalf("Claude Code banner was repeated in messages: %s", gjson.GetBytes(body, "messages").Raw)
+			}
+		})
+	}
+}
+
+func TestAnthropicMimicAPIKeyBetasByModel(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		model           string
+		wantClaudeCode  bool
+		wantFineGrained bool
+		wantBetaCount   int
+	}{
+		{name: "sonnet", model: "claude-sonnet-4-5", wantClaudeCode: true, wantFineGrained: true, wantBetaCount: 6},
+		{name: "haiku", model: "claude-haiku-4-5", wantBetaCount: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, tc.model))
+			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			injectAnthropicAPIKeyHeaders(req, &model.Config{Name: "anthropic-api-key"}, "sk-ant-key", body, false)
+			betas := strings.Split(headerValueFold(req.Header, "Anthropic-Beta"), ",")
+			if !slices.Contains(betas, "interleaved-thinking-2025-05-14") ||
+				slices.Contains(betas, "claude-code-20250219") != tc.wantClaudeCode ||
+				slices.Contains(betas, "fine-grained-tool-streaming-2025-05-14") != tc.wantFineGrained ||
+				len(betas) != tc.wantBetaCount {
+				t.Fatalf("API Key betas for %s = %v", tc.model, betas)
+			}
+		})
+	}
+}
+
 // TestSynthesizedAnthropicAPIKeyIdentityIsStable 保证 API Key 渠道的合成身份可复现：
 // 同一个 Key 永远派生同一台「设备」，换 Key 才换身份。身份漂移会让上游把每次请求
 // 当成新设备。

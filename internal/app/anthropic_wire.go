@@ -248,7 +248,7 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 		cloakCacheTTL = "1h"
 	}
 	// 新增的顶层键按 sjson 的插入顺序落在对象尾部。
-	originalSystem := anthropicSystemText(gjson.GetBytes(body, "system"))
+	originalSystem, originalSystemCacheControl := anthropicSystemTextAndCacheControl(gjson.GetBytes(body, "system"))
 	firstUserText := anthropicFirstUserText(gjson.GetBytes(body, "messages"))
 	clientVersion := anthropicClientVersion(headers)
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
@@ -269,9 +269,15 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	body = setJSONRaw(body, "system", "["+strings.Join(systemBlocks, ",")+"]")
 
 	messagePrefixCount := 0
-	if originalSystem != "" {
+	if originalSystem != "" && !anthropicHasClaudeCodePromptPrefix(originalSystem) {
+		instructions := "[System Instructions]\n" + originalSystem
+		instructionMessage := anthropicTextMessageRaw("user", instructions)
+		if originalSystemCacheControl != "" {
+			instructionMessage = string(setJSONRaw([]byte(instructionMessage), "content",
+				"["+anthropicTextBlockRaw(instructions, originalSystemCacheControl)+"]"))
+		}
 		prefix := []string{
-			anthropicTextMessageRaw("user", "[System Instructions]\n"+originalSystem),
+			instructionMessage,
 			anthropicTextMessageRaw("assistant", "Understood. I will follow these instructions."),
 		}
 		messages := append(prefix, anthropicRawArrayItems(gjson.GetBytes(body, "messages"))...)
@@ -1453,25 +1459,44 @@ func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 	return body
 }
 
-func anthropicSystemText(system gjson.Result) string {
+func anthropicSystemTextAndCacheControl(system gjson.Result) (string, string) {
 	switch {
 	case system.Type == gjson.String:
-		return strings.TrimSpace(system.String())
+		return strings.TrimSpace(system.String()), ""
 	case system.IsArray():
 		blocks := system.Array()
 		parts := make([]string, 0, len(blocks))
+		cacheControl := ""
 		for _, block := range blocks {
 			if !block.IsObject() {
 				continue
 			}
 			if text := jsonStringValue(block.Get("text")); strings.TrimSpace(text) != "" {
 				parts = append(parts, text)
+				if cache := block.Get("cache_control"); cache.IsObject() {
+					cacheControl = cache.Raw
+				}
 			}
 		}
-		return strings.Join(parts, "\n")
+		return strings.Join(parts, "\n\n"), cacheControl
 	default:
-		return ""
+		return "", ""
 	}
+}
+
+func anthropicHasClaudeCodePromptPrefix(system string) bool {
+	system = strings.TrimSpace(system)
+	for _, prefix := range []string{
+		"You are Claude Code, Anthropic's official CLI for Claude",
+		"You are a Claude agent, built on Anthropic's Claude Agent SDK",
+		"You are a file search specialist for Claude Code",
+		"You are a helpful AI assistant tasked with summarizing conversations",
+	} {
+		if strings.HasPrefix(system, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicFirstUserText(messages gjson.Result) string {
@@ -2247,9 +2272,22 @@ func anthropicOAuthMimicBetas() string {
 // anthropicClaudeCodeBetas 为 API Key 模拟请求按实际使用的能力声明 beta。
 // oauth-2025-04-20 只属于 OAuth 凭证，真实 CLI 用 API Key 时不发。
 func anthropicClaudeCodeBetas(body []byte) string {
-	betas := []string{
-		"claude-code-20250219", "interleaved-thinking-2025-05-14",
-		"prompt-caching-scope-2026-01-05", "effort-2025-11-24", "context-management-2025-06-27",
+	betas := []string{"interleaved-thinking-2025-05-14"}
+	if strings.Contains(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "haiku") {
+		// Haiku 的 API Key 默认头不声明 claude-code；只在 body 使用能力时追加 beta。
+		if anthropicRequestHasCacheControl(body, func(cache gjson.Result) bool { return cache.Get("scope").Exists() }) {
+			betas = append(betas, "prompt-caching-scope-2026-01-05")
+		}
+		if gjson.GetBytes(body, "output_config.effort").Exists() {
+			betas = append(betas, "effort-2025-11-24")
+		}
+		if gjson.GetBytes(body, "context_management").Exists() {
+			betas = append(betas, "context-management-2025-06-27")
+		}
+	} else {
+		betas = append([]string{"claude-code-20250219"}, betas...)
+		betas = append(betas, "fine-grained-tool-streaming-2025-05-14",
+			"prompt-caching-scope-2026-01-05", "effort-2025-11-24", "context-management-2025-06-27")
 	}
 	if gjson.GetBytes(body, "thinking.block_binding").Exists() {
 		betas = append(betas, "thinking-binding-controls-2026-08-01")
