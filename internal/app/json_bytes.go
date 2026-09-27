@@ -84,6 +84,44 @@ func jsonEscapedString(value string) string {
 	return gjson.Get(raw, "v").Raw
 }
 
+// jsonStringifyString 按 JS JSON.stringify 的规则编码字符串字面量：只转义 `"`、`\` 与
+// U+0000–U+001F（\b \f \n \r \t 用短形式，其余 \u00xx），`<`、`>`、`&`、U+2028/U+2029
+// 原样输出。Claude Code 是 JS 客户端；sjson/encoding/json 的 HTML 转义会写出 JS 永远
+// 不会产生的 <，改写 Claude Code body 里的文本必须走这里。
+func jsonStringifyString(value string) string {
+	const hex = "0123456789abcdef"
+	var out strings.Builder
+	out.Grow(len(value) + 2)
+	out.WriteByte('"')
+	for _, r := range value {
+		switch r {
+		case '"', '\\':
+			out.WriteByte('\\')
+			out.WriteRune(r)
+		case '\b':
+			out.WriteString(`\b`)
+		case '\f':
+			out.WriteString(`\f`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\t':
+			out.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				out.WriteString(`\u00`)
+				out.WriteByte(hex[r>>4])
+				out.WriteByte(hex[r&0xf])
+				continue
+			}
+			out.WriteRune(r)
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
+}
+
 // joinJSONRaw 把若干原始 JSON 片段拼成一个数组字面量。
 func joinJSONRaw(items []string) string {
 	return "[" + strings.Join(items, ",") + "]"

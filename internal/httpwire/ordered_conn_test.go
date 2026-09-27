@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestOrderedRequestConnPreservesBodyAndAppliesWireOrder(t *testing.T) {
+func TestOrderedRequestConnPreservesBodyAndAppliesWireOrderAndCasing(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -18,12 +18,14 @@ func TestOrderedRequestConnPreservesBodyAndAppliesWireOrder(t *testing.T) {
 		if !strings.HasPrefix(target, "/v1/messages") {
 			return nil
 		}
-		return []string{"Accept", "Authorization", "Connection", "Host", "Content-Length"}
+		return []string{"Accept", "Authorization", "anthropic-beta", "x-claude-code-prompt-id", "Connection", "Host", "Content-Length"}
 	})
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := ordered.Write([]byte("POST /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nContent-Length: 2\r\nAuthorization: Bearer token\r\nAccept: application/json\r\nConnection: keep-alive\r\n\r\n{}"))
+		_, err := ordered.Write([]byte("POST /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nContent-Length: 2\r\n" +
+			"X-Claude-Code-Prompt-Id: p1\r\nX-Unlisted: kept\r\nAuthorization: Bearer token\r\nAnthropic-Beta: a,b\r\n" +
+			"Accept: application/json\r\nConnection: keep-alive\r\n\r\n{}"))
 		errCh <- err
 	}()
 
@@ -31,9 +33,12 @@ func TestOrderedRequestConnPreservesBodyAndAppliesWireOrder(t *testing.T) {
 	want := "POST /v1/messages?beta=true HTTP/1.1\r\n" +
 		"Accept: application/json\r\n" +
 		"Authorization: Bearer token\r\n" +
+		"anthropic-beta: a,b\r\n" +
+		"x-claude-code-prompt-id: p1\r\n" +
 		"Connection: keep-alive\r\n" +
 		"Host: api.anthropic.com\r\n" +
-		"Content-Length: 2\r\n\r\n{}"
+		"Content-Length: 2\r\n" +
+		"X-Unlisted: kept\r\n\r\n{}"
 	got := make([]byte, len(want))
 	if _, err := io.ReadFull(reader, got); err != nil {
 		t.Fatalf("read ordered request: %v", err)

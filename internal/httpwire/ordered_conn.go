@@ -16,13 +16,16 @@ import (
 
 const maxBufferedRequestHeader = 1 << 20
 
-// RequestHeaderOrder returns the desired header-name order for one HTTP/1.1
-// request. Names are compared case-insensitively. Unlisted headers retain their
-// original relative order after the listed headers.
+// RequestHeaderOrder returns the desired header names for one HTTP/1.1 request.
+// Names are matched case-insensitively and fix both position and wire casing:
+// Go canonicalises names on the way in, so casing can only be restored here.
+// Unlisted headers keep their original casing and relative order after the
+// listed headers.
 type RequestHeaderOrder func(method, requestTarget string) []string
 
 // NewOrderedRequestConn wraps conn and rewrites only HTTP/1.1 request-header
-// order. Request lines, header casing and values, and body bytes remain intact.
+// order and the casing of listed names. Request lines, header values, and body
+// bytes remain intact.
 func NewOrderedRequestConn(conn net.Conn, order RequestHeaderOrder) net.Conn {
 	if conn == nil || order == nil {
 		return conn
@@ -136,7 +139,8 @@ func orderRequestHeader(header []byte, order RequestHeaderOrder) ([]byte, int64,
 			if used[index] || !headerLineNamed(line, name) {
 				continue
 			}
-			orderedLines = append(orderedLines, line)
+			colon := bytes.IndexByte(line, ':')
+			orderedLines = append(orderedLines, append([]byte(name), line[colon:]...))
 			used[index] = true
 		}
 	}

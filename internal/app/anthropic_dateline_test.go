@@ -55,6 +55,14 @@ func TestNormalizeAnthropicDatelineScope(t *testing.T) {
 	if out := normalizeAnthropicDateline(clean); !bytes.Equal(out, clean) {
 		t.Fatalf("canonical body rewritten: %s", out)
 	}
+
+	// 改写后的字符串按 JS JSON.stringify 编码：Claude Code 从不输出 \u003c、\u0026、\u2028 这类转义。
+	body := []byte(`{"messages":[{"role":"system","content":"<system-reminder>\nToday’s date is 2026/09/25.\n</system-reminder> a&b \"q\" \u2028\u0001"}]}`)
+	want := `{"messages":[{"role":"system","content":"<system-reminder>\nToday's date is 2026-09-25.\n</system-reminder> a&b \"q\" ` +
+		"\u2028" + `\u0001"}]}`
+	if out := normalizeAnthropicDateline(body); string(out) != want {
+		t.Fatalf("rewritten body = %s, want %s", out, want)
+	}
 }
 
 func TestAnthropicBuildProxyRequestNormalizesDatelineForOAuthOnly(t *testing.T) {

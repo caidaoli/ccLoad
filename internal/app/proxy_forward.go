@@ -239,9 +239,9 @@ func (s *Server) buildProxyRequest(
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
-	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) ||
+	if isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
 		isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
-		upstreamURL = buildAnthropicOAuthURL(baseURL, requestPath, upstreamQuery)
+		upstreamURL = buildAnthropicClaudeCodeURL(baseURL, requestPath, upstreamQuery)
 	}
 	if xaiResponsesRequest {
 		upstreamURL = buildXAIResponsesURL(baseURL, upstreamQuery)
@@ -2422,9 +2422,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp, gjson.GetBytes(sentBody, "model").String())
 		s.persistAnthropicPassiveUsage(cfg, resp)
-		// Claude Code 的 Accept-Encoding 声明了 br/zstd，Go transport 只会自动解 gzip，
-		// 剩下的必须自己解——发了那个头就得负责解码。
-		if err == nil && reqCtx.anthropicClaudeCodeWire {
+		// Claude Code 的 Accept-Encoding 声明了 br/zstd；请求显式带了该头时 Go transport
+		// 连 gzip 都不自动解。Messages 与 count_tokens 的模拟头都会发它——发了那个头
+		// 就得负责解码。
+		if err == nil && req != nil && runtimeUpstreamProtocol(reqCtx) == string(protocol.Anthropic) &&
+			anthropicHeaderValue(req.Header, "Accept-Encoding") != "" {
 			err = decodeAnthropicResponse(resp)
 		}
 	}

@@ -9,7 +9,6 @@ import (
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Anthropic 线协议改写全程以 []byte 为唯一表示：gjson 读、sjson 就地写。
@@ -192,7 +191,8 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 			body = deleteJSONPath(body, field.path)
 		}
 	}
-	if !hasBeta("mid-conversation-output-config-2026-07-01") {
+	// 2.1.283 起消息级 output_config 由 per-turn-control 承载；旧 beta 名保留给旧客户端。
+	if !hasBeta("per-turn-control-2026-07-01", "mid-conversation-output-config-2026-07-01") {
 		for index, message := range gjson.GetBytes(body, "messages").Array() {
 			if message.Get("output_config").Exists() {
 				body = deleteJSONPath(body, "messages."+strconv.Itoa(index)+".output_config")
@@ -308,33 +308,18 @@ func ensureAnthropicMessageCacheControl(body []byte) []byte {
 func anthropicEphemeralCacheControl() string { return `{"type":"ephemeral"}` }
 
 // anthropicTextBlockRaw 按原生键序拼一个 text 块：type → text → cache_control。
-// 字符串转义交给 sjson，与 encoding/json 完全一致（`<`、`>`、`&` 同样转义）。
+// 文本按 JS JSON.stringify 转义（`<`、`>`、`&` 原样），与 Claude Code 线上字节一致。
 func anthropicTextBlockRaw(text, cacheControlRaw string) string {
-	block, err := sjson.Set(`{"type":"text"}`, "text", text)
-	if err != nil {
-		return `{"type":"text","text":""}`
+	block := `{"type":"text","text":` + jsonStringifyString(text)
+	if cacheControlRaw != "" {
+		block += `,"cache_control":` + cacheControlRaw
 	}
-	if cacheControlRaw == "" {
-		return block
-	}
-	withCache, err := sjson.SetRaw(block, "cache_control", cacheControlRaw)
-	if err != nil {
-		return block
-	}
-	return withCache
+	return block + "}"
 }
 
 // anthropicTextMessageRaw 按原生键序拼一条纯文本消息：role → content。
 func anthropicTextMessageRaw(role, content string) string {
-	message, err := sjson.Set(`{"role":""}`, "role", role)
-	if err != nil {
-		return `{"role":"user","content":""}`
-	}
-	message, err = sjson.Set(message, "content", content)
-	if err != nil {
-		return `{"role":"user","content":""}`
-	}
-	return message
+	return `{"role":` + jsonStringifyString(role) + `,"content":` + jsonStringifyString(content) + "}"
 }
 
 func normalizeAnthropicCacheControlTTL(body []byte) []byte {

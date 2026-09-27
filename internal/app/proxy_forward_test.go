@@ -2534,8 +2534,13 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nanswer tersely" {
 		t.Fatalf("moved system = %q", got)
 	}
+	// 静态 system 前缀按官方 first-party 形态声明 global 缓存作用域，键序 type → ttl → scope。
+	if got := gjson.GetBytes(body, "system.2.cache_control").Raw; got != `{"type":"ephemeral","scope":"global"}` {
+		t.Fatalf("system prompt cache_control = %s", got)
+	}
+	// thinking 开启时官方不发 temperature；缺省 max_tokens 取模型目录默认值。
 	if !gjson.GetBytes(body, "tools").IsArray() || gjson.GetBytes(body, "tool_choice").Exists() ||
-		gjson.GetBytes(body, "temperature").Float() != 1 || gjson.GetBytes(body, "max_tokens").Int() != 128000 ||
+		gjson.GetBytes(body, "temperature").Exists() || gjson.GetBytes(body, "max_tokens").Int() != 32000 ||
 		gjson.GetBytes(body, "context_management.edits.0.type").String() != "clear_thinking_20251015" ||
 		gjson.GetBytes(body, "metadata.user_id").String() == "" {
 		t.Fatalf("normalized body = %s", body)
@@ -2559,7 +2564,7 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 	if got, want := headerValueFold(request.Header, "User-Agent"), "claude-cli/"+anthropicBillingVersion(body)+" (external, cli)"; got != want {
 		t.Fatalf("UA/billing version mismatch: got %q, want %q", got, want)
 	}
-	if got := buildAnthropicOAuthURL("https://api.anthropic.com", "/v1/messages", "foo=bar"); got != "https://api.anthropic.com/v1/messages?beta=true&foo=bar" {
+	if got := buildAnthropicClaudeCodeURL("https://api.anthropic.com", "/v1/messages", "foo=bar"); got != "https://api.anthropic.com/v1/messages?beta=true&foo=bar" {
 		t.Fatalf("upstream URL = %q", got)
 	}
 }
@@ -2574,20 +2579,31 @@ func TestAnthropicOAuthMimicUsesFableSystemAndSamplingDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	// temperature 与缺省 max_tokens 按 Claude Code 模型能力表：只有 Opus 4.7 之前的
+	// 模型在 thinking 关闭时发 temperature（调用方值优先，否则 1）。
 	for _, test := range []struct {
-		name        string
-		model       string
-		temperature string
-		tools       string
-		wantBlocks  int
-		wantTemp    float64
+		name          string
+		model         string
+		extra         string
+		tools         string
+		wantBlocks    int
+		wantTemp      string
+		wantMaxTokens int64
 	}{
-		{name: "Fable defaults", model: "claude-fable-5-1", wantBlocks: 2, wantTemp: 1,
+		{name: "Fable defaults", model: "claude-fable-5-1", wantBlocks: 2, wantMaxTokens: 64000,
 			tools: `,"tools":[{"name":"work","input_schema":{"type":"object"}},{"name":"later","defer_loading":true,"cache_control":{"type":"ephemeral"}}]`},
-		{name: "Sonnet caller sampling", model: "claude-sonnet-4-6", temperature: `,"temperature":0.3`, wantBlocks: 3, wantTemp: 0.3},
+		{name: "Sonnet caller sampling", model: "claude-sonnet-4-6", extra: `,"temperature":0.3`, wantBlocks: 3,
+			wantTemp: "0.3", wantMaxTokens: 32000},
+		{name: "Sonnet default temperature", model: "claude-sonnet-4-6", wantBlocks: 3, wantTemp: "1", wantMaxTokens: 32000},
+		{name: "Sonnet thinking drops temperature", model: "claude-sonnet-4-6", wantBlocks: 3, wantMaxTokens: 32000,
+			extra: `,"temperature":0.3,"thinking":{"type":"adaptive"}`},
+		{name: "Sonnet 5 never sends temperature", model: "claude-sonnet-5", extra: `,"temperature":0.3`,
+			wantBlocks: 3, wantMaxTokens: 64000},
+		{name: "Opus 5.5 output ceiling", model: "claude-opus-5-5", wantBlocks: 3, wantMaxTokens: 128000},
+		{name: "caller max_tokens kept", model: "claude-opus-5-5", extra: `,"max_tokens":1024`, wantBlocks: 3, wantMaxTokens: 1024},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := []byte(`{"model":"` + test.model + `","messages":[{"role":"user","content":"hi"}]` + test.temperature + test.tools + `}`)
+			body := []byte(`{"model":"` + test.model + `","messages":[{"role":"user","content":"hi"}]` + test.extra + test.tools + `}`)
 			got, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", http.Header{}, anthropicOfficialTestURL)
 			if err != nil {
 				t.Fatal(err)
@@ -2595,11 +2611,11 @@ func TestAnthropicOAuthMimicUsesFableSystemAndSamplingDefaults(t *testing.T) {
 			if blocks := len(gjson.GetBytes(got, "system").Array()); blocks != test.wantBlocks {
 				t.Fatalf("system blocks = %d, want %d", blocks, test.wantBlocks)
 			}
-			if maxTokens := gjson.GetBytes(got, "max_tokens").Int(); maxTokens != 128000 {
-				t.Fatalf("max_tokens = %d", maxTokens)
+			if maxTokens := gjson.GetBytes(got, "max_tokens").Int(); maxTokens != test.wantMaxTokens {
+				t.Fatalf("max_tokens = %d, want %d", maxTokens, test.wantMaxTokens)
 			}
-			if temperature := gjson.GetBytes(got, "temperature").Float(); temperature != test.wantTemp {
-				t.Fatalf("temperature = %v, want %v", temperature, test.wantTemp)
+			if temperature := gjson.GetBytes(got, "temperature").Raw; temperature != test.wantTemp {
+				t.Fatalf("temperature = %q, want %q", temperature, test.wantTemp)
 			}
 			if test.tools != "" && (!gjson.GetBytes(got, "tools.0.cache_control").Exists() ||
 				gjson.GetBytes(got, "tools.1.cache_control").Exists()) {
@@ -2664,28 +2680,28 @@ func TestAnthropicClaudeCodeWireUsesIncomingClientVersion(t *testing.T) {
 	}
 }
 
-func TestAnthropicClaudeCodeHeadersMarkStreamingRequests(t *testing.T) {
+// Claude Code 2.1.283 实测：stream:true 的 /v1/messages 不带 x-stainless-helper-method。
+func TestAnthropicClaudeCodeMimicHeadersOmitStreamHelper(t *testing.T) {
 	t.Parallel()
-	cfg := &model.Config{Name: "anthropic-api-key"}
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[],"stream":true}`)
 	for _, testCase := range []struct {
-		name       string
-		body       string
-		wantHelper bool
+		name   string
+		inject func(*http.Request)
 	}{
-		{name: "stream", body: `{"model":"claude-sonnet-4-6","messages":[],"stream":true}`, wantHelper: true},
-		{name: "non-stream", body: `{"model":"claude-sonnet-4-6","messages":[],"stream":false}`},
+		{name: "api-key", inject: func(req *http.Request) {
+			injectAnthropicAPIKeyHeaders(req, &model.Config{Name: "anthropic-api-key"}, "sk-ant-key", body, false)
+		}},
+		{name: "oauth", inject: func(req *http.Request) {
+			injectAnthropicOAuthHeadersWithFingerprint(req, &model.Config{AuthType: model.AuthTypeAnthropicOAuth}, "oauth-access", body, false, nil)
+		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), strings.NewReader(testCase.body))
+			req, err := http.NewRequest(http.MethodPost, anthropicOfficialTestURL.String(), bytes.NewReader(body))
 			if err != nil {
 				t.Fatal(err)
 			}
-			injectAnthropicAPIKeyHeaders(req, cfg, "sk-ant-key", []byte(testCase.body), false)
-			got := headerValueFold(req.Header, "x-stainless-helper-method")
-			if testCase.wantHelper && got != "stream" {
-				t.Fatalf("x-stainless-helper-method=%q, want stream", got)
-			}
-			if !testCase.wantHelper && got != "" {
+			testCase.inject(req)
+			if got := headerValueFold(req.Header, "x-stainless-helper-method"); got != "" {
 				t.Fatalf("x-stainless-helper-method=%q, want absent", got)
 			}
 		})
@@ -3419,17 +3435,8 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 	if hits := gjson.GetBytes(defaultBody, `@dig:ttl`).Array(); len(hits) != 0 {
 		t.Fatalf("gateway injected a cache TTL the caller did not ask for: %s", defaultBody)
 	}
-	if betas := anthropicClaudeCodeBetas(defaultBody); strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
+	if betas := anthropicClaudeCodeMimicBetas(defaultBody, false); strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("extended-cache-ttl beta declared without any cache TTL in body: %q", betas)
-	}
-	defaultBetas := anthropicClaudeCodeBetas(defaultBody)
-	for _, retired := range []string{
-		"redact-thinking-2026-02-12", "thinking-token-count-2026-05-13",
-		"advanced-tool-use-2025-11-20", "fallback-credit-2026-06-01",
-	} {
-		if strings.Contains(defaultBetas, retired) {
-			t.Fatalf("retired/unused beta %q advertised: %q", retired, defaultBetas)
-		}
 	}
 
 	longBody, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
@@ -3454,7 +3461,7 @@ func TestAnthropicClaudeCodeCacheTTLFollowsCaller(t *testing.T) {
 	if got := gjson.GetBytes(longBody, "system.2.cache_control.ttl").String(); got != "1h" {
 		t.Fatalf("gateway system breakpoint ttl=%q, want 1h: %s", got, longBody)
 	}
-	if betas := anthropicClaudeCodeBetas(longBody); !strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
+	if betas := anthropicClaudeCodeMimicBetas(longBody, false); !strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("1h cache TTL without extended-cache-ttl beta: %q", betas)
 	}
 }
@@ -3532,30 +3539,45 @@ func TestAnthropicMimicKeepsCustomContentAfterClaudeCodeBanner(t *testing.T) {
 	}
 }
 
-func TestAnthropicMimicAPIKeyBetasByModel(t *testing.T) {
+// TestAnthropicMimicBetasMatchClaudeCode 固定模拟路径的 anthropic-beta 线协议：
+// OAuth sonnet-5 与 Claude Code 2.1.283 抓包逐项同序，其余模型按官方能力表裁剪。
+func TestAnthropicMimicBetasMatchClaudeCode(t *testing.T) {
+	const captured = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
+		"thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05," +
+		"mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20," +
+		"mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24," +
+		"thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07"
 	for _, tc := range []struct {
-		name            string
-		model           string
-		wantClaudeCode  bool
-		wantFineGrained bool
-		wantBetaCount   int
+		name  string
+		body  string
+		oauth bool
+		want  string
 	}{
-		{name: "sonnet", model: "claude-sonnet-4-5", wantClaudeCode: true, wantFineGrained: true, wantBetaCount: 6},
-		{name: "haiku", model: "claude-haiku-4-5", wantBetaCount: 1},
+		{name: "oauth sonnet-5 capture", oauth: true, want: captured,
+			body: `{"model":"claude-sonnet-5","diagnostics":{"previous_message_id":"msg_1"},"messages":[]}`},
+		{name: "oauth without diagnostics", oauth: true,
+			body: `{"model":"claude-sonnet-5","messages":[]}`,
+			want: strings.TrimSuffix(captured, ",cache-diagnosis-2026-04-07")},
+		{name: "oauth message output_config", oauth: true,
+			body: `{"model":"claude-opus-5","messages":[{"role":"system","content":"x","output_config":{"effort":"low"}}]}`,
+			want: "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
+				"thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05," +
+				"mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,advanced-tool-use-2025-11-20," +
+				"mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24," +
+				"thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11"},
+		{name: "oauth haiku-4-5", oauth: true, body: `{"model":"claude-haiku-4-5","messages":[]}`,
+			want: "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
+				"thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05," +
+				"advanced-tool-use-2025-11-20,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11"},
+		{name: "api key sonnet-4-5", body: `{"model":"claude-sonnet-4-5","messages":[]}`,
+			want: "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13," +
+				"context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20"},
+		{name: "api key haiku helper", body: `{"model":"claude-haiku-4-5","messages":[]}`,
+			want: "interleaved-thinking-2025-05-14"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, tc.model))
-			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			injectAnthropicAPIKeyHeaders(req, &model.Config{Name: "anthropic-api-key"}, "sk-ant-key", body, false)
-			betas := strings.Split(headerValueFold(req.Header, "Anthropic-Beta"), ",")
-			if !slices.Contains(betas, "interleaved-thinking-2025-05-14") ||
-				slices.Contains(betas, "claude-code-20250219") != tc.wantClaudeCode ||
-				slices.Contains(betas, "fine-grained-tool-streaming-2025-05-14") != tc.wantFineGrained ||
-				len(betas) != tc.wantBetaCount {
-				t.Fatalf("API Key betas for %s = %v", tc.model, betas)
+			if got := anthropicClaudeCodeMimicBetas([]byte(tc.body), tc.oauth); got != tc.want {
+				t.Fatalf("betas =\n%s\nwant\n%s", got, tc.want)
 			}
 		})
 	}

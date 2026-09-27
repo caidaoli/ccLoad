@@ -183,7 +183,12 @@ func validateAnthropicOpus55Request(body []byte, requestModel string) error {
 	}
 }
 
-func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
+// buildAnthropicClaudeCodeURL 给 /v1/messages 补 ?beta=true。真实 Claude Code
+// 2.1.220+ 每次请求都带这个参数，跟认证方式无关；sub2api 把它写死在默认上游
+// URL 常量里，OAuth、API Key、第三方 base_url 全部无条件加（gateway_service.go
+// claudeAPIURL、gateway_upstream_request.go buildCustomRelayURL）。ccLoad 之前
+// 只在 OAuth 分支加，API Key/第三方渠道的 CLI 指纹请求会漏这个参数。
+func buildAnthropicClaudeCodeURL(baseURL, requestPath, rawQuery string) string {
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
 	parsed, err := url.Parse(upstreamURL)
 	if err != nil {
@@ -198,6 +203,12 @@ func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
 // anthropicCCHSigningEnabled 仅保留旧版 Haiku helper 的签名策略。新生成的
 // Claude Code billing block 跟随 sub2api 当前模拟路径，不再注入 CCH。
 func anthropicCCHSigningEnabled(cfg *model.Config, target *url.URL) bool {
+	return anthropicUsesFirstPartyHost(cfg, target)
+}
+
+// anthropicUsesFirstPartyHost 对应 Claude Code 的 first-party 判定：OAuth 凭证只能打
+// 官方端点，API Key 以目标地址是否为 api.anthropic.com 为准。
+func anthropicUsesFirstPartyHost(cfg *model.Config, target *url.URL) bool {
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
 		return true
 	}
@@ -263,8 +274,12 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	// prompt can cause an otherwise valid request to be refused.
 	if cfg == nil || !cfg.UsesAnthropicOAuth() ||
 		!strings.Contains(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "fable") {
-		systemBlocks = append(systemBlocks,
-			anthropicTextBlockRaw(anthropicClaudeCodePrompt, anthropicCloakCacheControl(cloakCacheTTL)))
+		promptCacheControl := anthropicCloakCacheControl(cloakCacheTTL)
+		if anthropicUsesFirstPartyHost(cfg, target) {
+			// 官方客户端直连 api.anthropic.com 时，静态 system 前缀走跨组织的 global 缓存。
+			promptCacheControl = string(setJSONValue([]byte(promptCacheControl), "scope", "global"))
+		}
+		systemBlocks = append(systemBlocks, anthropicTextBlockRaw(anthropicClaudeCodePrompt, promptCacheControl))
 	}
 	body = setJSONRaw(body, "system", "["+strings.Join(systemBlocks, ",")+"]")
 
@@ -317,19 +332,25 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	}
 
 	// Shared normalization removes temperature; OAuth mimic restores the caller's
-	// value (or Claude Code's default) immediately below.
+	// value (or Claude Code's default 1) immediately below, but only where Claude
+	// Code would send one: models that accept temperature, with thinking off.
 	callerTemperature := gjson.GetBytes(body, "temperature")
 	body = encodeNormalizedAnthropicRequest(body)
 	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		modelName := jsonStringValue(gjson.GetBytes(body, "model"))
 		if !gjson.GetBytes(body, "max_tokens").Exists() {
-			body = setJSONRaw(body, "max_tokens", "128000")
+			body = setJSONRaw(body, "max_tokens", anthropicClaudeCodeDefaultMaxTokens(modelName))
 		}
-		if !strings.HasPrefix(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "claude-opus-5-5") {
-			temperature := "1"
-			if callerTemperature.Exists() {
-				temperature = callerTemperature.Raw
+		switch strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type")))) {
+		case "enabled", "adaptive":
+		default:
+			if anthropicModelAcceptsTemperature(modelName) {
+				temperature := "1"
+				if callerTemperature.Exists() {
+					temperature = callerTemperature.Raw
+				}
+				body = setJSONRaw(body, "temperature", temperature)
 			}
-			body = setJSONRaw(body, "temperature", temperature)
 		}
 	}
 	return finishAnthropicPassthrough(body, false)
@@ -2008,10 +2029,7 @@ func injectAnthropicOAuthHeadersWithFingerprint(
 	if clientVersion == "" {
 		clientVersion = anthropicEffectiveCLIVersion()
 	}
-	applyAnthropicClaudeCodeHeaders(
-		req, anthropicOAuthMimicBetas(), "", clientVersion,
-		anthropicRequestIsStreaming(body), true,
-	)
+	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeMimicBetas(body, true), "", clientVersion, true)
 }
 
 // Header rules run after the wire headers are rebuilt. Restore only the
@@ -2049,8 +2067,8 @@ func injectAnthropicAPIKeyHeaders(
 	}
 	applyAnthropicAPIKeyAuth(req, apiKey)
 	applyAnthropicClaudeCodeHeaders(
-		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, apiKey, incoming),
-		anthropicClientVersion(incoming), anthropicRequestIsStreaming(body), false,
+		req, anthropicClaudeCodeMimicBetas(body, false), resolveAnthropicSessionID(body, cfg, apiKey, incoming),
+		anthropicClientVersion(incoming), false,
 	)
 }
 
@@ -2069,12 +2087,12 @@ func injectAnthropicCountTokensHeadersWithFingerprint(req *http.Request, cfg *mo
 			for name := range req.Header {
 				delete(req.Header, name)
 			}
-			betas := anthropicOAuthMimicBetas()
+			betas := anthropicClaudeCodeMimicBetas(body, true)
 			for _, beta := range strings.Split(normalizedAnthropicBetaHeader(incoming), ",") {
 				betas = appendAnthropicBeta(betas, beta)
 			}
 			applyAnthropicClaudeCodeHeaders(req, appendAnthropicBeta(betas, "token-counting-2024-11-01"),
-				"", anthropicEffectiveCLIVersion(), false, true)
+				"", anthropicEffectiveCLIVersion(), true)
 		}
 		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(apiKey))
 		return
@@ -2275,21 +2293,17 @@ func applyAnthropicNativeOAuthDefaults(req *http.Request, body []byte, fingerpri
 	setRawHeader(req.Header, "Anthropic-Beta", betas)
 }
 
-// anthropicOAuthMimicBetas 与 sub2api 的 FullClaudeCodeMimicryBetas 保持
-// 相同集合和顺序。OAuth 模拟请求不继承第三方客户端的 beta。
-func anthropicOAuthMimicBetas() string {
-	return "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
-		"prompt-caching-scope-2026-01-05,effort-2025-11-24,context-management-2025-06-27," +
-		"thinking-binding-controls-2026-08-01,mid-conversation-output-config-2026-07-01," +
-		"extended-cache-ttl-2025-04-11"
-}
-
-// anthropicClaudeCodeBetas 为 API Key 模拟请求按实际使用的能力声明 beta。
-// oauth-2025-04-20 只属于 OAuth 凭证，真实 CLI 用 API Key 时不发。
-func anthropicClaudeCodeBetas(body []byte) string {
-	betas := []string{"interleaved-thinking-2025-05-14"}
-	if strings.Contains(strings.ToLower(jsonStringValue(gjson.GetBytes(body, "model"))), "haiku") {
-		// Haiku 的 API Key 默认头不声明 claude-code；只在 body 使用能力时追加 beta。
+// anthropicClaudeCodeMimicBetas 按 Claude Code 2.1.283 主循环（first party）的构建顺序
+// 生成模拟请求的 anthropic-beta：基础表 → per-turn → 工具搜索 → mid-conversation
+// clear-at → effort → thinking-binding → fast → extended-cache-ttl → cache-diagnosis。
+// OAuth sonnet-5 的结果与 docs/claude 抓包逐项一致；抓包里的 cache-diagnosis 只在
+// body 带 diagnostics 时声明（官方同样由开关控制，关闭时 beta 与字段一起缺席）。
+// API Key 的 Haiku 请求保持 helper 形态：不声明 claude-code，能力 beta 按 body 追加。
+func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
+	modelName := anthropicCanonicalModelName(jsonStringValue(gjson.GetBytes(body, "model")))
+	var betas []string
+	if !oauth && strings.Contains(modelName, "haiku") {
+		betas = []string{"interleaved-thinking-2025-05-14"}
 		if anthropicRequestHasCacheControl(body, func(cache gjson.Result) bool { return cache.Get("scope").Exists() }) {
 			betas = append(betas, "prompt-caching-scope-2026-01-05")
 		}
@@ -2300,26 +2314,112 @@ func anthropicClaudeCodeBetas(body []byte) string {
 			betas = append(betas, "context-management-2025-06-27")
 		}
 	} else {
-		betas = append([]string{"claude-code-20250219"}, betas...)
-		betas = append(betas, "fine-grained-tool-streaming-2025-05-14",
-			"prompt-caching-scope-2026-01-05", "effort-2025-11-24", "context-management-2025-06-27")
+		betas = []string{"claude-code-20250219"}
+		if oauth {
+			betas = append(betas, "oauth-2025-04-20")
+		}
+		// Claude 3 既没有 interleaved thinking，也不支持 tool search 的 tool_reference。
+		claude3 := strings.HasPrefix(modelName, "claude-3-")
+		if !claude3 {
+			betas = append(betas, "interleaved-thinking-2025-05-14", "thinking-token-count-2026-05-13")
+		}
+		betas = append(betas, "context-management-2025-06-27", "prompt-caching-scope-2026-01-05")
+		midConversation := !anthropicUsesLegacySystemReminder(modelName)
+		if midConversation {
+			betas = append(betas, "mid-conversation-system-2026-04-07")
+		}
+		if anthropicHasMessageOutputConfig(body) {
+			betas = append(betas, "per-turn-control-2026-07-01")
+		}
+		if !claude3 {
+			betas = append(betas, "advanced-tool-use-2025-11-20")
+		}
+		if midConversation {
+			betas = append(betas, "mid-conversation-system-clear-at-2026-08-21")
+		}
+		if anthropicModelSupportsEffort(modelName) || gjson.GetBytes(body, "output_config.effort").Exists() {
+			betas = append(betas, "effort-2025-11-24")
+		}
+		if oauth {
+			betas = append(betas, "thinking-binding-controls-2026-08-01")
+		}
 	}
-	if gjson.GetBytes(body, "thinking.block_binding").Exists() {
+	if !slices.Contains(betas, "thinking-binding-controls-2026-08-01") &&
+		gjson.GetBytes(body, "thinking.block_binding").Exists() {
 		betas = append(betas, "thinking-binding-controls-2026-08-01")
-	}
-	if anthropicHasMessageOutputConfig(body) {
-		betas = append(betas, "mid-conversation-output-config-2026-07-01")
 	}
 	if strings.EqualFold(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "speed"))), "fast") {
 		betas = append(betas, "fast-mode-2026-02-01")
 	}
-	if anthropicRequestHasCacheControl(body, anthropicCacheControlHasTTL) {
+	// OAuth 凭证默认 1h 窗口，官方总是声明；API Key 只在 body 实际用到 ttl 时声明。
+	if oauth || anthropicRequestHasCacheControl(body, anthropicCacheControlHasTTL) {
 		betas = append(betas, "extended-cache-ttl-2025-04-11")
 	}
 	if gjson.GetBytes(body, "diagnostics").IsObject() {
 		betas = append(betas, "cache-diagnosis-2026-04-07")
 	}
 	return strings.Join(betas, ",")
+}
+
+// anthropicCanonicalModelName 去掉 provider 前缀并小写，供按官方模型名判定能力。
+func anthropicCanonicalModelName(modelName string) string {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if slash := strings.LastIndexByte(modelName, '/'); slash >= 0 {
+		modelName = modelName[slash+1:]
+	}
+	return modelName
+}
+
+// anthropicModelSupportsEffort 对应 Claude Code 的 effort 能力表：Claude 3 与
+// Opus 4/4.1、Sonnet 4/4.5、Haiku 4.5 不支持 output_config.effort。
+func anthropicModelSupportsEffort(modelName string) bool {
+	modelName = anthropicCanonicalModelName(modelName)
+	if strings.HasPrefix(modelName, "claude-3-") {
+		return false
+	}
+	switch strings.TrimSuffix(modelName, "[1m]") {
+	case "claude-opus-4", "claude-opus-4-0", "claude-opus-4-20250514",
+		"claude-opus-4-1", "claude-opus-4-1-20250805",
+		"claude-sonnet-4", "claude-sonnet-4-0", "claude-sonnet-4-20250514",
+		"claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
+		"claude-haiku-4-5", "claude-haiku-4-5-20251001":
+		return false
+	default:
+		return true
+	}
+}
+
+// anthropicModelAcceptsTemperature 对应 Claude Code 的 temperature 能力表：只有
+// Claude 3 与 Opus 4.7 之前的 4.x 模型接受 temperature，更新的模型官方从不发送。
+func anthropicModelAcceptsTemperature(modelName string) bool {
+	modelName = anthropicCanonicalModelName(modelName)
+	return strings.HasPrefix(modelName, "claude-3-") ||
+		anthropicUsesLegacySystemReminder(modelName) && !strings.HasPrefix(modelName, "claude-opus-4-7")
+}
+
+// anthropicClaudeCodeDefaultMaxTokens 是 Claude Code 模型目录的 max_output_tokens
+// 默认值；未知模型落在官方的 32000 兜底。
+func anthropicClaudeCodeDefaultMaxTokens(modelName string) string {
+	modelName = anthropicCanonicalModelName(modelName)
+	hasPrefix := func(prefixes ...string) bool {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(modelName, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case hasPrefix("claude-opus-5-5"):
+		return "128000"
+	case hasPrefix("claude-3-5-"):
+		return "8192"
+	case hasPrefix("claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",
+		"claude-sonnet-5", "claude-fable-", "claude-mythos-"):
+		return "64000"
+	default:
+		return "32000"
+	}
 }
 
 func anthropicHasMessageOutputConfig(body []byte) bool {
@@ -2333,11 +2433,7 @@ func anthropicHasMessageOutputConfig(body []byte) bool {
 }
 
 func anthropicUsesLegacySystemReminder(modelName string) bool {
-	modelName = strings.ToLower(strings.TrimSpace(modelName))
-	if slash := strings.LastIndexByte(modelName, '/'); slash >= 0 {
-		modelName = modelName[slash+1:]
-	}
-	switch modelName {
+	switch anthropicCanonicalModelName(modelName) {
 	case "claude-3-5-haiku-20241022", "claude-3-5-haiku-latest",
 		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
 		"claude-haiku-4-5", "claude-haiku-4-5-20251001",
@@ -2352,11 +2448,10 @@ func anthropicUsesLegacySystemReminder(modelName string) bool {
 	}
 }
 
-func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, clientVersion string, isStreaming, oauthMimic bool) {
+// applyAnthropicClaudeCodeHeaders 重建模拟路径的 CLI 头。流式请求也不发
+// x-stainless-helper-method：2.1.283 实测 stream:true 时官方不带该头。
+func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, clientVersion string, oauthMimic bool) {
 	setRawHeader(req.Header, "Accept", "application/json")
-	if isStreaming {
-		setRawHeader(req.Header, "x-stainless-helper-method", "stream")
-	}
 	setRawHeader(req.Header, "Content-Type", "application/json")
 	setRawHeader(req.Header, "User-Agent", "claude-cli/"+clientVersion+" (external, cli)")
 	if !oauthMimic {
@@ -2376,14 +2471,8 @@ func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID, client
 	setRawHeader(req.Header, "anthropic-version", "2023-06-01")
 	setRawHeader(req.Header, "x-app", "cli")
 	setRawHeader(req.Header, "x-client-request-id", uuid.NewString())
-	if !oauthMimic {
-		setRawHeader(req.Header, "Connection", "keep-alive")
-		setRawHeader(req.Header, "Accept-Encoding", "gzip, deflate, br, zstd")
-	}
-}
-
-func anthropicRequestIsStreaming(body []byte) bool {
-	return gjson.GetBytes(body, "stream").Bool()
+	setRawHeader(req.Header, "Connection", "keep-alive")
+	setRawHeader(req.Header, "Accept-Encoding", "gzip, deflate, br, zstd")
 }
 
 // setRawHeader 以给定大小写写入请求头。Claude Code CLI 的线上头名全部小写，Go 的

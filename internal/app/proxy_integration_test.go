@@ -37,6 +37,7 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -2049,11 +2050,18 @@ func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		sent = append(sent, capturedRequest{url: r.URL.String(), headers: r.Header.Clone(), body: body})
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":37}`)),
-		}, nil
+		header := http.Header{"Content-Type": []string{"application/json"}}
+		payload := []byte(`{"input_tokens":37}`)
+		// 上游按请求声明的编码压缩：模拟头声明了 br，网关必须自己解开再交给客户端。
+		if strings.Contains(headerValueFold(r.Header, "Accept-Encoding"), "br") {
+			var compressed bytes.Buffer
+			writer := brotli.NewWriter(&compressed)
+			_, _ = writer.Write(payload)
+			_ = writer.Close()
+			header.Set("Content-Encoding", "br")
+			payload = compressed.Bytes()
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(bytes.NewReader(payload))}, nil
 	})}
 
 	requestBody := map[string]any{
@@ -2068,14 +2076,16 @@ func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
 	_ = channelID
 	const originalSessionID = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
 	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", requestBody, nil)
-	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() != 37 || len(sent) != 1 {
-		t.Fatalf("mimic status=%d sent=%d body=%s", response.Code, len(sent), response.Body.String())
+	if response.Code != http.StatusOK || response.Body.String() != `{"input_tokens":37}` ||
+		response.Header().Get("Content-Encoding") != "" || len(sent) != 1 {
+		t.Fatalf("mimic status=%d sent=%d headers=%v body=%q", response.Code, len(sent), response.Header(), response.Body.String())
 	}
 	mimic := sent[0]
 	if mimic.url != "https://api.anthropic.com/v1/messages/count_tokens?beta=true" ||
 		headerValueFold(mimic.headers, "Authorization") != "Bearer oauth-count-token" ||
 		headerValueFold(mimic.headers, "X-Stainless-Runtime-Version") != anthropicStainlessRuntimeVersion ||
 		headerValueFold(mimic.headers, "X-Claude-Code-Session-Id") != "" ||
+		headerValueFold(mimic.headers, "Accept-Encoding") != "gzip, deflate, br, zstd" ||
 		!strings.Contains(headerValueFold(mimic.headers, "Anthropic-Beta"), "token-counting-2024-11-01") ||
 		gjson.GetBytes(mimic.body, "metadata").Exists() ||
 		gjson.GetBytes(mimic.body, "max_tokens").Exists() || gjson.GetBytes(mimic.body, "temperature").Exists() {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -316,54 +317,65 @@ func dialAnthropicClaudeCodeUTLS(
 	return httpwire.NewOrderedRequestConn(conn, anthropicClaudeCodeHeaderOrder), nil
 }
 
-var anthropicClaudeCodeMessagesHeaderOrder = []string{
-	"Accept",
-	"Authorization",
-	"Content-Type",
-	"User-Agent",
-	"X-Claude-Code-Session-Id",
-	"X-Stainless-Arch",
-	"X-Stainless-Lang",
-	"X-Stainless-OS",
-	"X-Stainless-Package-Version",
-	"X-Stainless-Retry-Count",
-	"X-Stainless-Runtime",
-	"X-Stainless-Runtime-Version",
-	"X-Stainless-Timeout",
-	"anthropic-beta",
-	"anthropic-dangerous-direct-browser-access",
-	"anthropic-version",
-	"x-app",
-	"x-client-request-id",
-	"Connection",
-	"Host",
-	"Accept-Encoding",
-	"Content-Length",
-}
-
-var anthropicClaudeCodeCountTokensHeaderOrder = []string{
-	"Accept",
-	"Authorization",
-	"Content-Type",
-	"User-Agent",
-	"X-Claude-Code-Session-Id",
-	"X-Stainless-Arch",
-	"X-Stainless-Lang",
-	"X-Stainless-OS",
-	"X-Stainless-Package-Version",
-	"X-Stainless-Retry-Count",
-	"X-Stainless-Runtime",
-	"X-Stainless-Runtime-Version",
-	"anthropic-beta",
-	"anthropic-dangerous-direct-browser-access",
-	"anthropic-version",
-	"x-app",
-	"x-client-request-id",
-	"Connection",
-	"Host",
-	"Accept-Encoding",
-	"Content-Length",
-}
+// Claude Code 按字节序发出 SDK 头（大写名在前），传输层再追加 Connection/Host/
+// Accept-Encoding/Content-Length。名单同时决定线上大小写（Go 会把入站头名规范化，
+// 只能在这里还原），小写名取自 2.1.283 二进制里的字面量；原生透传的头必须逐个列出，
+// 否则会以 Go 规范写法落到 Content-Length 之后。
+var (
+	anthropicClaudeCodeHeaderOrderTail = []string{
+		"anthropic-beta",
+		"anthropic-dangerous-direct-browser-access",
+		"anthropic-version",
+		"x-anthropic-additional-protection",
+		"x-app",
+		"x-claude-code-agent-id",
+		"x-claude-code-agent-type",
+		"x-claude-code-compaction",
+		"x-claude-code-context-compacted",
+		"x-claude-code-parent-agent-id",
+		"x-claude-code-prev-tool-durations",
+		"x-claude-code-prompt-id",
+		"x-claude-code-request-class",
+		"x-claude-remote-container-id",
+		"x-claude-remote-session-id",
+		"x-client-app",
+		"x-client-request-id",
+		"x-stainless-helper-method",
+		"Connection",
+		"Host",
+		"Accept-Encoding",
+		"Content-Length",
+	}
+	anthropicClaudeCodeMessagesHeaderOrder = slices.Concat([]string{
+		"Accept",
+		"Authorization",
+		"Content-Type",
+		"User-Agent",
+		"X-Claude-Code-Session-Id",
+		"X-Stainless-Arch",
+		"X-Stainless-Lang",
+		"X-Stainless-OS",
+		"X-Stainless-Package-Version",
+		"X-Stainless-Retry-Count",
+		"X-Stainless-Runtime",
+		"X-Stainless-Runtime-Version",
+		"X-Stainless-Timeout",
+	}, anthropicClaudeCodeHeaderOrderTail)
+	anthropicClaudeCodeCountTokensHeaderOrder = slices.Concat([]string{
+		"Accept",
+		"Authorization",
+		"Content-Type",
+		"User-Agent",
+		"X-Claude-Code-Session-Id",
+		"X-Stainless-Arch",
+		"X-Stainless-Lang",
+		"X-Stainless-OS",
+		"X-Stainless-Package-Version",
+		"X-Stainless-Retry-Count",
+		"X-Stainless-Runtime",
+		"X-Stainless-Runtime-Version",
+	}, anthropicClaudeCodeHeaderOrderTail)
+)
 
 func anthropicClaudeCodeHeaderOrder(_, requestTarget string) []string {
 	requestPath := requestTarget

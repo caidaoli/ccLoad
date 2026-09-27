@@ -54,7 +54,7 @@ func normalizeAnthropicDateline(body []byte) []byte {
 			return
 		}
 		if text := canonicalize(value.String()); text != value.String() {
-			patches = append(patches, anthropicRawPatch{path: path, raw: jsonEscapedString(text)})
+			patches = append(patches, anthropicRawPatch{path: path, raw: jsonStringifyString(text)})
 		}
 	}
 	patchTextBlocks := func(prefix string, blocks gjson.Result, canonicalize func(string) string) {

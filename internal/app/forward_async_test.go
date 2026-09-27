@@ -233,6 +233,9 @@ func TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream(t 
 	if got := headerValueFold(req.Header, "User-Agent"); got != "claude-cli/"+anthropicCLIVersion+" (external, cli)" {
 		t.Fatalf("User-Agent = %q, want Claude Code CLI fingerprint", got)
 	}
+	if got := req.URL.Query().Get("beta"); got != "true" {
+		t.Fatalf("upstream URL = %q, want ?beta=true (real Claude Code 2.1.220+ always sends it, API Key channel included)", req.URL.String())
+	}
 }
 
 func TestBuildProxyRequest_KeepsCustomHeaderRulesOnClaudeCodeWire(t *testing.T) {

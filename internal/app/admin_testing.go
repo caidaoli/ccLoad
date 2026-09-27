@@ -2076,8 +2076,8 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
 		requestPath = downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	}
-	if isAnthropicOAuthMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
-		requestPlan.fullURL = buildAnthropicOAuthURL(selectedURL, requestPath, "")
+	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+		requestPlan.fullURL = buildAnthropicClaudeCodeURL(selectedURL, requestPath, "")
 	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	// 与代理链路一致：Anthropic CCH 签名按上游 origin 分流，最终化前必须先有 URL。

@@ -350,7 +350,12 @@ func TestAnthropicClaudeCodeTransportMatchesCLIProxyProfile(t *testing.T) {
 		"X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version",
 		"X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
 		"X-Stainless-Timeout", "anthropic-beta", "anthropic-dangerous-direct-browser-access",
-		"anthropic-version", "x-app", "x-client-request-id", "Connection", "Host", "Accept-Encoding", "Content-Length",
+		"anthropic-version", "x-anthropic-additional-protection", "x-app",
+		"x-claude-code-agent-id", "x-claude-code-agent-type", "x-claude-code-compaction",
+		"x-claude-code-context-compacted", "x-claude-code-parent-agent-id",
+		"x-claude-code-prev-tool-durations", "x-claude-code-prompt-id", "x-claude-code-request-class",
+		"x-claude-remote-container-id", "x-claude-remote-session-id", "x-client-app",
+		"x-client-request-id", "x-stainless-helper-method", "Connection", "Host", "Accept-Encoding", "Content-Length",
 	}
 	if got := anthropicClaudeCodeHeaderOrder("POST", "/v1/messages"); !reflect.DeepEqual(got, wantMessages) {
 		t.Fatalf("messages header order = %v, want %v", got, wantMessages)
@@ -359,8 +364,13 @@ func TestAnthropicClaudeCodeTransportMatchesCLIProxyProfile(t *testing.T) {
 		"Accept", "Authorization", "Content-Type", "User-Agent", "X-Claude-Code-Session-Id",
 		"X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version",
 		"X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
-		"anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app",
-		"x-client-request-id", "Connection", "Host", "Accept-Encoding", "Content-Length",
+		"anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version",
+		"x-anthropic-additional-protection", "x-app",
+		"x-claude-code-agent-id", "x-claude-code-agent-type", "x-claude-code-compaction",
+		"x-claude-code-context-compacted", "x-claude-code-parent-agent-id",
+		"x-claude-code-prev-tool-durations", "x-claude-code-prompt-id", "x-claude-code-request-class",
+		"x-claude-remote-container-id", "x-claude-remote-session-id", "x-client-app",
+		"x-client-request-id", "x-stainless-helper-method", "Connection", "Host", "Accept-Encoding", "Content-Length",
 	}
 	if got := anthropicClaudeCodeHeaderOrder("POST", "/v1/messages/count_tokens?beta=true"); !reflect.DeepEqual(got, wantCountTokens) {
 		t.Fatalf("count_tokens header order = %v, want %v", got, wantCountTokens)
