@@ -269,7 +269,7 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	body = setJSONRaw(body, "system", "["+strings.Join(systemBlocks, ",")+"]")
 
 	messagePrefixCount := 0
-	if originalSystem != "" && !anthropicHasClaudeCodePromptPrefix(originalSystem) {
+	if originalSystem != "" {
 		instructions := "[System Instructions]\n" + originalSystem
 		instructionMessage := anthropicTextMessageRaw("user", instructions)
 		if originalSystemCacheControl != "" {
@@ -1459,10 +1459,19 @@ func enforceAnthropicCacheControlLimit(body []byte, limit int) []byte {
 	return body
 }
 
+// anthropicSystemTextAndCacheControl 把原始 system 拼成下沉用的纯文本，并带出要保留的
+// cache_control。已识别为 Claude Code/Agent SDK/Explore/Compact 官方提示词的 block 会被
+// 逐块剔除（而不是整段原文一旦命中前缀就整体丢弃）：真实抓包的 CC 请求为了控制缓存断点，
+// 官方样板文本和调用方自己的内容（比如 CLAUDE.md）本来就分属不同 block，逐块判断才能既去掉
+// 重复样板、又不连带丢失调用方自己的内容和它的 cache_control。
 func anthropicSystemTextAndCacheControl(system gjson.Result) (string, string) {
 	switch {
 	case system.Type == gjson.String:
-		return strings.TrimSpace(system.String()), ""
+		text := strings.TrimSpace(system.String())
+		if anthropicHasClaudeCodePromptPrefix(text) {
+			return "", ""
+		}
+		return text, ""
 	case system.IsArray():
 		blocks := system.Array()
 		parts := make([]string, 0, len(blocks))
@@ -1471,11 +1480,13 @@ func anthropicSystemTextAndCacheControl(system gjson.Result) (string, string) {
 			if !block.IsObject() {
 				continue
 			}
-			if text := jsonStringValue(block.Get("text")); strings.TrimSpace(text) != "" {
-				parts = append(parts, text)
-				if cache := block.Get("cache_control"); cache.IsObject() {
-					cacheControl = cache.Raw
-				}
+			text := jsonStringValue(block.Get("text"))
+			if strings.TrimSpace(text) == "" || anthropicHasClaudeCodePromptPrefix(text) {
+				continue
+			}
+			parts = append(parts, text)
+			if cache := block.Get("cache_control"); cache.IsObject() {
+				cacheControl = cache.Raw
 			}
 		}
 		return strings.Join(parts, "\n\n"), cacheControl
@@ -1484,6 +1495,10 @@ func anthropicSystemTextAndCacheControl(system gjson.Result) (string, string) {
 	}
 }
 
+// anthropicHasClaudeCodePromptPrefix 识别调用方自带的官方样板提示词开头。前缀是对 Anthropic
+// 官方 Claude Code CLI / Claude Agent SDK / Explore 与 Compact 子代理系统提示词的最佳猜测
+// （无法在本仓库内引用权威常量核对全文），上游措辞变化会导致漏判、退化为重复样板，但不会造成
+// 数据丢失——调用方真正追加的内容始终落在不匹配的 block 里，逐块下沉。
 func anthropicHasClaudeCodePromptPrefix(system string) bool {
 	system = strings.TrimSpace(system)
 	for _, prefix := range []string{

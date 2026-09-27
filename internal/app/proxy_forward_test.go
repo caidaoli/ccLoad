@@ -3510,6 +3510,28 @@ func TestAnthropicMimicDoesNotRepeatClaudeCodeBanner(t *testing.T) {
 	}
 }
 
+func TestAnthropicMimicKeepsCustomContentAfterClaudeCodeBanner(t *testing.T) {
+	input := `{"model":"claude-sonnet-4-5","system":[` +
+		`{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.\n\nGeneric CC boilerplate."},` +
+		`{"type":"text","text":"# Project Instructions\nAlways use tabs.","cache_control":{"type":"ephemeral","ttl":"1h"}}` +
+		`],"messages":[{"role":"user","content":"hello"}]}`
+	body, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(input), &model.Config{Name: "anthropic-api-key"},
+		"sk-ant-key", http.Header{"User-Agent": {"third-party-client"}}, anthropicOfficialTestURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := gjson.GetBytes(body, "messages").Array()
+	if len(messages) != 3 {
+		t.Fatalf("banner block should be dropped but project instructions still down-sunk: %s", gjson.GetBytes(body, "messages").Raw)
+	}
+	if got := messages[0].Get("content.0.text").String(); got != "[System Instructions]\n# Project Instructions\nAlways use tabs." {
+		t.Fatalf("moved system text = %q: %s", got, body)
+	}
+	if got := messages[0].Get("content.0.cache_control.ttl").String(); got != "1h" {
+		t.Fatalf("moved system cache_control.ttl = %q, want 1h: %s", got, body)
+	}
+}
+
 func TestAnthropicMimicAPIKeyBetasByModel(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
