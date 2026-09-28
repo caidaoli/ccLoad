@@ -194,3 +194,54 @@ func TestAPITokenChannelSettingReachesWebSession(t *testing.T) {
 		svc.Close()
 	}
 }
+
+func TestTokenLogModelVisibility(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	for _, actual := range []string{"private-upstream-model", "requested-model"} {
+		if err := store.AddLog(ctx, &model.LogEntry{
+			Time: model.JSONTime{Time: time.Now()}, AuthTokenID: 42,
+			Model: "requested-model", ActualModel: actual, ResponseModel: "private-response-model",
+			LogSource: model.LogSourceProxy, StatusCode: 200, Cost: 1, CostMultiplier: 1,
+			Message: "requested-model via " + actual + " responded as private-response-model",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		identity WebIdentity
+		hidden   bool
+	}{
+		{"token disabled", WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42, HideChannels: true}, true},
+		{"token enabled", WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42}, false},
+		{"admin unaffected", WebIdentity{Role: model.WebRoleAdmin, HideChannels: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today", nil))
+			c.Set(webIdentityContextKey, tc.identity)
+			server.HandleErrors(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+			}
+			var rows []model.LogEntry
+			mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &rows)
+			if len(rows) != 2 {
+				t.Fatalf("expected two logs, got %d", len(rows))
+			}
+			for _, row := range rows {
+				if row.Model != "requested-model" || row.Cost != 1 || !strings.Contains(row.Message, "requested-model") {
+					t.Fatalf("request model, message or cost changed: %+v", row)
+				}
+				if tc.hidden {
+					if row.ActualModel != "" || row.ResponseModel != "" || strings.Contains(row.Message, "private-") {
+						t.Fatalf("hidden model exposed: %+v", row)
+					}
+				} else if row.ActualModel == "" || row.ResponseModel != "private-response-model" || !strings.Contains(row.Message, "private-response-model") {
+					t.Fatalf("visible model changed: %+v", row)
+				}
+			}
+		})
+	}
+}

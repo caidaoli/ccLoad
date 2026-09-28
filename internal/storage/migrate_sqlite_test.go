@@ -2305,3 +2305,32 @@ func testSequentialKeyPrioritiesMigration(t *testing.T, db *sql.DB, dialect Dial
 		t.Fatalf("migration reapplied: priority sum=%d", total)
 	}
 }
+
+func TestInitDefaultSettings_RefreshesTokenVisibilityDescription(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	var value, defaultValue, description string
+	readSetting := func() {
+		t.Helper()
+		if err := db.QueryRowContext(ctx, `SELECT value, default_value, description FROM system_settings WHERE key = 'api_token_show_channels'`).Scan(&value, &defaultValue, &description); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readSetting()
+	if value != "false" || defaultValue != "false" || !strings.Contains(description, "实际模型名") {
+		t.Fatalf("unexpected initial setting: %q %q %q", value, defaultValue, description)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE system_settings SET value = 'true', description = 'old description' WHERE key = 'api_token_show_channels'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	readSetting()
+	if value != "true" || defaultValue != "false" || !strings.Contains(description, "实际模型名") {
+		t.Fatalf("saved value changed or description not refreshed: %q %q %q", value, defaultValue, description)
+	}
+}
