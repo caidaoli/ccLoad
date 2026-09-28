@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,14 @@ func (s *Server) HandleErrors(c *gin.Context) {
 			for i := range projected {
 				projected[i].ChannelID = 0
 				projected[i].ChannelName = ""
+				// Hide both model sources used by the UI, including names in error summaries.
+				for _, name := range []string{projected[i].ActualModel, projected[i].ResponseModel} {
+					if name != "" && name != projected[i].Model {
+						projected[i].Message = strings.ReplaceAll(projected[i].Message, name, "[redacted]")
+					}
+				}
+				projected[i].ActualModel = ""
+				projected[i].ResponseModel = ""
 			}
 		}
 		RespondJSONWithCount(c, http.StatusOK, projected, total)

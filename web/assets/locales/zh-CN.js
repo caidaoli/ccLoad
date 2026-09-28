@@ -92,7 +92,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.secretConfigured': '已配置；留空保留，重置可清除',
   'settings.secretUnconfigured': '未配置',
   'settings.desc.api_token_login_enabled': '允许 API Token 登录网页 （保存后重启生效）',
-  'settings.desc.api_token_show_channels': '启用渠道名显示 （禁用时隐藏渠道名称，保存后重启生效）',
+  'settings.desc.api_token_show_channels': 'API Token 登录时显示渠道名和实际模型名（默认禁用，保存后重启生效）',
   'login.title': '登录 - ccLoad',
   'login.brandSubtitle': '智能API代理管理系统',
   'login.adminLogin': '管理员登录',

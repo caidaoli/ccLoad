@@ -519,7 +519,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{config.TypeSafeEnabledSettingKey, "false", "bool", "TypeSafe 错误分析兜底（需配置密钥，保存后重启生效）", "false"},
 		{config.TypeSafeAPIKeySettingKey, "", "string", "TypeSafe API Key（留空保留；重置可清除并关闭 TypeSafe）", ""},
 		{config.APITokenLoginEnabledSettingKey, "false", "bool", "允许 API Token 登录网页（保存后重启生效，不影响 API 调用）", "false"},
-		{config.APITokenShowChannelsSettingKey, "false", "bool", "向 API Token 登录用户显示渠道名称和调用统计（不开放渠道配置）", "false"},
+		{config.APITokenShowChannelsSettingKey, "false", "bool", "API Token 登录时显示渠道名和实际模型名（默认禁用，保存后重启生效；不开放渠道配置）", "false"},
 		{config.CodexBaseURLSettingKey, "", "string", "Codex OAuth 完整 Responses URL(留空使用渠道URL；填写后覆盖渠道URL)", ""},
 		{config.XAIBaseURLSettingKey, "", "string", "xAI OAuth API根地址(通常以/v1结尾；留空使用渠道URL；填写后覆盖渠道URL)", ""},
 		{config.AntigravityURLSettingKey, "", "string", "Antigravity OAuth API根地址(留空使用渠道URL；填写后覆盖渠道URL)", ""},
@@ -648,6 +648,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	{
 		keyCol := quoteKeyIdent(dialect)
 		descriptionRefreshKeys := map[string]bool{
+			config.APITokenShowChannelsSettingKey:    true,
 			"antigravity_sensitive_words":            true,
 			"channel_test_content":                   true,
 			"channel_stats_range":                    true,

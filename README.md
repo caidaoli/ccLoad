@@ -1108,7 +1108,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `debug_log_enabled` | `false` | Capture upstream request/response debug logs |
 | `debug_log_retention_minutes` | `2` | Debug log retention in minutes |
 | `api_token_login_enabled` | `false` | Allow an API access token to sign in to the Web admin interface; does not affect API calls |
-| `api_token_show_channels` | `false` | Show channel names and call statistics to token-authenticated Web users; channel configuration stays closed to them |
+| `api_token_show_channels` | `false` | Show channel names and actual model names to token-authenticated Web users; disabling hides both while retaining call statistics; channel configuration stays closed; restart required after saving |
 | `log_channel_click_action` | `edit` | What clicking a channel name on the logs page does (`edit` opens the channel editor, `filter` filters by that channel) |
 | `channel_stats_range` | `today` | Cost statistics range on the channel management page (`today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`) |
 | `auto_refresh_interval_seconds` | `0` | Web page auto-refresh interval in seconds (`0` = disabled, `>= 30` recommended); a refresh is skipped while a dialog is open |
