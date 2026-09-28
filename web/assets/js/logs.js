@@ -504,6 +504,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   return `<span class="model-display">
       <span class="${classes.join(' ')}"${title}>
         <span class="model-text">${escapeHtml(model)}</span>
+        ${redirected ? `<span class="model-actual"><span class="model-actual-arrow" aria-hidden="true">↳</span><span class="model-text">${escapeHtml(actualModel)}</span></span>` : ''}
       </span>
       ${badgeHtml}
     </span>`;
