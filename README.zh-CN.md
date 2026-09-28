@@ -1129,7 +1129,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
 | `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
 | `api_token_login_enabled` | `false` | 允许 API 访问令牌登录 Web 管理界面；不影响 API 调用 |
-| `api_token_show_channels` | `false` | 向令牌登录的 Web 用户显示渠道名称和调用统计；不向其开放渠道配置 |
+| `api_token_show_channels` | `false` | 向令牌登录的 Web 用户显示渠道名和实际模型名；禁用时隐藏两者，调用统计仍保留；不开放渠道配置，保存后重启生效 |
 | `log_channel_click_action` | `edit` | 日志页点击渠道名后的操作（`edit` 打开渠道编辑器，`filter` 按该渠道过滤） |
 | `channel_stats_range` | `today` | 渠道管理页费用统计时间范围（`today`/`yesterday`/`day_before_yesterday`/`this_week`/`last_week`/`this_month`/`last_month`） |
 | `auto_refresh_interval_seconds` | `0` | Web 页面自动刷新间隔（秒，`0`=禁用，建议 `>= 30`）；有对话框打开时跳过本次刷新 |

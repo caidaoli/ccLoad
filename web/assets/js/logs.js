@@ -477,7 +477,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
     return '<span style="color: var(--neutral-500);">-</span>';
   }
 
-  const redirected = actualModel && actualModel !== model && !isPrefixOrSuffixVariant(model, actualModel);
+  const redirected = !window.shouldHideChannels?.() && actualModel && actualModel !== model && !isPrefixOrSuffixVariant(model, actualModel);
   const effort = normalizeThinkingEffortDisplay(thinkingEffort);
   const tokens = normalizeReasoningTokens(reasoningTokens);
   const classes = ['model-tag'];

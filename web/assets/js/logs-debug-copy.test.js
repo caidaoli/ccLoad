@@ -165,6 +165,7 @@ async function withLoadedLogsPage(options, assertions) {
   };
   const {
     isTokenRole = false,
+    showChannels = false,
     logSource = 'proxy',
     entries = []
   } = options;
@@ -222,7 +223,8 @@ async function withLoadedLogsPage(options, assertions) {
     },
     readFilterControlValues: () => ({ range: 'today', clientProtocol: '', authToken: '' }),
     getDurationTimingColor: () => '',
-    isAPITokenRole: () => isTokenRole
+    isAPITokenRole: () => isTokenRole,
+    shouldHideChannels: () => isTokenRole && !showChannels
   });
   setGlobal('document', {
     addEventListener() {},
@@ -321,4 +323,33 @@ test('Jev audit messages use the shared debug-log entry and expose the decision 
     assert.match(tbody.innerHTML, /call_id=audit-42, category=quota, fallback\.reset=no_valid_reset/);
     assert.doesNotMatch(tbody.innerHTML, /<details>|jev-log-detail/);
   });
+});
+
+test('token channel visibility also controls actual model text, hover and redirect badge', async () => {
+  for (const [isTokenRole, showChannels] of [[true, false], [true, true], [false, false]]) {
+    for (const modelField of ['actual_model', 'response_model']) {
+      await withLoadedLogsPage({
+        isTokenRole,
+        showChannels,
+        entries: [{
+          time: Date.now(), model: 'requested-model', [modelField]: 'private-upstream-model',
+          thinking_effort: 'high', reasoning_tokens: 123,
+          status_code: 200, duration: 0, log_source: 'proxy'
+        }]
+      }, ({ tbody }) => {
+        const html = tbody.innerHTML;
+        assert.match(html, /requested-model/);
+        assert.match(html, /thinking-effort-badge/);
+        assert.match(html, /思考等级: high/);
+        assert.match(html, /思考\/推理Token: 123/);
+        if (isTokenRole && !showChannels) {
+          assert.doesNotMatch(html, /private-upstream-model|model-actual|redirect-badge|实际模型:/);
+        } else {
+          assert.match(html, /model-actual/);
+          assert.match(html, /实际模型: private-upstream-model/);
+          assert.match(html, /redirect-badge/);
+        }
+      });
+    }
+  }
 });

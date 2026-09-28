@@ -92,7 +92,7 @@ window.I18N_LOCALES['en'] = {
   'settings.secretConfigured': 'Configured; leave blank to retain, reset to clear',
   'settings.secretUnconfigured': 'Not configured',
   'settings.desc.api_token_login_enabled': 'Allow API Token web login (restart required after saving)',
-  'settings.desc.api_token_show_channels': 'Show channel names (hidden when disabled; restart required after saving)',
+  'settings.desc.api_token_show_channels': 'Show channel names and actual model names for API Token sessions (disabled by default; restart required after saving)',
   'login.title': 'Login - ccLoad',
   'login.brandSubtitle': 'Intelligent API Proxy Management System',
   'login.adminLogin': 'Admin Login',
