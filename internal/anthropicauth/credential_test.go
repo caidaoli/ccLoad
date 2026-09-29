@@ -58,7 +58,7 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		OAuthUsage:            []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`),
 		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
 			Key: "|seven_day", WindowSeconds: 7 * 24 * 60 * 60,
-			StartedAt: 1_893_456_000, ResetAt: 1_894_060_800, StandardCostMicroUSD: 3_500_000,
+			StartedAt: 1_893_456_000, ResetAt: 1_894_060_800, CountFromAt: 1_893_459_600,
 		}}},
 	}
 	refreshed := &Credential{
@@ -75,7 +75,7 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		merged.Fingerprint.StainlessOS != "Darwin" ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` ||
 		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
-		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 3_500_000 {
+		merged.QuotaCostUsage.Windows[0].CountFromAt != 1_893_459_600 {
 		t.Fatalf("merged = %+v", merged)
 	}
 	merged.Fingerprint.StainlessOS = "Linux"

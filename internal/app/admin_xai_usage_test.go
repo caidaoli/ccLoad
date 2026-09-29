@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -488,16 +487,9 @@ func TestXAIUsage_PartialRefreshPreservesQuotaCosts(t *testing.T) {
 			}
 			assertCost := func(want int64) {
 				t.Helper()
-				gotCfg, err := server.store.GetConfig(ctx, cfg.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				credential, err := xaiauth.ParseCredential([]byte(gotCfg.OAuthCredential))
-				if err != nil {
-					t.Fatal(err)
-				}
+				view := quotaCostViewAt(t, server.store, cfg.ID, time.Now())
 				for _, key := range []string{"xai|weekly", "xai|monthly"} {
-					if w := oauthcost.Find(credential.QuotaCostUsage, key); w == nil || w.StandardCostMicroUSD != want {
+					if w := view.FindWindow(key); w == nil || w.StandardCostMicroUSD != want {
 						t.Fatalf("%s cost = %+v, want %d", key, w, want)
 					}
 				}

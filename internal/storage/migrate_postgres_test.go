@@ -129,7 +129,7 @@ func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 
 	tables := []string{
 		"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
-		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states",
+		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states", "oauth_quota_cost_ledger",
 		"channels", "schema_migrations", "key_rr",
 	}
 	for _, table := range tables {
@@ -178,7 +178,7 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
-	t.Run("OAuthQuotaRounding", func(t *testing.T) {
+	t.Run("OAuthQuotaLedger", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
 		store, err := CreatePostgresStoreForTest(env.dsn)
@@ -187,7 +187,7 @@ func TestPostgres(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 
-		assertOAuthQuotaRoundingMatchesGo(t, store)
+		assertOAuthQuotaLedgerDialect(t, store)
 	})
 
 	t.Run("StructuredChannelURLs", func(t *testing.T) {

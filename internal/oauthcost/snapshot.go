@@ -177,8 +177,7 @@ func BootstrapFromSnapshot(base *Usage, rawSnapshot []byte) *Usage {
 	if len(samples) == 0 {
 		return Clone(base)
 	}
-	// sampledAt 缺失时按零值观测：窗口保持采样周期，后续 AddStandardCost
-	// 会按日志时间推进，不会把成本记进错误的周期。
+	// sampledAt 缺失时按零值观测：窗口保持采样周期，后续采样确认边界。
 	return Reconcile(base, samples, parseSnapshotTime(snapshot.SampledAt))
 }
 

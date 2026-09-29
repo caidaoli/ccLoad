@@ -36,8 +36,8 @@ type HybridStore struct {
 	primarySync *primaryWriteBehind
 
 	// OAuth credential writes are serialized so the SQLite projection cannot apply them out of order.
-	// Reads take the read lock: they must not observe a half-applied credential swap, but they also
-	// must not queue behind a write that is reconciling costs against the log table.
+	// Credential reads take the read lock to avoid observing an in-flight swap.
+	// Periodic quota costs are read directly from the authoritative SQLite ledger.
 	oauthCredentialMu sync.RWMutex
 
 	sqliteReadFailCount atomic.Uint64
@@ -222,14 +222,19 @@ func (h *HybridStore) CompareAndSwapOAuthUsage(
 	ctx context.Context,
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
-) (bool, *oauthcost.Usage, error) {
+) (bool, *oauthcost.CostView, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
-	updated, usage, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+	updated, costs, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 	if err == nil && updated {
 		h.markChannelDirty(channelID, false)
 	}
-	return updated, usage, err
+	return updated, costs, err
+}
+
+// OAuthQuotaCostViews 读 SQLite 权威库；主库账本异步落后。
+func (h *HybridStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
+	return h.sqlite.OAuthQuotaCostViews(ctx, usages, at)
 }
 
 func (h *HybridStore) CompareAndSwapChannelManagement(

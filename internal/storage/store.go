@@ -19,9 +19,9 @@ type Store interface {
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
-	// CompareAndSwapOAuthUsage also reconciles changed cost windows with durable
-	// logs in the same transaction and returns the actually persisted counters.
-	CompareAndSwapOAuthUsage(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, *oauthcost.Usage, error)
+	// CompareAndSwapOAuthUsage persists a quota sample and returns ledger-derived costs.
+	CompareAndSwapOAuthUsage(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, *oauthcost.CostView, error)
+	OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error)
 	CompareAndSwapChannelManagement(ctx context.Context, channelID int64, expectedEnvelope, nextEnvelope string) (bool, error)
 	ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error
 	DisableOAuthChannelIfCredentialMatches(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string) (bool, error)

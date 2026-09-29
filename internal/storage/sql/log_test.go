@@ -125,23 +125,6 @@ func TestLog_BootstrapsOAuthQuotaWindowsFromSampledUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	windowCost := func(key string) int64 {
-		t.Helper()
-		cfg, getErr := store.GetConfig(ctx, created.ID)
-		if getErr != nil {
-			t.Fatal(getErr)
-		}
-		got, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil {
-			t.Fatal(parseErr)
-		}
-		window := oauthcost.Find(got.QuotaCostUsage, key)
-		if window == nil {
-			t.Fatalf("quota cost window %q missing: %#v", key, got.QuotaCostUsage)
-		}
-		return window.StandardCostMicroUSD
-	}
-
 	// 渠道 526 的真实日志：Gemini 与 Claude 消耗必须落进各自的模型族窗口。
 	geminiInFiveHour := time.UnixMilli(1786951952200).UTC()
 	geminiAfterFiveHour := time.UnixMilli(1787015339534).UTC()
@@ -155,6 +138,14 @@ func TestLog_BootstrapsOAuthQuotaWindowsFromSampledUsage(t *testing.T) {
 			ActualModel: "claude-opus-4-6-thinking", StatusCode: http.StatusOK, Cost: 0.044465},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	windowCost := func(key string) int64 {
+		t.Helper()
+		cost := quotaCostAt(t, ctx, store, created.ID, key, claudeLog.Add(time.Second))
+		if cost < 0 {
+			t.Fatalf("quota cost window %q missing", key)
+		}
+		return cost
 	}
 
 	// 周窗口覆盖全部三条日志的时间点，按族各收各的。
@@ -218,17 +209,9 @@ func TestLog_OAuthQuotaResetUsesIncrementalRounding(t *testing.T) {
 			}
 			assertCost := func() {
 				t.Helper()
-				gotCfg, err := store.GetConfig(ctx, cfg.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, err := codexauth.ParseCredential([]byte(gotCfg.OAuthCredential))
-				if err != nil {
-					t.Fatal(err)
-				}
-				w := oauthcost.Find(got.QuotaCostUsage, "codex|primary")
-				if w == nil || w.StandardCostMicroUSD != tc.want {
-					t.Fatalf("cost = %+v, want %d microUSD", w, tc.want)
+				got := quotaCostAt(t, ctx, store, cfg.ID, "codex|primary", base.Add(time.Minute))
+				if got != tc.want {
+					t.Fatalf("cost = %d, want %d microUSD", got, tc.want)
 				}
 			}
 			assertCost()
@@ -293,7 +276,7 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	if err := store.BatchAddLogs(ctx, logs); err != nil {
 		t.Fatal(err)
 	}
-	assertCosts := func(want int64) *codexauth.Credential {
+	assertCosts := func(at time.Time, want int64) *codexauth.Credential {
 		t.Helper()
 		cfg, getErr := store.GetConfig(ctx, created.ID)
 		if getErr != nil {
@@ -303,22 +286,18 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		if parseErr != nil {
 			t.Fatal(parseErr)
 		}
-		weekly := oauthcost.Find(got.QuotaCostUsage, "codex|secondary")
-		reserve := oauthcost.Find(got.QuotaCostUsage, "gpt-reserve|primary")
-		monthly := oauthcost.Find(got.QuotaCostUsage, "codex|monthly")
-		if weekly == nil || reserve == nil || monthly == nil {
-			t.Fatalf("quota cost usage missing: %#v", got.QuotaCostUsage)
-		}
-		if weekly.StandardCostMicroUSD != want || monthly.StandardCostMicroUSD != want {
+		view := quotaCostView(t, ctx, store, created.ID, at)
+		weekly, monthly := viewCost(view, "codex|secondary"), viewCost(view, "codex|monthly")
+		if weekly != want || monthly != want {
 			t.Fatalf("quota costs = weekly %d monthly %d, want %d",
-				weekly.StandardCostMicroUSD, monthly.StandardCostMicroUSD, want)
+				weekly, monthly, want)
 		}
-		if reserve.StandardCostMicroUSD != 0 {
-			t.Fatalf("gpt-reserve quota cost = %d, want 0", reserve.StandardCostMicroUSD)
+		if reserve := viewCost(view, "gpt-reserve|primary"); reserve != 0 {
+			t.Fatalf("gpt-reserve quota cost = %d, want 0", reserve)
 		}
 		return got
 	}
-	assertCosts(20_000_000)
+	assertCosts(now.Add(5*time.Second), 20_000_000)
 	// GPT-5.3-Codex-Spark 使用独立额度，不能污染 Codex 主周/月窗口。
 	if err := store.AddLog(ctx, &model.LogEntry{
 		Time: newJSONTime(now.Add(4 * time.Second)), Model: "gpt-5.3-codex-spark",
@@ -326,16 +305,16 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertCosts(20_000_000)
+	assertCosts(now.Add(5*time.Second), 20_000_000)
 
 	if err := store.AddLog(ctx, &model.LogEntry{
 		Time: newJSONTime(resetAt), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 0.5,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	rolled := assertCosts(500_000)
-	if oauthcost.Find(rolled.QuotaCostUsage, "codex|secondary").StartedAt != resetAt.Unix() ||
-		oauthcost.Find(rolled.QuotaCostUsage, "codex|monthly").StartedAt != resetAt.Unix() {
+	rolled := assertCosts(resetAt.Add(time.Second), 500_000)
+	if window := quotaCostView(t, ctx, store, created.ID, resetAt.Add(time.Second)).FindWindow("codex|secondary"); window == nil ||
+		window.ResetAt != resetAt.Add(7*24*time.Hour).Unix() {
 		t.Fatalf("period did not roll at reset: %#v", rolled.QuotaCostUsage)
 	}
 
@@ -344,7 +323,7 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertCosts(500_000)
+	assertCosts(resetAt.Add(time.Second), 500_000)
 
 	manualResetAt := resetAt.Add(time.Minute)
 	if err := store.AddLog(ctx, &model.LogEntry{
@@ -355,7 +334,7 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	if err := store.ResetOAuthQuotaCostUsage(ctx, created.ID, manualResetAt); err != nil {
 		t.Fatal(err)
 	}
-	reset := assertCosts(250_000)
+	reset := assertCosts(manualResetAt.Add(2*time.Second), 250_000)
 	if oauthcost.Find(reset.QuotaCostUsage, "codex|secondary").CountFromAt != manualResetAt.Unix() ||
 		oauthcost.Find(reset.QuotaCostUsage, "codex|monthly").CountFromAt != manualResetAt.Unix() {
 		t.Fatalf("manual reset cutoff missing: %#v", reset.QuotaCostUsage)
@@ -365,16 +344,23 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertCosts(250_000)
+	assertCosts(manualResetAt.Add(2*time.Second), 250_000)
 
 	db := store.(*sqlstore.SQLStore)
 	if _, err := db.ExecContext(ctx, `UPDATE channels SET oauth_credential = ? WHERE id = ?`,
 		`{"quota_cost_usage":`, created.ID); err != nil {
 		t.Fatal(err)
 	}
+	// 周期账本写入无需解码凭据；只有购买额度仍须改写凭据。
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(resetAt.Add(time.Second)), Model: "ledger-only-marker",
+		ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1,
+	}); err != nil {
+		t.Fatalf("periodic ledger log should survive invalid credential: %v", err)
+	}
 	if err := store.AddLog(ctx, &model.LogEntry{
 		Time: newJSONTime(resetAt.Add(time.Second)), Model: "rollback-marker",
-		ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1,
+		ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1, CodexHasCredits: true,
 	}); err == nil {
 		t.Fatal("invalid credential should roll back the log and quota update")
 	}
@@ -878,7 +864,7 @@ func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
 			if err := store.CleanupLogsBefore(ctx, base.Add(-2*24*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			refresh := func(cfg *model.Config, wantUpdated bool, want int64) {
+			refresh := func(cfg *model.Config, want int64) {
 				t.Helper()
 				current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
 				if err != nil {
@@ -891,28 +877,23 @@ func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
 					t.Fatal(err)
 				}
 				updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
-				if err != nil || updated != wantUpdated {
-					t.Fatalf("quota CAS = %t, %v, want %t", updated, err, wantUpdated)
+				if err != nil || !updated {
+					t.Fatalf("quota CAS = %t, %v, want true", updated, err)
 				}
-				if updated && oauthcost.Find(costs, sample.Key).StandardCostMicroUSD != want {
-					t.Fatalf("quota cost = %+v, want %d", oauthcost.Find(costs, sample.Key), want)
+				if got := viewCost(costs, sample.Key); got != want {
+					t.Fatalf("quota cost = %d, want %d", got, want)
 				}
 			}
 			cfg, err := store.GetConfig(ctx, channel.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			// A log committing after the snapshot must force a CAS retry.
+			// 日志不再改写凭据：快照之后提交的日志直接进入视图，无需 CAS 重试。
 			if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(base), ChannelID: channel.ID,
 				Model: "gemini-3.8-flash-high", Cost: 0.25}); err != nil {
 				t.Fatal(err)
 			}
-			refresh(cfg, false, 0)
-			cfg, err = store.GetConfig(ctx, channel.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			refresh(cfg, true, 2_750_000)
+			refresh(cfg, 2_750_000)
 		})
 	}
 }
@@ -964,15 +945,14 @@ func TestLog_OAuthUsageConfirmsLocallyAdvancedPeriod(t *testing.T) {
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 2_500_000 {
+			if got := viewCost(costs, sample.Key); got != 2_500_000 {
 				t.Fatalf("confirmed quota cost = %d, want 2500000", got)
 			}
 		})
 	}
 }
 
-// 本地误滚后上游确认真实周期时，旧周期尾部的日志可能已经超出保留期。
-// 对账只能核对边界的对称差；按新边界全量重算会把这段成本直接抹掉。
+// 本地误滚后上游确认真实周期时，账本独立于日志保留期保留旧周期成本。
 func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
 		window := time.Duration(seconds) * time.Second
@@ -1003,7 +983,7 @@ func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			refresh := func(next oauthcost.Sample, observedAt time.Time) *oauthcost.Usage {
+			refresh := func(next oauthcost.Sample, observedAt time.Time) *oauthcost.CostView {
 				t.Helper()
 				cfg, err := store.GetConfig(ctx, channel.ID)
 				if err != nil {
@@ -1026,10 +1006,10 @@ func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 				return costs
 			}
 
-			// 一次常规刷新把「已计入区间」落盘，随后的边界变化才有对账基准。
+			// 一次常规刷新读取账本成本。
 			add(oldReset.Add(-window / 3))
 			sample.SampledAt = oldReset.Add(-window / 4)
-			if got := oauthcost.Find(refresh(sample, sample.SampledAt), sample.Key).StandardCostMicroUSD; got != 1_000_000 {
+			if got := viewCost(refresh(sample, sample.SampledAt), sample.Key); got != 1_000_000 {
 				t.Fatalf("accounted quota cost = %d, want 1000000", got)
 			}
 
@@ -1045,7 +1025,7 @@ func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 			used = 30
 			sample.ResetAt = oldReset.Add(window - window/10)
 			sample.SampledAt = oldReset.Add(window / 2)
-			if got := oauthcost.Find(refresh(sample, sample.SampledAt), sample.Key).StandardCostMicroUSD; got != 2_000_000 {
+			if got := viewCost(refresh(sample, sample.SampledAt), sample.Key); got != 2_000_000 {
 				t.Fatalf("confirmed quota cost = %d, want 2000000", got)
 			}
 		})
@@ -1100,9 +1080,6 @@ func TestLog_OAuthUsagePeriodSwitchBackfillsLogsBeforeSample(t *testing.T) {
 			observedAt := oldReset.Add(window / 4)
 			sample.ResetAt, sample.SampledAt = oldReset.Add(window/2), observedAt
 			current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, []oauthcost.Sample{sample}, observedAt)
-			if got := oauthcost.Find(current.QuotaCostUsage, sample.Key).StandardCostMicroUSD; got != 0 {
-				t.Fatalf("switched window cost = %d, want 0 before reconcile", got)
-			}
 			payload, err := current.JSON()
 			if err != nil {
 				t.Fatal(err)
@@ -1112,7 +1089,7 @@ func TestLog_OAuthUsagePeriodSwitchBackfillsLogsBeforeSample(t *testing.T) {
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 2_500_000 {
+			if got := viewCost(costs, sample.Key); got != 2_500_000 {
 				t.Fatalf("backfilled quota cost = %d, want 2500000", got)
 			}
 		})
@@ -1178,7 +1155,7 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := oauthcost.Find(costs, sample.Key).StandardCostMicroUSD; got != 1_250_000 {
+			if got := viewCost(costs, sample.Key); got != 1_250_000 {
 				t.Fatalf("cost after reset = %d, want 1250000", got)
 			}
 			// Late logs obey the actual reset cutoff, including manual resets
@@ -1188,15 +1165,7 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 			if manual {
 				want += 250_000
 			}
-			cfg, err = store.GetConfig(ctx, channel.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			persisted, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := oauthcost.Find(persisted.QuotaCostUsage, sample.Key).StandardCostMicroUSD; got != want {
+			if got := quotaCostAt(t, ctx, store, channel.ID, sample.Key, base.Add(time.Hour)); got != want {
 				t.Fatalf("cost after late log = %d, want %d", got, want)
 			}
 		})
@@ -1272,17 +1241,18 @@ func TestLog_OAuthQuotaEpochSurvivesBootstrapAndManualReset(t *testing.T) {
 	usage := load(sampled)
 	window := oauthcost.Find(usage, "codex|primary")
 	if usage == nil || usage.EpochAt != epochAt.Unix() || window == nil ||
-		oauthcost.CountFrom(window) != epochAt.Unix() || window.StandardCostMicroUSD != 0 {
+		oauthcost.CountFrom(window) != epochAt.Unix() ||
+		quotaCostAt(t, ctx, store, sampled, "codex|primary", epochAt.Add(2*time.Minute)) != 0 {
 		t.Fatalf("usage after reset over a bare snapshot = %#v", usage)
 	}
 	addLog(sampled, epochAt.Add(-time.Minute), 0.75)
-	if got := oauthcost.Find(load(sampled), "codex|primary"); got == nil || got.StandardCostMicroUSD != 0 {
-		t.Fatalf("pre-epoch log was counted: %#v", got)
+	if got := quotaCostAt(t, ctx, store, sampled, "codex|primary", epochAt.Add(2*time.Minute)); got != 0 {
+		t.Fatalf("pre-epoch log was counted: %d", got)
 	}
 	addLog(sampled, epochAt.Add(time.Minute), 1.25)
 	usage = load(sampled)
 	if window = oauthcost.Find(usage, "codex|primary"); usage.EpochAt != epochAt.Unix() ||
-		window == nil || window.StandardCostMicroUSD != 1_250_000 {
+		window == nil || quotaCostAt(t, ctx, store, sampled, "codex|primary", epochAt.Add(2*time.Minute)) != 1_250_000 {
 		t.Fatalf("usage after post-epoch log = %#v", usage)
 	}
 
@@ -1350,12 +1320,15 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			updated, _, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, raw)
+			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, raw)
 			if err != nil || !updated {
 				t.Fatalf("refresh=%t, %v", updated, err)
 			}
-			_, got = read()
-			for _, window := range got.QuotaCostUsage.Windows {
+			read()
+			if len(costs.Windows) != 3 {
+				t.Fatalf("quota cost view = %+v, want three windows", costs)
+			}
+			for _, window := range costs.Windows {
 				if window.StandardCostMicroUSD != 500000 {
 					t.Fatalf("window %s cost=%d", window.Key, window.StandardCostMicroUSD)
 				}
@@ -1363,8 +1336,9 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 			if err := store.ResetOAuthQuotaCostUsage(ctx, channel.ID, now); err != nil {
 				t.Fatal(err)
 			}
-			_, got = read()
-			for _, window := range got.QuotaCostUsage.Windows {
+			read()
+			resetView := quotaCostView(t, ctx, store, channel.ID, now.Add(3*time.Second))
+			for _, window := range resetView.Windows {
 				if window.StandardCostMicroUSD != 500000 {
 					t.Fatalf("reset window %s cost=%d", window.Key, window.StandardCostMicroUSD)
 				}

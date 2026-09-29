@@ -96,7 +96,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-02T03:00:00Z"}`),
 		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
 			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
-			StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), StandardCostMicroUSD: 2_500_000,
+			StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), CountFromAt: now.Add(time.Hour).Unix(),
 		}}},
 	}
 	needsRefresh, err := current.NeedsRefresh(now, 5*time.Minute)
@@ -113,16 +113,16 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
 		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
-		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 ||
+		merged.QuotaCostUsage.Windows[0].CountFromAt != now.Add(time.Hour).Unix() ||
 		!merged.AccountFedRAMP {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
-	current.QuotaCostUsage.Windows[0].StandardCostMicroUSD = 99
+	current.QuotaCostUsage.Windows[0].CountFromAt = 99
 	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
 	}
-	if merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 {
+	if merged.QuotaCostUsage.Windows[0].CountFromAt != now.Add(time.Hour).Unix() {
 		t.Fatalf("merged quota cost usage shares mutable state with the old credential: %#v", merged.QuotaCostUsage)
 	}
 }
@@ -188,7 +188,7 @@ func TestMergeRefreshObservesQuotaIdentity(t *testing.T) {
 		return &oauthcost.Window{
 			Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
-			StandardCostMicroUSD: 2_500_000,
+			CountFromAt: now.Add(-30 * time.Minute).Unix(),
 		}
 	}
 	newCurrent := func(usage *oauthcost.Usage) *Credential {
@@ -213,48 +213,48 @@ func TestMergeRefreshObservesQuotaIdentity(t *testing.T) {
 		refreshed    *Credential
 		wantIdentity string
 		wantEpochAt  int64
-		wantCost     int64 // <0 表示窗口必须被丢弃
-		wantSnapshot bool  // oauth_usage 与 passive_usage 是否保留
+		wantWindow   bool
+		wantSnapshot bool // oauth_usage 与 passive_usage 是否保留
 	}{
 		{
 			name:      "same identity keeps everything",
 			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-1", "plus"), wantIdentity: "account-1|plus", wantCost: 2_500_000, wantSnapshot: true,
+			refreshed: refreshed("account-1", "plus"), wantIdentity: "account-1|plus", wantWindow: true, wantSnapshot: true,
 		},
 		{
 			name:      "plan change starts a new epoch",
 			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(), wantCost: -1,
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(),
 		},
 		{
 			name:      "account change starts a new epoch",
 			usage:     &oauthcost.Usage{Identity: "account-1|plus", Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-2", "plus"), wantIdentity: "account-2|plus", wantEpochAt: now.Unix(), wantCost: -1,
+			refreshed: refreshed("account-2", "plus"), wantIdentity: "account-2|plus", wantEpochAt: now.Unix(),
 		},
 		{
 			name:      "legacy state adopts the old identity before comparing",
 			usage:     &oauthcost.Usage{Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(), wantCost: -1,
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Unix(),
 		},
 		{
 			name:      "refresh without claims only inherits",
 			usage:     &oauthcost.Usage{Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("", ""), wantIdentity: "account-1|plus", wantCost: 2_500_000, wantSnapshot: true,
+			refreshed: refreshed("", ""), wantIdentity: "account-1|plus", wantWindow: true, wantSnapshot: true,
 		},
 		{
 			name:      "epoch opened by the usage poll only records the identity",
 			usage:     &oauthcost.Usage{EpochAt: now.Add(-time.Hour).Unix(), Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Add(-time.Hour).Unix(), wantCost: 2_500_000, wantSnapshot: true,
+			refreshed: refreshed("account-1", "pro"), wantIdentity: "account-1|pro", wantEpochAt: now.Add(-time.Hour).Unix(), wantWindow: true, wantSnapshot: true,
 		},
 		{
 			name:      "poll epoch does not hide a later account change",
 			usage:     &oauthcost.Usage{AccountID: "account-1", EpochAt: now.Add(-time.Hour).Unix(), Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-2", "pro"), wantIdentity: "account-2|pro", wantEpochAt: now.Unix(), wantCost: -1,
+			refreshed: refreshed("account-2", "pro"), wantIdentity: "account-2|pro", wantEpochAt: now.Unix(),
 		},
 		{
 			name:      "account change without plan claims still starts an epoch",
 			usage:     &oauthcost.Usage{AccountID: "account-1", Windows: []*oauthcost.Window{window()}},
-			refreshed: refreshed("account-2", ""), wantIdentity: "", wantEpochAt: now.Unix(), wantCost: -1,
+			refreshed: refreshed("account-2", ""), wantIdentity: "", wantEpochAt: now.Unix(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,12 +267,12 @@ func TestMergeRefreshObservesQuotaIdentity(t *testing.T) {
 				t.Fatalf("quota cost usage = %#v, want identity %q epoch %d", usage, tc.wantIdentity, tc.wantEpochAt)
 			}
 			got := oauthcost.Find(usage, "codex|primary")
-			if tc.wantCost < 0 {
+			if !tc.wantWindow {
 				if got != nil {
 					t.Fatalf("window survived a new epoch: %#v", got)
 				}
-			} else if got == nil || got.StandardCostMicroUSD != tc.wantCost {
-				t.Fatalf("window = %#v, want cost %d", got, tc.wantCost)
+			} else if got == nil || got.CountFromAt != now.Add(-30*time.Minute).Unix() {
+				t.Fatalf("window = %#v, want CountFromAt marker", got)
 			}
 			if tc.wantSnapshot && (len(merged.OAuthUsage) == 0 || merged.PassiveUsage == nil) {
 				t.Fatalf("snapshots were dropped without a new epoch: oauth_usage=%s passive_usage=%#v", merged.OAuthUsage, merged.PassiveUsage)
@@ -298,7 +298,7 @@ func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
 			epoch := current.QuotaCostUsage.EpochTime()
 			current.QuotaCostUsage.Windows = []*oauthcost.Window{{
 				Key: "codex|primary", WindowSeconds: 18000, StartedAt: at.Unix(),
-				ResetAt: at.Add(5 * time.Hour).Unix(), StandardCostMicroUSD: 500_000,
+				ResetAt: at.Add(5 * time.Hour).Unix(), CountFromAt: at.Add(time.Minute).Unix(),
 			}}
 			for i, plan := range []string{"plus", "", "plus", "pro"} {
 				raw, err := current.JSON()
@@ -316,7 +316,7 @@ func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !current.QuotaCostUsage.EpochTime().Equal(epoch) || len(current.QuotaCostUsage.Windows) != 1 || current.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 500_000 {
+				if !current.QuotaCostUsage.EpochTime().Equal(epoch) || len(current.QuotaCostUsage.Windows) != 1 || current.QuotaCostUsage.Windows[0].CountFromAt != at.Add(time.Minute).Unix() {
 					t.Fatalf("claims %q restarted poll epoch: %#v", plan, current.QuotaCostUsage)
 				}
 			}

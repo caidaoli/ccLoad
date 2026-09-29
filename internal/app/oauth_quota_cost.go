@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -309,19 +310,19 @@ func oauthQuotaSnapshotSummary(summary *oauthUsageSummary) oauthcost.SnapshotSum
 
 // attachOAuthQuotaCostUsage 把每个上游窗口的累计成本内联到窗口本身，
 // 前端按窗口渲染即可，不必再从时长反查槽位。
-func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, usage *oauthcost.Usage) *oauthUsageSummary {
+func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, costs *oauthcost.CostView) *oauthUsageSummary {
 	if summary == nil {
 		return nil
 	}
 	clone := *summary
-	clone.QuotaCostUsage = oauthcost.Clone(usage)
+	clone.QuotaCostUsage = costs
 	if len(summary.Windows) > 0 {
 		windows := make([]oauthUsageWindow, len(summary.Windows))
 		copy(windows, summary.Windows)
 		for i := range windows {
 			windows[i].StandardCostMicroUSD = nil
-			if window := oauthcost.Find(usage, oauthcost.Key(windows[i].LimitName, windows[i].Kind)); window != nil &&
-				oauthQuotaCostMatchesSampledWindow(windows[i], window) {
+			if window := costs.FindWindow(oauthcost.Key(windows[i].LimitName, windows[i].Kind)); window != nil &&
+				oauthQuotaCostMatchesSampledWindow(windows[i], window.WindowSeconds, window.ResetAt) {
 				cost := window.StandardCostMicroUSD
 				windows[i].StandardCostMicroUSD = &cost
 			}
@@ -331,17 +332,54 @@ func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, usage *oauthcost.Usag
 	return &clone
 }
 
-func oauthQuotaCostMatchesSampledWindow(sample oauthUsageWindow, cost *oauthcost.Window) bool {
-	if cost == nil || cost.WindowSeconds <= 0 || cost.ResetAt <= 0 || sample.ResetAt <= 0 {
+func oauthQuotaCostMatchesSampledWindow(sample oauthUsageWindow, windowSeconds, resetAt int64) bool {
+	if windowSeconds <= 0 || resetAt <= 0 || sample.ResetAt <= 0 {
 		return false
 	}
 	var delta uint64
-	if cost.ResetAt >= sample.ResetAt {
-		delta = uint64(cost.ResetAt) - uint64(sample.ResetAt)
+	if resetAt >= sample.ResetAt {
+		delta = uint64(resetAt) - uint64(sample.ResetAt)
 	} else {
-		delta = uint64(sample.ResetAt) - uint64(cost.ResetAt)
+		delta = uint64(sample.ResetAt) - uint64(resetAt)
 	}
-	return delta <= uint64(cost.WindowSeconds-1)/2
+	return delta <= uint64(windowSeconds-1)/2
+}
+
+// loadOAuthQuotaCostViews 批量读取账本成本；失败时展示降级为不带成本。
+func (s *Server) loadOAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, now time.Time) map[int64]*oauthcost.CostView {
+	if len(usages) == 0 {
+		return nil
+	}
+	views, err := s.store.OAuthQuotaCostViews(ctx, usages, now)
+	if err != nil {
+		log.Printf("[WARN] 查询 OAuth 额度成本失败: %v", err)
+		return nil
+	}
+	return views
+}
+
+func (s *Server) oauthQuotaCostView(ctx context.Context, channelID int64, state *oauthUsageCredentialState, now time.Time) *oauthcost.CostView {
+	if !state.tracksQuotaCost() {
+		return nil
+	}
+	usage := oauthcost.EffectiveUsage(state.quotaCostUsage, state.oauthUsage)
+	return s.loadOAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{channelID: usage}, now)[channelID]
+}
+
+// attachChannelQuotaCosts 用一次账本查询给一页渠道内联额度成本。
+func (s *Server) attachChannelQuotaCosts(ctx context.Context, cfgs []*model.Config, metadata []channelOAuthMetadata, now time.Time) {
+	usages := make(map[int64]*oauthcost.Usage)
+	for i := range metadata {
+		if metadata[i].tracksQuotaCost && metadata[i].oauthUsage != nil && metadata[i].quotaUsage != nil {
+			usages[cfgs[i].ID] = metadata[i].quotaUsage
+		}
+	}
+	views := s.loadOAuthQuotaCostViews(ctx, usages, now)
+	for i := range metadata {
+		if metadata[i].tracksQuotaCost {
+			metadata[i].oauthUsage = attachOAuthQuotaCostUsage(metadata[i].oauthUsage, views[cfgs[i].ID])
+		}
+	}
 }
 
 func (s *Server) resetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {
@@ -355,8 +393,8 @@ func (s *Server) resetOAuthQuotaCostUsage(ctx context.Context, channelID int64, 
 	return nil
 }
 
-// OAuth 凭证 CAS 与增量成本累计写同一行：高流量渠道每批带成本的日志都会重写
-// 凭证，无界重试可以在活跃渠道上空转到 context 超时，占住被动用量分片锁。
+// OAuth 额度采样、Codex Credit 累计及其他凭证更新仍会争用同一渠道的 CAS。
+// 无界重试可能在活跃渠道上空转到 context 超时，占住被动用量分片锁；
 // 让步有界且退避递增，把槽位还给下一次采样。
 const (
 	oauthCASMaxAttempts  = 8

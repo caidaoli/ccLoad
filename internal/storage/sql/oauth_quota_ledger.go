@@ -55,7 +55,7 @@ func sqlPlaceholders(count int) string {
 }
 
 func (s *SQLStore) applyOAuthQuotaLogEffectsTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) (OAuthQuotaLogEffects, error) {
-	credentialIDs, err := s.updateOAuthQuotaCostsTx(ctx, tx, logs)
+	credentialIDs, err := s.updateOAuthQuotaCreditsTx(ctx, tx, logs)
 	if err != nil {
 		return OAuthQuotaLogEffects{}, err
 	}
@@ -219,4 +219,98 @@ func (s *SQLStore) CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff tim
 		return fmt.Errorf("cleanup OAuth quota ledger: %w", err)
 	}
 	return nil
+}
+
+type ledgerRange struct {
+	channelID int64
+	oauthcost.Range
+}
+
+const oauthQuotaLedgerSumChunkSize = 200
+
+func (s *SQLStore) ledgerSumType() string {
+	switch {
+	case s.IsMySQL():
+		return "SIGNED"
+	case s.IsPostgres():
+		return "BIGINT"
+	default:
+		return "INTEGER"
+	}
+}
+
+// sumOAuthQuotaLedger 按模型和窗口键聚合每段账本，结果与 ranges 下标对应。
+func (s *SQLStore) sumOAuthQuotaLedger(ctx context.Context, queryer sqlQueryer, ranges []ledgerRange) ([][]oauthcost.LedgerTotal, error) {
+	result := make([][]oauthcost.LedgerTotal, len(ranges))
+	active := make([]int, 0, len(ranges))
+	for i, r := range ranges {
+		if r.channelID > 0 && r.From < r.Until {
+			active = append(active, i)
+		}
+	}
+	sumType := s.ledgerSumType()
+	for start := 0; start < len(active); start += oauthQuotaLedgerSumChunkSize {
+		chunk := active[start:min(start+oauthQuotaLedgerSumChunkSize, len(active))]
+		parts := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)*3)
+		for i, idx := range chunk {
+			parts[i] = fmt.Sprintf(`SELECT %d AS idx, model, window_key, CAST(SUM(cost_microusd) AS %s) AS cost
+				FROM oauth_quota_cost_ledger WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ?
+				GROUP BY model, window_key`, idx, sumType)
+			r := ranges[idx]
+			args = append(args, r.channelID, r.From, r.Until)
+		}
+		rows, err := s.queryWith(ctx, queryer, strings.Join(parts, " UNION ALL "), args...)
+		if err != nil {
+			return nil, fmt.Errorf("sum OAuth quota ledger: %w", err)
+		}
+		for rows.Next() {
+			var idx int
+			var total oauthcost.LedgerTotal
+			if err := rows.Scan(&idx, &total.Model, &total.WindowKey, &total.CostMicroUSD); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan OAuth quota ledger sum: %w", err)
+			}
+			if idx < 0 || idx >= len(result) {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan OAuth quota ledger sum: range index %d out of bounds", idx)
+			}
+			result[idx] = append(result[idx], total)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, fmt.Errorf("read OAuth quota ledger sum: %w", err)
+		}
+	}
+	return result, nil
+}
+
+// OAuthQuotaCostViews 返回各渠道在 at 时刻按账本计费的窗口视图。
+func (s *SQLStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
+	channelIDs := make([]int64, 0, len(usages))
+	for id, usage := range usages {
+		if usage != nil {
+			channelIDs = append(channelIDs, id)
+		}
+	}
+	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
+	windows := make(map[int64][]*oauthcost.Window, len(channelIDs))
+	var ranges []ledgerRange
+	for _, id := range channelIDs {
+		windows[id] = oauthcost.WindowsAt(usages[id], at)
+		for _, window := range windows[id] {
+			ranges = append(ranges, ledgerRange{channelID: id, Range: oauthcost.CountedRange(window)})
+		}
+	}
+	totals, err := s.sumOAuthQuotaLedger(ctx, s.db, ranges)
+	if err != nil {
+		return nil, err
+	}
+	views := make(map[int64]*oauthcost.CostView, len(channelIDs))
+	offset := 0
+	for _, id := range channelIDs {
+		count := len(windows[id])
+		views[id] = oauthcost.NewCostView(usages[id], windows[id], totals[offset:offset+count])
+		offset += count
+	}
+	return views, nil
 }

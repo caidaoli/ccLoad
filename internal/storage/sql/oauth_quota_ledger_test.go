@@ -11,8 +11,11 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
+
+	"github.com/tidwall/sjson"
 )
 
 func createOAuthLedgerChannel(t *testing.T, ctx context.Context, store storage.Store, name, authType string, now time.Time) int64 {
@@ -146,5 +149,138 @@ func TestOAuthQuotaLedger_RoundsEachManualTestLog(t *testing.T) {
 	want := []sqlstore.OAuthQuotaLedgerRow{{BucketAt: at.Unix(), Model: "gemini-3.6-pro", CostMicroUSD: 2}}
 	if got := ledgerRows(t, ss, channelID); !reflect.DeepEqual(got, want) {
 		t.Fatalf("manual test ledger = %#v, want per-log rounded cost %#v", got, want)
+	}
+}
+
+func TestOAuthQuotaLedger_ViewSumsWithinSecondBoundariesAndIgnoresLegacyCost(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "oauth-quota-ledger-view.db")
+	ss := store.(*sqlstore.SQLStore)
+	ctx := context.Background()
+	start := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
+	resetAt := start.Add(5 * time.Hour)
+	raw, err := (&codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: start.Add(24 * time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{{Key: "codex|primary", Family: oauthcost.FamilyCodex,
+			WindowSeconds: 18000, ResetAt: resetAt}}, start)}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "ledger-view", AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := raw
+	for path, value := range map[string]int64{
+		"quota_cost_usage.windows.0.standard_cost_microusd": 999_999,
+		"quota_cost_usage.windows.0.accounted_from":         start.Unix(),
+		"quota_cost_usage.windows.0.accounted_until":        start.Add(time.Hour).Unix(),
+	} {
+		if legacy, err = sjson.Set(legacy, path, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ss.ExecContext(ctx, `UPDATE channels SET oauth_credential = ? WHERE id = ?`, legacy, cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	logAt := func(at time.Time, modelName string, cost float64) *model.LogEntry {
+		return &model.LogEntry{Time: newJSONTime(at), ChannelID: cfg.ID, Model: modelName, StatusCode: http.StatusOK, Cost: cost}
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		logAt(start.Add(-time.Millisecond), "gpt-5.5", 0.000001),
+		logAt(start, "gpt-5.5", 0.00001),
+		logAt(resetAt.Add(-time.Millisecond), "gpt-5.5", 0.0001),
+		logAt(resetAt, "gpt-5.5", 0.001),
+		logAt(start.Add(time.Hour), "gpt-5.3-codex-spark", 0.01),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := quotaCostAt(t, ctx, store, cfg.ID, "codex|primary", start.Add(time.Hour)); got != 110 {
+		t.Fatalf("window cost = %d, want 110", got)
+	}
+	current, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codexauth.ParseCredential([]byte(current.OAuthCredential)); err != nil {
+		t.Fatalf("legacy credential must still parse: %v", err)
+	}
+}
+
+func TestOAuthQuotaLedger_TransientRollbackRestoresDespitePriceChange(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "oauth-quota-ledger-rollback.db")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	resetAt := now.Add(4 * 24 * time.Hour)
+	const key = "gemini models|quota"
+	samples := func(used float64, at time.Time) []oauthcost.Sample {
+		return []oauthcost.Sample{{Key: key, Family: oauthcost.FamilyGemini, WindowSeconds: 604800,
+			ResetAt: resetAt, UsedPercent: &used, SampledAt: at}}
+	}
+	first := now.Add(-3 * time.Hour)
+	raw, err := (&antigravityauth.Credential{Type: antigravityauth.ChannelType, AccessToken: "access",
+		RefreshToken: "refresh", Expired: now.Add(24 * time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: oauthcost.Reconcile(nil, samples(40, first), first)}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(ctx, &model.Config{Name: "ledger-rollback", AuthType: model.AuthTypeAntigravityOAuth,
+		OAuthCredential: raw, URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addLog := func(at time.Time, cost float64) {
+		t.Helper()
+		if err := store.AddLog(ctx, &model.LogEntry{Time: newJSONTime(at), ChannelID: channel.ID,
+			Model: "gemini-3.8-flash-high", StatusCode: http.StatusOK, Cost: cost}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cas := func(used float64, at time.Time) int64 {
+		t.Helper()
+		cfg, err := store.GetConfig(ctx, channel.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			t.Fatal(err)
+		}
+		current.QuotaCostUsage = oauthcost.Reconcile(current.QuotaCostUsage, samples(used, at), at)
+		payload, err := current.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+		if err != nil || !updated {
+			t.Fatalf("quota CAS = %t, %v", updated, err)
+		}
+		return viewCost(costs, key)
+	}
+	addLog(now.Add(-4*time.Hour), 4)
+	cut := now.Add(-2 * time.Hour)
+	if got := cas(5, cut); got != 0 {
+		t.Fatalf("cost right after cut = %d, want 0", got)
+	}
+	addLog(cut.Add(30*time.Minute), 4)
+	if got := cas(44, now.Add(-time.Hour)); got != 8_000_000 {
+		t.Fatalf("cost after transient restore = %d, want 8000000", got)
+	}
+	if got := quotaCostAt(t, ctx, store, channel.ID, key, now); got != 8_000_000 {
+		t.Fatalf("restored view = %d, want 8000000", got)
+	}
+	cfg, err := store.GetConfig(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window := oauthcost.Find(persisted.QuotaCostUsage, key); window == nil ||
+		oauthcost.CountFrom(window) >= now.Add(-4*time.Hour).Unix() || window.Rollback != nil {
+		t.Fatalf("persisted window = %#v, want restored count start without evidence", window)
 	}
 }

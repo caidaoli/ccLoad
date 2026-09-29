@@ -1252,7 +1252,7 @@ func TestOAuthDetectionPersistsUsageAndCost(t *testing.T) {
 				if credential.QuotaCostUsage == nil || len(credential.QuotaCostUsage.Windows) != 1 {
 					t.Fatalf("missing cost window: %+v", credential.QuotaCostUsage)
 				}
-				cost := credential.QuotaCostUsage.Windows[0].StandardCostMicroUSD
+				cost := quotaCostViewAt(t, srv.store, cfg.ID, time.Now()).FindWindow(credential.QuotaCostUsage.Windows[0].Key).StandardCostMicroUSD
 				if cost <= 0 || (i == 1 && cost != 2*previousCost) {
 					t.Fatalf("cost=%d previous=%d", cost, previousCost)
 				}
@@ -2532,10 +2532,14 @@ func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
 		t.Fatalf("missing cost windows: %+v", credential.QuotaCostUsage)
 	}
 	for _, window := range credential.QuotaCostUsage.Windows {
-		if window.Family == oauthcost.FamilyCodex && window.StandardCostMicroUSD <= 0 {
+		cost := quotaCostViewAt(t, srv.store, created.ID, time.Now()).FindWindow(window.Key)
+		if cost == nil {
+			t.Fatalf("missing cost view for %s", window.Key)
+		}
+		if window.Family == oauthcost.FamilyCodex && cost.StandardCostMicroUSD <= 0 {
 			t.Fatalf("first detection cost was lost: %+v", window)
 		}
-		if window.Family == oauthcost.FamilySpark && window.StandardCostMicroUSD != 0 {
+		if window.Family == oauthcost.FamilySpark && cost.StandardCostMicroUSD != 0 {
 			t.Fatalf("non-Spark detection charged Spark window: %+v", window)
 		}
 	}
@@ -2651,12 +2655,15 @@ func TestHandleChannelTest_CodexReserveAliasPreservesQuotaCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				main := oauthcost.Find(credential.QuotaCostUsage, "codex|"+mainKind)
-				if main == nil || main.StandardCostMicroUSD <= lastCost || main.CountFromAt != 0 || main.ResetAt != mainReset || main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != 50 {
+				view := quotaCostViewAt(t, srv.store, created.ID, time.Now())
+				mainCost := view.FindWindow("codex|" + mainKind)
+				if main == nil || mainCost == nil || mainCost.StandardCostMicroUSD <= lastCost || main.CountFromAt != 0 || main.ResetAt != mainReset || main.SampledUpstreamUsedPercent == nil || *main.SampledUpstreamUsedPercent != 50 {
 					t.Fatalf("unexpected main quota after detection %d: %+v; previous cost=%d", attempt, main, lastCost)
 				}
-				lastCost = main.StandardCostMicroUSD
+				lastCost = mainCost.StandardCostMicroUSD
 				reserve := oauthcost.Find(credential.QuotaCostUsage, "gpt-reserve|primary")
-				if reserve == nil || reserve.StandardCostMicroUSD != 0 || reserve.ResetAt != reserveReset || reserve.SampledUpstreamUsedPercent == nil || *reserve.SampledUpstreamUsedPercent != wantReserveUsed {
+				reserveCost := view.FindWindow("gpt-reserve|primary")
+				if reserve == nil || reserveCost == nil || reserveCost.StandardCostMicroUSD != 0 || reserve.ResetAt != reserveReset || reserve.SampledUpstreamUsedPercent == nil || *reserve.SampledUpstreamUsedPercent != wantReserveUsed {
 					t.Fatalf("reserve quota = %+v, want used=%g reset=%d", reserve, wantReserveUsed, reserveReset)
 				}
 				if tc.transport == "sse" && credential.PassiveUsage != nil {

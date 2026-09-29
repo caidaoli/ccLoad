@@ -217,9 +217,9 @@ type oauthUsageSummary struct {
 	Warnings              []string                `json:"warnings,omitempty"`
 	// DisplayMessage 是上游账单状态文案（例如 Cursor 的额度用尽提示），
 	// 不是采样失败。前端单独渲染，不得塞进 Warnings。
-	DisplayMessage string             `json:"display_message,omitempty"`
-	XAIBilling     *xaiBillingSummary `json:"xai_billing,omitempty"`
-	QuotaCostUsage *oauthcost.Usage   `json:"quota_cost_usage,omitempty"`
+	DisplayMessage string              `json:"display_message,omitempty"`
+	XAIBilling     *xaiBillingSummary  `json:"xai_billing,omitempty"`
+	QuotaCostUsage *oauthcost.CostView `json:"quota_cost_usage,omitempty"`
 }
 
 type codeBuddyCredits = codebuddyauth.ResourceUsage
@@ -1647,7 +1647,7 @@ func (s *Server) persistOAuthUsage(
 			if stale {
 				// 必须在每次 CAS 重试检查；重新读取状态不代表旧采样也变新。
 				if persisted != nil {
-					return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
+					return attachOAuthQuotaCostUsage(persisted, s.oauthQuotaCostView(ctx, currentCfg.ID, state, time.Now())), nil
 				}
 				return nil, errors.New("usage: Codex quota epoch changed during request")
 			}
@@ -1655,7 +1655,7 @@ func (s *Server) persistOAuthUsage(
 		if persisted != nil && !persistedRequestAt.Before(requestedAt) {
 			s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 			s.InvalidateChannelListCache()
-			return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
+			return attachOAuthQuotaCostUsage(persisted, s.oauthQuotaCostView(ctx, currentCfg.ID, state, time.Now())), nil
 		}
 
 		baseCostUsage := state.quotaCostUsage
@@ -1843,9 +1843,7 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 				}
 				window.LimitWindowSeconds = passiveWindow.LimitWindowSeconds
 				window.ResetAt = passiveWindow.ResetAt
-			} else if !oauthQuotaCostMatchesSampledWindow(passiveWindow, &oauthcost.Window{
-				WindowSeconds: window.LimitWindowSeconds, ResetAt: window.ResetAt,
-			}) {
+			} else if !oauthQuotaCostMatchesSampledWindow(passiveWindow, window.LimitWindowSeconds, window.ResetAt) {
 				// A completed official period cannot pin the display forever.
 				// Accept a forward rollover only once both periods' boundaries
 				// and the passive sample prove the new period is current.

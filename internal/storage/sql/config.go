@@ -393,13 +393,12 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 	return updated, err
 }
 
-// CompareAndSwapOAuthUsage persists a quota sample and its log-derived costs
-// under the same channel lock used by incremental log accounting.
+// CompareAndSwapOAuthUsage persists a quota sample and returns ledger-derived costs.
 func (s *SQLStore) CompareAndSwapOAuthUsage(
 	ctx context.Context,
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
-) (bool, *oauthcost.Usage, error) {
+) (bool, *oauthcost.CostView, error) {
 	return s.compareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential, true)
 }
 
@@ -408,7 +407,7 @@ func (s *SQLStore) compareAndSwapOAuthCredential(
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
 	reconcileCosts bool,
-) (bool, *oauthcost.Usage, error) {
+) (bool, *oauthcost.CostView, error) {
 	authType := model.NormalizeAuthType(expectedAuthType)
 	if authType == "" || authType == model.AuthTypeAPIKey {
 		return false, nil, errors.New("OAuth auth type is invalid")
@@ -420,7 +419,7 @@ func (s *SQLStore) compareAndSwapOAuthCredential(
 		return false, nil, errors.New("next OAuth credential cannot be empty")
 	}
 	matched := false
-	var costs *oauthcost.Usage
+	var costs *oauthcost.CostView
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		matched = false
 		costs = nil
@@ -434,17 +433,16 @@ func (s *SQLStore) compareAndSwapOAuthCredential(
 		if currentAuthType != authType || currentCredential != expectedCredential {
 			return nil
 		}
-		payload := nextCredential
 		if reconcileCosts && model.TracksQuotaCost(authType) {
 			var err error
-			payload, costs, err = s.reconcileOAuthQuotaCostsTx(ctx, tx, channelID, nextCredential)
+			costs, err = s.oauthQuotaCostViewTx(ctx, tx, channelID, nextCredential)
 			if err != nil {
 				return err
 			}
 		}
 		if _, updateErr := s.execTx(ctx, tx, `
 			UPDATE channels SET oauth_credential = ?, updated_at = ? WHERE id = ?
-		`, payload, timeToUnix(time.Now()), channelID); updateErr != nil {
+		`, nextCredential, timeToUnix(time.Now()), channelID); updateErr != nil {
 			return updateErr
 		}
 		matched = true

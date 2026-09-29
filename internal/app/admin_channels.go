@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
@@ -178,9 +179,14 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		protocolProbeRetries: s.protocolCapabilities.unsupportedRetrySummaries(now),
 		apiKeysMap:           allAPIKeys,
 	}
+	metadata := make([]channelOAuthMetadata, len(cfgs))
+	for i, cfg := range cfgs {
+		metadata[i] = channelOAuthMetadataFromCredential(cfg)
+	}
+	s.attachChannelQuotaCosts(c.Request.Context(), cfgs, metadata, now)
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
-	for _, cfg := range cfgs {
-		channel := ectx.enrichChannel(cfg)
+	for i, cfg := range cfgs {
+		channel := ectx.enrichChannel(cfg, metadata[i])
 		channel.ManagementAccount = s.managementAccountView(cfg)
 		out = append(out, channel)
 	}
@@ -386,8 +392,7 @@ func channelCostMultiplierRange(cfg *model.Config, apiKeys []*model.APIKey) (flo
 	return m, m
 }
 
-func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWithCooldown {
-	metadata := channelOAuthMetadataFromCredential(cfg)
+func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config, metadata channelOAuthMetadata) ChannelWithCooldown {
 	oc := ChannelWithCooldown{
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
@@ -469,6 +474,8 @@ type channelOAuthMetadata struct {
 	xaiEntitlementStatus    string
 	codeBuddyEnterprise     bool
 	codeBuddyInternational  bool
+	tracksQuotaCost         bool
+	quotaUsage              *oauthcost.Usage
 }
 
 func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
@@ -487,10 +494,11 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		if usage != nil {
 			usage.Credits = credential.Credits.Clone()
 		}
-		usage = attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage)
 		return channelOAuthMetadata{
 			antigravityPaidTier: credential.PaidTier.DisplayName(),
 			oauthUsage:          usage,
+			tracksQuotaCost:     true,
+			quotaUsage:          oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
 		}
 	}
 	if cfg.UsesXAIOAuth() {
@@ -499,12 +507,13 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, xaiauth.ChannelType)
-		usage = attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage)
 		return channelOAuthMetadata{
 			xaiEmail:             credential.Identity().Email,
 			xaiSubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
 			xaiEntitlementStatus: strings.TrimSpace(credential.EntitlementStatus),
 			oauthUsage:           usage,
+			tracksQuotaCost:      true,
+			quotaUsage:           oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
 		}
 	}
 	if cfg.UsesAnthropicOAuth() {
@@ -522,7 +531,9 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		)
 		return channelOAuthMetadata{
 			anthropicPlanType: strings.TrimSpace(credential.PlanType),
-			oauthUsage:        attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
+			oauthUsage:        usage,
+			tracksQuotaCost:   true,
+			quotaUsage:        oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
 		}
 	}
 	if cfg.UsesZAIOAuth() {
@@ -577,8 +588,10 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt,
 	)
 	metadata := channelOAuthMetadata{
-		planType:   credential.PlanType,
-		oauthUsage: attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
+		planType:        credential.PlanType,
+		oauthUsage:      usage,
+		tracksQuotaCost: true,
+		quotaUsage:      oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
 	}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until
@@ -801,18 +814,19 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	}
 
 	now := time.Now()
-	metadata := channelOAuthMetadataFromCredential(cfg)
+	metadata := []channelOAuthMetadata{channelOAuthMetadataFromCredential(cfg)}
+	s.attachChannelQuotaCosts(ctx, []*model.Config{cfg}, metadata, now)
 	detail := ChannelWithCooldown{
 		Config:                       cfg,
-		CodexPlanType:                metadata.planType,
-		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
-		AnthropicPlanType:            metadata.anthropicPlanType,
-		OAuthUsage:                   metadata.oauthUsage,
-		AntigravityPaidTier:          metadata.antigravityPaidTier,
-		XAIEmail:                     metadata.xaiEmail,
-		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
+		CodexPlanType:                metadata[0].planType,
+		CodexSubscriptionActiveUntil: metadata[0].subscriptionActiveUntil,
+		AnthropicPlanType:            metadata[0].anthropicPlanType,
+		OAuthUsage:                   metadata[0].oauthUsage,
+		AntigravityPaidTier:          metadata[0].antigravityPaidTier,
+		XAIEmail:                     metadata[0].xaiEmail,
+		XAISubscriptionTier:          metadata[0].xaiSubscriptionTier,
 		ManagementAccount:            s.managementAccountView(cfg),
-		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
+		XAIEntitlementStatus:         metadata[0].xaiEntitlementStatus,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
 		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], now),
 	}

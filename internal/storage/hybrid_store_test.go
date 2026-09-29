@@ -204,7 +204,12 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 		if parseErr != nil {
 			return 0, false
 		}
-		window := oauthcost.Find(credential.QuotaCostUsage, "codex|secondary")
+		usage := oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage)
+		views, viewErr := store.OAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{created.ID: usage}, now.Add(time.Minute))
+		if viewErr != nil {
+			return 0, false
+		}
+		window := views[created.ID].FindWindow("codex|secondary")
 		if window == nil {
 			return 0, false
 		}
@@ -230,14 +235,11 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 		t.Fatal(err)
 	}
 	updated, costs, err := hybrid.CompareAndSwapOAuthUsage(ctx, created.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
-	if err != nil || !updated || oauthcost.Find(costs, "codex|secondary").StandardCostMicroUSD != 2_250_000 {
+	window := costs.FindWindow("codex|secondary")
+	if err != nil || !updated || window == nil || window.StandardCostMicroUSD != 2_250_000 {
 		t.Fatalf("quota window reconciliation = %t, %+v, %v", updated, costs, err)
 	}
 	waitForCondition(t, 3*time.Second, func() bool {
-		cost, ok := readCost(primary)
-		if !ok || cost != 2_250_000 {
-			return false
-		}
 		cfg, getErr := primary.GetConfig(ctx, created.ID)
 		if getErr != nil {
 			return false

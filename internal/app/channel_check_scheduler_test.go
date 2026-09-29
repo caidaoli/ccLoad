@@ -367,7 +367,8 @@ func TestScheduledCheckCodexSSECostUsesRedirectedModel(t *testing.T) {
 		t.Fatalf("missing cost window: %+v", credential.QuotaCostUsage)
 	}
 	window := credential.QuotaCostUsage.Windows[0]
-	if window.Family != oauthcost.FamilySpark || window.StandardCostMicroUSD <= 0 {
+	cost := quotaCostViewAt(t, srv.store, cfg.ID, time.Now()).FindWindow(window.Key)
+	if window.Family != oauthcost.FamilySpark || cost == nil || cost.StandardCostMicroUSD <= 0 {
 		t.Fatalf("redirected detection must charge Spark: %+v", window)
 	}
 }

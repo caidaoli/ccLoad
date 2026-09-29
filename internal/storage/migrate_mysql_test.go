@@ -142,7 +142,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "oauth_quota_cost_ledger", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -183,7 +183,7 @@ func TestMySQL(t *testing.T) {
 		}
 	})
 
-	t.Run("OAuthQuotaRounding", func(t *testing.T) {
+	t.Run("OAuthQuotaLedger", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 		store, err := CreateMySQLStoreForTest(env.dsn)
 		if err != nil {
@@ -191,7 +191,7 @@ func TestMySQL(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 
-		assertOAuthQuotaRoundingMatchesGo(t, store)
+		assertOAuthQuotaLedgerDialect(t, store)
 	})
 
 	t.Run("SyncManagerLargeRestore", func(t *testing.T) {

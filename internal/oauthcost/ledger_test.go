@@ -221,7 +221,7 @@ func TestRollbackLowBandTakesPriorityOverRecovery(t *testing.T) {
 func TestRollbackEvidenceClearedByResetAndEpoch(t *testing.T) {
 	t.Parallel()
 	usage, start, cut := rollbackFixture(t)
-	reset := Reset(usage, cut.Add(time.Hour), nil)
+	reset := Reset(usage, cut.Add(time.Hour))
 	if w := Find(reset, "gemini|weekly"); w.Rollback != nil || w.CountFromAt != cut.Add(time.Hour).Unix() {
 		t.Fatalf("manual reset kept rollback evidence: %#v", w)
 	}
