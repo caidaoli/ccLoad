@@ -35,6 +35,7 @@ type codexSSEFramingReader struct {
 	candidateOn  bool
 	lineChecked  bool
 	streamPrefix bool
+	pendingCR    bool
 }
 
 type codexSSEBlockState struct {
@@ -144,6 +145,24 @@ const (
 
 func (r *codexSSEFramingReader) process() {
 	for r.readOff < r.readLen {
+		if r.pendingCR {
+			if r.readOff < r.readLen {
+				b := r.readBuf[r.readOff]
+				r.pendingCR = false
+				if b == '\n' {
+					r.readOff++
+					sseFramingRepairs.Add(1)
+					continue
+				}
+				r.emitBytes([]byte{'\r'})
+				if r.fatalErr != nil {
+					return
+				}
+			} else {
+				return
+			}
+		}
+
 		if r.candidateOn {
 			b := r.readBuf[r.readOff]
 			r.candidate = append(r.candidate, b)
@@ -185,10 +204,39 @@ func (r *codexSSEFramingReader) process() {
 			}
 			continue
 		}
-		if !r.lineChecked && len(r.linePrefix) == 0 && r.state.repairable() {
-			r.candidateOn = true
-			r.candidate = r.candidate[:0]
-			continue
+		if !r.lineChecked && len(r.linePrefix) == 0 {
+			if r.state.awaitingData() {
+				if r.readOff < r.readLen {
+					b := r.readBuf[r.readOff]
+					if b == '\n' {
+						r.readOff++
+						sseFramingRepairs.Add(1)
+						continue
+					}
+					if b == '\r' {
+						if r.readOff+1 < r.readLen {
+							if r.readBuf[r.readOff+1] == '\n' {
+								r.readOff += 2
+								sseFramingRepairs.Add(1)
+								continue
+							}
+							r.readOff++
+							r.emitBytes([]byte{'\r'})
+							if r.fatalErr != nil {
+								return
+							}
+							continue
+						}
+						r.readOff++
+						r.pendingCR = true
+						return
+					}
+				}
+			} else if r.state.repairable() {
+				r.candidateOn = true
+				r.candidate = r.candidate[:0]
+				continue
+			}
 		}
 		r.lineChecked = true
 		rest := r.readBuf[r.readOff:r.readLen]
@@ -287,6 +335,10 @@ func normalizeSSEStreamPrefix(prefix []byte) []byte {
 }
 
 func (r *codexSSEFramingReader) finishSource() {
+	if r.pendingCR {
+		r.emitBytes([]byte{'\r'})
+		r.pendingCR = false
+	}
 	if r.candidateOn {
 		r.candidateOn = false
 		r.lineChecked = true
@@ -350,6 +402,10 @@ func (s *codexSSEBlockState) observe(line []byte, eolCRLF bool) {
 
 func (s *codexSSEBlockState) repairable() bool {
 	return s.ordered && s.lines == 2 && s.events == 1 && s.datas == 1 && s.response
+}
+
+func (s *codexSSEBlockState) awaitingData() bool {
+	return s.ordered && s.lines == 1 && s.events == 1 && s.datas == 0 && s.response
 }
 
 var sseFramingRepairs atomic.Uint64
