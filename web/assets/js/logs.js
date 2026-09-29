@@ -483,7 +483,6 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   const classes = ['model-tag'];
   const titleParts = [];
   if (redirected) {
-    classes.push('model-redirected');
     titleParts.push(`请求模型: ${escapeHtml(model)}`);
     titleParts.push(`实际模型: ${escapeHtml(actualModel)}`);
   }
@@ -496,9 +495,8 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
     titleParts.push(`思考/推理Token: ${tokens}`);
   }
   const title = titleParts.length > 0 ? ` title="${titleParts.join('&#10;')}"` : '';
-  const redirectBadge = redirected ? '<sup class="redirect-badge">↪</sup>' : '';
-  const badgeHtml = redirectBadge || effort || tokens > 0
-    ? `<span class="model-badges">${redirectBadge}${buildThinkingEffortBadge(effort, tokens)}</span>`
+  const badgeHtml = effort || tokens > 0
+    ? `<span class="model-badges">${buildThinkingEffortBadge(effort, tokens)}</span>`
     : '';
 
   return `<span class="model-display">

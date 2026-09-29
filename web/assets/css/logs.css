@@ -1072,10 +1072,6 @@
       color: inherit;
     }
 
-    .model-tag.model-redirected {
-      padding-right: 18px;
-    }
-
     .model-text {
       display: inline-block;
       max-width: 200px;
@@ -1120,17 +1116,6 @@
     .logs-table .logs-col-model>.model-display .model-badges {
       top: 2px;
       right: 4px;
-    }
-
-    /* 重定向角标 - 显示在右上角 */
-    .redirect-badge {
-      background: var(--warning-500);
-      color: white;
-      font-size: 0.65em;
-      padding: 2px 4px;
-      border-radius: 8px;
-      font-weight: 600;
-      line-height: 1;
     }
 
     .thinking-effort-badge {

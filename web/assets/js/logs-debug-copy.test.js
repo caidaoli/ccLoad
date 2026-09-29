@@ -325,7 +325,7 @@ test('Jev audit messages use the shared debug-log entry and expose the decision 
   });
 });
 
-test('token channel visibility also controls actual model text, hover and redirect badge', async () => {
+test('token channel visibility also controls actual model text and hover', async () => {
   for (const [isTokenRole, showChannels] of [[true, false], [true, true], [false, false]]) {
     for (const modelField of ['actual_model', 'response_model']) {
       await withLoadedLogsPage({
@@ -343,12 +343,12 @@ test('token channel visibility also controls actual model text, hover and redire
         assert.match(html, /思考等级: high/);
         assert.match(html, /思考\/推理Token: 123/);
         if (isTokenRole && !showChannels) {
-          assert.doesNotMatch(html, /private-upstream-model|model-actual|redirect-badge|实际模型:/);
+          assert.doesNotMatch(html, /private-upstream-model|model-actual|实际模型:/);
         } else {
           assert.match(html, /model-actual/);
           assert.match(html, /实际模型: private-upstream-model/);
-          assert.match(html, /redirect-badge/);
         }
+        assert.doesNotMatch(html, /redirect-badge/);
       });
     }
   }
