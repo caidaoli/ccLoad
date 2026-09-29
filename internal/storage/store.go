@@ -90,6 +90,7 @@ type Store interface {
 	CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error)
 	GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error)
 	CleanupLogsBefore(ctx context.Context, cutoff time.Time) error
+	CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff time.Time) error
 
 	// === Debug Log Management ===
 	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error

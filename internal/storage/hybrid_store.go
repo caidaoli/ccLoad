@@ -667,12 +667,12 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
 	h.oauthCredentialMu.Lock()
-	updatedChannelIDs, err := h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
+	effects, err := h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
 	if err != nil {
 		h.oauthCredentialMu.Unlock()
 		return err
 	}
-	for _, channelID := range updatedChannelIDs {
+	for _, channelID := range effects.CredentialChannelIDs {
 		h.markChannelDirty(channelID, false)
 	}
 	h.oauthCredentialMu.Unlock()
@@ -691,12 +691,12 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 		}
 	}
 	h.oauthCredentialMu.Lock()
-	updatedChannelIDs, err := h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
+	effects, err := h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
 	if err != nil {
 		h.oauthCredentialMu.Unlock()
 		return err
 	}
-	for _, channelID := range updatedChannelIDs {
+	for _, channelID := range effects.CredentialChannelIDs {
 		h.markChannelDirty(channelID, false)
 	}
 	h.oauthCredentialMu.Unlock()
@@ -762,6 +762,16 @@ func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) e
 	}
 	h.primarySync.enqueueBestEffort("logs/cleanup", "log cleanup", func(syncCtx context.Context) error {
 		return h.primary.CleanupLogsBefore(syncCtx, cutoff)
+	})
+	return nil
+}
+
+func (h *HybridStore) CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff time.Time) error {
+	if err := h.sqlite.CleanupOAuthQuotaLedgerBefore(ctx, cutoff); err != nil {
+		return err
+	}
+	h.primarySync.enqueueBestEffort("oauth-quota-ledger/cleanup", "OAuth quota ledger cleanup", func(syncCtx context.Context) error {
+		return h.primary.CleanupOAuthQuotaLedgerBefore(syncCtx, cutoff)
 	})
 	return nil
 }

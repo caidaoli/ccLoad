@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 )
 
@@ -288,6 +289,12 @@ func (s *LogService) cleanupOldLogsLoop() {
 					_ = s.store.CleanupLogsBefore(ctx, cutoff)
 				}()
 			}
+			// 账本按独立保留期清理，不受日志保留期设置影响。
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = s.store.CleanupOAuthQuotaLedgerBefore(ctx, time.Now().Add(-oauthcost.LedgerRetention))
+			}()
 
 		case <-s.shutdownCh:
 			return

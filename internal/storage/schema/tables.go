@@ -1,5 +1,17 @@
 package schema
 
+// DefineOAuthQuotaCostLedgerTable 定义独立于日志保留期的 OAuth 周期额度成本账本。
+func DefineOAuthQuotaCostLedgerTable() *TableBuilder {
+	return NewTable("oauth_quota_cost_ledger").
+		Column("channel_id INT NOT NULL").
+		Column("bucket_at BIGINT NOT NULL").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("window_key VARCHAR(128) NOT NULL DEFAULT ''").
+		Column("cost_microusd BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, bucket_at, model, window_key)").
+		Index("idx_oauth_quota_cost_ledger_bucket", "bucket_at")
+}
+
 // DefineChannelsTable 定义channels表结构
 func DefineChannelsTable() *TableBuilder {
 	return NewTable("channels").

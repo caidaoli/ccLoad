@@ -213,6 +213,7 @@ func (s *SQLStore) deleteChannelReplicaTx(ctx context.Context, tx *sql.Tx, chann
 		`DELETE FROM channel_url_states WHERE channel_id = ?`,
 		`DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`,
 		`DELETE FROM logs WHERE channel_id = ?`,
+		`DELETE FROM oauth_quota_cost_ledger WHERE channel_id = ?`,
 		`DELETE FROM channels WHERE id = ?`,
 	}
 	for _, statement := range statements {

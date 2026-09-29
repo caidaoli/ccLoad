@@ -78,6 +78,13 @@ func TracksQuotaCost(authType string) bool {
 	}
 }
 
+// CountsTowardQuotaWindows 判断日志的标准成本是否进入周期额度账本。
+func CountsTowardQuotaWindows(authType, logSource string, cost float64, codexHasCredits bool) bool {
+	normalized := NormalizeAuthType(authType)
+	return TracksQuotaCost(normalized) && cost > 0 && logSource != LogSourceJev &&
+		(!codexHasCredits || normalized != AuthTypeCodexOAuth)
+}
+
 // UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.
 func (c *Config) UsesCodeBuddyOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCodeBuddyOAuth

@@ -1606,6 +1606,9 @@ func (s *SQLStore) deleteConfigRowsTx(
 	if _, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
 		return fmt.Errorf("delete channel logs: %w", err)
 	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM oauth_quota_cost_ledger WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel OAuth quota ledger: %w", err)
+	}
 	if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete channel: %w", err)
 	}

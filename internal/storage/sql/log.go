@@ -172,10 +172,8 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	return err
 }
 
-// AddLogWithOAuthQuotaCost atomically persists one log and any OAuth weekly or
-// monthly standard-cost update caused by it. The returned IDs are the channel
-// credentials actually changed by the transaction.
-func (s *SQLStore) AddLogWithOAuthQuotaCost(ctx context.Context, e *model.LogEntry) ([]int64, error) {
+// AddLogWithOAuthQuotaCost atomically persists one log and its OAuth quota effects.
+func (s *SQLStore) AddLogWithOAuthQuotaCost(ctx context.Context, e *model.LogEntry) (OAuthQuotaLogEffects, error) {
 	return s.addLog(ctx, e, true)
 }
 
@@ -186,39 +184,39 @@ func (s *SQLStore) AddLogReplica(ctx context.Context, e *model.LogEntry) error {
 	return err
 }
 
-func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuotaCost bool) ([]int64, error) {
+func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuotaCost bool) (OAuthQuotaLogEffects, error) {
 	if e == nil {
-		return nil, nil
+		return OAuthQuotaLogEffects{}, nil
 	}
 	if e.LogSource != model.LogSourceJev && s.isChannelDeleted(e.ChannelID) {
-		return nil, nil
+		return OAuthQuotaLogEffects{}, nil
 	}
 	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
 	tx, err := s.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return OAuthQuotaLogEffects{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if e.DebugData != nil {
 		if err := insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e}); err != nil {
-			return nil, err
+			return OAuthQuotaLogEffects{}, err
 		}
 	} else if _, err := s.execTx(ctx, tx, logsInsertColumns+logRowPlaceholders, logRowArgs(e)...); err != nil {
-		return nil, err
+		return OAuthQuotaLogEffects{}, err
 	}
-	var updatedChannelIDs []int64
+	var effects OAuthQuotaLogEffects
 	if updateOAuthQuotaCost {
-		updatedChannelIDs, err = s.updateOAuthQuotaCostsTx(ctx, tx, []*model.LogEntry{e})
+		effects, err = s.applyOAuthQuotaLogEffectsTx(ctx, tx, []*model.LogEntry{e})
 		if err != nil {
-			return nil, err
+			return OAuthQuotaLogEffects{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return OAuthQuotaLogEffects{}, err
 	}
-	return updatedChannelIDs, nil
+	return effects, nil
 }
 
 const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
@@ -240,7 +238,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 }
 
 // BatchAddLogsWithOAuthQuotaCost is the batch form of AddLogWithOAuthQuotaCost.
-func (s *SQLStore) BatchAddLogsWithOAuthQuotaCost(ctx context.Context, logs []*model.LogEntry) ([]int64, error) {
+func (s *SQLStore) BatchAddLogsWithOAuthQuotaCost(ctx context.Context, logs []*model.LogEntry) (OAuthQuotaLogEffects, error) {
 	return s.batchAddLogs(ctx, logs, true)
 }
 
@@ -254,10 +252,10 @@ func (s *SQLStore) batchAddLogs(
 	ctx context.Context,
 	logs []*model.LogEntry,
 	updateOAuthQuotaCost bool,
-) ([]int64, error) {
+) (OAuthQuotaLogEffects, error) {
 	logs = s.filterDeletedChannelLogs(logs)
 	if len(logs) == 0 {
-		return nil, nil
+		return OAuthQuotaLogEffects{}, nil
 	}
 	now := time.Now()
 	for _, entry := range logs {
@@ -268,7 +266,7 @@ func (s *SQLStore) batchAddLogs(
 
 	tx, err := s.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return OAuthQuotaLogEffects{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -284,26 +282,26 @@ func (s *SQLStore) batchAddLogs(
 
 	if len(plain) > 0 {
 		if err := batchInsertPlainLogs(ctx, s, tx, plain); err != nil {
-			return nil, err
+			return OAuthQuotaLogEffects{}, err
 		}
 	}
 
 	if len(withDebug) > 0 {
 		if err := insertLogsWithDebug(ctx, s, tx, withDebug); err != nil {
-			return nil, err
+			return OAuthQuotaLogEffects{}, err
 		}
 	}
-	var updatedChannelIDs []int64
+	var effects OAuthQuotaLogEffects
 	if updateOAuthQuotaCost {
-		updatedChannelIDs, err = s.updateOAuthQuotaCostsTx(ctx, tx, logs)
+		effects, err = s.applyOAuthQuotaLogEffectsTx(ctx, tx, logs)
 		if err != nil {
-			return nil, err
+			return OAuthQuotaLogEffects{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return OAuthQuotaLogEffects{}, err
 	}
-	return updatedChannelIDs, nil
+	return effects, nil
 }
 
 func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.LogEntry {
