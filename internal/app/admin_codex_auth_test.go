@@ -147,9 +147,9 @@ func (s *concurrentOAuthWinnerStore) CompareAndSwapOAuthCredential(
 
 func (s *concurrentOAuthWinnerStore) CompareAndSwapOAuthUsage(
 	ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string,
-) (bool, *oauthcost.CostView, error) {
+) (bool, error) {
 	if injected, err := s.injectWinner(ctx, channelID, expectedCredential); injected || err != nil {
-		return false, nil, err
+		return false, err
 	}
 	return s.Store.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 }
@@ -5908,12 +5908,9 @@ func TestHandleChannelsQuotaCostSurvivesLogCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, restored)
+	updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, restored)
 	if err != nil || !updated {
 		t.Fatalf("restore CAS = (%v, %v)", updated, err)
-	}
-	if view := costs.FindWindow("codex|secondary"); view == nil || view.StandardCostMicroUSD != 2_000_000 {
-		t.Fatalf("CAS cost after restore = %#v, want 2_000_000", view)
 	}
 	if got := listedCost(); got != 2_000_000 {
 		t.Fatalf("weekly cost lost after log cleanup and restore = %d, want 2_000_000", got)

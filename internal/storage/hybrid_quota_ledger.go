@@ -16,14 +16,8 @@ import (
 const primaryReconcileLedgerSlice = int64(6 * 60 * 60)
 
 // enqueueOAuthQuotaLedgerSlices 为每个分钟分片入队一次跨渠道复制。
-func (h *HybridStore) enqueueOAuthQuotaLedgerSlices(ledgerSlices []sqlstore.OAuthQuotaLedgerSlice) {
-	seen := make(map[int64]struct{}, len(ledgerSlices))
-	for _, slice := range ledgerSlices {
-		if _, ok := seen[slice.SliceStart]; ok {
-			continue
-		}
-		seen[slice.SliceStart] = struct{}{}
-		from := slice.SliceStart
+func (h *HybridStore) enqueueOAuthQuotaLedgerSlices(sliceStarts []int64) {
+	for _, from := range sliceStarts {
 		h.primarySync.enqueue(fmt.Sprintf("oauth-quota-ledger/%d", from), "OAuth quota ledger", func(ctx context.Context) error {
 			return h.copyOAuthQuotaLedgerRange(ctx, from, from+sqlstore.OAuthQuotaLedgerReplicationSlice)
 		})

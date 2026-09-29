@@ -1692,7 +1692,7 @@ func (s *Server) persistOAuthUsage(
 		if len(payload) > maxOAuthCredentialBytes {
 			return nil, errors.New("OAuth credential exceeds persistence limit")
 		}
-		updated, persistedCosts, err := s.store.CompareAndSwapOAuthUsage(
+		updated, err := s.store.CompareAndSwapOAuthUsage(
 			ctx, currentCfg.ID, state.authType, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {
@@ -1707,7 +1707,12 @@ func (s *Server) persistOAuthUsage(
 
 		s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 		s.InvalidateChannelListCache()
-		return attachOAuthQuotaCostUsage(summary, persistedCosts), nil
+		// 在 CAS 之外求和：窗口已按 sampledAt 对齐，求和时刻与持久化边界一致。
+		var costs *oauthcost.CostView
+		if nextQuotaCostUsage != nil {
+			costs = s.loadOAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{currentCfg.ID: nextQuotaCostUsage}, sampledAt)[currentCfg.ID]
+		}
+		return attachOAuthQuotaCostUsage(summary, costs), nil
 	}
 }
 

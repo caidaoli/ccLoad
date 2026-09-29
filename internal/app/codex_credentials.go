@@ -419,7 +419,7 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		if err != nil {
 			return false, err
 		}
-		updated, _, err := m.store.CompareAndSwapOAuthUsage(
+		updated, err := m.store.CompareAndSwapOAuthUsage(
 			ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {

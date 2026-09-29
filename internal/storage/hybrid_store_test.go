@@ -229,7 +229,7 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	readCost := func(store *sqlstore.SQLStore) (int64, bool) {
+	readCost := func(store Store) (int64, bool) {
 		cfg, getErr := store.GetConfig(ctx, created.ID)
 		if getErr != nil {
 			return 0, false
@@ -268,10 +268,12 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, costs, err := hybrid.CompareAndSwapOAuthUsage(ctx, created.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
-	window := costs.FindWindow("codex|secondary")
-	if err != nil || !updated || window == nil || window.StandardCostMicroUSD != 2_250_000 {
-		t.Fatalf("quota window reconciliation = %t, %+v, %v", updated, costs, err)
+	updated, err := hybrid.CompareAndSwapOAuthUsage(ctx, created.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
+	if err != nil || !updated {
+		t.Fatalf("quota window reconciliation = %t, %v", updated, err)
+	}
+	if cost, ok := readCost(hybrid); !ok || cost != 2_250_000 {
+		t.Fatalf("hybrid quota cost = (%d, %t), want 2250000", cost, ok)
 	}
 	waitForCondition(t, 3*time.Second, func() bool {
 		if cost, ok := readCost(primary); !ok || cost != 2_250_000 {

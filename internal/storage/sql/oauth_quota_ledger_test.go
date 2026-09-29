@@ -45,9 +45,15 @@ func createOAuthLedgerChannel(t *testing.T, ctx context.Context, store storage.S
 
 func ledgerRows(t *testing.T, store *sqlstore.SQLStore, channelID int64) []sqlstore.OAuthQuotaLedgerRow {
 	t.Helper()
-	rows, err := store.ListOAuthQuotaLedgerReplica(context.Background(), channelID, 0, math.MaxInt64)
+	all, err := store.ListOAuthQuotaLedgerRangeReplica(context.Background(), math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var rows []sqlstore.OAuthQuotaLedgerRow
+	for _, row := range all {
+		if row.ChannelID == channelID {
+			rows = append(rows, row.OAuthQuotaLedgerRow)
+		}
 	}
 	return rows
 }
@@ -85,7 +91,7 @@ func TestOAuthQuotaLedger_AggregatesEligibleLogsBySecondAndModel(t *testing.T) {
 	if !reflect.DeepEqual(effects.CredentialChannelIDs, []int64{codex}) {
 		t.Fatalf("credential channels = %v, want [%d]", effects.CredentialChannelIDs, codex)
 	}
-	wantSlices := []sqlstore.OAuthQuotaLedgerSlice{{ChannelID: antigravity, SliceStart: base.Unix()}, {ChannelID: codex, SliceStart: base.Unix()}}
+	wantSlices := []int64{base.Unix()}
 	if !reflect.DeepEqual(effects.LedgerSlices, wantSlices) {
 		t.Fatalf("ledger slices = %#v, want %#v", effects.LedgerSlices, wantSlices)
 	}
@@ -253,11 +259,11 @@ func TestOAuthQuotaLedger_TransientRollbackRestoresDespitePriceChange(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+		updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
 		if err != nil || !updated {
 			t.Fatalf("quota CAS = %t, %v", updated, err)
 		}
-		return viewCost(costs, key)
+		return quotaCostAt(t, ctx, store, channel.ID, key, at)
 	}
 	addLog(now.Add(-4*time.Hour), 4)
 	cut := now.Add(-2 * time.Hour)

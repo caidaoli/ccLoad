@@ -18,19 +18,14 @@ import (
 // OAuthQuotaLogEffects 描述一次日志事务造成的 OAuth 额度副作用。
 type OAuthQuotaLogEffects struct {
 	CredentialChannelIDs []int64
-	LedgerSlices         []OAuthQuotaLedgerSlice
+	// LedgerSlices 是本次写入触及的账本分片起点（秒，去重升序），跨渠道共享。
+	LedgerSlices []int64
 }
 
 // OAuthQuotaLedgerReplicationSlice 是混合模式账本复制的分片宽度（秒）。
 const OAuthQuotaLedgerReplicationSlice = int64(60)
 
-// OAuthQuotaLedgerSlice 标识一个待复制的账本时间分片。
-type OAuthQuotaLedgerSlice struct {
-	ChannelID  int64
-	SliceStart int64
-}
-
-// OAuthQuotaLedgerRow 是账本的一行，用于副本复制与查询。
+// OAuthQuotaLedgerRow 是账本一行除渠道外的字段。
 type OAuthQuotaLedgerRow struct {
 	BucketAt     int64
 	Model        string
@@ -94,7 +89,7 @@ func (s *SQLStore) loadChannelAuthTypesTx(ctx context.Context, tx *sql.Tx, chann
 	return authTypes, nil
 }
 
-func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) ([]OAuthQuotaLedgerSlice, error) {
+func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) ([]int64, error) {
 	candidates := make(map[int64]struct{})
 	for _, entry := range logs {
 		if entry != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource != model.LogSourceJev {
@@ -173,14 +168,16 @@ func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs [
 		}
 	}
 
-	slices := make([]OAuthQuotaLedgerSlice, 0, len(keys))
+	seen := make(map[int64]struct{})
+	slices := make([]int64, 0, len(keys))
 	for _, key := range keys {
-		slice := OAuthQuotaLedgerSlice{ChannelID: key.channelID,
-			SliceStart: key.bucketAt - key.bucketAt%OAuthQuotaLedgerReplicationSlice}
-		if len(slices) == 0 || slices[len(slices)-1] != slice {
-			slices = append(slices, slice)
+		start := key.bucketAt - key.bucketAt%OAuthQuotaLedgerReplicationSlice
+		if _, ok := seen[start]; !ok {
+			seen[start] = struct{}{}
+			slices = append(slices, start)
 		}
 	}
+	sort.Slice(slices, func(i, j int) bool { return slices[i] < slices[j] })
 	return slices, nil
 }
 
@@ -189,28 +186,6 @@ func (s *SQLStore) oauthQuotaLedgerAccumulateClause() string {
 		return ` ON CONFLICT (channel_id, bucket_at, model, window_key) DO UPDATE SET cost_microusd = oauth_quota_cost_ledger.cost_microusd + excluded.cost_microusd`
 	}
 	return ` ON DUPLICATE KEY UPDATE cost_microusd = cost_microusd + VALUES(cost_microusd)`
-}
-
-// ListOAuthQuotaLedgerReplica 返回渠道在 [from, until) 秒内的账本行。
-func (s *SQLStore) ListOAuthQuotaLedgerReplica(ctx context.Context, channelID, from, until int64) ([]OAuthQuotaLedgerRow, error) {
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT bucket_at, model, window_key, cost_microusd FROM oauth_quota_cost_ledger
-		WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ? ORDER BY bucket_at, model, window_key`), channelID, from, until)
-	if err != nil {
-		return nil, fmt.Errorf("list OAuth quota ledger: %w", err)
-	}
-	var result []OAuthQuotaLedgerRow
-	for rows.Next() {
-		var row OAuthQuotaLedgerRow
-		if err := rows.Scan(&row.BucketAt, &row.Model, &row.WindowKey, &row.CostMicroUSD); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("scan OAuth quota ledger: %w", err)
-		}
-		result = append(result, row)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("read OAuth quota ledger: %w", err)
-	}
-	return result, nil
 }
 
 // OAuthQuotaLedgerReplicaRow 是跨渠道复制时的账本行。
@@ -273,11 +248,6 @@ func (s *SQLStore) CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff tim
 	return nil
 }
 
-type ledgerRange struct {
-	channelID int64
-	oauthcost.Range
-}
-
 const oauthQuotaLedgerSumChunkSize = 200
 
 func (s *SQLStore) ledgerSumType() string {
@@ -291,78 +261,83 @@ func (s *SQLStore) ledgerSumType() string {
 	}
 }
 
-// sumOAuthQuotaLedger 按模型和窗口键聚合每段账本，结果与 ranges 下标对应。
-func (s *SQLStore) sumOAuthQuotaLedger(ctx context.Context, queryer sqlQueryer, ranges []ledgerRange) ([][]oauthcost.LedgerTotal, error) {
-	result := make([][]oauthcost.LedgerTotal, len(ranges))
-	active := make([]int, 0, len(ranges))
-	for i, r := range ranges {
-		if r.channelID > 0 && r.From < r.Until {
-			active = append(active, i)
-		}
+// OAuthQuotaCostViews 返回各渠道在 at 时刻按账本计费的窗口视图。
+// 每个渠道只查一次所有窗口的并集区间，在 Go 侧按窗口分配成本。
+func (s *SQLStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
+	type channelWindows struct {
+		id      int64
+		windows []*oauthcost.Window
+		from    int64
+		until   int64
 	}
+	channels := make([]channelWindows, 0, len(usages))
+	for id, usage := range usages {
+		if usage == nil {
+			continue
+		}
+		windows := oauthcost.WindowsAt(usage, at)
+		if len(windows) == 0 {
+			continue
+		}
+		var from, until int64
+		for _, w := range windows {
+			cr := oauthcost.CountedRange(w)
+			if cr.From >= cr.Until {
+				continue
+			}
+			if from == 0 || cr.From < from {
+				from = cr.From
+			}
+			if cr.Until > until {
+				until = cr.Until
+			}
+		}
+		if from >= until {
+			continue
+		}
+		channels = append(channels, channelWindows{id: id, windows: windows, from: from, until: until})
+	}
+	sort.Slice(channels, func(i, j int) bool { return channels[i].id < channels[j].id })
+
+	views := make(map[int64]*oauthcost.CostView, len(channels))
 	sumType := s.ledgerSumType()
-	for start := 0; start < len(active); start += oauthQuotaLedgerSumChunkSize {
-		chunk := active[start:min(start+oauthQuotaLedgerSumChunkSize, len(active))]
+	for start := 0; start < len(channels); start += oauthQuotaLedgerSumChunkSize {
+		chunk := channels[start:min(start+oauthQuotaLedgerSumChunkSize, len(channels))]
 		parts := make([]string, len(chunk))
 		args := make([]any, 0, len(chunk)*3)
-		for i, idx := range chunk {
-			parts[i] = fmt.Sprintf(`SELECT %d AS idx, model, window_key, CAST(SUM(cost_microusd) AS %s) AS cost
-				FROM oauth_quota_cost_ledger WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ?
-				GROUP BY model, window_key`, idx, sumType)
-			r := ranges[idx]
-			args = append(args, r.channelID, r.From, r.Until)
+		for i, ch := range chunk {
+			parts[i] = fmt.Sprintf(`SELECT %d AS idx, bucket_at, model, window_key, CAST(cost_microusd AS %s) AS cost
+				FROM oauth_quota_cost_ledger WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ?`, i, sumType)
+			args = append(args, ch.id, ch.from, ch.until)
 		}
-		rows, err := s.queryWith(ctx, queryer, strings.Join(parts, " UNION ALL "), args...)
+		rows, err := s.queryWith(ctx, s.db, strings.Join(parts, " UNION ALL "), args...)
 		if err != nil {
 			return nil, fmt.Errorf("sum OAuth quota ledger: %w", err)
 		}
+		rowsByIdx := make(map[int][]oauthcost.LedgerRow)
 		for rows.Next() {
 			var idx int
-			var total oauthcost.LedgerTotal
-			if err := rows.Scan(&idx, &total.Model, &total.WindowKey, &total.CostMicroUSD); err != nil {
+			var row oauthcost.LedgerRow
+			if err := rows.Scan(&idx, &row.BucketAt, &row.Model, &row.WindowKey, &row.CostMicroUSD); err != nil {
 				_ = rows.Close()
-				return nil, fmt.Errorf("scan OAuth quota ledger sum: %w", err)
+				return nil, fmt.Errorf("scan OAuth quota ledger: %w", err)
 			}
-			if idx < 0 || idx >= len(result) {
-				_ = rows.Close()
-				return nil, fmt.Errorf("scan OAuth quota ledger sum: range index %d out of bounds", idx)
-			}
-			result[idx] = append(result[idx], total)
+			rowsByIdx[idx] = append(rowsByIdx[idx], row)
 		}
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, fmt.Errorf("read OAuth quota ledger sum: %w", err)
+			return nil, fmt.Errorf("read OAuth quota ledger: %w", err)
+		}
+		for i, ch := range chunk {
+			views[ch.id] = oauthcost.CostViewFromUnion(usages[ch.id], ch.windows, rowsByIdx[i])
 		}
 	}
-	return result, nil
-}
-
-// OAuthQuotaCostViews 返回各渠道在 at 时刻按账本计费的窗口视图。
-func (s *SQLStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
-	channelIDs := make([]int64, 0, len(usages))
+	// 没有窗口的渠道仍需返回一个空视图。
 	for id, usage := range usages {
 		if usage != nil {
-			channelIDs = append(channelIDs, id)
+			if _, ok := views[id]; !ok {
+				views[id] = oauthcost.CostViewFromUnion(usage, nil, nil)
+			}
 		}
-	}
-	sort.Slice(channelIDs, func(i, j int) bool { return channelIDs[i] < channelIDs[j] })
-	windows := make(map[int64][]*oauthcost.Window, len(channelIDs))
-	var ranges []ledgerRange
-	for _, id := range channelIDs {
-		windows[id] = oauthcost.WindowsAt(usages[id], at)
-		for _, window := range windows[id] {
-			ranges = append(ranges, ledgerRange{channelID: id, Range: oauthcost.CountedRange(window)})
-		}
-	}
-	totals, err := s.sumOAuthQuotaLedger(ctx, s.db, ranges)
-	if err != nil {
-		return nil, err
-	}
-	views := make(map[int64]*oauthcost.CostView, len(channelIDs))
-	offset := 0
-	for _, id := range channelIDs {
-		count := len(windows[id])
-		views[id] = oauthcost.NewCostView(usages[id], windows[id], totals[offset:offset+count])
-		offset += count
 	}
 	return views, nil
 }

@@ -222,14 +222,14 @@ func (h *HybridStore) CompareAndSwapOAuthUsage(
 	ctx context.Context,
 	channelID int64,
 	expectedAuthType, expectedCredential, nextCredential string,
-) (bool, *oauthcost.CostView, error) {
+) (bool, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
-	updated, costs, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+	updated, err := h.sqlite.CompareAndSwapOAuthUsage(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 	if err == nil && updated {
 		h.markChannelDirty(channelID, false)
 	}
-	return updated, costs, err
+	return updated, err
 }
 
 // OAuthQuotaCostViews 读 SQLite 权威库；主库账本异步落后。
@@ -671,16 +671,12 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
-	h.oauthCredentialMu.Lock()
-	effects, err := h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
+	effects, err := h.addLogsLocked([]*model.LogEntry{e}, func() (sqlstore.OAuthQuotaLogEffects, error) {
+		return h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
+	})
 	if err != nil {
-		h.oauthCredentialMu.Unlock()
 		return err
 	}
-	for _, channelID := range effects.CredentialChannelIDs {
-		h.markChannelDirty(channelID, false)
-	}
-	h.oauthCredentialMu.Unlock()
 	h.enqueueOAuthQuotaLedgerSlices(effects.LedgerSlices)
 	entry := cloneLogEntryForSync(e)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
@@ -696,22 +692,35 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 			entry.Time = model.JSONTime{Time: now}
 		}
 	}
-	h.oauthCredentialMu.Lock()
-	effects, err := h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
+	effects, err := h.addLogsLocked(logs, func() (sqlstore.OAuthQuotaLogEffects, error) {
+		return h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
+	})
 	if err != nil {
-		h.oauthCredentialMu.Unlock()
 		return err
 	}
-	for _, channelID := range effects.CredentialChannelIDs {
-		h.markChannelDirty(channelID, false)
-	}
-	h.oauthCredentialMu.Unlock()
 	h.enqueueOAuthQuotaLedgerSlices(effects.LedgerSlices)
 	entries := cloneLogEntriesForSync(logs)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
 		return h.primary.BatchAddLogsReplica(syncCtx, entries)
 	})
 	return nil
+}
+
+// addLogsLocked 只在日志会改写凭据（Codex 已购额度）时与凭据 CAS 串行；
+// 周期额度只写账本，不触碰凭据，无需等待被动采样。
+func (h *HybridStore) addLogsLocked(logs []*model.LogEntry, write func() (sqlstore.OAuthQuotaLogEffects, error)) (sqlstore.OAuthQuotaLogEffects, error) {
+	if sqlstore.LogsChargeOAuthCredits(logs) {
+		h.oauthCredentialMu.Lock()
+		defer h.oauthCredentialMu.Unlock()
+	}
+	effects, err := write()
+	if err != nil {
+		return effects, err
+	}
+	for _, channelID := range effects.CredentialChannelIDs {
+		h.markChannelDirty(channelID, false)
+	}
+	return effects, nil
 }
 
 func (h *HybridStore) analyticsStore() *sqlstore.SQLStore {

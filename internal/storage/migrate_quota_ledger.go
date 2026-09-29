@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -150,19 +149,8 @@ func oauthQuotaLegacyBaselines(ctx context.Context, tx *sql.Tx, dialect Dialect,
 			log.Printf("[WARN] OAuth quota ledger migration skips channel %d baseline: %v", channel.id, err)
 			continue
 		}
-		// WindowsAt 会按 window_seconds 推进；超出 time.Duration 范围会溢出。
-		invalidDuration := false
-		for _, window := range usage.Windows {
-			if window.WindowSeconds > math.MaxInt64/int64(time.Second) {
-				invalidDuration = true
-				break
-			}
-		}
-		if invalidDuration {
-			log.Printf("[WARN] OAuth quota ledger migration skips channel %d baseline: invalid window duration", channel.id)
-			continue
-		}
-		// 已过期窗口的旧成本属于上一周期，无需调用 WindowsAt 推进它。
+		// 过滤已过期窗口：旧成本属于上一周期，不参与基线补差。
+		// 保留的窗口仍需经过 WindowsAt 以应用 epoch 和推进边界。
 		active := usage.Windows[:0]
 		for _, window := range usage.Windows {
 			if window.ResetAt > now.Unix() {

@@ -27,36 +27,41 @@ type oauthQuotaCostCredentialEnvelope struct {
 	QuotaCostUsage *oauthcost.Usage `json:"quota_cost_usage"`
 }
 
-// oauthQuotaCostViewTx 对即将持久化的窗口从账本求和，不改写凭据。
-func (s *SQLStore) oauthQuotaCostViewTx(ctx context.Context, tx *sql.Tx, channelID int64, nextJSON string) (*oauthcost.CostView, error) {
+// validateOAuthQuotaCostCredential 拒绝持久化非法的额度窗口边界。
+func validateOAuthQuotaCostCredential(channelID int64, nextJSON string) error {
 	var next oauthQuotaCostCredentialEnvelope
 	if err := json.Unmarshal([]byte(nextJSON), &next); err != nil {
-		return nil, fmt.Errorf("decode OAuth quota cost credential for channel %d: %w", channelID, err)
+		return fmt.Errorf("decode OAuth quota cost credential for channel %d: %w", channelID, err)
 	}
-	usage := next.QuotaCostUsage
-	if usage == nil {
-		return nil, nil
+	if next.QuotaCostUsage == nil {
+		return nil
 	}
-	if err := oauthcost.Validate(usage); err != nil {
-		return nil, fmt.Errorf("validate OAuth quota cost credential for channel %d: %w", channelID, err)
+	if err := oauthcost.Validate(next.QuotaCostUsage); err != nil {
+		return fmt.Errorf("validate OAuth quota cost credential for channel %d: %w", channelID, err)
 	}
-	ranges := make([]ledgerRange, len(usage.Windows))
-	for i, window := range usage.Windows {
-		ranges[i] = ledgerRange{channelID: channelID, Range: oauthcost.CountedRange(window)}
+	return nil
+}
+
+func isOAuthQuotaCreditLog(entry *model.LogEntry) bool {
+	return entry != nil && entry.ChannelID > 0 && entry.Cost > 0 &&
+		entry.LogSource != model.LogSourceJev && entry.CodexHasCredits
+}
+
+// LogsChargeOAuthCredits 报告这批日志是否会改写凭据（仅 Codex 已购额度）。
+func LogsChargeOAuthCredits(logs []*model.LogEntry) bool {
+	for _, entry := range logs {
+		if isOAuthQuotaCreditLog(entry) {
+			return true
+		}
 	}
-	totals, err := s.sumOAuthQuotaLedger(ctx, tx, ranges)
-	if err != nil {
-		return nil, fmt.Errorf("sum OAuth quota cost for channel %d: %w", channelID, err)
-	}
-	return oauthcost.NewCostView(usage, usage.Windows, totals), nil
+	return false
 }
 
 // updateOAuthQuotaCreditsTx 仅将 Codex 已购额度成本累计进凭据；周期成本由账本承担。
 func (s *SQLStore) updateOAuthQuotaCreditsTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) ([]int64, error) {
 	credits := make(map[int64]int64)
 	for _, entry := range logs {
-		if entry == nil || entry.ChannelID <= 0 || entry.Cost <= 0 ||
-			entry.LogSource == model.LogSourceJev || !entry.CodexHasCredits {
+		if !isOAuthQuotaCreditLog(entry) {
 			continue
 		}
 		costMicroUSD, err := util.USDToMicroUSDSafe(entry.Cost)

@@ -43,8 +43,9 @@ func NewSyncManager(primary, sqlite *sqlstore.SQLStore) *SyncManager {
 func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error {
 	start := time.Now()
 
-	// 第一步：恢复配置表（快速，<1 秒）
-	// oauth_quota_cost_ledger 与日志保留期无关，必须随配置表完整恢复，不能依赖 logDays。
+	// 第一步：在同一快照内恢复配置表与额度账本。
+	// oauth_quota_cost_ledger 与日志保留期无关，必须随配置表完整恢复，不能依赖 logDays；
+	// 账本最多保留 64 天，行数随流量增长，耗时不再是固定的亚秒级。
 	configTables := []string{
 		"system_settings",
 		"channels",
@@ -72,7 +73,7 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	}
 	defer func() { _ = sqliteTx.Rollback() }()
 
-	log.Printf("[INFO] 开始恢复配置表（共 %d 个表）...", len(configTables))
+	log.Printf("[INFO] 开始恢复配置表与额度账本（共 %d 个表）...", len(configTables))
 	for _, table := range configTables {
 		if err := sm.restoreTable(ctx, primaryTx, sqliteTx, table); err != nil {
 			return fmt.Errorf("恢复表 %s 失败: %w", table, err)
@@ -85,7 +86,7 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 		return fmt.Errorf("提交 SQLite 配置恢复事务失败: %w", err)
 	}
 
-	log.Printf("[INFO] 配置表恢复完成，耗时: %v", time.Since(start))
+	log.Printf("[INFO] 配置表与额度账本恢复完成，耗时: %v", time.Since(start))
 
 	// 第二步：首次启动也执行与后续启动相同的日志增量导入。
 	if err := sm.RestoreLogsOnStartup(ctx, logDays); err != nil {

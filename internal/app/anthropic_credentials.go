@@ -396,7 +396,7 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 		if err != nil {
 			return false, err
 		}
-		updated, _, err := m.store.CompareAndSwapOAuthUsage(
+		updated, err := m.store.CompareAndSwapOAuthUsage(
 			ctx, currentCfg.ID, model.AuthTypeAnthropicOAuth, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {

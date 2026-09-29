@@ -876,11 +876,11 @@ func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+				updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
 				if err != nil || !updated {
 					t.Fatalf("quota CAS = %t, %v, want true", updated, err)
 				}
-				if got := viewCost(costs, sample.Key); got != want {
+				if got := quotaCostAt(t, ctx, store, channel.ID, sample.Key, base); got != want {
 					t.Fatalf("quota cost = %d, want %d", got, want)
 				}
 			}
@@ -941,11 +941,11 @@ func TestLog_OAuthUsageConfirmsLocallyAdvancedPeriod(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
+			updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := viewCost(costs, sample.Key); got != 2_500_000 {
+			if got := quotaCostAt(t, ctx, store, channel.ID, sample.Key, sample.SampledAt); got != 2_500_000 {
 				t.Fatalf("confirmed quota cost = %d, want 2500000", got)
 			}
 		})
@@ -998,12 +998,12 @@ func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
+				updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
 					model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
 				if err != nil || !updated {
 					t.Fatalf("quota CAS = %t, %v", updated, err)
 				}
-				return costs
+				return quotaCostView(t, ctx, store, channel.ID, observedAt)
 			}
 
 			// 一次常规刷新读取账本成本。
@@ -1084,12 +1084,12 @@ func TestLog_OAuthUsagePeriodSwitchBackfillsLogsBeforeSample(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
+			updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID,
 				model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, payload)
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := viewCost(costs, sample.Key); got != 2_500_000 {
+			if got := quotaCostAt(t, ctx, store, channel.ID, sample.Key, observedAt); got != 2_500_000 {
 				t.Fatalf("backfilled quota cost = %d, want 2500000", got)
 			}
 		})
@@ -1151,11 +1151,11 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
+			updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, payload)
 			if err != nil || !updated {
 				t.Fatalf("quota CAS = %t, %v", updated, err)
 			}
-			if got := viewCost(costs, sample.Key); got != 1_250_000 {
+			if got := quotaCostAt(t, ctx, store, channel.ID, sample.Key, base.Add(time.Hour)); got != 1_250_000 {
 				t.Fatalf("cost after reset = %d, want 1250000", got)
 			}
 			// Late logs obey the actual reset cutoff, including manual resets
@@ -1320,11 +1320,12 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			updated, costs, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, raw)
+			updated, err := store.CompareAndSwapOAuthUsage(ctx, channel.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, raw)
 			if err != nil || !updated {
 				t.Fatalf("refresh=%t, %v", updated, err)
 			}
 			read()
+			costs := quotaCostView(t, ctx, store, channel.ID, now)
 			if len(costs.Windows) != 3 {
 				t.Fatalf("quota cost view = %+v, want three windows", costs)
 			}
