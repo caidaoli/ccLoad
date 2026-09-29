@@ -87,7 +87,8 @@ type Window struct {
 	// 另一侧，采样确认时必须允许边界被改写（见 reconcileWindow）。
 	// 显式记录而不是从其他字段反推——否则 advanceWindow 的任何赋值调整都会
 	// 让这个判断静默失效，额度数字慢慢跑偏且没有任何编译或测试信号。
-	LocallyAdvanced bool `json:"locally_advanced,omitempty"`
+	LocallyAdvanced bool      `json:"locally_advanced,omitempty"`
+	Rollback        *Rollback `json:"rollback,omitempty"`
 }
 
 // CountFrom 返回窗口的计数起点：周期起点与手动重置截止点中较晚的一个。
@@ -242,6 +243,7 @@ func cloneWindow(window *Window) *Window {
 	}
 	clone := *window
 	clone.SampledUpstreamUsedPercent = cloneFloat64(window.SampledUpstreamUsedPercent)
+	clone.Rollback = cloneRollback(window.Rollback)
 	return &clone
 }
 
@@ -290,6 +292,9 @@ func Validate(usage *Usage) error {
 		if usedPercent := window.SampledUpstreamUsedPercent; usedPercent != nil &&
 			(math.IsNaN(*usedPercent) || math.IsInf(*usedPercent, 0) || *usedPercent < 0 || *usedPercent > 100) {
 			return errors.New("OAuth quota sampled usage is invalid")
+		}
+		if err := validateRollback(window); err != nil {
+			return err
 		}
 		if window.StandardCostMicroUSD < 0 {
 			return errors.New("OAuth quota standard cost cannot be negative")
@@ -513,10 +518,12 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 		return next
 	}
 	if usageSampleIsNewer && upstreamUsageRolledBack(current.SampledUpstreamUsedPercent, sample.UsedPercent) {
-		// 上游可以在原 reset_at 到期前直接恢复额度。使用率在同一额度周期内只会
-		// 单调增加；只有超过 upstreamUsageRollbackEpsilon 的显著回退才会切断旧成本，
-		// 小数级抖动按噪声保留累计，不能再用 reset_at 的位移猜测。
-		next.CountFromAt = usageSampledAt.Unix()
+		// 截断立即生效；同周期内保存证据，由后续上游读数判定是否撤销。
+		if sameQuotaPeriod(current, next) {
+			recordRollback(current, next, usageSampledAt)
+		} else {
+			next.CountFromAt = usageSampledAt.Unix()
+		}
 		return next
 	}
 	if sameQuotaPeriod(current, next) {
@@ -533,6 +540,7 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 				current.ResetAt = next.ResetAt
 				current.ResetDay = next.ResetDay
 			}
+			resolveRollback(current, *sample.UsedPercent)
 			current.SampledUpstreamUsedPercent = cloneFloat64(sample.UsedPercent)
 			current.SampledUpstreamAtUnixNano = sampledAtUnixNano
 			// 采样确认了边界，暂定状态结束。
@@ -639,6 +647,7 @@ func Reset(current *Usage, resetAt time.Time, costByFamily map[string]int64) *Us
 		// 手动重置是已确认的计数起点，不是本地按截止时间猜出来的边界：
 		// 后续采样不得改写 StartedAt，否则会把重置后已计入的日志排除在外。
 		window.LocallyAdvanced = false
+		window.Rollback = nil
 		window.Family = WindowModelFamily(window)
 		window.StandardCostMicroUSD = costByFamily[window.Family]
 		// costByFamily 正是自计数起点起的已落盘成本，已计入区间随之确定。
@@ -701,6 +710,7 @@ func advanceWindow(window *Window, at time.Time) {
 	window.StandardCostMicroUSD = 0
 	// 本地按截止时间滚出的新周期，边界都是暂定值，等采样确认。
 	window.LocallyAdvanced = true
+	window.Rollback = nil
 	// 新周期的零成本是确定的：落在新周期内的日志都会先推进窗口再累计，
 	// 所以此刻整个新区间「已计入」且为零，后续日志由增量累计维持该不变式。
 	MarkAccounted(window, CountFrom(window), window.ResetAt)
@@ -756,7 +766,13 @@ func applyEpoch(usage *Usage) {
 		return
 	}
 	for _, window := range usage.Windows {
-		if window != nil && window.StartedAt < usage.EpochAt {
+		if window == nil {
+			continue
+		}
+		if window.Rollback != nil && window.Rollback.PreviousCountFrom < usage.EpochAt {
+			window.Rollback = nil
+		}
+		if window.StartedAt < usage.EpochAt {
 			window.CountFromAt = max(window.CountFromAt, usage.EpochAt)
 		}
 	}
