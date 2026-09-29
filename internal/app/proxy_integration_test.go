@@ -9496,6 +9496,51 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 	}
 }
 
+func TestProxy_AutomaticProtocolFallback_CacheIsolatedByModel(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		paths = append(paths, body.Model+":"+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case body.Model == "model-a" && r.URL.Path == "/v1/messages":
+			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"model-a","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		case body.Model == "model-b" && r.URL.Path == "/v1/chat/completions":
+			_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"model-b","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprintf(w, `{"error":{"message":"Invalid URL (POST %s)"}}`, r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "per-model-protocol", upstreamProtocol: "openai",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "model-a,model-b",
+	}}, map[int]string{0: upstream.URL})
+
+	for _, modelName := range []string{"model-a", "model-b", "model-a", "model-b"} {
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": modelName, "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", modelName, w.Code, w.Body.String())
+		}
+	}
+
+	want := strings.Join([]string{
+		"model-a:/v1/chat/completions", "model-a:/v1/messages",
+		"model-b:/v1/chat/completions",
+		"model-a:/v1/messages",
+		"model-b:/v1/chat/completions",
+	}, ",")
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("upstream paths=%s\nwant %s (each model keeps its own learned protocol)", got, want)
+	}
+}
+
 func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailures(t *testing.T) {
 	t.Parallel()
 
@@ -9837,10 +9882,21 @@ func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) 
 		t.Fatalf("upstream paths=%s, want native Anthropic then cached OpenAI", got)
 	}
 
+	// 渠道列表失效也由 OAuth 刷新等运行时写库触发，不能丢弃学习结果。
 	env.server.InvalidateChannelListCache()
 	request()
-	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions,/v1/messages,/v1/chat/completions" {
-		t.Fatalf("upstream paths=%s, want channel cache invalidation to probe Anthropic again", got)
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want channel list invalidation to keep cached OpenAI", got)
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	env.server.protocolCapabilities.clearChannels(configs[0].ID)
+	request()
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions,/v1/chat/completions,/v1/messages,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want channel capability reset to probe Anthropic again", got)
 	}
 }
 

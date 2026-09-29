@@ -3885,6 +3885,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	var urlPolicy channelURLAttemptPolicy
 	var deferredFallbackLog *model.LogEntry
 	var keyTargetSkipped bool
+	capabilityModel := s.protocolCapabilityModel(cfg, reqCtx, requestFamily)
 	defer func() {
 		if deferredFallbackLog != nil {
 			s.AddLogAsync(deferredFallbackLog)
@@ -3923,6 +3924,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		capabilityKey := protocolCapabilityKey{
 			channelID: cfg.ID, baseURL: attemptBaseURL,
 			clientProtocol: clientProtocol, requestFamily: requestFamily,
+			upstreamModel: capabilityModel,
 		}
 		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
 			return nil, nil, fmt.Errorf("invalid URL selector index %d for channel %d", urlEntry.idx, cfg.ID)
