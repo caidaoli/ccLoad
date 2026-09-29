@@ -161,6 +161,10 @@ func (s *Server) prepareJevError(ctx context.Context, cfg *model.Config, reqCtx 
 		if in.IsNetworkError || res.UpstreamWebsocketTransportFailure || util.IsModelScopedStreamFailure(in.StatusCode) || ctx.Err() != nil {
 			return local
 		}
+		// 本地已有明确分类就直接处理，不为补充时间信息再次调用远程分析。
+		if !local.DefaultFallback {
+			return local
+		}
 		if s.configService == nil || !s.configService.GetBool(config.TypeSafeEnabledSettingKey, false) {
 			res.jevNote = "skipped:disabled"
 			return local
@@ -173,9 +177,6 @@ func (s *Server) prepareJevError(ctx context.Context, cfg *model.Config, reqCtx 
 		secrets := []string{key, selectedKey, reqCtx.header.Get("Authorization"), reqCtx.header.Get("X-Api-Key")}
 		state := buildJevState(in, secrets)
 		needsTime := !local.HasKeyCooldownUntil && !local.HasModelCooldownUntil && !local.HasChannelCooldownUntil && local.Level != util.ErrorLevelClient && len(state.Candidates) > 0
-		if !local.DefaultFallback && !needsTime {
-			return local
-		}
 		if reqCtx.jevWait >= jevWaitBudget {
 			res.jevNote = "skipped:budget_exhausted"
 			return local

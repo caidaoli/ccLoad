@@ -581,7 +581,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
 		_, knownStatus := statusCodeMetaMap[statusCode]
-		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode), DefaultFallback: !knownStatus || IsModelScopedHTTPStatus(statusCode)}
+		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode), DefaultFallback: !knownStatus}
 	}
 
 	// 401/403错误:分析响应体内容

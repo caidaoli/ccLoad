@@ -54,7 +54,7 @@
 ## TypeSafe 错误分析兜底
 
 - `TypeSafe_enabled` 默认关闭，`TypeSafe_api_key` 保存后重启生效。独立客户端请求 TypeSafe 官方 `/v1/systemone`，模型使用 `jev-latest`，审计记录实际返回版本。
-- `cooldown.Manager.PrepareError` 先执行自定义规则和本地分类；只为默认兜底补类别，为缺少精确截止时间的错误补时间。分类与时间各自要求 confidence >= 0.95，非法概率分布、无依据/无时区/过期或超过 366 天的时间回退原策略。精确 reset 不受指数退避上限截断。
+- `cooldown.Manager.PrepareError` 先执行自定义规则和本地分类；本地已有明确分类（包括已登记的 500/502/503/504）时直接处理，不调用 Jev，也不单独为其补时间；只有本地默认兜底的未知错误才调用 Jev 补类别，并可同时补充缺少的精确截止时间。分类与时间各自要求 confidence >= 0.95，非法概率分布、无依据/无时区/过期或超过 366 天的时间回退原策略。精确 reset 不受指数退避上限截断。
 - 每个 HTTP 请求及每个 Responses WS turn 跨重试累计等待最多 3 秒；不重试远程分析，全局最多 8 并发、滚动一秒最多 10 次，容量不足直接回退。冷却数据库写入继续使用独立 3 秒上下文。
 - 同次失败的已准备判定供换 Key、换渠、延迟冷却复用。网络故障、WS transport tracker、取消和人工中断不分析；已提交响应只应用冷却，不重放请求。分析不触发凭据禁用、请求体修复或付费回退。
 - 每次实际调用写 `log_source=jev`，message 为有大小上限的版本化 JSON，保留脱敏输入、响应、概率、采用/回退原因、调用 ID；同时把脱敏的 TypeSafe 请求和审计结果关联到 `debug_logs`，供管理端 Debug 弹窗查看。代理日志携带同一调用 ID 及 adopted/fallback 结果；未调用则记跳过原因。Jev 日志成本按现有 `jev-latest` 模型价格目录计算，未配置价格时为 0；审计仍不计入渠道/URL/Token/OAuth 用量；API Token 网页用户仅能查询自身 proxy 来源日志。

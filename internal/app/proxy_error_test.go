@@ -416,7 +416,13 @@ func TestProxyJevAnalysis(t *testing.T) {
 		configured, disabled, committed bool
 	}{
 		{name: "unknown", status: 404, body: `{"error":{"message":"unrecognized failure sk-upstream-secret"},"messages":["private conversation"]}`, category: "channel", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
-		{name: "5xx classification", status: 500, body: `{"error":{"message":"unknown"}}`, category: "channel", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
+		{name: "known 500", status: 500, body: `{"error":{"message":"unknown"}}`, want: cooldown.ActionRetryModel},
+		{name: "known 502", status: 502, body: `{"error":{"message":"Bad Gateway"}}`, want: cooldown.ActionRetryModel},
+		{name: "known 502 with time", status: 502, body: `{"error":{"message":"Bad Gateway; retry in 2 hours"}}`, want: cooldown.ActionRetryModel},
+		{name: "known 429 with time", status: 429, body: `{"error":{"message":"retry in 2 hours"}}`, want: cooldown.ActionRetryModel},
+		{name: "known 503", status: 503, body: `{"error":{"message":"Service Unavailable"}}`, want: cooldown.ActionRetryModel},
+		{name: "known 504", status: 504, body: `{"error":{"message":"Gateway Timeout"}}`, want: cooldown.ActionRetryModel},
+		{name: "unknown 5xx", status: 529, body: `{"error":{"message":"unrecognized failure"}}`, category: "channel", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
 		{name: "request", status: 597, body: `{"error":{"type":"unrecognized","message":"invalid shape"}}`, category: "request", confidence: 1, want: cooldown.ActionReturnClient, calls: 1},
 		{name: "oauth credential", status: 401, body: `{"error":{"message":"unrecognized rejection"}}`, category: "credential", confidence: 1, want: cooldown.ActionRetryChannel, calls: 1},
 		{name: "low confidence", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "request", confidence: 0.9, want: cooldown.ActionRetryChannel, calls: 1, outcome: "low_confidence"},
@@ -424,13 +430,13 @@ func TestProxyJevAnalysis(t *testing.T) {
 		{name: "configured priority", status: 404, body: `{"error":{"message":"unrecognized"}}`, category: "request", confidence: 1, want: cooldown.ActionRetryModel, calls: 0, configured: true},
 		{name: "disabled", status: 404, body: `{"error":{"message":"unrecognized"}}`, want: cooldown.ActionRetryChannel, disabled: true},
 		{name: "known context limit", status: 400, body: `{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}`, want: cooldown.ActionReturnClient},
-		{name: "time only", status: 429, body: `{"error":{"message":"retry in 2 hours; previous reset 2020-01-01T00:00:00Z"}}`, reset: "2 hours", confidence: 1, resetAfter: 2 * time.Hour, want: cooldown.ActionRetryModel, calls: 1},
-		{name: "compound duration", status: 429, body: `{"error":{"message":"Daily free limit reached. Try again in 2h 18m"}}`, reset: "2h 18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
-		{name: "compact compound duration", status: 429, body: `{"error":{"message":"Daily free limit reached. Try again in 2h18m"}}`, reset: "2h18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
-		{name: "ambiguous timezone", status: 429, body: `{"error":{"message":"reset 2099-01-01 12:00:00"}}`, reset: "2099-01-01 12:00:00", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
-		{name: "explicit UTC offset", status: 429, body: fmt.Sprintf(`{"error":{"message":"reset %s UTC+8"}}`, offsetReset), reset: offsetReset + " UTC+8", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
-		{name: "past reset", status: 429, body: `{"error":{"message":"reset 2020-01-01T00:00:00Z"}}`, reset: "2020-01-01T00:00:00Z", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
-		{name: "reset overflow", status: 429, body: `{"error":{"message":"retry in 999999999999999999999999 hours"}}`, reset: "999999999999999999999999 hours", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "time only", status: 404, category: "quota", body: `{"error":{"message":"retry in 2 hours; previous reset 2020-01-01T00:00:00Z"}}`, reset: "2 hours", confidence: 1, resetAfter: 2 * time.Hour, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "compound duration", status: 404, category: "quota", body: `{"error":{"message":"Daily free limit reached. Try again in 2h 18m"}}`, reset: "2h 18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "compact compound duration", status: 404, category: "quota", body: `{"error":{"message":"Daily free limit reached. Try again in 2h18m"}}`, reset: "2h18m", confidence: 1, resetAfter: 2*time.Hour + 18*time.Minute, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "ambiguous timezone", status: 404, category: "quota", body: `{"error":{"message":"reset 2099-01-01 12:00:00"}}`, reset: "2099-01-01 12:00:00", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "explicit UTC offset", status: 404, category: "quota", body: fmt.Sprintf(`{"error":{"message":"reset %s UTC+8"}}`, offsetReset), reset: offsetReset + " UTC+8", confidence: 1, want: cooldown.ActionRetryModel, calls: 1},
+		{name: "past reset", status: 404, category: "quota", body: `{"error":{"message":"reset 2020-01-01T00:00:00Z"}}`, reset: "2020-01-01T00:00:00Z", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
+		{name: "reset overflow", status: 404, category: "quota", body: `{"error":{"message":"retry in 999999999999999999999999 hours"}}`, reset: "999999999999999999999999 hours", confidence: 1, want: cooldown.ActionRetryModel, calls: 1, outcome: "no_valid_reset"},
 		{name: "committed SSE", status: 597, body: `{"error":{"type":"new_failure","message":"model temporarily unavailable"}}`, category: "model", confidence: 1, want: cooldown.ActionReturnClient, calls: 1, committed: true},
 	}
 	for _, tc := range cases {
@@ -599,7 +605,7 @@ func TestProxyJevBudgetAndCancellation(t *testing.T) {
 	})}
 	cfg := &model.Config{ID: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}}
 	reqCtx := &proxyRequestContext{jevWait: jevWaitBudget - 40*time.Millisecond}
-	res := &fwResult{Status: 500, Body: []byte(`{"error":{"message":"unknown"}}`)}
+	res := &fwResult{Status: 529, Body: []byte(`{"error":{"message":"unknown"}}`)}
 	input := cooldownInputForModel(httpErrorInput(1, 0, res), "m")
 	start := time.Now()
 	prepared := srv.prepareJevError(context.Background(), cfg, reqCtx, res, input, "")
@@ -607,14 +613,14 @@ func TestProxyJevBudgetAndCancellation(t *testing.T) {
 		t.Fatalf("elapsed=%v calls=%d", time.Since(start), calls)
 	}
 	_ = srv.decideCooldownAction(context.Background(), cfg, prepared)
-	second := &fwResult{Status: 500, Body: res.Body}
+	second := &fwResult{Status: 529, Body: res.Body}
 	_ = srv.prepareJevError(context.Background(), cfg, reqCtx, second, input, "")
 	if calls != 1 || second.jevNote != "skipped:budget_exhausted" {
 		t.Fatalf("calls=%d note=%s", calls, second.jevNote)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = srv.prepareJevError(ctx, cfg, &proxyRequestContext{}, &fwResult{Status: 500}, input, "")
+	_ = srv.prepareJevError(ctx, cfg, &proxyRequestContext{}, &fwResult{Status: 529}, input, "")
 	if calls != 1 {
 		t.Fatal("canceled request called TypeSafe")
 	}
@@ -641,7 +647,7 @@ func TestProxyJevAdmissionAndFailureAudits(t *testing.T) {
 	})}
 	cfg := &model.Config{ID: 1}
 	run := func() *fwResult {
-		res := &fwResult{Status: 500, Body: []byte(`{"error":{"message":"unknown"}}`)}
+		res := &fwResult{Status: 529, Body: []byte(`{"error":{"message":"unknown"}}`)}
 		_ = srv.prepareJevError(context.Background(), cfg, &proxyRequestContext{}, res, httpErrorInput(1, 0, res), "")
 		return res
 	}
