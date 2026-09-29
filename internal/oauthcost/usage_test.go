@@ -1,9 +1,63 @@
 package oauthcost
 
 import (
+	"math"
 	"testing"
 	"time"
 )
+
+func TestQuotaWindowDurationBounds(t *testing.T) {
+	t.Parallel()
+	base := &Window{Key: "test|fixed", WindowSeconds: 1, StartedAt: 1, ResetAt: 2}
+	for _, seconds := range []int64{math.MaxInt64/int64(time.Second) + 1, 1 << 55} {
+		window := *base
+		window.WindowSeconds = seconds
+		usage := &Usage{Windows: []*Window{&window}}
+		if err := Validate(usage); err == nil {
+			t.Errorf("Validate accepted window_seconds=%d", seconds)
+		}
+		if got := WindowsAt(usage, time.Unix(100, 0))[0]; got.ResetAt != window.ResetAt || got.StartedAt != window.StartedAt {
+			t.Errorf("WindowsAt advanced invalid window_seconds=%d: %#v", seconds, got)
+		}
+	}
+	valid := *base
+	valid.WindowSeconds = math.MaxInt64 / int64(time.Second)
+	if err := Validate(&Usage{Windows: []*Window{&valid}}); err != nil {
+		t.Fatalf("Validate rejected maximum safe window: %v", err)
+	}
+}
+
+func TestFixedQuotaWindowAdvancesToCurrentPeriod(t *testing.T) {
+	t.Parallel()
+	reset := time.Date(2026, time.September, 1, 0, 0, 1, 0, time.UTC)
+	usage := &Usage{Windows: []*Window{{
+		Key: "test|one_second", WindowSeconds: 1, StartedAt: reset.Add(-time.Second).Unix(), ResetAt: reset.Unix(),
+		CountFromAt: reset.Add(-time.Second).Unix(), SampledUpstreamUsedPercent: float64Pointer(80), Rollback: &Rollback{},
+	}}}
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{"before", reset.Add(-time.Nanosecond)},
+		{"exact", reset},
+		{"subsecond", reset.Add(time.Nanosecond)},
+		{"distant", reset.AddDate(10, 0, 0).Add(500 * time.Millisecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := WindowsAt(usage, tc.at)[0]
+			wantStart := tc.at.Unix()
+			if tc.at.Before(reset) {
+				wantStart = reset.Unix() - 1
+			}
+			if got.StartedAt != wantStart || got.ResetAt != wantStart+1 {
+				t.Fatalf("window at %s = [%d, %d), want [%d, %d)", tc.at, got.StartedAt, got.ResetAt, wantStart, wantStart+1)
+			}
+			if !tc.at.Before(reset) && (got.CountFromAt != 0 || got.SampledUpstreamUsedPercent != nil || !got.LocallyAdvanced || got.Rollback != nil) {
+				t.Fatalf("rolled window retained old-period state: %#v", got)
+			}
+		})
+	}
+}
 
 func TestMonthlyQuotaRolloverClampsToAnchorDay(t *testing.T) {
 	t.Parallel()

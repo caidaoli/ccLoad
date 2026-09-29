@@ -10,6 +10,7 @@ import (
 const (
 	monthlyWindowMinimumSeconds = 28 * 24 * 60 * 60
 	monthlyWindowMaximumSeconds = 31 * 24 * 60 * 60
+	maxWindowSeconds            = math.MaxInt64 / int64(time.Second)
 	// upstreamUsageRollbackEpsilon 是判定上游用量「回退」所需的最小降幅
 	// （绝对百分点，开区间）。上游用量在同一个额度周期内只会单调增加，
 	// 小数级下降一律是采样噪声：Google remaining_fraction 的浮点抖动、
@@ -223,7 +224,7 @@ func Validate(usage *Usage) error {
 		if window == nil {
 			return errors.New("OAuth quota cost window is missing")
 		}
-		if strings.TrimSpace(window.Key) == "" || window.WindowSeconds <= 0 {
+		if strings.TrimSpace(window.Key) == "" || window.WindowSeconds <= 0 || window.WindowSeconds > maxWindowSeconds {
 			return errors.New("OAuth quota cost window identity is invalid")
 		}
 		if _, ok := keys[window.Key]; ok {
@@ -586,23 +587,37 @@ func Reset(current *Usage, resetAt time.Time) *Usage {
 }
 
 func advanceWindow(window *Window, at time.Time) {
-	if window == nil || window.WindowSeconds <= 0 || window.ResetAt <= window.StartedAt {
+	if window == nil || window.WindowSeconds <= 0 || window.WindowSeconds > maxWindowSeconds ||
+		window.ResetAt <= 0 || window.ResetAt <= window.StartedAt {
 		return
 	}
 	resetAt := time.Unix(window.ResetAt, 0).UTC()
-	if isMonthlyWindow(window.WindowSeconds) && window.ResetDay == 0 {
+	monthly := isMonthlyWindow(window.WindowSeconds)
+	if monthly && window.ResetDay == 0 {
 		window.ResetDay = resetAt.Day()
 	}
-	advanced := false
-	for !at.Before(resetAt) {
-		resetAt = periodEnd(window, resetAt)
-		advanced = true
-	}
-	if !advanced {
+	if at.Before(resetAt) {
 		return
 	}
-	window.StartedAt = periodStart(window, resetAt).Unix()
-	window.ResetAt = resetAt.Unix()
+	if !monthly {
+		elapsed := at.Unix() - window.ResetAt
+		startedAt := window.ResetAt + elapsed/window.WindowSeconds*window.WindowSeconds
+		if startedAt > math.MaxInt64-window.WindowSeconds {
+			return
+		}
+		window.StartedAt = startedAt
+		window.ResetAt = startedAt + window.WindowSeconds
+	} else {
+		for !at.Before(resetAt) {
+			next := periodEnd(window, resetAt)
+			if !next.After(resetAt) {
+				return
+			}
+			resetAt = next
+		}
+		window.StartedAt = periodStart(window, resetAt).Unix()
+		window.ResetAt = resetAt.Unix()
+	}
 	if window.CountFromAt < window.StartedAt {
 		window.CountFromAt = 0
 	}
