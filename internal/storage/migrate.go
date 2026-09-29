@@ -364,6 +364,10 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if err := backfillLogsClientProtocol(ctx, db, dialect); err != nil {
 		return fmt.Errorf("backfill logs client_protocol: %w", err)
 	}
+	// 账本基线依赖 channels 与账本表均已迁移完成。
+	if err := backfillOAuthQuotaCostLedger(ctx, db, dialect); err != nil {
+		return fmt.Errorf("backfill OAuth quota cost ledger: %w", err)
+	}
 
 	// 初始化默认配置
 	if err := initDefaultSettings(ctx, db, dialect); err != nil {

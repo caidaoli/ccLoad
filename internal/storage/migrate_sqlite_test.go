@@ -6,14 +6,19 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage/schema"
 	sqlstore "ccLoad/internal/storage/sql"
 
+	"github.com/tidwall/sjson"
 	_ "modernc.org/sqlite"
 )
 
@@ -26,6 +31,167 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// TestMigrate_SQLite_BackfillsOAuthQuotaLedgerWithLegacyBaseline 走真实的重开库迁移路径。
+func TestMigrate_SQLite_BackfillsOAuthQuotaLedgerWithLegacyBaseline(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	store, err := createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	credentialJSON, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: now.Add(time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{
+			{Key: "codex|primary", WindowSeconds: 5 * 60 * 60,
+				StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(4 * time.Hour).Unix()},
+			{Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
+				StartedAt: now.Add(-3 * 24 * time.Hour).Unix(), ResetAt: now.Add(4 * 24 * time.Hour).Unix()},
+			{Key: "codex-spark|secondary", Family: oauthcost.FamilySpark, WindowSeconds: 7 * 24 * 60 * 60,
+				StartedAt: now.Add(-7*24*time.Hour - time.Hour).Unix(), ResetAt: now.Add(-time.Hour).Unix()},
+		}},
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, legacy := range []int64{100_000, 5_000_000, 9_000_000} {
+		credentialJSON, err = sjson.Set(credentialJSON, fmt.Sprintf("quota_cost_usage.windows.%d.standard_cost_microusd", i), legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "ledger-backfill", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := store.CreateConfig(ctx, &model.Config{
+		Name: "corrupt-ledger-backfill", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExecContext(ctx, "UPDATE channels SET oauth_credential = ? WHERE id = ?", "{broken", corrupt.ID); err != nil {
+		t.Fatal(err)
+	}
+	oversized, err := store.CreateConfig(ctx, &model.Config{
+		Name: "oversized-ledger-backfill", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversizedJSON := credentialJSON
+	for path, value := range map[string]int64{
+		"quota_cost_usage.windows.0.window_seconds": 1 << 55,
+		"quota_cost_usage.windows.0.started_at":     1,
+		"quota_cost_usage.windows.0.reset_at":       2,
+	} {
+		oversizedJSON, err = sjson.Set(oversizedJSON, path, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !json.Valid([]byte(oversizedJSON)) {
+		t.Fatal("oversized fixture is not valid JSON")
+	}
+	if _, err := store.ExecContext(ctx, "UPDATE channels SET oauth_credential = ? WHERE id = ?", oversizedJSON, oversized.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct {
+		at   time.Time
+		cost float64
+	}{
+		{now.Add(-2 * 24 * time.Hour), 1.5},
+		{now.Add(-30 * time.Minute), 0.5},
+	} {
+		if err := store.AddLog(ctx, &model.LogEntry{
+			Time: model.JSONTime{Time: entry.at}, ChannelID: created.ID, Model: "gpt-5.6-sol",
+			StatusCode: 200, Cost: entry.cost, CostMultiplier: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CleanupLogsBefore(ctx, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", oauthQuotaCostLedgerMigrationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopen := func() *sqlstore.SQLStore {
+		t.Helper()
+		reopened, openErr := createSQLiteStore(path)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		t.Cleanup(func() { _ = reopened.Close() })
+		return reopened
+	}
+	assertCosts := func(s *sqlstore.SQLStore) {
+		t.Helper()
+		cfg, getErr := s.GetConfig(ctx, created.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		credential, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		views, viewErr := s.OAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{
+			created.ID: oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
+		}, now.Add(time.Second))
+		if viewErr != nil {
+			t.Fatal(viewErr)
+		}
+		view := views[created.ID]
+		for key, want := range map[string]int64{
+			"codex|primary":         500_000,
+			"codex|secondary":       5_000_000,
+			"codex-spark|secondary": 0,
+		} {
+			window := view.FindWindow(key)
+			if window == nil || window.StandardCostMicroUSD != want {
+				t.Fatalf("%s cost = %#v, want %d (view %#v)", key, window, want, view)
+			}
+		}
+	}
+
+	// 旧窗口时长若溢出 Duration，启动迁移曾在推进窗口时无限循环。
+	type openResult struct {
+		store *sqlstore.SQLStore
+		err   error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		s, openErr := createSQLiteStore(path)
+		opened <- openResult{store: s, err: openErr}
+	}()
+	var migrated *sqlstore.SQLStore
+	select {
+	case result := <-opened:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		migrated = result.store
+		t.Cleanup(func() { _ = migrated.Close() })
+	case <-time.After(10 * time.Second):
+		t.Fatal("SQLite migration hung on an oversized legacy window")
+	}
+	assertCosts(migrated)
+	if err := migrated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertCosts(reopen())
 }
 
 func TestMigrateDailyChannelChecks(t *testing.T) {
