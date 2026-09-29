@@ -88,63 +88,105 @@ func TestInvalidateChannelListCacheKeepsLearnedProtocols(t *testing.T) {
 	}
 }
 
-func TestHandleUpdateChannelClearsOnlyUpdatedChannelProtocolCapabilities(t *testing.T) {
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
+func TestHandleUpdateChannelClearsProtocolCapabilitiesOnlyForRelevantChanges(t *testing.T) {
+	tests := []struct {
+		name      string
+		patch     func(payload map[string]any, cfg *model.Config)
+		wantClear bool
+	}{
+		{
+			name: "name priority limits and models keep cache",
+			patch: func(payload map[string]any, _ *model.Config) {
+				payload["name"] = "capability-renamed"
+				payload["priority"] = 20
+				payload["rpm_limit"] = 30
+				payload["models"] = []map[string]any{{"model": "model-a"}, {"model": "model-b", "redirect_model": "model-a"}}
+			},
+		},
+		{
+			name: "transform mode clears",
+			patch: func(payload map[string]any, _ *model.Config) {
+				payload["protocol_transform_mode"] = model.ProtocolTransformModeLocal
+			},
+			wantClear: true,
+		},
+		{
+			name: "declared URL protocol clears",
+			patch: func(payload map[string]any, cfg *model.Config) {
+				payload["urls"] = []map[string]any{{"url": cfg.URLs[0].URL, "protocols": []string{"codex"}}}
+			},
+			wantClear: true,
+		},
+		{
+			name: "api key clears",
+			patch: func(payload map[string]any, _ *model.Config) {
+				payload["api_key"] = "sk-capability-rotated"
+			},
+			wantClear: true,
+		},
+	}
 
-	ctx := context.Background()
-	createChannel := func(name string) *model.Config {
-		t.Helper()
-		created, err := store.CreateConfig(ctx, &model.Config{
-			Name:         name,
-			URLs:         model.ChannelURLs{{URL: "https://" + name + ".example.com"}},
-			Priority:     10,
-			Enabled:      true,
-			ModelEntries: []model.ModelEntry{{Model: "model-a"}},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+
+			ctx := context.Background()
+			createChannel := func(name string) *model.Config {
+				t.Helper()
+				created, err := store.CreateConfig(ctx, &model.Config{
+					Name:         name,
+					URLs:         model.ChannelURLs{{URL: "https://" + name + ".example.com"}},
+					Priority:     10,
+					Enabled:      true,
+					ModelEntries: []model.ModelEntry{{Model: "model-a"}},
+				})
+				if err != nil {
+					t.Fatalf("创建测试渠道失败: %v", err)
+				}
+				if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+					ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-" + name, KeyStrategy: model.KeyStrategySequential,
+				}}); err != nil {
+					t.Fatalf("创建测试 API Key 失败: %v", err)
+				}
+				return created
+			}
+			updated := createChannel("capability-updated")
+			untouched := createChannel("capability-untouched")
+			keyFor := func(cfg *model.Config) protocolCapabilityKey {
+				return protocolCapabilityKey{
+					channelID: cfg.ID, baseURL: cfg.URLs[0].URL,
+					clientProtocol: protocol.OpenAI, requestFamily: protocol.RequestFamilyChatCompletions,
+					upstreamModel: "model-a",
+				}
+			}
+			server.protocolCapabilities.set(keyFor(updated), protocol.Anthropic)
+			server.protocolCapabilities.set(keyFor(untouched), protocol.Codex)
+
+			payload := map[string]any{
+				"name":     updated.Name,
+				"api_key":  "sk-" + updated.Name,
+				"urls":     []map[string]any{{"url": updated.URLs[0].URL}},
+				"priority": 10,
+				"models":   []map[string]any{{"model": "model-a"}},
+				"enabled":  true,
+			}
+			tt.patch(payload, updated)
+			id := strconv.FormatInt(updated.ID, 10)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+id, payload))
+			c.Params = gin.Params{{Key: "id", Value: id}}
+			server.handleUpdateChannel(c, updated.ID)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+
+			_, known := server.protocolCapabilities.get(keyFor(updated))
+			if known == tt.wantClear {
+				t.Fatalf("updated channel capability known=%v, want cleared=%v", known, tt.wantClear)
+			}
+			if got, known := server.protocolCapabilities.get(keyFor(untouched)); !known || got != protocol.Codex {
+				t.Fatalf("untouched channel capability=%q known=%v, want codex", got, known)
+			}
 		})
-		if err != nil {
-			t.Fatalf("创建测试渠道失败: %v", err)
-		}
-		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-			ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-" + name, KeyStrategy: model.KeyStrategySequential,
-		}}); err != nil {
-			t.Fatalf("创建测试 API Key 失败: %v", err)
-		}
-		return created
-	}
-	updated := createChannel("capability-updated")
-	untouched := createChannel("capability-untouched")
-	keyFor := func(cfg *model.Config) protocolCapabilityKey {
-		return protocolCapabilityKey{
-			channelID: cfg.ID, baseURL: cfg.URLs[0].URL,
-			clientProtocol: protocol.OpenAI, requestFamily: protocol.RequestFamilyChatCompletions,
-			upstreamModel: "model-a",
-		}
-	}
-	server.protocolCapabilities.set(keyFor(updated), protocol.Anthropic)
-	server.protocolCapabilities.set(keyFor(untouched), protocol.Codex)
-
-	payload := map[string]any{
-		"name":                    updated.Name,
-		"api_key":                 "sk-" + updated.Name,
-		"urls":                    []map[string]any{{"url": updated.URLs[0].URL}},
-		"priority":                10,
-		"protocol_transform_mode": model.ProtocolTransformModeLocal,
-		"models":                  []map[string]any{{"model": "model-a"}},
-		"enabled":                 true,
-	}
-	id := strconv.FormatInt(updated.ID, 10)
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+id, payload))
-	c.Params = gin.Params{{Key: "id", Value: id}}
-	server.handleUpdateChannel(c, updated.ID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-
-	if _, known := server.protocolCapabilities.get(keyFor(updated)); known {
-		t.Fatal("updated channel kept its learned protocol after config change")
-	}
-	if got, known := server.protocolCapabilities.get(keyFor(untouched)); !known || got != protocol.Codex {
-		t.Fatalf("untouched channel capability=%q known=%v, want codex", got, known)
 	}
 }

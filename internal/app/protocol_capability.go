@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -285,6 +286,43 @@ func (c *protocolCapabilityCache) unsupportedRetrySummaries(now time.Time) map[i
 		summaries[key.channelID] = summary
 	}
 	return summaries
+}
+
+// protocolCapabilityConfigChanged 判断渠道更新是否可能改变已学习的上游协议能力。
+// 只排除明确与协议无关的字段；其余字段（含日后新增字段）一律视为相关，宁可多探测
+// 一次也不保留过期结果。模型行不参与比较：缓存本就按上游模型区分。
+func protocolCapabilityConfigChanged(before, after *model.Config) bool {
+	return !reflect.DeepEqual(protocolCapabilityRelevantConfig(before), protocolCapabilityRelevantConfig(after))
+}
+
+func protocolCapabilityRelevantConfig(cfg *model.Config) *model.Config {
+	relevant := cfg.Clone()
+	if relevant == nil {
+		return nil
+	}
+	relevant.Name = ""
+	relevant.Priority = 0
+	relevant.RPMLimit = 0
+	relevant.MaxConcurrency = 0
+	relevant.Enabled = false
+	relevant.ScheduledCheckEnabled = false
+	relevant.ScheduledCheckModel = ""
+	relevant.ScheduledCheckIntervalMinutes = 0
+	relevant.ScheduledCheckStartTime = ""
+	relevant.ModelEntries = nil
+	relevant.CooldownUntil = 0
+	relevant.CooldownDurationMs = 0
+	relevant.DailyCostLimit = 0
+	relevant.CostMultiplier = 0
+	// 协议能力判定先于冷却分类，冷却探测规则不影响学习结果。
+	relevant.CooldownDetectionRules = nil
+	relevant.AvailableTimeStart = ""
+	relevant.AvailableTimeEnd = ""
+	relevant.RetryOtherKeysOnFailure = false
+	relevant.CreatedAt = model.JSONTime{}
+	relevant.UpdatedAt = model.JSONTime{}
+	relevant.KeyCount = 0
+	return relevant
 }
 
 // clearChannels 只丢弃指定渠道的学习结果。OAuth 刷新、额度元数据等运行时写库

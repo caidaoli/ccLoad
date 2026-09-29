@@ -1539,10 +1539,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		reflect.DeepEqual(before, after)
 	if !priorityOnly {
 		s.clearAllChannelCooldowns(c.Request.Context(), id)
-		// URL、协议声明、转换模式或 Key 可能已变化，只重新探测本渠道。
-		s.protocolCapabilities.clearChannels(id)
 	} else {
 		s.InvalidateAPIKeysCache(id)
+	}
+	if keyChanged || protocolCapabilityConfigChanged(existing, upd) {
+		// URL、协议声明、转换模式或 Key 等可能已变化，只重新探测本渠道。
+		s.protocolCapabilities.clearChannels(id)
 	}
 
 	// 渠道更新后刷新缓存，确保选择器立即生效
