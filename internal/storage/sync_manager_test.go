@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,6 +21,33 @@ func createTestStoreForSync(t *testing.T, suffix string) *sqlstore.SQLStore {
 		t.Fatalf("创建测试存储失败: %v", err)
 	}
 	return store.(*sqlstore.SQLStore)
+}
+
+func TestSyncManager_RestoreOnStartup_RestoresOAuthQuotaLedger(t *testing.T) {
+	source := createTestStoreForSync(t, "ledger_source")
+	target := createTestStoreForSync(t, "ledger_target")
+	defer func() { _ = source.Close(); _ = target.Close() }()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	channelID := createCodexQuotaChannel(t, source, now)
+	if err := source.AddLog(ctx, &model.LogEntry{
+		Time: model.JSONTime{Time: now.Add(-time.Hour)}, ChannelID: channelID, Model: "gpt-5.6-sol",
+		StatusCode: 200, Cost: 2, CostMultiplier: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.ExecContext(ctx,
+		`INSERT INTO oauth_quota_cost_ledger (channel_id, bucket_at, model, window_key, cost_microusd) VALUES (?, ?, ?, '', ?)`,
+		99, now.Add(-24*time.Hour).Unix(), "stale", 7_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := allLedgerRows(t, source)
+	if got := allLedgerRows(t, target); len(want) != 1 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored ledger = %#v, want %#v", got, want)
+	}
 }
 
 func TestSyncManager_RestoreOnStartup_EmptyMySQL(t *testing.T) {

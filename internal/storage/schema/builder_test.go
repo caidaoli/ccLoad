@@ -72,3 +72,18 @@ func TestDefineChannelsTable_MySQLOAuthCredentialIsNullableWithoutDefault(t *tes
 		t.Fatalf("BuildMySQL constrains optional OAuth credential, got:\n%s", ddl)
 	}
 }
+
+func TestDefineOAuthQuotaCostLedgerTable_BinaryMySQLKeys(t *testing.T) {
+	table := DefineOAuthQuotaCostLedgerTable()
+	mysql := table.BuildMySQL()
+	for _, column := range []string{"model VARCHAR(191)", "window_key VARCHAR(128)"} {
+		if !strings.Contains(mysql, column+" CHARACTER SET utf8mb4 COLLATE utf8mb4_bin") {
+			t.Fatalf("MySQL ledger key %s lacks binary collation: %s", column, mysql)
+		}
+	}
+	for _, ddl := range []string{table.BuildSQLite(), table.BuildPostgres()} {
+		if strings.Contains(ddl, "utf8mb4") || strings.Contains(ddl, "COLLATE") {
+			t.Fatalf("non-MySQL ledger DDL contains MySQL collation: %s", ddl)
+		}
+	}
+}

@@ -79,7 +79,7 @@ func (b *TableBuilder) BuildSQLite() string {
 
 // mysqlToSQLite 类型转换（MySQL → SQLite）
 func mysqlToSQLite(mysqlCol string) string {
-	col := mysqlCol
+	col := strings.ReplaceAll(mysqlCol, " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", "")
 
 	// 特殊模式先处理（避免部分匹配）
 	col = strings.ReplaceAll(col, "INT PRIMARY KEY AUTO_INCREMENT", "INTEGER PRIMARY KEY AUTOINCREMENT")
@@ -118,6 +118,7 @@ func (b *TableBuilder) BuildPostgres() string {
 // mysqlToPostgres 类型转换（MySQL → PostgreSQL）
 func mysqlToPostgres(mysqlCol string) string {
 	col := strings.TrimSpace(mysqlCol)
+	col = strings.ReplaceAll(col, " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", "")
 
 	// 行内 UNIQUE KEY 定义 → 表级 UNIQUE 约束
 	if strings.HasPrefix(strings.ToUpper(col), "UNIQUE KEY") {

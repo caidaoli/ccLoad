@@ -20,6 +20,34 @@ import (
 
 const oauthQuotaCostLedgerMigrationVersion = "v7_oauth_quota_cost_ledger"
 
+// ensureOAuthQuotaLedgerBinaryKeys 让 MySQL 账本主键与 SQLite 的区分大小写语义一致。
+// DDL 在 v7 回填事务之前执行；仅旧表列排序规则不匹配时改表。
+func ensureOAuthQuotaLedgerBinaryKeys(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect != DialectMySQL {
+		return nil
+	}
+	var total, binaryKeys int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(CASE WHEN CHARACTER_SET_NAME = 'utf8mb4' AND COLLATION_NAME = 'utf8mb4_bin' THEN 1 ELSE 0 END), 0)
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'oauth_quota_cost_ledger' AND COLUMN_NAME IN ('model', 'window_key')
+	`).Scan(&total, &binaryKeys); err != nil {
+		return fmt.Errorf("query OAuth quota ledger key collations: %w", err)
+	}
+	if total != 2 {
+		return fmt.Errorf("OAuth quota ledger key columns: got %d, want 2", total)
+	}
+	if binaryKeys == 2 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE oauth_quota_cost_ledger
+		MODIFY COLUMN model VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+		MODIFY COLUMN window_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("modify OAuth quota ledger key collations: %w", err)
+	}
+	return nil
+}
+
 // 每行 5 个参数；150 行低于旧版 SQLite 的 999 参数上限。
 const oauthQuotaLedgerBaselineChunkSize = 150
 

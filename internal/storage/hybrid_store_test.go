@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,6 +40,38 @@ func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool
 	if !condition() {
 		t.Fatal("等待条件超时")
 	}
+}
+
+func createCodexQuotaChannel(t *testing.T, store Store, now time.Time) int64 {
+	t.Helper()
+	credentialJSON, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: now.Add(time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
+			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+		}}},
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "oauth-ledger", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created.ID
+}
+
+func allLedgerRows(t *testing.T, store *sqlstore.SQLStore) []sqlstore.OAuthQuotaLedgerReplicaRow {
+	t.Helper()
+	rows, err := store.ListOAuthQuotaLedgerRangeReplica(context.Background(), 0, math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 func TestHybridStore_SQLiteSuccessDoesNotWaitForPrimary(t *testing.T) {
@@ -240,6 +274,9 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 		t.Fatalf("quota window reconciliation = %t, %+v, %v", updated, costs, err)
 	}
 	waitForCondition(t, 3*time.Second, func() bool {
+		if cost, ok := readCost(primary); !ok || cost != 2_250_000 {
+			return false
+		}
 		cfg, getErr := primary.GetConfig(ctx, created.ID)
 		if getErr != nil {
 			return false
@@ -251,6 +288,82 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 		logs, listErr := primary.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
 		return listErr == nil && len(logs) == 1
 	})
+}
+
+func TestHybridStore_FullReconcileMirrorsOAuthQuotaLedger(t *testing.T) {
+	ctx := context.Background()
+	sqlite := createTestSQLiteStore(t)
+	primary := createTestSQLiteStore(t)
+	release := make(chan struct{})
+	hybrid := newHybridStore(sqlite, primary, func(initCtx context.Context) error {
+		select {
+		case <-release:
+			return nil
+		case <-initCtx.Done():
+			return initCtx.Err()
+		}
+	})
+	hybrid.primarySync.configureReconcile(1, hybrid.reconcilePrimary, hybrid.markPrimaryReconcileDirty)
+	t.Cleanup(func() { _ = hybrid.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	channelID := createCodexQuotaChannel(t, hybrid, now)
+	if _, err := primary.ExecContext(ctx,
+		`INSERT INTO oauth_quota_cost_ledger (channel_id, bucket_at, model, window_key, cost_microusd) VALUES (?, ?, ?, '', ?)`,
+		channelID, now.Add(-30*24*time.Hour).Unix(), "gpt-5.6-sol", 3_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := hybrid.AddLog(ctx, &model.LogEntry{
+		Time: model.JSONTime{Time: now.Add(-2 * time.Hour)}, ChannelID: channelID, Model: "gpt-5.6-sol",
+		StatusCode: 200, Cost: 1.25, CostMultiplier: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := allLedgerRows(t, sqlite)
+	if len(want) != 1 || want[0].CostMicroUSD != 1_250_000 {
+		t.Fatalf("SQLite ledger = %#v", want)
+	}
+	close(release)
+	waitForCondition(t, 5*time.Second, func() bool {
+		return reflect.DeepEqual(allLedgerRows(t, primary), want) && hybrid.RuntimeMetrics().PrimarySyncPending == 0
+	})
+}
+
+func TestHybridStore_OAuthQuotaLedgerEqualDespiteSQLCollationOrder(t *testing.T) {
+	ctx := context.Background()
+	sqlite := createTestSQLiteStore(t)
+	primary := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+
+	// 模拟主库排序规则：两行主键仍不同，但 ORDER BY 与 SQLite 的字节序相反。
+	if _, err := primary.ExecContext(ctx, `DROP TABLE oauth_quota_cost_ledger`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.ExecContext(ctx, `CREATE TABLE oauth_quota_cost_ledger (
+		channel_id INTEGER NOT NULL, bucket_at INTEGER NOT NULL,
+		model TEXT COLLATE NOCASE NOT NULL, window_key TEXT NOT NULL DEFAULT '', cost_microusd INTEGER NOT NULL,
+		PRIMARY KEY (channel_id, bucket_at, model, window_key))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, store := range []*sqlstore.SQLStore{sqlite, primary} {
+		for _, modelName := range []string{"B", "a"} {
+			if _, err := store.ExecContext(ctx, `INSERT INTO oauth_quota_cost_ledger
+				(channel_id, bucket_at, model, window_key, cost_microusd) VALUES (1, 100, ?, '', 1)`, modelName); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if reflect.DeepEqual(allLedgerRows(t, sqlite), allLedgerRows(t, primary)) {
+		t.Fatal("test setup did not produce different SQL order")
+	}
+	if _, err := primary.ExecContext(ctx, `CREATE TRIGGER prevent_ledger_rewrite BEFORE DELETE ON oauth_quota_cost_ledger
+		BEGIN SELECT RAISE(ABORT, 'unexpected ledger rewrite'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := hybrid.copyOAuthQuotaLedgerRange(ctx, 0, 101); err != nil {
+		t.Fatalf("identical ledger rows were rewritten: %v", err)
+	}
 }
 
 func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {

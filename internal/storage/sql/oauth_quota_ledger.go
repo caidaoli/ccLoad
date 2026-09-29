@@ -213,6 +213,58 @@ func (s *SQLStore) ListOAuthQuotaLedgerReplica(ctx context.Context, channelID, f
 	return result, nil
 }
 
+// OAuthQuotaLedgerReplicaRow 是跨渠道复制时的账本行。
+type OAuthQuotaLedgerReplicaRow struct {
+	ChannelID int64
+	OAuthQuotaLedgerRow
+}
+
+// ListOAuthQuotaLedgerRangeReplica 读取所有渠道在 [from, until) 秒内的账本行，按主键排序。
+func (s *SQLStore) ListOAuthQuotaLedgerRangeReplica(ctx context.Context, from, until int64) ([]OAuthQuotaLedgerReplicaRow, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT channel_id, bucket_at, model, window_key, cost_microusd FROM oauth_quota_cost_ledger
+		WHERE bucket_at >= ? AND bucket_at < ? ORDER BY channel_id, bucket_at, model, window_key`), from, until)
+	if err != nil {
+		return nil, fmt.Errorf("list OAuth quota ledger range: %w", err)
+	}
+	var result []OAuthQuotaLedgerReplicaRow
+	for rows.Next() {
+		var row OAuthQuotaLedgerReplicaRow
+		if err := rows.Scan(&row.ChannelID, &row.BucketAt, &row.Model, &row.WindowKey, &row.CostMicroUSD); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan OAuth quota ledger range: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("read OAuth quota ledger range: %w", err)
+	}
+	return result, nil
+}
+
+// ReplaceOAuthQuotaLedgerRangeReplica 用 rows 原子替换所有渠道在 [from, until) 秒内的账本行。
+// rows 必须来自权威库的同一区间（主键唯一）；重复执行结果相同。
+func (s *SQLStore) ReplaceOAuthQuotaLedgerRangeReplica(ctx context.Context, from, until int64, rows []OAuthQuotaLedgerReplicaRow) error {
+	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM oauth_quota_cost_ledger WHERE bucket_at >= ? AND bucket_at < ?`, from, until); err != nil {
+			return fmt.Errorf("clear OAuth quota ledger range: %w", err)
+		}
+		for start := 0; start < len(rows); start += oauthQuotaLedgerChunkSize {
+			chunk := rows[start:min(start+oauthQuotaLedgerChunkSize, len(rows))]
+			values := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)*5)
+			for i, row := range chunk {
+				values[i] = "(?, ?, ?, ?, ?)"
+				args = append(args, row.ChannelID, row.BucketAt, row.Model, row.WindowKey, row.CostMicroUSD)
+			}
+			if _, err := s.execTx(ctx, tx, `INSERT INTO oauth_quota_cost_ledger (channel_id, bucket_at, model, window_key, cost_microusd) VALUES `+
+				strings.Join(values, ", "), args...); err != nil {
+				return fmt.Errorf("insert OAuth quota ledger range: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
 // CleanupOAuthQuotaLedgerBefore 删除早于 cutoff 所在秒的账本行。
 func (s *SQLStore) CleanupOAuthQuotaLedgerBefore(ctx context.Context, cutoff time.Time) error {
 	if _, err := s.db.ExecContext(ctx, s.q(`DELETE FROM oauth_quota_cost_ledger WHERE bucket_at < ?`), cutoff.Unix()); err != nil {

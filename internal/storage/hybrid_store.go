@@ -681,6 +681,7 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		h.markChannelDirty(channelID, false)
 	}
 	h.oauthCredentialMu.Unlock()
+	h.enqueueOAuthQuotaLedgerSlices(effects.LedgerSlices)
 	entry := cloneLogEntryForSync(e)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
 		return h.primary.AddLogReplica(syncCtx, entry)
@@ -705,6 +706,7 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 		h.markChannelDirty(channelID, false)
 	}
 	h.oauthCredentialMu.Unlock()
+	h.enqueueOAuthQuotaLedgerSlices(effects.LedgerSlices)
 	entries := cloneLogEntriesForSync(logs)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
 		return h.primary.BatchAddLogsReplica(syncCtx, entries)

@@ -147,6 +147,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if _, err := db.ExecContext(ctx, buildDDL(tb, dialect)); err != nil {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
 		}
+		if tb.Name() == "oauth_quota_cost_ledger" {
+			if err := ensureOAuthQuotaLedgerBinaryKeys(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate OAuth quota ledger key collation: %w", err)
+			}
+		}
 		if tb.Name() == "debug_logs" {
 			if err := ensureDebugLogsProtocolMetadata(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate debug_logs protocol metadata: %w", err)

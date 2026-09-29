@@ -44,6 +44,7 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	start := time.Now()
 
 	// 第一步：恢复配置表（快速，<1 秒）
+	// oauth_quota_cost_ledger 与日志保留期无关，必须随配置表完整恢复，不能依赖 logDays。
 	configTables := []string{
 		"system_settings",
 		"channels",
@@ -52,6 +53,7 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 		"channel_url_states",
 		"api_keys",
 		"auth_tokens",
+		"oauth_quota_cost_ledger",
 	}
 
 	// TiDB 不实现 MySQL 的 READ ONLY 事务选项；恢复代码本身只发 SELECT，

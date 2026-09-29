@@ -5,8 +5,8 @@ func DefineOAuthQuotaCostLedgerTable() *TableBuilder {
 	return NewTable("oauth_quota_cost_ledger").
 		Column("channel_id INT NOT NULL").
 		Column("bucket_at BIGINT NOT NULL").
-		Column("model VARCHAR(191) NOT NULL").
-		Column("window_key VARCHAR(128) NOT NULL DEFAULT ''").
+		Column("model VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL").
+		Column("window_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''").
 		Column("cost_microusd BIGINT NOT NULL").
 		Column("PRIMARY KEY (channel_id, bucket_at, model, window_key)").
 		Index("idx_oauth_quota_cost_ledger_bucket", "bucket_at")

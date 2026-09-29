@@ -10,6 +10,7 @@ const primaryReconcilePageSize = 25
 const (
 	reconcileLocalChannels = iota
 	reconcilePrimaryChannels
+	reconcileOAuthQuotaLedger
 	reconcileLocalAuthTokens
 	reconcilePrimaryAuthTokens
 	reconcileSettings
@@ -109,6 +110,13 @@ func (h *HybridStore) reconcilePrimaryPage(ctx context.Context) (bool, error) {
 			}
 		}
 		lastID, pageDone = lastReplicaID(ids, afterID), len(ids) < primaryReconcilePageSize
+
+	case reconcileOAuthQuotaLedger:
+		next, done, err := h.reconcileOAuthQuotaLedgerPage(ctx, afterID)
+		if err != nil {
+			return false, err
+		}
+		lastID, pageDone = next, done
 
 	case reconcileLocalAuthTokens:
 		ids, err := h.sqlite.ListReplicaIDsPage(ctx, "auth_tokens", afterID, primaryReconcilePageSize)
