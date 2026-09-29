@@ -262,82 +262,100 @@ func (s *SQLStore) ledgerSumType() string {
 }
 
 // OAuthQuotaCostViews 返回各渠道在 at 时刻按账本计费的窗口视图。
-// 每个渠道只查一次所有窗口的并集区间，在 Go 侧按窗口分配成本。
+// 每个渠道只扫描一次所有窗口计数区间的并集：按区间端点切成基本分段在 SQL 端聚合，
+// 每个窗口恰好覆盖若干连续分段，返回行数只取决于分段与模型数，与流量无关。
 func (s *SQLStore) OAuthQuotaCostViews(ctx context.Context, usages map[int64]*oauthcost.Usage, at time.Time) (map[int64]*oauthcost.CostView, error) {
-	type channelWindows struct {
+	type channelSegments struct {
 		id      int64
 		windows []*oauthcost.Window
-		from    int64
-		until   int64
+		bounds  []int64 // 非空计数区间的端点，去重升序；分段 i 为 [bounds[i], bounds[i+1])
 	}
-	channels := make([]channelWindows, 0, len(usages))
+	views := make(map[int64]*oauthcost.CostView, len(usages))
+	channels := make([]channelSegments, 0, len(usages))
 	for id, usage := range usages {
 		if usage == nil {
 			continue
 		}
 		windows := oauthcost.WindowsAt(usage, at)
-		if len(windows) == 0 {
+		bounds := oauthQuotaLedgerSegmentBounds(windows)
+		if len(bounds) < 2 {
+			views[id] = oauthcost.NewCostView(usage, windows, nil)
 			continue
 		}
-		var from, until int64
-		for _, w := range windows {
-			cr := oauthcost.CountedRange(w)
-			if cr.From >= cr.Until {
-				continue
-			}
-			if from == 0 || cr.From < from {
-				from = cr.From
-			}
-			if cr.Until > until {
-				until = cr.Until
-			}
-		}
-		if from >= until {
-			continue
-		}
-		channels = append(channels, channelWindows{id: id, windows: windows, from: from, until: until})
+		channels = append(channels, channelSegments{id: id, windows: windows, bounds: bounds})
 	}
 	sort.Slice(channels, func(i, j int) bool { return channels[i].id < channels[j].id })
 
-	views := make(map[int64]*oauthcost.CostView, len(channels))
 	sumType := s.ledgerSumType()
 	for start := 0; start < len(channels); start += oauthQuotaLedgerSumChunkSize {
 		chunk := channels[start:min(start+oauthQuotaLedgerSumChunkSize, len(channels))]
 		parts := make([]string, len(chunk))
-		args := make([]any, 0, len(chunk)*3)
+		var args []any
 		for i, ch := range chunk {
-			parts[i] = fmt.Sprintf(`SELECT %d AS idx, bucket_at, model, window_key, CAST(cost_microusd AS %s) AS cost
-				FROM oauth_quota_cost_ledger WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ?`, i, sumType)
-			args = append(args, ch.id, ch.from, ch.until)
+			// WHERE 保证 bucket_at < 末端点，CASE 必然命中某个分段。
+			var seg strings.Builder
+			seg.WriteString("CASE")
+			for j, bound := range ch.bounds[1:] {
+				fmt.Fprintf(&seg, " WHEN bucket_at < ? THEN %d", j)
+				args = append(args, bound)
+			}
+			seg.WriteString(" END")
+			parts[i] = fmt.Sprintf(`SELECT %d AS idx, %s AS seg, model, window_key, CAST(SUM(cost_microusd) AS %s) AS cost
+				FROM oauth_quota_cost_ledger WHERE channel_id = ? AND bucket_at >= ? AND bucket_at < ?
+				GROUP BY seg, model, window_key`, i, seg.String(), sumType)
+			args = append(args, ch.id, ch.bounds[0], ch.bounds[len(ch.bounds)-1])
 		}
 		rows, err := s.queryWith(ctx, s.db, strings.Join(parts, " UNION ALL "), args...)
 		if err != nil {
 			return nil, fmt.Errorf("sum OAuth quota ledger: %w", err)
 		}
-		rowsByIdx := make(map[int][]oauthcost.LedgerRow)
+		totals := make([][][]oauthcost.LedgerTotal, len(chunk))
+		for i, ch := range chunk {
+			totals[i] = make([][]oauthcost.LedgerTotal, len(ch.windows))
+		}
 		for rows.Next() {
-			var idx int
-			var row oauthcost.LedgerRow
-			if err := rows.Scan(&idx, &row.BucketAt, &row.Model, &row.WindowKey, &row.CostMicroUSD); err != nil {
+			var idx, seg int
+			var total oauthcost.LedgerTotal
+			if err := rows.Scan(&idx, &seg, &total.Model, &total.WindowKey, &total.CostMicroUSD); err != nil {
 				_ = rows.Close()
-				return nil, fmt.Errorf("scan OAuth quota ledger: %w", err)
+				return nil, fmt.Errorf("scan OAuth quota ledger sum: %w", err)
 			}
-			rowsByIdx[idx] = append(rowsByIdx[idx], row)
+			if idx < 0 || idx >= len(chunk) || seg < 0 || seg >= len(chunk[idx].bounds)-1 {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan OAuth quota ledger sum: segment %d/%d out of bounds", idx, seg)
+			}
+			ch := chunk[idx]
+			for w, window := range ch.windows {
+				counted := oauthcost.CountedRange(window)
+				if ch.bounds[seg] >= counted.From && ch.bounds[seg+1] <= counted.Until {
+					totals[idx][w] = append(totals[idx][w], total)
+				}
+			}
 		}
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, fmt.Errorf("read OAuth quota ledger: %w", err)
+			return nil, fmt.Errorf("read OAuth quota ledger sum: %w", err)
 		}
 		for i, ch := range chunk {
-			views[ch.id] = oauthcost.CostViewFromUnion(usages[ch.id], ch.windows, rowsByIdx[i])
-		}
-	}
-	// 没有窗口的渠道仍需返回一个空视图。
-	for id, usage := range usages {
-		if usage != nil {
-			if _, ok := views[id]; !ok {
-				views[id] = oauthcost.CostViewFromUnion(usage, nil, nil)
-			}
+			views[ch.id] = oauthcost.NewCostView(usages[ch.id], ch.windows, totals[i])
 		}
 	}
 	return views, nil
+}
+
+// oauthQuotaLedgerSegmentBounds 返回所有非空计数区间的端点（去重升序）。
+func oauthQuotaLedgerSegmentBounds(windows []*oauthcost.Window) []int64 {
+	var bounds []int64
+	for _, window := range windows {
+		if counted := oauthcost.CountedRange(window); counted.From < counted.Until {
+			bounds = append(bounds, counted.From, counted.Until)
+		}
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bounds[i] < bounds[j] })
+	unique := bounds[:0]
+	for _, bound := range bounds {
+		if len(unique) == 0 || unique[len(unique)-1] != bound {
+			unique = append(unique, bound)
+		}
+	}
+	return unique
 }

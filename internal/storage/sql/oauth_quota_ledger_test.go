@@ -214,6 +214,52 @@ func TestOAuthQuotaLedger_ViewSumsWithinSecondBoundariesAndIgnoresLegacyCost(t *
 	}
 }
 
+func TestOAuthQuotaLedger_ViewSplitsSharedScanByWindowRange(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "oauth-quota-ledger-segments.db")
+	ctx := context.Background()
+	base := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
+	n := base.Unix()
+	nested := createOAuthLedgerChannel(t, ctx, store, "ledger-nested", model.AuthTypeCodexOAuth, base)
+	empty := createOAuthLedgerChannel(t, ctx, store, "ledger-empty", model.AuthTypeCodexOAuth, base)
+	logAt := func(channelID int64, offset time.Duration, modelName string, cost float64) *model.LogEntry {
+		return &model.LogEntry{Time: newJSONTime(base.Add(offset)), ChannelID: channelID, Model: modelName,
+			StatusCode: http.StatusOK, Cost: cost}
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		logAt(nested, -5*24*time.Hour, "gpt-5.5", 0.000001),
+		logAt(nested, -2*time.Hour, "gpt-5.5", 0.00001),
+		logAt(nested, -30*time.Minute, "gpt-5.5", 0.0001),
+		logAt(nested, -30*time.Minute, "gpt-5.3-codex-spark", 0.001),
+		logAt(nested, -3*24*time.Hour, "gpt-5.3-codex-spark", 0.01),
+		logAt(empty, -30*time.Minute, "gpt-5.5", 0.1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	views, err := store.OAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{
+		nested: {Windows: []*oauthcost.Window{
+			{Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 18000, StartedAt: n - 3600, ResetAt: n + 14400},
+			{Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800, StartedAt: n - 6*86400, ResetAt: n + 86400},
+			{Key: "codex-spark|secondary", Family: oauthcost.FamilySpark, WindowSeconds: 604800, StartedAt: n - 2*86400, ResetAt: n + 5*86400},
+		}},
+		// 计数起点已到重置点：窗口仍要出现在视图中，成本为 0。
+		empty: {Windows: []*oauthcost.Window{
+			{Key: "codex|primary", Family: oauthcost.FamilyCodex, WindowSeconds: 18000, StartedAt: n - 3600, ResetAt: n + 14400, CountFromAt: n + 14400},
+		}},
+	}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]int64{"codex|primary": 100, "codex|secondary": 111, "codex-spark|secondary": 1000} {
+		if got := viewCost(views[nested], key); got != want {
+			t.Fatalf("%s cost = %d, want %d", key, got, want)
+		}
+	}
+	if got := viewCost(views[empty], "codex|primary"); got != 0 {
+		t.Fatalf("empty-range window cost = %d, want 0", got)
+	}
+}
+
 func TestOAuthQuotaLedger_TransientRollbackRestoresDespitePriceChange(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t, "oauth-quota-ledger-rollback.db")

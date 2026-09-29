@@ -122,55 +122,6 @@ func NewCostView(usage *Usage, windows []*Window, totals [][]LedgerTotal) *CostV
 	return view
 }
 
-// LedgerRow is a single ledger row with its bucket timestamp, used for
-// union-scan cost computation where multiple windows share one query.
-type LedgerRow struct {
-	BucketAt     int64
-	Model        string
-	WindowKey    string
-	CostMicroUSD int64
-}
-
-// CostViewFromUnion builds a CostView from rows fetched over the union of all
-// windows' counted ranges. Each window sees only rows in its own [CountFrom, ResetAt).
-func CostViewFromUnion(usage *Usage, windows []*Window, rows []LedgerRow) *CostView {
-	if usage == nil {
-		return nil
-	}
-	view := &CostView{CreditStandardCostMicroUSD: usage.CreditStandardCostMicroUSD}
-	for _, window := range windows {
-		if window == nil {
-			continue
-		}
-		cr := CountedRange(window)
-		var cost int64
-		for _, row := range rows {
-			if row.BucketAt < cr.From || row.BucketAt >= cr.Until || row.CostMicroUSD <= 0 {
-				continue
-			}
-			if row.WindowKey != "" {
-				if row.WindowKey != window.Key {
-					continue
-				}
-			} else if !WindowMatchesModel(window, row.Model) {
-				continue
-			}
-			if cost > math.MaxInt64-row.CostMicroUSD {
-				cost = math.MaxInt64
-				break
-			}
-			cost += row.CostMicroUSD
-		}
-		view.Windows = append(view.Windows, WindowCostView{
-			Key:                  window.Key,
-			WindowSeconds:        window.WindowSeconds,
-			ResetAt:              window.ResetAt,
-			StandardCostMicroUSD: cost,
-		})
-	}
-	return view
-}
-
 // FindWindow returns the cost view for key, if present.
 func (view *CostView) FindWindow(key string) *WindowCostView {
 	if view == nil || key == "" {
