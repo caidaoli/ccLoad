@@ -94,6 +94,8 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 			SampledAt: now.Format(time.RFC3339Nano),
 		},
 		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-02T03:00:00Z"}`),
+		ModelManifest: &ModelManifest{AccountID: "account-1", UserID: "user-1", PlanType: "plus", Endpoint: "https://chatgpt.com/backend-api/codex/models",
+			SampledAt: now.UnixNano(), Models: []ManifestModel{{Slug: "gpt-6-astra", ServiceTiers: json.RawMessage(`[{"id":"ultrafast","name":"Ultrafast","description":"6x"}]`)}}},
 		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
 			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), CountFromAt: now.Add(time.Hour).Unix(),
@@ -114,11 +116,15 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
 		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
 		merged.QuotaCostUsage.Windows[0].CountFromAt != now.Add(time.Hour).Unix() ||
-		!merged.AccountFedRAMP {
+		!merged.AccountFedRAMP || merged.ModelManifest == nil {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
 	current.QuotaCostUsage.Windows[0].CountFromAt = 99
+	current.ModelManifest.Models[0].ServiceTiers[0] = 'x'
+	if !json.Valid(merged.ModelManifest.Models[0].ServiceTiers) {
+		t.Fatal("merged manifest shares mutable state with the old credential")
+	}
 	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
 	}
@@ -292,8 +298,13 @@ func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
 			current := &Credential{
 				Type: ChannelType, AccessToken: "old-at", RefreshToken: "rt", AccountID: "account-1",
 				PlanType: "plus", Expired: at.Add(time.Hour).Format(time.RFC3339),
+				ModelManifest: &ModelManifest{AccountID: "account-1", PlanType: "plus", Endpoint: "https://chatgpt.com/backend-api/codex/models",
+					SampledAt: at.Add(-time.Second).UnixNano(), Models: []ManifestModel{{Slug: "gpt-6-astra", ServiceTiers: json.RawMessage(`[{"id":"ultrafast"}]`)}}},
 			}
 			current.RestartQuotaEpochFromPoll(at)
+			if current.ModelManifest != nil {
+				t.Fatal("poll plan change retained stale model capabilities")
+			}
 			current.RestartQuotaEpochFromPoll(at.Add(time.Second))
 			epoch := current.QuotaCostUsage.EpochTime()
 			current.QuotaCostUsage.Windows = []*oauthcost.Window{{
@@ -333,6 +344,31 @@ func TestMergeRefreshWaitsForClaimsAfterPoll(t *testing.T) {
 			}
 			if !current.ObserveQuotaIdentity(account, plan, at.Add(11*time.Second)) || len(current.QuotaCostUsage.Windows) != 0 || current.QuotaIdentityBeforePoll != "" {
 				t.Fatal("later identity change did not restart epoch")
+			}
+		})
+	}
+}
+
+func TestCredentialModelManifestIdentityChanges(t *testing.T) {
+	for _, scenario := range []struct{ name, account, user, plan string }{
+		{name: "same account", account: "account", user: "user", plan: "pro"},
+		{name: "different account", account: "other", user: "user", plan: "pro"},
+		{name: "different user", account: "account", user: "other", plan: "pro"},
+		{name: "different plan", account: "account", user: "user", plan: "free"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			at := time.Now()
+			credential := &Credential{AccessToken: "old", RefreshToken: "refresh", AccountID: "account", ChatGPTUserID: "user", PlanType: "pro",
+				Type: ChannelType, Expired: at.Add(time.Hour).Format(time.RFC3339),
+				ModelManifest: &ModelManifest{AccountID: "account", UserID: "user", PlanType: "pro", Endpoint: "https://chatgpt.com/backend-api/codex/models",
+					SampledAt: at.Add(-time.Second).UnixNano(), Models: []ManifestModel{{Slug: "gpt-6-astra", ServiceTiers: json.RawMessage(`[{"id":"ultrafast"}]`)}}}}
+			refreshed := &Credential{AccessToken: "new", Type: ChannelType, Expired: at.Add(time.Hour).Format(time.RFC3339), AccountID: scenario.account, ChatGPTUserID: scenario.user, PlanType: scenario.plan}
+			merged, err := credential.MergeRefresh(refreshed, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (merged.ModelManifest != nil) != (scenario.name == "same account") {
+				t.Fatalf("manifest=%+v for %s", merged.ModelManifest, scenario.name)
 			}
 		})
 	}

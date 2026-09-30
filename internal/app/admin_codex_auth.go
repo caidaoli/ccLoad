@@ -769,27 +769,14 @@ func newCodexOAuthChannel(name, credentialJSON, planType string) *model.Config {
 	}
 }
 
-func codexOAuthPlanTier(planType string) string {
-	switch strings.ToLower(strings.TrimSpace(planType)) {
-	case "free":
-		return "free"
-	case "team", "business", "go", "self_serve_business_prolite":
-		return "team"
-	case "plus":
-		return "plus"
-	case "pro":
-		return "pro"
-	default:
-		return "pro"
-	}
-}
-
 func codexOAuthModelAllowed(name, planType string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" || name == "*" {
 		return false
 	}
-	excluded := codexOAuthExcludedModelsByPlan[codexOAuthPlanTier(planType)]
+	// Only explicitly restricted plans alter the fallback catalog. Preserve SKU
+	// identity: an unknown or newly introduced plan is not a Pro subscription.
+	excluded := codexOAuthExcludedModelsByPlan[strings.ToLower(strings.TrimSpace(planType))]
 	for _, supported := range codexOAuthDefaultModels {
 		if name == supported {
 			_, blocked := excluded[name]

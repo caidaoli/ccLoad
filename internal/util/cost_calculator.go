@@ -3,6 +3,7 @@ package util
 import (
 	"log"
 	"strings"
+	"time"
 )
 
 // ============================================================================
@@ -564,7 +565,8 @@ func modelSupportsTier(model string) bool {
 
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
 // Codex 的 auto/priority 表示 Fast 模式：GPT-5.6/5.5=2.5x，
-// GPT-6 Sol/Luna 和 GPT-5.4=2x；其他 priority 模型=2x，ultrafast=10x，flex=0.5x，
+// GPT-6 Sol/Luna 和 GPT-5.4=2x；其他 priority 模型=2x，Astra ultrafast=6x，
+// 其他 ultrafast=10x，flex=0.5x，
 // default/standard/""=1x（标准）。
 func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
@@ -576,6 +578,9 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	}
 	switch serviceTier {
 	case "ultrafast":
+		if IsOpenAIAstraModel(model) {
+			return 6.0
+		}
 		return 10.0
 	case "auto", "priority":
 		if multiplier := openAIFastModeMultiplier(model); multiplier != 1.0 {
@@ -589,6 +594,20 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	default:
 		return 1.0
 	}
+}
+
+// IsOpenAIAstraModel identifies Astra and its dated snapshots, excluding other variants.
+func IsOpenAIAstraModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	const astra = "gpt-6-astra"
+	if model == astra {
+		return true
+	}
+	if !strings.HasPrefix(model, astra+"-") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", strings.TrimPrefix(model, astra+"-"))
+	return err == nil
 }
 
 func openAIFastModeMultiplier(model string) float64 {

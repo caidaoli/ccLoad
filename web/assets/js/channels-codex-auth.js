@@ -2121,15 +2121,20 @@ function getAnthropicResetCreditsState(channelID) {
 }
 
 function anthropicResetCreditsChannelVersion(channel) {
-  return JSON.stringify([channel.auth_type, channel.created_at || '', channel.updated_at || '']);
+  return { identity: JSON.stringify([channel.auth_type, channel.created_at || '']), updatedAt: channel.updated_at || '' };
 }
 
 function syncAnthropicResetCreditsFromChannels(channelList) {
   for (const channel of channelList) {
     const channelID = Number(channel?.id);
-    if (!anthropicResetCreditsChannelVersionByID.has(channelID)) continue;
-    if (anthropicResetCreditsChannelVersion(channel) === anthropicResetCreditsChannelVersionByID.get(channelID)) continue;
-    anthropicResetCreditsChannelVersionByID.delete(channelID);
+    const previous = anthropicResetCreditsChannelVersionByID.get(channelID);
+    if (!previous) continue;
+    const next = anthropicResetCreditsChannelVersion(channel);
+    if (next.identity === previous.identity && next.updatedAt === previous.updatedAt) continue;
+    anthropicResetCreditsChannelVersionByID.set(channelID, next);
+    // Token refreshes bump updated_at. A redeem in flight may already have
+    // consumed a credit on this channel, so only an identity change drops it.
+    if (next.identity === previous.identity && getAnthropicResetCreditsState(channelID)?.reset_status === 'loading') continue;
     anthropicResetCreditsOperationByChannelID.delete(channelID);
     anthropicResetCreditsByChannelID.delete(channelID);
   }
@@ -2145,10 +2150,12 @@ async function refreshAnthropicResetCredits(channelID, fetcher = fetchDataWithAu
   if (!channel) {
     throw new Error('An Anthropic OAuth channel is required');
   }
+  const previous = anthropicResetCreditsByChannelID.get(numericID);
+  if (previous?.reset_status === 'loading') return previous.data;
   anthropicResetCreditsChannelVersionByID.set(numericID, anthropicResetCreditsChannelVersion(channel));
   const operation = Symbol();
   anthropicResetCreditsOperationByChannelID.set(numericID, operation);
-  anthropicResetCreditsByChannelID.set(numericID, { status: 'loading' });
+  anthropicResetCreditsByChannelID.set(numericID, { ...previous, status: 'loading', error: '' });
   rerenderOAuthUsage();
   try {
     const data = await fetcher(`/admin/channels/${numericID}/anthropic-reset-credits`, { method: 'GET' });
@@ -2165,12 +2172,107 @@ async function refreshAnthropicResetCredits(channelID, fetcher = fetchDataWithAu
   } catch (error) {
     if (anthropicResetCreditsOperationByChannelID.get(numericID) === operation) {
       anthropicResetCreditsByChannelID.set(numericID, {
+        ...previous,
         status: 'error', error: error?.message || window.t('channels.oauth.anthropicResetFailed')
       });
       anthropicResetCreditsOperationByChannelID.delete(numericID);
       rerenderOAuthUsage();
     }
     throw error;
+  }
+}
+
+function anthropicResetWindowLabels(windows) {
+  const keys = { five_hour: 'anthropicResetFiveHour', seven_day: 'anthropicResetSevenDay', seven_day_overage_included: 'anthropicResetSevenDayOverage' };
+  return (Array.isArray(windows) ? windows : []).map(name => keys[name]
+    ? window.t(`channels.oauth.${keys[name]}`) : name).join(', ');
+}
+
+async function confirmAnthropicQuotaReset(channelID, fetcher = fetchDataWithAuth, options = {}) {
+  const state = getAnthropicResetCreditsState(channelID);
+  if (state?.reset_status === 'loading' || state?.status === 'loading') return null;
+  if (!(state?.status === 'ready' && state.data?.eligible && state.data.available_count > 0)) return null;
+  const credit = state?.data?.credits?.find(item => item.redeemable);
+  const message = window.t('channels.oauth.anthropicResetConfirm', {
+    windows: anthropicResetWindowLabels(credit?.clears) || '—',
+    count: Math.max(0, state.data.credits.reduce((sum, item) => sum + Math.max(0, Number(item.resets_left) || 0), 0) - 1)
+  });
+  if (!window.confirm(message)) return null;
+  return redeemAnthropicResetCredit(channelID, fetcher, options);
+}
+
+async function redeemAnthropicResetCredit(channelID, fetcher = fetchDataWithAuth, options = {}) {
+  const numericID = Number(channelID);
+  const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+  const channel = channelList.find(item => Number(item?.id) === numericID && item?.auth_type === 'anthropic_oauth');
+  if (!Number.isInteger(numericID) || numericID <= 0 || !channel) throw new Error('An Anthropic OAuth channel is required');
+  anthropicResetCreditsChannelVersionByID.set(numericID, anthropicResetCreditsChannelVersion(channel));
+  const previous = getAnthropicResetCreditsState(numericID);
+  if (previous?.reset_status === 'loading') return null;
+  if (!(previous?.status === 'ready' && previous.data?.eligible && previous.data.available_count > 0)) {
+    throw new Error(window.t('channels.oauth.anthropicResetUnavailable'));
+  }
+  const operation = Symbol();
+  anthropicResetCreditsOperationByChannelID.set(numericID, operation);
+  anthropicResetCreditsByChannelID.set(numericID, { ...previous, reset_status: 'loading', reset_error: '', reset_feedback: '' });
+  const usageOperation = ++oauthUsageOperationSequence;
+  oauthUsageLastOperationByChannelID.set(numericID, usageOperation);
+  rerenderOAuthUsage();
+  try {
+    const result = await fetcher(`/admin/channels/${numericID}/anthropic-reset-credits/redeem`, {
+      method: 'POST'
+    });
+    const outcomeKeys = {
+      reset: 'resetSuccess', already_used: 'anthropicResetAlreadyUsed', not_limited: 'anthropicResetNotLimited',
+      cooldown: 'anthropicResetInCooldown', ineligible: 'anthropicResetIneligible', unknown: 'anthropicResetUnknown'
+    };
+    if (!result || !Object.hasOwn(outcomeKeys, result.outcome)) throw new Error(window.t('channels.oauth.resetInvalid'));
+    if (anthropicResetCreditsOperationByChannelID.get(numericID) !== operation) return result;
+    const hasWarnings = Array.isArray(result.warnings) && result.warnings.length > 0;
+    const feedbackKey = result.outcome === 'reset' && (hasWarnings || !result.usage)
+      ? 'resetSuccessNeedsRefresh' : outcomeKeys[result.outcome];
+    const data = result.credits;
+    const validCredits = result.outcome !== 'unknown' && data && typeof data.eligible === 'boolean' && Number.isInteger(data.available_count) && Array.isArray(data.credits);
+    anthropicResetCreditsByChannelID.set(numericID, {
+      status: validCredits ? 'ready' : 'idle', data: validCredits ? data : null,
+      reset_status: result.outcome, reset_feedback: window.t(`channels.oauth.${feedbackKey}`)
+    });
+    if (oauthUsageLastOperationByChannelID.get(numericID) === usageOperation) {
+      if (result.usage && Array.isArray(result.usage.windows)) {
+        oauthUsageOperationByChannelID.delete(numericID);
+        oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result.usage });
+      } else if (result.outcome === 'reset') {
+        oauthUsageOperationByChannelID.delete(numericID);
+        oauthUsageStateByChannelID.set(numericID, { status: 'error', error: window.t('channels.oauth.resetNeedsRefresh') });
+      }
+    }
+    // Consumption has finished; a list reload failure must not turn it into a retry.
+    if (result.outcome === 'reset' && options.reload !== false && typeof loadChannels === 'function') {
+      try { await loadChannels({ refreshUsage: false }); } catch { /* The result remains visible below. */ }
+      const currentChannels = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+      if (!getAnthropicResetCreditsState(numericID) && currentChannels.some(item => Number(item?.id) === numericID && item.auth_type === 'anthropic_oauth')) {
+        anthropicResetCreditsByChannelID.set(numericID, {
+          status: 'idle', reset_status: result.outcome, reset_feedback: window.t(`channels.oauth.${feedbackKey}`)
+        });
+      }
+    }
+    return result;
+  } catch (error) {
+    if (anthropicResetCreditsOperationByChannelID.get(numericID) === operation) {
+      // Coded server rejections all precede the claim POST; anything else may have consumed a reset.
+      const rejected = typeof error?.response?.data?.code === 'string';
+      anthropicResetCreditsByChannelID.set(numericID, rejected ? {
+        ...previous, reset_status: 'error',
+        reset_error: window.t('channels.oauth.anthropicResetNotPerformed', { message: error.message })
+      } : {
+        status: 'idle', data: null, reset_status: 'unknown',
+        reset_feedback: window.t('channels.oauth.anthropicResetUnknown')
+      });
+    }
+    throw error;
+  } finally {
+    if (anthropicResetCreditsOperationByChannelID.get(numericID) === operation) anthropicResetCreditsOperationByChannelID.delete(numericID);
+    rerenderOAuthUsage();
   }
 }
 
@@ -3251,6 +3353,8 @@ if (typeof module !== 'undefined' && module.exports) {
     getAnthropicResetCreditsState,
     syncAnthropicResetCreditsFromChannels,
     refreshAnthropicResetCredits,
+    confirmAnthropicQuotaReset,
+    redeemAnthropicResetCredit,
     snapshotOAuthUsageStates,
     syncOAuthUsageFromChannels,
     maybeAutoRefreshActiveChannelUsage,

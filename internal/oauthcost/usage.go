@@ -52,6 +52,9 @@ type Usage struct {
 	EpochAt   int64  `json:"epoch_at,omitempty"`
 	// 成本窗口以秒计数；事件屏障保留纳秒，避免同秒旧采样越过重置。
 	EpochAtUnixNano int64 `json:"epoch_at_unix_nano,omitempty"`
+	// WindowResetAtUnixNano preserves a confirmed reset even when that window has
+	// not been sampled yet; sibling windows keep their existing counting interval.
+	WindowResetAtUnixNano map[string]int64 `json:"window_reset_at_unix_nano,omitempty"`
 	// 独立购买额度的标准成本，不属于任何周期窗口。
 	CreditStandardCostMicroUSD int64     `json:"credit_standard_cost_microusd,omitempty"`
 	Windows                    []*Window `json:"windows,omitempty"`
@@ -180,6 +183,12 @@ func Clone(usage *Usage) *Usage {
 		return nil
 	}
 	clone := &Usage{CreditStandardCostMicroUSD: usage.CreditStandardCostMicroUSD, Identity: usage.Identity, AccountID: usage.AccountID, EpochAt: usage.EpochAt, EpochAtUnixNano: usage.EpochAtUnixNano}
+	if usage.WindowResetAtUnixNano != nil {
+		clone.WindowResetAtUnixNano = make(map[string]int64, len(usage.WindowResetAtUnixNano))
+		for key, at := range usage.WindowResetAtUnixNano {
+			clone.WindowResetAtUnixNano[key] = at
+		}
+	}
 	if usage.Windows != nil {
 		clone.Windows = make([]*Window, 0, len(usage.Windows))
 		for _, window := range usage.Windows {
@@ -218,6 +227,11 @@ func Validate(usage *Usage) error {
 	if usage.EpochAt < 0 || usage.EpochAtUnixNano < 0 ||
 		(usage.EpochAtUnixNano != 0 && usage.EpochAtUnixNano/int64(time.Second) != usage.EpochAt) {
 		return errors.New("OAuth quota epoch is invalid")
+	}
+	for key, at := range usage.WindowResetAtUnixNano {
+		if strings.TrimSpace(key) == "" || at <= 0 {
+			return errors.New("OAuth quota window reset is invalid")
+		}
 	}
 	keys := make(map[string]struct{}, len(usage.Windows))
 	for _, window := range usage.Windows {
@@ -317,6 +331,13 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 			continue
 		}
 		seen[key] = struct{}{}
+		if cutoff := next.WindowResetAtUnixNano[key]; cutoff > 0 &&
+			sampleTimeUnixNano(firstNonZeroTime(sample.SampledAt, observedAt)) < cutoff {
+			if window := cloneWindow(Find(current, key)); window != nil {
+				next.Windows = append(next.Windows, window)
+			}
+			continue
+		}
 		sample.UsedPercent = normalizedUsedPercent(sample.UsedPercent)
 		if window := reconcileWindow(Find(current, key), sample, observedAt); window != nil {
 			next.Windows = append(next.Windows, window)
@@ -353,6 +374,7 @@ func reconcile(current *Usage, samples []Sample, observedAt time.Time, partial b
 		return Clone(current)
 	}
 	applyEpoch(next)
+	applyWindowResets(next)
 	return next
 }
 

@@ -123,7 +123,8 @@ window.WebAuth = window.WebAuth || {
 
   async function fetchDataWithAuth(url, options = {}) {
     const resp = await fetchAPIWithAuth(url, options);
-    if (!resp.success) throw new Error(resp.error || t('error.requestFailed'));
+    // response 标记这是服务端明确给出的失败，而非网络或解析错误
+    if (!resp.success) throw Object.assign(new Error(resp.error || t('error.requestFailed')), { response: resp });
     return resp.data;
   }
 

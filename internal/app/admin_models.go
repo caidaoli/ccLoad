@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ccLoad/internal/codebuddyauth"
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -1208,23 +1209,62 @@ func (s *Server) fetchCodexOAuthModels(
 	if err != nil {
 		return nil, fmt.Errorf("获取 Codex 凭证失败: %w", err)
 	}
-	catalog := codexOAuthModelEntries(credential.PlanType)
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	sampledAt := time.Now().UnixNano()
+	var catalog []codexauth.ManifestModel
+	var endpoint string
+	var fetchErr error
+	refreshed := false
+	for _, route := range s.codexResponsesRoutes(cfg) {
+		if route.upstream != protocol.Codex {
+			continue
+		}
+		endpoint, fetchErr = codexauth.ModelsEndpoint(route.url.URL)
+		if fetchErr != nil {
+			continue
+		}
+		catalog, fetchErr = codexauth.FetchModelManifest(requestCtx, s.getClientForChannel(cfg), endpoint, credential)
+		var statusError interface{ StatusCode() int }
+		if errors.As(fetchErr, &statusError) && statusError.StatusCode() == http.StatusUnauthorized && !refreshed {
+			refreshed = true
+			credential, err = s.codexCredentials.credentialAfterUnauthorized(requestCtx, cfg, credential.AccessToken)
+			if err != nil {
+				return nil, fmt.Errorf("模型发现: 刷新 Codex 凭证失败: %w", err)
+			}
+			catalog, fetchErr = codexauth.FetchModelManifest(requestCtx, s.getClientForChannel(cfg), endpoint, credential)
+		}
+		if fetchErr == nil {
+			break
+		}
+	}
 	if len(catalog) == 0 {
-		return nil, fmt.Errorf("模型发现: Codex 订阅计划没有可用模型")
+		if fetchErr == nil {
+			fetchErr = errors.New("没有可尝试的 Codex 上游 URL")
+		}
+		return nil, fmt.Errorf("模型发现: 获取 Codex 账号目录失败: %w", fetchErr)
+	}
+	manifest := &codexauth.ModelManifest{
+		AccountID: credential.AccountID, UserID: credential.ChatGPTUserID, PlanType: credential.PlanType,
+		Endpoint: endpoint, SampledAt: sampledAt, Models: catalog,
+	}
+	if err := s.codexCredentials.persistModelManifest(ctx, cfg, credential, manifest); err != nil {
+		return nil, err
 	}
 	models := make([]model.ModelEntry, len(catalog))
 	for i, entry := range catalog {
-		models[i] = model.ModelEntry{Model: entry.Model, RedirectModel: entry.Model}
+		models[i] = model.ModelEntry{Model: entry.Slug, RedirectModel: entry.Slug}
 	}
+	models = model.CarryModelPricing(cfg.ModelEntries, models)
 	channelURL := ""
 	if len(cfg.URLs) > 0 {
 		channelURL = cfg.URLs[0].RuntimeURL()
 	}
 	return &FetchModelsResponse{
-		Models: models, Protocol: util.ProtocolCodex, Source: "predefined",
+		Models: models, Protocol: util.ProtocolCodex, Source: "api",
 		Debug: &FetchModelsDebug{
 			NormalizedProtocol: util.ProtocolCodex,
-			Fetcher:            "codex_oauth_catalog",
+			Fetcher:            "codex_oauth_manifest",
 			ChannelURL:         channelURL,
 		},
 	}, nil

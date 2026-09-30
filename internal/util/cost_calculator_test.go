@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -572,9 +573,13 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		multiplier float64
 	}{
 		{"gpt-6-astra", "fast", 2.5},
+		{"gpt-6-astra", "ultrafast", 6.0},
+		{"gpt-6-astra-2026-09-24", "ultrafast", 6.0},
+		{"GPT-6-ASTRA", " ULTRAFAST ", 6.0},
 		{"gpt-6-astra", "flex", 0.5},
 		{"gpt-6-sol", "fast", 2.0},
 		{"gpt-6-sol", "priority", 2.0},
+		{"gpt-6-sol", "ultrafast", 10.0},
 		{"gpt-6-luna", "fast", 2.0},
 		{"gpt-6-luna", "flex", 0.5},
 		{"gpt-5.6", "priority", 2.5},
@@ -620,6 +625,8 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		tier  string
 	}{
 		{"gpt-5-pro", "priority"},
+		{"gpt-6-astra-pro", "ultrafast"},
+		{"gpt-6-astra-preview", "ultrafast"},
 		{"gpt-5-nano", "priority"},
 		{"gpt-5.4-pro", "priority"},
 		{"gpt-5.3-codex-spark", "priority"},
@@ -649,6 +656,33 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	expectedFlex := (0.625*1000 + 5.0*1000) / 1_000_000
 	if !floatEquals(flexCost, expectedFlex, 0.000001) {
 		t.Errorf("gpt-5 flex: cost = %.6f, 期望 %.6f", flexCost, expectedFlex)
+	}
+}
+
+func TestCalculateCost_AstraUltrafastWithCustomPrices(t *testing.T) {
+	t.Cleanup(func() { _ = InstallCustomModelPricing(nil) })
+	if err := InstallCustomModelPricingJSON(`{"gpt-6-astra":{"input_price":7,"output_price":11,"cache_read_price":0.7,"cache_write_price":8}}`); err != nil {
+		t.Fatal(err)
+	}
+	price := &CustomModelPrice{}
+	if err := json.Unmarshal([]byte(`{"input_price":3,"output_price":5,"cache_read_price":0.3,"cache_write_price":4}`), price); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name  string
+		price *CustomModelPrice
+		want  float64
+	}{
+		{name: "global", want: 6 * (7 + 11 + 0.7 + 8 + 14) / 1000},
+		{name: "channel", price: price, want: 6 * (3 + 5 + 0.3 + 4 + 6) / 1000},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			got := CalculateStandardCostBreakdownWithPrice("gpt-6-astra", "ultrafast", scenario.price, 1000, 1000, 1000, 1000, 1000)
+			if !floatEquals(got.Total, scenario.want, 1e-12) || got.ServiceTierMultiplier != 6 ||
+				!floatEquals(got.Input.Cost+got.Output.Cost+got.CacheRead.Cost+got.CacheWrite.Cost, got.Total, 1e-12) {
+				t.Fatalf("Astra Ultrafast breakdown = %+v, want total %v and 6x", got, scenario.want)
+			}
+		})
 	}
 }
 

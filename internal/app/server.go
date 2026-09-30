@@ -90,6 +90,7 @@ type Server struct {
 	codexService                  *codexauth.Service
 	codexCredentials              *codexCredentialManager
 	codexQuotaResetInFlight       sync.Map
+	anthropicQuotaResetInFlight   sync.Map
 	antigravityOAuth              *codexOAuthManager
 	antigravityCredentials        *antigravityCredentialManager
 	antigravityService            *antigravityauth.Service
@@ -1800,6 +1801,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
 		admin.POST("/channels/:id/oauth-usage", s.HandleOAuthUsage)
 		admin.GET("/channels/:id/anthropic-reset-credits", s.HandleAnthropicResetCredits)
+		admin.POST("/channels/:id/anthropic-reset-credits/redeem", s.HandleRedeemAnthropicResetCredits)
 		admin.POST("/channels/:id/codex-quota-reset", s.HandleResetCodexQuota)
 		admin.POST("/channels/oauth-usage/batch/stream", s.HandleOAuthUsageBatchStream)
 		admin.POST("/channels/usage/active/batch/stream", s.HandleActiveChannelUsageBatchStream)

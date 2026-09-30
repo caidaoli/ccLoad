@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -1267,6 +1268,15 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	var manifestRequests atomic.Int32
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+		manifestRequests.Add(1)
+		if r.URL.Path != "/backend-api/codex/models" || r.URL.Query().Get("client_version") != codexauth.DefaultClientVersion ||
+			r.Header.Get("Authorization") != "Bearer "+accessToken || r.Header.Get("ChatGPT-Account-Id") != "account-models" {
+			t.Fatalf("unexpected Codex manifest request: %s, headers=%v", r.URL, r.Header)
+		}
+		return jsonResponse(r, `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}]},{"slug":"unknown-tier"},{"slug":"no-tiers","service_tiers":[]}]}`)
+	})}
 	server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
 
 	credential := &codexauth.Credential{
@@ -1280,7 +1290,7 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name: "Codex models", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
 		URLs:         model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
-		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra", RedirectModel: "gpt-6-astra", Pricing: &util.CustomModelPrice{InputPrice: float64PtrForModelsTest(3), OutputPrice: float64PtrForModelsTest(5)}}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1297,7 +1307,7 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 		t.Fatalf("response leaked OAuth token: %s", w.Body.String())
 	}
 	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
-	if !resp.Success || len(resp.Data.Models) == 0 || resp.Data.Protocol != "codex" || resp.Data.Source != "predefined" {
+	if !resp.Success || len(resp.Data.Models) != 3 || resp.Data.Protocol != "codex" || resp.Data.Source != "api" {
 		t.Fatalf("unexpected response: %s", w.Body.String())
 	}
 
@@ -1328,6 +1338,198 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	}
 	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
 		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+	}
+	if manifestRequests.Load() != 2 || persisted.ModelEntries[0].Pricing == nil {
+		t.Fatalf("manifest requests=%d, model pricing=%+v", manifestRequests.Load(), persisted.ModelEntries)
+	}
+	storedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || storedCredential.ModelManifest == nil || len(storedCredential.ModelManifest.Models) != 3 {
+		t.Fatalf("manifest not persisted: credential=%+v, error=%v", storedCredential, err)
+	}
+}
+
+func float64PtrForModelsTest(value float64) *float64 { return &value }
+
+func TestAdminModels_CodexManifestRefreshBoundaries(t *testing.T) {
+	for _, scenario := range []string{"refresh401", "unavailable", "invalid", "redirect", "expandedCredential", "oldEpoch", "baseURLOverride", "multipleURLs", "manualQuotaReset"} {
+		t.Run(scenario, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			credential := &codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "old-access", RefreshToken: "refresh", AccountID: "account",
+				PlanType: "pro", Expired: time.Now().Add(time.Hour).Format(time.RFC3339)}
+			payload, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := store.CreateConfig(ctx, &model.Config{Name: "Codex manifest boundaries", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
+				Enabled: true, URLs: model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "baseURLOverride" {
+				server.configService = newStubConfigService(map[string]string{config.CodexBaseURLSettingKey: "https://custom.example/backend-api/codex/responses"})
+			}
+			if scenario == "multipleURLs" {
+				cfg.URLs = append(cfg.URLs, model.ChannelURL{URL: "https://other.example/v1", Protocols: []string{"openai"}})
+			}
+			var requests, tokenRefreshes int
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/oauth/token" {
+					tokenRefreshes++
+					return jsonResponse(r, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
+				}
+				requests++
+				if scenario == "baseURLOverride" && r.URL.Hostname() != "custom.example" {
+					t.Fatalf("ignored base URL override: %s", r.URL)
+				}
+				body := `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","name":"Ultrafast","description":"6x"}]}]}`
+				status := http.StatusOK
+				switch scenario {
+				case "refresh401":
+					if r.Header.Get("Authorization") == "Bearer old-access" {
+						status = http.StatusUnauthorized
+					}
+				case "unavailable":
+					status = http.StatusServiceUnavailable
+				case "invalid":
+					body = `{"models":[{"slug":"gpt-6-astra","service_tiers":{"id":"ultrafast"}}]}`
+				case "redirect":
+					status = http.StatusFound
+				case "expandedCredential":
+					body = `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","description":"` + strings.Repeat("<", 200000) + `"}]}]}`
+				case "oldEpoch":
+					credential.RestartQuotaEpochFromPoll(time.Now())
+					next, err := credential.JSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					changed, err := store.CompareAndSwapOAuthCredential(ctx, cfg.ID, model.AuthTypeCodexOAuth, payload, next)
+					if err != nil || !changed {
+						t.Fatalf("change poll epoch: changed=%v error=%v", changed, err)
+					}
+				}
+				response, err := jsonResponse(r, body)
+				response.StatusCode = status
+				if status == http.StatusFound {
+					response.Header.Set("Location", "https://unrelated.example/leak")
+				}
+				return response, err
+			})}
+			server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
+			response, err := server.fetchModelsForChannel(ctx, cfg, "", modelFetchFirstAvailableKey)
+			shouldSucceed := scenario == "refresh401" || scenario == "baseURLOverride" || scenario == "multipleURLs" || scenario == "manualQuotaReset"
+			if shouldSucceed != (err == nil) {
+				t.Fatalf("response=%+v error=%v", response, err)
+			}
+			if scenario == "manualQuotaReset" {
+				// A quota reset moves the ledger epoch but not the account's capabilities.
+				if err := server.resetOAuthQuotaCostUsage(ctx, cfg.ID, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stored, loadErr := store.GetConfig(ctx, cfg.ID)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			parsed, parseErr := codexauth.ParseCredential([]byte(stored.OAuthCredential))
+			if parseErr != nil {
+				t.Fatalf("model refresh damaged credentials: %v", parseErr)
+			}
+			if shouldSucceed {
+				if parsed.ModelManifest == nil {
+					t.Fatal("successful refresh did not save capabilities")
+				}
+				if strings.Contains(parsed.ModelManifest.Endpoint, "client_version") {
+					t.Fatalf("client version became part of the snapshot identity: %s", parsed.ModelManifest.Endpoint)
+				}
+				if scenario == "refresh401" && (requests != 2 || tokenRefreshes != 1 || parsed.AccessToken != "new-access") {
+					t.Fatalf("requests=%d tokenRefreshes=%d accessToken=%q", requests, tokenRefreshes, parsed.AccessToken)
+				}
+			} else if parsed.ModelManifest != nil || parsed.AccessToken != "old-access" || (scenario != "oldEpoch" && stored.OAuthCredential != payload) {
+				t.Fatalf("failed discovery changed credentials: %s", stored.OAuthCredential)
+			}
+			if scenario == "redirect" && requests != 1 {
+				t.Fatalf("followed an untrusted redirect: %d requests", requests)
+			}
+			if scenario == "baseURLOverride" || scenario == "manualQuotaReset" {
+				server.authService = newTestAuthService(t)
+				client, result := newTestContext(t, newRequest(http.MethodGet, "/v1/models?client_version=0.159.2", nil))
+				server.handleListOpenAIModels(client)
+				var models struct {
+					Models []struct {
+						ServiceTiers []codexauth.ServiceTier `json:"service_tiers"`
+					} `json:"models"`
+				}
+				mustUnmarshalJSON(t, result.Body.Bytes(), &models)
+				if len(models.Models) != 1 || len(models.Models[0].ServiceTiers) != 1 || requests != 1 {
+					t.Fatalf("public directory did not reuse actual endpoint snapshot: %s, requests=%d", result.Body.String(), requests)
+				}
+			}
+		})
+	}
+}
+
+type codexManifestAfterSwapStore struct {
+	storage.Store
+	afterSwap func(context.Context, int64, string) error
+}
+
+func (s *codexManifestAfterSwapStore) CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, authType, expected, next string) (bool, error) {
+	updated, err := s.Store.CompareAndSwapOAuthCredential(ctx, channelID, authType, expected, next)
+	if err == nil && updated {
+		err = s.afterSwap(ctx, channelID, next)
+	}
+	return updated, err
+}
+
+func TestAdminModels_CodexManifestPreservesConcurrentReauthorization(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	credential := &codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "account",
+		PlanType: "pro", Expired: time.Now().Add(time.Hour).Format(time.RFC3339)}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "Codex concurrent manifest", Enabled: true, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
+		URLs: model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-6-astra"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(r, `{"models":[{"slug":"gpt-6-astra","service_tiers":[{"id":"ultrafast","name":"Ultrafast","description":"6x"}]}]}`)
+	})}
+	wrapped := &codexManifestAfterSwapStore{Store: store}
+	server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), wrapped, nil, nil)
+	wrapped.afterSwap = func(ctx context.Context, channelID int64, saved string) error {
+		winner := *credential
+		winner.AccessToken, winner.RefreshToken = "winner-access", "winner-refresh"
+		winnerJSON, err := winner.JSON()
+		if err != nil {
+			return err
+		}
+		updated, err := store.CompareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeCodexOAuth, saved, winnerJSON)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return fmt.Errorf("could not commit concurrent reauthorization")
+		}
+		server.codexCredentials.cache(channelID, &winner)
+		return nil
+	}
+	if _, err := server.fetchCodexOAuthModels(ctx, cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := server.codexCredentials.credential(ctx, latest, false)
+	if err != nil || resolved.AccessToken != "winner-access" || resolved.RefreshToken != "winner-refresh" || resolved.ModelManifest != nil {
+		t.Fatalf("manifest refresh resurrected stale credentials: %+v, error=%v", resolved, err)
 	}
 }
 

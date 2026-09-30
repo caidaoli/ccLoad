@@ -42,6 +42,7 @@ type Credential struct {
 	PassiveUsage   *PassiveUsage    `json:"passive_usage,omitempty"`
 	OAuthUsage     json.RawMessage  `json:"oauth_usage,omitempty"`
 	QuotaCostUsage *oauthcost.Usage `json:"quota_cost_usage,omitempty"`
+	ModelManifest  *ModelManifest   `json:"model_manifest,omitempty"`
 	// QuotaIdentityBeforePoll 保留轮询重置前的声明身份，等待 id_token 追上这次变化。
 	QuotaIdentityBeforePoll string `json:"quota_identity_before_poll,omitempty"`
 }
@@ -155,6 +156,9 @@ func (c *Credential) Normalize() error {
 		c.RefreshToken = ""
 		c.LastRefresh = ""
 		c.Expired = ""
+		if err := c.normalizeModelManifest(); err != nil {
+			return err
+		}
 		adoptLegacyQuotaIdentity(c.QuotaCostUsage, c.QuotaIdentity(), c.AccountID)
 		return nil
 	}
@@ -179,6 +183,9 @@ func (c *Credential) Normalize() error {
 				c.PlanType = strings.TrimSpace(claims.Auth.ChatGPTPlanType)
 			}
 		}
+	}
+	if err := c.normalizeModelManifest(); err != nil {
+		return err
 	}
 	adoptLegacyQuotaIdentity(c.QuotaCostUsage, c.QuotaIdentity(), c.AccountID)
 	return nil
@@ -265,6 +272,7 @@ func (c *Credential) RestartQuotaEpoch(identity string, at time.Time) {
 		EpochAt: at.UTC().Unix(), EpochAtUnixNano: at.UTC().UnixNano()}
 	c.OAuthUsage = nil
 	c.PassiveUsage = nil
+	c.ModelManifest = nil
 	c.QuotaIdentityBeforePoll = ""
 }
 
@@ -293,6 +301,9 @@ func (c *Credential) InheritQuotaState(previous *Credential) {
 	}
 	adoptLegacyQuotaIdentity(c.QuotaCostUsage, previous.QuotaIdentity(), previous.AccountID)
 	c.QuotaIdentityBeforePoll = previous.QuotaIdentityBeforePoll
+	if c.ModelManifest == nil && previous.ModelManifest != nil && previous.ModelManifest.Matches(c, previous.ModelManifest.Endpoint) {
+		c.ModelManifest = previous.ModelManifest.Clone()
+	}
 }
 
 // adoptLegacyQuotaIdentity 给升级前的额度状态补记身份：既没记录身份也没有过纪元，说明它累计的

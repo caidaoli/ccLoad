@@ -61,7 +61,7 @@ type anthropicResetBlock struct {
 	WeeklyResetsAt *time.Time            `json:"weekly_resets_at"`
 }
 
-func parseAnthropicResetCredits(body []byte, now time.Time) (*anthropicResetCredits, error) {
+func parseAnthropicResetBlock(body []byte) (*anthropicResetBlock, error) {
 	invalid := errors.New("invalid Anthropic reset status")
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
@@ -70,14 +70,21 @@ func parseAnthropicResetCredits(body []byte, now time.Time) (*anthropicResetCred
 	if _, hasError := envelope["error"]; hasError {
 		return nil, invalid
 	}
-	result := &anthropicResetCredits{Credits: []anthropicResetCredit{}, FetchedAt: now.UTC()}
 	raw, present := envelope["cedar_ember"]
 	if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return result, nil
+		return nil, nil
 	}
 	var block anthropicResetBlock
 	if err := json.Unmarshal(raw, &block); err != nil || block.Grants == nil {
 		return nil, errors.New("invalid Anthropic reset grants")
+	}
+	return &block, nil
+}
+
+func projectAnthropicResetCredits(block *anthropicResetBlock, now time.Time) *anthropicResetCredits {
+	result := &anthropicResetCredits{Credits: []anthropicResetCredit{}, FetchedAt: now.UTC()}
+	if block == nil {
+		return result
 	}
 	result.Eligible = block.Eligible
 	if block.CooldownUntil != nil && now.Before(*block.CooldownUntil) {
@@ -85,14 +92,11 @@ func parseAnthropicResetCredits(body []byte, now time.Time) (*anthropicResetCred
 	}
 	result.WeeklyResetsAt = block.WeeklyResetsAt
 	for _, grant := range block.Grants {
-		if !anthropicResetGrantIDPattern.MatchString(grant.ID) || len(grant.Clears) == 0 || grant.ResetsLeft <= 0 || grant.Paused ||
-			(grant.StartsAt != nil && now.Before(*grant.StartsAt)) || (grant.EndsAt != nil && !now.Before(*grant.EndsAt)) {
+		if !anthropicResetGrantHeld(grant, now) {
 			continue
 		}
 		requiresLimit := grant.UseRequiresLimit == nil || *grant.UseRequiresLimit
-		redeemable := block.Eligible && grant.UsableNow && grant.ID == block.NextGrantID &&
-			(!requiresLimit || block.AtLimit) && len(grant.Blocking) == 0 &&
-			(block.CooldownUntil == nil || !now.Before(*block.CooldownUntil))
+		redeemable := anthropicResetGrantRedeemable(block, grant, now)
 		percentUsed := map[string]float64{}
 		for name, value := range grant.PercentUsed {
 			if validOAuthUsedPercent(value) {
@@ -108,10 +112,30 @@ func parseAnthropicResetCredits(body []byte, now time.Time) (*anthropicResetCred
 			result.AvailableCount += grant.ResetsLeft
 		}
 	}
-	return result, nil
+	return result
+}
+
+func anthropicResetGrantHeld(grant anthropicResetGrant, now time.Time) bool {
+	return anthropicResetGrantIDPattern.MatchString(grant.ID) && len(grant.Clears) > 0 && grant.ResetsLeft > 0 && !grant.Paused &&
+		(grant.StartsAt == nil || !now.Before(*grant.StartsAt)) && (grant.EndsAt == nil || now.Before(*grant.EndsAt))
+}
+
+func anthropicResetGrantRedeemable(block *anthropicResetBlock, grant anthropicResetGrant, now time.Time) bool {
+	requiresLimit := grant.UseRequiresLimit == nil || *grant.UseRequiresLimit
+	return block != nil && anthropicResetGrantHeld(grant, now) && block.Eligible && grant.UsableNow && grant.ID == block.NextGrantID &&
+		(!requiresLimit || block.AtLimit) && len(grant.Blocking) == 0 &&
+		(block.CooldownUntil == nil || !now.Before(*block.CooldownUntil))
 }
 
 func requestAnthropicResetCredits(ctx context.Context, client *http.Client, credential *anthropicauth.Credential, baseURL string) (*anthropicResetCredits, error) {
+	block, err := requestAnthropicResetBlock(ctx, client, credential, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return projectAnthropicResetCredits(block, time.Now()), nil
+}
+
+func requestAnthropicResetBlock(ctx context.Context, client *http.Client, credential *anthropicauth.Credential, baseURL string) (*anthropicResetBlock, error) {
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return nil, errors.New("anthropic reset request is unavailable")
 	}
@@ -123,13 +147,18 @@ func requestAnthropicResetCredits(ctx context.Context, client *http.Client, cred
 	if err != nil {
 		return nil, errors.New("anthropic reset request is unavailable")
 	}
-	req.Header.Set("x-app", "cli")
-	req.Header.Set("User-Agent", "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)")
+	setAnthropicResetHeaders(req)
 	body, err := executeOAuthUsageRequest(client, req, "Anthropic reset")
 	if err != nil {
 		return nil, err
 	}
-	return parseAnthropicResetCredits(body, time.Now())
+	return parseAnthropicResetBlock(body)
+}
+
+func setAnthropicResetHeaders(req *http.Request) {
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("x-app", "cli")
+	req.Header.Set("User-Agent", "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)")
 }
 
 // HandleAnthropicResetCredits queries native reset credits without redeeming them.

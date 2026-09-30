@@ -1,12 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
@@ -16,18 +20,13 @@ import (
 )
 
 // filterCodexResponsesModels uses configured route capabilities without probing upstreams.
-func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []string) ([]string, error) {
+func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []string) ([]string, map[string]json.RawMessage, error) {
 	if len(visibleModels) == 0 {
-		return visibleModels, nil
+		return visibleModels, nil, nil
 	}
 	channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
 	if err != nil {
-		return nil, err
-	}
-
-	visible := make(map[string]struct{}, len(visibleModels))
-	for _, modelID := range visibleModels {
-		visible[modelID] = struct{}{}
+		return nil, nil, err
 	}
 
 	tokenHash, _ := c.Get("token_hash")
@@ -38,29 +37,45 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 		restriction, hasRestriction = s.authService.getChannelRestriction(tokenHashStr)
 	}
 
+	visible := make(map[string]struct{}, len(visibleModels))
+	for _, modelID := range visibleModels {
+		visible[modelID] = struct{}{}
+	}
+
 	available := make(map[string]struct{}, len(visibleModels))
+	tiers := make(map[string]json.RawMessage, len(visibleModels))
+	targets := make(map[string]string, len(visibleModels))
+	conflicts := make(map[string]bool, len(visibleModels))
 	for _, cfg := range channels {
 		if cfg == nil || (hasRestriction && !restriction.Allows(cfg.ID)) {
 			continue
 		}
-		upstreamProtocols := s.codexResponsesUpstreamProtocols(cfg)
-		if len(upstreamProtocols) == 0 {
+		cfg = s.withOAuthBaseURLOverride(cfg)
+		routes := s.codexResponsesRoutes(cfg)
+		if len(routes) == 0 {
 			continue
 		}
+		var sources []codexRouteTierSource
 		for _, modelID := range cfg.GetModels() {
-			if modelID == "*" {
-				continue
-			}
-			if _, ok := visible[modelID]; !ok {
+			if _, ok := visible[modelID]; !ok || modelID == "*" {
 				continue
 			}
 			for _, selected := range s.enumerateModelRows(cfg, modelID) {
-				for _, upstream := range upstreamProtocols {
-					actualModel := s.resolveFinalUpstreamModel(cfg, selected, string(upstream))
-					if codexResponsesTextModel(actualModel) {
-						available[modelID] = struct{}{}
-						break
+				for i, route := range routes {
+					actualModel := s.resolveFinalUpstreamModel(cfg, selected, string(route.upstream))
+					if !codexResponsesTextModel(actualModel) {
+						continue
 					}
+					if sources == nil {
+						sources = codexRouteTierSources(cfg, routes)
+					}
+					declared := sources[i].serviceTiers(actualModel)
+					if _, seen := available[modelID]; !seen {
+						tiers[modelID], targets[modelID] = declared, actualModel
+					} else if targets[modelID] != actualModel || !bytes.Equal(tiers[modelID], declared) {
+						conflicts[modelID] = true
+					}
+					available[modelID] = struct{}{}
 				}
 			}
 		}
@@ -70,29 +85,88 @@ func (s *Server) filterCodexResponsesModels(c *gin.Context, visibleModels []stri
 	for _, modelID := range visibleModels {
 		if _, ok := available[modelID]; ok {
 			filtered = append(filtered, modelID)
+			if conflicts[modelID] {
+				tiers[modelID] = json.RawMessage("null")
+			}
 		}
 	}
-	return filtered, nil
+	return filtered, tiers, nil
 }
 
-func (s *Server) codexResponsesUpstreamProtocols(cfg *model.Config) []protocol.Protocol {
-	seen := make(map[protocol.Protocol]struct{})
-	var protocols []protocol.Protocol
+type codexResponsesRoute struct {
+	url      model.ChannelURL
+	upstream protocol.Protocol
+}
+
+func (s *Server) codexResponsesRoutes(cfg *model.Config) []codexResponsesRoute {
+	var routes []codexResponsesRoute
 	order := localUpstreamProtocolOrder(cfg.URLs)
 	for _, candidateURL := range orderChannelAttemptURLs(s.urlSelector, cfg, cfg.GetURLs()) {
+		if s.urlSelector != nil && s.urlSelector.IsDisabled(cfg.ID, candidateURL.url) {
+			continue
+		}
 		entry := cfg.URLs[candidateURL.idx]
 		candidates, _ := protocolCandidatesForURL(
 			entry, cfg.GetProtocolTransformMode(), protocol.Codex, protocol.RequestFamilyResponses, order,
 		)
 		for _, candidate := range candidates {
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			protocols = append(protocols, candidate)
+			routes = append(routes, codexResponsesRoute{url: entry, upstream: candidate})
 		}
 	}
-	return protocols
+	return routes
+}
+
+// codexRouteTierSource is the service-tier evidence one route can provide.
+type codexRouteTierSource struct {
+	manifest    *codexauth.ModelManifest // Codex OAuth snapshot bound to this route's endpoint
+	officialAPI bool                     // static API key on the official OpenAI API
+}
+
+// codexRouteTierSources resolves per-route evidence once per channel.
+func codexRouteTierSources(cfg *model.Config, routes []codexResponsesRoute) []codexRouteTierSource {
+	sources := make([]codexRouteTierSource, len(routes))
+	var credential *codexauth.Credential
+	if cfg.UsesCodexOAuth() {
+		credential, _ = codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+	}
+	for i, route := range routes {
+		// Only native Responses keeps service_tier; Responses -> Chat conversion drops it.
+		if route.upstream != protocol.Codex {
+			continue
+		}
+		if cfg.UsesCodexOAuth() {
+			endpoint, err := codexauth.ModelsEndpoint(route.url.URL)
+			if err == nil && credential != nil && credential.ModelManifest.Matches(credential, endpoint) {
+				sources[i].manifest = credential.ModelManifest
+			}
+			continue
+		}
+		parsed, err := url.Parse(route.url.URL)
+		sources[i].officialAPI = cfg.GetAuthType() == model.AuthTypeAPIKey && err == nil && parsed.Scheme == "https" && parsed.User == nil &&
+			strings.EqualFold(parsed.Hostname(), "api.openai.com") && (parsed.Port() == "" || parsed.Port() == "443")
+	}
+	return sources
+}
+
+func (source codexRouteTierSource) serviceTiers(actualModel string) json.RawMessage {
+	unknown := json.RawMessage("null")
+	if source.manifest != nil {
+		for _, entry := range source.manifest.Models {
+			if entry.Slug == actualModel && len(bytes.TrimSpace(entry.ServiceTiers)) > 0 {
+				return entry.ServiceTiers
+			}
+		}
+		return unknown
+	}
+	if !source.officialAPI || !util.IsOpenAIAstraModel(actualModel) {
+		return unknown
+	}
+	encoded, _ := json.Marshal([]codexauth.ServiceTier{
+		{ID: "priority", Name: "Fast", Description: "Priority processing for lower latency."},
+		{ID: "ultrafast", Name: "Ultrafast", Description: fmt.Sprintf("Lowest latency; %gx Standard token pricing.",
+			util.OpenAIServiceTierMultiplier(actualModel, "ultrafast"))},
+	})
+	return encoded
 }
 
 func codexResponsesTextModel(modelID string) bool {
@@ -118,10 +192,10 @@ func codexResponsesTextModel(modelID string) bool {
 	return true
 }
 
-func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool) {
+func handleListCodexModels(c *gin.Context, modelIDs []string, multiAgent bool, serviceTiers map[string]json.RawMessage) {
 	models := make([]map[string]any, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		models = append(models, codexModelDescriptor(modelID, multiAgent))
+		models = append(models, codexModelDescriptor(modelID, multiAgent, serviceTiers[modelID]))
 	}
 	body, err := json.Marshal(struct {
 		Models []map[string]any `json:"models"`
@@ -153,7 +227,11 @@ func matchesCodexModelsETag(header, etag string) bool {
 	return false
 }
 
-func codexModelDescriptor(modelID string, multiAgent bool) map[string]any {
+// serviceTiers keeps unknown (null), empty, and declared lists distinct.
+func codexModelDescriptor(modelID string, multiAgent bool, serviceTiers json.RawMessage) map[string]any {
+	if len(serviceTiers) == 0 {
+		serviceTiers = json.RawMessage("null")
+	}
 	openAIInfo := cliproxyregistry.LookupModelInfo(modelID, "openai")
 	info := openAIInfo
 	if info == nil {
@@ -192,7 +270,7 @@ func codexModelDescriptor(modelID string, multiAgent bool) map[string]any {
 		"supported_in_api":             true,
 		"priority":                     50,
 		"additional_speed_tiers":       []string{},
-		"service_tiers":                []any{},
+		"service_tiers":                serviceTiers,
 		"default_service_tier":         nil,
 		"availability_nux":             nil,
 		"upgrade":                      nil,

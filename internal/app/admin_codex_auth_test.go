@@ -40,6 +40,7 @@ import (
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const (
@@ -207,6 +208,446 @@ func codexTestIDTokenForPlan(t *testing.T, email, accountID, planType string) st
 		t.Fatal(err)
 	}
 	return "x." + base64.RawURLEncoding.EncodeToString(claims) + ".y"
+}
+
+const anthropicResetTestOrganization = "11111111-2222-4333-8444-555555555555"
+const anthropicResetTestGrant = `{"cedar_ember":{"eligible":true,"at_limit":true,"next_grant_id":"private_grant","grants":[{"id":"private_grant","label":"Native reset","resets_left":2,"clears":["five_hour","seven_day"],"usable_now":true}]}}`
+
+func createAnthropicResetTestChannel(t *testing.T, store storage.Store, account string, usage *oauthcost.Usage) *model.Config {
+	t.Helper()
+	credential := &anthropicauth.Credential{Type: anthropicauth.ChannelType, AccessToken: "access-" + account, RefreshToken: "refresh-" + account,
+		Scope: "user:inference user:profile", Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: account,
+		OrgUUID: "untrusted-cached-organization", QuotaCostUsage: usage}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{Name: "reset-" + account, AuthType: model.AuthTypeAnthropicOAuth,
+		OAuthCredential: raw, URLs: model.ChannelURLs{{URL: anthropicauth.DefaultUpstreamURL, Protocols: []string{"anthropic"}}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func anthropicResetTestResponse(request *http.Request, status int, body string) (*http.Response, error) {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+}
+
+func configureAnthropicResetTestClient(server *Server, store storage.Store, transport oauthUsageRoundTripper) {
+	server.client = &http.Client{Transport: transport}
+	server.cooldownManager = cooldown.NewManager(store, nil)
+	server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil)
+}
+
+func requestAnthropicResetRedeemHTTP(t *testing.T, server *Server, id int64) (*httptest.ResponseRecorder, APIResponse[anthropicResetOutcome]) {
+	t.Helper()
+	router := gin.New()
+	router.POST("/admin/channels/:id/anthropic-reset-credits/redeem", server.HandleRedeemAnthropicResetCredits)
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/anthropic-reset-credits/redeem", id), nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	var response APIResponse[anthropicResetOutcome]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode HTTP result: %v: %s", err, recorder.Body.String())
+	}
+	return recorder, response
+}
+
+func TestHandleAnthropicResetRedeemSuccess(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	now := time.Now().UTC()
+	usage := &oauthcost.Usage{Windows: []*oauthcost.Window{
+		{Key: oauthcost.Key("", "five_hour"), Family: oauthcost.FamilyAll, WindowSeconds: 5 * 3600, StartedAt: now.Add(-time.Hour).Unix(), ResetAt: now.Add(4 * time.Hour).Unix()},
+		{Key: oauthcost.Key("", "seven_day"), Family: oauthcost.FamilyAll, WindowSeconds: 7 * 24 * 3600, StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix()},
+		{Key: oauthcost.Key("Claude Sonnet", "seven_day_sonnet"), Family: oauthcost.FamilySonnet, WindowSeconds: 7 * 24 * 3600, StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix()},
+		{Key: oauthcost.Key("Claude Fable", "seven_day_fable"), Family: oauthcost.FamilyFable, WindowSeconds: 7 * 24 * 3600, StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix()},
+	}}
+	cfg := createAnthropicResetTestChannel(t, store, "success-account", usage)
+	ctx := context.Background()
+	for _, entry := range []struct {
+		model string
+		cost  float64
+	}{{"claude-sonnet-4-5", 1}, {"claude-fable-5", 2}} {
+		if err := store.AddLog(ctx, &model.LogEntry{ChannelID: cfg.ID, Time: model.JSONTime{Time: now.Add(-time.Minute)}, Model: entry.model, StatusCode: 200, Cost: entry.cost}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetChannelCooldown(ctx, cfg.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	posts := 0
+	transport := oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			posts++
+			if request.URL.Path != "/api/organizations/"+anthropicResetTestOrganization+"/reset_rate_limits" || request.GetBody != nil || request.Header.Get("Idempotency-Key") != "" {
+				t.Errorf("unsafe claim request: %s %v", request.URL, request.Header)
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			requestID, err := uuid.Parse(payload["request_id"])
+			if payload["program"] != "cedar_ember" || payload["grant_id"] != "private_grant" || err != nil || requestID == uuid.Nil {
+				t.Errorf("claim payload = %v", payload)
+			}
+			return anthropicResetTestResponse(request, 200, `{"result":"reset","cleared":["five_hour","private_identifier"],"reason":"private_grant"}`)
+		}
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"},"account":{"subscription_type":"max"}}`)
+		}
+		if request.URL.RawQuery != "" {
+			return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+		}
+		return anthropicResetTestResponse(request, 200, fmt.Sprintf(`{"five_hour":{"utilization":0,"resets_at":%q},"seven_day":{"utilization":40,"resets_at":%q},"seven_day_sonnet":{"utilization":50,"resets_at":%q},"seven_day_overage_included":{"utilization":60,"resets_at":%q}}`, now.Add(4*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339)))
+	})
+	configureAnthropicResetTestClient(server, store, transport)
+	w, response := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+	if w.Code != 200 || !response.Success || response.Data.Outcome != "reset" || posts != 1 || !reflect.DeepEqual(response.Data.Cleared, []string{"five_hour"}) {
+		t.Fatalf("first result = %d %+v posts=%d", w.Code, response, posts)
+	}
+	for _, secret := range []string{"private_grant", "private_identifier", anthropicResetTestOrganization, "access-success-account"} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("private value leaked: %s", w.Body.String())
+		}
+	}
+	fresh, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(fresh.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.QuotaCostUsage.EpochAt != 0 {
+		t.Fatal("partial reset changed the global quota epoch")
+	}
+	views, err := store.OAuthQuotaCostViews(ctx, map[int64]*oauthcost.Usage{cfg.ID: credential.QuotaCostUsage}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]int64{"|five_hour": 0, "|seven_day": 3_000_000, "claude sonnet|seven_day_sonnet": 1_000_000, "claude fable|seven_day_fable": 2_000_000} {
+		window := views[cfg.ID].FindWindow(key)
+		if window == nil || window.StandardCostMicroUSD != want {
+			t.Fatalf("window %s = %+v want %d", key, window, want)
+		}
+	}
+	cooldowns, err := store.GetAllChannelCooldowns(ctx)
+	if err != nil || cooldowns[cfg.ID].After(time.Now()) {
+		t.Fatalf("cooldown remained: %v %v", cooldowns, err)
+	}
+}
+
+func TestHandleAnthropicResetRedeemUnknownAllowsLaterExplicitAttempt(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		status         int
+		body           string
+		transportError bool
+	}{
+		{"network", 0, "", true}, {"malformed", 200, "{", false}, {"server-error", 500, "{}", false},
+		{"redirect", 302, "", false}, {"unconfirmed", 200, `{"result":"reset","reason":"reset_unconfirmed"}`, false},
+		{"unavailable", 200, `{"result":"unavailable"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			first := createAnthropicResetTestChannel(t, store, "unknown-first", nil)
+			second := createAnthropicResetTestChannel(t, store, "unknown-second", nil)
+			before, _ := store.GetConfig(context.Background(), first.ID)
+			posts, queries := 0, 0
+			requestIDs := make(map[string]bool)
+			transport := oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodPost {
+					posts++
+					var payload map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					requestID, err := uuid.Parse(payload["request_id"])
+					if err != nil || requestID == uuid.Nil || requestIDs[payload["request_id"]] {
+						t.Fatalf("request ID must be a fresh UUID: %v", payload)
+					}
+					requestIDs[payload["request_id"]] = true
+					if test.transportError {
+						return nil, errors.New("connection lost")
+					}
+					return anthropicResetTestResponse(request, test.status, test.body)
+				}
+				if request.URL.Path == "/api/oauth/profile" {
+					return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+				}
+				queries++
+				return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+			})
+			configureAnthropicResetTestClient(server, store, transport)
+			w, result := requestAnthropicResetRedeemHTTP(t, server, first.ID)
+			if w.Code != 200 || result.Data.Outcome != "unknown" || result.Data.Reason == "" || posts != 1 || queries != 1 {
+				t.Fatalf("unknown = %d %+v posts=%d", w.Code, result, posts)
+			}
+			after, _ := store.GetConfig(context.Background(), first.ID)
+			if after.OAuthCredential != before.OAuthCredential {
+				t.Fatal("unknown reset changed local quota")
+			}
+			for _, id := range []int64{first.ID, second.ID} {
+				w, next := requestAnthropicResetRedeemHTTP(t, server, id)
+				if w.Code != 200 || next.Data.Outcome != "unknown" || posts != queries {
+					t.Fatalf("later explicit attempt = %d %+v posts=%d queries=%d", w.Code, next, posts, queries)
+				}
+			}
+			if posts != 3 {
+				t.Fatalf("explicit attempts = %d, want 3", posts)
+			}
+		})
+	}
+}
+
+func TestHandleAnthropicResetRedeemConcurrentChannelAndOrganization(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	first := createAnthropicResetTestChannel(t, store, "concurrent-first", nil)
+	second := createAnthropicResetTestChannel(t, store, "concurrent-second", nil)
+	claimStarted, releaseClaim := make(chan struct{}), make(chan struct{})
+	var posts atomic.Int32
+	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			if posts.Add(1) == 1 {
+				close(claimStarted)
+				<-releaseClaim
+			}
+			return anthropicResetTestResponse(request, 200, `{"result":"not_limited"}`)
+		}
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+		}
+		return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+	}))
+	finished := make(chan int, 1)
+	go func() {
+		w, _ := requestAnthropicResetRedeemHTTP(t, server, first.ID)
+		finished <- w.Code
+	}()
+	select {
+	case <-claimStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("claim never started")
+	}
+	for _, id := range []int64{first.ID, second.ID} {
+		w, _ := requestAnthropicResetRedeemHTTP(t, server, id)
+		if w.Code != 409 || posts.Load() != 1 {
+			t.Errorf("concurrent channel %d = %d posts=%d", id, w.Code, posts.Load())
+		}
+	}
+	close(releaseClaim)
+	if status := <-finished; status != 200 {
+		t.Fatalf("first claim status = %d", status)
+	}
+	w, result := requestAnthropicResetRedeemHTTP(t, server, second.ID)
+	if w.Code != 200 || result.Data.Outcome != "not_limited" || posts.Load() != 2 {
+		t.Fatalf("later claim = %d %+v posts=%d", w.Code, result, posts.Load())
+	}
+}
+
+func TestHandleAnthropicResetRedeemRequiresFreshEligibility(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	cfg := createAnthropicResetTestChannel(t, store, "preflight-account", nil)
+	var posts, queries int
+	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			posts++
+			return anthropicResetTestResponse(request, 200, `{"result":"reset"}`)
+		}
+		queries++
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+		}
+		return anthropicResetTestResponse(request, 200, `{"cedar_ember":{"eligible":true,"at_limit":false,"next_grant_id":"private_grant","grants":[{"id":"private_grant","resets_left":2,"clears":["five_hour"],"usable_now":true}]}}`)
+	}))
+	w, _ := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+	if w.Code != 409 || queries != 2 || posts != 0 {
+		t.Fatalf("fresh eligibility = %d queries=%d posts=%d", w.Code, queries, posts)
+	}
+}
+
+func TestHandleAnthropicResetRedeemExhaustedPreparationSkipsClaim(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	cfg := createAnthropicResetTestChannel(t, store, "exhausted-account", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	posts := 0
+	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			posts++
+			return anthropicResetTestResponse(request, 200, `{"result":"reset"}`)
+		}
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+		}
+		cancel() // the eligibility answer arrives as the request budget runs out
+		return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+	}))
+	router := gin.New()
+	router.POST("/admin/channels/:id/anthropic-reset-credits/redeem", server.HandleRedeemAnthropicResetCredits)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("/admin/channels/%d/anthropic-reset-credits/redeem", cfg.ID), nil))
+	var response APIResponse[struct {
+		Code string `json:"code"`
+	}]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusGatewayTimeout || response.Data.Code != "reset_prepare_timeout" || posts != 0 {
+		t.Fatalf("exhausted preparation = %d %s posts=%d", recorder.Code, recorder.Body.String(), posts)
+	}
+}
+
+func TestHandleAnthropicResetRedeemMissingWindowSurvivesFailedRefresh(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	cfg := createAnthropicResetTestChannel(t, store, "missing-window-account", nil)
+	now := time.Now().UTC()
+	if err := store.AddLog(context.Background(), &model.LogEntry{ChannelID: cfg.ID, Time: model.JSONTime{Time: now.Add(-time.Hour)}, Model: "claude-sonnet-4-5", StatusCode: 200, Cost: 5}); err != nil {
+		t.Fatal(err)
+	}
+	refreshFails := true
+	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			return anthropicResetTestResponse(request, 200, `{"result":"reset","cleared":["seven_day"]}`)
+		}
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+		}
+		if request.URL.RawQuery != "" {
+			return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+		}
+		if refreshFails {
+			return anthropicResetTestResponse(request, 503, `{}`)
+		}
+		return anthropicResetTestResponse(request, 200, fmt.Sprintf(`{"five_hour":{"utilization":20,"resets_at":%q},"seven_day":{"utilization":0,"resets_at":%q}}`, now.Add(4*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339)))
+	}))
+	w, result := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+	if w.Code != 200 || result.Data.Outcome != "reset" || len(result.Data.Warnings) == 0 {
+		t.Fatalf("reset with failed refresh = %d %+v", w.Code, result)
+	}
+	refreshFails = false
+	c, w := newTestContext(t, newRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/oauth-usage", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+	server.HandleOAuthUsage(c)
+	var usageResponse APIResponse[oauthUsageSummary]
+	if err := json.Unmarshal(w.Body.Bytes(), &usageResponse); err != nil || w.Code != 200 {
+		t.Fatalf("later usage = %d %v %s", w.Code, err, w.Body.String())
+	}
+	for _, window := range usageResponse.Data.Windows {
+		want := int64(5_000_000)
+		if window.Kind == "seven_day" {
+			want = 0
+		}
+		if window.StandardCostMicroUSD == nil || *window.StandardCostMicroUSD != want {
+			t.Fatalf("later %s cost = %v want %d", window.Kind, window.StandardCostMicroUSD, want)
+		}
+	}
+}
+
+func TestHandleAnthropicResetRedeemMetadataRefreshesButClaimDoesNotRetry(t *testing.T) {
+	for _, rejected := range []string{"profile", "usage", "claim"} {
+		t.Run(rejected, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			cfg := createAnthropicResetTestChannel(t, store, "refresh-account", nil)
+			posts, refreshes := 0, 0
+			configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path == "/token" {
+					refreshes++
+					return anthropicResetTestResponse(request, 200, `{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600,"scope":"user:inference user:profile","token_type":"Bearer"}`)
+				}
+				if request.Method == http.MethodPost {
+					posts++
+					if rejected == "claim" {
+						return anthropicResetTestResponse(request, 401, `{}`)
+					}
+					if request.Header.Get("Authorization") != "Bearer rotated-access" {
+						t.Errorf("claim used rejected token: %q", request.Header.Get("Authorization"))
+					}
+					return anthropicResetTestResponse(request, 200, `{"result":"not_limited"}`)
+				}
+				oldToken := request.Header.Get("Authorization") == "Bearer access-refresh-account"
+				if request.URL.Path == "/api/oauth/profile" {
+					if rejected == "profile" && oldToken {
+						return anthropicResetTestResponse(request, 401, `{}`)
+					}
+					return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+				}
+				if rejected == "usage" && oldToken {
+					return anthropicResetTestResponse(request, 401, `{}`)
+				}
+				return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+			}))
+			server.anthropicCredentials.service.TokenURL = "https://oauth.example.test/token"
+			w, response := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+			wantOutcome, wantRefreshes := "not_limited", 1
+			if rejected == "claim" {
+				wantOutcome, wantRefreshes = "ineligible", 0
+			}
+			if w.Code != 200 || response.Data.Outcome != wantOutcome || posts != 1 || refreshes != wantRefreshes {
+				t.Fatalf("401 at %s = %d %+v claims=%d refreshes=%d", rejected, w.Code, response, posts, refreshes)
+			}
+		})
+	}
+}
+
+func TestHandleAnthropicResetRedeemChangedIdentitySkipsLocalRepair(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	cfg := createAnthropicResetTestChannel(t, store, "original-account", nil)
+	ctx := context.Background()
+	configureAnthropicResetTestClient(server, store, oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			fresh, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := anthropicauth.ParseCredential([]byte(fresh.OAuthCredential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential.AccountUUID = "new-account"
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := store.CompareAndSwapOAuthCredential(ctx, cfg.ID, model.AuthTypeAnthropicOAuth, fresh.OAuthCredential, raw); err != nil || !changed {
+				t.Fatal(err)
+			}
+			if err = store.SetChannelCooldown(ctx, cfg.ID, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			return anthropicResetTestResponse(request, 200, `{"result":"reset","cleared":["seven_day"]}`)
+		}
+		if request.URL.Path == "/api/oauth/profile" {
+			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
+		}
+		if request.URL.RawQuery == "" {
+			t.Error("refreshed the replacement identity after the original reset")
+		}
+		return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
+	}))
+	w, response := requestAnthropicResetRedeemHTTP(t, server, cfg.ID)
+	if w.Code != 200 || response.Data.Outcome != "reset" || response.Data.Usage != nil || len(response.Data.Warnings) == 0 {
+		t.Fatalf("changed identity result = %d %+v", w.Code, response)
+	}
+	cooldowns, _ := store.GetAllChannelCooldowns(ctx)
+	if !cooldowns[cfg.ID].After(time.Now()) {
+		t.Fatal("reset cleared the replacement account's cooldown")
+	}
+	fresh, _ := store.GetConfig(ctx, cfg.ID)
+	credential, err := anthropicauth.ParseCredential([]byte(fresh.OAuthCredential))
+	if err != nil || credential.AccountUUID != "new-account" || credential.QuotaCostUsage != nil {
+		t.Fatalf("reset changed replacement quota: %+v %v", credential, err)
+	}
 }
 
 func newCodexAuthTestStore(t *testing.T) storage.Store {

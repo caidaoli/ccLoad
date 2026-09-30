@@ -108,10 +108,27 @@ function channelShowsOAuthUsage(channel) {
 
 // Codex plan_type → 用户可读标签；未登记的值原样返回。
 function codexPlanLabel(rawPlanType) {
-  const key = String(rawPlanType || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const key = String(rawPlanType || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
   switch (key) {
-    case 'self_serve_business_prolite': return 'Premium seat';
-    case 'team': return 'Standard seat';
+    case 'free': return 'Free';
+    case 'go': return 'Go';
+    case 'plus': return 'Plus';
+    case 'prolite': return 'Pro 100';
+    case 'chatgptpro':
+    case 'pro': return 'Pro 200';
+    case 'promax': return 'Pro 500';
+    case 'team':
+    case 'selfservebusinessusagebased': return 'Business';
+    case 'selfservebusinessprolite': return 'Business Premium';
+    case 'business':
+    case 'enterprise':
+    case 'ent26':
+    case 'enterprisecbpusagebased': return 'Enterprise';
+    case 'enterprisecbpautomation': return 'Enterprise (Automation)';
+    case 'edu': return 'Edu';
+    case 'eduplus': return 'Edu Plus';
+    case 'edupro': return 'Edu Pro';
+    case 'unknown': return 'Unknown';
     default: return rawPlanType;
   }
 }
@@ -859,9 +876,16 @@ function buildAnthropicResetCreditsHtml(channelID) {
   const state = typeof getAnthropicResetCreditsState === 'function'
     ? getAnthropicResetCreditsState(channelID) : null;
   const loading = state?.status === 'loading';
-  const button = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="refresh-anthropic-reset-credits" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(loading ? 'channels.oauth.anthropicResetLoading' : 'channels.oauth.anthropicResetCount'))}</button>`;
+  const resetting = state?.reset_status === 'loading';
+  const canReset = state?.status === 'ready' && state.data?.eligible && state.data.available_count > 0;
+  const queryButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="refresh-anthropic-reset-credits" data-channel-id="${channelID}"${loading || resetting ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(loading ? 'channels.oauth.anthropicResetLoading' : 'channels.oauth.anthropicResetCount'))}</button>`;
+  const resetLabel = resetting ? 'resettingQuota' : 'resetQuota';
+  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${loading || resetting || !canReset ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
+  const button = `${queryButton}${resetButton}`;
+  const message = state?.reset_error || state?.reset_feedback;
+  const feedback = message ? `<div class="ch-oauth-usage__credits-summary" role="${state?.reset_status === 'reset' ? 'status' : 'alert'}">${escapeChannelRefreshText(message)}</div>` : '';
   if (state?.status !== 'ready') {
-    return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${button}</div>${state?.status === 'error' ? `<div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(state.error)}</div>` : ''}</div>`;
+    return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${button}</div>${state?.status === 'error' ? `<div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(state.error)}</div>` : ''}${feedback}</div>`;
   }
   const data = state.data;
   const credits = data.credits.filter(credit => credit && typeof credit === 'object');
@@ -890,6 +914,7 @@ function buildAnthropicResetCreditsHtml(channelID) {
       ${button}
     </div>
     <div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(window.t(status))}${cooldown ? ` · ${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown }))}` : ''}</div>
+    ${feedback}
   </div>`;
 }
 
@@ -1598,7 +1623,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'refresh-anthropic-reset-credits', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'refresh-anthropic-reset-credits', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1622,6 +1647,11 @@ function initChannelEventDelegation() {
       case 'refresh-anthropic-reset-credits':
         if (typeof refreshAnthropicResetCredits === 'function') {
           refreshAnthropicResetCredits(channelId).catch(() => {});
+        }
+        break;
+      case 'reset-anthropic-quota':
+        if (typeof confirmAnthropicQuotaReset === 'function') {
+          confirmAnthropicQuotaReset(channelId).catch(() => {});
         }
         break;
       case 'checkin-codebuddy':
