@@ -22,9 +22,11 @@ import (
 )
 
 func TestUpstreamHTTP2KeepAlive(t *testing.T) {
+	t.Parallel()
 	for _, protected := range []bool{false, true} {
 		for _, acknowledge := range []bool{false, true} {
 			t.Run(fmt.Sprintf("protected=%t/ack=%t", protected, acknowledge), func(t *testing.T) {
+				t.Parallel()
 				peerDone := make(chan error, 1)
 				upstream := httptest.NewUnstartedServer(nil)
 				upstream.EnableHTTP2 = true

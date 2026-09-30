@@ -1040,7 +1040,7 @@ func TestUpstreamHTTPTransportClosesIdleCodexUTLSConnectionAtMaxAge(t *testing.T
 }
 
 func TestNewServerAppliesUpstreamConnectionMaxAgeToHTTP(t *testing.T) {
-	t.Setenv("CCLOAD_PASS", "upstream-connection-age-test-password")
+	t.Parallel()
 
 	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {

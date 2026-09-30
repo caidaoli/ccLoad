@@ -2720,6 +2720,7 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 }
 
 func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var baseURLs []string
 	var requestTimes []time.Time
@@ -2784,6 +2785,7 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 }
 
 func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)

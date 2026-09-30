@@ -1617,6 +1617,7 @@ func TestHandleChannelChat_CodexOAuthWithoutAPIKeyOrSSEContentType(t *testing.T)
 }
 
 func TestHandleChannelChat_AntigravityCapacityUsesProviderFallbackPolicy(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var baseURLs []string
 	var requestTimes []time.Time
@@ -1740,6 +1741,7 @@ func TestHandleChannelChat_AntigravityCapacityCancellationKeepsModelCooldown(t *
 }
 
 func TestHandleChannelChat_AntigravityFallbackBusinessFailureKeepsModelCooldown(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var baseURLs []string
 	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {

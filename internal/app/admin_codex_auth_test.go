@@ -1362,7 +1362,7 @@ func waitXAICredentialImportTestJob(
 }
 
 func TestXAIRefreshTokenImportAcceptsMoreThanHundredWithBoundedConcurrencyAndRedactsSecrets(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	var active atomic.Int32
 	var maximum atomic.Int32
@@ -2945,7 +2945,7 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 }
 
 func TestHandleImportOAuthCredentialsValidatesConcurrentlyAndContinuesAfterNetworkFailure(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	var active, maxActive atomic.Int32
 	concurrent := make(chan struct{})
