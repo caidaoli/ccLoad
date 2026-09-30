@@ -6882,6 +6882,220 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 	}
 }
 
+func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "reset-access-secret", RefreshToken: "reset-refresh-secret",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference user:profile",
+		AccountUUID: "reset-account", EmailAddress: "reset@example.com",
+	}
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	upstreamBody := `{"cedar_ember":{"eligible":true,"at_limit":true,"next_grant_id":"grant_1","grants":[{"id":"grant_1","label":"Weekly reset","resets_left":2,"clears":["weekly"],"usable_now":true,"percent_used":{"weekly":75}}]}}`
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.URL.String() != "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1" ||
+			request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer reset-access-secret" ||
+			request.Header.Get("anthropic-beta") != "oauth-2025-04-20" || request.Header.Get("x-app") != "cli" ||
+			request.Header.Get("User-Agent") != "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)" {
+			t.Errorf("reset request = %s %s %v", request.Method, request.URL, request.Header)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(upstreamBody)), Request: request}, nil
+	})}
+	server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil)
+	path := fmt.Sprintf("/admin/channels/%d/anthropic-reset-credits", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleAnthropicResetCredits(c)
+	if w.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Eligible       bool `json:"eligible"`
+			AvailableCount int  `json:"available_count"`
+			Credits        []struct {
+				Redeemable bool `json:"redeemable"`
+			} `json:"credits"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || !response.Success || !response.Data.Eligible ||
+		response.Data.AvailableCount != 2 || len(response.Data.Credits) != 1 || !response.Data.Credits[0].Redeemable {
+		t.Fatalf("reset response = %+v, %v", response, err)
+	}
+	if strings.Contains(w.Body.String(), "grant_1") || strings.Contains(w.Body.String(), "reset-access-secret") {
+		t.Fatalf("reset response leaked private data: %s", w.Body.String())
+	}
+	after, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil || after.OAuthCredential != before.OAuthCredential {
+		t.Fatalf("read-only query changed credential: %v", err)
+	}
+	baseGrant := `"id":"grant_1","label":"Weekly reset","resets_left":2,"clears":["weekly"],"usable_now":true`
+	for _, test := range []struct {
+		name, blockFields, grantFields string
+		wantCredits, wantAvailable     int
+	}{
+		{"paused", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"paused":true`, 0, 0},
+		{"expired", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"ends_at":"2000-01-01T00:00:00Z"`, 0, 0},
+		{"future", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"starts_at":"2100-01-01T00:00:00Z"`, 0, 0},
+		{"cooldown", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1","cooldown_until":"2100-01-01T00:00:00Z"`, baseGrant, 1, 0},
+		{"requires limit", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant, 1, 0},
+		{"blocking", `"eligible":true,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant + `,"blocking":["some_limit"]`, 1, 0},
+		{"ineligible", `"eligible":false,"at_limit":true,"next_grant_id":"grant_1"`, baseGrant, 1, 0},
+		{"not next", `"eligible":true,"at_limit":true,"next_grant_id":"other"`, baseGrant, 1, 0},
+		{"no limit required", `"eligible":true,"at_limit":false,"next_grant_id":"grant_1"`, baseGrant + `,"use_requires_limit":false`, 1, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstreamBody = `{"cedar_ember":{` + test.blockFields + `,"grants":[{` + test.grantFields + `}]}}`
+			c, response := newTestContext(t, newRequest(http.MethodGet, path, nil))
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+			server.HandleAnthropicResetCredits(c)
+			var result struct {
+				Success bool `json:"success"`
+				Data    struct {
+					AvailableCount int               `json:"available_count"`
+					Credits        []json.RawMessage `json:"credits"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || !result.Success ||
+				len(result.Data.Credits) != test.wantCredits || result.Data.AvailableCount != test.wantAvailable {
+				t.Fatalf("status=%d result=%+v err=%v", response.Code, result, err)
+			}
+		})
+	}
+}
+
+func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "reset-access-secret", RefreshToken: "reset-refresh-secret",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:inference",
+		AccountUUID: "reset-error-account", EmailAddress: "reset-error@example.com",
+	}
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	status := http.StatusOK
+	body := `{"cedar_ember":{"eligible":true}}`
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: status, Header: http.Header{"Location": []string{"https://other.example/"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil)
+	query := func() *httptest.ResponseRecorder {
+		path := fmt.Sprintf("/admin/channels/%d/anthropic-reset-credits", channel.ID)
+		c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+		server.HandleAnthropicResetCredits(c)
+		return w
+	}
+	if response := query(); response.Code != http.StatusBadRequest || calls != 0 {
+		t.Fatalf("missing scope status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+	credential.Scope = "user:profile"
+	credential.AccountUUID = "reset-error-account-with-scope"
+	credential.EmailAddress = "reset-error-with-scope@example.com"
+	channel, _, err = createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := query(); response.Code != http.StatusBadGateway || calls != 1 || !strings.Contains(response.Body.String(), "invalid Anthropic reset grants") {
+		t.Fatalf("malformed upstream status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+	for _, upstream := range []string{`{}`, `{"cedar_ember":null}`} {
+		body = upstream
+		response := query()
+		var result struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Eligible       bool              `json:"eligible"`
+				AvailableCount int               `json:"available_count"`
+				Credits        []json.RawMessage `json:"credits"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || !result.Success ||
+			result.Data.Eligible || result.Data.AvailableCount != 0 || len(result.Data.Credits) != 0 {
+			t.Fatalf("absent reset %s status=%d body=%s err=%v", upstream, response.Code, response.Body.String(), err)
+		}
+	}
+	for _, upstream := range []string{`{"error":"denied"}`, `{"cedar_ember":{"grants":null}}`, `{"cedar_ember":42}`} {
+		body = upstream
+		if response := query(); response.Code != http.StatusBadGateway {
+			t.Fatalf("invalid reset %s status=%d body=%s", upstream, response.Code, response.Body.String())
+		}
+	}
+	status = http.StatusFound
+	beforeRedirect := calls
+	if response := query(); response.Code != http.StatusBadGateway || calls != beforeRedirect+1 {
+		t.Fatalf("redirect status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+}
+
+func TestHandleAnthropicResetCreditsRefreshesOnceAfterUnauthorized(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-reset-token", RefreshToken: "old-reset-refresh",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Scope: "user:profile",
+		AccountUUID: "reset-retry-account", EmailAddress: "reset-retry@example.com",
+	}
+	channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageCalls, refreshCalls := 0, 0
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		status, body := http.StatusOK, `{"cedar_ember":{"eligible":true,"grants":[]}}`
+		switch request.URL.String() {
+		case "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1":
+			usageCalls++
+			if request.Header.Get("Authorization") == "Bearer old-reset-token" {
+				status = http.StatusUnauthorized
+			} else if request.Header.Get("Authorization") != "Bearer new-reset-token" {
+				t.Errorf("unexpected reset Authorization = %q", request.Header.Get("Authorization"))
+			}
+		case anthropicauth.TokenURL:
+			refreshCalls++
+			body = `{"access_token":"new-reset-token","refresh_token":"new-reset-refresh","expires_in":3600,"scope":"user:profile"}`
+		default:
+			t.Errorf("unexpected URL = %s", request.URL)
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	server.anthropicCredentials = newAnthropicCredentialManager(anthropicauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil)
+	path := fmt.Sprintf("/admin/channels/%d/anthropic-reset-credits", channel.ID)
+	c, response := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleAnthropicResetCredits(c)
+	if response.Code != http.StatusOK || usageCalls != 2 || refreshCalls != 1 {
+		t.Fatalf("status=%d usage calls=%d refresh calls=%d body=%s", response.Code, usageCalls, refreshCalls, response.Body.String())
+	}
+	var wire struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Eligible bool `json:"eligible"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil || !wire.Success || !wire.Data.Eligible {
+		t.Fatalf("reset response = %+v, %v", wire, err)
+	}
+}
+
 func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 	const upstreamBody = "  {\"error\":\"invalid_grant\",\"error_description\":\"refresh token expired\"}\n"
 	tests := []struct {

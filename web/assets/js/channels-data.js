@@ -34,6 +34,9 @@ async function loadChannels(options = {}) {
     }
 
     channels = Array.isArray(resp.data) ? resp.data : [];
+    if (typeof syncAnthropicResetCreditsFromChannels === 'function') {
+      syncAnthropicResetCreditsFromChannels(channels);
+    }
     if (typeof syncOAuthUsageFromChannels === 'function') {
       syncOAuthUsageFromChannels(channels, usageStates);
     }

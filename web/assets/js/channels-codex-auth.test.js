@@ -17,6 +17,9 @@ const {
   pollAnthropicOAuthStatus,
   pollXAIOAuthStatus,
   getOAuthUsageState,
+  getAnthropicResetCreditsState,
+  syncAnthropicResetCreditsFromChannels,
+  refreshAnthropicResetCredits,
   snapshotOAuthUsageStates,
   syncOAuthUsageFromChannels,
   maybeAutoRefreshActiveChannelUsage,
@@ -47,6 +50,38 @@ const {
   loadCodeBuddyCredentialFile,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('Claude reset credits are queried only on demand and ignore an older response', async () => {
+  const previousChannels = global.channels;
+  const previousWindow = global.window;
+  global.channels = [{ id: 8101, auth_type: 'anthropic_oauth' }, { id: 8102, auth_type: 'codex_oauth' }];
+  global.window = { t: key => key };
+  let resolveFirst;
+  const first = new Promise(resolve => { resolveFirst = resolve; });
+  const firstData = { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] };
+  const secondData = { eligible: true, available_count: 2, credits: [{ resets_left: 2 }] };
+  try {
+    assert.equal(getAnthropicResetCreditsState(8101), null);
+    await assert.rejects(() => refreshAnthropicResetCredits(8102, async () => assert.fail('unexpected request')), /Anthropic OAuth/);
+    const older = refreshAnthropicResetCredits(8101, (url, options) => {
+      assert.equal(url, '/admin/channels/8101/anthropic-reset-credits');
+      assert.equal(options.method, 'GET');
+      return first;
+    });
+    assert.equal(getAnthropicResetCreditsState(8101).status, 'loading');
+    await refreshAnthropicResetCredits(8101, async () => secondData);
+    resolveFirst(firstData);
+    await older;
+    assert.deepEqual(getAnthropicResetCreditsState(8101), { status: 'ready', data: secondData });
+    syncAnthropicResetCreditsFromChannels([{ id: 8101, auth_type: 'anthropic_oauth', updated_at: '2026-09-30T00:00:00Z' }]);
+    assert.equal(getAnthropicResetCreditsState(8101), null);
+    await assert.rejects(() => refreshAnthropicResetCredits(8101, async () => ({ credits: [] })), /Invalid|无效|anthropicResetInvalid/);
+    assert.equal(getAnthropicResetCreditsState(8101).status, 'error');
+  } finally {
+    global.channels = previousChannels;
+    global.window = previousWindow;
+  }
+});
 
 test('manual CodeBuddy check-in uses the saved channel and publishes refreshed credits', async () => {
   const previousWindow = global.window;

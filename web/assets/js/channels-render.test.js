@@ -73,6 +73,39 @@ test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () =>
   }
 });
 
+test('Claude 重置次数只对 Anthropic OAuth 显示，且上游字段不能注入 HTML', () => {
+  const previousWindow = global.window;
+  const previousResetState = global.getAnthropicResetCreditsState;
+  const previousUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = { t: (key, values = {}) => `${key}${values.count ?? ''}${values.time ?? ''}` };
+  global.getOAuthUsageState = () => null;
+  global.getAnthropicResetCreditsState = () => ({
+    status: 'ready', data: {
+      eligible: true, available_count: 0,
+      credits: [
+        { label: '<img src=x onerror=alert(1)>', resets_left: 2, expires_at: '2027-01-01T00:00:00Z' },
+        { label: 'second', resets_left: 1, expires_at: '2027-02-01T00:00:00Z' }
+      ]
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 8101, auth_type: 'anthropic_oauth' });
+    assert.match(html, /anthropicResetRemaining3/);
+    assert.match(html, /anthropicResetUnavailable/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /data-action="refresh-anthropic-reset-credits"/);
+    assert.doesNotMatch(buildOAuthUsageStatusHtml({ id: 8102, auth_type: 'codex_oauth' }), /refresh-anthropic-reset-credits/);
+  } finally {
+    global.window = previousWindow;
+    global.getAnthropicResetCreditsState = previousResetState;
+    global.getOAuthUsageState = previousUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
 test('OAuth 计划徽标支持 Antigravity paidTier 并转义内容', () => {
   const previousGetUsageState = global.getOAuthUsageState;
   global.getOAuthUsageState = () => ({

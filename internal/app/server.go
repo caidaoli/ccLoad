@@ -1798,6 +1798,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/codex/credentials/import", s.HandleImportCodexCredential)
 		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
 		admin.POST("/channels/:id/oauth-usage", s.HandleOAuthUsage)
+		admin.GET("/channels/:id/anthropic-reset-credits", s.HandleAnthropicResetCredits)
 		admin.POST("/channels/:id/codex-quota-reset", s.HandleResetCodexQuota)
 		admin.POST("/channels/oauth-usage/batch/stream", s.HandleOAuthUsageBatchStream)
 		admin.POST("/channels/usage/active/batch/stream", s.HandleActiveChannelUsageBatchStream)

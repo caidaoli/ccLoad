@@ -29,6 +29,9 @@ let currentOAuthCredentialView = 'decoded';
 let oauthLoginDialogTrigger = null;
 let oauthCredentialImportDialogTrigger = null;
 const oauthUsageStateByChannelID = new Map();
+const anthropicResetCreditsByChannelID = new Map();
+const anthropicResetCreditsOperationByChannelID = new Map();
+const anthropicResetCreditsChannelVersionByID = new Map();
 const oauthUsageOperationByChannelID = new Map();
 const oauthUsageLastOperationByChannelID = new Map();
 let oauthUsageOperationSequence = 0;
@@ -2113,6 +2116,64 @@ function getOAuthUsageState(channelID) {
   return oauthUsageStateByChannelID.get(numericID) || null;
 }
 
+function getAnthropicResetCreditsState(channelID) {
+  return anthropicResetCreditsByChannelID.get(Number(channelID)) || null;
+}
+
+function anthropicResetCreditsChannelVersion(channel) {
+  return JSON.stringify([channel.auth_type, channel.created_at || '', channel.updated_at || '']);
+}
+
+function syncAnthropicResetCreditsFromChannels(channelList) {
+  for (const channel of channelList) {
+    const channelID = Number(channel?.id);
+    if (!anthropicResetCreditsChannelVersionByID.has(channelID)) continue;
+    if (anthropicResetCreditsChannelVersion(channel) === anthropicResetCreditsChannelVersionByID.get(channelID)) continue;
+    anthropicResetCreditsChannelVersionByID.delete(channelID);
+    anthropicResetCreditsOperationByChannelID.delete(channelID);
+    anthropicResetCreditsByChannelID.delete(channelID);
+  }
+}
+
+async function refreshAnthropicResetCredits(channelID, fetcher = fetchDataWithAuth) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved Anthropic OAuth channel is required');
+  }
+  const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+  const channel = channelList.find(channel => Number(channel?.id) === numericID && channel?.auth_type === 'anthropic_oauth');
+  if (!channel) {
+    throw new Error('An Anthropic OAuth channel is required');
+  }
+  anthropicResetCreditsChannelVersionByID.set(numericID, anthropicResetCreditsChannelVersion(channel));
+  const operation = Symbol();
+  anthropicResetCreditsOperationByChannelID.set(numericID, operation);
+  anthropicResetCreditsByChannelID.set(numericID, { status: 'loading' });
+  rerenderOAuthUsage();
+  try {
+    const data = await fetcher(`/admin/channels/${numericID}/anthropic-reset-credits`, { method: 'GET' });
+    if (!data || typeof data.eligible !== 'boolean' || !Number.isInteger(data.available_count) ||
+        !Array.isArray(data.credits)) {
+      throw new Error(window.t('channels.oauth.anthropicResetInvalid'));
+    }
+    if (anthropicResetCreditsOperationByChannelID.get(numericID) === operation) {
+      anthropicResetCreditsByChannelID.set(numericID, { status: 'ready', data });
+      anthropicResetCreditsOperationByChannelID.delete(numericID);
+      rerenderOAuthUsage();
+    }
+    return data;
+  } catch (error) {
+    if (anthropicResetCreditsOperationByChannelID.get(numericID) === operation) {
+      anthropicResetCreditsByChannelID.set(numericID, {
+        status: 'error', error: error?.message || window.t('channels.oauth.anthropicResetFailed')
+      });
+      anthropicResetCreditsOperationByChannelID.delete(numericID);
+      rerenderOAuthUsage();
+    }
+    throw error;
+  }
+}
+
 function snapshotOAuthUsageStates() {
   return new Map(oauthUsageStateByChannelID);
 }
@@ -3187,6 +3248,9 @@ if (typeof module !== 'undefined' && module.exports) {
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
     getOAuthUsageState,
+    getAnthropicResetCreditsState,
+    syncAnthropicResetCreditsFromChannels,
+    refreshAnthropicResetCredits,
     snapshotOAuthUsageStates,
     syncOAuthUsageFromChannels,
     maybeAutoRefreshActiveChannelUsage,

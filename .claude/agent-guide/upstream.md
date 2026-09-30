@@ -76,6 +76,8 @@
 
 ## Anthropic / Claude Code
 
+- **原生重置额度查询** (`admin_anthropic_reset_credits.go`)：参照 sub2api `a60a29549f488a854966aaec9541abbe006cac22` 的 `claude_reset_credits.go`，管理员通过 `GET /admin/channels/:id/anthropic-reset-credits` 按需查询 OAuth usage 的 `cedar_ember`（`cedar_ember=1&skip_spend=1`）。仅 Claude OAuth 且具有 `user:profile` scope 的渠道可用，复用凭证刷新、渠道代理和全局上游地址覆盖，拒绝跟随重定向。响应只返回安全的重置券视图，不暴露 grant/组织 ID；排除已用完、暂停、未生效或到期券，当前可用次数同时遵守账号资格、next grant、额度限制和冷却条件。页面沿用 Codex 重置次数样式，区分持有次数与当前可用状态并显示到期时间；不自动查询、不兑换重置券、不改配额或成本账本。
+
 - **对照来源**: Anthropic 原生传输参照 CLIProxyAPI `21d26a07a39316f94c6ebc370a92222bca89aaac`；账号身份、模拟 beta/header 参照 sub2api `a3eb7ef302961cba716dc78b39b93b60c467db0e`。两者均为 app 层参照，不改变 `internal/protocol/cliproxy/UPSTREAM.md` 的完整同步基线。
 
 - **Anthropic thinking**:项目生成的 Anthropic 请求用 `thinking.type=adaptive` + `output_config.effort`;anyrouter `/v1/messages` 兜底补 adaptive 并归一旧 `enabled`;anyrouter 额外注入 `anthropic-beta: context-1m`

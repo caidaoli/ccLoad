@@ -855,6 +855,44 @@ function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
   return `<div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>`;
 }
 
+function buildAnthropicResetCreditsHtml(channelID) {
+  const state = typeof getAnthropicResetCreditsState === 'function'
+    ? getAnthropicResetCreditsState(channelID) : null;
+  const loading = state?.status === 'loading';
+  const button = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="refresh-anthropic-reset-credits" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(loading ? 'channels.oauth.anthropicResetLoading' : 'channels.oauth.anthropicResetCount'))}</button>`;
+  if (state?.status !== 'ready') {
+    return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${button}</div>${state?.status === 'error' ? `<div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(state.error)}</div>` : ''}</div>`;
+  }
+  const data = state.data;
+  const credits = data.credits.filter(credit => credit && typeof credit === 'object');
+  const total = credits.reduce((sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0), 0);
+  const expiry = credit => {
+    const timestamp = Date.parse(String(credit.expires_at || ''));
+    return Number.isFinite(timestamp) ? timestamp : Infinity;
+  };
+  const primary = credits.find(credit => credit.redeemable) ||
+    [...credits].sort((left, right) => expiry(left) - expiry(right))[0];
+  const available = data.eligible && data.available_count > 0;
+  const status = !data.eligible ? 'channels.oauth.anthropicResetIneligible'
+    : available ? 'channels.oauth.anthropicResetUsable'
+      : 'channels.oauth.anthropicResetUnavailable';
+  const expiryText = primary?.expires_at ? formatXAIUsageReset(primary.expires_at) : '';
+  const details = credits.map(credit => {
+    const time = credit.expires_at ? formatXAIUsageReset(credit.expires_at) : '';
+    return `${String(credit.label || '')}: ${Math.max(0, Number(credit.resets_left) || 0)}${time ? ` · ${window.t('channels.oauth.resetCreditExpires', { time })}` : ''}`;
+  }).join('\n');
+  const cooldown = data.cooldown_until && Date.parse(data.cooldown_until) > Date.now()
+    ? formatXAIUsageReset(data.cooldown_until) : '';
+  return `<div class="ch-oauth-usage__credits" role="status">
+    <div class="ch-oauth-usage__credits-summary" title="${escapeChannelRefreshText(details)}">
+      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetRemaining', { count: total }))}</span>
+      ${expiryText ? `<span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpires', { time: expiryText }))}</span>` : ''}
+      ${button}
+    </div>
+    <div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(window.t(status))}${cooldown ? ` · ${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown }))}` : ''}</div>
+  </div>`;
+}
+
 function formatCodexResetCreditExpiry(expiresAt) {
   const date = new Date(String(expiresAt || '').trim());
   if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return null;
@@ -1066,16 +1104,17 @@ function buildOAuthUsageStatusHtml(channel) {
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
   if (!state) {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
   }
   if (state.status === 'loading') {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, state, true)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, state, true)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
   }
   if (state.status === 'error') {
     const fallback = window.t('channels.oauth.usageFailed');
     const message = formatOAuthUsageError(state.error) || fallback;
     return `<div class="ch-oauth-usage">
       ${buildOAuthUsageToolbar(channel, state)}
+      ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
       <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(message)}">${escapeChannelRefreshText(message)}</div>
     </div>`;
   }
@@ -1165,6 +1204,7 @@ function buildOAuthUsageStatusHtml(channel) {
     : '';
   return `<div class="ch-oauth-usage">
     ${buildOAuthUsageToolbar(channel, state)}
+    ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
     ${rows.join('')}
     ${isCodex ? buildCodexPurchasedCreditsHtml(state.data) : ''}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
@@ -1558,7 +1598,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'refresh-anthropic-reset-credits', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1577,6 +1617,11 @@ function initChannelEventDelegation() {
           refreshOAuthUsage(channelId).catch(error => {
             if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
           });
+        }
+        break;
+      case 'refresh-anthropic-reset-credits':
+        if (typeof refreshAnthropicResetCredits === 'function') {
+          refreshAnthropicResetCredits(channelId).catch(() => {});
         }
         break;
       case 'checkin-codebuddy':
