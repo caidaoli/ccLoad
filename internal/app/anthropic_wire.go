@@ -2410,7 +2410,7 @@ func anthropicClaudeCodeDefaultMaxTokens(modelName string) string {
 		return false
 	}
 	switch {
-	case hasPrefix("claude-opus-5-5"):
+	case hasPrefix("claude-opus-5-5", "claude-sonnet-5-5"):
 		return "128000"
 	case hasPrefix("claude-3-5-"):
 		return "8192"

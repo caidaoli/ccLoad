@@ -248,9 +248,10 @@ type codexModelPreset struct {
 }
 
 var codexModelPresets = map[string]codexModelPreset{
-	"gpt-6-sol":  {contextWindow: 272000, reasoningLevels: []string{"low", "medium", "high", "xhigh", "max"}, supportsImage: true},
-	"gpt-6-luna": {contextWindow: 272000, reasoningLevels: []string{"low", "medium", "high", "xhigh", "max"}, supportsImage: true},
-	"gpt-4o":     {contextWindow: 128000, supportsImage: true},
+	"gpt-6.1-sol": {contextWindow: 272000, reasoningLevels: []string{"low", "medium", "high", "xhigh", "max"}, supportsImage: true},
+	"gpt-6-sol":   {contextWindow: 272000, reasoningLevels: []string{"low", "medium", "high", "xhigh", "max"}, supportsImage: true},
+	"gpt-6-luna":  {contextWindow: 272000, reasoningLevels: []string{"low", "medium", "high", "xhigh", "max"}, supportsImage: true},
+	"gpt-4o":      {contextWindow: 128000, supportsImage: true},
 }
 
 func codexModelReasoningLevels(info *cliproxyregistry.ModelInfo, preset codexModelPreset) (string, []map[string]string) {

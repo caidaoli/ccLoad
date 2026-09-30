@@ -20,7 +20,7 @@
 
 - Key 级(401/403;400 且错误信息含组织已禁用 `organization has been disabled`、余额耗尽 `credit balance`、需身份验证 `identity verification is required`)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却。OAuth 渠道没有独立 Key(`KeyIndex == NoKeyIndex`,凭证就是渠道),Key 级故障直接改为渠道冷却并切渠道;401 例外,先由 OAuth 凭证层强制刷新重试
 - **Anthropic 429 分流**(`util/classifier.go`):响应头明确拒绝共享 5h/7d 订阅窗口 → `CredentialScoped` Key 级冷却(OAuth 即渠道冷却),reset 取自响应头,禁止同渠道 Key 回退;fast 模式缺少 usage credits → 客户端错误,不冷却;其余 429 按模型级
-- 模型级(`model_cooldown`,上游 HTTP 400/413/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
+- 模型级(`model_cooldown`,上游 HTTP 400/413/499/5xx/520/524/429,597 服务类 SSE 错误及模型不可用 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
 - 原生协议能力不支持(响应未提交的 HTTP 400 仅限明确的 `RESPONSES_MODEL_NOT_SUPPORTED`、不支持 anthropic-beta 或 `convert_request_failed` + `not implemented`，非模型 404/405，或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 写入带 `protocol capability fallback` 标记的代理尝试日志,开启 Debug 日志时同时保存请求/响应详情,但不冷却 Key/模型/渠道/URL;auto 模式可转换时同渠道/Key/URL 探测其他协议,不可转换时切 URL/渠道。普通参数校验、无效 arguments、畸形或空错误体的 400 不视为协议能力缺失，继续按具体 HTTP 错误分类处理
 - 客户端错误(406,404 非模型 `does not exist`,400/413/597 上下文超限,413 `message_too_big` WebSocket close 1009)→ 直接返回,不重试;普通 HTTP 413 请求体超限仍按模型级换渠

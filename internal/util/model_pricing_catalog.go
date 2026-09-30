@@ -155,6 +155,11 @@ var (
 // - Gemini: https://ai.google.dev/gemini-api/docs/pricing
 var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
+	"claude-sonnet-5-5": {
+		InputPrice: 2.00, OutputPrice: 10.00,
+		CacheReadPrice: 0.20, HasCacheReadPrice: true,
+		CacheWritePrice: 2.50, HasCacheWritePrice: true,
+	},
 	"claude-sonnet-5":   {InputPrice: 3.00, OutputPrice: 15.00}, // 同 claude-sonnet-4-6
 	"claude-sonnet-4-6": {InputPrice: 3.00, OutputPrice: 15.00}, // 全1M窗口统一价格
 	"claude-sonnet-4-5": {
@@ -203,6 +208,12 @@ var basePricing = map[string]ModelPricing{
 	"gpt-6-astra": {
 		InputPrice: 10.00, OutputPrice: 50.00, CacheReadPrice: 1.00, HasCacheReadPrice: true,
 		InputPriceHigh: 20.00, OutputPriceHigh: 75.00, CacheReadPriceHigh: 2.00, // >272K context
+		CacheReadCountsTowardTier: true,
+	},
+	// GPT-6.1 Sol 官方价格：缓存读为输入价格的 5%，>272K 整段按高价计费。
+	"gpt-6.1-sol": {
+		InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,
+		InputPriceHigh: 4.00, OutputPriceHigh: 15.00, CacheReadPriceHigh: 0.20, // >272K context
 		CacheReadCountsTowardTier: true,
 	},
 	// GPT-6 Sol/Luna 官方价格：缓存读为输入价格的 10%，缓存写按输入价格的 1.25×计费。

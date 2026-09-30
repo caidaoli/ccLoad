@@ -1132,6 +1132,16 @@ func TestClassifySSEError(t *testing.T) {
 	}
 }
 
+// Codex WS 错误事件经 597 分类时，模型不可用只冷却当前模型；OAuth 渠道无独立 Key，
+// 若按普通 Key 级处理会冷却整个渠道。
+func TestClassifySSEErrorModelUnavailableIsModelScoped(t *testing.T) {
+	body := []byte(`{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`)
+	classification := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, body)
+	if classification.Level != ErrorLevelKey || !classification.ModelScoped {
+		t.Fatalf("classification=%+v, want Key level and model scoped", classification)
+	}
+}
+
 func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	tests := []struct {
 		name         string

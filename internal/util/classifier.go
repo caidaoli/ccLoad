@@ -466,12 +466,14 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
 	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
 	// 服务类错误切换渠道但只冷却当前模型；认证/限流类错误仍冷却 Key。
+	// 模型不可用（如 Codex WS 错误事件 "model is not supported"）与 HTTP 400 同口径：只冷却当前模型。
 	if statusCode == StatusSSEError {
 		level, matched := classifySSEError(responseBody)
 		return HTTPResponseClassification{
 			Level:           level,
 			DefaultFallback: !matched,
-			ModelScoped:     level == ErrorLevelChannel,
+			ModelScoped: level == ErrorLevelChannel ||
+				(level == ErrorLevelKey && isModelUnavailableResponse(responseBody)),
 		}
 	}
 

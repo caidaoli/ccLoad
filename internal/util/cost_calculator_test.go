@@ -131,6 +131,17 @@ func TestCalculateCost_Opus55(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_Sonnet55(t *testing.T) {
+	// 不能模糊命中 claude-sonnet-5 的 $3/$15。
+	breakdown := CalculateStandardCostBreakdown("claude-sonnet-5-5", "", 1_000, 1_000, 1_000, 1_000, 0)
+	if breakdown.Input.PricePerMillion != 2 ||
+		breakdown.Output.PricePerMillion != 10 ||
+		breakdown.CacheRead.PricePerMillion != 0.2 ||
+		breakdown.CacheWrite.PricePerMillion != 2.5 {
+		t.Fatalf("breakdown=%#v", breakdown)
+	}
+}
+
 func TestCalculateCost_Opus41(t *testing.T) {
 	// 场景：Claude Opus 4.1高端请求
 	cost := CalculateCostDetailed("claude-opus-4-1-20250805", 1000, 2000, 0, 0, 0)
@@ -406,6 +417,8 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
 		{"gpt-6-astra", 1000, 1000, 0, 0.06},                // $10.00/1M input, $50.00/1M output
 		{"gpt-6-astra", 1000, 1000, 1000, 0.061},            // 缓存读取 $1.00/1M
+		{"gpt-6.1-sol", 1000, 1000, 0, 0.012},               // $2.00/1M input, $10.00/1M output
+		{"gpt-6.1-sol", 1000, 1000, 1000, 0.0121},           // 缓存读取 $0.10/1M
 		{"gpt-6-sol", 1000, 1000, 0, 0.012},                 // $2.00/1M input, $10.00/1M output
 		{"gpt-6-sol", 1000, 1000, 1000, 0.0122},             // 缓存读取 $0.20/1M
 		{"gpt-6-luna", 1000, 1000, 0, 0.0006},               // $0.10/1M input, $0.50/1M output

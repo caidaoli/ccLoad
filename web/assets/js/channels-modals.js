@@ -3757,17 +3757,19 @@ const COMMON_MODELS = {
     'claude-opus-4-8',
     'claude-opus-5',
     'claude-opus-5-5',
-    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-sonnet-5-5',
     'claude-sonnet-5',
     'claude-sonnet-4-6',
   ],
   codex: [
+    'gpt-6.1-sol',
+    'gpt-6-astra',
+    'gpt-6-luna',
     'gpt-5.5',
     'gpt-5.6-sol',
     'gpt-5.6-luna',
-    'gpt-5.6-terra',
-    'gpt-5.3-codex-spark',
-    'codex-auto-review'
+    'gpt-5.6-terra'
   ],
   gemini: [
     'gemini-3.6-flash',

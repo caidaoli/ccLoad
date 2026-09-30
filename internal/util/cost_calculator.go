@@ -506,6 +506,7 @@ func isOpenAIModel(model string) bool {
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
 	"gpt-6-astra":       true,
+	"gpt-6.1-sol":       true,
 	"gpt-6-sol":         true,
 	"gpt-6-luna":        true,
 	"gpt-5.6":           true,
@@ -595,7 +596,7 @@ func openAIFastModeMultiplier(model string) float64 {
 	switch {
 	case strings.HasPrefix(lowerModel, "gpt-6-astra"), strings.HasPrefix(lowerModel, "gpt-5.6"), strings.HasPrefix(lowerModel, "gpt-5.5"):
 		return 2.5
-	case strings.HasPrefix(lowerModel, "gpt-6-sol"), strings.HasPrefix(lowerModel, "gpt-6-luna"):
+	case strings.HasPrefix(lowerModel, "gpt-6.1-sol"), strings.HasPrefix(lowerModel, "gpt-6-sol"), strings.HasPrefix(lowerModel, "gpt-6-luna"):
 		return 2.0
 	case strings.HasPrefix(lowerModel, "gpt-5.4"):
 		return 2.0
