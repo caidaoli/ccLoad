@@ -1614,7 +1614,10 @@ func (s *Server) getAllModelCooldowns(ctx context.Context) (map[int64]map[string
 }
 
 // InvalidateChannelListCache 使渠道列表缓存失效
-// 在渠道CRUD操作后调用，确保缓存一致性
+// 在渠道CRUD操作后调用，确保缓存一致性。
+// 不清协议能力学习结果：OAuth 刷新、额度元数据等运行时写库也走这里，全局清空会让
+// 所有渠道反复重新探测；URL/协议相关配置变更须用 protocolCapabilities.clearChannels
+// 只清受影响渠道。
 func (s *Server) InvalidateChannelListCache() {
 	if cache := s.getChannelCache(); cache != nil {
 		cache.InvalidateCache()
@@ -1623,8 +1626,6 @@ func (s *Server) InvalidateChannelListCache() {
 	if s.channelBalancer != nil {
 		s.channelBalancer.ResetAll()
 	}
-	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
-	s.protocolCapabilities.clear()
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效

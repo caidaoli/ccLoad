@@ -439,11 +439,18 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 				s.cleanupOrphanedURLStates(c.Request.Context(), channelID, cfg.GetURLs())
 			}
 		}
+		importedIDs := make([]int64, 0, len(validChannels))
 		for _, channel := range validChannels {
-			if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+			if channel == nil || channel.Config == nil {
+				continue
+			}
+			importedIDs = append(importedIDs, channel.Config.ID)
+			if channel.Config.UsesOAuth() {
 				s.invalidateOAuthCredential(channel.Config.ID, channel.Config.GetAuthType())
 			}
 		}
+		// 导入可能覆盖已有渠道的 URL/协议配置，只重新探测被导入的渠道。
+		s.protocolCapabilities.clearChannels(importedIDs...)
 	}
 
 	summary.Processed = summary.Created + summary.Updated + summary.Skipped

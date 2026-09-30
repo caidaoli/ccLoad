@@ -1556,6 +1556,10 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	} else {
 		s.InvalidateAPIKeysCache(id)
 	}
+	if keyChanged || protocolCapabilityConfigChanged(existing, upd) {
+		// URL、协议声明、转换模式或 Key 等可能已变化，只重新探测本渠道。
+		s.protocolCapabilities.clearChannels(id)
+	}
 
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()
@@ -2155,6 +2159,9 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 				s.InvalidateAPIKeysCache(channelID)
 			}
 		}
+		if patch.ProtocolTransformMode != nil {
+			s.protocolCapabilities.clearChannels(channelIDs...)
+		}
 		s.InvalidateChannelListCache()
 	}
 
@@ -2313,6 +2320,7 @@ func (s *Server) disableChannelIfOAuthSnapshotMatches(
 
 func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	id := cfg.ID
+	s.protocolCapabilities.clearChannels(id)
 	if s.keySelector != nil {
 		s.keySelector.RemoveChannelCounter(id)
 	}
