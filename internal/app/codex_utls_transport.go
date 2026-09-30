@@ -89,13 +89,16 @@ func isChromeUTLSRequest(req *http.Request) bool {
 		return true
 	}
 	host := req.URL.Hostname()
-	return strings.EqualFold(host, "chatgpt.com") || strings.EqualFold(host, "claude.ai") ||
-		strings.EqualFold(host, "platform.claude.com")
+	return strings.EqualFold(host, "chatgpt.com")
 }
 
 func isAnthropicNodeUTLSRequest(req *http.Request) bool {
-	return req != nil && req.URL != nil && req.URL.Scheme == "https" &&
-		strings.EqualFold(req.URL.Hostname(), "api.anthropic.com")
+	if req == nil || req.URL == nil || req.URL.Scheme != "https" {
+		return false
+	}
+	host := req.URL.Hostname()
+	return strings.EqualFold(host, "api.anthropic.com") || strings.EqualFold(host, "claude.ai") ||
+		strings.EqualFold(host, "platform.claude.com")
 }
 
 func (t *codexUTLSRoundTripper) roundTripProtected(req *http.Request) (*http.Response, error) {
