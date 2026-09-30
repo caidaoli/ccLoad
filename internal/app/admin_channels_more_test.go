@@ -13,6 +13,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -202,12 +203,20 @@ func TestOAuthChannelUpdateAcceptsStaleSyntheticKeyRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	capabilityKey := protocolCapabilityKey{
+		channelID: created.ID, baseURL: created.URLs[0].URL,
+		clientProtocol: protocol.OpenAI, requestFamily: protocol.RequestFamilyChatCompletions,
+		upstreamModel: created.ModelEntries[0].Model,
+	}
+	server.protocolCapabilities.set(capabilityKey, protocol.Codex)
+
 	// 编辑器打开后台自动刷新轮换了 AT，表单里仍是轮换前的掩码值。
 	// 合成行的 api_key 永不落库，保存必须成功且保留渠道倍率。
 	path := fmt.Sprintf("/admin/channels/%d", created.ID)
 	update := map[string]any{
 		"name": created.Name, "auth_type": model.AuthTypeXAIOAuth,
-		"urls": created.URLs, "models": created.ModelEntries, "enabled": true,
+		"protocol_transform_mode": created.ProtocolTransformMode,
+		"urls":                    created.URLs, "models": created.ModelEntries, "enabled": true,
 		"api_keys": []map[string]any{{
 			"api_key": util.MaskAPIKey("xai-access-before-rotation"), "cost_multiplier": 0.5,
 		}},
@@ -228,6 +237,9 @@ func TestOAuthChannelUpdateAcceptsStaleSyntheticKeyRow(t *testing.T) {
 	}
 	if persisted.CostMultiplier != 0.5 {
 		t.Fatalf("cost multiplier=%v, want 0.5", persisted.CostMultiplier)
+	}
+	if got, known := server.protocolCapabilities.get(capabilityKey); !known || got != protocol.Codex {
+		t.Fatalf("capability=%q known=%v after synthetic key submission, want codex", got, known)
 	}
 	storedKeys, err := store.GetAPIKeys(context.Background(), created.ID)
 	if err != nil {

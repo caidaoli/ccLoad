@@ -1365,11 +1365,6 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		req.ManagementAccount = resolvedManagement
 	}
 
-	// 检测api_key是否变化（需要重建API Keys）
-	if existing.UsesOAuth() {
-		oldKeys = nil
-	}
-
 	newKeys := req.normalizeAPIKeys()
 	normalizeAPIKeyScopesForModels(newKeys, req.Models)
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
@@ -1377,8 +1372,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		keyStrategy = channelKeyStrategy(oldKeys)
 	}
 
-	// 比较Key数量和内容是否变化
-	keyChanged := len(oldKeys) != len(newKeys)
+	// OAuth 合成 Key 仅回传倍率，不参与实际 API Key 变更判断。
+	keyChanged := !existing.UsesOAuth() && len(oldKeys) != len(newKeys)
 	if !keyChanged {
 		for i, oldKey := range oldKeys {
 			if i >= len(newKeys) || oldKey.APIKey != newKeys[i].APIKey {
