@@ -512,11 +512,13 @@ else
   [[ "$synchronized_provider_count" == "$provider_count" ]] || fail "UPSTREAM.md must record one synchronized status per imported provider"
 fi
 
+module_source_path=""
 if [[ -f "$upstream_doc" ]]; then
   if ! grep -Fq -- "- Repository: \`https://github.com/caidaoli/CLIProxyAPI\`" "$upstream_doc"; then
     fail "UPSTREAM.md repository is missing or unexpected"
   fi
-  if ! grep -Fq -- "- Module source path: \`github.com/router-for-me/CLIProxyAPI/v7\`" "$upstream_doc"; then
+  module_source_path="$(sed -nE 's#^- Module source path: `([^`]+)`$#\1#p' "$upstream_doc")"
+  if [[ ! "$module_source_path" =~ ^github\.com/router-for-me/CLIProxyAPI/v[0-9]+$ ]]; then
     fail "UPSTREAM.md module source path is missing or unexpected"
   fi
 
@@ -605,6 +607,10 @@ if [[ -n "$upstream_repo" ]]; then
   elif ! git -C "$upstream_repo" cat-file -e "${synchronized_commit}^{commit}" 2>/dev/null; then
     fail "recorded commit $synchronized_commit is absent from $upstream_repo"
   elif [[ -n "$provider_test_lister_bin" ]]; then
+    upstream_module_path="$(git -C "$upstream_repo" show "${synchronized_commit}:go.mod" | awk '$1 == "module" { print $2 }')"
+    if [[ "$module_source_path" != "$upstream_module_path" ]]; then
+      fail "UPSTREAM.md module source path differs from the recorded commit: expected $upstream_module_path"
+    fi
     core_scope_args=(
       --upstream-repo "$upstream_repo"
       --target-commit "$synchronized_commit"

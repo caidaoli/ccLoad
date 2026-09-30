@@ -3664,14 +3664,22 @@ func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T)
 						return
 					}
 					contents := gjson.GetBytes(wire, "request.contents").Array()
-					if len(contents) != 3 {
-						t.Errorf("contents=%d, want user/model/user: %s", len(contents), wire)
+					wantTurns := 3
+					if target == "claude-sonnet-4-6" {
+						wantTurns = 4
+					}
+					if len(contents) != wantTurns {
+						t.Errorf("contents=%d, want %d: %s", len(contents), wantTurns, wire)
 						w.WriteHeader(400)
 						return
 					}
 					calls := contents[1].Get("parts").Array()
 					results := contents[2].Get("parts").Array()
-					if len(calls) != 2 || len(results) != 3 {
+					wantResultParts := 3
+					if target == "claude-sonnet-4-6" {
+						wantResultParts = 2
+					}
+					if len(calls) != 2 || len(results) != wantResultParts {
 						t.Errorf("calls=%d results=%d: %s", len(calls), len(results), wire)
 						w.WriteHeader(400)
 						return
@@ -3696,7 +3704,13 @@ func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T)
 					if got := results[resultOffset+1].Get("functionResponse.parts.0.inlineData"); got.Get("mimeType").String() != "image/png" || got.Get("data").String() != "aW1hZ2U=" {
 						t.Errorf("tool result image lost: %s", wire)
 					}
-					if !strings.Contains(results[reminderIndex].Get("text").String(), "keep the reminder") {
+					reminderText := ""
+					if target == "claude-sonnet-4-6" {
+						reminderText = contents[3].Get("parts.0.text").String()
+					} else {
+						reminderText = results[reminderIndex].Get("text").String()
+					}
+					if !strings.Contains(reminderText, "keep the reminder") {
 						t.Errorf("reminder lost or misplaced: %s", wire)
 					}
 					if gjson.GetBytes(wire, "request.tools.0.functionDeclarations.#").Int() != 2 {
@@ -3744,6 +3758,80 @@ func TestProxy_AntigravityClaudeSystemReminderPreservesToolPairing(t *testing.T)
 				}
 			})
 		}
+	}
+}
+
+func TestProxy_AntigravityClaudeToolResultsFollowModelTurn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		messages   []any
+		wantTurns  int
+		wantResult int
+		wantText   string
+	}{
+		{
+			name: "mixed text and tool result",
+			messages: []any{
+				map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "call_a", "name": "read_a", "input": map[string]any{}}}},
+				map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "Continue."}, map[string]any{"type": "tool_result", "tool_use_id": "call_a", "content": "A"}}},
+			},
+			wantTurns: 3, wantResult: 1, wantText: "Continue.",
+		},
+		{
+			name: "parallel results across messages",
+			messages: []any{
+				map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "call_a", "name": "read_a", "input": map[string]any{}}, map[string]any{"type": "tool_use", "id": "call_b", "name": "read_b", "input": map[string]any{}}}},
+				map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "call_a", "content": "A"}}},
+				map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "call_b", "content": "B"}}},
+			},
+			wantTurns: 2, wantResult: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(500)
+					return
+				}
+				contents := gjson.GetBytes(wire, "request.contents").Array()
+				if len(contents) != tc.wantTurns {
+					t.Errorf("contents=%d, want %d: %s", len(contents), tc.wantTurns, wire)
+					w.WriteHeader(400)
+					return
+				}
+				if contents[0].Get("role").String() != "model" || contents[1].Get("role").String() != "user" {
+					t.Errorf("tool result does not immediately follow model turn: %s", wire)
+				}
+				parts := contents[1].Get("parts").Array()
+				if len(parts) != tc.wantResult {
+					t.Errorf("function responses=%d, want %d: %s", len(parts), tc.wantResult, wire)
+				}
+				for _, part := range parts {
+					if !part.Get("functionResponse").Exists() {
+						t.Errorf("result turn contains non-result part: %s", wire)
+					}
+				}
+				if tc.wantText != "" && contents[2].Get("parts.0.text").String() != tc.wantText {
+					t.Errorf("trailing text=%q, want %q: %s", contents[2].Get("parts.0.text").String(), tc.wantText, wire)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			t.Cleanup(upstream.Close)
+			const target = "claude-sonnet-4-6"
+			env := setupProxyTestEnv(t, []testChannel{{name: "antigravity-tool-result-adjacency", upstreamProtocol: "gemini", models: target, priority: 100, authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-tool-result-adjacency")}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": target, "max_tokens": 64, "messages": tc.messages,
+				"tools": []any{map[string]any{"name": "read_a", "input_schema": map[string]any{"type": "object"}}, map[string]any{"name": "read_b", "input_schema": map[string]any{"type": "object"}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

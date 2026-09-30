@@ -1051,10 +1051,22 @@ func TestConvertOpenAIResponsesRequestToAntigravity_WebSearchToolChoiceAutoPrese
 func TestConvertOpenAIResponsesRequestToAntigravity_ReasoningSummaries(t *testing.T) {
 	// Reasoning summary application belongs to the excluded runtime thinking layer.
 	// The pure converter must preserve the wire request without injecting it.
-	input := []byte(`{"model":"gemini-3-flash","reasoning":{"effort":"high"},"input":"hello"}`)
-	out := ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", input, false)
-	if got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts"); got.Exists() {
-		t.Fatalf("pure converter injected runtime includeThoughts=%s; runtime policy must remain outside the protocol core", got.Raw)
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"effort only", `{"model":"gemini-3-flash","reasoning":{"effort":"high"},"input":"hello"}`},
+		{"explicit auto", `{"model":"gemini-3-flash","reasoning":{"effort":"high","summary":"auto"},"input":"hello"}`},
+		{"explicit null", `{"model":"gemini-3-flash","reasoning":{"effort":"high","summary":null},"input":"hello"}`},
+		{"explicit none", `{"model":"gemini-3-flash","reasoning":{"effort":"high","summary":"none"},"input":"hello"}`},
+		{"explicit generate summary", `{"model":"gemini-3-flash","reasoning":{"effort":"high","generate_summary":"detailed"},"input":"hello"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ConvertOpenAIResponsesRequestToAntigravity("gemini-3-flash", []byte(tc.input), false)
+			if got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts"); got.Exists() {
+				t.Fatalf("pure converter injected runtime includeThoughts=%s", got.Raw)
+			}
+		})
 	}
 }
 

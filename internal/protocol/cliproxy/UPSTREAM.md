@@ -1,9 +1,9 @@
 # CLIProxyAPI translator provenance
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
-- Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `21d26a07a39316f94c6ebc370a92222bca89aaac` (`fork/v8.97.0`)
-- Synchronized at: `2026-09-25`
+- Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
+- Last synchronized commit: `802133a1d2e84dd870c1822c34ea92f6b2e4e7f1` (`fork/v9.0.0`)
+- Synchronized at: `2026-09-30`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -21,6 +21,42 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-09-30)
+
+Core sources remain the four-protocol trees and shared helpers under
+`internal/translator/{claude,codex,gemini,openai,common}`, plus the allowlisted
+`internal/{signature,thinking,util,misc}` sources and embedded model catalog.
+They are synchronized under `internal/protocol/cliproxy`; Antigravity's source
+and destination directories are recorded in the provider section below.
+The upstream module changed from `/v7` to `/v8`; all local imports remain under
+`ccLoad/internal/protocol/cliproxy`, with no runtime module dependency.
+
+Chat Completions-to-Codex now normalizes trimmed, case-insensitive `fast` and
+`priority` service tiers to `priority`, preserves `ultrafast`, and omits other
+values. Claude requests targeting Antigravity Claude models now isolate tool
+results immediately after their model call turn, combine parallel result turns,
+and move intervening text/reminders after those results. Gemini model targets
+retain their existing merge behavior. The shared split helper and public model
+predicates are imported with their tests; `util/claude_model.go` is no longer
+excluded as a runtime helper because the provider converter directly uses its
+pure model classification. The existing HTTP provider contract tests cover the
+different Claude/Gemini ordering rules.
+
+Antigravity Responses summary visibility still belongs to ccLoad's application
+boundary. Upstream's `thinking.ExtractSummaryConfig`/`ApplySummaryConfig` changes
+are not imported into the pure provider; the synchronized summary test retains
+the local no-injection contract for explicit auto/null/none/legacy summary
+values as well as effort-only input. Existing signature, usage/cache, SSE,
+request-validation, and same-protocol passthrough contracts remain intact.
+
+The new `thinking/configuration_update.go` helpers are used only by the excluded
+runtime `thinking/apply.go` policy. No mapped converter moved field injection to
+that layer. The model catalog's new `support_configuration_update` flags are
+copied as source data but are not consumed by ccLoad's static loader; this sync
+does not enable the upstream runtime policy. Authentication, dynamic registries,
+executors, caches, logging, Interactions, and runtime-only tests remain excluded.
+The upstream license and attribution are unchanged.
 
 ## Synchronization adaptations (2026-09-25)
 
@@ -91,7 +127,7 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 71 `_test.go` files from the same commit as the
+The core snapshot includes 72 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -109,7 +145,7 @@ production sources:
 - `openai/gemini`: 2
 - `openai/openai/responses`: 8
 - `signature`: 8
-- `util`: 6
+- `util`: 7
 
 Tests for excluded packages are not copied. Performance-only benchmarks are
 also excluded: the translator-wide benchmark requires the excluded dynamic
@@ -125,7 +161,7 @@ length check do not define converter behavior. JSON parsing, nested schema
 cleanup, and malformed/low-entropy signature rejection remain covered.
 The `thinking` package keeps only the pure
 conversion sources (`convert.go`, `suffix.go`, `text.go`, `types.go`); upstream's
-runtime thinking application (`apply.go`, `strip.go`, `summary.go`,
+runtime thinking application (`apply.go`, `configuration_update.go`, `strip.go`, `summary.go`,
 `validate.go`, `errors.go`, `provider/`) and its tests stay excluded, as does
 the upstream SDK translator Registry and its summary test. The OpenAI-to-OpenAI
 Chat Completions no-op converter and its post-`[DONE]` tests are excluded because
