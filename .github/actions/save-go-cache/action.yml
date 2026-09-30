@@ -1,0 +1,28 @@
+name: Save Go build cache
+description: Drop build cache entries this job did not use, then save the rest.
+
+inputs:
+  path:
+    description: GOCACHE directory from setup-go.
+    required: true
+  key:
+    description: Primary build cache key from setup-go.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Trim unused build results
+      shell: bash
+      env:
+        GOCACHE_DIR: ${{ inputs.path }}
+      run: |
+        before=$(du -sm "$GOCACHE_DIR" | cut -f1)
+        find "$GOCACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-used-after" -delete
+        echo "GOCACHE trimmed: ${before}MB -> $(du -sm "$GOCACHE_DIR" | cut -f1)MB"
+
+    - name: Save Go build results
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}

@@ -1,6 +1,20 @@
 name: Set up Go
 description: Cache dependencies separately from the build results updated by each job.
 
+inputs:
+  cache-key:
+    description: Build cache scope; defaults to the job id. Matrix jobs must pass a per-target value.
+    required: false
+    default: ''
+
+outputs:
+  build-cache-path:
+    description: GOCACHE directory, consumed by save-go-cache.
+    value: ${{ steps.paths.outputs.build }}
+  build-cache-key:
+    description: Primary build cache key, consumed by save-go-cache.
+    value: ${{ steps.keys.outputs.build }}
+
 runs:
   using: composite
   steps:
@@ -18,6 +32,15 @@ runs:
         echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
         echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
 
+    - name: Compute build cache key
+      id: keys
+      shell: bash
+      env:
+        PREFIX: go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-key || github.job }}-${{ hashFiles('go.mod', 'go.sum') }}-
+      run: |
+        echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+        echo "build=$PREFIX$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
     - name: Cache Go modules
       id: modules
       uses: actions/cache@v5
@@ -33,11 +56,18 @@ runs:
       shell: bash
       run: go mod download
 
-    - name: Cache Go build results
-      uses: actions/cache@v5
+    # Restore only: save-go-cache trims entries this job did not touch before saving,
+    # otherwise the rolling cache grows with every commit.
+    - name: Restore Go build results
+      uses: actions/cache/restore@v5
       with:
         path: ${{ steps.paths.outputs.build }}
-        key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+        key: ${{ steps.keys.outputs.build }}
         restore-keys: |
-          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-${{ hashFiles('go.mod', 'go.sum') }}-
-          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ github.job }}-
+          ${{ steps.keys.outputs.prefix }}
+
+    # Go refreshes an entry's mtime on use only when it is older than one hour,
+    # so anything not newer than (job start - 1h) was not used by this job.
+    - name: Mark build cache usage window
+      shell: bash
+      run: touch -d '1 hour ago' "$RUNNER_TEMP/go-cache-used-after"

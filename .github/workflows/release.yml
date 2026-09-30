@@ -99,11 +99,12 @@ jobs:
         with:
           ref: refs/tags/${{ needs.metadata.outputs.tag }}
 
+      # Caches saved under a tag ref are invisible to other tags, so only restore
+      # the per-target caches that test.yml cross-build saves on master.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go
         with:
-          go-version: '1.27.x'
-          cache: false
+          cache-key: cross-${{ matrix.goos }}-${{ matrix.goarch }}
 
       - name: Build binary
         shell: bash
@@ -235,6 +236,10 @@ jobs:
           push: true
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
+          # Registry cache is shared across tag runs (GHA cache is not); it keeps the
+          # QEMU-emulated arm64 apt-get layer until the base image digest changes.
+          cache-from: type=registry,ref=${{ steps.image.outputs.name }}:buildcache
+          cache-to: type=registry,ref=${{ steps.image.outputs.name }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Promote beta alias for stable releases
         if: needs.metadata.outputs.channel == 'stable'
