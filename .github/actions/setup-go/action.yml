@@ -46,9 +46,9 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ steps.paths.outputs.modules }}
+        # No restore-keys: restoring an older module set and saving it again keeps
+        # every superseded module version forever.
         key: go-mod-all-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
-        restore-keys: |
-          go-mod-all-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-
 
     # Every job must save the full dependency set, including the PostgreSQL job.
     - name: Download Go modules
