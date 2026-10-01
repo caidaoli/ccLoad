@@ -51,6 +51,7 @@ func mustBuildTestTransformPlan(t testing.TB, _ *model.Config, body []byte) prot
 
 // TestRequestContextCreation 测试请求上下文创建
 func TestRequestContextCreation(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	tests := []struct {
@@ -101,6 +102,7 @@ func TestRequestContextCreation(t *testing.T) {
 
 // TestBuildProxyRequest 测试请求构建
 func TestBuildProxyRequest(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -147,6 +149,7 @@ func TestBuildProxyRequest(t *testing.T) {
 }
 
 func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -185,6 +188,7 @@ func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 // 整体重建，调用方声明的 anthropic-beta 不透传——否则 body 已按 CLI 形态重写，
 // header 却还是调用方的旧能力集，两边必然对不上。
 func TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -239,6 +243,7 @@ func TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream(t 
 }
 
 func TestBuildProxyRequest_KeepsCustomHeaderRulesOnClaudeCodeWire(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -304,6 +309,7 @@ func TestBuildProxyRequest_KeepsCustomHeaderRulesOnClaudeCodeWire(t *testing.T) 
 }
 
 func TestBuildProxyRequest_AnyrouterMergesContext1mIntoClaudeCodeBeta(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 	cfg := anyrouterAnthropicCfg()
 	reqCtx := &requestContext{
@@ -346,6 +352,7 @@ func TestBuildProxyRequest_AnyrouterMergesContext1mIntoClaudeCodeBeta(t *testing
 }
 
 func TestBuildProxyRequest_KeepsCustomHeaderRulesOnAntigravityWire(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 	cfg := &model.Config{
 		ID:                     1,
@@ -390,6 +397,7 @@ func TestBuildProxyRequest_KeepsCustomHeaderRulesOnAntigravityWire(t *testing.T)
 }
 
 func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -437,6 +445,7 @@ func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
 }
 
 func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -483,6 +492,7 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 
 // TestHandleRequestError 测试错误处理
 func TestHandleRequestError(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{ID: 1}
@@ -547,6 +557,7 @@ func TestHandleRequestError(t *testing.T) {
 
 // TestForwardOnceAsync_Integration 集成测试
 func TestForwardOnceAsync_Integration(t *testing.T) {
+	t.Parallel()
 	// 创建测试服务器
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 验证认证头
@@ -637,6 +648,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 }
 
 func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
+	t.Parallel()
 	var gotPath string
 	var gotBody string
 	originalBody := []byte(`{"model":"alias-model","messages":[{"role":"user","content":"hi"}]}`)
@@ -747,6 +759,7 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 }
 
 func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.T) {
+	t.Parallel()
 	resetCodexSessionCache()
 
 	var gotSessionID string
@@ -830,6 +843,7 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 }
 
 func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T) {
+	t.Parallel()
 	var gotHeaders http.Header
 	srv := newInMemoryServer(t)
 	srv.client = &http.Client{
@@ -956,6 +970,7 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 // TestClientCancelClosesUpstream 测试客户端取消时上游连接立即关闭（方案1验证）
 // 验证：客户端499取消 → resp.Body.Close() → 上游Read被中断
 func TestClientCancelClosesUpstream(t *testing.T) {
+	t.Parallel()
 	// 通道：用于同步上游服务器的状态
 	upstreamStarted := make(chan struct{})
 	upstreamClosed := make(chan struct{})
@@ -1076,6 +1091,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 // 2. 客户端取消（499） - AfterFunc 触发，但无泄漏
 // 3. 首字节超时 - 定时器触发，context 取消
 func TestNoGoroutineLeak(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	const maxDelta = 20
@@ -1197,6 +1213,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 // 场景：请求发出后，响应头还未收到时超时定时器触发
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	// 定义超时与延迟的明确倍数关系，避免魔法数字
@@ -1258,6 +1275,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 }
 
 func TestStreamTimeout_ClosesLongRunningStreamingResponse(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	const testTimeout = 50 * time.Millisecond
@@ -1315,6 +1333,7 @@ func TestStreamTimeout_ClosesLongRunningStreamingResponse(t *testing.T) {
 // 场景：上游先发送响应头并 flush，但延迟发送 SSE body
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误
 func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	const testTimeout = 10 * time.Millisecond
@@ -1368,6 +1387,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 // 场景：上游响应头已到，并持续发送 SSE 注释保活，真正 data 内容超过阈值才到。
 // 期望：心跳不能解除首块响应体超时，应返回 598 和 ErrUpstreamFirstByteTimeout。
 func TestFirstByteTimeout_StreamingHeartbeatBeforeContent(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 
 	const testTimeout = 20 * time.Millisecond

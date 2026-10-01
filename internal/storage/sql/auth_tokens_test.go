@@ -16,7 +16,7 @@ import (
 func TestAuthToken_CreateAndGet(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "auth_tokens.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -72,7 +72,7 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 func TestAuthToken_InvalidChannelRestrictionModeWriteReturnsError(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "invalid_channel_restriction_mode_write.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	invalid := &model.AuthToken{
@@ -306,7 +306,7 @@ func TestAuthToken_ExistingCostLimitWithoutMaxConcurrencyBackfillsDefault(t *tes
 func TestAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "cost_limit_requires_max_concurrency.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	token := &model.AuthToken{
@@ -333,7 +333,7 @@ func TestAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) {
 func TestAuthToken_List(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "list.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -372,7 +372,7 @@ func TestAuthToken_List(t *testing.T) {
 func TestAuthToken_Update(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "update.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -427,7 +427,7 @@ func TestAuthToken_Update(t *testing.T) {
 func TestAuthToken_Delete(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "delete.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -457,7 +457,7 @@ func TestAuthToken_Delete(t *testing.T) {
 func TestAuthToken_UpdateLastUsed(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "last_used.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 

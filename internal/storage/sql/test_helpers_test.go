@@ -3,7 +3,6 @@ package sql_test
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,11 +11,10 @@ import (
 	"ccLoad/internal/storage"
 )
 
-func newTestStore(t testing.TB, dbFile string) storage.Store {
+func newTestStore(t testing.TB) storage.Store {
 	t.Helper()
 
-	tmp := t.TempDir()
-	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, dbFile))
+	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatalf("create sqlite store: %v", err)
 	}

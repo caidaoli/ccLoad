@@ -60,7 +60,7 @@ func ledgerRows(t *testing.T, store *sqlstore.SQLStore, channelID int64) []sqlst
 
 func TestOAuthQuotaLedger_AggregatesEligibleLogsBySecondAndModel(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "oauth-quota-ledger.db")
+	store := newTestStore(t)
 	ss := store.(*sqlstore.SQLStore)
 	ctx := context.Background()
 	base := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
@@ -137,7 +137,7 @@ func TestOAuthQuotaLedger_AggregatesEligibleLogsBySecondAndModel(t *testing.T) {
 
 func TestOAuthQuotaLedger_RoundsEachManualTestLog(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "oauth-quota-ledger-rounding.db")
+	store := newTestStore(t)
 	ss := store.(*sqlstore.SQLStore)
 	ctx := context.Background()
 	at := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
@@ -160,7 +160,7 @@ func TestOAuthQuotaLedger_RoundsEachManualTestLog(t *testing.T) {
 
 func TestOAuthQuotaLedger_ViewSumsWithinSecondBoundariesAndIgnoresLegacyCost(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "oauth-quota-ledger-view.db")
+	store := newTestStore(t)
 	ss := store.(*sqlstore.SQLStore)
 	ctx := context.Background()
 	start := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
@@ -216,7 +216,7 @@ func TestOAuthQuotaLedger_ViewSumsWithinSecondBoundariesAndIgnoresLegacyCost(t *
 
 func TestOAuthQuotaLedger_ViewSplitsSharedScanByWindowRange(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "oauth-quota-ledger-segments.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
 	n := base.Unix()
@@ -262,7 +262,7 @@ func TestOAuthQuotaLedger_ViewSplitsSharedScanByWindowRange(t *testing.T) {
 
 func TestOAuthQuotaLedger_TransientRollbackRestoresDespitePriceChange(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "oauth-quota-ledger-rollback.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	resetAt := now.Add(4 * 24 * time.Hour)

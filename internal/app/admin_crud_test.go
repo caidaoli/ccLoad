@@ -33,8 +33,7 @@ func (s *failAPIKeyAllowedModelsStore) UpdateAPIKeyModelScopes(context.Context, 
 func setupAdminTestServer(t *testing.T) (*Server, storage.Store, func()) {
 	t.Helper()
 
-	tmpDB := t.TempDir() + "/admin_crud_test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB)
+	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

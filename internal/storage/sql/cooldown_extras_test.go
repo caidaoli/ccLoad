@@ -10,7 +10,7 @@ import (
 )
 
 func TestCooldown_GetKeyCooldownUntil_AndClearAll(t *testing.T) {
-	store := newTestStore(t, "cooldown_extras.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	ss := store.(*sqlstore.SQLStore)

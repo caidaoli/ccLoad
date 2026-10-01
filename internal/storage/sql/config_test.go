@@ -133,7 +133,7 @@ func TestConfig_CreateAndGet(t *testing.T) {
 
 func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "codex-credential.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"at-secret","refresh_token":"rt-secret","expired":"2030-01-01T00:00:00Z"}`
 
@@ -210,7 +210,7 @@ func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 
 func TestConfig_DisableOAuthChannelIfCredentialMatches(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "disable-rejected-oauth.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	original := `{"type":"codex","access_token":"rejected-at","refresh_token":"rejected-rt"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -297,7 +297,7 @@ func TestConfig_DisableOAuthChannelIfCredentialMatches(t *testing.T) {
 }
 
 func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *testing.T) {
-	store := newTestStore(t, "explicit-oauth-credential.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -327,7 +327,7 @@ func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *test
 }
 
 func TestConfig_DeleteConfigIfOAuthSnapshotMatches(t *testing.T) {
-	store := newTestStore(t, "conditional-oauth-delete.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	original := `{"type":"codex","access_token":"old-at","refresh_token":"old-rt"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -387,7 +387,7 @@ func TestConfig_DeleteConfigIfOAuthSnapshotMatches(t *testing.T) {
 }
 
 func TestConfig_CreateWithExplicitIDRejectsOAuthAcrossExistingAPIKey(t *testing.T) {
-	store := newTestStore(t, "explicit-api-key-to-oauth.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name: "api-key-winner", AuthType: model.AuthTypeAPIKey,
@@ -417,7 +417,7 @@ func TestConfig_CreateWithExplicitIDRejectsOAuthAcrossExistingAPIKey(t *testing.
 func TestConfig_ListConfigs(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "list.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -463,7 +463,7 @@ func TestConfig_ListConfigs(t *testing.T) {
 func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "update-enabled.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -1022,7 +1022,7 @@ func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(
 func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "model_query.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -1120,7 +1120,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 func TestConfig_GetEnabledChannelsByModelUsesRoutingModelName(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "routing_model_query.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	for _, entry := range []struct {
@@ -1153,7 +1153,7 @@ func TestConfig_GetEnabledChannelsByModelUsesRoutingModelName(t *testing.T) {
 func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "enabled_includes_cooled.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cooled, err := store.CreateConfig(ctx, &model.Config{
@@ -1218,7 +1218,7 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 func TestConfig_BatchUpdatePriority(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "priority.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -1267,7 +1267,7 @@ func TestConfig_BatchUpdatePriority(t *testing.T) {
 func TestConfig_BatchPatchConfigs(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "batch-patch.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	create := func(name, mode, scheduledModel string, models []model.ModelEntry) *model.Config {
 		t.Helper()
@@ -1451,7 +1451,7 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 func TestConfig_UpdatePrunesAPIKeyModelScopes(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "prune-key-model-scopes.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name: "prune-key-model-scopes", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
@@ -1498,7 +1498,7 @@ func TestConfig_UpdatePrunesAPIKeyModelScopes(t *testing.T) {
 func TestConfig_BatchPatchConfigsUpdatesOAuthModelsWithoutCredentialMutation(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "batch-patch-oauth.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"winner","refresh_token":"winner-rt"}`
 	oauth, err := store.CreateConfig(ctx, &model.Config{
@@ -1548,7 +1548,7 @@ func TestConfig_BatchPatchConfigsUpdatesOAuthModelsWithoutCredentialMutation(t *
 func TestConfig_SyncOAuthConfigReplicaIsAtomicAndProviderRestricted(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "sync-oauth-replica.db")
+	store := newTestStore(t)
 	replica := store.(*sqlstore.SQLStore)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"old","refresh_token":"old-rt"}`
@@ -1597,7 +1597,7 @@ func TestConfig_SyncOAuthConfigReplicaIsAtomicAndProviderRestricted(t *testing.T
 func TestConfig_ModelRedirect(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "redirect.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -1637,7 +1637,7 @@ func TestConfig_ModelRedirect(t *testing.T) {
 
 func TestConfig_ChannelManagementCompareAndSwap(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "channel-management-cas.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -1696,7 +1696,7 @@ func TestConfig_ChannelManagementCompareAndSwap(t *testing.T) {
 
 func TestConfig_ChannelManagementCompareAndSwapRejectsOAuthChannel(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "channel-management-oauth.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"oauth-private-token","refresh_token":"oauth-refresh-token"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -1720,7 +1720,7 @@ func TestConfig_ChannelManagementCompareAndSwapRejectsOAuthChannel(t *testing.T)
 func TestConfig_ModelPricingPersistsAcrossWritePaths(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "model-pricing.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	price := func(value float64) *float64 { return &value }
 	sonnetPrice := &util.CustomModelPrice{InputPrice: price(1.5), OutputPrice: price(7.5), CacheReadPrice: price(0)}
@@ -1762,7 +1762,7 @@ func TestConfig_ModelPricingPersistsAcrossWritePaths(t *testing.T) {
 
 func TestConfig_ModelVariantsPersistAndProject(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "model-variants.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	priceValue := 3.0
 	price := &util.CustomModelPrice{InputPrice: &priceValue, OutputPrice: &priceValue}

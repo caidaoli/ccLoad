@@ -9,7 +9,7 @@ import (
 )
 
 func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
-	store := newTestStore(t, "auth_token_stats.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	now := time.Now()

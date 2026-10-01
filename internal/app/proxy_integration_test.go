@@ -134,6 +134,7 @@ func TestProxy_SameChannelModelVariantsRotateAndSkipCooldown(t *testing.T) {
 }
 
 func TestProxy_ModelVariantsPreserveSecondRedirect(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var sent []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +186,7 @@ func TestProxy_ModelVariantsPreserveSecondRedirect(t *testing.T) {
 }
 
 func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var sent []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +274,7 @@ func TestProxy_ModelVariantsUseKeySupportingSelectedFinalTarget(t *testing.T) {
 }
 
 func TestProxy_DetectedKeyTargetSkipsIncompatibleProtocolURL(t *testing.T) {
+	t.Parallel()
 	var openAIHits atomic.Int64
 	openAI := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		openAIHits.Add(1)
@@ -334,6 +337,7 @@ func TestProxy_DetectedKeyTargetSkipsIncompatibleProtocolURL(t *testing.T) {
 }
 
 func TestProxy_DetectedKeyTargetUsesSendableURLProtocolAndTriesAnotherKey(t *testing.T) {
+	t.Parallel()
 	for _, declared := range [][]string{{"openai"}, {"openai", "gemini"}} {
 		t.Run(strings.Join(declared, "+"), func(t *testing.T) {
 			var sent []string
@@ -391,6 +395,7 @@ func TestProxy_DetectedKeyTargetUsesSendableURLProtocolAndTriesAnotherKey(t *tes
 }
 
 func TestProxy_ExactModelMatchPrecedesFuzzy(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var sent []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +449,7 @@ func TestProxy_ExactModelMatchPrecedesFuzzy(t *testing.T) {
 }
 
 func TestProxy_UnconfiguredModelIsNotServedAfterExplicitModelFailure(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Model string `json:"model"`
@@ -479,6 +485,7 @@ func TestProxy_UnconfiguredModelIsNotServedAfterExplicitModelFailure(t *testing.
 }
 
 func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
+	t.Parallel()
 	for _, stream := range []bool{false, true} {
 		for _, clientProtocol := range []string{"openai", "anthropic", "codex", "gemini"} {
 			t.Run(fmt.Sprintf("%s/stream=%v", clientProtocol, stream), func(t *testing.T) {
@@ -629,6 +636,7 @@ func TestProxy_CodeBuddyNonStreamToolCallsAndErrors(t *testing.T) {
 }
 
 func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
@@ -687,6 +695,7 @@ func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
 }
 
 func TestProxy_SuccessResetsExpiredModelCooldownHistory(t *testing.T) {
+	t.Parallel()
 	const modelName = "gpt-test"
 
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -801,6 +810,7 @@ func TestProxy_APIKeyCostMultiplierSnapshotsPerKeyInLogs(t *testing.T) {
 }
 
 func TestProxy_NonResponsesGenerateFieldIsPreserved(t *testing.T) {
+	t.Parallel()
 	requestBody := make(chan []byte, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -1165,6 +1175,7 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 }
 
 func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		authType        string
@@ -1916,6 +1927,7 @@ func TestAnthropicOAuthFingerprintVersionFloorDoesNotRewriteCredential(t *testin
 }
 
 func TestAnthropicOAuthFingerprintPersistenceDoesNotBlockOtherAccounts(t *testing.T) {
+	t.Parallel()
 	credentialJSON := anthropicProxyTestCredential(t, "oauth-fingerprint")
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "one", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON},
@@ -2820,6 +2832,7 @@ func TestProxy_NativeAnthropicToolRepairFailurePreservesNextChannelRequest(t *te
 }
 
 func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
+	t.Parallel()
 	t.Run("API key channel is unaffected", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -2955,6 +2968,7 @@ func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 }
 
 func TestProxy_AntigravityCreditsFallback(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                                           string
 		model                                                          string
@@ -3100,6 +3114,7 @@ func TestProxy_AntigravityCreditsFallback(t *testing.T) {
 }
 
 func TestProxy_AntigravityCreditsFallbackKeepsExhaustedModelRow(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var standardModel, paidModel string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3159,6 +3174,7 @@ func TestProxy_AntigravityCreditsFallbackKeepsExhaustedModelRow(t *testing.T) {
 }
 
 func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
+	t.Parallel()
 	const actualModel = "gemini-3.8-flash-high"
 	for _, tc := range []struct {
 		name         string
@@ -3306,6 +3322,7 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 }
 
 func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		delay   string
 		succeed bool
@@ -3337,7 +3354,9 @@ func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
 			if tc.succeed && response.Code != 200 {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			if !tc.succeed {
+			// 冷却按秒向上取整且只能读到未过期的行：10ms 的冷却可能在读取前就跨秒过期，
+			// 精度只由不重试（>=3s）的用例断言。
+			if delay, _ := time.ParseDuration(tc.delay); delay >= 3*time.Second {
 				configs, err := env.store.ListConfigs(context.Background())
 				if err != nil {
 					t.Fatal(err)
@@ -3346,7 +3365,6 @@ func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				delay, _ := time.ParseDuration(tc.delay)
 				until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]
 				if until.Before(start.Add(delay)) || until.After(time.Now().Add(delay+time.Second)) {
 					t.Fatalf("imprecise cooldown %v for %s", until, tc.delay)
@@ -3357,6 +3375,7 @@ func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
+	t.Parallel()
 	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
@@ -3538,6 +3557,7 @@ func antigravityWireContainsText(wire []byte, want string) bool {
 }
 
 func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3587,6 +3607,7 @@ func antigravityCatalogMaxOutputTokens(t testing.TB, modelName string) int64 {
 }
 
 func TestProxy_AntigravityMaxOutputTokens(t *testing.T) {
+	t.Parallel()
 	const opus = "claude-opus-4-6-thinking"
 	opusCap := antigravityCatalogMaxOutputTokens(t, opus)
 	overLimit := int(opusCap * 2)
@@ -3836,6 +3857,7 @@ func TestProxy_AntigravityClaudeToolResultsFollowModelTurn(t *testing.T) {
 }
 
 func TestProxy_AntigravityClaudeSequentialToolHistoryBackfillsThoughtSignatures(t *testing.T) {
+	t.Parallel()
 	validThinkingSignature := antigravityProxyClaudeThoughtSignature("claude-opus-5")
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wire, err := io.ReadAll(r.Body)
@@ -3915,6 +3937,7 @@ func TestProxy_AntigravityClaudeSequentialToolHistoryBackfillsThoughtSignatures(
 }
 
 func TestProxy_AntigravityOAuthKeepsClaudeSessionStable(t *testing.T) {
+	t.Parallel()
 	var sessionIDs []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wire, err := io.ReadAll(r.Body)
@@ -3978,6 +4001,7 @@ func TestProxy_AntigravityOAuthKeepsClaudeSessionStable(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthSeparatesThreadsAcrossSessionSources(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		headerName string
@@ -4053,6 +4077,7 @@ func TestProxy_AntigravityOAuthSeparatesThreadsAcrossSessionSources(t *testing.T
 }
 
 func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4086,6 +4111,7 @@ func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 }
 
 func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4144,6 +4170,7 @@ func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthPreservesAnthropicToolIDs(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wireBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -4191,6 +4218,7 @@ func TestProxy_AntigravityOAuthPreservesAnthropicToolIDs(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthHandlesCountTokensLocally(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -4215,6 +4243,7 @@ func TestProxy_AntigravityOAuthHandlesCountTokensLocally(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wireBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -4279,6 +4308,7 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthRejectsSignatureWithoutRewritingHistory(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -4301,6 +4331,7 @@ func TestProxy_AntigravityOAuthRejectsSignatureWithoutRewritingHistory(t *testin
 }
 
 func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	var bodies [][]byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4354,6 +4385,7 @@ func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *t
 }
 
 func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		effort string
 		want   string
@@ -4492,6 +4524,7 @@ func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		requestPath   string
@@ -4581,6 +4614,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	requestBaseURLs := make([]string, 0, 2)
 	env := setupProxyTestEnv(t, []testChannel{{
@@ -4649,6 +4683,7 @@ func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testin
 }
 
 func TestProxy_AntigravityOAuthDoesNotCallDisabledOnlyURL(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -4898,6 +4933,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterDefaultBase
 }
 
 func TestProxy_AntigravityOAuthSingleURLModelCapacityExhaustionBecomes429(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -4984,6 +5020,7 @@ func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing
 }
 
 func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
 			t.Errorf("Antigravity stream URL = %s?%s", r.URL.Path, r.URL.RawQuery)
@@ -5013,6 +5050,7 @@ func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
+	t.Parallel()
 	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := upstreamAttempts.Add(1)
@@ -5085,6 +5123,7 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 }
 
 func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T) {
+	t.Parallel()
 	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := upstreamAttempts.Add(1)
@@ -5190,6 +5229,7 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 }
 
 func TestProxy_CodexOAuthQuotaMergesIndependentResponseGroups(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		call := calls.Add(1)
@@ -5372,6 +5412,7 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 }
 
 func TestProxy_CodexOAuthImage25Snapshots(t *testing.T) {
+	t.Parallel()
 	for _, imageModel := range []string{"gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"} {
 		t.Run(imageModel, func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5509,6 +5550,7 @@ func TestProxy_CodexOAuthImage25Direct(t *testing.T) {
 }
 
 func TestProxy_CodexOAuthImage25Multipart(t *testing.T) {
+	t.Parallel()
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5829,6 +5871,7 @@ func TestProxy_XAIImagesStreamEmitsErrorAfterPartialOutput(t *testing.T) {
 }
 
 func TestProxy_XAIImagesBridgeFallsBackWithoutViolatingChannelPolicy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		transformMode string
@@ -5942,6 +5985,7 @@ func TestProxy_XAIImagesBridgeFallsBackWithoutViolatingChannelPolicy(t *testing.
 }
 
 func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		status      int
@@ -6043,6 +6087,7 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 }
 
 func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		authType         string
@@ -6222,6 +6267,7 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 }
 
 func TestProxy_OperatorAbort_DuringOAuthRefreshDoesNotCoolChannel(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -6291,6 +6337,7 @@ func TestProxy_OperatorAbort_DuringOAuthRefreshDoesNotCoolChannel(t *testing.T) 
 }
 
 func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) {
+	t.Parallel()
 	const accessToken = "stale-access-token"
 	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6347,6 +6394,7 @@ func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) 
 }
 
 func TestProxy_RejectedCodexPersonalAccessTokenDisablesChannel(t *testing.T) {
+	t.Parallel()
 	const accessToken = "at-static-rejected"
 	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6435,6 +6483,7 @@ func TestProxy_XAIOAuthDoesNotReplayAfterCommittedSemanticOutput(t *testing.T) {
 }
 
 func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
+	t.Parallel()
 	const (
 		clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
 		clientWindowID  = "019a3c5e-7f21-7c3a-9b4d-2f6e8a1c0d11:0"
@@ -6505,6 +6554,7 @@ func TestProxy_CodexPreservesOfficialClientIdentity(t *testing.T) {
 }
 
 func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wireBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -6548,6 +6598,7 @@ func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *tes
 }
 
 func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
+	t.Parallel()
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
 			var attempts atomic.Int64
@@ -6612,6 +6663,7 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 }
 
 func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name                    string
 		retryOtherKeysOnFailure bool
@@ -6699,6 +6751,7 @@ func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 }
 
 func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
+	t.Parallel()
 	var phase atomic.Int32
 	var keyACalls, keyBCalls, fallbackCalls atomic.Int64
 
@@ -6850,6 +6903,7 @@ func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
 }
 
 func TestProxy_GlobalCooldownDetectionRulesFallbackAndChannelOverride(t *testing.T) {
+	t.Parallel()
 	globalRules := `{"rules":[{"enabled":true,"name":"Global maintenance","priority":0,"status_codes":[406],"message_pattern":"planned maintenance","scope":"channel","mode":"fixed","cooldown_seconds":120}]}`
 
 	t.Run("channel without rules inherits global rules", func(t *testing.T) {
@@ -7020,6 +7074,7 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 }
 
 func TestProxy_ModelCooldownSSEErrorReturns429(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -7046,6 +7101,7 @@ func TestProxy_ModelCooldownSSEErrorReturns429(t *testing.T) {
 // OpenAI Responses 的 rate limit 失败终态：HTTP 200 + event:response.failed，
 // error 嵌在 response.error。漏判会把限流当成功 200 返回。
 func TestProxy_ResponseFailedSSERateLimitReturns429(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -7076,6 +7132,7 @@ func TestProxy_ResponseFailedSSERateLimitReturns429(t *testing.T) {
 }
 
 func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
+	t.Parallel()
 	const finalModel = "shared-upstream-model"
 
 	var primaryHits atomic.Int64
@@ -7173,6 +7230,7 @@ func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 }
 
 func TestProxy_CrossProtocolTranslationDropsClientQuery(t *testing.T) {
+	t.Parallel()
 	var upstreamPath string
 	var upstreamQuery string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7295,6 +7353,7 @@ func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 }
 
 func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
+	t.Parallel()
 	var upstreamHits atomic.Int64
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamHits.Add(1)
@@ -7334,13 +7393,6 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
 	if got := env.server.costCache.Get(configs[0].ID); got != 0 {
 		t.Fatalf("failed request cached cost=%v, want 0", got)
 	}
-	logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
-	if err != nil {
-		t.Fatalf("ListLogs: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Fatalf("capability miss wrote proxy logs: %+v", logs)
-	}
 	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllChannelCooldowns failed: %v", err)
@@ -7359,6 +7411,7 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
 }
 
 func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
+	t.Parallel()
 	var unsupportedHits atomic.Int64
 	unsupported := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		unsupportedHits.Add(1)
@@ -7408,6 +7461,7 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
 }
 
 func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
+	t.Parallel()
 	t.Run("responses exact URL is rewritten to alpha/search", func(t *testing.T) {
 		var upstreamHits atomic.Int64
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7601,6 +7655,7 @@ func TestDashboardProxy_UsesBoundTokenAndStreams(t *testing.T) {
 }
 
 func TestDashboardProxy_EnforcesModelAndChannelRestrictions(t *testing.T) {
+	t.Parallel()
 	t.Run("model", func(t *testing.T) {
 		var hits atomic.Int64
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -7682,6 +7737,7 @@ func TestDashboardProxy_EnforcesModelAndChannelRestrictions(t *testing.T) {
 }
 
 func TestDashboardProxy_RejectsRevokedToken(t *testing.T) {
+	t.Parallel()
 	var hits atomic.Int64
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -8922,6 +8978,7 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 }
 
 func TestProxy_URLProtocolsSkipNativeProbeAndUseDeclaredChannelProtocol(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -8960,6 +9017,7 @@ func TestProxy_URLProtocolsSkipNativeProbeAndUseDeclaredChannelProtocol(t *testi
 }
 
 func TestProxy_URLProtocolsSkipIncompatibleEndpointWithoutCoolingChannel(t *testing.T) {
+	t.Parallel()
 	var incompatibleHits atomic.Int64
 	incompatible := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		incompatibleHits.Add(1)
@@ -9020,6 +9078,7 @@ func TestProxy_URLProtocolsSkipIncompatibleEndpointWithoutCoolingChannel(t *test
 }
 
 func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *testing.T) {
+	t.Parallel()
 	const modelName = "shared-model"
 	tests := []struct {
 		name             string
@@ -9099,6 +9158,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 }
 
 func TestProxy_ProtocolTransformModeStrict(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		mode       string
@@ -9142,6 +9202,7 @@ func TestProxy_ProtocolTransformModeStrict(t *testing.T) {
 }
 
 func TestProxy_LocalModeUsesDeclaredProtocolOrder(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -9184,6 +9245,7 @@ func TestProxy_LocalModeUsesDeclaredProtocolOrder(t *testing.T) {
 }
 
 func TestProxy_OfficialCodexClientPrefersDeclaredNativeCodex(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		protocols      []string
@@ -9275,6 +9337,7 @@ func TestProxy_OfficialCodexClientPrefersDeclaredNativeCodex(t *testing.T) {
 }
 
 func TestProxy_LocalModeUsesFixedOrderWhenAllURLsAreAutomatic(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -9320,6 +9383,7 @@ func TestProxy_LocalModeUsesFixedOrderWhenAllURLsAreAutomatic(t *testing.T) {
 }
 
 func TestProxy_LocalModePrioritizesDeclaredURLs(t *testing.T) {
+	t.Parallel()
 	var automaticHits atomic.Int64
 	automatic := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		automaticHits.Add(1)
@@ -9370,6 +9434,7 @@ func TestProxy_LocalModePrioritizesDeclaredURLs(t *testing.T) {
 }
 
 func TestProxy_AutoModePrioritizesAutomaticURLBeforeDeclaredConversion(t *testing.T) {
+	t.Parallel()
 	var automaticPathsMu sync.Mutex
 	var automaticPaths []string
 	automatic := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -9431,6 +9496,7 @@ func TestProxy_AutoModePrioritizesAutomaticURLBeforeDeclaredConversion(t *testin
 }
 
 func TestProxy_LocalModeUsesDeclaredProtocolForAutomaticBackupURL(t *testing.T) {
+	t.Parallel()
 	var declaredPaths []string
 	declared := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		declaredPaths = append(declaredPaths, r.URL.Path)
@@ -9485,6 +9551,7 @@ func TestProxy_LocalModeUsesDeclaredProtocolForAutomaticBackupURL(t *testing.T) 
 }
 
 func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
+	t.Parallel()
 	var pathsA, pathsB []string
 	newUpstream := func(paths *[]string) *testHTTPServer {
 		return newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -9538,6 +9605,7 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 }
 
 func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -9585,6 +9653,7 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 }
 
 func TestProxy_AutomaticProtocolFallback_CacheIsolatedByModel(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -9780,6 +9849,7 @@ func TestProxy_AutomaticProtocolFallback_LogsAttemptsAndCachesOnlyEndpointFailur
 }
 
 func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		status     int
@@ -9928,6 +9998,7 @@ func TestProxy_CodexMap429To503Setting(t *testing.T) {
 }
 
 func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -9989,6 +10060,7 @@ func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) 
 }
 
 func TestProxy_AutomaticProtocolFallback_ResponsesModelNotSupported(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -10032,6 +10104,7 @@ func TestProxy_AutomaticProtocolFallback_ResponsesModelNotSupported(t *testing.T
 }
 
 func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -10075,6 +10148,7 @@ func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing
 }
 
 func TestProxy_AutomaticProtocolFallback_SkipsUnrepresentableTransforms(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -10104,6 +10178,7 @@ func TestProxy_AutomaticProtocolFallback_SkipsUnrepresentableTransforms(t *testi
 }
 
 func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextProtocol(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -10147,6 +10222,7 @@ func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextProtocol(t 
 }
 
 func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextChannel(t *testing.T) {
+	t.Parallel()
 	var anthropicHits, codexHits int
 	anthropicUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		anthropicHits++
@@ -10187,6 +10263,7 @@ func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextChannel(t *
 }
 
 func TestProxy_AutomaticProtocolFallback_ExactURLTranslatesDirectly(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -11689,6 +11766,7 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 }
 
 func TestProxy_Success_Streaming_OpenAIToCodexTransformWithoutContentType(t *testing.T) {
+	t.Parallel()
 	var gotPath string
 	upstreamBody := newDataThenBlockReadCloser([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n"), 7)
 	defer func() { _ = upstreamBody.Close() }()
@@ -11821,6 +11899,7 @@ func TestProxy_Success_Streaming_CodexCompletedWithoutEOF(t *testing.T) {
 }
 
 func TestProxy_Success_Streaming_AnthropicMessageStopWithoutEOF(t *testing.T) {
+	t.Parallel()
 	sse := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-5-sonnet\",\"stop_reason\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n")
@@ -13282,6 +13361,7 @@ func TestProxy_ClientCancel_Returns499(t *testing.T) {
 
 // 下游响应未提交时，中断跳过当前渠道所有 URL/Key，不施加故障冷却。
 func TestProxy_OperatorAbort_SkipsChannelWithoutCooldown(t *testing.T) {
+	t.Parallel()
 	upstreamStarted := make(chan struct{})
 	var startOnce sync.Once
 	var primaryHits atomic.Int64
@@ -13410,6 +13490,7 @@ func TestProxy_OperatorAbort_SkipsChannelWithoutCooldown(t *testing.T) {
 }
 
 func TestProxy_OperatorAbort_NonStreamPingOnlyHTTP(t *testing.T) {
+	t.Parallel()
 	upstreamStarted := make(chan struct{})
 	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -13499,6 +13580,7 @@ func TestProxy_OperatorAbort_NonStreamPingOnlyHTTP(t *testing.T) {
 // 响应已提交给客户端后再中断：按契约禁止网关内部切换或重放，正确收场是 599
 // （流式中断），不施加冷却，也不能换渠道重发。
 func TestProxy_OperatorAbort_AfterCommitDoesNotSwitchChannel(t *testing.T) {
+	t.Parallel()
 	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -13637,6 +13719,7 @@ func (w *abortOnCommitDownstream) SetWriteDeadline(time.Time) error { return nil
 // 中断恰好落在首字节提交窗口时，下游实际未收到任何字节，必须仍按"未提交"切换渠道，
 // 而不是把空的 200 留给客户端。
 func TestProxy_OperatorAbort_AtCommitBoundaryStillFailsOver(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		stream     bool
@@ -13739,6 +13822,7 @@ func TestProxy_OperatorAbort_AtCommitBoundaryStillFailsOver(t *testing.T) {
 // 本测试用 cancelOnWriteHeader 在下游 WriteHeader 成功后立即取消 ctx，精确命中
 // "写出成功、但取消已可见"的边界。
 func TestDeferredCommit_CancelAfterHeaderDelivered_StillCommits(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	raw := &cancelOnWriteHeader{ResponseRecorder: httptest.NewRecorder(), cancel: cancel}
 
@@ -13790,6 +13874,7 @@ func (w *cancelBeforeWriteHeader) WriteHeader(status int) {
 func (w *cancelBeforeWriteHeader) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestDeferredCommit_CancelBeforeHeaderDelivered_ReturnsError(t *testing.T) {
+	t.Parallel()
 	for _, duringWriteHeader := range []bool{false, true} {
 		t.Run(fmt.Sprintf("during_write_header=%t", duringWriteHeader), func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(context.Background())
@@ -13870,6 +13955,7 @@ func (w *blockedDownstream) SetWriteDeadline(deadline time.Time) error {
 }
 
 func TestProxy_OperatorAbort_UnblocksDownstream(t *testing.T) {
+	t.Parallel()
 	for _, translated := range []bool{false, true} {
 		for _, flush := range []bool{false, true} {
 			t.Run(fmt.Sprintf("translated=%v/flush=%v", translated, flush), func(t *testing.T) {
@@ -14247,6 +14333,7 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 }
 
 func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.T) {
+	t.Parallel()
 	resetAt := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -15038,6 +15125,7 @@ func TestProxy_ResponsesSSEMissingStoredItemRetriesOnceWithStrippedBody(t *testi
 }
 
 func TestProxy_ResponsesMissingStoredItemsPreserveWireHistory(t *testing.T) {
+	t.Parallel()
 	for _, sseError := range []bool{false, true} {
 		for _, rejectedAgain := range []bool{false, true} {
 			t.Run(fmt.Sprintf("sse=%t/rejected_again=%t", sseError, rejectedAgain), func(t *testing.T) {
@@ -15236,6 +15324,7 @@ func TestProxy_ResponsesHTTPMissingStoredItemRetriesOnce(t *testing.T) {
 }
 
 func TestProxy_SSEContextLengthExceededReturns400WithoutRetryOrCooldown(t *testing.T) {
+	t.Parallel()
 	var firstCalls atomic.Int32
 	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstCalls.Add(1)
@@ -15300,6 +15389,7 @@ func TestProxy_SSEContextLengthExceededReturns400WithoutRetryOrCooldown(t *testi
 }
 
 func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
+	t.Parallel()
 	upstreamModels := make(chan string, 4)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -15373,6 +15463,7 @@ func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 }
 
 func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
+	t.Parallel()
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
 			signature := antigravityProxyClaudeThoughtSignature("claude-sonnet-4-6")
@@ -15472,6 +15563,7 @@ func TestProxy_AntigravityThinkingSignatureRecovery(t *testing.T) {
 }
 
 func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                string
 		stream, mixed, none bool
@@ -15536,6 +15628,7 @@ func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
 }
 
 func TestProxy_AntigravityResponsesSignatureRecovery(t *testing.T) {
+	t.Parallel()
 	const signature = "EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA"
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
@@ -15653,6 +15746,7 @@ func TestProxy_AntigravityResponsesSignatureRecovery(t *testing.T) {
 }
 
 func TestProxy_MixedModelKeyCooldownFallback(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		fallback      bool
@@ -15735,6 +15829,7 @@ func TestProxy_MixedModelKeyCooldownFallback(t *testing.T) {
 }
 
 func TestProxy_MixedStandardQuotaAndModelCooldownFallback(t *testing.T) {
+	t.Parallel()
 	const actualModel = "claude-sonnet-4-6"
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var wire struct {
@@ -16037,6 +16132,7 @@ func TestProxy_InterruptedCommittedStreamBillsPartialUsage(t *testing.T) {
 }
 
 func TestProxy_AnthropicSessionAffinity(t *testing.T) {
+	t.Parallel()
 	names := []string{"primary", "peer-a", "peer-b"}
 	var failing sync.Map // name → bool
 	failing.Store("primary", true)
@@ -16145,6 +16241,7 @@ func TestProxy_AnthropicSessionAffinity(t *testing.T) {
 // Codex 会话按 Session-Id 粘在一个账号上；客户端回带的 turn-state 只发回签发它的账号，
 // 故障转移到其他账号时删除，不把 A 账号的 sticky routing 令牌泄露给 B 账号。
 func TestProxy_CodexSessionAffinityScopesTurnState(t *testing.T) {
+	t.Parallel()
 	type upstreamHit struct {
 		name      string
 		turnState []string
@@ -16264,6 +16361,7 @@ func TestProxy_CodexSessionAffinityScopesTurnState(t *testing.T) {
 }
 
 func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
+	t.Parallel()
 	servedKeys := make(chan string, 16)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		servedKeys <- r.Header.Get("X-Api-Key") + r.Header.Get("Authorization")

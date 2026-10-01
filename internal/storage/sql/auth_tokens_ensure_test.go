@@ -9,7 +9,7 @@ import (
 )
 
 func TestEnsureAuthToken_CreatesAndSkipsExistingByToken(t *testing.T) {
-	store := newTestStore(t, "auth_tokens_ensure.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	tokenHash := model.HashToken("seed-token")

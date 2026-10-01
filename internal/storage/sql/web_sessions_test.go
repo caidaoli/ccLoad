@@ -11,7 +11,7 @@ import (
 func TestWebSessionPersistsIdentityAndExcludesExpiredSessions(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "web_sessions.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
 
@@ -65,7 +65,7 @@ func TestWebSessionPersistsIdentityAndExcludesExpiredSessions(t *testing.T) {
 func TestWebSessionDeleteAndClean(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "web_sessions_clean.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	if err := store.CreateWebSession(ctx, "delete-me", model.WebSession{

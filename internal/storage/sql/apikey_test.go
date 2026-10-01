@@ -11,7 +11,7 @@ import (
 func TestAPIKey_CreateAndGet(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "apikey.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "apikey-test-channel")
@@ -60,7 +60,7 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "allowed_models.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "allowed-models-channel")
 
@@ -107,7 +107,7 @@ func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
 func TestAPIKey_UpdateStrategy(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "strategy.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "strategy-test-channel")
@@ -138,7 +138,7 @@ func TestAPIKey_UpdateStrategy(t *testing.T) {
 func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "notes.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "notes-test-channel")
@@ -176,7 +176,7 @@ func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
 func TestAPIKey_Delete(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "delete.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "delete-test-channel")
@@ -209,7 +209,7 @@ func TestAPIKey_Delete(t *testing.T) {
 func TestAPIKey_CompactIndices(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "compact.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "compact-test-channel")
@@ -254,7 +254,7 @@ func TestAPIKey_CompactIndices(t *testing.T) {
 func TestAPIKey_DeleteAll(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "delete_all.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "delete-all-test-channel")
@@ -286,7 +286,7 @@ func TestAPIKey_DeleteAll(t *testing.T) {
 func TestAPIKey_GetAllAPIKeys(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "get_all.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -323,7 +323,7 @@ func TestAPIKey_GetAllAPIKeys(t *testing.T) {
 func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "import.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -441,7 +441,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 }
 
 func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T) {
-	store := newTestStore(t, "import-codex-auth-immutable.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"at-secret","refresh_token":"rt-secret","expired":"2030-01-01T00:00:00Z"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -479,7 +479,7 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 }
 
 func TestAPIKey_ImportChannelBatchUpdatesExistingOAuthChannel(t *testing.T) {
-	store := newTestStore(t, "import-update-oauth-channel.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	original := `{"type":"codex","access_token":"at-original","refresh_token":"rt-original","expired":"2031-01-01T00:00:00Z"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
@@ -533,7 +533,7 @@ func TestAPIKey_ImportChannelBatchUpdatesExistingOAuthChannel(t *testing.T) {
 func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "import-preserve-id.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	channel := &model.ChannelWithKeys{
@@ -577,7 +577,7 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "import-preserve-model-order.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	channel := &model.ChannelWithKeys{
@@ -623,7 +623,7 @@ func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
 
 func TestAPIKey_ImportChannelBatchMigratesChannelManagementEnvelope(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "import-channel-management-migration.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	envelope := `{"kind":"channel_management","version":1,"profile":"sub2api","settings":{"base_url":"https://panel.example.com","access_token":"csv-private-token"},"state":{}}`
 	invalidCredential := `{"type":"codex","access_token":"must-not-persist"}`
@@ -713,7 +713,7 @@ func TestAPIKey_ImportChannelBatchMigratesChannelManagementEnvelope(t *testing.T
 
 func TestAPIKey_UpdatePrioritiesPreservesRuntimeState(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "priority.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "priority")
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{

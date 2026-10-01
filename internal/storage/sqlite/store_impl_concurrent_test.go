@@ -17,7 +17,7 @@ import (
 
 // TestConcurrentConfigCreate 测试并发创建渠道配置
 func TestConcurrentConfigCreate(t *testing.T) {
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 
 // TestConcurrentConfigReadWrite 测试并发读写渠道配置
 func TestConcurrentConfigReadWrite(t *testing.T) {
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -146,7 +146,7 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 
 // TestConcurrentLogAdd 测试并发添加日志
 func TestConcurrentLogAdd(t *testing.T) {
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -205,7 +205,7 @@ func TestConcurrentLogAdd(t *testing.T) {
 
 // TestConcurrentBatchLogAdd 测试并发批量添加日志
 func TestConcurrentBatchLogAdd(t *testing.T) {
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -257,7 +257,7 @@ func TestConcurrentBatchLogAdd(t *testing.T) {
 
 // TestConcurrentAPIKeyOperations 测试并发API Key操作
 func TestConcurrentAPIKeyOperations(t *testing.T) {
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -344,7 +344,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 		t.Skip("跳过并发测试（使用 -short 标志）")
 	}
 
-	store, cleanup := setupSQLiteTestStore(t, "concurrent-test.db")
+	store, cleanup := setupSQLiteTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()

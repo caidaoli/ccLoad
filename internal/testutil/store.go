@@ -12,8 +12,7 @@ import (
 func SetupTestStore(t testing.TB) (storage.Store, func()) {
 	t.Helper()
 
-	tmpDB := t.TempDir() + "/test.db"
-	store, err := storage.CreateSQLiteStore(tmpDB)
+	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatalf("创建测试数据库失败: %v", err)
 	}

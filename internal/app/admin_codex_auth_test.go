@@ -256,6 +256,7 @@ func requestAnthropicResetRedeemHTTP(t *testing.T, server *Server, id int64) (*h
 }
 
 func TestHandleAnthropicResetRedeemSuccess(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	now := time.Now().UTC()
@@ -341,6 +342,7 @@ func TestHandleAnthropicResetRedeemSuccess(t *testing.T) {
 }
 
 func TestHandleAnthropicResetRedeemUnknownAllowsLaterExplicitAttempt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		status         int
@@ -405,6 +407,7 @@ func TestHandleAnthropicResetRedeemUnknownAllowsLaterExplicitAttempt(t *testing.
 }
 
 func TestHandleAnthropicResetRedeemConcurrentChannelAndOrganization(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	first := createAnthropicResetTestChannel(t, store, "concurrent-first", nil)
@@ -451,6 +454,7 @@ func TestHandleAnthropicResetRedeemConcurrentChannelAndOrganization(t *testing.T
 }
 
 func TestHandleAnthropicResetRedeemRequiresFreshEligibility(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	cfg := createAnthropicResetTestChannel(t, store, "preflight-account", nil)
@@ -473,6 +477,7 @@ func TestHandleAnthropicResetRedeemRequiresFreshEligibility(t *testing.T) {
 }
 
 func TestHandleAnthropicResetRedeemExhaustedPreparationSkipsClaim(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	cfg := createAnthropicResetTestChannel(t, store, "exhausted-account", nil)
@@ -506,6 +511,7 @@ func TestHandleAnthropicResetRedeemExhaustedPreparationSkipsClaim(t *testing.T) 
 }
 
 func TestHandleAnthropicResetRedeemMissingWindowSurvivesFailedRefresh(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	cfg := createAnthropicResetTestChannel(t, store, "missing-window-account", nil)
@@ -553,6 +559,7 @@ func TestHandleAnthropicResetRedeemMissingWindowSurvivesFailedRefresh(t *testing
 }
 
 func TestHandleAnthropicResetRedeemMetadataRefreshesButClaimDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	for _, rejected := range []string{"profile", "usage", "claim"} {
 		t.Run(rejected, func(t *testing.T) {
 			server, store, cleanup := setupAdminTestServer(t)
@@ -600,6 +607,7 @@ func TestHandleAnthropicResetRedeemMetadataRefreshesButClaimDoesNotRetry(t *test
 }
 
 func TestHandleAnthropicResetRedeemChangedIdentitySkipsLocalRepair(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	cfg := createAnthropicResetTestChannel(t, store, "original-account", nil)
@@ -826,6 +834,7 @@ func codeBuddyModelCatalogTestClient() *http.Client {
 }
 
 func TestCodeBuddyCredentialImportUsesLiveModels(t *testing.T) {
+	t.Parallel()
 	for _, unavailable := range []bool{false, true} {
 		t.Run(fmt.Sprintf("unavailable=%v", unavailable), func(t *testing.T) {
 			srv := newInMemoryServer(t)
@@ -862,6 +871,7 @@ func TestCodeBuddyCredentialImportUsesLiveModels(t *testing.T) {
 }
 
 func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 	srv.client = codeBuddyModelCatalogTestClient()
 	var body bytes.Buffer
@@ -906,6 +916,7 @@ func TestCodeBuddyBatchImportWorkbuddyJSON(t *testing.T) {
 }
 
 func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
+	t.Parallel()
 	for _, reauthorize := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reauthorize=%v", reauthorize), func(t *testing.T) {
 			srv := newInMemoryServer(t)
@@ -981,6 +992,7 @@ func TestCodeBuddyImportRefreshAndReauthorization(t *testing.T) {
 }
 
 func TestCodeBuddyOAuthSessionOwnershipAndCancellation(t *testing.T) {
+	t.Parallel()
 	srv := newInMemoryServer(t)
 	srv.codeBuddyService.Client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/v2/plugin/auth/state" {
@@ -1179,6 +1191,7 @@ func TestXAIOAuthHandlersGenerateLocallyAndExchangeManualCallback(t *testing.T) 
 }
 
 func TestXAIOAuthAcceptsBareCodeForCurrentAdminSession(t *testing.T) {
+	t.Parallel()
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		if err := request.ParseForm(); err != nil || request.Form.Get("code") != "bare-code" {
 			return nil, fmt.Errorf("unexpected bare-code request: %v %s", err, request.Form.Encode())
@@ -1207,6 +1220,7 @@ func TestXAIOAuthAcceptsBareCodeForCurrentAdminSession(t *testing.T) {
 }
 
 func TestXAIOAuthCancellationRespectsCommitBoundary(t *testing.T) {
+	t.Parallel()
 	newService := func() *xaiauth.Service {
 		return xaiauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -1418,6 +1432,7 @@ func TestXAIRefreshTokenImportAcceptsMoreThanHundredWithBoundedConcurrencyAndRed
 }
 
 func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
 	first.IDToken = xaiTestJWT("first@example.com", "stable-subject")
@@ -1448,6 +1463,7 @@ func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 }
 
 func TestXAIOAuthConcurrentInteractivePersistenceCreatesOneStableIdentity(t *testing.T) {
+	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
 	store := &snapshotBarrierStore{Store: baseStore, ready: make(chan struct{}), release: make(chan struct{})}
 	credential := xaiTestCredential("access", "refresh", time.Now().Add(time.Hour))
@@ -1485,6 +1501,7 @@ func TestXAIOAuthConcurrentInteractivePersistenceCreatesOneStableIdentity(t *tes
 }
 
 func TestCodexPersonalAccessTokenConcurrentPersistenceCreatesOneStableIdentity(t *testing.T) {
+	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
 	store := &snapshotBarrierStore{Store: baseStore, ready: make(chan struct{}), release: make(chan struct{})}
 	credential := &codexauth.Credential{
@@ -1538,6 +1555,7 @@ func TestCodexPersonalAccessTokenConcurrentPersistenceCreatesOneStableIdentity(t
 }
 
 func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
 	first.Email = "User@Example.com"
@@ -1701,6 +1719,7 @@ func TestXAISSOImportReportsErrorsWithBoundedConcurrencyAndRedactsSecrets(t *tes
 }
 
 func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	idToken := codexTestIDToken(t, "user@example.com", "account-1")
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1775,6 +1794,7 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 }
 
 func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1872,6 +1892,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 }
 
 func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	existingCredential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt",
@@ -1928,6 +1949,7 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 }
 
 func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	ctx := context.Background()
 	oldCredential := &antigravityauth.Credential{
@@ -1982,6 +2004,7 @@ func TestCreateAntigravityChannelPreservesModelEditAtCommit(t *testing.T) {
 }
 
 func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	ctx := context.Background()
 	oldCredential := &antigravityauth.Credential{
@@ -2037,6 +2060,7 @@ func TestCreateAntigravityChannelPreservesQuotaCostUpdateAtModelCommit(t *testin
 }
 
 func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
+	t.Parallel()
 	t.Run("Anthropic", func(t *testing.T) {
 		baseStore := newCodexAuthTestStore(t)
 		expired := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
@@ -2197,6 +2221,7 @@ func quotaCostViewAt(t testing.TB, store storage.Store, channelID int64, at time
 }
 
 func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &antigravityauth.Credential{
@@ -3575,6 +3600,7 @@ func TestHandleImportOAuthCredentialsRejectsInvalidOptions(t *testing.T) {
 }
 
 func TestCodexOAuthManualCallbackCreatesDatabaseChannel(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	idToken := codexTestIDToken(t, "manual@example.com", "account-manual")
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3735,6 +3761,7 @@ func TestCodexOAuthStartReplacesExistingPendingSession(t *testing.T) {
 }
 
 func TestCodexOAuthCancelInterruptsTokenExchangeWithoutCreatingChannel(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	tokenStarted := make(chan struct{})
 	tokenCancelled := make(chan struct{})
@@ -3799,6 +3826,7 @@ func TestCodexOAuthCancelInterruptsTokenExchangeWithoutCreatingChannel(t *testin
 }
 
 func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	now := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	first := &codexauth.Credential{
@@ -4127,6 +4155,7 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 }
 
 func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	plus := &codexauth.Credential{
@@ -4153,6 +4182,7 @@ func TestImportedOAuthCredentialPreservesModelsOnPlanChange(t *testing.T) {
 }
 
 func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	ctx := context.Background()
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
@@ -4251,6 +4281,7 @@ func TestReauthorizationStartsQuotaEpochOnIdentityChange(t *testing.T) {
 }
 
 func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		plan              string
 		paidModelsAllowed bool
@@ -4553,6 +4584,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 }
 
 func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-old", RefreshToken: "rt-old",
@@ -4629,6 +4661,7 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 }
 
 func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
+	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
 	initial := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
@@ -4689,6 +4722,7 @@ func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 }
 
 func TestCodexCredentialManagerCASMissMergesPassiveUsageWithoutRefreshingTwice(t *testing.T) {
+	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
 	initial := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-once",
@@ -4750,6 +4784,7 @@ func TestCodexCredentialManagerCASMissMergesPassiveUsageWithoutRefreshingTwice(t
 }
 
 func TestCodexPassiveUsageKeepsLatestResultPerQuotaGroup(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	credential := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at", RefreshToken: "rt",
@@ -5191,6 +5226,7 @@ func TestCodexWeeklyRoleChangePersistsCost(t *testing.T) {
 }
 
 func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	t.Run("forced request reuses a newer access token", func(t *testing.T) {
 		store := newCodexAuthTestStore(t)
 		initial := &codexauth.Credential{
@@ -5292,6 +5328,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 }
 
 func TestCodexCredentialManagerNeverRefreshesPersonalAccessToken(t *testing.T) {
+	t.Parallel()
 	store := newCodexAuthTestStore(t)
 	credential := &codexauth.Credential{
 		Type:          codexauth.ChannelType,
@@ -5332,6 +5369,7 @@ func TestCodexCredentialManagerNeverRefreshesPersonalAccessToken(t *testing.T) {
 }
 
 func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing.T) {
+	t.Parallel()
 	primaryStore, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "primary.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -5409,6 +5447,7 @@ func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing
 }
 
 func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
+	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
 	initial := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
@@ -5483,6 +5522,7 @@ func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T)
 }
 
 func TestAntigravityMetadataFailurePreservesRefreshedCredential(t *testing.T) {
+	t.Parallel()
 	for _, expired := range []bool{false, true} {
 		t.Run(fmt.Sprintf("expired=%t", expired), func(t *testing.T) {
 			store := newCodexAuthTestStore(t)
@@ -5546,6 +5586,7 @@ func TestAntigravityMetadataFailurePreservesRefreshedCredential(t *testing.T) {
 }
 
 func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		force         bool
@@ -5625,6 +5666,7 @@ func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *
 }
 
 func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -5692,6 +5734,7 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 }
 
 func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing.T) {
+	t.Parallel()
 	const accessToken = "at-handler-secret"
 	whoami := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+accessToken ||
@@ -5795,6 +5838,7 @@ func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing
 }
 
 func TestHandleOAuthUsageReconcilesCostsAfterWindowChange(t *testing.T) {
+	t.Parallel()
 	for _, duration := range []time.Duration{5 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour} {
 		t.Run(duration.String(), func(t *testing.T) {
 			server, store, cleanup := setupAdminTestServer(t)
@@ -5877,6 +5921,7 @@ func TestHandleOAuthUsageReconcilesCostsAfterWindowChange(t *testing.T) {
 }
 
 func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -6281,6 +6326,7 @@ func TestLatestCodexOAuthUsageRequiresSameQuotaPeriod(t *testing.T) {
 }
 
 func TestHandleChannelsQuotaCostSurvivesLogCleanup(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -6359,6 +6405,7 @@ func TestHandleChannelsQuotaCostSurvivesLogCleanup(t *testing.T) {
 }
 
 func TestHandleChannelsCodexQuotaUsesCurrentPassivePeriod(t *testing.T) {
+	t.Parallel()
 	base := time.Now().UTC().Truncate(time.Second)
 	for _, tc := range []struct {
 		name     string
@@ -6456,6 +6503,7 @@ func TestHandleChannelsCodexQuotaUsesCurrentPassivePeriod(t *testing.T) {
 }
 
 func TestHandleChannelsCodexQuotaFollowsDurationChanges(t *testing.T) {
+	t.Parallel()
 	const day = 24 * time.Hour
 	base := time.Now().UTC().Truncate(time.Second)
 	for _, tc := range []struct {
@@ -6638,6 +6686,7 @@ func TestRequestCodexUsageSamplesBeforeResetCreditLookupCompletes(t *testing.T) 
 }
 
 func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavailable(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -6686,6 +6735,7 @@ func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavaila
 }
 
 func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -6811,6 +6861,7 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 }
 
 func TestHandleResetCodexQuotaRejectsConcurrentConsume(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -6884,6 +6935,7 @@ func TestHandleResetCodexQuotaRejectsConcurrentConsume(t *testing.T) {
 }
 
 func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResults(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -7021,6 +7073,7 @@ func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResu
 }
 
 func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -7155,6 +7208,7 @@ func TestPersistOAuthUsageKeepsNewerPassiveQuotaAfterCASConflict(t *testing.T) {
 }
 
 func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		profileBody      string
@@ -7324,6 +7378,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 }
 
 func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &anthropicauth.Credential{
@@ -7417,6 +7472,7 @@ func TestHandleAnthropicResetCreditsReadOnlyWire(t *testing.T) {
 }
 
 func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &anthropicauth.Credential{
@@ -7487,6 +7543,7 @@ func TestHandleAnthropicResetCreditsRejectsMissingScopeAndMalformedUpstream(t *t
 }
 
 func TestHandleAnthropicResetCreditsRefreshesOnceAfterUnauthorized(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &anthropicauth.Credential{
@@ -7538,6 +7595,7 @@ func TestHandleAnthropicResetCreditsRefreshesOnceAfterUnauthorized(t *testing.T)
 }
 
 func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
+	t.Parallel()
 	const upstreamBody = "  {\"error\":\"invalid_grant\",\"error_description\":\"refresh token expired\"}\n"
 	tests := []struct {
 		name  string
@@ -7663,6 +7721,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 }
 
 func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	sonnetResetAt := time.Now().UTC().Add(7 * 24 * time.Hour).Unix()
@@ -7792,6 +7851,7 @@ func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t 
 }
 
 func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
@@ -7919,6 +7979,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 }
 
 func TestHandleOAuthUsageHidesUpstreamErrorBody(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
@@ -7953,6 +8014,7 @@ func TestHandleOAuthUsageHidesUpstreamErrorBody(t *testing.T) {
 }
 
 func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
+	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	channel, err := store.CreateConfig(context.Background(), &model.Config{
@@ -7973,6 +8035,7 @@ func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
 }
 
 func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *testing.T) {
+	t.Parallel()
 	var exchangedState string
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		var payload map[string]string
@@ -8029,6 +8092,7 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 }
 
 func TestHandleAnthropicCookieAuthCreatesChannelWithoutReturningOrPersistingCookie(t *testing.T) {
+	t.Parallel()
 	const sessionKey = "sk-ant-sid01-handler-secret"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -8094,6 +8158,7 @@ func TestHandleAnthropicCookieAuthCreatesChannelWithoutReturningOrPersistingCook
 }
 
 func TestHandleAnthropicCookieAuthReturnsSanitizedUpstreamErrors(t *testing.T) {
+	t.Parallel()
 	const sessionKey = "sk-ant-sid01-a/b+c="
 	var mixedEncodedSecret strings.Builder
 	var percentEncodedSecret strings.Builder
@@ -8186,6 +8251,7 @@ func TestHandleAnthropicCookieAuthReturnsSanitizedUpstreamErrors(t *testing.T) {
 }
 
 func TestSameAnthropicIdentityNeverUsesSharedOrganization(t *testing.T) {
+	t.Parallel()
 	first := &anthropicauth.Credential{OrgUUID: "shared-org"}
 	second := &anthropicauth.Credential{OrgUUID: "shared-org"}
 	if sameAnthropicIdentity(first, second) {
@@ -8198,6 +8264,7 @@ func TestSameAnthropicIdentityNeverUsesSharedOrganization(t *testing.T) {
 }
 
 func TestAnthropicCredentialManagerPersistsRotatedRefreshToken(t *testing.T) {
+	t.Parallel()
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		var payload map[string]string
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -8245,6 +8312,7 @@ func TestAnthropicCredentialManagerPersistsRotatedRefreshToken(t *testing.T) {
 }
 
 func TestHandleRefreshAnthropicCredentialReturnsUpstreamErrorDetails(t *testing.T) {
+	t.Parallel()
 	const upstreamBody = `{"error":"invalid_grant","error_description":"refresh token expired"}`
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		var payload map[string]string
@@ -8293,6 +8361,7 @@ func TestHandleRefreshAnthropicCredentialReturnsUpstreamErrorDetails(t *testing.
 }
 
 func TestAnthropicCredentialManagerConsumesConcurrentCASWinnerAfterInvalidGrant(t *testing.T) {
+	t.Parallel()
 	_, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	oldCredential := &anthropicauth.Credential{
@@ -8340,6 +8409,7 @@ func TestAnthropicCredentialManagerConsumesConcurrentCASWinnerAfterInvalidGrant(
 }
 
 func TestAnthropicCredentialManagerMergesRepeatedMetadataWinnersWithoutRefreshingTwice(t *testing.T) {
+	t.Parallel()
 	_, baseStore, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	oldCredential := &anthropicauth.Credential{
@@ -8888,6 +8958,7 @@ func TestPersistOAuthUsageRestartsQuotaEpochOnUpstreamPlanChange(t *testing.T) {
 }
 
 func TestCodexQuotaEpochRejectsSamplesAfterCASConflict(t *testing.T) {
+	t.Parallel()
 	for _, passive := range []bool{false, true} {
 		name := "active"
 		if passive {

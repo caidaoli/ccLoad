@@ -22,7 +22,7 @@ func newJSONTime(t time.Time) model.JSONTime {
 func TestLog_AddAndList(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "logs.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "log-test-channel")
@@ -103,7 +103,7 @@ const prodAntigravityOAuthUsage = `{
 func TestLog_BootstrapsOAuthQuotaWindowsFromSampledUsage(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "oauth-quota-bootstrap.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	credential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
@@ -175,7 +175,7 @@ func TestLog_OAuthQuotaResetUsesIncrementalRounding(t *testing.T) {
 		{name: "round each down", cost: 0.0000004, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t, "quota-reset-rounding.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			base := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
 			credential := &codexauth.Credential{
@@ -226,7 +226,7 @@ func TestLog_OAuthQuotaResetUsesIncrementalRounding(t *testing.T) {
 func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "oauth-quota-cost.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	resetAt := now.Add(time.Hour)
@@ -376,7 +376,7 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 func TestLog_AddAndListPersistsReasoningTokens(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "logs_reasoning_tokens.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "log-reasoning-token-channel")
@@ -409,7 +409,7 @@ func TestLog_AddAndListPersistsReasoningTokens(t *testing.T) {
 func TestLog_AddLogPersistsDebugData(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "add_log_debug.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "add-log-debug-channel")
 
@@ -485,7 +485,7 @@ func TestLog_AddLogPersistsDebugData(t *testing.T) {
 func TestDebugLog_AddPersistsProtocolMetadata(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "add_debug_log.db")
+	store := newTestStore(t)
 	entry := &model.DebugLogEntry{
 		LogID:                 42,
 		ReqMethod:             http.MethodPost,
@@ -528,7 +528,7 @@ func TestDebugLog_AddPersistsProtocolMetadata(t *testing.T) {
 func TestDebugLog_CleanupBatchDeletesOldestRowsUpToLimit(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "cleanup_debug_log_batch.db")
+	store := newTestStore(t)
 	ctx := t.Context()
 	cutoff := time.Now()
 
@@ -600,7 +600,7 @@ func TestDebugLog_CleanupBatchDeletesOldestRowsUpToLimit(t *testing.T) {
 func TestDebugLog_TruncateKeepsTableUsable(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "truncate_debug_logs.db")
+	store := newTestStore(t)
 	entry := &model.DebugLogEntry{
 		LogID:       1,
 		ReqURL:      "https://upstream.example.com",
@@ -630,7 +630,7 @@ func TestDebugLog_TruncateKeepsTableUsable(t *testing.T) {
 func TestLog_BatchAdd(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "batch_logs.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "batch-log-channel")
@@ -684,7 +684,7 @@ func TestLog_BatchAdd(t *testing.T) {
 func TestLog_ListRange(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "range_logs.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "range-log-channel")
@@ -740,7 +740,7 @@ func TestLog_ListRange(t *testing.T) {
 func TestLog_Pagination(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "pagination_logs.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "pagination-channel")
@@ -794,7 +794,7 @@ func TestLog_Pagination(t *testing.T) {
 func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "logs_zero_multiplier.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "free-log-channel")
 
@@ -838,7 +838,7 @@ func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
 	for _, seconds := range []int64{604800, 30 * 24 * 60 * 60} {
 		t.Run(time.Duration(seconds*int64(time.Second)).String(), func(t *testing.T) {
-			store := newTestStore(t, "quota-retention.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			base := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
 			used := 10.0
@@ -901,7 +901,7 @@ func TestLog_OAuthUsageBoundaryCorrectionKeepsExpiredLogCosts(t *testing.T) {
 func TestLog_OAuthUsageConfirmsLocallyAdvancedPeriod(t *testing.T) {
 	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
 		t.Run(time.Duration(seconds*int64(time.Second)).String(), func(t *testing.T) {
-			store := newTestStore(t, "quota-local-rollover.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
 			used := 10.0
@@ -957,7 +957,7 @@ func TestLog_OAuthUsageConfirmedPeriodKeepsExpiredLocalCosts(t *testing.T) {
 	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
 		window := time.Duration(seconds) * time.Second
 		t.Run(window.String(), func(t *testing.T) {
-			store := newTestStore(t, "quota-local-rollover-expired.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
 			used := 10.0
@@ -1041,7 +1041,7 @@ func TestLog_OAuthUsagePeriodSwitchBackfillsLogsBeforeSample(t *testing.T) {
 	for _, seconds := range []int64{18000, 604800, 30 * 24 * 60 * 60} {
 		window := time.Duration(seconds) * time.Second
 		t.Run(window.String(), func(t *testing.T) {
-			store := newTestStore(t, "quota-period-switch.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			oldReset := time.Date(2026, time.September, 17, 6, 0, 0, 0, time.UTC)
 			used := 10.0
@@ -1103,7 +1103,7 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 			name = "manual_reset_and_weekly_role_change"
 		}
 		t.Run(name, func(t *testing.T) {
-			store := newTestStore(t, "quota-cutoff.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			base := time.Date(2026, time.September, 5, 6, 0, 0, 0, time.UTC)
 			used := 80.0
@@ -1175,7 +1175,7 @@ func TestLog_OAuthUsageRespectsResetCutoffs(t *testing.T) {
 func TestLog_OAuthQuotaEpochSurvivesBootstrapAndManualReset(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "oauth-quota-epoch.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2030, time.July, 1, 12, 0, 0, 0, time.UTC)
 	epochAt := base.Add(time.Hour)
@@ -1270,7 +1270,7 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 	t.Parallel()
 	for _, withWindows := range []bool{false, true} {
 		t.Run(fmt.Sprint("windows=", withWindows), func(t *testing.T) {
-			store := newTestStore(t, "codex-credit.db")
+			store := newTestStore(t)
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Second)
 			samples := []oauthcost.Sample{
@@ -1368,7 +1368,7 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 
 func TestJevLogsAreAuditsNotChannelUsage(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "jev-logs.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "jev-origin")
 	now := time.Now()

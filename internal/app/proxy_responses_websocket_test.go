@@ -180,6 +180,7 @@ func waitForResponsesWebsocketAttachments(
 }
 
 func TestResponsesExecutionSessionPreferredChannelLifecycle(t *testing.T) {
+	t.Parallel()
 	store := newResponsesExecutionSessionStore(nil, 1024, 0)
 	defer store.close()
 
@@ -266,6 +267,7 @@ func readResponsesWebsocketUpgradeError(t testing.TB, response *http.Response) r
 }
 
 func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	requests := make(chan []byte, 2)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -339,6 +341,7 @@ func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T)
 }
 
 func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSession(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -502,6 +505,7 @@ func TestResponsesWebsocketBridgeWriterRejectsInvalidJSON(t *testing.T) {
 // events must still fail once the collected transcript snapshot exceeds the
 // request-side transcript limit, instead of accumulating without bound.
 func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
+	t.Parallel()
 	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t), 0)
 
 	text := strings.Repeat("x", 512*1024)
@@ -525,6 +529,7 @@ func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -571,6 +576,7 @@ func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testin
 }
 
 func TestCodexWebsocketTargetChangesWithTransportConfiguration(t *testing.T) {
+	t.Parallel()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
 	if err != nil {
 		t.Fatalf("build target request: %v", err)
@@ -597,6 +603,7 @@ func TestCodexWebsocketTargetChangesWithTransportConfiguration(t *testing.T) {
 }
 
 func TestResponsesWebsocketUpgradeAndRejectUnsupportedEvent(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("unsupported downstream event must not reach upstream")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -636,6 +643,7 @@ func TestResponsesWebsocketUpgradeAndRejectUnsupportedEvent(t *testing.T) {
 // upgrades and completes a turn exactly like the canonical /v1/responses
 // path. This mirrors CLIProxyAPI's codexDirect route group.
 func TestResponsesWebsocketAcceptsCodexDirectRouteAlias(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-alias\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
@@ -659,6 +667,7 @@ func TestResponsesWebsocketAcceptsCodexDirectRouteAlias(t *testing.T) {
 // path (/v1/codex/responses, baseUrl + "/codex/responses") upgrades and
 // completes a turn exactly like the canonical /v1/responses path.
 func TestResponsesWebsocketAcceptsV1CodexPath(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-v1codex\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
@@ -684,6 +693,7 @@ func TestResponsesWebsocketAcceptsV1CodexPath(t *testing.T) {
 // /backend-api/codex/responses. The upstream must see the canonical
 // /v1/responses path, not the alias.
 func TestCodexResponsePathsHTTPSSEFallback(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("upstream method = %q, want POST", r.Method)
@@ -717,6 +727,7 @@ func TestCodexResponsePathsHTTPSSEFallback(t *testing.T) {
 }
 
 func TestResponsesGetWithoutWebsocketUpgradeDoesNotReachUpstream(t *testing.T) {
+	t.Parallel()
 	for _, path := range responsesWebsocketUpgradePaths {
 		t.Run(path, func(t *testing.T) {
 			var upstreamCalls atomic.Int32
@@ -744,6 +755,7 @@ func TestResponsesGetWithoutWebsocketUpgradeDoesNotReachUpstream(t *testing.T) {
 }
 
 func TestResponsesWebsocketRequiresAPIAuthentication(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -770,6 +782,7 @@ func TestResponsesWebsocketRequiresAPIAuthentication(t *testing.T) {
 }
 
 func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSession(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -811,6 +824,7 @@ func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSession(t *testing
 }
 
 func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -861,6 +875,7 @@ func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
 }
 
 func TestResponsesWebsocketRejectsBinaryAndOversizedFrames(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("invalid websocket frame must not reach upstream")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -905,6 +920,7 @@ func TestResponsesWebsocketRejectsBinaryAndOversizedFrames(t *testing.T) {
 }
 
 func TestResponsesWebsocketIdleConnectionsDoNotConsumeTokenConcurrency(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -929,6 +945,7 @@ func TestResponsesWebsocketIdleConnectionsDoNotConsumeTokenConcurrency(t *testin
 }
 
 func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -980,6 +997,7 @@ func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
 }
 
 func TestResponsesWebsocketGlobalConnectionLimitRejectsIdleUpgrades(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -1024,6 +1042,7 @@ func TestResponsesWebsocketGlobalConnectionLimitRejectsIdleUpgrades(t *testing.T
 }
 
 func TestResponsesWebsocketRevokedTokenClosesBeforeNextTurn(t *testing.T) {
+	t.Parallel()
 	upstreamCalls := atomic.Int32{}
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -1059,6 +1078,7 @@ func TestResponsesWebsocketRevokedTokenClosesBeforeNextTurn(t *testing.T) {
 }
 
 func TestResponsesWebsocketExpiredTokenClosesWhileIdle(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -1084,6 +1104,7 @@ func TestResponsesWebsocketExpiredTokenClosesWhileIdle(t *testing.T) {
 }
 
 func TestResponsesWebsocketClosesWhenServerShutsDown(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -1113,6 +1134,7 @@ func TestResponsesWebsocketClosesWhenServerShutsDown(t *testing.T) {
 }
 
 func TestResponsesWebsocketServerPingKeepsLongTurnAlive(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(180 * time.Millisecond)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1139,6 +1161,7 @@ func TestResponsesWebsocketServerPingKeepsLongTurnAlive(t *testing.T) {
 }
 
 func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1255,6 +1278,7 @@ func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
 }
 
 func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
+	t.Parallel()
 	requestSeen := make(chan map[string]any, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1327,6 +1351,7 @@ func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 }
 
 func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
+	t.Parallel()
 	upstreamModels := make(chan string, 3)
 	var turn int
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1412,6 +1437,7 @@ func TestResponsesWebsocketMultimodalFallbackUsesFullTranscript(t *testing.T) {
 }
 
 func TestResponsesWebsocketXAIOAuthAlwaysBridgesHTTPSSEResponse(t *testing.T) {
+	t.Parallel()
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	requestSeen := make(chan map[string]any, 2)
@@ -1509,6 +1535,7 @@ func TestResponsesWebsocketXAIOAuthAlwaysBridgesHTTPSSEResponse(t *testing.T) {
 }
 
 func TestResponsesWebsocketExpandsIncrementalTurnForHTTPUpstream(t *testing.T) {
+	t.Parallel()
 	requests := make(chan map[string]any, 2)
 	var turn int
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1592,6 +1619,7 @@ func TestResponsesWebsocketExpandsIncrementalTurnForHTTPUpstream(t *testing.T) {
 }
 
 func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -1644,6 +1672,7 @@ func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
 }
 
 func TestResponsesWebsocketCompactionReplacesStaleTranscript(t *testing.T) {
+	t.Parallel()
 	requests := make(chan map[string]any, 2)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1697,6 +1726,7 @@ func TestResponsesWebsocketCompactionReplacesStaleTranscript(t *testing.T) {
 }
 
 func TestResponsesCompactEndpointStaysOnHTTP(t *testing.T) {
+	t.Parallel()
 	requestSeen := make(chan []byte, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
@@ -1732,6 +1762,7 @@ func TestResponsesCompactEndpointStaysOnHTTP(t *testing.T) {
 }
 
 func TestBuildCodexWebsocketRequestBodySanitizesInputItemIDs(t *testing.T) {
+	t.Parallel()
 	longReasoningID := "rs_" + strings.Repeat("r", 64)
 	longCallID := strings.Repeat("call-item-", 8)
 	body := []byte(`{"model":"gpt-test","input":[` +
@@ -1765,6 +1796,7 @@ func TestBuildCodexWebsocketRequestBodySanitizesInputItemIDs(t *testing.T) {
 }
 
 func TestResponsesReplayDropsOnlyNonPortableReasoning(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"model":"gpt-test","input":[` +
 		`{"type":"reasoning","id":"rs_drop","summary":[]},` +
 		`{"type":"reasoning","id":"rs_keep","encrypted_content":"opaque","summary":[]},` +
@@ -1790,6 +1822,7 @@ func TestResponsesReplayDropsOnlyNonPortableReasoning(t *testing.T) {
 }
 
 func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
+	t.Parallel()
 	requests := make(chan map[string]any, 2)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1866,6 +1899,7 @@ func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
 }
 
 func TestResponsesWebsocketDropsIncompleteCollectedToolCall(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 2)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1915,6 +1949,7 @@ func TestResponsesWebsocketDropsIncompleteCollectedToolCall(t *testing.T) {
 }
 
 func TestResponsesWebsocketReconcilesCompletedToolCallBeforeReplay(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 2)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1970,6 +2005,7 @@ func TestResponsesWebsocketReconcilesCompletedToolCallBeforeReplay(t *testing.T)
 // not make the client's matching tool output an orphan. The next turn must
 // replay the delivered call and its output without executing the tool again.
 func TestResponsesWebsocketRecoversCompletedToolCallAfterInterruptedStream(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 3)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2089,6 +2125,7 @@ func TestResponsesWebsocketRecoversCompletedToolCallAfterInterruptedStream(t *te
 // client-retryable server_error and close 1011 so Codex can reconnect and
 // replay the turn instead of treating it as an invalid_request_error.
 func TestResponsesWebsocketClientRetryAfterInterruptedTextStream(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 3)
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2192,6 +2229,7 @@ func TestResponsesWebsocketClientRetryAfterInterruptedTextStream(t *testing.T) {
 // carry a status (usage_limit_reached + 429) stays a verbatim terminal answer;
 // TestNativeCodexWebsocketUsageLimitCoolsWithoutReplay guards that side.
 func TestResponsesWebsocketClientRetryAfterUpstreamErrorEvent(t *testing.T) {
+	t.Parallel()
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -2255,6 +2293,7 @@ func TestResponsesWebsocketClientRetryAfterUpstreamErrorEvent(t *testing.T) {
 }
 
 func TestResponsesWebsocketSwitchesChannelAfterMetadataThenBareError(t *testing.T) {
+	t.Parallel()
 	var firstCalls atomic.Int32
 	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -2318,6 +2357,7 @@ func TestResponsesWebsocketSwitchesChannelAfterMetadataThenBareError(t *testing.
 // — it terminates nothing — and the turn must end with 502
 // upstream_stream_interrupted plus close 1011.
 func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testing.T) {
+	t.Parallel()
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -2386,6 +2426,7 @@ func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testin
 // its existing path: it IS a Responses turn terminator, so it reaches the client
 // verbatim and the connection stays open for the next turn.
 func TestResponsesWebsocketForwardsUpstreamResponseFailed(t *testing.T) {
+	t.Parallel()
 	var turn atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -2436,6 +2477,7 @@ func TestResponsesWebsocketForwardsUpstreamResponseFailed(t *testing.T) {
 // model-level failure — cooling down and retrying an unrelated channel for
 // what is actually a malformed client request. Rejecting locally avoids that.
 func TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -2482,6 +2524,7 @@ func TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest(t *testin
 // merged transcript still contains an orphan output that must be rejected
 // before it reaches upstream.
 func TestResponsesWebsocketRejectsOrphanToolCallOutputOnIncrementalTurn(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -2532,6 +2575,7 @@ func TestResponsesWebsocketRejectsOrphanToolCallOutputOnIncrementalTurn(t *testi
 }
 
 func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
+	t.Parallel()
 	var handshakes atomic.Int32
 	requests := make(chan map[string]any, 2)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -2689,6 +2733,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T) {
+	t.Parallel()
 	const clientUserAgent = "codex-tui/0.153.4 (Mac OS 26.6.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.153.4)"
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	requestBody := make(chan map[string]any, 1)
@@ -2788,6 +2833,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 }
 
 func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	echoed := make(chan gjson.Result, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2914,6 +2960,7 @@ func TestNativeCodexWebsocketScopesTurnStateToIssuingAccount(t *testing.T) {
 // HTTP 客户端只从响应头取 turn-state；HTTP 续写重拨原生 WS 时，握手头里的令牌
 // 必须经合成响应带标签回到 HTTP 响应头。
 func TestHTTPResponsesTagsNativeCodexWebsocketHandshakeTurnState(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	completeTurn := func(conn *websocket.Conn, responseID string) {
 		if _, _, err := conn.ReadMessage(); err != nil {
@@ -3008,6 +3055,7 @@ func TestHTTPResponsesTagsNativeCodexWebsocketHandshakeTurnState(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketWindowHeaderRules(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		action string
@@ -3072,6 +3120,7 @@ func TestNativeCodexWebsocketWindowHeaderRules(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketUsageLimitCoolsWithoutReplay(t *testing.T) {
+	t.Parallel()
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3148,6 +3197,7 @@ func TestNativeCodexWebsocketUsageLimitCoolsWithoutReplay(t *testing.T) {
 }
 
 func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T) {
+	t.Parallel()
 	var handshakes atomic.Int32
 	requests := make(chan map[string]any, 2)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -3225,6 +3275,7 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 }
 
 func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.T) {
+	t.Parallel()
 	organizations := make(chan string, 2)
 	var handshakes atomic.Int32
 	var responses atomic.Int32
@@ -3304,6 +3355,7 @@ func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.
 }
 
 func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		bodyHint     map[string]any
@@ -3381,6 +3433,7 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 }
 
 func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -3448,6 +3501,7 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 }
 
 func TestResponsesWebsocketClosesDetachedUpstreamButKeepsTranscript(t *testing.T) {
+	t.Parallel()
 	upstreamClosed := make(chan struct{}, 1)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -3523,6 +3577,7 @@ func TestResponsesWebsocketClosesDetachedUpstreamButKeepsTranscript(t *testing.T
 }
 
 func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -3569,6 +3624,7 @@ func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
 }
 
 func TestResponsesWebsocketThreadIsolationPreservesParentContinuation(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	requests := make(chan []byte, 3)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3643,6 +3699,7 @@ func TestResponsesWebsocketThreadIsolationPreservesParentContinuation(t *testing
 }
 
 func TestHTTPResponsesWithoutExistingUpstreamWebsocketUsesHTTP(t *testing.T) {
+	t.Parallel()
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	requests := make(chan map[string]any, 2)
@@ -3695,6 +3752,7 @@ func TestHTTPResponsesWithoutExistingUpstreamWebsocketUsesHTTP(t *testing.T) {
 }
 
 func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		body       map[string]any
@@ -3797,6 +3855,7 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 }
 
 func TestCodexHTTPGatewayChainPreservesThreadConcurrency(t *testing.T) {
+	t.Parallel()
 	type executionIdentity struct {
 		sessionID string
 		threadID  string
@@ -3894,6 +3953,7 @@ func TestCodexHTTPGatewayChainPreservesThreadConcurrency(t *testing.T) {
 }
 
 func TestHTTPResponsesReportsActiveUpstreamLifecycle(t *testing.T) {
+	t.Parallel()
 	requestArrived := make(chan struct{})
 	allowResponse := make(chan struct{}, 1)
 	responseFlushed := make(chan struct{})
@@ -3988,6 +4048,7 @@ func TestHTTPResponsesReportsActiveUpstreamLifecycle(t *testing.T) {
 }
 
 func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testing.T) {
+	t.Parallel()
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4048,6 +4109,7 @@ func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testi
 }
 
 func TestHTTPResponsesUnknownPreviousIDStaysOnHTTP(t *testing.T) {
+	t.Parallel()
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4084,6 +4146,7 @@ func TestHTTPResponsesUnknownPreviousIDStaysOnHTTP(t *testing.T) {
 }
 
 func TestHTTPResponsesWithoutPreviousIDReplacesSessionTranscript(t *testing.T) {
+	t.Parallel()
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	requests := make(chan map[string]any, 2)
@@ -4133,6 +4196,7 @@ func TestHTTPResponsesWithoutPreviousIDReplacesSessionTranscript(t *testing.T) {
 }
 
 func TestResponsesWebsocketClosesNativeConnectionWhenTransportSwitchesToHTTP(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstreamClosed := make(chan struct{}, 1)
 	httpBodies := make(chan []byte, 1)
@@ -4218,6 +4282,7 @@ func TestResponsesWebsocketClosesNativeConnectionWhenTransportSwitchesToHTTP(t *
 }
 
 func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
+	t.Parallel()
 	authorizations := make(chan string, 2)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -4301,6 +4366,7 @@ func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketRetainsAffinityAfterPhysicalDisconnect(t *testing.T) {
+	t.Parallel()
 	authorizations := make(chan string, 2)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -4393,6 +4459,7 @@ func TestNativeCodexWebsocketRetainsAffinityAfterPhysicalDisconnect(t *testing.T
 }
 
 func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
+	t.Parallel()
 	pongReceived := make(chan bool, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4462,6 +4529,7 @@ func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
+	t.Parallel()
 	pingReceived := make(chan struct{}, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4552,6 +4620,7 @@ func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketBackpressuresFullReadQueue(t *testing.T) {
+	t.Parallel()
 	upstreamClosed := make(chan bool, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4617,6 +4686,7 @@ func TestNativeCodexWebsocketBackpressuresFullReadQueue(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketCancelUnblocksFullReadQueue(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	upstreamStopped := make(chan struct{})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -4703,6 +4773,7 @@ func TestNativeCodexWebsocketCancelUnblocksFullReadQueue(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketAcceptsAllSuccessfulTerminalEvents(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name           string
 		terminalType   string
@@ -4778,6 +4849,7 @@ func TestNativeCodexWebsocketAcceptsAllSuccessfulTerminalEvents(t *testing.T) {
 }
 
 func TestResponsesWebsocketHandlesHTTPPrewarmLocally(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -4819,6 +4891,7 @@ func TestResponsesWebsocketHandlesHTTPPrewarmLocally(t *testing.T) {
 }
 
 func TestResponsesWebsocketOnlyHandlesInitialHTTPPrewarmLocally(t *testing.T) {
+	t.Parallel()
 	var upstreamCalls atomic.Int32
 	requestBodies := make(chan []byte, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4867,6 +4940,7 @@ func TestResponsesWebsocketOnlyHandlesInitialHTTPPrewarmLocally(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -4927,6 +5001,7 @@ func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
 }
 
 func TestResponsesWebsocketMapsFinal429To503ForCodexRetry(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -4967,6 +5042,7 @@ func TestResponsesWebsocketMapsFinal429To503ForCodexRetry(t *testing.T) {
 }
 
 func TestResponsesWebsocketDoesNotMapFinal429ForOtherResponsesClients(t *testing.T) {
+	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -5006,10 +5082,12 @@ func TestResponsesWebsocketDoesNotMapFinal429ForOtherResponsesClients(t *testing
 }
 
 func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
+	t.Parallel()
 	testNativeCodexWebsocketReadFailureReconnectsWithReplay(t, "EOF", nil)
 }
 
 func TestNativeCodexWebsocketInterruptedEventReconnectsWithReplayBeforeSemanticOutput(t *testing.T) {
+	t.Parallel()
 	testNativeCodexWebsocketReadFailureReconnectsWithReplay(
 		t,
 		responsesWebsocketInterruptedCode,
@@ -5030,6 +5108,7 @@ func TestNativeCodexWebsocketInterruptedEventReconnectsWithReplayBeforeSemanticO
 // keepalive 是保活帧而非语义输出：上游发完 keepalive 就断连时，
 // 只要还没出现真实内容就必须允许同目标重连重放。
 func TestNativeCodexWebsocketKeepaliveReconnectsWithReplayBeforeSemanticOutput(t *testing.T) {
+	t.Parallel()
 	testNativeCodexWebsocketReadFailureReconnectsWithReplay(
 		t,
 		"keepalive",
@@ -5332,6 +5411,7 @@ func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketPriorityKeyFailbackReplaysBetweenTurns(t *testing.T) {
+	t.Parallel()
 	var phase atomic.Int32
 	var keyAHandshakes, keyBHandshakes atomic.Int32
 	keyAReplay := make(chan map[string]any, 1)
@@ -5467,6 +5547,7 @@ func TestNativeCodexWebsocketPriorityKeyFailbackReplaysBetweenTurns(t *testing.T
 }
 
 func TestNativeCodexWebsocketModelRowBindingAndSwitchReplaysTranscript(t *testing.T) {
+	t.Parallel()
 	var handshakes, responses atomic.Int32
 	requests := make(chan map[string]any, 3)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -5557,6 +5638,7 @@ func TestNativeCodexWebsocketModelRowBindingAndSwitchReplaysTranscript(t *testin
 }
 
 func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *testing.T) {
+	t.Parallel()
 	requests := make(chan map[string]any, 3)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -5674,6 +5756,7 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 }
 
 func TestNativeCodexWebsocketMissingStoredInputItemReconnectsWithStrippedReplay(t *testing.T) {
+	t.Parallel()
 	const missingID = "rs_item_813dd000e22bc4aa5ed48884"
 	requests := make(chan []byte, 2)
 	var handshakes atomic.Int32
@@ -5771,6 +5854,7 @@ func TestNativeCodexWebsocketMissingStoredInputItemReconnectsWithStrippedReplay(
 }
 
 func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 2)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -5875,6 +5959,7 @@ func TestNativeCodexWebsocketInvalidEncryptedContentReconnectsWithStrippedReplay
 }
 
 func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(t *testing.T) {
+	t.Parallel()
 	var primaryHandshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5949,6 +6034,7 @@ func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(
 }
 
 func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
+	t.Parallel()
 	var primaryCalls atomic.Int32
 	var fallbackCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -5987,6 +6073,7 @@ func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 }
 
 func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *testing.T) {
+	t.Parallel()
 	var primaryCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		call := primaryCalls.Add(1)
@@ -6361,6 +6448,7 @@ func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T
 }
 
 func TestNativeCodexWebsocketReconnectRejectionFallsBackToSameChannelHTTP(t *testing.T) {
+	t.Parallel()
 	var websocketHandshakes atomic.Int32
 	var httpCalls atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -6434,6 +6522,7 @@ func TestNativeCodexWebsocketReconnectRejectionFallsBackToSameChannelHTTP(t *tes
 }
 
 func TestNativeCodexWebsocketMessageTooBigDoesNotFailOver(t *testing.T) {
+	t.Parallel()
 	var primaryHandshakes atomic.Int32
 	var fallbackCalls atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -6490,6 +6579,7 @@ func TestNativeCodexWebsocketMessageTooBigDoesNotFailOver(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketMessageTooBigAfterOutputClosesDownstream(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -6545,6 +6635,7 @@ func TestNativeCodexWebsocketMessageTooBigAfterOutputClosesDownstream(t *testing
 }
 
 func TestNativeCodexWebsocketUsesChannelHTTPProxy(t *testing.T) {
+	t.Parallel()
 	var proxyCalls atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6633,6 +6724,7 @@ func TestNativeCodexWebsocketUsesChannelHTTPProxy(t *testing.T) {
 }
 
 func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
+	t.Parallel()
 	var fallbackCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -6931,6 +7023,7 @@ func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBefor
 }
 
 func TestNativeCodexWebsocketCompletedTurnResetsAbnormalCloseStreak(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var primaryHandshakes atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7119,6 +7212,7 @@ func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T
 }
 
 func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	requestStarted := make(chan struct{}, 1)
 	releaseResponse := make(chan struct{})
@@ -7201,6 +7295,7 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 }
 
 func TestResponsesWebsocketOperatorAbortPingOnlyUpstream(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	requestStarted := make(chan struct{}, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7272,6 +7367,7 @@ func TestResponsesWebsocketOperatorAbortPingOnlyUpstream(t *testing.T) {
 }
 
 func TestResponsesWebsocketOperatorAbortPingOnlyHTTPUpstream(t *testing.T) {
+	t.Parallel()
 	for _, withBackup := range []bool{false, true} {
 		t.Run(fmt.Sprintf("nativeBackup=%v", withBackup), func(t *testing.T) {
 			requestStarted := make(chan struct{}, 1)
@@ -7434,6 +7530,7 @@ func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T
 }
 
 func TestResponsesWebsocketAntigravityCreditsFallback(t *testing.T) {
+	t.Parallel()
 	for _, initialEmpty := range []bool{false, true} {
 		t.Run(strconv.FormatBool(initialEmpty), func(t *testing.T) {
 			var standard, paid atomic.Int32
@@ -7492,6 +7589,7 @@ func TestResponsesWebsocketAntigravityCreditsFallback(t *testing.T) {
 }
 
 func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
+	t.Parallel()
 	requestSeen := make(chan struct {
 		path string
 		body []byte
@@ -7571,6 +7669,7 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 // 的 SSE error `[input[N].status]`）。发送边界必须在首帧就剥离，而不是撞 400 再靠重试
 // 自愈——自愈多一个 RTT，且在响应已提交时根本不可用。
 func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) {
+	t.Parallel()
 	requests := make(chan []byte, 1)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

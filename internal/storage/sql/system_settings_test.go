@@ -11,7 +11,7 @@ import (
 func TestSystemSettings_GetSetting(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "settings.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -43,7 +43,7 @@ func TestSystemSettings_GetSetting(t *testing.T) {
 func TestSystemSettings_ListAllSettings(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "settings.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -82,7 +82,7 @@ func TestSystemSettings_ListAllSettings(t *testing.T) {
 func TestSystemSettings_UpdateSetting(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "settings.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 
@@ -113,7 +113,7 @@ func TestSystemSettings_UpdateSetting(t *testing.T) {
 func TestSystemSettings_BatchUpdateSettings(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t, "settings.db")
+	store := newTestStore(t)
 
 	ctx := context.Background()
 

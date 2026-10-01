@@ -14,7 +14,7 @@ import (
 )
 
 func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
-	store := newTestStore(t, "metrics_basic.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	// 两个渠道：用于覆盖 type/name 过滤与交集逻辑
@@ -266,7 +266,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 }
 
 func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T) {
-	store := newTestStore(t, "metrics_token_speed.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "speed-channel",
@@ -302,7 +302,7 @@ func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T
 }
 
 func TestMetrics_UpstreamProtocolFilterUsesPersistedAttemptProtocol(t *testing.T) {
-	store := newTestStore(t, "metrics_upstream_protocol.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
@@ -390,7 +390,7 @@ func TestMetrics_UpstreamProtocolFilterUsesPersistedAttemptProtocol(t *testing.T
 }
 
 func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
-	store := newTestStore(t, "health_timeline_full_filter.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
@@ -466,7 +466,7 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 }
 
 func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
-	store := newTestStore(t, "metrics_last_success.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -531,7 +531,7 @@ func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
 }
 
 func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(t *testing.T) {
-	store := newTestStore(t, "metrics_last_request_ids.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -587,7 +587,7 @@ func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(
 }
 
 func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
-	store := newTestStore(t, "metrics_last_success_all_time.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -636,7 +636,7 @@ func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
 }
 
 func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
-	store := newTestStore(t, "metrics_last_request_all_time.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -691,7 +691,7 @@ func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
 }
 
 func TestMetrics_LastStateIsChannelLevelWithoutModelFilter(t *testing.T) {
-	store := newTestStore(t, "metrics_last_state_channel_level.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -747,7 +747,7 @@ func TestMetrics_LastStateIsChannelLevelWithoutModelFilter(t *testing.T) {
 }
 
 func TestMetrics_LastStateRespectsModelFilter(t *testing.T) {
-	store := newTestStore(t, "metrics_last_state_model_filter.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -803,7 +803,7 @@ func TestMetrics_LastStateRespectsModelFilter(t *testing.T) {
 }
 
 func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {
-	store := newTestStore(t, "metrics_last_state_status_filter.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
@@ -867,7 +867,7 @@ func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {
 }
 
 func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
-	store := newTestStore(t, "metrics_zero_multiplier.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{

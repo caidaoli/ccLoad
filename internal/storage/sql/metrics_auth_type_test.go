@@ -10,7 +10,7 @@ import (
 
 func TestGetAuthTypeStats(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t, "metrics_auth_type.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	zai, err := store.CreateConfig(ctx, &model.Config{

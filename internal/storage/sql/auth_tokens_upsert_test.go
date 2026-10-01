@@ -10,7 +10,7 @@ import (
 )
 
 func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {
-	store := newTestStore(t, "auth_tokens_upsert.db")
+	store := newTestStore(t)
 	ctx := context.Background()
 
 	ss := store.(*sqlstore.SQLStore)
@@ -65,7 +65,7 @@ func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {
 }
 
 func TestUpsertAuthTokenAllFields_RejectsInvalidChannelRestrictionMode(t *testing.T) {
-	store := newTestStore(t, "auth_tokens_upsert_invalid_mode.db")
+	store := newTestStore(t)
 	ss := store.(*sqlstore.SQLStore)
 
 	err := ss.UpsertAuthTokenAllFields(context.Background(), &model.AuthToken{
