@@ -27,11 +27,6 @@ jobs:
         id: go
         uses: ./.github/actions/setup-go
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '26'
-
       - name: Test backend
         id: backend
         env:
@@ -79,9 +74,6 @@ jobs:
           path: ${{ runner.temp }}/backend-tests.jsonl
           retention-days: 7
 
-      - name: Verify web assets
-        run: make verify-web
-
       - name: Build
         run: make build
 
@@ -91,6 +83,24 @@ jobs:
         with:
           path: ${{ steps.go.outputs.build-cache-path }}
           key: ${{ steps.go.outputs.build-cache-key }}
+
+  # Separate job: installing Node takes ~16s and must not sit on the backend test path.
+  web:
+    name: Verify web assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+
+      - name: Verify web assets
+        run: make verify-web
 
   lint:
     name: Lint
@@ -105,11 +115,17 @@ jobs:
         id: go
         uses: ./.github/actions/setup-go
 
+      # The action's own cache key is immutable within a 7-day window and rotates weekly,
+      # forcing a cold analysis (~150s vs ~30s). Keep the analysis cache inside GOCACHE so it
+      # rolls forward per commit with the Go build cache and is pruned by save-go-cache.
       - name: Lint
         uses: golangci/golangci-lint-action@v9
+        env:
+          GOLANGCI_LINT_CACHE: ${{ steps.go.outputs.build-cache-path }}/golangci-lint
         with:
           version: v2.13.0
           args: --timeout=10m
+          skip-cache: true
 
       - name: Save Go build cache
         if: ${{ !cancelled() && github.event_name == 'push' && steps.go.outcome == 'success' }}
