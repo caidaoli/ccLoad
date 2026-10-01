@@ -26,6 +26,38 @@ func assertClassifyError(t *testing.T, err error, wantStatus int, wantLevel Erro
 
 }
 
+func TestClassifyXAIFreeUsageScope(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{429, 403, StatusSSEError} {
+		for _, tc := range []struct {
+			name  string
+			body  string
+			model string
+		}{
+			{"account", `{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for now."}`, ""},
+			{"named model", `{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.6 for now."}`, "grok-4.6"},
+			{"structured model", `{"error":{"code":"subscription:free-usage-exhausted","message":"Included free usage exhausted","model":"grok-4.7","reset_seconds":3600}}`, "grok-4.7"},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", status, tc.name), func(t *testing.T) {
+				before := time.Now()
+				got := ClassifyHTTPResponseWithMeta(status, nil, []byte(tc.body))
+				if tc.model == "" {
+					if got.ModelScoped || !got.CredentialScoped || got.Level != ErrorLevelKey || !got.HasKeyCooldownUntil {
+						t.Fatalf("account quota classification=%+v", got)
+					}
+				} else {
+					if !got.ModelScoped || got.CredentialScoped || got.Model != tc.model || !got.HasModelCooldownUntil {
+						t.Fatalf("model quota classification=%+v", got)
+					}
+					if tc.name == "structured model" && (got.ModelCooldownUntil.Before(before.Add(time.Hour-time.Second)) || got.ModelCooldownUntil.After(before.Add(time.Hour+time.Second))) {
+						t.Fatalf("exact reset lost: %v", got.ModelCooldownUntil)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestClassifyHTTPResponse(t *testing.T) {
 	tests := []struct {
 		name         string

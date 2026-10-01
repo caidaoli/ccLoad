@@ -122,13 +122,14 @@ func xaiReasoningEfforts(modelName string) map[string]struct{} {
 	if slash := strings.LastIndex(modelName, "/"); slash >= 0 {
 		modelName = modelName[slash+1:]
 	}
+	modelName = strings.TrimSuffix(modelName, "-latest")
 	var efforts []string
 	switch modelName {
-	case "grok-4.7":
+	case "grok-4.6", "grok-4.7":
 		efforts = []string{"low", "medium", "high", "xhigh"}
 	case "grok-4.3":
 		efforts = []string{"none", "low", "medium", "high"}
-	case "grok-4.5", "grok-4.20-multi-agent-0309", "grok-3-mini", "grok-3-mini-fast":
+	case "grok-4.5", "grok-4.20-0309-reasoning", "grok-4.20-reasoning", "grok-4.20-multi-agent-0309", "grok-3-mini", "grok-3-mini-fast":
 		efforts = []string{"low", "medium", "high"}
 	default:
 		return nil

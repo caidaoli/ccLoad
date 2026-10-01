@@ -5984,15 +5984,136 @@ func TestProxy_XAIImagesBridgeFallsBackWithoutViolatingChannelPolicy(t *testing.
 	}
 }
 
+func TestProxy_XAIClaudeReasoningStream(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp-thinking","model":"grok-4.6","output":[]}}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"Thinking text"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Thinking text"}]}}
+
+data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Answer"}
+
+data: {"type":"response.completed","response":{"id":"resp-thinking","model":"grok-4.6","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}
+
+`)
+	}))
+	defer upstream.Close()
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-thinking", RefreshToken: "refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-thinking", upstreamProtocol: "codex", models: "grok-4.6", authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "grok-4.6", "stream": true, "max_tokens": 100,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	var thinking, answer strings.Builder
+	stopped := false
+	for _, event := range parseSSEJSONPayloads(response.Body.String()) {
+		stopped = stopped || event["type"] == "message_stop"
+		if delta, ok := event["delta"].(map[string]any); ok {
+			if text, ok := delta["thinking"].(string); ok {
+				thinking.WriteString(text)
+			}
+			if text, ok := delta["text"].(string); ok {
+				answer.WriteString(text)
+			}
+		}
+	}
+	if response.Code != http.StatusOK || thinking.String() != "Thinking text" || answer.String() != "Answer" || !stopped {
+		t.Fatalf("status=%d thinking=%q answer=%q stopped=%v body=%s", response.Code, thinking.String(), answer.String(), stopped, response.Body.String())
+	}
+}
+
+func TestProxy_XAIResponsesClientToolsRoundTrip(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		tools := gjson.GetBytes(body, "tools").Array()
+		if len(tools) != 2 || tools[0].Get("type").String() != "function" || tools[1].Get("type").String() != "function" {
+			t.Errorf("upstream tools were not adapted: %s", body)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		choice := gjson.GetBytes(body, "tool_choice")
+		if choice.Get("type").String() != "function" || choice.Get("name").String() != tools[0].Get("name").String() || choice.Get("namespace").Exists() {
+			t.Errorf("forced namespace tool lost: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-tools\",\"model\":\"grok-4.6\",\"output\":[]}}\n\n")
+		items := []string{
+			fmt.Sprintf(`{"type":"function_call","id":"fc_ns","call_id":"call_ns","name":%q,"arguments":"{\"message\":\"hi\"}"}`, tools[0].Get("name").String()),
+			fmt.Sprintf(`{"type":"function_call","id":"fc_custom","call_id":"call_custom","name":%q,"arguments":"{\"input\":\"patch text\"}"}`, tools[1].Get("name").String()),
+		}
+		for i, item := range items {
+			_, _ = fmt.Fprintf(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":%d,\"item\":%s}\n\n", i, item)
+		}
+		_, _ = fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-tools\",\"status\":\"completed\",\"model\":\"grok-4.6\",\"output\":[%s],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", strings.Join(items, ","))
+	}))
+	defer upstream.Close()
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-tools", RefreshToken: "refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-tools", upstreamProtocol: "codex", models: "grok-4.6", authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", streaming), func(t *testing.T) {
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "grok-4.6", "stream": streaming, "input": "call the tools",
+				"tools": []any{
+					map[string]any{"type": "namespace", "name": "collaboration", "tools": []any{map[string]any{"type": "function", "name": "send_message", "parameters": map[string]any{"type": "object", "properties": map[string]any{"message": map[string]any{"type": "string"}}}}}},
+					map[string]any{"type": "custom", "name": "apply_patch"},
+				},
+				"tool_choice": map[string]any{"type": "function", "namespace": "collaboration", "name": "send_message"},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			result := gjson.ParseBytes(response.Body.Bytes())
+			if streaming {
+				for _, event := range parseSSEJSONPayloads(response.Body.String()) {
+					if event["type"] == "response.completed" {
+						payload, err := json.Marshal(event["response"])
+						if err != nil {
+							t.Fatal(err)
+						}
+						result = gjson.ParseBytes(payload)
+					}
+				}
+			}
+			items := result.Get("output").Array()
+			if len(items) != 2 || items[0].Get("namespace").String() != "collaboration" || items[0].Get("name").String() != "send_message" || items[0].Get("call_id").String() != "call_ns" {
+				t.Fatalf("namespace call was not restored: %s", response.Body.String())
+			}
+			if items[1].Get("type").String() != "custom_tool_call" || items[1].Get("name").String() != "apply_patch" || items[1].Get("input").String() != "patch text" || items[1].Get("call_id").String() != "call_custom" {
+				t.Fatalf("custom call was not restored: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		status      int
-		body        string
-		wantRefresh bool
+		name          string
+		status        int
+		body          string
+		wantRefresh   bool
+		lateRejection bool
 	}{
 		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":{"type":"authentication_error","code":"invalid_token"}}`, wantRefresh: true},
+		{name: "late unauthorized after another refresh", status: http.StatusUnauthorized, body: `{"error":{"type":"authentication_error","code":"invalid_token"}}`, wantRefresh: true, lateRejection: true},
 		{name: "structured bad credential", status: http.StatusForbidden, body: `{"code":"invalid_token"}`, wantRefresh: true},
 		{name: "ordinary forbidden", status: http.StatusForbidden, body: `{"error":{"message":"forbidden"}}`},
 		{name: "entitlement forbidden", status: http.StatusForbidden, body: `{"code":"subscription_required"}`},
@@ -6003,6 +6124,7 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var upstreamAttempts atomic.Int32
 			var firstExecutionID string
+			var refreshBeforeRejection func(context.Context) error
 			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				attempt := upstreamAttempts.Add(1)
 				wantToken := "xai-old"
@@ -6031,6 +6153,11 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if tt.lateRejection && attempt == 1 {
+					if err := refreshBeforeRejection(r.Context()); err != nil {
+						t.Errorf("concurrent refresh: %v", err)
+					}
+				}
 				w.WriteHeader(tt.status)
 				_, _ = io.WriteString(w, tt.body)
 			}))
@@ -6063,6 +6190,14 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 					env.server.InvalidateChannelListCache()
 				},
 			)
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("configs=%d err=%v", len(configs), err)
+			}
+			refreshBeforeRejection = func(ctx context.Context) error {
+				_, err := env.server.xaiCredentials.credentialAfterUnauthorized(ctx, configs[0], "xai-old")
+				return err
+			}
 
 			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 				"model": "grok-4.5", "stream": false, "input": "hello",

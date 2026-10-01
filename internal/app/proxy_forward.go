@@ -302,6 +302,11 @@ func (s *Server) buildProxyRequest(
 		}
 	}
 	if xaiResponsesRequest {
+		reqCtx.xaiResponses = true
+		body, reqCtx.xaiTools, err = prepareXAIResponsesToolsRequest(body, reqCtx.xaiTools)
+		if err != nil {
+			return nil, err
+		}
 		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
 		if err != nil {
 			return nil, err
@@ -1286,9 +1291,13 @@ func (s *Server) handleSuccessResponse(
 	if isSSE && isCodexResponses {
 		resp.Body = wrapCodexSSEBody(resp.Body)
 	}
+	if reqCtx.xaiResponses {
+		prepareXAIResponsesResponse(resp, reqCtx.isStreaming || isSSE)
+		prepareXAIResponsesToolsResponse(resp, reqCtx.xaiTools, reqCtx.isStreaming || isSSE)
+	}
 	prepareOpenCodeResponsesResponse(resp, reqCtx.openCodeResponses, reqCtx.isStreaming)
 	prepareAnthropicMCPToolAliasResponse(resp, reqCtx.anthropicToolAliases, reqCtx.isStreaming)
-	if reqCtx.openCodeResponses != nil || len(reqCtx.anthropicToolAliases) > 0 {
+	if reqCtx.xaiResponses || reqCtx.openCodeResponses != nil || len(reqCtx.anthropicToolAliases) > 0 {
 		hdrClone.Del("Content-Length")
 	}
 	if isResponsesSSE && isSSE {
@@ -2263,6 +2272,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		isAnthropicClaudeCodeMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 	reqCtx.replayBodyRulesApplied = replayBodyRulesApplied
 	reqCtx.openCodeResponses = wireAliases.openCode
+	reqCtx.xaiTools = wireAliases.xaiTools
 	reqCtx.anthropicToolAliases = wireAliases.anthropicTools
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
@@ -2458,7 +2468,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
 	dc.captureUpstreamError(err)
-	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.openCodeResponses != nil {
+	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil {
 		originalReqURL := reqCtx.transformPlan.OriginalPath
 		if rawQuery != "" {
 			separator := "?"
@@ -2521,7 +2531,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	cancelableWriter, stopWrites := newCancelableResponseWriter(reqCtx.ctx, w)
 	defer stopWrites()
 	var responseWriter http.ResponseWriter = cancelableWriter
-	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.openCodeResponses != nil) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || cfg.UsesZedOAuth() || reqCtx.xaiResponses || reqCtx.openCodeResponses != nil) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		responseWriter = dc.wrapTranslatedResponseWriter(cancelableWriter)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
@@ -2532,7 +2542,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
 		!res.ResponseCommitted && len(res.SSEErrorEvent) > 0) {
 		res.upstreamRequestBody = bytes.Clone(sentBody)
-		res.wireAliases = upstreamWireAliases{openCode: reqCtx.openCodeResponses, anthropicTools: reqCtx.anthropicToolAliases}
+		res.wireAliases = upstreamWireAliases{openCode: reqCtx.openCodeResponses, xaiTools: reqCtx.xaiTools, anthropicTools: reqCtx.anthropicToolAliases}
 	}
 	if usedNativeWebsocket {
 		// Reconnects happen while handleResponse drains the upstream frames. Take
@@ -4553,8 +4563,14 @@ func (s *Server) tryXAIOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "xAI", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
-		credential, err := s.xaiCredentials.credential(ctx, cfg, forceRefresh)
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "xAI", false, func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error) {
+		var credential *xaiauth.Credential
+		var err error
+		if forceRefresh {
+			credential, err = s.xaiCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		} else {
+			credential, err = s.xaiCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			return cfg, "", err
 		}

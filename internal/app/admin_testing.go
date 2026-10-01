@@ -167,6 +167,7 @@ type channelTestRequestPlan struct {
 	anthropicMappedSessionID  string
 	zedWire                   *zedWirePlan
 	openCodeResponses         *openCodeResponsesPlan
+	xaiTools                  *xaiResponsesToolsPlan
 	timeout                   *channelTestTimeout
 	debugCapture              *debugCapture
 	antigravityOAuth          bool
@@ -1789,6 +1790,10 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		})
 	}
 	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isEventStream)
+	if requestPlan.xaiOAuth {
+		prepareXAIResponsesResponse(resp, requestPlan.upstreamStreaming || isEventStream)
+		prepareXAIResponsesToolsResponse(resp, requestPlan.xaiTools, requestPlan.upstreamStreaming || isEventStream)
+	}
 	prepareOpenCodeResponsesResponse(resp, requestPlan.openCodeResponses, requestPlan.upstreamStreaming)
 
 	// 通用结果初始化
@@ -2133,6 +2138,10 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	if xaiResponsesRequest {
 		requestPlan.xaiConversationID = testReq.ResolveSessionID()
+		requestPlan.requestBody, requestPlan.xaiTools, err = prepareXAIResponsesToolsRequest(requestPlan.requestBody, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("adapt xAI test tools: %w", err)
+		}
 		requestPlan.requestBody, err = finalizeXAIResponsesBody(
 			requestPlan.requestBody,
 			testReq.Model,

@@ -73,6 +73,9 @@
 
 ## xAI
 
+- **客户端版本**：`xaiauth.CLIClientVersion` 统一驱动 `x-grok-client-version`、模型请求 UA 和账单 UA。2026-10-01 对齐官方 npm [`@xai-official/grok@1.0.46`](https://registry.npmjs.org/@xai-official/grok/1.0.46) 稳定版；版本头取发行版本的契约参照官方 `xai-org/grok-build` `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` 的 `xai-grok-shell/src/agent/proxy_headers.rs` 与 `xai-grok-version/src/lib.rs`。
+- **Responses 工具及思考兼容**：xAI 请求边界将 namespace/custom/tool_search 工具声明、强制选择和调用历史一致转换为 function，返回 JSON/SSE 恢复原工具类型及 namespace，call_id 保持原值；名称限制与碰撞由同一映射处理，局部重试沿用首轮映射。xAI 的 `reasoning_text` 流事件及终态 content 在协议转换前归一为 reasoning summary，保留已有摘要和 encrypted_content；Grok 4.6/4.7（含 latest 别名）支持 xhigh。代理和管理测试共用入口。参照 sub2api `42bc7f6cffe24bcb471608e48e66b4a0afa1f882` 与 CLIProxyAPI `ea44eefd59302f60fe9d3bd1106106608aa7d3cb`；本次为 app 层适配，未更新转换核心快照。
+- **认证恢复**：401 或明确 bad-credential 403 后，将实际被拒 access token 传给刷新管理器；若并发请求已保存新 token，直接使用已刷新的凭证，不能因旧请求晚到的拒绝再次轮换新 token。
 - **xAI Responses 图片工具**(`xai_wire.go`,`xai_images.go`):`image_generation` 只保留给 `grok-4.6` 及之后的对话模型;`grok-4.20-*` 是旧产品线,不能按小数版本误判为比 4.6 新。客户端强制选择 `{"type":"image_generation"}` 必须改写成 xAI 接受的 `allowed_tools`+`mode=required`;不支持的模型删除该工具及孤立选择。公开 `POST /v1/images/generations` 使用 `grok-4.6+` 时,app 层把 OpenAI Images 请求桥接成 xAI Responses 工具调用:非流请求聚合成标准 Images JSON,流请求输出 `image_generation.partial_image/completed` SSE,已提交后断流补 `event:error`;这不是 xAI 原生 `grok-imagine-*` 媒体 API,不要把两条线塞进同一个 finalizer
 
 ## Anthropic / Claude Code

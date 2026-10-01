@@ -161,6 +161,7 @@ func looksLikeJSON(body []byte) bool {
 // 的 provider body，映射只能从首轮带过来。
 type upstreamWireAliases struct {
 	openCode       *openCodeResponsesPlan
+	xaiTools       *xaiResponsesToolsPlan
 	anthropicTools anthropicMCPToolAliases
 }
 

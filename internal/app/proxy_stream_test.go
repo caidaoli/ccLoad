@@ -13,9 +13,118 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
 )
+
+func TestXAIResponsesReasoningStreamContract(t *testing.T) {
+	input := `event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_xai","model":"grok","created_at":1,"output":[]}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":1,"item_id":"r1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","sequence_number":2,"item_id":"r1","output_index":0,"content_index":0,"delta":"Consider carefully"}
+
+event: response.reasoning_text.done
+data: {"type":"response.reasoning_text.done","sequence_number":3,"item_id":"r1","output_index":0,"content_index":0,"text":"Consider carefully"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":{"id":"r1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Consider carefully"}],"encrypted_content":"cipher"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_xai","model":"grok","status":"completed","output":[{"id":"r1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Consider carefully"}],"encrypted_content":"cipher"}],"usage":{"input_tokens":1,"output_tokens":2}}}
+
+`
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(input))}
+	prepareXAIResponsesResponse(resp, true)
+	defer func() { _ = resp.Body.Close() }()
+	normalized, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := protocol.NewRegistry()
+	builtin.Register(registry)
+	var state any
+	var translated bytes.Buffer
+	counts := make(map[string]int)
+	var nextSequence int64
+	for _, frame := range strings.Split(string(normalized), "\n\n") {
+		if frame == "" {
+			continue
+		}
+		event, data := parseSSEEventChunk([]byte(frame))
+		payload := gjson.ParseBytes(data)
+		if event != payload.Get("type").String() {
+			t.Fatalf("event=%q type=%q", event, payload.Get("type").String())
+		}
+		counts[event]++
+		if payload.Get("sequence_number").Int() != nextSequence {
+			t.Fatalf("out-of-order event: %s, want sequence %d", data, nextSequence)
+		}
+		nextSequence++
+		if strings.HasPrefix(event, "response.reasoning_summary_") {
+			if payload.Get("summary_index").Int() != 0 || payload.Get("content_index").Exists() {
+				t.Fatalf("invalid reasoning indexes: %s", data)
+			}
+		}
+		if event == "response.completed" {
+			item := payload.Get("response.output.0")
+			if item.Get("summary.0.type").String() != "summary_text" || item.Get("summary.0.text").String() != "Consider carefully" || item.Get("encrypted_content").String() != "cipher" {
+				t.Fatalf("invalid terminal reasoning: %s", data)
+			}
+		}
+		chunks, err := registry.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Anthropic, "grok", []byte(`{"model":"grok"}`), nil, []byte(frame+"\n\n"), &state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, chunk := range chunks {
+			translated.Write(chunk)
+		}
+	}
+	if counts["response.reasoning_summary_text.done"] != 1 || counts["response.reasoning_summary_part.done"] != 1 {
+		t.Fatalf("done events=%v", counts)
+	}
+	var thinking strings.Builder
+	var stopped bool
+	for _, payload := range parseSSEJSONPayloads(translated.String()) {
+		if payload["type"] == "message_stop" {
+			stopped = true
+		}
+		if delta, ok := payload["delta"].(map[string]any); ok && delta["type"] == "thinking_delta" {
+			thinking.WriteString(delta["thinking"].(string))
+		}
+	}
+	if thinking.String() != "Consider carefully" || !stopped {
+		t.Fatalf("thinking=%q stopped=%v translated=%s", thinking.String(), stopped, translated.String())
+	}
+}
+
+func TestXAIResponsesJSONReasoningContract(t *testing.T) {
+	for _, summary := range []string{`[]`, `[{"type":"summary_text","text":"existing"}]`, `[{"type":"reasoning_text","text":"existing"}]`} {
+		t.Run(summary, func(t *testing.T) {
+			input := `{"object":"response","output":[{"type":"reasoning","summary":` + summary + `,"content":[{"type":"reasoning_text","text":"fallback"}],"encrypted_content":"cipher"}]}`
+			resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(input))}
+			prepareXAIResponsesResponse(resp, false)
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := gjson.GetBytes(body, "output.0")
+			want := "existing"
+			if summary == `[]` {
+				want = "fallback"
+			}
+			if len(item.Get("summary").Array()) != 1 || item.Get("summary.0.type").String() != "summary_text" || item.Get("summary.0.text").String() != want || item.Get("encrypted_content").String() != "cipher" {
+				t.Fatalf("normalized reasoning=%s", body)
+			}
+		})
+	}
+}
 
 func readCodexMalformedSSEFixture(t *testing.T) []byte {
 	t.Helper()
