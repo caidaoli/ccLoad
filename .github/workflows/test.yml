@@ -33,9 +33,51 @@ jobs:
           node-version: '26'
 
       - name: Test backend
+        id: backend
         env:
           CGO_ENABLED: 0
-        run: go test -trimpath -tags sonic ./internal/...
+        run: go test -trimpath -tags sonic -json ./internal/... > "$RUNNER_TEMP/backend-tests.jsonl"
+
+      - name: Summarize backend test timings
+        if: ${{ !cancelled() && steps.backend.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "backend-tests.jsonl"
+          events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+          parallel = {(e.get("Package"), e.get("Test")) for e in events if e["Action"] == "pause"}
+          completed = [e for e in events if e["Action"] in ("pass", "fail", "skip") and "Elapsed" in e]
+          packages = [e for e in completed if not e.get("Test")]
+          tests = [e for e in completed if e.get("Test") and "/" not in e["Test"]]
+          serial_tests = [e for e in tests if (e["Package"], e["Test"]) not in parallel]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              for title, rows in (("Backend packages", packages), ("Slowest serial top-level tests", serial_tests), ("Slowest top-level tests", tests)):
+                  summary.write(f"### {title}\n\n| Package / test | Seconds | Result | Execution |\n| --- | ---: | --- | --- |\n")
+                  for event in sorted(rows, key=lambda e: e["Elapsed"], reverse=True)[:20]:
+                      name = event["Package"] + (" / " + event["Test"] if event.get("Test") else "")
+                      execution = "parallel" if (event.get("Package"), event.get("Test")) in parallel else "serial"
+                      if not event.get("Test"):
+                          execution = "—"
+                      summary.write(f"| {name} | {event['Elapsed']:.3f} | {event['Action']} | {execution} |\n")
+                  summary.write("\n")
+              summary.write("Top-level durations include their subtests; parallel durations must not be added together. Cached package results are not a fresh timing measurement.\n")
+          failed_packages = {e["Package"] for e in events if e["Action"] == "fail" and not e.get("Test")}
+          for event in events:
+              if event.get("Package") in failed_packages and event.get("Output"):
+                  print(event["Output"], end="")
+          PY
+
+      - name: Upload backend test events
+        if: ${{ !cancelled() && steps.backend.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-events
+          path: ${{ runner.temp }}/backend-tests.jsonl
+          retention-days: 7
 
       - name: Verify web assets
         run: make verify-web
