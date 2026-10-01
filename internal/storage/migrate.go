@@ -597,20 +597,30 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"responses_ws_max_connections_per_token", "0", "int", responsesWSMaxConnectionsPerTokenDescription, "0"},
 	}
 
-	var query string
+	// 单条多行 INSERT：逐条写入是迁移里语句数最多的一段，每次启动/建库都要付一遍往返。
+	var insertHead, rowSQL, insertTail string
 	switch dialect {
 	case DialectMySQL:
-		query = "INSERT IGNORE INTO system_settings (`key`, value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, UNIX_TIMESTAMP())"
+		insertHead = "INSERT IGNORE INTO system_settings (`key`, value, value_type, description, default_value, updated_at) VALUES "
+		rowSQL = "(?, ?, ?, ?, ?, UNIX_TIMESTAMP())"
 	case DialectPostgres:
-		query = `INSERT INTO system_settings ("key", value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, EXTRACT(EPOCH FROM NOW())::BIGINT) ON CONFLICT ("key") DO NOTHING`
+		insertHead = `INSERT INTO system_settings ("key", value, value_type, description, default_value, updated_at) VALUES `
+		rowSQL = "(?, ?, ?, ?, ?, EXTRACT(EPOCH FROM NOW())::BIGINT)"
+		insertTail = ` ON CONFLICT ("key") DO NOTHING`
 	default:
-		query = "INSERT OR IGNORE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, unixepoch())"
+		insertHead = "INSERT OR IGNORE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES "
+		rowSQL = "(?, ?, ?, ?, ?, unixepoch())"
 	}
 
-	for _, s := range settings {
-		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), s.key, s.value, s.valueType, s.desc, s.defaultVal); err != nil {
-			return fmt.Errorf("insert default setting %s: %w", s.key, err)
-		}
+	rows := make([]string, len(settings))
+	args := make([]any, 0, len(settings)*5)
+	for i, s := range settings {
+		rows[i] = rowSQL
+		args = append(args, s.key, s.value, s.valueType, s.desc, s.defaultVal)
+	}
+	query := insertHead + strings.Join(rows, ", ") + insertTail
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), args...); err != nil {
+		return fmt.Errorf("insert default settings: %w", err)
 	}
 
 	// 默认词表在 CLIProxyAPI 示例的 ["API","proxy"] 基础上加入 Claude/Anthropic。
