@@ -10,28 +10,29 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260917-1"></script>
-  <script defer src="assets/locales/en.js?v=20260917-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
+  <script defer src="assets/locales/en.js?v=20261002-2"></script>
+  <script defer src="assets/locales/config.zh-CN.js?v=20261002-2"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
   <script defer src="assets/js/nav.js?v=20260904-1"></script>
-  <script defer src="assets/js/www.js?v=20260829-1"></script>
+  <script defer src="assets/js/www.js?v=20261002-3"></script>
 </head>
 <body class="www-page www-config">
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
-      <span class="www-eyebrow">Configuration</span>
+      <span class="www-eyebrow" data-i18n-html="www.config.eyebrow">Configuration</span>
       <h1 class="www-page-title" data-i18n="www.config.title">Configuration Guide</h1>
       <p class="www-page-subtitle" data-i18n="www.config.subtitle">
         Set the secure startup options first, then tune channels, limits, and timeout policy from the admin console.
       </p>
-      <div class="www-badge-row" aria-label="Configuration categories">
-        <span class="www-badge">Environment</span>
-        <span class="www-badge">Storage</span>
-        <span class="www-badge">Channel Policy</span>
-        <span class="www-badge">OAuth Addresses</span>
-        <span class="www-badge">Cost Limits</span>
+      <div class="www-badge-row" aria-label="Configuration categories" data-i18n-aria-label="www.config.badges.label">
+        <span class="www-badge" data-i18n-html="www.config.badge.env">Environment</span>
+        <span class="www-badge" data-i18n-html="www.config.badge.storage">Storage</span>
+        <span class="www-badge" data-i18n-html="www.config.badge.channel">Channel Policy</span>
+        <span class="www-badge" data-i18n-html="www.config.badge.oauth">OAuth Addresses</span>
+        <span class="www-badge" data-i18n-html="www.config.badge.cost">Cost Limits</span>
       </div>
     </div>
   </header>
@@ -40,110 +41,110 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Startup Environment Variables</h2>
-          <p>Environment variables cover bootstrap configuration only — values ccLoad needs before a database connection exists. Storage variables (<code>SQLITE_PATH</code>, <code>SQLITE_JOURNAL_MODE</code>, <code>CCLOAD_MYSQL</code>, <code>CCLOAD_POSTGRES</code>, <code>CCLOAD_ENABLE_SQLITE_REPLICA</code>, <code>CCLOAD_SQLITE_LOG_DAYS</code>) decide <em>how</em> the database is opened, so they cannot live inside that same database and will stay environment variables. Runtime policies belong in the admin console below.</p>
+          <h2 data-i18n-html="www.config.env.title">Startup Environment Variables</h2>
+          <p data-i18n-html="www.config.env.desc">Environment variables cover bootstrap configuration only — values ccLoad needs before a database connection exists. Storage variables (<code>SQLITE_PATH</code>, <code>SQLITE_JOURNAL_MODE</code>, <code>CCLOAD_MYSQL</code>, <code>CCLOAD_POSTGRES</code>, <code>CCLOAD_ENABLE_SQLITE_REPLICA</code>, <code>CCLOAD_SQLITE_LOG_DAYS</code>) decide <em>how</em> the database is opened, so they cannot live inside that same database and will stay environment variables. Runtime policies belong in the admin console below.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>Variable</th>
-                <th>Default</th>
-                <th>Purpose</th>
-                <th>Recommendation</th>
+                <th data-i18n-html="www.config.env.th.variable">Variable</th>
+                <th data-i18n-html="www.config.env.th.default">Default</th>
+                <th data-i18n-html="www.config.env.th.purpose">Purpose</th>
+                <th data-i18n-html="www.config.env.th.advice">Recommendation</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td><code>PORT</code></td>
                 <td><code>8080</code></td>
-                <td>HTTP listen port.</td>
-                <td>Hugging Face Spaces must use <code>7860</code>.</td>
+                <td data-i18n-html="www.config.env.port.purpose">HTTP listen port.</td>
+                <td data-i18n-html="www.config.env.port.advice">Hugging Face Spaces must use <code>7860</code>.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_PASS</code></td>
-                <td>None</td>
-                <td>Admin console password. The service exits when it is not set.</td>
-                <td>Required in production. Use platform Secrets or Docker Secrets.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.pass.purpose">Admin console password. The service exits when it is not set.</td>
+                <td data-i18n-html="www.config.env.pass.advice">Required in production. Use platform Secrets or Docker Secrets.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_API_TOKENS</code></td>
-                <td>None</td>
-                <td>Pre-provisions API access tokens at startup. Supports <code>token|description</code>.</td>
-                <td>Useful for automated recovery. Prefer the token page for normal management.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.tokens.purpose">Pre-provisions API access tokens at startup. Supports <code>token|description</code>.</td>
+                <td data-i18n-html="www.config.env.tokens.advice">Useful for automated recovery. Prefer the token page for normal management.</td>
               </tr>
               <tr>
                 <td><code>API_TOKENS</code></td>
-                <td>None</td>
-                <td>Compatibility alias for <code>CCLOAD_API_TOKENS</code>.</td>
-                <td>Do not set it to a different value from <code>CCLOAD_API_TOKENS</code>.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.tokensAlias.purpose">Compatibility alias for <code>CCLOAD_API_TOKENS</code>.</td>
+                <td data-i18n-html="www.config.env.tokensAlias.advice">Do not set it to a different value from <code>CCLOAD_API_TOKENS</code>.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_RELEASE_BASE_URL</code></td>
-                <td>None</td>
-                <td>Complete <code>.../releases/latest/download</code> base URL used for stable release detection and all release asset downloads.</td>
-                <td>Leave unset to let the update manager try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, <code>ghfast.top</code>, then GitHub. Preview metadata always comes from GitHub's Releases feed. Set this only to force one private mirror for stable metadata and all release asset downloads.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.release.purpose">Complete <code>.../releases/latest/download</code> base URL used for stable release detection and all release asset downloads.</td>
+                <td data-i18n-html="www.config.env.release.advice">Leave unset to let the update manager try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, <code>ghfast.top</code>, then GitHub. Preview metadata always comes from GitHub's Releases feed. Set this only to force one private mirror for stable metadata and all release asset downloads.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
-                <td>None</td>
-                <td>MySQL DSN. Mutually exclusive with <code>CCLOAD_POSTGRES</code>.</td>
-                <td>Set exactly one primary DSN; when neither is set, ccLoad uses SQLite.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.mysql.purpose">MySQL DSN. Mutually exclusive with <code>CCLOAD_POSTGRES</code>.</td>
+                <td data-i18n-html="www.config.env.mysql.advice">Set exactly one primary DSN; when neither is set, ccLoad uses SQLite.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_POSTGRES</code></td>
-                <td>None</td>
-                <td>PostgreSQL DSN in URL or libpq keyword format. Mutually exclusive with <code>CCLOAD_MYSQL</code>.</td>
-                <td>Example: <code>postgres://user:pass@host:5432/ccload?sslmode=require</code>.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.postgres.purpose">PostgreSQL DSN in URL or libpq keyword format. Mutually exclusive with <code>CCLOAD_MYSQL</code>.</td>
+                <td data-i18n-html="www.config.env.postgres.advice">Example: <code>postgres://user:pass@host:5432/ccload?sslmode=require</code>.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ENABLE_SQLITE_REPLICA</code></td>
                 <td><code>0</code></td>
-                <td>Hybrid storage switch: persist through MySQL/PostgreSQL and read from a local SQLite replica.</td>
-                <td>Requires one primary DSN. Useful on Hugging Face Spaces or with a high-latency primary.</td>
+                <td data-i18n-html="www.config.env.replica.purpose">Hybrid storage switch: persist through MySQL/PostgreSQL and read from a local SQLite replica.</td>
+                <td data-i18n-html="www.config.env.replica.advice">Requires one primary DSN. Useful on Hugging Face Spaces or with a high-latency primary.</td>
               </tr>
               <tr>
                 <td><code>SQLITE_PATH</code></td>
                 <td><code>data/ccload.db</code></td>
-                <td>SQLite database file path. Falls back to a temporary directory when the default is not writable.</td>
-                <td>Set an explicit persistent path in production. Read while opening the database, so it cannot be a system setting.</td>
+                <td data-i18n-html="www.config.env.sqlitePath.purpose">SQLite database file path. Falls back to a temporary directory when the default is not writable.</td>
+                <td data-i18n-html="www.config.env.sqlitePath.advice">Set an explicit persistent path in production. Read while opening the database, so it cannot be a system setting.</td>
               </tr>
               <tr>
                 <td><code>SQLITE_JOURNAL_MODE</code></td>
                 <td><code>WAL</code></td>
-                <td>SQLite journal mode used to build the connection DSN. Accepts a fixed whitelist; an invalid value stops startup.</td>
-                <td><code>TRUNCATE</code> is safer in containers where WAL sidecar files can be lost. Read before the database exists, so it cannot be a system setting.</td>
+                <td data-i18n-html="www.config.env.journal.purpose">SQLite journal mode used to build the connection DSN. Accepts a fixed whitelist; an invalid value stops startup.</td>
+                <td data-i18n-html="www.config.env.journal.advice"><code>TRUNCATE</code> is safer in containers where WAL sidecar files can be lost. Read before the database exists, so it cannot be a system setting.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_SQLITE_LOG_DAYS</code></td>
                 <td><code>7</code></td>
-                <td>Initial log window imported from primary when hybrid SQLite has no logs.</td>
-                <td><code>-1</code> imports all logs; <code>0</code> disables startup log imports. Other values make later startups import only logs newer than SQLite's latest timestamp.</td>
+                <td data-i18n-html="www.config.env.logDays.purpose">Initial log window imported from primary when hybrid SQLite has no logs.</td>
+                <td data-i18n-html="www.config.env.logDays.advice"><code>-1</code> imports all logs; <code>0</code> disables startup log imports. Other values make later startups import only logs newer than SQLite's latest timestamp.</td>
               </tr>
               <tr>
                 <td><code>CURSOR_SDK_BRIDGE_BIN</code></td>
-                <td>Auto-discovered</td>
-                <td>Explicit path to the Cursor SDK Bridge executable.</td>
-                <td>Leave unset unless you pin a local binary. An invalid override fails startup when a Cursor channel exists.</td>
+                <td data-i18n-html="www.config.env.bridge.default">Auto-discovered</td>
+                <td data-i18n-html="www.config.env.bridge.purpose">Explicit path to the Cursor SDK Bridge executable.</td>
+                <td data-i18n-html="www.config.env.bridge.advice">Leave unset unless you pin a local binary. An invalid override fails startup when a Cursor channel exists.</td>
               </tr>
               <tr>
                 <td><code>TRUSTED_PROXIES</code></td>
-                <td>Private ranges + loopback + <code>100.64.0.0/10</code></td>
-                <td>Trusted proxy CIDRs for client IP detection and login rate limiting.</td>
-                <td>Set explicitly behind a reverse proxy. <code>none</code> trusts no proxies.</td>
+                <td data-i18n-html="www.config.env.proxies.default">Private ranges + loopback + <code>100.64.0.0/10</code></td>
+                <td data-i18n-html="www.config.env.proxies.purpose">Trusted proxy CIDRs for client IP detection and login rate limiting.</td>
+                <td data-i18n-html="www.config.env.proxies.advice">Set explicitly behind a reverse proxy. <code>none</code> trusts no proxies.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ALLOW_INSECURE_TLS</code></td>
                 <td><code>0</code></td>
-                <td>Allows skipping upstream TLS certificate verification.</td>
-                <td>Use only for controlled internal debugging. Do not enable in production.</td>
+                <td data-i18n-html="www.config.env.insecureTls.purpose">Allows skipping upstream TLS certificate verification.</td>
+                <td data-i18n-html="www.config.env.insecureTls.advice">Use only for controlled internal debugging. Do not enable in production.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_HOST_OVERRIDES</code></td>
-                <td>None</td>
-                <td>Pins upstream hostnames to fixed IPs before dialing. Format: <code>host=ip,host2=ip2</code>.</td>
-                <td>Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged. Invalid entries fail startup.</td>
+                <td data-i18n-html="www.config.env.none">None</td>
+                <td data-i18n-html="www.config.env.hostOverrides.purpose">Pins upstream hostnames to fixed IPs before dialing. Format: <code>host=ip,host2=ip2</code>.</td>
+                <td data-i18n-html="www.config.env.hostOverrides.advice">Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged. Invalid entries fail startup.</td>
               </tr>
             </tbody>
           </table>
@@ -154,44 +155,44 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Storage Modes</h2>
-          <p>Choose storage by deployment shape. Do not add an external database just to look production-grade; SQLite is simpler and has less operational surface for single-instance deployments.</p>
+          <h2 data-i18n-html="www.config.storage.title">Storage Modes</h2>
+          <p data-i18n-html="www.config.storage.desc">Choose storage by deployment shape. Do not add an external database just to look production-grade; SQLite is simpler and has less operational surface for single-instance deployments.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>Mode</th>
-                <th>Configuration</th>
-                <th>Use Case</th>
-                <th>Trade-off</th>
+                <th data-i18n-html="www.config.storage.th.mode">Mode</th>
+                <th data-i18n-html="www.config.storage.th.config">Configuration</th>
+                <th data-i18n-html="www.config.storage.th.useCase">Use Case</th>
+                <th data-i18n-html="www.config.storage.th.tradeoff">Trade-off</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>SQLite only</td>
-                <td>Do not set a primary DSN</td>
-                <td>Local development, personal deployments and single-instance services.</td>
-                <td>Simplest path; not suitable for shared multi-instance state.</td>
+                <td data-i18n-html="www.config.storage.sqlite.mode">SQLite only</td>
+                <td data-i18n-html="www.config.storage.sqlite.config">Do not set a primary DSN</td>
+                <td data-i18n-html="www.config.storage.sqlite.useCase">Local development, personal deployments and single-instance services.</td>
+                <td data-i18n-html="www.config.storage.sqlite.tradeoff">Simplest path; not suitable for shared multi-instance state.</td>
               </tr>
               <tr>
-                <td>MySQL only</td>
-                <td>Set <code>CCLOAD_MYSQL</code></td>
-                <td>Standard production, external backups and migration across machines.</td>
-                <td>Strong persistence; read/write latency depends on the database.</td>
+                <td data-i18n-html="www.config.storage.mysql.mode">MySQL only</td>
+                <td data-i18n-html="www.config.storage.mysql.config">Set <code>CCLOAD_MYSQL</code></td>
+                <td data-i18n-html="www.config.storage.mysql.useCase">Standard production, external backups and migration across machines.</td>
+                <td data-i18n-html="www.config.storage.external.tradeoff">Strong persistence; read/write latency depends on the database.</td>
               </tr>
               <tr>
-                <td>PostgreSQL only</td>
-                <td>Set <code>CCLOAD_POSTGRES</code></td>
-                <td>PostgreSQL-based production, external backups and migration across machines.</td>
-                <td>Strong persistence; read/write latency depends on the database.</td>
+                <td data-i18n-html="www.config.storage.postgres.mode">PostgreSQL only</td>
+                <td data-i18n-html="www.config.storage.postgres.config">Set <code>CCLOAD_POSTGRES</code></td>
+                <td data-i18n-html="www.config.storage.postgres.useCase">PostgreSQL-based production, external backups and migration across machines.</td>
+                <td data-i18n-html="www.config.storage.external.tradeoff">Strong persistence; read/write latency depends on the database.</td>
               </tr>
               <tr>
-                <td>Hybrid</td>
-                <td>Primary DSN + <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code></td>
-                <td>Hugging Face Spaces or a high-latency primary when persistence is still required.</td>
-                <td>Durable data uses the primary and reads use local cache; higher complexity.</td>
+                <td data-i18n-html="www.config.storage.hybrid.mode">Hybrid</td>
+                <td data-i18n-html="www.config.storage.hybrid.config">Primary DSN + <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code></td>
+                <td data-i18n-html="www.config.storage.hybrid.useCase">Hugging Face Spaces or a high-latency primary when persistence is still required.</td>
+                <td data-i18n-html="www.config.storage.hybrid.tradeoff">Durable data uses the primary and reads use local cache; higher complexity.</td>
               </tr>
             </tbody>
           </table>
@@ -202,54 +203,54 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Channel Configuration</h2>
-          <p>Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits. First-party providers use <code>auth_type</code> (<code>codex_oauth</code>, <code>anthropic_oauth</code>, <code>antigravity_oauth</code>, <code>xai_oauth</code>, <code>codebuddy_oauth</code>, <code>zai_oauth</code>, <code>cursor_oauth</code>, <code>zed_oauth</code>) instead of a static API key.</p>
+          <h2 data-i18n-html="www.config.channel.title">Channel Configuration</h2>
+          <p data-i18n-html="www.config.channel.desc">Channels are ccLoad's core runtime objects. Every channel accepts four client protocols and owns multiple keys and URLs, plus independent cooldown and RPM/concurrency limits. First-party providers use <code>auth_type</code> (<code>codex_oauth</code>, <code>anthropic_oauth</code>, <code>antigravity_oauth</code>, <code>xai_oauth</code>, <code>codebuddy_oauth</code>, <code>zai_oauth</code>, <code>cursor_oauth</code>, <code>zed_oauth</code>) instead of a static API key.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Core fields</h3>
+            <h3 data-i18n-html="www.config.channel.core.title">Core fields</h3>
             <ul class="www-check-list">
-              <li><code>name</code>: readable channel name used by logs and statistics.</li>
-              <li><code>protocol_transform_mode</code>: <code>auto</code> starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying it; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> translates to URL-declared protocols, with declared Codex promoted for Responses requests from official Codex clients.</li>
-              <li><code>urls</code>: an ordered list of URLs with optional <code>protocols</code>. Local mode prioritizes declared URLs; if all are undeclared it tries Anthropic → Codex → OpenAI → Gemini. <code>exact: true</code> disables automatic path joining.</li>
-              <li><code>api_key</code>: supports one or multiple keys. Each key may set <code>allowed_models</code> to restrict which channel models it serves; empty or <code>*</code> means unrestricted. Matching uses the channel logical model (after fuzzy match, before <code>redirect_model</code>). Each key may also set <code>cost_multiplier</code> (default <code>1</code>, <code>0</code> = free) applied to that key's usage for effective-cost limits and accounting.</li>
-              <li><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
-              <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
-              <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
-              <li><code>available_time_start</code> / <code>available_time_end</code>: optional server-local daily availability window in <code>HH:MM</code>; leave both empty for all day, and overnight windows such as <code>22:00</code>–<code>08:00</code> are supported.</li>
-              <li><code>websockets</code>: for channels with a Codex-capable URL. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
+              <li data-i18n-html="www.config.channel.core.name"><code>name</code>: readable channel name used by logs and statistics.</li>
+              <li data-i18n-html="www.config.channel.core.transform"><code>protocol_transform_mode</code>: <code>auto</code> starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying it; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> translates to URL-declared protocols, with declared Codex promoted for Responses requests from official Codex clients.</li>
+              <li data-i18n-html="www.config.channel.core.urls"><code>urls</code>: an ordered list of URLs with optional <code>protocols</code>. Local mode prioritizes declared URLs; if all are undeclared it tries Anthropic → Codex → OpenAI → Gemini. <code>exact: true</code> disables automatic path joining.</li>
+              <li data-i18n-html="www.config.channel.core.apiKey"><code>api_key</code>: supports one or multiple keys. Each key may set <code>allowed_models</code> to restrict which channel models it serves; empty or <code>*</code> means unrestricted. Matching uses the channel logical model (after fuzzy match, before <code>redirect_model</code>). Each key may also set <code>cost_multiplier</code> (default <code>1</code>, <code>0</code> = free) applied to that key's usage for effective-cost limits and accounting.</li>
+              <li data-i18n-html="www.config.channel.core.models"><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
+              <li data-i18n-html="www.config.channel.core.priority"><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
+              <li data-i18n-html="www.config.channel.core.proxy"><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
+              <li data-i18n-html="www.config.channel.core.window"><code>available_time_start</code> / <code>available_time_end</code>: optional server-local daily availability window in <code>HH:MM</code>; leave both empty for all day, and overnight windows such as <code>22:00</code>–<code>08:00</code> are supported.</li>
+              <li data-i18n-html="www.config.channel.core.websockets"><code>websockets</code>: for channels with a Codex-capable URL. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
             </ul>
           </article>
 
           <article class="www-info-card">
-            <h3>Protection fields</h3>
+            <h3 data-i18n-html="www.config.channel.protect.title">Protection fields</h3>
             <ul class="www-check-list">
-              <li><code>rpm_limit</code>: rolling 60-second request cap for the channel; <code>0</code> means unlimited.</li>
-              <li><code>max_concurrency</code>: maximum in-flight requests for the channel. Streaming requests release the slot only when the stream ends.</li>
-              <li><code>daily_cost_limit</code>: daily channel cost limit. The channel is skipped after the limit is reached.</li>
-              <li><code>cost_multiplier</code>: for OAuth channels the credential is 1:1 with the channel, so the multiplier stays channel-level; for <code>api_key</code> channels it lives on each key.</li>
-              <li><code>scheduled_check_enabled</code>: enables daily scheduled probing, usually paired with <code>scheduled_check_model</code>. <code>scheduled_check_interval_minutes</code> accepts 1–1440 whole minutes (default <code>300</code>), and <code>scheduled_check_start_time</code> uses server-local <code>HH:MM</code> (default <code>00:00</code>). Checks run from the start time at the configured interval until the day ends; missed checks are skipped.</li>
+              <li data-i18n-html="www.config.channel.protect.rpm"><code>rpm_limit</code>: rolling 60-second request cap for the channel; <code>0</code> means unlimited.</li>
+              <li data-i18n-html="www.config.channel.protect.concurrency"><code>max_concurrency</code>: maximum in-flight requests for the channel. Streaming requests release the slot only when the stream ends.</li>
+              <li data-i18n-html="www.config.channel.protect.dailyCost"><code>daily_cost_limit</code>: daily channel cost limit. The channel is skipped after the limit is reached.</li>
+              <li data-i18n-html="www.config.channel.protect.multiplier"><code>cost_multiplier</code>: for OAuth channels the credential is 1:1 with the channel, so the multiplier stays channel-level; for <code>api_key</code> channels it lives on each key.</li>
+              <li data-i18n-html="www.config.channel.protect.check"><code>scheduled_check_enabled</code>: enables daily scheduled probing, usually paired with <code>scheduled_check_model</code>. <code>scheduled_check_interval_minutes</code> accepts 1–1440 whole minutes (default <code>300</code>), and <code>scheduled_check_start_time</code> uses server-local <code>HH:MM</code> (default <code>00:00</code>). Checks run from the start time at the configured interval until the day ends; missed checks are skipped.</li>
             </ul>
           </article>
         </div>
 
-        <div class="www-callout www-mt-8">
+        <div class="www-callout www-mt-8" data-i18n-html="www.config.channel.note.auto">
           <strong>Auto mode learns protocol capability at runtime.</strong> For each URL and request family, ccLoad tries the client protocol first, then falls back through OpenAI, Anthropic, Codex and Gemini while skipping the protocol already attempted. A working protocol remains cached until restart or channel configuration changes; an all-unsupported result is probed again after 10 minutes. It advances only after an uncommitted HTTP 400, a non-model 404/405, a structured 500 with <code>convert_request_failed</code> plus <code>not implemented</code>, a pre-origin Cloudflare 403 block page, or a transform that cannot represent the request. Exact URLs marked with <code>#</code> translate directly when a conversion exists. Choose <code>upstream</code> or <code>local</code> when the route must be strict.
         </div>
-        <div class="www-callout www-mt-8">
+        <div class="www-callout www-mt-8" data-i18n-html="www.config.channel.note.urls">
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
         </div>
-        <div class="www-callout www-mt-4">
+        <div class="www-callout www-mt-4" data-i18n-html="www.config.channel.note.thinking">
           <strong>Thinking suffixes are client syntax, not model identity.</strong> Request <code>claude-sonnet-4-6(high)</code> or <code>gpt-5.2(xhigh)</code>; ccLoad strips the suffix for routing and writes the level into the upstream protocol's thinking fields. Channel model lists do not need suffixed entries. Custom request rules run later and can override those fields.
         </div>
-        <div class="www-callout www-mt-4">
+        <div class="www-callout www-mt-4" data-i18n-html="www.config.channel.note.quota">
           <strong>An explicit channel-wide fixed-window quota is treated as a real channel cooldown.</strong> When the upstream provides a concrete channel reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
         </div>
-        <div class="www-callout www-mt-4">
+        <div class="www-callout www-mt-4" data-i18n-html="www.config.channel.note.rules">
           <strong>Provider-specific failures belong in channel cooldown detection rules.</strong> Rules run in priority order and the first match wins. Match status and response text, choose key/model/channel scope, then use a fixed duration or parse the provider's reset time. Test an unsaved rule against a raw response or standard upstream log before saving; no match or an unusable reset time falls back to the built-in classifier.
         </div>
-        <div class="www-callout www-mt-4">
+        <div class="www-callout www-mt-4" data-i18n-html="www.config.channel.note.cleanup">
           <strong>Bulk model cleanup is explicit.</strong> After refreshing selected channels, the console can lowercase model names or remove source prefixes in one operation. Review the selected channels first because these actions change the persisted model list.
         </div>
       </div>
@@ -258,86 +259,86 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Runtime Settings in the Admin Console</h2>
-          <p>These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. Saving either <code>model_multimodal_fallback</code> or <code>model_custom_pricing</code> on its own applies immediately without a restart. Saving multiple settings together still restarts the process. In-flight requests finish before the process exits.</p>
+          <h2 data-i18n-html="www.config.runtime.title">Runtime Settings in the Admin Console</h2>
+          <p data-i18n-html="www.config.runtime.desc">These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. Saving either <code>model_multimodal_fallback</code> or <code>model_custom_pricing</code> on its own applies immediately without a restart. Saving multiple settings together still restarts the process. In-flight requests finish before the process exits.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
-            <h3>Retries and cooldown</h3>
-            <p>Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, ordinary upstream HTTP 400/413 and 5xx, key-level 429 rate limits, model-unavailable 404, and explicit model-retirement 410 — cool only the actual upstream model. Context-length errors and WebSocket <code>message_too_big</code> return directly to the client without failover or cooldown. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped. <code>cooldown_fallback_enabled</code> (default true) picks the earliest-recovering channel when every candidate is cooling.</p>
+            <h3 data-i18n-html="www.config.runtime.cooldown.title">Retries and cooldown</h3>
+            <p data-i18n-html="www.config.runtime.cooldown.desc">Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, ordinary upstream HTTP 400/413 and 5xx, key-level 429 rate limits, model-unavailable 404, and explicit model-retirement 410 — cool only the actual upstream model. Context-length errors and WebSocket <code>message_too_big</code> return directly to the client without failover or cooldown. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped. <code>cooldown_fallback_enabled</code> (default true) picks the earliest-recovering channel when every candidate is cooling.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
-            <h3>Protocol timeouts</h3>
-            <p><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
+            <h3 data-i18n-html="www.config.runtime.timeout.title">Protocol timeouts</h3>
+            <p data-i18n-html="www.config.runtime.timeout.desc"><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🔌</span>
-            <h3>Upstream connection lifetime</h3>
-            <p><code>upstream_connection_reuse_limit_seconds</code> limits how long HTTP/1.1, HTTP/2 and WebSocket connections may be reused. <code>0</code> keeps the existing unlimited behavior. At the limit, idle connections close immediately; active connections stop accepting work and close after draining, while new requests reconnect on demand.</p>
+            <h3 data-i18n-html="www.config.runtime.connection.title">Upstream connection lifetime</h3>
+            <p data-i18n-html="www.config.runtime.connection.desc"><code>upstream_connection_reuse_limit_seconds</code> limits how long HTTP/1.1, HTTP/2 and WebSocket connections may be reused. <code>0</code> keeps the existing unlimited behavior. At the limit, idle connections close immediately; active connections stop accepting work and close after draining, while new requests reconnect on demand.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📈</span>
-            <h3>Health-based sorting</h3>
-            <p>When enabled, ccLoad subtracts a confidence-weighted failure penalty from priority. Optional TTFB scoring also penalizes channels slower than the current candidate median without applying full weight to small samples.</p>
+            <h3 data-i18n-html="www.config.runtime.health.title">Health-based sorting</h3>
+            <p data-i18n-html="www.config.runtime.health.desc">When enabled, ccLoad subtracts a confidence-weighted failure penalty from priority. Optional TTFB scoring also penalizes channels slower than the current candidate median without applying full weight to small samples.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">💳</span>
-            <h3>Token limits</h3>
-            <p>Auth tokens can restrict models, cap concurrency and cost, and scope statistics. Channel access combines <code>allowed_channel_ids</code> with <code>channel_restriction_mode</code>: <code>allow</code> treats the list as an allowlist, while <code>deny</code> treats it as a denylist. An empty list is unrestricted in either mode. Costs use integer micro-dollars to avoid floating-point drift.</p>
+            <h3 data-i18n-html="www.config.runtime.token.title">Token limits</h3>
+            <p data-i18n-html="www.config.runtime.token.desc">Auth tokens can restrict models, cap concurrency and cost, and scope statistics. Channel access combines <code>allowed_channel_ids</code> with <code>channel_restriction_mode</code>: <code>allow</code> treats the list as an allowlist, while <code>deny</code> treats it as a denylist. An empty list is unrestricted in either mode. Costs use integer micro-dollars to avoid floating-point drift.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🧩</span>
-            <h3>Custom request rules</h3>
-            <p>Rewrite headers and JSON bodies per channel with remove, override and append operations. Authentication headers are protected and CRLF injection is blocked.</p>
+            <h3 data-i18n-html="www.config.runtime.rules.title">Custom request rules</h3>
+            <p data-i18n-html="www.config.runtime.rules.desc">Rewrite headers and JSON bodies per channel with remove, override and append operations. Authentication headers are protected and CRLF injection is blocked.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🧪</span>
-            <h3>Channel checks</h3>
-            <p>Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
+            <h3 data-i18n-html="www.config.runtime.checks.title">Channel checks</h3>
+            <p data-i18n-html="www.config.runtime.checks.desc">Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🚦</span>
-            <h3>Concurrency and body limits</h3>
-            <p><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout — independent of the body-size limits. All take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
+            <h3 data-i18n-html="www.config.runtime.limits.title">Concurrency and body limits</h3>
+            <p data-i18n-html="www.config.runtime.limits.desc"><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout — independent of the body-size limits. All take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🔗</span>
-            <h3>WebSocket sessions</h3>
-            <p>New installs cap downstream WebSocket connections at 1024 globally and 64 per token, retain 1024 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
+            <h3 data-i18n-html="www.config.runtime.ws.title">WebSocket sessions</h3>
+            <p data-i18n-html="www.config.runtime.ws.desc">New installs cap downstream WebSocket connections at 1024 globally and 64 per token, retain 1024 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🖼️</span>
-            <h3>Multimodal fallback</h3>
-            <p><code>model_multimodal_fallback</code> maps a text model to a fallback model for requests that carry non-text content. Keys are normalized by base name with thinking suffixes stripped; up to 64 mappings within 8 KB. It rewrites the incoming model before thinking suffixes, token allowlists, channel filtering and cooldown checks, so routing, logging and cooldown all follow the fallback model. Detection uses the full client-protocol body on HTTP and the complete transcript on Responses WebSocket. Saving this setting on its own applies without a restart.</p>
+            <h3 data-i18n-html="www.config.runtime.multimodal.title">Multimodal fallback</h3>
+            <p data-i18n-html="www.config.runtime.multimodal.desc"><code>model_multimodal_fallback</code> maps a text model to a fallback model for requests that carry non-text content. Keys are normalized by base name with thinking suffixes stripped; up to 64 mappings within 8 KB. It rewrites the incoming model before thinking suffixes, token allowlists, channel filtering and cooldown checks, so routing, logging and cooldown all follow the fallback model. Detection uses the full client-protocol body on HTTP and the complete transcript on Responses WebSocket. Saving this setting on its own applies without a restart.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📚</span>
-            <h3>Model catalog sync</h3>
-            <p><code>model_catalog_sync_interval_hours</code> refreshes models and pricing from models.dev every 6 hours by default. Set it to <code>0</code> to disable network sync; startup falls back from the last-good cache to the embedded catalog.</p>
+            <h3 data-i18n-html="www.config.runtime.catalog.title">Model catalog sync</h3>
+            <p data-i18n-html="www.config.runtime.catalog.desc"><code>model_catalog_sync_interval_hours</code> refreshes models and pricing from models.dev every 6 hours by default. Set it to <code>0</code> to disable network sync; startup falls back from the last-good cache to the embedded catalog.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">💰</span>
-            <h3>Custom model prices</h3>
-            <p>Open the custom pricing editor in Settings to set input, output, cache-read and cache-write prices in USD per million tokens, plus optional high-context prices. <code>model_custom_pricing</code> replaces the model's system price entry as a whole. Enter <code>0</code> for a free cache rate; leaving a cache rate blank uses the model-family fallback. High-context thresholds follow the system model rules.</p>
-            <p>Saving prices from the editor applies immediately without a restart. Catalog refreshes preserve your overrides. Remove an override to restore the system price. Models with pricing tiers that cannot fit the two-level editor are rejected; image-specific and per-request prices remain managed by the system catalog.</p>
-            <p>When the same model costs different amounts on different channels, open the <strong>$</strong> button on a model row in the channel editor to set a channel price with the same fields. It applies only to that model on that channel, takes precedence over the global override and the system price, and is still multiplied by the channel or key cost multiplier. Clear it to fall back to the global price.</p>
+            <h3 data-i18n-html="www.config.runtime.pricing.title">Custom model prices</h3>
+            <p data-i18n-html="www.config.runtime.pricing.editor">Open the custom pricing editor in Settings to set input, output, cache-read and cache-write prices in USD per million tokens, plus optional high-context prices. <code>model_custom_pricing</code> replaces the model's system price entry as a whole. Enter <code>0</code> for a free cache rate; leaving a cache rate blank uses the model-family fallback. High-context thresholds follow the system model rules.</p>
+            <p data-i18n-html="www.config.runtime.pricing.apply">Saving prices from the editor applies immediately without a restart. Catalog refreshes preserve your overrides. Remove an override to restore the system price. Models with pricing tiers that cannot fit the two-level editor are rejected; image-specific and per-request prices remain managed by the system catalog.</p>
+            <p data-i18n-html="www.config.runtime.pricing.channel">When the same model costs different amounts on different channels, open the <strong>$</strong> button on a model row in the channel editor to set a channel price with the same fields. It applies only to that model on that channel, takes precedence over the global override and the system price, and is still multiplied by the channel or key cost multiplier. Clear it to fall back to the global price.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⬆️</span>
-            <h3>Auto updates</h3>
-            <p>For non-container deployments, one update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and all release asset downloads. Container deployments switch versions with the <code>latest</code> and <code>beta</code> image Tags instead.</p>
+            <h3 data-i18n-html="www.config.runtime.update.title">Auto updates</h3>
+            <p data-i18n-html="www.config.runtime.update.desc">For non-container deployments, one update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and all release asset downloads. Container deployments switch versions with the <code>latest</code> and <code>beta</code> image Tags instead.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🌍</span>
-            <h3>OAuth upstream addresses</h3>
-            <p><code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code> and <code>ANTIGRAVITY_URL</code> default empty and use each provider's official address. When set, matching OAuth channels use only that global address for data requests, model discovery, tests and quota queries, ignoring the channel URL. Authorization and token refresh still use official endpoints; API-key channels are unaffected. Saving a change restarts the process.</p>
+            <h3 data-i18n-html="www.config.runtime.oauth.title">OAuth upstream addresses</h3>
+            <p data-i18n-html="www.config.runtime.oauth.desc"><code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code> and <code>ANTIGRAVITY_URL</code> default empty and use each provider's official address. When set, matching OAuth channels use only that global address for data requests, model discovery, tests and quota queries, ignoring the channel URL. Authorization and token refresh still use official endpoints; API-key channels are unaffected. Saving a change restarts the process.</p>
           </article>
         </div>
 
-        <div class="www-callout www-mt-8">
+        <div class="www-callout www-mt-8" data-i18n-html="www.config.runtime.note.sorting">
           <strong>Dynamic channel sorting is opt-in.</strong> Enable <code>enable_health_score</code> for success-rate scoring, then enable <code>enable_ttfb_score</code> to add relative first-byte scoring. Tune the two penalties independently with <code>success_rate_penalty_weight</code>, <code>health_min_confident_sample</code>, <code>ttfb_penalty_weight</code>, <code>ttfb_max_slow_ratio</code> and <code>ttfb_min_confident_sample</code>.
         </div>
       </div>
@@ -346,22 +347,22 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Security Baseline</h2>
-          <p>The real proxy-service risk is not UI polish; it is exposing upstream keys or the admin surface to the wrong audience.</p>
+          <h2 data-i18n-html="www.config.security.title">Security Baseline</h2>
+          <p data-i18n-html="www.config.security.desc">The real proxy-service risk is not UI polish; it is exposing upstream keys or the admin surface to the wrong audience.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Pre-production checklist</h3>
+            <h3 data-i18n-html="www.config.security.checklist.title">Pre-production checklist</h3>
             <ul class="www-check-list">
-              <li>Store the strong password in Secrets, not in the repository.</li>
-              <li>Create at least one API access token; otherwise <code>/v1/*</code> returns 401 by design.</li>
-              <li>Restrict admin-console access on public deployments or place it behind a protected network.</li>
-              <li>Do not use <code>CCLOAD_ALLOW_INSECURE_TLS</code> as a long-term setting.</li>
+              <li data-i18n-html="www.config.security.checklist.item1">Store the strong password in Secrets, not in the repository.</li>
+              <li data-i18n-html="www.config.security.checklist.item2">Create at least one API access token; otherwise <code>/v1/*</code> returns 401 by design.</li>
+              <li data-i18n-html="www.config.security.checklist.item3">Restrict admin-console access on public deployments or place it behind a protected network.</li>
+              <li data-i18n-html="www.config.security.checklist.item4">Do not use <code>CCLOAD_ALLOW_INSECURE_TLS</code> as a long-term setting.</li>
             </ul>
           </article>
           <article class="www-info-card">
-            <h3>Configuration example</h3>
+            <h3 data-i18n-html="www.config.security.example.title">Configuration example</h3>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">.env</span>
@@ -371,15 +372,15 @@
                 <pre><code>CCLOAD_PASS=your_strong_admin_password
 CCLOAD_API_TOKENS=client_token|production
 
-# Optional: choose exactly one primary database
+<span data-i18n-html="www.config.security.code.primary"># Optional: choose exactly one primary database</span>
 CCLOAD_MYSQL=user:pass@tcp(host:3306)/ccload?charset=utf8mb4
 # CCLOAD_POSTGRES=postgres://user:pass@host:5432/ccload?sslmode=require
 
-# Optional: add a local SQLite read replica
+<span data-i18n-html="www.config.security.code.replica"># Optional: add a local SQLite read replica</span>
 CCLOAD_ENABLE_SQLITE_REPLICA=1
 CCLOAD_SQLITE_LOG_DAYS=7
 
-# Optional: bypass broken upstream DNS
+<span data-i18n-html="www.config.security.code.dns"># Optional: bypass broken upstream DNS</span>
 CCLOAD_HOST_OVERRIDES=anyrouter.top=47.246.23.200</code></pre>
               </div>
             </div>

@@ -150,7 +150,7 @@ cp ../web/assets/js/theme-init.js assets/js/
 cp ../web/favicon.* ../web/apple-touch-icon.png .
 cp ../web/brand-mark.svg ../web/brand-wordmark.svg .
 mkdir -p assets/images
-cp ../images/ccload.jpg ../images/ccload-dashboard.jpeg ../images/ccload-logs.jpg assets/images/
+cp ../images/ccload-dashboard.jpeg ../images/ccload-logs.jpg ../images/ccload-promo.*.jpg assets/images/
 
 # 现在 www 目录完全独立，可以复制到任何地方
 ```
@@ -178,14 +178,33 @@ www/
 │   │   ├── nav.js          # 导航组件
 │   │   └── www.js          # 交互逻辑
 │   ├── images/
-│   │   ├── ccload.jpg
+│   │   ├── hero-bg.svg     # 首页 Hero 背景（www 专用）
 │   │   ├── ccload-dashboard.jpeg
-│   │   └── ccload-logs.jpg
+│   │   ├── ccload-logs.jpg
+│   │   └── ccload-promo.<locale>.jpg  # 介绍视频封面
+│   ├── video/
+│   │   └── ccload-promo.<locale>.mp4  # 首页介绍视频（由 promo/ 生成，不入库）
 │   └── locales/
 │       ├── zh-CN.js        # 中文语言包
-│       └── en.js           # 英文语言包
+│       ├── en.js           # 英文语言包
+│       └── <page>.zh-CN.js # 子页面正文中文译文（install/config/usage/feedback）
+├── promo/                  # 介绍视频源：动画页、逐帧渲染脚本、配音脚本
 └── .gitignore              # 忽略复制的文件
 ```
+
+## 🎬 介绍视频
+
+`assets/video/*.mp4` 不入库。新克隆的仓库在部署前需要先生成（依赖 ego-browser、ffmpeg、uvx）：
+
+```bash
+(cd www && python3 -m http.server 8765 &)
+ego-browser nodejs -e "globalThis.PROMO={lang:'zh',out:'/tmp/promo-zh'};$(cat www/promo/render.mjs)"
+ffmpeg -framerate 30 -i /tmp/promo-zh/f%05d.jpg -c:v libx264 -crf 18 -preset slow \
+  -pix_fmt yuv420p -movflags +faststart www/assets/video/ccload-promo.zh-CN.mp4
+www/promo/audio.sh zh    # 配旁白和背景音乐，原地替换
+```
+
+英文版把 `zh` 换成 `en`，输出 `ccload-promo.en.mp4`。`make www-release` 在视频缺失时会直接失败，因为 rsync 带 `--delete`，缺文件发布会删掉线上视频。
 
 ## ⚙️ 配置说明
 

@@ -12,3 +12,6 @@ favicon.ico
 apple-touch-icon.png
 brand-mark.svg
 brand-wordmark.svg
+
+# 由 promo/ 生成的介绍视频（render.mjs + audio.sh），不入库
+assets/video/*.mp4

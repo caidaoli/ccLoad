@@ -68,6 +68,27 @@ cp -r www /path/to/webroot/
 <h1 data-i18n="www.page.title">页面标题</h1>
 ```
 
+`data-i18n` 只替换纯文本，且每个键必须同时写进 `zh-CN.js` 和 `en.js`。
+
+### 子页面正文（data-i18n-html）
+
+`install` / `config` / `usage` / `feedback` 的正文带 `<code>` 等行内标记，使用 `www.js` 提供的 `data-i18n-html`：
+
+- 英文源文直接写在 HTML 里，不进 `en.js`
+- 中文译文写在该页专属的 `assets/locales/<page>.zh-CN.js`，值可以包含行内 HTML
+- 代码块只标注注释行：`<span data-i18n-html="...">`，命令本身不重复
+
+```html
+<p data-i18n-html="www.install.docker.desc">Set <code>CCLOAD_PASS</code> first.</p>
+```
+
+```javascript
+// assets/locales/install.zh-CN.js
+'www.install.docker.desc': '先设置 <code>CCLOAD_PASS</code>。',
+```
+
+改了英文源文必须同步改对应的中文键；`aria-label` / `alt` 仍用 `data-i18n-aria-label` / `data-i18n-alt` 加主语言包。
+
 ### 样式开发
 
 在 `www/assets/css/www.css` 中添加样式，使用 `www-` 前缀避免冲突：
@@ -89,7 +110,7 @@ cp -r www /path/to/webroot/
 ## 已完成功能
 
 ### ✅ 首页（index.html）
-- Hero 区域（对齐正式版 README 标语）
+- Hero 区域
 - 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
 - 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / CodeBuddy / Z.ai / Cursor / Zed
 - 管理后台预览截图

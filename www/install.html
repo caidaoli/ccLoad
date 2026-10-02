@@ -10,23 +10,24 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260917-1"></script>
-  <script defer src="assets/locales/en.js?v=20260917-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
+  <script defer src="assets/locales/en.js?v=20261002-2"></script>
+  <script defer src="assets/locales/install.zh-CN.js?v=20261002-2"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
   <script defer src="assets/js/nav.js?v=20260904-1"></script>
-  <script defer src="assets/js/www.js?v=20260829-1"></script>
+  <script defer src="assets/js/www.js?v=20261002-3"></script>
 </head>
 <body class="www-page www-install">
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
-      <span class="www-eyebrow">Install</span>
+      <span class="www-eyebrow" data-i18n-html="www.install.eyebrow">Install</span>
       <h1 class="www-page-title" data-i18n="www.install.title">Deploy ccLoad</h1>
       <p class="www-page-subtitle" data-i18n="www.install.subtitle">
         Pick the smallest deployment path that fits your runtime, from local testing to production.
       </p>
-      <div class="www-badge-row" aria-label="Deployment options">
+      <div class="www-badge-row" aria-label="Deployment options" data-i18n-aria-label="www.install.badges.label">
         <span class="www-badge">Docker</span>
         <span class="www-badge">Hugging Face Spaces</span>
         <span class="www-badge">Go 1.27+</span>
@@ -39,35 +40,35 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Choose the deployment path first</h2>
-          <p>ccLoad has one hard startup requirement: set <code>CCLOAD_PASS</code> in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
+          <h2 data-i18n-html="www.install.choose.title">Choose the deployment path first</h2>
+          <p data-i18n-html="www.install.choose.desc">ccLoad has one hard startup requirement: set <code>CCLOAD_PASS</code> in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🐳</span>
             <h3>Docker Compose</h3>
-            <p>Recommended path. Image, ports, environment variables and volumes live in <code>docker-compose.yml</code>, which is suitable for long-running servers.</p>
+            <p data-i18n-html="www.install.choose.docker.desc">Recommended path. Image, ports, environment variables and volumes live in <code>docker-compose.yml</code>, which is suitable for long-running servers.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#docker">View Docker steps</a>
+              <a class="www-btn www-btn-primary" href="#docker" data-i18n-html="www.install.choose.docker.action">View Docker steps</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🤗</span>
             <h3>Hugging Face Spaces</h3>
-            <p>Good for low-cost hosting. Spaces are publicly reachable by default, so admin passwords and API access tokens are mandatory.</p>
+            <p data-i18n-html="www.install.choose.hf.desc">Good for low-cost hosting. Spaces are publicly reachable by default, so admin passwords and API access tokens are mandatory.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#huggingface">View Spaces steps</a>
+              <a class="www-btn www-btn-primary" href="#huggingface" data-i18n-html="www.install.choose.hf.action">View Spaces steps</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🔧</span>
-            <h3>Source or Binary</h3>
-            <p>Use this for development, private environments and lightweight deployments. Source builds must use <code>-tags sonic</code>.</p>
+            <h3 data-i18n-html="www.install.choose.source.title">Source or Binary</h3>
+            <p data-i18n-html="www.install.choose.source.desc">Use this for development, private environments and lightweight deployments. Source builds must use <code>-tags sonic</code>.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#source-binary">View runtime options</a>
+              <a class="www-btn www-btn-primary" href="#source-binary" data-i18n-html="www.install.choose.source.action">View runtime options</a>
             </div>
           </article>
         </div>
@@ -77,27 +78,27 @@
     <section class="www-section" id="docker">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Docker Deployment</h2>
-          <p>This is the production path with the fewest moving parts. Download the compose file and environment template, set the password, then start the service.</p>
+          <h2 data-i18n-html="www.install.docker.title">Docker Deployment</h2>
+          <p data-i18n-html="www.install.docker.desc">This is the production path with the fewest moving parts. Download the compose file and environment template, set the password, then start the service.</p>
         </div>
 
         <div class="www-step-list">
           <div class="www-step">
             <div>
-              <h3>Prepare configuration</h3>
-              <p>Copy the official <code>docker-compose.yml</code> and <code>.env.docker.example</code>, then set a strong <code>CCLOAD_PASS</code> in <code>.env</code>.</p>
+              <h3 data-i18n-html="www.install.docker.step1.title">Prepare configuration</h3>
+              <p data-i18n-html="www.install.docker.step1.desc">Copy the official <code>docker-compose.yml</code> and <code>.env.docker.example</code>, then set a strong <code>CCLOAD_PASS</code> in <code>.env</code>.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>Start the service</h3>
-              <p>The default port is <code>8080</code>; the admin console is under <code>/web/</code>, and API proxy endpoints are under <code>/v1/*</code> and <code>/v1beta/*</code>.</p>
+              <h3 data-i18n-html="www.install.docker.step2.title">Start the service</h3>
+              <p data-i18n-html="www.install.docker.step2.desc">The default port is <code>8080</code>; the admin console is under <code>/web/</code>, and API proxy endpoints are under <code>/v1/*</code> and <code>/v1beta/*</code>.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>Create access tokens</h3>
-              <p>After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
+              <h3 data-i18n-html="www.install.docker.step3.title">Create access tokens</h3>
+              <p data-i18n-html="www.install.docker.step3.desc">After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
             </div>
           </div>
         </div>
@@ -111,7 +112,7 @@
             <pre><code>curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
 
-# Required: set the admin console password
+<span data-i18n-html="www.install.docker.code.password"># Required: set the admin console password</span>
 nano .env
 
 docker-compose up -d
@@ -119,11 +120,11 @@ docker-compose logs -f ccload</code></pre>
           </div>
         </div>
 
-        <div class="www-callout">
+        <div class="www-callout" data-i18n-html="www.install.docker.note.sqlite">
           <strong>An external database is not required by default.</strong> Start with SQLite for single-instance deployments. Set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code> when you need external persistence or data retention after Hugging Face restarts.
         </div>
 
-        <div class="www-callout www-mt-4">
+        <div class="www-callout www-mt-4" data-i18n-html="www.install.docker.note.image">
           <strong>The official GHCR image uses a Debian/glibc runtime for the Cursor SDK Bridge companion.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not update in process. Set the Compose image Tag, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>. Pin a release with <code>ghcr.io/caidaoli/ccload:v4.9.0</code>.
         </div>
       </div>
@@ -133,27 +134,27 @@ docker-compose logs -f ccload</code></pre>
       <div class="www-container">
         <div class="www-section-header">
           <h2>Hugging Face Spaces</h2>
-          <p>Spaces work well for quick public deployments. The operational risk is that <code>/tmp</code> is cleared on restart, so long-term usage should use external MySQL or PostgreSQL and optionally enable the SQLite replica for faster reads.</p>
+          <p data-i18n-html="www.install.hf.desc">Spaces work well for quick public deployments. The operational risk is that <code>/tmp</code> is cleared on restart, so long-term usage should use external MySQL or PostgreSQL and optionally enable the SQLite replica for faster reads.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Space settings</h3>
+            <h3 data-i18n-html="www.install.hf.settings.title">Space settings</h3>
             <ul class="www-check-list">
-              <li>Create a Space and choose Docker as the SDK.</li>
-              <li>Use <code>ghcr.io/caidaoli/ccload:latest</code> in <code>Dockerfile</code>.</li>
-              <li>Add <code>CCLOAD_PASS</code> in Secrets; do not put it in public files.</li>
-              <li>Create an API access token in the admin console before production access.</li>
+              <li data-i18n-html="www.install.hf.settings.item1">Create a Space and choose Docker as the SDK.</li>
+              <li data-i18n-html="www.install.hf.settings.item2">Use <code>ghcr.io/caidaoli/ccload:latest</code> in <code>Dockerfile</code>.</li>
+              <li data-i18n-html="www.install.hf.settings.item3">Add <code>CCLOAD_PASS</code> in Secrets; do not put it in public files.</li>
+              <li data-i18n-html="www.install.hf.settings.item4">Create an API access token in the admin console before production access.</li>
             </ul>
           </article>
 
           <article class="www-info-card">
-            <h3>Persistence guidance</h3>
+            <h3 data-i18n-html="www.install.hf.persist.title">Persistence guidance</h3>
             <ul class="www-check-list">
-              <li>Temporary testing: set only <code>CCLOAD_PASS</code> and use the default SQLite storage.</li>
-              <li>Long-term usage: set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code>.</li>
-              <li>High-read workloads: also set <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code>.</li>
-              <li>Control the empty-SQLite log import window with <code>CCLOAD_SQLITE_LOG_DAYS</code>; later hybrid startups import only the log tail. All storage variables are bootstrap-only and stay environment variables.</li>
+              <li data-i18n-html="www.install.hf.persist.item1">Temporary testing: set only <code>CCLOAD_PASS</code> and use the default SQLite storage.</li>
+              <li data-i18n-html="www.install.hf.persist.item2">Long-term usage: set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code>.</li>
+              <li data-i18n-html="www.install.hf.persist.item3">High-read workloads: also set <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code>.</li>
+              <li data-i18n-html="www.install.hf.persist.item4">Control the empty-SQLite log import window with <code>CCLOAD_SQLITE_LOG_DAYS</code>; later hybrid startups import only the log tail. All storage variables are bootstrap-only and stay environment variables.</li>
             </ul>
           </article>
         </div>
@@ -170,7 +171,7 @@ ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
 EXPOSE 7860
 
-# Pin a stable release instead of latest:
+<span data-i18n-html="www.install.hf.code.pin"># Pin a stable release instead of latest:</span>
 # FROM ghcr.io/caidaoli/ccload:v4.9.0</code></pre>
           </div>
         </div>
@@ -180,15 +181,15 @@ EXPOSE 7860
     <section class="www-section" id="source-binary">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Source Builds and Binary Runtime</h2>
-          <p>Use source builds for development and customization, and binaries when you do not want to maintain a build environment. Both require <code>CCLOAD_PASS</code> before startup.</p>
+          <h2 data-i18n-html="www.install.source.title">Source Builds and Binary Runtime</h2>
+          <p data-i18n-html="www.install.source.desc">Use source builds for development and customization, and binaries when you do not want to maintain a build environment. Both require <code>CCLOAD_PASS</code> before startup.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-doc-card">
             <span class="www-doc-icon">⚙️</span>
-            <h3>Source build</h3>
-            <p>Builds must enable the <code>sonic</code> tag. Use <code>make build</code> directly instead of maintaining a forked build script.</p>
+            <h3 data-i18n-html="www.install.source.build.title">Source build</h3>
+            <p data-i18n-html="www.install.source.build.desc">Builds must enable the <code>sonic</code> tag. Use <code>make build</code> directly instead of maintaining a forked build script.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -207,8 +208,8 @@ make build
 
           <article class="www-doc-card">
             <span class="www-doc-icon">📦</span>
-            <h3>Binary runtime</h3>
-            <p>Download the ccLoad artifact for your platform from Releases, make it executable and run it. Cursor SDK Bridge is installed automatically when needed; offline archives are available from its official release page.</p>
+            <h3 data-i18n-html="www.install.source.binary.title">Binary runtime</h3>
+            <p data-i18n-html="www.install.source.binary.desc">Download the ccLoad artifact for your platform from Releases, make it executable and run it. Cursor SDK Bridge is installed automatically when needed; offline archives are available from its official release page.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -218,9 +219,9 @@ make build
                 <pre><code>wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
 chmod +x ccload-linux-amd64
 
-# Cursor SDK Bridge is installed automatically when a Cursor channel exists.
+<span data-i18n-html="www.install.source.code.bridge"># Cursor SDK Bridge is installed automatically when a Cursor channel exists.
 # Offline: place cursor-sdk-bridge beside ccLoad, or set CURSOR_SDK_BRIDGE_BIN.
-# Archives: https://github.com/cursor/sdk-bridge/releases
+# Archives: https://github.com/cursor/sdk-bridge/releases</span>
 
 export CCLOAD_PASS=your_admin_password
 ./ccload-linux-amd64</code></pre>
@@ -234,8 +235,8 @@ export CCLOAD_PASS=your_admin_password
     <section class="www-section" id="verify" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Post-deployment verification</h2>
-          <p>Verify the process first, then the configuration entry point, then send a real proxy request with a real token. Do not ignore 401 responses; they usually mean tokens have not been configured yet.</p>
+          <h2 data-i18n-html="www.install.verify.title">Post-deployment verification</h2>
+          <p data-i18n-html="www.install.verify.desc">Verify the process first, then the configuration entry point, then send a real proxy request with a real token. Do not ignore 401 responses; they usually mean tokens have not been configured yet.</p>
         </div>
 
         <div class="www-code-block">
@@ -247,10 +248,10 @@ export CCLOAD_PASS=your_admin_password
             <pre><code>curl -s http://localhost:8080/health
 curl -s http://localhost:8080/public/summary
 
-# Admin console
+<span data-i18n-html="www.install.verify.code.admin"># Admin console</span>
 # http://localhost:8080/web/
 
-# API proxy endpoint examples
+<span data-i18n-html="www.install.verify.code.endpoints"># API proxy endpoint examples</span>
 # POST http://localhost:8080/v1/messages
 # POST http://localhost:8080/v1/chat/completions
 # POST http://localhost:8080/v1/responses

@@ -57,10 +57,12 @@ com.ccload.service.plist
 .gocache
 .gomodcache
 .codegraph/
+.cloudflare/
 AGENTS.md
 dist
 *.bak
-docs
+docs/*
+!docs/guide/
 .worktrees/
 # 步骤1：忽略所有目录下的 claude.md
 **/claude.md

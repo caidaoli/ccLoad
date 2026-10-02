@@ -10,18 +10,19 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260917-1"></script>
-  <script defer src="assets/locales/en.js?v=20260917-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
+  <script defer src="assets/locales/en.js?v=20261002-2"></script>
+  <script defer src="assets/locales/feedback.zh-CN.js?v=20261002-2"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
   <script defer src="assets/js/nav.js?v=20260904-1"></script>
-  <script defer src="assets/js/www.js?v=20260829-1"></script>
+  <script defer src="assets/js/www.js?v=20261002-3"></script>
 </head>
 <body class="www-page www-feedback">
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
-      <span class="www-eyebrow">Support</span>
+      <span class="www-eyebrow" data-i18n-html="www.feedback.eyebrow">Support</span>
       <h1 class="www-page-title" data-i18n="www.feedback.title">Support</h1>
       <p class="www-page-subtitle" data-i18n="www.feedback.subtitle">
         Use the right channel for bugs, feature requests, usage discussions, and security reports.
@@ -33,91 +34,89 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Choose by issue type</h2>
-          <p>The more specific the support channel, the faster the fix. Reports without logs, version information or reproduction steps usually require follow-up.</p>
+          <h2 data-i18n-html="www.feedback.choose.title">Choose by issue type</h2>
+          <p data-i18n-html="www.feedback.choose.desc">The more specific the support channel, the faster the fix. Reports without logs, version information or reproduction steps usually require follow-up.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🐞</span>
-            <h3>Bug Reports</h3>
-            <p>Use Issues for request failures, automatic protocol fallback bugs, incorrect statistics or UI behavior problems.</p>
+            <h3 data-i18n-html="www.feedback.bug.title">Bug Reports</h3>
+            <p data-i18n-html="www.feedback.bug.desc">Use Issues for request failures, automatic protocol fallback bugs, incorrect statistics or UI behavior problems.</p>
             <ul class="www-check-list">
-              <li>Include the ccLoad version and deployment method.</li>
-              <li>Include the request endpoint, status code and relevant log snippet.</li>
-              <li>Describe expected behavior and actual behavior.</li>
+              <li data-i18n-html="www.feedback.bug.item1">Include the ccLoad version and deployment method.</li>
+              <li data-i18n-html="www.feedback.bug.item2">Include the request endpoint, status code and relevant log snippet.</li>
+              <li data-i18n-html="www.feedback.bug.item3">Describe expected behavior and actual behavior.</li>
             </ul>
             <div class="www-card-actions">
-              <a href="https://github.com/caidaoli/ccLoad/issues/new" target="_blank" rel="noopener" class="www-btn www-btn-primary">Submit Issue</a>
+              <a href="https://github.com/caidaoli/ccLoad/issues/new" target="_blank" rel="noopener" class="www-btn www-btn-primary" data-i18n-html="www.feedback.bug.action">Submit Issue</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">💡</span>
-            <h3>Feature Requests</h3>
-            <p>For new protocols, providers, metrics, deployment support or admin console improvements, start with the use case.</p>
+            <h3 data-i18n-html="www.feedback.feature.title">Feature Requests</h3>
+            <p data-i18n-html="www.feedback.feature.desc">For new protocols, providers, metrics, deployment support or admin console improvements, start with the use case.</p>
             <ul class="www-check-list">
-              <li>Explain the workaround you use today.</li>
-              <li>Explain who the new capability serves.</li>
-              <li>Avoid speculative requirements that may never be used.</li>
+              <li data-i18n-html="www.feedback.feature.item1">Explain the workaround you use today.</li>
+              <li data-i18n-html="www.feedback.feature.item2">Explain who the new capability serves.</li>
+              <li data-i18n-html="www.feedback.feature.item3">Avoid speculative requirements that may never be used.</li>
             </ul>
             <div class="www-card-actions">
-              <a href="https://github.com/caidaoli/ccLoad/issues" target="_blank" rel="noopener" class="www-btn www-btn-primary">View Issues</a>
+              <a href="https://github.com/caidaoli/ccLoad/issues" target="_blank" rel="noopener" class="www-btn www-btn-primary" data-i18n-html="www.feedback.feature.action">View Issues</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">💬</span>
-            <h3>Usage Discussions</h3>
-            <p>Deployment choices, channel configuration, model selection and cost strategy are often discussions rather than bugs.</p>
+            <h3 data-i18n-html="www.feedback.discuss.title">Usage Discussions</h3>
+            <p data-i18n-html="www.feedback.discuss.desc">Deployment choices, channel configuration, model selection and cost strategy are often discussions rather than bugs.</p>
             <ul class="www-check-list">
-              <li>Describe the deployment environment.</li>
-              <li>Explain the current configuration shape.</li>
-              <li>Share only the minimum necessary logs; never paste full secrets.</li>
+              <li data-i18n-html="www.feedback.discuss.item1">Describe the deployment environment.</li>
+              <li data-i18n-html="www.feedback.discuss.item2">Explain the current configuration shape.</li>
+              <li data-i18n-html="www.feedback.discuss.item3">Share only the minimum necessary logs; never paste full secrets.</li>
             </ul>
             <div class="www-card-actions">
-              <a href="https://github.com/caidaoli/ccLoad/discussions" target="_blank" rel="noopener" class="www-btn www-btn-primary">Open Discussions</a>
+              <a href="https://github.com/caidaoli/ccLoad/discussions" target="_blank" rel="noopener" class="www-btn www-btn-primary" data-i18n-html="www.feedback.discuss.action">Open Discussions</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🔐</span>
-            <h3>Security Reports</h3>
-            <p>Do not publicly post exploit details for auth bypass, sensitive data leaks, request-rule injection or TLS risks.</p>
+            <h3 data-i18n-html="www.feedback.security.title">Security Reports</h3>
+            <p data-i18n-html="www.feedback.security.desc">Do not publicly post exploit details for auth bypass, sensitive data leaks, request-rule injection or TLS risks.</p>
             <ul class="www-check-list">
-              <li>Contact maintainers through GitHub's private security channel first.</li>
-              <li>Provide impact scope and a minimal reproduction.</li>
-              <li>Do not paste upstream keys, tokens or passwords into public issues.</li>
+              <li data-i18n-html="www.feedback.security.item1">Contact maintainers through GitHub's private security channel first.</li>
+              <li data-i18n-html="www.feedback.security.item2">Provide impact scope and a minimal reproduction.</li>
+              <li data-i18n-html="www.feedback.security.item3">Do not paste upstream keys, tokens or passwords into public issues.</li>
             </ul>
             <div class="www-card-actions">
-              <a href="https://github.com/caidaoli/ccLoad/security" target="_blank" rel="noopener" class="www-btn www-btn-primary">Security Page</a>
+              <a href="https://github.com/caidaoli/ccLoad/security" target="_blank" rel="noopener" class="www-btn www-btn-primary" data-i18n-html="www.feedback.security.action">Security Page</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🛠️</span>
-            <h3>Contributing Code</h3>
-            <p>Keep bug fixes and feature work focused. Open an issue first for broad refactors.</p>
+            <h3 data-i18n-html="www.feedback.contribute.title">Contributing Code</h3>
+            <p data-i18n-html="www.feedback.contribute.desc">Keep bug fixes and feature work focused. Open an issue first for broad refactors.</p>
             <ul class="www-check-list">
-              <li>Go builds and tests must use <code>-tags sonic</code>.</li>
-              <li>Run <code>make verify-web</code> for frontend verification.</li>
-              <li>Do not mix unrelated formatting or generated files into the change.</li>
+              <li data-i18n-html="www.feedback.contribute.item1">Go builds and tests must use <code>-tags sonic</code>.</li>
+              <li data-i18n-html="www.feedback.contribute.item2">Run <code>make verify-web</code> for frontend verification.</li>
+              <li data-i18n-html="www.feedback.contribute.item3">Do not mix unrelated formatting or generated files into the change.</li>
             </ul>
             <div class="www-card-actions">
-              <a href="https://github.com/caidaoli/ccLoad/pulls" target="_blank" rel="noopener" class="www-btn www-btn-primary">View PRs</a>
+              <a href="https://github.com/caidaoli/ccLoad/pulls" target="_blank" rel="noopener" class="www-btn www-btn-primary" data-i18n-html="www.feedback.contribute.action">View PRs</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">⭐</span>
-            <h3>Project Links</h3>
-            <p>Source code, releases, license and README files are on GitHub. Read the current README before deployment.</p>
+            <h3 data-i18n-html="www.feedback.links.title">Project Links</h3>
+            <p data-i18n-html="www.feedback.links.desc">Source code, releases and the license are on GitHub.</p>
             <div class="www-link-list">
-              <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener">GitHub Repository</a>
-              <a href="https://github.com/caidaoli/ccLoad/releases" target="_blank" rel="noopener">Releases</a>
-              <a href="https://github.com/caidaoli/ccLoad#readme" target="_blank" rel="noopener">English README</a>
-              <a href="https://github.com/caidaoli/ccLoad/blob/master/README.zh-CN.md" target="_blank" rel="noopener">Chinese README</a>
-              <a href="https://github.com/caidaoli/ccLoad/blob/master/LICENSE" target="_blank" rel="noopener">MIT License</a>
+              <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" data-i18n-html="www.feedback.links.repo">GitHub Repository</a>
+              <a href="https://github.com/caidaoli/ccLoad/releases" target="_blank" rel="noopener" data-i18n-html="www.feedback.links.releases">Releases</a>
+              <a href="https://github.com/caidaoli/ccLoad/blob/master/LICENSE" target="_blank" rel="noopener" data-i18n-html="www.feedback.links.license">MIT License</a>
             </div>
           </article>
         </div>
@@ -127,8 +126,8 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>High-signal report template</h2>
-          <p>The easier the issue is to reproduce, the easier it is to fix directly. This template covers most deployment, proxy and frontend issues.</p>
+          <h2 data-i18n-html="www.feedback.template.title">High-signal report template</h2>
+          <p data-i18n-html="www.feedback.template.desc">The easier the issue is to reproduce, the easier it is to fix directly. This template covers most deployment, proxy and frontend issues.</p>
         </div>
 
         <div class="www-code-block">
@@ -137,7 +136,7 @@
             <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
           </div>
           <div class="www-code-content">
-            <pre><code>## Environment
+            <pre><code data-i18n-html="www.feedback.template.body">## Environment
 - ccLoad version:
 - Deployment method: Docker / Hugging Face / Source / Binary
 - Storage mode: SQLite / MySQL / PostgreSQL / Hybrid

@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccLoad Promo</title>
+<!--
+  ccLoad 宣传动画（1920×1080，全部画面由代码绘制，无外部素材）。
+  - 直接打开即循环播放；?lang=zh|en 切换语言。
+  - 所有画面是时间 t 的纯函数：window.seek(t) 可定位到任意时刻，
+    render.mjs 据此逐帧截图并用 ffmpeg 合成 mp4。
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #020617; overflow: hidden; }
+  #stage {
+    position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden;
+    transform-origin: 0 0; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #050c1c, #0a1836 55%, #071127);
+  }
+  #stage::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(147, 197, 253, .15) 1.5px, transparent 1.5px);
+    background-size: 36px 36px;
+  }
+  #glow {
+    position: absolute; left: 260px; top: -160px; width: 1400px; height: 1400px; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(37, 99, 235, .38), rgba(29, 78, 216, .12) 50%, transparent);
+  }
+  .scene { position: absolute; inset: 0; }
+  .scene svg.wires { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+  .abs { position: absolute; }
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+
+  .title { position: absolute; left: 0; right: 0; top: 84px; text-align: center; font-size: 72px; font-weight: 800; letter-spacing: -.5px; }
+  .sub { position: absolute; left: 0; right: 0; top: 190px; text-align: center; font-size: 36px; color: #b8dcff; }
+  .caption { position: absolute; left: 0; right: 0; text-align: center; font-size: 40px; font-weight: 600; color: #e0efff; }
+  .colhead { position: absolute; font-size: 26px; font-weight: 600; color: #7cc3ff; letter-spacing: 2px; text-transform: uppercase; }
+
+  .card {
+    position: absolute; box-sizing: border-box; height: 84px; border-radius: 18px; padding: 0 26px;
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    background: rgba(13, 27, 62, .92); border: 1.5px solid rgba(124, 195, 255, .35);
+    font-size: 29px; font-weight: 600; white-space: nowrap;
+  }
+  .en .card { font-size: 25px; }
+  .ring { position: absolute; inset: -1.5px; border-radius: inherit; border: 3px solid; pointer-events: none; }
+  .ring.red { border-color: #f87171; box-shadow: 0 0 40px rgba(248, 113, 113, .35); }
+  .ring.green { border-color: #34d399; box-shadow: 0 0 40px rgba(52, 211, 153, .35); }
+  .ring.blue { border-color: #60a5fa; box-shadow: 0 0 40px rgba(96, 165, 250, .4); }
+  .badge { position: absolute; right: 22px; top: 50%; margin-top: -19px; height: 38px; line-height: 38px; padding: 0 14px; border-radius: 19px; font-size: 20px; font-weight: 700; }
+  .badge.blue { background: rgba(59, 130, 246, .25); color: #93c5fd; }
+  .badge.gray { background: rgba(148, 163, 184, .18); color: #cbd5e1; }
+  .badge.red { background: rgba(248, 113, 113, .22); color: #fca5a5; }
+  .badge.green { background: rgba(52, 211, 153, .22); color: #6ee7b7; }
+
+  .hub {
+    position: absolute; box-sizing: border-box; border-radius: 32px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: linear-gradient(160deg, #1d4ed8, #4338ca); border: 2px solid rgba(184, 220, 255, .6);
+    box-shadow: 0 0 90px rgba(59, 130, 246, .55); font-size: 44px; font-weight: 800;
+  }
+  .hub small { position: absolute; left: 0; right: 0; bottom: 34px; text-align: center; font-size: 26px; font-weight: 600; color: #dbeafe; }
+
+  .wire { fill: none; stroke: rgba(124, 195, 255, .28); stroke-width: 2.5; }
+  .wire.hot { stroke: #60a5fa; stroke-width: 4; }
+  .wire.green { stroke: #34d399; stroke-width: 4; }
+  .wire.down { stroke: #f87171; stroke-width: 3; stroke-dasharray: 6 12; }
+
+  .pain {
+    position: absolute; box-sizing: border-box; width: 400px; height: 170px; border-radius: 22px; padding: 26px 28px;
+    background: rgba(60, 16, 28, .55); border: 1.5px solid rgba(248, 113, 113, .45);
+    font-size: 30px; font-weight: 600; line-height: 1.45; white-space: pre-line;
+  }
+  .pain b { display: block; color: #fca5a5; font-size: 34px; }
+
+  .panel { position: absolute; box-sizing: border-box; border-radius: 28px; background: rgba(10, 22, 52, .92); border: 1.5px solid rgba(124, 195, 255, .3); }
+  .panel h3 { margin: 0; font-size: 30px; font-weight: 700; color: #b8dcff; }
+  .tile { position: absolute; box-sizing: border-box; width: 360px; height: 150px; border-radius: 20px; padding: 22px 28px; background: rgba(30, 58, 138, .35); border: 1px solid rgba(124, 195, 255, .25); }
+  .tile span { display: block; font-size: 24px; color: #93c5fd; }
+  .tile b { display: block; margin-top: 10px; font-size: 56px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .bar { position: absolute; bottom: 0; width: 72px; border-radius: 10px 10px 0 0; background: linear-gradient(180deg, #60a5fa, #2563eb); transform-origin: 50% 100%; }
+  .barlabel { position: absolute; width: 112px; text-align: center; font-size: 20px; color: #93c5fd; }
+  .row { position: absolute; left: 0; right: 0; height: 58px; display: flex; align-items: center; font-size: 23px; border-bottom: 1px solid rgba(124, 195, 255, .14); font-variant-numeric: tabular-nums; }
+  .row span { flex: none; overflow: hidden; white-space: nowrap; }
+  .ok { color: #6ee7b7; } .bad { color: #fca5a5; } .cost { color: #fbbf24; }
+
+  .chip { display: inline-block; margin: 0 16px 18px 0; padding: 14px 24px; border-radius: 16px; background: rgba(30, 58, 138, .45); border: 1px solid rgba(124, 195, 255, .3); font-size: 28px; font-weight: 600; }
+  .limit { display: flex; align-items: center; gap: 18px; margin-top: 22px; font-size: 31px; font-weight: 600; }
+  .limit i { flex: none; width: 40px; height: 40px; line-height: 40px; border-radius: 50%; background: rgba(52, 211, 153, .22); color: #6ee7b7; text-align: center; font-style: normal; font-size: 24px; }
+
+  .term { position: absolute; box-sizing: border-box; border-radius: 22px; background: #030816; border: 1.5px solid rgba(124, 195, 255, .35); box-shadow: 0 30px 90px rgba(0, 0, 0, .5); padding: 86px 48px 0; font-size: 38px; line-height: 1.9; }
+  .term::before { content: ''; position: absolute; left: 30px; top: 28px; width: 18px; height: 18px; border-radius: 50%; background: #f87171; box-shadow: 30px 0 #fbbf24, 60px 0 #34d399; }
+  .caret { display: inline-block; width: 20px; height: 40px; margin-left: 4px; vertical-align: -6px; background: #7cc3ff; }
+  .pill { display: inline-block; margin: 0 12px; padding: 14px 32px; border-radius: 40px; background: rgba(59, 130, 246, .2); border: 1.5px solid rgba(124, 195, 255, .45); font-size: 32px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="glow"></div></div>
+
+<script>
+const lang = new URLSearchParams(location.search).get('lang') === 'en' ? 'en' : 'zh';
+const capture = new URLSearchParams(location.search).has('capture');
+const TOTAL = 47.5;
+
+const L = {
+  zh: {
+    tagline: '自托管的 AI API 网关',
+    tagline2: '多个账号和 API Key，汇成一个稳定入口',
+    s2title: '只靠一个 Key，迟早被卡住',
+    working: '正在生成代码…', failed: '✗ 请求失败，工作中断',
+    pains: [['被限流', '请求直接失败'], ['上游出故障', '只能手动换地址'], ['协议各不相同', '每个工具各配一套 Key'], ['成本不透明', '花了多少没人说得清']],
+    s3title: 'ccLoad：一个入口，多条通路',
+    clients: '你的客户端', upstreams: '上游渠道',
+    clientList: ['Claude Code', 'Codex', 'Gemini 客户端', 'OpenAI 兼容 SDK'],
+    upList: ['渠道 A · 官方 Key', '渠道 B · 第三方端点', '渠道 C · Codex 账号', '渠道 D · Claude 账号'],
+    primary: '优先', standby: '备用', cooling: '429 冷却中', takeover: '已接管',
+    hub1: '选择渠道', hub2: '故障切换', hub3: '继续转发',
+    cap1: '按优先级选择渠道，同优先级加权轮询',
+    cap2: '渠道 A 被限流 → 自动切到渠道 B',
+    cap3: '只冷却出问题的 Key 或模型，客户端无感知',
+    s4title: '任何客户端，任何上游',
+    s4sub: '协议不一致时，ccLoad 自动转换请求和流式响应',
+    clientProto: '客户端协议', upProto: '上游协议', transform: '协议转换',
+    s5title: '每一笔花费都看得见',
+    s5sub: '按渠道、模型、令牌统计请求数、Token、成本和首字延迟',
+    tiles: ['今日请求', '成功率', 'Token 用量', '成本'],
+    byChannel: '按渠道成本', recent: '请求日志', sample: '示意数据',
+    switched: '已切换渠道',
+    s5cap: '渠道每日成本上限 · 令牌总 / 日 / 月限额',
+    s6title: '上游凭证留在网关',
+    s6left: '上游账号与 API Key', s6right: '发给客户端的 ccLoad 令牌',
+    apiKeys: '各家 API Key', accounts: '账号',
+    limits: ['限定可用模型', '限定可用渠道', '成本限额：总 / 日 / 月', '并发上限'],
+    s6cap: '客户端和同事只拿到 ccLoad 令牌，随时可停用',
+    s7title: '几分钟完成部署',
+    started: '✔ Container ccload  Started', open: '→ 管理后台 http://localhost:8080/web/',
+    deploy: ['Docker', '二进制', '源码编译', 'Hugging Face'],
+    pills: ['开源 · MIT', '自托管', '多协议'],
+  },
+  en: {
+    tagline: 'A self-hosted AI API gateway',
+    tagline2: 'Many accounts and API keys behind one stable endpoint',
+    s2title: 'One key will eventually let you down',
+    working: 'Generating code…', failed: '✗ Request failed, work stopped',
+    pains: [['Rate limited', 'Requests simply fail'], ['Upstream outage', 'Switch endpoints by hand'], ['Different protocols', 'Separate keys for every tool'], ['Opaque cost', 'Nobody knows the spend']],
+    s3title: 'ccLoad: one endpoint, many routes',
+    clients: 'Your clients', upstreams: 'Upstream channels',
+    clientList: ['Claude Code', 'Codex', 'Gemini clients', 'OpenAI-compatible SDKs'],
+    upList: ['A · Official key', 'B · Third-party endpoint', 'C · Codex account', 'D · Claude account'],
+    primary: 'Primary', standby: 'Standby', cooling: '429 cooling', takeover: 'Took over',
+    hub1: 'Select channel', hub2: 'Failover', hub3: 'Keep serving',
+    cap1: 'Channels are picked by priority, weighted within a tier',
+    cap2: 'Channel A is rate-limited → traffic moves to channel B',
+    cap3: 'Only the failing key or model cools down. Clients never notice.',
+    s4title: 'Any client, any upstream',
+    s4sub: 'When protocols differ, ccLoad converts the request and the streamed response',
+    clientProto: 'Client protocol', upProto: 'Upstream protocol', transform: 'Transform',
+    s5title: 'Spending you can see',
+    s5sub: 'Requests, tokens, cost and first-byte latency by channel, model and token',
+    tiles: ['Requests today', 'Success rate', 'Tokens', 'Cost'],
+    byChannel: 'Cost by channel', recent: 'Request log', sample: 'Sample data',
+    switched: 'switched',
+    s5cap: 'Daily cost cap per channel · total / daily / monthly limits per token',
+    s6title: 'Upstream credentials stay in the gateway',
+    s6left: 'Upstream accounts and API keys', s6right: 'ccLoad token handed to clients',
+    apiKeys: 'Provider API keys', accounts: 'account',
+    limits: ['Allowed models', 'Allowed channels', 'Cost limits: total / daily / monthly', 'Concurrency cap'],
+    s6cap: 'Clients and teammates only hold ccLoad tokens you can disable anytime',
+    s7title: 'Deploy in minutes',
+    started: '✔ Container ccload  Started', open: '→ Admin console http://localhost:8080/web/',
+    deploy: ['Docker', 'Binary', 'From source', 'Hugging Face'],
+    pills: ['Open source · MIT', 'Self-hosted', 'Multi-protocol'],
+  },
+}[lang];
+
+// ── 构建辅助 ──
+const io = (a, b, fx) => `data-in="${a}"${b == null ? '' : ` data-out="${b}"`}${fx ? ` data-fx="${fx}"` : ''}`;
+const logo = w => `<svg width="${w}" viewBox="8 6 88 60" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg1" x1="0" y1="0" x2="0.82" y2="1"><stop offset="0" stop-color="#38bdf8"/><stop offset="0.55" stop-color="#60a5fa"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <mask id="bm1"><rect width="112" height="72" fill="#000"/><circle cx="49" cy="36" r="30" fill="#fff"/><circle cx="49" cy="36" r="16" fill="#000"/><path d="M52 36 90 4v64Z" fill="#000"/></mask>
+  </defs>
+  <rect x="19" y="6" width="60" height="60" fill="url(#bg1)" mask="url(#bm1)"/>
+  <path fill="url(#bg1)" fill-rule="evenodd" d="M59.4 36c4-4 8-8 12-11 8-4 16 2 16 11s-8 15-16 11c-4-3-8-7-12-11Zm17-4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/>
+</svg>`;
+const packets = []; // {path, from, to, period, dur, color}
+const wire = (id, d, cls = '', attrs = '') => `<path id="${id}" class="wire ${cls}" d="${d}" ${attrs}/>`;
+const scene = (a, b, html) => `<div class="scene" ${io(a, b, 'fade')}>${html}</div>`;
+
+// ── S1 开场 0–4.5 ──
+const s1 = scene(0, 4.2, `<div class="center">
+  <div ${io(0.3)}>${logo(300)}</div>
+  <div ${io(0.9)} style="font-size:150px;font-weight:800;letter-spacing:-3px;margin-top:10px">ccLoad</div>
+  <div ${io(1.6)} style="font-size:56px;font-weight:700;margin-top:26px">${L.tagline}</div>
+  <div ${io(2.3)} style="font-size:36px;color:#b8dcff;margin-top:22px">${L.tagline2}</div>
+</div>`);
+
+// ── S2 问题 4.5–11 ──
+packets.push({ path: 's2w', from: 5.5, to: 7.7, period: 0.45, dur: 1.1, color: '#7cc3ff' });
+const s2 = scene(4.5, 10.7, `
+  <div class="title" ${io(4.7)}>${L.s2title}</div>
+  <svg class="wires">
+    ${wire('s2w', 'M700 460H1220', '', io(5.2, 7.7, 'fade'))}
+    ${wire('s2wd', 'M700 460H1220', 'down', io(7.7, null, 'fade'))}
+  </svg>
+  <div class="card" style="left:260px;top:400px;width:440px;height:120px;display:block;padding-top:20px" ${io(5.0)}>
+    <div style="font-size:34px">Claude Code</div>
+    <div class="abs" style="left:26px;top:68px;font-size:24px;color:#93c5fd;font-weight:500" ${io(5.3, 7.7, 'fade')}>${L.working}</div>
+    <div class="abs" style="left:26px;top:68px;font-size:24px;color:#fca5a5" ${io(7.9, null, 'fade')}>${L.failed}</div>
+    <div class="ring red" ${io(7.9, null, 'fade')}></div>
+  </div>
+  <div class="card" style="left:1220px;top:400px;width:440px;height:120px;display:block;padding-top:20px" ${io(5.2)}>
+    <div style="font-size:34px">API Key</div>
+    <div class="abs mono" style="left:26px;top:70px;font-size:22px;color:#93c5fd;font-weight:500">sk-••••••••••••</div>
+    <div class="badge green" style="top:36px" ${io(5.6, 7.7, 'fade')}>200 OK</div>
+    <div class="badge red" style="top:36px" ${io(7.7, null, 'fade')}>429 Too Many Requests</div>
+    <div class="ring red" ${io(7.7, null, 'fade')}></div>
+  </div>
+  ${L.pains.map(([a, b], i) => `<div class="pain" style="left:${121 + i * 426}px;top:660px" ${io(8.3 + i * 0.45)}><b>${a}</b>${b}</div>`).join('')}
+`);
+
+// ── S3 方案 11–21 ──
+const ys = [350, 470, 590, 710];
+const HY = 530;
+const cw = i => `M540 ${ys[i]}C680 ${ys[i]} 680 ${HY} 810 ${HY}`;
+const uw = i => `M1110 ${HY}C1230 ${HY} 1230 ${ys[i]} 1340 ${ys[i]}`;
+ys.forEach((_, i) => packets.push({ path: `s3c${i}`, from: 12.6 + i * 0.17, to: 20.6, period: 0.68, dur: 1.0, color: '#7cc3ff' }));
+packets.push({ path: 's3u0', from: 13.3, to: 15.0, period: 0.3, dur: 0.9, color: '#93c5fd' });
+packets.push({ path: 's3u1', from: 15.3, to: 20.6, period: 0.3, dur: 0.9, color: '#6ee7b7' });
+const s3 = scene(11, 20.7, `
+  <div class="title" style="top:64px" ${io(11.2)}>${L.s3title}</div>
+  <div class="colhead" style="left:140px;top:240px" ${io(11.6)}>${L.clients}</div>
+  <div class="colhead" style="left:1340px;top:240px" ${io(12.0)}>${L.upstreams}</div>
+  <svg class="wires" ${io(12.3, null, 'fade')}>
+    ${ys.map((_, i) => wire(`s3c${i}`, cw(i))).join('')}
+    ${ys.map((_, i) => wire(`s3u${i}`, uw(i))).join('')}
+    ${wire('s3h0', uw(0), 'hot', io(13.1, 15.0, 'fade'))}
+    ${wire('s3d0', uw(0), 'down', io(15.0, null, 'fade'))}
+    ${wire('s3h1', uw(1), 'green', io(15.3, null, 'fade'))}
+  </svg>
+  ${L.clientList.map((n, i) => `<div class="card" style="left:140px;top:${ys[i] - 42}px;width:400px" ${io(11.6 + i * 0.12)}>${n}</div>`).join('')}
+  <div class="hub" style="left:810px;top:${HY - 160}px;width:300px;height:320px;padding-bottom:50px" ${io(11.9)}>
+    ${logo(130)}<div>ccLoad</div>
+    <small ${io(12.6, 15.0, 'fade')}>${L.hub1}</small>
+    <small ${io(15.0, 18.0, 'fade')}>${L.hub2}</small>
+    <small ${io(18.0, null, 'fade')}>${L.hub3}</small>
+  </div>
+  ${L.upList.map((n, i) => `<div class="card" style="left:1340px;top:${ys[i] - 42}px;width:460px" ${io(12.0 + i * 0.12)}>${n}${
+    i === 0 ? `<div class="badge blue" ${io(12.6, 15.0, 'fade')}>${L.primary}</div><div class="badge red" ${io(15.0, null, 'fade')}>${L.cooling}</div><div class="ring red" ${io(15.0, null, 'fade')}></div>`
+    : i === 1 ? `<div class="badge gray" ${io(12.7, 15.3, 'fade')}>${L.standby}</div><div class="badge green" ${io(15.3, null, 'fade')}>${L.takeover}</div><div class="ring green" ${io(15.3, null, 'fade')}></div>`
+    : `<div class="badge gray" ${io(12.8 + i * 0.1, null, 'fade')}>${L.standby}</div>`}</div>`).join('')}
+  <div class="caption" style="top:880px" ${io(12.8, 14.9)}>${L.cap1}</div>
+  <div class="caption" style="top:880px" ${io(15.2, 17.9)}>${L.cap2}</div>
+  <div class="caption" style="top:880px" ${io(18.2)}>${L.cap3}</div>
+`);
+
+// ── S4 协议转换 21–27 ──
+const protos = ['Anthropic Messages', 'OpenAI Chat Completions', 'OpenAI Responses · Codex', 'Gemini'];
+const py = [380, 500, 620, 740], PH = 560;
+const pl = i => `M600 ${py[i]}C730 ${py[i]} 730 ${PH} 830 ${PH}`;
+const pr = i => `M1090 ${PH}C1190 ${PH} 1190 ${py[i]} 1320 ${py[i]}`;
+const pairs = [[0, 2, 22.4], [2, 0, 23.8], [1, 3, 25.2]];
+pairs.forEach(([a, b, t], k) => {
+  packets.push({ path: `s4l${a}`, from: t, to: t + 1.4, period: 0.28, dur: 0.7, color: '#93c5fd' });
+  packets.push({ path: `s4r${b}`, from: t + 0.3, to: t + 1.5, period: 0.28, dur: 0.7, color: '#6ee7b7' });
+});
+const s4 = scene(21, 26.9, `
+  <div class="title" ${io(21.2)}>${L.s4title}</div>
+  <div class="sub" ${io(21.6)}>${L.s4sub}</div>
+  <div class="colhead" style="left:160px;top:286px" ${io(21.8)}>${L.clientProto}</div>
+  <div class="colhead" style="left:1320px;top:286px" ${io(21.9)}>${L.upProto}</div>
+  <svg class="wires" ${io(22.1, null, 'fade')}>
+    ${py.map((_, i) => wire(`s4l${i}`, pl(i)) + wire(`s4r${i}`, pr(i))).join('')}
+    ${pairs.map(([a, b, t], k) => wire(`s4hl${k}`, pl(a), 'hot', io(t, t + 1.4, 'fade')) + wire(`s4hr${k}`, pr(b), 'green', io(t + 0.2, t + 1.4, 'fade'))).join('')}
+  </svg>
+  ${protos.map((n, i) => `<div class="card" style="left:160px;top:${py[i] - 42}px;width:440px" ${io(21.8 + i * 0.1)}>${n}${
+    pairs.filter(p => p[0] === i).map(p => `<div class="ring blue" ${io(p[2], p[2] + 1.4, 'fade')}></div>`).join('')}</div>`).join('')}
+  ${protos.map((n, i) => `<div class="card" style="left:1320px;top:${py[i] - 42}px;width:440px" ${io(21.9 + i * 0.1)}>${n}${
+    pairs.filter(p => p[1] === i).map(p => `<div class="ring green" ${io(p[2] + 0.2, p[2] + 1.4, 'fade')}></div>`).join('')}</div>`).join('')}
+  <div class="hub" style="left:830px;top:${PH - 130}px;width:260px;height:260px;font-size:34px" ${io(22.0)}>
+    <div style="font-size:84px;line-height:1">⇄</div><div>${L.transform}</div>
+  </div>
+`);
+
+// ── S5 成本与监控 27–34 ──
+const tiles = [[12480, v => Math.round(v).toLocaleString('en-US')], [99.2, v => v.toFixed(1) + '%'], [86.4, v => v.toFixed(1) + 'M'], [214.36, v => '$' + v.toFixed(2)]];
+const bars = [['A', 0.92], ['B', 0.64], ['C', 0.78], ['D', 0.41], ['E', 0.22]];
+const logs = [
+  ['12:04:31', 'claude-sonnet-4-5', 'A', '200', '0.71s', '$0.0156', 'ok'],
+  ['12:04:36', 'gpt-5-codex', 'C', '200', '1.12s', '$0.0430', 'ok'],
+  ['12:04:40', 'claude-sonnet-4-5', 'A', '429', '—', '—', 'bad'],
+  ['12:04:40', 'claude-sonnet-4-5', 'B', '200', '0.94s', '$0.0149', 'ok'],
+  ['12:04:52', 'gemini-2.5-pro', 'D', '200', '1.35s', '$0.0081', 'ok'],
+];
+const s5 = scene(27, 33.9, `
+  <div class="title" style="top:64px" ${io(27.2)}>${L.s5title}</div>
+  <div class="sub" style="top:166px" ${io(27.6)}>${L.s5sub}</div>
+  <div class="panel" style="left:160px;top:260px;width:1600px;height:650px" ${io(27.8)}>
+    <div class="abs" style="right:28px;top:-44px;font-size:22px;color:#7cc3ff">${L.sample}</div>
+    ${tiles.map(([v], i) => `<div class="tile" style="left:${40 + i * 387}px;top:36px" ${io(28.0 + i * 0.12)}><span>${L.tiles[i]}</span><b data-count="${i}" class="${i === 3 ? 'cost' : ''}"></b></div>`).join('')}
+    <div class="abs" style="left:40px;top:222px;width:600px;height:390px">
+      <h3 ${io(28.6)}>${L.byChannel}</h3>
+      <div class="abs" style="left:0;right:0;top:60px;height:280px;border-bottom:1.5px solid rgba(124,195,255,.3)">
+        ${bars.map(([n, h], i) => `<div class="bar" data-bar="${28.9 + i * 0.15}" style="left:${30 + i * 112}px;height:${Math.round(h * 260)}px"></div>`).join('')}
+      </div>
+      ${bars.map(([n], i) => `<div class="barlabel" style="left:${10 + i * 112}px;top:352px" ${io(28.9 + i * 0.15, null, 'fade')}>${n}</div>`).join('')}
+    </div>
+    <div class="abs" style="left:700px;top:222px;width:860px;height:390px">
+      <h3 ${io(29.6)}>${L.recent}</h3>
+      ${logs.map((r, i) => `<div class="row mono" style="top:${56 + i * 62}px" ${io(30.0 + i * 0.5)}>
+        <span style="width:130px;color:#93c5fd">${r[0]}</span><span style="width:270px">${r[1]}</span><span style="width:60px;color:#93c5fd">${r[2]}</span>
+        <span style="width:80px" class="${r[6]}">${r[3]}</span><span style="width:110px">${r[4]}</span>
+        <span style="width:200px;font-family:inherit" class="${r[6] === 'bad' ? 'bad' : 'cost'}">${r[6] === 'bad' ? '↪ ' + L.switched : r[5]}</span>
+      </div>`).join('')}
+    </div>
+  </div>
+  <div class="caption" style="top:950px;font-size:36px" ${io(31.6)}>${L.s5cap}</div>
+`);
+
+// ── S6 凭证与令牌 34–39.5 ──
+const providers = ['Codex / ChatGPT', 'Anthropic / Claude', 'Antigravity', 'xAI', 'CodeBuddy', 'Z.ai Coding Plan', 'Cursor', 'Zed', L.apiKeys];
+packets.push({ path: 's6w', from: 36.2, to: 39.2, period: 0.5, dur: 1.0, color: '#6ee7b7' });
+const s6 = scene(34, 39.3, `
+  <div class="title" ${io(34.2)}>${L.s6title}</div>
+  <svg class="wires">${wire('s6w', 'M1020 545H1140', 'green', io(36.0, null, 'fade'))}</svg>
+  <div class="panel" style="left:120px;top:310px;width:780px;height:470px;padding:36px 40px" ${io(34.5)}>
+    <h3 style="margin-bottom:30px">${L.s6left}</h3>
+    ${providers.map((n, i) => `<span class="chip" ${io(34.8 + i * 0.1)}>${n}</span>`).join('')}
+  </div>
+  <div class="hub" style="left:900px;top:485px;width:120px;height:120px;border-radius:50%;font-size:56px" ${io(35.6)}>🔒</div>
+  <div class="panel" style="left:1140px;top:310px;width:660px;height:470px;padding:36px 40px" ${io(35.9)}>
+    <h3>${L.s6right}</h3>
+    <div class="mono" style="margin:26px 0 8px;padding:18px 22px;border-radius:14px;background:#030816;font-size:30px;color:#7cc3ff">sk-••••••••••••3f9a</div>
+    ${L.limits.map((n, i) => `<div class="limit" ${io(36.4 + i * 0.3)}><i>✓</i>${n}</div>`).join('')}
+  </div>
+  <div class="caption" style="top:860px;font-size:38px" ${io(37.6)}>${L.s6cap}</div>
+`);
+
+// ── S7 部署 39.5–43.4 ──
+const CMD = 'docker-compose up -d', TYPE_AT = 40.3, CPS = 15;
+const s7 = scene(39.5, 43.2, `
+  <div class="title" ${io(39.7)}>${L.s7title}</div>
+  <div class="term mono" style="left:310px;top:280px;width:1300px;height:350px" ${io(39.9)}>
+    <div><span style="color:#6ee7b7">$ </span><span id="typed"></span><span class="caret" id="caret"></span></div>
+    <div style="color:#6ee7b7" ${io(41.9, null, 'fade')}>${L.started}</div>
+    <div style="color:#b8dcff" ${io(42.2, null, 'fade')}>${L.open}</div>
+  </div>
+  <div class="abs" style="left:0;right:0;top:730px;text-align:center">
+    ${L.deploy.map((n, i) => `<span class="pill" ${io(41.0 + i * 0.15)}>${n}</span>`).join('')}
+  </div>
+`);
+
+// ── S8 结尾 43.4–47.5 ──
+const s8 = scene(43.4, null, `<div class="center">
+  <div ${io(43.6)}>${logo(220)}</div>
+  <div ${io(43.9)} style="font-size:120px;font-weight:800;letter-spacing:-2px">ccLoad</div>
+  <div ${io(44.3)} style="font-size:48px;font-weight:700;margin-top:14px">${L.tagline}</div>
+  <div ${io(44.8)} style="margin-top:44px">${L.pills.map(p => `<span class="pill">${p}</span>`).join('')}</div>
+  <div ${io(45.3)} class="mono" style="font-size:46px;color:#7cc3ff;margin-top:52px">github.com/caidaoli/ccLoad</div>
+</div>`);
+
+const stage = document.getElementById('stage');
+stage.classList.add(lang);
+stage.insertAdjacentHTML('beforeend', s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8);
+
+// ── 时间轴 ──
+const ease = x => (x <= 0 ? 0 : x >= 1 ? 1 : 1 - (1 - x) ** 3);
+const timed = [...stage.querySelectorAll('[data-in]')].map(el => ({
+  el, a: +el.dataset.in, b: el.dataset.out == null ? null : +el.dataset.out, fade: el.dataset.fx === 'fade',
+}));
+const counters = [...stage.querySelectorAll('[data-count]')].map(el => ({ el, i: +el.dataset.count }));
+const barEls = [...stage.querySelectorAll('[data-bar]')].map(el => ({ el, at: +el.dataset.bar }));
+const NS = 'http://www.w3.org/2000/svg';
+const dots = packets.map(p => {
+  const path = document.getElementById(p.path);
+  const n = Math.ceil(p.dur / p.period) + 1;
+  const els = Array.from({ length: n }, () => {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('r', 7); c.setAttribute('fill', p.color);
+    path.ownerSVGElement.appendChild(c);
+    return c;
+  });
+  return { ...p, path, len: path.getTotalLength(), els };
+});
+const typed = document.getElementById('typed'), caret = document.getElementById('caret'), glow = document.getElementById('glow');
+
+function seek(t) {
+  for (const { el, a, b, fade } of timed) {
+    const i = ease((t - a) / 0.6), o = i * (b == null ? 1 : 1 - ease((t - b) / 0.45));
+    el.style.opacity = o;
+    el.style.visibility = o <= 0 ? 'hidden' : 'visible';
+    if (!fade) el.style.translate = `0 ${((1 - i) * 30).toFixed(2)}px`;
+  }
+  for (const d of dots) {
+    const k0 = Math.floor((t - d.from) / d.period);
+    d.els.forEach((c, j) => {
+      const launch = d.from + (k0 - j) * d.period, f = (t - launch) / d.dur;
+      if (k0 - j < 0 || launch + d.dur > d.to || f < 0 || f > 1) { c.style.display = 'none'; return; }
+      const pt = d.path.getPointAtLength(d.len * f);
+      c.style.display = '';
+      c.setAttribute('cx', pt.x.toFixed(1)); c.setAttribute('cy', pt.y.toFixed(1));
+      c.setAttribute('opacity', Math.min(1, f * 6, (1 - f) * 6).toFixed(2));
+    });
+  }
+  for (const { el, i } of counters) el.textContent = tiles[i][1](tiles[i][0] * ease((t - 28.2) / 2.0));
+  for (const { el, at } of barEls) el.style.scale = `1 ${ease((t - at) / 0.9).toFixed(3)}`;
+  typed.textContent = CMD.slice(0, Math.max(0, Math.floor((t - TYPE_AT) * CPS)));
+  caret.style.opacity = t > 41.9 ? 0 : Math.floor(t * 2.5) % 2 ? 0.25 : 1;
+  glow.style.translate = `${(Math.sin(t / 6) * 120).toFixed(1)}px ${(Math.cos(t / 7.5) * 60).toFixed(1)}px`;
+}
+window.seek = seek;
+window.TOTAL = TOTAL;
+
+if (capture) {
+  seek(0);
+} else {
+  const fit = () => { stage.style.scale = Math.min(innerWidth / 1920, innerHeight / 1080); };
+  fit(); addEventListener('resize', fit);
+  const t0 = performance.now();
+  (function loop() { seek(((performance.now() - t0) / 1000) % (TOTAL + 1.5)); requestAnimationFrame(loop); })();
+}
+</script>
+</body>
+</html>

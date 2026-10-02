@@ -94,7 +94,7 @@ www-setup:
 	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
-	@cp -f images/ccload.jpg images/ccload-dashboard.jpeg images/ccload-logs.jpg www/assets/images/ 2>/dev/null || true
+	@cp -f images/ccload-dashboard.jpeg images/ccload-logs.jpg images/ccload-promo.zh-CN.jpg images/ccload-promo.en.jpg www/assets/images/ 2>/dev/null || true
 	@echo "✓ www 设置完成，现在是完全独立的静态网站"
 
 # 本地运行 www 网站（预览效果）
@@ -104,6 +104,8 @@ WWW_RELEASE_PATH ?= /var/www/ccload.xyz
 WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
 WWW_RELEASE_SSH ?= ssh -T
 WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
+# 介绍视频不入库，由 www/promo/render.mjs + audio.sh 生成；缺失时拒绝发布，否则 --delete 会删掉线上视频
+WWW_PROMO_VIDEOS ?= www/assets/video/ccload-promo.zh-CN.mp4 www/assets/video/ccload-promo.en.mp4
 www-run: www-setup
 	@echo "启动 www 介绍网站预览服务器..."
 	@echo "访问地址: http://localhost:$(WWW_PORT)/"
@@ -111,6 +113,7 @@ www-run: www-setup
 	@cd www && python3 -m http.server $(WWW_PORT)
 
 www-release: www-setup
+	@for f in $(WWW_PROMO_VIDEOS); do [ -s "$$f" ] || { echo "缺少 $${f}，先按 www/promo/render.mjs 和 audio.sh 生成" >&2; exit 1; }; done
 	@echo "检查远端发布环境..."
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'command -v rsync >/dev/null || { echo "远端缺少 rsync，请先在服务器执行: apt-get update && apt-get install -y rsync" >&2; exit 127; }'
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'mkdir -p "$(WWW_RELEASE_PATH)"'

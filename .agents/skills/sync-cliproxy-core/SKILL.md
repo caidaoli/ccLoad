@@ -106,7 +106,7 @@ golangci-lint run ./...
 git diff --check
 ```
 
-只在并发相关代码受影响时运行 `make race-fast` 或 `make race`。根据最终差异更新 `.claude/agent-guide/` 中受影响的专题及必要的 `README.md` / `README.zh-CN.md`；只有通用约束或入口变化才修改 `CLAUDE.md`。
+只在并发相关代码受影响时运行 `make race-fast` 或 `make race`。根据最终差异更新 `.claude/agent-guide/` 中受影响的专题及必要的 `README.md` / `README.zh-CN.md`、`docs/guide/`；只有通用约束或入口变化才修改 `CLAUDE.md`。
 
 ## 完成报告
 

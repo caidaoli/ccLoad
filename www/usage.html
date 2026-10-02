@@ -10,23 +10,24 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=20260829-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260917-1"></script>
-  <script defer src="assets/locales/en.js?v=20260917-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
+  <script defer src="assets/locales/en.js?v=20261002-2"></script>
+  <script defer src="assets/locales/usage.zh-CN.js?v=20261002-2"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
   <script defer src="assets/js/nav.js?v=20260904-1"></script>
-  <script defer src="assets/js/www.js?v=20260829-1"></script>
+  <script defer src="assets/js/www.js?v=20261002-3"></script>
 </head>
 <body class="www-page www-usage">
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
-      <span class="www-eyebrow">API Usage</span>
+      <span class="www-eyebrow" data-i18n-html="www.usage.eyebrow">API Usage</span>
       <h1 class="www-page-title" data-i18n="www.usage.title">API Usage</h1>
       <p class="www-page-subtitle" data-i18n="www.usage.subtitle">
         ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including Responses WebSocket, thinking suffixes, and the Images API. Clients only need a new base URL and token.
       </p>
-      <div class="www-badge-row" aria-label="Compatible protocols">
+      <div class="www-badge-row" aria-label="Compatible protocols" data-i18n-aria-label="www.usage.badges.label">
         <span class="www-badge">Anthropic Messages</span>
         <span class="www-badge">OpenAI Chat</span>
         <span class="www-badge">Gemini v1beta</span>
@@ -40,27 +41,27 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Before calling the API</h2>
-          <p>Create an API access token in the admin console, then point the client base URL at ccLoad. Do not send upstream provider keys to clients; clients should only hold ccLoad tokens.</p>
+          <h2 data-i18n-html="www.usage.before.title">Before calling the API</h2>
+          <p data-i18n-html="www.usage.before.desc">Create an API access token in the admin console, then point the client base URL at ccLoad. Do not send upstream provider keys to clients; clients should only hold ccLoad tokens.</p>
         </div>
 
         <div class="www-step-list">
           <div class="www-step">
             <div>
-              <h3>Log in to the admin console</h3>
-              <p>Open <code>http://localhost:8080/web/</code> and log in with <code>CCLOAD_PASS</code>.</p>
+              <h3 data-i18n-html="www.usage.before.step1.title">Log in to the admin console</h3>
+              <p data-i18n-html="www.usage.before.step1.desc">Open <code>http://localhost:8080/web/</code> and log in with <code>CCLOAD_PASS</code>.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>Add channels</h3>
-              <p>Open the channel page and configure the upstream protocol, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
+              <h3 data-i18n-html="www.usage.before.step2.title">Add channels</h3>
+              <p data-i18n-html="www.usage.before.step2.desc">Open the channel page and configure the upstream protocol, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>Create access tokens</h3>
-              <p>Create client tokens on the token page. Restrict models, choose a channel allowlist or denylist, and cap cost or concurrency when needed. An empty channel list is unrestricted in either mode. Proxy endpoints return 401 when no token exists.</p>
+              <h3 data-i18n-html="www.usage.before.step3.title">Create access tokens</h3>
+              <p data-i18n-html="www.usage.before.step3.desc">Create client tokens on the token page. Restrict models, choose a channel allowlist or denylist, and cap cost or concurrency when needed. An empty channel list is unrestricted in either mode. Proxy endpoints return 401 when no token exists.</p>
             </div>
           </div>
         </div>
@@ -70,64 +71,64 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Endpoint Reference</h2>
-          <p>All four core client protocols can use every model-compatible channel. In automatic mode, ccLoad tries the client protocol first, then probes OpenAI, Anthropic, Codex, and Gemini without retrying the client protocol. It advances only when the request has not produced output and the endpoint reports a capability mismatch, or when the request cannot be represented in that protocol.</p>
+          <h2 data-i18n-html="www.usage.endpoints.title">Endpoint Reference</h2>
+          <p data-i18n-html="www.usage.endpoints.desc">All four core client protocols can use every model-compatible channel. In automatic mode, ccLoad tries the client protocol first, then probes OpenAI, Anthropic, Codex, and Gemini without retrying the client protocol. It advances only when the request has not produced output and the endpoint reports a capability mismatch, or when the request cannot be represented in that protocol.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>Client</th>
-                <th>Endpoint</th>
-                <th>Purpose</th>
+                <th data-i18n-html="www.usage.endpoints.th.client">Client</th>
+                <th data-i18n-html="www.usage.endpoints.th.endpoint">Endpoint</th>
+                <th data-i18n-html="www.usage.endpoints.th.purpose">Purpose</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Anthropic / Claude Code</td>
                 <td><code>POST /v1/messages</code></td>
-                <td>Messages API, streaming and non-streaming.</td>
+                <td data-i18n-html="www.usage.endpoints.messages.purpose">Messages API, streaming and non-streaming.</td>
               </tr>
               <tr>
-                <td>OpenAI-compatible clients</td>
+                <td data-i18n-html="www.usage.endpoints.openai.client">OpenAI-compatible clients</td>
                 <td><code>POST /v1/chat/completions</code></td>
-                <td>Chat Completions, suitable for OpenAI SDKs with only a base URL change.</td>
+                <td data-i18n-html="www.usage.endpoints.openai.purpose">Chat Completions, suitable for OpenAI SDKs with only a base URL change.</td>
               </tr>
               <tr>
-                <td>Codex clients</td>
+                <td data-i18n-html="www.usage.endpoints.codex.client">Codex clients</td>
                 <td><code>POST /v1/responses</code></td>
-                <td>Responses-compatible endpoint for Codex-style requests and streams.</td>
+                <td data-i18n-html="www.usage.endpoints.codex.purpose">Responses-compatible endpoint for Codex-style requests and streams.</td>
               </tr>
               <tr>
-                <td>Codex WebSocket clients</td>
+                <td data-i18n-html="www.usage.endpoints.codexWs.client">Codex WebSocket clients</td>
                 <td><code>GET /v1/responses</code></td>
-                <td>Authenticated Responses WebSocket; aliases are <code>GET /v1/codex/responses</code> and <code>GET /backend-api/codex/responses</code>.</td>
+                <td data-i18n-html="www.usage.endpoints.codexWs.purpose">Authenticated Responses WebSocket; aliases are <code>GET /v1/codex/responses</code> and <code>GET /backend-api/codex/responses</code>.</td>
               </tr>
               <tr>
                 <td>Codex Alpha Search</td>
                 <td><code>POST /v1/alpha/search</code></td>
-                <td>Native Codex search passthrough. Only resolved Codex upstreams are eligible.</td>
+                <td data-i18n-html="www.usage.endpoints.alphaSearch.purpose">Native Codex search passthrough. Only resolved Codex upstreams are eligible.</td>
               </tr>
               <tr>
                 <td>Images API</td>
                 <td><code>POST /v1/images/generations</code></td>
-                <td>OpenAI Images-compatible. xAI conversational models at <code>grok-4.6</code> and later are bridged to the Responses <code>image_generation</code> tool.</td>
+                <td data-i18n-html="www.usage.endpoints.images.purpose">OpenAI Images-compatible. xAI conversational models at <code>grok-4.6</code> and later are bridged to the Responses <code>image_generation</code> tool.</td>
               </tr>
               <tr>
-                <td>Gemini clients</td>
+                <td data-i18n-html="www.usage.endpoints.gemini.client">Gemini clients</td>
                 <td><code>POST /v1beta/models/{model}:generateContent</code></td>
-                <td>Gemini generateContent-compatible endpoint.</td>
+                <td data-i18n-html="www.usage.endpoints.gemini.purpose">Gemini generateContent-compatible endpoint.</td>
               </tr>
               <tr>
-                <td>Token count</td>
+                <td data-i18n-html="www.usage.endpoints.count.client">Token count</td>
                 <td><code>POST /v1/messages/count_tokens</code></td>
-                <td>Local token estimation without forwarding to upstream.</td>
+                <td data-i18n-html="www.usage.endpoints.count.purpose">Local token estimation without forwarding to upstream.</td>
               </tr>
               <tr>
-                <td>Health check</td>
+                <td data-i18n-html="www.usage.endpoints.health.client">Health check</td>
                 <td><code>GET /health</code></td>
-                <td>Process liveness check for container probes.</td>
+                <td data-i18n-html="www.usage.endpoints.health.purpose">Process liveness check for container probes.</td>
               </tr>
             </tbody>
           </table>
@@ -138,26 +139,26 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Model thinking suffix</h2>
-          <p>Append a thinking level to any model name. ccLoad strips it for routing, then writes the matching thinking fields for the protocol actually forwarded upstream.</p>
+          <h2 data-i18n-html="www.usage.thinking.title">Model thinking suffix</h2>
+          <p data-i18n-html="www.usage.thinking.desc">Append a thinking level to any model name. ccLoad strips it for routing, then writes the matching thinking fields for the protocol actually forwarded upstream.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Accepted suffixes</h3>
+            <h3 data-i18n-html="www.usage.thinking.accepted.title">Accepted suffixes</h3>
             <ul class="www-check-list">
-              <li>Levels: <code>(minimal)</code> <code>(low)</code> <code>(medium)</code> <code>(high)</code> <code>(xhigh)</code> <code>(max)</code>. A level beyond the upstream model clamps to the nearest supported tier.</li>
-              <li>Disable: <code>(none)</code> or <code>(0)</code>.</li>
-              <li>Auto: <code>(auto)</code> defers to the upstream default.</li>
-              <li>Numeric budget: <code>(16384)</code> becomes Anthropic <code>budget_tokens</code> or Gemini <code>thinkingBudget</code>.</li>
+              <li data-i18n-html="www.usage.thinking.accepted.levels">Levels: <code>(minimal)</code> <code>(low)</code> <code>(medium)</code> <code>(high)</code> <code>(xhigh)</code> <code>(max)</code>. A level beyond the upstream model clamps to the nearest supported tier.</li>
+              <li data-i18n-html="www.usage.thinking.accepted.disable">Disable: <code>(none)</code> or <code>(0)</code>.</li>
+              <li data-i18n-html="www.usage.thinking.accepted.auto">Auto: <code>(auto)</code> defers to the upstream default.</li>
+              <li data-i18n-html="www.usage.thinking.accepted.budget">Numeric budget: <code>(16384)</code> becomes Anthropic <code>budget_tokens</code> or Gemini <code>thinkingBudget</code>.</li>
             </ul>
           </article>
           <article class="www-info-card">
-            <h3>Not a model identity</h3>
+            <h3 data-i18n-html="www.usage.thinking.identity.title">Not a model identity</h3>
             <ul class="www-check-list">
-              <li>Request <code>claude-sonnet-4-6(high)</code>, <code>gpt-5.2(xhigh)</code>, or <code>gemini-3.1-pro(8192)</code>.</li>
-              <li>Routing, auth, cooldown, logging, and the upstream model name always use the base name. Channel model lists do not need suffixed entries.</li>
-              <li>HTTP proxy, Responses WebSocket, and admin channel tests all honor the suffix. Channel custom request rules run later and can override the fields it writes.</li>
+              <li data-i18n-html="www.usage.thinking.identity.item1">Request <code>claude-sonnet-4-6(high)</code>, <code>gpt-5.2(xhigh)</code>, or <code>gemini-3.1-pro(8192)</code>.</li>
+              <li data-i18n-html="www.usage.thinking.identity.item2">Routing, auth, cooldown, logging, and the upstream model name always use the base name. Channel model lists do not need suffixed entries.</li>
+              <li data-i18n-html="www.usage.thinking.identity.item3">HTTP proxy, Responses WebSocket, and admin channel tests all honor the suffix. Channel custom request rules run later and can override the fields it writes.</li>
             </ul>
           </article>
         </div>
@@ -167,49 +168,49 @@
     <section class="www-section" id="oauth-channels" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>First-party account channels</h2>
-          <p>Import credentials in the admin console. Clients only hold ccLoad tokens. OAuth authorization and token refresh still use the provider's official endpoints.</p>
+          <h2 data-i18n-html="www.usage.oauth.title">First-party account channels</h2>
+          <p data-i18n-html="www.usage.oauth.desc">Import credentials in the admin console. Clients only hold ccLoad tokens. OAuth authorization and token refresh still use the provider's official endpoints.</p>
         </div>
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-info-card">
             <h3>Codex / Anthropic / Antigravity / xAI</h3>
             <ul class="www-check-list">
-              <li>Import OAuth credentials, or a Codex PAT that starts with <code>at-</code>.</li>
-              <li>Anthropic Messages requests automatically remove blank text blocks, including those inside tool results, before forwarding.</li>
-              <li>Batch-refresh quota windows from the channel card. Permanently rejected refreshes disable the channel without cooling it.</li>
-              <li>Optional system settings <code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code>, and <code>ANTIGRAVITY_URL</code> override data-plane addresses only.</li>
+              <li data-i18n-html="www.usage.oauth.main.item1">Import OAuth credentials, or a Codex PAT that starts with <code>at-</code>.</li>
+              <li data-i18n-html="www.usage.oauth.main.item2">Anthropic Messages requests automatically remove blank text blocks, including those inside tool results, before forwarding.</li>
+              <li data-i18n-html="www.usage.oauth.main.item3">Batch-refresh quota windows from the channel card. Permanently rejected refreshes disable the channel without cooling it.</li>
+              <li data-i18n-html="www.usage.oauth.main.item4">Optional system settings <code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code>, and <code>ANTIGRAVITY_URL</code> override data-plane addresses only.</li>
             </ul>
           </article>
           <article class="www-info-card">
             <h3>CodeBuddy</h3>
             <ul class="www-check-list">
-              <li>Scan to sign in, or import <code>workbuddy.json</code> or credential JSON. Tokens refresh automatically.</li>
-              <li>Models are fetched from the account when creating a channel. Reauthorizing an existing channel preserves its model configuration.</li>
-              <li>Refresh balances from the channel card: personal accounts show resource packs, and enterprise accounts show their quota. Daily check-in is available for the China edition; international editions do not support it.</li>
+              <li data-i18n-html="www.usage.oauth.codebuddy.item1">Scan to sign in, or import <code>workbuddy.json</code> or credential JSON. Tokens refresh automatically.</li>
+              <li data-i18n-html="www.usage.oauth.codebuddy.item2">Models are fetched from the account when creating a channel. Reauthorizing an existing channel preserves its model configuration.</li>
+              <li data-i18n-html="www.usage.oauth.codebuddy.item3">Refresh balances from the channel card: personal accounts show resource packs, and enterprise accounts show their quota. Daily check-in is available for the China edition; international editions do not support it.</li>
             </ul>
           </article>
           <article class="www-info-card">
             <h3>Z.ai Coding Plan</h3>
             <ul class="www-check-list">
-              <li>Complete the browser authorization flow, or import a Coding Plan API key when the provider OAuth poll endpoint is unavailable.</li>
-              <li>The model catalog is loaded from the account, then models.dev, then the built-in list.</li>
-              <li>Quota windows are shown on the channel card and are not billed as standard cost.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item1">Complete the browser authorization flow, or import a Coding Plan API key when the provider OAuth poll endpoint is unavailable.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item2">The model catalog is loaded from the account, then models.dev, then the built-in list.</li>
+              <li data-i18n-html="www.usage.oauth.zai.item3">Quota windows are shown on the channel card and are not billed as standard cost.</li>
             </ul>
           </article>
           <article class="www-info-card">
             <h3>Cursor</h3>
             <ul class="www-check-list">
-              <li>Open Cursor Dashboard → Integrations → User API Keys to create a key, then paste it into the channel dialog. Submitting an empty field opens that dashboard. Browser session tokens and Cursor CLI credentials are not supported.</li>
-              <li>ccLoad locates or installs the pinned official SDK Bridge in the background. Inference does not use HTTP forwarding.</li>
-              <li>The SDK Agent allows only Cursor's <code>mcp</code> capability group, which exposes SDK custom tools through the synthetic <code>custom-user-tools</code> server while keeping shell, file, and other built-ins disabled. Native callbacks remain isolated by Agent and call ID.</li>
+              <li data-i18n-html="www.usage.oauth.cursor.item1">Open Cursor Dashboard → Integrations → User API Keys to create a key, then paste it into the channel dialog. Submitting an empty field opens that dashboard. Browser session tokens and Cursor CLI credentials are not supported.</li>
+              <li data-i18n-html="www.usage.oauth.cursor.item2">ccLoad locates or installs the pinned official SDK Bridge in the background. Inference does not use HTTP forwarding.</li>
+              <li data-i18n-html="www.usage.oauth.cursor.item3">The SDK Agent allows only Cursor's <code>mcp</code> capability group, which exposes SDK custom tools through the synthetic <code>custom-user-tools</code> server while keeping shell, file, and other built-ins disabled. Native callbacks remain isolated by Agent and call ID.</li>
             </ul>
           </article>
           <article class="www-info-card">
             <h3>Zed</h3>
             <ul class="www-check-list">
-              <li>Native app sign-in exchanges an ephemeral RSA public key on a random loopback port; the callback token is decrypted into a long-lived native credential and the private key is never persisted.</li>
-              <li>Trial access depends on a real Zed installation <code>system_id</code>. Without one, ccLoad still allows sign-in and lets the upstream decide account eligibility.</li>
-              <li>A fixed exact <code>/completions</code> upstream runs Codex-protocol local transforms with WebSocket disabled; quota is read from <code>/client/users/me</code>.</li>
+              <li data-i18n-html="www.usage.oauth.zed.item1">Native app sign-in exchanges an ephemeral RSA public key on a random loopback port; the callback token is decrypted into a long-lived native credential and the private key is never persisted.</li>
+              <li data-i18n-html="www.usage.oauth.zed.item2">Trial access depends on a real Zed installation <code>system_id</code>. Without one, ccLoad still allows sign-in and lets the upstream decide account eligibility.</li>
+              <li data-i18n-html="www.usage.oauth.zed.item3">A fixed exact <code>/completions</code> upstream runs Codex-protocol local transforms with WebSocket disabled; quota is read from <code>/client/users/me</code>.</li>
             </ul>
           </article>
         </div>
@@ -220,28 +221,28 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Codex Responses WebSocket</h2>
-          <p>The downstream client keeps one authenticated WebSocket while each selected upstream candidate may use native Codex WebSocket or the existing HTTP/SSE bridge.</p>
+          <p data-i18n-html="www.usage.ws.desc">The downstream client keeps one authenticated WebSocket while each selected upstream candidate may use native Codex WebSocket or the existing HTTP/SSE bridge.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Channel and session setup</h3>
+            <h3 data-i18n-html="www.usage.ws.setup.title">Channel and session setup</h3>
             <ul class="www-check-list">
-              <li>Upgrade <code>GET /v1/responses</code>, <code>GET /v1/codex/responses</code>, or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
-              <li>Enable <code>websockets</code> only on channels whose upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
-              <li>Keep the API token and <code>Session-Id</code> header stable across reconnects. When <code>Thread-Id</code> is present, ccLoad combines it with <code>Session-Id</code> so concurrent agent transcripts and turn locks stay isolated. Request-body cache hints never identify an execution session.</li>
-              <li>New installs retain 1024 execution sessions with a 256 MiB transcript budget and a 15-minute idle TTL. Downstream connections default to 1024 globally and 64 per token.</li>
-              <li><code>upstream_connection_reuse_limit_seconds</code> can rotate old upstream HTTP and WebSocket connections. Active turns drain first; a new native WebSocket reconnects on demand and replays the retained transcript.</li>
+              <li data-i18n-html="www.usage.ws.setup.item1">Upgrade <code>GET /v1/responses</code>, <code>GET /v1/codex/responses</code>, or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
+              <li data-i18n-html="www.usage.ws.setup.item2">Enable <code>websockets</code> only on channels whose upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
+              <li data-i18n-html="www.usage.ws.setup.item3">Keep the API token and <code>Session-Id</code> header stable across reconnects. When <code>Thread-Id</code> is present, ccLoad combines it with <code>Session-Id</code> so concurrent agent transcripts and turn locks stay isolated. Request-body cache hints never identify an execution session.</li>
+              <li data-i18n-html="www.usage.ws.setup.item4">New installs retain 1024 execution sessions with a 256 MiB transcript budget and a 15-minute idle TTL. Downstream connections default to 1024 globally and 64 per token.</li>
+              <li data-i18n-html="www.usage.ws.setup.item5"><code>upstream_connection_reuse_limit_seconds</code> can rotate old upstream HTTP and WebSocket connections. Active turns drain first; a new native WebSocket reconnects on demand and replays the retained transcript.</li>
             </ul>
           </article>
 
           <article class="www-info-card">
-            <h3>Failover boundary</h3>
+            <h3 data-i18n-html="www.usage.ws.failover.title">Failover boundary</h3>
             <ul class="www-check-list">
-              <li>Before semantic output, HTTP/SSE &rarr; HTTP/SSE, native WebSocket &rarr; HTTP/SSE and native WebSocket &rarr; native WebSocket failover happens inside ccLoad.</li>
-              <li>HTTP/SSE &rarr; native WebSocket returns a retryable <code>502/server_error/upstream_unavailable</code> event and closes with code <code>1011</code>; the client must reconnect and replay the complete request.</li>
-              <li>After any semantic output, ccLoad does not switch transports or replay, preventing duplicate text, tool calls and charges.</li>
-              <li>Before output, ordinary upstream HTTP <code>413</code> follows the <code>400</code> model-scoped cooldown and channel failover policy. Context-length errors return to the client directly. A WebSocket <code>1009</code> close (<code>message_too_big</code>) preserves the close behavior without trying another channel; reduce the request size before retrying.</li>
+              <li data-i18n-html="www.usage.ws.failover.item1">Before semantic output, HTTP/SSE &rarr; HTTP/SSE, native WebSocket &rarr; HTTP/SSE and native WebSocket &rarr; native WebSocket failover happens inside ccLoad.</li>
+              <li data-i18n-html="www.usage.ws.failover.item2">HTTP/SSE &rarr; native WebSocket returns a retryable <code>502/server_error/upstream_unavailable</code> event and closes with code <code>1011</code>; the client must reconnect and replay the complete request.</li>
+              <li data-i18n-html="www.usage.ws.failover.item3">After any semantic output, ccLoad does not switch transports or replay, preventing duplicate text, tool calls and charges.</li>
+              <li data-i18n-html="www.usage.ws.failover.item4">Before output, ordinary upstream HTTP <code>413</code> follows the <code>400</code> model-scoped cooldown and channel failover policy. Context-length errors return to the client directly. A WebSocket <code>1009</code> close (<code>message_too_big</code>) preserves the close behavior without trying another channel; reduce the request size before retrying.</li>
             </ul>
           </article>
         </div>
@@ -251,53 +252,53 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Built-in Search Across Protocols</h2>
-          <p>ccLoad keeps model search requests in the native shape required by the runtime upstream protocol. It does not pretend web search is a normal function tool.</p>
+          <h2 data-i18n-html="www.usage.search.title">Built-in Search Across Protocols</h2>
+          <p data-i18n-html="www.usage.search.desc">ccLoad keeps model search requests in the native shape required by the runtime upstream protocol. It does not pretend web search is a normal function tool.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>Protocol</th>
-                <th>Search request shape</th>
-                <th>Transform behavior</th>
+                <th data-i18n-html="www.usage.search.th.protocol">Protocol</th>
+                <th data-i18n-html="www.usage.search.th.shape">Search request shape</th>
+                <th data-i18n-html="www.usage.search.th.behavior">Transform behavior</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>OpenAI Chat</td>
                 <td><code>"web_search_options": {}</code></td>
-                <td>OpenAI upstreams receive native Chat Completions search options; Codex <code>web_search</code> tools are converted to this shape when forwarding to OpenAI.</td>
+                <td data-i18n-html="www.usage.search.openai">OpenAI upstreams receive native Chat Completions search options; Codex <code>web_search</code> tools are converted to this shape when forwarding to OpenAI.</td>
               </tr>
               <tr>
                 <td>Codex Responses</td>
                 <td><code>"tools": [{"type": "web_search"}]</code></td>
-                <td>Codex upstreams receive the Responses tool form, including search options and tool choice when present.</td>
+                <td data-i18n-html="www.usage.search.codex">Codex upstreams receive the Responses tool form, including search options and tool choice when present.</td>
               </tr>
               <tr>
                 <td>Codex Alpha Search</td>
                 <td><code>POST /v1/alpha/search</code></td>
-                <td>Native passthrough only. This endpoint is never translated to another protocol, and its <code>model</code> field is optional.</td>
+                <td data-i18n-html="www.usage.search.alpha">Native passthrough only. This endpoint is never translated to another protocol, and its <code>model</code> field is optional.</td>
               </tr>
               <tr>
                 <td>Gemini</td>
                 <td><code>"tools": [{"googleSearch": {}}]</code></td>
-                <td>Gemini channels receive the Google Search tool shape instead of OpenAI or Codex fields.</td>
+                <td data-i18n-html="www.usage.search.gemini">Gemini channels receive the Google Search tool shape instead of OpenAI or Codex fields.</td>
               </tr>
               <tr>
                 <td>Anthropic</td>
                 <td><code>"web_search_20250305"</code></td>
-                <td>Anthropic channels receive the Anthropic web search tool form with the standard tool name.</td>
+                <td data-i18n-html="www.usage.search.anthropic">Anthropic channels receive the Anthropic web search tool form with the standard tool name.</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="www-callout">
+        <div class="www-callout" data-i18n-html="www.usage.search.note.capability">
           <strong>Search remains an upstream capability.</strong> If the selected provider, model or route does not support built-in search, disable search for that request or channel instead of expecting ccLoad to emulate browser access.
         </div>
-        <div class="www-callout www-mt-8">
+        <div class="www-callout www-mt-8" data-i18n-html="www.usage.search.note.antigravity">
           <strong>Antigravity Responses search.</strong> Requests containing only native <code>web_search</code> tools use the dedicated Gemini search route when <code>tool_choice</code> permits it. Domain filters are preserved, and responses include search calls, citation annotations and search usage. Mixing function tools or setting <code>tool_choice: "none"</code> disables that route.
         </div>
       </div>
@@ -306,18 +307,18 @@
     <section class="www-section" id="api-examples">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>API Examples</h2>
-          <p>The <code>Authorization</code> header below uses a ccLoad access token, not an upstream provider key.</p>
+          <h2 data-i18n-html="www.usage.examples.title">API Examples</h2>
+          <p data-i18n-html="www.usage.examples.desc">The <code>Authorization</code> header below uses a ccLoad access token, not an upstream provider key.</p>
         </div>
 
         <div class="www-tabs">
-          <div class="www-tab-list" role="tablist" aria-label="API examples">
+          <div class="www-tab-list" role="tablist" aria-label="API examples" data-i18n-aria-label="www.usage.examples.label">
             <button class="www-tab-button active">Anthropic</button>
             <button class="www-tab-button">OpenAI</button>
             <button class="www-tab-button">Codex</button>
             <button class="www-tab-button">Gemini</button>
             <button class="www-tab-button">Images</button>
-            <button class="www-tab-button">Token Count</button>
+            <button class="www-tab-button" data-i18n-html="www.usage.examples.tab.count">Token Count</button>
           </div>
 
           <div class="www-tab-panel active">
@@ -394,7 +395,7 @@
 
             <div class="www-section-header">
               <h3>Codex Alpha Search</h3>
-              <p>This endpoint preserves the native Codex search payload. The <code>model</code> field is optional, and only channels whose resolved upstream protocol is Codex can handle the request.</p>
+              <p data-i18n-html="www.usage.examples.alpha.desc">This endpoint preserves the native Codex search payload. The <code>model</code> field is optional, and only channels whose resolved upstream protocol is Codex can handle the request.</p>
             </div>
 
             <div class="www-code-block">
@@ -412,7 +413,7 @@
               </div>
             </div>
 
-            <div class="www-callout">
+            <div class="www-callout" data-i18n-html="www.usage.examples.alpha.note">
               Regular channel base URLs automatically append <code>/v1/alpha/search</code>. An exact URL ending in <code>#</code> must already point to that endpoint, for example <code>https://upstream.example.com/v1/alpha/search#</code>. ccLoad removes <code>prompt_cache_key</code> and <code>prompt_cache_retention</code> before forwarding.
             </div>
           </div>
@@ -456,7 +457,7 @@
   }'</code></pre>
               </div>
             </div>
-            <div class="www-callout www-mt-4">
+            <div class="www-callout www-mt-4" data-i18n-html="www.usage.examples.images.note">
               <strong>This is the OpenAI Images API, not xAI's native grok-imagine media API.</strong> For conversational models at <code>grok-4.6</code> and later, ccLoad bridges the request into an xAI Responses <code>image_generation</code> tool call. Non-streaming requests aggregate into standard Images JSON; streaming requests emit <code>partial_image</code> / <code>completed</code> SSE. Body size is capped by <code>max_image_body_bytes</code>.
             </div>
           </div>
@@ -489,23 +490,23 @@
         <div class="www-split">
           <div>
             <div class="www-section-header">
-              <h2>How to use the admin console</h2>
-              <p>The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
+              <h2 data-i18n-html="www.usage.admin.title">How to use the admin console</h2>
+              <p data-i18n-html="www.usage.admin.desc">The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li>Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai / Zed credentials; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
-              <li>Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
-              <li>Logs: filter requests by status code, channel, model and token to locate failures.</li>
-              <li>Overview: compare traffic by client protocol and inspect seven-day service health.</li>
-              <li>Stats: inspect requests, tokens, cost, first-byte latency and channel health.</li>
-              <li>Trends: observe RPM, cost and latency by time range.</li>
-              <li>Model test: run chat-style requests or test models by channel through the real proxy path, including thinking suffixes, built-in search, and image generation. API-key choices show the masked key, its note and cost multiplier to help select the intended credential.</li>
-              <li>Cache metrics: cache-read and cache-write statistics follow the usage returned by the upstream, including compatible providers and custom model names.</li>
+              <li data-i18n-html="www.usage.admin.channels">Channels: create, edit, delete and test upstream channels; import OAuth / PAT / Cursor / Z.ai / Zed credentials; pause individual models; set per-key model allowlists; detect native WebSocket support; configure provider-specific cooldown rules and daily scheduled checks; import or export CSV.</li>
+              <li data-i18n-html="www.usage.admin.tokens">Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
+              <li data-i18n-html="www.usage.admin.logs">Logs: filter requests by status code, channel, model and token to locate failures.</li>
+              <li data-i18n-html="www.usage.admin.overview">Overview: compare traffic by client protocol and inspect seven-day service health.</li>
+              <li data-i18n-html="www.usage.admin.stats">Stats: inspect requests, tokens, cost, first-byte latency and channel health.</li>
+              <li data-i18n-html="www.usage.admin.trends">Trends: observe RPM, cost and latency by time range.</li>
+              <li data-i18n-html="www.usage.admin.modelTest">Model test: run chat-style requests or test models by channel through the real proxy path, including thinking suffixes, built-in search, and image generation. API-key choices show the masked key, its note and cost multiplier to help select the intended credential.</li>
+              <li data-i18n-html="www.usage.admin.cache">Cache metrics: cache-read and cache-write statistics follow the usage returned by the upstream, including compatible providers and custom model names.</li>
             </ul>
           </div>
           <figure class="www-media-frame">
-            <img src="assets/images/ccload-dashboard.jpeg" alt="ccLoad admin dashboard statistics screenshot">
-            <figcaption class="www-media-caption">The statistics view puts channels, models, cost and latency into one working surface.</figcaption>
+            <img src="assets/images/ccload-dashboard.jpeg" alt="ccLoad admin dashboard statistics screenshot" data-i18n-alt="www.usage.admin.imageAlt">
+            <figcaption class="www-media-caption" data-i18n-html="www.usage.admin.caption">The statistics view puts channels, models, cost and latency into one working surface.</figcaption>
           </figure>
         </div>
       </div>
@@ -514,13 +515,13 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Channel Management API</h2>
-          <p>The web UI is best for daily operations; bulk import, automation and migration can call the admin API directly.</p>
+          <h2 data-i18n-html="www.usage.api.title">Channel Management API</h2>
+          <p data-i18n-html="www.usage.api.desc">The web UI is best for daily operations; bulk import, automation and migration can call the admin API directly.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Add a channel</h3>
+            <h3 data-i18n-html="www.usage.api.add.title">Add a channel</h3>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -549,7 +550,7 @@
           </article>
 
           <article class="www-info-card">
-            <h3>CSV import/export</h3>
+            <h3 data-i18n-html="www.usage.api.csv.title">CSV import/export</h3>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -567,24 +568,24 @@ curl -X POST -H "Authorization: Bearer your_token" \
           </article>
 
           <article class="www-info-card">
-            <h3>Channel management accounts</h3>
-            <p><code>api_key</code> channels can attach a New API or Sub2API management account for balance checks and daily check-in. Profiles: <code>new_api</code> (user ID, check-in + balance), <code>sub2api</code> (balance only) and <code>sub2api_pro</code> (check-in + balance). Writes are compare-and-swap and serialized per channel.</p>
+            <h3 data-i18n-html="www.usage.api.account.title">Channel management accounts</h3>
+            <p data-i18n-html="www.usage.api.account.desc"><code>api_key</code> channels can attach a New API or Sub2API management account for balance checks and daily check-in. Profiles: <code>new_api</code> (user ID, check-in + balance), <code>sub2api</code> (balance only) and <code>sub2api_pro</code> (check-in + balance). Writes are compare-and-swap and serialized per channel.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
                 <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
-                <pre><code># Manual check-in and balance refresh
+                <pre><code><span data-i18n-html="www.usage.api.code.manual"># Manual check-in and balance refresh</span>
 curl -X POST -H "Authorization: Bearer your_token" \
   http://localhost:8080/admin/channels/42/management-account/checkin
 
 curl -X POST -H "Authorization: Bearer your_token" \
   http://localhost:8080/admin/channels/42/management-account/balance
 
-# CSV carries management_daily_checkin_enabled and
+<span data-i18n-html="www.usage.api.code.csv"># CSV carries management_daily_checkin_enabled and
 # management_daily_checkin_time columns. Daily check-in runs on a
-# per-channel scheduler and writes log_source=checkin audit entries.</code></pre>
+# per-channel scheduler and writes log_source=checkin audit entries.</span></code></pre>
               </div>
             </div>
           </article>
@@ -596,15 +597,15 @@ curl -X POST -H "Authorization: Bearer your_token" \
       <div class="www-container">
         <div class="www-split">
           <figure class="www-media-frame">
-            <img src="assets/images/ccload-logs.jpg" alt="ccLoad request log screenshot">
-            <figcaption class="www-media-caption">The logs page tracks failures, rate limits, first-byte latency and upstream responses.</figcaption>
+            <img src="assets/images/ccload-logs.jpg" alt="ccLoad request log screenshot" data-i18n-alt="www.usage.logs.imageAlt">
+            <figcaption class="www-media-caption" data-i18n-html="www.usage.logs.caption">The logs page tracks failures, rate limits, first-byte latency and upstream responses.</figcaption>
           </figure>
           <div>
             <div class="www-section-header">
-              <h2>Debug from logs, not guesses</h2>
-              <p>ccLoad records custom status codes such as 499, 596, 597, 598 and 599 to separate client cancellations, quota exhaustion, SSE errors, first-byte timeouts and stream interruptions.</p>
+              <h2 data-i18n-html="www.usage.logs.title">Debug from logs, not guesses</h2>
+              <p data-i18n-html="www.usage.logs.desc">ccLoad records custom status codes such as 499, 596, 597, 598 and 599 to separate client cancellations, quota exhaustion, SSE errors, first-byte timeouts and stream interruptions.</p>
             </div>
-            <div class="www-callout">
+            <div class="www-callout" data-i18n-html="www.usage.logs.note">
               <strong>429 has two explicit success-rate scopes.</strong> UI timeline success rate includes 429 as an error and exposes it again as the <code>rate_limited</code> subset for pure rate-limit coloring; health-score sorting excludes 429 so key-level throttling does not demote an otherwise healthy channel.
             </div>
           </div>
