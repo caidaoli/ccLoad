@@ -73,7 +73,7 @@ test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () =>
   }
 });
 
-test('Claude 重置次数只对 Anthropic OAuth 显示，且上游字段不能注入 HTML', () => {
+test('Claude 重置次数中的上游字段不能注入 HTML', () => {
   const previousWindow = global.window;
   const previousResetState = global.getAnthropicResetCreditsState;
   const previousUsageState = global.getOAuthUsageState;
@@ -96,8 +96,6 @@ test('Claude 重置次数只对 Anthropic OAuth 显示，且上游字段不能�
     assert.match(html, /anthropicResetUnavailable/);
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
     assert.doesNotMatch(html, /<img/);
-    assert.match(html, /data-action="refresh-anthropic-reset-credits"/);
-    assert.doesNotMatch(buildOAuthUsageStatusHtml({ id: 8102, auth_type: 'codex_oauth' }), /refresh-anthropic-reset-credits/);
   } finally {
     global.window = previousWindow;
     global.getAnthropicResetCreditsState = previousResetState;

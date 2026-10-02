@@ -877,19 +877,20 @@ function buildAnthropicResetCreditsHtml(channelID) {
     ? getAnthropicResetCreditsState(channelID) : null;
   const loading = state?.status === 'loading';
   const resetting = state?.reset_status === 'loading';
-  const canReset = state?.status === 'ready' && state.data?.eligible && state.data.available_count > 0;
-  const queryButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="refresh-anthropic-reset-credits" data-channel-id="${channelID}"${loading || resetting ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(loading ? 'channels.oauth.anthropicResetLoading' : 'channels.oauth.anthropicResetCount'))}</button>`;
+  const canReset = state?.status === 'ready' && !state.cached && state.data?.eligible && state.data.available_count > 0;
   const resetLabel = resetting ? 'resettingQuota' : 'resetQuota';
-  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${loading || resetting || !canReset ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
-  const button = `${queryButton}${resetButton}`;
+  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${state?.cached ? ` title="${escapeChannelRefreshText(window.t('channels.oauth.usageRefresh'))}"` : ''}${loading || resetting || !canReset ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
   const message = state?.reset_error || state?.reset_feedback;
   const feedback = message ? `<div class="ch-oauth-usage__credits-summary" role="${state?.reset_status === 'reset' ? 'status' : 'alert'}">${escapeChannelRefreshText(message)}</div>` : '';
   if (state?.status !== 'ready') {
-    return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${button}</div>${state?.status === 'error' ? `<div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(state.error)}</div>` : ''}${feedback}</div>`;
+    if (state?.status !== 'error' && !feedback) return '';
+    return `<div class="ch-oauth-usage__credits">${state?.status === 'error' ? `<div class="ch-oauth-usage__error" role="alert">${escapeChannelRefreshText(state.error)}</div>` : ''}${feedback}</div>`;
   }
   const data = state.data;
-  const credits = data.credits.filter(credit => credit && typeof credit === 'object');
+  const credits = data.credits.filter(credit => credit && typeof credit === 'object' &&
+    (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
   const total = credits.reduce((sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0), 0);
+  if (total <= 0) return feedback ? `<div class="ch-oauth-usage__credits">${feedback}</div>` : '';
   const expiry = credit => {
     const timestamp = Date.parse(String(credit.expires_at || ''));
     return Number.isFinite(timestamp) ? timestamp : Infinity;
@@ -911,7 +912,7 @@ function buildAnthropicResetCreditsHtml(channelID) {
     <div class="ch-oauth-usage__credits-summary" title="${escapeChannelRefreshText(details)}">
       <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetRemaining', { count: total }))}</span>
       ${expiryText ? `<span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpires', { time: expiryText }))}</span>` : ''}
-      ${button}
+      ${resetButton}
     </div>
     <div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(window.t(status))}${cooldown ? ` · ${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown }))}` : ''}</div>
     ${feedback}
@@ -1229,8 +1230,8 @@ function buildOAuthUsageStatusHtml(channel) {
     : '';
   return `<div class="ch-oauth-usage">
     ${buildOAuthUsageToolbar(channel, state)}
-    ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
     ${rows.join('')}
+    ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
     ${isCodex ? buildCodexPurchasedCreditsHtml(state.data) : ''}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
@@ -1623,7 +1624,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'refresh-anthropic-reset-credits', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1642,11 +1643,6 @@ function initChannelEventDelegation() {
           refreshOAuthUsage(channelId).catch(error => {
             if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
           });
-        }
-        break;
-      case 'refresh-anthropic-reset-credits':
-        if (typeof refreshAnthropicResetCredits === 'function') {
-          refreshAnthropicResetCredits(channelId).catch(() => {});
         }
         break;
       case 'reset-anthropic-quota':

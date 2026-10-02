@@ -214,6 +214,7 @@ type oauthUsageSummary struct {
 	EntitlementStatus     string                  `json:"entitlement_status,omitempty"`
 	Windows               []oauthUsageWindow      `json:"windows"`
 	RateLimitResetCredits *codexQuotaResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	AnthropicResetCredits *anthropicResetCredits  `json:"anthropic_reset_credits,omitempty"`
 	Warnings              []string                `json:"warnings,omitempty"`
 	// DisplayMessage 是上游账单状态文案（例如 Cursor 的额度用尽提示），
 	// 不是采样失败。前端单独渲染，不得塞进 Warnings。
@@ -768,10 +769,17 @@ func requestAnthropicUsage(
 		baseURL = anthropicauth.DefaultUpstreamURL
 	}
 	usageURL := buildUpstreamURL(baseURL, "/api/oauth/usage", "")
+	queryResetCredits := anthropicResetHasProfileScope(credential.Scope)
+	if queryResetCredits {
+		usageURL += "?cedar_ember=1"
+	}
 	profileURL := buildUpstreamURL(baseURL, "/api/oauth/profile", "")
 	usageRequest, err := newAnthropicOAuthMetadataRequest(ctx, usageURL, credential.AccessToken, true)
 	if err != nil {
 		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic request is unavailable")
+	}
+	if queryResetCredits {
+		setAnthropicResetHeaders(usageRequest)
 	}
 	usageBody, err := executeOAuthUsageRequest(client, usageRequest, "Anthropic")
 	if err != nil {
@@ -786,6 +794,14 @@ func requestAnthropicUsage(
 		return nil, anthropicCredentialMetadata{}, err
 	}
 	usageSampledAt := time.Now().UTC()
+	if queryResetCredits {
+		resetBlock, resetErr := parseAnthropicResetBlock(usageBody)
+		if resetErr != nil {
+			summary.Warnings = append(summary.Warnings, "Anthropic reset credits unavailable")
+		} else {
+			summary.AnthropicResetCredits = projectAnthropicResetCredits(resetBlock, usageSampledAt)
+		}
+	}
 	for i := range summary.Windows {
 		summary.Windows[i].SampledAt = usageSampledAt
 	}
@@ -1779,6 +1795,7 @@ func latestOAuthUsage(
 		}
 		merged := *passive
 		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
+		merged.AnthropicResetCredits = active.AnthropicResetCredits
 		return &merged
 	}
 	return active

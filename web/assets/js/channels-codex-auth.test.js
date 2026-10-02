@@ -19,7 +19,6 @@ const {
   getOAuthUsageState,
   getAnthropicResetCreditsState,
   syncAnthropicResetCreditsFromChannels,
-  refreshAnthropicResetCredits,
   confirmAnthropicQuotaReset,
   redeemAnthropicResetCredit,
   snapshotOAuthUsageStates,
@@ -53,35 +52,63 @@ const {
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
 
-test('Claude reset credits are queried only on demand and ignore an older response', async () => {
+async function loadAnthropicUsage(channelID, fetcher) {
+  return refreshOAuthUsage(channelID, async () => ({
+    windows: [], anthropic_reset_credits: await fetcher()
+  }), { reload: false });
+}
+
+test('Claude usage refresh includes reset credits and ignores an older response', async () => {
   const previousChannels = global.channels;
   const previousWindow = global.window;
-  global.channels = [{ id: 8101, auth_type: 'anthropic_oauth' }, { id: 8102, auth_type: 'codex_oauth' }];
+  const saved = { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] };
+  global.channels = [{ id: 8101, auth_type: 'anthropic_oauth', oauth_usage: { windows: [], anthropic_reset_credits: saved } }];
   global.window = { t: key => key };
   let resolveFirst;
   const first = new Promise(resolve => { resolveFirst = resolve; });
-  const firstData = { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] };
-  const secondData = { eligible: true, available_count: 2, credits: [{ resets_left: 2 }] };
+  const latest = { eligible: true, available_count: 2, credits: [{ resets_left: 2 }], fetched_at: '2026-10-02T01:00:00Z' };
   try {
-    assert.equal(getAnthropicResetCreditsState(8101), null);
-    await assert.rejects(() => refreshAnthropicResetCredits(8102, async () => assert.fail('unexpected request')), /Anthropic OAuth/);
-    const older = refreshAnthropicResetCredits(8101, (url, options) => {
-      assert.equal(url, '/admin/channels/8101/anthropic-reset-credits');
-      assert.equal(options.method, 'GET');
+    assert.deepEqual(getAnthropicResetCreditsState(8101).data, saved);
+    assert.equal(await confirmAnthropicQuotaReset(8101, () => assert.fail('cached credits require refresh')), null);
+    await assert.rejects(() => redeemAnthropicResetCredit(8101, () => assert.fail('cached credits require refresh')), /anthropicResetUnavailable/);
+    const older = refreshOAuthUsage(8101, (url, options) => {
+      assert.equal(url, '/admin/channels/8101/oauth-usage');
+      assert.equal(options.method, 'POST');
       return first;
-    });
-    assert.equal(getAnthropicResetCreditsState(8101).status, 'loading');
-    await refreshAnthropicResetCredits(8101, async () => secondData);
-    resolveFirst(firstData);
+    }, { reload: false });
+    await loadAnthropicUsage(8101, async () => latest);
+    resolveFirst({ windows: [], anthropic_reset_credits: saved });
     await older;
-    assert.deepEqual(getAnthropicResetCreditsState(8101), { status: 'ready', data: secondData });
-    syncAnthropicResetCreditsFromChannels([{ id: 8101, auth_type: 'anthropic_oauth', updated_at: '2026-09-30T00:00:00Z' }]);
-    assert.equal(getAnthropicResetCreditsState(8101), null);
-    await assert.rejects(() => refreshAnthropicResetCredits(8101, async () => ({ credits: [] })), /Invalid|无效|anthropicResetInvalid/);
-    assert.equal(getAnthropicResetCreditsState(8101).status, 'error');
+    assert.deepEqual(getAnthropicResetCreditsState(8101), { status: 'ready', data: latest });
+    global.channels[0] = { ...global.channels[0], updated_at: '2026-10-02T01:00:00Z',
+      oauth_usage: { windows: [], anthropic_reset_credits: latest } };
+    syncAnthropicResetCreditsFromChannels(global.channels);
+    assert.deepEqual(getAnthropicResetCreditsState(8101), { status: 'ready', data: latest });
+    await refreshOAuthUsage(8101, async () => ({ windows: [] }), { reload: false });
+    assert.equal(getAnthropicResetCreditsState(8101).data, null);
   } finally {
     global.channels = previousChannels;
     global.window = previousWindow;
+  }
+});
+
+test('Claude reset credits are updated by manual and automatic batch usage refreshes', async () => {
+  const previousChannels = global.channels;
+  global.channels = [{ id: 8103, auth_type: 'anthropic_oauth' }];
+  const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] };
+  try {
+    for (const [index, refresh] of [refreshOAuthUsageBatch, maybeAutoRefreshActiveChannelUsage].entries()) {
+      const data = index === 0 ? credits : { eligible: false, available_count: 0, credits: [] };
+      const usage = { windows: [], anthropic_reset_credits: data };
+      const result = await refresh([8103], async () => oauthUsageBatchSSE([
+        { event: 'progress', result: { channel_id: 8103, status: 'succeeded', usage } },
+        { event: 'complete', processed: 1, total: 1, succeeded: 1, failed: 0 }
+      ]), { reload: false });
+      assert.equal(result.succeeded, 1);
+      assert.deepEqual(getAnthropicResetCreditsState(8103).data, data);
+    }
+  } finally {
+    global.channels = previousChannels;
   }
 });
 
@@ -104,14 +131,16 @@ test('Claude reset requires confirmation and sends one operation while refreshin
   };
   try {
     assert.equal(await confirmAnthropicQuotaReset(8110, fetcher), null);
-    await refreshAnthropicResetCredits(8110, async () => credits);
+    await loadAnthropicUsage(8110, async () => credits);
     assert.equal(await confirmAnthropicQuotaReset(8110, fetcher), null);
     assert.equal(calls, 0);
     confirmed = true;
     const pending = confirmAnthropicQuotaReset(8110, fetcher, { reload: false });
     assert.equal(getAnthropicResetCreditsState(8110).reset_status, 'loading');
     assert.equal(await confirmAnthropicQuotaReset(8110, fetcher), null);
-    await refreshAnthropicResetCredits(8110, () => assert.fail('must not query during redemption'));
+    await loadAnthropicUsage(8110, () => assert.fail('must not query during redemption'));
+    assert.equal((await refreshOAuthUsageBatch([8110], () => assert.fail('must not batch query during redemption'))).total, 0);
+    assert.equal(await maybeAutoRefreshActiveChannelUsage([8110], () => assert.fail('must not auto query during redemption')), null);
     const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 0 }] };
     const result = { outcome: 'reset', usage, credits: { ...credits, available_count: 0, credits: [] } };
     resolveRequest(result);
@@ -134,7 +163,7 @@ test('Claude reset requires a fresh query and confirmation after transport failu
   global.window = { t: key => key, confirm: () => { confirmations++; return true; } };
   const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1, redeemable: true }] };
   try {
-    await refreshAnthropicResetCredits(8111, async () => credits);
+    await loadAnthropicUsage(8111, async () => credits);
     await assert.rejects(() => confirmAnthropicQuotaReset(8111, async (_, options) => {
       assert.equal(options.headers, undefined);
       throw new Error('connection lost');
@@ -144,9 +173,9 @@ test('Claude reset requires a fresh query and confirmation after transport failu
     assert.equal(await confirmAnthropicQuotaReset(8111, () => assert.fail('query required')), null);
     await assert.rejects(() => redeemAnthropicResetCredit(8111, () => assert.fail('query required')), /anthropicResetUnavailable/);
     assert.equal(confirmations, 1);
-    await refreshAnthropicResetCredits(8111, async () => ({ ...credits, available_count: 0, credits: [] }));
+    await loadAnthropicUsage(8111, async () => ({ ...credits, available_count: 0, credits: [] }));
     assert.equal(await confirmAnthropicQuotaReset(8111, () => assert.fail('no credits')), null);
-    await refreshAnthropicResetCredits(8111, async () => credits);
+    await loadAnthropicUsage(8111, async () => credits);
     const result = await confirmAnthropicQuotaReset(8111, async (_, options) => {
       assert.equal(options.headers, undefined);
       return { outcome: 'reset' };
@@ -169,7 +198,7 @@ test('Claude reset coded rejection keeps credits while other server failures sta
   const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1, redeemable: true }] };
   const serverFailure = (data) => Object.assign(new Error('rejected'), { response: { success: false, error: 'rejected', data } });
   try {
-    await refreshAnthropicResetCredits(8115, async () => credits);
+    await loadAnthropicUsage(8115, async () => credits);
     await assert.rejects(() => confirmAnthropicQuotaReset(8115, async () => { throw serverFailure({ code: 'reset_prepare_timeout' }); }), /rejected/);
     let state = getAnthropicResetCreditsState(8115);
     assert.equal(state.reset_status, 'error');
@@ -191,7 +220,7 @@ test('Claude reset unknown outcome invalidates credits without claiming usage wa
   global.channels = [{ id: 8112, auth_type: 'anthropic_oauth' }];
   global.window = { t: key => key, confirm: () => true };
   try {
-    await refreshAnthropicResetCredits(8112, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
+    await loadAnthropicUsage(8112, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     const result = await redeemAnthropicResetCredit(8112, async () => ({
       outcome: 'unknown', reason: 'claim_unconfirmed',
       credits: { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }
@@ -202,8 +231,8 @@ test('Claude reset unknown outcome invalidates credits without claiming usage wa
     assert.equal(state.data, null);
     assert.equal(state.reset_feedback, 'channels.oauth.anthropicResetUnknown');
     assert.equal(await confirmAnthropicQuotaReset(8112, () => assert.fail('query required')), null);
-    assert.equal(getOAuthUsageState(8112), null);
-    await refreshAnthropicResetCredits(8112, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
+    assert.equal(getOAuthUsageState(8112).data.windows.length, 0);
+    await loadAnthropicUsage(8112, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     assert.equal((await confirmAnthropicQuotaReset(8112, async () => ({ outcome: 'not_limited' }), { reload: false })).outcome, 'not_limited');
   } finally {
     global.channels = previousChannels;
@@ -218,14 +247,14 @@ test('Claude reset ignores a late result after the channel authentication change
   global.window = { t: key => key };
   let resolveRequest;
   try {
-    await refreshAnthropicResetCredits(8113, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8113, async () => ({ eligible: true, available_count: 1, credits: [] }));
     const pending = redeemAnthropicResetCredit(8113, () => new Promise(resolve => { resolveRequest = resolve; }), { reload: false });
     global.channels[0].auth_type = 'codex_oauth';
     syncAnthropicResetCreditsFromChannels(global.channels);
     resolveRequest({ outcome: 'reset', usage: { windows: [] } });
     await pending;
     assert.equal(getAnthropicResetCreditsState(8113), null);
-    assert.equal(getOAuthUsageState(8113), null);
+    assert.equal(getOAuthUsageState(8113).data.windows.length, 0);
   } finally {
     global.channels = previousChannels;
     global.window = previousWindow;
@@ -239,7 +268,7 @@ test('Claude reset keeps its result when a credential refresh updates the channe
   global.window = { t: key => key };
   let resolveRequest;
   try {
-    await refreshAnthropicResetCredits(8115, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8115, async () => ({ eligible: true, available_count: 1, credits: [] }));
     const pending = redeemAnthropicResetCredit(8115, () => new Promise(resolve => { resolveRequest = resolve; }), { reload: false });
     syncAnthropicResetCreditsFromChannels([{ ...global.channels[0], updated_at: '2026-09-30T00:01:00Z' }]);
     const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 0 }] };
@@ -264,14 +293,18 @@ test('Claude reset without refreshed usage does not orphan an in-flight quota qu
   global.window = { t: key => key };
   let resolveUsage;
   try {
-    await refreshAnthropicResetCredits(8114, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8114, async () => ({ eligible: true, available_count: 1, credits: [] }));
     const query = refreshOAuthUsage(8114, () => new Promise(resolve => { resolveUsage = resolve; }), { reload: false });
     await redeemAnthropicResetCredit(8114, async () => ({ outcome: 'unknown' }), { reload: false });
-    const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 80 }] };
+    const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 80 }],
+      anthropic_reset_credits: { eligible: true, available_count: 1, credits: [{ resets_left: 1 }] } };
+
     resolveUsage(usage);
     await query;
     assert.equal(getOAuthUsageState(8114).status, 'ready');
     assert.deepEqual(getOAuthUsageState(8114).data, usage);
+    assert.equal(getAnthropicResetCreditsState(8114).data, null);
+    assert.equal(getAnthropicResetCreditsState(8114).reset_status, 'unknown');
   } finally {
     global.channels = previousChannels;
     global.window = previousWindow;

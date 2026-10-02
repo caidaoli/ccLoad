@@ -299,7 +299,7 @@ func TestHandleAnthropicResetRedeemSuccess(t *testing.T) {
 		if request.URL.Path == "/api/oauth/profile" {
 			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"},"account":{"subscription_type":"max"}}`)
 		}
-		if request.URL.RawQuery != "" {
+		if request.URL.Query().Get("skip_spend") == "1" {
 			return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
 		}
 		return anthropicResetTestResponse(request, 200, fmt.Sprintf(`{"five_hour":{"utilization":0,"resets_at":%q},"seven_day":{"utilization":40,"resets_at":%q},"seven_day_sonnet":{"utilization":50,"resets_at":%q},"seven_day_overage_included":{"utilization":60,"resets_at":%q}}`, now.Add(4*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339)))
@@ -527,7 +527,7 @@ func TestHandleAnthropicResetRedeemMissingWindowSurvivesFailedRefresh(t *testing
 		if request.URL.Path == "/api/oauth/profile" {
 			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
 		}
-		if request.URL.RawQuery != "" {
+		if request.URL.Query().Get("skip_spend") == "1" {
 			return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
 		}
 		if refreshFails {
@@ -638,7 +638,7 @@ func TestHandleAnthropicResetRedeemChangedIdentitySkipsLocalRepair(t *testing.T)
 		if request.URL.Path == "/api/oauth/profile" {
 			return anthropicResetTestResponse(request, 200, `{"organization":{"uuid":"`+anthropicResetTestOrganization+`"}}`)
 		}
-		if request.URL.RawQuery == "" {
+		if request.URL.Query().Get("skip_spend") != "1" {
 			t.Error("refreshed the replacement identity after the original reset")
 		}
 		return anthropicResetTestResponse(request, 200, anthropicResetTestGrant)
@@ -7218,6 +7218,10 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 		wantSubscription string
 		wantTrialEndsAt  string
 		wantWarning      bool
+		scope            string
+		resetBody        string
+		wantResetCount   int
+		wantResetWarning bool
 	}{
 		{
 			name:             "pro",
@@ -7255,6 +7259,24 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			initialPlan: "Pro",
 			wantPlan:    "Team",
 		},
+		{
+			name:        "reset credits share usage request",
+			profileBody: `{"organization":{"organization_type":"claude_pro"}}`,
+			wantPlan:    "Pro", scope: "user:inference user:profile",
+			resetBody:      `,"cedar_ember":{"eligible":true,"at_limit":true,"next_grant_id":"private-grant","grants":[{"id":"private-grant","label":"Weekly","resets_left":2,"clears":["seven_day"],"usable_now":true}]}`,
+			wantResetCount: 2,
+		},
+		{
+			name:        "missing reset block keeps quota",
+			profileBody: `{"organization":{"organization_type":"claude_pro"}}`,
+			wantPlan:    "Pro", scope: "user:profile",
+		},
+		{
+			name:        "invalid optional reset block keeps quota",
+			profileBody: `{"organization":{"organization_type":"claude_pro"}}`,
+			wantPlan:    "Pro", scope: "user:profile",
+			resetBody: `,"cedar_ember":{"grants":"invalid"}`, wantResetWarning: true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -7262,6 +7284,9 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			defer cleanup()
 			customBaseURL := "https://gateway.example/anthropic"
 			expectedUsageURL := customBaseURL + "/api/oauth/usage"
+			if test.scope != "" {
+				expectedUsageURL += "?cedar_ember=1"
+			}
 			expectedProfileURL := customBaseURL + "/api/oauth/profile"
 			server.configService = newStubConfigService(map[string]string{
 				config.AnthropicBaseURLSettingKey: customBaseURL,
@@ -7269,7 +7294,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			credential := &anthropicauth.Credential{
 				Type: anthropicauth.ChannelType, AccessToken: "at-anthropic-quota-secret", RefreshToken: "rt-anthropic-quota-secret",
 				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "account-anthropic-quota", EmailAddress: "quota@example.com",
-				PlanType: test.initialPlan, ClaudeCodeTrialEndsAt: test.initialTrial,
+				PlanType: test.initialPlan, ClaudeCodeTrialEndsAt: test.initialTrial, Scope: test.scope,
 			}
 			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
 			if err != nil {
@@ -7285,7 +7310,14 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				if got := request.Header.Get("Authorization"); got != "Bearer at-anthropic-quota-secret" {
 					t.Errorf("Authorization = %q", got)
 				}
-				if got := request.Header.Get("User-Agent"); got != anthropicUsageUserAgent {
+				wantUserAgent := anthropicUsageUserAgent
+				if request.URL.String() == expectedUsageURL && test.scope != "" {
+					wantUserAgent = "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)"
+					if request.Header.Get("x-app") != "cli" {
+						t.Error("reset usage request missing CLI header")
+					}
+				}
+				if got := request.Header.Get("User-Agent"); got != wantUserAgent {
 					t.Errorf("User-Agent = %q", got)
 				}
 				var responseBody string
@@ -7299,7 +7331,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 						"seven_day":{"utilization":40,"resets_at":"2026-08-15T10:00:00Z"},
 						"seven_day_sonnet":{"utilization":25,"resets_at":"2026-08-15T11:00:00Z"},
 						"seven_day_overage_included":{"utilization":75,"resets_at":"2026-08-15T12:00:00Z"}
-					}`
+					` + test.resetBody + `}`
 				case expectedProfileURL:
 					if got := request.Header.Get("Cache-Control"); got != "no-cache" {
 						t.Errorf("Cache-Control = %q", got)
@@ -7336,12 +7368,34 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				response.Data.SubscriptionTier != test.wantSubscription || len(response.Data.Windows) != 4 {
 				t.Fatalf("usage summary = %#v", response.Data)
 			}
+			wantWarnings := []string{}
+			if test.wantResetWarning {
+				wantWarnings = append(wantWarnings, "Anthropic reset credits unavailable")
+			}
 			if test.wantWarning {
-				if len(response.Data.Warnings) != 1 || response.Data.Warnings[0] != "Anthropic subscription metadata unavailable" {
-					t.Fatalf("usage warnings = %v", response.Data.Warnings)
-				}
-			} else if len(response.Data.Warnings) != 0 {
+				wantWarnings = append(wantWarnings, "Anthropic subscription metadata unavailable")
+			}
+			if strings.Join(response.Data.Warnings, ";") != strings.Join(wantWarnings, ";") {
 				t.Fatalf("usage warnings = %v", response.Data.Warnings)
+			}
+			credits := response.Data.AnthropicResetCredits
+			wantCredits := test.scope != "" && !test.wantResetWarning
+			if (credits != nil) != wantCredits || credits != nil && (credits.AvailableCount != test.wantResetCount || credits.FetchedAt.IsZero()) {
+				t.Fatalf("reset credits = %#v", credits)
+			}
+			var responseFields map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &responseFields); err != nil {
+				t.Fatal(err)
+			}
+			if resetFields, ok := responseFields["data"].(map[string]any)["anthropic_reset_credits"].(map[string]any); ok {
+				if _, leaked := resetFields["next_grant_id"]; leaked {
+					t.Fatal("reset response leaked next grant ID")
+				}
+				for _, credit := range resetFields["credits"].([]any) {
+					if _, leaked := credit.(map[string]any)["id"]; leaked {
+						t.Fatal("reset response leaked grant ID")
+					}
+				}
 			}
 			if requestCounts[expectedUsageURL] != 1 || requestCounts[expectedProfileURL] != 1 || len(requestCounts) != 2 {
 				t.Fatalf("Anthropic request counts = %v", requestCounts)
@@ -7362,6 +7416,17 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				list.Data[0].OAuthUsage == nil || list.Data[0].OAuthUsage.Provider != anthropicauth.ChannelType ||
 				len(list.Data[0].OAuthUsage.Windows) != 4 {
 				t.Fatalf("Anthropic channel list metadata = %+v", list.Data)
+			}
+			listedCredits := list.Data[0].OAuthUsage.AnthropicResetCredits
+			if (listedCredits != nil) != wantCredits || listedCredits != nil && listedCredits.AvailableCount != test.wantResetCount {
+				t.Fatalf("persisted reset credits = %#v", listedCredits)
+			}
+			if wantCredits {
+				passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 80}}}
+				merged := latestOAuthUsage(list.Data[0].OAuthUsage, time.Now(), passive, time.Now().Add(time.Minute).Format(time.RFC3339Nano))
+				if merged.AnthropicResetCredits == nil || merged.AnthropicResetCredits.AvailableCount != test.wantResetCount || merged.Windows[0].UsedPercent != 80 {
+					t.Fatalf("passive merged usage = %#v", merged)
+				}
 			}
 			windows := response.Data.Windows
 			if windows[0].Kind != "five_hour" || windows[0].UsedPercent != 12.5 || windows[0].RemainingPercent != 87.5 || windows[0].LimitWindowSeconds != 5*60*60 {
