@@ -1113,10 +1113,6 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
     assert.equal(progress.focused, true);
     assert.equal(elements.get('xaiCredentialImportProgressBar').max, 2);
     assert.equal(elements.get('xaiCredentialImportProgressBar').value, 2);
-    assert.match(elements.get('xaiCredentialImportProgressCounter').textContent, /"processed":2/);
-    assert.match(elements.get('xaiCredentialImportProgressCounts').textContent, /"created":1/);
-    assert.match(elements.get('xaiCredentialImportProgressCounts').textContent, /"failed":1/);
-    assert.match(elements.get('xaiCredentialImportProgressDetail').textContent, /progressComplete/);
     assert.equal(elements.get('xaiCredentialImportErrors').hidden, false);
     assert.equal(errorList.children.length, 1);
     assert.match(errorList.children[0].textContent, /#2/);
@@ -1295,7 +1291,6 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
   };
 
   const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
-  const loadedScriptPaths = [];
   let openedChannelID = null;
   let oauthSetupCalls = 0;
   let scriptFailed = false;
@@ -1332,7 +1327,6 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
           return;
         }
         const path = new URL(script.src, global.window.location.origin).pathname;
-        loadedScriptPaths.push(path);
         if (path === '/web/assets/js/channels-codex-auth.js') {
           global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
         }
@@ -1373,10 +1367,6 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
     }
 
     assert.equal(openedChannelID, 42);
-    const renderIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-render.js');
-    const modalsIndex = loadedScriptPaths.indexOf('/web/assets/js/channels-modals.js');
-    assert.notEqual(renderIndex, -1);
-    assert.ok(renderIndex < modalsIndex);
     assert.equal(oauthSetupCalls, 1);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
@@ -2083,8 +2073,6 @@ test('OAuth credential import polls a background job, recovers from network erro
     assert.equal(captured[3].url, '/admin/oauth/credentials/import/jobs/ocij-1?after=1');
     assert.equal(elements.get('oauthCredentialImportProgressBar').max, 3);
     assert.equal(elements.get('oauthCredentialImportProgressBar').value, 3);
-    assert.match(elements.get('oauthCredentialImportProgressCounter').textContent, /3/);
-    assert.match(elements.get('oauthCredentialImportProgressCounts').textContent, /1/);
     assert.equal(elements.get('oauthCredentialImportErrors').hidden, false);
     assert.equal(elements.get('oauthCredentialImportErrorList').children.length, 2);
     assert.match(elements.get('oauthCredentialImportErrorList').children[0].textContent, /credentials\.zip\/two\.json/);

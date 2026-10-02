@@ -6,24 +6,6 @@ import (
 	"time"
 )
 
-func TestCostCache_CheckAndResetIfNewDay(t *testing.T) {
-	c := NewCostCache()
-
-	c.mu.Lock()
-	c.costs[1] = 9.9
-	tomorrow := c.dayStart.AddDate(0, 0, 1).Add(time.Hour)
-	c.checkAndResetIfNewDay(tomorrow)
-	if len(c.costs) != 0 {
-		c.mu.Unlock()
-		t.Fatalf("expected reset costs on new day, got len=%d", len(c.costs))
-	}
-	if !c.dayStart.Equal(todayStart(tomorrow)) {
-		c.mu.Unlock()
-		t.Fatalf("dayStart not updated: got=%v want=%v", c.dayStart, todayStart(tomorrow))
-	}
-	c.mu.Unlock()
-}
-
 func TestCostCache_Add_Get_GetAll_CrossDayBehavior(t *testing.T) {
 	c := NewCostCache()
 

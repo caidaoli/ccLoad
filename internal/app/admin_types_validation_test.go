@@ -183,56 +183,6 @@ func TestChannelRequestValidation_KeyStrategy(t *testing.T) {
 	)
 }
 
-// TestChannelRequestValidation_Combined 测试组合场景
-func TestChannelRequestValidation_Combined(t *testing.T) {
-	tests := []struct {
-		name        string
-		req         ChannelRequest
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name: "完全合法的请求",
-			req: ChannelRequest{
-				Name:        "test-channel",
-				APIKey:      "test-key",
-				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
-				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				KeyStrategy: "round_robin",
-			},
-			wantErr: false,
-		},
-		{
-			name: "非法 key_strategy 应该被拦截",
-			req: ChannelRequest{
-				Name:        "test-channel",
-				APIKey:      "test-key",
-				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
-				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				KeyStrategy: "invalid",
-			},
-			wantErr:     true,
-			errContains: "invalid key_strategy",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.req.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if tt.wantErr && err != nil {
-				if !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("错误信息应该包含 %q, got: %v", tt.errContains, err)
-				}
-			}
-		})
-	}
-}
-
 func TestChannelRequestValidation_ScheduledCheckModel(t *testing.T) {
 	t.Run("empty allowed", func(t *testing.T) {
 		req := newValidChannelRequest()

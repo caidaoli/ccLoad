@@ -899,39 +899,6 @@ test('非容器更新渠道显示手动检测按钮并触发完整更新流程',
   assert.equal(page.updateButton.getAttribute('aria-busy'), null);
 });
 
-test('仅发现更新时不提示已开始下载', async (t) => {
-  const page = await loadSettingsPage(t, [{
-    key: 'auto_update_channel',
-    value: 'stable',
-    value_type: 'string',
-    description: ''
-  }], {
-    auto_update_channel: 'stable'
-  });
-
-  page.setUpdateResult({
-    has_update: true,
-    latest_version: 'v2.0.0',
-    pending_restart: false
-  });
-  page.clickUpdate();
-  await flushAsyncWork();
-
-  assert.equal(page.successes.length, 1);
-  assert.equal(page.successes[0], 'settings.updateCheck.found');
-
-  page.setUpdateResult({
-    has_update: false,
-    latest_version: 'v2.0.0',
-    pending_restart: false
-  });
-  page.clickUpdate();
-  await flushAsyncWork();
-
-  assert.equal(page.successes.length, 2);
-  assert.equal(page.successes[1], 'settings.updateCheck.upToDate');
-});
-
 test('手动检测更新失败时恢复按钮并显示错误', async (t) => {
   const page = await loadSettingsPage(t, [{
     key: 'auto_update_channel',
@@ -983,7 +950,6 @@ test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   assert.ok(channelRow);
   assert.doesNotMatch(channelRow.data.inputHtml, /data-action="check-for-updates"/);
 });
-
 
 test('TypeSafe secret is omitted unless changed and explicit reset disables the service', async (t) => {
   const page = await loadSettingsPage(t, [

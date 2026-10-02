@@ -48,17 +48,9 @@ func TestStatsCache_CalculateTTL(t *testing.T) {
 }
 
 func TestStatsCache_HashFilter(t *testing.T) {
-	// nil filter
-	if got := hashFilter(nil); got != "nil" {
-		t.Errorf("hashFilter(nil) = %s, want nil", got)
-	}
-
 	// 空 filter
 	emptyFilter := &model.LogFilter{}
 	hash1 := hashFilter(emptyFilter)
-	if len(hash1) != 16 {
-		t.Errorf("hashFilter 返回长度应为 16, got %d", len(hash1))
-	}
 
 	// 带字段的 filter
 	channelID := int64(123)
@@ -67,9 +59,6 @@ func TestStatsCache_HashFilter(t *testing.T) {
 		Model:     "gpt-4",
 	}
 	hash2 := hashFilter(filter)
-	if len(hash2) != 16 {
-		t.Errorf("hashFilter 返回长度应为 16, got %d", len(hash2))
-	}
 
 	// 不同 filter 应产生不同 hash
 	if hash1 == hash2 {

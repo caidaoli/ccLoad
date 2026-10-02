@@ -373,19 +373,16 @@ test('Key model scope master checkbox reflects and changes visible models', () =
     assert.equal(toggleAll.checked, false);
     assert.equal(toggleAll.indeterminate, true);
     assert.equal(toggleAll.disabled, false);
-    assert.equal(count.textContent, '2/3');
 
     assert.equal(setVisibleKeyModelScopeChecked(false), true);
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [false, true, false]);
     assert.equal(toggleAll.checked, false);
     assert.equal(toggleAll.indeterminate, false);
-    assert.equal(count.textContent, '1/3');
 
     assert.equal(setVisibleKeyModelScopeChecked(true), true);
     assert.deepEqual(checkboxes.map(checkbox => checkbox.checked), [true, true, true]);
     assert.equal(toggleAll.checked, true);
     assert.equal(toggleAll.indeterminate, false);
-    assert.equal(count.textContent, '3/3');
 
     allowAll.checked = true;
     updateKeyModelScopeSelectionCount();

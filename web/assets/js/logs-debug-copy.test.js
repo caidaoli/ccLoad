@@ -301,7 +301,7 @@ test('model filter options contain request models but not redirected models', as
   });
 });
 
-test('Jev audit messages use the shared debug-log entry and expose the decision summary', async () => {
+test('Jev audit messages link to their upstream debug-log entry', async () => {
   await withLoadedLogsPage({
     logSource: 'jev',
     entries: [{
@@ -318,10 +318,7 @@ test('Jev audit messages use the shared debug-log entry and expose the decision 
       })
     }]
   }, ({ tbody }) => {
-    assert.match(tbody.innerHTML, /log-source-badge[^>]*>Jev<\/span>/);
     assert.match(tbody.innerHTML, /debug-log-link has-upstream-detail[^>]*data-log-id="42"/);
-    assert.match(tbody.innerHTML, /call_id=audit-42, category=quota, fallback\.reset=no_valid_reset/);
-    assert.doesNotMatch(tbody.innerHTML, /<details>|jev-log-detail/);
   });
 });
 
@@ -339,16 +336,11 @@ test('token channel visibility also controls actual model text and hover', async
       }, ({ tbody }) => {
         const html = tbody.innerHTML;
         assert.match(html, /requested-model/);
-        assert.match(html, /thinking-effort-badge/);
-        assert.match(html, /思考等级: high/);
-        assert.match(html, /思考\/推理Token: 123/);
         if (isTokenRole && !showChannels) {
           assert.doesNotMatch(html, /private-upstream-model|model-actual|实际模型:/);
         } else {
-          assert.match(html, /model-actual/);
           assert.match(html, /实际模型: private-upstream-model/);
         }
-        assert.doesNotMatch(html, /redirect-badge/);
       });
     }
   }

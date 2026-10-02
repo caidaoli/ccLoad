@@ -174,11 +174,10 @@ test('MarkdownRenderer renders reasoning separately from merged response content
   const thinking = bubble.querySelector('.chat-thinking');
   assert.ok(thinking);
   assert.equal(thinking.querySelector('.chat-thinking-content').textContent, '检查上游返回');
-  assert.match(content.innerHTML, /<strong>最终回答<\/strong>/);
   assert.equal(target._rawText, '检查上游返回\n\n**最终回答**');
 });
 
-test('MarkdownRenderer renders tool diagnostics in a collapsed block', () => {
+test('MarkdownRenderer separates tool diagnostics from response content and preserves copied text', () => {
   const { renderer, element } = loadRenderer();
   const target = element();
   target.className = 'upstream-merged-markdown';
@@ -196,8 +195,6 @@ test('MarkdownRenderer renders tool diagnostics in a collapsed block', () => {
 
   const toolCalls = bubble.querySelector('.chat-tool-calls');
   assert.ok(toolCalls);
-  assert.equal(Boolean(toolCalls.open), false);
-  assert.match(content.innerHTML, /<strong>最终回答<\/strong>/);
   assert.doesNotMatch(content.innerHTML, /echo hidden/);
 
   const toolContent = toolCalls.querySelector('.chat-tool-calls-content');

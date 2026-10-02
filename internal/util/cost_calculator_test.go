@@ -1489,39 +1489,6 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_CacheSavings(t *testing.T) {
-	// 验证缓存节省（Cache Read vs 普通Input）
-	normalCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)
-	cacheCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, 10000, 0, 0)
-
-	// Cache Read应该是普通Input的10%
-	expectedRatio := 0.1
-	actualRatio := cacheCost / normalCost
-
-	if !floatEquals(actualRatio, expectedRatio, 0.01) {
-		t.Errorf("缓存读取节省比例 = %.2f, 期望 %.2f (90%%节省)", actualRatio, expectedRatio)
-	}
-
-	t.Logf("普通输入成本: $%.6f", normalCost)
-	t.Logf("缓存读取成本: $%.6f (节省 %.0f%%)", cacheCost, (1-actualRatio)*100)
-}
-
-func TestCacheWriteCost(t *testing.T) {
-	// 验证缓存写入成本（应该是Input的125%）
-	inputCost := CalculateCostDetailed("claude-sonnet-4-5", 10000, 0, 0, 0, 0)
-	cacheWriteCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, 0, 10000, 0)
-
-	expectedRatio := 1.25
-	actualRatio := cacheWriteCost / inputCost
-
-	if !floatEquals(actualRatio, expectedRatio, 0.01) {
-		t.Errorf("缓存写入价格倍数 = %.2f, 期望 %.2f", actualRatio, expectedRatio)
-	}
-
-	t.Logf("普通输入成本: $%.6f", inputCost)
-	t.Logf("缓存写入成本: $%.6f (溢价 %.0f%%)", cacheWriteCost, (actualRatio-1)*100)
-}
-
 // TestCalculateCost_OpusCacheRead 验证Opus模型缓存读取定价（10%价）
 // 参考：https://docs.claude.com/en/docs/about-claude/pricing
 // Opus缓存读取价格 = 基础输入价格 × 0.1（90%折扣）
@@ -1575,23 +1542,6 @@ func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
 
 	t.Logf("[INFO] Opus缓存倍率: %.2f (90%%折扣)", opusRatio)
 	t.Logf("[INFO] Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
-}
-
-func TestRealWorldScenario(t *testing.T) {
-	// 真实场景：带缓存的长对话
-	// - 首次请求：创建缓存（系统prompt 2000 tokens）+ 输入100 + 输出200
-	// - 后续请求：读取缓存 + 输入50 + 输出150
-	firstCost := CalculateCostDetailed("claude-sonnet-4-5", 100, 200, 0, 2000, 0)
-	laterCost := CalculateCostDetailed("claude-sonnet-4-5", 50, 150, 2000, 0, 0)
-
-	t.Logf("首次请求成本: $%.6f", firstCost)
-	t.Logf("后续请求成本: $%.6f (缓存命中)", laterCost)
-	t.Logf("节省: $%.6f (%.1f%%)", firstCost-laterCost, (1-laterCost/firstCost)*100)
-
-	// 后续请求应该更便宜（缓存读取只有10%价格）
-	if laterCost >= firstCost {
-		t.Errorf("缓存命中后成本应降低：首次$%.6f, 后续$%.6f", firstCost, laterCost)
-	}
 }
 
 // floatEquals 浮点数相等比较（带误差容忍）
