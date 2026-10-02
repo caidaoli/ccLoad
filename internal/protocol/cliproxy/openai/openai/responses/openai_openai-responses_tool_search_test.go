@@ -224,3 +224,59 @@ func TestToolSearchResponseStreamRestoresSearchCall(t *testing.T) {
 		t.Fatalf("missing search stream lifecycle events: added=%v done=%v completed=%v", added, done, completed)
 	}
 }
+
+func TestToolSearchAndApplyPatchResponsePreserveBothContracts(t *testing.T) {
+	request := []byte(`{"model":"gpt-5.4","tools":[{"type":"tool_search","execution":"client","parameters":{"type":"object"}},{"type":"custom","name":"apply_patch"}]}`)
+	chatResponse := []byte(`{"id":"chat_mixed","object":"chat.completion","created":1710000000,"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"ts_mixed","type":"function","function":{"name":"tool_search","arguments":"{\"goal\":\"shipping\"}"}},{"id":"patch_mixed","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"patch\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	for _, stream := range []bool{false, true} {
+		name := "nonstream"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			var state any
+			var response gjson.Result
+			if !stream {
+				raw, err := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStreamWithError(context.Background(), "gpt-5.4", request, nil, chatResponse, &state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response = gjson.ParseBytes(raw)
+			} else {
+				chunks := [][]byte{
+					[]byte(`data: {"id":"chat_mixed","object":"chat.completion.chunk","created":1710000000,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ts_mixed","type":"function","function":{"name":"tool_search","arguments":"{\"goal\":\"shipping\"}"}},{"index":1,"id":"patch_mixed","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"patch\"}"}}]},"finish_reason":"tool_calls"}]}`),
+					[]byte(`data: [DONE]`),
+				}
+				counts := map[string]int{}
+				for _, chunk := range chunks {
+					frames, err := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesWithError(context.Background(), "gpt-5.4", request, nil, chunk, &state)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, frame := range frames {
+						for _, line := range strings.Split(string(frame), "\n") {
+							if !strings.HasPrefix(line, "data:") {
+								continue
+							}
+							payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+							if !gjson.Valid(payload) {
+								t.Fatalf("invalid event: %s", frame)
+							}
+							event := gjson.Parse(payload)
+							counts[event.Get("type").String()]++
+							if event.Get("type").String() == "response.completed" {
+								response = event.Get("response")
+							}
+						}
+					}
+				}
+				if counts["response.completed"] != 1 || counts["response.custom_tool_call_input.delta"] != 1 || counts["response.custom_tool_call_input.done"] != 1 || counts["response.failed"] != 0 {
+					t.Fatalf("mixed stream did not complete once: %v", counts)
+				}
+			}
+			if response.Get("status").String() != "completed" || response.Get("output.#").Int() != 2 || response.Get("output.0.type").String() != "tool_search_call" || response.Get("output.0.arguments.goal").String() != "shipping" || response.Get("output.0.call_id").String() != "ts_mixed" || response.Get("output.1.type").String() != "custom_tool_call" || response.Get("output.1.input").String() != "patch" || response.Get("output.1.call_id").String() != "patch_mixed" {
+				t.Fatalf("mixed response lost tool identity or input: %s", response.Raw)
+			}
+		})
+	}
+}

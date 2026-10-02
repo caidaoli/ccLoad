@@ -106,3 +106,21 @@ func (r *Registry) TranslateResponseStream(ctx context.Context, from, to Protoco
 	}
 	return fn(ctx, model, originalRequestRawJSON, requestRawJSON, rawJSON, param)
 }
+
+// ResponseToolInputError returns a retained response tool validation failure.
+func ResponseToolInputError(state any) error {
+	if state, ok := state.(interface{ ToolInputError() error }); ok {
+		return state.ToolInputError()
+	}
+	return nil
+}
+
+// FinalizeResponseToolInput checks transport termination without synthesizing
+// success. The optional converter state returns already framed failure events.
+func FinalizeResponseToolInput(state any) ([][]byte, error) {
+	var chunks [][]byte
+	if finalizer, ok := state.(interface{ FinalizeToolInput() [][]byte }); ok {
+		chunks = finalizer.FinalizeToolInput()
+	}
+	return chunks, ResponseToolInputError(state)
+}

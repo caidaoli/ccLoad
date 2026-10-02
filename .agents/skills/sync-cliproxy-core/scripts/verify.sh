@@ -113,7 +113,7 @@ audit_provider_imports() {
     if [[ "$import_path" == "ccLoad/internal/protocol/cliproxy/providers/$provider" || "$import_path" == "ccLoad/internal/protocol/cliproxy/providers/$provider/"* ]]; then
       continue
     fi
-    if [[ "$import_path" =~ ^ccLoad/internal/protocol/cliproxy/(claude|codex|common|gemini|misc|openai|registry|signature|thinking|util)(/|$) ]]; then
+    if [[ "$import_path" =~ ^ccLoad/internal/protocol/cliproxy/(applypatch|claude|codex|common|gemini|misc|openai|registry|signature|thinking|util)(/|$) ]]; then
       continue
     fi
     if [[ "$import_path" == ccLoad/* ]]; then
@@ -187,7 +187,7 @@ if [[ -d "$snapshot" ]]; then
   for entry in "$snapshot"/*; do
     base="$(basename "$entry")"
     case "$base" in
-      LICENSE|UPSTREAM.md|claude|codex|common|gemini|misc|openai|providers|registry|signature|thinking|util)
+      LICENSE|UPSTREAM.md|applypatch|claude|codex|common|gemini|misc|openai|providers|registry|signature|thinking|util)
         ;;
       *)
         fail "unexpected top-level snapshot entry: $entry"

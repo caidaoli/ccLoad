@@ -21,7 +21,7 @@
 
 - 纯数据标准库：`bytes`、`context`、`encoding/*`、`errors`、`fmt`、`hash/*`、`io`、`math/*`、`path/*`、`reflect`、`regexp`、`sort`、`strconv`、`strings`、`sync/*`、`time`、`unicode/*`、`cmp`、`maps`、`slices`；测试另可使用 `runtime`、`testing`；
 - `gjson`、`sjson`；测试可使用 ccLoad 已有的 `protowire` 解析 fixture；
-- `ccLoad/internal/protocol/cliproxy/{claude,codex,common,gemini,misc,openai,registry,signature,thinking,util}` 中的纯 core 包；
+- `ccLoad/internal/protocol/cliproxy/{applypatch,claude,codex,common,gemini,misc,openai,registry,signature,thinking,util}` 中的纯 core 包；
 - 同一 provider adapter 下的纯包。
 
 禁止：

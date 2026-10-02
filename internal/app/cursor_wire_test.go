@@ -813,3 +813,52 @@ func TestCursorAnthropicStreamFinishEmitsEmptyObjectForInvalidToolArguments(t *t
 		t.Fatalf("partial_json = %q, want %q (invalid arguments must not leak)", got, want)
 	}
 }
+
+func TestForwardCursorResponsesKeepsOriginalSDKErrorAfterPing(t *testing.T) {
+	for _, toolType := range []string{"function", "custom"} {
+		t.Run(toolType, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			srv.cursorRunner = &fakeCursorRunner{pings: 1, eventErr: errors.New("upstream SDK temporarily unavailable")}
+			original := []byte(`{"model":"composer-2.5","input":"hello","stream":true,"tools":[{"type":"` + toolType + `","name":"apply_patch"}]}`)
+			translated, err := srv.protocolRegistry.TranslateRequest(protocol.Codex, protocol.OpenAI, "composer-2.5", original, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			result, err := srv.forwardCursorAgent(context.Background(),
+				&model.Config{ID: 23, AuthType: model.AuthTypeCursorOAuth},
+				&cursorauth.Credential{APIKey: "key"},
+				&proxyRequestContext{originalModel: "composer-2.5", clientProtocol: protocol.Codex, requestPath: "/v1/responses", body: original, translatedBody: translated, isStreaming: true, skipProxyLog: true}, rec)
+			if err != nil || result == nil || result.status != http.StatusBadGateway {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			seenOriginal := false
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				var event struct {
+					Type     string `json:"type"`
+					Message  string `json:"message"`
+					Response struct {
+						Error struct {
+							Code string `json:"code"`
+						} `json:"error"`
+					} `json:"response"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+					t.Fatal(err)
+				}
+				if event.Type == "error" && event.Message == "upstream SDK temporarily unavailable" {
+					seenOriginal = true
+				}
+				if event.Response.Error.Code == "invalid_tool_arguments" {
+					t.Errorf("SDK failure was incorrectly replaced with tool input failure: %s", line)
+				}
+			}
+			if !seenOriginal {
+				t.Errorf("original SDK error missing from client stream: %s", rec.Body.String())
+			}
+		})
+	}
+}

@@ -3,13 +3,162 @@ package protocol_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
+
+func registryToolInputEvents(t *testing.T, chunks [][]byte) []gjson.Result {
+	t.Helper()
+	var events []gjson.Result
+	for _, chunk := range chunks {
+		for _, line := range bytes.Split(chunk, []byte{'\n'}) {
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
+			}
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if !json.Valid(payload) {
+				t.Fatalf("invalid translated SSE data %q", payload)
+			}
+			events = append(events, gjson.ParseBytes(payload))
+		}
+	}
+	return events
+}
+
+func TestRegistryApplyPatchResponsesValidateArgumentsAndCompleteConsistently(t *testing.T) {
+	request := []byte(`{"model":"test","input":"edit","tools":[{"type":"custom","name":"apply_patch"}]}`)
+	for _, source := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Gemini} {
+		for _, invalid := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/invalid=%v", source, invalid), func(t *testing.T) {
+				reg := protocol.NewRegistry()
+				builtin.Register(reg)
+				translated, err := reg.TranslateRequest(protocol.Codex, source, "test", request, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := any("patch\nnext")
+				if invalid {
+					input = 42
+				}
+				args, err := json.Marshal(map[string]any{"input": input})
+				if err != nil {
+					t.Fatal(err)
+				}
+				call := map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "apply_patch", "arguments": string(args)}}
+				var response any
+				var rawEvents []any
+				switch source {
+				case protocol.OpenAI:
+					response = map[string]any{"id": "chat_1", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "tool_calls": []any{call}}, "finish_reason": "tool_calls"}}}
+					call["index"] = 0
+					rawEvents = []any{map[string]any{"id": "chat_1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{call}}, "finish_reason": "tool_calls"}}}, "[DONE]"}
+				case protocol.Anthropic:
+					response = map[string]any{"id": "msg_1", "type": "message", "role": "assistant", "model": "test", "content": []any{map[string]any{"type": "tool_use", "id": "c1", "name": "apply_patch", "input": json.RawMessage(args)}}, "stop_reason": "tool_use", "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}}
+					rawEvents = []any{
+						map[string]any{"type": "message_start", "message": map[string]any{"id": "msg_1", "model": "test", "usage": map[string]int{"input_tokens": 1}}},
+						map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "tool_use", "id": "c1", "name": "apply_patch", "input": map[string]any{}}},
+						map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(args)}},
+						map[string]any{"type": "content_block_stop", "index": 0},
+						map[string]any{"type": "message_delta", "delta": map[string]string{"stop_reason": "tool_use"}, "usage": map[string]int{"output_tokens": 1}},
+						map[string]any{"type": "message_stop"},
+					}
+				case protocol.Gemini:
+					response = map[string]any{"responseId": "gemini_1", "modelVersion": "test", "candidates": []any{map[string]any{"index": 0, "content": map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"id": "c1", "name": "apply_patch", "args": json.RawMessage(args)}}}}, "finishReason": "STOP"}}}
+					rawEvents = []any{response}
+				}
+				raw, err := json.Marshal(response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, nonStreamErr := reg.TranslateResponseNonStream(context.Background(), source, protocol.Codex, "test", request, translated, raw)
+				if (nonStreamErr != nil) != invalid {
+					t.Fatalf("non-stream error=%v, invalid=%v, response=%s", nonStreamErr, invalid, body)
+				}
+				var state any
+				var events []gjson.Result
+				var streamErr error
+				for _, event := range rawEvents {
+					var payload []byte
+					if event == "[DONE]" {
+						payload = []byte("[DONE]")
+					} else {
+						payload, err = json.Marshal(event)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					chunks, err := reg.TranslateResponseStream(context.Background(), source, protocol.Codex, "test", request, translated, append(append([]byte("data: "), payload...), '\n', '\n'), &state)
+					events = append(events, registryToolInputEvents(t, chunks)...)
+					if err != nil {
+						streamErr = err
+						break
+					}
+				}
+				chunks, finalizeErr := protocol.FinalizeResponseToolInput(state)
+				events = append(events, registryToolInputEvents(t, chunks)...)
+				if (streamErr != nil) != invalid || (finalizeErr != nil) != invalid {
+					t.Fatalf("stream error=%v finalize error=%v, invalid=%v", streamErr, finalizeErr, invalid)
+				}
+				failures, completions := 0, 0
+				var deltaInput, doneInput, itemInput, terminalInput string
+				for _, event := range events {
+					switch event.Get("type").String() {
+					case "response.failed":
+						failures++
+						if event.Get("response.error.code").String() != "invalid_tool_arguments" {
+							t.Fatalf("unexpected failure: %s", event.Raw)
+						}
+					case "response.completed":
+						completions++
+						terminalInput = event.Get("response.output.0.input").String()
+					case "response.custom_tool_call_input.delta":
+						deltaInput += event.Get("delta").String()
+					case "response.custom_tool_call_input.done":
+						doneInput = event.Get("input").String()
+					case "response.output_item.done":
+						itemInput = event.Get("item.input").String()
+					}
+				}
+				if invalid {
+					if failures != 1 || completions != 0 || doneInput != "" || itemInput != "" {
+						t.Fatalf("invalid input completed: failures=%d completions=%d done=%q item=%q", failures, completions, doneInput, itemInput)
+					}
+				} else if failures != 0 || completions != 1 || deltaInput != input || doneInput != input || itemInput != input || terminalInput != input || gjson.GetBytes(body, "output.0.input").String() != input {
+					t.Fatalf("inconsistent successful patch: delta=%q done=%q item=%q terminal=%q nonstream=%s", deltaInput, doneInput, itemInput, terminalInput, body)
+				}
+			})
+		}
+	}
+}
+
+func TestRegistryApplyPatchEmptyEOFRejectsMissingSourceTerminator(t *testing.T) {
+	request := []byte(`{"model":"test","input":"edit","tools":[{"type":"custom","name":"apply_patch"}]}`)
+	for _, source := range []protocol.Protocol{protocol.OpenAI, protocol.Anthropic, protocol.Gemini} {
+		t.Run(string(source), func(t *testing.T) {
+			reg := protocol.NewRegistry()
+			builtin.Register(reg)
+			var state any
+			if _, err := reg.TranslateResponseStream(context.Background(), source, protocol.Codex, "test", request, nil, nil, &state); err != nil {
+				t.Fatal(err)
+			}
+			chunks, err := protocol.FinalizeResponseToolInput(state)
+			events := registryToolInputEvents(t, chunks)
+			if err == nil || len(events) != 1 || events[0].Get("type").String() != "response.failed" {
+				t.Fatalf("empty EOF succeeded: error=%v events=%v", err, events)
+			}
+			if chunks, err := protocol.FinalizeResponseToolInput(state); err == nil || len(chunks) != 0 {
+				t.Fatalf("repeated EOF duplicated failure: error=%v chunks=%q", err, chunks)
+			}
+		})
+	}
+}
 
 // TestRegistry_Stream_OpenAIToCodex_ToolCalls 验证 OpenAI stream tool_calls 增量
 // 经过多个 chunk 拼接 arguments 后，[DONE] 时输出 response.output_item.done（type=function_call）。

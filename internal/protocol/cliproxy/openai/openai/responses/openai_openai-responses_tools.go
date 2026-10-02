@@ -6,6 +6,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	applypatch "ccLoad/internal/protocol/cliproxy/applypatch"
 )
 
 // responsesToolDeclaration is one Responses tool declaration paired with the
@@ -262,7 +264,17 @@ func convertResponsesCustomToolToOpenAIChat(tool gjson.Result, overrideName stri
 	if description := responsesToolDescription(tool); description != "" {
 		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
 	}
+	if applypatch.IsCustomTool(tool) {
+		chatTool, _ = sjson.SetBytes(chatTool, "function.description", applypatch.Description(tool))
+		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", applypatch.Parameters())
+	}
 	return chatTool, true
+}
+
+// isApplyPatch resolves only the original winning custom declaration.
+func (idx *responsesToolIndex) isApplyPatch(name string) bool {
+	d, ok := idx.byChat[name]
+	return ok && d.custom && applypatch.IsCustomTool(d.tool)
 }
 
 func convertResponsesFunctionToolToOpenAIChat(tool gjson.Result, overrideName string) ([]byte, bool) {
@@ -388,7 +400,7 @@ func rawResponsesNamespaceQualifiedName(namespaceName, childName string) string 
 	if childName == "" || namespaceName == "" || strings.HasPrefix(childName, "mcp__") {
 		return childName
 	}
-	if strings.HasPrefix(childName, namespaceName) {
+	if childName == namespaceName || strings.HasPrefix(childName, namespaceName+"__") {
 		return childName
 	}
 	if strings.HasSuffix(namespaceName, "__") {

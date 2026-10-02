@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `802133a1d2e84dd870c1822c34ea92f6b2e4e7f1` (`fork/v9.0.0`)
-- Synchronized at: `2026-09-30`
+- Last synchronized commit: `7cfba95bffa394bba2da468c54dff7e6c97132d7` (`fork/v10.1.0-7-g7cfba95b`; explicit commit target, not a release tag)
+- Synchronized at: `2026-10-02`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -21,6 +21,58 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-10-02)
+
+The four-protocol core and every allowlisted Antigravity adapter share the
+explicit target above. The pure `internal/client/codex/apply-patch` helpers are
+mapped to `applypatch/`; the shared input decoder, event builders and Responses
+bridge are mapped to `common/`. No upstream client runtime, executor, plugin,
+configuration system, or Interactions wire support is imported.
+
+Custom `apply_patch` declarations now retain their grammar while describing the
+JSON input wrapper required by function-tool upstreams. Claude no longer drops
+the tool. Responses output restores custom-tool identity, preserves patch
+whitespace and Unicode, emits decoded input deltas, and rejects invalid argument
+envelopes and conflicting identity/snapshot evidence. Antigravity reuses the
+Gemini converter and carries its matching provider contract test. Ordinary
+same-name functions retain their original identity and behavior.
+
+ccLoad's Registry/builtin and application boundaries consume tool input errors
+and finalize converter state at EOF. When the upstream already carried its
+semantic terminal (for example an OpenAI `finish_reason` without `[DONE]`),
+ccLoad synthesizes the terminator first so finalization only rejects truly
+truncated patch-enabled streams; transport errors keep their original error.
+Failure chunks
+are delivered before returning conversion errors, and a completed upstream
+cannot erase a conversion failure. Existing upstream errors take precedence
+over missing-terminator checks. HTTP, Antigravity, Cursor and Zed paths retain
+their cancellation and error behavior; parsed usage is preserved even when
+non-stream response translation fails. Native same-protocol passthrough and
+the client model catalog's disabled `apply_patch_tool_type` remain unchanged.
+
+The Codex-to-Chat converter also carries a local correction to the target:
+input.done, output_item.done and response.completed snapshots complete any
+unstreamed patch suffix. Conflicting snapshots and a missing source terminator
+are reported through the same tool-error boundary instead of returning a
+truncated successful function call. Native Claude JSON remains supported with
+the new custom-tool validation; cache accounting, terminal SSE events, client
+tool_search, and namespace restoration retain ccLoad's existing contracts.
+The Chat-to-Codex request and Codex-to-Chat response converters also accept
+OpenAI Chat's nested custom tools (`{"type":"custom","custom":{...}}`) as a
+local correction. Declarations, grammar formats and tool_choice are flattened
+to the Responses shape. Calls to those tools return as native Chat
+`type:"custom"` tool_calls with raw input.
+Flat custom declarations keep the function-envelope behavior.
+
+Other adopted changes include self-terminating shared SSE frames, Claude tool
+name collision handling and thinking replay separation, explicit Claude effort
+preservation, empty Codex function-history arguments normalized to `{}`, and the
+target model catalog. The locally added Antigravity model entry remains intact.
+Gemini diagnostic logging remains excluded; its new log-only tests, the opaque
+Responses output digest, and two allocation/literal-description tests are
+explicitly recorded in the manifest. The runtime thinking-policy test remains
+excluded with its implementation. The license and upstream attribution are unchanged.
 
 ## Synchronization adaptations (2026-09-30)
 
@@ -127,23 +179,24 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 72 `_test.go` files from the same commit as the
+The core snapshot includes 79 `_test.go` files from the same commit as the
 production sources:
 
+- `applypatch`: 1
 - `claude/gemini`: 2
 - `claude/openai/chat-completions`: 3
-- `claude/openai/responses`: 8
+- `claude/openai/responses`: 9
 - `codex/claude`: 4
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 10
+- `common`: 14
 - `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
-- `gemini/openai/responses`: 4
+- `gemini/openai/responses`: 6
 - `openai/claude`: 3
 - `openai/gemini`: 2
-- `openai/openai/responses`: 8
+- `openai/openai/responses`: 7
 - `signature`: 8
 - `util`: 7
 

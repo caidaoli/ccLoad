@@ -447,6 +447,158 @@ func TestHandleTranslatedStreamSuccessResponse_CodexMalformedSSEFramesEachEvent(
 	}
 }
 
+func TestTranslatedApplyPatchStreamRetainsFailureEventsAndErrors(t *testing.T) {
+	const invalidChat = `data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"apply_patch","arguments":"{\"input\":42}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n"
+	const partialChat = `data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"apply_patch","arguments":"{\"input\":\"partial"}}]}}]}` + "\n\n"
+	const finishedChat = `data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"apply_patch","arguments":"{\"input\":\"patch\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n"
+	const invalidGemini = `data: {"response":{"responseId":"g1","candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"apply_patch","args":{"input":42}}}]},"finishReason":"STOP"}]}}` + "\n\n"
+	const partialGemini = `data: {"response":{"responseId":"g1","candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"apply_patch","args":{"input":"patch"}}}]}}]}}` + "\n\n"
+	const textChat = `data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}` + "\n\n"
+	readErr := errors.New("connection reset by peer")
+	for _, tt := range []struct {
+		name, body           string
+		upstream             protocol.Protocol
+		antigravity          bool
+		ordinaryFunction     bool
+		readErr              error
+		wantError, committed bool
+	}{
+		{name: "invalid arguments with source terminal", body: invalidChat, upstream: protocol.OpenAI, wantError: true, committed: true},
+		{name: "truncated JSON at EOF", body: partialChat, upstream: protocol.OpenAI, wantError: true, committed: true},
+		{name: "finish_reason without source DONE", body: finishedChat, upstream: protocol.OpenAI, committed: true},
+		{name: "declared patch text reply without source DONE", body: textChat, upstream: protocol.OpenAI, committed: true},
+		{name: "transport error keeps original error", body: partialChat, upstream: protocol.OpenAI, readErr: readErr, wantError: true, committed: true},
+		{name: "empty EOF", upstream: protocol.OpenAI, wantError: true},
+		{name: "successful patch", body: finishedChat + "data: [DONE]\n\n", upstream: protocol.OpenAI, committed: true},
+		{name: "ordinary function retains synthesized DONE", body: finishedChat, upstream: protocol.OpenAI, ordinaryFunction: true, committed: true},
+		{name: "Antigravity invalid arguments with source terminal", body: invalidGemini, upstream: protocol.Gemini, antigravity: true, wantError: true, committed: true},
+		{name: "Antigravity EOF lacks finishReason", body: partialGemini, upstream: protocol.Gemini, antigravity: true, wantError: true, committed: true},
+		{name: "Antigravity empty EOF", upstream: protocol.Gemini, antigravity: true, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := protocol.NewRegistry()
+			builtin.Register(reg)
+			toolType := "custom"
+			if tt.ordinaryFunction {
+				toolType = "function"
+			}
+			original := []byte(fmt.Sprintf(`{"model":"test","input":"edit","tools":[{"type":%q,"name":"apply_patch"}]}`, toolType))
+			translated, err := reg.TranslateRequest(protocol.Codex, tt.upstream, "test", original, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.antigravity {
+				translated = append(append([]byte(`{"request":`), translated...), '}')
+			}
+			reqCtx := &requestContext{
+				ctx: context.Background(), startTime: time.Now(), isStreaming: true, antigravityOAuth: tt.antigravity,
+				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Codex, UpstreamProtocol: tt.upstream, OriginalModel: "test", ActualModel: "test", OriginalBody: original, TranslatedBody: translated, NeedsTransform: true},
+			}
+			var body io.Reader = strings.NewReader(tt.body)
+			if tt.readErr != nil {
+				body = io.MultiReader(body, iotest.ErrReader(tt.readErr))
+			}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(body)}
+			stats := &streamReadStats{}
+			attachFirstByteDetector(reqCtx, resp, stats, nil)
+			rec := newRecorder()
+			result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(tt.upstream), stats, nil)
+			if (err != nil) != tt.wantError || result == nil || result.ResponseCommitted != tt.committed {
+				t.Fatalf("error=%v result=%#v, want error=%v committed=%v", err, result, tt.wantError, tt.committed)
+			}
+			if tt.readErr != nil {
+				if !errors.Is(err, tt.readErr) || result.StreamDiagMsg == "" {
+					t.Fatalf("error=%v diag=%q, want original transport error", err, result.StreamDiagMsg)
+				}
+				return
+			}
+			if tt.wantError {
+				if result.StreamDiagMsg == "" || gjson.GetBytes(result.SSEErrorEvent, "response.error.code").String() != "invalid_tool_arguments" {
+					t.Fatalf("failure was lost from result: %#v", result)
+				}
+			}
+			if !tt.committed {
+				if rec.Body.Len() != 0 {
+					t.Fatalf("empty attempt committed data: %s", rec.Body.String())
+				}
+				return
+			}
+			failures, completions := 0, 0
+			for _, event := range parseCodexResponseEventTypes(t, rec.Body.String()) {
+				switch event {
+				case "response.failed":
+					failures++
+				case "response.completed":
+					completions++
+				}
+			}
+			if tt.wantError && (failures != 1 || completions != 0) || !tt.wantError && (failures != 0 || completions != 1) {
+				t.Fatalf("failures=%d completions=%d, want error=%v; response=%s", failures, completions, tt.wantError, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestTranslatedApplyPatchNonStreamFailureRetainsUsage(t *testing.T) {
+	for _, antigravity := range []bool{false, true} {
+		t.Run(fmt.Sprintf("antigravity=%v", antigravity), func(t *testing.T) {
+			reg := protocol.NewRegistry()
+			builtin.Register(reg)
+			upstream := protocol.OpenAI
+			body := `{"id":"c1","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","function":{"name":"apply_patch","arguments":"{\"input\":42}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+			if antigravity {
+				upstream = protocol.Gemini
+				body = `{"response":{"responseId":"g1","candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"apply_patch","args":{"input":42}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}}}`
+			}
+			original := []byte(`{"model":"test","input":"edit","tools":[{"type":"custom","name":"apply_patch"}]}`)
+			translated, err := reg.TranslateRequest(protocol.Codex, upstream, "test", original, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if antigravity {
+				translated = append(append([]byte(`{"request":`), translated...), '}')
+			}
+			reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), antigravityOAuth: antigravity,
+				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Codex, UpstreamProtocol: upstream, OriginalModel: "test", ActualModel: "test", OriginalBody: original, TranslatedBody: translated, NeedsTransform: true}}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
+			rec := newRecorder()
+			result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedNonStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(upstream), &streamReadStats{})
+			if err == nil || result == nil || result.InputTokens != 7 || result.OutputTokens != 3 || result.ResponseCommitted || rec.Body.Len() != 0 {
+				t.Fatalf("invalid upstream arguments lost usage or committed success: error=%v result=%#v body=%s", err, result, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestTranslatedApplyPatchStreamPreservesUpstreamError(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	original := []byte(`{"model":"test","input":"edit","tools":[{"type":"custom","name":"apply_patch"}]}`)
+	translated, err := reg.TranslateRequest(protocol.Codex, protocol.Anthropic, "test", original, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "data: " + `{"type":"message_start","message":{"id":"msg_1","model":"test","usage":{"input_tokens":7}}}` + "\n\n" +
+		"data: " + `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"data: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}` + "\n\n" +
+		"data: " + `{"type":"error","error":{"type":"rate_limit_error","message":"busy"}}` + "\n\n"
+	reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true,
+		transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Anthropic, OriginalModel: "test", ActualModel: "test", OriginalBody: original, TranslatedBody: translated, NeedsTransform: true}}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
+	stats := &streamReadStats{}
+	attachFirstByteDetector(reqCtx, resp, stats, nil)
+	rec := newRecorder()
+	result, _, err := (&Server{protocolRegistry: reg}).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Anthropic), stats, nil)
+	if err != nil || result == nil || !result.ResponseCommitted || gjson.GetBytes(result.SSEErrorEvent, "error.type").String() != "rate_limit_error" || result.InputTokens != 7 {
+		t.Fatalf("provider error or usage was replaced: error=%v result=%#v response=%s", err, result, rec.Body.String())
+	}
+	for _, event := range parseCodexResponseEventTypes(t, rec.Body.String()) {
+		if event == "response.failed" || event == "response.completed" {
+			t.Fatalf("provider failure gained a synthetic terminal: %s", rec.Body.String())
+		}
+	}
+}
+
 func TestLooksLikeSSERequiresBothEventAndData(t *testing.T) {
 	tests := []struct {
 		name string

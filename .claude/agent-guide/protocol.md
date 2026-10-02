@@ -14,5 +14,7 @@
 - Claude 请求转 Antigravity Claude 模型时，工具结果须独立成 user turn 并紧跟 model 工具调用；夹在中间的文本/提醒后移，同轮并行结果合并。Gemini 模型保持原有合并规则。
 - OpenAI Chat 转 Codex 时，`service_tier` 的 `fast`/`priority` 规范为 `priority`，保留 `ultrafast`，忽略其他值；匹配时忽略大小写与首尾空白。
 - Responses 工具历史转换按原始 call_id 配对；孤立 output 转普通用户内容，Claude 缺失工具结果按中断错误补齐并保持结果先于文本。Responses → Chat 的工具声明、历史、tool_choice 和反向映射共用命名空间及长度/碰撞规则。
+- 跨协议 `custom apply_patch` 转函数工具时，保留补丁语法并使用唯一字符串 `input` 参数；反向转换按原始获胜声明识别工具，普通同名 function 不升级为 custom。OpenAI Chat 嵌套 `custom` 声明与 tool_choice 转 Codex 时拍平为 Responses 形状；这类工具的调用以原生 `type:"custom"` tool_calls 和原始 input 返回，扁平声明保持函数包装。补丁正文的空白、转义和 Unicode 必须在历史回放、增量、done 与最终 output 中一致。
+- 上游补丁参数非法、身份冲突或流缺少源协议终态时，转换边界传播工具输入错误，不得伪造成功；已开始的 Responses 流最多发送一次 `response.failed`。EOF 时上游已有语义终态（如 OpenAI `finish_reason`）则先补终止事件，再检查转换状态；启用补丁转换且缺少语义终态的流不得用合成终态掩盖截断。传输错误、取消与上游错误事件保留原错误，不改判为工具参数错误。普通工具与同协议透传保持原契约。
 - OpenAI → Claude 接收 reasoning_content、reasoning、reasoning_details 的首个有效表示；工具流保留 length/content_filter，累计参数不是有效对象时不得标成正常 tool_use。单条 system 输入继续作为原始用户提示，不包中途提醒。
 - Gemini 原生搜索仅查询静态模型能力；响应转换以实际发出的 googleSearch 请求判断搜索模式，不引入动态模型注册或探测。

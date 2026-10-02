@@ -1138,7 +1138,7 @@ func TestCustomToolCallResponseFollowUpRoundTrip(t *testing.T) {
 	if got := assistantMessage.Get("tool_calls.0.type").String(); got != "function" {
 		t.Fatalf("expected response to normalize custom call as function, got %s", assistantMessage.Raw)
 	}
-	if got := assistantMessage.Get("tool_calls.0.function.arguments").String(); got != "patch" {
+	if got := assistantMessage.Get("tool_calls.0.function.arguments").String(); got != `{"input":"patch"}` {
 		t.Fatalf("expected normalized custom input, got %s", assistantMessage.Raw)
 	}
 
@@ -1160,6 +1160,9 @@ func TestCustomToolCallResponseFollowUpRoundTrip(t *testing.T) {
 	}
 	if got := items[2].Get("type").String(); got != "custom_tool_call_output" {
 		t.Fatalf("expected custom_tool_call_output after response round trip, got %s", items[2].Raw)
+	}
+	if got := items[1].Get("input").String(); got != "patch" {
+		t.Fatalf("raw follow-up input = %q", got)
 	}
 }
 
@@ -1711,5 +1714,77 @@ func TestConvertOpenAIRequestToCodexServiceTier(t *testing.T) {
 				t.Fatalf("reasoning.effort = %q, want %q; payload=%s", gotEffort, tt.wantEffort, out)
 			}
 		})
+	}
+}
+
+func TestApplyPatchChatHistoryBoundary(t *testing.T) {
+	for _, tc := range []struct{ name, tools, call, wantType, want string }{
+		{"normalized", `[{"type":"custom","name":"apply_patch"}]`, `{"type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"p\"}"}}`, "custom_tool_call", "p"},
+		{"legacy", `[{"type":"custom","name":"apply_patch"}]`, `{"type":"function","function":{"name":"apply_patch","arguments":"raw patch"}}`, "custom_tool_call", "raw patch"},
+		{"explicit", `[{"type":"custom","name":"apply_patch"}]`, `{"type":"custom","custom":{"name":"apply_patch","input":"{\"input\":\"p\"}"}}`, "custom_tool_call", `{"input":"p"}`},
+		{"invalid-wrapper", `[{"type":"custom","name":"apply_patch"}]`, `{"type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"p\",\"extra\":1}"}}`, "custom_tool_call", `{"input":"p","extra":1}`},
+		{"function-preference", `[{"type":"custom","name":"apply_patch"},{"type":"function","function":{"name":"apply_patch","parameters":{}}}]`, `{"type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"p\"}"}}`, "function_call", `{"input":"p"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"tools":` + tc.tools + `,"messages":[{"role":"assistant","tool_calls":[` + tc.call + `]}]}`)
+			out := ConvertOpenAIRequestToCodex("m", raw, true)
+			items := gjson.GetBytes(out, "input").Array()
+			item := items[len(items)-1]
+			field := "arguments"
+			if tc.wantType == "custom_tool_call" {
+				field = "input"
+			}
+			if item.Get("type").String() != tc.wantType || item.Get(field).String() != tc.want {
+				t.Fatalf("history boundary: %s", out)
+			}
+		})
+	}
+}
+
+func TestOpenAIChatNestedCustomToolRequest(t *testing.T) {
+	longName := "a_very_long_nested_custom_tool_name_that_exceeds_sixty_four_characters_limit"
+	input := []byte(`{
+		"messages": [
+			{"role":"user","content":"Apply the patch."},
+			{"role":"assistant","content":null,"tool_calls":[
+				{"id":"call_patch","type":"custom","custom":{"name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}
+			]},
+			{"role":"tool","tool_call_id":"call_patch","content":"done"}
+		],
+		"tools": [
+			{"type":"custom","custom":{"name":"apply_patch","description":"Apply a patch.","format":{"type":"grammar","grammar":{"syntax":"lark","definition":"start: patch"}}}},
+			{"type":"custom","custom":{"name":"` + longName + `","format":{"type":"text"}}}
+		],
+		"tool_choice":{"type":"custom","custom":{"name":"` + longName + `"}}
+	}`)
+
+	out := ConvertOpenAIRequestToCodex("gpt-5.5", input, true)
+	patch := gjson.GetBytes(out, "tools.0")
+	if patch.Get("type").String() != "custom" || patch.Get("name").String() != "apply_patch" || patch.Get("description").String() != "Apply a patch." {
+		t.Fatalf("expected flat custom apply_patch declaration, got %s", patch.Raw)
+	}
+	if patch.Get("format.type").String() != "grammar" || patch.Get("format.syntax").String() != "lark" || patch.Get("format.definition").String() != "start: patch" {
+		t.Fatalf("expected flattened grammar format, got %s", patch.Raw)
+	}
+	if patch.Get("custom").Exists() {
+		t.Fatalf("nested custom object must not be forwarded, got %s", patch.Raw)
+	}
+	shortName := gjson.GetBytes(out, "tools.1.name").String()
+	if shortName == "" || shortName == longName || len(shortName) > 64 {
+		t.Fatalf("expected shortened custom name, got %q", shortName)
+	}
+	if got := gjson.GetBytes(out, "tools.1.format.type").String(); got != "text" {
+		t.Fatalf("expected text format, got %s", gjson.GetBytes(out, "tools.1").Raw)
+	}
+	choice := gjson.GetBytes(out, "tool_choice")
+	if choice.Get("type").String() != "custom" || choice.Get("name").String() != shortName {
+		t.Fatalf("expected flat custom tool choice %q, got %s", shortName, choice.Raw)
+	}
+	call := gjson.GetBytes(out, "input.1")
+	if call.Get("type").String() != "custom_tool_call" || call.Get("input").String() != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("expected raw custom call history, got %s", call.Raw)
+	}
+	if got := buildReverseMapFromOriginalOpenAI(input)[shortName]; got != longName {
+		t.Fatalf("expected reverse name mapping to %q, got %q", longName, got)
 	}
 }

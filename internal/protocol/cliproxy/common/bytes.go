@@ -78,15 +78,16 @@ func SetRawArrayItems(data []byte, path string, items [][]byte) []byte {
 	return data
 }
 
-// SSEEventData frames one named SSE event without trailing newlines.
+// SSEEventData builds one complete SSE frame. Each frame carries its own
+// blank-line terminator so concatenated frames stay separable downstream.
 func SSEEventData(event string, payload []byte) []byte {
-	out := make([]byte, 0, len(event)+len(payload)+14)
+	out := make([]byte, 0, len(event)+len(payload)+16)
 	out = append(out, "event: "...)
 	out = append(out, event...)
 	out = append(out, '\n')
 	out = append(out, "data: "...)
 	out = append(out, payload...)
-	return out
+	return append(out, '\n', '\n')
 }
 
 // AppendSSEEventString appends one named SSE event with a string payload.

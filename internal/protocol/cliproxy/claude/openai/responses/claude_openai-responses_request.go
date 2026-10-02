@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	applypatch "ccLoad/internal/protocol/cliproxy/applypatch"
 	"ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/registry"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
@@ -189,6 +190,8 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		appendSystemText(formatInstruction, gjson.Result{})
 	}
 
+	names := buildClaudeToolNames(root)
+
 	// input array processing
 	var pendingRole string
 	var pendingParts [][]byte
@@ -203,8 +206,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 		parts := pendingParts
 		if pendingRole == "assistant" && len(pendingToolUseParts) > 0 {
-			combined := make([][]byte, 0, len(pendingParts)+len(pendingToolUseParts))
+			combined := make([][]byte, 0, len(pendingParts)+len(pendingToolUseParts)+1)
 			combined = append(combined, pendingParts...)
+			if separator := claudeThinkingSeparatorForToolUse(pendingParts); separator != nil {
+				combined = append(combined, separator)
+			}
 			combined = append(combined, pendingToolUseParts...)
 			parts = combined
 		}
@@ -458,7 +464,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 			toolUse := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
 			toolUse, _ = sjson.SetBytes(toolUse, "id", callID)
-			toolUse, _ = sjson.SetBytes(toolUse, "name", util.SanitizeClaudeFunctionName(name))
+			toolUse, _ = sjson.SetBytes(toolUse, "name", names.claudeName(name))
 			if isCustomToolCall {
 				toolUse, _ = sjson.SetBytes(toolUse, "input.input", item.Get("input").String())
 			} else {
@@ -550,12 +556,14 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		if !ok || winner.order != descriptor.order {
 			continue
 		}
-		tJSON, ok := convertResponsesToolDescriptorToClaude(descriptor)
+		claudeName := names.claudeName(descriptor.name)
+		tJSON, ok := convertResponsesToolDescriptorToClaude(descriptor, claudeName)
 		if !ok {
 			continue
 		}
 		toolName := gjson.GetBytes(tJSON, "name").String()
 		if toolName != "" {
+			includedToolNames[descriptor.name] = struct{}{}
 			includedToolNames[toolName] = struct{}{}
 		}
 		toolItems = append(toolItems, tJSON)
@@ -604,7 +612,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				}
 				if _, ok := includedToolNames[fn]; ok {
 					toolChoiceJSON := []byte(`{"name":"","type":"tool"}`)
-					toolChoiceJSON, _ = sjson.SetBytes(toolChoiceJSON, "name", util.SanitizeClaudeFunctionName(fn))
+					toolChoiceJSON, _ = sjson.SetBytes(toolChoiceJSON, "name", names.claudeName(fn))
 					out, _ = sjson.SetRawBytes(out, "tool_choice", toolChoiceJSON)
 				}
 			}
@@ -809,6 +817,27 @@ func responsesReasoningPartsText(parts gjson.Result) string {
 		return true
 	})
 	return builder.String()
+}
+
+// claudeThinkingSeparatorForToolUse returns the most recent thinking block when
+// the buffered assistant content ends with a server tool result, so the
+// tool-use run that follows keeps a thinking block of its own. Upstreams that
+// enforce Anthropic's thinking replay rules reject a tool_use glued directly
+// onto a web_search_tool_result, while native Claude output always carries a
+// fresh thinking block before the continued segment.
+func claudeThinkingSeparatorForToolUse(parts [][]byte) []byte {
+	if len(parts) == 0 {
+		return nil
+	}
+	if gjson.GetBytes(parts[len(parts)-1], "type").String() != "web_search_tool_result" {
+		return nil
+	}
+	for index := len(parts) - 1; index >= 0; index-- {
+		if gjson.GetBytes(parts[index], "type").String() == "thinking" {
+			return parts[index]
+		}
+	}
+	return nil
 }
 
 func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) []byte {
@@ -1145,13 +1174,9 @@ func convertResponsesContentPartToClaude(part gjson.Result) []byte {
 	return nil
 }
 
-func isOpenAIResponsesApplyPatchCustomTool(toolType string, tool gjson.Result) bool {
-	return toolType == "custom" && strings.TrimSpace(tool.Get("name").String()) == "apply_patch"
-}
-
-func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor) ([]byte, bool) {
-	overrideName := ""
-	if !descriptor.direct {
+func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor, claudeName string) ([]byte, bool) {
+	overrideName := claudeName
+	if overrideName == "" && !descriptor.direct {
 		overrideName = descriptor.name
 	}
 	switch descriptor.toolType {
@@ -1241,9 +1266,7 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			case "", "function":
 				appendDescriptor(child, qualifiedName, childName, namespaceName, "function", sourcePriority, false)
 			case "custom":
-				if !isOpenAIResponsesApplyPatchCustomTool("custom", child) {
-					appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", sourcePriority, false)
-				}
+				appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", sourcePriority, false)
 			}
 			return true
 		})
@@ -1255,9 +1278,7 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			case "", "function":
 				appendDescriptor(tool, responsesToolName(tool), "", "", "function", source.priority, true)
 			case "custom":
-				if !isOpenAIResponsesApplyPatchCustomTool("custom", tool) {
-					appendDescriptor(tool, responsesToolName(tool), "", "", "custom", source.priority, true)
-				}
+				appendDescriptor(tool, responsesToolName(tool), "", "", "custom", source.priority, true)
 			case "namespace":
 				appendNamespaceChildren(tool, source.priority)
 			case "web_search":
@@ -1343,9 +1364,14 @@ func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
 	names := make(map[string]struct{})
 	root := gjson.ParseBytes(requestRawJSON)
-	for name, descriptor := range responsesToolWinners(root) {
+	winners := responsesToolWinners(root)
+	toolNames := buildClaudeToolNamesWithWinners(root, winners)
+	for name, descriptor := range winners {
 		if descriptor.toolType == "custom" {
 			names[name] = struct{}{}
+			if cName := toolNames.claudeName(name); cName != "" {
+				names[cName] = struct{}{}
+			}
 		}
 	}
 	return names
@@ -1429,14 +1455,14 @@ func unwrapCustomToolInput(arguments string) string {
 func convertResponsesFunctionToolToClaude(tool gjson.Result, overrideName string) ([]byte, bool) {
 	name := strings.TrimSpace(overrideName)
 	if name == "" {
-		name = responsesToolName(tool)
+		name = util.SanitizeClaudeFunctionName(responsesToolName(tool))
 	}
 	if name == "" {
 		return nil, false
 	}
 
 	tJSON := []byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{}}}`)
-	tJSON, _ = sjson.SetBytes(tJSON, "name", util.SanitizeClaudeFunctionName(name))
+	tJSON, _ = sjson.SetBytes(tJSON, "name", name)
 	if d := responsesToolDescription(tool); d != "" {
 		tJSON, _ = sjson.SetBytes(tJSON, "description", d)
 	}
@@ -1451,16 +1477,20 @@ func convertResponsesFunctionToolToClaude(tool gjson.Result, overrideName string
 func convertResponsesCustomToolToClaude(tool gjson.Result, overrideName string) ([]byte, bool) {
 	name := strings.TrimSpace(overrideName)
 	if name == "" {
-		name = responsesToolName(tool)
+		name = util.SanitizeClaudeFunctionName(responsesToolName(tool))
 	}
 	if name == "" {
 		return nil, false
 	}
 
 	tJSON := []byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}}`)
-	tJSON, _ = sjson.SetBytes(tJSON, "name", util.SanitizeClaudeFunctionName(name))
+	tJSON, _ = sjson.SetBytes(tJSON, "name", name)
 	if description := responsesToolDescription(tool); description != "" {
 		tJSON, _ = sjson.SetBytes(tJSON, "description", description)
+	}
+	if applypatch.IsCustomTool(tool) {
+		tJSON, _ = sjson.SetBytes(tJSON, "description", applypatch.Description(tool))
+		tJSON, _ = sjson.SetRawBytes(tJSON, "input_schema", applypatch.Parameters())
 	}
 	tJSON = common.AttachCacheControl(tJSON, tool)
 	return tJSON, true
@@ -1539,14 +1569,18 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 	}
 
 	root := gjson.ParseBytes(requestRawJSON)
-	descriptor, ok := responsesToolWinners(root)[qualifiedName]
+	winners := responsesToolWinners(root)
+	toolNames := buildClaudeToolNamesWithWinners(root, winners)
+	identity := toolNames.identity(qualifiedName)
+
+	descriptor, ok := winners[identity]
 	if !ok {
-		return qualifiedName, ""
+		return identity, ""
 	}
 	if !descriptor.direct {
 		return descriptor.childName, descriptor.namespace
 	}
-	return qualifiedName, ""
+	return identity, ""
 }
 
 func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {

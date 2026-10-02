@@ -1553,6 +1553,22 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
 		}, reqCtx.Duration().Seconds(), err
 	}
+	result := &fwResult{
+		Status:         resp.StatusCode,
+		UpstreamStatus: resp.StatusCode,
+		Header:         hdrClone,
+		FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
+		BytesReceived:  readStats.totalBytes,
+	}
+	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ResponseModel = parser.GetResponseModel()
+	result.ReasoningTokens = parser.GetReasoningTokens()
+	result.Cache5mInputTokens = parser.Cache5mInputTokens
+	result.Cache1hInputTokens = parser.Cache1hInputTokens
+	result.ServiceTier = parser.ServiceTier
+	result.ToolCostUSD = parser.GetToolCostUSD()
+	result.ThinkingEffort = parser.GetThinkingEffort()
+	result.CodexHasCredits = parser.GetCodexHasCredits()
 
 	var translatedBody []byte
 	if reqCtx.antigravityOAuth {
@@ -1576,13 +1592,8 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		)
 	}
 	if err != nil {
-		return &fwResult{
-			Status:         resp.StatusCode,
-			UpstreamStatus: resp.StatusCode,
-			Header:         hdrClone,
-			Body:           rawBody,
-			FirstByteTime:  responseFirstByteSec(reqCtx, readStats),
-		}, reqCtx.Duration().Seconds(), err
+		result.Body = rawBody
+		return result, reqCtx.Duration().Seconds(), err
 	}
 
 	reqCtx.antigravityReplay.captureJSON(translatedBody)
@@ -1602,23 +1613,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		_, _ = w.Write(translatedBody)
 	}
 
-	result := &fwResult{
-		Status:            resp.StatusCode,
-		UpstreamStatus:    resp.StatusCode,
-		Header:            hdrClone,
-		FirstByteTime:     responseFirstByteSec(reqCtx, readStats),
-		BytesReceived:     readStats.totalBytes,
-		ResponseCommitted: committed,
-	}
-	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
-	result.ResponseModel = parser.GetResponseModel()
-	result.ReasoningTokens = parser.GetReasoningTokens()
-	result.Cache5mInputTokens = parser.Cache5mInputTokens
-	result.Cache1hInputTokens = parser.Cache1hInputTokens
-	result.ServiceTier = parser.ServiceTier
-	result.ToolCostUSD = parser.GetToolCostUSD()
-	result.ThinkingEffort = parser.GetThinkingEffort()
-	result.CodexHasCredits = parser.GetCodexHasCredits()
+	result.ResponseCommitted = committed
 
 	return result, reqCtx.Duration().Seconds(), headerErr
 }
@@ -1642,6 +1637,19 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	var translatedComplete bool
 	var codeBuddyDone bool
 	var state any
+	var translatedError []byte
+	var translationErr error
+	recordTranslatedOutput := func(chunks [][]byte) {
+		for _, chunk := range chunks {
+			eventType, data := parseSSEEventChunk(chunk)
+			if eventType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
+				translatedError = bytes.Clone(data)
+			}
+		}
+		if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+			translatedComplete = true
+		}
+	}
 	commitTranslatedOutput := func(chunks [][]byte) error {
 		// Responses metadata may produce pass-through chunks, but it is not semantic
 		// output. Keep those chunks buffered so a following error can still replace
@@ -1662,14 +1670,18 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		return nil
 	}
 	translateEvent := func(rawEvent []byte) ([][]byte, error) {
-		if reqCtx.codeBuddyOAuth {
+		if reqCtx.codeBuddyOAuth && len(rawEvent) > 0 {
 			rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
 		}
 		translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 		if reqCtx.antigravityOAuth {
-			providerEvent, err := antigravitySSEData(rawEvent)
-			if err != nil {
-				return nil, err
+			var providerEvent []byte
+			if len(rawEvent) > 0 {
+				var err error
+				providerEvent, err = antigravitySSEData(rawEvent)
+				if err != nil {
+					return nil, err
+				}
 			}
 			chunks, translateErr := translateAntigravityResponseStream(
 				reqCtx.ctx,
@@ -1681,16 +1693,14 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				&state,
 			)
 			if translateErr != nil {
-				return nil, translateErr
+				translationErr = translateErr
 			}
 			reqCtx.antigravityReplay.captureStream(chunks)
-			if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
-				translatedComplete = true
-			}
+			recordTranslatedOutput(chunks)
 			if err := commitTranslatedOutput(chunks); err != nil {
 				return nil, err
 			}
-			return chunks, nil
+			return chunks, translateErr
 		}
 		chunks, err := s.protocolRegistry.TranslateResponseStream(
 			reqCtx.ctx,
@@ -1703,15 +1713,24 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			&state,
 		)
 		if err != nil {
-			return nil, err
+			translationErr = err
 		}
-		if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
-			translatedComplete = true
+		recordTranslatedOutput(chunks)
+		if commitErr := commitTranslatedOutput(chunks); commitErr != nil {
+			return nil, commitErr
 		}
-		if err := commitTranslatedOutput(chunks); err != nil {
-			return nil, err
+		return chunks, err
+	}
+	// Initialize optional tool validation state even when the upstream ends
+	// before sending its first event. Native same-protocol streams stay untouched.
+	if reqCtx.transformPlan.ClientProtocol == protocol.Codex && reqCtx.transformPlan.UpstreamProtocol != protocol.Codex {
+		chunks, err := translateEvent(nil)
+		if err == nil {
+			err = writeSSEChunks(deferredWriter, chunks)
 		}
-		return chunks, nil
+		if err != nil {
+			return nil, reqCtx.Duration().Seconds(), err
+		}
 	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
@@ -1752,19 +1771,38 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		},
 	)
 
-	if needsSynthesizedStreamTerminator(
+	// 上游已给出语义终态（如 finish_reason）时先补发终止事件，转换器据此完成收尾；
+	// 之后的 Finalize 只拦截真正缺少终态的截断流。
+	if protocol.ResponseToolInputError(state) == nil && needsSynthesizedStreamTerminator(
 		reqCtx.transformPlan.UpstreamProtocol,
 		reqCtx.transformPlan.ClientProtocol,
 		parser.IsStreamComplete(),
 		translatedComplete,
 		deferredWriter.Committed(),
 	) {
-		if chunks, doneErr := translateEvent(sseSynthesizedDoneEvent); doneErr != nil {
-			log.Printf("[WARN] 上游省略 [DONE]，补发终止事件失败: %v", doneErr)
-		} else if writeErr := writeSSEChunks(deferredWriter, chunks); writeErr != nil && streamErr == nil {
+		chunks, doneErr := translateEvent(sseSynthesizedDoneEvent)
+		if writeErr := writeSSEChunks(deferredWriter, chunks); writeErr != nil && streamErr == nil {
 			streamErr = writeErr
+		} else if doneErr != nil {
+			streamErr = doneErr
 		}
 	}
+	// 传输错误、取消与上游错误事件保留原始错误，不改判为工具参数错误。
+	if streamErr == nil && context.Cause(reqCtx.ctx) == nil && parser.GetLastError() == nil {
+		chunks, finalizeErr := protocol.FinalizeResponseToolInput(state)
+		if finalizeErr != nil {
+			translationErr = finalizeErr
+		}
+		recordTranslatedOutput(chunks)
+		if commitErr := commitTranslatedOutput(chunks); commitErr != nil {
+			streamErr = commitErr
+		} else if writeErr := writeSSEChunks(deferredWriter, chunks); writeErr != nil {
+			streamErr = writeErr
+		} else {
+			streamErr = finalizeErr
+		}
+	}
+	toolInputErr := protocol.ResponseToolInputError(state)
 
 	abortedBeforeCommit := errors.Is(streamErr, errAbortStreamBeforeWrite)
 	if abortedBeforeCommit {
@@ -1793,8 +1831,11 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
 	result.SSEErrorEvent = parser.GetLastError()
+	if translatedError != nil && result.SSEErrorEvent == nil {
+		result.SSEErrorEvent = translatedError
+	}
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
-	streamComplete := parser.IsStreamComplete() || translatedComplete
+	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
 
 	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, resp.Header.Get("Content-Type")); diagMsg != "" {
 		result.StreamDiagMsg = diagMsg

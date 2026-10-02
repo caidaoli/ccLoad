@@ -845,6 +845,25 @@ func relayZedResponsesEvents(ctx context.Context, upstream io.ReadCloser, output
 	defer func() { _ = upstream.Close() }()
 	reader := bufio.NewReader(upstream)
 	state := &zedRelayState{}
+	if plan.providerProtocol != protocol.Codex {
+		if _, err := registry.TranslateResponseStream(ctx, plan.providerProtocol, protocol.Codex,
+			plan.model, plan.originalRequest, plan.translatedRequest, nil, &state.transform); err != nil {
+			_ = output.CloseWithError(err)
+			return
+		}
+	}
+	finish := func() error {
+		if state.failed {
+			return nil
+		}
+		chunks, err := protocol.FinalizeResponseToolInput(state.transform)
+		for _, chunk := range chunks {
+			if _, writeErr := output.Write(chunk); writeErr != nil {
+				return writeErr
+			}
+		}
+		return err
+	}
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		line = bytes.TrimSpace(line)
@@ -858,13 +877,13 @@ func relayZedResponsesEvents(ctx context.Context, upstream io.ReadCloser, output
 				return
 			}
 			if ended {
-				_ = output.Close()
+				_ = output.CloseWithError(finish())
 				return
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				_ = output.Close()
+				_ = output.CloseWithError(finish())
 			} else {
 				_ = output.CloseWithError(readErr)
 			}
@@ -1080,13 +1099,13 @@ func translateZedProviderEvent(
 		ctx, plan.providerProtocol, protocol.Codex, plan.model,
 		plan.originalRequest, plan.translatedRequest, framed, &state.transform,
 	)
-	if err != nil {
-		return fmt.Errorf("translate Zed %s response: %w", plan.provider, err)
-	}
 	for _, chunk := range chunks {
 		if _, err := output.Write(chunk); err != nil {
 			return err
 		}
+	}
+	if err != nil {
+		return fmt.Errorf("translate Zed %s response: %w", plan.provider, err)
 	}
 	return nil
 }

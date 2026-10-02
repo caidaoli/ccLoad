@@ -2,12 +2,14 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -644,30 +646,132 @@ func TestFinalizeZedAnthropicDropsUnsolicitedCodexThinking(t *testing.T) {
 }
 
 func TestZedAnthropicWirePreservesProviderError(t *testing.T) {
-	registry := newZedWireTestRegistry()
-	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"claude-sonnet-5","input":"hello"}`), nil)
-	if err != nil {
-		t.Fatal(err)
+	for _, withPatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("apply_patch=%v", withPatch), func(t *testing.T) {
+			registry := newZedWireTestRegistry()
+			request := `{"model":"claude-sonnet-5","input":"hello"}`
+			var events []string
+			errorType := "overloaded_error"
+			if withPatch {
+				request = `{"model":"claude-sonnet-5","input":"hello","tools":[{"type":"custom","name":"apply_patch"}]}`
+				events = append(events, `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
+				errorType = "rate_limit_error"
+			}
+			_, plan, err := finalizeZedResponsesBody(registry, []byte(request), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":"busy"}}`, errorType), `{"status":"stream_ended"}`, "")
+			response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(strings.Join(events, "\n")))}
+			if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+				t.Fatal(err)
+			}
+			converted, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parser := newSSEUsageParser(string(protocol.Codex))
+			if err := parser.Feed(converted); err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(parser.GetLastError(), "error.type").String(); got != errorType {
+				t.Fatalf("provider error was replaced: got=%q want=%q response=%s", got, errorType, converted)
+			}
+			for _, eventType := range parseCodexResponseEventTypes(t, string(converted)) {
+				if eventType == "response.failed" || eventType == "response.completed" {
+					t.Fatalf("provider failure gained a synthetic terminal: %s", converted)
+				}
+			}
+		})
 	}
-	upstream := strings.Join([]string{
-		`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`,
-		`{"status":"stream_ended"}`,
-		"",
-	}, "\n")
-	response := &http.Response{
-		StatusCode: http.StatusOK, Header: make(http.Header),
-		Body: io.NopCloser(strings.NewReader(upstream)),
+}
+
+func TestZedApplyPatchResponsePropagatesInvalidInputAndEOF(t *testing.T) {
+	for _, tt := range []struct{ name, event string }{
+		{name: "invalid input", event: `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"apply_patch","input":{"input":42}}}`},
+		{name: "missing source terminator", event: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := newZedWireTestRegistry()
+			request := []byte(`{"model":"claude-sonnet-5","input":"edit","tools":[{"type":"custom","name":"apply_patch"}]}`)
+			_, plan, err := finalizeZedResponsesBody(registry, request, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tt.event + "\n"))}
+			if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+				t.Fatal(err)
+			}
+			converted, err := io.ReadAll(response.Body)
+			if err == nil {
+				t.Fatalf("invalid or incomplete stream succeeded: %s", converted)
+			}
+			failures := 0
+			for _, eventType := range parseCodexResponseEventTypes(t, string(converted)) {
+				if eventType == "response.completed" {
+					t.Fatalf("invalid or incomplete stream completed: %s", converted)
+				}
+				if eventType == "response.failed" {
+					failures++
+				}
+			}
+			if failures != 1 {
+				t.Fatalf("failed events=%d, want one: %s", failures, converted)
+			}
+		})
 	}
-	if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
-		t.Fatal(err)
-	}
-	converted, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(converted)
-	if !strings.Contains(text, "event: error") || !strings.Contains(text, `"type":"overloaded_error"`) || strings.Contains(text, "response.completed") {
-		t.Fatalf("converted SSE = %q", text)
+}
+
+// OpenAI Chat 客户端经 Zed（上游协议为 Codex）：声明 apply_patch 不得把正常结束的
+// 文本流判失败，补丁调用在 EOF 截断时才失败。
+func TestZedApplyPatchOpenAIChatClientTerminal(t *testing.T) {
+	const start = `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`
+	for _, tt := range []struct {
+		name      string
+		events    []string
+		wantError bool
+	}{
+		{name: "stream_ended without message_stop", events: []string{start,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+			`{"status":"stream_ended"}`}},
+		{name: "patch truncated at EOF", wantError: true, events: []string{start,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"apply_patch","input":{}}}`}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := newZedWireTestRegistry()
+			chat := []byte(`{"model":"claude-sonnet-5","stream":true,"messages":[{"role":"user","content":"edit"}],"tools":[{"type":"custom","name":"apply_patch"}]}`)
+			codexBody, err := registry.TranslateRequest(protocol.OpenAI, protocol.Codex, "claude-sonnet-5", chat, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zedBody, plan, err := finalizeZedResponsesBody(registry, codexBody, chat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(strings.Join(tt.events, "\n") + "\n"))}
+			if err := prepareZedResponsesResponse(resp, plan, registry); err != nil {
+				t.Fatal(err)
+			}
+			reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), isStreaming: true,
+				transformPlan: protocol.TransformPlan{ClientProtocol: protocol.OpenAI, UpstreamProtocol: protocol.Codex, OriginalModel: "claude-sonnet-5", ActualModel: "claude-sonnet-5", OriginalBody: chat, TranslatedBody: zedBody, NeedsTransform: true}}
+			stats := &streamReadStats{}
+			attachFirstByteDetector(reqCtx, resp, stats, nil)
+			rec := newRecorder()
+			result, _, err := (&Server{protocolRegistry: registry}).handleTranslatedStreamSuccessResponse(reqCtx, resp, resp.Header.Clone(), rec, string(protocol.Codex), stats, nil)
+			if (err != nil) != tt.wantError || result == nil {
+				t.Fatalf("error=%v result=%#v, want error=%v", err, result, tt.wantError)
+			}
+			if tt.wantError {
+				if gjson.GetBytes(result.SSEErrorEvent, "response.error.code").String() != "invalid_tool_arguments" {
+					t.Fatalf("failure was lost from result: %#v", result)
+				}
+				return
+			}
+			if result.StreamDiagMsg != "" || !strings.Contains(rec.Body.String(), "data: [DONE]") {
+				t.Fatalf("diag=%q response=%s, want completed chat stream", result.StreamDiagMsg, rec.Body.String())
+			}
+		})
 	}
 }
 

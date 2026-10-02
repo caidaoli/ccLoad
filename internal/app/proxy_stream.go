@@ -575,11 +575,11 @@ func streamTransformSSEEventsUntil(
 					}
 					if transform != nil {
 						chunks, transformErr := transform(rawEvent)
-						if transformErr != nil {
-							return transformErr
-						}
 						if writeErr := writeSSEChunks(dst, chunks); writeErr != nil {
 							return writeErr
+						}
+						if transformErr != nil {
+							return transformErr
 						}
 					}
 					if stopAfterEvent != nil && stopAfterEvent() {
