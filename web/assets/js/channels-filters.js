@@ -9,13 +9,13 @@ function getChannelAuthTypeOptions() {
     { value: 'all', label: window.t('channels.authTypeAll') },
     { value: 'api_key', label: window.t('channels.authTypeAPI') },
     { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
-    { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
-    { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
-    { value: 'zai_oauth', label: window.t('channels.authTypeZAI') },
+    { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
+    { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') },
+    { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
     { value: 'zed_oauth', label: window.t('channels.authTypeZed') },
-    { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') }
+    { value: 'zai_oauth', label: window.t('channels.authTypeZAI') }
   ];
 }
 

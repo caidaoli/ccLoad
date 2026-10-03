@@ -184,6 +184,10 @@ function applyChannelAuthEditorMode(
   if (planBadge) {
     planBadge.textContent = planBadgeText;
     planBadge.hidden = !planBadgeText;
+    const planTone = typeof oauthPlanBadgeTone === 'function' ? oauthPlanBadgeTone(authType, planType) : '';
+    ['plus', 'pro', 'team'].forEach(tone => {
+      planBadge.classList?.toggle(`ch-oauth-plan-badge--${tone}`, Boolean(planBadgeText) && tone === planTone);
+    });
   }
   // xAI OAuth now receives a masked synthetic Key row from the editor API so
   // its channel-level multiplier remains editable. Keep the empty create form

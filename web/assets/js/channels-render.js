@@ -133,6 +133,14 @@ function codexPlanLabel(rawPlanType) {
   }
 }
 
+// 订阅计划标签配色：渠道列表与编辑框共用，保证同一计划显示同一颜色。
+function oauthPlanBadgeTone(authType, planType) {
+  const plan = String(planType || '').toLowerCase();
+  if (authType === 'codex_oauth' && plan.replace(/[^a-z0-9]+/g, '_') === 'self_serve_business_prolite') return 'pro';
+  const planTokens = plan.split(/[^a-z0-9]+/).filter(Boolean);
+  return ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier)) || '';
+}
+
 function buildOAuthPlanBadge(channel) {
   let planType = '';
   if (channel?.auth_type === 'codex_oauth') {
@@ -155,10 +163,7 @@ function buildOAuthPlanBadge(channel) {
   const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   if (channel?.auth_type !== 'xai_oauth' && planTokens.includes('free')) return '';
 
-  const planTone = channel?.auth_type === 'codex_oauth' &&
-    String(planType).toLowerCase().replace(/[^a-z0-9]+/g, '_') === 'self_serve_business_prolite'
-    ? 'pro'
-    : ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
+  const planTone = oauthPlanBadgeTone(channel?.auth_type, planType);
   const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
   const displayLabel = channel?.auth_type === 'codex_oauth' ? codexPlanLabel(planType) : planType;
   return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(displayLabel)}</span>`;
@@ -1782,6 +1787,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildChannelRuntimeStatusHtml,
     buildChannelUsageHtml,
     buildOAuthPlanBadge,
+    oauthPlanBadgeTone,
     codexPlanLabel,
     buildOAuthUsageStatusHtml,
     buildManagementAccountStatusHtml,

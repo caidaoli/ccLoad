@@ -597,6 +597,21 @@ function isChannelDynamicPriorityVisible(ch) {
   return ch && ch.effective_priority !== undefined && ch.effective_priority !== null;
 }
 
+// 健康度动态排序开启时（存在 effective_priority）按动态优先级排序，否则按静态优先级。
+function getModelTestChannelSortPriority(ch) {
+  const value = Number(isChannelDynamicPriorityVisible(ch) ? ch.effective_priority : ch?.priority);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function compareModelTestChannels(a, b) {
+  return getModelTestChannelSortPriority(b) - getModelTestChannelSortPriority(a) ||
+    String(a.name || '').localeCompare(String(b.name || ''));
+}
+
+function findModelTestChannel(channelId) {
+  return channelsList.find(ch => Number(ch.id) === Number(channelId));
+}
+
 // 按模型测试行在静态优先级下方叠加显示渠道动态优先级(P_eff = priority - 失败惩罚 - TTFB 惩罚)，
 // 与渠道页 ch-priority-stack 的健康度行同一语义：健康度模式关闭(无 effective_priority)或与静态优先级
 // 一致(无惩罚)时不显示，避免叠加一个相同的数字造成噪音。
@@ -706,6 +721,7 @@ async function saveModelTestInlinePriority(input) {
     input.classList.remove('is-dirty');
     updateLocalModelTestChannelPriority(channelId, nextPriority);
     syncModelTestRowDynamicPriority(input);
+    reorderModelTestRowsByChannelPriority();
   } catch (error) {
     console.error('Update channel priority failed:', error);
     input.dataset.originalPriority = String(originalPriority);
@@ -714,6 +730,20 @@ async function saveModelTestInlinePriority(input) {
   } finally {
     input.disabled = false;
   }
+}
+
+// 优先级变更后按新的（动态）优先级重排已有行，保留测试结果与勾选状态；用户的表头排序仍优先生效。
+function reorderModelTestRowsByChannelPriority() {
+  if (testMode !== TEST_MODE_MODEL || !tbody) return;
+  const dataRows = Array.from(tbody.querySelectorAll('tr')).filter(row => !row.querySelector('td[colspan]'));
+  if (dataRows.length === 0) return;
+  dataRows
+    .map(row => ({ row, channel: findModelTestChannel(row.dataset.channelId), order: Number(row.dataset.baseOrder || 0) }))
+    .sort((a, b) => (a.channel && b.channel ? compareModelTestChannels(a.channel, b.channel) : 0) || a.order - b.order)
+    .forEach(({ row }, index) => {
+      row.dataset.baseOrder = String(index);
+    });
+  applyCurrentSort();
 }
 
 function queueModelTestPrioritySave(input, delay = 1000) {
@@ -1275,6 +1305,10 @@ function getRowSortValue(row, key) {
     case 'name':
       return row.children[1]?.textContent?.trim() || '';
     case 'priority': {
+      const channel = findModelTestChannel(row.dataset.channelId);
+      if (testMode === TEST_MODE_MODEL && isChannelDynamicPriorityVisible(channel)) {
+        return getModelTestChannelSortPriority(channel);
+      }
       const priorityInput = row.querySelector('.ch-priority-input');
       return parseNumericCellValue(priorityInput ? priorityInput.value : row.querySelector('.channel-priority')?.textContent);
     }
@@ -1565,7 +1599,7 @@ function isModelSupported(channel, modelName) {
 function getChannelsSupportingModel(modelName) {
   return channelsList
     .filter(ch => isModelSupported(ch, modelName))
-    .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
+    .sort(compareModelTestChannels);
 }
 
 function isExactModel(modelName) {
@@ -1579,8 +1613,8 @@ function getChannelModelPairsMatching(keyword) {
   const trimmed = String(keyword || '').trim().toLowerCase();
   if (!trimmed) return [];
   const pairs = [];
-  channelsList
-    .sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name))
+  [...channelsList]
+    .sort(compareModelTestChannels)
     .forEach(ch => {
       (ch.models || []).forEach(entry => {
         const name = getModelName(entry);
@@ -1718,7 +1752,9 @@ function renderChannelModeRows() {
 
   const fragment = document.createDocumentFragment();
   const channelEnabled = isModelTestChannelEnabled(selectedChannel);
-  models.forEach(entry => {
+  // 默认顺序（baseOrder）按模型名称，表头排序取消后也回到名称顺序。
+  const sortedModels = [...models].sort((a, b) => compareSortValues(getModelName(a), getModelName(b)));
+  sortedModels.forEach(entry => {
     const modelName = getModelName(entry);
     if (!modelName) return;
     const modelEnabled = entry?.disabled !== true;

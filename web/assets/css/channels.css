@@ -942,10 +942,10 @@
       justify-content: center;
       min-height: 18px;
       padding: 1px 7px;
-      border: 1px solid color-mix(in srgb, var(--primary-500) 35%, transparent);
+      border: 1px solid var(--channel-plan-default-border);
       border-radius: 999px;
-      background: color-mix(in srgb, var(--primary-500) 10%, var(--surface-bg));
-      color: var(--primary-600);
+      background: var(--channel-plan-default-bg);
+      color: var(--channel-plan-default-fg);
       font-size: 10px;
       font-weight: 700;
       line-height: 1;
