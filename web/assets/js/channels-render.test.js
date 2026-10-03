@@ -54,8 +54,8 @@ test('Claude 重置次数中的上游字段不能注入 HTML', () => {
   global.window = { t: (key, values = {}) => `${key}${values.count ?? ''}${values.time ?? ''}` };
   global.getOAuthUsageState = () => null;
   global.getAnthropicResetCreditsState = () => ({
-    status: 'ready', data: {
-      eligible: true, available_count: 0,
+    status: 'ready', cached: true, data: {
+      eligible: false, available_count: 0,
       credits: [
         { label: '<img src=x onerror=alert(1)>', resets_left: 2, expires_at: '2027-01-01T00:00:00Z' },
         { label: 'second', resets_left: 1, expires_at: '2027-02-01T00:00:00Z' }
@@ -67,6 +67,9 @@ test('Claude 重置次数中的上游字段不能注入 HTML', () => {
     const html = buildOAuthUsageStatusHtml({ id: 8101, auth_type: 'anthropic_oauth' });
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
     assert.doesNotMatch(html, /<img/);
+    const resetButton = html.match(/<button\b[^>]*data-action="reset-anthropic-quota"[^>]*>/);
+    assert.ok(resetButton, 'remaining credits expose the reset action');
+    assert.doesNotMatch(resetButton[0], /\sdisabled\b/, 'cached credits allow reset without refreshing');
   } finally {
     global.window = previousWindow;
     global.getAnthropicResetCreditsState = previousResetState;

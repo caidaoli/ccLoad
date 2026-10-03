@@ -877,9 +877,6 @@ function buildAnthropicResetCreditsHtml(channelID) {
     ? getAnthropicResetCreditsState(channelID) : null;
   const loading = state?.status === 'loading';
   const resetting = state?.reset_status === 'loading';
-  const canReset = state?.status === 'ready' && !state.cached && state.data?.eligible && state.data.available_count > 0;
-  const resetLabel = resetting ? 'resettingQuota' : 'resetQuota';
-  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${state?.cached ? ` title="${escapeChannelRefreshText(window.t('channels.oauth.usageRefresh'))}"` : ''}${loading || resetting || !canReset ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
   const message = state?.reset_error || state?.reset_feedback;
   const feedback = message ? `<div class="ch-oauth-usage__credits-summary" role="${state?.reset_status === 'reset' ? 'status' : 'alert'}">${escapeChannelRefreshText(message)}</div>` : '';
   if (state?.status !== 'ready') {
@@ -891,6 +888,8 @@ function buildAnthropicResetCreditsHtml(channelID) {
     (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
   const total = credits.reduce((sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0), 0);
   if (total <= 0) return feedback ? `<div class="ch-oauth-usage__credits">${feedback}</div>` : '';
+  const resetLabel = resetting ? 'resettingQuota' : 'resetQuota';
+  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${loading || resetting ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
   const expiry = credit => {
     const timestamp = Date.parse(String(credit.expires_at || ''));
     return Number.isFinite(timestamp) ? timestamp : Infinity;
@@ -899,7 +898,7 @@ function buildAnthropicResetCreditsHtml(channelID) {
     [...credits].sort((left, right) => expiry(left) - expiry(right))[0];
   const available = data.eligible && data.available_count > 0;
   const status = !data.eligible ? 'channels.oauth.anthropicResetIneligible'
-    : available ? 'channels.oauth.anthropicResetUsable'
+    : available ? ''
       : 'channels.oauth.anthropicResetUnavailable';
   const expiryText = primary?.expires_at ? formatXAIUsageReset(primary.expires_at) : '';
   const details = credits.map(credit => {
@@ -914,7 +913,10 @@ function buildAnthropicResetCreditsHtml(channelID) {
       ${expiryText ? `<span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpires', { time: expiryText }))}</span>` : ''}
       ${resetButton}
     </div>
-    <div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(window.t(status))}${cooldown ? ` · ${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown }))}` : ''}</div>
+    ${status || cooldown ? `<div class="ch-oauth-usage__credits-summary">${[
+      status ? escapeChannelRefreshText(window.t(status)) : '',
+      cooldown ? escapeChannelRefreshText(window.t('channels.oauth.anthropicResetCooldown', { time: cooldown })) : ''
+    ].filter(Boolean).join(' · ')}</div>` : ''}
     ${feedback}
   </div>`;
 }

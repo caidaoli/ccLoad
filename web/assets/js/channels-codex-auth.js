@@ -2168,11 +2168,18 @@ function anthropicResetWindowLabels(windows) {
     ? window.t(`channels.oauth.${keys[name]}`) : name).join(', ');
 }
 
+function hasAnthropicResetCredits(state) {
+  return state?.status === 'ready' && state.data?.credits?.some(credit =>
+    Number(credit?.resets_left) > 0 && (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
+}
+
 async function confirmAnthropicQuotaReset(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const state = getAnthropicResetCreditsState(channelID);
   if (state?.reset_status === 'loading' || state?.status === 'loading') return null;
-  if (!(state?.status === 'ready' && !state.cached && state.data?.eligible && state.data.available_count > 0)) return null;
-  const credit = state?.data?.credits?.find(item => item.redeemable);
+  if (!hasAnthropicResetCredits(state)) return null;
+  const credit = state.data.credits.find(item => item.redeemable) ||
+    state.data.credits.find(item => Number(item?.resets_left) > 0 &&
+      (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
   const message = window.t('channels.oauth.anthropicResetConfirm', {
     windows: anthropicResetWindowLabels(credit?.clears) || '—',
     count: Math.max(0, state.data.credits.reduce((sum, item) => sum + Math.max(0, Number(item.resets_left) || 0), 0) - 1)
@@ -2189,7 +2196,7 @@ async function redeemAnthropicResetCredit(channelID, fetcher = fetchDataWithAuth
   anthropicResetCreditsChannelVersionByID.set(numericID, anthropicResetCreditsChannelVersion(channel));
   const previous = getAnthropicResetCreditsState(numericID);
   if (previous?.reset_status === 'loading') return null;
-  if (!(previous?.status === 'ready' && !previous.cached && previous.data?.eligible && previous.data.available_count > 0)) {
+  if (!hasAnthropicResetCredits(previous)) {
     throw new Error(window.t('channels.oauth.anthropicResetUnavailable'));
   }
   const operation = Symbol();

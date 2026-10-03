@@ -69,8 +69,6 @@ test('Claude usage refresh includes reset credits and ignores an older response'
   const latest = { eligible: true, available_count: 2, credits: [{ resets_left: 2 }], fetched_at: '2026-10-02T01:00:00Z' };
   try {
     assert.deepEqual(getAnthropicResetCreditsState(8101).data, saved);
-    assert.equal(await confirmAnthropicQuotaReset(8101, () => assert.fail('cached credits require refresh')), null);
-    await assert.rejects(() => redeemAnthropicResetCredit(8101, () => assert.fail('cached credits require refresh')), /anthropicResetUnavailable/);
     const older = refreshOAuthUsage(8101, (url, options) => {
       assert.equal(url, '/admin/channels/8101/oauth-usage');
       assert.equal(options.method, 'POST');
@@ -86,6 +84,41 @@ test('Claude usage refresh includes reset credits and ignores an older response'
     assert.deepEqual(getAnthropicResetCreditsState(8101), { status: 'ready', data: latest });
     await refreshOAuthUsage(8101, async () => ({ windows: [] }), { reload: false });
     assert.equal(getAnthropicResetCreditsState(8101).data, null);
+  } finally {
+    global.channels = previousChannels;
+    global.window = previousWindow;
+  }
+});
+
+test('Claude cached reset credits can be redeemed without refreshing or cached eligibility', async () => {
+  const previousChannels = global.channels;
+  const previousWindow = global.window;
+  const data = { eligible: false, available_count: 0, credits: [
+    { resets_left: 1, redeemable: false, clears: ['seven_day'] }
+  ] };
+  global.channels = [{ id: 8120, auth_type: 'anthropic_oauth', oauth_usage: { anthropic_reset_credits: data } }];
+  let confirmed = false;
+  let calls = 0;
+  global.window = { t: key => key, confirm: () => confirmed };
+  const fetcher = async (url, options) => {
+    calls++;
+    assert.equal(url, '/admin/channels/8120/anthropic-reset-credits/redeem');
+    assert.equal(options.method, 'POST');
+    return { outcome: 'reset', credits: { eligible: true, available_count: 0, credits: [] }, usage: { windows: [] } };
+  };
+  try {
+    assert.equal(await confirmAnthropicQuotaReset(8120, fetcher), null);
+    assert.equal(calls, 0);
+    confirmed = true;
+    data.credits[0].resets_left = 0;
+    assert.equal(await confirmAnthropicQuotaReset(8120, fetcher), null);
+    data.credits[0].resets_left = 1;
+    data.credits[0].expires_at = '2000-01-01T00:00:00Z';
+    assert.equal(await confirmAnthropicQuotaReset(8120, fetcher), null);
+    delete data.credits[0].expires_at;
+    assert.equal((await confirmAnthropicQuotaReset(8120, fetcher, { reload: false })).outcome, 'reset');
+    assert.equal(calls, 1);
+    assert.equal(await confirmAnthropicQuotaReset(8120, fetcher), null);
   } finally {
     global.channels = previousChannels;
     global.window = previousWindow;
@@ -247,7 +280,7 @@ test('Claude reset ignores a late result after the channel authentication change
   global.window = { t: key => key };
   let resolveRequest;
   try {
-    await loadAnthropicUsage(8113, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8113, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     const pending = redeemAnthropicResetCredit(8113, () => new Promise(resolve => { resolveRequest = resolve; }), { reload: false });
     global.channels[0].auth_type = 'codex_oauth';
     syncAnthropicResetCreditsFromChannels(global.channels);
@@ -268,7 +301,7 @@ test('Claude reset keeps its result when a credential refresh updates the channe
   global.window = { t: key => key };
   let resolveRequest;
   try {
-    await loadAnthropicUsage(8115, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8115, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     const pending = redeemAnthropicResetCredit(8115, () => new Promise(resolve => { resolveRequest = resolve; }), { reload: false });
     syncAnthropicResetCreditsFromChannels([{ ...global.channels[0], updated_at: '2026-09-30T00:01:00Z' }]);
     const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 0 }] };
@@ -293,7 +326,7 @@ test('Claude reset without refreshed usage does not orphan an in-flight quota qu
   global.window = { t: key => key };
   let resolveUsage;
   try {
-    await loadAnthropicUsage(8114, async () => ({ eligible: true, available_count: 1, credits: [] }));
+    await loadAnthropicUsage(8114, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     const query = refreshOAuthUsage(8114, () => new Promise(resolve => { resolveUsage = resolve; }), { reload: false });
     await redeemAnthropicResetCredit(8114, async () => ({ outcome: 'unknown' }), { reload: false });
     const usage = { provider: 'anthropic', windows: [{ name: 'seven_day', used_percent: 80 }],
