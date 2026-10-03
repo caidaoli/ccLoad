@@ -145,7 +145,7 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
 
   // 安装页
   'www.install.title': '部署安装',
-  'www.install.meta.description': 'ccLoad Docker、Hugging Face Spaces、源码编译和二进制部署指南，覆盖安全启动项、存储和 API 令牌配置。',
+  'www.install.meta.description': 'ccLoad Docker、Homebrew、Hugging Face Spaces、源码编译和二进制部署指南，覆盖安全启动项、存储和 API 令牌配置。',
   'www.install.subtitle': '从本地试用到生产部署，按场景选择最少配置路径',
   'www.install.badges.label': '部署方式',
 
@@ -174,4 +174,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.common.copied': '已复制！',
   'www.common.learnMore': '了解更多',
   'www.common.getStarted': '开始使用',
+  "www.home.deployment.brew.difficulty": "难度：⭐",
+  "www.home.deployment.brew.desc": "在 macOS/Linux（ARM64 或 AMD64）安装稳定版，通过 brew 管理后台服务。",
+  "www.home.deployment.brew.learnMore": "查看 Homebrew 步骤",
+  "www.home.quickstart.brew.setup": "编辑 .env 时先设置 CCLOAD_PASS 为强密码，再启动服务。随后访问 http://localhost:8080/web/。",
 });

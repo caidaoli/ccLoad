@@ -87,6 +87,41 @@ chmod +x ccload-linux-amd64
 
 存在 Cursor 渠道时，ccLoad 会自动下载锁定版本的 SDK Bridge，校验内置 SHA-256，并原子安装到托管状态目录。离线环境可从 [Cursor SDK Bridge 官方发布页](https://github.com/cursor/sdk-bridge/releases)下载匹配版本，把其中的 `cursor-sdk-bridge` 放到 ccLoad 同目录，或设置 `CURSOR_SDK_BRIDGE_BIN`。
 
+## Homebrew
+
+项目仓库同时作为 [Homebrew tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)，安装经过 SHA-256 校验的 Release 二进制，支持 macOS/Linux 的 ARM64、AMD64，无需 Go 编译器。Formula 仅跟随稳定版。
+
+```bash
+brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+# 创建或编辑此文件，将 CCLOAD_PASS 设置为强密码。
+# 示例内容：CCLOAD_PASS=your_strong_password
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+chmod 600 .env
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload
+```
+
+访问 `http://localhost:8080/web/`。`PORT` 等可选环境变量也写入此 `.env`。需要前台运行时，在该目录执行 `ccload`，无需启动后台服务。
+
+升级会保留配置和数据：`.env` 位于 `$(brew --prefix)/var/ccload`，默认数据库为 `var/ccload/data/ccload.db`，后台服务日志位于 `var/log/ccload`（后两者均相对于 Homebrew 前缀）。
+
+```bash
+brew update
+brew upgrade caidaoli/ccload/ccload
+brew services restart caidaoli/ccload/ccload
+# 停止服务：
+brew services stop caidaoli/ccload/ccload
+```
+
+安装入口设置 `CCLOAD_CONTAINER=1`，复用现有开关禁用进程内二进制更新。因此管理界面会显示容器托管更新提示；此安装方式请统一使用 Homebrew 升级。
+
+维护说明：稳定版发布后，工作流读取已发布的 `checksums.txt`，更新 `Formula/ccload.rb`，使用 `GITHUB_TOKEN` 提交到 `master`；Beta 不更新 Formula。分支规则需允许该机器人推送；拒绝推送或非快进冲突会使 Homebrew 任务失败，不会强制改写历史。恢复时先更新分支，再执行 `python3 .github/scripts/update-homebrew.py vX.Y.Z /path/to/checksums.txt Formula/ccload.rb`，检查并提交结果。脚本拒绝降级，避免重跑旧版发布使 tap 回退。
+
 ## 方式四：Hugging Face Spaces 部署
 
 Hugging Face Spaces 提供免费的 Docker 托管和自动 HTTPS，适合个人试用与轻量场景。

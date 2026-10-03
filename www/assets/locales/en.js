@@ -145,7 +145,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Install
   'www.install.title': 'Deploy ccLoad',
-  'www.install.meta.description': 'Deploy ccLoad with Docker, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.',
+  'www.install.meta.description': 'Deploy ccLoad with Docker, Homebrew, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.',
   'www.install.subtitle': 'Pick the smallest deployment path that fits your runtime, from local testing to production.',
   'www.install.badges.label': 'Deployment options',
 
@@ -174,4 +174,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.common.copied': 'Copied!',
   'www.common.learnMore': 'Learn More',
   'www.common.getStarted': 'Get Started',
+  "www.home.deployment.brew.difficulty": "Difficulty: ⭐",
+  "www.home.deployment.brew.desc": "Install stable releases on macOS/Linux (ARM64 or AMD64) and manage the service with brew.",
+  "www.home.deployment.brew.learnMore": "View Homebrew steps",
+  "www.home.quickstart.brew.setup": "When editing .env, set CCLOAD_PASS to a strong password before starting. Then open http://localhost:8080/web/.",
 });

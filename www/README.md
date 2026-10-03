@@ -114,12 +114,13 @@ cp -r www /path/to/webroot/
 - 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
 - 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / CodeBuddy / Z.ai / Cursor / Zed
 - 管理后台预览截图
-- 4 种部署方式卡片（Go 1.26+，官方 latest 二进制）
+- 5 种部署方式卡片（Go 1.26+，官方 latest 二进制）
 - 快速开始 Tab 切换
 - 代码复制功能
 
 ### ✅ 安装指南（install.html）
 - Docker Compose 部署（GHCR latest / beta / 精确版本）
+- Homebrew 安装、密码配置、后台服务及稳定版升级
 - Hugging Face Spaces 部署
 - 源码编译与二进制运行（含 Cursor SDK Bridge）
 - 部署后验证命令

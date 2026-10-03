@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title data-i18n="www.install.title">Deploy ccLoad - Docker, Hugging Face, Source and Binary</title>
-  <meta name="description" data-i18n-content="www.install.meta.description" content="Deploy ccLoad with Docker, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.">
+  <title data-i18n="www.install.title">Deploy ccLoad - Docker, Homebrew, Hugging Face, Source and Binary</title>
+  <meta name="description" data-i18n-content="www.install.meta.description" content="Deploy ccLoad with Docker, Homebrew, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -12,9 +12,9 @@
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
-  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
-  <script defer src="assets/locales/en.js?v=20261002-2"></script>
-  <script defer src="assets/locales/install.zh-CN.js?v=20261002-2"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261003-1"></script>
+  <script defer src="assets/locales/en.js?v=20261003-1"></script>
+  <script defer src="assets/locales/install.zh-CN.js?v=20261003-1"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
   <script defer src="assets/js/nav.js?v=20260904-1"></script>
   <script defer src="assets/js/www.js?v=20261002-3"></script>
@@ -29,6 +29,7 @@
       </p>
       <div class="www-badge-row" aria-label="Deployment options" data-i18n-aria-label="www.install.badges.label">
         <span class="www-badge">Docker</span>
+        <a class="www-badge" href="#homebrew">Homebrew</a>
         <span class="www-badge">Hugging Face Spaces</span>
         <span class="www-badge">Go 1.27+</span>
         <span class="www-badge">Linux / macOS / Windows</span>
@@ -175,6 +176,46 @@ EXPOSE 7860
 # FROM ghcr.io/caidaoli/ccload:v4.9.0</code></pre>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="www-section" id="homebrew">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>Homebrew</h2>
+          <p data-i18n-html="www.install.brew.desc">Install stable release binaries on macOS/Linux (ARM64 or AMD64), with SHA-256 verification and no Go compiler required.</p>
+          <p data-i18n-html="www.install.brew.password">When editing <code>.env</code> below, add <code>CCLOAD_PASS=your_strong_password</code> with your own strong password. Optional settings such as <code>PORT</code> go in the same file.</p>
+        </div>
+        <div class="www-code-block">
+          <div class="www-code-header">
+            <span class="www-code-lang">bash</span>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+          </div>
+          <div class="www-code-content"><pre><code>brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+chmod 600 .env
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload</code></pre></div>
+        </div>
+        <p data-i18n-html="www.install.brew.runtime">Open <code>http://localhost:8080/web/</code>. Configuration and data remain under <code>$(brew --prefix)/var/ccload</code>, with the default database at <code>data/ccload.db</code>. Service logs are under <code>$(brew --prefix)/var/log/ccload</code>. For foreground use, run <code>ccload</code> from the configuration directory instead of starting the service.</p>
+        <h3 data-i18n-html="www.install.brew.upgrade">Upgrade or stop the service</h3>
+        <div class="www-code-block">
+          <div class="www-code-header">
+            <span class="www-code-lang">bash</span>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+          </div>
+          <div class="www-code-content"><pre><code>brew update
+brew upgrade caidaoli/ccload/ccload
+brew services restart caidaoli/ccload/ccload
+
+brew services stop caidaoli/ccload/ccload</code></pre></div>
+        </div>
+        <p data-i18n-html="www.install.brew.note">Homebrew follows stable releases only and preserves your configuration and data across upgrades. In-app updates are disabled; use <code>brew upgrade</code> to update.</p>
       </div>
     </section>
 

@@ -97,6 +97,16 @@ curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docke
 docker compose up -d
 ```
 
+
+或通过 Homebrew 安装（macOS/Linux，支持 Apple Silicon/ARM64 和 Intel/AMD64）：
+
+```bash
+brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+```
+
+按 [Homebrew 部署说明](docs/guide/deployment.zh-CN.md#homebrew)设置管理密码并启动服务。
+
 然后：
 
 1. 打开 `http://localhost:8080/web/`，用 `CCLOAD_PASS` 登录。

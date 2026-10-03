@@ -79,6 +79,41 @@ chmod +x ccload-linux-amd64
 
 When a Cursor channel exists, ccLoad automatically downloads its pinned SDK Bridge, verifies the embedded SHA-256, and installs it atomically under its managed state directory. For offline installations, download the matching archive from the [official Cursor SDK Bridge releases](https://github.com/cursor/sdk-bridge/releases), place its `cursor-sdk-bridge` executable beside ccLoad, or set `CURSOR_SDK_BRIDGE_BIN`.
 
+## Homebrew
+
+The project repository doubles as a [Homebrew tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap). It installs verified release binaries for macOS and Linux on ARM64 or AMD64; no Go compiler is required. The formula tracks stable releases only.
+
+```bash
+brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+# Create/edit this file and set CCLOAD_PASS to a strong password.
+# Example content: CCLOAD_PASS=your_strong_password
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+chmod 600 .env
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload
+```
+
+Open `http://localhost:8080/web/`. Optional environment settings such as `PORT` belong in the same `.env`. To run in the foreground, run `ccload` from that directory instead of starting the service.
+
+Configuration and data survive upgrades: `.env` is under `$(brew --prefix)/var/ccload`, the default database is `var/ccload/data/ccload.db`, and service logs are under `var/log/ccload` (all relative to the Homebrew prefix).
+
+```bash
+brew update
+brew upgrade caidaoli/ccload/ccload
+brew services restart caidaoli/ccload/ccload
+# Stop the service:
+brew services stop caidaoli/ccload/ccload
+```
+
+The installed launcher sets `CCLOAD_CONTAINER=1`, the existing switch that disables in-app binary updates. The UI therefore describes updates as container-managed; use Homebrew to upgrade this installation.
+
+For maintainers: stable releases update `Formula/ccload.rb` from the published `checksums.txt` and commit it to `master` using `GITHUB_TOKEN`. Beta releases leave the formula unchanged. Branch rules must permit this bot push; rejected or non-fast-forward pushes fail the Homebrew job without rewriting history. To recover, update the branch, run `python3 .github/scripts/update-homebrew.py vX.Y.Z /path/to/checksums.txt Formula/ccload.rb`, review and commit the result. Older versions are rejected to prevent a release rerun from downgrading the tap.
+
 ## Method 4: Hugging Face Spaces Deployment
 
 Hugging Face Spaces provides free container hosting with Docker support, ideal for personal and small team use.

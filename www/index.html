@@ -16,8 +16,8 @@
   <link rel="stylesheet" href="assets/css/www.css?v=20261002-3">
 
   <!-- Locale bundles + i18n -->
-  <script defer src="assets/locales/zh-CN.js?v=20261002-2"></script>
-  <script defer src="assets/locales/en.js?v=20261002-2"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20261003-1"></script>
+  <script defer src="assets/locales/en.js?v=20261003-1"></script>
   <script defer src="assets/js/i18n.js?v=20260829-1"></script>
 
   <!-- Scripts -->
@@ -412,6 +412,14 @@
 
         <!-- Binary download -->
         <div class="www-deployment-card">
+          <span class="www-deployment-icon">🍺</span>
+          <h3 class="www-deployment-title">Homebrew</h3>
+          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.brew.difficulty">Difficulty: ⭐</span>
+          <p class="www-deployment-desc" data-i18n="www.home.deployment.brew.desc">Install stable releases on macOS/Linux (ARM64 or AMD64) and manage the service with brew.</p>
+          <a href="install.html#homebrew" class="www-btn www-btn-primary" data-i18n="www.home.deployment.brew.learnMore">View Homebrew steps</a>
+        </div>
+
+        <div class="www-deployment-card">
           <span class="www-deployment-icon">📦</span>
           <h3 class="www-deployment-title" data-i18n="www.home.deployment.binary.title">Binary</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.binary.difficulty">Difficulty: ⭐⭐</span>
@@ -437,6 +445,7 @@
           <button class="www-tab-button" data-i18n="www.home.quickstart.hf">Hugging Face</button>
           <button class="www-tab-button" data-i18n="www.home.quickstart.source">From Source</button>
           <button class="www-tab-button" data-i18n="www.home.quickstart.binary">Binary</button>
+          <button class="www-tab-button">Homebrew</button>
         </div>
 
         <!-- Docker -->
@@ -534,6 +543,26 @@ export CCLOAD_PASS=your_admin_password
 # Open http://localhost:8080/web/</code></pre>
             </div>
           </div>
+        </div>
+        <div class="www-tab-panel">
+          <p data-i18n="www.home.quickstart.brew.setup">When editing .env, set CCLOAD_PASS to a strong password before starting. Then open http://localhost:8080/web/.</p>
+          <div class="www-code-block">
+          <div class="www-code-header">
+            <span class="www-code-lang">bash</span>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+          </div>
+          <div class="www-code-content"><pre><code>brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+chmod 600 .env
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload</code></pre></div>
+        </div>
+          <a href="install.html#homebrew" class="www-btn www-btn-secondary" data-i18n="www.home.deployment.brew.learnMore">View Homebrew steps</a>
         </div>
       </div>
     </div>

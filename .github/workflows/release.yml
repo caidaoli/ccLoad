@@ -182,6 +182,43 @@ jobs:
             dist/ccload-*
             dist/checksums.txt
 
+  homebrew:
+    name: Update Homebrew stable formula
+    needs: [metadata, release]
+    if: needs.metadata.outputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-stable
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v7
+        with:
+          ref: master
+
+      - name: Update formula from published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern checksums.txt --dir "$RUNNER_TEMP/homebrew"
+          python3 .github/scripts/update-homebrew.py "$RELEASE_TAG" \
+            "$RUNNER_TEMP/homebrew/checksums.txt" Formula/ccload.rb
+          ruby -c Formula/ccload.rb
+          git diff --check
+          if git diff --quiet -- Formula/ccload.rb; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/ccload.rb
+          git commit -m "chore(homebrew): update ccload to $RELEASE_TAG"
+          git push origin HEAD:master
+
   docker:
     name: Publish ${{ needs.metadata.outputs.channel }} container image
     needs: [metadata, build]
