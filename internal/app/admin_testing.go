@@ -1213,6 +1213,7 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
 	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
 		input.UpstreamStatusCode = upstreamStatusCode
+		input.ModelScoped = isAntigravityModelNotFound(cfg, upstreamStatusCode)
 	}
 	action := s.applyCooldownDecision(
 		ctx,
@@ -1384,7 +1385,7 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 				}
 				return lastResult
 			}
-			if !isChannelTestProtocolEndpointMissing(lastResult) {
+			if !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -2957,12 +2958,12 @@ func (s *Server) applyChannelTestCapacityCooldown(
 	result["antigravity_capacity_cooldown_applied"] = true
 }
 
-func isChannelTestProtocolEndpointMissing(result map[string]any) bool {
+func isChannelTestProtocolEndpointMissing(cfg *model.Config, result map[string]any) bool {
 	if missing, _ := result["protocol_capability_missing"].(bool); missing {
 		return true
 	}
 	statusCode, ok := getResultInt(result["status_code"])
-	if !ok {
+	if !ok || isAntigravityModelNotFound(cfg, statusCode) {
 		return false
 	}
 	_, errorBody, _ := buildTestFailureClassificationInput(result)

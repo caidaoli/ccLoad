@@ -3281,6 +3281,7 @@ func (s *Server) forwardAttempt(
 	}
 
 	if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
+		!isAntigravityModelNotFound(cfg, res.Status) &&
 		isProtocolEndpointMissing(res) {
 		logged := s.logProtocolCapabilityFallback(
 			reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res,
@@ -4148,6 +4149,12 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 		// 模型级错误与 URL 无关，不要在同渠道继续浪费请求。
 		if nextAction == cooldown.ActionRetryModel {
+			// Antigravity 回退错误的冷却被推迟到 URL 重试结束；走到这里说明不再回退，必须落库。
+			if result != nil && result.deferredCooldown != nil {
+				nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
+				result.nextAction = nextAction
+				result.deferredCooldown = nil
+			}
 			break
 		}
 		// 客户端错误：直接返回

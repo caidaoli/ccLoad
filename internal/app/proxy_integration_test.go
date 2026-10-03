@@ -3321,6 +3321,68 @@ func TestProxy_AntigravityGeminiQuotaCooldownAndAccountFallback(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityNotFoundCoolsModelNotChannel(t *testing.T) {
+	t.Parallel()
+	const requestModel = "claude-sonnet-4-6"
+	for _, tc := range []struct {
+		mode     string
+		multiURL bool
+	}{
+		{mode: model.ProtocolTransformModeAuto}, {mode: model.ProtocolTransformModeAuto, multiURL: true},
+		{mode: model.ProtocolTransformModeUpstream}, {mode: model.ProtocolTransformModeUpstream, multiURL: true},
+	} {
+		multiURL := tc.multiURL
+		t.Run(fmt.Sprintf("%s/multiURL=%v", tc.mode, multiURL), func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`)
+			}))
+			urls := upstream.URL
+			if multiURL {
+				urls += "\n" + upstream.URL + "/fallback"
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-404", upstreamProtocol: "gemini", protocolTransformMode: tc.mode, models: requestModel + ",gemini-other", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-404"),
+			}}, map[int]string{0: urls})
+
+			response := doProxyRequest(t, env.engine, "/v1beta/models/"+requestModel+":generateContent", map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+			}, nil)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+			}
+			wantCalls := int32(1)
+			if multiURL {
+				wantCalls = 2
+			}
+			if calls.Load() != wantCalls {
+				t.Fatalf("upstream calls=%d, want %d", calls.Load(), wantCalls)
+			}
+
+			ctx := context.Background()
+			configs, err := env.store.ListConfigs(ctx)
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs = (%d, %v)", len(configs), err)
+			}
+			cooldowns, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if until, ok := cooldowns[configs[0].ID][requestModel]; !ok || !until.After(time.Now()) || len(cooldowns[configs[0].ID]) != 1 {
+				t.Fatalf("model cooldowns=%v, want only %s", cooldowns[configs[0].ID], requestModel)
+			}
+			if time.Unix(configs[0].CooldownUntil, 0).After(time.Now()) {
+				t.Fatalf("channel cooled until %d, want model-only cooldown", configs[0].CooldownUntil)
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

@@ -142,7 +142,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				return
 			}
 			lastResult = attempt.result
-			if !isChannelTestProtocolEndpointMissing(lastResult) {
+			if !isChannelTestProtocolEndpointMissing(cfg, lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1

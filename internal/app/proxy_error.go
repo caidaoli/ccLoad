@@ -792,6 +792,9 @@ func (s *Server) handleProxyErrorResponse(
 	if cfg.UsesZedOAuth() && zedModelPlanRejected(res.Status, res.Body) {
 		input.ModelScoped = true
 	}
+	if isAntigravityModelNotFound(cfg, res.Status) {
+		input.ModelScoped = true
+	}
 	if !forceReturnClient && !modelCapacityRateLimited {
 		input = s.prepareJevError(ctx, cfg, reqCtx, res, input, selectedKey)
 	}

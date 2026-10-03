@@ -2860,6 +2860,56 @@ func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *t
 	}
 }
 
+func TestHandleChannelTest_AntigravityNotFoundCoolsModelNotChannel(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{model.ProtocolTransformModeLocal, model.ProtocolTransformModeAuto, model.ProtocolTransformModeUpstream} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`)
+			}))
+			t.Cleanup(upstream.Close)
+
+			srv := newInMemoryServer(t)
+			srv.antigravityClient = upstream.Client()
+			created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+			created.ProtocolTransformMode = mode
+			created.ModelEntries = append(created.ModelEntries, model.ModelEntry{Model: "gemini-other"})
+			ctx := context.Background()
+			if _, err := srv.store.UpdateConfig(ctx, created.ID, created); err != nil {
+				t.Fatal(err)
+			}
+			channelID := fmt.Sprintf("%d", created.ID)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+				"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+			}))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelTest(c)
+
+			resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+			if got, _ := resp.Data["cooldown_action"].(string); got != "model_cooldown_applied" {
+				t.Fatalf("cooldown_action=%q data=%+v", got, resp.Data)
+			}
+			cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if until, ok := cooldowns[created.ID]["gemini-3-flash"]; !ok || !until.After(time.Now()) || len(cooldowns[created.ID]) != 1 {
+				t.Fatalf("model cooldowns=%v, want only gemini-3-flash", cooldowns[created.ID])
+			}
+			stored, err := srv.store.GetConfig(ctx, created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if time.Unix(stored.CooldownUntil, 0).After(time.Now()) {
+				t.Fatalf("channel cooled until %d, want model-only cooldown", stored.CooldownUntil)
+			}
+		})
+	}
+}
+
 func TestHandleChannelTest_AntigravityCustomURLDoesNotExpandCapacityFallback(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
