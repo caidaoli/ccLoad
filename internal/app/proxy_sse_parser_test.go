@@ -726,6 +726,20 @@ data: {"type":"message_stop","usage":{"input_tokens":0,"output_tokens":0,"cache_
 			want1h:        0,
 		},
 		{
+			// 真实 Anthropic 帧形状：message_delta 只重发 aggregate，不带 cache_creation
+			name: "aggregate-only delta matching known split keeps 1h",
+			sseData: `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":4,"cache_creation_input_tokens":10117,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":10117}}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":4,"cache_creation_input_tokens":10117,"cache_read_input_tokens":0,"output_tokens":4}}
+
+`,
+			wantAggregate: 10117,
+			want5m:        0,
+			want1h:        10117,
+		},
+		{
 			name: "aggregate-only falls back to 5m and clears 1h",
 			sseData: `event: message_start
 data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}}}

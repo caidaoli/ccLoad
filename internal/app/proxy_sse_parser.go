@@ -1730,8 +1730,11 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	}
 	if detailedCache5m > 0 || detailedCache1h > 0 {
 		u.setCacheCreationSnapshot(detailedCache5m, detailedCache1h)
-	} else if aggregateCacheCreation > 0 {
-		// 只有 aggregate、没有权威 split 时按 5m 计价，并清掉可能残留的旧 1h bucket。
+	} else if aggregateCacheCreation > 0 &&
+		aggregateCacheCreation != u.Cache5mInputTokens+u.Cache1hInputTokens {
+		// 只有 aggregate 且与已知 split 不一致时才按 5m 计价，并清掉旧 1h bucket。
+		// Anthropic 的 message_delta 会只带 aggregate 重发同一快照（无 cache_creation），
+		// 此时必须保留 message_start 的 split，否则 1h 写入会被错记为 5m。
 		u.setCacheCreationSnapshot(aggregateCacheCreation, 0)
 	}
 
