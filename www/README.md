@@ -48,6 +48,8 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 
 在 `assets/css/www.css` 中添加，使用 `www-` 前缀；共享设计系统 `styles.css` 由 `make www-setup` 从 `web/` 复制。
 
+图标不用 emoji：源 HTML 写 `<span class="www-feature-icon" data-icon="key"></span>`（也可用 `www-doc-icon` / `www-deployment-icon`），构建时由 `build.mjs` 的 `ICONS` 内联为线性 SVG；图标名未知时构建直接失败。
+
 ## 技术栈
 
 - **构建**：`build.mjs`（Node ESM，零依赖）预渲染双语静态页

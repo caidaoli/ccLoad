@@ -126,42 +126,42 @@
       </p>
       <div class="www-feature-grid www-why-grid">
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">🔑</span>
+          <span class="www-feature-icon" data-icon="key"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.accounts.title">Subscription accounts, not just API keys</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.accounts.desc">
             Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">🔀</span>
+          <span class="www-feature-icon" data-icon="shuffle"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.protocol.title">Any client on any upstream</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.protocol.desc">
             Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">🛡️</span>
+          <span class="www-feature-icon" data-icon="shield"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.failover.title">Failover your client never sees</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.failover.desc">
             If an upstream fails before the first byte reaches the client, ccLoad retries the next candidate. Errors disguised as HTTP 200 and rate limits inside SSE streams count as failures too.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">🎯</span>
+          <span class="www-feature-icon" data-icon="snowflake"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.cooldown.title">Cooldown at the right scope</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.cooldown.desc">
             A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">💰</span>
+          <span class="www-feature-icon" data-icon="coins"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.cost.title">Cost you can check and cap</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.cost.desc">
             Pricing covers cache reads and writes, long-context tiers, OpenAI service_tier and image generation. Cap spend per channel per day and per token in total, per day or per month.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon" aria-hidden="true">🪶</span>
+          <span class="www-feature-icon" data-icon="feather"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.light.title">Light to run</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.light.desc">
             One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
@@ -175,16 +175,19 @@
   <section class="www-section" id="use-cases">
     <div class="www-container">
       <h2 class="www-section-title" data-i18n="www.home.who.title">Who uses ccLoad</h2>
-      <div class="www-doc-grid">
+      <div class="www-doc-grid www-doc-grid-3">
         <div class="www-info-card">
+          <span class="www-doc-icon" data-icon="user"></span>
           <h3 data-i18n="www.home.who.solo.title">Developers with several AI subscriptions</h3>
           <p data-i18n="www.home.who.solo.desc">Combine ChatGPT, Claude and other plans with spare API keys, so Claude Code and Codex keep running when one quota runs out.</p>
         </div>
         <div class="www-info-card">
+          <span class="www-doc-icon" data-icon="users"></span>
           <h3 data-i18n="www.home.who.team.title">Teams sharing model access</h3>
           <p data-i18n="www.home.who.team.desc">Give each teammate a token with model, budget and concurrency limits. Upstream credentials stay in one place and access can be revoked at any time.</p>
         </div>
         <div class="www-info-card">
+          <span class="www-doc-icon" data-icon="server"></span>
           <h3 data-i18n="www.home.who.ops.title">Operators running many channels</h3>
           <p data-i18n="www.home.who.ops.desc">Manage channels with priorities, health-based ordering, scheduled checks, CSV import and export, and a log entry for every request.</p>
         </div>
@@ -199,7 +202,7 @@
       <h3 class="www-feature-group" data-i18n="www.home.features.group.reliability">Routing and failover</h3>
       <div class="www-feature-grid">
         <div class="www-feature-card">
-          <span class="www-feature-icon">🎯</span>
+          <span class="www-feature-icon" data-icon="route"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.routing.title">Smart Routing</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.routing.desc">
             Higher-priority channels first; equal priority uses smooth weighted round-robin by usable keys. Optional health and first-byte scoring.
@@ -207,7 +210,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🔄</span>
+          <span class="www-feature-icon" data-icon="refresh"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.failover.title">Auto Failover</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.failover.desc">
             Isolate failures at key, model, channel, or URL scope. 401/403 cool only the current key; model-scoped errors do not disable the whole channel.
@@ -215,7 +218,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🛡️</span>
+          <span class="www-feature-icon" data-icon="shield-alert"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.detection.title">Soft Error Detection</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.detection.desc">
             Detect errors disguised as HTTP 200. Explicit rate-limit markers in SSE streams are handled as 429.
@@ -223,7 +226,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🌐</span>
+          <span class="www-feature-icon" data-icon="globe"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.proxy.title">Per-channel Proxy and Windows</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.proxy.desc">
             Route a channel through HTTP, HTTPS, or SOCKS5, and optionally restrict it to an HH:MM availability window. Outside the window it is excluded from routing.
@@ -234,7 +237,7 @@
       <h3 class="www-feature-group" data-i18n="www.home.features.group.protocol">Protocol and client compatibility</h3>
       <div class="www-feature-grid">
         <div class="www-feature-card">
-          <span class="www-feature-icon">🔀</span>
+          <span class="www-feature-icon" data-icon="shuffle"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.protocol.title">Automatic Protocol Fallback</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.protocol.desc">
             Try the client protocol first, then probe OpenAI, Anthropic, Codex, and Gemini without retrying it.
@@ -242,7 +245,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🔗</span>
+          <span class="www-feature-icon" data-icon="link"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.websocket.title">Responses WebSocket</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.websocket.desc">
             Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover.
@@ -250,7 +253,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🧠</span>
+          <span class="www-feature-icon" data-icon="sparkles"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.thinking.title">Thinking Suffix</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.thinking.desc">
             Append (high)/(xhigh)/(16384) to a model name to set thinking parameters across protocols. Routing, cooldown, and the upstream name always use the base name.
@@ -258,7 +261,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">⚡</span>
+          <span class="www-feature-icon" data-icon="zap"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.token.title">Local Token Count</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.token.desc">
             &lt;5ms response, 93%+ accuracy, count tokens without calling upstream.
@@ -269,7 +272,7 @@
       <h3 class="www-feature-group" data-i18n="www.home.features.group.control">Accounts, cost, and monitoring</h3>
       <div class="www-feature-grid">
         <div class="www-feature-card">
-          <span class="www-feature-icon">🔑</span>
+          <span class="www-feature-icon" data-icon="key"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.oauth.title">OAuth Channels</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.oauth.desc">
             Connect Codex, Anthropic, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, and Zed accounts. Refresh quotas and balances from the channel list.
@@ -277,7 +280,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">🗝️</span>
+          <span class="www-feature-icon" data-icon="list-check"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.keys.title">Per-Key Model Allowlists</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.keys.desc">
             Restrict which channel models each key serves. If every key declines the model, the channel is skipped with no cooldown and no failure recorded.
@@ -285,7 +288,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">💰</span>
+          <span class="www-feature-icon" data-icon="coins"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.cost.title">Cost Control</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.cost.desc">
             Global and per-channel custom model prices, per-key multipliers, daily channel limits, and token total/daily/monthly limits. Track OAuth quota windows against upstream reset times.
@@ -293,7 +296,7 @@
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon">📊</span>
+          <span class="www-feature-icon" data-icon="chart"></span>
           <h4 class="www-feature-title" data-i18n="www.home.features.monitoring.title">Real-time Monitoring</h4>
           <p class="www-feature-desc" data-i18n="www.home.features.monitoring.desc">
             Seven-day service health, client-protocol statistics, cost analysis, trends, and live request monitoring.
@@ -312,56 +315,56 @@
       </p>
       <div class="www-feature-grid www-provider-grid">
         <div class="www-feature-card">
-          <span class="www-feature-icon">💬</span>
+          <span class="www-feature-icon" data-icon="message"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.codex.title">Codex / ChatGPT</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.codex.desc">
             OAuth or a personal access token (PAT). PATs start with at- and are verified on import. A permanently rejected refresh disables the channel.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">🟠</span>
+          <span class="www-feature-icon" data-icon="asterisk"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.anthropic.title">Anthropic / Claude</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.anthropic.desc">
             Claude OAuth credentials refresh automatically. Quota windows and standard-cost tracking follow the upstream reset schedule.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">☁️</span>
+          <span class="www-feature-icon" data-icon="cloud"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.antigravity.title">Antigravity</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.antigravity.desc">
             Google Cloud Code channels with a fixed daily → daily sandbox fallback. Capacity exhaustion cools the current model first.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">⚡</span>
+          <span class="www-feature-icon" data-icon="zap"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.xai.title">xAI</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.xai.desc">
             Grok OAuth channels. Conversational models at grok-4.6 and later can use the Images API through the image_generation tool.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">🧩</span>
+          <span class="www-feature-icon" data-icon="bot"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.codebuddy.title">CodeBuddy</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.codebuddy.desc">
             Scan to sign in or import workbuddy.json credentials. Fetch account models, refresh tokens automatically, and refresh balances from the channel card. China accounts also support daily check-in.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">🧩</span>
+          <span class="www-feature-icon" data-icon="code"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.zai.title">Z.ai Coding Plan</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.zai.desc">
             Browser authorization or a Coding Plan API key. The model catalog is loaded from the account; quota windows are not billed as standard cost.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">🖱️</span>
+          <span class="www-feature-icon" data-icon="pointer"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.cursor.title">Cursor</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.cursor.desc">
             Import a Cursor user API key. ccLoad installs the official SDK Bridge when needed and does not run Cursor built-in tools on the gateway host.
           </p>
         </div>
         <div class="www-feature-card">
-          <span class="www-feature-icon">⌨️</span>
+          <span class="www-feature-icon" data-icon="keyboard"></span>
           <h3 class="www-feature-title" data-i18n="www.home.oauth.zed.title">Zed</h3>
           <p class="www-feature-desc" data-i18n="www.home.oauth.zed.desc">
             Sign in through the native Zed app flow; ccLoad stores the resulting long-lived credential and serves Zed models through the Codex protocol.
@@ -406,7 +409,7 @@
       <div class="www-deployment-grid">
         <!-- Docker -->
         <div class="www-deployment-card">
-          <span class="www-deployment-icon">🐳</span>
+          <span class="www-deployment-icon" data-icon="layers"></span>
           <h3 class="www-deployment-title" data-i18n="www.home.deployment.docker.title">Docker</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.docker.difficulty">Difficulty: ⭐⭐</span>
           <p class="www-deployment-desc" data-i18n="www.home.deployment.docker.desc">
@@ -419,7 +422,7 @@
 
         <!-- Hugging Face -->
         <div class="www-deployment-card">
-          <span class="www-deployment-icon">🤗</span>
+          <span class="www-deployment-icon" data-icon="smile"></span>
           <h3 class="www-deployment-title" data-i18n="www.home.deployment.hf.title">Hugging Face</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.hf.difficulty">Difficulty: ⭐</span>
           <p class="www-deployment-desc" data-i18n="www.home.deployment.hf.desc">
@@ -432,7 +435,7 @@
 
         <!-- Source build -->
         <div class="www-deployment-card">
-          <span class="www-deployment-icon">🔧</span>
+          <span class="www-deployment-icon" data-icon="wrench"></span>
           <h3 class="www-deployment-title" data-i18n="www.home.deployment.source.title">From Source</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.source.difficulty">Difficulty: ⭐⭐⭐</span>
           <p class="www-deployment-desc" data-i18n="www.home.deployment.source.desc">
@@ -445,7 +448,7 @@
 
         <!-- Binary download -->
         <div class="www-deployment-card">
-          <span class="www-deployment-icon">🍺</span>
+          <span class="www-deployment-icon" data-icon="mug"></span>
           <h3 class="www-deployment-title">Homebrew</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.brew.difficulty">Difficulty: ⭐</span>
           <p class="www-deployment-desc" data-i18n="www.home.deployment.brew.desc">Install stable releases on macOS/Linux (ARM64 or AMD64) and manage the service with brew.</p>
@@ -453,7 +456,7 @@
         </div>
 
         <div class="www-deployment-card">
-          <span class="www-deployment-icon">📦</span>
+          <span class="www-deployment-icon" data-icon="package"></span>
           <h3 class="www-deployment-title" data-i18n="www.home.deployment.binary.title">Binary</h3>
           <span class="www-deployment-difficulty" data-i18n="www.home.deployment.binary.difficulty">Difficulty: ⭐⭐</span>
           <p class="www-deployment-desc" data-i18n="www.home.deployment.binary.desc">

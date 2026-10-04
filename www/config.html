@@ -262,74 +262,74 @@
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
-            <span class="www-doc-icon">🔁</span>
+            <span class="www-doc-icon" data-icon="refresh"></span>
             <h3 data-i18n-html="www.config.runtime.cooldown.title">Retries and cooldown</h3>
             <p data-i18n-html="www.config.runtime.cooldown.desc">Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, ordinary upstream HTTP 400/413 and 5xx, key-level 429 rate limits, model-unavailable 404, and explicit model-retirement 410 — cool only the actual upstream model. Context-length errors and WebSocket <code>message_too_big</code> return directly to the client without failover or cooldown. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped. <code>cooldown_fallback_enabled</code> (default true) picks the earliest-recovering channel when every candidate is cooling.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">⏱️</span>
+            <span class="www-doc-icon" data-icon="clock"></span>
             <h3 data-i18n-html="www.config.runtime.timeout.title">Protocol timeouts</h3>
             <p data-i18n-html="www.config.runtime.timeout.desc"><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🔌</span>
+            <span class="www-doc-icon" data-icon="plug"></span>
             <h3 data-i18n-html="www.config.runtime.connection.title">Upstream connection lifetime</h3>
             <p data-i18n-html="www.config.runtime.connection.desc"><code>upstream_connection_reuse_limit_seconds</code> limits how long HTTP/1.1, HTTP/2 and WebSocket connections may be reused. <code>0</code> keeps the existing unlimited behavior. At the limit, idle connections close immediately; active connections stop accepting work and close after draining, while new requests reconnect on demand.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">📈</span>
+            <span class="www-doc-icon" data-icon="trending"></span>
             <h3 data-i18n-html="www.config.runtime.health.title">Health-based sorting</h3>
             <p data-i18n-html="www.config.runtime.health.desc">When enabled, ccLoad subtracts a confidence-weighted failure penalty from priority. Optional TTFB scoring also penalizes channels slower than the current candidate median without applying full weight to small samples.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">💳</span>
+            <span class="www-doc-icon" data-icon="card"></span>
             <h3 data-i18n-html="www.config.runtime.token.title">Token limits</h3>
             <p data-i18n-html="www.config.runtime.token.desc">Auth tokens can restrict models, cap concurrency and cost, and scope statistics. Channel access combines <code>allowed_channel_ids</code> with <code>channel_restriction_mode</code>: <code>allow</code> treats the list as an allowlist, while <code>deny</code> treats it as a denylist. An empty list is unrestricted in either mode. Costs use integer micro-dollars to avoid floating-point drift.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🧩</span>
+            <span class="www-doc-icon" data-icon="blocks"></span>
             <h3 data-i18n-html="www.config.runtime.rules.title">Custom request rules</h3>
             <p data-i18n-html="www.config.runtime.rules.desc">Rewrite headers and JSON bodies per channel with remove, override and append operations. Authentication headers are protected and CRLF injection is blocked.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🧪</span>
+            <span class="www-doc-icon" data-icon="flask"></span>
             <h3 data-i18n-html="www.config.runtime.checks.title">Channel checks</h3>
             <p data-i18n-html="www.config.runtime.checks.desc">Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🚦</span>
+            <span class="www-doc-icon" data-icon="gauge"></span>
             <h3 data-i18n-html="www.config.runtime.limits.title">Concurrency and body limits</h3>
             <p data-i18n-html="www.config.runtime.limits.desc"><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. <code>http_read_timeout_seconds</code> covers the complete downstream header and body read (<code>0</code> uses 120 seconds) and returns 408 on timeout — independent of the body-size limits. All take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🔗</span>
+            <span class="www-doc-icon" data-icon="link"></span>
             <h3 data-i18n-html="www.config.runtime.ws.title">WebSocket sessions</h3>
             <p data-i18n-html="www.config.runtime.ws.desc">New installs cap downstream WebSocket connections at 1024 globally and 64 per token, retain 1024 execution sessions, and budget 256 MiB of transcript payload. Saving <code>0</code> on any of these settings uses that built-in default; negative values are rejected. <code>responses_ws_session_ttl_minutes</code> defaults to 15. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🖼️</span>
+            <span class="www-doc-icon" data-icon="image"></span>
             <h3 data-i18n-html="www.config.runtime.multimodal.title">Multimodal fallback</h3>
             <p data-i18n-html="www.config.runtime.multimodal.desc"><code>model_multimodal_fallback</code> maps a text model to a fallback model for requests that carry non-text content. Keys are normalized by base name with thinking suffixes stripped; up to 64 mappings within 8 KB. It rewrites the incoming model before thinking suffixes, token allowlists, channel filtering and cooldown checks, so routing, logging and cooldown all follow the fallback model. Detection uses the full client-protocol body on HTTP and the complete transcript on Responses WebSocket. Saving this setting on its own applies without a restart.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">📚</span>
+            <span class="www-doc-icon" data-icon="book"></span>
             <h3 data-i18n-html="www.config.runtime.catalog.title">Model catalog sync</h3>
             <p data-i18n-html="www.config.runtime.catalog.desc"><code>model_catalog_sync_interval_hours</code> refreshes models and pricing from models.dev every 6 hours by default. Set it to <code>0</code> to disable network sync; startup falls back from the last-good cache to the embedded catalog.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">💰</span>
+            <span class="www-doc-icon" data-icon="coins"></span>
             <h3 data-i18n-html="www.config.runtime.pricing.title">Custom model prices</h3>
             <p data-i18n-html="www.config.runtime.pricing.editor">Open the custom pricing editor in Settings to set input, output, cache-read and cache-write prices in USD per million tokens, plus optional high-context prices. <code>model_custom_pricing</code> replaces the model's system price entry as a whole. Enter <code>0</code> for a free cache rate; leaving a cache rate blank uses the model-family fallback. High-context thresholds follow the system model rules.</p>
             <p data-i18n-html="www.config.runtime.pricing.apply">Saving prices from the editor applies immediately without a restart. Catalog refreshes preserve your overrides. Remove an override to restore the system price. Models with pricing tiers that cannot fit the two-level editor are rejected; image-specific and per-request prices remain managed by the system catalog.</p>
             <p data-i18n-html="www.config.runtime.pricing.channel">When the same model costs different amounts on different channels, open the <strong>$</strong> button on a model row in the channel editor to set a channel price with the same fields. It applies only to that model on that channel, takes precedence over the global override and the system price, and is still multiplied by the channel or key cost multiplier. Clear it to fall back to the global price.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">⬆️</span>
+            <span class="www-doc-icon" data-icon="upgrade"></span>
             <h3 data-i18n-html="www.config.runtime.update.title">Auto updates</h3>
             <p data-i18n-html="www.config.runtime.update.desc">For non-container deployments, one update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and all release asset downloads. Container deployments switch versions with the <code>latest</code> and <code>beta</code> image Tags instead.</p>
           </article>
           <article class="www-doc-card">
-            <span class="www-doc-icon">🌍</span>
+            <span class="www-doc-icon" data-icon="globe"></span>
             <h3 data-i18n-html="www.config.runtime.oauth.title">OAuth upstream addresses</h3>
             <p data-i18n-html="www.config.runtime.oauth.desc"><code>CODEX_BASE_URL</code>, <code>ANTHROPIC_BASE_URL</code>, <code>XAI_BASE_URL</code> and <code>ANTIGRAVITY_URL</code> default empty and use each provider's official address. When set, matching OAuth channels use only that global address for data requests, model discovery, tests and quota queries, ignoring the channel URL. Authorization and token refresh still use official endpoints; API-key channels are unaffected. Saving a change restarts the process.</p>
           </article>
