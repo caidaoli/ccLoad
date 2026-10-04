@@ -8156,162 +8156,18 @@ func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *tes
 	}
 }
 
-func TestHandleAnthropicCookieAuthCreatesChannelWithoutReturningOrPersistingCookie(t *testing.T) {
-	t.Parallel()
-	const sessionKey = "sk-ant-sid01-handler-secret"
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/organizations":
-			cookie, err := request.Cookie("sessionKey")
-			if err != nil || cookie.Value != sessionKey {
-				t.Errorf("organization cookie = %v, err = %v", cookie, err)
-			}
-			_, _ = io.WriteString(w, `[{"uuid":"cookie-org"}]`)
-		case "/v1/oauth/cookie-org/authorize":
-			var payload map[string]string
-			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-				t.Errorf("decode authorization request: %v", err)
-			}
-			redirect := anthropicauth.RedirectURI + "?code=cookie-code&state=" + url.QueryEscape(payload["state"])
-			_ = json.NewEncoder(w).Encode(map[string]string{"redirect_uri": redirect})
-		case "/token":
-			_, _ = io.WriteString(w, `{"access_token":"cookie-access-secret","refresh_token":"cookie-refresh-secret","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"cookie-org"},"account":{"uuid":"cookie-account","email_address":"cookie@example.com"}}`)
-		default:
-			http.NotFound(w, request)
-		}
-	}))
-	defer upstream.Close()
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	service := anthropicauth.NewService(upstream.Client())
-	service.ClaudeWebURL = upstream.URL
-	service.TokenURL = upstream.URL + "/token"
-	server.anthropicService = service
+func TestAnthropicCookieAuthEndpointRemoved(t *testing.T) {
+	server := newInMemoryServer(t)
+	engine := gin.New()
+	server.SetupRoutes(engine)
 
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
-		"session_key": sessionKey,
-	}))
-	server.HandleAnthropicCookieAuth(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("cookie auth status=%d body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), sessionKey) || strings.Contains(w.Body.String(), "cookie-access-secret") ||
-		strings.Contains(w.Body.String(), "cookie-refresh-secret") {
-		t.Fatalf("cookie auth response leaked credentials: %s", w.Body.String())
-	}
-	var response APIResponse[struct {
-		Status    string `json:"status"`
-		ChannelID int64  `json:"channel_id"`
-		Created   bool   `json:"created"`
-	}]
-	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
-	if !response.Success || response.Data.Status != "complete" || !response.Data.Created || response.Data.ChannelID == 0 {
-		t.Fatalf("cookie auth response = %+v", response)
-	}
-	channel, err := store.GetConfig(context.Background(), response.Data.ChannelID)
-	if err != nil {
-		t.Fatalf("get cookie channel: %v", err)
-	}
-	if !channel.UsesAnthropicOAuth() || strings.Contains(channel.OAuthCredential, sessionKey) {
-		t.Fatalf("cookie channel persisted sessionKey: %+v", channel)
-	}
-	credential, err := anthropicauth.ParseCredential([]byte(channel.OAuthCredential))
-	if err != nil || credential.AccessToken != "cookie-access-secret" || credential.RefreshToken != "cookie-refresh-secret" {
-		t.Fatalf("stored cookie credential = %+v, err = %v", credential, err)
-	}
-}
-
-func TestHandleAnthropicCookieAuthReturnsSanitizedUpstreamErrors(t *testing.T) {
-	t.Parallel()
-	const sessionKey = "sk-ant-sid01-a/b+c="
-	var mixedEncodedSecret strings.Builder
-	var percentEncodedSecret strings.Builder
-	for _, char := range sessionKey {
-		_, _ = fmt.Fprintf(&mixedEncodedSecret, "%%5Cu%04x", char)
-	}
-	for index := range len(sessionKey) {
-		_, _ = fmt.Fprintf(&percentEncodedSecret, "%%%02X", sessionKey[index])
-	}
-	tests := []struct {
-		name            string
-		failurePath     string
-		statusCode      int
-		message         string
-		reflectedSecret string
-		rawFailureBody  string
-		expectRedacted  bool
-	}{
-		{name: "organization", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "organization authorization denied"},
-		{name: "authorization", failurePath: "/v1/oauth/cookie-org/authorize", statusCode: http.StatusForbidden, message: "organization cannot use this OAuth client"},
-		{name: "token", failurePath: "/token", statusCode: http.StatusBadRequest, message: "authorization code expired"},
-		{name: "query-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: url.QueryEscape(sessionKey), expectRedacted: true},
-		{name: "path-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "sk-ant-sid01-a%2Fb+c=", expectRedacted: true},
-		{name: "HTML-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "sk-ant-sid01-a&#47;b&#43;c&#61;", expectRedacted: true},
-		{name: "duplicate JSON key", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, rawFailureBody: `{"session_key":"sk-ant-sid01-a\/b\u002bc=","session_key":"safe"}`, expectRedacted: true},
-		{name: "multiple JSON values", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, rawFailureBody: "{\"error\":\"safe\"}\n{\"session_key\":\"sk-ant-sid01-a\\/b\\u002bc=\"}", expectRedacted: true},
-		{name: "nested JSON escape", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, rawFailureBody: `{"error":"sk-ant-sid01-a\\u002fb\\u002bc="}`, expectRedacted: true},
-		{name: "mixed URL and JSON escapes", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: mixedEncodedSecret.String(), expectRedacted: true},
-		{name: "benign nested JSON escape", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "literal", rawFailureBody: `{"error":"literal \"quoted\" \\u1234"}`},
-		{name: "benign Windows path", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "path C", rawFailureBody: `{"error":"path C:\\users\\name"}`},
-		{name: "invalid JSON escape before secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, rawFailureBody: `{"error":"path C:\\users\\name sk-ant-sid01-a\\u002fb\\u002bc="}`, expectRedacted: true},
-		{name: "invalid percent escape before secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "bad%ZZ" + percentEncodedSecret.String(), expectRedacted: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				if request.URL.Path == test.failurePath {
-					w.WriteHeader(test.statusCode)
-					if test.rawFailureBody != "" {
-						_, _ = io.WriteString(w, test.rawFailureBody)
-						return
-					}
-					payload := map[string]string{"error": test.message}
-					if test.reflectedSecret != "" {
-						payload["session_key"] = test.reflectedSecret
-					}
-					_ = json.NewEncoder(w).Encode(payload)
-					return
-				}
-				switch request.URL.Path {
-				case "/api/organizations":
-					_, _ = io.WriteString(w, `[{"uuid":"cookie-org"}]`)
-				case "/v1/oauth/cookie-org/authorize":
-					var payload map[string]string
-					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-						t.Fatalf("decode authorization request: %v", err)
-					}
-					redirect := anthropicauth.RedirectURI + "?code=cookie-code&state=" + url.QueryEscape(payload["state"])
-					_ = json.NewEncoder(w).Encode(map[string]string{"redirect_uri": redirect})
-				default:
-					http.NotFound(w, request)
-				}
-			}))
-			defer upstream.Close()
-
-			server, _, cleanup := setupAdminTestServer(t)
-			defer cleanup()
-			service := anthropicauth.NewService(upstream.Client())
-			service.ClaudeWebURL = upstream.URL
-			service.TokenURL = upstream.URL + "/token"
-			server.anthropicService = service
-
-			c, recorder := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
-				"session_key": sessionKey,
-			}))
-			server.HandleAnthropicCookieAuth(c)
-
-			body := recorder.Body.String()
-			if recorder.Code != http.StatusBadGateway || strings.Contains(body, sessionKey) ||
-				strings.Contains(body, url.QueryEscape(sessionKey)) ||
-				!strings.Contains(body, fmt.Sprintf("returned HTTP %d", test.statusCode)) {
-				t.Fatalf("cookie auth error status=%d body=%s", recorder.Code, body)
-			}
-			if test.expectRedacted != strings.Contains(body, "[REDACTED]") ||
-				(!test.expectRedacted && !strings.Contains(body, test.message)) {
-				t.Fatalf("cookie auth error status=%d body=%s", recorder.Code, body)
-			}
-		})
+	request := newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
+		"session_key": "removed-cookie-credential",
+	})
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("removed Cookie endpoint status=%d, want 404 body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

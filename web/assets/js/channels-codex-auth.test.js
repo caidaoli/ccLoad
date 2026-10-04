@@ -40,7 +40,6 @@ const {
   showOAuthSession,
   submitXAICredentialBatch,
   submitAntigravityOAuthCallback,
-  submitAnthropicCookieAuth,
   submitAnthropicOAuthCode,
   submitCodexOAuthCallback,
   submitCodexPersonalAccessToken,
@@ -1017,60 +1016,6 @@ test('Codex Personal Access Token submission clears the secret and uses the dedi
   }
 });
 
-test('Anthropic Cookie authorization reports each failed source line with its upstream error', async () => {
-  const previousWindow = global.window;
-  const storageWrites = [];
-  global.window = {
-    t: key => key,
-    localStorage: { setItem: (...args) => storageWrites.push(args) },
-    sessionStorage: { setItem: (...args) => storageWrites.push(args) }
-  };
-  const input = {
-    value: '  sk-ant-sid01-first  \n\n sk-ant-sid01-invalid\nsk-ant-sid01-existing  ',
-    removeAttribute() {},
-    setAttribute() {},
-    focus() {}
-  };
-  const captured = [];
-  const progress = [];
-  try {
-    const result = await submitAnthropicCookieAuth(input, async (url, options) => {
-      assert.equal(input.value, '');
-      const request = { url, body: JSON.parse(options.body) };
-      captured.push(request);
-      if (request.body.session_key === 'sk-ant-sid01-invalid') throw new Error('invalid cookie');
-      return {
-        status: 'complete',
-        channel_id: request.body.session_key === 'sk-ant-sid01-first' ? 77 : 78,
-        created: request.body.session_key === 'sk-ant-sid01-first'
-      };
-    }, undefined, value => progress.push(value));
-    assert.deepEqual(result, {
-      total: 3,
-      created: 1,
-      updated: 1,
-      failed: 1,
-      failedLines: [3],
-      failedDetails: [{ line: 3, error: 'invalid cookie' }]
-    });
-    assert.deepEqual(captured, [
-      { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-first' } },
-      { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-invalid' } },
-      { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-existing' } }
-    ]);
-    assert.deepEqual(progress, [
-      { current: 1, total: 3 },
-      { current: 2, total: 3 },
-      { current: 3, total: 3 }
-    ]);
-    assert.equal(input.value, '');
-    assert.ok(captured.every(request => !request.url.includes('sk-ant')));
-    assert.deepEqual(storageWrites, []);
-  } finally {
-    global.window = previousWindow;
-  }
-});
-
 test('xAI credential import renders streamed item progress in the OAuth dialog', async () => {
   const makeTarget = properties => ({
     dataset: {}, listeners: {},
@@ -1536,13 +1481,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     setAttribute(name, value) { this[name] = value; }
   });
   const xaiMethod = makeTarget({ value: 'manual' });
-  const anthropicMethod = makeTarget({ value: 'code', disabled: false });
-  const anthropicSessionKey = makeTarget({
-    value: '', required: false,
-    focus() { this.focused = true; },
-    removeAttribute(name) { delete this[name]; },
-    setAttribute(name, value) { this[name] = value; }
-  });
   const cursorUserAPIKey = makeTarget({
     value: '', required: false,
     focus() { this.focused = true; },
@@ -1575,10 +1513,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ['xaiCredentialSecretField', secretField],
     ['xaiCredentialImportProgress', xaiProgress],
     ['xaiCredentialValues', { value: '', removeAttribute() {}, setAttribute() {} }],
-    ['anthropicOAuthControls', { hidden: true }],
-    ['anthropicOAuthMethod', anthropicMethod],
-    ['anthropicCookieField', { hidden: true }],
-    ['anthropicSessionKey', anthropicSessionKey],
     ['cursorOAuthControls', { hidden: true }],
     ['cursorAPIKeyField', { hidden: true }],
     ['cursorUserAPIKey', cursorUserAPIKey],
@@ -1602,26 +1536,12 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   const successNotices = [];
   const errorNotices = [];
   global.window = {
-    t: (key, params = {}) => {
-      if (key === 'channels.anthropic.cookieFailureDetail') return `line ${params.line}: ${params.error}`;
-      if (key === 'channels.anthropic.cookiePartial') return `partial\n${params.details}`;
-      if (key === 'channels.anthropic.cookieReloadFailedWithResult') return `${params.result}\nreload failed`;
-      return key;
-    },
+    t: key => key,
     showSuccess: message => successNotices.push(message),
     showError: message => errorNotices.push(message)
   };
-  const cookieRequests = [];
   global.fetchDataWithAuth = async (url, options) => {
     requests.push(url);
-    if (url === '/admin/anthropic/oauth/cookie') {
-      const request = { url, body: JSON.parse(options.body) };
-      cookieRequests.push(request);
-      if (request.body.session_key === 'sk-ant-sid01-ui-invalid') {
-        throw new Error('anthropic organization endpoint returned HTTP 401: account_session_invalid');
-      }
-      return { status: 'complete', channel_id: 9, created: cookieRequests.length === 1 };
-    }
     if (url.endsWith('/oauth/start')) {
       return { url: 'https://accounts.example/authorize', state: 'gravity-state' };
     }
@@ -1697,129 +1617,18 @@ test('OAuth login toolbar waits for explicit authorization after provider select
       '/admin/antigravity/oauth/start',
       '/admin/antigravity/oauth/status?state=gravity-state'
     ]);
-    const noticeCountsBeforeCookie = {
-      success: successNotices.length,
-      error: errorNotices.length
-    };
-
     openOAuthLoginDialog(loginButton);
     providerSelect.value = 'anthropic';
     providerSelect.listeners.change();
-    assert.equal(elements.get('anthropicOAuthControls').hidden, false);
-    assert.equal(elements.get('anthropicCookieField').hidden, true);
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    assert.equal(elements.get('anthropicCookieField').hidden, false);
-    anthropicSessionKey.value = 'sk-ant-sid01-ui-first\nsk-ant-sid01-ui-second';
-    const cookieReloadOptions = [];
-    global.reloadChannelsList = async (options = {}) => {
-      cookieReloadOptions.push(options);
-      if (options.throwOnError) throw new Error('channel reload failed');
-      global.window.showError('channels.loadChannelsFailed');
-    };
+    assert.equal(dialogDescription.textContent, 'channels.anthropic.codeDescription');
+    assert.equal(authorizeButton.textContent, 'channels.oauth.startAuthorization');
+    assert.equal(sessionFields.hidden, true);
+    const requestsBeforeAnthropic = requests.length;
     await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(anthropicSessionKey.value, '');
-    assert.deepEqual(cookieRequests, [
-      { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-ui-first' } },
-      { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-ui-second' } }
+    assert.deepEqual(requests.slice(requestsBeforeAnthropic), [
+      '/admin/anthropic/oauth/start',
+      '/admin/anthropic/oauth/status?state=gravity-state'
     ]);
-    assert.equal(dialog.open, true);
-    assert.equal(dialogStatus.textContent, 'channels.anthropic.cookieComplete\nreload failed');
-    assert.equal(dialogStatus.dataset.kind, 'error');
-    assert.equal(successNotices.length, noticeCountsBeforeCookie.success);
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.deepEqual(cookieReloadOptions, [{ throwOnError: true }]);
-    assert.equal(anthropicSessionKey['aria-invalid'], undefined);
-    assert.equal(providerSelect.disabled, false);
-
-    openOAuthLoginDialog(loginButton);
-    providerSelect.value = 'anthropic';
-    providerSelect.listeners.change();
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    anthropicSessionKey.value = 'sk-ant-sid01-ui-partial-success\nsk-ant-sid01-ui-invalid';
-    await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(
-      dialogStatus.textContent,
-      'partial\nline 2: anthropic organization endpoint returned HTTP 401: account_session_invalid\nreload failed'
-    );
-    assert.equal(dialogStatus.dataset.kind, 'error');
-    assert.equal(successNotices.length, noticeCountsBeforeCookie.success);
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.deepEqual(cookieReloadOptions, [
-      { throwOnError: true },
-      { throwOnError: true }
-    ]);
-    assert.equal(providerSelect.disabled, false);
-
-    global.reloadChannelsList = async options => { cookieReloadOptions.push(options); };
-    openOAuthLoginDialog(loginButton);
-    providerSelect.value = 'anthropic';
-    providerSelect.listeners.change();
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    anthropicSessionKey.value = 'sk-ant-sid01-ui-invalid';
-    await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(
-      dialogStatus.textContent,
-      'partial\nline 1: anthropic organization endpoint returned HTTP 401: account_session_invalid'
-    );
-    assert.equal(successNotices.length, noticeCountsBeforeCookie.success);
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.equal(anthropicSessionKey['aria-invalid'], 'true');
-    assert.equal(providerSelect.disabled, false);
-
-    openOAuthLoginDialog(loginButton);
-    providerSelect.value = 'anthropic';
-    providerSelect.listeners.change();
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    anthropicSessionKey.value = 'sk-ant-sid01-ui-final';
-    await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(dialog.open, true);
-    assert.equal(dialogStatus.textContent, 'channels.anthropic.cookieComplete');
-    assert.equal(dialogStatus.dataset.kind, 'success');
-    assert.equal(successNotices.length, noticeCountsBeforeCookie.success);
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.deepEqual(cookieReloadOptions, [
-      { throwOnError: true },
-      { throwOnError: true },
-      { throwOnError: true }
-    ]);
-    assert.equal(providerSelect.disabled, false);
-
-    openOAuthLoginDialog(loginButton);
-    providerSelect.value = 'anthropic';
-    providerSelect.listeners.change();
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    anthropicSessionKey.value = 'sk-ant-sid01-ui-invalid-first\nsk-ant-sid01-ui-invalid-second';
-    global.fetchDataWithAuth = async (_url, options) => {
-      const { session_key: sessionKey } = JSON.parse(options.body);
-      throw new Error(sessionKey.endsWith('first') ? 'upstream first error' : 'upstream second error');
-    };
-    global.reloadChannelsList = async () => {};
-    await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(anthropicSessionKey.value, '');
-    assert.equal(
-      dialogStatus.textContent,
-      'partial\nline 1: upstream first error\nline 2: upstream second error'
-    );
-    assert.equal(dialogStatus.dataset.kind, 'error');
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.equal(anthropicSessionKey['aria-invalid'], 'true');
-
-    openOAuthLoginDialog(loginButton);
-    providerSelect.value = 'anthropic';
-    providerSelect.listeners.change();
-    anthropicMethod.value = 'cookie';
-    anthropicMethod.listeners.change();
-    await loginForm.listeners.submit({ preventDefault() {} });
-    assert.equal(dialogStatus.textContent, 'channels.anthropic.cookieRequired');
-    assert.equal(successNotices.length, noticeCountsBeforeCookie.success);
-    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
-    assert.equal(anthropicSessionKey['aria-invalid'], 'true');
-    assert.equal(providerSelect.disabled, false);
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;

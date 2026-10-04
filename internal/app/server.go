@@ -1822,7 +1822,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/anthropic/oauth/status", s.HandleAnthropicOAuthStatus)
 		admin.POST("/anthropic/oauth/cancel", s.HandleCancelAnthropicOAuth)
 		admin.POST("/anthropic/oauth/callback", s.HandleSubmitAnthropicOAuthCode)
-		admin.POST("/anthropic/oauth/cookie", s.HandleAnthropicCookieAuth)
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/zai/oauth/start", s.HandleStartZAIOAuth)
 		admin.POST("/codebuddy/oauth/start", s.HandleStartCodeBuddyOAuth)

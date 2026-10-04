@@ -13,7 +13,6 @@ let activeCodexPersonalAccessTokenFlow = null;
 let codexOAuthStopPromise = null;
 let activeXAIImportFlow = null;
 let xaiImportStopPromise = null;
-let activeAnthropicCookieFlow = null;
 let activeZAIKeyFlow = null;
 let activeCursorImportFlow = null;
 let activeCodeBuddyFileFlow = null;
@@ -446,7 +445,6 @@ function openOAuthLoginDialog(trigger = null) {
   callbackURL.removeAttribute?.('aria-invalid');
   resetXAIOAuthDialog();
   resetCodexPersonalAccessTokenDialog();
-  resetAnthropicCookieDialog();
   syncOAuthProviderFields();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
@@ -460,7 +458,6 @@ function closeOAuthLoginDialogElement() {
   if (dialog?.open) dialog.close();
   resetXAIOAuthDialog();
   resetCodexPersonalAccessTokenDialog();
-  resetAnthropicCookieDialog();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
   trigger?.focus?.();
@@ -512,27 +509,6 @@ function clearCodexPersonalAccessToken(input = document.getElementById('codexPer
   input.removeAttribute?.('aria-invalid');
 }
 
-function resetAnthropicCookieDialog() {
-  const controls = document.getElementById('anthropicOAuthControls');
-  const method = document.getElementById('anthropicOAuthMethod');
-  const cookieField = document.getElementById('anthropicCookieField');
-  const input = document.getElementById('anthropicSessionKey');
-  if (controls) controls.hidden = true;
-  if (method) {
-    method.value = 'code';
-    method.disabled = false;
-  }
-  if (cookieField) cookieField.hidden = true;
-  clearAnthropicCookieSecret(input);
-  if (input) input.required = false;
-}
-
-function clearAnthropicCookieSecret(input = document.getElementById('anthropicSessionKey')) {
-  if (!input) return;
-  input.value = '';
-  input.removeAttribute?.('aria-invalid');
-}
-
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod')?.value || 'oauth';
@@ -557,7 +533,6 @@ function syncOAuthProviderFields() {
   }
   const codexMethod = document.getElementById('codexOAuthMethod')?.value || 'oauth';
   const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
-  const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
   const zaiMethod = document.getElementById('zaiOAuthMethod')?.value || 'oauth';
   const xai = provider === 'xai';
   const anthropic = provider === 'anthropic';
@@ -568,13 +543,9 @@ function syncOAuthProviderFields() {
   const zaiAPIKey = zai && zaiMethod === 'api_key';
   const cursorAPIKey = cursor;
   const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
-  const anthropicCookie = anthropic && anthropicMethod === 'cookie';
   const controls = document.getElementById('xaiOAuthControls');
   const secretField = document.getElementById('xaiCredentialSecretField');
   const textarea = document.getElementById('xaiCredentialValues');
-  const anthropicControls = document.getElementById('anthropicOAuthControls');
-  const anthropicCookieField = document.getElementById('anthropicCookieField');
-  const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const zaiControls = document.getElementById('zaiOAuthControls');
   const zaiAPIKeyField = document.getElementById('zaiAPIKeyField');
   const zaiAPIKeyInput = document.getElementById('zaiCodingPlanKey');
@@ -592,7 +563,6 @@ function syncOAuthProviderFields() {
   resetOAuthCredentialImportProgress('xaiCredentialImport');
   if (controls) controls.hidden = !xai;
   if (codexControls) codexControls.hidden = !codex;
-  if (anthropicControls) anthropicControls.hidden = !anthropic;
   if (zaiControls) zaiControls.hidden = !zai;
   if (cursorControls) cursorControls.hidden = !cursor;
   if (zedControls) zedControls.hidden = !zed;
@@ -610,7 +580,7 @@ function syncOAuthProviderFields() {
   // Let Cursor's custom empty-value handler run so it can open the Dashboard.
   // Keep the input required for assistive technology and other form semantics.
   if (authorizeButton) authorizeButton.formNoValidate = cursorAPIKey;
-  if (sessionFields && (codebuddyFile || xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
+  if (sessionFields && (codebuddyFile || xai || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -621,11 +591,6 @@ function syncOAuthProviderFields() {
     textarea.required = xai && xaiMethod !== 'manual';
     textarea.setAttribute?.('aria-describedby', 'xaiCredentialSecretHint oauthLoginDialogStatus');
     if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
-  }
-  if (anthropicCookieField) anthropicCookieField.hidden = !anthropicCookie;
-  if (anthropicSessionKey) {
-    anthropicSessionKey.required = anthropicCookie;
-    if (!anthropicCookie) clearAnthropicCookieSecret(anthropicSessionKey);
   }
   if (description) {
     const descriptionKey = codebuddyFile
@@ -641,7 +606,7 @@ function syncOAuthProviderFields() {
       : xai
       ? (xaiMethod === 'manual' ? 'channels.xai.manualDescription' : 'channels.xai.importDescription')
       : (anthropic
-          ? (anthropicCookie ? 'channels.anthropic.cookieDescription' : 'channels.anthropic.codeDescription')
+          ? 'channels.anthropic.codeDescription'
           : 'channels.oauth.loginDialogDescription');
     description.setAttribute?.('data-i18n', descriptionKey);
     if (typeof window !== 'undefined' && typeof window.t === 'function') {
@@ -650,7 +615,7 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
+    const method = codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : 'oauth'));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
@@ -669,8 +634,6 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
     ? (method === 'manual' ? 'channels.xai.generateLink' : 'channels.xai.importSecrets')
     : (provider === 'codex' && method === 'personalAccessToken'
         ? 'channels.codex.personalAccessTokenSubmit'
-        : provider === 'anthropic' && method === 'cookie'
-        ? 'channels.anthropic.authorizeWithCookie'
         : 'channels.oauth.startAuthorization');
   button.setAttribute?.('data-i18n', key);
   if (typeof window !== 'undefined' && typeof window.t === 'function') button.textContent = window.t(key);
@@ -801,71 +764,6 @@ async function submitXAIOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) 
 
 async function submitAnthropicOAuthCode(code, state, fetcher = fetchDataWithAuth) {
   return submitOAuthCallback('anthropic', code, fetcher, state);
-}
-
-async function submitAnthropicCookieAuth(
-  input,
-  fetcher = fetchDataWithAuth,
-  signal = undefined,
-  onProgress = () => {}
-) {
-  let entries = String(input?.value || '')
-    .split(/\r?\n/)
-    .map((sessionKey, index) => ({ line: index + 1, sessionKey: sessionKey.trim() }))
-    .filter(entry => entry.sessionKey);
-  if (entries.length === 0) {
-    input?.setAttribute?.('aria-invalid', 'true');
-    input?.focus?.();
-    throw new Error(window.t('channels.anthropic.cookieRequired'));
-  }
-  input?.removeAttribute?.('aria-invalid');
-  clearAnthropicCookieSecret(input);
-  const summary = {
-    total: entries.length,
-    created: 0,
-    updated: 0,
-    failed: 0,
-    failedLines: [],
-    failedDetails: []
-  };
-  try {
-    for (let index = 0; index < entries.length; index++) {
-      if (signal?.aborted) {
-        const error = new Error('Anthropic Cookie authorization cancelled');
-        error.name = 'AbortError';
-        throw error;
-      }
-      const entry = entries[index];
-      onProgress({ current: index + 1, total: entries.length });
-      let body = JSON.stringify({ session_key: entry.sessionKey });
-      try {
-        const result = await fetcher('/admin/anthropic/oauth/cookie', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-          signal
-        });
-        if (result?.created === true) summary.created++;
-        else summary.updated++;
-      } catch (error) {
-        if (signal?.aborted || error?.name === 'AbortError') throw error;
-        summary.failed++;
-        summary.failedLines.push(entry.line);
-        const errorMessage = String(error?.message || '').trim();
-        summary.failedDetails.push({
-          line: entry.line,
-          error: errorMessage || window.t('channels.anthropic.cookieFailed')
-        });
-      } finally {
-        body = '';
-        entry.sessionKey = '';
-      }
-    }
-    return summary;
-  } finally {
-    for (const entry of entries) entry.sessionKey = '';
-    entries = [];
-  }
 }
 
 async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
@@ -1266,7 +1164,6 @@ async function stopActiveOAuth(options = {}) {
     stopActiveCodexOAuth({ closeDialog: false }),
     stopActiveCodexPersonalAccessToken(),
     stopActiveXAIImport({ closeDialog: false }),
-    stopActiveAnthropicCookieAuth(),
     stopActiveZAIKeyImport(),
     stopActiveCursorImport()
   ]);
@@ -1320,22 +1217,6 @@ function stopActiveCodexPersonalAccessToken() {
   }
   clearCodexPersonalAccessToken(flow?.input);
   const method = document.getElementById('codexOAuthMethod');
-  if (method) method.disabled = false;
-}
-
-function stopActiveAnthropicCookieAuth() {
-  const flow = activeAnthropicCookieFlow;
-  if (flow) {
-    flow.cancelling = true;
-    flow.controller?.abort?.();
-    if (activeAnthropicCookieFlow === flow) activeAnthropicCookieFlow = null;
-    if (flow.button) {
-      flow.button.disabled = false;
-      flow.button.removeAttribute?.('aria-busy');
-    }
-  }
-  clearAnthropicCookieSecret();
-  const method = document.getElementById('anthropicOAuthMethod');
   if (method) method.disabled = false;
 }
 
@@ -2685,8 +2566,6 @@ function setupOAuthActions() {
   const codexPersonalAccessToken = document.getElementById('codexPersonalAccessToken');
   const xaiMethod = document.getElementById('xaiOAuthMethod');
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
-  const anthropicMethod = document.getElementById('anthropicOAuthMethod');
-  const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod');
   const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   const codebuddyFile = document.getElementById('codebuddyCredentialFile');
@@ -2735,10 +2614,6 @@ function setupOAuthActions() {
     codexMethod.addEventListener('change', syncOAuthProviderFields);
     codexMethod.dataset.bound = '1';
   }
-  if (anthropicMethod && !anthropicMethod.dataset.bound) {
-    anthropicMethod.addEventListener('change', syncOAuthProviderFields);
-    anthropicMethod.dataset.bound = '1';
-  }
   if (codebuddyMethod && !codebuddyMethod.dataset.bound) {
     codebuddyMethod.addEventListener('change', syncOAuthProviderFields);
     codebuddyMethod.dataset.bound = '1';
@@ -2765,7 +2640,7 @@ function setupOAuthActions() {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
-        activeAnthropicCookieFlow || activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow) return;
+        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow) return;
       providerSelect.disabled = true;
       const codebuddyProvider = providerSelect.value === 'codebuddy' || providerSelect.value === 'codebuddy-international';
       const codebuddyEditionValue = providerSelect.value === 'codebuddy-international'
@@ -2922,64 +2797,6 @@ function setupOAuthActions() {
           zaiMethod.disabled = false;
           authorizeButton.disabled = false;
           authorizeButton.removeAttribute?.('aria-busy');
-        }
-      } else if (providerSelect.value === 'anthropic' && anthropicMethod?.value === 'cookie') {
-        const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        const flow = { button: authorizeButton, input: anthropicSessionKey, cancelling: false, controller };
-        activeAnthropicCookieFlow = flow;
-        anthropicMethod.disabled = true;
-        authorizeButton.disabled = true;
-        authorizeButton.setAttribute?.('aria-busy', 'true');
-        try {
-          const result = await submitAnthropicCookieAuth(
-            anthropicSessionKey,
-            fetchDataWithAuth,
-            controller?.signal,
-            progress => setCodexOAuthDialogStatus(
-              window.t('channels.anthropic.cookieAuthorizing', progress)
-            )
-          );
-          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
-          const successful = result.created + result.updated;
-          let resultMessage = '';
-          if (result.failed > 0) {
-            const details = result.failedDetails
-              .map(detail => window.t('channels.anthropic.cookieFailureDetail', detail))
-              .join('\n');
-            resultMessage = window.t('channels.anthropic.cookiePartial', {
-              ...result,
-              details
-            });
-            anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
-            anthropicSessionKey?.focus?.();
-            setCodexOAuthDialogStatus(resultMessage, 'error');
-          } else {
-            resultMessage = window.t('channels.anthropic.cookieComplete', result);
-            setCodexOAuthDialogStatus(resultMessage, 'success');
-          }
-          if (successful > 0) {
-            try {
-              await reloadChannelsList({ throwOnError: true });
-            } catch {
-              if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
-              setCodexOAuthDialogStatus(window.t('channels.anthropic.cookieReloadFailedWithResult', {
-                result: resultMessage
-              }), 'error');
-            }
-          }
-          return result;
-        } catch (error) {
-          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
-          anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
-          anthropicSessionKey?.focus?.();
-          const message = error?.message || window.t('channels.anthropic.cookieFailed');
-          setCodexOAuthDialogStatus(message, 'error');
-        } finally {
-          if (activeAnthropicCookieFlow === flow) activeAnthropicCookieFlow = null;
-          anthropicMethod.disabled = false;
-          authorizeButton.disabled = false;
-          authorizeButton.removeAttribute?.('aria-busy');
-          if (loginDialog?.open && sessionFields?.hidden) providerSelect.disabled = false;
         }
       } else {
         await startOAuth(selectedOAuthProvider(providerSelect.value), authorizeButton);
@@ -3374,7 +3191,6 @@ if (typeof module !== 'undefined' && module.exports) {
     setupOAuthActions,
     showOAuthSession,
     submitAntigravityOAuthCallback,
-    submitAnthropicCookieAuth,
     submitAnthropicOAuthCode,
     submitCodexPersonalAccessToken,
     submitCursorCredential,
