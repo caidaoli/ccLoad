@@ -3,7 +3,6 @@
 
 # 从 web 复制的共享资源
 assets/css/styles.css
-assets/js/i18n.js
 assets/js/theme-init.js
 
 # 从 web 复制的图标
@@ -15,3 +14,6 @@ brand-wordmark.svg
 
 # 由 promo/ 生成的介绍视频（render.mjs + audio.sh），不入库
 assets/video/*.mp4
+
+# make www-build 的预渲染产物
+dist/

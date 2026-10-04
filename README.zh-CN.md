@@ -2,7 +2,7 @@
 
 **自托管的 AI API 网关，面向 Claude Code、Codex、Gemini 和 OpenAI 兼容客户端。**
 
-**[English](README.md) | 简体中文** · [官网](https://ccload.xyz)
+**[English](README.md) | 简体中文** · [官网](https://ccload.xyz/zh/)
 
 [![Release](https://img.shields.io/github/v/release/caidaoli/ccLoad)](https://github.com/caidaoli/ccLoad/releases/latest)
 [![Test](https://github.com/caidaoli/ccLoad/actions/workflows/test.yml/badge.svg)](https://github.com/caidaoli/ccLoad/actions/workflows/test.yml)
@@ -15,15 +15,22 @@ ccLoad 在多个 AI API 上游前面提供一个稳定入口。客户端只需�
 
 ▶ [观看 47 秒介绍视频](https://ccload.xyz/assets/video/ccload-promo.zh-CN.mp4?v=20261002) · [English](https://ccload.xyz/assets/video/ccload-promo.en.mp4?v=20261002)
 
-## 解决什么问题
+## 它和普通 API 中转有什么不同
 
-手工维护多个 AI API 渠道，迟早会遇到这些问题：
+反向代理只负责转发。ccLoad 面向的是会长时间流式输出、连续运行数小时、并且真金白银计费的编程智能体，所有设计都围绕两件事：会话不断、账单可控。
 
-- **渠道切换靠手工**：不同 Key、有效期、额度和上游 URL 混在一起，迟早失控。
-- **限流和故障打断工作流**：`429`、`502`、`504`、Key 过期、供应商过载，都不应该让客户端直接停摆。
-- **请求状态不可见**：长时间流式请求没有实时状态，只能猜卡在客户端、网关还是上游。
-- **HTTP 200 里藏错误**：部分上游返回成功状态码，但响应体实际是错误。
-- **成本不可控**：共享网关需要渠道级和令牌级限额，不能等账单出来再补救。
+- **订阅账号也能当渠道，不只是 API Key**：把 Codex（ChatGPT）、Claude、Antigravity、xAI、CodeBuddy、Z.ai Coding Plan、Cursor、Zed 账号接入为渠道。令牌自动刷新，额度用量按各家的重置窗口统计。
+- **任意客户端用任意上游**：Anthropic Messages、OpenAI Chat、Codex Responses、Gemini 四种客户端都能使用任何提供该模型的渠道。协议不同时自动转换请求和流式响应，Codex 的 Responses WebSocket 也一样。
+- **客户端无感的故障切换**：上游在首字节到达客户端之前失败，ccLoad 就直接重试下一个候选渠道。伪装成 HTTP 200 的错误、SSE 流里的限流标记同样按失败处理。
+- **按准确范围冷却**：失效的 Key、被限流的模型、不可用的 URL 各自按指数退避冷却，并遵循上游给出的重置时间；同一渠道的其余部分照常服务。
+- **成本可核对、可封顶**：计价覆盖缓存读写、长上下文分档、OpenAI `service_tier` 和图片生成。可按渠道设每日限额，按令牌设总额、每日和每月限额。
+- **部署轻量**：一个 Go 二进制，内置 SQLite 和管理后台。需要时再接 MySQL 或 PostgreSQL，也可以免费跑在 Hugging Face Spaces 上。
+
+## 适合谁用
+
+- **手上有多个 AI 订阅的开发者**：把 ChatGPT、Claude 等订阅和闲置 API Key 合在一起，一个额度用完，Claude Code 和 Codex 也不会停下来。
+- **共享模型访问的团队**：给每个成员发一个令牌，限定模型、预算和并发。上游凭证集中保管，随时可以撤销访问。
+- **管理大量渠道的运营者**：用优先级、健康度排序、定时检测、CSV 导入导出管理渠道，每个请求都有日志可查。
 
 ## 功能
 
@@ -148,7 +155,7 @@ openai_base_url = "http://localhost:8080/v1"
 | [配置说明](docs/guide/configuration.zh-CN.md) | 环境变量、存储模式、系统设置、渠道排序、API 令牌、认证 |
 | [架构](docs/guide/architecture.zh-CN.md) | 协议路由、依赖、模块划分、数据库结构 |
 
-官网以引导页的形式覆盖相同主题：[安装](https://ccload.xyz/install.html) · [配置](https://ccload.xyz/config.html) · [使用](https://ccload.xyz/usage.html) · [反馈](https://ccload.xyz/feedback.html)。
+官网以引导页的形式覆盖相同主题：[安装](https://ccload.xyz/zh/install.html) · [配置](https://ccload.xyz/zh/config.html) · [使用](https://ccload.xyz/zh/usage.html) · [反馈](https://ccload.xyz/zh/feedback.html)。
 
 ## 安全
 

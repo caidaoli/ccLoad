@@ -27,7 +27,7 @@ LDFLAGS = -s -w \
 	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
 	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
 
-.PHONY: help build docker-build web-test verify-web race-fast race www-setup www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+.PHONY: help build docker-build web-test verify-web race-fast race www-setup www-build www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -41,8 +41,9 @@ help:
 	@echo "  race-fast         - 运行高价值 race 测试子集"
 	@echo "  race              - 运行全量 race 测试（显式并行度）"
 	@echo "  www-setup         - 设置 www 介绍网站（复制共享资源）"
-	@echo "  www-run           - 本地运行 www 网站（使用 Python 简易服务器）"
-	@echo "  www-release       - 使用 rsync 发布 www 到 racknerd"
+	@echo "  www-build         - 预渲染 www 中英文静态页到 www/dist"
+	@echo "  www-run           - 本地预览 www/dist（使用 Python 简易服务器）"
+	@echo "  www-release       - 使用 rsync 发布 www/dist 到 racknerd"
 	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
@@ -73,7 +74,7 @@ docker-build:
 	@echo "Docker 镜像构建完成: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 web-test: www-setup
-	@node --test web/assets/js/*.test.js
+	@node --test web/assets/js/*.test.js www/build.test.mjs
 
 verify-web: web-test
 
@@ -88,14 +89,17 @@ race:
 # 设置 www 介绍网站（复制共享资源，使其完全独立）
 www-setup:
 	@echo "设置 www 介绍网站..."
-	@mkdir -p www/assets/{css,js,locales,images}
+	@mkdir -p www/assets/{css,js,images}
 	@echo "复制共享资源（CSS、JS、图标）..."
 	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
-	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
 	@cp -f images/ccload-dashboard.jpeg images/ccload-logs.jpg images/ccload-promo.zh-CN.jpg images/ccload-promo.en.jpg www/assets/images/ 2>/dev/null || true
-	@echo "✓ www 设置完成，现在是完全独立的静态网站"
+	@echo "✓ www 共享资源已就绪"
+
+# 预渲染 www：源 HTML + 语言包 → www/dist（/ 英文，/zh/ 中文，含 sitemap.xml、robots.txt）
+www-build: www-setup
+	@node www/build.mjs
 
 # 本地运行 www 网站（预览效果）
 WWW_PORT ?= 8888
@@ -106,19 +110,19 @@ WWW_RELEASE_SSH ?= ssh -T
 WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
 # 介绍视频不入库，由 www/promo/render.mjs + audio.sh 生成；缺失时拒绝发布，否则 --delete 会删掉线上视频
 WWW_PROMO_VIDEOS ?= www/assets/video/ccload-promo.zh-CN.mp4 www/assets/video/ccload-promo.en.mp4
-www-run: www-setup
+www-run: www-build
 	@echo "启动 www 介绍网站预览服务器..."
 	@echo "访问地址: http://localhost:$(WWW_PORT)/"
 	@echo "按 Ctrl+C 停止服务"
-	@cd www && python3 -m http.server $(WWW_PORT)
+	@cd www/dist && python3 -m http.server $(WWW_PORT)
 
-www-release: www-setup
+www-release: www-build
 	@for f in $(WWW_PROMO_VIDEOS); do [ -s "$$f" ] || { echo "缺少 $${f}，先按 www/promo/render.mjs 和 audio.sh 生成" >&2; exit 1; }; done
 	@echo "检查远端发布环境..."
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'command -v rsync >/dev/null || { echo "远端缺少 rsync，请先在服务器执行: apt-get update && apt-get install -y rsync" >&2; exit 127; }'
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'mkdir -p "$(WWW_RELEASE_PATH)"'
 	@echo "同步 www 到 $(WWW_RELEASE_TARGET)..."
-	@rsync -e "$(WWW_RELEASE_SSH)" $(WWW_RELEASE_RSYNC_FLAGS) www/ $(WWW_RELEASE_TARGET)/
+	@rsync -e "$(WWW_RELEASE_SSH)" $(WWW_RELEASE_RSYNC_FLAGS) www/dist/ $(WWW_RELEASE_TARGET)/
 	@echo "修正远程文件权限..."
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'find "$(WWW_RELEASE_PATH)" -type d -exec chmod 755 {} \; && find "$(WWW_RELEASE_PATH)" -type f -exec chmod 644 {} \;'
 	@echo "✓ www 已同步到 $(WWW_RELEASE_TARGET)"

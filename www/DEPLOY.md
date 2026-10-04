@@ -1,195 +1,78 @@
 # ccLoad 介绍网站部署指南
 
-这是 ccLoad 项目的独立介绍网站。执行 `make www-setup` 复制共享资源后，可以部署到任何静态 Web 服务器。
+这是 ccLoad 项目的独立介绍网站。源文件在 `www/`，发布产物是 `make www-build` 生成的 `www/dist/`（纯静态，可部署到任何 Web 服务器）。
 
-## 📁 目录说明
-
-执行 `make www-setup` 后，`www/` 目录是一个**完全独立**的静态网站，包含：
-
-- ✅ HTML/CSS/JS（无框架依赖）
-- ✅ 首页、导航、页面标题和摘要支持中英文切换（详细文档正文目前为英文）
-- ✅ 主题切换（light/dark/system）
-- ✅ 响应式设计
-- ✅ 可直接复制到任何 Web 服务器
-
-## 🚀 快速部署
-
-### 方法一：使用 Makefile（开发环境）
+## 📁 构建产物
 
 ```bash
-# 1. 设置网站（复制共享资源）
-make www-setup
-
-# 2. 本地预览（Python 简易服务器）
-make www-run
-
-# 访问 http://localhost:8888/
+make www-build   # = make www-setup（复制共享资源）+ node www/build.mjs
 ```
 
-### 方法二：复制到 Nginx
+`www/dist/` 包含：
+
+- `index.html` 等英文页（`x-default`），`zh/` 下为对应中文页
+- `sitemap.xml`（含 hreflang 交替链接）、`robots.txt`
+- `assets/{css,js,images,video}`、favicon 与品牌图标
+
+不包含：源 HTML、`assets/locales/`、`build.mjs`、`promo/`。站点域名由 `build.mjs` 的 `SITE_URL` 决定（canonical、sitemap、OG 都依赖它），换域名时改这里。
+
+## 🚀 部署
+
+### 官方站点
 
 ```bash
-# 1. 设置网站
-make www-setup
+make www-release   # 构建后 rsync --delete www/dist/ 到线上目录
+```
 
-# 2. 复制到 Nginx 目录
-sudo cp -r www /usr/share/nginx/html/
+### Nginx
 
-# 3. 配置 Nginx（示例）
-# 在 /etc/nginx/sites-available/default 或你的站点配置中添加：
-
+```nginx
 server {
     listen 80;
     server_name your-domain.com;
-    root /usr/share/nginx/html/www;
+    root /var/www/ccload/dist;   # 指向 www/dist 的拷贝
     index index.html;
 
     location / {
         try_files $uri $uri/ =404;
     }
 
-    # 缓存策略
-    location ~* \.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot)$ {
+    location ~* \.(css|js|jpg|jpeg|png|gif|svg|ico|mp4|woff2?)$ {
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    location ~* \.html$ {
-        expires -1;
+    location ~* (\.html|/)$ {
         add_header Cache-Control "no-cache, must-revalidate";
     }
 }
-
-# 4. 重启 Nginx
-sudo nginx -t && sudo systemctl reload nginx
 ```
 
-### 方法三：复制到 Apache
+CSS/JS 通过 `?v=` 查询串做缓存失效，改动样式或脚本时同步更新 HTML 中的版本号。
 
-```bash
-# 1. 设置网站
-make www-setup
+### 其他静态托管（GitHub Pages / Netlify / Vercel / Cloudflare Pages）
 
-# 2. 复制到 Apache 目录
-sudo cp -r www /var/www/html/
+把 `www/dist/` 作为发布目录即可，例如 `netlify deploy --prod --dir www/dist`。无需任何重写规则。
 
-# 3. 创建 .htaccess（可选）
-cat > www/.htaccess << 'EOF'
-# 启用 Gzip 压缩
-<IfModule mod_deflate.c>
-    AddOutputFilterByType DEFLATE text/html text/css text/javascript application/javascript
-</IfModule>
-
-# 缓存策略
-<IfModule mod_expires.c>
-    ExpiresActive On
-    ExpiresByType text/html "access plus 0 seconds"
-    ExpiresByType text/css "access plus 1 year"
-    ExpiresByType application/javascript "access plus 1 year"
-    ExpiresByType image/svg+xml "access plus 1 year"
-    ExpiresByType image/x-icon "access plus 1 year"
-</IfModule>
-EOF
-
-# 4. 重启 Apache
-sudo systemctl reload apache2
-```
-
-### 方法四：部署到 GitHub Pages
-
-```bash
-# 1. 设置网站
-make www-setup
-
-# 2. 创建独立仓库
-cd /tmp
-git clone https://github.com/your-username/ccload-website.git
-cd ccload-website
-
-# 3. 复制文件
-cp -r /path/to/ccLoad/www/* .
-
-# 4. 推送到 GitHub
-git add .
-git commit -m "Initial commit"
-git push
-
-# 5. 在 GitHub 仓库设置中启用 Pages
-# Settings -> Pages -> Source: main branch / root
-```
-
-### 方法五：部署到 Netlify/Vercel
-
-```bash
-# 1. 设置网站
-make www-setup
-
-# 2. 安装 CLI（选择其一）
-npm install -g netlify-cli
-# 或
-npm install -g vercel
-
-# 3. 部署
-cd www
-netlify deploy --prod
-# 或
-vercel --prod
-```
-
-## 🔧 手动设置（不使用 Makefile）
-
-如果你不在 ccLoad 项目环境中，可以手动设置：
-
-```bash
-cd www
-
-# 复制共享资源（从 ccLoad 的 web 目录）
-cp ../web/assets/css/styles.css assets/css/
-cp ../web/assets/js/i18n.js assets/js/
-cp ../web/assets/js/theme-init.js assets/js/
-cp ../web/favicon.* ../web/apple-touch-icon.png .
-cp ../web/brand-mark.svg ../web/brand-wordmark.svg .
-mkdir -p assets/images
-cp ../images/ccload-dashboard.jpeg ../images/ccload-logs.jpg ../images/ccload-promo.*.jpg assets/images/
-
-# 现在 www 目录完全独立，可以复制到任何地方
-```
-
-## 📝 目录结构
+## 📝 源码结构
 
 ```
 www/
-├── index.html              # 首页
-├── install.html            # 安装指南
-├── config.html             # 配置文档
-├── usage.html              # 使用指南
-├── feedback.html           # 反馈渠道
-├── favicon.svg/ico         # 图标
-├── apple-touch-icon.png
-├── brand-mark.svg          # 共享品牌图标
-├── brand-wordmark.svg      # 共享品牌字标
+├── build.mjs               # 预渲染构建脚本（零依赖 Node ESM）
+├── build.test.mjs          # 构建产物测试（make verify-web 运行）
+├── index.html / install.html / config.html / usage.html / feedback.html  # 英文源文 + data-i18n 标注
 ├── assets/
-│   ├── css/
-│   │   ├── styles.css      # 共享设计系统（复制自 web）
-│   │   └── www.css         # 网站专用样式
-│   ├── js/
-│   │   ├── i18n.js         # 国际化系统（复制自 web）
-│   │   ├── theme-init.js   # 主题初始化（复制自 web）
-│   │   ├── nav.js          # 导航组件
-│   │   └── www.js          # 交互逻辑
-│   ├── images/
-│   │   ├── hero-bg.svg     # 首页 Hero 背景（www 专用）
-│   │   ├── ccload-dashboard.jpeg
-│   │   ├── ccload-logs.jpg
-│   │   └── ccload-promo.<locale>.jpg  # 介绍视频封面
-│   ├── video/
-│   │   └── ccload-promo.<locale>.mp4  # 首页介绍视频（由 promo/ 生成，不入库）
+│   ├── css/www.css         # 网站专用样式（styles.css 由 www-setup 复制）
+│   ├── js/nav.js           # 移动菜单、主题、语言偏好
+│   ├── js/www.js           # 代码复制、Tab、平滑滚动
+│   ├── images/             # Hero 背景、截图、视频封面
+│   ├── video/              # 介绍视频（不入库）
 │   └── locales/
-│       ├── zh-CN.js        # 中文语言包
-│       ├── en.js           # 英文语言包
-│       └── <page>.zh-CN.js # 子页面正文中文译文（install/config/usage/feedback）
-├── promo/                  # 介绍视频源：动画页、逐帧渲染脚本、配音脚本
-└── .gitignore              # 忽略复制的文件
+│       ├── en.js           # 构建生成的导航/页脚英文
+│       ├── zh-CN.js        # 首页、导航、页脚、页面标题中文
+│       └── <page>.zh-CN.js # 子页正文中文
+├── promo/                  # 介绍视频源
+└── dist/                   # 构建产物（gitignore）
 ```
 
 ## 🎬 介绍视频
@@ -206,63 +89,17 @@ www/promo/audio.sh zh    # 配旁白和背景音乐，原地替换
 
 英文版把 `zh` 换成 `en`，输出 `ccload-promo.en.mp4`。`make www-release` 在视频缺失时会直接失败，因为 rsync 带 `--delete`，缺文件发布会删掉线上视频。
 
-## ⚙️ 配置说明
-
-### 修改端口（本地预览）
-
-```bash
-make www-run WWW_PORT=9000
-```
-
-### 自定义域名
-
-在你的 DNS 提供商处添加 A 记录或 CNAME 记录指向你的服务器。
-
-### HTTPS 配置
-
-推荐使用 Let's Encrypt：
-
-```bash
-# Nginx
-sudo certbot --nginx -d your-domain.com
-
-# Apache
-sudo certbot --apache -d your-domain.com
-```
-
 ## 🔍 验证部署
 
-访问以下 URL 确认部署成功：
-
-- 首页：`http://your-domain.com/`
-- CSS：`http://your-domain.com/assets/css/www.css`
-- JS：`http://your-domain.com/assets/js/nav.js`
-- 语言包：`http://your-domain.com/assets/locales/zh-CN.js`
-
-## 📊 浏览器兼容性
-
-- Chrome/Edge 90+
-- Firefox 88+
-- Safari 14+
-- 移动端浏览器
+- `https://your-domain.com/` 与 `/zh/` 均返回完整正文（`curl` 可见，无需 JS）
+- `https://your-domain.com/sitemap.xml`、`/robots.txt` 可访问
+- 上线后在 Google Search Console 与百度搜索资源平台提交 sitemap
 
 ## 🐛 故障排除
 
-### 样式未加载
-
-确认 `make www-setup` 已执行，检查 `assets/css/styles.css` 是否存在。
-
-### 语言切换不工作
-
-检查浏览器控制台是否有 JS 错误，确认 `assets/js/i18n.js` 已加载。
-
-### 图标未显示
-
-确认 `favicon.svg`、`favicon.ico`、`brand-mark.svg` 和 `brand-wordmark.svg` 已复制到 www 根目录。
-
-### 相对路径问题
-
-确保 HTML 中的资源引用使用相对路径（不以 `/` 开头）。
+- **`make www-build` 报 missing translations**：中文语言包缺少报错中列出的键
+- **报 missing favicon.svg 等**：先执行 `make www-setup`
+- **样式未加载**：确认部署的是 `dist/` 而不是 `www/` 源目录
 
 ## 🤝 贡献
 

@@ -1,6 +1,3 @@
-/* 导入管理后台的设计系统 */
-@import './styles.css';
-
 /* ========================================
    介绍网站专用 CSS 变量
    ======================================== */
@@ -398,7 +395,8 @@ html[data-theme="dark"] {
     grid-template-columns: repeat(4, 1fr);
   }
 
-  .www-feature-grid.www-provider-grid {
+  .www-feature-grid.www-provider-grid,
+  .www-feature-grid.www-why-grid {
     grid-template-columns: repeat(3, 1fr);
   }
 }
@@ -1161,4 +1159,94 @@ html[data-theme="dark"] {
 
 .www-mb-12 {
   margin-bottom: var(--space-12);
+}
+
+/* ========================================
+   首页：定位标语、关键数字、常见问题；交替背景区块；页脚链接
+   ======================================== */
+.www-hero-eyebrow {
+  margin-bottom: var(--space-4);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.www-hero .www-hero-title {
+  font-size: clamp(2rem, 4.5vw, 3rem);
+}
+
+.www-hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-4) var(--space-8);
+  margin: var(--space-10) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.www-hero-stats li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.9375rem;
+}
+
+.www-hero-stats strong {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: white;
+}
+
+.www-section-alt {
+  background: var(--color-bg-elevated);
+}
+
+.www-faq {
+  max-width: 860px;
+}
+
+.www-faq-item {
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-4) 0;
+}
+
+.www-faq-item summary {
+  cursor: pointer;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.www-faq-item p {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}
+
+.www-footer-content {
+  padding-bottom: var(--space-6);
+}
+
+.www-footer-content ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.www-footer-tagline {
+  color: var(--color-text-secondary);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.www-footer-bottom a {
+  color: inherit;
+  text-decoration: underline;
 }

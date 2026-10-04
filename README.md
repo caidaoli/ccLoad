@@ -17,13 +17,20 @@ ccLoad puts one stable endpoint in front of many AI API upstreams. Clients keep 
 
 ## Why ccLoad
 
-Running several AI API channels by hand fails in predictable ways:
+A reverse proxy forwards requests. ccLoad is built for coding agents that stream long responses, run for hours, and spend real money, so every design choice is about keeping the session alive and the bill predictable.
 
-- **Manual channel switching**: Different keys, validity windows, quotas, and upstream URLs quickly become hard to manage.
-- **Rate limits and upstream failures**: `429`, `502`, `504`, expired keys, and overloaded providers should not stop the client workflow.
-- **Opaque request status**: Without live request visibility, long streaming requests become guesswork.
-- **HTTP 200 with error content**: Some upstreams return a successful HTTP status while the response body is an actual error.
-- **Cost drift**: Shared gateways need per-channel and per-token limits, not spreadsheet accounting after the bill arrives.
+- **Subscription accounts, not just API keys**: Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
+- **Any client on any upstream**: Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
+- **Failover your client never sees**: If an upstream fails before the first byte reaches the client, ccLoad retries the next candidate. Errors disguised as HTTP 200 and rate limits inside SSE streams count as failures too.
+- **Cooldown at the right scope**: A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
+- **Cost you can check and cap**: Pricing covers cache reads and writes, long-context tiers, OpenAI `service_tier` and image generation. Cap spend per channel per day and per token in total, per day or per month.
+- **Light to run**: One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
+
+## Who It's For
+
+- **Developers with several AI subscriptions**: Combine ChatGPT, Claude and other plans with spare API keys, so Claude Code and Codex keep running when one quota runs out.
+- **Teams sharing model access**: Give each teammate a token with model, budget and concurrency limits. Upstream credentials stay in one place and access can be revoked at any time.
+- **Operators running many channels**: Manage channels with priorities, health-based ordering, scheduled checks, CSV import and export, and a log entry for every request.
 
 ## Features
 
