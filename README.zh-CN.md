@@ -9,11 +9,168 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/caidaoli/ccLoad)](go.mod)
 [![License](https://img.shields.io/github/license/caidaoli/ccLoad)](LICENSE)
 
-ccLoad 在多个 AI API 上游前面提供一个稳定入口。客户端只需要一个地址和一个 ccLoad 令牌，渠道选择、故障切换、冷却、协议转换、请求可观测性和费用限制都由网关处理。
-
 [![观看 47 秒 ccLoad 介绍视频](images/ccload-promo.zh-CN.jpg)](https://ccload.xyz/assets/video/ccload-promo.zh-CN.mp4?v=20261002)
 
 ▶ [观看 47 秒介绍视频](https://ccload.xyz/assets/video/ccload-promo.zh-CN.mp4?v=20261002) · [English](https://ccload.xyz/assets/video/ccload-promo.en.mp4?v=20261002)
+
+## ccLoad 是什么
+
+你手上可能有好几个 AI 来源：官方 API Key、第三方中转站、ChatGPT 或 Claude 订阅账号。每个客户端都得单独配置，某个额度用完或者上游出错，正在跑的 Claude Code、Codex 任务就会中断。
+
+ccLoad 是一个运行在你自己电脑或服务器上的网关程序。你把所有 AI 来源都交给它管理，客户端只需要配置 ccLoad 的地址和一个 ccLoad 令牌：
+
+```text
+Claude Code / Codex / Gemini / 各类 OpenAI 兼容工具
+                │  只配置一个地址 + 一个 ccLoad 令牌
+                ▼
+             ccLoad   挑选可用上游 → 失败自动换下一个 → 必要时转换协议 → 记录用量和费用
+                │
+   ┌────────────┼──────────────┬──────────────────┐
+官方 API Key   第三方中转站   Codex / Claude 等订阅账号   ……
+```
+
+先了解三个概念，后面的步骤都围绕它们：
+
+- **渠道**：一个上游来源，例如“某中转站的地址 + Key”或“一个已登录的 Codex 账号”。每个渠道要写明它能提供哪些模型。
+- **API 令牌**：ccLoad 发给客户端使用的密钥。客户端只认识 ccLoad 和这个令牌，接触不到真实的上游 Key。
+- **管理后台**：浏览器打开 `http://服务地址:8080/web/`，用管理密码 `CCLOAD_PASS` 登录，在这里添加渠道、创建令牌、查看日志和费用。
+
+## 适合谁用
+
+- **手上有多个 AI 订阅的开发者**：把 ChatGPT、Claude 等订阅和闲置 API Key 合在一起，一个额度用完，Claude Code 和 Codex 也不会停下来。
+- **共享模型访问的团队**：给每个成员发一个令牌，限定模型、预算和并发。上游凭证集中保管，随时可以撤销访问。
+- **管理大量渠道的运营者**：用优先级、健康度排序、定时检测、CSV 导入导出管理渠道，每个请求都有日志可查。
+
+## 快速开始
+
+下面五步走完，就能让 Claude Code 或 Codex 通过 ccLoad 工作。
+
+### 第 1 步：安装并启动
+
+任选一种方式。所有方式都**必须设置管理密码 `CCLOAD_PASS`**，未设置时服务会直接退出。服务默认监听 `8080` 端口。
+
+**Docker（推荐）**：
+
+```bash
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=换成你的管理密码 \
+  -v ccload_data:/app/data \
+  ghcr.io/caidaoli/ccload:latest
+```
+
+数据保存在 Docker 卷 `ccload_data` 里，删除或升级容器都不会丢失。
+
+**Docker Compose**：
+
+```bash
+curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+# 编辑 .env，把 CCLOAD_PASS 改成你的管理密码
+docker compose up -d
+```
+
+**Homebrew（macOS / Linux）**：
+
+```bash
+brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+# 在配置目录创建 .env，写入一行：CCLOAD_PASS=你的管理密码
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload
+```
+
+**直接下载程序**：从 [Releases](https://github.com/caidaoli/ccLoad/releases/latest) 下载对应平台的文件（`ccload-linux-amd64`、`ccload-linux-arm64`、`ccload-darwin-arm64`、`ccload-darwin-amd64`、`ccload-windows-amd64.exe`），以 Linux 为例：
+
+```bash
+chmod +x ccload-linux-amd64
+CCLOAD_PASS=你的管理密码 ./ccload-linux-amd64
+```
+
+数据默认保存在当前目录的 `data/ccload.db`。
+
+没有服务器也可以免费部署到 Hugging Face Spaces，步骤见[部署文档](docs/guide/deployment.zh-CN.md#方式四hugging-face-spaces-部署)。
+
+确认服务已启动：
+
+```bash
+curl http://localhost:8080/health
+```
+
+> 部署在服务器上时，把本文所有 `localhost` 换成服务器的 IP 或域名。
+
+### 第 2 步：登录管理后台
+
+浏览器打开 `http://localhost:8080/web/`，输入第 1 步设置的 `CCLOAD_PASS` 登录。
+
+### 第 3 步：添加渠道
+
+进入 **渠道管理** 页，点击 **添加渠道**：
+
+- **API Key 类上游**（官方 API、第三方中转站）：最简单的是点 **一键填充渠道配置**，粘贴服务商给你的地址和 Key（例如 `OPENAI_BASE_URL=https://api.example.com` 和 `OPENAI_API_KEY=sk-...`），ccLoad 会检查连通性并自动拉取模型列表。手动填写时，API URL 只填基础地址，不要带 `/v1` 或具体接口路径。
+- **订阅账号**（Codex/ChatGPT、Claude、Antigravity、xAI、CodeBuddy、Z.ai Coding Plan、Cursor、Zed）：在渠道管理中选择对应的账号类型，按页面提示在浏览器授权或导入凭证。
+
+**模型列表决定渠道会不会被选中。** ccLoad 按客户端请求的模型名挑选渠道：客户端要 `claude-sonnet-4-6`，就必须有渠道配置了 `claude-sonnet-4-6`。可以用 **获取模型** 或 **常用模型** 按钮添加；上游的模型名和客户端不一样时，在 **重定向目标** 里填上游的模型名。
+
+保存后在渠道上点 **测试**，确认能正常返回。
+
+### 第 4 步：创建 API 令牌
+
+进入 **API令牌** 页（`/web/tokens.html`），新建一个令牌并复制。所有客户端都用它访问 ccLoad；不带令牌的 `/v1/*` 和 `/v1beta/*` 请求一律返回 `401`。
+
+### 第 5 步：让客户端连接 ccLoad
+
+先用 curl 测一下，把 `your-api-token` 换成第 4 步的令牌，模型换成渠道里配置的模型名：
+
+```bash
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello, Claude!"}]
+  }'
+```
+
+**Claude Code**：
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_AUTH_TOKEN=your-api-token
+claude
+```
+
+写进 `~/.zshrc` 或 `~/.bashrc` 可以长期生效。
+
+**Codex CLI**：先用 ccLoad 令牌登录，再修改地址：
+
+```bash
+echo your-api-token | codex login --with-api-key
+```
+
+```toml
+# ~/.codex/config.toml
+openai_base_url = "http://localhost:8080/v1"
+```
+
+**其他 OpenAI 兼容工具**（Cherry Studio、各类 SDK 等）：Base URL 填 `http://localhost:8080/v1`，API Key 填 ccLoad 令牌。
+
+客户端用的是哪种协议都可以，ccLoad 会在客户端协议和上游协议不一致时自动转换。更多接口与用法见[使用说明](docs/guide/usage.zh-CN.md)。
+
+## 常见问题
+
+- **服务启动后立即退出**：没有设置 `CCLOAD_PASS`。密码里包含 `$` 时，在 `.env` 中要用单引号包起来，例如 `CCLOAD_PASS='abc$def'`。
+- **请求返回 `401`**：客户端没带令牌或令牌填错。确认填的是第 4 步创建的 ccLoad 令牌，而不是上游 Key 或管理密码。
+- **返回 `404 model: xxx` 或 `503 no available upstream`**：没有任何渠道配置了这个模型名，或者能用的渠道都在冷却。检查渠道的模型列表，并到 **日志** 页查看每次尝试的失败原因。
+- **8080 端口被占用**：设置环境变量 `PORT` 换一个端口，Docker 则修改 `-p` 左侧的端口。
+- **其他机器访问不了**：检查防火墙和端口映射。公网部署请放在 HTTPS 反向代理之后，见下文[安全](#安全)。
 
 ## 它和普通 API 中转有什么不同
 
@@ -25,12 +182,6 @@ ccLoad 在多个 AI API 上游前面提供一个稳定入口。客户端只需�
 - **按准确范围冷却**：失效的 Key、被限流的模型、不可用的 URL 各自按指数退避冷却，并遵循上游给出的重置时间；同一渠道的其余部分照常服务。
 - **成本可核对、可封顶**：计价覆盖缓存读写、长上下文分档、OpenAI `service_tier` 和图片生成。可按渠道设每日限额，按令牌设总额、每日和每月限额。
 - **部署轻量**：一个 Go 二进制，内置 SQLite 和管理后台。需要时再接 MySQL 或 PostgreSQL，也可以免费跑在 Hugging Face Spaces 上。
-
-## 适合谁用
-
-- **手上有多个 AI 订阅的开发者**：把 ChatGPT、Claude 等订阅和闲置 API Key 合在一起，一个额度用完，Claude Code 和 Codex 也不会停下来。
-- **共享模型访问的团队**：给每个成员发一个令牌，限定模型、预算和并发。上游凭证集中保管，随时可以撤销访问。
-- **管理大量渠道的运营者**：用优先级、健康度排序、定时检测、CSV 导入导出管理渠道，每个请求都有日志可查。
 
 ## 功能
 
@@ -84,67 +235,6 @@ ccLoad 在多个 AI API 上游前面提供一个稳定入口。客户端只需�
 ![ccLoad 程序架构](images/ccload-architecture.jpg)
 
 请求先用 ccLoad 令牌认证，再按模型、优先级和限制匹配候选渠道，转发到某个上游 URL 和 Key。上游在任何输出到达客户端之前失败时，ccLoad 冷却出问题的那一层并尝试下一个候选。只有客户端协议和所选上游协议不一致时才做协议转换。详见[架构](docs/guide/architecture.zh-CN.md)。
-
-## 快速开始
-
-```bash
-docker run -d --name ccload \
-  -p 8080:8080 \
-  -e CCLOAD_PASS=your_secure_password \
-  -v ccload_data:/app/data \
-  ghcr.io/caidaoli/ccload:latest
-```
-
-或使用 Docker Compose：
-
-```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
-# 编辑 .env 设置 CCLOAD_PASS（必填，未设置服务会拒绝启动）
-docker compose up -d
-```
-
-
-或通过 Homebrew 安装（macOS/Linux，支持 Apple Silicon/ARM64 和 Intel/AMD64）：
-
-```bash
-brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
-brew install caidaoli/ccload/ccload
-```
-
-按 [Homebrew 部署说明](docs/guide/deployment.zh-CN.md#homebrew)设置管理密码并启动服务。
-
-然后：
-
-1. 打开 `http://localhost:8080/web/`，用 `CCLOAD_PASS` 登录。
-2. 在**渠道管理**页添加渠道：上游 URL、API Key 或账号凭证、模型。
-3. 在 **API令牌** 页（`/web/tokens.html`）创建 API 令牌。没有令牌时，所有 `/v1/*` 和 `/v1beta/*` 请求都返回 `401`。
-4. 把客户端指向网关：
-
-```bash
-curl -X POST http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-token" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello, Claude!"}]
-  }'
-```
-
-```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_AUTH_TOKEN=your-api-token
-```
-
-```toml
-# Codex CLI：先用 ccLoad 令牌执行 `codex login --with-api-key`，再修改 ~/.codex/config.toml
-openai_base_url = "http://localhost:8080/v1"
-```
-
-二进制下载、源码编译、Hugging Face Spaces 和外部数据库见[部署](docs/guide/deployment.zh-CN.md)。
 
 ## 文档
 

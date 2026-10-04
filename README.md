@@ -9,11 +9,168 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/caidaoli/ccLoad)](go.mod)
 [![License](https://img.shields.io/github/license/caidaoli/ccLoad)](LICENSE)
 
-ccLoad puts one stable endpoint in front of many AI API upstreams. Clients keep a single base URL and a ccLoad token; the gateway handles upstream selection, failover, cooldown, protocol conversion, request visibility, and cost limits.
-
 [![Watch the 47-second ccLoad overview](images/ccload-promo.en.jpg)](https://ccload.xyz/assets/video/ccload-promo.en.mp4?v=20261002)
 
 ▶ [Watch the 47-second overview](https://ccload.xyz/assets/video/ccload-promo.en.mp4?v=20261002) · [中文版](https://ccload.xyz/assets/video/ccload-promo.zh-CN.mp4?v=20261002)
+
+## What Is ccLoad
+
+You may have several AI sources: official API keys, third-party relay services, and ChatGPT or Claude subscriptions. Each client has to be configured separately, and when one quota runs out or an upstream fails, a running Claude Code or Codex session stops.
+
+ccLoad is a gateway you run on your own computer or server. It manages all of those sources, and every client only needs the ccLoad address and a ccLoad token:
+
+```text
+Claude Code / Codex / Gemini / OpenAI-compatible tools
+                │  one address + one ccLoad token
+                ▼
+             ccLoad   pick an upstream → retry the next one on failure → convert protocols if needed → record usage and cost
+                │
+   ┌────────────┼──────────────┬──────────────────────────┐
+Official API keys  Relay services  Codex / Claude and other subscriptions  …
+```
+
+Three terms are used throughout the steps below:
+
+- **Channel**: one upstream source, such as "a relay service's URL plus key" or "a signed-in Codex account". Each channel lists the models it serves.
+- **API token**: the key ccLoad gives to your clients. Clients only talk to ccLoad with this token and never see the real upstream keys.
+- **Admin console**: open `http://your-host:8080/web/` and sign in with the admin password `CCLOAD_PASS` to add channels, create tokens, and view logs and costs.
+
+## Who It's For
+
+- **Developers with several AI subscriptions**: Combine ChatGPT, Claude and other plans with spare API keys, so Claude Code and Codex keep running when one quota runs out.
+- **Teams sharing model access**: Give each teammate a token with model, budget and concurrency limits. Upstream credentials stay in one place and access can be revoked at any time.
+- **Operators running many channels**: Manage channels with priorities, health-based ordering, scheduled checks, CSV import and export, and a log entry for every request.
+
+## Quick Start
+
+Five steps get Claude Code or Codex working through ccLoad.
+
+### Step 1: Install and start
+
+Pick one method. Every method **requires the admin password `CCLOAD_PASS`**; without it the service exits immediately. The service listens on port `8080` by default.
+
+**Docker (recommended)**:
+
+```bash
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=your_admin_password \
+  -v ccload_data:/app/data \
+  ghcr.io/caidaoli/ccload:latest
+```
+
+Data lives in the Docker volume `ccload_data`, so removing or upgrading the container keeps it.
+
+**Docker Compose**:
+
+```bash
+curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+# Edit .env and set CCLOAD_PASS to your admin password
+docker compose up -d
+```
+
+**Homebrew (macOS / Linux)**:
+
+```bash
+brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+brew install caidaoli/ccload/ccload
+
+# Create .env in the config directory with one line: CCLOAD_PASS=your_admin_password
+mkdir -p "$(brew --prefix)/var/ccload"
+cd "$(brew --prefix)/var/ccload"
+(umask 077; touch .env)
+${EDITOR:-vi} .env
+
+brew services start caidaoli/ccload/ccload
+```
+
+**Download the binary**: get the file for your platform from [Releases](https://github.com/caidaoli/ccLoad/releases/latest) (`ccload-linux-amd64`, `ccload-linux-arm64`, `ccload-darwin-arm64`, `ccload-darwin-amd64`, `ccload-windows-amd64.exe`). On Linux:
+
+```bash
+chmod +x ccload-linux-amd64
+CCLOAD_PASS=your_admin_password ./ccload-linux-amd64
+```
+
+Data is stored in `data/ccload.db` under the current directory by default.
+
+Without a server, you can deploy for free on Hugging Face Spaces; see [Deployment](docs/guide/deployment.md#method-4-hugging-face-spaces-deployment).
+
+Check that the service is up:
+
+```bash
+curl http://localhost:8080/health
+```
+
+> On a server, replace every `localhost` in this guide with the server's IP address or domain.
+
+### Step 2: Sign in to the admin console
+
+Open `http://localhost:8080/web/` and sign in with the `CCLOAD_PASS` from step 1.
+
+### Step 3: Add a channel
+
+Go to **Channels** and click **Add Channel**:
+
+- **API-key upstreams** (official APIs, relay services): the easiest way is **Auto-fill channel configuration**. Paste the address and key your provider gave you (for example `OPENAI_BASE_URL=https://api.example.com` and `OPENAI_API_KEY=sk-...`); ccLoad checks the connection and fetches the model list. When filling the form by hand, enter only the base URL, without `/v1` or an endpoint path.
+- **Subscription accounts** (Codex/ChatGPT, Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, Zed): choose the account type in Channels and follow the prompts to authorize in the browser or import credentials.
+
+**The model list decides whether a channel is used.** ccLoad picks channels by the model name the client requests: if the client asks for `claude-sonnet-4-6`, some channel must list `claude-sonnet-4-6`. Add models with **Fetch Models** or **Common Models**; when the upstream uses a different name, put the upstream name in **Redirect Target**.
+
+After saving, click **Test** on the channel to confirm it responds.
+
+### Step 4: Create an API token
+
+Go to **API Tokens** (`/web/tokens.html`), create a token and copy it. Every client uses it to reach ccLoad; `/v1/*` and `/v1beta/*` requests without a token return `401`.
+
+### Step 5: Point your clients at ccLoad
+
+Test with curl first. Replace `your-api-token` with the token from step 4 and the model with one configured on your channel:
+
+```bash
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello, Claude!"}]
+  }'
+```
+
+**Claude Code**:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_AUTH_TOKEN=your-api-token
+claude
+```
+
+Add the exports to `~/.zshrc` or `~/.bashrc` to keep them.
+
+**Codex CLI**: log in with your ccLoad token, then change the address:
+
+```bash
+echo your-api-token | codex login --with-api-key
+```
+
+```toml
+# ~/.codex/config.toml
+openai_base_url = "http://localhost:8080/v1"
+```
+
+**Other OpenAI-compatible tools** (Cherry Studio, SDKs, and so on): set the base URL to `http://localhost:8080/v1` and the API key to your ccLoad token.
+
+The client protocol does not have to match the upstream; ccLoad converts between them when they differ. More endpoints and options are in the [Usage Guide](docs/guide/usage.md).
+
+## Troubleshooting
+
+- **The service exits right after starting**: `CCLOAD_PASS` is not set. If the password contains `$`, wrap it in single quotes in `.env`, for example `CCLOAD_PASS='abc$def'`.
+- **Requests return `401`**: the client sends no token or a wrong one. Use the ccLoad token from step 4, not an upstream key or the admin password.
+- **`404 model: xxx` or `503 no available upstream`**: no channel lists that model name, or every usable channel is cooling down. Check the channel's model list and see each attempt's failure reason on the **Logs** page.
+- **Port 8080 is in use**: set the `PORT` environment variable, or change the left side of `-p` for Docker.
+- **Other machines cannot connect**: check the firewall and port mapping. For public deployments, put ccLoad behind an HTTPS reverse proxy; see [Security](#security).
 
 ## Why ccLoad
 
@@ -25,12 +182,6 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 - **Cooldown at the right scope**: A revoked key, a rate-limited model, or a dead URL cools down on its own with exponential backoff and honors upstream reset times. The rest of the channel keeps serving.
 - **Cost you can check and cap**: Pricing covers cache reads and writes, long-context tiers, OpenAI `service_tier` and image generation. Cap spend per channel per day and per token in total, per day or per month.
 - **Light to run**: One Go binary with embedded SQLite and a built-in admin console. Add MySQL or PostgreSQL only when you need them, or run it for free on Hugging Face Spaces.
-
-## Who It's For
-
-- **Developers with several AI subscriptions**: Combine ChatGPT, Claude and other plans with spare API keys, so Claude Code and Codex keep running when one quota runs out.
-- **Teams sharing model access**: Give each teammate a token with model, budget and concurrency limits. Upstream credentials stay in one place and access can be revoked at any time.
-- **Operators running many channels**: Manage channels with priorities, health-based ordering, scheduled checks, CSV import and export, and a log entry for every request.
 
 ## Features
 
@@ -84,67 +235,6 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 ![ccLoad program architecture](images/ccload-architecture.jpg)
 
 A request is authenticated with a ccLoad token, matched to candidate channels by model, priority, and limits, and forwarded to an upstream URL and key. If the upstream fails before any output reaches the client, ccLoad cools the failed scope and retries the next candidate. Protocol conversion happens only when the client protocol and the selected upstream protocol differ. Details: [Architecture](docs/guide/architecture.md).
-
-## Quick Start
-
-```bash
-docker run -d --name ccload \
-  -p 8080:8080 \
-  -e CCLOAD_PASS=your_secure_password \
-  -v ccload_data:/app/data \
-  ghcr.io/caidaoli/ccload:latest
-```
-
-Or with Docker Compose:
-
-```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
-# Edit .env and set CCLOAD_PASS (required; the service refuses to start without it)
-docker compose up -d
-```
-
-
-Or install with Homebrew (macOS/Linux, Apple Silicon/ARM64 and Intel/AMD64):
-
-```bash
-brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
-brew install caidaoli/ccload/ccload
-```
-
-Follow the [Homebrew setup guide](docs/guide/deployment.md#homebrew) to set the admin password and start the service.
-
-Then:
-
-1. Open `http://localhost:8080/web/` and sign in with `CCLOAD_PASS`.
-2. Add a channel on the **Channels** page: upstream URL, API key or account credentials, and models.
-3. Create an API token on the **API Tokens** page (`/web/tokens.html`). Without a token, every `/v1/*` and `/v1beta/*` request returns `401`.
-4. Point your client at the gateway:
-
-```bash
-curl -X POST http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-token" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello, Claude!"}]
-  }'
-```
-
-```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_AUTH_TOKEN=your-api-token
-```
-
-```toml
-# Codex CLI: ~/.codex/config.toml, after `codex login --with-api-key` using your ccLoad token
-openai_base_url = "http://localhost:8080/v1"
-```
-
-Binary downloads, source builds, Hugging Face Spaces, and external databases are covered in [Deployment](docs/guide/deployment.md).
 
 ## Documentation
 
