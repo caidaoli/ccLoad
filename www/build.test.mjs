@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { build, translate, PAGES, LOCALES, SITE_URL } from './build.mjs';
+import { build, translate, PAGES, LOCALES, SITE_URL, INDEXNOW_KEY } from './build.mjs';
 
 const outDir = build({ outDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccload-www-')) });
 test.after(() => fs.rmSync(outDir, { recursive: true, force: true }));
@@ -60,6 +60,7 @@ test('canonical、hreflang 与 sitemap 一致且互相指向', () => {
   const locs = new Set([...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1]));
   assert.deepEqual([...locs].sort(), [...canonicals].sort());
   assert.match(fs.readFileSync(path.join(outDir, 'robots.txt'), 'utf8'), new RegExp(`Sitemap: ${SITE_URL}/sitemap.xml`));
+  assert.equal(fs.readFileSync(path.join(outDir, `${INDEXNOW_KEY}.txt`), 'utf8'), INDEXNOW_KEY);
 });
 
 test('首页 JSON-LD 可解析，FAQ 与页面问答一一对应', () => {

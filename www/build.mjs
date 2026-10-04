@@ -5,6 +5,8 @@
  *   /zh/     简体中文（data-i18n* 的键全部由 zh-CN 语言包替换，缺键直接失败）
  * 导航、页脚、canonical / hreflang / Open Graph / JSON-LD、sitemap.xml、robots.txt 均在构建期生成，
  * 搜索引擎拿到的就是最终 HTML，不依赖运行时 JS。零依赖，仅用 Node 内置模块。
+ *
+ * `node www/build.mjs --indexnow` 把全部页面 URL 提交给 IndexNow（Bing、Yandex 等），发布后由 make www-release 调用。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +16,8 @@ import { fileURLToPath } from 'node:url';
 const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const SITE_URL = 'https://ccload.xyz';
 const GITHUB_URL = 'https://github.com/caidaoli/ccLoad';
+// IndexNow 密钥是公开的站点归属证明，构建时写成 /<key>.txt
+export const INDEXNOW_KEY = 'b60e5cb0a81bf0fdc1966f224ffa73b7';
 
 export const PAGES = ['index', 'install', 'config', 'usage', 'feedback'];
 export const LOCALES = [
@@ -315,6 +319,10 @@ export function renderPage(source, page, locale, messages) {
   return prefixAssets(html, locale.dir ? '../' : '');
 }
 
+export function siteUrls() {
+  return PAGES.flatMap(page => LOCALES.map(locale => pageUrl(page, locale)));
+}
+
 function renderSitemap() {
   const urls = PAGES.flatMap(page => LOCALES.map(locale => {
     const links = LOCALES.map(l => `    <xhtml:link rel="alternate" hreflang="${l.code}" href="${pageUrl(page, l)}"/>`).join('\n');
@@ -347,10 +355,29 @@ export function build({ outDir = path.join(SRC_DIR, 'dist') } = {}) {
   }
   fs.writeFileSync(path.join(outDir, 'sitemap.xml'), renderSitemap());
   fs.writeFileSync(path.join(outDir, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n`);
+  fs.writeFileSync(path.join(outDir, `${INDEXNOW_KEY}.txt`), INDEXNOW_KEY);
   return outDir;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+export async function submitIndexNow() {
+  const res = await fetch('https://api.indexnow.org/indexnow', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      host: new URL(SITE_URL).host,
+      key: INDEXNOW_KEY,
+      keyLocation: `${SITE_URL}/${INDEXNOW_KEY}.txt`,
+      urlList: siteUrls()
+    })
+  });
+  if (!res.ok) throw new Error(`IndexNow HTTP ${res.status}: ${await res.text()}`);
+  return res.status;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === '--indexnow') {
+  const status = await submitIndexNow();
+  console.log(`✓ IndexNow submitted ${siteUrls().length} URLs (HTTP ${status})`);
+} else if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const out = build({ outDir: process.argv[2] ? path.resolve(process.argv[2]) : undefined });
   console.log(`✓ www built: ${out}`);
 }

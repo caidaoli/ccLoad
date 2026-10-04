@@ -126,6 +126,7 @@ www-release: www-build
 	@echo "修正远程文件权限..."
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'find "$(WWW_RELEASE_PATH)" -type d -exec chmod 755 {} \; && find "$(WWW_RELEASE_PATH)" -type f -exec chmod 644 {} \;'
 	@echo "✓ www 已同步到 $(WWW_RELEASE_TARGET)"
+	@node www/build.mjs --indexnow || echo "⚠ IndexNow 提交失败，站点已发布，可稍后重跑: node www/build.mjs --indexnow" >&2
 
 # 创建必要的目录
 

@@ -12,6 +12,7 @@ make www-build   # = make www-setup（复制共享资源）+ node www/build.mjs
 
 - `index.html` 等英文页（`x-default`），`zh/` 下为对应中文页
 - `sitemap.xml`（含 hreflang 交替链接）、`robots.txt`
+- `<INDEXNOW_KEY>.txt`：IndexNow 站点归属证明；`make www-release` 同步后自动执行 `node www/build.mjs --indexnow`，把全部页面推给 Bing、Yandex 等
 - `assets/{css,js,images,video}`、favicon 与品牌图标
 
 不包含：源 HTML、`assets/locales/`、`build.mjs`、`promo/`。站点域名由 `build.mjs` 的 `SITE_URL` 决定（canonical、sitemap、OG 都依赖它），换域名时改这里。
