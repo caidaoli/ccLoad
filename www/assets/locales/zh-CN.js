@@ -24,6 +24,20 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.footer.issues': '问题反馈',
 
   // 首页 - Hero
+  // 首页 - 区块标签与结尾
+  'www.home.eyebrow.how': '工作原理',
+  'www.home.eyebrow.why': '为什么选 ccLoad',
+  'www.home.eyebrow.who': '适用场景',
+  'www.home.eyebrow.features': '功能',
+  'www.home.eyebrow.oauth': '账号渠道',
+  'www.home.eyebrow.admin': '管理后台',
+  'www.home.eyebrow.deployment': '部署',
+  'www.home.eyebrow.quickstart': '五分钟上手',
+  'www.home.eyebrow.faq': '答疑',
+  'www.home.cta.title': '一个 base URL，背后是你所有的 Key 和账号',
+  'www.home.cta.desc': '免费、MIT 许可。用 Docker、Homebrew 或单个二进制，几分钟就能跑起来。',
+  'www.home.cta.github': '在 GitHub 点个 Star',
+
   'www.home.meta.title': 'ccLoad：自托管 AI API 网关，Claude Code / Codex / Gemini 多账号故障切换',
   'www.home.meta.description': 'ccLoad 是开源自托管的 AI API 网关：把多个 API Key 和 Codex、Claude 等订阅账号汇成一个入口，为 Claude Code、Codex、Gemini 提供自动故障切换、协议转换和成本限额。',
   'www.home.hero.eyebrow': '开源 · 自托管 · MIT 许可',

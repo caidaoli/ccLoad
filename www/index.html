@@ -13,15 +13,16 @@
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
 
   <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261003-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261004-1">
 
   <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261003-1"></script>
+  <script defer src="assets/js/www.js?v=20261004-1"></script>
 </head>
 <body class="www-page www-home">
 <main>
   <!-- Hero -->
   <section class="www-hero">
+    <div class="www-hero-inner">
     <div class="www-hero-content">
       <p class="www-hero-eyebrow" data-i18n="www.home.hero.eyebrow">Open source · Self-hosted · MIT licensed</p>
       <h1 class="www-hero-title" data-i18n="www.home.hero.title">Self-hosted AI API gateway for Claude Code, Codex and Gemini</h1>
@@ -47,11 +48,28 @@
         <li><strong>1</strong><span data-i18n="www.home.hero.stat.binary">Go binary with embedded SQLite</span></li>
       </ul>
     </div>
+    <div class="www-hero-visual" aria-hidden="true">
+      <div class="www-term">
+        <div class="www-term-bar"><span class="www-term-dots"></span><span class="www-term-title">ccload — request log</span></div>
+        <div class="www-term-body">
+          <p class="www-term-line"><span class="t-prompt">$</span> export ANTHROPIC_BASE_URL=http://localhost:8080</p>
+          <p class="www-term-line"><span class="t-prompt">$</span> claude</p>
+          <p class="www-term-line t-req"><span class="t-method">POST</span> /v1/messages <span class="t-dim">·</span> claude-sonnet-4-5 <span class="t-dim">· stream</span></p>
+          <p class="www-term-line"><span class="t-bad">✕</span> anthropic-official <span class="t-dim">key#2</span> <span class="t-tag t-tag-bad">429</span> <span class="t-dim">cooldown 60s</span></p>
+          <p class="www-term-line"><span class="t-bad">✕</span> relay-east <span class="t-dim">url#1</span> <span class="t-tag t-tag-bad">502</span> <span class="t-dim">url cooled</span></p>
+          <p class="www-term-line"><span class="t-ok">✓</span> claude-max-account <span class="t-dim">oauth</span> <span class="t-tag t-tag-ok">200</span> <span class="t-dim">ttfb 412ms</span></p>
+          <p class="www-term-line t-sum"><span class="t-dim">tokens</span> 12.4k in / 1.1k out <span class="t-dim">· cost</span> $0.0183</p>
+          <p class="www-term-line t-final"><span class="t-ok">●</span> client received 1 response, 0 errors<span class="www-term-caret"></span></p>
+        </div>
+      </div>
+    </div>
+    </div>
   </section>
 
   <!-- What it is / how it works -->
   <section class="www-section" id="overview">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.how">How it works</p>
       <h2 class="www-section-title" data-i18n="www.home.how.title">What is ccLoad?</h2>
       <p class="www-section-lead" data-i18n="www.home.how.desc">
         ccLoad is an open-source gateway you run on your own server. It sits between your AI clients and the model providers: clients talk to one address with a ccLoad token, and ccLoad decides which upstream key or account handles each request.
@@ -120,24 +138,33 @@
   <!-- Why ccLoad -->
   <section class="www-section www-section-alt" id="why">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.why">Why ccLoad</p>
       <h2 class="www-section-title" data-i18n="www.home.why.title">Why ccLoad instead of a plain API relay</h2>
       <p class="www-section-lead" data-i18n="www.home.why.desc">
         A reverse proxy forwards requests. ccLoad is built for coding agents that stream long responses, run for hours, and spend real money, so every design choice is about keeping the session alive and the bill predictable.
       </p>
-      <div class="www-feature-grid www-why-grid">
-        <div class="www-feature-card">
+      <div class="www-bento">
+        <div class="www-feature-card www-bento-wide">
           <span class="www-feature-icon" data-icon="key"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.accounts.title">Subscription accounts, not just API keys</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.accounts.desc">
             Sign in Codex (ChatGPT), Claude, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts as channels. Tokens refresh automatically, and quota usage is tracked against each provider's reset window.
           </p>
+          <div class="www-bento-visual www-chip-cloud" aria-hidden="true">
+            <span>Codex</span><span>Claude</span><span>Antigravity</span><span>xAI</span><span>CodeBuddy</span><span>Z.ai</span><span>Cursor</span><span>Zed</span><span class="is-key">API Key</span>
+          </div>
         </div>
-        <div class="www-feature-card">
+        <div class="www-feature-card www-bento-wide">
           <span class="www-feature-icon" data-icon="shuffle"></span>
           <h3 class="www-feature-title" data-i18n="www.home.why.protocol.title">Any client on any upstream</h3>
           <p class="www-feature-desc" data-i18n="www.home.why.protocol.desc">
             Anthropic Messages, OpenAI Chat, Codex Responses and Gemini clients can all use every channel that serves the model. Requests and streamed responses are converted when the protocols differ, including Codex Responses over WebSocket.
           </p>
+          <div class="www-bento-visual www-proto-map" aria-hidden="true">
+            <ul><li>Claude Code</li><li>Codex CLI</li><li>Gemini CLI</li><li>OpenAI SDK</li></ul>
+            <span class="www-proto-hub">ccLoad</span>
+            <ul><li>Anthropic</li><li>OpenAI</li><li>Codex</li><li>Gemini</li></ul>
+          </div>
         </div>
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="shield"></span>
@@ -174,6 +201,7 @@
   <!-- Who it is for -->
   <section class="www-section" id="use-cases">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.who">Use cases</p>
       <h2 class="www-section-title" data-i18n="www.home.who.title">Who uses ccLoad</h2>
       <div class="www-doc-grid www-doc-grid-3">
         <div class="www-info-card">
@@ -197,7 +225,8 @@
 
   <!-- Core features -->
   <section class="www-section">
-    <div class="www-container">
+    <div class="www-container www-feature-overview">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.features">Features</p>
       <h2 class="www-section-title" data-i18n="www.home.features.title">Feature overview</h2>
       <h3 class="www-feature-group" data-i18n="www.home.features.group.reliability">Routing and failover</h3>
       <div class="www-feature-grid">
@@ -309,6 +338,7 @@
   <!-- First-party OAuth channels -->
   <section class="www-section www-section-alt">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.oauth">Accounts</p>
       <h2 class="www-section-title" data-i18n="www.home.oauth.section.title">First-party account channels</h2>
       <p class="www-section-lead" data-i18n="www.home.oauth.section.desc">
         Import credentials in the admin console. Clients never hold upstream keys. OAuth authorization and refresh still use official endpoints; optional system settings override data-plane addresses.
@@ -380,6 +410,7 @@
       <div class="www-split">
         <div>
           <div class="www-section-header">
+            <p class="www-eyebrow" data-i18n="www.home.eyebrow.admin">Admin console</p>
             <h2 data-i18n="www.home.admin.title">Not a black-box proxy</h2>
             <p data-i18n="www.home.admin.desc">ccLoad puts channels, OAuth credentials, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.</p>
           </div>
@@ -405,6 +436,7 @@
   <!-- Deployment options -->
   <section class="www-section www-section-alt">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.deployment">Deploy</p>
       <h2 class="www-section-title" data-i18n="www.home.deployment.title">Deployment Options</h2>
       <div class="www-deployment-grid">
         <!-- Docker -->
@@ -473,6 +505,7 @@
   <!-- Quick start -->
   <section class="www-section" id="quickstart">
     <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.quickstart">Get running</p>
       <h2 class="www-section-title" data-i18n="www.home.quickstart.title">Quick Start</h2>
 
       <div class="www-tabs">
@@ -607,6 +640,7 @@ brew services start caidaoli/ccload/ccload</code></pre></div>
   <!-- FAQ -->
   <section class="www-section www-section-alt" id="faq">
     <div class="www-container www-faq">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.faq">FAQ</p>
       <h2 class="www-section-title" data-i18n="www.home.faq.title">Frequently asked questions</h2>
       <details class="www-faq-item" open>
         <summary data-i18n="www.home.faq.what.q">What is ccLoad?</summary>
@@ -636,6 +670,18 @@ brew services start caidaoli/ccload/ccload</code></pre></div>
         <summary data-i18n="www.home.faq.run.q">What do I need to run ccLoad?</summary>
         <p data-i18n="www.home.faq.run.a">A Linux, macOS or Windows machine, or any Docker host on amd64 or arm64. Set an admin password in CCLOAD_PASS and start the binary or container; the admin console is at /web/.</p>
       </details>
+    </div>
+  </section>
+
+  <!-- Closing call to action -->
+  <section class="www-cta">
+    <div class="www-cta-inner">
+      <h2 class="www-cta-title" data-i18n="www.home.cta.title">One base URL. Every key and account behind it.</h2>
+      <p class="www-cta-desc" data-i18n="www.home.cta.desc">Free and MIT licensed. Run it with Docker, Homebrew or a single binary in a few minutes.</p>
+      <div class="www-hero-actions">
+        <a href="#quickstart" class="www-btn www-btn-primary" data-i18n="www.home.hero.getStarted">Get Started</a>
+        <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn www-btn-secondary" data-i18n="www.home.cta.github">Star on GitHub</a>
+      </div>
     </div>
   </section>
 </main>

@@ -71,10 +71,49 @@
     });
   }
 
+  // 区块内容进入视口时渐入；网格内卡片按序错开。不支持或偏好减少动效时保持静态
+  function initReveal() {
+    if (!('IntersectionObserver' in window)) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const GRID = '.www-bento, .www-feature-grid, .www-deployment-grid, .www-doc-grid, .www-step-list';
+    const targets = [];
+    document.querySelectorAll('.www-section .www-container > *, .www-cta-inner').forEach(el => {
+      if (el.matches(GRID)) {
+        Array.from(el.children).forEach((child, i) => {
+          child.style.transitionDelay = `${Math.min(i, 6) * 60}ms`;
+          targets.push(child);
+        });
+      } else {
+        targets.push(el);
+      }
+    });
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        const el = entry.target;
+        el.classList.add('is-visible');
+        observer.unobserve(el);
+        // 动画结束后撤掉临时类，恢复卡片自身的 hover 过渡
+        setTimeout(() => {
+          el.classList.remove('www-reveal', 'is-visible');
+          el.style.transitionDelay = '';
+        }, 1000);
+      });
+    }, { rootMargin: '0px 0px -8% 0px' });
+
+    targets.forEach(el => {
+      el.classList.add('www-reveal');
+      observer.observe(el);
+    });
+  }
+
   function init() {
     initCodeCopy();
     initTabs();
     initSmoothScroll();
+    initReveal();
   }
 
   if (document.readyState === 'loading') {
