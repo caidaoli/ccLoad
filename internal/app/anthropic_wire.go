@@ -243,10 +243,10 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	helperShape := callerWire.haikuHelper
 	if helperShape != anthropicHaikuHelperNone {
 		return finishAnthropicPassthrough(body,
-			helperShape == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target))
+			helperShape == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, headers)
 	}
 	if callerWire.nativeClaudeCode {
-		return finishAnthropicPassthrough(body, false)
+		return finishAnthropicPassthrough(body, false, cfg, headers)
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -353,17 +353,22 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 			}
 		}
 	}
-	return finishAnthropicPassthrough(body, false)
+	return finishAnthropicPassthrough(body, false, cfg, headers)
 }
 
 // finishAnthropicPassthrough is the single Anthropic Messages outbound exit.
 // Fingerprint rewrite (system cloak, sampling, cache stamps) happens before
 // this, or is skipped for native Claude Code / Haiku helper. This layer only
-// applies API-contract invariants and optional CCH, so new Anthropic 400 guards
-// extend applyAnthropicMessagesAPIInvariants instead of growing every early-
-// return branch.
-func finishAnthropicPassthrough(body []byte, signCCH bool) ([]byte, error) {
+// applies API-contract invariants, official-Anthropic thinking recovery, and
+// optional CCH.
+func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, headers http.Header) ([]byte, error) {
 	body = applyAnthropicMessagesAPIInvariants(body)
+	if cloaked, ok := cloakOfficialAnthropicThinkingHistory(cfg, body); ok {
+		body = cloaked
+	}
+	if omitted, ok := omitRememberedAnthropicThinkingHistory(cfg, headers, body); ok {
+		body = omitted
+	}
 	if !signCCH {
 		return body, nil
 	}
