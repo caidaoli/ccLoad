@@ -892,14 +892,17 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	ctx := c.Request.Context()
 	requestPlan.debugCapture.captureTranslatedResponseMeta(resp.StatusCode, resp.Header)
 
-	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
+	src := resp.Body
+	if requestPlan.antigravityOAuth {
+		src = terminateAntigravitySSE(src)
+	}
 	return streamTransformSSEEvents(ctx, src, c.Writer,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
 			if requestPlan.antigravityOAuth {
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
-				if err != nil {
+				if err != nil || parserEvent == nil {
 					return err
 				}
 			}
@@ -913,7 +916,7 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			if requestPlan.antigravityOAuth {
 				var err error
 				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
-				if err != nil {
+				if err != nil || rawEvent == nil {
 					return nil, err
 				}
 				translatedRequestBody, err = unwrapAntigravityRequest(requestPlan.requestBody)

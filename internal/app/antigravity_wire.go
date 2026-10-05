@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -178,19 +179,59 @@ func frameAntigravityStreamChunks(chunks [][]byte) [][]byte {
 	return framed
 }
 
-func antigravitySSEData(event []byte) ([]byte, error) {
+// antigravityEventPayload returns the JSON payload of one Antigravity stream
+// event, or nil for events without one. Data lines join per SSE; the backend
+// may also append a bare, pretty-printed JSON error object after the frames.
+func antigravityEventPayload(event []byte) []byte {
 	normalized := bytes.ReplaceAll(event, []byte("\r\n"), []byte("\n"))
+	var dataLines, bareLines [][]byte
 	for _, line := range bytes.Split(normalized, []byte("\n")) {
 		trimmed := bytes.TrimSpace(line)
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		if data, ok := bytes.CutPrefix(trimmed, []byte("data:")); ok {
+			dataLines = append(dataLines, bytes.TrimSpace(data))
 			continue
 		}
-		data := bytes.TrimSpace(trimmed[len("data:"):])
-		if len(data) > 0 {
-			return data, nil
+		if len(trimmed) == 0 || trimmed[0] == ':' || bytes.HasPrefix(trimmed, []byte("event:")) ||
+			bytes.HasPrefix(trimmed, []byte("id:")) || bytes.HasPrefix(trimmed, []byte("retry:")) {
+			continue
+		}
+		bareLines = append(bareLines, trimmed)
+	}
+	if len(dataLines) == 0 {
+		dataLines = bareLines
+	}
+	payload := bytes.TrimSpace(bytes.Join(dataLines, []byte("\n")))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return payload
+	}
+	// A frame split mid-object stays undecodable; dropping it keeps the
+	// truncation visible as an incomplete stream.
+	if !gjson.ValidBytes(payload) {
+		return nil
+	}
+	if bytes.IndexByte(payload, '\n') >= 0 {
+		var compact bytes.Buffer
+		if json.Compact(&compact, payload) == nil {
+			payload = compact.Bytes()
 		}
 	}
-	return nil, errors.New("stream: Antigravity SSE event is missing data")
+	return payload
+}
+
+// isAntigravityErrorPayload reports a backend error object sent in place of a
+// response chunk.
+func isAntigravityErrorPayload(payload []byte) bool {
+	return gjson.GetBytes(payload, "error").IsObject() && !gjson.GetBytes(payload, "response").Exists()
+}
+
+// antigravitySSEData returns the payload handed to the stream converters; nil
+// skips the event. Backend errors reach the usage parser instead.
+func antigravitySSEData(event []byte) []byte {
+	payload := antigravityEventPayload(event)
+	if len(payload) == 0 || isAntigravityErrorPayload(payload) {
+		return nil
+	}
+	return payload
 }
 
 func prepareAntigravityRequestBody(
@@ -901,36 +942,30 @@ func unwrapAntigravityRequest(raw []byte) ([]byte, error) {
 	return envelope.Request, nil
 }
 
+// terminateAntigravitySSE dispatches a trailing event the backend closes
+// without a blank line, such as an appended bare JSON error. Read errors still
+// surface unchanged; only a clean EOF gets the terminator.
+func terminateAntigravitySSE(body io.ReadCloser) io.ReadCloser {
+	return readerWithCloser{Reader: io.MultiReader(body, strings.NewReader("\n\n")), Closer: body}
+}
+
+// unwrapAntigravitySSEEvent renders one event for the usage parser; nil means
+// the event carries no payload. Backend errors stay intact so the parser
+// records them as the stream error.
 func unwrapAntigravitySSEEvent(event []byte) ([]byte, error) {
-	normalized := bytes.ReplaceAll(event, []byte("\r\n"), []byte("\n"))
-	lines := bytes.Split(normalized, []byte("\n"))
-	var output bytes.Buffer
-	foundData := false
-	for _, line := range lines {
-		trimmed := bytes.TrimSpace(line)
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
-			continue
-		}
-		data := bytes.TrimSpace(trimmed[len("data:"):])
-		if len(data) == 0 {
-			continue
-		}
-		if bytes.Equal(data, []byte("[DONE]")) {
-			output.WriteString("data: [DONE]\n\n")
-			foundData = true
-			continue
-		}
-		inner, err := unwrapAntigravityResponse(data)
+	payload := antigravityEventPayload(event)
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	if !bytes.Equal(payload, []byte("[DONE]")) && !isAntigravityErrorPayload(payload) {
+		inner, err := unwrapAntigravityResponse(payload)
 		if err != nil {
 			return nil, err
 		}
-		output.WriteString("data: ")
-		output.Write(bytes.TrimSpace(inner))
-		output.WriteString("\n\n")
-		foundData = true
+		payload = bytes.TrimSpace(inner)
 	}
-	if !foundData {
-		return nil, errors.New("stream: Antigravity SSE event is missing data")
-	}
-	return output.Bytes(), nil
+	output := make([]byte, 0, len(payload)+8)
+	output = append(output, "data: "...)
+	output = append(output, payload...)
+	return append(output, '\n', '\n'), nil
 }

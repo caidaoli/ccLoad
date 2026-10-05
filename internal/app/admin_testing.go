@@ -2360,7 +2360,10 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	translatedWriter.WriteHeader(resp.StatusCode)
 	var rawUpstreamBuf bytes.Buffer
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
-	streamReader := readerWithCloser{Reader: upstreamTee, Closer: resp.Body}
+	var streamReader io.ReadCloser = readerWithCloser{Reader: upstreamTee, Closer: resp.Body}
+	if requestPlan.antigravityOAuth {
+		streamReader = terminateAntigravitySSE(streamReader)
+	}
 	firstContentCaptured := false
 	upstreamParser := newSSEUsageParser(requestPlan.upstreamProtocol)
 	var translatedComplete bool
@@ -2383,7 +2386,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			if requestPlan.antigravityOAuth {
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
-				if err != nil {
+				if err != nil || parserEvent == nil {
 					return err
 				}
 			}
@@ -2404,7 +2407,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			if requestPlan.antigravityOAuth {
 				var err error
 				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
-				if err != nil {
+				if err != nil || rawEvent == nil {
 					return nil, err
 				}
 				translatedRequestBody, err = unwrapAntigravityRequest(requestPlan.requestBody)

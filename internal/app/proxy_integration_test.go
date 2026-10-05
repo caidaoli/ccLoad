@@ -4276,6 +4276,109 @@ func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
+	t.Parallel()
+	textFrame := `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	quotaFrame := `data: {"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}` + "\n\n"
+	// 后端在已发帧后追加多行裸 JSON 错误且不补空行。
+	trailingError := "{\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"backend unavailable\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}"
+	multilineData := "data: {\"response\":{\"responseId\":\"r1\",\n" +
+		`data: "candidates":[{"content":{"role":"model","parts":[{"text":"joined"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	fallbackFrame := `data: {"response":{"responseId":"r2","candidates":[{"content":{"role":"model","parts":[{"text":"fallback"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+
+	cases := []struct {
+		name         string
+		stream       string
+		wantClient   int
+		wantLog      int
+		wantText     string
+		wantFallback bool
+	}{
+		{name: "first-frame-error-fails-over", stream: quotaFrame, wantClient: http.StatusOK, wantLog: http.StatusTooManyRequests, wantText: "fallback", wantFallback: true},
+		{name: "mid-stream-error", stream: textFrame + quotaFrame, wantClient: http.StatusOK, wantLog: http.StatusTooManyRequests, wantText: "partial"},
+		{name: "trailing-bare-json-error", stream: textFrame + trailingError, wantClient: http.StatusOK, wantLog: http.StatusServiceUnavailable, wantText: "partial"},
+		{name: "multiline-data", stream: multilineData, wantClient: http.StatusOK, wantLog: http.StatusOK, wantText: "joined"},
+	}
+	for _, adapter := range antigravityProviderAdapterCases() {
+		if adapter.name != "Claude" && adapter.name != "OpenAI" {
+			continue
+		}
+		for _, tc := range cases {
+			t.Run(adapter.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, tc.stream)
+				}))
+				t.Cleanup(primary.Close)
+				var fallbackHits atomic.Int64
+				fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					fallbackHits.Add(1)
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, fallbackFrame)
+				}))
+				t.Cleanup(fallback.Close)
+
+				requestBody := maps.Clone(adapter.body)
+				requestBody["stream"] = true
+				env := setupProxyTestEnv(t, []testChannel{
+					{
+						name: "antigravity-primary", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+						authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-primary"),
+					},
+					{
+						name: "antigravity-fallback", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 10,
+						authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-fallback"),
+					},
+				}, map[int]string{0: primary.URL, 1: fallback.URL})
+				response := doProxyRequest(t, env.engine, adapter.path, requestBody, nil)
+				if response.Code != tc.wantClient {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if got := fallbackHits.Load() > 0; got != tc.wantFallback {
+					t.Fatalf("fallback hit=%v, want %v", got, tc.wantFallback)
+				}
+
+				var texts []string
+				var errorEvents int
+				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+					event, data := parseSSEEventChunk([]byte(block))
+					if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+						continue
+					}
+					if !gjson.ValidBytes(data) {
+						t.Fatalf("invalid SSE JSON payload: %q", data)
+					}
+					if gjson.GetBytes(data, "error").Exists() || gjson.GetBytes(data, "response").Exists() {
+						if event != "error" {
+							t.Fatalf("backend frame leaked to client: %s", data)
+						}
+						errorEvents++
+						continue
+					}
+					if text := gjson.GetBytes(data, adapter.streamTextPath).String(); text != "" {
+						texts = append(texts, text)
+					}
+				}
+				if strings.Join(texts, "") != tc.wantText {
+					t.Fatalf("stream text=%q, want %q: %s", texts, tc.wantText, response.Body.String())
+				}
+				wantErrorEvent := adapter.name == "Claude" && tc.wantLog != http.StatusOK && !tc.wantFallback
+				if (errorEvents > 0) != wantErrorEvent {
+					t.Fatalf("error events=%d, want present=%v: %s", errorEvents, wantErrorEvent, response.Body.String())
+				}
+
+				entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+					return entry.StatusCode == tc.wantLog
+				})
+				if entry == nil {
+					t.Fatalf("missing proxy log with status %d", tc.wantLog)
+				}
+			})
+		}
+	}
+}
+
 func TestProxy_AntigravityOAuthPreservesAnthropicToolIDs(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

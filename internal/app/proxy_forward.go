@@ -1686,10 +1686,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		if reqCtx.antigravityOAuth {
 			var providerEvent []byte
 			if len(rawEvent) > 0 {
-				var err error
-				providerEvent, err = antigravitySSEData(rawEvent)
-				if err != nil {
-					return nil, err
+				if providerEvent = antigravitySSEData(rawEvent); providerEvent == nil {
+					return nil, nil
 				}
 			}
 			chunks, translateErr := translateAntigravityResponseStream(
@@ -1741,9 +1739,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return nil, reqCtx.Duration().Seconds(), err
 		}
 	}
+	streamBody := resp.Body
+	if reqCtx.antigravityOAuth {
+		streamBody = terminateAntigravitySSE(streamBody)
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
-		resp.Body,
+		streamBody,
 		deferredWriter,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
@@ -1754,7 +1756,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			if reqCtx.antigravityOAuth {
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
-				if err != nil {
+				if err != nil || parserEvent == nil {
 					return err
 				}
 			}
@@ -2019,6 +2021,10 @@ func classifySSEErrorStatus(body []byte) int {
 	}
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
+	}
+	// Google 风格错误帧（Gemini / Antigravity）用数字 error.code 携带 HTTP 状态。
+	if code := gjson.GetBytes(body, "error.code"); code.Type == gjson.Number && code.Int() >= 400 && code.Int() <= 599 {
+		return int(code.Int())
 	}
 	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
 		return util.StatusQuotaExceeded
@@ -2868,10 +2874,17 @@ func (s *Server) handleCommittedAwareProxyError(
 	}
 	// 上游断流时 Anthropic 客户端只看到半截流：没有 message_stop 也没有 error，
 	// Claude Code 会把残缺回复当成完成。补一条 error 事件让客户端报错并自行重试；
-	// 上游已经发过 error 事件的不重复补。
-	if reqCtx.isStreaming && reqCtx.clientProtocol == protocol.Anthropic &&
-		len(res.SSEErrorEvent) == 0 && ctx.Err() == nil && w != nil {
-		writeAnthropicStreamErrorEvent(w, "upstream stream interrupted before completion")
+	// 上游已经发过 error 事件的不重复补。Antigravity 转换器不转发后端错误帧，按未发过处理。
+	if reqCtx.isStreaming && reqCtx.clientProtocol == protocol.Anthropic && ctx.Err() == nil && w != nil {
+		if len(res.SSEErrorEvent) == 0 {
+			writeAnthropicStreamErrorEvent(w, "upstream stream interrupted before completion")
+		} else if cfg.UsesAntigravityOAuth() {
+			message := gjson.GetBytes(res.SSEErrorEvent, "error.message").String()
+			if message == "" {
+				message = "upstream stream failed before completion"
+			}
+			writeAnthropicStreamErrorEvent(w, message)
+		}
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 }

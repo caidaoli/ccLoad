@@ -1130,6 +1130,59 @@ func TestOpenAIStreamCompleteWithoutDoneMarkerSurvivesClientCancel(t *testing.T)
 	})
 }
 
+// Antigravity 在终态块（finishReason）之后客户端断开时，数据已完整，按成功记账。
+func TestAntigravityStreamCompleteSurvivesClientCancel(t *testing.T) {
+	t.Parallel()
+
+	partial := `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]}}]}}` + "\n\n"
+	complete := partial + `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":5,"totalTokenCount":12}}}` + "\n\n"
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	original := []byte(`{"model":"gemini-3-flash","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	translated, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-3-flash", original, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translated = append(append([]byte(`{"request":`), translated...), '}')
+	run := func(sse string) (*fwResult, error) {
+		reqCtx := &requestContext{
+			ctx: context.Background(), startTime: time.Now(), isStreaming: true, antigravityOAuth: true,
+			clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Gemini,
+			transformPlan: protocol.TransformPlan{ClientProtocol: protocol.Anthropic, UpstreamProtocol: protocol.Gemini, OriginalModel: "gemini-3-flash", ActualModel: "gemini-3-flash", OriginalBody: original, TranslatedBody: translated, NeedsTransform: true},
+		}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(io.MultiReader(strings.NewReader(sse), iotest.ErrReader(context.Canceled))),
+		}
+		result, _, err := (&Server{protocolRegistry: reg}).handleSuccessResponse(
+			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Gemini), &streamReadStats{}, nil,
+		)
+		return result, err
+	}
+
+	t.Run("cancel after finish reason", func(t *testing.T) {
+		t.Parallel()
+		result, err := run(complete)
+		if err != nil {
+			t.Fatalf("终态块之后的客户端取消不得判为失败: %v", err)
+		}
+		if result.Status != http.StatusOK || result.StreamDiagMsg != "" {
+			t.Fatalf("status=%d diag=%q", result.Status, result.StreamDiagMsg)
+		}
+		if result.OutputTokens != 5 {
+			t.Fatalf("usage 未计入: %#v", result)
+		}
+	})
+
+	t.Run("cancel before finish reason", func(t *testing.T) {
+		t.Parallel()
+		if _, err := run(partial); err == nil {
+			t.Fatal("未见终态就取消必须保留失败语义，交给 499 路径")
+		}
+	})
+}
+
 // 598 语义比 599 更精确（冷却时长不同），流诊断不得把它降级覆盖。
 func TestMarkIncompleteStreamForwardResultKeepsFirstByteTimeout(t *testing.T) {
 	res := &fwResult{Status: util.StatusFirstByteTimeout, StreamDiagMsg: "流传输中断"}
