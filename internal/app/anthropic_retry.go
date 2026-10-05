@@ -520,8 +520,14 @@ func anthropicHistoryHasForeignThinking(body []byte) bool {
 			if kind != "thinking" && kind != "redacted_thinking" {
 				continue
 			}
-			switch cliproxysignature.DetectSignatureProvider(anthropicThinkingCarrierSignature(block)) {
-			case cliproxysignature.SignatureProviderClaude, cliproxysignature.SignatureProviderUnknown:
+			carrier := anthropicThinkingCarrierSignature(block)
+			switch cliproxysignature.DetectSignatureProvider(carrier) {
+			case cliproxysignature.SignatureProviderClaude:
+				// Antigravity 的双层 CAQS（Q 开头）是 Google 传输包装，原生 Claude 端点不接受。
+				if strings.HasPrefix(cliproxysignature.SignaturePayloadWithoutProviderPrefix(carrier), "Q") {
+					return true
+				}
+			case cliproxysignature.SignatureProviderUnknown:
 			default:
 				return true
 			}
