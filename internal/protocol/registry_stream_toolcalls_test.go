@@ -71,7 +71,8 @@ func TestRegistryApplyPatchResponsesValidateArgumentsAndCompleteConsistently(t *
 					}
 				case protocol.Gemini:
 					response = map[string]any{"responseId": "gemini_1", "modelVersion": "test", "candidates": []any{map[string]any{"index": 0, "content": map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"id": "c1", "name": "apply_patch", "args": json.RawMessage(args)}}}}, "finishReason": "STOP"}}}
-					rawEvents = []any{response}
+					// Gemini 线协议没有 [DONE]，网关在语义终态后补喂（同 CLIProxyAPI executor）。
+					rawEvents = []any{response, "[DONE]"}
 				}
 				raw, err := json.Marshal(response)
 				if err != nil {

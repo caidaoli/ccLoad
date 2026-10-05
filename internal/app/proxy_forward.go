@@ -960,7 +960,7 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	}
 }
 
-// sseSynthesizedDoneEvent 是网关补喂给转换器的 Chat Completions 终止哨兵。
+// sseSynthesizedDoneEvent 是网关补喂给转换器的流终止哨兵。
 var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 
 // needsSynthesizedStreamTerminator 判断跨协议转换是否要补一个终止序列。
@@ -970,13 +970,17 @@ var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 // Codex 的 response.completed）。而部分 OpenAI 兼容上游给完 finish_reason 就断流，
 // 客户端会一直等不到终止事件。上游语义既然已判完整，就必须给下游一个完整的终止序列。
 //
+// Gemini 线协议没有 [DONE]，但 CLIProxyAPI executor 会在 EOF 补喂一次；
+// gemini→Responses 转换器在 finishReason 后等 usage 或 [DONE] 才发终态，
+// 末帧不带 usageMetadata 时同样要靠这里收尾。
+//
 // 补的是 [DONE] 而不是手搓终止帧：open content block、stop_reason、usage 都在
 // 转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
 func needsSynthesizedStreamTerminator(upstream, client protocol.Protocol, upstreamComplete, translatedComplete, committed bool) bool {
 	if !committed || !upstreamComplete || translatedComplete {
 		return false
 	}
-	return upstream == protocol.OpenAI && client != protocol.OpenAI
+	return (upstream == protocol.OpenAI || upstream == protocol.Gemini) && client != upstream
 }
 
 // parseSSEEventChunk 在 []byte 视图上解析 SSE 事件块，避免 string(chunk) 与 []byte(data) 来回拷贝。

@@ -296,6 +296,25 @@ func TestConvertOpenAIResponsesRequestToCodexPreservesUltrafastServiceTier(t *te
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToCodexReusesNormalizedPayloadWithSources(t *testing.T) {
+	for _, includeJSON := range []string{
+		`["reasoning.encrypted_content","web_search_call.action.sources"]`,
+		`[ "reasoning.encrypted_content" , "web_search_call.action.sources" ]`,
+		`[ "reasoning.encrypted_content" ]`,
+	} {
+		inputJSON := []byte(`{"model":"gpt-5.6","stream":true,"store":false,"parallel_tool_calls":true,"include":` + includeJSON + `,"service_tier":"priority","input":[{"type":"message","role":"user","content":"hello"}]}`)
+
+		output := ConvertOpenAIResponsesRequestToCodex("gpt-5.6", inputJSON, true)
+
+		if &output[0] != &inputJSON[0] {
+			t.Fatalf("normalized request payload with include %s was copied", includeJSON)
+		}
+		if string(output) != string(inputJSON) {
+			t.Fatalf("normalized request changed:\n got: %s\nwant: %s", output, inputJSON)
+		}
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToCodex_FiltersPromptCacheRetention(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gpt-5.6-terra",

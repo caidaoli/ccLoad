@@ -10,8 +10,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -48,6 +50,8 @@ type ConvertCliToOpenAIParams struct {
 	FunctionCallIndex     int
 	toolCallStates        map[string]*toolCallStreamState
 	currentToolCall       *toolCallStreamState
+	citationKeys          map[string]struct{}
+	emittedTextRunes      int64
 	LastImageHashByItemID map[string][32]byte
 }
 
@@ -73,6 +77,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			ResponseID:            "",
 			FunctionCallIndex:     -1,
 			toolCallStates:        make(map[string]*toolCallStreamState),
+			citationKeys:          make(map[string]struct{}),
 			LastImageHashByItemID: make(map[string][32]byte),
 		}
 	}
@@ -145,9 +150,18 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
 	case "response.output_text.delta":
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
+			delta := deltaResult.String()
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-			template, _ = sjson.SetBytes(template, "choices.0.delta.content", deltaResult.String())
+			template, _ = sjson.SetBytes(template, "choices.0.delta.content", delta)
+			p.emittedTextRunes += int64(utf8.RuneCountInString(delta))
 		}
+	case "response.output_text.annotation.added", "response.output_text.done", "response.content_part.done":
+		citations := buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), p.emittedTextRunes, p.citationKeys)
+		if len(citations) == 0 {
+			return [][]byte{}
+		}
+		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+		template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
 	case "response.image_generation_call.partial_image":
 		itemID := rootResult.Get("item_id").String()
 		b64 := rootResult.Get("partial_image_b64").String()
@@ -320,6 +334,15 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		itemResult := rootResult.Get("item")
 		if !itemResult.Exists() {
 			return [][]byte{}
+		}
+		if itemResult.Get("type").String() == "message" {
+			citations := buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), p.emittedTextRunes, p.citationKeys)
+			if len(citations) == 0 {
+				return [][]byte{}
+			}
+			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+			template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
+			return [][]byte{template}
 		}
 		itemType := itemResult.Get("type").String()
 		if itemType == "image_generation_call" {
@@ -537,6 +560,9 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		outputArray := outputResult.Array()
 		var contentText string
 		var reasoningText string
+		var messageAnnotations [][]byte
+		annotationKeys := make(map[string]struct{})
+		var contentRuneOffset int64
 
 		for _, outputItem := range outputArray {
 			outputType := outputItem.Get("type").String()
@@ -562,16 +588,20 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 				}
 				reasoningText += itemText.String()
 			case "message":
-				// Extract message content
+				// Extract message content and URL citations.
 				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
-					contentArray := contentResult.Array()
-					for _, contentItem := range contentArray {
-						if contentItem.Get("type").String() == "output_text" {
-							if text := contentItem.Get("text").String(); text != "" {
-								contentText += text
-							}
-							break
+					for _, contentItem := range contentResult.Array() {
+						if contentItem.Get("type").String() != "output_text" {
+							continue
 						}
+						text := contentItem.Get("text").String()
+						contentText += text
+						messageAnnotations = append(messageAnnotations, buildCodexURLCitations(
+							codexAnnotationResults(contentItem.Get("annotations")),
+							contentRuneOffset,
+							annotationKeys,
+						)...)
+						contentRuneOffset += int64(utf8.RuneCountInString(text))
 					}
 				}
 			case "function_call", "custom_tool_call":
@@ -613,6 +643,10 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 
 		if reasoningText != "" {
 			template, _ = sjson.SetBytes(template, "choices.0.message.reasoning_content", reasoningText)
+		}
+
+		if len(messageAnnotations) > 0 {
+			template, _ = sjson.SetRawBytes(template, "choices.0.message.annotations", translatorcommon.JoinRawArray(messageAnnotations))
 		}
 
 		// Add tool calls if any
@@ -657,6 +691,88 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 	}
 
 	return template
+}
+
+func codexAnnotationResults(value gjson.Result) []gjson.Result {
+	if !value.Exists() {
+		return nil
+	}
+	if value.IsArray() {
+		results := make([]gjson.Result, 0, len(value.Array()))
+		value.ForEach(func(_, item gjson.Result) bool {
+			results = append(results, item)
+			return true
+		})
+		return results
+	}
+	return []gjson.Result{value}
+}
+
+func codexAnnotationsFromEvent(event gjson.Result) []gjson.Result {
+	annotations := make([]gjson.Result, 0)
+	for _, path := range []string{"annotation", "annotations", "part.annotations"} {
+		annotations = append(annotations, codexAnnotationResults(event.Get(path))...)
+	}
+	item := event.Get("item")
+	if item.Exists() {
+		annotations = append(annotations, codexAnnotationResults(item.Get("annotations"))...)
+		if content := item.Get("content"); content.IsArray() {
+			for _, contentItem := range content.Array() {
+				annotations = append(annotations, codexAnnotationResults(contentItem.Get("annotations"))...)
+			}
+		}
+	}
+	return annotations
+}
+
+func buildCodexURLCitations(annotations []gjson.Result, runeOffset int64, seen map[string]struct{}) [][]byte {
+	citations := make([][]byte, 0, len(annotations))
+	for _, annotation := range annotations {
+		if annotation.Get("type").String() != "url_citation" {
+			continue
+		}
+
+		rawStartIndex := annotation.Get("start_index").Int()
+		rawEndIndex := annotation.Get("end_index").Int()
+		startIndex := rawStartIndex + runeOffset
+		endIndex := rawEndIndex + runeOffset
+		if startIndex < 0 || endIndex < startIndex {
+			continue
+		}
+
+		url := annotation.Get("url").String()
+		key := url + "\x00" + strconv.FormatInt(rawStartIndex, 10)
+		if url == "" {
+			key = annotation.Get("id").String() + "\x00" + strconv.FormatInt(rawStartIndex, 10)
+		}
+		keys := []string{key}
+		if id := annotation.Get("id").String(); id != "" {
+			keys = append(keys, "id\x00"+id)
+		}
+		if seen != nil {
+			duplicate := false
+			for _, key := range keys {
+				if _, exists := seen[key]; exists {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			for _, key := range keys {
+				seen[key] = struct{}{}
+			}
+		}
+
+		citation := []byte(`{"type":"url_citation","url":"","title":"","start_index":0,"end_index":0}`)
+		citation, _ = sjson.SetBytes(citation, "url", url)
+		citation, _ = sjson.SetBytes(citation, "title", annotation.Get("title").String())
+		citation, _ = sjson.SetBytes(citation, "start_index", startIndex)
+		citation, _ = sjson.SetBytes(citation, "end_index", endIndex)
+		citations = append(citations, citation)
+	}
+	return citations
 }
 
 func registerToolCallState(p *ConvertCliToOpenAIParams, eventResult, itemResult gjson.Result, state *toolCallStreamState) {

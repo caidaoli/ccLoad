@@ -89,7 +89,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 	// Convert input array to messages
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		rawInputArray := input.Array()
+		rawInputArray := toolIndex.shellHistory(input.Array())
 		explicitOutputCounts := make(map[string]int)
 		missingIDOutputsCount := 0
 		for _, item := range rawInputArray {
@@ -578,6 +578,12 @@ func convertResponsesToolChoiceWithIndex(toolChoice gjson.Result, toolIndex *res
 	}
 
 	choiceType := toolChoice.Get("type").String()
+	if choiceType == "shell" {
+		if name := toolIndex.shellName(); name != "" {
+			converted, _ := sjson.SetBytes([]byte(`{"type":"function","function":{}}`), "function.name", name)
+			return converted
+		}
+	}
 	if choiceType != "function" && choiceType != "custom" {
 		return []byte(toolChoice.Raw)
 	}

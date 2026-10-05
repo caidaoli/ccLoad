@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `7cfba95bffa394bba2da468c54dff7e6c97132d7` (`fork/v10.1.0-7-g7cfba95b`; explicit commit target, not a release tag)
-- Synchronized at: `2026-10-02`
+- Last synchronized commit: `a6dfa6bdf07fc1ad68bb513f60b49e84e2720148` (`fork/v10.3.0`)
+- Synchronized at: `2026-10-04`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -21,6 +21,31 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-10-04)
+
+The core and the allowlisted Antigravity adapter share the target above.
+Adopted: Antigravity Claude 5.5 double-layer CAQS signature validation and
+replay gating, the shared synthetic `signaturetest` envelope, the local shell
+tool for OpenAI Responses, Codex URL citation annotations in Chat output,
+Claude Responses request fixes, Gemini Responses usage/terminal handling, and
+the target model catalog.
+
+The Gemini-to-Responses converter now waits for usage or `[DONE]` after a
+`finishReason`. Gemini has no `[DONE]` on the wire; upstream's executor feeds
+one at EOF, and ccLoad's application boundary now synthesizes the same
+terminator for Gemini upstreams when the source stream is semantically
+complete.
+
+Upstream's `common/claude_native_response.go` (native Claude JSON replayed as
+SSE) is excluded. ccLoad keeps its direct native JSON converters, which emit
+one output item per Claude block and preserve structured reasoning, usage
+details and `apply_patch` identity; the ported native-response test uses a
+single text block accordingly. The Codex request converter keeps preserving the
+client `include` list, so the two upstream include-normalization tests are
+recorded as `skip-test`. Antigravity in-stream error frames, multi-line
+payloads and post-terminal client cancellation are handled at ccLoad's wire
+boundary rather than by the excluded executor.
 
 ## Synchronization adaptations (2026-10-02)
 
