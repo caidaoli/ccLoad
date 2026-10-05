@@ -909,6 +909,15 @@ func TestZedResponsesWireTranslatesNativeProviderEvents(t *testing.T) {
 				"",
 			}, "\n"),
 		},
+		{
+			// 末帧不带 usageMetadata：转换器要等 [DONE] 才发终态。
+			name: "google without usage", model: "gemini-3.5-flash",
+			upstream: strings.Join([]string{
+				`{"event":{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP","index":0}],"modelVersion":"gemini-3.5-flash","responseId":"resp_zed"}}`,
+				`{"status":"stream_ended"}`,
+				"",
+			}, "\n"),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -936,6 +945,34 @@ func TestZedResponsesWireTranslatesNativeProviderEvents(t *testing.T) {
 				t.Fatalf("converted SSE = %q", text)
 			}
 		})
+	}
+}
+
+// 没有 finishReason 的 Gemini 流即使收到 stream_ended 也不能被补成完成。
+func TestZedResponsesWireKeepsTruncatedGeminiIncomplete(t *testing.T) {
+	registry := newZedWireTestRegistry()
+	_, plan, err := finalizeZedResponsesBody(registry, []byte(`{"model":"gemini-3.5-flash","input":"hello"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := strings.Join([]string{
+		`{"candidates":[{"content":{"parts":[{"text":"hel"}],"role":"model"},"index":0}],"modelVersion":"gemini-3.5-flash","responseId":"resp_zed"}`,
+		`{"status":"stream_ended"}`,
+		"",
+	}, "\n")
+	response := &http.Response{
+		StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(upstream)),
+	}
+	if err := prepareZedResponsesResponse(response, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(converted), "event: response.completed") {
+		t.Fatalf("truncated Gemini stream completed: %q", converted)
 	}
 }
 

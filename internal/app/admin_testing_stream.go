@@ -914,6 +914,10 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 		func(rawEvent []byte) ([][]byte, error) {
 			translatedRequestBody := requestPlan.requestBody
 			if requestPlan.antigravityOAuth {
+				// 与代理链路一致：后端错误帧只交给 usage parser，不进转换器。
+				if isAntigravityErrorPayload(antigravityEventPayload(rawEvent)) {
+					return nil, nil
+				}
 				var err error
 				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
 				if err != nil || rawEvent == nil {

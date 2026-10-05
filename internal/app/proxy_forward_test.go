@@ -1278,6 +1278,10 @@ func TestClassifySSEErrorStatus_RateLimits(t *testing.T) {
 			name: "responses_api_response_failed_nested_rate_limit",
 			body: []byte(`{"type":"response.failed","response":{"id":"resp_5ca0fb7943504d6a93576c7fb7e3a760","object":"response","model":"gpt-5.6-sol","status":"failed","output":[],"error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded, please retry later"}}}`),
 		},
+		{
+			name: "google_resource_exhausted",
+			body: []byte(`{"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}`),
+		},
 	}
 
 	for _, tt := range tests {
@@ -1286,6 +1290,18 @@ func TestClassifySSEErrorStatus_RateLimits(t *testing.T) {
 				t.Fatalf("classifySSEErrorStatus()=%d, want %d", got, http.StatusTooManyRequests)
 			}
 		})
+	}
+}
+
+// Only Google-shaped frames (numeric code plus string status) carry an HTTP
+// status; another relay's numeric code must not turn a stream error into a
+// client-facing 400 that skips failover.
+func TestClassifySSEErrorStatus_NumericCodeRequiresGoogleStatus(t *testing.T) {
+	if got := classifySSEErrorStatus([]byte(`{"error":{"code":400,"message":"upstream overloaded"}}`)); got != util.StatusSSEError {
+		t.Fatalf("relay numeric code = %d, want %d", got, util.StatusSSEError)
+	}
+	if got := classifySSEErrorStatus([]byte(`{"error":{"code":503,"message":"No capacity","status":"UNAVAILABLE"}}`)); got != http.StatusServiceUnavailable {
+		t.Fatalf("Google frame = %d, want 503", got)
 	}
 }
 
@@ -1707,7 +1723,7 @@ func TestRetryBodyForRejectedRequest_StripsMissingRequiredInput(t *testing.T) {
 	}
 	plan := protocol.TransformPlan{TranslatedBody: body}
 
-	got, strategy, ok := retryBodyForRejectedRequest(protocol.OpenAI, nil, plan, res)
+	got, strategy, ok := retryBodyForRejectedRequest(protocol.OpenAI, nil, nil, plan, res)
 	if !ok {
 		t.Fatal("retryBodyForRejectedRequest returned ok=false")
 	}
@@ -1727,7 +1743,7 @@ func TestAnthropicRetryBodyFor400PreservesOrderWhileDowngradingThinking(t *testi
 		Body:   []byte(`{"error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`),
 	}
 
-	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, nil, protocol.TransformPlan{TranslatedBody: body}, res)
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, nil, nil, protocol.TransformPlan{TranslatedBody: body}, res)
 	if !ok || strategy != "downgrade_anthropic_thinking" {
 		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
 	}
@@ -1831,7 +1847,7 @@ func TestRetryBodyForRejectedRequest_StripsUnknownInputStatus(t *testing.T) {
 		ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex,
 		RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: body,
 	}
-	got, strategy, ok := retryBodyForRejectedRequest(protocol.Codex, nil, plan, res)
+	got, strategy, ok := retryBodyForRejectedRequest(protocol.Codex, nil, nil, plan, res)
 	if !ok {
 		t.Fatal("retryBodyForRejectedRequest returned ok=false")
 	}
@@ -2115,7 +2131,7 @@ func TestResponsesRetryBodyForMissingStoredInputItem_StripsNamedReasoning(t *tes
 		t.Fatalf("unrelated item lost: %s", got)
 	}
 
-	got, strategy, ok = retryBodyForRejectedRequest(protocol.Codex, nil, plan, &fwResult{
+	got, strategy, ok = retryBodyForRejectedRequest(protocol.Codex, nil, nil, plan, &fwResult{
 		Status: http.StatusNotFound,
 		Body:   errorEvent,
 	})

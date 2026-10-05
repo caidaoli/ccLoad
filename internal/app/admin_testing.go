@@ -2405,6 +2405,10 @@ func (s *Server) parseTestTranslatedSSEResponse(
 				rawEvent = normalizeCodeBuddySSEEvent(rawEvent)
 			}
 			if requestPlan.antigravityOAuth {
+				// 与代理链路一致：后端错误帧只交给 usage parser，不进转换器。
+				if isAntigravityErrorPayload(antigravityEventPayload(rawEvent)) {
+					return nil, nil
+				}
 				var err error
 				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
 				if err != nil || rawEvent == nil {

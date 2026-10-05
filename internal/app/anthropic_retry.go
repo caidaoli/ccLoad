@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/model"
@@ -24,6 +25,7 @@ import (
 func anthropicRetryBodyFor400(
 	upstreamProtocol protocol.Protocol,
 	cfg *model.Config,
+	target *url.URL,
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
@@ -34,12 +36,13 @@ func anthropicRetryBodyFor400(
 		return nil, "", false
 	}
 	errorText := anthropicErrorText(res.Body)
-	// Official Anthropic HMAC only. Other auth types keep the original body.
+	// Official Anthropic HMAC only: judged by the URL this attempt hit, so a
+	// relay sharing the channel keeps the original body.
 	// A signature 400 must not fall through to downgrade_anthropic_thinking,
 	// which turns thinking into assistant text. messages.N.content.M often
 	// does not exist on the wire body, so the tool classifier would skip repair.
 	if isAnthropicInvalidThinkingSignatureError(errorText) {
-		if isOfficialAnthropicThinkingUpstream(cfg) {
+		if anthropicUsesFirstPartyHost(cfg, target) {
 			if body, ok := stripAnthropicHistoryThinkingBlocks(plan.TranslatedBody); ok {
 				return body, stripAnthropicInvalidThinkingSignatureStrategy, true
 			}
@@ -403,38 +406,25 @@ const (
 	omitAnthropicForeignThinkingStrategy           = "omit_anthropic_foreign_thinking"
 	omitAnthropicRememberedThinkingStrategy        = "omit_anthropic_remembered_thinking"
 	anthropicThinkingOmitIdleTTL                   = 15 * time.Minute
+	// anthropicThinkingOmitSweepThreshold bounds the memory: past it, a write
+	// sweeps expired entries so ended sessions do not accumulate forever.
+	anthropicThinkingOmitSweepThreshold = 1024
 )
 
 // anthropicThinkingOmitSessions remembers official-Anthropic session+model
 // pairs whose replay already 400'd on a thinking signature. Later turns omit
 // history thinking before the first upstream attempt. The key is never a
 // token hash, so other models on the same credential stay untouched.
-var anthropicThinkingOmitSessions sync.Map
+var (
+	anthropicThinkingOmitSessions sync.Map
+	anthropicThinkingOmitEntries  atomic.Int64
+)
 
 func isAnthropicInvalidThinkingSignatureError(errorText string) bool {
 	if !strings.Contains(errorText, "signature") || !strings.Contains(errorText, "invalid") {
 		return false
 	}
 	return strings.Contains(errorText, "thinking") || strings.Contains(errorText, "redacted_thinking")
-}
-
-func isOfficialAnthropicThinkingUpstream(cfg *model.Config) bool {
-	if cfg != nil && cfg.UsesAnthropicOAuth() {
-		return true
-	}
-	if cfg == nil {
-		return false
-	}
-	for _, raw := range cfg.GetURLs() {
-		parsed, err := url.Parse(strings.TrimSpace(raw))
-		if err != nil {
-			continue
-		}
-		if isOfficialAnthropicURL(parsed) {
-			return true
-		}
-	}
-	return false
 }
 
 func anthropicThinkingOmitSession(headers http.Header, body []byte) string {
@@ -460,7 +450,29 @@ func rememberAnthropicThinkingOmit(headers http.Header, body []byte) {
 	if key == "" {
 		return
 	}
-	anthropicThinkingOmitSessions.Store(key, time.Now().Add(anthropicThinkingOmitIdleTTL))
+	if _, loaded := anthropicThinkingOmitSessions.Swap(key, time.Now().Add(anthropicThinkingOmitIdleTTL)); loaded {
+		return
+	}
+	if anthropicThinkingOmitEntries.Add(1) > anthropicThinkingOmitSweepThreshold {
+		sweepExpiredAnthropicThinkingOmits(time.Now())
+	}
+}
+
+func sweepExpiredAnthropicThinkingOmits(now time.Time) {
+	anthropicThinkingOmitSessions.Range(func(key, value any) bool {
+		if expires, ok := value.(time.Time); !ok || now.After(expires) {
+			deleteAnthropicThinkingOmit(key, value)
+		}
+		return true
+	})
+}
+
+// deleteAnthropicThinkingOmit removes only the observed entry, so a concurrent
+// remember for the same key survives.
+func deleteAnthropicThinkingOmit(key, value any) {
+	if anthropicThinkingOmitSessions.CompareAndDelete(key, value) {
+		anthropicThinkingOmitEntries.Add(-1)
+	}
 }
 
 func anthropicThinkingOmitRemembered(headers http.Header, body []byte) bool {
@@ -474,27 +486,26 @@ func anthropicThinkingOmitRemembered(headers http.Header, body []byte) bool {
 	}
 	expires, ok := value.(time.Time)
 	if !ok || time.Now().After(expires) {
-		anthropicThinkingOmitSessions.Delete(key)
+		deleteAnthropicThinkingOmit(key, value)
 		return false
 	}
 	anthropicThinkingOmitSessions.Store(key, time.Now().Add(anthropicThinkingOmitIdleTTL))
 	return true
 }
 
-func omitRememberedAnthropicThinkingHistory(cfg *model.Config, headers http.Header, body []byte) ([]byte, bool) {
-	if !isOfficialAnthropicThinkingUpstream(cfg) || !anthropicThinkingOmitRemembered(headers, body) {
+func omitRememberedAnthropicThinkingHistory(headers http.Header, body []byte) ([]byte, bool) {
+	if !anthropicBodyHasHistoryThinkingBlocks(body) || !anthropicThinkingOmitRemembered(headers, body) {
 		return nil, false
 	}
 	return stripAnthropicHistoryThinkingBlocks(body)
 }
 
-var (
-	anthropicThinkingTypeNeedle         = []byte(`"type":"thinking"`)
-	anthropicRedactedThinkingTypeNeedle = []byte(`"type":"redacted_thinking"`)
-)
+var anthropicThinkingNeedle = []byte("thinking")
 
+// anthropicBodyHasHistoryThinkingBlocks is a cheap prefilter only. It must not
+// depend on JSON whitespace: passthrough bodies keep the caller's formatting.
 func anthropicBodyHasHistoryThinkingBlocks(body []byte) bool {
-	return bytes.Contains(body, anthropicThinkingTypeNeedle) || bytes.Contains(body, anthropicRedactedThinkingTypeNeedle)
+	return bytes.Contains(body, anthropicThinkingNeedle)
 }
 
 func anthropicThinkingCarrierSignature(block gjson.Result) string {
@@ -543,8 +554,8 @@ func anthropicHistoryHasForeignThinking(body []byte) bool {
 // Anthropic accepts omitting thinking on replay; a gap in the sequence is
 // invalid, so mixed foreign blocks drop the whole history run. Current-turn
 // thinking controls stay.
-func cloakOfficialAnthropicThinkingHistory(cfg *model.Config, body []byte) ([]byte, bool) {
-	if !isOfficialAnthropicThinkingUpstream(cfg) || !anthropicBodyHasHistoryThinkingBlocks(body) {
+func cloakOfficialAnthropicThinkingHistory(body []byte) ([]byte, bool) {
+	if !anthropicBodyHasHistoryThinkingBlocks(body) {
 		return nil, false
 	}
 	if !anthropicHistoryHasForeignThinking(body) {

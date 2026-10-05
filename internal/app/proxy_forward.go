@@ -570,7 +570,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 				return nil, "", errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 			}
 			body, thinkingOmitStrategy, err = finishAnthropicPassthrough(body,
-				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, headers)
+				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, target, headers)
 		default:
 			body, thinkingOmitStrategy, err = finalizeAnthropicClaudeCodeMessagesBodyForCaller(body, cfg, apiKey, headers, target, callerWire)
 		}
@@ -972,7 +972,8 @@ var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 //
 // Gemini 线协议没有 [DONE]，但 CLIProxyAPI executor 会在 EOF 补喂一次；
 // gemini→Responses 转换器在 finishReason 后等 usage 或 [DONE] 才发终态，
-// 末帧不带 usageMetadata 时同样要靠这里收尾。
+// 末帧不带 usageMetadata 时同样要靠这里收尾。只补 Responses：gemini→Claude
+// 在 [DONE] 上不保留 finishReason，补喂会把 MAX_TOKENS 截断报成 end_turn。
 //
 // 补的是 [DONE] 而不是手搓终止帧：open content block、stop_reason、usage 都在
 // 转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
@@ -980,7 +981,14 @@ func needsSynthesizedStreamTerminator(upstream, client protocol.Protocol, upstre
 	if !committed || !upstreamComplete || translatedComplete {
 		return false
 	}
-	return (upstream == protocol.OpenAI || upstream == protocol.Gemini) && client != upstream
+	switch upstream {
+	case protocol.OpenAI:
+		return client != upstream
+	case protocol.Gemini:
+		return client == protocol.Codex
+	default:
+		return false
+	}
 }
 
 // parseSSEEventChunk 在 []byte 视图上解析 SSE 事件块，避免 string(chunk) 与 []byte(data) 来回拷贝。
@@ -1758,6 +1766,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				parserEvent = normalizeCodeBuddySSEEvent(parserEvent)
 			}
 			if reqCtx.antigravityOAuth {
+				// 终态之后追加的后端错误不能把已完整送达的流改判为失败。
+				if parser.IsStreamComplete() {
+					if payload := antigravityEventPayload(rawEvent); isAntigravityErrorPayload(payload) {
+						log.Printf("[WARN] ignored Antigravity error after stream completion: %s", payload)
+						return nil
+					}
+				}
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
 				if err != nil || parserEvent == nil {
@@ -1788,7 +1803,8 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 
 	// 上游已给出语义终态（如 finish_reason）时先补发终止事件，转换器据此完成收尾；
 	// 之后的 Finalize 只拦截真正缺少终态的截断流。
-	if protocol.ResponseToolInputError(state) == nil && needsSynthesizedStreamTerminator(
+	// 上游已报错时不替转换器伪造正常终态。
+	if protocol.ResponseToolInputError(state) == nil && parser.GetLastError() == nil && needsSynthesizedStreamTerminator(
 		reqCtx.transformPlan.UpstreamProtocol,
 		reqCtx.transformPlan.ClientProtocol,
 		parser.IsStreamComplete(),
@@ -2026,8 +2042,10 @@ func classifySSEErrorStatus(body []byte) int {
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
 	}
-	// Google 风格错误帧（Gemini / Antigravity）用数字 error.code 携带 HTTP 状态。
-	if code := gjson.GetBytes(body, "error.code"); code.Type == gjson.Number && code.Int() >= 400 && code.Int() <= 599 {
+	// Google 风格错误帧（Gemini / Antigravity）用数字 error.code 携带 HTTP 状态，
+	// 以字符串 error.status 为结构特征；其他上游的数字 code 不可信，交给后面的分类。
+	if code := gjson.GetBytes(body, "error.code"); code.Type == gjson.Number && code.Int() >= 400 && code.Int() <= 599 &&
+		gjson.GetBytes(body, "error.status").Type == gjson.String {
 		return int(code.Int())
 	}
 	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
@@ -3120,6 +3138,8 @@ func (s *Server) forwardAttempt(
 	}
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
+	// 只有主机名参与官方 Anthropic 判定，解析失败按非官方处理。
+	retryTarget, _ := url.Parse(strings.TrimSpace(baseURL))
 	for !cfg.AntigravityCredits && ctx.Err() == nil {
 		retryStrategies = appendSendStrategy(retryStrategies, res)
 		retrySourcePlan := plan
@@ -3130,7 +3150,7 @@ func (s *Server) forwardAttempt(
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
 			retryBodyRulesApplied = true
 		}
-		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retrySourcePlan, res)
+		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retryTarget, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
 			break
 		}
@@ -3446,10 +3466,11 @@ func isInvalidResponsesRequestError(body []byte) bool {
 func retryBodyForRejectedRequest(
 	upstreamProtocol protocol.Protocol,
 	cfg *model.Config,
+	target *url.URL,
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
-	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, plan, res); ok {
+	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForUnknownParameter(upstreamProtocol, plan, res); ok {

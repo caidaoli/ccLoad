@@ -244,10 +244,10 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	helperShape := callerWire.haikuHelper
 	if helperShape != anthropicHaikuHelperNone {
 		return finishAnthropicPassthrough(body,
-			helperShape == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, headers)
+			helperShape == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, target, headers)
 	}
 	if callerWire.nativeClaudeCode {
-		return finishAnthropicPassthrough(body, false, cfg, headers)
+		return finishAnthropicPassthrough(body, false, cfg, target, headers)
 	}
 	body = normalizeAnthropicOAuthModel(body)
 	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
@@ -354,7 +354,7 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 			}
 		}
 	}
-	return finishAnthropicPassthrough(body, false, cfg, headers)
+	return finishAnthropicPassthrough(body, false, cfg, target, headers)
 }
 
 // finishAnthropicPassthrough is the single Anthropic Messages outbound exit.
@@ -362,15 +362,18 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 // this, or is skipped for native Claude Code / Haiku helper. This layer only
 // applies API-contract invariants, official-Anthropic thinking recovery, and
 // optional CCH. The returned strategy names a history-thinking omission so the
-// request log can show it.
-func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, headers http.Header) ([]byte, string, error) {
+// request log can show it. Thinking recovery is judged by the URL this
+// attempt hits, not by any URL on the channel.
+func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, target *url.URL, headers http.Header) ([]byte, string, error) {
 	body = applyAnthropicMessagesAPIInvariants(body)
 	strategy := ""
-	if cloaked, ok := cloakOfficialAnthropicThinkingHistory(cfg, body); ok {
-		body, strategy = cloaked, omitAnthropicForeignThinkingStrategy
-	}
-	if omitted, ok := omitRememberedAnthropicThinkingHistory(cfg, headers, body); ok {
-		body, strategy = omitted, omitAnthropicRememberedThinkingStrategy
+	if anthropicUsesFirstPartyHost(cfg, target) {
+		if cloaked, ok := cloakOfficialAnthropicThinkingHistory(body); ok {
+			body, strategy = cloaked, omitAnthropicForeignThinkingStrategy
+		}
+		if omitted, ok := omitRememberedAnthropicThinkingHistory(headers, body); ok {
+			body, strategy = omitted, omitAnthropicRememberedThinkingStrategy
+		}
 	}
 	if !signCCH {
 		return body, strategy, nil

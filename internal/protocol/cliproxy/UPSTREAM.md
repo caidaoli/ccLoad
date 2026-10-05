@@ -34,8 +34,16 @@ the target model catalog.
 The Gemini-to-Responses converter now waits for usage or `[DONE]` after a
 `finishReason`. Gemini has no `[DONE]` on the wire; upstream's executor feeds
 one at EOF, and ccLoad's application boundary now synthesizes the same
-terminator for Gemini upstreams when the source stream is semantically
-complete.
+terminator for Gemini upstreams with Responses clients when the source stream
+is semantically complete (Zed's Gemini relay does the same on `stream_ended`).
+Gemini-to-Claude is not fed a synthetic `[DONE]`: it drops `finishReason` on
+`[DONE]` and would report `MAX_TOKENS` as `end_turn`.
+
+The ported `pause_turn` buffered test calls the non-stream converter directly.
+ccLoad's production non-stream path first runs `NormalizeAnthropicResponse`,
+which rejects `server_tool_use` / `web_search_tool_result` blocks, so
+non-stream Claude server-tool responses remain unsupported; streaming is
+unaffected.
 
 Upstream's `common/claude_native_response.go` (native Claude JSON replayed as
 SSE) is excluded. ccLoad keeps its direct native JSON converters, which emit

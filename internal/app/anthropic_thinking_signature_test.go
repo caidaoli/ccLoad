@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -12,14 +14,34 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/signature/signaturetest"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func testAnthropicOAuthChannel() *model.Config {
 	return &model.Config{AuthType: model.AuthTypeAnthropicOAuth}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+// testChannelTarget is the URL an attempt on cfg hits: its first channel URL.
+func testChannelTarget(t *testing.T, cfg *model.Config) *url.URL {
+	t.Helper()
+	if cfg == nil || len(cfg.GetURLs()) == 0 {
+		return nil
+	}
+	return mustParseURL(t, cfg.GetURLs()[0])
 }
 
 func TestAnthropicRetryBodyFor400StripsInvalidThinkingSignature(t *testing.T) {
@@ -30,7 +52,7 @@ func TestAnthropicRetryBodyFor400StripsInvalidThinkingSignature(t *testing.T) {
 		Body:   []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"messages.17.content.337: Invalid ` + "`signature`" + ` in ` + "`thinking`" + ` block"},"request_id":"req_011CfhQgbE5tFRWBe35h6kaB"}`),
 	}
 
-	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, testAnthropicOAuthChannel(), protocol.TransformPlan{TranslatedBody: body}, res)
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, testAnthropicOAuthChannel(), nil, protocol.TransformPlan{TranslatedBody: body}, res)
 	if !ok || strategy != "strip_anthropic_invalid_thinking_signature" {
 		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
 	}
@@ -57,6 +79,24 @@ func TestAnthropicRetryBodyFor400StripsInvalidThinkingSignature(t *testing.T) {
 	}
 }
 
+// Passthrough bodies keep the caller's JSON formatting; spaced JSON must
+// still recover from a signature 400.
+func TestAnthropicRetryBodyFor400StripsSpacedJSONThinking(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model": "claude-sonnet-5-5", "messages": [{"role": "assistant", "content": [{"type": "thinking", "thinking": "plan", "signature": "8cda4dfbe7d4496c894702ac"}, {"type": "text", "text": "ok"}]}]}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid signature in thinking block"}}`),
+	}
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, testAnthropicOAuthChannel(), nil, protocol.TransformPlan{TranslatedBody: body}, res)
+	if !ok || strategy != "strip_anthropic_invalid_thinking_signature" {
+		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
+	}
+	if gjson.GetBytes(got, `messages.0.content.#(type=="thinking")`).Exists() || gjson.GetBytes(got, "messages.0.content.0.text").String() != "ok" {
+		t.Fatalf("spaced thinking not omitted: %s", got)
+	}
+}
+
 func TestAnthropicRetryBodyFor400StripsOnOfficialAnthropicAPIKeyURL(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
@@ -68,7 +108,7 @@ func TestAnthropicRetryBodyFor400StripsOnOfficialAnthropicAPIKeyURL(t *testing.T
 		AuthType: model.AuthTypeAPIKey,
 		URLs:     channelURLsForTest("https://api.anthropic.com"),
 	}
-	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, cfg, protocol.TransformPlan{TranslatedBody: body}, res)
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, cfg, mustParseURL(t, "https://api.anthropic.com"), protocol.TransformPlan{TranslatedBody: body}, res)
 	if !ok || strategy != "strip_anthropic_invalid_thinking_signature" {
 		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
 	}
@@ -94,8 +134,10 @@ func TestAnthropicRetryBodyFor400SkipsThinkingStripOnNonAnthropicOAuth(t *testin
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://open.bigmodel.cn/api/paas/v4")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.deepseek.com")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.openai.com/v1")},
+		// A relay sharing the channel with the official URL stays untouched.
+		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://relay.example.com", "https://api.anthropic.com")},
 	} {
-		got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, cfg, protocol.TransformPlan{TranslatedBody: body}, res)
+		got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, cfg, testChannelTarget(t, cfg), protocol.TransformPlan{TranslatedBody: body}, res)
 		if ok {
 			t.Fatalf("signature rewrite ran for auth=%v strategy=%q body=%s", cfg, strategy, got)
 		}
@@ -103,7 +145,7 @@ func TestAnthropicRetryBodyFor400SkipsThinkingStripOnNonAnthropicOAuth(t *testin
 			t.Fatalf("input mutated without retry: %s", body)
 		}
 	}
-	if _, _, ok := anthropicRetryBodyFor400(protocol.OpenAI, testAnthropicOAuthChannel(), protocol.TransformPlan{TranslatedBody: body}, res); ok {
+	if _, _, ok := anthropicRetryBodyFor400(protocol.OpenAI, testAnthropicOAuthChannel(), nil, protocol.TransformPlan{TranslatedBody: body}, res); ok {
 		t.Fatal("signature strip ran for OpenAI protocol")
 	}
 }
@@ -115,7 +157,7 @@ func TestAnthropicRetryBodyFor400UnsupportedThinkingStillDisablesControls(t *tes
 		Status: http.StatusBadRequest,
 		Body:   []byte(`{"error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`),
 	}
-	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, nil, protocol.TransformPlan{TranslatedBody: body}, res)
+	got, strategy, ok := anthropicRetryBodyFor400(protocol.Anthropic, nil, nil, protocol.TransformPlan{TranslatedBody: body}, res)
 	if !ok || strategy != "downgrade_anthropic_thinking" {
 		t.Fatalf("retry = (%q, %v), body=%s", strategy, ok, got)
 	}
@@ -179,23 +221,24 @@ func TestRememberedAnthropicThinkingOmitIsSessionAndModelScoped(t *testing.T) {
 		t.Fatal("session was remembered before the signature 400")
 	}
 	rememberAnthropicThinkingOmit(headers, poisoned)
-	got, ok := omitRememberedAnthropicThinkingHistory(testAnthropicOAuthChannel(), headers, poisoned)
+	got, ok := omitRememberedAnthropicThinkingHistory(headers, poisoned)
 	if !ok || gjson.GetBytes(got, `messages.0.content.#(type=="thinking")`).Exists() {
 		t.Fatalf("remembered sonnet-5-5 turn did not omit thinking: %s", got)
 	}
 	if gjson.GetBytes(got, "thinking.type").String() != "adaptive" || gjson.GetBytes(got, "messages.0.content.0.text").String() != "ok" {
 		t.Fatalf("current-turn controls or text lost: %s", got)
 	}
-	if _, ok := omitRememberedAnthropicThinkingHistory(testAnthropicOAuthChannel(), headers, otherModel); ok {
+	if _, ok := omitRememberedAnthropicThinkingHistory(headers, otherModel); ok {
 		t.Fatal("sonnet-5 on the same session was omitted")
 	}
 	otherSession := headers.Clone()
 	otherSession.Set("X-Claude-Code-Session-Id", session+"-other")
-	if _, ok := omitRememberedAnthropicThinkingHistory(testAnthropicOAuthChannel(), otherSession, poisoned); ok {
+	if _, ok := omitRememberedAnthropicThinkingHistory(otherSession, poisoned); ok {
 		t.Fatal("a different session was omitted")
 	}
-	if _, ok := omitRememberedAnthropicThinkingHistory(&model.Config{AuthType: model.AuthTypeZAIOAuth}, headers, poisoned); ok {
-		t.Fatal("Z.ai used the official Anthropic omit memory")
+	if got, _, err := finishAnthropicPassthrough(poisoned, false, &model.Config{AuthType: model.AuthTypeZAIOAuth},
+		mustParseURL(t, "https://api.z.ai/api/anthropic"), headers); err != nil || string(got) != string(poisoned) {
+		t.Fatalf("Z.ai used the official Anthropic omit memory: err=%v body=%s", err, got)
 	}
 	rememberAnthropicThinkingOmit(nil, []byte(`{"model":"claude-sonnet-5-5","messages":[]}`))
 	if anthropicThinkingOmitRemembered(nil, []byte(`{"model":"claude-sonnet-5-5","messages":[]}`)) {
@@ -226,7 +269,7 @@ func TestStripAnthropicHistoryThinkingBlocksFastPath(t *testing.T) {
 func TestCloakOfficialAnthropicThinkingHistoryOmitsForeignCarriers(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"omp plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
-	got, ok := cloakOfficialAnthropicThinkingHistory(testAnthropicOAuthChannel(), body)
+	got, ok := cloakOfficialAnthropicThinkingHistory(body)
 	if !ok {
 		t.Fatal("foreign thinking must be omitted on official Anthropic")
 	}
@@ -252,9 +295,57 @@ func TestCloakOfficialAnthropicThinkingHistoryOmitsAntigravityCAQS(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, ok := cloakOfficialAnthropicThinkingHistory(testAnthropicOAuthChannel(), body)
+		got, ok := cloakOfficialAnthropicThinkingHistory(body)
 		if !ok || gjson.GetBytes(got, `messages.0.content.#(type=="thinking")`).Exists() {
 			t.Fatalf("Antigravity CAQS thinking survived (signature prefix %q): %s", signature[:7], got)
+		}
+	}
+}
+
+// anthropicNativeCAQS mirrors the single-layer CAQS that api.anthropic.com
+// issues for Claude 5.5 thinking (captured from Claude Code): unlike the
+// Antigravity envelope, it is one base64 layer and its channel has no
+// infrastructure field. Opaque fields are generated zeros.
+func anthropicNativeCAQS() string {
+	appendVarint := func(dst []byte, field protowire.Number, value uint64) []byte {
+		return protowire.AppendVarint(protowire.AppendTag(dst, field, protowire.VarintType), value)
+	}
+	appendBytes := func(dst []byte, field protowire.Number, value []byte) []byte {
+		return protowire.AppendBytes(protowire.AppendTag(dst, field, protowire.BytesType), value)
+	}
+	var channel []byte
+	channel = appendVarint(channel, 1, 18)
+	channel = appendVarint(channel, 3, 2)
+	channel = appendVarint(channel, 7, 1)
+	channel = appendBytes(channel, 8, []byte("thinking"))
+	container := appendBytes(nil, 1, channel)
+	container = appendBytes(container, 2, make([]byte, 12))
+	container = appendBytes(container, 3, make([]byte, 12))
+	container = appendBytes(container, 4, make([]byte, 48))
+	container = appendBytes(container, 5, make([]byte, 1020))
+	payload := appendVarint(nil, 1, 4)
+	payload = appendBytes(payload, 2, container)
+	payload = appendVarint(payload, 3, 1)
+	return base64.StdEncoding.EncodeToString(payload)
+}
+
+func TestFinishAnthropicPassthroughKeepsOfficialNativeCAQS(t *testing.T) {
+	t.Parallel()
+	// 官方 Claude 5.5 原生签名同样以 CAQS 开头；只有 Antigravity 双层包装才算外来。
+	native := anthropicNativeCAQS()
+	if !strings.HasPrefix(native, "CAQS") || cliproxysignature.DetectSignatureProvider(native) != cliproxysignature.SignatureProviderClaude {
+		t.Fatalf("fixture is not a recognized native CAQS: %.12s", native)
+	}
+	cfg := testAnthropicOAuthChannel()
+	target := mustParseURL(t, "https://api.anthropic.com/v1/messages?beta=true")
+	for _, signature := range []string{native, "claude#" + native} {
+		body, err := sjson.SetBytes([]byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":""},{"type":"text","text":"ok"}]}]}`), "messages.0.content.0.signature", signature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, strategy, err := finishAnthropicPassthrough(body, false, cfg, target, nil)
+		if err != nil || strategy != "" || !gjson.GetBytes(got, `messages.0.content.#(type=="thinking")`).Exists() {
+			t.Fatalf("native CAQS thinking omitted (signature prefix %q, strategy %q, err %v): %s", signature[:7], strategy, err, got)
 		}
 	}
 }
@@ -264,7 +355,7 @@ func TestCloakOfficialAnthropicThinkingHistoryKeepsUnrecognizedCarriers(t *testi
 	// An unrecognized carrier may be a Claude format the detector has not
 	// learned yet; the signature 400 retry handles a real mismatch.
 	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
-	if got, ok := cloakOfficialAnthropicThinkingHistory(testAnthropicOAuthChannel(), body); ok {
+	if got, ok := cloakOfficialAnthropicThinkingHistory(body); ok {
 		t.Fatalf("unrecognized carrier omitted before any signature 400: %s", got)
 	}
 }
@@ -286,17 +377,23 @@ func TestCloakOfficialAnthropicThinkingHistorySkipsOtherAuthTypes(t *testing.T) 
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.deepseek.com")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.openai.com/v1")},
 		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://ai.hdd.sb")},
+		{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://relay.example.com", "https://api.anthropic.com")},
 	} {
-		if got, ok := cloakOfficialAnthropicThinkingHistory(cfg, body); ok {
-			t.Fatalf("cloak ran for auth=%v body=%s", cfg, got)
+		got, _, err := finishAnthropicPassthrough(body, false, cfg, testChannelTarget(t, cfg), nil)
+		if err != nil || string(got) != string(body) {
+			t.Fatalf("cloak ran for auth=%v err=%v body=%s", cfg, err, got)
 		}
+	}
+	apiKeyOfficial := &model.Config{AuthType: model.AuthTypeAPIKey, URLs: channelURLsForTest("https://api.anthropic.com")}
+	if got, _, _ := finishAnthropicPassthrough(body, false, apiKeyOfficial, testChannelTarget(t, apiKeyOfficial), nil); string(got) == string(body) {
+		t.Fatal("API key on the official URL kept foreign thinking")
 	}
 }
 
 func TestFinishAnthropicPassthroughCloaksForeignThinkingOnOfficial(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
-	got, _, err := finishAnthropicPassthrough(body, false, testAnthropicOAuthChannel(), nil)
+	got, _, err := finishAnthropicPassthrough(body, false, testAnthropicOAuthChannel(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +403,7 @@ func TestFinishAnthropicPassthroughCloaksForeignThinkingOnOfficial(t *testing.T)
 	got, _, err = finishAnthropicPassthrough(body, false, &model.Config{
 		AuthType: model.AuthTypeZAIOAuth,
 		URLs:     channelURLsForTest("https://api.z.ai/api/anthropic"),
-	}, nil)
+	}, mustParseURL(t, "https://api.z.ai/api/anthropic"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

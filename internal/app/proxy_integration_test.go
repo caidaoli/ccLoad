@@ -4285,6 +4285,7 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 	multilineData := "data: {\"response\":{\"responseId\":\"r1\",\n" +
 		`data: "candidates":[{"content":{"role":"model","parts":[{"text":"joined"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
 	fallbackFrame := `data: {"response":{"responseId":"r2","candidates":[{"content":{"role":"model","parts":[{"text":"fallback"}]},"finishReason":"STOP"}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
+	completeFrame := `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4},"modelVersion":"gemini-3-flash"}}` + "\n\n"
 
 	cases := []struct {
 		name         string
@@ -4298,6 +4299,8 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 		{name: "mid-stream-error", stream: textFrame + quotaFrame, wantClient: http.StatusOK, wantLog: http.StatusTooManyRequests, wantText: "partial"},
 		{name: "trailing-bare-json-error", stream: textFrame + trailingError, wantClient: http.StatusOK, wantLog: http.StatusServiceUnavailable, wantText: "partial"},
 		{name: "multiline-data", stream: multilineData, wantClient: http.StatusOK, wantLog: http.StatusOK, wantText: "joined"},
+		// 终态已送达后的后端错误不能把完整流改判为失败，也不能在终态后补 error 事件。
+		{name: "error-after-complete", stream: completeFrame + trailingError, wantClient: http.StatusOK, wantLog: http.StatusOK, wantText: "done"},
 	}
 	for _, adapter := range antigravityProviderAdapterCases() {
 		if adapter.name != "Claude" && adapter.name != "OpenAI" {
