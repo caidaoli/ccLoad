@@ -2271,6 +2271,7 @@ func TestProxy_AnthropicCountTokensFailureFallsBackWithoutModelCooldown(t *testi
 		{name: "official-anthropic", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test"},
 		{name: "official-anthropic-2", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-test-2"},
 	}, map[int]string{0: "https://api.anthropic.com", 1: "https://api.anthropic.com"})
+	env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
 	var countCalls, messageCalls atomic.Int32
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
@@ -2299,6 +2300,15 @@ func TestProxy_AnthropicCountTokensFailureFallsBackWithoutModelCooldown(t *testi
 	statuses := map[int]int64{}
 	for _, entry := range countLogs {
 		statuses[entry.StatusCode] = entry.ChannelID
+		if entry.StatusCode != http.StatusBadRequest {
+			continue
+		}
+		// 上游失败那条的 debug 保留官方原始响应，本地估算那条只有本地应答。
+		debug, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+		if err != nil || debug == nil || !strings.HasPrefix(debug.ReqURL, "https://api.anthropic.com/v1/messages/count_tokens") ||
+			debug.RespStatus != http.StatusBadRequest || gjson.GetBytes(debug.RespBody, "error.message").String() != "unsupported" {
+			t.Fatalf("upstream count_tokens debug=%+v err=%v", debug, err)
+		}
 	}
 	if channelID, ok := statuses[http.StatusBadRequest]; !ok || channelID <= 0 {
 		t.Fatalf("missing upstream 400 count_tokens log: %+v", countLogs)
