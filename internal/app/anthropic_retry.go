@@ -1,15 +1,21 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
+	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -17,6 +23,7 @@ import (
 
 func anthropicRetryBodyFor400(
 	upstreamProtocol protocol.Protocol,
+	cfg *model.Config,
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
@@ -24,6 +31,19 @@ func anthropicRetryBodyFor400(
 		return nil, "", false
 	}
 	if !isAnthropicRepairableValidationError(res.Body) {
+		return nil, "", false
+	}
+	errorText := anthropicErrorText(res.Body)
+	// Official Anthropic HMAC only. Other auth types keep the original body.
+	// A signature 400 must not fall through to downgrade_anthropic_thinking,
+	// which turns thinking into assistant text. messages.N.content.M often
+	// does not exist on the wire body, so the tool classifier would skip repair.
+	if isAnthropicInvalidThinkingSignatureError(errorText) {
+		if isOfficialAnthropicThinkingUpstream(cfg) {
+			if body, ok := stripAnthropicHistoryThinkingBlocks(plan.TranslatedBody); ok {
+				return body, stripAnthropicInvalidThinkingSignatureStrategy, true
+			}
+		}
 		return nil, "", false
 	}
 	if path, message, toolError := rejectedAnthropicToolPath(plan.TranslatedBody, res.Body); toolError {
@@ -34,7 +54,6 @@ func anthropicRetryBodyFor400(
 		// downgrade just because an argument is named "thinking".
 		return nil, "", false
 	}
-	errorText := anthropicErrorText(res.Body)
 	if isAnthropicThinkingBudgetError(errorText) {
 		if body, ok := rectifyAnthropicThinkingBudget(plan.TranslatedBody); ok {
 			return body, "rectify_anthropic_thinking_budget", true
@@ -58,6 +77,9 @@ func rejectedAnthropicToolPath(body, errorBody []byte) (string, string, bool) {
 		return "", "", false
 	}
 	message := gjson.GetBytes(errorBody, "error.message").String()
+	if isAnthropicInvalidThinkingSignatureError(strings.ToLower(message)) {
+		return "", message, false
+	}
 	param := strings.TrimSpace(gjson.GetBytes(errorBody, "error.param").String())
 	prefix, _, _ := strings.Cut(message, ":")
 	parse := func(path string) string {
@@ -374,6 +396,198 @@ func isAnthropicThinkingBudgetError(errorText string) bool {
 
 func isAnthropicThinkingBlockError(errorText string) bool {
 	return strings.Contains(errorText, "thinking") || strings.Contains(errorText, "redacted_thinking")
+}
+
+const (
+	stripAnthropicInvalidThinkingSignatureStrategy = "strip_anthropic_invalid_thinking_signature"
+	anthropicThinkingOmitIdleTTL                   = 15 * time.Minute
+)
+
+// anthropicThinkingOmitSessions remembers official-Anthropic session+model
+// pairs whose replay already 400'd on a thinking signature. Later turns omit
+// history thinking before the first upstream attempt. The key is never a
+// token hash, so other models on the same credential stay untouched.
+var anthropicThinkingOmitSessions sync.Map
+
+func isAnthropicInvalidThinkingSignatureError(errorText string) bool {
+	if !strings.Contains(errorText, "signature") || !strings.Contains(errorText, "invalid") {
+		return false
+	}
+	return strings.Contains(errorText, "thinking") || strings.Contains(errorText, "redacted_thinking")
+}
+
+func isOfficialAnthropicThinkingUpstream(cfg *model.Config) bool {
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	for _, raw := range cfg.GetURLs() {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		if isOfficialAnthropicURL(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicThinkingOmitSession(headers http.Header, body []byte) string {
+	if headers != nil {
+		if sid := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); sid != "" {
+			return sid
+		}
+	}
+	return anthropicSessionIDFromRequest(body)
+}
+
+func anthropicThinkingOmitKey(headers http.Header, body []byte) string {
+	session := anthropicThinkingOmitSession(headers, body)
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if session == "" || model == "" {
+		return ""
+	}
+	return session + "\x00" + model
+}
+
+func rememberAnthropicThinkingOmit(headers http.Header, body []byte) {
+	key := anthropicThinkingOmitKey(headers, body)
+	if key == "" {
+		return
+	}
+	anthropicThinkingOmitSessions.Store(key, time.Now().Add(anthropicThinkingOmitIdleTTL))
+}
+
+func anthropicThinkingOmitRemembered(headers http.Header, body []byte) bool {
+	key := anthropicThinkingOmitKey(headers, body)
+	if key == "" {
+		return false
+	}
+	value, ok := anthropicThinkingOmitSessions.Load(key)
+	if !ok {
+		return false
+	}
+	expires, ok := value.(time.Time)
+	if !ok || time.Now().After(expires) {
+		anthropicThinkingOmitSessions.Delete(key)
+		return false
+	}
+	anthropicThinkingOmitSessions.Store(key, time.Now().Add(anthropicThinkingOmitIdleTTL))
+	return true
+}
+
+func omitRememberedAnthropicThinkingHistory(cfg *model.Config, headers http.Header, body []byte) ([]byte, bool) {
+	if !isOfficialAnthropicThinkingUpstream(cfg) || !anthropicThinkingOmitRemembered(headers, body) {
+		return nil, false
+	}
+	return stripAnthropicHistoryThinkingBlocks(body)
+}
+
+var (
+	anthropicThinkingTypeNeedle         = []byte(`"type":"thinking"`)
+	anthropicRedactedThinkingTypeNeedle = []byte(`"type":"redacted_thinking"`)
+)
+
+func anthropicBodyHasHistoryThinkingBlocks(body []byte) bool {
+	return bytes.Contains(body, anthropicThinkingTypeNeedle) || bytes.Contains(body, anthropicRedactedThinkingTypeNeedle)
+}
+
+func anthropicThinkingCarrierSignature(block gjson.Result) string {
+	sig := strings.TrimSpace(block.Get("signature").String())
+	if sig != "" {
+		return sig
+	}
+	return strings.TrimSpace(block.Get("data").String())
+}
+
+func anthropicHistoryHasNonClaudeThinking(body []byte) bool {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	for _, message := range messages.Array() {
+		content := message.Get("content")
+		if !content.IsArray() {
+			continue
+		}
+		for _, block := range content.Array() {
+			kind := block.Get("type").String()
+			if kind != "thinking" && kind != "redacted_thinking" {
+				continue
+			}
+			if cliproxysignature.DetectSignatureProvider(anthropicThinkingCarrierSignature(block)) != cliproxysignature.SignatureProviderClaude {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// cloakOfficialAnthropicThinkingHistory omits history thinking when the
+// transcript carries a non-Claude thinking carrier. Anthropic accepts omitting
+// thinking on replay; a gap in the sequence is invalid, so mixed foreign
+// blocks drop the whole history run. Current-turn thinking controls stay.
+func cloakOfficialAnthropicThinkingHistory(cfg *model.Config, body []byte) ([]byte, bool) {
+	if !isOfficialAnthropicThinkingUpstream(cfg) || !anthropicBodyHasHistoryThinkingBlocks(body) {
+		return nil, false
+	}
+	if !anthropicHistoryHasNonClaudeThinking(body) {
+		return nil, false
+	}
+	return stripAnthropicHistoryThinkingBlocks(body)
+}
+
+// stripAnthropicHistoryThinkingBlocks omits prior thinking / redacted_thinking
+// blocks. Rewriting them into assistant text is not part of this recovery.
+func stripAnthropicHistoryThinkingBlocks(body []byte) ([]byte, bool) {
+	if !anthropicBodyHasHistoryThinkingBlocks(body) || !isMutableJSONObject(body) {
+		return nil, false
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return nil, false
+	}
+	updated := body
+	changed := false
+	for messageIndex := len(messages.Array()) - 1; messageIndex >= 0; messageIndex-- {
+		message := gjson.GetBytes(updated, fmt.Sprintf("messages.%d", messageIndex))
+		content := message.Get("content")
+		if !message.IsObject() || !content.IsArray() {
+			continue
+		}
+		rendered := make([][]byte, 0, len(content.Array()))
+		messageChanged := false
+		for _, block := range content.Array() {
+			if block.IsObject() {
+				kind := block.Get("type").String()
+				if kind == "thinking" || kind == "redacted_thinking" {
+					messageChanged = true
+					continue
+				}
+			}
+			rendered = append(rendered, []byte(block.Raw))
+		}
+		if !messageChanged {
+			continue
+		}
+		changed = true
+		var err error
+		if len(rendered) == 0 {
+			updated, err = sjson.DeleteBytes(updated, fmt.Sprintf("messages.%d", messageIndex))
+		} else {
+			updated, err = sjson.SetRawBytes(updated, fmt.Sprintf("messages.%d.content", messageIndex), cliproxycommon.JoinRawArray(rendered))
+		}
+		if err != nil {
+			return nil, false
+		}
+	}
+	if !changed {
+		return nil, false
+	}
+	return updated, true
 }
 
 func downgradeAnthropicThinkingBlocks(body []byte) ([]byte, bool) {

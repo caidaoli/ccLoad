@@ -565,7 +565,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 				return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 			}
 			body, err = finishAnthropicPassthrough(body,
-				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target))
+				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, headers)
 		default:
 			body, err = finalizeAnthropicClaudeCodeMessagesBodyForCaller(body, cfg, apiKey, headers, target, callerWire)
 		}
@@ -3116,6 +3116,9 @@ func (s *Server) forwardAttempt(
 			missingStoredItemRetries++
 		}
 		retryStrategies = append(retryStrategies, retryStrategy)
+		if retryStrategy == stripAnthropicInvalidThinkingSignatureStrategy {
+			rememberAnthropicThinkingOmit(reqCtx.header, retrySourcePlan.TranslatedBody)
+		}
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
 		// 可复用的 WS 连接优先发 attempt.incrementalBody。status
@@ -3420,7 +3423,7 @@ func retryBodyForRejectedRequest(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
-	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, plan, res); ok {
+	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, plan, res); ok {
 		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForUnknownParameter(upstreamProtocol, plan, res); ok {
