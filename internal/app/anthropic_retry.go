@@ -503,7 +503,7 @@ func anthropicThinkingCarrierSignature(block gjson.Result) string {
 	return strings.TrimSpace(block.Get("data").String())
 }
 
-func anthropicHistoryHasNonClaudeThinking(body []byte) bool {
+func anthropicHistoryHasForeignThinking(body []byte) bool {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return false
@@ -518,7 +518,9 @@ func anthropicHistoryHasNonClaudeThinking(body []byte) bool {
 			if kind != "thinking" && kind != "redacted_thinking" {
 				continue
 			}
-			if cliproxysignature.DetectSignatureProvider(anthropicThinkingCarrierSignature(block)) != cliproxysignature.SignatureProviderClaude {
+			switch cliproxysignature.DetectSignatureProvider(anthropicThinkingCarrierSignature(block)) {
+			case cliproxysignature.SignatureProviderClaude, cliproxysignature.SignatureProviderUnknown:
+			default:
 				return true
 			}
 		}
@@ -527,14 +529,17 @@ func anthropicHistoryHasNonClaudeThinking(body []byte) bool {
 }
 
 // cloakOfficialAnthropicThinkingHistory omits history thinking when the
-// transcript carries a non-Claude thinking carrier. Anthropic accepts omitting
-// thinking on replay; a gap in the sequence is invalid, so mixed foreign
-// blocks drop the whole history run. Current-turn thinking controls stay.
+// transcript carries a carrier positively identified as another provider's.
+// Unrecognized carriers stay: a Claude format drift must not silently strip
+// valid thinking, and a real mismatch is recovered by the signature 400 retry.
+// Anthropic accepts omitting thinking on replay; a gap in the sequence is
+// invalid, so mixed foreign blocks drop the whole history run. Current-turn
+// thinking controls stay.
 func cloakOfficialAnthropicThinkingHistory(cfg *model.Config, body []byte) ([]byte, bool) {
 	if !isOfficialAnthropicThinkingUpstream(cfg) || !anthropicBodyHasHistoryThinkingBlocks(body) {
 		return nil, false
 	}
-	if !anthropicHistoryHasNonClaudeThinking(body) {
+	if !anthropicHistoryHasForeignThinking(body) {
 		return nil, false
 	}
 	return stripAnthropicHistoryThinkingBlocks(body)

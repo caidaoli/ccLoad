@@ -98,8 +98,6 @@ func TestNativeClaudeCodeFinalizeDropsRejectedCacheControls(t *testing.T) {
 	t.Parallel()
 	const identity = `"metadata":{"user_id":"{\"device_id\":\"device\",\"session_id\":\"session\"}"}`
 	cache := `{"type":"ephemeral"}`
-	// Official Anthropic omits history thinking whose signature is not Claude-shaped.
-	const claudeSignature = "CAISqwIKiAEIEBgCKkBHRlRBsNiptQUWfPoOhuQKwi5LnncZVO9bB5jqOs76D7uBtgktML0zqJtNmLHXHHcgD6lk4MQu4QBXzFd1lbC3Mg5jbGF1ZGUtZmFibGUtNTgBQgh0aGlua2luZ1okZDk3NDM5NzUtNGJiMC00OTM2LTllMjgtZDViMGQyMWJkYzQ4EgxCGh+XVFFFeySAjtAaDL/A1LltGu6MMJ+eXSIwsN0oBpDrqLv22UBfkMnTotnIbkvkOyb9xZHgigG6OZVHaI3gThm+maLKmgO5PrFLKlDFYp+YZksy/wKwszJlnLTPzAK+NUlfzagOE1ymtZTXhAYK260XyFYmg/te/C231+Fr/hoX+EJoUBnrn0gD7hqMISOT+TaFEuOXYsN517GfaxgB"
 	cfg := anthropicGoldenConfig(t, anthropicGoldenCase{oauth: true})
 
 	t.Run("deferred tools and thinking blocks", func(t *testing.T) {
@@ -108,8 +106,8 @@ func TestNativeClaudeCodeFinalizeDropsRejectedCacheControls(t *testing.T) {
 			`{"name":"custom_deferred","custom":{"defer_loading":true},"cache_control":` + cache + `},` +
 			`{"name":"string_flag","defer_loading":"true","cache_control":` + cache + `}],` +
 			`"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[` +
-			`{"type":"thinking","thinking":"plan","signature":"` + claudeSignature + `","cache_control":` + cache + `},` +
-			`{"type":"redacted_thinking","data":"` + claudeSignature + `","cache_control":` + cache + `},` +
+			`{"type":"thinking","thinking":"plan","signature":"sig","cache_control":` + cache + `},` +
+			`{"type":"redacted_thinking","data":"opaque","cache_control":` + cache + `},` +
 			`{"type":"text","text":"done","cache_control":` + cache + `}]}]}`)
 		out, err := finalizeAnthropicClaudeCodeMessagesBody(body, cfg, "", anthropicGoldenNativeHeaders(), anthropicOfficialTestURL)
 		if err != nil {

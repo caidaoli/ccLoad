@@ -218,7 +218,7 @@ func TestStripAnthropicHistoryThinkingBlocksFastPath(t *testing.T) {
 
 func TestCloakOfficialAnthropicThinkingHistoryOmitsForeignCarriers(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"omp plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
+	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"omp plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
 	got, ok := cloakOfficialAnthropicThinkingHistory(testAnthropicOAuthChannel(), body)
 	if !ok {
 		t.Fatal("foreign thinking must be omitted on official Anthropic")
@@ -237,9 +237,19 @@ func TestCloakOfficialAnthropicThinkingHistoryOmitsForeignCarriers(t *testing.T)
 	}
 }
 
+func TestCloakOfficialAnthropicThinkingHistoryKeepsUnrecognizedCarriers(t *testing.T) {
+	t.Parallel()
+	// An unrecognized carrier may be a Claude format the detector has not
+	// learned yet; the signature 400 retry handles a real mismatch.
+	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
+	if got, ok := cloakOfficialAnthropicThinkingHistory(testAnthropicOAuthChannel(), body); ok {
+		t.Fatalf("unrecognized carrier omitted before any signature 400: %s", got)
+	}
+}
+
 func TestCloakOfficialAnthropicThinkingHistorySkipsOtherAuthTypes(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
+	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
 	for _, cfg := range []*model.Config{
 		nil,
 		{AuthType: model.AuthTypeAPIKey},
@@ -263,7 +273,7 @@ func TestCloakOfficialAnthropicThinkingHistorySkipsOtherAuthTypes(t *testing.T) 
 
 func TestFinishAnthropicPassthroughCloaksForeignThinkingOnOfficial(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign plan","signature":"8cda4dfbe7d4496c894702ac"},{"type":"text","text":"ok"}]}]}`)
+	body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
 	got, err := finishAnthropicPassthrough(body, false, testAnthropicOAuthChannel(), nil)
 	if err != nil {
 		t.Fatal(err)
