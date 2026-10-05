@@ -7,6 +7,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // CountTokensRequest is the input of every local count_tokens estimate.
@@ -22,17 +23,18 @@ type CountTokensResponse struct {
 	InputTokens int `json:"input_tokens"`
 }
 
-// handleCountTokens estimates requests that have no first-party Anthropic target.
-func (s *Server) handleCountTokens(c *gin.Context) {
+// localCountTokens estimates requests that have no first-party Anthropic target.
+// It returns the status, the Anthropic-compatible response, and the estimate (0 on error).
+func localCountTokens(body []byte) (int, any, int) {
 	var req CountTokensRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+	if err := binding.JSON.BindBody(body, &req); err != nil {
+		return http.StatusBadRequest, gin.H{"error": gin.H{
 			"type": "invalid_request_error", "message": fmt.Sprintf("Invalid request body: %v", err),
-		}})
-		return
+		}}, 0
 	}
 	// 估算与模型无关：Claude Code 接 GLM/DeepSeek/Kimi 等后端时同样依赖它决定压缩时机，不按模型名拒绝。
-	c.JSON(http.StatusOK, CountTokensResponse{InputTokens: estimateTokens(&req)})
+	inputTokens := estimateTokens(&req)
+	return http.StatusOK, CountTokensResponse{InputTokens: inputTokens}, inputTokens
 }
 
 // MessageParam 消息参数（简化版本，支持文本内容）

@@ -350,9 +350,29 @@ func (s *Server) officialAnthropicCountTokensCandidates(cands []*model.Config) [
 	return selected
 }
 
-func (s *Server) handleLocalCountTokens(c *gin.Context, body []byte) {
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	s.handleCountTokens(c)
+// handleLocalCountTokens 用本地估算应答 count_tokens，并按 count_tokens 来源记一条无渠道日志。
+func (s *Server) handleLocalCountTokens(c *gin.Context, body []byte, entry *model.LogEntry) {
+	status, payload, inputTokens := localCountTokens(body)
+	respBody, _ := sonic.Marshal(payload)
+	c.Data(status, "application/json; charset=utf-8", respBody)
+
+	entry.LogSource = model.LogSourceCountTokens
+	entry.StatusCode = status
+	entry.InputTokens = inputTokens
+	entry.Duration = time.Since(entry.Time.Time).Seconds()
+	if s.configService.GetBool("debug_log_enabled", false) {
+		entry.DebugData = &model.DebugLogEntry{
+			CreatedAt:   time.Now().Unix(),
+			ReqMethod:   c.Request.Method,
+			ReqURL:      c.Request.URL.String(),
+			ReqHeaders:  encodeDebugHeaders(c.Request.Header),
+			ReqBody:     body,
+			RespStatus:  status,
+			RespHeaders: encodeDebugHeaders(c.Writer.Header()),
+			RespBody:    respBody,
+		}
+	}
+	s.AddLogAsync(entry)
 }
 
 // ============================================================================
@@ -455,13 +475,23 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
+	localCountTokensLog := func(reason string) *model.LogEntry {
+		return &model.LogEntry{
+			Time:           model.JSONTime{Time: startTime},
+			Model:          clientModel,
+			AuthTokenID:    tokenIDInt64,
+			ClientProtocol: string(clientProtocol),
+			ClientIP:       c.ClientIP(),
+			Message:        "local: " + reason,
+		}
+	}
 
 	// count_tokens is an auxiliary, non-billable endpoint: an exhausted budget
 	// still gets an estimate. A model outside the token's whitelist must not
 	// reach a first-party account either, so it gets the local estimate too.
 	if countTokensRequest {
 		if !s.tokenModelAllowed(tokenHashStr, incoming.authorizationModel()) {
-			s.handleLocalCountTokens(c, all)
+			s.handleLocalCountTokens(c, all, localCountTokensLog("model restricted"))
 			return
 		}
 	} else if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
@@ -536,7 +566,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if countTokensRequest {
 		cands = s.officialAnthropicCountTokensCandidates(cands)
 		if len(cands) == 0 {
-			s.handleLocalCountTokens(c, all)
+			s.handleLocalCountTokens(c, all, localCountTokensLog("no official channel"))
 			return
 		}
 	}
@@ -656,7 +686,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 	if countTokensRequest && (lastResult == nil || !lastResult.isClientCanceled) {
-		s.handleLocalCountTokens(c, all)
+		s.handleLocalCountTokens(c, all, localCountTokensLog("upstream failed"))
 		return
 	}
 

@@ -14,6 +14,8 @@ const (
 	LogSourceManualTest     = "manual_test"
 	LogSourceManualChat     = "manual_chat"
 	LogSourceCheckin        = "checkin"
+	// LogSourceCountTokens 记录 count_tokens 辅助请求：不计费，不进入渠道健康度与统计。
+	LogSourceCountTokens = "count_tokens"
 
 	LogSourceDetection = "detection"
 	LogSourceAll       = "all"
@@ -34,6 +36,8 @@ func NormalizeStoredLogSource(raw string) string {
 		return LogSourceJev
 	case LogSourceCheckin:
 		return LogSourceCheckin
+	case LogSourceCountTokens:
+		return LogSourceCountTokens
 	default:
 		return LogSourceProxy
 	}

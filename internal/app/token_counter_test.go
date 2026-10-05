@@ -4,27 +4,31 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/bytedance/sonic"
 )
 
-func TestHandleCountTokens(t *testing.T) {
-	srv := &Server{}
+func countTokensBody(t *testing.T, payload any) []byte {
+	t.Helper()
+	body, err := sonic.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return body
+}
 
+func TestLocalCountTokens(t *testing.T) {
 	t.Run("invalid json", func(t *testing.T) {
-		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/v1/messages/count_tokens", []byte(`{`)))
-
-		srv.handleCountTokens(c)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		if status, _, inputTokens := localCountTokens([]byte(`{`)); status != http.StatusBadRequest || inputTokens != 0 {
+			t.Fatalf("status=%d inputTokens=%d, want 400 and 0", status, inputTokens)
 		}
 	})
 
 	t.Run("any model name is estimated", func(t *testing.T) {
 		for _, model := range []string{"glm-4.6", "deepseek-v3.2", "kimi-k2", "qwen3-coder-plus"} {
-			c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/v1/messages/count_tokens",
-				[]byte(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`)))
-			srv.handleCountTokens(c)
-			if w.Code != http.StatusOK {
-				t.Fatalf("model %s status=%d, want %d, body=%s", model, w.Code, http.StatusOK, w.Body.String())
+			status, payload, _ := localCountTokens([]byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`))
+			if status != http.StatusOK {
+				t.Fatalf("model %s status=%d, want %d, payload=%v", model, status, http.StatusOK, payload)
 			}
 		}
 	})
@@ -47,12 +51,8 @@ func TestHandleCountTokens(t *testing.T) {
 				"model":    "claude-sonnet-4-6",
 				"messages": []any{map[string]any{"role": "user", "content": []any{block}}},
 			}
-			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/v1/messages/count_tokens", payload))
-			srv.handleCountTokens(c)
-			var resp CountTokensResponse
-			mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-			if resp.InputTokens < 5_000 {
-				t.Fatalf("%s: InputTokens=%d, want >=5000", name, resp.InputTokens)
+			if _, _, inputTokens := localCountTokens(countTokensBody(t, payload)); inputTokens < 5_000 {
+				t.Fatalf("%s: InputTokens=%d, want >=5000", name, inputTokens)
 			}
 		}
 	})
@@ -82,17 +82,9 @@ func TestHandleCountTokens(t *testing.T) {
 				},
 			},
 		}
-		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/v1/messages/count_tokens", payload))
-
-		srv.handleCountTokens(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp CountTokensResponse
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if resp.InputTokens <= 0 {
-			t.Fatalf("InputTokens=%d, want >0", resp.InputTokens)
+		status, resp, inputTokens := localCountTokens(countTokensBody(t, payload))
+		if status != http.StatusOK || inputTokens <= 0 || resp != (CountTokensResponse{InputTokens: inputTokens}) {
+			t.Fatalf("status=%d inputTokens=%d resp=%v", status, inputTokens, resp)
 		}
 	})
 }

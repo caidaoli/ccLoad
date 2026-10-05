@@ -2027,7 +2027,8 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 }
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
-	if s == nil || s.urlSelector == nil || entry == nil || entry.LogSource == model.LogSourceJev {
+	if s == nil || s.urlSelector == nil || entry == nil ||
+		entry.LogSource == model.LogSourceJev || entry.LogSource == model.LogSourceCountTokens {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

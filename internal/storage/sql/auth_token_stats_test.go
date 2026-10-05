@@ -17,6 +17,7 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	end := now.Add(2 * time.Minute)
 
 	// token 1: 1 success(stream) + 1 failure(non-stream) + 1 cancelled(499, should be excluded)
+	//          + 1 count_tokens（辅助请求，不计入令牌统计）
 	// token 2: 1 success
 	logs := []*model.LogEntry{
 		{
@@ -56,6 +57,16 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 			InputTokens:   0,
 			OutputTokens:  0,
 			Cost:          0,
+		},
+		{
+			Time:        model.JSONTime{Time: now},
+			LogSource:   model.LogSourceCountTokens,
+			ChannelID:   1,
+			Model:       "m1",
+			StatusCode:  200,
+			Duration:    0.1,
+			AuthTokenID: 1,
+			InputTokens: 100,
 		},
 		{
 			Time:         model.JSONTime{Time: now},
@@ -100,7 +111,7 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	if err := store.FillAuthTokenRPMStats(ctx, stats, start, end, true); err != nil {
 		t.Fatalf("FillAuthTokenRPMStats failed: %v", err)
 	}
-	if stats[1].AvgRPM <= 0 || stats[1].PeakRPM <= 0 {
+	if stats[1].AvgRPM <= 0 || stats[1].PeakRPM != 2 {
 		t.Fatalf("token1 rpm invalid: %+v", stats[1])
 	}
 	// recent RPM 只在 isToday=true 时计算；这里日志就在近2分钟，应该 >=1（排除499）

@@ -1458,6 +1458,9 @@ func (s *Server) handleSuccessResponse(
 	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 	result.ToolCostUSD = parser.GetToolCostUSD()
+	if jsonParser, ok := parser.(*jsonUsageParser); ok && reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyCountTokens {
+		result.InputTokens = jsonParser.countTokensResult()
+	}
 	if reqCtx.transformPlan.RequestFamily == protocol.RequestFamilyImages && !reqCtx.transformPlan.NeedsTransform {
 		usage := parser.GetImageUsage()
 		result.ImageUsage = &usage

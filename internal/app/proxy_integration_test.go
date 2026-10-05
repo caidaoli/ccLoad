@@ -2186,6 +2186,11 @@ func TestProxy_AnthropicCountTokensAPIKeyUsesUpstream(t *testing.T) {
 		t.Fatalf("status=%d url=%s headers=%v upstream=%s downstream=%s", response.Code,
 			sentURL, sentHeaders, sentBody, response.Body.String())
 	}
+	entry := waitForCountTokensLogs(t, env, 1)[0]
+	if entry.StatusCode != http.StatusOK || entry.ChannelID <= 0 || entry.Cost != 0 ||
+		entry.Model != "claude-sonnet-4-6" || entry.InputTokens != 19 {
+		t.Fatalf("count_tokens log=%+v", entry)
+	}
 }
 
 func TestProxy_AnthropicCountTokensRecognizesNativeUAWithoutMetadata(t *testing.T) {
@@ -2238,11 +2243,23 @@ func TestProxy_AnthropicCountTokensCustomOriginUsesLocalEstimate(t *testing.T) {
 func TestProxy_AnthropicCountTokensWithoutChannelsUsesLocalEstimate(t *testing.T) {
 	t.Parallel()
 	env := setupProxyTestEnv(t, nil, nil)
+	env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
 	response := doProxyRequest(t, env.engine, "/v1/messages/count_tokens", map[string]any{
 		"model": "claude-sonnet-4-6", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
 	}, nil)
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "input_tokens").Int() <= 0 {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	entry := waitForCountTokensLogs(t, env, 1)[0]
+	if entry.StatusCode != http.StatusOK || entry.ChannelID != 0 || entry.Model != "claude-sonnet-4-6" ||
+		entry.Message != "local: no official channel" ||
+		int64(entry.InputTokens) != gjson.Get(response.Body.String(), "input_tokens").Int() {
+		t.Fatalf("local count_tokens log=%+v body=%s", entry, response.Body.String())
+	}
+	debug, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+	if err != nil || debug == nil || gjson.GetBytes(debug.ReqBody, "model").String() != "claude-sonnet-4-6" ||
+		debug.RespStatus != http.StatusOK || string(debug.RespBody) != response.Body.String() {
+		t.Fatalf("local count_tokens debug=%+v err=%v", debug, err)
 	}
 }
 
@@ -2276,6 +2293,24 @@ func TestProxy_AnthropicCountTokensFailureFallsBackWithoutModelCooldown(t *testi
 		message.Code != http.StatusOK || countCalls.Load() != 1 || messageCalls.Load() != 1 {
 		t.Fatalf("count=%d %s, message=%d %s, upstream count=%d messages=%d",
 			count.Code, count.Body.String(), message.Code, message.Body.String(), countCalls.Load(), messageCalls.Load())
+	}
+	// 上游失败与本地估算各记一条 count_tokens 日志，请求日志（渠道健康度来源）只有 messages。
+	countLogs := waitForCountTokensLogs(t, env, 2)
+	statuses := map[int]int64{}
+	for _, entry := range countLogs {
+		statuses[entry.StatusCode] = entry.ChannelID
+	}
+	if channelID, ok := statuses[http.StatusBadRequest]; !ok || channelID <= 0 {
+		t.Fatalf("missing upstream 400 count_tokens log: %+v", countLogs)
+	}
+	if channelID, ok := statuses[http.StatusOK]; !ok || channelID != 0 {
+		t.Fatalf("missing local estimate count_tokens log: %+v", countLogs)
+	}
+	waitForProxyLog(t, env, "claude-sonnet-4-6")
+	proxyLogs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0,
+		&model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil || len(proxyLogs) != 1 || proxyLogs[0].StatusCode != http.StatusOK {
+		t.Fatalf("proxy logs=%+v err=%v, want only the messages request", proxyLogs, err)
 	}
 }
 
@@ -8263,6 +8298,29 @@ func waitForProxyLog(t testing.TB, env *proxyTestEnv, modelName string) *model.L
 	}
 	t.Fatalf("proxy log for model %q not found within deadline", modelName)
 	return nil
+}
+
+// waitForCountTokensLogs 等待 count_tokens 来源的日志条数达到 want，按时间倒序返回。
+func waitForCountTokensLogs(t testing.TB, env *proxyTestEnv, want int) []*model.LogEntry {
+	t.Helper()
+
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	var logs []*model.LogEntry
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var err error
+		logs, err = env.store.ListLogs(ctx, since, 20, 0, &model.LogFilter{LogSource: model.LogSourceCountTokens})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		if len(logs) >= want {
+			break
+		}
+	}
+	if len(logs) != want {
+		t.Fatalf("count_tokens logs=%d, want %d: %+v", len(logs), want, logs)
+	}
+	return logs
 }
 
 func waitForProxyLogMatching(t testing.TB, env *proxyTestEnv, match func(*model.LogEntry) bool) *model.LogEntry {

@@ -566,6 +566,8 @@ function renderLogSourceBadge(logSource) {
       return `<span class="log-source-badge log-source-badge--manual">${escapeHtml(t('logs.sourceManualChatBadge'))}</span>`;
     case 'checkin':
       return `<span class="log-source-badge log-source-badge--checkin">${escapeHtml(t('logs.sourceCheckinBadge'))}</span>`;
+    case 'count_tokens':
+      return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceCountTokensBadge'))}</span>`;
     default:
       return '';
   }
@@ -573,8 +575,9 @@ function renderLogSourceBadge(logSource) {
 
 function canInspectDebugLog(entry) {
   const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
-  const isJevAudit = entry?.log_source === 'jev';
-  return !isTokenSession && (Number(entry?.channel_id) > 0 || (isJevAudit && Number(entry?.id) > 0));
+  // Jev 审计与 count_tokens 本地估算没有渠道，但同样可能带 debug 记录。
+  const isChannelless = entry?.log_source === 'jev' || entry?.log_source === 'count_tokens';
+  return !isTokenSession && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
 }
 
 function buildLogMessageContent(entry) {

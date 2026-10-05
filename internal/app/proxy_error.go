@@ -189,15 +189,11 @@ func (s *Server) logProxyResult(
 	res *fwResult,
 	errMsg string,
 ) {
-	if reqCtx.countTokens() {
-		return
-	}
 	s.AddLogAsync(buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, statusCode, duration, res, errMsg))
 }
 
-// logCountTokensUpstreamFailure keeps a failed first-party count_tokens visible.
-// It stays out of the request log on purpose: that log feeds channel health
-// scores, and an auxiliary request must not rank channels for generation.
+// logCountTokensUpstreamFailure 在服务日志中标出回退本地估算的上游失败；
+// 日志表记录由 count_tokens 来源承载，不进入渠道健康度。
 func logCountTokensUpstreamFailure(cfg *model.Config, status int, detail string) {
 	log.Printf("[WARN] count_tokens 上游失败，回退本地估算: channel=%s(id=%d) status=%d detail=%s",
 		cfg.Name, cfg.ID, status, truncateErr(detail))
@@ -268,6 +264,10 @@ func buildProxyLogEntry(
 	}
 	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
 		entry.Message += " [credits]"
+	}
+	if reqCtx.countTokens() {
+		entry.LogSource = model.LogSourceCountTokens
+		entry.Cost = 0
 	}
 	return entry
 }
@@ -390,7 +390,7 @@ func (s *Server) handleNetworkError(
 
 	// 流式响应中途失败（用户按 Esc 为 499、上游断连为 5xx）时上游已按 token 收费：
 	// 已提交的部分 usage 照常计费，499 只是不计失败次数。
-	if res != nil && hasConsumedTokens(res) {
+	if res != nil && !reqCtx.countTokens() && hasConsumedTokens(res) {
 		s.updateTokenStatsForProxy(reqCtx, failureTokenStatsOutcome(statusCode), duration, res, actualModel)
 	}
 	if reqCtx.countTokens() && !failure.isClientCanceled {
@@ -654,9 +654,8 @@ func (s *Server) handleProxySuccess(
 	}
 	s.sessionAffinity.bind(reqCtx.sessionAffinityKey, sessionAffinityTarget{channelID: cfg.ID, keyIndex: keyIndex}, time.Now())
 
+	s.AddLogAsync(buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, ""))
 	if !reqCtx.countTokens() {
-		entry := buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
-		s.AddLogAsync(entry)
 		// 异步更新Token统计
 		s.updateTokenStatsForProxy(reqCtx, model.TokenStatsSuccess, duration, res, actualModel)
 	}
@@ -748,7 +747,7 @@ func (s *Server) handleUncommittedWebsocketTransportFailure(
 }
 
 // countTokensUpstreamErrorResult ends a failed count_tokens attempt without
-// cooldown, token stats, or a request log. A rejected body fails the same way on
+// cooldown or token stats; the caller writes the count_tokens log. A rejected body fails the same way on
 // every official channel, so 400/413 stop the fan-out; the handler then answers
 // with the local estimate either way.
 func countTokensUpstreamErrorResult(cfg *model.Config, res *fwResult, duration float64) (*proxyResult, cooldown.Action) {
@@ -786,6 +785,7 @@ func (s *Server) handleProxyErrorResponse(
 	modelCapacityRateLimited bool,
 ) (*proxyResult, cooldown.Action) {
 	if reqCtx.countTokens() {
+		s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, "")
 		return countTokensUpstreamErrorResult(cfg, res, duration)
 	}
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)

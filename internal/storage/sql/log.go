@@ -615,7 +615,7 @@ func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Ti
 		WHERE time >= ?
 			AND channel_id > 0
 			AND base_url <> ''
-			AND log_source <> 'jev'
+			AND log_source NOT IN ('jev', 'count_tokens')
 		GROUP BY channel_id, base_url
 		ORDER BY channel_id ASC, base_url ASC
 	`

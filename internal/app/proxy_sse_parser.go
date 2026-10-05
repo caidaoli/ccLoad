@@ -1236,6 +1236,15 @@ func isJSONWhitespace(b byte) bool {
 	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
 }
 
+// countTokensResult 读取 count_tokens 响应顶层的 input_tokens。它是计数结果而非生成用量，
+// 不放进 GetUsage，避免其它响应里同名顶层字段被误计。
+func (p *jsonUsageParser) countTokensResult() int {
+	if p.truncated {
+		return 0
+	}
+	return int(gjson.GetBytes(p.buffer.Bytes(), "input_tokens").Int())
+}
+
 func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	if p.truncated {
 		return p.normalizedUsage(p.upstreamProtocol)
