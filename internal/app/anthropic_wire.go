@@ -225,8 +225,9 @@ func finalizeAnthropicClaudeCodeMessagesBody(
 	headers http.Header,
 	target *url.URL,
 ) ([]byte, error) {
-	return finalizeAnthropicClaudeCodeMessagesBodyForCaller(
+	body, _, err := finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 		body, cfg, apiKey, headers, target, classifyAnthropicCallerWire(body, headers))
+	return body, err
 }
 
 func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
@@ -236,9 +237,9 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	headers http.Header,
 	target *url.URL,
 	callerWire anthropicCallerWire,
-) ([]byte, error) {
+) ([]byte, string, error) {
 	if !isAnthropicJSONObject(body) {
-		return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
+		return nil, "", errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 	}
 	helperShape := callerWire.haikuHelper
 	if helperShape != anthropicHaikuHelperNone {
@@ -310,7 +311,7 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	}
 	body, err := injectAnthropicClaudeCodeMetadata(body, cfg, apiKey, headers)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	autoContextManagement := false
 	if !gjson.GetBytes(body, "context_management").Exists() && anthropicThinkingAcceptsContextManagement(body) {
@@ -360,19 +361,22 @@ func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 // Fingerprint rewrite (system cloak, sampling, cache stamps) happens before
 // this, or is skipped for native Claude Code / Haiku helper. This layer only
 // applies API-contract invariants, official-Anthropic thinking recovery, and
-// optional CCH.
-func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, headers http.Header) ([]byte, error) {
+// optional CCH. The returned strategy names a history-thinking omission so the
+// request log can show it.
+func finishAnthropicPassthrough(body []byte, signCCH bool, cfg *model.Config, headers http.Header) ([]byte, string, error) {
 	body = applyAnthropicMessagesAPIInvariants(body)
+	strategy := ""
 	if cloaked, ok := cloakOfficialAnthropicThinkingHistory(cfg, body); ok {
-		body = cloaked
+		body, strategy = cloaked, omitAnthropicForeignThinkingStrategy
 	}
 	if omitted, ok := omitRememberedAnthropicThinkingHistory(cfg, headers, body); ok {
-		body = omitted
+		body, strategy = omitted, omitAnthropicRememberedThinkingStrategy
 	}
 	if !signCCH {
-		return body, nil
+		return body, strategy, nil
 	}
-	return finalizeAnthropicCCH(body)
+	body, err := finalizeAnthropicCCH(body)
+	return body, strategy, err
 }
 
 // applyAnthropicMessagesAPIInvariants enforces Anthropic Messages request

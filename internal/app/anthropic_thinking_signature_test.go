@@ -1,10 +1,15 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 
@@ -274,14 +279,14 @@ func TestCloakOfficialAnthropicThinkingHistorySkipsOtherAuthTypes(t *testing.T) 
 func TestFinishAnthropicPassthroughCloaksForeignThinkingOnOfficial(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign plan","signature":"skip_thought_signature_validator"},{"type":"text","text":"ok"}]}]}`)
-	got, err := finishAnthropicPassthrough(body, false, testAnthropicOAuthChannel(), nil)
+	got, _, err := finishAnthropicPassthrough(body, false, testAnthropicOAuthChannel(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gjson.GetBytes(got, `messages.0.content.#(type=="thinking")`).Exists() {
 		t.Fatalf("native official passthrough leaked foreign thinking: %s", got)
 	}
-	got, err = finishAnthropicPassthrough(body, false, &model.Config{
+	got, _, err = finishAnthropicPassthrough(body, false, &model.Config{
 		AuthType: model.AuthTypeZAIOAuth,
 		URLs:     channelURLsForTest("https://api.z.ai/api/anthropic"),
 	}, nil)
@@ -290,5 +295,124 @@ func TestFinishAnthropicPassthroughCloaksForeignThinkingOnOfficial(t *testing.T)
 	}
 	if string(got) != string(body) {
 		t.Fatalf("Z.ai passthrough rewritten:\n%s\n%s", body, got)
+	}
+}
+
+func TestProxyLogRecordsAnthropicThinkingOmission(t *testing.T) {
+	const modelName = "claude-sonnet-4-6"
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-anthropic-token")
+	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Native Claude Code passthrough keeps history thinking; the simulated path
+	// already drops signatures that are not Claude-shaped while normalizing.
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "official-anthropic-oauth", upstreamProtocol: "anthropic", models: modelName,
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	var bodies [][]byte
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		status, payload := http.StatusOK,
+			`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+		if strings.Contains(string(body), `"type":"thinking"`) {
+			status, payload = http.StatusBadRequest,
+				`{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `+"`signature`"+` in `+"`thinking`"+` block"}}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}
+	send := func(session, signature string) []byte {
+		t.Helper()
+		bodies = nil
+		identity, err := json.Marshal(map[string]string{
+			"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID, "session_id": session,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model":      modelName,
+			"max_tokens": 1024,
+			"thinking":   map[string]any{"type": "adaptive"},
+			"metadata":   map[string]any{"user_id": string(identity)},
+			"system": []any{
+				map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+				map[string]any{"type": "text", "text": "native prompt"},
+			},
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hi"},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "thinking", "thinking": "plan", "signature": signature},
+					map[string]any{"type": "text", "text": "ok"},
+				}},
+				map[string]any{"role": "user", "content": "next"},
+			},
+		}, map[string]string{
+			"User-Agent":               "claude-cli/" + anthropicCLIVersion + " (external, cli)",
+			"X-App":                    "cli",
+			"Anthropic-Beta":           "claude-code-20250219",
+			"X-Claude-Code-Session-Id": session,
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		return bodies[len(bodies)-1]
+	}
+	waitMessage := func(count int) string {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0,
+				&model.LogFilter{LogSource: model.LogSourceProxy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(logs) == count {
+				return logs[0].Message
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("proxy logs did not reach %d", count)
+		return ""
+	}
+	session := "sess-log-" + t.Name()
+	t.Cleanup(func() {
+		anthropicThinkingOmitSessions.Range(func(key, _ any) bool {
+			if strings.HasPrefix(key.(string), session) {
+				anthropicThinkingOmitSessions.Delete(key)
+			}
+			return true
+		})
+	})
+
+	// An unrecognized carrier is sent; the signature 400 retry strips it.
+	send(session, "8cda4dfbe7d4496c894702ac")
+	if len(bodies) != 2 {
+		t.Fatalf("upstream sends=%d, want 400 then retry", len(bodies))
+	}
+	if got := waitMessage(1); got != "ok [strip_anthropic_invalid_thinking_signature]" {
+		t.Fatalf("retry log message=%q", got)
+	}
+	// The same session omits history thinking before the first send.
+	send(session, "8cda4dfbe7d4496c894702ac")
+	if len(bodies) != 1 {
+		t.Fatalf("remembered session upstream sends=%d, want 1", len(bodies))
+	}
+	if got := waitMessage(2); got != "ok [omit_anthropic_remembered_thinking]" {
+		t.Fatalf("remembered omit log message=%q", got)
+	}
+	// A carrier identified as another provider is omitted on a fresh session.
+	send(session+"-foreign", "skip_thought_signature_validator")
+	if len(bodies) != 1 {
+		t.Fatalf("foreign carrier upstream sends=%d, want 1", len(bodies))
+	}
+	if got := waitMessage(3); got != "ok [omit_anthropic_foreign_thinking]" {
+		t.Fatalf("foreign omit log message=%q", got)
 	}
 }

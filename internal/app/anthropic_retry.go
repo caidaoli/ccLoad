@@ -400,6 +400,8 @@ func isAnthropicThinkingBlockError(errorText string) bool {
 
 const (
 	stripAnthropicInvalidThinkingSignatureStrategy = "strip_anthropic_invalid_thinking_signature"
+	omitAnthropicForeignThinkingStrategy           = "omit_anthropic_foreign_thinking"
+	omitAnthropicRememberedThinkingStrategy        = "omit_anthropic_remembered_thinking"
 	anthropicThinkingOmitIdleTTL                   = 15 * time.Minute
 )
 

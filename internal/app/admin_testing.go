@@ -2105,7 +2105,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		}
 		requestPlan.anthropicOAuthFingerprint = s.getAnthropicOAuthFingerprint(ctx, cfgForBuild, fingerprintSource)
 	}
-	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
+	requestPlan.requestBody, _, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, requestPlan.clientBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
 		false, callerBodyIsAnthropic,

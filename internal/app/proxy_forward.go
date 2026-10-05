@@ -269,7 +269,8 @@ func (s *Server) buildProxyRequest(
 			body = deleteJSONPath(body, "metadata.user_id")
 		}
 	}
-	body, err = s.prepareTranslatedUpstreamBody(
+	var thinkingOmitStrategy string
+	body, thinkingOmitStrategy, err = s.prepareTranslatedUpstreamBody(
 		cfg, upstreamProtocol, requestPath, requestModel, body, sourceBody, apiKey, hdr,
 		reqCtx != nil && reqCtx.anthropicClaudeCodeWire, parsedUpstreamURL,
 		reqCtx != nil && reqCtx.replayBodyRulesApplied,
@@ -277,6 +278,9 @@ func (s *Server) buildProxyRequest(
 	)
 	if err != nil {
 		return nil, err
+	}
+	if reqCtx != nil {
+		reqCtx.anthropicThinkingOmitStrategy = thinkingOmitStrategy
 	}
 	// 重试回放的是已改写的 wire，沿用首轮映射；只有 OAuth 模拟路径改名。
 	if reqCtx != nil && reqCtx.anthropicToolAliases == nil && cfg.UsesAnthropicOAuth() && !callerOwnsAnthropicWire &&
@@ -508,7 +512,8 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	target *url.URL,
 	wireBodyRulesApplied bool,
 	callerBodyIsAnthropic bool,
-) ([]byte, error) {
+) ([]byte, string, error) {
+	thinkingOmitStrategy := ""
 	callerBody := sourceBody
 	if len(callerBody) == 0 {
 		callerBody = body
@@ -518,7 +523,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		callerWire = classifyAnthropicRequestCallerWire(callerBody, headers, upstreamProtocol, requestPath, callerBodyIsAnthropic)
 		if callerBodyIsAnthropic {
 			if err := validateAnthropicOpus55Request(callerBody, requestModel); err != nil {
-				return nil, err
+				return nil, "", err
 			}
 		}
 	}
@@ -551,7 +556,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		var err error
 		body, err = finalizeAnthropicCountTokensBody(body, cfg, target, callerWire.nativeClaudeCode)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	} else if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
@@ -562,15 +567,15 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		case anthropicAlreadyFinalized:
 			// 重试重放已经是完整 wire，请求修复后的 body 不再重判原生身份。
 			if !isAnthropicJSONObject(body) {
-				return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
+				return nil, "", errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 			}
-			body, err = finishAnthropicPassthrough(body,
+			body, thinkingOmitStrategy, err = finishAnthropicPassthrough(body,
 				callerWire.haikuHelper == anthropicHaikuHelperStructured && anthropicCCHSigningEnabled(cfg, target), cfg, headers)
 		default:
-			body, err = finalizeAnthropicClaudeCodeMessagesBodyForCaller(body, cfg, apiKey, headers, target, callerWire)
+			body, thinkingOmitStrategy, err = finalizeAnthropicClaudeCodeMessagesBodyForCaller(body, cfg, apiKey, headers, target, callerWire)
 		}
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	body = injectAnyrouterClaudeCodeFallbackTools(cfg, upstreamProtocol, requestPath, headers, callerBody, body)
@@ -580,7 +585,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		var err error
 		body, err = finalizeZAICodingPlanBody(body, cfg)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	if cfg != nil && cfg.UsesAntigravityOAuth() {
@@ -589,13 +594,14 @@ func (s *Server) prepareTranslatedUpstreamBody(
 			cfg, requestModel, body, sourceBody, headers, s.antigravityPromptMatcher,
 		)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	if isCodeBuddyChatRequest(cfg, upstreamProtocol) {
-		return finalizeCodeBuddyBody(body, s.antigravityPromptMatcher)
+		body, err := finalizeCodeBuddyBody(body, s.antigravityPromptMatcher)
+		return body, thinkingOmitStrategy, err
 	}
-	return body, nil
+	return body, thinkingOmitStrategy, nil
 }
 
 func refreshAnthropicCallerCCH(body, callerBody []byte, callerWire anthropicCallerWire) ([]byte, error) {
@@ -2581,6 +2587,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	if res != nil {
 		res.errorReceivedAt = time.Now()
+		res.RetryStrategy = reqCtx.anthropicThinkingOmitStrategy
 	}
 	reqCtx.antigravityReplay.finish(res, err)
 	if res != nil && (res.Status == http.StatusBadRequest || res.Status == http.StatusNotFound ||
@@ -3097,6 +3104,7 @@ func (s *Server) forwardAttempt(
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
 	for !cfg.AntigravityCredits && ctx.Err() == nil {
+		retryStrategies = appendSendStrategy(retryStrategies, res)
 		retrySourcePlan := plan
 		retryBodyRulesApplied := false
 		// Use the last wire body so retry strategies see the upstream-protocol
@@ -3167,6 +3175,7 @@ func (s *Server) forwardAttempt(
 	// default/standard 都不能把它降档。resolveBillingServiceTier 仍允许更贵的
 	// ultrafast 以及非 priority 请求的真实终态覆盖请求值。
 	if res != nil {
+		retryStrategies = appendSendStrategy(retryStrategies, res)
 		if len(retryStrategies) > 0 {
 			res.RetryStrategy = strings.Join(retryStrategies, ",")
 		}
@@ -3466,6 +3475,15 @@ func codexRetryBodyFor400(
 // 便于日志和渠道测试结果按前缀统一解析。
 func modelCapacityRetryStrategy(retries int) string {
 	return fmt.Sprintf("model_capacity_retry_%d", retries)
+}
+
+// appendSendStrategy keeps the body rewrite a single upstream send applied
+// (res.RetryStrategy before aggregation) so later sends do not erase it.
+func appendSendStrategy(strategies []string, res *fwResult) []string {
+	if res == nil || res.RetryStrategy == "" || hasRetryStrategy(strategies, res.RetryStrategy) {
+		return strategies
+	}
+	return append(strategies, res.RetryStrategy)
 }
 
 func hasRetryStrategy(strategies []string, strategy string) bool {

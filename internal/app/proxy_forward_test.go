@@ -2970,7 +2970,7 @@ func TestAnthropicOpus55GuardUsesCallerBody(t *testing.T) {
 		{name: "native Anthropic request", callerIsAnthropic: true, wantErr: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			got, err := (&Server{}).prepareTranslatedUpstreamBody(
+			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", "claude-opus-5-5", body, body,
 				"sk-ant-key", http.Header{}, false, anthropicOfficialTestURL, false, testCase.callerIsAnthropic,
 			)
@@ -3008,7 +3008,7 @@ func TestAnthropicOAuthNativeClaudeCodeRetryPreservesCallerCCH(t *testing.T) {
 		t.Fatalf("native OAuth body changed before retry:\n got %s\nwant %s", finalized, body)
 	}
 
-	replayed, err := (&Server{}).prepareTranslatedUpstreamBody(
+	replayed, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
 		"", headers, true, anthropicOfficialTestURL, false, true,
 	)
@@ -3813,7 +3813,7 @@ func TestAnthropicClaudeCodeRetryReplaysUnsignedMimicWire(t *testing.T) {
 			if !isNativeAnthropicClaudeCodeRequest(finalized, outboundHeaders) {
 				t.Fatalf("gateway-owned wire failed its own outbound identity check: %s", finalized)
 			}
-			replayed, err := server.prepareTranslatedUpstreamBody(
+			replayed, _, err := server.prepareTranslatedUpstreamBody(
 				cfg, protocol.Anthropic, "/v1/messages", "", finalized, finalized,
 				"sk-ant-key", headers, true, testCase.target, false, true)
 			if err != nil {
@@ -3840,7 +3840,7 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 		"Anthropic-Beta": {"claude-code-20250219"},
 	}
 
-	got, err := (&Server{}).prepareTranslatedUpstreamBody(
+	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		anyrouterAnthropicCfg(), protocol.Anthropic, "/v1/messages", "",
 		[]byte(body), []byte(body), "sk-ant-key", headers, false, anthropicThirdPartyTestURL,
 		false, true,
@@ -3872,7 +3872,7 @@ func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *
 		modelName, want*2,
 	))
 	cfg := &model.Config{AuthType: model.AuthTypeAntigravityOAuth, AntigravityProjectID: "gravity-project"}
-	got, err := (&Server{}).prepareTranslatedUpstreamBody(
+	got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
 		cfg, protocol.Gemini, "/v1internal:generateContent", modelName,
 		body, body, "", http.Header{}, false, nil, false, false,
 	)
