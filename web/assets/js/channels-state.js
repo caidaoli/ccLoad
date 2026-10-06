@@ -169,7 +169,9 @@ function initChannelFormDirtyTracking() {
     'selectAllKeys',
     'keyStatusFilter',
     'selectAllModels',
-    'modelFilterInput'
+    'modelFilterInput',
+    'cooldownDetectionTestStatus',
+    'cooldownDetectionTestBody'
   ]);
 
   const uiOnlyClasses = ['url-checkbox', 'key-checkbox', 'model-checkbox'];

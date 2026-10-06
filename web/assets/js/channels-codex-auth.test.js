@@ -1222,7 +1222,6 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
     'keyExportModal',
     'keySortModal',
     'modelImportModal',
-    'customRulesModal',
     'testModal',
     'upstreamDetailModal',
     'tpl-key-row',
@@ -1241,7 +1240,6 @@ test(`logs channel editor supports Codex auth and Key models${failFirstScript ? 
   ]);
   const elements = new Map();
   for (const id of [
-    'codexCredentialReadOnlyNotice',
     'channelAPIKeyHeader',
     'channelAPIKeyTable',
     'channelApiKey',
@@ -2840,7 +2838,6 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
 test('OAuth editor keeps credentials read-only and applies provider-specific controls', async () => {
   const elements = new Map();
   for (const id of [
-    'codexCredentialReadOnlyNotice',
     'channelAPIKeyHeader',
     'channelAPIKeyTable',
     'channelApiKey',
@@ -2888,7 +2885,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     applyChannelAuthEditorMode('codex_oauth', credential, {
       codex_subscription_active_until: '2030-02-03T04:05:06Z'
     }, credentialInfo);
-    assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);
     assert.equal(elements.get('channelAPIKeyTable').hidden, false);
     assert.equal(elements.get('channelApiKey').required, false);
@@ -2925,7 +2921,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
 
     const antigravityCredential = { type: 'antigravity', access_token: 'gravity-at', refresh_token: 'gravity-rt', project_id: 'project-1' };
     applyChannelAuthEditorMode('antigravity_oauth', antigravityCredential);
-    assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('channelApiKey').required, false);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('codexCredentialViewDescription').hidden, true);
@@ -2964,7 +2959,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     applyChannelAuthEditorMode('cursor_oauth', cursorCredential);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
-    assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(cursorCredential, null, 2));
 
     const zaiCredential = { type: 'z.ai', api_key: 'zai-key', email: 'zai@example.com' };
@@ -2981,7 +2975,6 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(zaiOAuthCredential, null, 2));
 
     applyChannelAuthEditorMode('api_key');
-    assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, true);
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);
     assert.equal(elements.get('channelAPIKeyTable').hidden, false);
     assert.equal(elements.get('channelApiKey').required, true);

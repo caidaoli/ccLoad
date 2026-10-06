@@ -193,7 +193,7 @@ test('首个渠道 URL 只作为初始默认，显式面板地址不被多 URL �
   }
 });
 
-test('新建渠道填写 URL 后进入高级设置，管理账户补填根地址且保留手填地址', () => {
+test('新建渠道填写 URL 后启用管理账户，补填根地址且保留手填地址', () => {
   const dom = installManagementDOM();
   try {
     const mod = loadManagementModule();

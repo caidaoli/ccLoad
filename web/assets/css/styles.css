@@ -9607,8 +9607,8 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
 .channels-readonly .ch-col-actions,
 .channels-readonly .ch-url-line,
 .channels-readonly #batchFloatingMenu,
-.channels-readonly #addChannelBtn,
-.channels-readonly #importCsvBtn {
+.channels-readonly #channelAddGroup,
+.channels-readonly #channelImportMenu {
   display: none !important;
 }
 

@@ -256,6 +256,7 @@
     });
     renderRuleList();
     hideError();
+    markChannelFormDirty();
   }
 
   function removeCooldownDetectionRule(index) {
@@ -263,6 +264,7 @@
     _draft.rules.splice(index, 1);
     normalizeDraftPriorities();
     renderRuleList();
+    markChannelFormDirty();
   }
 
   function moveCooldownDetectionRule(index, direction) {
@@ -273,6 +275,7 @@
     _draft.rules.splice(target, 0, rule);
     normalizeDraftPriorities();
     renderRuleList();
+    markChannelFormDirty();
   }
 
   function setCooldownDetectionRulePriority(index, oneBasedPriority) {
@@ -285,6 +288,12 @@
     _draft.rules.splice(target, 0, rule);
     normalizeDraftPriorities();
     renderRuleList();
+    markChannelFormDirty();
+  }
+
+  // 渠道编辑抽屉内的规则增删排序不触发 input 事件，需要显式标记未保存。
+  function markChannelFormDirty() {
+    if (hasWindow && typeof window.markChannelFormDirty === 'function') window.markChannelFormDirty();
   }
 
   function normalizeDraftPriorities() {

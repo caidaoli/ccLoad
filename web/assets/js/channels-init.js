@@ -114,7 +114,42 @@ function jumpChannelsPage() {
   input.value = '';
 }
 
+function closeChannelPageMenus(except) {
+  document.querySelectorAll('.channel-page-menu.is-open').forEach((menu) => {
+    if (menu === except) return;
+    menu.classList.remove('is-open');
+    const trigger = menu.querySelector('.channel-page-menu__trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  });
+}
+
+// 页头「导入 / 更多操作 / 添加渠道」下拉：菜单项沿用原按钮 ID，业务事件仍由各模块按 ID 绑定。
+let channelPageMenusBound = false;
+
+function initChannelPageMenus() {
+  if (channelPageMenusBound) return;
+  channelPageMenusBound = true;
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.channel-page-menu__trigger');
+    if (trigger) {
+      const menu = trigger.closest('.channel-page-menu');
+      const open = !menu.classList.contains('is-open');
+      closeChannelPageMenus(menu);
+      menu.classList.toggle('is-open', open);
+      trigger.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    if (e.target.closest('.channel-page-menu__item') || !e.target.closest('.channel-page-menu__panel')) {
+      closeChannelPageMenus();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeChannelPageMenus();
+  });
+}
+
 function initChannelsPageActions() {
+  initChannelPageMenus();
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
   }
@@ -192,7 +227,7 @@ function initChannelsPageActions() {
 function applyChannelsAccessMode() {
   const readOnly = isTokenChannelsReadOnly();
   document.body.classList.toggle('channels-readonly', readOnly);
-  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'oauthCredentialCleanupOpenBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+  for (const id of ['channelImportMenu', 'channelAddGroup', 'oauthCredentialCleanupOpenBtn', 'batchFloatingMenu']) {
     const el = document.getElementById(id);
     if (el) el.hidden = readOnly;
   }
@@ -332,7 +367,6 @@ document.addEventListener('pointerdown', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    const customRulesModal = document.getElementById('customRulesModal');
     const modelImportModal = document.getElementById('modelImportModal');
     const keyImportModal = document.getElementById('keyImportModal');
     const keyExportModal = document.getElementById('keyExportModal');
@@ -341,9 +375,7 @@ document.addEventListener('keydown', (e) => {
     const testModal = document.getElementById('testModal');
     const channelModal = document.getElementById('channelModal');
 
-    if (customRulesModal && customRulesModal.classList.contains('show')) {
-      closeCustomRulesModal();
-    } else if (modelImportModal && modelImportModal.classList.contains('show')) {
+    if (modelImportModal && modelImportModal.classList.contains('show')) {
       closeModelImportModal();
     } else if (keyImportModal && keyImportModal.classList.contains('show')) {
       closeKeyImportModal();

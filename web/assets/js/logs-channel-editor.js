@@ -9,7 +9,6 @@
     'keyExportModal',
     'keySortModal',
     'modelImportModal',
-    'customRulesModal',
     'testModal',
     'upstreamDetailModal'
   ];
@@ -166,16 +165,13 @@
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
 
-      const customRulesModal = document.getElementById('customRulesModal');
       const modelImportModal = document.getElementById('modelImportModal');
       const keyImportModal = document.getElementById('keyImportModal');
       const keyExportModal = document.getElementById('keyExportModal');
       const testModal = document.getElementById('testModal');
       const channelModal = document.getElementById('channelModal');
 
-      if (customRulesModal && customRulesModal.classList.contains('show')) {
-        closeCustomRulesModal();
-      } else if (modelImportModal && modelImportModal.classList.contains('show')) {
+      if (modelImportModal && modelImportModal.classList.contains('show')) {
         closeModelImportModal();
       } else if (keyImportModal && keyImportModal.classList.contains('show')) {
         closeKeyImportModal();

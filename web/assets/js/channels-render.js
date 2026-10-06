@@ -47,8 +47,18 @@ function formatChannelModelLabel(group) {
   return `${group.model}(${visible}${suffix})`;
 }
 
-function formatChannelModelSummary(models) {
-  return channelModelDisplayGroups(models).map(formatChannelModelLabel).join(', ');
+const CHANNEL_MODEL_CHIP_LIMIT = 4;
+
+// 列表只占一行：前几个模型做标签，其余折成 +N，完整列表放在 title。
+function buildChannelModelLineHtml(models) {
+  const groups = channelModelDisplayGroups(models);
+  if (groups.length === 0) return '';
+  const chips = groups.slice(0, CHANNEL_MODEL_CHIP_LIMIT)
+    .map(group => `<span class="ch-model-chip">${escapeChannelRefreshText(formatChannelModelLabel(group))}</span>`);
+  if (groups.length > CHANNEL_MODEL_CHIP_LIMIT) {
+    chips.push(`<span class="ch-model-chip ch-model-chip--more">+${groups.length - CHANNEL_MODEL_CHIP_LIMIT}</span>`);
+  }
+  return `<div class="ch-model-line" title="${escapeChannelRefreshText(formatChannelModelTitle(models))}">${chips.join('')}</div>`;
 }
 
 function formatChannelModelTitle(models) {
@@ -491,112 +501,72 @@ function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle
   ].join('; ');
 }
 
-/**
- * 构建渠道健康状态指示器 HTML（参考 stats.js buildHealthIndicator）
- * @param {Array} timeline - health_timeline 数组
- * @param {number} currentRate - 当前成功率 (0-1)
- * @returns {string} HTML字符串
- */
-function buildChannelHealthIndicator(timeline, currentRate) {
-  if (!timeline || timeline.length === 0) return '';
+const CHANNEL_METRIC_ICONS = {
+  clock: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>',
+  check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5L20 7"/></svg>'
+};
 
-  const fixedBucketCount = 48;
-  const normalizedTimeline = timeline.length >= fixedBucketCount
-    ? timeline.slice(-fixedBucketCount)
-    : [...Array(fixedBucketCount - timeline.length).fill(null), ...timeline];
-  const blocks = new Array(fixedBucketCount);
-
-  for (let i = 0; i < fixedBucketCount; i++) {
-    const point = normalizedTimeline[i];
-    if (!point || point.rate < 0) {
-      blocks[i] = `<span class="health-block unknown" title="${window.t('stats.healthNoData')}"></span>`;
-      continue;
-    }
-
-    const rate = point.rate;
-    const rateLimited = point.rate_limited || 0;
-    const realErrors = (point.error || 0) - rateLimited;
-
-    // 配色：所有失败都是限流 → 蓝色；有真实错误 → 按成功率分级(绿/橙/红)
-    const className = (realErrors === 0 && rateLimited > 0)
-      ? 'rate-limited'
-      : rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
-
-    const d = new Date(point.ts);
-    const timeStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-
-    let title = `${timeStr}\n${window.t('stats.tooltipSuccess')}: ${point.success || 0} / ${window.t('stats.tooltipFailed')}: ${point.error || 0}`;
-    if (rateLimited > 0) title += ` (${window.t('stats.tooltipRateLimited')}: ${rateLimited})`;
-    if (point.avg_first_byte_time > 0) title += `\n${window.t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
-    if (point.avg_duration > 0) title += `\n${window.t('stats.tooltipDuration')}: ${point.avg_duration.toFixed(2)}s`;
-
-    // 简化 title 中内容：只显示关键性能指标
-    blocks[i] = `<span class="health-block ${className}" title="${title.replace(/"/g, '&quot;')}"></span>`;
-  }
-
-  const ratePercent = (currentRate * 100).toFixed(1);
-  const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
-                    currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
-
-  return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="color: ${rateColor}">${ratePercent}%</span></div>`;
+function channelSuccessRateLevel(rate) {
+  if (rate >= 0.95) return 'good';
+  if (rate >= 0.8) return 'warn';
+  return 'bad';
 }
 
-function buildChannelTimingHtml(stats) {
+/**
+ * 渠道名下方的指标行：首字/总耗时、速度、成功/失败·成功率、消耗。
+ * 统计窗口内没有调用时整行不渲染。
+ */
+function buildChannelMetricsHtml(stats) {
   if (!stats) return '';
-
-  const avgFirstByte = stats.avgFirstByteTimeSeconds || 0;
-  const avgDuration = stats.avgDurationSeconds || 0;
   const successCount = Number.isFinite(Number(stats.success)) ? Number(stats.success) : 0;
   const failureCount = Number.isFinite(Number(stats.error)) ? Number(stats.error) : 0;
-  const firstByteColor = window.getFirstByteTimingColor(avgFirstByte);
-  const durationColor = window.getDurationTimingColor(avgDuration);
+  const total = successCount + failureCount;
+  if (total <= 0) return '';
 
-  const rows = [];
-  if (avgFirstByte > 0) {
-    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.firstByte')}</span><span class="ch-timing-value" style="color: ${firstByteColor};">${avgFirstByte.toFixed(2)}${window.t('common.seconds')}</span></div>`);
-  }
-  if (avgDuration > 0) {
-    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('stats.tooltipDuration')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgDuration.toFixed(2)}${window.t('common.seconds')}</span></div>`);
+  const items = [];
+  const seconds = window.t('common.seconds');
+  const avgFirstByte = stats.avgFirstByteTimeSeconds || 0;
+  const avgDuration = stats.avgDurationSeconds || 0;
+  if (avgFirstByte > 0 || avgDuration > 0) {
+    const values = [];
+    if (avgFirstByte > 0) {
+      values.push(`<b style="color: ${window.getFirstByteTimingColor(avgFirstByte)};">${avgFirstByte.toFixed(2)}${seconds}</b>`);
+    }
+    if (avgDuration > 0) {
+      values.push(`<b style="color: ${window.getDurationTimingColor(avgDuration)};">${avgDuration.toFixed(2)}${seconds}</b>`);
+    }
+    const label = avgFirstByte > 0 ? window.t('channels.stats.firstByte') : window.t('stats.tooltipDuration');
+    items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.timingTitle'))}">${CHANNEL_METRIC_ICONS.clock}${escapeChannelRefreshText(label)} ${values.join(' / ')}</span>`);
   }
   if (Number.isFinite(stats.outputTokensPerSecond) && stats.outputTokensPerSecond > 0) {
-    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.speed')}</span><span class="ch-timing-value">${stats.outputTokensPerSecond.toFixed(1)} tok/s</span></div>`);
+    items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.speed'))}">${CHANNEL_METRIC_ICONS.bolt}<b>${stats.outputTokensPerSecond.toFixed(1)}</b> tok/s</span>`);
   }
-  rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.calls')}</span><span class="ch-timing-value"><span style="color: var(--success-600);">${successCount}</span>/<span style="color: var(--error-600);">${failureCount}</span>${window.t('stats.unitTimes')}</span></div>`);
 
-  return rows.length > 0 ? `<div class="ch-timing">${rows.join('')}</div>` : '';
-}
+  const rate = successCount / total;
+  items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.callsTitle'))}">${CHANNEL_METRIC_ICONS.check}<b class="ch-metric__ok">${successCount}</b> / <b class="ch-metric__err">${failureCount}</b> ${escapeChannelRefreshText(window.t('stats.unitTimes'))} · <b class="ch-metric__rate--${channelSuccessRateLevel(rate)}">${(rate * 100).toFixed(1)}%</b></span>`);
 
-/**
- * 构建渠道消耗列（token 与成本统一放在同一列）。
- * 缓存行按实际数据渲染：协议声明无法判定渠道是否缓存——CodeBuddy 等上游同样
- * 声明 openai 且返回缓读，用协议白名单会把真实数据永久隐藏。
- */
-function buildChannelUsageHtml(stats) {
-  if (!stats) return '';
-
-  const inputTokensText = formatMetricNumber(stats.totalInputTokens);
-  const outputTokensText = formatMetricNumber(stats.totalOutputTokens);
-  const cacheReadTokens = stats.totalCacheReadInputTokens || 0;
-  const cacheCreationTokens = stats.totalCacheCreationInputTokens || 0;
-
-  const parts = [];
-  parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.input')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${inputTokensText}</span></div>`);
-  parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.output')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${outputTokensText}</span></div>`);
-  if (cacheReadTokens > 0) {
-    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheRead')}</span><span class="ch-usage-value" style="color: var(--success-500);">${formatMetricNumber(cacheReadTokens)}</span></div>`);
+  // 缓存行按实际数据显示：协议声明无法判定渠道是否缓存，CodeBuddy 等上游同样声明 openai 且返回缓读。
+  const usageLines = [
+    `${window.t('channels.stats.input')} ${formatMetricNumber(stats.totalInputTokens)}`,
+    `${window.t('channels.stats.output')} ${formatMetricNumber(stats.totalOutputTokens)}`
+  ];
+  if (stats.totalCacheReadInputTokens > 0) {
+    usageLines.push(`${window.t('channels.stats.cacheRead')} ${formatMetricNumber(stats.totalCacheReadInputTokens)}`);
   }
-  if (cacheCreationTokens > 0) {
-    parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheCreate')}</span><span class="ch-usage-value" style="color: var(--primary-500);">${formatMetricNumber(cacheCreationTokens)}</span></div>`);
+  if (stats.totalCacheCreationInputTokens > 0) {
+    usageLines.push(`${window.t('channels.stats.cacheCreate')} ${formatMetricNumber(stats.totalCacheCreationInputTokens)}`);
   }
   const costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, {
     tone: 'warning',
     decimalPlaces: 2,
     inline: true
   });
-  if (costHtml) {
-    parts.push(`<div class="ch-usage-row ch-usage-cost-row" title="${escapeChannelRefreshText(window.t('channels.stats.cost'))}">${costHtml}</div>`);
-  }
-  return `<div class="ch-usage-list">${parts.join('')}</div>`;
+  const tokenTotal = (Number(stats.totalInputTokens) || 0) + (Number(stats.totalOutputTokens) || 0);
+  const usageValue = costHtml || `<b>${formatMetricNumber(tokenTotal)}</b> tok`;
+  items.push(`<span class="ch-metric ch-metric--usage" title="${escapeChannelRefreshText(usageLines.join(' · '))}">${usageValue}</span>`);
+
+  return `<div class="ch-metrics">${items.join('')}</div>`;
 }
 
 function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
@@ -1129,6 +1099,39 @@ function buildCodeBuddyCreditsHtml(credits) {
   </div>`;
 }
 
+const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
+// 展开状态跨重渲染保留：列表在刷新额度、筛选后整体重建。
+const expandedOAuthUsageChannels = new Set();
+
+function oauthUsageWindowsToggleLabel(expanded, hiddenCount) {
+  return expanded
+    ? window.t('channels.oauthUsageLessWindows')
+    : window.t('channels.oauthUsageMoreWindows', { count: hiddenCount });
+}
+
+function buildOAuthUsageRowsHtml(channelID, rows) {
+  if (rows.length <= OAUTH_USAGE_VISIBLE_WINDOWS) return rows.join('');
+  const hiddenCount = rows.length - OAUTH_USAGE_VISIBLE_WINDOWS;
+  const expanded = expandedOAuthUsageChannels.has(Number(channelID));
+  return `${rows.slice(0, OAUTH_USAGE_VISIBLE_WINDOWS).join('')}
+    <div class="ch-oauth-usage__more"${expanded ? '' : ' hidden'}>${rows.slice(OAUTH_USAGE_VISIBLE_WINDOWS).join('')}</div>
+    <button type="button" class="ch-oauth-usage__toggle channel-action-btn" data-action="toggle-oauth-usage-windows" data-channel-id="${channelID}" data-hidden-count="${hiddenCount}" aria-expanded="${expanded}">${escapeChannelRefreshText(oauthUsageWindowsToggleLabel(expanded, hiddenCount))}</button>`;
+}
+
+function toggleOAuthUsageWindows(btn) {
+  const channelID = Number(btn.dataset.channelId);
+  const expanded = !expandedOAuthUsageChannels.has(channelID);
+  if (expanded) {
+    expandedOAuthUsageChannels.add(channelID);
+  } else {
+    expandedOAuthUsageChannels.delete(channelID);
+  }
+  const more = btn.parentElement && btn.parentElement.querySelector('.ch-oauth-usage__more');
+  if (more) more.hidden = !expanded;
+  btn.setAttribute('aria-expanded', String(expanded));
+  btn.textContent = oauthUsageWindowsToggleLabel(expanded, Number(btn.dataset.hiddenCount) || 0);
+}
+
 function buildOAuthUsageStatusHtml(channel) {
   if (!channelShowsOAuthUsage(channel) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
@@ -1237,7 +1240,7 @@ function buildOAuthUsageStatusHtml(channel) {
     : '';
   return `<div class="ch-oauth-usage">
     ${buildOAuthUsageToolbar(channel, state)}
-    ${rows.join('')}
+    ${buildOAuthUsageRowsHtml(channel.id, rows)}
     ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
     ${isCodex ? buildCodexPurchasedCreditsHtml(state.data) : ''}
     ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
@@ -1472,21 +1475,8 @@ function createChannelCard(channel) {
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
-  // 一对多模型显示前两个重定向目标，悬停时显示全部目标。
-  const modelsText = formatChannelModelSummary(channel.models);
-  const modelsTitle = formatChannelModelTitle(channel.models);
-
-  const durationHtml = buildChannelTimingHtml(stats);
   const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
   const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
-  const usageHtml = buildChannelUsageHtml(stats);
-
-  // 健康指示器
-  let healthHtml = '';
-  if (stats && stats.healthTimeline && stats.total > 0) {
-    const successRate = stats.total > 0 ? stats.success / stats.total : 0;
-    healthHtml = buildChannelHealthIndicator(stats.healthTimeline, successRate);
-  }
 
   // 行class
   const rowClasses = ['channel-table-row'];
@@ -1511,27 +1501,18 @@ function createChannelCard(channel) {
     oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
-    modelsText: modelsText,
-    modelsTitle: modelsTitle,
-    priority: channel.priority,
+    // 一对多模型显示前两个重定向目标，悬停时显示全部目标。
+    modelsHtml: buildChannelModelLineHtml(channel.models),
+    metricsHtml: buildChannelMetricsHtml(stats),
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    durationHtml: durationHtml,
-    usageHtml: usageHtml,
     runtimeStatusHtml: runtimeStatusHtml,
     lastRequestFailureHtml: lastRequestFailureHtml,
-    healthHtml: healthHtml,
     enabled: channel.enabled,
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
     toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
-    durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
-    usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
-    lastSuccessCellClass: runtimeStatusHtml ? '' : 'ch-mobile-empty',
-    mobileLabelModels: window.t('channels.table.models'),
+    statusCellClass: runtimeStatusHtml ? '' : 'ch-mobile-empty',
     mobileLabelPriority: window.t('channels.table.priority'),
-    mobileLabelDuration: window.t('channels.table.duration'),
-    mobileLabelUsage: window.t('channels.table.usage'),
-    mobileLabelLastSuccess: window.t('common.status'),
-    mobileLabelEnabled: window.t('channels.table.enabled'),
+    mobileLabelStatus: window.t('channels.table.quotaStatus'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
@@ -1642,6 +1623,9 @@ function initChannelEventDelegation() {
       case 'edit':
         editChannel(channelId);
         break;
+      case 'toggle-oauth-usage-windows':
+        toggleOAuthUsageWindows(btn);
+        break;
       case 'edit-cooling-keys':
         editChannelCoolingKeys(channelId);
         break;
@@ -1745,13 +1729,9 @@ function renderChannels(channelsToRender = channels) {
     <tr>
       <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" data-change-action="toggle-visible-channels-selection"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
       <th class="ch-col-name">${window.t('channels.table.nameAndUrl')}</th>
-      <th class="ch-col-models">${window.t('channels.table.models')}</th>
+      <th class="ch-col-status">${window.t('channels.table.quotaStatus')}</th>
       <th class="ch-col-priority">${window.t('channels.table.priority')}</th>
-      <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
-      <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
-      <th class="ch-col-last-success">${window.t('common.status')}</th>
-      <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
-      <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
+      <th class="ch-col-actions">${window.t('channels.table.enabledAndActions')}</th>
     </tr>
   </thead>`;
 
@@ -1782,14 +1762,15 @@ function renderChannels(channelsToRender = channels) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     uniqueChannelModelNames,
-    formatChannelModelSummary,
+    buildChannelModelLineHtml,
+    buildChannelMetricsHtml,
     formatChannelModelTitle,
     buildChannelRuntimeStatusHtml,
-    buildChannelUsageHtml,
     buildOAuthPlanBadge,
     oauthPlanBadgeTone,
     codexPlanLabel,
     buildOAuthUsageStatusHtml,
+    toggleOAuthUsageWindows,
     buildManagementAccountStatusHtml,
     formatCooldownRecoveryTime,
     isOpenCodeGoChannel,

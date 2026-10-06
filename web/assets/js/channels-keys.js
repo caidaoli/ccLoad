@@ -191,18 +191,6 @@ function selectFirstEnabledInlineKey(rows, states) {
   return selectAvailableInlineKeys(rows, states)[0] || '';
 }
 
-function selectModelsForInlineKeyTest(row, modelRows) {
-  const keyRow = normalizeInlineKeyRow(row);
-  const allowedModels = new Set(keyRow.allowed_models.map(name => name.toLowerCase()));
-  const rows = (Array.isArray(modelRows) ? modelRows : []).filter(modelRow => {
-    const name = routingKeyModelName(modelRow?.model);
-    return name && (allowedModels.size === 0 || allowedModels.has(name.toLowerCase()));
-  });
-  const enabledRows = rows.filter(modelRow => !modelRow.disabled);
-  return (enabledRows.length > 0 ? enabledRows : rows)
-    .map(modelRow => routingKeyModelName(modelRow.model));
-}
-
 function updateInlineKeyHiddenInput() {
   const hiddenInput = document.getElementById('channelApiKey');
   if (hiddenInput) {
@@ -592,11 +580,9 @@ function getKeyTableViewportHeight(container = getKeyTableContainer()) {
 
 const CHANNEL_EDITOR_TABLE_LAYOUT = {
   KEY_MIN_ROWS: 1,
-  KEY_MAX_ROWS: 8,
-  DEFAULT_ROW_HEIGHT: 36
+  KEY_MAX_ROWS: 8
 };
 
-let channelEditorLayoutResizeBound = false;
 let channelEditorLayoutRafId = null;
 
 function clampChannelEditorRows(value, min, max) {
@@ -605,22 +591,11 @@ function clampChannelEditorRows(value, min, max) {
   return Math.min(max, Math.max(min, Math.ceil(numberValue)));
 }
 
-function getChannelEditorCSSPixelValue(styles, propertyName, fallback) {
-  const value = parseFloat(styles.getPropertyValue(propertyName));
-  return Number.isFinite(value) ? value : fallback;
-}
-
 function getVisibleKeyCountForLayout() {
   if (typeof getVisibleKeyIndices === 'function') {
     return getVisibleKeyIndices().length;
   }
   return Array.isArray(inlineKeyTableData) ? inlineKeyTableData.length : 0;
-}
-
-function ensureChannelEditorLayoutResizeSync() {
-  if (channelEditorLayoutResizeBound || typeof window === 'undefined') return;
-  window.addEventListener('resize', scheduleChannelEditorTableSizingSync, { passive: true });
-  channelEditorLayoutResizeBound = true;
 }
 
 function scheduleChannelEditorTableSizingSync() {
@@ -638,38 +613,15 @@ function scheduleChannelEditorTableSizingSync() {
 
 function syncChannelEditorTableSizing() {
   const body = document.querySelector('#channelModal .channel-editor-body');
-  const keyGroup = document.querySelector('#channelModal .channel-editor-group--keys');
-  const modelGroup = document.querySelector('#channelModal .channel-editor-group--models');
-  if (!body || !keyGroup || !modelGroup) return;
-
-  ensureChannelEditorLayoutResizeSync();
-  const bodyStyles = window.getComputedStyle(body);
-  const rowHeight = getChannelEditorCSSPixelValue(
-    bodyStyles,
-    '--channel-editor-table-row-height',
-    CHANNEL_EDITOR_TABLE_LAYOUT.DEFAULT_ROW_HEIGHT
-  );
+  if (!body) return;
 
   const visibleKeyCount = getVisibleKeyCountForLayout();
-  let keyRows = clampChannelEditorRows(
+  const keyRows = clampChannelEditorRows(
     visibleKeyCount || CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MIN_ROWS,
     CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MIN_ROWS,
     CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MAX_ROWS
   );
   body.style.setProperty('--channel-editor-key-visible-rows', String(keyRows));
-
-  const modelTable = modelGroup.querySelector('.inline-table-container');
-  if (modelTable && rowHeight > 0) {
-    const overflow = modelTable.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom;
-    if (overflow > 0 && keyRows > CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MIN_ROWS) {
-      keyRows = clampChannelEditorRows(
-        keyRows - Math.ceil(overflow / rowHeight),
-        CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MIN_ROWS,
-        CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MAX_ROWS
-      );
-      body.style.setProperty('--channel-editor-key-visible-rows', String(keyRows));
-    }
-  }
 
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => refreshVirtualKeyRows());
@@ -1045,8 +997,7 @@ function initKeyTableEventDelegation() {
     if (actionBtn) {
       const action = actionBtn.dataset.action;
       const index = parseInt(actionBtn.dataset.index);
-      if (action === 'test') testSingleKey(index, actionBtn);
-      else if (action === 'copy') copyKeyToClipboard(index);
+      if (action === 'copy') copyKeyToClipboard(index);
       else if (action === 'delete') deleteInlineKey(index);
       else if (action === 'toggle-disabled') toggleKeyDisabled(index);
       else if (action === 'models') openKeyModelScopeModal(index, actionBtn);
@@ -1112,11 +1063,7 @@ function initKeyTableEventDelegation() {
     const btn = e.target.closest('.key-action-btn');
     if (btn) {
       const action = btn.dataset.action;
-      if (action === 'test') {
-        btn.style.background = '#eff6ff';
-        btn.style.borderColor = '#93c5fd';
-        btn.style.color = '#3b82f6';
-      } else if (action === 'copy') {
+      if (action === 'copy') {
         btn.style.background = '#f0fdf4';
         btn.style.borderColor = '#86efac';
         btn.style.color = '#16a34a';
@@ -1140,12 +1087,9 @@ function initKeyTableEventDelegation() {
 
 function renderInlineKeyTable() {
   const tbody = document.getElementById('inlineKeyTableBody');
-  const keyCount = document.getElementById('inlineKeyCount');
-  const virtualScrollHint = document.getElementById('virtualScrollHint');
 
   normalizeInlineKeyTableData();
   tbody.innerHTML = '';
-  keyCount.textContent = inlineKeyTableData.length;
   const sortButton = document.getElementById('sortKeysBtn');
   if (sortButton) sortButton.disabled = isChannelKeyEditorReadOnly() || getValidInlineKeyRows().length < 2;
 
@@ -1162,7 +1106,6 @@ function renderInlineKeyTable() {
     if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
     virtualScrollState.enabled = false;
-    if (virtualScrollHint) virtualScrollHint.style.display = 'none';
     syncChannelEditorTableSizing();
     return;
   }
@@ -1179,7 +1122,6 @@ function renderInlineKeyTable() {
     if (emptyRow) tbody.appendChild(emptyRow);
     cleanupVirtualScroll();
     virtualScrollState.enabled = false;
-    if (virtualScrollHint) virtualScrollHint.style.display = 'none';
     syncChannelEditorTableSizing();
     return;
   }
@@ -1200,7 +1142,6 @@ function renderInlineKeyTable() {
     tbody.innerHTML = '';
     tbody.appendChild(fragment);
 
-    if (virtualScrollHint) virtualScrollHint.style.display = 'none';
     updateSelectAllCheckbox();
     updateBatchDeleteButton();
 
@@ -1233,10 +1174,6 @@ function renderInlineKeyTable() {
     }
   }
 
-  if (virtualScrollHint) {
-    const showHint = visibleIndices.length >= VIRTUAL_SCROLL_CONFIG.ENABLE_THRESHOLD;
-    virtualScrollHint.style.display = showHint ? 'inline' : 'none';
-  }
 
   updateSelectAllCheckbox();
   updateBatchDeleteButton();
@@ -1305,63 +1242,6 @@ function updateInlineKeyCostMultiplier(index, value) {
   row.cost_multiplier = nextValue;
   inlineKeyTableData[index] = row;
   markChannelFormDirty();
-}
-
-async function testSingleKey(keyIndex, testButton) {
-  if (!editingChannelId) {
-    alert(window.t('channels.cannotGetChannelId'));
-    return;
-  }
-
-  // 从 redirectTableData 获取模型列表（定义在 channels-state.js）
-  const models = selectModelsForInlineKeyTest(inlineKeyTableData[keyIndex], redirectTableData);
-  if (models.length === 0) {
-    alert(window.t('channels.configModelsFirst'));
-    return;
-  }
-
-  const firstModel = models[0];
-  const apiKey = getInlineKeyValue(keyIndex);
-
-  if (!apiKey || !apiKey.trim()) {
-    alert(window.t('channels.emptyKeyCannotTest'));
-    return;
-  }
-
-  if (!testButton) return;
-  const originalHTML = testButton.innerHTML;
-  testButton.disabled = true;
-  testButton.innerHTML = '<span style="font-size: 10px;">⏳</span>';
-
-  try {
-    const testResult = await fetchDataWithAuth(`/admin/channels/${editingChannelId}/test`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: firstModel,
-        stream: true,
-        content: 'test',
-        client_protocol: 'anthropic',
-        key_index: keyIndex,
-        api_key: apiKey.trim()
-      })
-    });
-
-    await refreshKeyCooldownStatus();
-
-    if (testResult.success) {
-      window.showNotification(window.t('channels.testKeySuccess', { index: keyIndex + 1 }), 'success');
-    } else {
-      const errorMsg = testResult.error || window.t('common.failed');
-      window.showNotification(window.t('channels.testKeyFailed', { index: keyIndex + 1, error: errorMsg }), 'error');
-    }
-  } catch (e) {
-    console.error('Test failed', e);
-    window.showNotification(window.t('channels.testRequestFailed', { index: keyIndex + 1, error: e.message }), 'error');
-  } finally {
-    testButton.disabled = false;
-    testButton.innerHTML = originalHTML;
-  }
 }
 
 async function refreshKeyCooldownStatus() {
@@ -1821,7 +1701,6 @@ if (typeof module !== 'undefined' && module.exports) {
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
     selectFirstEnabledInlineKey,
-    selectModelsForInlineKeyTest,
     openKeyModelScopeModal,
     closeKeyModelScopeModal,
     confirmKeyModelScope,

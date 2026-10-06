@@ -150,7 +150,6 @@ function applyChannelAuthEditorMode(
   const zedOAuth = authType === 'zed_oauth';
   const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth;
   const oauth = credentialVisible;
-  const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
   const hiddenKey = document.getElementById('channelApiKey');
@@ -170,16 +169,6 @@ function applyChannelAuthEditorMode(
   const planBadgeText = codexOAuth
     ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
     : ((xaiOAuth || anthropicOAuth) ? planType : '');
-  if (notice) {
-    const noticeKey = xaiOAuth
-      ? 'channels.xai.editorReadOnly'
-      : (codexPersonalAccessToken ? 'channels.codex.personalAccessTokenReadOnly' : 'channels.oauthCredentialReadOnly');
-    notice.hidden = !oauth;
-    notice.setAttribute?.('data-i18n', noticeKey);
-    if (oauth && typeof window !== 'undefined' && typeof window.t === 'function') {
-      notice.textContent = window.t(noticeKey);
-    }
-  }
   if (planBadge) {
     planBadge.textContent = planBadgeText;
     planBadge.hidden = !planBadgeText;
@@ -205,6 +194,8 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
+  const credentialPanel = document.getElementById('advancedSettingsPanelCredential');
+  if (credentialPanel) credentialPanel.hidden = !credentialVisible;
   if (credentialViewDescription) credentialViewDescription.hidden = !codexOAuth;
   if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {

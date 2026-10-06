@@ -111,14 +111,14 @@ async function loadChannelStats(range = channelStatsRange) {
     const params = new URLSearchParams({ range, limit: '500', offset: '0' });
     const statsBase = channelsReadURL('/admin/stats', '/dashboard/stats');
     const data = await fetchDataWithAuth(`${statsBase}?${params.toString()}`);
-    channelStatsById = aggregateChannelStats((data && data.stats) || [], data && data.channel_health);
+    channelStatsById = aggregateChannelStats((data && data.stats) || []);
     filterChannels();
   } catch (err) {
     console.error('Failed to load channel stats', err);
   }
 }
 
-function aggregateChannelStats(statsEntries = [], channelHealth = null) {
+function aggregateChannelStats(statsEntries = []) {
   const result = {};
 
   for (const entry of statsEntries) {
@@ -215,12 +215,6 @@ function aggregateChannelStats(statsEntries = [], channelHealth = null) {
     }
     if (stats.speedOutputTokens > 0 && stats.speedDurationSeconds > 0) {
       stats.outputTokensPerSecond = stats.speedOutputTokens / stats.speedDurationSeconds;
-    }
-
-    // 使用后端按渠道聚合的健康时间线（无需前端 merge）
-    // 保留 rate=-1 的空桶，buildChannelHealthIndicator 会渲染为灰色
-    if (channelHealth && channelHealth[id]) {
-      stats.healthTimeline = channelHealth[id];
     }
 
     delete stats._firstByteWeightedSum;

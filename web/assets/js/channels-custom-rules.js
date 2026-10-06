@@ -1,13 +1,13 @@
 /**
- * 渠道高级设置模态框
+ * 渠道编辑抽屉的高级分区（请求改写、冷却探测、管理账户）草稿
  *
  * 暴露全局函数：
- * - openCustomRulesModal / closeCustomRulesModal
+ * - beginAdvancedSettingsDraft / discardAdvancedSettingsDraft
  * - resetCustomRulesState(rules|null)
  * - collectCustomRulesForSubmit()
- * - applyAdvancedSettingsFromForm() / addCustomRule / removeCustomRule / closeCustomRulesHelp
+ * - commitAdvancedSettingsDraft() / addCustomRule / removeCustomRule / closeCustomRulesHelp
  *
- * 状态：模块内 `_state`（{ headers: [], body: [] }）与 `_draft`（仅模态打开期间）
+ * 状态：模块内 `_state`（{ headers: [], body: [] }）与 `_draft`（编辑抽屉打开期间）
  */
 (function () {
   'use strict';
@@ -26,7 +26,6 @@
 
   let _state = { headers: [], body: [] };
   let _draft = null;
-  let _advancedSettingsOpener = null;
 
   function t(key, fallback) {
     if (hasWindow && typeof window.t === 'function') {
@@ -227,25 +226,24 @@
 
   // ===== 以下函数依赖 DOM，仅在浏览器中生效 =====
 
-  function openCustomRulesModal() {
+  function beginAdvancedSettingsDraft() {
     if (!hasDocument) return;
-    const active = document.activeElement;
-    _advancedSettingsOpener = active && active !== document.body ? active : null;
     _draft = cloneRules(getState());
     renderRuleList('headers');
     renderRuleList('body');
     switchTab('headers');
     hideError();
+    closeCustomRulesHelp();
     updateAnyrouterHint();
+    if (hasWindow && typeof window.discardCooldownDetectionDraft === 'function') {
+      window.discardCooldownDetectionDraft();
+    }
     if (hasWindow && typeof window.beginCooldownDetectionDraft === 'function') {
       window.beginCooldownDetectionDraft();
     }
     if (hasWindow && typeof window.beginManagementAccountDraft === 'function') {
       window.beginManagementAccountDraft();
     }
-    switchAdvancedSettingsTab('custom-rules');
-    const modal = document.getElementById('customRulesModal');
-    if (modal) modal.classList.add('show');
   }
 
   function updateAnyrouterHint() {
@@ -262,42 +260,18 @@
     hint.hidden = !(supportsAnthropic && (name.includes('anyrouter') || url.includes('anyrouter')));
   }
 
-  function closeCustomRulesModal() {
+  function discardAdvancedSettingsDraft() {
     if (!hasDocument) return;
-    const modal = document.getElementById('customRulesModal');
-    if (modal) modal.classList.remove('show');
     _draft = null;
     closeCustomRulesHelp();
     if (hasWindow && typeof window.discardCooldownDetectionDraft === 'function') {
       window.discardCooldownDetectionDraft();
     }
-    // 键盘用户必须回到打开高级设置的按钮，而不是被丢到 <body>。
-    const opener = _advancedSettingsOpener;
-    _advancedSettingsOpener = null;
-    if (opener && typeof opener.focus === 'function' && opener.isConnected) opener.focus();
   }
 
-  function switchAdvancedSettingsTab(tab) {
-    if (!hasDocument) return;
-    const panels = {
-      'custom-rules': document.getElementById('advancedSettingsPanelCustomRules'),
-      'cooldown-detection': document.getElementById('advancedSettingsPanelCooldownDetection'),
-      credential: document.getElementById('advancedSettingsPanelCredential'),
-      other: document.getElementById('advancedSettingsPanelOther')
-    };
-    if (!Object.prototype.hasOwnProperty.call(panels, tab)) return;
-    const buttons = document.querySelectorAll('[data-advanced-settings-tab]');
-    buttons.forEach((button) => {
-      const active = button.dataset.advancedSettingsTab === tab;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    Object.entries(panels).forEach(([name, panel]) => {
-      if (!panel) return;
-      panel.classList.toggle('hidden', name !== tab);
-    });
-    if (tab === 'cooldown-detection' && hasWindow && typeof window.beginCooldownDetectionDraft === 'function') {
-      window.beginCooldownDetectionDraft();
+  function revealSection(section) {
+    if (hasWindow && typeof window.revealChannelEditorSection === 'function') {
+      window.revealChannelEditorSection(section);
     }
   }
 
@@ -338,6 +312,7 @@
     }
     hideError();
     renderRuleList(target);
+    markFormDirty();
   }
 
   function removeCustomRule(target, index) {
@@ -347,6 +322,11 @@
     if (!Array.isArray(list) || index >= list.length) return;
     list.splice(index, 1);
     renderRuleList(target);
+    markFormDirty();
+  }
+
+  function markFormDirty() {
+    if (hasWindow && typeof window.markChannelFormDirty === 'function') window.markChannelFormDirty();
   }
 
   function renderRuleList(target) {
@@ -499,28 +479,21 @@
     return true;
   }
 
-  function applyAdvancedSettingsFromForm() {
-    if (hasWindow && typeof window.validateChannelScheduledCheckSchedule === 'function'
-        && !window.validateChannelScheduledCheckSchedule()) return false;
-    const customRulesValid = validateCustomRulesDraft();
-    const cooldownRulesValid = !hasWindow || typeof window.validateCooldownDetectionDraft !== 'function'
-      || window.validateCooldownDetectionDraft();
-    if (!customRulesValid) {
-      switchAdvancedSettingsTab('custom-rules');
+  // 保存渠道前统一校验并提交高级分区草稿；失败时滚动到出错分区，草稿保持可编辑。
+  function commitAdvancedSettingsDraft() {
+    if (!validateCustomRulesDraft()) {
+      revealSection('rules');
       return false;
     }
-    if (!cooldownRulesValid) {
-      const cooldownPanel = hasDocument ? document.getElementById('advancedSettingsPanelCooldownDetection') : null;
-      if (cooldownPanel && cooldownPanel.classList.contains('hidden')) {
-        switchAdvancedSettingsTab('cooldown-detection');
-        window.validateCooldownDetectionDraft();
-      }
+    if (hasWindow && typeof window.validateCooldownDetectionDraft === 'function'
+        && !window.validateCooldownDetectionDraft()) {
+      revealSection('cooldown');
       return false;
     }
-    // 管理账户草稿非法：切到“其他”页后重新校验，让焦点落在可见控件上。
     if (hasWindow && typeof window.validateManagementAccountDraft === 'function'
         && !window.validateManagementAccountDraft()) {
-      switchAdvancedSettingsTab('other');
+      revealSection('management');
+      // 滚动后重新校验，让焦点落在出错控件上。
       window.validateManagementAccountDraft();
       return false;
     }
@@ -532,7 +505,6 @@
         && !window.commitManagementAccountDraft()) {
       return false;
     }
-    closeCustomRulesModal();
     return true;
   }
 
@@ -598,10 +570,10 @@
   }
 
   if (hasWindow) {
-    window.openCustomRulesModal = openCustomRulesModal;
-    window.closeCustomRulesModal = closeCustomRulesModal;
-    window.switchAdvancedSettingsTab = switchAdvancedSettingsTab;
-    window.applyAdvancedSettingsFromForm = applyAdvancedSettingsFromForm;
+    window.beginAdvancedSettingsDraft = beginAdvancedSettingsDraft;
+    window.discardAdvancedSettingsDraft = discardAdvancedSettingsDraft;
+    window.commitAdvancedSettingsDraft = commitAdvancedSettingsDraft;
+    window.updateCustomRulesAnyrouterHint = updateAnyrouterHint;
     window.addCustomRule = addCustomRule;
     window.removeCustomRule = removeCustomRule;
     window.closeCustomRulesHelp = closeCustomRulesHelp;
@@ -613,7 +585,7 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       validateRulesLocally,
-      applyAdvancedSettingsFromForm,
+      commitAdvancedSettingsDraft,
       collectCustomRulesForSubmit,
       resetCustomRulesState,
       cloneRules,

@@ -112,7 +112,6 @@ function createURLRow(index) {
     url: entry.url,
     mobileLabelUrl: window.t('channels.tableApiUrl'),
     mobileLabelProtocols: window.t('channels.urlProtocols'),
-    mobileLabelExactURL: window.t('channels.fullUrl'),
     mobileLabelActions: window.t('common.actions')
   };
 

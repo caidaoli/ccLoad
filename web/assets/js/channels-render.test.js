@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const {
   buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
+  toggleOAuthUsageWindows,
+  buildChannelMetricsHtml,
   buildManagementAccountStatusHtml,
   isOpenCodeGoChannel,
   channelShowsOAuthUsage
@@ -514,5 +516,75 @@ test('只读模式不渲染管理账户动作', () => {
     }), '');
   } finally {
     restore();
+  }
+});
+
+test('渠道指标行在无调用时不渲染，有调用时给出成功/失败与成功率', () => {
+  const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber };
+  global.window = {
+    t: key => key,
+    getFirstByteTimingColor: () => 'green',
+    getDurationTimingColor: () => 'green'
+  };
+  global.buildCostStackHtml = () => '';
+  global.formatMetricNumber = value => String(value || 0);
+  try {
+    assert.equal(buildChannelMetricsHtml(null), '');
+    assert.equal(buildChannelMetricsHtml({ success: 0, error: 0, avgDurationSeconds: 3 }), '');
+
+    const html = buildChannelMetricsHtml({
+      success: 19, error: 1, avgFirstByteTimeSeconds: 1.5, avgDurationSeconds: 8,
+      totalInputTokens: 100, totalOutputTokens: 20
+    });
+    assert.match(html, /<b class="ch-metric__ok">19<\/b> \/ <b class="ch-metric__err">1<\/b>/);
+    assert.match(html, /ch-metric__rate--good">95\.0%</);
+    assert.match(html, /1\.50.*8\.00/);
+    assert.match(html, /<b>120<\/b> tok/);
+  } finally {
+    global.window = saved.window;
+    global.buildCostStackHtml = saved.cost;
+    global.formatMetricNumber = saved.metric;
+  }
+});
+
+test('OAuth 额度超过 2 个窗口时折叠其余窗口，展开状态跨重渲染保留', () => {
+  const saved = { window: global.window, state: global.getOAuthUsageState, readOnly: global.isTokenChannelsReadOnly };
+  global.window = { t: (key, values = {}) => `${key}${values.count ?? ''}` };
+  global.isTokenChannelsReadOnly = () => false;
+  const windows = [1, 2, 3, 4].map(i => ({ limit_name: `w${i}`, remaining_percent: 50 }));
+  global.getOAuthUsageState = () => ({ status: 'ready', data: { windows } });
+  const channel = { id: 77, auth_type: 'codex_oauth' };
+  const count = (html, re) => (html.match(re) || []).length;
+  try {
+    let html = buildOAuthUsageStatusHtml(channel);
+    assert.equal(count(html, /role="progressbar"/g), 4);
+    const visible = html.slice(0, html.indexOf('ch-oauth-usage__more'));
+    assert.equal(count(visible, /role="progressbar"/g), 2);
+    assert.match(html, /class="ch-oauth-usage__more" hidden>/);
+    assert.match(html, /data-action="toggle-oauth-usage-windows" data-channel-id="77" data-hidden-count="2" aria-expanded="false">channels\.oauthUsageMoreWindows2</);
+
+    const more = { hidden: true };
+    const btn = {
+      dataset: { channelId: '77', hiddenCount: '2' },
+      parentElement: { querySelector: () => more },
+      setAttribute(name, value) { this[name] = value; }
+    };
+    toggleOAuthUsageWindows(btn);
+    assert.equal(more.hidden, false);
+    assert.equal(btn['aria-expanded'], 'true');
+
+    html = buildOAuthUsageStatusHtml(channel);
+    assert.match(html, /class="ch-oauth-usage__more">/);
+    assert.match(html, /aria-expanded="true">channels\.oauthUsageLessWindows</);
+
+    toggleOAuthUsageWindows(btn);
+    assert.match(buildOAuthUsageStatusHtml(channel), /class="ch-oauth-usage__more" hidden>/);
+
+    global.getOAuthUsageState = () => ({ status: 'ready', data: { windows: windows.slice(0, 2) } });
+    assert.doesNotMatch(buildOAuthUsageStatusHtml(channel), /toggle-oauth-usage-windows/);
+  } finally {
+    global.window = saved.window;
+    global.getOAuthUsageState = saved.state;
+    global.isTokenChannelsReadOnly = saved.readOnly;
   }
 });

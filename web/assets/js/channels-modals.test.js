@@ -8,7 +8,6 @@ const {
   selectModelFetchKeyEntries,
   countConfiguredInlineKeys,
   selectFirstEnabledInlineKey,
-  selectModelsForInlineKeyTest,
   openKeyModelScopeModal,
   closeKeyModelScopeModal,
   confirmKeyModelScope,
@@ -106,26 +105,6 @@ test('inline Key rows preserve and normalize model scopes', () => {
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-free', cost_multiplier: 0 }).cost_multiplier, 0);
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-bad', cost_multiplier: -3 }).cost_multiplier, 1);
   assert.equal(normalizeInlineKeyRow({ api_key: 'sk-nan', cost_multiplier: 'abc' }).cost_multiplier, 1);
-  assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-disabled', allowed_models: ['gpt-5'] },
-    [{ model: 'gpt-5', disabled: true }]
-  ), ['gpt-5']);
-  const modelRows = [
-    { model: 'GPT-5(max)', disabled: true },
-    { model: 'claude-opus', disabled: false }
-  ];
-  assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-disabled', allowed_models: ['gpt-5'] }, modelRows
-  ), ['GPT-5']);
-  assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-both', allowed_models: ['gpt-5', 'claude-opus'] }, modelRows
-  ), ['claude-opus']);
-  assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-unrestricted', allowed_models: [] }, modelRows
-  ), ['claude-opus']);
-  assert.deepEqual(selectModelsForInlineKeyTest(
-    { api_key: 'sk-unmatched', allowed_models: ['other'] }, modelRows
-  ), []);
 });
 
 test('removing configured models prunes every restricted Key scope', () => {
@@ -485,7 +464,6 @@ test('per-Key model detection handles stale sessions, model variants, redirect m
     keyModelScopeStatus: status,
     detectKeyModelScopeBtn: detectButton,
     inlineKeyTableBody: { dataset: { delegated: 'true' }, innerHTML: '', appendChild() {} },
-    inlineKeyCount: { textContent: '' },
     channelModal: { setAttribute() {}, removeAttribute() {} },
     channelProxyURL: { value: ' socks5://127.0.0.1:1080 ' }
   };
@@ -882,7 +860,8 @@ function installEditChannelGlobals(channel, {
       setAttribute() {},
       addEventListener() {},
       appendChild() {},
-      querySelector: () => null
+      querySelector: () => null,
+      querySelectorAll: () => []
     };
   };
   const getElement = id => {

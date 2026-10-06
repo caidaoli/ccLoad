@@ -234,6 +234,10 @@ function bindManagementProfileChange(select) {
       draft.session = null;
       clearManagementPendingSession();
     }
+    // 新建渠道时打开抽屉还没有 URL，启用管理账户时再补默认面板地址。
+    if (!draft.base_url && typeof getValidInlineURLConfigs === 'function') {
+      draft.base_url = firstManagementBaseURL(getValidInlineURLConfigs());
+    }
     renderManagementAccountFields(draft);
     if (typeof window !== 'undefined' && typeof window.markChannelFormDirty === 'function') {
       window.markChannelFormDirty();
@@ -263,6 +267,8 @@ function renderManagementAccountFields(draft) {
   const group = managementElement('channelManagementGroup');
   const isAPIKey = managementAccountAuthType === 'api_key';
   if (group) group.hidden = !isAPIKey;
+  const navItem = managementElement('channelManagementNavItem');
+  if (navItem) navItem.hidden = !isAPIKey;
   if (!isAPIKey) {
     clearManagementAccountErrors();
     return;
@@ -355,15 +361,10 @@ function resetManagementAccountDraft(view, channelURLs, authType) {
   return managementAccountState;
 }
 
-/** 重开高级设置时丢弃未确认的编辑，回到最近一次 commit 的草稿。 */
+/** 打开编辑抽屉时丢弃未提交的编辑，回到最近一次 commit 的草稿。 */
 function beginManagementAccountDraft() {
   clearManagementPendingSession();
-  const draft = { ...managementAccountState };
-  // 新建弹窗初始化时 URL 尚未填写，进入高级设置时再补齐默认面板地址。
-  if (!draft.base_url && typeof getValidInlineURLConfigs === 'function') {
-    draft.base_url = firstManagementBaseURL(getValidInlineURLConfigs());
-  }
-  renderManagementAccountFields(draft);
+  renderManagementAccountFields({ ...managementAccountState });
 }
 
 function validateManagementAccountDraft() {

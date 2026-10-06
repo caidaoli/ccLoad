@@ -363,11 +363,8 @@ function initChannelEditorActions() {
         'download-export-keys': () => invokeChannelEditorAction('downloadExportKeys'),
         'close-model-import-modal': () => invokeChannelEditorAction('closeModelImportModal'),
         'confirm-model-import': () => invokeChannelEditorAction('confirmModelImport'),
-        'open-custom-rules-modal': () => invokeChannelEditorAction('openCustomRulesModal'),
+        'channel-editor-nav': (actionTarget) => revealChannelEditorSection(actionTarget?.dataset?.editorSectionTarget || ''),
         'probe-channel-websocket': (actionTarget) => detectChannelWebsocketSupport(actionTarget),
-        'close-custom-rules-modal': () => invokeChannelEditorAction('closeCustomRulesModal'),
-        'switch-advanced-settings-tab': (actionTarget) => invokeChannelEditorAction('switchAdvancedSettingsTab', actionTarget?.dataset?.advancedSettingsTab || ''),
-        'apply-advanced-settings': () => invokeChannelEditorAction('applyAdvancedSettingsFromForm'),
         'login-channel-management': () => invokeChannelEditorAction('loginManagementAccount'),
         'add-custom-rule': (actionTarget) => invokeChannelEditorAction('addCustomRule', actionTarget?.dataset?.customRulesTarget || ''),
         'remove-custom-rule': (actionTarget) => invokeChannelEditorAction('removeCustomRule', actionTarget?.dataset?.customRulesTarget || '', Number(actionTarget?.dataset?.customRulesIndex || '-1')),
@@ -396,6 +393,7 @@ function initChannelEditorActions() {
     channelForm.addEventListener('submit', (event) => {
       return saveChannel(event);
     });
+    channelForm.addEventListener('input', () => invokeChannelEditorAction('updateCustomRulesAnyrouterHint'));
     channelForm.dataset.channelFormBound = '1';
   }
 
@@ -474,7 +472,7 @@ async function showAddModal() {
   invokeChannelEditorAction('resetCooldownDetectionState', null);
 
   resetChannelFormDirty();
-  document.getElementById('channelModal').classList.add('show');
+  showChannelEditorDrawer();
   scheduleChannelEditorTableSizingSync();
 }
 
@@ -496,13 +494,6 @@ async function editChannel(id) {
     return;
   }
 
-  const modelStatsData = editorData.model_stats || {};
-  const modelStats = modelStatsData.available === false
-    ? null
-    : new Map((Array.isArray(modelStatsData.items) ? modelStatsData.items : []).map(entry => [
-      normalizeModelStatsKey(entry.model),
-      entry
-    ]));
   const urlStats = editorData.url_stats && Array.isArray(editorData.url_stats.items)
     ? editorData.url_stats.items
     : [];
@@ -584,16 +575,13 @@ async function editChannel(id) {
     const redirectModel = m.redirect_model || '';
     const actualModel = resolveEditorActualModel(configuredModels, m);
     const cooldown = modelCooldowns.get(actualModel);
-    const stats = modelStats?.get(normalizeModelStatsKey(modelName));
     return {
       model: modelName,
       redirect_model: redirectModel,
       disabled: !!m.disabled,
       ...rowPricingField(m.pricing),
       cooldown_until: cooldown?.cooldown_until || '',
-      cooldown_remaining_ms: cooldown?.cooldown_remaining_ms || 0,
-      model_stats: stats || null,
-      model_stats_unavailable: modelStats === null
+      cooldown_remaining_ms: cooldown?.cooldown_remaining_ms || 0
     };
   });
   selectedModelIndices.clear();
@@ -614,12 +602,67 @@ async function editChannel(id) {
   if (availableTimeEnd) availableTimeEnd.value = channel.available_time_end || '';
 
   resetChannelFormDirty();
-  document.getElementById('channelModal').classList.add('show');
+  showChannelEditorDrawer();
   scheduleChannelEditorTableSizingSync();
 }
 
-function normalizeModelStatsKey(modelName) {
-  return String(modelName || '').trim().toLowerCase();
+// 抽屉打开时高级分区进入草稿态，导航回到第一个分区。
+function showChannelEditorDrawer() {
+  invokeChannelEditorAction('beginAdvancedSettingsDraft');
+  document.getElementById('channelModal').classList.add('show');
+  const main = document.getElementById('channelEditorMain');
+  if (!main) return;
+  main.scrollTop = 0;
+  bindChannelEditorScrollSpy(main);
+  setActiveChannelEditorNav('basic');
+}
+
+function channelEditorSections(main) {
+  return Array.from(main.querySelectorAll('[data-editor-section]'))
+    .filter(section => !section.hidden);
+}
+
+function setActiveChannelEditorNav(sectionName) {
+  const nav = document.getElementById('channelEditorNav');
+  if (!nav) return;
+  nav.querySelectorAll('[data-editor-section-target]').forEach((item) => {
+    if (item.dataset.editorSectionTarget === sectionName) {
+      item.setAttribute('aria-current', 'true');
+    } else {
+      item.removeAttribute('aria-current');
+    }
+  });
+}
+
+function revealChannelEditorSection(sectionName) {
+  const main = document.getElementById('channelEditorMain');
+  const section = main?.querySelector(`[data-editor-section="${sectionName}"]`);
+  if (!section || section.hidden) return;
+  section.scrollIntoView({ block: 'start' });
+  setActiveChannelEditorNav(sectionName);
+}
+
+// 滚动时高亮最后一个顶部越过视口上沿的分区；滚到底时高亮最后一个分区。
+function bindChannelEditorScrollSpy(main) {
+  if (!main || main.dataset.scrollSpyBound === '1') return;
+  main.dataset.scrollSpyBound = '1';
+  let frame = 0;
+  main.addEventListener('scroll', () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      const sections = channelEditorSections(main);
+      if (sections.length === 0) return;
+      const atBottom = main.scrollTop + main.clientHeight >= main.scrollHeight - 2;
+      const threshold = main.getBoundingClientRect().top + 24;
+      let current = sections[0];
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= threshold) current = section;
+      }
+      if (atBottom) current = sections[sections.length - 1];
+      setActiveChannelEditorNav(current.dataset.editorSection);
+    });
+  }, { passive: true });
 }
 
 function closeModal() {
@@ -627,6 +670,7 @@ function closeModal() {
     return;
   }
   document.getElementById('channelModal').classList.remove('show');
+  invokeChannelEditorAction('discardAdvancedSettingsDraft');
   editingChannelId = null;
   clearChannelDuplicateHint();
   resetChannelFormDirty();
@@ -803,10 +847,7 @@ function validateChannelScheduledCheckSchedule() {
       error.hidden = valid;
     }
     if (!valid) {
-      if (!document.getElementById('customRulesModal')?.classList.contains('show')) {
-        invokeChannelEditorAction('openCustomRulesModal');
-      }
-      invokeChannelEditorAction('switchAdvancedSettingsTab', 'other');
+      revealChannelEditorSection('schedule');
       input.setAttribute('aria-invalid', 'true');
       input.focus();
       return false;
@@ -819,6 +860,7 @@ function validateChannelScheduledCheckSchedule() {
 async function saveChannel(event) {
   event.preventDefault();
   if (!validateChannelScheduledCheckSchedule()) return;
+  if (invokeChannelEditorAction('commitAdvancedSettingsDraft') === false) return;
 
   const cooldownRuleErrors = invokeChannelEditorAction('validateCooldownDetectionRulesForSubmit');
   if (Array.isArray(cooldownRuleErrors) && cooldownRuleErrors.length > 0) {
@@ -1969,7 +2011,7 @@ async function copyChannel(id, name) {
   syncScheduledCheckModelState();
 
   resetChannelFormDirty();
-  document.getElementById('channelModal').classList.add('show');
+  showChannelEditorDrawer();
   scheduleChannelEditorTableSizingSync();
 }
 
@@ -2367,10 +2409,6 @@ function updateRedirectRow(index, field, value) {
     // 用户改动模型配置后，原运行态已不再对应当前行。
     redirectTableData[index].cooldown_until = '';
     redirectTableData[index].cooldown_remaining_ms = 0;
-    if (field === 'model') {
-      redirectTableData[index].model_stats = null;
-      redirectTableData[index].model_stats_unavailable = false;
-    }
 
     if (field === 'model') {
       markChannelFormDirty();
@@ -2555,15 +2593,7 @@ function renderActiveRedirectModelStatus(statusCell, redirect) {
       badge.classList.add('redirect-model-cooldown-badge');
       statusCell.appendChild(badge);
     }
-    return;
   }
-  renderRedirectModelStats(statusCell, redirect);
-}
-
-function formatModelStatsSeconds(value) {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
-  return `${seconds.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')}s`;
 }
 
 function appendRedirectModelStatus(statusCell, modifier, lines) {
@@ -2575,85 +2605,6 @@ function appendRedirectModelStatus(statusCell, modifier, lines) {
     status.appendChild(line);
   }
   statusCell.appendChild(status);
-}
-
-function appendRedirectModelPerformance(statusCell, stats) {
-  const status = document.createElement('div');
-  status.className = 'redirect-model-status redirect-model-status--performance';
-
-  // 第一行：首字/耗时 2s/14.4s
-  status.appendChild(buildRedirectModelPerformanceLine(
-    window.t('channels.modelTiming'),
-    [
-      {
-        text: formatModelStatsSeconds(stats.avg_first_byte_time_seconds),
-        color: window.getFirstByteTimingColor(stats.avg_first_byte_time_seconds)
-      },
-      {
-        text: formatModelStatsSeconds(stats.avg_duration_seconds),
-        color: window.getDurationTimingColor(stats.avg_duration_seconds)
-      }
-    ]
-  ));
-
-  // 第二行：调用/失败 成功次数/失败次数
-  status.appendChild(buildRedirectModelPerformanceLine(
-    window.t('channels.modelCallFail'),
-    [
-      { text: formatModelStatsCount(stats.success), color: 'var(--success-600)' },
-      { text: formatModelStatsCount(stats.error), color: 'var(--error-600)' }
-    ]
-  ));
-
-  statusCell.appendChild(status);
-}
-
-function buildRedirectModelPerformanceLine(labelText, values) {
-  const line = document.createElement('span');
-  line.className = 'redirect-model-performance-line';
-
-  const label = document.createElement('span');
-  label.className = 'redirect-model-performance-label';
-  label.textContent = labelText;
-  line.appendChild(label);
-
-  values.forEach((item, index) => {
-    if (index > 0) {
-      const sep = document.createElement('span');
-      sep.className = 'redirect-model-performance-sep';
-      sep.textContent = '/';
-      line.appendChild(sep);
-    }
-    const value = document.createElement('span');
-    value.className = 'redirect-model-performance-value';
-    value.textContent = item.text;
-    if (item.color) {
-      value.style.color = item.color;
-    }
-    line.appendChild(value);
-  });
-
-  return line;
-}
-
-function formatModelStatsCount(value) {
-  const count = Number(value);
-  if (!Number.isFinite(count) || count < 0) return '—';
-  return String(Math.trunc(count));
-}
-
-function renderRedirectModelStats(statusCell, redirect) {
-  const stats = redirect.model_stats;
-  if (Number(stats?.success) > 0) {
-    appendRedirectModelPerformance(statusCell, stats);
-    return;
-  }
-
-  appendRedirectModelStatus(statusCell, 'empty', [
-    window.t(redirect.model_stats_unavailable
-      ? 'channels.modelStatsUnavailable'
-      : 'channels.modelNoSamples')
-  ]);
 }
 
 /**
