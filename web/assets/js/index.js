@@ -151,18 +151,6 @@
       document.getElementById('overview-output-tokens').textContent = formatNumber(totals.outputTokens);
     }
 
-    function renderOverviewStatus(state) {
-      const badge = document.getElementById('overview-status');
-      const text = document.getElementById('overview-status-text');
-      if (!badge || !text) return;
-      const fallbacks = { healthy: '服务正常', warning: '服务波动', critical: '服务异常', unknown: '暂无数据' };
-      const safeState = Object.hasOwn(fallbacks, state) ? state : 'unknown';
-      const key = `index.overview.status.${safeState}`;
-      badge.dataset.state = safeState;
-      text.dataset.i18n = key;
-      text.textContent = overviewText(key, fallbacks[safeState]);
-    }
-
     function buildCurrentDateRangeQuery() {
       return typeof window.buildDateRangeQuery === 'function'
         ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
@@ -314,7 +302,6 @@
           )
           : '';
       }
-      renderOverviewStatus(model.state);
       message.hidden = true;
       message.textContent = '';
     }
@@ -326,7 +313,6 @@
         rateElement.textContent = '--';
         rateElement.dataset.state = 'unknown';
       }
-      renderOverviewStatus('unknown');
       if (message) {
         message.hidden = false;
         message.textContent = overviewText(

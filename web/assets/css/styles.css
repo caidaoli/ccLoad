@@ -1133,27 +1133,6 @@ body {
   min-width: 0;
 }
 
-.overview-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 40px;
-  padding: 0 var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--neutral-100);
-  color: var(--neutral-600);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  white-space: nowrap;
-}
-
-.overview-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 .overview-refresh {
   display: inline-flex;
   align-items: center;
@@ -1332,21 +1311,18 @@ body {
 }
 
 .service-health-rate[data-state="healthy"],
-.overview-status[data-state="healthy"],
 .usage-rate[data-state="healthy"] {
   background: rgba(16, 185, 129, 0.14);
   color: var(--success-600);
 }
 
 .service-health-rate[data-state="warning"],
-.overview-status[data-state="warning"],
 .usage-rate[data-state="warning"] {
   background: rgba(245, 158, 11, 0.14);
   color: var(--warning-600);
 }
 
 .service-health-rate[data-state="critical"],
-.overview-status[data-state="critical"],
 .usage-rate[data-state="critical"] {
   background: rgba(239, 68, 68, 0.14);
   color: var(--error-600);
