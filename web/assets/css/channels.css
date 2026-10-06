@@ -14,8 +14,6 @@
       --channel-runtime-status-channel-fg: #9a3412;
       --channel-runtime-status-key-accent: #d97706;
       --channel-runtime-status-key-fg: #92400e;
-      --channel-runtime-status-model-accent: #65a30d;
-      --channel-runtime-status-model-fg: #4d7c0f;
       --channel-runtime-status-protocol-accent: var(--primary-500);
       --channel-runtime-status-protocol-fg: var(--primary-700);
       --channel-last-request-bg: rgba(254, 242, 242, 0.94);
@@ -75,8 +73,6 @@
       --channel-runtime-status-channel-fg: #fed7aa;
       --channel-runtime-status-key-accent: #fbbf24;
       --channel-runtime-status-key-fg: #fde68a;
-      --channel-runtime-status-model-accent: #a3e635;
-      --channel-runtime-status-model-fg: #d9f99d;
       --channel-runtime-status-protocol-accent: var(--primary-400);
       --channel-runtime-status-protocol-fg: var(--primary-200);
       --channel-last-request-bg: rgba(127, 29, 29, 0.24);
@@ -108,8 +104,6 @@
       --channel-runtime-status-channel-fg: #fed7aa;
       --channel-runtime-status-key-accent: #fbbf24;
       --channel-runtime-status-key-fg: #fde68a;
-      --channel-runtime-status-model-accent: #a3e635;
-      --channel-runtime-status-model-fg: #d9f99d;
       --channel-runtime-status-protocol-accent: var(--primary-400);
       --channel-runtime-status-protocol-fg: var(--primary-200);
       --channel-last-request-bg: rgba(127, 29, 29, 0.24);
@@ -1540,16 +1534,17 @@
       max-height: var(--channel-editor-table-visible-height);
       overflow-y: auto;
       overflow-x: hidden;
+      /* 表格滚到头或不可滚动时，滚轮交给抽屉 */
+      overscroll-behavior: auto;
       scrollbar-width: thin;
       scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
     }
 
-    #channelModal .channel-editor-group--urls .inline-table-container {
-      /* URL 行包含 38px 的协议选择器，比通用内联表行更高。 */
-      --channel-editor-table-visible-rows: 3;
-      --channel-editor-table-row-height: 45px;
-      --channel-editor-table-header-height: 46px;
-      max-height: var(--channel-editor-table-visible-height);
+    /* URL / 模型表按内容撑开，由抽屉统一滚动；clip 不建立滚动容器，不拦截滚轮 */
+    #channelModal .channel-editor-group--urls .inline-table-container,
+    #channelModal .channel-editor-group--models .inline-table-container {
+      max-height: none;
+      overflow: clip;
     }
 
     #channelModal .inline-table-container::-webkit-scrollbar {
@@ -1588,21 +1583,15 @@
       max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-key-max-visible-rows) * var(--channel-editor-table-row-height)));
     }
 
-    /* 抽屉连续滚动，模型表不再填满剩余高度，改为固定可见行数。 */
-    #channelModal .channel-editor-group--models .inline-table-container {
-      --channel-editor-table-visible-rows: 12;
-    }
-
-    #channelModal .channel-editor-group--keys .inline-table-container:has(tbody > tr:only-child) {
+    /* Key 表桌面端是虚拟滚动，超过最大可见行数才需要内滚 */
+    #channelModal .channel-editor-group--keys .inline-table-container:not(.is-scrollable) {
       overflow-y: hidden;
     }
 
-    /* 移动端行渲染为卡片，桌面行高推算的容器高度会截断卡片；改为按内容撑开，超过 70vh 再内滚。 */
+    /* 移动端 Key 行渲染为卡片，桌面行高推算的容器高度会截断卡片；改为按内容撑开，超过 70vh 再内滚。 */
     @media (max-width: 768px) {
-      #channelModal .channel-editor-group--urls .inline-table-container,
       #channelModal .channel-editor-group--keys .inline-table-container,
-      #channelModal .channel-editor-group--keys .inline-table-container:has(tbody > tr:only-child),
-      #channelModal .channel-editor-group--models .inline-table-container {
+      #channelModal .channel-editor-group--keys .inline-table-container:not(.is-scrollable) {
         height: auto;
         min-height: 0;
         max-height: 70vh;
@@ -2500,8 +2489,38 @@
     }
 
     .ch-priority-editor-wrap {
+      position: relative;
       display: inline-block;
       max-width: 100%;
+    }
+
+    /* 改动未保存时在输入框下方提示快捷键；绝对定位，不撑高行 */
+    .ch-priority-hint {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 50%;
+      z-index: 2;
+      display: none;
+      transform: translateX(-50%);
+      color: var(--neutral-500);
+      font-size: 11px;
+      line-height: 1.2;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .ch-priority-editor-wrap:has(.ch-priority-input.is-dirty) .ch-priority-hint {
+      display: block;
+    }
+
+    /* 编辑中动态优先级已过时，让位给提示 */
+    .ch-priority-stack:has(.ch-priority-input.is-dirty) .ch-priority-health {
+      visibility: hidden;
+    }
+
+    .ch-priority-stack .ch-priority-value {
+      margin-left: 0;
+      text-align: center;
     }
 
     .ch-priority-editor {
@@ -2657,10 +2676,22 @@
     }
 
     .ch-runtime-status--models {
-      border-left: 3px solid var(--channel-runtime-status-model-accent);
-      color: var(--channel-runtime-status-model-fg);
-      gap: 4px;
+      justify-content: flex-start;
+      gap: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
     }
+
+    .ch-runtime-status__text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: start;
+    }
+
+
+
 
     .ch-runtime-status__clock {
       display: inline-flex;
@@ -3426,16 +3457,28 @@
       color: var(--channel-plan-team-fg);
     }
 
+    /* 头像在名称 + URL 两行左侧垂直居中 */
+    .ch-name-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .ch-name-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
     .ch-name-avatar {
       flex: 0 0 auto;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 22px;
-      height: 22px;
-      margin-right: 4px;
-      border-radius: 6px;
-      font-size: 11px;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      font-size: 14px;
       font-weight: 700;
     }
 
@@ -3494,10 +3537,10 @@
       white-space: nowrap;
     }
 
+    /* 可见数量由 fitChannelModelLine 按行宽决定；只有首个标签允许收缩省略 */
     .ch-model-chip {
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       min-width: 0;
-      max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
       padding: 1px 7px;
@@ -3510,8 +3553,15 @@
       line-height: 18px;
     }
 
+    .ch-model-chip:first-child {
+      flex-shrink: 1;
+    }
+
+    .ch-model-chip[hidden] {
+      display: none;
+    }
+
     .ch-model-chip--more {
-      flex: 0 0 auto;
       color: var(--neutral-500);
       font-family: inherit;
     }
@@ -6071,8 +6121,8 @@
 
       .channel-table tbody tr {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px 12px;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px 0;
         padding: 14px;
         border: 1px solid var(--surface-border);
         border-radius: 16px;
@@ -6117,13 +6167,14 @@
         margin: 0;
       }
 
-      .channel-table .ch-col-name,
-      .channel-table .ch-col-actions {
+      .channel-table .ch-col-name {
         grid-column: 1 / -1;
       }
 
+      /* 底部操作栏：优先级 | 启用开关 + 操作按钮，同一行 */
       .channel-table .ch-col-priority {
-        order: 10;
+        order: 30;
+        grid-column: 1;
       }
 
       .channel-table .ch-col-status {
@@ -6134,18 +6185,30 @@
 
       .channel-table .ch-col-actions {
         order: 30;
+        grid-column: 2;
       }
 
       .channel-table .ch-col-name {
         padding-right: 0;
       }
 
-      .channel-table .ch-col-priority,
       .channel-table .ch-col-status {
         background: var(--surface-bg-muted);
         border: 1px solid var(--surface-border);
         border-radius: 12px;
         padding: 10px 12px;
+      }
+
+      .channel-table .ch-col-priority {
+        justify-content: flex-start !important;
+        gap: 8px !important;
+      }
+
+      .channel-table .ch-col-priority,
+      .channel-table .ch-col-actions {
+        margin-top: 2px;
+        padding-top: 10px;
+        border-top: 1px solid var(--neutral-200);
       }
 
       .channel-table .ch-col-priority,
@@ -6170,13 +6233,21 @@
         flex: 0 0 auto;
       }
 
+      /* 触屏无 Enter/Esc 键盘习惯，不显示快捷键提示 */
+      .channel-table .ch-col-priority .ch-priority-hint {
+        display: none !important;
+      }
+
+      .channel-table .ch-priority-stack:has(.ch-priority-input.is-dirty) .ch-priority-health {
+        visibility: visible;
+      }
+
       .channel-table .ch-col-status .ch-runtime-status-list {
         flex: 1 1 auto;
-        align-items: flex-end;
-        width: auto;
+        align-items: stretch;
+        width: 100%;
         min-width: 0;
         margin-left: 0;
-        max-width: min(100%, 420px);
       }
 
       .channel-table .ch-col-status .ch-runtime-status {
@@ -6202,14 +6273,13 @@
 
       .channel-table .ch-col-actions {
         display: flex;
-        flex-direction: column;
         align-items: center;
-        margin-top: 2px;
-        padding-top: 10px;
-        border-top: 1px solid var(--neutral-200);
+        justify-content: flex-end;
+        padding-left: 10px;
       }
 
-      .channel-table td.ch-col-actions::before {
+      .channel-table td.ch-col-actions::before,
+      .channel-table td.ch-col-status::before {
         content: none;
         display: none;
       }
@@ -6606,21 +6676,15 @@
       .channel-table .ch-action-group {
         display: flex;
         flex-wrap: nowrap;
-        gap: 6px;
+        gap: 4px;
         overflow-x: auto;
-        padding-bottom: 2px;
-        justify-content: center;
-        margin: 0 auto;
         max-width: 100%;
       }
 
       .channel-table .ch-actions-stack {
-        flex-direction: column;
-        align-items: center;
-        justify-content: flex-start;
+        justify-content: flex-end;
         gap: 6px;
         min-height: 0;
-        padding-top: 0;
       }
 
       .channel-table .ch-action-group::-webkit-scrollbar {
@@ -6832,8 +6896,16 @@
 
     @media (max-width: 480px) {
       .channel-table tbody tr {
-        gap: 8px 10px;
+        gap: 8px 0;
         padding: 12px;
+      }
+    }
+
+    /* 超窄屏：省掉优先级标签，保证底部操作栏仍为一行 */
+    @media (max-width: 340px) {
+      .channel-table td.ch-col-priority::before {
+        content: none;
+        display: none;
       }
     }
 

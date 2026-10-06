@@ -47,18 +47,71 @@ function formatChannelModelLabel(group) {
   return `${group.model}(${visible}${suffix})`;
 }
 
-const CHANNEL_MODEL_CHIP_LIMIT = 4;
+// 可见数量由实际行宽决定（fitChannelModelLine）；渲染上限只为控制 DOM 规模，再多一行也放不下。
+const CHANNEL_MODEL_CHIP_RENDER_CAP = 40;
 
-// 列表只占一行：前几个模型做标签，其余折成 +N，完整列表放在 title。
+// 列表只占一行：放得下的模型做标签，其余折成 +N，完整列表放在 title。
 function buildChannelModelLineHtml(models) {
   const groups = channelModelDisplayGroups(models);
   if (groups.length === 0) return '';
-  const chips = groups.slice(0, CHANNEL_MODEL_CHIP_LIMIT)
+  const chips = groups.slice(0, CHANNEL_MODEL_CHIP_RENDER_CAP)
     .map(group => `<span class="ch-model-chip">${escapeChannelRefreshText(formatChannelModelLabel(group))}</span>`);
-  if (groups.length > CHANNEL_MODEL_CHIP_LIMIT) {
-    chips.push(`<span class="ch-model-chip ch-model-chip--more">+${groups.length - CHANNEL_MODEL_CHIP_LIMIT}</span>`);
+  const rest = groups.length - chips.length;
+  chips.push(`<span class="ch-model-chip ch-model-chip--more"${rest > 0 ? '' : ' hidden'}>+${rest}</span>`);
+  return `<div class="ch-model-line" data-total="${groups.length}" title="${escapeChannelRefreshText(formatChannelModelTitle(models))}">${chips.join('')}</div>`;
+}
+
+// scrollWidth 是内容自然宽度，不受 flex 收缩影响；再补上边框
+function channelModelChipNaturalWidth(chip) {
+  return chip.scrollWidth + chip.offsetWidth - chip.clientWidth;
+}
+
+// 按行宽决定可见标签数：至少保留第一个（过长时由 CSS 省略），其余折成 +N
+function fitChannelModelLine(line) {
+  const available = line.clientWidth;
+  if (available <= 0) return;
+  const more = line.querySelector('.ch-model-chip--more');
+  const chips = Array.from(line.querySelectorAll('.ch-model-chip:not(.ch-model-chip--more)'));
+  const total = Number(line.dataset.total) || chips.length;
+  const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+
+  chips.forEach(chip => { chip.hidden = false; });
+  more.hidden = false;
+  more.textContent = `+${total}`;
+  const moreWidth = channelModelChipNaturalWidth(more);
+
+  let visible = 0;
+  let used = 0;
+  for (const chip of chips) {
+    const next = used + (visible > 0 ? gap : 0) + channelModelChipNaturalWidth(chip);
+    const reserve = visible + 1 < total ? gap + moreWidth : 0;
+    if (visible > 0 && next + reserve > available) break;
+    used = next;
+    visible++;
   }
-  return `<div class="ch-model-line" title="${escapeChannelRefreshText(formatChannelModelTitle(models))}">${chips.join('')}</div>`;
+
+  chips.forEach((chip, index) => { chip.hidden = index >= visible; });
+  more.hidden = visible >= total;
+  more.textContent = `+${total - visible}`;
+}
+
+let channelModelLineObserver = null;
+
+// 容器宽度变化时重新计算；只在宽度变化时触发，避免高度抖动引起循环
+function fitChannelModelLines(container) {
+  container.querySelectorAll('.ch-model-line').forEach(fitChannelModelLine);
+  if (channelModelLineObserver || typeof ResizeObserver !== 'function') return;
+  let lastWidth = container.clientWidth;
+  let frame = 0;
+  channelModelLineObserver = new ResizeObserver(() => {
+    if (container.clientWidth === lastWidth) return;
+    lastWidth = container.clientWidth;
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      container.querySelectorAll('.ch-model-line').forEach(fitChannelModelLine);
+    });
+  });
+  channelModelLineObserver.observe(container);
 }
 
 function formatChannelModelTitle(models) {
@@ -387,6 +440,7 @@ function buildPriorityEditorRow(channelId, priority, priorityLabel) {
       <div class="ch-priority-editor">
         <input class="ch-priority-input" type="number" min="${CHANNEL_PRIORITY_MIN}" max="${CHANNEL_PRIORITY_MAX}" step="1" value="${priority}" data-channel-id="${channelId}" data-original-priority="${priority}" aria-label="${priorityLabel}"${disabledAttr}>
       </div>
+      <div class="ch-priority-hint" aria-hidden="true">${escapeChannelRefreshText(window.t('channels.priorityEditHint'))}</div>
     </div>
   </div>`;
 }
@@ -1450,9 +1504,11 @@ function buildChannelRuntimeStatusHtml(channel) {
     .filter(remainingMS => remainingMS > 0);
   if (coolingModels.length > 0) {
     const nextRecoveryMS = Math.min(...coolingModels);
-    const countText = escapeChannelRefreshText(window.t('channels.status.modelCooldownsCount', { count: coolingModels.length }));
-    const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery'));
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span>${countText}</span><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
+    const text = escapeChannelRefreshText(window.t('channels.status.modelCooldowns', {
+      count: coolingModels.length,
+      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
+    }));
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span class="ch-runtime-status__text">${text}</span></div>`);
   }
 
   const protocolProbeRetryCount = Number(channel.protocol_probe_retry_count || 0);
@@ -1756,6 +1812,7 @@ function renderChannels(channelsToRender = channels) {
 
   el.innerHTML = `<div class="table-container channel-table-container"><table class="modern-table channel-table">${thead}</table></div>`;
   el.querySelector('table').appendChild(tbody);
+  fitChannelModelLines(el);
 
   // 模板渲染后设置 checkbox 选中态
   el.querySelectorAll('.channel-select-checkbox').forEach(cb => {

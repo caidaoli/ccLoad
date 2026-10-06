@@ -622,6 +622,7 @@ function syncChannelEditorTableSizing() {
     CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MAX_ROWS
   );
   body.style.setProperty('--channel-editor-key-visible-rows', String(keyRows));
+  getKeyTableContainer()?.classList.toggle('is-scrollable', visibleKeyCount > CHANNEL_EDITOR_TABLE_LAYOUT.KEY_MAX_ROWS);
 
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => refreshVirtualKeyRows());

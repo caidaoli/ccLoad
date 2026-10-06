@@ -2328,10 +2328,15 @@
       </td>
       <td class="ch-col-name">
         <div class="ch-name-cell">
-          <div class="ch-name-line">
-            <div class="ch-name-main"><span class="ch-name-avatar channel-provider-avatar" data-auth-type="{{authType}}" aria-hidden="true">{{{avatarHtml}}}</span><strong title="{{name}}">{{name}}</strong>{{{nameMultiplierBadge}}}{{{oauthPlanBadge}}}</div>
+          <div class="ch-name-head">
+            <span class="ch-name-avatar channel-provider-avatar" data-auth-type="{{authType}}" aria-hidden="true">{{{avatarHtml}}}</span>
+            <div class="ch-name-text">
+              <div class="ch-name-line">
+                <div class="ch-name-main"><strong title="{{name}}">{{name}}</strong>{{{nameMultiplierBadge}}}{{{oauthPlanBadge}}}</div>
+              </div>
+              <div class="ch-url-line" title="{{url}}">{{url}}</div>
+            </div>
           </div>
-          <div class="ch-url-line" title="{{url}}">{{url}}</div>
           {{{modelsHtml}}}
           {{{metricsHtml}}}
           <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>
