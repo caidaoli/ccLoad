@@ -40,13 +40,10 @@ var errInvalidSettingCombination = errors.New("invalid setting combination")
 
 type adminSystemSetting struct {
 	*model.SystemSetting
-	Configured     *bool  `json:"configured,omitempty"`
-	Editable       bool   `json:"editable"`
-	DisabledReason string `json:"disabled_reason,omitempty"`
+	Configured *bool `json:"configured,omitempty"`
 }
 
-const containerImageManagedDisabledReason = "container_image_managed"
-
+// 容器版由镜像标签管理升级，更新配置项既不展示也不可写。
 func isContainerManagedUpdateSetting(key string) bool {
 	if !runningInContainer() {
 		return false
@@ -58,17 +55,12 @@ func systemSettingForAdmin(setting *model.SystemSetting) adminSystemSetting {
 	copySetting := *setting
 	view := adminSystemSetting{
 		SystemSetting: &copySetting,
-		Editable:      true,
 	}
 	if setting.Key == config.TypeSafeAPIKeySettingKey {
 		configured := setting.Value != ""
 		view.Configured = &configured
 		copySetting.Value = ""
 		copySetting.DefaultValue = ""
-	}
-	if isContainerManagedUpdateSetting(setting.Key) {
-		view.Editable = false
-		view.DisabledReason = containerImageManagedDisabledReason
 	}
 	return view
 }
@@ -239,6 +231,9 @@ func (s *Server) AdminListSettings(c *gin.Context) {
 	}
 	views := make([]adminSystemSetting, 0, len(settings))
 	for _, setting := range settings {
+		if isContainerManagedUpdateSetting(setting.Key) {
+			continue
+		}
 		views = append(views, systemSettingForAdmin(setting))
 	}
 	RespondJSON(c, http.StatusOK, views)
@@ -255,7 +250,7 @@ func (s *Server) AdminGetSetting(c *gin.Context) {
 
 	// 管理接口必须返回持久化后的最新值，不能复用等待重启的运行时缓存。
 	setting, err := s.configService.GetSettingFresh(c.Request.Context(), key)
-	if errors.Is(err, model.ErrSettingNotFound) {
+	if errors.Is(err, model.ErrSettingNotFound) || isContainerManagedUpdateSetting(key) {
 		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("setting not found: %s", key))
 		return
 	}

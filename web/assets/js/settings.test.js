@@ -920,37 +920,6 @@ test('手动检测更新失败时恢复按钮并显示错误', async (t) => {
   assert.equal(page.updateButton.getAttribute('aria-busy'), null);
 });
 
-test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
-  const page = await loadSettingsPage(t, [
-    {
-      key: 'auto_update_channel',
-      value: 'stable',
-      value_type: 'string',
-      description: '',
-      editable: false,
-      disabled_reason: 'container_image_managed'
-    },
-    {
-      key: 'auto_update_interval_hours',
-      value: '12',
-      value_type: 'int',
-      description: '',
-      editable: false,
-      disabled_reason: 'container_image_managed'
-    }
-  ], {});
-
-  const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
-  assert.equal(settingRows.length, 2);
-  for (const { data } of settingRows) {
-    assert.match(data.inputHtml, /\bdisabled\b/);
-    assert.equal(data.resetDisabledAttributes, 'disabled');
-  }
-  const channelRow = settingRows.find(({ data }) => data.key === 'auto_update_channel');
-  assert.ok(channelRow);
-  assert.doesNotMatch(channelRow.data.inputHtml, /data-action="check-for-updates"/);
-});
-
 test('TypeSafe secret is omitted unless changed and explicit reset disables the service', async (t) => {
   const page = await loadSettingsPage(t, [
     { key: 'TypeSafe_api_key', value: '', default_value: '', value_type: 'string', configured: true },

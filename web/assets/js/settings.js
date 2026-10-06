@@ -40,7 +40,6 @@ function projectCustomPricingDefaults(pricing) {
   return projected;
 }
 
-const containerImageManagedDisabledReason = 'container_image_managed';
 const advancedSettingKeys = new Set([
   'typesafe_enabled', 'typesafe_api_key', 'api_token_login_enabled', 'api_token_show_channels',
   'auto_update_interval_hours', 'auto_update_channel',
@@ -1686,11 +1685,6 @@ function renderSettings(settings) {
     if (!isModalSettingKey(s.key)) continue;
     const target = document.getElementById(s.key);
     if (target) target.value = displayValue;
-    const buttonID = s.key === modelMultimodalFallbackSettingKey
-      ? 'model-multimodal-fallback-btn'
-      : 'model-custom-pricing-btn';
-    const button = document.getElementById(buttonID);
-    if (button) button.disabled = s.editable === false;
     if (s.key === modelMultimodalFallbackSettingKey) updateMultimodalFallbackSummary(displayValue);
     else updateCustomPricingSummary(displayValue);
   }
@@ -1703,8 +1697,7 @@ function renderSettings(settings) {
   for (const g of groups) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
-      groupName: g.name,
-      groupNoticeHtml: ''
+      groupName: g.name
     });
     if (groupRow) tbody.appendChild(groupRow);
 
@@ -1717,8 +1710,7 @@ function renderSettings(settings) {
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
         description: description,
-        inputHtml: renderInput({ ...s, value: displayValue }) + (s.key === 'auto_update_channel' ? renderSettingGroupNotice(g) : ''),
-        resetDisabledAttributes: settingDisabledAttributes(s),
+        inputHtml: renderInput({ ...s, value: displayValue }),
         mobileLabelDescription: t('settings.configItem'),
         mobileLabelValue: t('settings.currentValue'),
         mobileLabelActions: t('common.actions')
@@ -1726,28 +1718,6 @@ function renderSettings(settings) {
       if (row) tbody.appendChild(row);
     }
   }
-}
-
-function renderSettingGroupNotice(group) {
-  const containerManaged = group.settings.some((setting) => (
-    setting.editable === false && setting.disabled_reason === containerImageManagedDisabledReason
-  ));
-  if (!containerManaged) return '';
-
-  return `
-    <div class="settings-group-notice" role="note">
-      <p data-i18n="settings.update.containerManaged">${escapeHtml(t('settings.update.containerManaged'))}</p>
-      <ul>
-        <li><span data-i18n="settings.update.stableImage">${escapeHtml(t('settings.update.stableImage'))}</span>: <code>ghcr.io/caidaoli/ccload:latest</code></li>
-        <li><span data-i18n="settings.update.betaImage">${escapeHtml(t('settings.update.betaImage'))}</span>: <code>ghcr.io/caidaoli/ccload:beta</code></li>
-      </ul>
-      <p data-i18n="settings.update.applyImage">${escapeHtml(t('settings.update.applyImage'))}</p>
-      <code class="settings-group-notice-command">docker compose pull &amp;&amp; docker compose up -d</code>
-    </div>`;
-}
-
-function settingDisabledAttributes(setting) {
-  return setting.editable === false ? 'disabled' : '';
 }
 
 // 初始化事件委托（替代 inline onclick）
@@ -1837,7 +1807,6 @@ function renderInput(setting) {
   const placeholder = oauthBaseURLPlaceholders.get(setting.key);
   const placeholderAttribute = placeholder ? `placeholder="${escapeHtml(placeholder)}"` : '';
   const wideTextInput = setting.key === 'channel_test_content' || oauthBaseURLPlaceholders.has(setting.key);
-  const disabledAttributes = settingDisabledAttributes(setting);
   const numericAttributes = numericInputAttributes(setting);
 
   if (setting.key === globalCooldownRulesSettingKey) {
@@ -1845,7 +1814,7 @@ function renderInput(setting) {
     return `
       <div class="global-cooldown-rules-control">
         <input type="hidden" id="${safeKey}" value="${safeValue}">
-        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules" data-i18n="settings.globalCooldownRules.edit" ${disabledAttributes}>
+        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules" data-i18n="settings.globalCooldownRules.edit">
           ${escapeHtml(t('settings.globalCooldownRules.edit'))}
         </button>
         <span id="global-cooldown-rules-summary" class="global-cooldown-rules-summary">
@@ -1857,8 +1826,8 @@ function renderInput(setting) {
   if (setting.key === 'TypeSafe_api_key') {
     const hint = t(setting.configured ? 'settings.secretConfigured' : 'settings.secretUnconfigured');
     return `<div class="settings-typesafe-control">
-      <input type="text" id="${safeKey}" value="" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(hint)}" aria-label="TypeSafe API Key" class="settings-input settings-input--text" ${disabledAttributes}>
-      <button type="button" class="btn btn-secondary" data-action="test-typesafe" title="${escapeHtml(t('settings.typeSafeTest.hint'))}" ${disabledAttributes}>${escapeHtml(t('settings.typeSafeTest.test'))}</button>
+      <input type="text" id="${safeKey}" value="" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(hint)}" aria-label="TypeSafe API Key" class="settings-input settings-input--text">
+      <button type="button" class="btn btn-secondary" data-action="test-typesafe" title="${escapeHtml(t('settings.typeSafeTest.hint'))}">${escapeHtml(t('settings.typeSafeTest.test'))}</button>
     </div>`;
   }
 
@@ -1868,11 +1837,11 @@ function renderInput(setting) {
       `<option value="${value}" data-i18n="${labelKey}" ${setting.value === value ? 'selected' : ''}>${escapeHtml(t(labelKey))}</option>`
     )).join('');
     const selectHtml = `
-      <select id="${safeKey}" class="settings-input settings-input--select" ${disabledAttributes}>
+      <select id="${safeKey}" class="settings-input settings-input--select">
         ${optionsHtml}
       </select>`;
-    // 更新渠道旁提供手动检测按钮；容器模式（editable=false）不渲染、后端同样拒绝。
-    if (setting.key === 'auto_update_channel' && setting.editable !== false) {
+    // 更新渠道旁提供手动检测按钮（容器版后端不返回该配置项）。
+    if (setting.key === 'auto_update_channel') {
       return `
         <div class="settings-update-channel-control">
           ${selectHtml}
@@ -1885,7 +1854,7 @@ function renderInput(setting) {
   }
 
   if (byteSettingKeys.has(setting.key)) {
-    return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
+    return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes}>`;
   }
 
   switch (setting.value_type) {
@@ -1894,19 +1863,19 @@ function renderInput(setting) {
       return `
         <div class="settings-bool-group">
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} ${disabledAttributes}> <span data-i18n="common.enable">${t('common.enable')}</span>
+            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''}> <span data-i18n="common.enable">${t('common.enable')}</span>
           </label>
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} ${disabledAttributes}> <span data-i18n="common.disable">${t('common.disable')}</span>
+            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''}> <span data-i18n="common.disable">${t('common.disable')}</span>
           </label>
         </div>`;
     case 'int':
     case 'duration':
-      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes}>`;
     case 'float':
-      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes}>`;
     default:
-      return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${wideTextInput ? ' settings-input--wide' : ''}" ${disabledAttributes}>`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${wideTextInput ? ' settings-input--wide' : ''}">`;
   }
 }
 

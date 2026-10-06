@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,18 +73,7 @@ func TestServerRestartFuncIsConcurrentAndInstanceScoped(t *testing.T) {
 	}
 }
 
-func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[string]any {
-	t.Helper()
-	for _, setting := range settings {
-		if setting["key"] == key {
-			return setting
-		}
-	}
-	t.Fatalf("setting %q not found", key)
-	return nil
-}
-
-func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
+func TestAdminContainerUpdateSettingsHidden(t *testing.T) {
 	t.Setenv("CCLOAD_CONTAINER", "1")
 
 	server, store, cleanup := setupAdminTestServer(t)
@@ -93,10 +83,9 @@ func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
 		t.Fatalf("LoadDefaults failed: %v", err)
 	}
 
-	const disabledReason = "container_image_managed"
 	updateKeys := []string{autoUpdateIntervalSettingKey, autoUpdateChannelSettingKey}
 
-	t.Run("list and get expose disabled state", func(t *testing.T) {
+	t.Run("list and get hide container-managed settings", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
 		server.AdminListSettings(c)
 
@@ -105,24 +94,18 @@ func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
 		}
 
 		resp := mustParseAPIResponse[[]map[string]any](t, w.Body.Bytes())
-		for _, key := range updateKeys {
-			setting := findAdminSetting(t, resp.Data, key)
-			if editable, ok := setting["editable"].(bool); !ok || editable {
-				t.Fatalf("setting %q editable=%v, want false", key, setting["editable"])
+		for _, setting := range resp.Data {
+			if slices.Contains(updateKeys, setting["key"].(string)) {
+				t.Fatalf("list exposes container-managed setting %v", setting["key"])
 			}
-			if reason := setting["disabled_reason"]; reason != disabledReason {
-				t.Fatalf("setting %q disabled_reason=%v, want %q", key, reason, disabledReason)
-			}
+		}
 
+		for _, key := range updateKeys {
 			c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/settings/"+key, nil))
 			c.Params = gin.Params{{Key: "key", Value: key}}
 			server.AdminGetSetting(c)
-			if w.Code != http.StatusOK {
-				t.Fatalf("get %q status=%d, want %d body=%s", key, w.Code, http.StatusOK, w.Body.String())
-			}
-			view := mustParseAPIResponse[map[string]any](t, w.Body.Bytes()).Data
-			if view["editable"] != false || view["disabled_reason"] != disabledReason {
-				t.Fatalf("get %q view=%v, want disabled container view", key, view)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("get %q status=%d, want %d body=%s", key, w.Code, http.StatusNotFound, w.Body.String())
 			}
 		}
 	})
