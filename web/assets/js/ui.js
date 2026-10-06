@@ -625,16 +625,32 @@ window.WebAuth = window.WebAuth || {
     }
   }
 
-  function createBrandWordmark() {
+  // 顶栏 Logo 内联渲染：外部 SVG（img / use href）每次切页都要重新取文件解析，
+  // 顶栏先出现、Logo 后补上，表现为切页时 Logo 闪动。图形与 /web/brand-*.svg 保持一致。
+  const BRAND_MARK_SVG = '<defs><linearGradient id="topbar-brand-gradient" x1="0" y1="0" x2="0.82" y2="1">'
+    + '<stop offset="0" stop-color="#1d9bf0"/><stop offset="0.55" stop-color="#367df4"/><stop offset="1" stop-color="#7c3aed"/>'
+    + '</linearGradient><mask id="topbar-brand-c-mask"><rect width="112" height="72" fill="#000"/>'
+    + '<circle cx="49" cy="36" r="30" fill="#fff"/><circle cx="49" cy="36" r="16" fill="#000"/><path d="M52 36 90 4v64Z" fill="#000"/>'
+    + '</mask></defs>'
+    + '<rect x="19" y="6" width="60" height="60" fill="url(#topbar-brand-gradient)" mask="url(#topbar-brand-c-mask)"/>'
+    + '<path fill="url(#topbar-brand-gradient)" fill-rule="evenodd" d="M59.4 36c4-4 8-8 12-11 8-4 16 2 16 11s-8 15-16 11c-4-3-8-7-12-11Zm17-4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/>';
+
+  const BRAND_WORDMARK_SVG = '<defs><linearGradient id="topbar-wordmark-gradient" x1="0" y1="0" x2="1" y2="1">'
+    + '<stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient></defs>'
+    + '<g font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="30" font-style="italic" font-weight="900">'
+    + '<text x="4" y="24.5" fill="currentColor" textLength="34" lengthAdjust="spacingAndGlyphs">cc</text>'
+    + '<text x="40" y="24.5" fill="#2563eb" textLength="17" lengthAdjust="spacingAndGlyphs">L</text>'
+    + '<circle cx="68.5" cy="16" r="8.5" fill="url(#topbar-wordmark-gradient)"/>'
+    + '<path d="M70.7 3.2 64 15.4h3.9L66 28.8l8-14.7h-4.2Z" fill="#fbbf24" transform="rotate(34.6 68.5 16)"/>'
+    + '<text x="80" y="24.5" fill="#2563eb" textLength="46" lengthAdjust="spacingAndGlyphs">ad</text></g>'
+    + '<text x="0" y="35" fill="#2563eb" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" font-weight="700" transform="translate(6.5 0) scale(.867 1)">API Load Balancer &amp; Proxy</text>';
+
+  function createInlineBrandSVG(className, viewBox, markup) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    el.setAttribute('viewBox', '0 0 132 36');
+    el.setAttribute('viewBox', viewBox);
     el.setAttribute('aria-hidden', 'true');
-    el.classList.add('brand-wordmark');
-    use.setAttribute('href', '/web/brand-wordmark.svg#brand-wordmark');
-    use.setAttribute('width', '132');
-    use.setAttribute('height', '36');
-    el.appendChild(use);
+    el.classList.add(className);
+    el.innerHTML = markup;
     return el;
   }
 
@@ -642,8 +658,8 @@ window.WebAuth = window.WebAuth || {
     const bar = h('header', { class: 'topbar' });
 
     // 图标与字标独立复用；活动动画层只属于图标
-    const iconImg = h('img', { class: 'brand-mark', src: '/web/brand-mark.svg', alt: '' });
-    const wordmark = createBrandWordmark();
+    const iconImg = createInlineBrandSVG('brand-mark', '8 6 88 60', BRAND_MARK_SVG);
+    const wordmark = createInlineBrandSVG('brand-wordmark', '0 0 132 36', BRAND_WORDMARK_SVG);
     const speedLines = h('span', { class: 'brand-speed-lines', 'aria-hidden': 'true' }, [
       h('i'), h('i'), h('i'), h('i'), h('i')
     ]);
@@ -705,10 +721,15 @@ window.WebAuth = window.WebAuth || {
     const langSwitcher = window.i18n ? window.i18n.createLanguageSwitcher() : null;
     const themeSwitcher = buildThemeSwitcher();
 
+    const tools = h('div', { class: 'topbar-tools' }, [
+      themeSwitcher,
+      langSwitcher && h('span', { class: 'topbar-tools-sep', 'aria-hidden': 'true' }),
+      langSwitcher
+    ].filter(Boolean));
+
     const right = h('div', { class: 'topbar-right' }, [
       versionGroup,
-      themeSwitcher,
-      langSwitcher,
+      tools,
       h('button', {
         id: 'auth-btn',
         class: 'btn btn-secondary btn-sm',
@@ -820,9 +841,20 @@ window.WebAuth = window.WebAuth || {
     const mobileBtn = document.getElementById('mobile-menu-btn');
     if (mobileBtn) mobileBtn.style.display = 'none';
 
-    // 插入顶部条
+    // 插入顶部条；角色变化后重复调用时原位替换
     const topbar = buildTopbar(activeKey);
-    document.body.appendChild(topbar);
+    const existing = document.querySelector('body > .topbar');
+    if (existing) existing.replaceWith(topbar);
+    else document.body.appendChild(topbar);
+
+    // 窄屏导航横向滚动时，让当前页可见
+    const nav = topbar.querySelector('.topnav');
+    const activeLink = nav && nav.querySelector('.topnav-link.active');
+    if (activeLink && nav.scrollWidth > nav.clientWidth) {
+      const navRect = nav.getBoundingClientRect();
+      const linkRect = activeLink.getBoundingClientRect();
+      nav.scrollLeft += linkRect.left - navRect.left - (navRect.width - linkRect.width) / 2;
+    }
 
     // 背景动效
     injectBackground();
@@ -832,6 +864,7 @@ window.WebAuth = window.WebAuth || {
 
     // 启动活动请求指示器轮询
     if (isLoggedIn() && !window.isAPITokenRole()) startActiveRequestsPolling();
+    else stopActiveRequestsPolling();
   }
 
   // 供其他模块订阅活动请求数据（全站唯一轮询源，避免重复请求）
@@ -1075,10 +1108,29 @@ window.WebAuth = window.WebAuth || {
     return true;
   }
 
+  // defer 脚本执行期间 readyState 已是 interactive 但 DOMContentLoaded 未触发，
+  // 只能在 ui.js 自身执行时注册监听；导航计时用于识别已触发过的情况。
+  const domContentLoaded = new Promise((resolve) => {
+    const nav = typeof performance !== 'undefined' && performance.getEntriesByType
+      ? performance.getEntriesByType('navigation')[0]
+      : null;
+    if (document.readyState === 'complete' || (nav && nav.domContentLoadedEventEnd > 0)) {
+      resolve();
+      return;
+    }
+    document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
+  });
+
   function initPageBootstrap(options = {}) {
     const run = typeof options.run === 'function' ? options.run : () => {};
 
     const execute = async () => {
+      // 顶栏先按登录时缓存的角色立即渲染，不等 session 往返，否则每次切页顶栏都会闪现
+      const cachedRole = window.getWebRole();
+      if (options.topbarKey && typeof window.initTopbar === 'function') {
+        window.initTopbar(options.topbarKey);
+      }
+
 	  const session = await window.fetchDataWithAuth('/dashboard/session');
 	  if (session && session.role) localStorage.setItem(window.WebAuth.ROLE_KEY, session.role);
       window.webSession = session;
@@ -1092,10 +1144,12 @@ window.WebAuth = window.WebAuth || {
         window.i18n.translatePage();
       }
 
-      if (options.topbarKey && typeof window.initTopbar === 'function') {
+      if (options.topbarKey && typeof window.initTopbar === 'function' && window.getWebRole() !== cachedRole) {
         window.initTopbar(options.topbarKey);
       }
 
+      // 页面脚本之后的 defer 依赖（如 echarts）在 DOMContentLoaded 前才保证执行完
+      await domContentLoaded;
       await run();
     };
 

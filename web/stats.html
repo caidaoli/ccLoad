@@ -15,7 +15,6 @@
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
-  <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/filter-state.js?v=__VERSION__"></script>
@@ -25,6 +24,8 @@
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/stats.js?v=__VERSION__"></script>
+  <!-- echarts 体积大，放在页面脚本之后：顶栏先渲染，避免其执行推迟首帧顶栏 -->
+  <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">

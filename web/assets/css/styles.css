@@ -185,13 +185,14 @@
   --timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* 布局 */
-  --topbar-height: 64px;
+  --topbar-height: 56px;
   --topbar-offset: var(--topbar-height);
   --container-max-width: 100%;
 
   /* Topbar 前景色（提高对比度） */
   --topbar-fg: var(--neutral-900);
   --topbar-fg-muted: var(--neutral-700);
+  --topbar-accent: var(--primary-600);
 }
 
 html[data-theme="light"] {
@@ -239,6 +240,7 @@ html[data-theme="dark"] {
   --filter-dropdown-item-active-bg: rgba(255, 255, 255, 0.12);
   --topbar-fg: var(--neutral-900);
   --topbar-fg-muted: var(--neutral-600);
+  --topbar-accent: #60a5fa;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -283,6 +285,7 @@ html[data-theme="dark"] {
     --filter-dropdown-item-active-bg: rgba(255, 255, 255, 0.12);
     --topbar-fg: var(--neutral-900);
     --topbar-fg-muted: var(--neutral-600);
+    --topbar-accent: #60a5fa;
   }
 }
 
@@ -526,9 +529,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 var(--space-6);
-  background: var(--glass-bg);
-  border-bottom: 1px solid var(--glass-border);
+  gap: var(--space-6);
+  padding: 0 var(--space-5);
+  background: color-mix(in srgb, var(--glass-bg) 92%, transparent);
+  -webkit-backdrop-filter: saturate(1.6) blur(12px);
+  backdrop-filter: saturate(1.6) blur(12px);
+  border-bottom: 1px solid var(--surface-border);
+  box-shadow: 0 6px 16px -12px rgba(15, 23, 42, 0.18);
   z-index: 300;
 }
 
@@ -742,57 +749,147 @@ body {
 
 .topnav {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: 1;
+  align-self: stretch;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1 1 auto;
   min-width: 0;
-  justify-content: center;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
+.topnav::-webkit-scrollbar {
+  display: none;
+}
+
+/* 链接撑满导航行高，::after 指示线贴在顶栏底边 */
 .topnav-link {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: .5rem;
-  padding: .5rem .75rem;
-  border-radius: var(--radius-lg);
-  color: var(--topbar-fg);
+  gap: 6px;
+  padding: 0 11px;
+  color: var(--topbar-fg-muted);
   text-decoration: none;
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
   white-space: nowrap;
-  transition: background var(--duration-fast) var(--timing-function), color var(--duration-fast);
+  transition: color var(--duration-fast) var(--timing-function);
+}
+
+.topnav-link svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  opacity: 0.75;
+}
+
+.topnav-link::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background var(--duration-fast) var(--timing-function);
 }
 
 .topnav-link:hover {
-  background: var(--surface-hover);
   color: var(--topbar-fg);
 }
 
+.topnav-link:hover::after {
+  background: var(--surface-border-strong);
+}
+
 .topnav-link.active {
-  background: var(--surface-active);
-  color: var(--topbar-fg);
-  border: 1px solid var(--surface-border);
+  color: var(--topbar-accent);
+}
+
+.topnav-link.active svg {
+  opacity: 1;
+}
+
+.topnav-link.active::after {
+  background: currentColor;
+}
+
+.topnav-link:focus-visible {
+  outline: 2px solid var(--topbar-accent);
+  outline-offset: -4px;
+  border-radius: var(--radius-sm);
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 10px;
   flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* 主题与语言切换合并为一个分段工具组 */
+.topbar-tools {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  background: var(--surface-bg);
+}
+
+.topbar-tools-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--surface-border);
+}
+
+.topbar-tools .theme-trigger,
+.topbar-tools .lang-dropdown-trigger {
+  height: 26px;
+  min-width: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--topbar-fg-muted);
+}
+
+.topbar-tools .theme-trigger:hover,
+.topbar-tools .theme-switcher.open .theme-trigger,
+.topbar-tools .lang-dropdown-trigger:hover {
+  background: var(--surface-hover);
+  color: var(--topbar-fg);
+}
+
+.topbar-right #auth-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-weight: var(--font-medium);
 }
 
 /* 版本+GitHub组 */
 .version-group {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
+  height: 32px;
+  padding: 0 2px 0 10px;
+  border: 1px solid var(--surface-border);
+  border-radius: 999px;
+  background: var(--surface-bg);
 }
 
 /* 版本徽章 - 轻量纯文本样式 */
 .version-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 6px;
+  padding: 0 6px 0 0;
   cursor: pointer;
   font-size: 12px;
   font-family: monospace;
@@ -824,9 +921,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
   color: var(--neutral-500);
   transition: color 0.2s, background 0.2s;
 }
@@ -2101,23 +2198,7 @@ body {
 
 /* ===== 响应式设计 ===== */
 @media (max-width: 768px) {
-  :root {
-    --topbar-offset: 144px;
-  }
-
-  .topbar {
-    height: auto;
-    min-height: var(--topbar-height);
-    padding: 8px var(--space-3);
-    gap: var(--space-2);
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
   .topbar-left {
-    min-width: 0;
-    order: 1;
-    flex: 1 1 0;
     gap: var(--space-2);
   }
 
@@ -2169,56 +2250,17 @@ body {
     top: 17px;
   }
 
-  .topnav {
-    order: 3;
-    flex: 0 0 100%;
-    width: 100%;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-    overflow-x: visible;
-    white-space: normal;
-    gap: 6px 4px;
-    padding-bottom: 0;
-  }
-
-  .topnav::-webkit-scrollbar {
-    display: none;
-  }
-
   .topnav-link {
-    gap: 4px;
-    padding: 6px 8px;
+    padding: 0 10px;
     font-size: 13px;
-    white-space: nowrap;
-  }
-
-  .topnav-link svg {
-    width: 16px;
-    height: 16px;
-    flex: 0 0 auto;
   }
 
   .topbar-right {
-    order: 2;
-    margin-left: 0;
-    flex: 0 0 auto;
-    gap: 4px;
-    flex-wrap: nowrap;
-    justify-content: flex-end;
-  }
-
-  .topbar-right .btn {
-    padding: 6px 8px;
-    font-size: var(--text-xs);
-    white-space: nowrap;
+    gap: 6px;
   }
 
   .version-group {
-    gap: 0;
-  }
-
-  .lang-dropdown-trigger {
-    padding: 6px;
+    padding-left: 8px;
   }
 
   .main-content {
@@ -2503,10 +2545,6 @@ body {
 }
 
 @media (max-width: 480px) {
-  :root {
-    --topbar-offset: 144px;
-  }
-
   .grid-cols-4,
   .grid-cols-3,
   .grid-cols-2 {
@@ -6738,62 +6776,52 @@ body.web-role-api-token .filter-group--auth-token {
   }
 }
 
-@media (max-width: 1800px) and (min-width: 769px) {
-  .topbar {
-    padding: 0 var(--space-4);
-    gap: var(--space-3);
-  }
-
-  .topnav {
-    justify-content: center;
-    overflow-x: auto;
-    scrollbar-width: thin;
-  }
-
-  .topnav-link {
-    gap: 6px;
-    padding: 7px 9px;
-    font-size: var(--text-sm);
-  }
-}
-
-@media (max-width: 1280px) and (min-width: 769px) {
+/* 窄屏导航放不进一行：品牌与工具占第一行，导航独占第二行横向滚动 */
+@media (max-width: 1280px) {
   :root {
-    --topbar-offset: 108px;
+    --topbar-nav-row-height: 44px;
+    --topbar-offset: calc(var(--topbar-height) + var(--topbar-nav-row-height));
   }
 
   .topbar {
+    --topbar-pad-x: var(--space-4);
     height: auto;
-    min-height: var(--topbar-height);
     flex-wrap: wrap;
-    align-items: center;
-    padding: 8px var(--space-4);
+    padding: 0 var(--topbar-pad-x);
+    row-gap: 0;
   }
 
   .topbar-left {
     order: 1;
     flex: 1 1 0;
+    height: var(--topbar-height);
   }
 
   .topbar-right {
     order: 2;
-    margin-left: auto;
-    gap: var(--space-2);
   }
 
   .topnav {
     order: 3;
-    flex: 0 0 100%;
-    width: 100%;
-    justify-content: flex-start;
-    overflow-x: auto;
-    padding-bottom: 2px;
+    flex: 0 0 auto;
+    width: calc(100% + 2 * var(--topbar-pad-x));
+    height: var(--topbar-nav-row-height);
+    margin: 0 calc(-1 * var(--topbar-pad-x));
+    padding: 0 calc(var(--topbar-pad-x) - 10px);
+    border-top: 1px solid var(--surface-border);
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
   }
+}
 
-  .topnav-link {
-    padding: 6px 8px;
+@media (max-width: 768px) {
+  .topbar {
+    --topbar-pad-x: var(--space-3);
+    gap: 0 var(--space-2);
   }
+}
 
+@media (min-width: 769px) and (max-width: 1280px) {
   .main-content {
     padding: var(--space-2);
   }
