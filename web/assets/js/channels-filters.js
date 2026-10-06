@@ -38,18 +38,45 @@ function isExactChannelNameFilter(value) {
   return isExactChannelFilterValue(value, allAvailableChannelNames);
 }
 
-function filterChannels() {
-  const filtered = channels.slice();
+function channelListPriority(channel) {
+  return Number(channel.effective_priority ?? channel.priority) || 0;
+}
 
-  // 排序：优先使用 effective_priority（健康度模式），否则使用 priority
-  filtered.sort((a, b) => {
-    const prioA = a.effective_priority ?? a.priority;
-    const prioB = b.effective_priority ?? b.priority;
-    if (prioB !== prioA) {
-      return prioB - prioA;
-    }
-    return a.name.localeCompare(b.name);
-  });
+function compareChannelText(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+// 与服务端 sortChannelList 同一规则：先按排序键，平局依次按优先级降序、名称升序、ID 升序。
+// 本地改动（如行内改优先级）后重排当前页，结果与重新请求一致。
+function compareChannelsForList(a, b, sort = channelsSort) {
+  let result;
+  if (sort.key === 'name') {
+    result = compareChannelText(a.name, b.name);
+  } else if (sort.key === 'enabled') {
+    result = Number(Boolean(a.enabled)) - Number(Boolean(b.enabled));
+  } else {
+    result = channelListPriority(a) - channelListPriority(b);
+  }
+  if (result !== 0) return sort.order === 'desc' ? -result : result;
+  const priorityDiff = channelListPriority(b) - channelListPriority(a);
+  if (priorityDiff !== 0) return priorityDiff;
+  return compareChannelText(a.name, b.name) || (Number(a.id) - Number(b.id));
+}
+
+function toggleChannelsSort(key) {
+  const order = channelsSort.key === key
+    ? (channelsSort.order === 'asc' ? 'desc' : 'asc')
+    : defaultChannelSortOrder(key);
+  channelsSort = normalizeChannelsSort({ key, order });
+  channelsCurrentPage = 1;
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+  loadChannels();
+}
+
+function filterChannels() {
+  const filtered = channels.slice().sort((a, b) => compareChannelsForList(a, b));
 
   filteredChannels = filtered; // 当前页筛选结果（服务端已过滤）
   renderChannels(filtered);
@@ -234,5 +261,5 @@ function setupFilterListeners() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { setupFilterListeners };
+  module.exports = { setupFilterListeners, compareChannelsForList };
 }

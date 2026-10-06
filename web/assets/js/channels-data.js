@@ -14,6 +14,8 @@ function buildChannelsListParams() {
   if (filters.model && filters.model !== 'all') {
     params.set(filters.modelExact ? 'model' : 'model_like', filters.model);
   }
+  params.set('sort', channelsSort.key);
+  params.set('order', channelsSort.order);
   params.set('limit', String(channelsPageSize));
   params.set('offset', String((channelsCurrentPage - 1) * channelsPageSize));
   return params;

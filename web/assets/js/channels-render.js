@@ -1144,25 +1144,66 @@ function buildAntigravityCreditsHtml(credits) {
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
-function buildCodeBuddyCreditsHtml(credits) {
+// 额度窗口行：左侧名称+金额，右侧主值+时间，悬浮展开明细；percent 为 null 时不画进度条。
+function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null }) {
+  const id = escapeChannelRefreshText(tooltipID);
+  let track = '';
+  if (percent !== null) {
+    const clamped = Math.min(100, Math.max(0, percent));
+    track = `<div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(formatOAuthUsagePercent(clamped))}">
+        <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(clamped)}" style="width:${clamped}%"></span>
+      </div>`;
+  }
+  return `<div class="ch-oauth-usage__window">
+      <div class="ch-oauth-usage__meta">
+        <span class="ch-oauth-usage__summary" tabindex="0" aria-describedby="${id}">
+          <span class="ch-oauth-usage__heading">
+            <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
+            ${amount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(amount)}</span>` : ''}
+          </span>
+          <span class="ch-oauth-usage__details">
+            ${value ? `<span class="ch-oauth-usage__percent">${escapeChannelRefreshText(value)}</span>` : ''}
+            ${time ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(time)}</span>` : ''}
+          </span>
+          <span id="${id}" class="ch-oauth-usage__tooltip" role="tooltip">
+            ${detailLines.filter(Boolean).map(line => `<span class="ch-oauth-usage__tooltip-line">${escapeChannelRefreshText(line)}</span>`).join('')}
+          </span>
+        </span>
+      </div>
+      ${track}
+    </div>`;
+}
+
+function oauthUsageTooltipID(prefix, channelID, index) {
+  return `${prefix}-${String(channelID).replace(/[^a-zA-Z0-9_-]/g, '')}-${index}`;
+}
+
+function buildCodeBuddyCreditsHtml(credits, channelID) {
   const remain = Number(credits?.remain);
   if (!Number.isFinite(remain)) return '';
   const formatCredits = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const total = credits?.total;
   const used = credits?.used;
-  const usageBar = !credits?.unlimited && Number.isFinite(total) && Number.isFinite(used)
-    ? buildManagementUsageBar({
-      percent: total > 0 ? remain / total * 100 : 0,
-      used: formatCredits(used),
-      total: formatCredits(total)
-    }) : '';
-  if (usageBar) return usageBar;
+  if (!credits?.unlimited && Number.isFinite(total) && Number.isFinite(used)) {
+    const label = window.t('channels.codebuddy.credits');
+    const percent = total > 0 ? remain / total * 100 : 0;
+    const percentText = formatOAuthUsagePercent(Math.min(100, Math.max(0, percent)));
+    const usageText = window.t('channels.management.usage', { used: formatCredits(used), total: formatCredits(total) });
+    const availableText = window.t('channels.management.available', { percent: percentText });
+    return buildOAuthUsageWindowHtml({
+      tooltipID: oauthUsageTooltipID('ch-codebuddy-credits-tooltip', channelID, 0),
+      label,
+      amount: `${formatCredits(used)}/${formatCredits(total)}`,
+      value: formatCredits(Math.max(0, remain)),
+      detailLines: [label, usageText, availableText],
+      ariaLabel: availableText,
+      percent
+    });
+  }
   const text = credits?.unlimited
     ? window.t('channels.codebuddy.unlimitedCredits')
     : window.t('channels.oauth.codeBuddyCredits', { remain: formatCredits(Math.max(0, remain)) });
-  return `<div class="ch-management__balance">
-    <div class="ch-management__summary"><div class="ch-management__meta ch-management__meta--remaining"><span class="ch-management__amount">${escapeChannelRefreshText(text)}</span></div></div>
-  </div>`;
+  return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
 const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
@@ -1265,28 +1306,16 @@ function buildOAuthUsageStatusHtml(channel) {
       window.t('channels.oauth.usageDetailRemaining', { percent }),
       resetAt ? window.t('channels.oauth.usageReset', { time: resetAt }) : ''
     ].filter(Boolean);
-    const tooltipID = `ch-oauth-usage-tooltip-${String(channel.id).replace(/[^a-zA-Z0-9_-]/g, '')}-${windowIndex}`;
-    const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });
-    return `<div class="ch-oauth-usage__window">
-      <div class="ch-oauth-usage__meta">
-        <span class="ch-oauth-usage__summary" tabindex="0" aria-describedby="${escapeChannelRefreshText(tooltipID)}">
-          <span class="ch-oauth-usage__heading">
-            <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
-            ${compactAmount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(compactAmount)}</span>` : ''}
-          </span>
-          <span class="ch-oauth-usage__details">
-            <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(compactRemaining)}</span>
-            ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
-          </span>
-          <span id="${escapeChannelRefreshText(tooltipID)}" class="ch-oauth-usage__tooltip" role="tooltip">
-            ${detailLines.map(line => `<span class="ch-oauth-usage__tooltip-line">${escapeChannelRefreshText(line)}</span>`).join('')}
-          </span>
-        </span>
-      </div>
-      <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
-        <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
-      </div>
-    </div>`;
+    return buildOAuthUsageWindowHtml({
+      tooltipID: oauthUsageTooltipID('ch-oauth-usage-tooltip', channel.id, windowIndex),
+      label,
+      amount: compactAmount,
+      value: compactRemaining,
+      time: resetAt,
+      detailLines,
+      ariaLabel: window.t('channels.oauth.usageRemaining', { label, percent }),
+      percent: remaining
+    });
   });
   const notice = isCursor
     ? formatCursorUsageNotice(state.data?.display_message)
@@ -1310,7 +1339,7 @@ function buildOAuthUsageStatusHtml(channel) {
     ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
     ${isCodex ? (buildCodexResetCreditsHtml(state.data, state, channel.id) || buildCodexPurchasedCreditsHtml(state.data)) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
-    ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits) : ''}
+    ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, channel.id) : ''}
     ${codeBuddyCheckinNotice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(codeBuddyCheckinNotice)}</div>` : ''}
     ${codeBuddyCheckinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(codeBuddyCheckinError)}">${escapeChannelRefreshText(codeBuddyCheckinError)}</div>` : ''}
     ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
@@ -1325,7 +1354,7 @@ const MANAGEMENT_ACCOUNT_CHECKIN_STATUSES = [
 
 function buildManagementActionButton(action, channelID, labelKey, loadingKey, loading) {
   const text = loading ? window.t(loadingKey) : window.t(labelKey);
-  return `<button type="button" class="ch-management__action channel-action-btn" data-action="${action}" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="${action}" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
 }
 
 function formatManagementAmount(value, unit) {
@@ -1345,68 +1374,62 @@ function formatManagementCheckinStatus(status) {
 }
 
 // 只有上游同时给出已用、总额和可用百分比才画进度条,缺失用量只展示剩余额度。
-function buildManagementUsageBar(usage) {
-  const percent = Number(usage?.percent);
-  const used = String(usage?.used || '').trim();
-  const total = String(usage?.total || '').trim();
-  if (!Number.isFinite(percent) || !used || !total) return '';
-  const clamped = Math.min(100, Math.max(0, percent));
-  const percentText = formatOAuthUsagePercent(clamped);
-  const usageText = window.t('channels.management.usage', { used, total });
-  const availableText = window.t('channels.management.available', { percent: percentText });
-  return `<div class="ch-management__usage">
-    <div class="ch-management__usage-meta">
-      <span class="ch-management__usage-text" title="${escapeChannelRefreshText(usageText)}">${escapeChannelRefreshText(usageText)}</span>
-      <span class="ch-management__usage-percent">${escapeChannelRefreshText(availableText)}</span>
-    </div>
-    <div class="ch-management__track" role="progressbar" aria-label="${escapeChannelRefreshText(availableText)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percentText)}">
-      <span class="ch-management__fill ch-management__fill--${oauthUsageLevel(clamped)}" style="width:${clamped}%"></span>
-    </div>
-  </div>`;
+function buildManagementWindowHtml(channelID, index, { label, remaining, used, total, percent, sampledAt }) {
+  const hasAmounts = Boolean(used && total);
+  const numericPercent = Number(percent);
+  const hasUsage = hasAmounts && Number.isFinite(numericPercent);
+  const percentText = hasUsage ? formatOAuthUsagePercent(Math.min(100, Math.max(0, numericPercent))) : '';
+  const availableText = hasUsage ? window.t('channels.management.available', { percent: percentText }) : '';
+  return buildOAuthUsageWindowHtml({
+    tooltipID: oauthUsageTooltipID('ch-management-tooltip', channelID, index),
+    label,
+    // 只有余额时金额紧跟名称，右侧只留采样时间。
+    amount: hasAmounts ? `${used}/${total}` : remaining,
+    value: hasAmounts ? (remaining || (hasUsage ? `${percentText}%` : '')) : '',
+    time: sampledAt,
+    detailLines: [
+      label,
+      hasAmounts ? window.t('channels.management.usage', { used, total }) : '',
+      remaining ? window.t('channels.management.remaining', { amount: remaining }) : '',
+      availableText,
+      sampledAt ? window.t('channels.management.sampledAt', { time: sampledAt }) : ''
+    ],
+    ariaLabel: availableText,
+    percent: hasUsage ? numericPercent : null
+  });
 }
 
-function buildManagementSubscriptionRows(subscriptions, unit) {
-  const entries = Array.isArray(subscriptions) ? subscriptions : [];
-  return entries.map(entry => {
-    const name = String(entry?.name || '').trim();
-    const windowName = String(entry?.window || '').trim();
-    const label = [name, windowName].filter(Boolean).join(' · ') || window.t('channels.management.subscription');
-    const used = formatManagementAmount(entry?.used_usd, unit);
-    const total = formatManagementAmount(entry?.limit_usd, unit);
-    const bar = buildManagementUsageBar({ percent: entry?.available_percent, used, total });
-    const detail = bar || !used || !total
-      ? ''
-      : `<span class="ch-management__usage-text">${escapeChannelRefreshText(window.t('channels.management.usage', { used, total }))}</span>`;
-    if (!bar && !detail) return '';
-    return `<div class="ch-management__subscription">
-      <span class="ch-management__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
-      ${bar}${detail}
-    </div>`;
-  }).filter(Boolean).join('');
-}
-
-function buildManagementBalanceHtml(balance) {
+function buildManagementBalanceRows(channelID, balance) {
   const unit = balance?.unit;
   const remaining = formatManagementAmount(balance?.remaining, unit);
-  const sampledAt = formatXAIUsageReset(balance?.sampled_at);
-  const usageBar = buildManagementUsageBar({
-    percent: balance?.available_percent,
-    used: formatManagementAmount(balance?.used, unit),
-    total: formatManagementAmount(balance?.total, unit)
+  const used = formatManagementAmount(balance?.used, unit);
+  const total = formatManagementAmount(balance?.total, unit);
+  const rows = [];
+  if (remaining || (used && total)) {
+    rows.push(buildManagementWindowHtml(channelID, 0, {
+      label: window.t('channels.management.balance'),
+      remaining,
+      used,
+      total,
+      percent: balance?.available_percent,
+      sampledAt: formatXAIUsageReset(balance?.sampled_at)
+    }));
+  }
+  const subscriptions = Array.isArray(balance?.subscriptions) ? balance.subscriptions : [];
+  subscriptions.forEach((entry, index) => {
+    const subUsed = formatManagementAmount(entry?.used_usd, unit);
+    const subTotal = formatManagementAmount(entry?.limit_usd, unit);
+    if (!subUsed || !subTotal) return;
+    const name = String(entry?.name || '').trim();
+    const windowName = String(entry?.window || '').trim();
+    rows.push(buildManagementWindowHtml(channelID, index + 1, {
+      label: [name, windowName].filter(Boolean).join(' · ') || window.t('channels.management.subscription'),
+      used: subUsed,
+      total: subTotal,
+      percent: entry?.available_percent
+    }));
   });
-  const subscriptions = buildManagementSubscriptionRows(balance?.subscriptions, unit);
-  if (!remaining && !usageBar && !subscriptions) return '';
-  const balanceSummary = [
-    sampledAt ? `<span class="ch-management__sampled">${escapeChannelRefreshText(window.t('channels.management.sampledAt', { time: sampledAt }))}</span>` : '',
-    remaining ? `<div class="ch-management__meta ch-management__meta--remaining">
-      <span class="ch-management__label">${escapeChannelRefreshText(window.t('channels.management.remaining'))}</span>
-      <span class="ch-management__amount">${escapeChannelRefreshText(remaining)}</span>
-    </div>` : ''
-  ].filter(Boolean).join('');
-  return `<div class="ch-management__balance">
-    ${balanceSummary ? `<div class="ch-management__summary">${balanceSummary}</div>` : ''}
-    ${usageBar}${subscriptions}
-  </div>`;
+  return rows;
 }
 
 function buildManagementAccountStatusHtml(channel) {
@@ -1451,7 +1474,7 @@ function buildManagementAccountStatusHtml(channel) {
   }
 
   if (checkedInAt) {
-    buttons.push(`<span class="ch-management__checkin-time" role="status">${escapeChannelRefreshText(checkedInAt)}</span>`);
+    buttons.push(`<span class="ch-oauth-usage__reset" role="status">${escapeChannelRefreshText(checkedInAt)}</span>`);
   }
 
   const balanceError = balanceState?.status === 'error' ? String(balanceState.error || '').trim() : '';
@@ -1459,19 +1482,19 @@ function buildManagementAccountStatusHtml(channel) {
   const balanceData = balanceState?.status === 'ready'
     ? balanceState.data?.balance
     : (balanceState ? null : account?.balance);
-  const balanceBody = buildManagementBalanceHtml(balanceData);
+  const balanceRows = buildManagementBalanceRows(channel.id, balanceData);
 
   const checkinSummary = checkinStatus === 'already_checked'
     || checkinStatus === 'skipped_disabled'
     ? ''
     : [statusText, rewardText].filter(Boolean).join(' · ');
 
-  return `<div class="ch-management">
-    <div class="ch-management__toolbar">${buttons.join('')}</div>
-    ${balanceError ? `<div class="ch-management__error" role="status" title="${escapeChannelRefreshText(balanceError)}">${escapeChannelRefreshText(balanceError)}</div>` : ''}
-    ${balanceBody}
-    ${checkinSummary ? `<div class="ch-management__checkin" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
-    ${checkinError ? `<div class="ch-management__error" role="status" title="${escapeChannelRefreshText(checkinError)}">${escapeChannelRefreshText(checkinError)}</div>` : ''}
+  return `<div class="ch-oauth-usage">
+    <div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>
+    ${balanceError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(balanceError)}">${escapeChannelRefreshText(balanceError)}</div>` : ''}
+    ${buildOAuthUsageRowsHtml(channel.id, balanceRows)}
+    ${checkinSummary ? `<div class="ch-oauth-usage__credits-summary" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
+    ${checkinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(checkinError)}">${escapeChannelRefreshText(checkinError)}</div>` : ''}
   </div>`;
 }
 
@@ -1640,6 +1663,12 @@ function initChannelEventDelegation() {
   });
 
   container.addEventListener('keydown', (e) => {
+    const sortHeader = e.target.closest('th[data-sort-key]');
+    if (sortHeader && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      toggleChannelsSort(sortHeader.dataset.sortKey);
+      return;
+    }
     const input = e.target.closest('.ch-priority-input');
     if (!input || isTokenChannelsReadOnly()) return;
     if (e.key === 'Enter') {
@@ -1660,6 +1689,12 @@ function initChannelEventDelegation() {
 
   // 事件委托：处理所有渠道操作按钮
   container.addEventListener('click', (e) => {
+    const sortHeader = e.target.closest('th[data-sort-key]');
+    if (sortHeader) {
+      toggleChannelsSort(sortHeader.dataset.sortKey);
+      return;
+    }
+
     const lastRequestCopyBtn = e.target.closest('.ch-last-request__copy');
     if (lastRequestCopyBtn) {
       copyChannelLastRequestFailure(lastRequestCopyBtn);
@@ -1780,6 +1815,12 @@ function initChannelEventDelegation() {
   }
 }
 
+function buildChannelSortHeader(key, className, label) {
+  const active = channelsSort.key === key;
+  const ariaSort = active ? (channelsSort.order === 'asc' ? 'ascending' : 'descending') : 'none';
+  return `<th class="${className} sortable${active ? ' sorted' : ''}" data-sort-key="${key}"${active ? ` data-sort-order="${channelsSort.order}"` : ''} aria-sort="${ariaSort}" tabindex="0">${label}<span class="sort-indicator" aria-hidden="true"></span></th>`;
+}
+
 function renderChannels(channelsToRender = channels) {
   const el = document.getElementById('channels-container');
   if (!channelsToRender || channelsToRender.length === 0) {
@@ -1797,10 +1838,10 @@ function renderChannels(channelsToRender = channels) {
   const thead = `<thead>
     <tr>
       <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" data-change-action="toggle-visible-channels-selection"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
-      <th class="ch-col-name">${window.t('channels.table.nameAndUrl')}</th>
+      ${buildChannelSortHeader('name', 'ch-col-name', window.t('channels.table.nameAndUrl'))}
       <th class="ch-col-status">${window.t('channels.table.quotaStatus')}</th>
-      <th class="ch-col-priority">${window.t('channels.table.priority')}</th>
-      <th class="ch-col-actions">${window.t('channels.table.enabledAndActions')}</th>
+      ${buildChannelSortHeader('priority', 'ch-col-priority', window.t('channels.table.priority'))}
+      ${buildChannelSortHeader('enabled', 'ch-col-actions', window.t('channels.table.enabledAndActions'))}
     </tr>
   </thead>`;
 

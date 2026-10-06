@@ -32,6 +32,7 @@ async function captureChannelReadURLs(role) {
     channelsTotalPages: 1,
     channelsCurrentPage: 1,
     channelsPageSize: 20,
+    channelsSort: { key: 'priority', order: 'desc' },
     allAvailableChannelNames: [],
     allAvailableModels: [],
     channelStatsRange: 'today',

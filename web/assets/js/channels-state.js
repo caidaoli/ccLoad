@@ -26,6 +26,21 @@ function normalizeChannelsPageSize(value) {
 }
 
 let channelsPageSize = normalizeChannelsPageSize(localStorage.getItem('channels.pageSize'));
+
+// 表头排序：取值与服务端 parseChannelListSort 一致，省略方向时名称升序、其余降序。
+const CHANNEL_SORT_KEYS = ['name', 'priority', 'enabled'];
+
+function defaultChannelSortOrder(key) {
+  return key === 'name' ? 'asc' : 'desc';
+}
+
+function normalizeChannelsSort(value) {
+  const key = CHANNEL_SORT_KEYS.includes(value?.key) ? value.key : 'priority';
+  const order = value?.order === 'asc' || value?.order === 'desc' ? value.order : defaultChannelSortOrder(key);
+  return { key, order };
+}
+
+let channelsSort = normalizeChannelsSort(null);
 let channelsTotalPages = 1;
 let channelsTotalCount = 0;
 let allAvailableModels = [];
@@ -55,7 +70,7 @@ function channelAuthTypeFilterLabel(value) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { normalizeChannelsPageSize, markChannelFormDirty, resetChannelFormDirty, syncChannelSaveButtonLabel };
+  module.exports = { normalizeChannelsPageSize, normalizeChannelsSort, markChannelFormDirty, resetChannelFormDirty, syncChannelSaveButtonLabel };
 }
 
 function isTokenChannelsReadOnly() {

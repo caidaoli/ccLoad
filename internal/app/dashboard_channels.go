@@ -91,6 +91,11 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 		return
 	}
 
+	listSort, err := parseChannelListSort(c)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
 	configs, cooldowns, err := s.tokenScopedChannelConfigs(c)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -99,6 +104,7 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 
 	now := time.Now()
 	configs = applyChannelListFilters(configs, c, channelCooldownSnapshot{channels: cooldowns}, now)
+	sortChannelList(configs, listSort, configPriority)
 	total := len(configs)
 	configs = paginateChannels(configs, c)
 

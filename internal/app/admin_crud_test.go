@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"slices"
@@ -305,6 +306,77 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 				t.Fatalf("names=%v, want %v", gotNames, tt.wantNames)
 			}
 		})
+	}
+}
+
+func TestHandleListChannelsSortsBeforePagination(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	fixtures := []struct {
+		name     string
+		priority int
+		enabled  bool
+	}{
+		{"charlie", 30, true},
+		{"alpha", 10, false},
+		{"delta", 20, true},
+		{"bravo", 20, false},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.CreateConfig(ctx, &model.Config{
+			Name:         fixture.name,
+			URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority:     fixture.priority,
+			ModelEntries: []model.ModelEntry{{Model: "m"}},
+			Enabled:      fixture.enabled,
+		}); err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.name, err)
+		}
+	}
+
+	listNames := func(t *testing.T, query string) []string {
+		t.Helper()
+		var names []string
+		for offset := 0; offset < len(fixtures); offset += 2 {
+			c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels?%s&limit=2&offset=%d", query, offset), nil))
+			server.handleListChannels(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			for _, item := range mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes()).Data {
+				names = append(names, item.Name)
+			}
+		}
+		return names
+	}
+
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{"", []string{"charlie", "bravo", "delta", "alpha"}},
+		{"sort=priority&order=asc", []string{"alpha", "bravo", "delta", "charlie"}},
+		{"sort=name", []string{"alpha", "bravo", "charlie", "delta"}},
+		{"sort=name&order=desc", []string{"delta", "charlie", "bravo", "alpha"}},
+		{"sort=enabled", []string{"charlie", "delta", "bravo", "alpha"}},
+		{"sort=enabled&order=asc", []string{"bravo", "alpha", "charlie", "delta"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			if got := listNames(t, tt.query); !slices.Equal(got, tt.want) {
+				t.Fatalf("names=%v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	for _, query := range []string{"sort=models", "sort=name&order=up"} {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?"+query, nil))
+		server.handleListChannels(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d, want 400 body=%s", query, w.Code, w.Body.String())
+		}
 	}
 }
 

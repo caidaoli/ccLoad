@@ -2223,6 +2223,7 @@ test('channel reload updates quota percentages and costs without overwriting new
   setGlobal('filters', {});
   setGlobal('channels', []);
   setGlobal('channelsPageSize', 20);
+  setGlobal('channelsSort', { key: 'priority', order: 'desc' });
   setGlobal('channelsCurrentPage', 1);
   setGlobal('channelsTotalCount', 0);
   setGlobal('channelsTotalPages', 1);
@@ -2325,6 +2326,7 @@ test('quota operations reload the list without cascading into automatic usage re
   setGlobal('filters', {});
   setGlobal('channels', []);
   setGlobal('channelsPageSize', 20);
+  setGlobal('channelsSort', { key: 'priority', order: 'desc' });
   setGlobal('channelsCurrentPage', 1);
   setGlobal('channelsTotalCount', 0);
   setGlobal('channelsTotalPages', 1);
