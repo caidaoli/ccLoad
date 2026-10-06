@@ -7,168 +7,160 @@
     let serviceHealthModel = null;
     let dashboardLoadGeneration = 0;
 
-    const AUTH_TYPE_CARD_CONFIG = Object.freeze({
-      api_key: {
-        labelKey: 'index.channels.api',
-        iconClass: 'api',
-        icon: '<path d="M15 7a5 5 0 1 0-9.9 1H3v4h2v2h2v2h3v-3.1A5 5 0 0 0 15 7Zm-5 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/>'
-      },
-      codex_oauth: {
-        labelKey: 'index.channels.codex',
-        iconClass: 'codex',
-        filled: true,
-        icon: '<path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>'
-      },
-      antigravity_oauth: {
-        labelKey: 'index.channels.antigravity',
-        iconClass: 'antigravity',
-        viewBox: '0 0 111 113',
-        filled: true,
-        icon: '<path d="M89.6992 93.695C94.3659 97.195 101.366 94.8617 94.9492 88.445 75.6992 69.7783 79.7825 18.445 55.8659 18.445S36.0325 69.7783 16.7825 88.445C9.78251 95.445 17.3658 97.195 22.0325 93.695 40.1159 81.445 38.9492 59.8617 55.8659 59.8617S71.6159 81.445 89.6992 93.695Z"/>'
-      },
-      xai_oauth: {
-        labelKey: 'index.channels.xai',
-        iconClass: 'xai',
-        filled: true,
-        icon: '<text x="12" y="15.5" text-anchor="middle" font-family="Arial, sans-serif" font-size="10.5" font-weight="700">xAI</text>'
-      },
-      anthropic_oauth: {
-        labelKey: 'index.channels.anthropic',
-        iconClass: 'anthropic',
-        filled: true,
-        icon: '<path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/>'
-      },
-      zai_oauth: {
-        labelKey: 'index.channels.zai',
-        iconClass: 'zai',
-        viewBox: '0 0 30 30',
-        filled: true,
-        icon: '<path d="M15.47 7.1 14.17 8.95c-.2.29-.54.47-.9.47h-7.1V7.09h9.31Zm8.83 0L13.14 22.91H5.7L16.86 7.1h7.44Zm-9.77 15.81 1.31-1.86c.2-.29.54-.47.9-.47h7.09v2.33h-9.3Z"/>'
-      },
-      cursor_oauth: {
-        labelKey: 'index.channels.cursor',
-        iconClass: 'cursor',
-        filled: true,
-        icon: '<path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"/>'
-      },
-      zed_oauth: {
-        labelKey: 'index.channels.zed',
-        iconClass: 'zed',
-        filled: true,
-        icon: '<path d="M2.25 1.5a.75.75 0 0 0-.75.75v16.5H0V2.25A2.25 2.25 0 0 1 2.25 0h20.095c1.002 0 1.504 1.212.795 1.92L10.764 14.298h3.486V12.75h1.5v1.922a1.125 1.125 0 0 1-1.125 1.125H9.264l-2.578 2.578h11.689V9h1.5v9.375a1.5 1.5 0 0 1-1.5 1.5H5.185L2.562 22.5H21.75a.75.75 0 0 0 .75-.75V5.25H24v16.5A2.25 2.25 0 0 1 21.75 24H1.655C.653 24 .151 22.788.86 22.08L13.19 9.75H9.75v1.5h-1.5V9.375A1.125 1.125 0 0 1 9.375 8.25h5.314l2.625-2.625H5.625V15h-1.5V5.625a1.5 1.5 0 0 1 1.5-1.5h13.19L21.438 1.5Z"/>'
-      }
+    // 入口协议固定展示，顺序即表格行序
+    const PROTOCOL_USAGE_ROWS = Object.freeze([
+      { key: 'anthropic', label: 'Claude Code', icon: '<path d="M12 2L2 22h20L12 2zm0 4.5L18.5 20h-13L12 6.5z"/>' },
+      { key: 'codex', label: 'Codex', icon: '<path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>' },
+      { key: 'openai', label: 'OpenAI', icon: '<path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>' },
+      { key: 'gemini', label: 'Google Gemini', icon: '<path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.82 8 12 11.82 4.18 8 12 4.18zM4 9.48l7 3.5v7.84l-7-3.5V9.48zm16 0v7.84l-7 3.5v-7.84l7-3.5z"/>' }
+    ]);
+
+    // 渠道认证类型的显示名与行序；图标与渠道管理页共用 channel-provider-icons.js
+    const AUTH_TYPE_LABEL_KEYS = Object.freeze({
+      api_key: 'index.channels.api',
+      codex_oauth: 'index.channels.codex',
+      antigravity_oauth: 'index.channels.antigravity',
+      xai_oauth: 'index.channels.xai',
+      anthropic_oauth: 'index.channels.anthropic',
+      zai_oauth: 'index.channels.zai',
+      cursor_oauth: 'index.channels.cursor',
+      zed_oauth: 'index.channels.zed'
     });
 
-    const AUTH_TYPE_CARD_ORDER = Object.keys(AUTH_TYPE_CARD_CONFIG);
+    const AUTH_TYPE_ORDER = Object.keys(AUTH_TYPE_LABEL_KEYS);
 
-    function createOverviewElement(tag, className, text) {
-      const element = document.createElement(tag);
-      if (className) element.className = className;
-      if (text !== undefined) element.textContent = text;
-      return element;
+    function overviewText(key, fallback, params) {
+      if (typeof window.i18nText === 'function') return window.i18nText(key, fallback, params);
+      const translated = typeof window.t === 'function' ? window.t(key, params) : key;
+      return translated === key ? fallback : translated;
     }
 
-    function translatedAuthTypeLabel(authType, config) {
-      if (config && config.labelKey && typeof window.t === 'function') {
-        const translated = window.t(config.labelKey);
-        if (translated && translated !== config.labelKey) return translated;
-      }
-      return authType;
+    function toNumber(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
     }
 
-    function createAuthTypeCard(authType) {
-      const config = AUTH_TYPE_CARD_CONFIG[authType] || {
-        labelKey: '',
-        iconClass: 'api',
-        icon: '<path d="M5 12h14M12 5v14"/>'
+    // effective_cost 缺省时视为未打折，等于 total_cost
+    function effectiveCostOf(stat) {
+      return stat && stat.effective_cost !== undefined && stat.effective_cost !== null
+        ? toNumber(stat.effective_cost)
+        : toNumber(stat && stat.total_cost);
+    }
+
+    // 全局指标：请求计数取响应顶层；费用与输出 Tokens 按入口协议加总（每个请求只属于一个入口协议）
+    function buildOverviewTotals(summary) {
+      const totals = {
+        requests: toNumber(summary && summary.total_requests),
+        success: toNumber(summary && summary.success_requests),
+        error: toNumber(summary && summary.error_requests),
+        rate: null,
+        cost: 0,
+        effectiveCost: 0,
+        outputTokens: 0
       };
-      const card = createOverviewElement('div', 'channel-card');
-      card.id = `type-${authType}-card`;
-
-      const header = createOverviewElement('div', 'channel-card-header');
-      const title = createOverviewElement('div', 'channel-card-title');
-      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      icon.setAttribute('width', '16');
-      icon.setAttribute('height', '16');
-      icon.setAttribute('viewBox', config.viewBox || '0 0 24 24');
-      icon.setAttribute('fill', config.filled ? 'currentColor' : 'none');
-      icon.setAttribute('stroke', config.filled ? 'none' : 'currentColor');
-      icon.setAttribute('stroke-width', '2.2');
-      icon.setAttribute('stroke-linecap', 'round');
-      icon.setAttribute('stroke-linejoin', 'round');
-      icon.setAttribute('aria-hidden', 'true');
-      icon.setAttribute('focusable', 'false');
-      icon.innerHTML = config.icon;
-      const iconContainer = createOverviewElement('div', `channel-icon channel-icon--${config.iconClass}`);
-      iconContainer.appendChild(icon);
-      title.append(iconContainer, createOverviewElement('span', '', translatedAuthTypeLabel(authType, config)));
-
-      const cost = createOverviewElement('div', 'channel-cost');
-      cost.append(
-        createOverviewElement('span', 'cost-label', typeof window.t === 'function' ? window.t('common.cost') : '成本'),
-        createOverviewElement('span', 'cost-value')
-      );
-      cost.lastElementChild.id = `type-${authType}-cost`;
-      header.append(title, cost);
-      card.appendChild(header);
-
-      const metrics = createOverviewElement('div', 'channel-metrics');
-      [
-        ['requests', 'index.metrics.totalRequests', '总请求', 'metric-total'],
-        ['success', 'index.metrics.success', '成功', 'metric-success'],
-        ['error', 'index.metrics.failed', '失败', 'metric-error'],
-        ['rate', 'index.metrics.successRate', '成功率', 'metric-rate']
-      ].forEach(([name, labelKey, fallback, valueClass]) => {
-        const item = createOverviewElement('div', 'metric-item');
-        const value = createOverviewElement('div', `metric-value ${valueClass}`, name === 'rate' ? '0.0%' : '0');
-        value.id = `type-${authType}-${name}`;
-        const label = createOverviewElement('div', 'metric-label', typeof window.t === 'function' ? window.t(labelKey) : fallback);
-        label.dataset.i18n = labelKey;
-        item.append(value, label);
-        metrics.appendChild(item);
-      });
-      card.appendChild(metrics);
-
-      const tokens = createOverviewElement('div', 'token-stats');
-      [
-        ['input', 'common.input', '输入', false],
-        ['output', 'common.output', '输出', false],
-        ['cache-read', 'common.cacheRead', '缓存读', true],
-        ['cache-create', 'common.cacheCreate', '缓存创', true]
-      ].forEach(([name, labelKey, fallback, isCache]) => {
-        const item = createOverviewElement('div', 'token-item');
-        const label = createOverviewElement('span', 'token-label', typeof window.t === 'function' ? window.t(labelKey) : fallback);
-        label.dataset.i18n = labelKey;
-        const value = createOverviewElement('span', `token-value${isCache ? ' token-cache' : ''}`, '0');
-        value.id = `type-${authType}-${name}`;
-        item.append(label, value);
-        tokens.appendChild(item);
-      });
-      card.appendChild(tokens);
-      return card;
+      for (const stat of Object.values((summary && summary.by_client_protocol) || {})) {
+        totals.cost += toNumber(stat && stat.total_cost);
+        totals.effectiveCost += effectiveCostOf(stat);
+        totals.outputTokens += toNumber(stat && stat.total_output_tokens);
+      }
+      if (totals.requests > 0) totals.rate = totals.success / totals.requests;
+      return totals;
     }
 
-    function renderAuthTypeCards(authStats) {
-      const section = document.getElementById('auth-type-section');
-      const grid = document.getElementById('auth-type-cards');
-      if (!section || !grid) return;
+    function formatRate(rate) {
+      return rate === null ? '--' : `${(rate * 100).toFixed(1)}%`;
+    }
 
+    function formatOverviewCost(stat) {
+      const total = toNumber(stat && stat.total_cost);
+      return buildCostStackHtml(total, effectiveCostOf(stat), { tone: 'warning', inline: true })
+        || escapeHtml(formatCost(0, 3));
+    }
+
+    function protocolIconHtml(row) {
+      return `<span class="usage-avatar usage-avatar--${row.key}" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">${row.icon}</svg></span>`;
+    }
+
+    function authTypeIconHtml(authType, label) {
+      const content = typeof window.channelAvatarContentHTML === 'function'
+        ? window.channelAvatarContentHTML(authType, label)
+        : escapeHtml(label.charAt(0));
+      return `<span class="usage-avatar channel-provider-avatar" data-auth-type="${escapeHtml(authType)}" aria-hidden="true">${content}</span>`;
+    }
+
+    // 协议表与渠道表共用：rows 为 { label, iconHtml, stat }
+    // 只列有请求的行；没有任何行时隐藏整个分区。
+    function renderUsageSection(sectionId, tbodyId, rows) {
+      const section = document.getElementById(sectionId);
+      const tbody = document.getElementById(tbodyId);
+      if (!section || !tbody) return;
+      const activeRows = rows.filter(row => toNumber(row.stat && row.stat.total_requests) > 0);
+      section.hidden = activeRows.length === 0;
+      tbody.innerHTML = activeRows.map(({ label, iconHtml, stat }) => {
+        const requests = toNumber(stat.total_requests);
+        const rate = toNumber(stat.success_requests) / requests;
+        const rateState = window.ServiceHealth ? window.ServiceHealth.classifyRate(rate) : 'unknown';
+        const rateText = `${Number((rate * 100).toFixed(1))}%`;
+        return `<tr>
+          <th scope="row"><span class="usage-name">${iconHtml}<span>${escapeHtml(label)}</span></span></th>
+          <td>${formatNumber(requests)}</td>
+          <td><span class="usage-rate" data-state="${rateState}">${rateText}</span></td>
+          <td>${formatOverviewCost(stat)}</td>
+          <td>${formatNumber(toNumber(stat && stat.total_input_tokens))}</td>
+          <td>${formatNumber(toNumber(stat && stat.total_output_tokens))}</td>
+          <td>${formatNumber(toNumber(stat && stat.total_cache_read_tokens))}</td>
+          <td>${formatNumber(toNumber(stat && stat.total_cache_creation_tokens))}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderProtocolUsage(protocolStats) {
+      renderUsageSection('protocol-usage-section', 'protocol-usage-body', PROTOCOL_USAGE_ROWS.map(row => ({
+        label: row.label,
+        iconHtml: protocolIconHtml(row),
+        stat: protocolStats[row.key]
+      })));
+    }
+
+    function renderAuthTypeUsage(authStats) {
+      const orderOf = authType => {
+        const index = AUTH_TYPE_ORDER.indexOf(authType);
+        return index < 0 ? AUTH_TYPE_ORDER.length : index;
+      };
       const entries = Object.entries(authStats || {})
-        .filter(([, stat]) => Number(stat && stat.total_requests) > 0)
-        .sort(([left], [right]) => {
-          const leftIndex = AUTH_TYPE_CARD_ORDER.indexOf(left);
-          const rightIndex = AUTH_TYPE_CARD_ORDER.indexOf(right);
-          return (leftIndex < 0 ? AUTH_TYPE_CARD_ORDER.length : leftIndex)
-            - (rightIndex < 0 ? AUTH_TYPE_CARD_ORDER.length : rightIndex);
-        });
+        .sort(([left], [right]) => orderOf(left) - orderOf(right));
+      renderUsageSection('auth-type-section', 'auth-type-usage-body', entries.map(([authType, stat]) => {
+        const labelKey = AUTH_TYPE_LABEL_KEYS[authType];
+        const label = labelKey ? overviewText(labelKey, authType) : authType;
+        return { label, iconHtml: authTypeIconHtml(authType, label), stat };
+      }));
+    }
 
-      grid.replaceChildren();
-      section.hidden = entries.length === 0;
-      entries.forEach(([authType, stat]) => {
-        const card = createAuthTypeCard(authType);
-        grid.appendChild(card);
-        updateOverviewCard(authType, stat);
+    function renderOverviewKpis(totals) {
+      document.getElementById('overview-requests').textContent = formatNumber(totals.requests);
+      document.getElementById('overview-rate').textContent = formatRate(totals.rate);
+      document.getElementById('overview-counts').textContent = overviewText(
+        'index.overview.successFailed',
+        `${totals.success} 成功 · ${totals.error} 失败`,
+        { success: formatNumber(totals.success), error: formatNumber(totals.error) }
+      );
+      document.getElementById('overview-cost').innerHTML = formatOverviewCost({
+        total_cost: totals.cost,
+        effective_cost: totals.effectiveCost
       });
+      document.getElementById('overview-output-tokens').textContent = formatNumber(totals.outputTokens);
+    }
+
+    function renderOverviewStatus(state) {
+      const badge = document.getElementById('overview-status');
+      const text = document.getElementById('overview-status-text');
+      if (!badge || !text) return;
+      const fallbacks = { healthy: '服务正常', warning: '服务波动', critical: '服务异常', unknown: '暂无数据' };
+      const safeState = Object.hasOwn(fallbacks, state) ? state : 'unknown';
+      const key = `index.overview.status.${safeState}`;
+      badge.dataset.state = safeState;
+      text.dataset.i18n = key;
+      text.textContent = overviewText(key, fallbacks[safeState]);
     }
 
     function buildCurrentDateRangeQuery() {
@@ -188,12 +180,6 @@
       return typeof window.getRangeHours === 'function'
         ? window.getRangeHours(currentTimeRange)
         : 24;
-    }
-
-    function serviceHealthText(key, fallback, params) {
-      if (typeof window.i18nText === 'function') return window.i18nText(key, fallback, params);
-      const translated = typeof window.t === 'function' ? window.t(key, params) : key;
-      return translated === key ? fallback : translated;
     }
 
     function serviceHealthLocale() {
@@ -307,7 +293,7 @@
           : '--';
       }
       grid.setAttribute('aria-label', hasData
-        ? serviceHealthText(
+        ? overviewText(
           'index.health.summary',
           `${period}服务成功率 ${rate}，成功 ${model.success} 次，失败 ${model.error} 次`,
           {
@@ -317,7 +303,18 @@
             error: formatNumber(model.error)
           }
         )
-        : serviceHealthText('index.health.noData', `${period}暂无请求数据`, { period }));
+        : overviewText('index.health.noData', `${period}暂无请求数据`, { period }));
+      const countsElement = document.getElementById('service-health-counts');
+      if (countsElement) {
+        countsElement.textContent = hasData
+          ? overviewText(
+            'index.overview.successFailed',
+            `${model.success} 成功 · ${model.error} 失败`,
+            { success: formatNumber(model.success), error: formatNumber(model.error) }
+          )
+          : '';
+      }
+      renderOverviewStatus(model.state);
       message.hidden = true;
       message.textContent = '';
     }
@@ -329,9 +326,10 @@
         rateElement.textContent = '--';
         rateElement.dataset.state = 'unknown';
       }
+      renderOverviewStatus('unknown');
       if (message) {
         message.hidden = false;
-        message.textContent = serviceHealthText(
+        message.textContent = overviewText(
           'index.health.unavailable',
           '健康数据暂时无法加载，将在下次刷新时重试。'
         );
@@ -342,8 +340,8 @@
       const generation = ++dashboardLoadGeneration;
       const dateRangeQuery = buildCurrentDateRangeQuery();
       const grid = document.getElementById('service-health-grid');
-      const loadingElements = document.querySelectorAll('.metric-number');
-      loadingElements.forEach(element => element.classList.add('animate-pulse'));
+      const refreshButton = document.getElementById('overview-refresh');
+      if (refreshButton) refreshButton.setAttribute('aria-busy', 'true');
       if (grid) grid.setAttribute('aria-busy', 'true');
 
       const healthRequest = window.ServiceHealth
@@ -377,62 +375,15 @@
         renderServiceHealthUnavailable();
       }
 
-      loadingElements.forEach(element => element.classList.remove('animate-pulse'));
+      if (refreshButton) refreshButton.setAttribute('aria-busy', 'false');
       if (grid) grid.setAttribute('aria-busy', 'false');
     }
 
     // 更新统计显示
     function updateStatsDisplay() {
-      // 更新按客户端入口协议统计
-      const protocolStats = statsData.by_client_protocol || {};
-      updateOverviewCard('anthropic', protocolStats.anthropic);
-      updateOverviewCard('codex', protocolStats.codex);
-      updateOverviewCard('openai', protocolStats.openai);
-      updateOverviewCard('gemini', protocolStats.gemini);
-
-      renderAuthTypeCards(statsData.by_auth_type || {});
-    }
-
-    // 更新单个概览卡片的统计
-    function updateOverviewCard(type, data) {
-      const card = document.getElementById(`type-${type}-card`);
-      if (!card) return;
-
-      // 如果没有数据，显示默认值
-      const totalRequests = data ? (data.total_requests || 0) : 0;
-      const successRequests = data ? (data.success_requests || 0) : 0;
-      const errorRequests = data ? (data.error_requests || 0) : 0;
-
-      const successRate = totalRequests > 0
-        ? ((successRequests / totalRequests) * 100).toFixed(1)
-        : '0.0';
-
-      // 更新基础统计（总请求、成功、失败、成功率）
-      document.getElementById(`type-${type}-requests`).textContent = formatNumber(totalRequests);
-      document.getElementById(`type-${type}-success`).textContent = formatNumber(successRequests);
-      document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
-      document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
-
-      const inputTokens = data ? (data.total_input_tokens || 0) : 0;
-      const outputTokens = data ? (data.total_output_tokens || 0) : 0;
-      const totalCost = data ? (data.total_cost || 0) : 0;
-      const effectiveCost = data && data.effective_cost !== undefined && data.effective_cost !== null
-        ? Number(data.effective_cost) || 0
-        : totalCost;
-
-      document.getElementById(`type-${type}-input`).textContent = formatNumber(inputTokens);
-      document.getElementById(`type-${type}-output`).textContent = formatNumber(outputTokens);
-      document.getElementById(`type-${type}-cost`).innerHTML = buildCostStackHtml(totalCost, effectiveCost, { tone: 'warning', inline: true });
-
-      const cacheReadTokens = data ? (data.total_cache_read_tokens || 0) : 0;
-      const cacheReadEl = document.getElementById(`type-${type}-cache-read`);
-      if (cacheReadEl) cacheReadEl.textContent = formatNumber(cacheReadTokens);
-
-      const cacheCreateEl = document.getElementById(`type-${type}-cache-create`);
-      if (cacheCreateEl) {
-        const cacheCreateTokens = data ? (data.total_cache_creation_tokens || 0) : 0;
-        cacheCreateEl.textContent = formatNumber(cacheCreateTokens);
-      }
+      renderOverviewKpis(buildOverviewTotals(statsData));
+      renderProtocolUsage(statsData.by_client_protocol || {});
+      renderAuthTypeUsage(statsData.by_auth_type || {});
     }
 
     // 通知系统统一由 ui.js 提供（showSuccess/showError/showNotification）
@@ -441,8 +392,12 @@
 
     // 自动刷新由 createAutoRefresh 统一管理（system_settings.auto_refresh_interval_seconds）
 
+    if (typeof module !== 'undefined' && module.exports) {
+      module.exports = { buildOverviewTotals };
+    }
+
     // 页面初始化
-    window.initPageBootstrap({
+    if (typeof window !== 'undefined') window.initPageBootstrap({
       topbarKey: 'index',
       run: () => {
       window.bindTimeRangeSelector({
@@ -459,6 +414,7 @@
 
       // 费用与服务健康检测共用同一日期范围快照。
       loadDashboard();
+      document.getElementById('overview-refresh')?.addEventListener('click', loadDashboard);
 
       if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
         window.i18n.onLocaleChange(() => {

@@ -6,6 +6,8 @@ const {
   buildOAuthUsageStatusHtml,
   toggleOAuthUsageWindows,
   buildChannelMetricsHtml,
+  buildChannelPerformanceHtml,
+  buildChannelQuotaHintHtml,
   buildManagementAccountStatusHtml,
   isOpenCodeGoChannel,
   channelShowsOAuthUsage
@@ -585,6 +587,35 @@ test('OAuth 额度超过 2 个窗口时折叠其余窗口，展开状态跨重�
   } finally {
     global.window = saved.window;
     global.getOAuthUsageState = saved.state;
+    global.isTokenChannelsReadOnly = saved.readOnly;
+  }
+});
+
+test('无额度渠道：有调用时显示成功率条（不重复调用次数），无调用时仅 API 渠道提供管理账户入口且只读不显示', () => {
+  const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber, readOnly: global.isTokenChannelsReadOnly };
+  global.window = { t: key => key, getFirstByteTimingColor: () => 'green', getDurationTimingColor: () => 'green' };
+  global.buildCostStackHtml = () => '';
+  global.formatMetricNumber = value => String(value || 0);
+  let readOnly = false;
+  global.isTokenChannelsReadOnly = () => readOnly;
+  try {
+    assert.equal(buildChannelPerformanceHtml(9, { success: 0, error: 0 }), '');
+
+    const html = buildChannelPerformanceHtml(9, { success: 9, error: 1, avgDurationSeconds: 2, totalInputTokens: 10, totalOutputTokens: 5 });
+    assert.match(html, /role="progressbar"[^>]*aria-valuenow="90"/);
+    assert.match(html, /ch-oauth-usage__fill--medium/);
+    assert.match(html, /9 \/ 1 stats\.unitTimes/);
+    assert.doesNotMatch(html, /ch-metric__ok/);
+
+    const action = /data-action="configure-management-account" data-channel-id="9"/;
+    assert.match(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key' }), action);
+    assert.equal(buildChannelQuotaHintHtml({ id: 9, auth_type: 'codex_oauth' }), '');
+    readOnly = true;
+    assert.equal(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key' }), '');
+  } finally {
+    global.window = saved.window;
+    global.buildCostStackHtml = saved.cost;
+    global.formatMetricNumber = saved.metric;
     global.isTokenChannelsReadOnly = saved.readOnly;
   }
 });

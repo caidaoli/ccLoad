@@ -1089,42 +1089,6 @@
       display: none;
     }
 
-    /* 底色、前景色与标志缩放对齐 @lobehub/icons Avatar（AVATAR_BACKGROUND / AVATAR_COLOR / AVATAR_ICON_MULTIPLE） */
-    /* 渠道头像（列表 / 抽屉 / 添加菜单共用）：API Key 渠道显示名称首字母 */
-    .channel-provider-avatar {
-      background: var(--primary-600);
-      color: #fff;
-    }
-
-    .channel-provider-avatar svg {
-      width: calc(100% * var(--provider-icon-scale, 0.6));
-      height: calc(100% * var(--provider-icon-scale, 0.6));
-    }
-
-    /* 彩色标志不能放纯白底：列表行也是白底，图块边界消失后看起来比实色图块小一圈 */
-    .channel-provider-avatar[data-auth-type="antigravity_oauth"] {
-      background: var(--neutral-100);
-      box-shadow: inset 0 0 0 1px var(--neutral-300);
-    }
-
-    .channel-provider-avatar[data-auth-type="codex_oauth"],
-    .channel-provider-avatar[data-auth-type="xai_oauth"],
-    .channel-provider-avatar[data-auth-type="cursor_oauth"],
-    .channel-provider-avatar[data-auth-type="zai_oauth"] {
-      background: #000;
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-    }
-
-    .channel-provider-avatar[data-auth-type="xai_oauth"] { --provider-icon-scale: 0.65; }
-    .channel-provider-avatar[data-auth-type="codex_oauth"] { --provider-icon-scale: 0.65; }
-    .channel-provider-avatar[data-auth-type="anthropic_oauth"] { --provider-icon-scale: 0.75; background: #d97757; }
-    .channel-provider-avatar[data-auth-type="antigravity_oauth"] { --provider-icon-scale: 0.75; }
-    .channel-provider-avatar[data-auth-type="codebuddy_oauth"] {
-      --provider-icon-scale: 0.75;
-      background: radial-gradient(66.67% 66.67% at 87.5% 102.08%, #2ea99d 0%, #6c4dff 100%);
-    }
-    .channel-provider-avatar[data-auth-type="zed_oauth"] { background: #084ccf; }
-
     .channel-drawer__auth-badge {
       flex: 0 0 auto;
       padding: 2px 10px;
@@ -3034,12 +2998,6 @@
     }
 
     /* 重置次数行：浅蓝底单行，卡片图标 + 次数 + 灰色明细 + 右侧操作 */
-    .ch-oauth-usage__credits--reset {
-      padding: 4px 4px 4px 8px;
-      border-radius: 6px;
-      background: color-mix(in srgb, var(--primary-500) 10%, transparent);
-    }
-
     .ch-oauth-usage__credits--reset .ch-oauth-usage__credits-summary {
       gap: 6px;
       font-size: 12px;
@@ -3473,6 +3431,16 @@
 
     .ch-metric--usage {
       cursor: help;
+    }
+
+    /* 额度列：无额度时的成功率条与指标、配置入口 */
+    .ch-channel-performance .ch-metrics {
+      margin-top: 0;
+    }
+
+    .ch-quota-hint {
+      display: flex;
+      justify-content: flex-end;
     }
 
     .ch-metric--usage .cost-stack {

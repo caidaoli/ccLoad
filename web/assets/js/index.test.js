@@ -55,3 +55,30 @@ test('service health treats empty and malformed metrics as unknown instead of he
   assert.equal(model.rate, null);
   assert.equal(model.state, 'unknown');
 });
+
+test('overview totals take request counts from the summary and sum cost and output tokens across protocols', () => {
+  const { buildOverviewTotals } = require('./index.js');
+  const totals = buildOverviewTotals({
+    total_requests: 251,
+    success_requests: 250,
+    error_requests: 1,
+    by_client_protocol: {
+      gemini: { total_requests: 231, total_cost: 1.75, effective_cost: 0.875, total_output_tokens: 44500 },
+      openai: { total_requests: 20, total_cost: 0.009, total_output_tokens: 673 },
+      anthropic: { total_requests: 0, effective_cost: 0 }
+    }
+  });
+
+  assert.equal(totals.requests, 251);
+  assert.equal(totals.success, 250);
+  assert.equal(totals.error, 1);
+  assert.equal(totals.rate, 250 / 251);
+  assert.ok(Math.abs(totals.cost - 1.759) < 1e-9);
+  // 缺少 effective_cost 的协议按 total_cost 计入
+  assert.ok(Math.abs(totals.effectiveCost - 0.884) < 1e-9);
+  assert.equal(totals.outputTokens, 45173);
+
+  assert.deepEqual(buildOverviewTotals({}), {
+    requests: 0, success: 0, error: 0, rate: null, cost: 0, effectiveCost: 0, outputTokens: 0
+  });
+});

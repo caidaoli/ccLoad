@@ -569,9 +569,9 @@ function channelSuccessRateLevel(rate) {
 
 /**
  * 渠道名下方的指标行：首字/总耗时、速度、成功/失败·成功率、消耗。
- * 统计窗口内没有调用时整行不渲染。
+ * 统计窗口内没有调用时整行不渲染；omitCalls 用于成功率已单独成条的场景。
  */
-function buildChannelMetricsHtml(stats) {
+function buildChannelMetricsHtml(stats, { omitCalls = false } = {}) {
   if (!stats) return '';
   const successCount = Number.isFinite(Number(stats.success)) ? Number(stats.success) : 0;
   const failureCount = Number.isFinite(Number(stats.error)) ? Number(stats.error) : 0;
@@ -598,7 +598,7 @@ function buildChannelMetricsHtml(stats) {
   }
 
   const rate = successCount / total;
-  items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.callsTitle'))}">${CHANNEL_METRIC_ICONS.check}<b class="ch-metric__ok">${successCount}</b> / <b class="ch-metric__err">${failureCount}</b> ${escapeChannelRefreshText(window.t('stats.unitTimes'))} · <b class="ch-metric__rate--${channelSuccessRateLevel(rate)}">${(rate * 100).toFixed(1)}%</b></span>`);
+  if (!omitCalls) items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.callsTitle'))}">${CHANNEL_METRIC_ICONS.check}<b class="ch-metric__ok">${successCount}</b> / <b class="ch-metric__err">${failureCount}</b> ${escapeChannelRefreshText(window.t('stats.unitTimes'))} · <b class="ch-metric__rate--${channelSuccessRateLevel(rate)}">${(rate * 100).toFixed(1)}%</b></span>`);
 
   // 缓存行按实际数据显示：协议声明无法判定渠道是否缓存，CodeBuddy 等上游同样声明 openai 且返回缓读。
   const usageLines = [
@@ -1145,13 +1145,13 @@ function buildAntigravityCreditsHtml(credits) {
 }
 
 // 额度窗口行：左侧名称+金额，右侧主值+时间，悬浮展开明细；percent 为 null 时不画进度条。
-function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null }) {
+function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null, level = '' }) {
   const id = escapeChannelRefreshText(tooltipID);
   let track = '';
   if (percent !== null) {
     const clamped = Math.min(100, Math.max(0, percent));
     track = `<div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(formatOAuthUsagePercent(clamped))}">
-        <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(clamped)}" style="width:${clamped}%"></span>
+        <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${level || oauthUsageLevel(clamped)}" style="width:${clamped}%"></span>
       </div>`;
   }
   return `<div class="ch-oauth-usage__window">
@@ -1500,7 +1500,39 @@ function buildManagementAccountStatusHtml(channel) {
 
 const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 
-function buildChannelRuntimeStatusHtml(channel) {
+// 渠道没有额度可显示时，额度列用成功率条承载调用表现，与额度条同一视觉。
+const SUCCESS_RATE_FILL_LEVEL = { good: 'high', warn: 'medium', bad: 'low' };
+
+function buildChannelPerformanceHtml(channelID, stats) {
+  const metricsHtml = buildChannelMetricsHtml(stats, { omitCalls: true });
+  if (!metricsHtml) return '';
+  const success = Number(stats.success) || 0;
+  const failure = Number(stats.error) || 0;
+  const rate = success / (success + failure);
+  const rateText = `${(rate * 100).toFixed(1)}%`;
+  const label = window.t('channels.stats.successRateLabel');
+  const amount = `${success} / ${failure} ${window.t('stats.unitTimes')}`;
+  return `<div class="ch-oauth-usage ch-channel-performance">${buildOAuthUsageWindowHtml({
+    tooltipID: oauthUsageTooltipID('ch-performance-tooltip', channelID, 0),
+    label,
+    amount,
+    value: rateText,
+    detailLines: [window.t('channels.stats.callsTitle'), `${amount} · ${rateText}`],
+    ariaLabel: `${label} ${rateText}`,
+    percent: rate * 100,
+    level: SUCCESS_RATE_FILL_LEVEL[channelSuccessRateLevel(rate)]
+  })}${metricsHtml}</div>`;
+}
+
+// 无调用、也无额度时：API 渠道给出配置管理账户的入口（只读身份不显示）。
+function buildChannelQuotaHintHtml(channel) {
+  const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
+  if (channel?.auth_type !== 'api_key' || readOnly) return '';
+  return `<div class="ch-quota-hint"><button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
+}
+
+// quotaHtml：额度区内容（OAuth/管理账户额度，或无额度时的成功率条/配置入口）。
+function buildChannelRuntimeStatusHtml(channel, quotaHtml = '') {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
   if (channelCooldownMS > 0) {
@@ -1544,11 +1576,7 @@ function buildChannelRuntimeStatusHtml(channel) {
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--protocols">${escapeChannelRefreshText(text)}</div>`);
   }
 
-  const oauthUsageHtml = buildOAuthUsageStatusHtml(channel);
-  if (oauthUsageHtml) statuses.push(oauthUsageHtml);
-
-  const managementHtml = buildManagementAccountStatusHtml(channel);
-  if (managementHtml) statuses.push(managementHtml);
+  if (quotaHtml) statuses.push(quotaHtml);
 
   return statuses.length > 0
     ? `<div class="ch-runtime-status-list">${statuses.join('')}</div>`
@@ -1565,7 +1593,13 @@ function createChannelCard(channel) {
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
-  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel);
+  // 没有额度可显示时，调用表现移到额度列，左侧不再重复。
+  const quotaHtml = buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel);
+  const performanceHtml = quotaHtml ? '' : buildChannelPerformanceHtml(channel.id, stats);
+  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(
+    channel,
+    quotaHtml || performanceHtml || buildChannelQuotaHintHtml(channel)
+  );
   const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
 
   // 行class
@@ -1595,7 +1629,7 @@ function createChannelCard(channel) {
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     // 一对多模型显示前两个重定向目标，悬停时显示全部目标。
     modelsHtml: buildChannelModelLineHtml(channel.models),
-    metricsHtml: buildChannelMetricsHtml(stats),
+    metricsHtml: performanceHtml ? '' : buildChannelMetricsHtml(stats),
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
     runtimeStatusHtml: runtimeStatusHtml,
     lastRequestFailureHtml: lastRequestFailureHtml,
@@ -1610,6 +1644,12 @@ function createChannelCard(channel) {
 
   const card = TemplateEngine.render('tpl-channel-card', cardData);
   return card;
+}
+
+async function editChannelManagementAccount(channelId) {
+  await editChannel(channelId);
+  if (editingChannelId !== channelId) return;
+  if (typeof revealChannelEditorSection === 'function') revealChannelEditorSection('management');
 }
 
 async function editChannelCoolingKeys(channelId) {
@@ -1716,7 +1756,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'configure-management-account', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1732,6 +1772,9 @@ function initChannelEventDelegation() {
         break;
       case 'edit-cooling-keys':
         editChannelCoolingKeys(channelId);
+        break;
+      case 'configure-management-account':
+        editChannelManagementAccount(channelId);
         break;
       case 'refresh-oauth-usage':
         if (typeof refreshOAuthUsage === 'function') {
@@ -1877,6 +1920,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildChannelMetricsHtml,
     formatChannelModelTitle,
     buildChannelRuntimeStatusHtml,
+    buildChannelPerformanceHtml,
+    buildChannelQuotaHintHtml,
     buildOAuthPlanBadge,
     oauthPlanBadgeTone,
     codexPlanLabel,

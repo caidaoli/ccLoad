@@ -19,6 +19,7 @@
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/service-health.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channel-provider-icons.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/index.js?v=__VERSION__"></script>
 </head>
 <body class="page-index">
@@ -27,243 +28,128 @@
     <!-- 主内容区域 -->
     <main class="main-content index-main-content">
       <div class="content-area">
-        <!-- 时间范围选择器 -->
-        <section class="mb-4">
-          <div class="time-range-container">
-            <div id="index-time-range" class="time-range-selector"></div>
+        <!-- 页头：服务状态、时间范围与刷新 -->
+        <header class="overview-header mb-4">
+          <div class="overview-actions">
+            <span id="overview-status" class="overview-status" data-state="unknown" role="status">
+              <i class="overview-status-dot" aria-hidden="true"></i>
+              <span id="overview-status-text" data-i18n="index.overview.status.unknown">暂无数据</span>
+            </span>
+            <div class="time-range-container">
+              <div id="index-time-range" class="time-range-selector"></div>
+            </div>
+            <button type="button" id="overview-refresh" class="overview-refresh" data-i18n-title="index.overview.refresh" title="刷新" data-i18n-aria-label="index.overview.refresh" aria-label="刷新">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            </button>
           </div>
-        </section>
+        </header>
 
-        <!-- 四种入口协议固定展示 -->
-        <section class="mb-6">
-          <div class="grid grid-cols-2 animate-slide-up animate-delay-1 gap-space-3">
-            <!-- Claude Code -->
-            <div class="channel-card" id="type-anthropic-card">
-              <div class="channel-card-header">
-                <div class="channel-card-title">
-                  <div class="channel-icon channel-icon--anthropic">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 2L2 22h20L12 2zm0 4.5L18.5 20h-13L12 6.5z"/>
-                    </svg>
-                  </div>
-                  <span>Claude Code</span>
-                </div>
-                <div class="channel-cost">
-                  <span class="cost-label" data-i18n="common.cost">成本</span>
-                  <span class="cost-value" id="type-anthropic-cost">$0.00</span>
-                </div>
-              </div>
-              <!-- 主要指标 -->
-              <div class="channel-metrics">
-                <div class="metric-item">
-                  <div class="metric-value metric-total" id="type-anthropic-requests">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-success" id="type-anthropic-success">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-error" id="type-anthropic-error">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-rate" id="type-anthropic-rate">0.0%</div>
-                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
-                </div>
-              </div>
-              <!-- Token统计 -->
-              <div class="token-stats">
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.input">输入</span>
-                  <span class="token-value" id="type-anthropic-input">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.output">输出</span>
-                  <span class="token-value" id="type-anthropic-output">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
-                  <span class="token-value token-cache" id="type-anthropic-cache-read">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
-                  <span class="token-value token-cache" id="type-anthropic-cache-create">0</span>
-                </div>
-              </div>
+        <!-- 全局指标 -->
+        <section class="overview-kpis mb-4 animate-slide-up animate-delay-1">
+          <div class="glass-card overview-kpi">
+            <span class="overview-kpi-icon overview-kpi-icon--requests" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05"/><path d="M12 22.08V12"/></svg>
+            </span>
+            <div class="overview-kpi-body">
+              <div class="overview-kpi-label" data-i18n="index.overview.totalRequests">请求总数</div>
+              <div class="overview-kpi-value" id="overview-requests">0</div>
             </div>
-
-            <!-- Codex -->
-            <div class="channel-card" id="type-codex-card">
-              <div class="channel-card-header">
-                <div class="channel-card-title">
-                  <div class="channel-icon channel-icon--codex">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
-                    </svg>
-                  </div>
-                  <span>Codex</span>
-                </div>
-                <div class="channel-cost">
-                  <span class="cost-label" data-i18n="common.cost">成本</span>
-                  <span class="cost-value" id="type-codex-cost">$0.00</span>
-                </div>
-              </div>
-              <!-- 主要指标 -->
-              <div class="channel-metrics">
-                <div class="metric-item">
-                  <div class="metric-value metric-total" id="type-codex-requests">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-success" id="type-codex-success">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-error" id="type-codex-error">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-rate" id="type-codex-rate">0.0%</div>
-                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
-                </div>
-              </div>
-              <!-- Token统计 -->
-              <div class="token-stats">
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.input">输入</span>
-                  <span class="token-value" id="type-codex-input">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.output">输出</span>
-                  <span class="token-value" id="type-codex-output">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
-                  <span class="token-value token-cache" id="type-codex-cache-read">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
-                  <span class="token-value token-cache" id="type-codex-cache-create">0</span>
-                </div>
-              </div>
+          </div>
+          <div class="glass-card overview-kpi">
+            <span class="overview-kpi-icon overview-kpi-icon--success" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            </span>
+            <div class="overview-kpi-body">
+              <div class="overview-kpi-label" data-i18n="index.overview.successRate">成功率</div>
+              <div class="overview-kpi-value" id="overview-rate">--</div>
+              <div class="overview-kpi-sub" id="overview-counts"></div>
             </div>
-
-            <!-- OpenAI -->
-            <div class="channel-card" id="type-openai-card">
-              <div class="channel-card-header">
-                <div class="channel-card-title">
-                  <div class="channel-icon channel-icon--openai">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
-                    </svg>
-                  </div>
-                  <span>OpenAI</span>
-                </div>
-                <div class="channel-cost">
-                  <span class="cost-label" data-i18n="common.cost">成本</span>
-                  <span class="cost-value" id="type-openai-cost">$0.00</span>
-                </div>
-              </div>
-              <!-- 主要指标 -->
-              <div class="channel-metrics">
-                <div class="metric-item">
-                  <div class="metric-value metric-total" id="type-openai-requests">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-success" id="type-openai-success">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-error" id="type-openai-error">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-rate" id="type-openai-rate">0.0%</div>
-                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
-                </div>
-              </div>
-              <!-- Token统计 -->
-              <div class="token-stats">
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.input">输入</span>
-                  <span class="token-value" id="type-openai-input">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.output">输出</span>
-                  <span class="token-value" id="type-openai-output">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
-                  <span class="token-value token-cache" id="type-openai-cache-read">0</span>
-                </div>
-              </div>
+          </div>
+          <div class="glass-card overview-kpi">
+            <span class="overview-kpi-icon overview-kpi-icon--cost" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </span>
+            <div class="overview-kpi-body">
+              <div class="overview-kpi-label" data-i18n="index.overview.totalCost">总费用</div>
+              <div class="overview-kpi-value" id="overview-cost">$0</div>
             </div>
-
-            <!-- Gemini -->
-            <div class="channel-card" id="type-gemini-card">
-              <div class="channel-card-header">
-                <div class="channel-card-title">
-                  <div class="channel-icon channel-icon--gemini">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.82 8 12 11.82 4.18 8 12 4.18zM4 9.48l7 3.5v7.84l-7-3.5V9.48zm16 0v7.84l-7 3.5v-7.84l7-3.5z"/>
-                    </svg>
-                  </div>
-                  <span>Google Gemini</span>
-                </div>
-                <div class="channel-cost">
-                  <span class="cost-label" data-i18n="common.cost">成本</span>
-                  <span class="cost-value" id="type-gemini-cost">$0.00</span>
-                </div>
-              </div>
-              <!-- 主要指标 -->
-              <div class="channel-metrics">
-                <div class="metric-item">
-                  <div class="metric-value metric-total" id="type-gemini-requests">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-success" id="type-gemini-success">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.success">成功</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-error" id="type-gemini-error">0</div>
-                  <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
-                </div>
-                <div class="metric-item">
-                  <div class="metric-value metric-rate" id="type-gemini-rate">0.0%</div>
-                  <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
-                </div>
-              </div>
-              <!-- Token统计 -->
-              <div class="token-stats">
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.input">输入</span>
-                  <span class="token-value" id="type-gemini-input">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.output">输出</span>
-                  <span class="token-value" id="type-gemini-output">0</span>
-                </div>
-                <div class="token-item">
-                  <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
-                  <span class="token-value token-cache" id="type-gemini-cache-read">0</span>
-                </div>
-              </div>
+          </div>
+          <div class="glass-card overview-kpi">
+            <span class="overview-kpi-icon overview-kpi-icon--tokens" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+            </span>
+            <div class="overview-kpi-body">
+              <div class="overview-kpi-label" data-i18n="index.overview.outputTokens">输出 Tokens</div>
+              <div class="overview-kpi-value" id="overview-output-tokens">0</div>
             </div>
           </div>
         </section>
 
-        <!-- 有代理请求的渠道类型动态展示 -->
-        <section id="auth-type-section" class="mb-6" hidden>
-          <div id="auth-type-cards" class="grid grid-cols-2 animate-slide-up animate-delay-1 gap-space-3"></div>
+        <!-- 按客户端入口协议统计：仅列有请求的协议 -->
+        <section id="protocol-usage-section" class="mb-4" hidden>
+          <div class="glass-card usage-card animate-slide-up animate-delay-1">
+            <h2 class="usage-card-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+              <span data-i18n="index.overview.protocolUsage">请求协议用量</span>
+            </h2>
+            <div class="usage-table-wrap">
+              <table class="usage-table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="index.overview.colProtocol">协议</th>
+                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
+                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
+                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
+                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
+                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
+                  </tr>
+                </thead>
+                <tbody id="protocol-usage-body"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
+
+        <!-- 按渠道认证类型统计：仅列有请求的类型 -->
+        <section id="auth-type-section" class="mb-4" hidden>
+          <div class="glass-card usage-card animate-slide-up animate-delay-1">
+            <h2 class="usage-card-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M10.5 7.6 6.5 16.4"/><path d="m13.5 7.6 4 8.8"/></svg>
+              <span data-i18n="index.overview.channelUsage">渠道用量</span>
+            </h2>
+            <div class="usage-table-wrap">
+              <table class="usage-table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="index.overview.colChannel">渠道</th>
+                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
+                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
+                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
+                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
+                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
+                  </tr>
+                </thead>
+                <tbody id="auth-type-usage-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <!-- 服务健康监测 -->
         <section class="mb-6">
           <div class="glass-card service-health-card animate-slide-up animate-delay-2" aria-labelledby="service-health-title">
             <div class="service-health-header">
-              <h2 id="service-health-title" class="service-health-title" data-i18n="index.health.title">服务健康监测</h2>
+              <div class="service-health-heading">
+                <h2 id="service-health-title" class="service-health-title">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                  <span data-i18n="index.health.title">服务健康监测</span>
+                </h2>
+                <span id="service-health-counts" class="service-health-counts"></span>
+              </div>
               <div class="service-health-summary">
                 <span id="service-health-period" class="service-health-period">本日</span>
                 <span id="service-health-rate" class="service-health-rate" data-state="unknown" aria-live="polite">--</span>
