@@ -4,27 +4,6 @@ let channelAuthTypeFilterCombobox = null; // 认证类型筛选组合框实例
 let modelFilterCombobox = null; // 通用组件实例
 let channelNameCombobox = null; // 渠道名筛选组合框实例
 
-function getChannelAuthTypeOptions() {
-  return [
-    { value: 'all', label: window.t('channels.authTypeAll') },
-    { value: 'api_key', label: window.t('channels.authTypeAPI') },
-    { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
-    { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
-    { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
-    { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') },
-    { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
-    { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
-    { value: 'zed_oauth', label: window.t('channels.authTypeZed') },
-    { value: 'zai_oauth', label: window.t('channels.authTypeZAI') }
-  ];
-}
-
-function channelAuthTypeFilterLabel(value) {
-  const options = getChannelAuthTypeOptions();
-  const option = options.find(item => item.value === value);
-  return option ? option.label : options[0].label;
-}
-
 function getModelAllLabel() {
   return (window.t && window.t('channels.modelAll')) || '所有模型';
 }
@@ -208,13 +187,6 @@ function setupFilterListeners() {
       }
     });
   }
-
-  // 筛选按钮：手动触发筛选
-  document.getElementById('btn_filter').addEventListener('click', () => {
-    channelsCurrentPage = 1;
-    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    loadChannels();
-  });
 
   const clearSearchBtn = document.getElementById('clearSearchBtn');
   if (clearSearchBtn) {

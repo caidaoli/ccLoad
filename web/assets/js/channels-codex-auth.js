@@ -25,6 +25,7 @@ let currentOAuthCredentialJSON = '';
 let currentOAuthCredential = null;
 let currentOAuthCredentialInfo = null;
 let currentOAuthCredentialView = 'decoded';
+let currentOAuthCredentialAuthType = '';
 let oauthLoginDialogTrigger = null;
 let oauthCredentialImportDialogTrigger = null;
 const oauthUsageStateByChannelID = new Map();
@@ -116,11 +117,123 @@ function renderCurrentOAuthCredential() {
   }
 }
 
+// 各提供商凭证的到期字段不同：expired 为 RFC3339，expires_at 为秒或毫秒时间戳
+function oauthCredentialExpiryMs(credential) {
+  const expired = Date.parse(String(credential?.expired || ''));
+  if (Number.isFinite(expired)) return expired;
+  const raw = credential?.expires_at;
+  const numeric = Number(raw);
+  if (raw !== '' && raw !== null && Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(raw || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatOAuthCredentialTime(ms) {
+  const date = new Date(ms);
+  if (!ms || Number.isNaN(date.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function oauthCredentialExpiryState(credential, nowMs = Date.now()) {
+  const expiresAt = oauthCredentialExpiryMs(credential);
+  if (!expiresAt) return null;
+  const remaining = expiresAt - nowMs;
+  if (remaining <= 0) return { expiresAt, tone: 'expired', text: window.t('channels.oauthCredential.expired') };
+  const text = typeof formatRemainingStatusTime === 'function'
+    ? formatRemainingStatusTime(
+      remaining,
+      'channels.oauthCredential.secondsUntilExpiry',
+      'channels.oauthCredential.minutesUntilExpiry',
+      'channels.oauthCredential.hoursMinutesUntilExpiry',
+      'channels.oauthCredential.daysHoursUntilExpiry'
+    )
+    : formatOAuthCredentialTime(expiresAt);
+  return { expiresAt, tone: remaining < 60 * 60 * 1000 ? 'warning' : 'ok', text };
+}
+
+function oauthCredentialSummaryRows(authType, credential, credentialInfo, expiry) {
+  const t = key => window.t(`channels.oauthCredential.${key}`);
+  const provider = typeof channelAuthTypeFilterLabel === 'function' ? channelAuthTypeFilterLabel(authType) : authType;
+  const rawPlan = String(credential.plan_type || credentialInfo?.plan_type || credential.subscription_tier || '').trim();
+  const plan = rawPlan && authType === 'codex_oauth' && typeof codexPlanLabel === 'function' ? codexPlanLabel(rawPlan) : rawPlan;
+  const refreshToken = String(credential.refresh_token || '').trim();
+  const lastRefresh = formatOAuthCredentialTime(Date.parse(String(credential.last_refresh || '')));
+  return [
+    { label: t('account'), value: credential.email || credential.email_address || '' },
+    { label: t('provider'), value: provider },
+    { label: t('plan'), value: plan, pill: true },
+    {
+      label: 'Access Token',
+      value: expiry ? formatOAuthCredentialTime(expiry.expiresAt) : '',
+      note: expiry?.text || '',
+      tone: expiry?.tone || ''
+    },
+    { label: 'Refresh Token', value: refreshToken ? t('refreshTokenAuto') : t('refreshTokenMissing') },
+    { label: t('lastRefresh'), value: lastRefresh },
+    {
+      label: t('accountId'),
+      value: credential.account_id || credentialInfo?.chatgpt_account_id || credential.user_id || credential.project_id || '',
+      mono: true
+    }
+  ].filter(row => String(row.value || '').trim());
+}
+
+// 凭证概要：左侧键值卡片 + 标题旁的 Access Token 到期提示，JSON 原文仍在右侧代码面板
+function renderOAuthCredentialSummary() {
+  if (typeof document === 'undefined') return;
+  const summary = document.getElementById('oauthCredentialSummary');
+  const pill = document.getElementById('oauthCredentialExpiryPill');
+  const credential = currentOAuthCredential;
+  const expiry = credential ? oauthCredentialExpiryState(credential) : null;
+  if (pill) {
+    pill.hidden = !expiry;
+    pill.textContent = expiry ? `Access Token ${expiry.text}` : '';
+    if (pill.dataset) pill.dataset.tone = expiry?.tone || '';
+  }
+  if (!summary || typeof summary.replaceChildren !== 'function') return;
+  if (!credential) {
+    summary.replaceChildren();
+    summary.hidden = true;
+    return;
+  }
+  const rows = oauthCredentialSummaryRows(currentOAuthCredentialAuthType, credential, currentOAuthCredentialInfo, expiry);
+  summary.replaceChildren(...rows.map(row => {
+    const item = document.createElement('div');
+    item.className = 'oauth-credential-summary__row';
+    const term = document.createElement('dt');
+    term.textContent = row.label;
+    const value = document.createElement('dd');
+    if (row.pill) {
+      const badge = document.createElement('span');
+      badge.className = 'oauth-credential-summary__pill';
+      badge.textContent = row.value;
+      value.append(badge);
+    } else {
+      value.textContent = row.value;
+    }
+    if (row.mono) value.classList.add('oauth-credential-summary__mono');
+    if (row.note) {
+      const note = document.createElement('span');
+      note.className = 'oauth-credential-summary__note';
+      note.dataset.tone = row.tone;
+      note.textContent = row.note;
+      value.append(document.createElement('br'), note);
+    }
+    item.append(term, value);
+    return item;
+  }));
+  summary.hidden = rows.length === 0;
+}
+
 function renderOAuthCredential(credential, credentialInfo = null, view = 'decoded') {
   currentOAuthCredential = credential || null;
   currentOAuthCredentialInfo = credentialInfo || null;
   currentOAuthCredentialView = view === 'raw' ? 'raw' : 'decoded';
   renderCurrentOAuthCredential();
+  renderOAuthCredentialSummary();
 }
 
 function setOAuthCredentialView(view) {
@@ -203,6 +316,7 @@ function applyChannelAuthEditorMode(
       codexPersonalAccessToken || (authType === 'codebuddy_oauth' && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
     );
   }
+  currentOAuthCredentialAuthType = authType;
   renderOAuthCredential(
     credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,
@@ -404,7 +518,7 @@ function updateOAuthCredentialImportProgress(event, prefix = 'oauthCredentialImp
   }
 }
 
-function openOAuthLoginDialog(trigger = null) {
+function openOAuthLoginDialog(trigger = null, provider = 'codex') {
   const dialog = document.getElementById('oauthLoginDialog');
   const providerSelect = document.getElementById('oauthProviderSelect');
   const xaiMethod = document.getElementById('xaiOAuthMethod');
@@ -420,7 +534,7 @@ function openOAuthLoginDialog(trigger = null) {
   }
 
   oauthLoginDialogTrigger = trigger;
-  providerSelect.value = 'codex';
+  providerSelect.value = provider;
   providerSelect.disabled = false;
   const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   if (codebuddyEditionSelect) {
@@ -2549,7 +2663,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
 }
 
 function setupOAuthActions() {
-  const loginButton = document.getElementById('oauthLoginBtn');
+  const addMenu = document.getElementById('channelAddMenu');
   const loginDialog = document.getElementById('oauthLoginDialog');
   const loginForm = document.getElementById('oauthLoginForm');
   const providerSelect = document.getElementById('oauthProviderSelect');
@@ -2589,9 +2703,15 @@ function setupOAuthActions() {
   const credentialCopyButton = document.getElementById('codexCredentialCopyButton');
   const credentialRefreshButton = document.getElementById('codexCredentialRefreshButton');
 
-  if (loginButton && !loginButton.dataset.bound) {
-    loginButton.addEventListener('click', () => openOAuthLoginDialog(loginButton));
-    loginButton.dataset.bound = '1';
+  // 页头「添加」菜单的 OAuth 项：按菜单项预选认证类型，关闭对话框后焦点回到菜单触发按钮
+  if (addMenu && !addMenu.dataset.oauthBound) {
+    addMenu.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-oauth-provider]');
+      if (!item) return;
+      const trigger = document.querySelector('#channelAddGroup .channel-page-menu__trigger');
+      openOAuthLoginDialog(trigger, item.dataset.oauthProvider);
+    });
+    addMenu.dataset.oauthBound = '1';
   }
   if (providerSelect && typeof providerSelect.addEventListener === 'function' && !providerSelect.dataset?.oauthBound) {
     providerSelect.addEventListener('change', syncOAuthProviderFields);

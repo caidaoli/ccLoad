@@ -847,6 +847,8 @@ function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
   return `<div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>`;
 }
 
+const OAUTH_RESET_CREDIT_ICON = '<svg class="ch-oauth-usage__credit-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.75" stroke="currentColor" stroke-width="1.3"/><path d="M1.75 6.25H14.25M4.5 10H7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+
 function buildAnthropicResetCreditsHtml(channelID) {
   const state = typeof getAnthropicResetCreditsState === 'function'
     ? getAnthropicResetCreditsState(channelID) : null;
@@ -875,17 +877,20 @@ function buildAnthropicResetCreditsHtml(channelID) {
   const status = !data.eligible ? 'channels.oauth.anthropicResetIneligible'
     : available ? ''
       : 'channels.oauth.anthropicResetUnavailable';
-  const expiryText = primary?.expires_at ? formatXAIUsageReset(primary.expires_at) : '';
+  const expiryText = primary?.expires_at
+    ? window.t('channels.oauth.resetCreditExpires', { time: formatXAIUsageReset(primary.expires_at) })
+    : window.t('channels.oauth.resetCreditExpiresUnknown');
   const details = credits.map(credit => {
     const time = credit.expires_at ? formatXAIUsageReset(credit.expires_at) : '';
     return `${String(credit.label || '')}: ${Math.max(0, Number(credit.resets_left) || 0)}${time ? ` · ${window.t('channels.oauth.resetCreditExpires', { time })}` : ''}`;
   }).join('\n');
   const cooldown = data.cooldown_until && Date.parse(data.cooldown_until) > Date.now()
     ? formatXAIUsageReset(data.cooldown_until) : '';
-  return `<div class="ch-oauth-usage__credits" role="status">
-    <div class="ch-oauth-usage__credits-summary" title="${escapeChannelRefreshText(details)}">
-      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.anthropicResetRemaining', { count: total }))}</span>
-      ${expiryText ? `<span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpires', { time: expiryText }))}</span>` : ''}
+  return `<div class="ch-oauth-usage__credits ch-oauth-usage__credits--reset" role="status">
+    <div class="ch-oauth-usage__credits-summary">
+      ${OAUTH_RESET_CREDIT_ICON}
+      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: total }))}</span>
+      <span class="ch-oauth-usage__credit-expiry" title="${escapeChannelRefreshText(details)}">${escapeChannelRefreshText(expiryText)}</span>
       ${resetButton}
     </div>
     ${status || cooldown ? `<div class="ch-oauth-usage__credits-summary">${[
@@ -931,11 +936,18 @@ function buildCodexResetCreditsHtml(data, state, channelID) {
         time: visibleExpiries.map(expiry => expiry.text).join('、')
       })
     : window.t('channels.oauth.resetCreditExpiresUnknown');
-  const escapedExpiryText = escapeChannelRefreshText(expiryText);
-  return `<div class="ch-oauth-usage__credits">
+  // 已购 Credit 的累计标准成本与重置次数同属额度信息，合并到同一行
+  const creditCost = formatOAuthAccumulatedCost(data?.quota_cost_usage?.credit_standard_cost_microusd);
+  const metaText = [
+    expiryText,
+    creditCost ? window.t('channels.oauth.codexCreditCostShort', { cost: creditCost }) : ''
+  ].filter(Boolean).join(' · ');
+  const escapedMetaText = escapeChannelRefreshText(metaText);
+  return `<div class="ch-oauth-usage__credits ch-oauth-usage__credits--reset">
     <div class="ch-oauth-usage__credits-summary">
+      ${OAUTH_RESET_CREDIT_ICON}
       <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: availableCount }))}</span>
-      <span class="ch-oauth-usage__credit-expiry" title="${escapedExpiryText}">${escapedExpiryText}</span>
+      <span class="ch-oauth-usage__credit-expiry" title="${escapedMetaText}">${escapedMetaText}</span>
       <button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-codex-quota" data-channel-id="${channelID}" data-reset-count="${availableCount}" data-reset-expiry="${escapeChannelRefreshText(earliest)}"${disabled ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(buttonText)}</button>
     </div>
     ${resetError ? `<div class="ch-oauth-usage__error" role="status">${escapeChannelRefreshText(resetError)}</div>` : ''}
@@ -1242,8 +1254,7 @@ function buildOAuthUsageStatusHtml(channel) {
     ${buildOAuthUsageToolbar(channel, state)}
     ${buildOAuthUsageRowsHtml(channel.id, rows)}
     ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
-    ${isCodex ? buildCodexPurchasedCreditsHtml(state.data) : ''}
-    ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
+    ${isCodex ? (buildCodexResetCreditsHtml(state.data, state, channel.id) || buildCodexPurchasedCreditsHtml(state.data)) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
     ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits) : ''}
     ${codeBuddyCheckinNotice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(codeBuddyCheckinNotice)}</div>` : ''}
@@ -1497,6 +1508,8 @@ function createChannelCard(channel) {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
 		name: channel.name,
+    authType: channel.auth_type || 'api_key',
+    avatarHtml: window.channelAvatarContentHTML(channel.auth_type || 'api_key', channel.name),
 		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier_min, channel.cost_multiplier_max),
     oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),

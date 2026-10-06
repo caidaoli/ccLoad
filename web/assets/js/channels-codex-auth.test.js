@@ -1464,6 +1464,7 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ...properties
   });
   const loginButton = makeTarget({ focus() { this.focused = true; } });
+  const addMenu = makeTarget();
   const dialog = makeTarget({
     open: false,
     showModal() { this.open = true; },
@@ -1498,7 +1499,7 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   const secretField = { hidden: false };
   const xaiProgress = { hidden: false };
   const elements = new Map([
-    ['oauthLoginBtn', loginButton],
+    ['channelAddMenu', addMenu],
     ['oauthLoginDialog', dialog],
     ['oauthLoginForm', loginForm],
     ['oauthProviderSelect', providerSelect],
@@ -1529,6 +1530,7 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   const requests = [];
   global.document = {
     getElementById: id => elements.get(id) || null,
+    querySelector: selector => (selector === '#channelAddGroup .channel-page-menu__trigger' ? loginButton : null),
     querySelectorAll: () => []
   };
   const successNotices = [];
@@ -1548,9 +1550,10 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   global.reloadChannelsList = async () => {};
   try {
     setupOAuthActions();
-    loginButton.listeners.click();
+    addMenu.listeners.click({ target: { closest: () => ({ dataset: { oauthProvider: 'cursor' } }) } });
 
     assert.equal(dialog.open, true);
+    assert.equal(providerSelect.value, 'cursor');
     assert.equal(providerSelect.focused, true);
     assert.equal(sessionFields.hidden, true);
     assert.deepEqual(requests, []);

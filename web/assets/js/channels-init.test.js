@@ -62,6 +62,7 @@ test('returning via reload or bfcache restores channel name search with the othe
   setGlobal('document', {
     body: { classList: { toggle() {} } },
     addEventListener() {},
+    querySelectorAll: () => [],
     getElementById: (id) => elements[id] || null
   });
   setGlobal('localStorage', {
@@ -145,8 +146,7 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
     ['statusFilter', { addEventListener() {} }],
     ['channelAuthTypeFilter', {}],
     ['modelFilter', {}],
-    ['searchInput', {}],
-    ['btn_filter', { addEventListener() {} }]
+    ['searchInput', {}]
   ]);
   let authCombobox;
   let loadedAuthType = '';
@@ -157,6 +157,8 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
   setGlobal('channelsCurrentPage', 4);
   setGlobal('allAvailableModels', []);
   setGlobal('allAvailableChannelNames', []);
+  setGlobal('channelAuthTypeFilterLabel', value => value);
+  setGlobal('getChannelAuthTypeOptions', () => []);
   setGlobal('createSearchableCombobox', options => {
     if (options.inputId === 'channelAuthTypeFilter') authCombobox = options;
     return { setValue() {}, refresh() {} };

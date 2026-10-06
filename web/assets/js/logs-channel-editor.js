@@ -39,6 +39,7 @@
     '/web/assets/js/channels-cooldown-detection.js',
     '/web/assets/js/model-entry-parser.js',
     '/web/assets/js/channels-model-pricing.js',
+    '/web/assets/js/channel-provider-icons.js',
     '/web/assets/js/channels-modals.js',
     '/web/assets/js/channels-management.js',
     '/web/assets/js/channels-test.js',

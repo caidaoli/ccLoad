@@ -129,6 +129,9 @@ let channelPageMenusBound = false;
 function initChannelPageMenus() {
   if (channelPageMenusBound) return;
   channelPageMenusBound = true;
+  document.querySelectorAll('[data-provider-icon]').forEach((el) => {
+    el.innerHTML = window.channelProviderIconSVG?.(el.dataset.authType) || '';
+  });
   document.addEventListener('click', (e) => {
     const trigger = e.target.closest('.channel-page-menu__trigger');
     if (trigger) {

@@ -4,6 +4,94 @@ function setChannelModalTitle(i18nKey) {
 
   titleEl.setAttribute('data-i18n', i18nKey);
   titleEl.textContent = window.t(i18nKey);
+  titleEl.removeAttribute('title');
+  setChannelDrawerIdentityVisible(false);
+}
+
+function setChannelDrawerIdentityVisible(visible) {
+  ['channelDrawerAvatar', 'channelDrawerAuthBadge', 'channelDrawerStatus', 'channelDrawerMeta'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !visible;
+  });
+}
+
+function channelDrawerAuthLabel(authType) {
+  if (!authType || authType === 'api_key') return window.t('channels.drawer.authApiKey');
+  return window.t('channels.drawer.authOAuth', { provider: channelAuthTypeFilterLabel(authType) });
+}
+
+function formatChannelDrawerDate(unixSeconds) {
+  const date = new Date(Number(unixSeconds) * 1000);
+  if (!unixSeconds || Number.isNaN(date.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// 编辑模式抽屉头部：名称取代"编辑渠道"标题，并展示认证类型、运行状态与统计摘要
+function renderChannelDrawerIdentity(channel) {
+  const titleEl = document.getElementById('modalTitle');
+  if (!titleEl || !channel) return;
+  titleEl.removeAttribute('data-i18n');
+  titleEl.textContent = channel.name;
+  titleEl.title = channel.name;
+
+  const authType = channel.auth_type || 'api_key';
+  const authLabel = channelDrawerAuthLabel(authType);
+
+  const avatar = document.getElementById('channelDrawerAvatar');
+  if (avatar) {
+    avatar.innerHTML = window.channelAvatarContentHTML(authType, channel.name);
+    avatar.dataset.authType = authType;
+  }
+
+  const badge = document.getElementById('channelDrawerAuthBadge');
+  if (badge) {
+    badge.textContent = authLabel;
+    badge.dataset.authType = authType;
+  }
+
+  const statusEl = document.getElementById('channelDrawerStatus');
+  if (statusEl) {
+    statusEl.dataset.cooling = Number(channel.cooldown_remaining_ms || 0) > 0 ? '1' : '';
+    renderChannelDrawerStatus(!!channel.enabled);
+  }
+
+  const metaEl = document.getElementById('channelDrawerMeta');
+  if (metaEl) {
+    const parts = [window.t('channels.drawer.metaId', { id: channel.id })];
+    const created = formatChannelDrawerDate(channel.created_at);
+    if (created) parts.push(window.t('channels.drawer.metaCreated', { date: created }));
+    const stats = typeof channelStatsById !== 'undefined' ? channelStatsById[channel.id] : null;
+    const success = Number(stats?.success) || 0;
+    const total = success + (Number(stats?.error) || 0);
+    if (total > 0) {
+      const range = typeof channelStatsRange !== 'undefined' ? channelStatsRange : 'today';
+      parts.push(window.t('channels.drawer.metaRequests', {
+        range: window.t(`index.timeRange.${range.replace(/_([a-z])/g, (_, c) => c.toUpperCase())}`),
+        count: total.toLocaleString(),
+        rate: (success / total * 100).toFixed(1)
+      }));
+    }
+    metaEl.textContent = parts.join(' · ');
+  }
+
+  setChannelDrawerIdentityVisible(true);
+}
+
+// 启用开关切换时同步头部状态，冷却状态沿用打开抽屉时的快照
+function renderChannelDrawerStatus(enabled) {
+  const statusEl = document.getElementById('channelDrawerStatus');
+  if (!statusEl) return;
+  let state = 'normal';
+  if (!enabled) state = 'disabled';
+  else if (statusEl.dataset.cooling) state = 'cooldown';
+  const labelKey = {
+    normal: 'channels.status.normal',
+    cooldown: 'channels.status.cooldown',
+    disabled: 'channels.statusDisabled'
+  }[state];
+  statusEl.textContent = window.t(labelKey);
+  statusEl.dataset.state = state;
 }
 
 function normalizeProtocolTransformMode(value) {
@@ -19,9 +107,9 @@ let modelImportTarget = 'channel';
 
 function getProtocolTransformModeOptions() {
   return [
-    { value: 'auto', label: window.t('channels.modal.protocolTransformModeAuto') },
-    { value: 'upstream', label: window.t('channels.modal.protocolTransformModeUpstream') },
-    { value: 'local', label: window.t('channels.modal.protocolTransformModeLocal') }
+    { value: 'auto', label: window.t('channels.modal.protocolTransformModeAuto'), description: window.t('channels.modal.protocolTransformModeAutoHelp') },
+    { value: 'upstream', label: window.t('channels.modal.protocolTransformModeUpstream'), description: window.t('channels.modal.protocolTransformModeUpstreamHelp') },
+    { value: 'local', label: window.t('channels.modal.protocolTransformModeLocal'), description: window.t('channels.modal.protocolTransformModeLocalHelp') }
   ];
 }
 
@@ -61,6 +149,7 @@ async function ensureProtocolTransformModeCombobox(transformMode) {
       inputId: 'protocolTransformModeInput',
       dropdownId: 'protocolTransformModeDropdown',
       minWidth: 0,
+      dropdownMinWidth: 420,
       getOptions: getProtocolTransformModeOptions,
       initialValue: 'auto',
       initialLabel: getProtocolTransformModeLabel('auto'),
@@ -405,6 +494,14 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
+  const enabledCheckbox = document.getElementById('channelEnabled');
+  if (enabledCheckbox && !enabledCheckbox.dataset.bound) {
+    enabledCheckbox.addEventListener('change', () => {
+      renderChannelDrawerStatus(enabledCheckbox.checked);
+    });
+    enabledCheckbox.dataset.bound = '1';
+  }
+
   initCommonModelsModalEvents();
   initQuickAddChannelModalEvents();
   initModelNormalizationOptions();
@@ -509,6 +606,7 @@ async function editChannel(id) {
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
+  renderChannelDrawerIdentity(channel);
   document.getElementById('channelName').value = channel.name;
   setInlineURLTableData(channel.urls);
   applyURLStats(urlStats);
@@ -2465,9 +2563,7 @@ async function testRedirectModel(index, button) {
       name: document.getElementById('channelName').value,
       models: redirectTableData
     }, modelName, String(redirect.redirect_model || modelName).trim());
-    if (!opened) return false;
-    await runChannelTest();
-    return true;
+    return !!opened;
   } catch (error) {
     console.error('Model test failed', error);
     if (window.showError) {

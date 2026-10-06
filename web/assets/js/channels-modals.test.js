@@ -858,6 +858,7 @@ function installEditChannelGlobals(channel, {
         contains: name => classes.has(name)
       },
       setAttribute() {},
+      removeAttribute() {},
       addEventListener() {},
       appendChild() {},
       querySelector: () => null,
@@ -875,6 +876,7 @@ function installEditChannelGlobals(channel, {
     window: {
       t: key => key,
       showError: message => errors.push(message),
+      channelAvatarContentHTML: () => '',
       addEventListener() {}
     },
     document: {
@@ -885,6 +887,7 @@ function installEditChannelGlobals(channel, {
       ].includes(selector) ? null : makeElement()
     },
     normalizeInlineKeyRow,
+    channelAuthTypeFilterLabel: value => value,
     channels: [],
     editingChannelId: null,
     editingChannelAuthType: 'api_key',
@@ -1610,7 +1613,7 @@ test('model disabled state toggles without changing the model mapping', () => {
   assert.equal(toggleModelDisabledState(rows, 9), false);
 });
 
-test('model row test opens the existing test flow for the current model and runs it', async () => {
+test('model row test opens the test dialog for the current model without running it', async () => {
   const fixture = installModelRequestTestGlobals();
 
   try {
@@ -1621,8 +1624,7 @@ test('model row test opens the existing test flow for the current model and runs
         id: 7,
         name: 'test-channel',
         models: [{ model: 'requested-model', redirect_model: 'upstream-model', disabled: false }]
-      }, 'requested-model', 'upstream-model'] },
-      { type: 'run' }
+      }, 'requested-model', 'upstream-model'] }
     ]);
     assert.equal(fixture.button.disabled, false);
     assert.equal(fixture.button.attributes.has('aria-busy'), false);
@@ -1650,7 +1652,7 @@ test('model row test can probe a saved disabled target without enabling it', asy
   try {
     const { testRedirectModel } = loadChannelsModals();
     assert.equal(await testRedirectModel(0, fixture.button), true);
-    assert.deepEqual(fixture.calls.map(call => call.type), ['open', 'run']);
+    assert.deepEqual(fixture.calls.map(call => call.type), ['open']);
     assert.equal(global.redirectTableData[0].disabled, true);
     assert.equal(fixture.button.disabled, false);
     assert.deepEqual(fixture.notifications, []);

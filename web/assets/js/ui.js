@@ -1681,6 +1681,7 @@ window.WebAuth = window.WebAuth || {
    * @param {boolean} [config.allowCustomInput] - 允许提交非下拉选项的自定义输入
    * @param {boolean} [config.commitEmptyAsFirst] - 输入为空回车/失焦时提交第一项（通常为“全部”），覆盖默认的取消/恢复行为
    * @param {boolean} [config.showAllOptionsOnOpen] - 打开时先展示完整选项，开始输入后再按关键字过滤
+   * @param {number} [config.dropdownMinWidth] - 下拉面板最小宽度；选项带 description 时用于避免说明文字过度折行
    * @returns {Object} 组件实例
    */
   function createSearchableCombobox(config) {
@@ -1698,7 +1699,8 @@ window.WebAuth = window.WebAuth || {
       attachMode = false,
       allowCustomInput = false,
       commitEmptyAsFirst = false,
-      showAllOptionsOnOpen = false
+      showAllOptionsOnOpen = false,
+      dropdownMinWidth = 0
     } = config;
 
     let input, dropdown, wrapper, dropdownHome, container = null;
@@ -1934,7 +1936,19 @@ window.WebAuth = window.WebAuth || {
         row.id = `${dropdown.id}-option-${idx}`;
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
-        row.textContent = item.label;
+        if (item.description) {
+          // 图文选项：标题 + 说明两行
+          row.classList.add('filter-dropdown-item--described');
+          const label = document.createElement('span');
+          label.className = 'filter-dropdown-item__label';
+          label.textContent = item.label;
+          const description = document.createElement('span');
+          description.className = 'filter-dropdown-item__desc';
+          description.textContent = item.description;
+          row.append(label, description);
+        } else {
+          row.textContent = item.label;
+        }
         if (item.className) {
           row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
         }
@@ -1977,8 +1991,11 @@ window.WebAuth = window.WebAuth || {
       const rect = input.getBoundingClientRect();
       const margin = 6;
 
-      dropdown.style.left = `${Math.round(rect.left)}px`;
-      dropdown.style.width = `${Math.round(rect.width)}px`;
+      const viewportWidth = window.innerWidth || 0;
+      const width = Math.min(Math.max(rect.width, dropdownMinWidth), Math.max(rect.width, viewportWidth - margin * 2));
+      const left = Math.max(margin, Math.min(rect.left, viewportWidth - margin - width));
+      dropdown.style.left = `${Math.round(left)}px`;
+      dropdown.style.width = `${Math.round(width)}px`;
       dropdown.style.top = `${Math.round(rect.bottom + margin)}px`;
 
       const dropdownHeight = dropdown.offsetHeight || 0;
