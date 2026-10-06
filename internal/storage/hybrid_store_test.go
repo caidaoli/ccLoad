@@ -705,7 +705,7 @@ func TestHybridStore_AuthoritativeSQLiteFailureIsReturned(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindDoesNotClearNewGeneration(t *testing.T) {
-	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
+	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
 	t.Cleanup(w.close)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -726,7 +726,7 @@ func TestPrimaryWriteBehindDoesNotClearNewGeneration(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindRetriesFailedFinalState(t *testing.T) {
-	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
+	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
 	t.Cleanup(w.close)
 	var attempts atomic.Int64
 	w.enqueue("state", "retry", func(context.Context) error {
@@ -742,7 +742,7 @@ func TestPrimaryWriteBehindRetriesFailedFinalState(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindDoesNotRetryBestEffortLogs(t *testing.T) {
-	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
+	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
 	t.Cleanup(w.close)
 	var attempts atomic.Int64
 	w.enqueueBestEffort("logs/latest", "logs", func(context.Context) error {
@@ -757,7 +757,7 @@ func TestPrimaryWriteBehindDoesNotRetryBestEffortLogs(t *testing.T) {
 }
 
 func TestPrimaryWriteBehindPublishesReconcileOnlyAfterDirtyMarker(t *testing.T) {
-	w := newPrimaryWriteBehind(10*time.Millisecond, time.Second)
+	w := newPrimaryWriteBehindWithInitializer(10*time.Millisecond, time.Second, nil)
 	t.Cleanup(w.close)
 	dirtyStarted := make(chan struct{})
 	releaseDirty := make(chan struct{})

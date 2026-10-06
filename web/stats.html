@@ -257,10 +257,10 @@
       <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
       <td class="stats-col-speed {{speedCellClass}}" data-mobile-label="{{mobileLabelSpeed}}">{{{avgSpeed}}}</td>
       <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
-      <td class="stats-col-input" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
-      <td class="stats-col-output" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
-      <td class="stats-col-cache-read" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
-      <td class="stats-col-cache-create" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
+      <td class="stats-col-input {{inputCellClass}}" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
+      <td class="stats-col-output {{outputCellClass}}" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
+      <td class="stats-col-cache-read {{cacheReadCellClass}}" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
+      <td class="stats-col-cache-create {{cacheCreateCellClass}}" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
       <td class="stats-col-cache-util" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
       <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>

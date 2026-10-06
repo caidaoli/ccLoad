@@ -29,8 +29,8 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 }
 
 func TestCalculateStandardCostBreakdown_ExposesFormulaComponents(t *testing.T) {
-	breakdown := CalculateStandardCostBreakdown(
-		"claude-sonnet-4-5-20250929", "",
+	breakdown := CalculateStandardCostBreakdownWithPrice(
+		"claude-sonnet-4-5-20250929", "", nil,
 		12, 73, 17_558, 278, 100,
 	)
 
@@ -81,8 +81,8 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 }
 
 func TestCalculateCost_Fable51(t *testing.T) {
-	breakdown := CalculateStandardCostBreakdown(
-		"claude-fable-5-1", "",
+	breakdown := CalculateStandardCostBreakdownWithPrice(
+		"claude-fable-5-1", "", nil,
 		1_000, 2_000, 4_000, 500, 250,
 	)
 	for _, test := range []struct {
@@ -120,7 +120,7 @@ func TestCalculateCost_Opus55(t *testing.T) {
 		{name: "fast", serviceTier: "fast", wantInputPrice: 8, wantOutputPrice: 40, wantCacheReadPrice: 0.2, wantCacheWritePrice: 5, wantServiceMultiplier: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdown("claude-opus-5-5", test.serviceTier, 1_000, 1_000, 1_000, 1_000, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, nil, 1_000, 1_000, 1_000, 1_000, 0)
 			if breakdown.Input.PricePerMillion != test.wantInputPrice ||
 				breakdown.Output.PricePerMillion != test.wantOutputPrice ||
 				breakdown.CacheRead.PricePerMillion != test.wantCacheReadPrice ||
@@ -134,7 +134,7 @@ func TestCalculateCost_Opus55(t *testing.T) {
 
 func TestCalculateCost_Sonnet55(t *testing.T) {
 	// 不能模糊命中 claude-sonnet-5 的 $3/$15。
-	breakdown := CalculateStandardCostBreakdown("claude-sonnet-5-5", "", 1_000, 1_000, 1_000, 1_000, 0)
+	breakdown := CalculateStandardCostBreakdownWithPrice("claude-sonnet-5-5", "", nil, 1_000, 1_000, 1_000, 1_000, 0)
 	if breakdown.Input.PricePerMillion != 2 ||
 		breakdown.Output.PricePerMillion != 10 ||
 		breakdown.CacheRead.PricePerMillion != 0.2 ||
@@ -1689,19 +1689,19 @@ func TestIsFastModeModel(t *testing.T) {
 	}
 }
 
-func TestCalculateFastModeCost_Basic(t *testing.T) {
+func TestFastModeCost_Basic(t *testing.T) {
 	// 场景：Fast mode 基础输入/输出
 	// Input: 1000 × $10 / 1M = $0.010
 	// Output: 2000 × $50 / 1M = $0.100
 	// Total: $0.110
-	cost := CalculateFastModeCost(1000, 2000, 0, 0, 0)
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 1000, 2000, 0, 0, 0).Total
 	expected := 0.110
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Fast mode 基础成本 = %.6f, 期望 %.6f", cost, expected)
 	}
 }
 
-func TestCalculateFastModeCost_WithCache(t *testing.T) {
+func TestFastModeCost_WithCache(t *testing.T) {
 	// 场景：Fast mode + 缓存
 	// [P1-3] 缓存成本基于「基础 input 价 $5」而非 fast 价 $10
 	//   （缓存倍率常量定义为相对基础 input 价，且与标准计费路径 CalculateCostDetailed 一致）
@@ -1711,21 +1711,21 @@ func TestCalculateFastModeCost_WithCache(t *testing.T) {
 	// 5m Write:   2000 × ($5 × 1.25) / 1M = $0.012500
 	// 1h Write:   1000 × ($5 × 2.0) / 1M  = $0.010000
 	// Total: $0.060000
-	cost := CalculateFastModeCost(1000, 500, 5000, 2000, 1000)
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 1000, 500, 5000, 2000, 1000).Total
 	expected := 0.060
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Fast mode 缓存成本 = %.6f, 期望 %.6f", cost, expected)
 	}
 }
 
-func TestCalculateFastModeCost_VsStandard(t *testing.T) {
+func TestFastModeCost_VsStandard(t *testing.T) {
 	// 验证 fast mode 与标准模式的价格差异
 	// 标准模式统一价格: Input=$5, Output=$25（全1M窗口）
 	// Fast mode 统一: Input=$10, Output=$50
 	inputTokens := 250000
 
 	standardCost := CalculateCostDetailed("claude-opus-5", inputTokens, 1000, 0, 0, 0)
-	fastCost := CalculateFastModeCost(inputTokens, 1000, 0, 0, 0)
+	fastCost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, inputTokens, 1000, 0, 0, 0).Total
 
 	// 标准: 250000×$5/1M + 1000×$25/1M = $1.275
 	expectedStandard := 1.275
@@ -1759,7 +1759,7 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdown(tt.model, "fast", 1_000, 1_000, 0, 0, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice(tt.model, "fast", nil, 1_000, 1_000, 0, 0, 0)
 			if breakdown.Input.PricePerMillion != tt.wantInputPrice || breakdown.Output.PricePerMillion != tt.wantOutputPrice {
 				t.Fatalf("fast pricing for %q = input %.2f/output %.2f, want %.2f/%.2f", tt.model,
 					breakdown.Input.PricePerMillion, breakdown.Output.PricePerMillion, tt.wantInputPrice, tt.wantOutputPrice)
@@ -1768,15 +1768,15 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 	}
 }
 
-func TestCalculateFastModeCost_NegativeTokens(t *testing.T) {
-	cost := CalculateFastModeCost(-1, 100, 0, 0, 0)
+func TestFastModeCost_NegativeTokens(t *testing.T) {
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, -1, 100, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("负数token应返回0, 实际 %.6f", cost)
 	}
 }
 
-func TestCalculateFastModeCost_ZeroTokens(t *testing.T) {
-	cost := CalculateFastModeCost(0, 0, 0, 0, 0)
+func TestFastModeCost_ZeroTokens(t *testing.T) {
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 0, 0, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("零token应返回0, 实际 %.6f", cost)
 	}

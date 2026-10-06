@@ -700,16 +700,6 @@ type ChannelImportSummary struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// CooldownRequest 冷却设置请求
-type CooldownRequest struct {
-	DurationMs int64 `json:"duration_ms" binding:"required,min=1000"` // 最少1秒
-}
-
-// SettingUpdateRequest 系统配置更新请求
-type SettingUpdateRequest struct {
-	Value string `json:"value" binding:"required"`
-}
-
 // CheckDuplicateRequest 渠道重复检测请求
 type CheckDuplicateRequest struct {
 	URLs model.ChannelURLs `json:"urls" binding:"required,min=1"`

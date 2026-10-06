@@ -72,7 +72,6 @@
 
   function resetCustomRulesState(rules) {
     _state = rules == null ? { headers: [], body: [] } : cloneRules(rules);
-    if (hasWindow) window.channelCustomRulesState = _state;
     updateTabCounts(_state);
   }
 
@@ -469,11 +468,8 @@
       return false;
     }
     _state = normalized;
-    if (hasWindow) {
-      window.channelCustomRulesState = _state;
-      if (typeof window.markChannelFormDirty === 'function') {
-        window.markChannelFormDirty();
-      }
+    if (hasWindow && typeof window.markChannelFormDirty === 'function') {
+      window.markChannelFormDirty();
     }
     updateTabCounts(_state);
     return true;
@@ -579,7 +575,6 @@
     window.closeCustomRulesHelp = closeCustomRulesHelp;
     window.resetCustomRulesState = resetCustomRulesState;
     window.collectCustomRulesForSubmit = collectCustomRulesForSubmit;
-    window.validateCustomRulesLocally = validateRulesLocally;
   }
 
   if (typeof module !== 'undefined' && module.exports) {

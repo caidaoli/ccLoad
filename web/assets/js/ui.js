@@ -1573,12 +1573,9 @@ window.WebAuth = window.WebAuth || {
     try {
       const fetcher = window.fetchDataWithAuth || window.fetchData;
       if (typeof fetcher !== 'function') return 0;
-      const data = await fetcher('/admin/settings');
-      if (Array.isArray(data)) {
-        const item = data.find(s => s && s.key === 'auto_refresh_interval_seconds');
-        const n = item ? Number(item.value) : 0;
-        if (Number.isFinite(n) && n > 0) seconds = Math.floor(n);
-      }
+      const data = await fetcher('/admin/settings/auto_refresh_interval_seconds');
+      const n = data ? Number(data.value) : 0;
+      if (Number.isFinite(n) && n > 0) seconds = Math.floor(n);
     } catch (_) { /* 拉取失败：不刷新 */ }
 
     try {

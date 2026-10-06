@@ -497,16 +497,6 @@ function applyURLStats(stats) {
   renderInlineURLTable();
 }
 
-async function fetchURLStats(channelId) {
-  if (!channelId) return;
-  try {
-    const stats = await fetchDataWithAuth(`/admin/channels/${channelId}/url-stats`);
-    applyURLStats(stats);
-  } catch (e) {
-    console.error('Failed to fetch URL stats', e);
-  }
-}
-
 function formatURLStatus(stat) {
   if (!stat) {
     return '<span class="inline-url-status-placeholder">--</span>';
@@ -607,7 +597,6 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     applyURLStats,
     createURLRow,
-    fetchURLStats,
     normalizeInlineURLConfig,
     normalizeInlineURLConfigs,
     runtimeInlineURL

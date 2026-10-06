@@ -34,7 +34,11 @@ func TestLoginDecryptsNativeCallback(t *testing.T) {
 	query := url.Values{}
 	query.Set("user_id", "user-42")
 	query.Set("access_token", base64.RawURLEncoding.EncodeToString(ciphertext))
-	credential, err := login.ParseCallbackURL("http://localhost:43123/?"+query.Encode(), "11111111-2222-4333-8444-555555555555")
+	callback, err := login.DecryptCallbackURL("http://localhost:43123/?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := NewCredential(callback.UserID, "11111111-2222-4333-8444-555555555555", callback.NativeCredential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +63,7 @@ func TestLoginRejectsForeignCallbackHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := login.ParseCallbackURL("https://example.com/?user_id=u&access_token=x", "system"); err == nil {
+	if _, err := login.DecryptCallbackURL("https://example.com/?user_id=u&access_token=x"); err == nil {
 		t.Fatal("foreign callback host must be rejected")
 	}
 }

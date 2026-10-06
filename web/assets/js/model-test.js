@@ -3070,11 +3070,6 @@ function getFirstEnabledModelTestKey(keys) {
   return (Array.isArray(keys) ? keys : []).find(key => key?.disabled !== true) || null;
 }
 
-function getPreferredModelTestKey(keys) {
-  const list = Array.isArray(keys) ? keys : [];
-  return getFirstEnabledModelTestKey(list) || list[0] || null;
-}
-
 async function fetchModelTestChannelKeys(channelId) {
   if (!channelId) return [];
   const keys = (await fetchDataWithAuth(`/admin/channels/${channelId}/keys`)) || [];

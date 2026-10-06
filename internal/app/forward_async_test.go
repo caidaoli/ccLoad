@@ -49,10 +49,17 @@ func mustBuildTestTransformPlan(t testing.TB, _ *model.Config, body []byte) prot
 	return plan
 }
 
-// TestRequestContextCreation 测试请求上下文创建
-func TestRequestContextCreation(t *testing.T) {
+// forwardOnceAsync 走 HTTP 路径（非原生 Codex WebSocket、无回放覆盖）的单次转发。
+func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
+	return s.forwardOnceAsyncWithNativeCodexWebsocket(
+		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
+		false, upstreamWireAliases{},
+	)
+}
+
+// TestIsStreamingRequest 测试流式请求识别（body stream 字段与 Gemini 流式路径）
+func TestIsStreamingRequest(t *testing.T) {
 	t.Parallel()
-	srv := newInMemoryServer(t)
 
 	tests := []struct {
 		name          string
@@ -61,13 +68,13 @@ func TestRequestContextCreation(t *testing.T) {
 		wantStreaming bool
 	}{
 		{
-			name:          "流式请求-应设置超时",
+			name:          "body-stream-true",
 			requestPath:   "/v1/messages",
 			body:          []byte(`{"stream":true}`),
 			wantStreaming: true,
 		},
 		{
-			name:          "非流式请求-无超时",
+			name:          "body-stream-false",
 			requestPath:   "/v1/messages",
 			body:          []byte(`{"stream":false}`),
 			wantStreaming: false,
@@ -81,22 +88,9 @@ func TestRequestContextCreation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			// 移除defer reqCtx.Close()（Close方法已删除）
-			reqCtx := srv.newRequestContext(ctx, tt.requestPath, tt.body)
-
-			if reqCtx.isStreaming != tt.wantStreaming {
-				t.Errorf("isStreaming = %v, want %v", reqCtx.isStreaming, tt.wantStreaming)
-			}
-
-			// 验证上下文创建成功
-			if reqCtx.ctx == nil {
-				t.Error("reqCtx.ctx should not be nil")
-			}
-
-			// 移除cancel字段验证（cancel已删除）
-		})
+		if got := isStreamingRequest(tt.requestPath, tt.body); got != tt.wantStreaming {
+			t.Errorf("%s: isStreamingRequest = %v, want %v", tt.name, got, tt.wantStreaming)
+		}
 	}
 }
 

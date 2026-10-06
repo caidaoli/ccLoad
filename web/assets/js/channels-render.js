@@ -18,10 +18,6 @@ const CHANNEL_PRIORITY_MIN = -99999;
 const CHANNEL_PRIORITY_MAX = 9999999;
 let channelPrioritySaveTimers = new Map();
 
-function uniqueChannelModelNames(models) {
-  return channelModelDisplayGroups(models).map((group) => group.model);
-}
-
 function channelModelDisplayGroups(models) {
   const groups = new Map();
   (Array.isArray(models) ? models : []).forEach((entry) => {
@@ -538,21 +534,6 @@ function flushInlineChannelPrioritySave(input) {
     channelPrioritySaveTimers.delete(channelId);
   }
   return saveInlineChannelPriority(input);
-}
-
-function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle = 'solid' }) {
-  return [
-    'display: inline-flex',
-    'align-items: center',
-    `background: ${background}`,
-    `color: ${color}`,
-    'padding: 2px 6px',
-    'border-radius: 999px',
-    'font-size: 0.68rem',
-    'font-weight: 600',
-    `border: 1px ${borderStyle} ${borderColor}`,
-    'line-height: 1'
-  ].join('; ');
 }
 
 const CHANNEL_METRIC_ICONS = {
@@ -1915,7 +1896,6 @@ function renderChannels(channelsToRender = channels) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    uniqueChannelModelNames,
     buildChannelModelLineHtml,
     buildChannelMetricsHtml,
     formatChannelModelTitle,

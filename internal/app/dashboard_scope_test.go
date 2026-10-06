@@ -484,7 +484,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 		t.Fatalf("models channels=%v, want %v", got, wantChannels)
 	}
 
-	metricsCtx, metricsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/metrics?range=today&bucket_min=5", nil))
+	metricsCtx, metricsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/metrics?range=today&bucket_min=5&by_channel=1", nil))
 	metricsCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
 	server.HandleMetrics(metricsCtx)
 	metrics := mustParseAPIResponse[[]model.MetricPoint](t, metricsW.Body.Bytes()).Data
@@ -504,7 +504,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 		t.Fatalf("metrics channels=%v, want %v", metricChannels, want)
 	}
 
-	statsCtx, statsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/stats?range=today", nil))
+	statsCtx, statsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/stats?range=today&health_timeline=1", nil))
 	statsCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
 	server.HandleStats(statsCtx)
 	statsData := mustParseAPIResponse[struct {
@@ -568,7 +568,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 
 	summaryCtx, summaryW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
 	summaryCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
-	server.HandlePublicSummary(summaryCtx)
+	server.HandleDashboardSummary(summaryCtx)
 	summary := mustParseAPIResponse[struct {
 		TotalRequests int `json:"total_requests"`
 	}](t, summaryW.Body.Bytes()).Data

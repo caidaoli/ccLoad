@@ -9,7 +9,7 @@ let authTokens = []; // 令牌列表
 let logsChannelNameCombobox = null; // 渠道名筛选组合框
 let logsModelCombobox = null; // 模型筛选组合框
 let logsStatusCombobox = null; // 状态码筛选组合框
-window.logsChannels = []; // 渠道列表（来自 /admin/models）
+window.logsChannels = []; // 渠道列表（来自 /dashboard/models）
 window.availableLogsModels = []; // 可用模型列表
 window.availableLogsStatusCodes = []; // 可用状态码列表
 let logsExactChannelNameValue = '';
@@ -1476,7 +1476,7 @@ async function loadLogsFilterOptions(range) {
 }
 
 // 从日志/活跃请求数据中提取渠道名与请求模型，去重合并进筛选下拉。
-// 根因：/admin/models 的 distinct 查询滞后于刚落库或进行中的请求，
+// 根因：/dashboard/models 的 distinct 查询滞后于刚落库或进行中的请求，
 // 导致列表里能看到的渠道/模型在下拉里缺失，必须刷新页面才更新。
 // 此处做到“所见即可筛选”，无需刷新。
 function mergeLogsFilterOptions(entries) {

@@ -24,6 +24,14 @@ import (
 // 每一处 diff 都必须先解释清楚是修正还是回归，再决定要不要接受。
 const anthropicGoldenPath = "testdata/anthropic_wire_golden.json"
 
+// finalizeAnthropicClaudeCodeMessagesBody 按 body/header 自动识别调用方 wire 后最终化，
+// 与 forwardOnce 的调用方式一致。
+func finalizeAnthropicClaudeCodeMessagesBody(body []byte, cfg *model.Config, apiKey string, headers http.Header, target *url.URL) ([]byte, error) {
+	body, _, err := finalizeAnthropicClaudeCodeMessagesBodyForCaller(
+		body, cfg, apiKey, headers, target, classifyAnthropicCallerWire(body, headers))
+	return body, err
+}
+
 type anthropicGoldenCase struct {
 	name    string
 	body    string

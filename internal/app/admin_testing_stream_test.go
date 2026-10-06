@@ -130,7 +130,7 @@ func TestStreamChatNativeEmitsOnlyFrontendDeltaEvents(t *testing.T) {
 		"",
 	}, "\n"))
 
-	streamChatNative(c, upstream)
+	_ = streamChatNativeWithFirstContent(c, upstream, nil, nil)
 
 	body := w.Body.String()
 	if !strings.Contains(body, `"delta":"I'm ready"`) {
@@ -193,7 +193,7 @@ func TestChatFrontendChunksFromSSEEventEmitsThinkingDelta(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chunks := chatFrontendChunksFromSSEEvent([]byte(tt.rawEvent))
+			chunks := chatFrontendChunksFromSSEEventWithState([]byte(tt.rawEvent), nil)
 			body := string(bytes.Join(chunks, nil))
 			if !strings.Contains(body, tt.want) {
 				t.Fatalf("expected %s in chunks, got:\n%s", tt.want, body)
@@ -220,7 +220,7 @@ func TestStreamChatNativeParsesSplitThinkTags(t *testing.T) {
 		"",
 	}, "\n"))
 
-	streamChatNative(c, upstream)
+	_ = streamChatNativeWithFirstContent(c, upstream, nil, nil)
 
 	body := w.Body.String()
 	if !strings.Contains(body, `"thinking_delta":"split thought"`) {

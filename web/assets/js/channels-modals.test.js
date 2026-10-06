@@ -4,10 +4,8 @@ const assert = require('node:assert/strict');
 const {
   normalizeInlineKeyRow,
   pruneKeyAllowedModels,
-  selectAvailableInlineKeys,
   selectModelFetchKeyEntries,
   countConfiguredInlineKeys,
-  selectFirstEnabledInlineKey,
   openKeyModelScopeModal,
   closeKeyModelScopeModal,
   confirmKeyModelScope,
@@ -18,7 +16,7 @@ const {
   canFetchInlineKeyRate,
   toggleKeyDisabled
 } = require('./channels-keys.js');
-const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
+const { applyURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '' }) {
@@ -37,10 +35,8 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, 
     currentChannelKeyCooldowns: states,
     editingChannelId: channelId,
     editingChannelAuthType: authType,
-    selectAvailableInlineKeys,
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
-    selectFirstEnabledInlineKey,
     fetchAPIWithAuth: onFetch,
     alert: onError,
     console: { ...console, error: () => {} }
@@ -928,7 +924,6 @@ function installEditChannelGlobals(channel, {
     clearChannelDuplicateHint() {},
     setInlineURLTableData() {},
     applyURLStats,
-    fetchURLStats,
     urlStatsMap: {},
     renderInlineURLTable() {},
     setInlineKeyTableDataFromAPI(keys) { loadedKeys = keys; },
@@ -1077,7 +1072,6 @@ function installWebsocketProbeGlobals({
     getInlineKeyRows: () => rows,
     urlStatsMap: urlStats,
     currentChannelKeyCooldowns: keyStates,
-    selectFirstEnabledInlineKey,
     fetchDataWithAuth: async (url, options) => {
       requests.push({ url, body: JSON.parse(options.body) });
       return { supported, error: supported ? '' : '426 Upgrade Required' };

@@ -517,7 +517,7 @@ func TestBuildLogEntry_ResponseModelDoesNotChangeBillingModel(t *testing.T) {
 		Result:        result,
 	})
 
-	wantCost := computeRequestCost("gpt-5.4", "", result)
+	wantCost := computeRequestCostWithPrice("gpt-5.4", "", nil, result)
 	if !floatEquals(entry.Cost, wantCost) {
 		t.Fatalf("cost=%.6f, want billing model cost %.6f", entry.Cost, wantCost)
 	}
@@ -531,14 +531,14 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	t.Parallel()
 
 	gpt54LongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000}
-	got := computeRequestCost("gpt-5.4", "priority", gpt54LongContext)
+	got := computeRequestCostWithPrice("gpt-5.4", "priority", nil, gpt54LongContext)
 	want := util.CalculateCostDetailed("gpt-5.4", 300_000, 1_000, 0, 0, 0) * 2
 	if !floatEquals(got, want) {
 		t.Fatalf("gpt-5.4 priority cost=%.6f, want %.6f", got, want)
 	}
 
 	qwenLongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000_000}
-	got = computeRequestCost("qwen3.5-plus", "priority", qwenLongContext)
+	got = computeRequestCostWithPrice("qwen3.5-plus", "priority", nil, qwenLongContext)
 	want = util.CalculateCostDetailed("qwen3.5-plus", 300_000, 1_000_000, 0, 0, 0)
 	if !floatEquals(got, want) {
 		t.Fatalf("qwen priority cost=%.6f, want service_tier ignored cost %.6f", got, want)
@@ -1084,20 +1084,23 @@ func TestAPIKeyModelScopeUsesLogicalModelBeforeRedirect(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{modelFuzzyMatch: true}
-	cfg := &model.Config{ModelEntries: []model.ModelEntry{
-		{Model: "gemini-3-flash-preview", RedirectModel: "alias"},
-		{Model: "alias", RedirectModel: "upstream"},
-	}}
+	cfg := &model.Config{
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-3-flash-preview", RedirectModel: "alias"},
+			{Model: "alias", RedirectModel: "upstream"},
+		},
+	}
 	keys := []*model.APIKey{
 		{APIKey: "sk-logical", AllowedModels: []string{"gemini-3-flash-preview"}},
 		{APIKey: "sk-upstream", AllowedModels: []string{"alias"}},
 	}
 
-	logicalModel := s.resolveChannelRoutingModel(cfg, "gemini-3-flash")
-	if logicalModel != "gemini-3-flash-preview" {
-		t.Fatalf("logical model=%q, want gemini-3-flash-preview", logicalModel)
+	rows := s.enumerateModelRows(cfg, "gemini-3-flash")
+	if len(rows) == 0 || rows[0].logicalModel != "gemini-3-flash-preview" {
+		t.Fatalf("model rows=%+v, want logical model gemini-3-flash-preview", rows)
 	}
-	filtered, scoped := filterAPIKeysForModel(keys, logicalModel)
+	filtered, scoped := s.filterAPIKeysForModelRow(cfg, keys, rows[0], "anthropic")
 	if !scoped || len(filtered) != 1 || filtered[0].APIKey != "sk-logical" {
 		t.Fatalf("filtered keys=%v scoped=%v, want only logical-model key", filtered, scoped)
 	}

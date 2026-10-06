@@ -370,10 +370,6 @@ func xaiImagesStreamErrorEvent(rawError json.RawMessage, fallback string) ([]byt
 	return chunk, errors.New(message)
 }
 
-func translateXAIImagesResponsesStreamEvent(rawEvent, originalRequest []byte) (chunks [][]byte, terminal bool, eventErr error) {
-	return translateXAIImagesResponsesStreamEventWithState(rawEvent, originalRequest, nil)
-}
-
 func translateXAIImagesResponsesStreamEventWithState(
 	rawEvent, originalRequest []byte,
 	state *xaiImagesStreamState,

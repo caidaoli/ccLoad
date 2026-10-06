@@ -36,19 +36,19 @@ type ChannelMetric struct {
 
 // HealthPoint 健康状态数据点（用于健康状态指示器）
 type HealthPoint struct {
-	Ts                       time.Time `json:"ts"`                    // 时间点
-	SuccessRate              float64   `json:"rate"`                  // 成功率 (0-1), -1表示无数据
-	SuccessCount             int       `json:"success"`               // 成功次数
-	ErrorCount               int       `json:"error"`                 // 失败次数
-	RateLimitedCount         int       `json:"rate_limited"`          // 429限流次数（ErrorCount的子集）
-	AvgFirstByteTime         float64   `json:"avg_first_byte_time"`   // 平均上游首块响应体时间(秒)
-	AvgDuration              float64   `json:"avg_duration"`          // 平均耗时(秒)
-	TotalInputTokens         int64     `json:"input_tokens"`          // 输入Token
-	TotalOutputTokens        int64     `json:"output_tokens"`         // 输出Token
-	TotalCacheReadTokens     int64     `json:"cache_read_tokens"`     // 缓存读取Token
-	TotalCacheCreationTokens int64     `json:"cache_creation_tokens"` // 缓存创建Token
-	TotalCost                float64   `json:"cost"`                  // 标准成本(美元)
-	EffectiveCost            float64   `json:"effective_cost"`        // 倍率后成本(美元)
+	Ts                       time.Time `json:"ts"`                              // 时间点
+	SuccessRate              float64   `json:"rate"`                            // 成功率 (0-1), -1表示无数据
+	SuccessCount             int       `json:"success,omitempty"`               // 成功次数
+	ErrorCount               int       `json:"error,omitempty"`                 // 失败次数
+	RateLimitedCount         int       `json:"rate_limited,omitempty"`          // 429限流次数（ErrorCount的子集）
+	AvgFirstByteTime         float64   `json:"avg_first_byte_time,omitempty"`   // 平均上游首块响应体时间(秒)
+	AvgDuration              float64   `json:"avg_duration,omitempty"`          // 平均耗时(秒)
+	TotalInputTokens         int64     `json:"input_tokens,omitempty"`          // 输入Token
+	TotalOutputTokens        int64     `json:"output_tokens,omitempty"`         // 输出Token
+	TotalCacheReadTokens     int64     `json:"cache_read_tokens,omitempty"`     // 缓存读取Token
+	TotalCacheCreationTokens int64     `json:"cache_creation_tokens,omitempty"` // 缓存创建Token
+	TotalCost                float64   `json:"cost,omitempty"`                  // 标准成本(美元)
+	EffectiveCost            float64   `json:"effective_cost,omitempty"`        // 倍率后成本(美元)
 }
 
 // StatsEntry 统计数据条目

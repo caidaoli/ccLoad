@@ -236,24 +236,7 @@ func hasAnyJSONField(fields map[string]json.RawMessage, names ...string) bool {
 	return false
 }
 
-// HandleImportOAuthCredentials imports mixed OAuth credential files. The
-// provider form field defaults to automatic detection.
-func (s *Server) HandleImportOAuthCredentials(c *gin.Context) {
-	s.handleImportOAuthCredentials(c, "")
-}
-
-func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider string) {
-	batch, status, err := s.prepareOAuthCredentialImport(c, forcedProvider)
-	if err != nil {
-		RespondError(c, status, err)
-		return
-	}
-	defer wipeOAuthCredentialImportBatch(batch)
-	summary, _ := s.runOAuthCredentialImport(c.Request.Context(), batch, nil)
-	RespondJSON(c, http.StatusOK, summary)
-}
-
-func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider string) (*oauthCredentialImportBatch, int, error) {
+func (s *Server) prepareOAuthCredentialImport(c *gin.Context) (*oauthCredentialImportBatch, int, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthCredentialImportRequestBytes)
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
@@ -267,11 +250,7 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 		return nil, http.StatusBadRequest, errors.New("credential files are required")
 	}
 
-	providerValue := forcedProvider
-	if providerValue == "" {
-		providerValue = values["provider"]
-	}
-	provider, err := normalizeOAuthCredentialProvider(providerValue)
+	provider, err := normalizeOAuthCredentialProvider(values["provider"])
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}

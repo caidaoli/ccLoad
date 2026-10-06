@@ -262,11 +262,6 @@ func (s *Server) HandleSubmitAntigravityOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-// HandleImportAntigravityCredential imports CLIProxyAPI-compatible credential files.
-func (s *Server) HandleImportAntigravityCredential(c *gin.Context) {
-	s.handleImportOAuthCredentials(c, antigravityauth.ChannelType)
-}
-
 // HandleRefreshAntigravityCredential forces and persists one credential refresh.
 func (s *Server) HandleRefreshAntigravityCredential(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")

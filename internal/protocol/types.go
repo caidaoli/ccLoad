@@ -3,7 +3,6 @@ package protocol
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -98,23 +97,6 @@ var supportedTransformFamiliesByClientAndUpstream = map[Protocol]map[Protocol][]
 		Anthropic: {RequestFamilyGenerateContent},
 		Codex:     {RequestFamilyGenerateContent},
 	},
-}
-
-// SupportedClientProtocolsForUpstream returns the documented client-facing protocols
-// that can be translated into the given upstream protocol.
-func SupportedClientProtocolsForUpstream(upstream Protocol) []Protocol {
-	supported := make([]Protocol, 0, len(supportedTransformFamiliesByClientAndUpstream))
-	for client, upstreams := range supportedTransformFamiliesByClientAndUpstream {
-		if len(upstreams[upstream]) == 0 {
-			continue
-		}
-		supported = append(supported, client)
-	}
-	if len(supported) == 0 {
-		return nil
-	}
-	slices.Sort(supported)
-	return supported
 }
 
 // SupportsTransform reports whether the runtime has a documented transform path for

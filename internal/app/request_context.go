@@ -11,7 +11,7 @@ import (
 )
 
 // requestContext 封装单次请求的上下文和超时控制
-// 从 forwardOnceAsync 提取，遵循SRP原则
+// 从 forwardOnceAsyncWithNativeCodexWebsocket 提取，遵循SRP原则
 // 补充首字节超时管控（可选）
 type requestContext struct {
 	ctx                           context.Context
@@ -49,24 +49,11 @@ type requestContext struct {
 	streamIdleTimedOut            atomic.Bool
 }
 
-// newRequestContext 创建请求上下文（处理超时控制）
+// newRequestContextForStreaming 创建请求上下文（处理超时控制）
 // 设计原则：
 // - 流式请求：使用 firstByteTimeout（首字节）、streamTimeout（总时长）和 streamIdleTimeout（上游连续无数据）
 // - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
 // [INFO] Go 1.21+ 改进：总是返回非 nil 的 cancel，调用方无需检查（符合 Go 惯用法）
-func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
-	return s.newRequestContextWithTimeouts(parentCtx, requestPath, body, protocolTimeoutConfig{
-		FirstByteTimeout:  s.firstByteTimeout,
-		StreamTimeout:     s.streamTimeout,
-		StreamIdleTimeout: s.streamIdleTimeout,
-		NonStreamTimeout:  s.nonStreamTimeout,
-	})
-}
-
-func (s *Server) newRequestContextWithTimeouts(parentCtx context.Context, requestPath string, body []byte, timeouts protocolTimeoutConfig) *requestContext {
-	return newRequestContextForStreaming(parentCtx, isStreamingRequest(requestPath, body), timeouts)
-}
-
 func newRequestContextForStreaming(parentCtx context.Context, isStreaming bool, timeouts protocolTimeoutConfig) *requestContext {
 
 	// [INFO] 关键改动：总是使用 WithCancel 包裹（即使无超时配置也能正常取消）

@@ -315,13 +315,6 @@ func (s *AuthService) generateToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// isValidToken 验证Token有效性（检查过期时间）
-// [INFO] 安全修复：通过tokenHash查询(2025-12)
-func (s *AuthService) isValidToken(token string) bool {
-	_, ok, _ := s.webSession(token)
-	return ok
-}
-
 func (s *AuthService) webSession(token string) (model.WebSession, bool, error) {
 	tokenHash := model.HashToken(token)
 

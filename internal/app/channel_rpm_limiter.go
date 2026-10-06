@@ -43,10 +43,6 @@ func newChannelRPMLimiter(now func() time.Time) *channelRPMLimiter {
 	}
 }
 
-func (l *channelRPMLimiter) allow(channelID int64, limit int) bool {
-	return l.reserve(channelID, limit).allowed
-}
-
 func (l *channelRPMLimiter) RemoveChannel(channelID int64) {
 	if l == nil || channelID <= 0 {
 		return

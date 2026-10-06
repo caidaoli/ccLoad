@@ -219,12 +219,6 @@ func validateCustomPricingTarget(id string) error {
 	return nil
 }
 
-// ParseModelCustomPricingJSON is a descriptive alias kept for callers that use
-// the setting name in their integration code.
-func ParseModelCustomPricingJSON(value string) (map[string]ModelPricing, error) {
-	return ParseCustomModelPricing(value)
-}
-
 func normalizeCustomModelPricing(raw CustomModelPrice) (ModelPricing, error) {
 	pricing := ModelPricing{}
 	assignPrice := func(name string, value *float64, dst *float64) error {
@@ -367,9 +361,6 @@ func InstallCustomModelPricingJSON(value string) error {
 	return InstallCustomModelPricing(pricing)
 }
 
-// InstallModelCustomPricingJSON is an alias matching the setting name.
-func InstallModelCustomPricingJSON(value string) error { return InstallCustomModelPricingJSON(value) }
-
 func validateCustomModelPricing(pricing ModelPricing) error {
 	// 固定按次费率只由系统目录维护（图像模型）；自定义价格不提供该字段，
 	// 若放行会让程序化调用塞进一个前端无法编辑、却覆盖系统图像计费的值。
@@ -387,15 +378,4 @@ func validateCustomModelPricing(pricing ModelPricing) error {
 		}
 	}
 	return nil
-}
-
-// CurrentCustomModelPricing returns a detached copy for diagnostics/tests.
-func CurrentCustomModelPricing() map[string]ModelPricing {
-	modelPricingStateMu.Lock()
-	defer modelPricingStateMu.Unlock()
-	result := make(map[string]ModelPricing, len(activeCustomModelPricing))
-	for id, pricing := range activeCustomModelPricing {
-		result[id] = cloneModelPricing(pricing)
-	}
-	return result
 }

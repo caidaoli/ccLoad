@@ -2331,27 +2331,3 @@ func TestRegistry_TranslateResponseNonStream_AnthropicToOpenAI_ToolCalls(t *test
 		t.Fatalf("expected expr=1+1 in function arguments, got:\n%s", result)
 	}
 }
-
-func TestSupportedClientProtocolsForUpstream_BidirectionalMatrix(t *testing.T) {
-	tests := []struct {
-		upstream protocol.Protocol
-		want     []protocol.Protocol
-	}{
-		{upstream: protocol.OpenAI, want: []protocol.Protocol{protocol.Anthropic, protocol.Codex, protocol.Gemini}},
-		{upstream: protocol.Anthropic, want: []protocol.Protocol{protocol.Codex, protocol.Gemini, protocol.OpenAI}},
-		{upstream: protocol.Codex, want: []protocol.Protocol{protocol.Anthropic, protocol.Gemini, protocol.OpenAI}},
-		{upstream: protocol.Gemini, want: []protocol.Protocol{protocol.Anthropic, protocol.Codex, protocol.OpenAI}},
-	}
-
-	for _, tt := range tests {
-		got := protocol.SupportedClientProtocolsForUpstream(tt.upstream)
-		if len(got) != len(tt.want) {
-			t.Fatalf("upstream %s: expected %v, got %v", tt.upstream, tt.want, got)
-		}
-		for i, want := range tt.want {
-			if got[i] != want {
-				t.Fatalf("upstream %s: expected %v, got %v", tt.upstream, tt.want, got)
-			}
-		}
-	}
-}

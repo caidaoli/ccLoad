@@ -36,13 +36,6 @@ type upstreamRoundTripper interface {
 
 type upstreamRoundTripperFactory func(*http.Transport) upstreamRoundTripper
 
-func newUpstreamConnectionAgeTransport(
-	base *http.Transport,
-	maxAge time.Duration,
-) *upstreamConnectionAgeTransport {
-	return newUpstreamConnectionAgeTransportWithFactory(base, maxAge, newDefaultUpstreamRoundTripper)
-}
-
 func newUpstreamConnectionAgeTransportWithFactory(
 	base *http.Transport,
 	maxAge time.Duration,

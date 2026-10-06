@@ -36,7 +36,7 @@ func TestNativeImagesUsageAndCompletion(t *testing.T) {
 			imageUsage := parser.GetImageUsage()
 			res := &fwResult{InputTokens: input, OutputTokens: output, CacheReadInputTokens: cached, ImageUsage: &imageUsage}
 			// 30 text + 10 cached text + 40 image + 20 cached image + 50 output.
-			if cost := computeRequestCost("gpt-image-2.5-flare", "", res); !floatEquals(cost, 0.0020225) {
+			if cost := computeRequestCostWithPrice("gpt-image-2.5-flare", "", nil, res); !floatEquals(cost, 0.0020225) {
 				t.Fatalf("image cost=%g, want 0.0020225", cost)
 			}
 		})

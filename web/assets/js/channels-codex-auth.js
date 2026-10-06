@@ -855,22 +855,6 @@ async function submitOAuthCallback(provider, callbackURL, fetcher = fetchDataWit
   });
 }
 
-async function submitCodexOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) {
-  return submitOAuthCallback('codex', callbackURL, fetcher);
-}
-
-async function submitAntigravityOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) {
-  return submitOAuthCallback('antigravity', callbackURL, fetcher);
-}
-
-async function submitXAIOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) {
-  return submitOAuthCallback('xai', callbackURL, fetcher);
-}
-
-async function submitAnthropicOAuthCode(code, state, fetcher = fetchDataWithAuth) {
-  return submitOAuthCallback('anthropic', code, fetcher, state);
-}
-
 async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
   const config = oauthProviderConfig(provider);
   const normalizedState = String(state || '').trim();
@@ -880,26 +864,6 @@ async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ state: normalizedState })
   });
-}
-
-async function cancelCodexOAuth(state, fetcher = fetchDataWithAuth) {
-  return cancelOAuth('codex', state, fetcher);
-}
-
-async function cancelAntigravityOAuth(state, fetcher = fetchDataWithAuth) {
-  return cancelOAuth('antigravity', state, fetcher);
-}
-
-async function cancelXAIOAuth(state, fetcher = fetchDataWithAuth) {
-  return cancelOAuth('xai', state, fetcher);
-}
-
-async function cancelAnthropicOAuth(state, fetcher = fetchDataWithAuth) {
-  return cancelOAuth('anthropic', state, fetcher);
-}
-
-async function cancelZAIOAuth(state, fetcher = fetchDataWithAuth) {
-  return cancelOAuth('zai', state, fetcher);
 }
 
 // submitZAICodingPlanKey imports a Coding Plan key without a browser round trip.
@@ -1121,26 +1085,6 @@ async function pollOAuthStatus(provider, state, options = {}) {
     await delay(interval);
   }
   throw new Error(window.t(`${config.i18n}.oauthTimedOut`));
-}
-
-async function pollCodexOAuthStatus(state, options = {}) {
-  return pollOAuthStatus('codex', state, options);
-}
-
-async function pollAntigravityOAuthStatus(state, options = {}) {
-  return pollOAuthStatus('antigravity', state, options);
-}
-
-async function pollXAIOAuthStatus(state, options = {}) {
-  return pollOAuthStatus('xai', state, options);
-}
-
-async function pollAnthropicOAuthStatus(state, options = {}) {
-  return pollOAuthStatus('anthropic', state, options);
-}
-
-async function pollZAIOAuthStatus(state, options = {}) {
-  return pollOAuthStatus('zai', state, options);
 }
 
 async function startOAuth(provider, button) {
@@ -3263,12 +3207,8 @@ if (typeof module !== 'undefined' && module.exports) {
     submitCodeBuddyCredentialFile,
     applyChannelAuthEditorMode,
     batchRefreshSelectedOAuthUsage,
-    cancelAntigravityOAuth,
-    cancelAnthropicOAuth,
-    cancelCodexOAuth,
+    cancelOAuth,
     cancelOAuthCredentialCleanup,
-    cancelXAIOAuth,
-    cancelZAIOAuth,
     cleanupOAuthCredentials,
     copyOAuthCredential,
     copyCodexOAuthLink,
@@ -3286,10 +3226,7 @@ if (typeof module !== 'undefined' && module.exports) {
     maskOAuthSyntheticKey,
     openOAuthCredentialImportDialog,
     openOAuthLoginDialog,
-    pollAntigravityOAuthStatus,
-    pollAnthropicOAuthStatus,
-    pollCodexOAuthStatus,
-    pollXAIOAuthStatus,
+    pollOAuthStatus,
     refreshOAuthCredential,
     checkInCodeBuddy,
     refreshOAuthUsage,
@@ -3301,16 +3238,12 @@ if (typeof module !== 'undefined' && module.exports) {
     setOAuthCredentialView,
     setupOAuthActions,
     showOAuthSession,
-    submitAntigravityOAuthCallback,
-    submitAnthropicOAuthCode,
     submitCodexPersonalAccessToken,
+    submitOAuthCallback,
     submitCursorCredential,
     looksLikeCursorCLISessionSecret,
     CURSOR_USER_API_KEYS_URL,
-    submitCodexOAuthCallback,
-    submitXAIOAuthCallback,
     submitXAICredentialBatch,
-    submitZAICodingPlanKey,
-    pollZAIOAuthStatus
+    submitZAICodingPlanKey
   };
 }

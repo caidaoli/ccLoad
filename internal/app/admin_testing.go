@@ -1156,10 +1156,6 @@ func findAPIKeyByIndex(apiKeys []*model.APIKey, keyIndex int) (*model.APIKey, bo
 	return nil, false
 }
 
-func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
-	return s.executeChannelTestWithCooldown(ctx, cfg, keyIndex, apiKey, testReq, true)
-}
-
 func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
 	result := s.testChannelAPIWithCooldownTarget(ctx, cfg, apiKey, testReq, keyIndex, updatePersistedCooldown)
 	return s.applyChannelTestResultCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result)

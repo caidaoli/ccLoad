@@ -913,12 +913,6 @@ func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-// HandleImportCodexCredential imports CLIProxy-compatible JSON credentials
-// directly into new channels. Existing channel names are skipped unchanged.
-func (s *Server) HandleImportCodexCredential(c *gin.Context) {
-	s.handleImportOAuthCredentials(c, codexauth.ChannelType)
-}
-
 // HandleCreateCodexPersonalAccessToken validates one static Codex token and
 // creates or updates the channel identified by the returned OpenAI account.
 func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {

@@ -85,7 +85,7 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 	if got.CacheCreationTokensTotal != 3 {
 		t.Fatalf("CacheCreationTokensTotal = %d, want %d", got.CacheCreationTokensTotal, 3)
 	}
-	wantCost := computeRequestCost("gpt-5.1-codex", result.ServiceTier, result)
+	wantCost := computeRequestCostWithPrice("gpt-5.1-codex", result.ServiceTier, nil, result)
 	if math.Abs(got.TotalCostUSD-wantCost) > 0.000001 {
 		t.Fatalf("TotalCostUSD = %f, want %f including tool cost", got.TotalCostUSD, wantCost)
 	}

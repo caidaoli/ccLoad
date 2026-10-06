@@ -11,6 +11,12 @@ import (
 	"ccLoad/internal/storage"
 )
 
+// isValidToken 走 webSession 的完整校验（含过期清理与吊销通知）。
+func (s *AuthService) isValidToken(token string) bool {
+	_, ok, _ := s.webSession(token)
+	return ok
+}
+
 func TestAuthService_GenerateToken_LengthAndHex(t *testing.T) {
 	t.Parallel()
 

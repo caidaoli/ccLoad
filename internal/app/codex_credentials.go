@@ -473,14 +473,6 @@ func (m *codexCredentialManager) observePassiveUsageWindows(
 	return accepted
 }
 
-func mergeCodexPassiveUsage(
-	current *codexauth.PassiveUsage,
-	windows []codexauth.PassiveUsageWindow,
-	fallbackTime time.Time,
-) (*codexauth.PassiveUsage, bool) {
-	return mergeCodexPassiveUsageWithScopes(current, windows, fallbackTime, nil)
-}
-
 func mergeCodexPassiveUsageWithScopes(
 	current *codexauth.PassiveUsage,
 	windows []codexauth.PassiveUsageWindow,

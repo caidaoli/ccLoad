@@ -128,7 +128,7 @@ func TestCustomModelPricingOverridesAndCalculatesAllPriceForms(t *testing.T) {
 	if got := util.CalculateCostDetailed("custom-implicit-cache", 0, 0, 1_000_000, 0, 0); math.Abs(got-0.3) > 1e-12 {
 		t.Fatalf("custom implicit cache-read price = %v, want 0.3", got)
 	}
-	breakdown := util.CalculateStandardCostBreakdown("custom-cache-write", "", 0, 0, 0, 1_000_000, 0)
+	breakdown := util.CalculateStandardCostBreakdownWithPrice("custom-cache-write", "", nil, 0, 0, 0, 1_000_000, 0)
 	if math.Abs(breakdown.CacheWrite.Cost-0.4) > 1e-12 {
 		t.Fatalf("custom cache-write breakdown = %#v", breakdown)
 	}

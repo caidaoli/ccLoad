@@ -51,15 +51,6 @@ func (l *Login) AuthorizationURL(port int) (string, error) {
 	return NativeSignInURL + "?" + query.Encode(), nil
 }
 
-// ParseCallbackURL decrypts a callback and attaches the installation identity.
-func (l *Login) ParseCallbackURL(rawURL, systemID string) (*Credential, error) {
-	callback, err := l.DecryptCallbackURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	return NewCredential(callback.UserID, systemID, callback.NativeCredential)
-}
-
 // DecryptCallbackURL validates and decrypts a native Zed callback URL.
 func (l *Login) DecryptCallbackURL(rawURL string) (*NativeCallback, error) {
 	if l == nil || l.privateKey == nil {

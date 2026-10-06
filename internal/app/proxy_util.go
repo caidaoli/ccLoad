@@ -1273,16 +1273,10 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
 }
 
-// computeRequestCost 是请求总成本的唯一口径：标准 token 成本加服务端工具成本（Responses 图像、Anthropic web_search）。
-// fast 模式专用模型走 CalculateFastModeCost（已含 fast 倍率）。
+// computeRequestCostWithPrice 是请求总成本的唯一口径：标准 token 成本加服务端工具成本（Responses 图像、Anthropic web_search）。
+// price 非空时用渠道模型价格替代标准 token 价格；工具费率只来自系统目录，不受渠道价格影响。
 // OpenAI service_tier 是价格倍率，不改变按 token 数选择的长上下文分档；
 // 非 OpenAI 白名单模型即使响应携带 service_tier 也不加倍率。
-func computeRequestCost(model string, serviceTier string, res *fwResult) float64 {
-	return computeRequestCostWithPrice(model, serviceTier, nil, res)
-}
-
-// computeRequestCostWithPrice 在 price 非空时用渠道模型价格替代标准 token 价格；
-// 工具费率只来自系统目录，不受渠道价格影响。
 func computeRequestCostWithPrice(model string, serviceTier string, price *util.CustomModelPrice, res *fwResult) float64 {
 	if res == nil {
 		return 0

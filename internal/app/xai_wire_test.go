@@ -66,23 +66,25 @@ func TestBuildXAIImagesResponsesRequestAcceptsStreaming(t *testing.T) {
 func TestTranslateXAIImagesResponsesStreamEventSupportsURLFormat(t *testing.T) {
 	t.Parallel()
 
-	partial, terminal, err := translateXAIImagesResponsesStreamEvent(
+	partial, terminal, err := translateXAIImagesResponsesStreamEventWithState(
 		[]byte(`event: response.image_generation_call.partial_image
 data: {"type":"response.image_generation_call.partial_image","partial_image_index":1,"partial_image_b64":"cGFydGlhbA==","output_format":"webp"}
 
 `),
 		[]byte(`{"response_format":"url"}`),
+		nil,
 	)
 	if err != nil || terminal || len(partial) != 1 ||
 		!strings.Contains(string(partial[0]), `"url":"data:image/webp;base64,cGFydGlhbA=="`) {
 		t.Fatalf("partial URL event = %q, terminal=%v, err=%v", partial, terminal, err)
 	}
 
-	completed, terminal, err := translateXAIImagesResponsesStreamEvent(
+	completed, terminal, err := translateXAIImagesResponsesStreamEventWithState(
 		[]byte(`data: {"type":"response.completed","response":{"output":[{"type":"image_generation_call","result":"ZmluYWw=","output_format":"jpeg"}],"tool_usage":{"image_gen":{"total_tokens":9}}}}
 
 `),
 		[]byte(`{"response_format":"url"}`),
+		nil,
 	)
 	if err != nil || !terminal || len(completed) != 1 ||
 		!strings.Contains(string(completed[0]), `"url":"data:image/jpeg;base64,ZmluYWw="`) ||

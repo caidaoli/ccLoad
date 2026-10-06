@@ -2299,23 +2299,14 @@ func (s *Server) handleResponse(
 // 核心转发函数
 // ============================================================================
 
-// forwardOnceAsync 异步流式转发，透明转发客户端原始请求
-// 从proxy.go提取，遵循SRP原则
-// 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
-// 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
-func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
-	return s.forwardOnceAsyncWithNativeCodexWebsocket(
-		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
-		false, upstreamWireAliases{},
-	)
-}
-
 type nativeCodexWebsocketAttempt struct {
 	session                     *codexUpstreamWebsocketSession
 	incrementalBody             []byte
 	incrementalBodyRulesApplied bool
 }
 
+// forwardOnceAsyncWithNativeCodexWebsocket 异步流式转发，透明转发客户端原始请求
+// apiKey 为 KeySelector 已选中的 API Key；method 支持任意 HTTP 方法。
 func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	ctx context.Context,
 	cfg *model.Config,
@@ -3913,19 +3904,6 @@ func keyByIndex(apiKeys []*model.APIKey, keyIndex int) *model.APIKey {
 		}
 	}
 	return nil
-}
-
-func filterAPIKeysForModel(apiKeys []*model.APIKey, modelName string) ([]*model.APIKey, bool) {
-	if modelName == "" || modelName == "*" {
-		return apiKeys, false
-	}
-	filtered := make([]*model.APIKey, 0, len(apiKeys))
-	for _, apiKey := range apiKeys {
-		if apiKey != nil && apiKey.AllowsModel(modelName) {
-			filtered = append(filtered, apiKey)
-		}
-	}
-	return filtered, len(filtered) != len(apiKeys)
 }
 
 func (s *Server) filterAPIKeysForModelRow(cfg *model.Config, apiKeys []*model.APIKey, selected modelRoutingSelection, requestProtocol string) ([]*model.APIKey, bool) {

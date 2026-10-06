@@ -1341,24 +1341,6 @@ func buildCSVColumnIndex(header []string) map[string]int {
 	return index
 }
 
-// exportChannelModelPricing 把渠道模型价格序列化为 {模型名: 价格} JSON；没有价格时输出 "{}"。
-func exportChannelModelPricing(entries []model.ModelEntry) (string, error) {
-	pricing := make(map[string]*util.CustomModelPrice)
-	for _, entry := range entries {
-		if !entry.Pricing.IsEmpty() {
-			pricing[entry.Model] = entry.Pricing
-		}
-	}
-	if len(pricing) == 0 {
-		return "{}", nil
-	}
-	encoded, err := sonic.Marshal(pricing)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
-}
-
 // applyImportedModelPricing 解析 model_pricing 列并写入对应模型条目；键必须是本行 models 中的模型。
 func applyImportedModelPricing(entries []model.ModelEntry, raw string) error {
 	if raw == "" || raw == "{}" {

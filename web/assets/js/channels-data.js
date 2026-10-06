@@ -111,8 +111,7 @@ async function loadChannelStatsRange() {
 async function loadChannelStats(range = channelStatsRange) {
   try {
     const params = new URLSearchParams({ range, limit: '500', offset: '0' });
-    const statsBase = channelsReadURL('/admin/stats', '/dashboard/stats');
-    const data = await fetchDataWithAuth(`${statsBase}?${params.toString()}`);
+    const data = await fetchDataWithAuth(`/dashboard/stats?${params.toString()}`);
     channelStatsById = aggregateChannelStats((data && data.stats) || []);
     filterChannels();
   } catch (err) {

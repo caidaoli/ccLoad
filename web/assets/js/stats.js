@@ -114,6 +114,7 @@
         renderStatsLoading();
 
         const params = buildStatsRequestParams();
+        params.set('health_timeline', '1');
         // 后端返回格式: {"success":true,"data":{"stats":[...],"duration_seconds":...,"rpm_stats":{...},"is_today":...}}
         statsData = (await fetchDataWithAuth('/dashboard/stats?' + params.toString())) || { stats: [] };
         durationSeconds = statsData.duration_seconds || 1; // 防止除零
@@ -314,13 +315,17 @@
       const duration = Number(durationSeconds) || 0;
       const parts = [];
 
-      if (firstByte > 0) {
-        parts.push(buildStatsTimingValue(firstByte, window.getFirstByteTimingColor(firstByte)));
-      }
-      if (duration > 0) {
-        if (parts.length > 0) parts.push('<span class="stats-timing-separator">/</span>');
-        parts.push(buildStatsTimingValue(duration, window.getDurationTimingColor(duration)));
-      }
+      if (firstByte <= 0 && duration <= 0) return '';
+
+      // 两段始终同时出现，缺失的一段用占位符，避免单个数值分不清是首字还是耗时
+      const placeholder = '<span class="stats-value-muted">—</span>';
+      parts.push(firstByte > 0
+        ? buildStatsTimingValue(firstByte, window.getFirstByteTimingColor(firstByte))
+        : placeholder);
+      parts.push('<span class="stats-timing-separator">/</span>');
+      parts.push(duration > 0
+        ? buildStatsTimingValue(duration, window.getDurationTimingColor(duration))
+        : placeholder);
 
       return parts.join('');
     }
@@ -557,10 +562,15 @@
         timingCellClass: totalTimingText ? '' : 'mobile-empty-cell',
         avgSpeed: totalSpeedText,
         speedCellClass: totalSpeedText ? '' : 'mobile-empty-cell',
-        inputTokens: formatNumber(totalInputTokens),
-        outputTokens: formatNumber(totalOutputTokens),
-        cacheReadTokens: formatNumber(totalCacheRead),
-        cacheCreationTokens: formatNumber(totalCacheCreation),
+        // 与数据行一致：0 值留空，避免整列空白时合计行单独冒出 0
+        inputTokens: totalInputTokens ? formatNumber(totalInputTokens) : '',
+        outputTokens: totalOutputTokens ? formatNumber(totalOutputTokens) : '',
+        cacheReadTokens: totalCacheRead ? formatNumber(totalCacheRead) : '',
+        cacheCreationTokens: totalCacheCreation ? formatNumber(totalCacheCreation) : '',
+        inputCellClass: totalInputTokens ? '' : 'mobile-empty-cell',
+        outputCellClass: totalOutputTokens ? '' : 'mobile-empty-cell',
+        cacheReadCellClass: totalCacheRead ? '' : 'mobile-empty-cell',
+        cacheCreateCellClass: totalCacheCreation ? '' : 'mobile-empty-cell',
         cacheUtilText: buildCacheUtilRate(totalInputTokens, totalCacheRead, totalCacheCreation),
         costText: buildStatsCostDisplay(totalCost, totalEffectiveCost),
         mobileLabelSummary: t('stats.total'),

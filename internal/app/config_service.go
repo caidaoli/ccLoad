@@ -199,11 +199,6 @@ func (cs *ConfigService) GetSettingFresh(ctx context.Context, key string) (*mode
 	return cs.store.GetSetting(ctx, key)
 }
 
-// UpdateSetting 更新配置（仅写数据库，不更新启动缓存）
-func (cs *ConfigService) UpdateSetting(ctx context.Context, key, value string) error {
-	return cs.store.UpdateSetting(ctx, key, value)
-}
-
 // ListAllSettings 获取所有配置(用于前端展示)
 func (cs *ConfigService) ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error) {
 	return cs.store.ListAllSettings(ctx)

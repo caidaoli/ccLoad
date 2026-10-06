@@ -82,16 +82,6 @@ type xaiCredentialImportBatch struct {
 	NextPriority      int
 }
 
-// HandleStartXAICredentialImportJob starts an import owned by the server
-// lifecycle. Losing the progress connection must not cancel credential work.
-func (s *Server) HandleStartXAICredentialImportJob(c *gin.Context) {
-	started, ok := s.startXAICredentialImportJob(c)
-	if !ok {
-		return
-	}
-	RespondJSON(c, http.StatusAccepted, started)
-}
-
 // HandleImportXAICredentialsStream streams one background import. A broken SSE
 // connection stops only observation; the job remains owned by the server.
 func (s *Server) HandleImportXAICredentialsStream(c *gin.Context) {

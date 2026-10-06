@@ -49,7 +49,7 @@ async function captureChannelReadURLs(role) {
           models: ['claude-opus-5', 'gpt-5.4']
         };
       }
-      return { stats: [], channel_health: {} };
+      return { stats: [] };
     },
     filterChannels: () => {},
     updateChannelsPagination: () => {},
@@ -135,7 +135,7 @@ test('channel data uses endpoints allowed for the current web role', async () =>
   assert.deepEqual(adminURLs.map(url => url.split('?')[0]), [
     '/admin/channels',
     '/admin/channels/filter-options',
-    '/admin/stats'
+    '/dashboard/stats'
   ]);
   for (const url of [...apiTokenURLs, ...adminURLs].filter(value => value.includes('/channels/filter-options'))) {
     const params = new URL(url, 'http://localhost').searchParams;

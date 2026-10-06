@@ -3,7 +3,8 @@
 
     window.trendData = null;
     window.currentRange = 'today'; // 默认"本日"
-    window.currentTrendType = 'first_byte'; // 默认显示首字响应趋势 (count/rpm/first_byte/duration/tokens/cost)
+    const DEFAULT_TREND_TYPE = 'count'; // count/rpm/first_byte/duration/tokens/cost
+    window.currentTrendType = DEFAULT_TREND_TYPE;
     window.currentTrendChartType = 'line'; // 默认使用折线图，可切换为柱状图
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
@@ -69,9 +70,9 @@
       {
         key: 'trendType',
         queryKeys: ['type'],
-        defaultValue: 'first_byte',
+        defaultValue: DEFAULT_TREND_TYPE,
         includeInQuery(value) {
-          return Boolean(value) && value !== 'first_byte';
+          return Boolean(value) && value !== DEFAULT_TREND_TYPE;
         },
         includeInRequest() {
           return false;
@@ -98,7 +99,7 @@
         range,
         customStartTime: hasCustomRange ? String(currentTrendCustomTimeRange.startMs) : '',
         customEndTime: hasCustomRange ? String(currentTrendCustomTimeRange.endMs) : '',
-        trendType: window.currentTrendType || 'first_byte',
+        trendType: window.currentTrendType || DEFAULT_TREND_TYPE,
         clientProtocol: window.currentClientProtocol || '',
         model: window.currentModel || '',
         authToken: window.currentAuthToken || '',
@@ -151,7 +152,8 @@
       return params;
     }
 
-    // 加载当前时间范围内的可用模型和渠道列表
+    // 加载当前时间范围内的可用模型和渠道列表；
+    // 返回 true 表示已选模型不在新列表中被重置，调用方需重新拉取指标
     async function loadModels(range) {
       try {
         const filters = {
@@ -190,16 +192,31 @@
             modelSelect.value = window.currentModel;
           } else {
             // 模型不在新列表中，重置为"全部"
+            const modelReset = Boolean(window.currentModel);
             window.currentModel = '';
             modelSelect.value = '';
+            return modelReset;
           }
         }
       } catch (error) {
         console.error('加载模型列表失败:', error);
       }
+      return false;
     }
 
+    // 模型列表与指标并行拉取；只有已选模型被判定失效时才补拉一次指标
+    async function loadModelsAndData(range) {
+      const dataReady = loadData();
+      if (await loadModels(range)) {
+        await dataReady;
+        await loadData();
+      }
+    }
+
+    let trendLoadSeq = 0;
+
     async function loadData() {
+      const seq = ++trendLoadSeq;
       try {
         renderTrendLoading();
 
@@ -211,19 +228,10 @@
           currentTrendCustomTimeRange = null;
         }
 
-        const modelSelect = document.getElementById('f_model');
-        if (modelSelect) {
-          window.currentModel = modelSelect.value || '';
-        }
-
+        // 模型/令牌以 window 状态为准：两者的下拉选项异步填充，填充前读 DOM 会把已恢复的筛选冲掉
         const clientProtocolSelect = document.getElementById('f_client_protocol');
         if (clientProtocolSelect) {
           window.currentClientProtocol = clientProtocolSelect.value || '';
-        }
-
-        const tokenSelect = document.getElementById('f_auth_token');
-        if (tokenSelect) {
-          window.currentAuthToken = tokenSelect.value || '';
         }
 
         // 读取渠道名筛选（combobox）
@@ -234,9 +242,12 @@
         const bucketMin = computeBucketMin(hours);
 
         const metricsParams = buildTrendRequestParams({
-          bucket_min: bucketMin
+          bucket_min: bucketMin,
+          by_channel: '1'
         });
         const metrics = await fetchAPIWithAuthRaw('/dashboard/metrics?' + metricsParams.toString());
+        // 筛选连续变化时丢弃过期响应，避免旧数据覆盖新数据
+        if (seq !== trendLoadSeq) return;
 
         if (!metrics.payload.success) {
           throw new Error(metrics.payload.error || t('trend.fetchDataFailed'));
@@ -272,19 +283,6 @@
           persistChannelState();
           console.log('更新后的可见渠道:', Array.from(window.visibleChannels));
         }
-        
-        // 添加调试信息显示
-        const debugSince = metrics.res.headers.get('X-Debug-Since');
-        const debugPoints = metrics.res.headers.get('X-Debug-Points');
-        const debugTotal = metrics.res.headers.get('X-Debug-Total');
-
-        console.log('趋势数据调试信息:', {
-          since: debugSince,
-          points: debugPoints,
-          total: debugTotal,
-          dataLength: trendData.length,
-          channelsCount: window.channels.length
-        });
 
         updateChannelFilter();
         renderChart();
@@ -295,15 +293,20 @@
           iv.textContent = t('trend.dataInterval', {
             interval: formatInterval(bucketMin),
             points: trendData.length,
-            total: debugTotal || t('trend.unknown')
+            total: formatNumber(sumTrendRequests(window.trendData))
           });
         }
 
       } catch (error) {
+        if (seq !== trendLoadSeq) return;
         console.error('加载趋势数据失败:', error);
         try { if (window.showError) window.showError(t('trend.loadDataFailed')); } catch(_){}
         renderTrendError();
       }
+    }
+
+    function sumTrendRequests(points) {
+      return (points || []).reduce((sum, point) => sum + (point.success || 0) + (point.error || 0), 0);
     }
 
     function computeBucketMin(hours) {
@@ -1046,7 +1049,8 @@
             }
           }
         },
-        series: applyNoRequestMarkArea(applyTrendChartType(series, chartType), markAreaData),
+        graphic: buildTrendEmptyGraphic(series, trendType, chartTheme),
+        series: applyNoRequestMarkArea(applyTrendChartType(series, chartType, trendType), markAreaData),
         dataZoom: showZoom ? [
           {
             type: 'inside',
@@ -1074,7 +1078,7 @@
             }
           }
         ] : [],
-        animationDuration: 1000,
+        animationDuration: 300,
         animationEasing: 'cubicInOut'
       };
 
@@ -1082,8 +1086,12 @@
       window.chartInstance.setOption(option, true); // true 表示不合并，全量更新
     }
 
-    function applyTrendChartType(series, chartType) {
-      if (chartType !== 'bar') return series;
+    // 平滑曲线只用于耗时这类连续均值；计数/Token/成本的样条插值会过冲出不存在的峰谷
+    function applyTrendChartType(series, chartType, trendType) {
+      if (chartType !== 'bar') {
+        if (isLatencyTrendType(trendType)) return series;
+        return series.map(item => ({ ...item, smooth: false }));
+      }
 
       return series.map(item => {
         const isDashedLine = item.lineStyle && item.lineStyle.type === 'dashed';
@@ -1108,6 +1116,30 @@
         delete next.areaStyle;
         return next;
       });
+    }
+
+    // 所选指标整段无样本时在图上说明原因，避免空坐标系被误认为加载失败
+    function buildTrendEmptyGraphic(series, trendType, chartTheme) {
+      const hasSample = series.some(item => (item.data || []).some(value => {
+        const num = Number(value && typeof value === 'object' ? value.value : value);
+        return Number.isFinite(num) && num !== 0;
+      }));
+      if (hasSample) return [];
+      return [{
+        type: 'text',
+        left: 'center',
+        top: 'middle',
+        silent: true,
+        style: {
+          text: t(trendType === 'first_byte' ? 'trend.emptyFirstByte' : 'trend.emptyMetric'),
+          fill: chartTheme.mutedText,
+          fontSize: 13
+        }
+      }];
+    }
+
+    function isLatencyTrendType(trendType) {
+      return trendType === 'first_byte' || trendType === 'duration';
     }
 
     function setTrendChartType(chartType) {
@@ -1574,9 +1606,9 @@ function shouldShowZoom(points, hours, trendType) {
       // 初始化渠道名 combobox
       initTrendChannelNameCombobox(window.currentChannelName);
 
-      // 模型/渠道选项与令牌选项互不依赖
+      // 模型/渠道选项、令牌选项与指标数据互不依赖，并行加载
       const [, authTokens] = await Promise.all([
-        loadModels(),
+        loadModelsAndData(),
         window.initAuthTokenFilter({
           selectId: 'f_auth_token',
           value: window.currentAuthToken,
@@ -1587,9 +1619,6 @@ function shouldShowZoom(points, hours, trendType) {
         })
       ]);
       window.authTokens = authTokens;
-
-      // 数据加载（依赖 model/token select 已填充）
-      loadData();
 
       // 修复：全局注册resize监听器（仅一次，避免内存泄漏）
       window.addEventListener('resize', () => {
@@ -1625,7 +1654,7 @@ function shouldShowZoom(points, hours, trendType) {
         if (!t) return;
         trendTypeGroup.querySelectorAll('.toggle-btn').forEach(btn => btn.classList.remove('active'));
         t.classList.add('active');
-        const trendType = t.getAttribute('data-type') || 'first_byte';
+        const trendType = t.getAttribute('data-type') || DEFAULT_TREND_TYPE;
         window.currentTrendType = trendType;
         persistState();
         renderChart();
@@ -1701,8 +1730,7 @@ function shouldShowZoom(points, hours, trendType) {
         label.textContent = t('trend.dataDisplay', { range: rangeLabel });
       }
       persistState();
-      await loadModels(range);
-      loadData();
+      await loadModelsAndData(range);
     }
 
     function persistState() {
@@ -1745,7 +1773,7 @@ function shouldShowZoom(points, hours, trendType) {
         }
 
         // 恢复趋势类型
-        window.currentTrendType = 'first_byte';
+        window.currentTrendType = DEFAULT_TREND_TYPE;
         if (['count', 'rpm', 'first_byte', 'duration', 'tokens', 'cost'].includes(restoredFilters.trendType)) {
           window.currentTrendType = restoredFilters.trendType;
         }
@@ -1783,7 +1811,7 @@ function shouldShowZoom(points, hours, trendType) {
       const trendTypeGroup = document.getElementById('trend-type-group');
       if (trendTypeGroup) {
         trendTypeGroup.querySelectorAll('.toggle-btn').forEach(btn => {
-          const type = btn.getAttribute('data-type') || 'first_byte';
+          const type = btn.getAttribute('data-type') || DEFAULT_TREND_TYPE;
           btn.classList.toggle('active', type === window.currentTrendType);
         });
       }

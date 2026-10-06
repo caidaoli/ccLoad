@@ -292,7 +292,7 @@ func (s *Server) currentOAuthCredentialImportJobs() *oauthCredentialImportJobMan
 }
 
 func (s *Server) startOAuthCredentialImportJob(c *gin.Context) (oauthCredentialImportJobStart, bool) {
-	batch, status, err := s.prepareOAuthCredentialImport(c, "")
+	batch, status, err := s.prepareOAuthCredentialImport(c)
 	if err != nil {
 		RespondError(c, status, err)
 		return oauthCredentialImportJobStart{}, false
@@ -348,17 +348,6 @@ func (s *Server) HandleOAuthCredentialImportJob(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, view)
-}
-
-// HandleImportOAuthCredentialsStream keeps the legacy event contract while
-// running the import independently. A broken SSE connection no longer cancels
-// the job.
-func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
-	started, ok := s.startOAuthCredentialImportJob(c)
-	if !ok {
-		return
-	}
-	s.streamOAuthCredentialImportJob(c, started)
 }
 
 func (s *Server) streamOAuthCredentialImportJob(c *gin.Context, started oauthCredentialImportJobStart) {

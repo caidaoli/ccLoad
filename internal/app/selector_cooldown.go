@@ -404,28 +404,6 @@ func (s *Server) filterCooledChannels(
 	return filtered
 }
 
-func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
-	client := protocol.Protocol(util.NormalizeProtocol(requestProtocol))
-	protocols := possibleUpstreamProtocols(cfg, client)
-
-	seen := make(map[string]struct{}, len(protocols))
-	models := make([]string, 0, len(protocols))
-	for _, selected := range s.applicableModelRows(cfg, requestModel, time.Now()) {
-		for _, upstreamProtocol := range protocols {
-			actualModel := s.resolveFinalUpstreamModel(cfg, selected, string(upstreamProtocol))
-			if actualModel == "" {
-				continue
-			}
-			if _, ok := seen[actualModel]; ok {
-				continue
-			}
-			seen[actualModel] = struct{}{}
-			models = append(models, actualModel)
-		}
-	}
-	return models
-}
-
 func (s *Server) applicableModelRows(cfg *modelpkg.Config, requested string, now time.Time) []modelRoutingSelection {
 	rows := s.enumerateModelRows(cfg, requested)
 	result := rows[:0]

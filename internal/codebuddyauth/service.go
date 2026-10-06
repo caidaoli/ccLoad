@@ -83,11 +83,6 @@ func IsAlreadyCheckedIn(err error) bool {
 		strings.Contains(apiErr.Message, dailyCheckinAlreadyDoneMarker)
 }
 
-// ApplySourceHeaders supplies the CodeBuddy CLI request fingerprint.
-func ApplySourceHeaders(h http.Header) {
-	ApplySourceHeadersForBaseURL(h, BaseURL)
-}
-
 // ApplySourceHeadersForBaseURL supplies the CLI request fingerprint for the
 // selected public CodeBuddy edition.
 func ApplySourceHeadersForBaseURL(h http.Header, baseURL string) {

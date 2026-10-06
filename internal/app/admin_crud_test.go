@@ -1033,11 +1033,16 @@ func TestHandleGetChannelIncludesActiveModelCooldowns(t *testing.T) {
 	}
 }
 
-func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.T) {
+func TestHandleChannelEditorModelStatsCoverTodayForRequestedChannel(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	ctx := context.Background()
+	server.urlSelector = NewURLSelector()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(ctx); err != nil {
+		t.Fatalf("加载系统设置失败: %v", err)
+	}
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "model-stats-channel",
 		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
@@ -1108,19 +1113,24 @@ func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.
 		}
 	}
 
-	path := "/admin/channels/" + strconv.FormatInt(created.ID, 10) + "/model-stats"
+	path := "/admin/channels/" + strconv.FormatInt(created.ID, 10) + "/editor"
 	c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
 	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
-	server.HandleChannelModelStats(c)
+	server.HandleChannelEditor(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	resp := mustParseAPIResponse[[]ChannelModelStats](t, w.Body.Bytes())
-	if len(resp.Data) != 1 {
-		t.Fatalf("stats=%v, want one model", resp.Data)
+	resp := mustParseAPIResponse[struct {
+		ModelStats struct {
+			Items []ChannelModelStats `json:"items"`
+		} `json:"model_stats"`
+	}](t, w.Body.Bytes())
+	items := resp.Data.ModelStats.Items
+	if len(items) != 1 {
+		t.Fatalf("stats=%v, want one model", items)
 	}
-	got := resp.Data[0]
+	got := items[0]
 	if got.Model != "external-model" || got.Success != 2 || got.Error != 1 || got.Total != 3 {
 		t.Fatalf("stats=%+v, want model=external-model success=2 error=1 total=3", got)
 	}

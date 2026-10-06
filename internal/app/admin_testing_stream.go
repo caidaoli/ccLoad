@@ -754,10 +754,6 @@ func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
 	writeChatFrontendChunks(c, chatDoneEventChunk())
 }
 
-func streamChatNative(c *gin.Context, body io.Reader) {
-	_ = streamChatNativeWithFirstContent(c, body, nil, nil)
-}
-
 func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
 	success, _ := result["success"].(bool)
 	if !success {
@@ -864,7 +860,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, logModel, model.RoutingModelName(actualModel), apiKey, c.ClientIP(), logThinking, result))
 }
 
-// streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
+// streamChatNativeWithFirstContent 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
 func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstContent func(), sr *chatStreamResult) error {
 	frontendState := &chatFrontendStreamState{}
 	return streamTransformSSEEvents(c.Request.Context(), body, c.Writer,
@@ -954,10 +950,6 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			return chunks, nil
 		},
 	)
-}
-
-func chatFrontendChunksFromSSEEvent(rawEvent []byte) [][]byte {
-	return chatFrontendChunksFromSSEEventWithState(rawEvent, nil)
 }
 
 type chatFrontendStreamState struct {

@@ -48,10 +48,6 @@ type primaryWriteBehind struct {
 	success        atomic.Int64
 }
 
-func newPrimaryWriteBehind(retry, timeout time.Duration) *primaryWriteBehind {
-	return newPrimaryWriteBehindWithInitializer(retry, timeout, nil)
-}
-
 func newPrimaryWriteBehindWithInitializer(
 	retry, timeout time.Duration,
 	initialize func(context.Context) error,

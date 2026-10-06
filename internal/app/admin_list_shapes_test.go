@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -107,6 +108,10 @@ func TestAdminAPI_GetStats_ResponseShape_Empty(t *testing.T) {
 	}
 	if resp.Data.Stats == nil {
 		t.Fatalf("stats is null, want []")
+	}
+	raw := mustParseAPIResponse[map[string]json.RawMessage](t, w.Body.Bytes())
+	if _, ok := raw.Data["channel_health"]; ok {
+		t.Fatalf("channel_health 已移除，不应再出现在响应中")
 	}
 }
 

@@ -237,18 +237,9 @@ func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, input
 	).Total
 }
 
-// CalculateStandardCostBreakdown 返回日志页展示所需的标准成本计算过程。
+// CalculateStandardCostBreakdownWithPrice 返回日志页展示所需的标准成本计算过程。
 // serviceTier 与实际请求计费语义一致，包含 OpenAI priority/flex 和 Anthropic fast 定价。
-func CalculateStandardCostBreakdown(
-	model, serviceTier string,
-	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
-) StandardCostBreakdown {
-	return CalculateStandardCostBreakdownWithPrice(
-		model, serviceTier, nil, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
-	)
-}
-
-// CalculateStandardCostBreakdownWithPrice 在 price 非空时用它整份替换目录与全局自定义价格
+// price 非空时用它整份替换目录与全局自定义价格
 // （渠道模型价格）。model 仍决定长上下文阈值、缓存倍率回退与 service_tier 倍率；
 // Anthropic fast 模式按该价格的 input/output 翻倍，缓存仍按基础价，与官方 fast 定价同构。
 func CalculateStandardCostBreakdownWithPrice(
@@ -640,15 +631,6 @@ func IsFastModeModel(model string) bool {
 		strings.HasPrefix(lowerModel, "claude-opus-4-8")
 }
 
-// CalculateFastModeCost 计算 Anthropic fast mode 的独立费用
-// Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
-// 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
-// 故缓存成本基于模型基础价而非 fast 价，与标准路径 CalculateCostDetailed 一致。
-// 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
-func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
-	return calculateFastModeCostBreakdown("claude-opus-5", inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
-}
-
 // anthropicFastModeMultiplier 是 fast 模式 input/output 相对基础价的倍率。
 const anthropicFastModeMultiplier = 2.0
 
@@ -664,6 +646,11 @@ func scaleFastModeInputOutput(breakdown StandardCostBreakdown) StandardCostBreak
 	return breakdown
 }
 
+// calculateFastModeCostBreakdown 计算 Anthropic fast mode 费用明细。
+// Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
+// 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
+// 故缓存成本基于模型基础价而非 fast 价，与标准路径 CalculateCostDetailed 一致。
+// 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func calculateFastModeCostBreakdown(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
 		return StandardCostBreakdown{}

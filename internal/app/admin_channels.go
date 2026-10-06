@@ -1006,27 +1006,7 @@ func codexCredentialKeyNote(credential *codexauth.Credential) string {
 	return "Codex OAuth AT"
 }
 
-// HandleChannelModelStats 返回渠道当天的按模型轻量统计。
-// GET /admin/channels/:id/model-stats
-func (s *Server) HandleChannelModelStats(c *gin.Context) {
-	id, err := ParseInt64Param(c, "id")
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
-		return
-	}
-	if _, err := s.store.GetConfig(c.Request.Context(), id); err != nil {
-		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
-		return
-	}
-
-	result, err := s.getChannelModelStats(c.Request.Context(), id)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	RespondJSON(c, http.StatusOK, result)
-}
-
+// getChannelModelStats 返回渠道当天的按模型轻量统计，供渠道编辑器使用。
 func (s *Server) getChannelModelStats(ctx context.Context, id int64) ([]ChannelModelStats, error) {
 	params := &PaginationParams{Range: "today"}
 	startTime, endTime := params.GetTimeRange()
@@ -1050,31 +1030,6 @@ func (s *Server) getChannelModelStats(ctx context.Context, id int64) ([]ChannelM
 		})
 	}
 	return result, nil
-}
-
-// HandleChannelURLStats 返回渠道各URL的实时状态（延迟、冷却）
-// GET /admin/channels/:id/url-stats
-func (s *Server) HandleChannelURLStats(c *gin.Context) {
-	id, err := ParseInt64Param(c, "id")
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
-		return
-	}
-
-	cfg, err := s.store.GetConfig(c.Request.Context(), id)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
-		return
-	}
-
-	urls := cfg.GetURLs()
-	if len(urls) == 0 || s.urlSelector == nil {
-		RespondJSON(c, http.StatusOK, []URLStat{})
-		return
-	}
-
-	stats := s.urlSelector.GetURLStats(id, urls)
-	RespondJSON(c, http.StatusOK, stats)
 }
 
 // HandleURLDisable 手动禁用渠道的指定URL

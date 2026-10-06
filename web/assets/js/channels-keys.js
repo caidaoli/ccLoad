@@ -131,10 +131,6 @@ function getValidInlineKeyRows() {
   return getInlineKeyRows().filter(row => row.api_key);
 }
 
-function selectAvailableInlineKeys(rows, states) {
-  return [...new Set(selectModelFetchKeyEntries(rows, states, false).map(entry => entry.apiKey))];
-}
-
 function selectModelFetchKeyEntries(rows, states, allowCooldownFallback = true, allowScopeEmpty = false) {
   const statesByIndex = new Map(
     (Array.isArray(states) ? states : [])
@@ -185,10 +181,6 @@ function countConfiguredInlineKeys(rows) {
     if (apiKey) count++;
   }
   return count;
-}
-
-function selectFirstEnabledInlineKey(rows, states) {
-  return selectAvailableInlineKeys(rows, states)[0] || '';
 }
 
 function updateInlineKeyHiddenInput() {
@@ -1698,10 +1690,8 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeInlineKeyRow,
     normalizeKeyAllowedModels,
     pruneKeyAllowedModels,
-    selectAvailableInlineKeys,
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
-    selectFirstEnabledInlineKey,
     openKeyModelScopeModal,
     closeKeyModelScopeModal,
     confirmKeyModelScope,

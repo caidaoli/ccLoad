@@ -3,19 +3,12 @@ const assert = require('node:assert/strict');
 
 const {
   applyChannelAuthEditorMode,
-  cancelAntigravityOAuth,
-  cancelAnthropicOAuth,
-  cancelXAIOAuth,
+  cancelOAuth,
   cancelOAuthCredentialCleanup,
   cleanupOAuthCredentials,
-  pollCodexOAuthStatus,
   copyCodexOAuthLink,
   copyOAuthCredential,
-  cancelCodexOAuth,
   importOAuthCredentials,
-  pollAntigravityOAuthStatus,
-  pollAnthropicOAuthStatus,
-  pollXAIOAuthStatus,
   getOAuthUsageState,
   getAnthropicResetCreditsState,
   syncAnthropicResetCreditsFromChannels,
@@ -35,20 +28,18 @@ const {
   zedOAuthStartOptions,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
+  pollOAuthStatus,
   setOAuthCredentialView,
   setupOAuthActions,
   showOAuthSession,
   submitXAICredentialBatch,
-  submitAntigravityOAuthCallback,
-  submitAnthropicOAuthCode,
-  submitCodexOAuthCallback,
   submitCodexPersonalAccessToken,
   submitCursorCredential,
   looksLikeCursorCLISessionSecret,
   CURSOR_USER_API_KEYS_URL,
   submitCodeBuddyCredentialFile,
   loadCodeBuddyCredentialFile,
-  submitXAIOAuthCallback
+  submitOAuthCallback
 } = require('./channels-codex-auth.js');
 
 async function loadAnthropicUsage(channelID, fetcher) {
@@ -873,7 +864,7 @@ test('completed OAuth credential cleanup keeps a valid model selected and can st
 
 test('xAI manual OAuth helpers use the shared state and callback contract', async () => {
   const requests = [];
-  const status = await pollXAIOAuthStatus('xai/state', {
+  const status = await pollOAuthStatus('xai', 'xai/state', {
     fetchStatus: async url => {
       requests.push({ url });
       return { status: 'complete', channel_id: 91 };
@@ -884,7 +875,8 @@ test('xAI manual OAuth helpers use the shared state and callback contract', asyn
   assert.equal(status.channel_id, 91);
   assert.equal(requests[0].url, '/admin/xai/oauth/status?state=xai%2Fstate');
 
-  await submitXAIOAuthCallback(
+  await submitOAuthCallback(
+    'xai',
     '  http://127.0.0.1:56121/callback?code=code-1&state=state-1  ',
     async (url, options) => {
       requests.push({ url, options });
@@ -896,7 +888,7 @@ test('xAI manual OAuth helpers use the shared state and callback contract', asyn
     callback_url: 'http://127.0.0.1:56121/callback?code=code-1&state=state-1'
   });
 
-  await cancelXAIOAuth(' state-2 ', async (url, options) => {
+  await cancelOAuth('xai', ' state-2 ', async (url, options) => {
     requests.push({ url, options });
     return { status: 'cancelled', state: 'state-2' };
   });
@@ -1372,7 +1364,7 @@ test('Codex OAuth status polling waits for completion and encodes state', async 
     { status: 'pending' },
     { status: 'complete', channel_id: 42 }
   ];
-  const result = await pollCodexOAuthStatus('state with / symbols', {
+  const result = await pollOAuthStatus('codex', 'state with / symbols', {
     fetchStatus: async url => {
       requests.push(url);
       return statuses.shift();
@@ -1390,7 +1382,7 @@ test('Codex OAuth status polling waits for completion and encodes state', async 
 test('OAuth status polling resumes the same session after a browser network failure', async () => {
   for (const failure of [new TypeError('NetworkError when attempting to fetch resource.'), new TypeError('Failed to fetch'), new TypeError('Load failed'), Object.assign(new Error('offline'), { name: 'NetworkError' })]) {
     const requests = [];
-    const result = await pollCodexOAuthStatus('existing-state', {
+    const result = await pollOAuthStatus('codex', 'existing-state', {
       fetchStatus: async url => {
         requests.push(url);
         if (requests.length === 1) throw failure;
@@ -1406,7 +1398,7 @@ test('OAuth status polling resumes the same session after a browser network fail
 test('OAuth polling bounds network retries and preserves terminal errors', async () => {
   for (const [error, expectedCalls] of [[new TypeError('Failed to fetch'), 3], [new Error('unauthorized'), 1], [Object.assign(new Error('cancelled'), { name: 'AbortError' }), 1]]) {
     let calls = 0;
-    await assert.rejects(pollCodexOAuthStatus('state', {
+    await assert.rejects(pollOAuthStatus('codex', 'state', {
       fetchStatus: async () => { calls++; throw error; },
       delay: async () => {}, maxPolls: 3, interval: 0
     }), value => value === error);
@@ -1750,7 +1742,8 @@ test('completed OAuth credential import keeps the dialog open for result review'
 
 test('manual Codex OAuth callback submits the complete callback URL as JSON', async () => {
   let captured;
-  const result = await submitCodexOAuthCallback(
+  const result = await submitOAuthCallback(
+    'codex',
     '  http://localhost:1455/auth/callback?code=code-1&state=state-1  ',
     async (url, options) => {
       captured = { url, options };
@@ -1768,7 +1761,7 @@ test('manual Codex OAuth callback submits the complete callback URL as JSON', as
 
 test('Codex OAuth cancellation submits the active state as JSON', async () => {
   let captured;
-  const result = await cancelCodexOAuth('  state-1  ', async (url, options) => {
+  const result = await cancelOAuth('codex', '  state-1  ', async (url, options) => {
     captured = { url, options };
     return { status: 'cancelled', state: 'state-1' };
   });
@@ -1781,7 +1774,7 @@ test('Codex OAuth cancellation submits the active state as JSON', async () => {
 
 test('Antigravity OAuth helpers use the Antigravity admin contract', async () => {
   const requests = [];
-  const status = await pollAntigravityOAuthStatus('gravity/state', {
+  const status = await pollOAuthStatus('antigravity', 'gravity/state', {
     fetchStatus: async url => {
       requests.push(url);
       return { status: 'complete', channel_id: 9 };
@@ -1792,12 +1785,12 @@ test('Antigravity OAuth helpers use the Antigravity admin contract', async () =>
   assert.equal(status.channel_id, 9);
   assert.equal(requests[0], '/admin/antigravity/oauth/status?state=gravity%2Fstate');
 
-  await submitAntigravityOAuthCallback('http://localhost:51121/oauth-callback?code=x&state=y', async (url, options) => {
+  await submitOAuthCallback('antigravity', 'http://localhost:51121/oauth-callback?code=x&state=y', async (url, options) => {
     requests.push(url);
     assert.equal(JSON.parse(options.body).callback_url, 'http://localhost:51121/oauth-callback?code=x&state=y');
     return { status: 'accepted' };
   });
-  await cancelAntigravityOAuth('y', async (url, options) => {
+  await cancelOAuth('antigravity', 'y', async (url, options) => {
     requests.push(url);
     assert.deepEqual(JSON.parse(options.body), { state: 'y' });
     return { status: 'cancelled' };
@@ -1810,7 +1803,7 @@ test('Antigravity OAuth helpers use the Antigravity admin contract', async () =>
 
 test('Anthropic OAuth helpers submit the hosted authorization code with bound state', async () => {
   const requests = [];
-  const status = await pollAnthropicOAuthStatus('state/1', {
+  const status = await pollOAuthStatus('anthropic', 'state/1', {
     fetchStatus: async url => {
       requests.push({ url });
       return { status: 'complete', channel_id: 71 };
@@ -1818,11 +1811,11 @@ test('Anthropic OAuth helpers submit the hosted authorization code with bound st
     delay: async () => {}, maxPolls: 1
   });
   assert.equal(status.channel_id, 71);
-  await submitAnthropicOAuthCode('code-1#state/1', 'state/1', async (url, options) => {
+  await submitOAuthCallback('anthropic', 'code-1#state/1', async (url, options) => {
     requests.push({ url, body: JSON.parse(options.body) });
     return { status: 'accepted' };
-  });
-  await cancelAnthropicOAuth('state/2', async (url, options) => {
+  }, 'state/1');
+  await cancelOAuth('anthropic', 'state/2', async (url, options) => {
     requests.push({ url, body: JSON.parse(options.body) });
     return { status: 'cancelled' };
   });

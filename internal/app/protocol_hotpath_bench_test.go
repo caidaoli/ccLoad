@@ -42,17 +42,6 @@ func BenchmarkPossibleUpstreamProtocols(b *testing.B) {
 	}
 }
 
-// BenchmarkPossibleActualModels 覆盖 selector 冷却过滤对单个候选渠道的完整解析链
-// （possibleUpstreamProtocols + 每协议 resolveFinalUpstreamModel）。
-func BenchmarkPossibleActualModels(b *testing.B) {
-	cfg := benchProtocolChannelConfig()
-	s := &Server{}
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = s.possibleActualModels(cfg, "claude-sonnet-5", "anthropic")
-	}
-}
-
 func BenchmarkProtocolCandidatesForURL(b *testing.B) {
 	cfg := benchProtocolChannelConfig()
 	localOrder := localUpstreamProtocolOrder(cfg.URLs)

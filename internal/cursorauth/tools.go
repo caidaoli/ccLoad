@@ -74,11 +74,6 @@ func ParseRequest(body []byte) Request {
 	return request
 }
 
-// ExtractPrompt is the text the Cursor SDK Agent receives, including tool history.
-func ExtractPrompt(body []byte) string {
-	return ParseRequest(body).Prompt
-}
-
 func requestMessages(raw map[string]any) []any {
 	if messages, _ := raw["messages"].([]any); len(messages) > 0 {
 		return messages

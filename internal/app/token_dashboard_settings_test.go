@@ -94,7 +94,8 @@ func TestTokenChannelVisibilityKeepsStatisticsRows(t *testing.T) {
 			{"/dashboard/channels", server.HandleDashboardChannels},
 			{"/dashboard/channels/filter-options", server.HandleDashboardChannelFilterOptions},
 		} {
-			query := "?range=today"
+			// 显式请求逐渠道明细，验证隐藏开关优先于 by_channel。
+			query := "?range=today&by_channel=1&health_timeline=1"
 			if hidden {
 				query += "&channel_id=999999&channel_name=nonexistent&channel_name_like=nonexistent"
 			}
@@ -152,8 +153,10 @@ func TestTokenChannelVisibilityKeepsStatisticsRows(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/summary?range=today", nil))
 		if identity.Role != "" {
 			c.Set(webIdentityContextKey, identity)
+			server.HandleDashboardSummary(c)
+		} else {
+			server.HandlePublicSummary(c)
 		}
-		server.HandlePublicSummary(c)
 		wantTypes := identity.Role != model.WebRoleAPIToken
 		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "by_auth_type") != wantTypes {
 			t.Fatalf("summary role=%s: %d %s", identity.Role, w.Code, w.Body.String())

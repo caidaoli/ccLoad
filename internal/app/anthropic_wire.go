@@ -215,21 +215,9 @@ func anthropicUsesFirstPartyHost(cfg *model.Config, target *url.URL) bool {
 	return isOfficialAnthropicURL(target)
 }
 
-// finalizeAnthropicClaudeCodeMessagesBody 是 Anthropic Messages 上游 body 的唯一
+// finalizeAnthropicClaudeCodeMessagesBodyForCaller 是 Anthropic Messages 上游 body 的唯一
 // 最终化入口。原生 Claude Code 请求保留调用方 body/CCH；模拟请求生成无 CCH
 // 的 billing block。
-func finalizeAnthropicClaudeCodeMessagesBody(
-	body []byte,
-	cfg *model.Config,
-	apiKey string,
-	headers http.Header,
-	target *url.URL,
-) ([]byte, error) {
-	body, _, err := finalizeAnthropicClaudeCodeMessagesBodyForCaller(
-		body, cfg, apiKey, headers, target, classifyAnthropicCallerWire(body, headers))
-	return body, err
-}
-
 func finalizeAnthropicClaudeCodeMessagesBodyForCaller(
 	body []byte,
 	cfg *model.Config,

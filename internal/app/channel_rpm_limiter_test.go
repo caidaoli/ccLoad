@@ -31,7 +31,7 @@ func TestChannelRPMLimiterZeroLimitIsUnlimited(t *testing.T) {
 	limiter := newChannelRPMLimiter(clock.Now)
 
 	for i := 0; i < 1000; i++ {
-		if !limiter.allow(42, 0) {
+		if !limiter.reserve(42, 0).allowed {
 			t.Fatalf("request %d rejected for zero RPM limit", i+1)
 		}
 	}
@@ -41,23 +41,23 @@ func TestChannelRPMLimiterRejectsAfterLimitWithinRollingMinute(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
 	limiter := newChannelRPMLimiter(clock.Now)
 
-	if !limiter.allow(7, 2) {
+	if !limiter.reserve(7, 2).allowed {
 		t.Fatal("first request rejected")
 	}
-	if !limiter.allow(7, 2) {
+	if !limiter.reserve(7, 2).allowed {
 		t.Fatal("second request rejected")
 	}
-	if limiter.allow(7, 2) {
+	if limiter.reserve(7, 2).allowed {
 		t.Fatal("third request allowed within the same minute")
 	}
 
 	clock.Advance(59 * time.Second)
-	if limiter.allow(7, 2) {
+	if limiter.reserve(7, 2).allowed {
 		t.Fatal("request allowed before the rolling minute expired")
 	}
 
 	clock.Advance(time.Second)
-	if !limiter.allow(7, 2) {
+	if !limiter.reserve(7, 2).allowed {
 		t.Fatal("request rejected after the rolling minute expired")
 	}
 }
@@ -95,15 +95,15 @@ func TestChannelRPMLimiterRemoveChannelClearsRequests(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
 	limiter := newChannelRPMLimiter(clock.Now)
 
-	if !limiter.allow(7, 1) {
+	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("first request rejected")
 	}
-	if limiter.allow(7, 1) {
+	if limiter.reserve(7, 1).allowed {
 		t.Fatal("second request allowed before removal")
 	}
 
 	limiter.RemoveChannel(7)
-	if !limiter.allow(7, 1) {
+	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("request rejected after channel RPM state removal")
 	}
 }
@@ -112,7 +112,7 @@ func TestChannelRPMLimiterCleanupExpiredRemovesEmptyChannels(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
 	limiter := newChannelRPMLimiter(clock.Now)
 
-	if !limiter.allow(7, 1) {
+	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("first request rejected")
 	}
 
@@ -145,7 +145,7 @@ func TestDeleteChannelByIDRemovesChannelRPMState(t *testing.T) {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	if !srv.channelRPMLimiter.allow(cfg.ID, cfg.RPMLimit) {
+	if !srv.channelRPMLimiter.reserve(cfg.ID, cfg.RPMLimit).allowed {
 		t.Fatal("first request rejected")
 	}
 

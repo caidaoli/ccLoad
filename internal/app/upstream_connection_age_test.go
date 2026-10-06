@@ -943,7 +943,7 @@ func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true, 1), 50*time.Millisecond)
+	transport := newUpstreamConnectionAgeTransportWithFactory(buildHTTPTransport(true, 1), 50*time.Millisecond, newDefaultUpstreamRoundTripper)
 	client := &http.Client{Transport: transport}
 	t.Cleanup(transport.Close)
 
@@ -1005,7 +1005,7 @@ func TestUpstreamHTTPTransportClosesIdleCodexUTLSConnectionAtMaxAge(t *testing.T
 	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, server.Listener.Addr().String())
 	}
-	transport := newUpstreamConnectionAgeTransport(base, 50*time.Millisecond)
+	transport := newUpstreamConnectionAgeTransportWithFactory(base, 50*time.Millisecond, newDefaultUpstreamRoundTripper)
 	client := &http.Client{Transport: transport}
 	t.Cleanup(transport.Close)
 
@@ -1118,7 +1118,7 @@ func TestUpstreamHTTPTransportDrainsActiveResponsesAndRotatesNewRequests(t *test
 			server.StartTLS()
 			defer server.Close()
 
-			transport := newUpstreamConnectionAgeTransport(buildHTTPTransport(true, 1), 50*time.Millisecond)
+			transport := newUpstreamConnectionAgeTransportWithFactory(buildHTTPTransport(true, 1), 50*time.Millisecond, newDefaultUpstreamRoundTripper)
 			client := &http.Client{Transport: transport}
 			t.Cleanup(transport.Close)
 

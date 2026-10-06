@@ -47,15 +47,6 @@ func (b *TableBuilder) Index(name, columns string) *TableBuilder {
 	return b
 }
 
-// UniqueIndex 添加唯一索引定义。
-func (b *TableBuilder) UniqueIndex(name, columns string) *TableBuilder {
-	b.indexes = append(b.indexes, IndexDef{
-		Name: name,
-		SQL:  fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s(%s)", name, b.name, columns),
-	})
-	return b
-}
-
 // BuildMySQL 生成MySQL DDL
 func (b *TableBuilder) BuildMySQL() string {
 	sql := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n) ;",
