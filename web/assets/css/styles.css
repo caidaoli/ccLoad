@@ -2465,8 +2465,6 @@ body {
   }
 
   .filter-group {
-    display: grid;
-    grid-template-columns: 88px minmax(0, 1fr);
     align-items: center;
     width: 100%;
     min-width: 0;
@@ -2619,14 +2617,6 @@ body {
 
   .glass-card {
     padding: var(--space-4);
-  }
-
-  .filter-group {
-    grid-template-columns: 1fr;
-  }
-
-  .filter-label {
-    text-align: left;
   }
 }
 
@@ -2931,7 +2921,7 @@ body {
 
 .filter-control--time-range {
   min-width: 60px;
-  max-width: 90px;
+  max-width: 120px;
 }
 
 .filter-control--wide {
@@ -6859,6 +6849,19 @@ body.web-role-api-token .filter-group--auth-token {
   .modal-content {
     width: 90%;
     padding: var(--space-3);
+  }
+}
+
+/* 窄屏两列筛选放不下“标签 + 控件”同行（英文标签最先溢出），标签移到控件上方 */
+@media (max-width: 560px) {
+  .filter-group:not(.filter-group--checkbox) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .filter-label {
+    text-align: left;
   }
 }
 

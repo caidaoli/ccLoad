@@ -23,7 +23,7 @@
     const groupClass = config.groupClass || '';
     const checkboxGroupClass = config.checkboxGroupClass || groupClass;
     const timeRangeGroupClass = joinClasses(groupClass, config.timeRangeGroupClass);
-    const timeRangeControlClass = joinClasses('filter-control--compact', 'filter-control--time-range', config.timeRangeControlClass);
+    const timeRangeControlClass = joinClasses('filter-control--compact', 'filter-control--time-range');
     const channelIdGroupClass = joinClasses(groupClass, config.channelIdGroupClass);
     const channelIdControlClass = joinClasses('filter-control--narrow', config.channelIdControlClass);
     const authTokenGroupClass = joinClasses(groupClass, 'filter-group--auth-token', config.authTokenGroupClass);
@@ -155,7 +155,6 @@
       controlsClass: 'filter-controls logs-filter-controls',
       groupClass: 'logs-filter-group',
       timeRangeGroupClass: 'logs-filter-group--range',
-      timeRangeControlClass: 'logs-filter-control--range',
       authTokenGroupClass: 'logs-filter-group--token',
       authTokenControlClass: 'logs-filter-control--token',
       actionsClass: 'logs-filter-actions',
