@@ -40,7 +40,7 @@ func marshalTemplateStringFragment(v any) (string, error) {
 }
 
 // applyTemplateReplacements 替换模板中的占位符，保留原始 JSON 字段顺序
-// 支持的占位符: {{MODEL}}, {{STREAM}}, {{CONTENT}}, {{MAX_TOKENS}}, {{USER_ID}}
+// 占位符由各协议模板及调用方提供。
 func applyTemplateReplacements(tpl string, replacements map[string]any) (string, error) {
 	result := tpl
 

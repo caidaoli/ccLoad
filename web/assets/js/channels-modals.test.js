@@ -1041,7 +1041,9 @@ function installWebsocketProbeGlobals({
   urlConfigs = urls.map(url => ({ url, exact: false, protocols: [] })),
   rows = [{ api_key: 'sk-probe' }],
   urlStats = {},
-  keyStates = []
+  keyStates = [],
+  authType = 'api_key',
+  channelID = null
 }) {
   const checkbox = { checked: initialChecked };
   const button = { disabled: false, innerHTML: '检测' };
@@ -1053,6 +1055,7 @@ function installWebsocketProbeGlobals({
 		window: {
 			t: key => key,
       showNotification: (message, type) => notifications.push({ message, type }),
+      showError: message => notifications.push({ message, type: 'error' }),
       collectCustomRulesForSubmit: () => ({
         headers: [{ action: 'override', name: 'X-Probe', value: '1' }]
       })
@@ -1069,6 +1072,8 @@ function installWebsocketProbeGlobals({
     getInlineKeyRows: () => rows,
     urlStatsMap: urlStats,
     currentChannelKeyCooldowns: keyStates,
+    editingChannelAuthType: authType,
+    editingChannelId: channelID,
     fetchDataWithAuth: async (url, options) => {
       requests.push({ url, body: JSON.parse(options.body) });
       return { supported, error: supported ? '' : '426 Upgrade Required' };
@@ -1503,6 +1508,38 @@ test('editing a channel does not open a partial editor when bootstrap fails', as
     assert.deepEqual(fixture.requests, [`/admin/channels/${channel.id}/editor`]);
     assert.deepEqual(fixture.errors, ['channels.loadChannelsFailed']);
     assert.equal(fixture.getElement('channelModal').classList.contains('show'), false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('WebSocket probe uses saved Codex OAuth identity without reading API keys', async () => {
+  const fixture = installWebsocketProbeGlobals({
+    supported: true, initialChecked: false, authType: 'codex_oauth', channelID: 73, rows: []
+  });
+  global.getInlineKeyRows = () => { throw new Error('OAuth must not read API keys'); };
+  try {
+    const { detectChannelWebsocketSupport } = loadChannelsModals();
+    assert.equal(await detectChannelWebsocketSupport(fixture.button), true);
+    assert.deepEqual(fixture.request.body, {
+      url: 'https://upstream.test', channel_id: 73, proxy_url: 'socks5://proxy.test:1080',
+      custom_request_rules: { headers: [{ action: 'override', name: 'X-Probe', value: '1' }] }
+    });
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('WebSocket probe requires an OAuth channel to be saved first', async () => {
+  const fixture = installWebsocketProbeGlobals({
+    supported: true, initialChecked: false, authType: 'codex_oauth', rows: []
+  });
+  try {
+    const { detectChannelWebsocketSupport } = loadChannelsModals();
+    assert.equal(await detectChannelWebsocketSupport(fixture.button), false);
+    assert.equal(fixture.requests.length, 0);
+    assert.deepEqual(fixture.notifications, [{ message: 'channels.websocketsProbeSaveOAuthFirst', type: 'error' }]);
+    assert.equal(fixture.button.disabled, false);
   } finally {
     fixture.restore();
   }

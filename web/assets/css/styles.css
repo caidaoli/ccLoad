@@ -32,6 +32,7 @@
   --filter-dropdown-bg: #ffffff;
   --filter-dropdown-border: var(--neutral-200);
   --filter-dropdown-item-fg: var(--neutral-900);
+  --filter-dropdown-item-stripe-bg: var(--neutral-50);
   --filter-dropdown-item-hover-bg: var(--neutral-50);
   --filter-dropdown-item-active-bg: var(--neutral-100);
   --filter-dropdown-item-highlight-bg: var(--primary-500);
@@ -266,6 +267,7 @@ html[data-resolved-theme="dark"] {
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.34);
   --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.45);
   --filter-dropdown-bg: rgb(17, 24, 39);
+  --filter-dropdown-item-stripe-bg: rgba(255, 255, 255, 0.04);
   --filter-dropdown-border: rgba(255, 255, 255, 0.14);
   --filter-dropdown-item-fg: var(--neutral-900);
   --filter-dropdown-item-hover-bg: rgba(255, 255, 255, 0.08);
@@ -321,6 +323,7 @@ html[data-resolved-theme="dark"] {
     --filter-dropdown-bg: Canvas;
     --filter-dropdown-border: CanvasText;
     --filter-dropdown-item-fg: CanvasText;
+    --filter-dropdown-item-stripe-bg: Canvas;
     --filter-dropdown-item-hover-bg: Highlight;
     --filter-dropdown-item-active-bg: Highlight;
     --filter-dropdown-item-highlight-bg: Highlight;
@@ -2817,6 +2820,8 @@ body {
   padding: 6px 0;
   max-height: 640px;
   overflow: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
   z-index: var(--z-dropdown);
 }
 
@@ -2836,14 +2841,16 @@ body {
   display: none;
 }
 
+.filter-dropdown-item:nth-child(even) {
+  background: var(--filter-dropdown-item-stripe-bg);
+}
+
 .filter-dropdown-item:hover {
   background: var(--filter-dropdown-item-highlight-bg);
   color: var(--filter-dropdown-item-highlight-fg);
 }
 
 .filter-dropdown-item.selected {
-  background: transparent;
-  color: var(--filter-dropdown-item-fg);
   font-weight: var(--font-semibold);
 }
 
@@ -2863,6 +2870,14 @@ body {
 }
 
 .filter-dropdown-item__label {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-dropdown-item--described .filter-dropdown-item__label {
   font-weight: var(--font-semibold);
 }
 

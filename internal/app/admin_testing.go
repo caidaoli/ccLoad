@@ -51,8 +51,9 @@ func (s *Server) HandleChannelURLTest(c *gin.Context) {
 }
 
 type channelWebsocketProbeRequest struct {
+	ChannelID          int64                     `json:"channel_id,omitempty"`
 	URL                string                    `json:"url" binding:"required"`
-	APIKey             string                    `json:"api_key" binding:"required"`
+	APIKey             string                    `json:"api_key,omitempty"`
 	ProxyURL           string                    `json:"proxy_url,omitempty"`
 	CustomRequestRules *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
 }
@@ -64,7 +65,10 @@ func (r *channelWebsocketProbeRequest) Validate() error {
 		return err
 	}
 	r.APIKey = strings.TrimSpace(r.APIKey)
-	if r.APIKey == "" {
+	if r.ChannelID < 0 {
+		return errors.New("channel_id must be positive")
+	}
+	if r.APIKey == "" && r.ChannelID == 0 {
 		return errors.New("api_key cannot be empty")
 	}
 	r.ProxyURL, err = normalizeChannelProxyURL(r.ProxyURL)
@@ -81,7 +85,7 @@ type channelWebsocketProbeResult struct {
 }
 
 // HandleChannelWebsocketProbe 只探测 Codex Responses WebSocket 握手能力。
-// 它不发送模型请求，不写日志、冷却或渠道配置。
+// 不发送模型请求、不写冷却；OAuth 凭据按需刷新。
 func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	var probe channelWebsocketProbeRequest
 	if err := BindAndValidate(c, &probe); err != nil {
@@ -93,6 +97,28 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(probe.URL), Exact: model.HasExactUpstreamURLMarker(probe.URL)}},
 		ProxyURL:           probe.ProxyURL,
 		CustomRequestRules: probe.CustomRequestRules,
+	}
+	if probe.ChannelID != 0 {
+		stored, err := s.store.GetConfig(c.Request.Context(), probe.ChannelID)
+		if err != nil {
+			RespondError(c, http.StatusNotFound, err)
+			return
+		}
+		if !stored.UsesCodexOAuth() {
+			RespondErrorMsg(c, http.StatusBadRequest, "channel_id must identify a Codex OAuth channel")
+			return
+		}
+		// 使用草稿的连接设置刷新凭据，凭据本身仅从服务端读取。
+		stored = stored.Clone()
+		stored.ProxyURL = probe.ProxyURL
+		runtimeCfg, _, _, err := s.prepareOAuthChannelTestAuth(c.Request.Context(), stored, oauthCredentialRefreshIfNeeded)
+		if err != nil {
+			RespondError(c, http.StatusBadGateway, err)
+			return
+		}
+		runtimeCfg.URLs = cfg.URLs
+		runtimeCfg.CustomRequestRules = cfg.CustomRequestRules
+		cfg = runtimeCfg
 	}
 	testReq := &testutil.TestChannelRequest{Model: "websocket-probe", Stream: true, Content: "probe"}
 	fullURL, headers, _, err := (&testutil.CodexTester{}).Build(cfg, probe.APIKey, testReq)
@@ -165,6 +191,7 @@ type channelTestRequestPlan struct {
 	clientBody                []byte
 	anthropicOAuthFingerprint *anthropicOAuthFingerprint
 	anthropicMappedSessionID  string
+	anthropicTestBody         []byte
 	zedWire                   *zedWirePlan
 	openCodeResponses         *openCodeResponsesPlan
 	xaiTools                  *xaiResponsesToolsPlan
@@ -452,6 +479,14 @@ func (s *Server) buildChannelTestRequestPlan(
 	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
 	if err != nil {
 		return nil, err
+	}
+	// 测试器只保留显式参数；模型默认值复用正式 Anthropic 构造层的目录。
+	if clientProtocol == util.ProtocolAnthropic && !gjson.GetBytes(body, "max_tokens").Exists() {
+		body = setJSONRaw(body, "max_tokens", anthropicClaudeCodeDefaultMaxTokens(testReq.Model))
+	}
+	if clientProtocol == util.ProtocolAnthropic && testReq.ThinkingEffort == "" &&
+		!anthropicModelSupportsEffort(testReq.Model) {
+		body = deleteAnthropicOutputEffort(body)
 	}
 	body = applyThinkingSuffixForModel(body, protocol.Protocol(clientProtocol), requestedModel, testReq.Model)
 
@@ -2067,12 +2102,26 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if err != nil {
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
+	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
+	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
+	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+		// name.txt 的轻量请求结构用于正常问答；不注入主循环 billing/system/cache，
+		// 指纹与账号身份仍由共享 wire 层生成，避免模板硬编码版本与身份。
+		requestPlan.requestBody = injectClaudeCodeFallbackTools(requestPlan.requestBody)
+		requestPlan.requestBody, err = injectAnthropicClaudeCodeMetadata(
+			requestPlan.requestBody, cfgForBuild, requestPlan.apiKey, requestPlan.headers)
+		if err != nil {
+			return nil, nil, fmt.Errorf("构造 Anthropic 测试身份失败: %w", err)
+		}
+		applyAnthropicClaudeCodeHeaders(&http.Request{Header: requestPlan.headers},
+			anthropicClaudeCodeMimicBetas(requestPlan.requestBody, cfgForBuild.UsesAnthropicOAuth()),
+			anthropicSessionIDFromBody(requestPlan.requestBody), anthropicEffectiveCLIVersion(), false)
+		requestPlan.anthropicTestBody = requestPlan.requestBody
+	}
 	for key, value := range testReq.Headers {
 		requestPlan.headers.Set(key, value)
 	}
 
-	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
-	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfgForBuild, upstreamProtocolValue, requestPath)
 	if xaiResponsesRequest {
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
@@ -2088,10 +2137,13 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		return nil, nil, fmt.Errorf("parse test upstream URL: %w", err)
 	}
 	callerBody := requestPlan.clientBody
+	if len(requestPlan.anthropicTestBody) > 0 {
+		callerBody = requestPlan.anthropicTestBody
+	}
 	if len(callerBody) == 0 {
 		callerBody = requestPlan.requestBody
 	}
-	callerBodyIsAnthropic := requestPlan.clientProtocol == string(protocol.Anthropic)
+	callerBodyIsAnthropic := requestPlan.clientProtocol == string(protocol.Anthropic) || len(requestPlan.anthropicTestBody) > 0
 	callerWire := classifyAnthropicRequestCallerWire(
 		callerBody, requestPlan.headers, upstreamProtocolValue, requestPath, callerBodyIsAnthropic)
 	if cfgForBuild.UsesAnthropicOAuth() {
@@ -2102,7 +2154,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.anthropicOAuthFingerprint = s.getAnthropicOAuthFingerprint(ctx, cfgForBuild, fingerprintSource)
 	}
 	requestPlan.requestBody, _, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, requestPlan.clientBody,
+		cfgForBuild, upstreamProtocolValue, requestPath, testReq.Model, requestPlan.requestBody, callerBody,
 		requestPlan.apiKey, requestPlan.headers, false, parsedTestURL,
 		false, callerBodyIsAnthropic,
 	)
@@ -2197,6 +2249,9 @@ func (s *Server) newTestUpstreamRequest(
 	sourceHeaders := cloneHeaders(requestPlan.headers)
 	requestPlan.upstreamHeaders = sourceHeaders
 	callerBody := requestPlan.clientBody
+	if len(requestPlan.anthropicTestBody) > 0 {
+		callerBody = requestPlan.anthropicTestBody
+	}
 	if len(callerBody) == 0 {
 		callerBody = requestPlan.requestBody
 	}
@@ -2288,7 +2343,10 @@ func (s *Server) newTestUpstreamRequest(
 			return nil, nil, err
 		}
 	}
-	setAdminTestAcceptEncoding(cfgForBuild, req)
+	// Anthropic 与代理链路共用显式响应解压，保留 provider 的压缩协商头。
+	if !isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
+		setAdminTestAcceptEncoding(cfgForBuild, req)
+	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol || cfgForBuild.UsesZedOAuth() {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)

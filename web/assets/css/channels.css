@@ -1249,8 +1249,18 @@
       flex: 0 1 auto;
     }
 
-    .channel-editor-basic-grid > .channel-editor-field--name {
+    .channel-editor-basic-grid > .channel-editor-field--name,
+    .channel-editor-basic-grid > .channel-editor-field--switches {
       grid-column: span 4;
+    }
+
+    .channel-editor-basic-grid > .channel-editor-field--switches {
+      flex-wrap: wrap;
+      gap: 10px 24px;
+    }
+
+    .channel-editor-basic-grid > .channel-editor-field--switches > .channel-editor-websocket-control {
+      flex: 0 1 auto;
     }
 
     .channel-editor-name-row {
@@ -1322,15 +1332,34 @@
       opacity: 0.5;
     }
 
+    #channelEditorSectionLimits {
+      --channel-connection-label-width: 5em;
+    }
+
     .channel-editor-limits-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px 16px;
+      grid-template-columns: repeat(3, max-content);
+      gap: 12px 24px;
       margin-bottom: 14px;
     }
 
     .channel-editor-limits-grid .channel-editor-inline-field {
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: auto minmax(0, 120px);
+      justify-content: start;
+      gap: 10px;
+    }
+
+    .channel-editor-limits-grid .channel-editor-inline-field:first-child {
+      grid-template-columns: var(--channel-connection-label-width) minmax(0, 120px);
+    }
+
+    .channel-editor-limits-grid .channel-editor-inline-field:first-child > .form-label {
+      justify-content: flex-start;
+    }
+
+    .channel-editor-limits-grid .channel-editor-inline-field-input {
+      min-width: 0;
     }
 
     .channel-editor-limits-grid .form-input {
@@ -6666,7 +6695,18 @@
     }
 
     .channel-editor-connection-fields {
+      --advanced-settings-label-width: var(--channel-connection-label-width);
       --advanced-settings-control-width: 260px;
+    }
+
+    .channel-editor-connection-fields .advanced-settings-proxy-field > .form-label,
+    .channel-editor-connection-fields .advanced-settings-availability-row > .form-label {
+      text-align: start;
+    }
+
+    .channel-editor-connection-fields .advanced-settings-inline-help {
+      display: block;
+      margin: 4px 0 0;
     }
 
     .advanced-settings-availability-row {
@@ -7401,6 +7441,16 @@
     @media (max-width: 640px) {
       #customRulesModal .advanced-settings-modal {
         padding: 16px;
+      }
+
+      .channel-editor-limits-grid .channel-editor-inline-field,
+      .channel-editor-limits-grid .channel-editor-inline-field:first-child {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+      }
+
+      .channel-editor-limits-grid .channel-editor-inline-field:first-child > .form-label {
+        justify-content: flex-start;
       }
 
       .codex-credential-toolbar-actions {

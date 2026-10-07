@@ -4,10 +4,6 @@
     {
       "role": "user",
       "content": [
-         {
-          "type": "text",
-          "text": "<system-reminder>\nSessionStart:startup hook success: {\"continue\":true,\"suppressOutput\":true,\"status\":\"ready\"}\n{\"continue\":true,\"suppressOutput\":true}\n</system-reminder>"
-        },
         {
           "type": "text",
           "text": "{{CONTENT}}"
@@ -22,16 +18,10 @@
     },
     {
       "type": "text",
-      "text": "\nYou are an interactive agent that helps users with software engineering tasks.",
-      "cache_control": {
-        "type": "ephemeral"
-      }
+      "text": "Answer the user's questions clearly and help with software engineering tasks."
     }
   ],
   "tools": [],
-  "metadata": {
-    "user_id": "{{USER_ID}}"
-  },
-  "max_tokens": "{{MAX_TOKENS}}",
+  "output_config": {"effort": "medium"},
   "stream": "{{STREAM}}"
 }

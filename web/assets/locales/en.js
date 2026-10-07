@@ -636,6 +636,7 @@ window.I18N_LOCALES['en'] = {
   'channels.websocketsProbeSupported': 'The upstream supports native WebSocket. The option has been selected.',
   'channels.websocketsProbeUnsupported': 'The upstream does not support native WebSocket. The option has been cleared.',
   'channels.websocketsProbeFailed': 'WebSocket detection failed. The option has been cleared: {error}',
+  'channels.websocketsProbeSaveOAuthFirst': 'Save the Codex OAuth channel before detecting WebSocket support.',
   'channels.priority': 'Priority',
   'channels.dailyCostLimit': 'Daily Limit',
   'channels.dailyCostLimitPlaceholder': '0=No limit',

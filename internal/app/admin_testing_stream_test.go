@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,6 +233,90 @@ func TestStreamChatNativeParsesSplitThinkTags(t *testing.T) {
 	}
 	if strings.Contains(body, `<think>`) || strings.Contains(body, `</think>`) {
 		t.Fatalf("think tags must not leak to frontend stream:\n%s", body)
+	}
+}
+
+func TestHandleChannelChatDecodesAnthropicCompressedResponses(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Accept-Encoding") != "gzip, deflate, br, zstd" {
+					t.Errorf("unexpected compression negotiation: %s", r.Header.Get("Accept-Encoding"))
+				}
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if !gjson.ValidBytes(raw) {
+					t.Error("invalid upstream JSON")
+					return
+				}
+				if gjson.GetBytes(raw, "system.#").Int() != 2 || gjson.GetBytes(raw, "tools.#").Int() != 3 || gjson.GetBytes(raw, "output_config.format").Exists() {
+					t.Error("chat did not use lightweight Anthropic test request")
+				}
+				payload := `{"id":"msg-test","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"decoded answer"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`
+				contentType := "application/json"
+				if stream {
+					contentType = "text/event-stream"
+					payload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-test\",\"type\":\"message\",\"model\":\"claude-sonnet-4-5\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+						"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"decoded answer\"}}\n\n" +
+						"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n" +
+						"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+				}
+				w.Header().Set("Content-Type", contentType)
+				w.Header().Set("Content-Encoding", "gzip")
+				writer := gzip.NewWriter(w)
+				if _, err := io.WriteString(writer, payload); err != nil {
+					t.Error(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Error(err)
+				}
+			}))
+			srv := newInMemoryServer(t)
+			cfg := createAnthropicOAuthChannelForAdminTest(t, srv, upstream.URL)
+			channelID := strconv.FormatInt(cfg.ID, 10)
+			req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+				"model": "claude-sonnet-4-5", "client_protocol": "anthropic", "stream": stream,
+				"messages": []map[string]string{{"role": "user", "content": "hello"}},
+			})
+			c, w := newTestContext(t, req)
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			srv.HandleChannelChat(c)
+			var answer strings.Builder
+			done := false
+			scanner := bufio.NewScanner(w.Body)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					done = true
+					continue
+				}
+				var event struct {
+					Delta string `json:"delta"`
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(data), &event); err != nil {
+					t.Fatal(err)
+				}
+				if event.Error != "" {
+					t.Errorf("chat error: %s", event.Error)
+				}
+				answer.WriteString(event.Delta)
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if answer.String() != "decoded answer" || !done {
+				t.Fatalf("answer=%q, done=%v", answer.String(), done)
+			}
+		})
 	}
 }
 

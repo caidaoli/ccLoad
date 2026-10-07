@@ -1682,7 +1682,7 @@ func TestProxy_AnthropicOAuthPreservesRelayedClaudeCodeRequest(t *testing.T) {
 		t.Fatalf("status=%d upstream_headers=%v body=%s", response.Code, capturedHeaders, response.Body.String())
 	}
 	if got, want := gjson.GetBytes(capturedBody, "system.0.text").String(),
-		"x-anthropic-billing-header: cc_version="+anthropicCLIVersion+".790; cc_entrypoint=claude-vscode;"; got != want {
+		strings.Replace(anthropicBillingHeader("hello", anthropicEffectiveCLIVersion()), "cc_entrypoint=cli;", "cc_entrypoint=claude-vscode;", 1); got != want {
 		t.Fatalf("billing block=%q, want %q; body=%s", got, want, capturedBody)
 	}
 	if got := gjson.GetBytes(capturedBody, "system.1.text").String(); got != "caller prompt" ||
@@ -1762,7 +1762,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	})
 	if headerValueFold(second.headers, "User-Agent") != baseUA ||
 		headerValueFold(second.headers, "X-Stainless-OS") != "Darwin" ||
-		headerValueFold(second.headers, "X-Stainless-Package-Version") != "0.120.0" {
+		headerValueFold(second.headers, "X-Stainless-Package-Version") != anthropicStainlessPackageVersion {
 		t.Fatalf("older client changed account fingerprint: %v", second.headers)
 	}
 	parts, ok := parseAnthropicCLIVersion(baseVersion)
@@ -1776,7 +1776,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	})
 	if headerValueFold(third.headers, "User-Agent") != newerUA ||
 		headerValueFold(third.headers, "X-Stainless-OS") != "Linux" ||
-		headerValueFold(third.headers, "X-Stainless-Package-Version") != "0.120.0" {
+		headerValueFold(third.headers, "X-Stainless-Package-Version") != anthropicStainlessPackageVersion {
 		t.Fatalf("newer client did not merge account fingerprint: %v", third.headers)
 	}
 	fourth := send("/v1/messages", map[string]string{
@@ -1806,7 +1806,7 @@ func TestProxy_AnthropicOAuthAccountFingerprintPersistsAndUpgrades(t *testing.T)
 	}
 	credential, err := anthropicauth.ParseCredential([]byte(configs[0].OAuthCredential))
 	if err != nil || credential.Fingerprint == nil || credential.Fingerprint.UserAgent != newerUA ||
-		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != "0.120.0" {
+		credential.Fingerprint.StainlessOS != "Linux" || credential.Fingerprint.StainlessPackageVersion != anthropicStainlessPackageVersion {
 		t.Fatalf("persisted account fingerprint=%+v err=%v", credential, err)
 	}
 	env.server.anthropicOAuthFingerprintMu.Lock()
@@ -2032,7 +2032,7 @@ func TestProxy_AnthropicNativeBodyRulesKeepNativeWire(t *testing.T) {
 				t.Fatalf("native body changed after rule: %s", capturedBody)
 			}
 			for name, want := range map[string]string{
-				"User-Agent":        "claude-cli/2.1.280 (external, cli)",
+				"User-Agent":        "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
 				"Accept-Language":   "zh-CN,zh;q=0.9",
 				"Sec-Fetch-Mode":    "cors",
 				"X-Stainless-Async": "false",
@@ -2117,7 +2117,7 @@ func TestProxy_AnthropicCountTokensUsesUpstreamOAuthWire(t *testing.T) {
 	native := sent[1]
 	if gjson.GetBytes(native.body, "metadata").Exists() ||
 		gjson.GetBytes(native.body, "system.0.text").String() != anthropicBillingHeader("hello", anthropicCLIVersion) ||
-		headerValueFold(native.headers, "User-Agent") != "claude-cli/2.1.280 (external, cli)" ||
+		headerValueFold(native.headers, "User-Agent") != "claude-cli/"+anthropicEffectiveCLIVersion()+" (external, cli)" ||
 		!strings.Contains(headerValueFold(native.headers, "Anthropic-Beta"), "token-counting-2024-11-01") {
 		t.Fatalf("native wire headers=%v body=%s", native.headers, native.body)
 	}

@@ -1,44 +1,30 @@
 package testutil
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/bytedance/sonic"
 )
 
-func TestBuildRequestFromTemplate_PreservesAnthropicTopLevelFieldOrder(t *testing.T) {
-	replacements := map[string]any{
-		"MODEL":      "claude-haiku-4-5-20251001",
-		"CONTENT":    "list file",
-		"USER_ID":    "user_123",
-		"MAX_TOKENS": 32000,
-		"STREAM":     true,
+func TestBuildRequestFromTemplate_EscapesAnthropicContent(t *testing.T) {
+	content := "quoted \"text\"\nbackslash \\ and <tag>"
+	body, err := buildRequestFromTemplate("anthropic", map[string]any{
+		"MODEL": "claude-sonnet-5", "CONTENT": content, "STREAM": true,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantOrder := []string{
-		`"model":`,
-		`"messages":`,
-		`"system":`,
-		`"tools":`,
-		`"metadata":`,
-		`"max_tokens":`,
-		`"stream":`,
+	var payload struct {
+		Messages []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
 	}
-
-	for i := 0; i < 16; i++ {
-		body, err := buildRequestFromTemplate("anthropic", replacements)
-		if err != nil {
-			t.Fatalf("buildRequestFromTemplate failed: %v", err)
-		}
-
-		lastIndex := -1
-		for _, field := range wantOrder {
-			index := strings.Index(string(body), field)
-			if index == -1 {
-				t.Fatalf("field %s not found in output: %s", field, string(body))
-			}
-			if index <= lastIndex {
-				t.Fatalf("field order mismatch for %s in output: %s", field, string(body))
-			}
-			lastIndex = index
-		}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Messages) != 1 || len(payload.Messages[0].Content) != 1 || payload.Messages[0].Content[0].Text != content {
+		t.Fatalf("content was not preserved: %s", body)
 	}
 }

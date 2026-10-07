@@ -2001,13 +2001,14 @@ window.WebAuth = window.WebAuth || {
         row.id = `${dropdown.id}-option-${idx}`;
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
-        let content = [item.label];
+        const label = document.createElement('span');
+        label.className = 'filter-dropdown-item__label';
+        label.textContent = item.label;
+        label.title = item.label;
+        let content = [label];
         if (item.description) {
           // 图文选项：标题 + 说明两行
           row.classList.add('filter-dropdown-item--described');
-          const label = document.createElement('span');
-          label.className = 'filter-dropdown-item__label';
-          label.textContent = item.label;
           const description = document.createElement('span');
           description.className = 'filter-dropdown-item__desc';
           description.textContent = item.description;
@@ -2067,7 +2068,21 @@ window.WebAuth = window.WebAuth || {
       const margin = 6;
 
       const viewportWidth = window.innerWidth || 0;
-      const width = Math.min(Math.max(rect.width, dropdownMinWidth), Math.max(rect.width, viewportWidth - margin * 2));
+      const availableWidth = Math.max(0, viewportWidth - margin * 2);
+      const baseWidth = Math.min(Math.max(rect.width, dropdownMinWidth), availableWidth);
+      dropdown.style.width = `${Math.ceil(baseWidth)}px`;
+      // 只按标题扩宽，说明文字仍可折行；计入图标、内边距和滚动条。
+      const chromeWidth = dropdown.offsetWidth - dropdown.clientWidth;
+      let contentWidth = baseWidth;
+      dropdown.querySelectorAll('.filter-dropdown-item__label').forEach((label) => {
+        const row = label.closest('.filter-dropdown-item');
+        // scrollWidth 会取整，少于一个像素的缺口也会触发 ellipsis。
+        const textRange = document.createRange();
+        textRange.selectNodeContents(label);
+        contentWidth = Math.max(contentWidth, textRange.getBoundingClientRect().width +
+          row.getBoundingClientRect().width - label.getBoundingClientRect().width + chromeWidth);
+      });
+      const width = Math.min(Math.ceil(contentWidth), availableWidth);
       const left = Math.max(margin, Math.min(rect.left, viewportWidth - margin - width));
       dropdown.style.left = `${Math.round(left)}px`;
       dropdown.style.width = `${Math.round(width)}px`;

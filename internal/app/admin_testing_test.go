@@ -1270,6 +1270,148 @@ func TestOAuthDetectionPersistsUsageAndCost(t *testing.T) {
 	}
 }
 
+// Verify the final HTTP request, after provider body and header normalization.
+func TestAnthropicChannelTestUsesLightweightClaudeCodeWire(t *testing.T) {
+	for _, oauth := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, model, effort string
+			maxTokens           int
+			search              bool
+		}{
+			{name: "name-sample-shape", model: "claude-opus-5-5"},
+			{name: "legacy-haiku", model: "claude-haiku-4-5"},
+			{name: "thinking-disabled", model: "claude-haiku-4-5", effort: "none"},
+			{name: "explicit-options", model: "claude-sonnet-5", effort: "xhigh", maxTokens: 1024},
+			{name: "existing-tools", model: "claude-sonnet-5", search: true},
+		} {
+			t.Run(fmt.Sprintf("oauth=%v/%s", oauth, tc.name), func(t *testing.T) {
+				t.Parallel()
+				srv := newInMemoryServer(t)
+				cfg := &model.Config{Name: "anthropic-test"}
+				if oauth {
+					cfg.AuthType = model.AuthTypeAnthropicOAuth
+					cfg.OAuthCredential = anthropicProxyTestCredential(t, "test-token")
+				}
+				testReq := &testutil.TestChannelRequest{
+					Model: tc.model, ClientProtocol: util.ProtocolAnthropic,
+					Content: "hello", Stream: true, ThinkingEffort: tc.effort, MaxTokens: tc.maxTokens,
+					BuiltinSearch: tc.search, SessionID: "same-test-conversation",
+				}
+				built, plan, err := srv.buildTestUpstreamRequestPlan(context.Background(), cfg, "test-token",
+					testReq, testReq.Model, util.ProtocolAnthropic, util.ProtocolAnthropic, "https://api.anthropic.com")
+				if err != nil {
+					t.Fatal(err)
+				}
+				req, cancel, err := srv.newTestUpstreamRequest(context.Background(), built, testReq, plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cancel()
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !gjson.ValidBytes(body) {
+					t.Fatal("invalid request JSON")
+				}
+				if req.URL.RequestURI() != "/v1/messages?beta=true" {
+					t.Fatalf("request URI=%s", req.URL.RequestURI())
+				}
+				for name, want := range map[string]string{
+					"User-Agent":                  "claude-cli/" + anthropicEffectiveCLIVersion() + " (external, cli)",
+					"X-Stainless-Package-Version": "0.128.0",
+					"X-Stainless-Runtime-Version": "v26.3.0",
+					"X-Stainless-Timeout":         "600",
+					"Accept-Encoding":             "gzip, deflate, br, zstd",
+					"x-claude-code-request-class": "",
+					"x-stainless-helper-method":   "",
+				} {
+					if got := headerValueFold(req.Header, name); got != want {
+						t.Errorf("%s=%q, want %q", name, got, want)
+					}
+				}
+				wantMax := tc.maxTokens
+				if wantMax == 0 {
+					wantMax = 64000
+					switch tc.model {
+					case "claude-opus-5-5":
+						wantMax = 128000
+					case "claude-haiku-4-5":
+						wantMax = 32000
+					}
+				}
+				if got := gjson.GetBytes(body, "max_tokens").Int(); got != int64(wantMax) {
+					t.Errorf("max_tokens=%d, want %d", got, wantMax)
+				}
+				wantEffort := tc.effort
+				if wantEffort == "none" {
+					wantEffort = ""
+				}
+				if wantEffort == "" && tc.model != "claude-haiku-4-5" {
+					wantEffort = "medium"
+				}
+				if got := gjson.GetBytes(body, "output_config.effort").String(); got != wantEffort {
+					t.Errorf("effort=%q, want %q", got, wantEffort)
+				}
+				if tc.effort == "none" {
+					if got := gjson.GetBytes(body, "thinking.type").String(); got != "disabled" {
+						t.Errorf("thinking.type=%q", got)
+					}
+				} else if tc.effort != "" {
+					if got := gjson.GetBytes(body, "thinking.type").String(); got != "adaptive" {
+						t.Errorf("thinking.type=%q", got)
+					}
+				} else if gjson.GetBytes(body, "thinking").Exists() {
+					t.Error("default test must not add thinking")
+				}
+				for _, path := range []string{"context_management", "diagnostics", "output_config.format"} {
+					if gjson.GetBytes(body, path).Exists() {
+						t.Errorf("unexpected %s", path)
+					}
+				}
+				if !gjson.GetBytes(body, "stream").Bool() {
+					t.Error("stream flag lost")
+				}
+				system := gjson.GetBytes(body, "system").Array()
+				if len(system) != 2 {
+					t.Fatalf("system blocks=%d, want 2", len(system))
+				}
+				for _, block := range system {
+					if block.Get("cache_control").Exists() || strings.Contains(block.Get("text").String(), "x-anthropic-billing-header") {
+						t.Error("test must keep lightweight system shape")
+					}
+				}
+				if got := gjson.GetBytes(body, "messages.0.content.0.text").String(); got != "hello" {
+					t.Errorf("user message=%q", got)
+				}
+				tools := gjson.GetBytes(body, "tools").Array()
+				wantTools := []string{"Edit", "Read", "Write"}
+				if tc.search {
+					wantTools = []string{"web_search"}
+				}
+				names := make([]string, 0, len(tools))
+				for _, tool := range tools {
+					names = append(names, tool.Get("name").String())
+				}
+				if !slices.Equal(names, wantTools) {
+					t.Errorf("tools=%v, want %v", names, wantTools)
+				}
+				userID := gjson.Parse(gjson.GetBytes(body, "metadata.user_id").String())
+				if !userID.Get("session_id").Exists() || !userID.Get("device_id").Exists() {
+					t.Error("missing generated identity")
+				}
+				if oauth {
+					if headerValueFold(req.Header, "Authorization") != "Bearer test-token" {
+						t.Error("missing OAuth authentication")
+					}
+				} else if headerValueFold(req.Header, "x-api-key") != "test-token" || headerValueFold(req.Header, "Authorization") != "" {
+					t.Error("incorrect official API Key authentication")
+				}
+			})
+		}
+	}
+}
+
 func TestAnthropicOAuthChannelTestDecodesAdvertisedCompression(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1637,6 +1779,82 @@ func TestHandleChannelWebsocketProbeDetectsSupportedUpstream(t *testing.T) {
 	}](t, w.Body.Bytes())
 	if !result.Data.Supported {
 		t.Fatalf("supported=false, want true; body=%s", w.Body.String())
+	}
+}
+
+func TestHandleChannelWebsocketProbeUsesSavedCodexOAuthWithDraftURL(t *testing.T) {
+	t.Parallel()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	closed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(closed)
+		if got := r.URL.RequestURI(); got != "/backend-api/codex/responses" {
+			t.Errorf("request URI=%q", got)
+		}
+		for name, want := range map[string]string{
+			"Authorization":      "Bearer at-admin-test",
+			"Chatgpt-Account-Id": "account-admin-test",
+			"X-Codex-Turn-State": "draft-rule",
+		} {
+			if got := r.Header.Get(name); got != want {
+				t.Errorf("%s=%q, want %q", name, got, want)
+			}
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, body, err := conn.ReadMessage(); err == nil {
+			t.Errorf("handshake probe sent model message: %s", body)
+		}
+	}))
+	defer upstream.Close()
+	srv := newInMemoryServer(t)
+	cfg := createCodexOAuthChannelForAdminTest(t, srv, "http://127.0.0.1:1/saved-only")
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/websocket-probe", map[string]any{
+		"channel_id":           cfg.ID,
+		"url":                  upstream.URL + "/backend-api/codex/responses#",
+		"custom_request_rules": map[string]any{"headers": []map[string]any{{"action": "override", "name": "X-Codex-Turn-State", "value": "draft-rule"}}},
+	}))
+	srv.HandleChannelWebsocketProbe(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	result := mustParseAPIResponse[channelWebsocketProbeResult](t, w.Body.Bytes())
+	if !result.Data.Supported || result.Data.Status != http.StatusSwitchingProtocols {
+		t.Fatalf("probe result=%+v", result.Data)
+	}
+	<-closed
+}
+
+func TestHandleChannelWebsocketProbeRejectsInvalidOAuthChannel(t *testing.T) {
+	t.Parallel()
+	srv := newInMemoryServer(t)
+	nonCodex := createAntigravityOAuthChannelForAdminTest(t, srv, "http://127.0.0.1:1")
+	for _, tc := range []struct {
+		name string
+		id   int64
+		url  string
+	}{
+		{name: "negative-id", id: -1, url: "http://127.0.0.1:1"},
+		{name: "missing-channel", id: nonCodex.ID + 1000, url: "http://127.0.0.1:1"},
+		{name: "non-codex", id: nonCodex.ID, url: "http://127.0.0.1:1"},
+		{name: "missing-url", id: nonCodex.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/websocket-probe", map[string]any{"channel_id": tc.id, "url": tc.url}))
+			srv.HandleChannelWebsocketProbe(c)
+			want := http.StatusBadRequest
+			if tc.name == "missing-channel" {
+				want = http.StatusNotFound
+			}
+			if w.Code != want {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

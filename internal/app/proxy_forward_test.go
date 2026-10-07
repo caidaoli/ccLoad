@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -4258,5 +4259,92 @@ func TestCodexPurchasedCreditsReachProxyLog(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
+	t.Parallel()
+	// Synthetic fixture matching name.txt's title helper shape; no captured identity or prompt.
+	const body = `{
+		"model":"claude-opus-5-5",
+		"messages":[{"role":"user","content":[{"type":"text","text":"Synthetic conversation summary"}]}],
+		"system":[
+			{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},
+			{"type":"text","text":"Generate a short title for this synthetic conversation."}
+		],
+		"tools":[],
+		"metadata":{"user_id":"{\"device_id\":\"synthetic-device\",\"account_uuid\":\"\",\"session_id\":\"synthetic-session\"}"},
+		"max_tokens":128000,
+		"output_config":{"effort":"medium","format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},
+		"stream":true
+	}`
+	const apiKeyBetas = "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,structured-outputs-2025-12-15"
+	const oauthBetas = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,structured-outputs-2025-12-15"
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "synthetic-account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	for _, test := range []struct {
+		name  string
+		betas string
+	}{
+		{name: "OAuth caller", betas: oauthBetas},
+		{name: "API key caller using OAuth channel", betas: apiKeyBetas},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			headers := http.Header{
+				"User-Agent":                  {"claude-cli/2.1.292 (external, cli)"},
+				"X-App":                       {"cli"},
+				"Anthropic-Beta":              {test.betas},
+				"X-Stainless-Package-Version": {"0.128.0"},
+				"X-Stainless-Runtime-Version": {"v26.3.0"},
+				"X-Stainless-Runtime":         {"node"},
+				"X-Stainless-Lang":            {"js"},
+				"X-Stainless-OS":              {"MacOS"},
+				"X-Stainless-Arch":            {"arm64"},
+			}
+			reqCtx := &requestContext{
+				ctx: context.Background(), startTime: time.Now(), isStreaming: true,
+				clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+			}
+			request, err := (&Server{}).buildProxyRequest(reqCtx, cfg, "synthetic-access", http.MethodPost,
+				[]byte(body), headers, "", "/v1/messages", "https://api.anthropic.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = request.Body.Close() }()
+			finalized, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !gjson.ValidBytes(finalized) {
+				t.Fatal("final request body is invalid JSON")
+			}
+			for _, path := range []string{"model", "messages", "system", "tools", "max_tokens", "output_config", "stream"} {
+				if got, want := gjson.GetBytes(finalized, path).Value(), gjson.Get(body, path).Value(); !reflect.DeepEqual(got, want) {
+					t.Fatalf("caller field %s changed: got %#v, want %#v", path, got, want)
+				}
+			}
+			for _, path := range []string{"thinking", "context_management", "diagnostics", "cache_control", "temperature"} {
+				if gjson.GetBytes(finalized, path).Exists() {
+					t.Fatalf("title helper gained unexpected %s", path)
+				}
+			}
+			if got := headerValueFold(request.Header, "X-Claude-Code-Request-Class"); got != "" {
+				t.Fatalf("title helper gained request class %q", got)
+			}
+			if got := headerValueFold(request.Header, "Anthropic-Beta"); got != oauthBetas {
+				t.Fatalf("title helper beta = %q, want %q", got, oauthBetas)
+			}
+			for _, name := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version"} {
+				if got, want := headerValueFold(request.Header, name), headers.Get(name); got != want {
+					t.Fatalf("native header %s = %q, want %q", name, got, want)
+				}
+			}
+		})
 	}
 }

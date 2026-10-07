@@ -10,8 +10,8 @@ import (
 )
 
 // anyrouterClaudeCodeFallbackToolsJSON 是 anyrouter 当前 Claude Code 路由所需的
-// 最小真实工具集合。它们不是 Anthropic Messages 的协议必填字段，只在 anyrouter
-// 对原生 Claude Code 请求且调用方未提供工具时作为兼容兜底注入。
+// 最小真实工具集合。它们不是 Anthropic Messages 的协议必填字段；anyrouter
+// 的原生请求兜底和管理端 Anthropic 请求测试共用这份定义。
 const anyrouterClaudeCodeFallbackToolsJSON = `[
   {
     "name": "Edit",
@@ -121,7 +121,11 @@ func injectAnyrouterClaudeCodeFallbackTools(
 		!isAnthropicJSONObject(body) {
 		return body
 	}
+	return injectClaudeCodeFallbackTools(body)
+}
 
+// injectClaudeCodeFallbackTools 只补空工具列表，不覆盖已有工具或非法输入。
+func injectClaudeCodeFallbackTools(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
 	if tools.IsArray() {
 		if jsonMemberCount(tools) > 0 {

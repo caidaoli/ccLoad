@@ -506,6 +506,15 @@ func (s *Server) streamChatWithURLForProtocol(
 	s.persistDetectionCodexPassiveUsage(req.Context(), cfg, resp, gjson.GetBytes(requestPlan.requestBody, "model").String())
 	s.persistDetectionAnthropicPassiveUsage(req.Context(), cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
+	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), requestPlan.endpointPath) {
+		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
+			return chatURLAttemptResult{result: attachTestDebugData(requestPlan, resp, map[string]any{
+				"success": false, "error": "解码 Anthropic 对话响应失败: " + decodeErr.Error(),
+				"duration_ms": time.Since(start).Milliseconds(), "status_code": resp.StatusCode,
+				"is_streaming": testReq.Stream,
+			})}
+		}
+	}
 	if requestPlan.debugCapture != nil {
 		requestPlan.debugCapture.wrapResponseBody(resp)
 	}

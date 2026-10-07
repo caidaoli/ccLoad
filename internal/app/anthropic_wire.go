@@ -28,7 +28,7 @@ import (
 const (
 	// anthropicCLIVersion 是 Claude Code wire 的内置最低版本/离线回退值。
 	// 运行中的服务会由 anthropic_cli_version_sync.go 向前同步官方稳定版。
-	anthropicCLIVersion  = "2.1.280"
+	anthropicCLIVersion  = "2.1.292"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
@@ -1667,10 +1667,10 @@ func anthropicClientVersion(headers http.Header) string {
 // OAuth fingerprints are persisted with the private credential and cached per server.
 type anthropicOAuthFingerprint = anthropicauth.Fingerprint
 
-// Claude Code 2.1.280（内置 CLI 版本下限）实测随附的 @anthropic-ai/sdk 与运行时版本（对齐 CPA）。
+// Claude Code 2.1.292 抓包（docs/claude/name.txt）随附的 SDK 与运行时版本。
 // CLI 版本只升不降，SDK 版本随之单调，低于这一组的 Stainless 版本不可能与当前 UA 配套。
 const (
-	anthropicStainlessPackageVersion = "0.112.1"
+	anthropicStainlessPackageVersion = "0.128.0"
 	anthropicStainlessRuntimeVersion = "v26.3.0"
 )
 

@@ -314,8 +314,14 @@ async function detectChannelWebsocketSupport(button) {
     window.showError(window.t('channels.fillApiUrlFirst'));
     return false;
   }
-  const apiKeys = getEnabledChannelWebsocketKeys();
-  if (apiKeys.length === 0) {
+  const codexOAuth = typeof editingChannelAuthType !== 'undefined' && editingChannelAuthType === 'codex_oauth';
+  const channelID = typeof editingChannelId !== 'undefined' ? editingChannelId : null;
+  if (codexOAuth && !channelID) {
+    window.showError(window.t('channels.websocketsProbeSaveOAuthFirst'));
+    return false;
+  }
+  const apiKeys = codexOAuth ? [] : getEnabledChannelWebsocketKeys();
+  if (!codexOAuth && apiKeys.length === 0) {
     window.showError(window.t('channels.addAtLeastOneEnabledKey'));
     return false;
   }
@@ -335,7 +341,7 @@ async function detectChannelWebsocketSupport(button) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: baseURL,
-          api_key: apiKeys[index % apiKeys.length],
+          ...(codexOAuth ? { channel_id: channelID } : { api_key: apiKeys[index % apiKeys.length] }),
           proxy_url: proxyURL,
           custom_request_rules: customRules
         })

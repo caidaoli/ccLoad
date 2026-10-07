@@ -756,25 +756,35 @@ func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T
 	}
 }
 
-func TestAnthropicTesterBuild_MapsXHighThinkingEffortToMax(t *testing.T) {
+func TestAnthropicTesterBuild_MapsXHighThinkingEffortByModel(t *testing.T) {
 	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
-	req := &TestChannelRequest{Model: "claude-test", Content: "hello", ThinkingEffort: "xhigh"}
-
-	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-
-	var payload map[string]any
-	if err := sonic.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
-	}
-	outputConfig, ok := payload["output_config"].(map[string]any)
-	if !ok {
-		t.Fatalf("output_config missing or invalid; body=%s", body)
-	}
-	if got, _ := outputConfig["effort"].(string); got != "max" {
-		t.Fatalf("output_config.effort = %q, want max; body=%s", got, body)
+	for _, tt := range []struct {
+		model  string
+		effort string
+		want   string
+	}{
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-5", "xhigh", "xhigh"},
+		{"claude-sonnet-5-5", "max", "xhigh"},
+	} {
+		t.Run(tt.model, func(t *testing.T) {
+			req := &TestChannelRequest{Model: tt.model, Content: "hello", ThinkingEffort: tt.effort}
+			_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+			if err != nil {
+				t.Fatalf("Build() error = %v", err)
+			}
+			var payload struct {
+				OutputConfig struct {
+					Effort string `json:"effort"`
+				} `json:"output_config"`
+			}
+			if err := sonic.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("unmarshal body failed: %v", err)
+			}
+			if payload.OutputConfig.Effort != tt.want {
+				t.Fatalf("effort = %q, want %q", payload.OutputConfig.Effort, tt.want)
+			}
+		})
 	}
 }
 
@@ -810,14 +820,10 @@ func TestAnthropicTesterBuild_AppendsSystemPromptAndAppliesSampling(t *testing.T
 		t.Fatalf("max_tokens = %v, want 8192; body=%s", got, body)
 	}
 	system, ok := payload["system"].([]any)
-	if !ok || len(system) < 3 {
+	if !ok || len(system) != 3 {
 		t.Fatalf("system invalid: %#v; body=%s", payload["system"], body)
 	}
-	first, _ := system[0].(map[string]any)
 	last, _ := system[len(system)-1].(map[string]any)
-	if !strings.Contains(first["text"].(string), "Claude Code") {
-		t.Fatalf("template system prompt should be preserved, first=%#v; body=%s", first, body)
-	}
 	if last["type"] != "text" || last["text"] != "keep the answer direct" {
 		t.Fatalf("user system prompt should be appended last, last=%#v; body=%s", last, body)
 	}
@@ -892,5 +898,143 @@ func TestAnthropicTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 	source, ok := imagePart["source"].(map[string]any)
 	if !ok || source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != "aW1n" {
 		t.Fatalf("anthropic body missing image source block: %s", body)
+	}
+}
+
+func TestAnthropicTesterBuild_PlainRequest(t *testing.T) {
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
+	for _, stream := range []bool{false, true} {
+		req := &TestChannelRequest{Model: "claude-sonnet-5", Content: "hello", Stream: stream, SessionID: "conversation"}
+		fullURL, headers, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+		if err != nil {
+			t.Fatalf("Build() error = %v", err)
+		}
+		if fullURL != "https://api.example.com/v1/messages" {
+			t.Fatalf("URL = %q", fullURL)
+		}
+		accept := "application/json"
+		if stream {
+			accept = "text/event-stream"
+		}
+		wantHeaders := map[string]string{
+			"Accept": accept, "Content-Type": "application/json", "Authorization": "Bearer sk-test",
+			"Anthropic-Version": "2023-06-01", "X-Claude-Code-Session-Id": req.ResolveSessionID(),
+		}
+		if len(headers) != len(wantHeaders) {
+			t.Fatalf("unexpected headers: %v", headers)
+		}
+		for name, want := range wantHeaders {
+			if got := headers.Get(name); got != want {
+				t.Fatalf("header %s = %q, want %q", name, got, want)
+			}
+		}
+		var payload struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"messages"`
+			System []any `json:"system"`
+			Tools  []any `json:"tools"`
+			Stream bool  `json:"stream"`
+		}
+		if err := sonic.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Model != req.Model || payload.Stream != stream || len(payload.System) != 2 || len(payload.Tools) != 0 {
+			t.Fatalf("invalid plain payload: %s", body)
+		}
+		if len(payload.Messages) != 1 || payload.Messages[0].Role != "user" || len(payload.Messages[0].Content) != 1 || payload.Messages[0].Content[0].Type != "text" || payload.Messages[0].Content[0].Text != "hello" {
+			t.Fatalf("invalid content: %s", body)
+		}
+		var fields map[string]any
+		if err := sonic.Unmarshal(body, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if len(fields) != 6 {
+			t.Fatalf("unexpected body fields: %s", body)
+		}
+		outputConfig, _ := fields["output_config"].(map[string]any)
+		if outputConfig["effort"] != "medium" || len(outputConfig) != 1 {
+			t.Fatalf("unexpected default output_config: %v", outputConfig)
+		}
+		for i, block := range payload.System {
+			textBlock, _ := block.(map[string]any)
+			if textBlock["type"] != "text" || len(textBlock) != 2 {
+				t.Fatalf("system block %d is not plain text: %v", i, block)
+			}
+		}
+		firstSystem, _ := payload.System[0].(map[string]any)
+		if firstSystem["text"] != "You are Claude Code, Anthropic's official CLI for Claude." {
+			t.Fatalf("unexpected identity block: %v", firstSystem)
+		}
+	}
+}
+
+func TestAnthropicTesterBuild_MaxTokensRemainOptional(t *testing.T) {
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
+	temperature := 0.2
+	for _, tt := range []struct {
+		name    string
+		request TestChannelRequest
+	}{
+		{"unset", TestChannelRequest{}},
+		{"sampling", TestChannelRequest{Temperature: &temperature}},
+		{"system", TestChannelRequest{SystemPrompt: "custom"}},
+		{"thinking", TestChannelRequest{ThinkingEffort: "high"}},
+		{"disabled thinking", TestChannelRequest{ThinkingEffort: "none"}},
+		{"search", TestChannelRequest{BuiltinSearch: true}},
+		{"messages", TestChannelRequest{Messages: []ChatMessage{{Role: "user", Content: "one"}, {Role: "assistant", Content: "two"}, {Role: "user", Content: "three"}}}},
+		{"explicit", TestChannelRequest{MaxTokens: 1234}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := tt.request
+			req.Model = "claude-sonnet-5"
+			req.Content = "hello"
+			_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", &req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := sonic.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			value, exists := payload["max_tokens"]
+			if exists != (req.MaxTokens > 0) || exists && value != float64(req.MaxTokens) {
+				t.Fatalf("unexpected max_tokens: %s", body)
+			}
+			wantEffort := "medium"
+			if req.ThinkingEffort == "high" {
+				wantEffort = "high"
+			}
+			outputConfig, _ := payload["output_config"].(map[string]any)
+			if req.ThinkingEffort == "none" {
+				if outputConfig != nil {
+					t.Fatalf("output_config must be omitted when thinking is disabled: %s", body)
+				}
+			} else if outputConfig["effort"] != wantEffort {
+				t.Fatalf("output_config.effort = %v, want %q", outputConfig["effort"], wantEffort)
+			}
+			if len(req.Messages) > 0 {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != len(req.Messages) {
+					t.Fatalf("messages = %v", messages)
+				}
+				for i, expected := range req.Messages {
+					message, _ := messages[i].(map[string]any)
+					content, _ := message["content"].([]any)
+					if message["role"] != expected.Role || len(content) != 1 {
+						t.Fatalf("message %d = %v", i, message)
+					}
+					block, _ := content[0].(map[string]any)
+					if block["type"] != "text" || block["text"] != expected.Content {
+						t.Fatalf("message %d content = %v", i, content)
+					}
+				}
+			}
+		})
 	}
 }

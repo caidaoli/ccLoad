@@ -636,6 +636,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.websocketsProbeSupported': '上游支持原生 WebSocket，已自动勾选。',
   'channels.websocketsProbeUnsupported': '上游不支持原生 WebSocket，已自动取消。',
   'channels.websocketsProbeFailed': 'WebSocket 检测失败，已自动取消：{error}',
+  'channels.websocketsProbeSaveOAuthFirst': '请先保存 Codex OAuth 渠道，再检测 WebSocket 支持。',
   'channels.priority': '优先级',
   'channels.dailyCostLimit': '日限额',
   'channels.dailyCostLimitPlaceholder': '0=无限制',

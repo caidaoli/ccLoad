@@ -3,8 +3,6 @@ package testutil
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -367,7 +365,7 @@ func testCodexReasoningEffort(effort string) string {
 	}
 }
 
-func testAnthropicOutputEffort(effort string) string {
+func testAnthropicOutputEffort(model, effort string) string {
 	switch normalizeTestThinkingEffort(effort) {
 	case "minimal", "low":
 		return "low"
@@ -376,6 +374,9 @@ func testAnthropicOutputEffort(effort string) string {
 	case "high":
 		return "high"
 	case "xhigh":
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-sonnet-5") {
+			return "xhigh"
+		}
 		return "max"
 	default:
 		return ""
@@ -558,21 +559,17 @@ func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
 	if len(req.Messages) == 0 && effort == "" && !req.BuiltinSearch &&
-		req.Temperature == nil && req.TopP == nil && strings.TrimSpace(req.SystemPrompt) == "" {
+		req.Temperature == nil && req.TopP == nil && req.MaxTokens <= 0 && strings.TrimSpace(req.SystemPrompt) == "" {
 		return body, nil
 	}
 
-	// RawMessage keeps the template's nested objects byte-for-byte while this
-	// struct fixes the top-level Anthropic field order. Decoding into map here
-	// used to scramble Claude Code's request fingerprint whenever sampling
-	// options were present.
+	// Preserve nested message content while applying optional request parameters.
 	type anthropicRequestBody struct {
 		Model        sonic.NoCopyRawMessage `json:"model"`
 		Messages     sonic.NoCopyRawMessage `json:"messages"`
 		System       sonic.NoCopyRawMessage `json:"system"`
 		Tools        sonic.NoCopyRawMessage `json:"tools"`
-		Metadata     sonic.NoCopyRawMessage `json:"metadata"`
-		MaxTokens    int                    `json:"max_tokens"`
+		MaxTokens    int                    `json:"max_tokens,omitempty"`
 		Temperature  *float64               `json:"temperature,omitempty"`
 		TopP         *float64               `json:"top_p,omitempty"`
 		Thinking     map[string]any         `json:"thinking,omitempty"`
@@ -586,6 +583,9 @@ func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, er
 	}
 	obj.Temperature = req.Temperature
 	obj.TopP = req.TopP
+	if req.MaxTokens > 0 {
+		obj.MaxTokens = req.MaxTokens
+	}
 
 	if len(req.Messages) > 0 {
 		messages, err := sonic.Marshal(toAnthropicMessages(req.Messages))
@@ -621,9 +621,10 @@ func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, er
 	}
 	if effort == "none" {
 		obj.Thinking = map[string]any{"type": "disabled"}
+		obj.OutputConfig = nil
 	} else if effort != "" {
 		obj.Thinking = map[string]any{"type": "adaptive"}
-		obj.OutputConfig = map[string]any{"effort": testAnthropicOutputEffort(effort)}
+		obj.OutputConfig = map[string]any{"effort": testAnthropicOutputEffort(req.Model, effort)}
 	}
 	if req.BuiltinSearch {
 		var err error
@@ -1019,32 +1020,15 @@ func newTestSessionID() string {
 // AnthropicTester 实现 Anthropic 测试协议
 type AnthropicTester struct{}
 
-// newClaudeCLIUserID 生成 Claude CLI 用户ID
-func newClaudeCLIUserID(sessionID string) string {
-	// Claude Code 真实格式：metadata.user_id 是一个 JSON 字符串
-	// 例如：{"device_id":"76efe6...","account_uuid":"","session_id":"ce6c5d34-..."}
-	if strings.TrimSpace(sessionID) == "" {
-		sessionID = newTestSessionID()
-	}
-	deviceID := sha256.Sum256([]byte("ccload:admin-test-device:" + sessionID))
-	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID[:]), sessionID)
-}
-
 // Build 构建 Anthropic 格式的 API 请求
 func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChannelRequest) (string, http.Header, []byte, error) {
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 32000
-	}
 	testContent := req.Content
 	sessionID := req.ResolveSessionID()
 
 	body, err := buildRequestFromTemplate("anthropic", map[string]any{
-		"MODEL":      req.Model,
-		"STREAM":     req.Stream,
-		"CONTENT":    testContent,
-		"MAX_TOKENS": maxTokens,
-		"USER_ID":    newClaudeCLIUserID(sessionID),
+		"MODEL":   req.Model,
+		"STREAM":  req.Stream,
+		"CONTENT": testContent,
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -1055,30 +1039,16 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 		return "", nil, nil, err
 	}
 
-	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1/messages?beta=true")
+	fullURL := buildTesterURL(cfg.GetURLs()[0], "/v1/messages")
 
 	h := make(http.Header)
 	h.Set("Accept", "application/json")
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
-	// Claude Code CLI headers
-	h.Set("User-Agent", "claude-cli/2.1.209 (external, cli)")
-	h.Set("x-app", "cli")
 	h.Set("anthropic-version", "2023-06-01")
-	h.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24")
-	h.Set("anthropic-dangerous-direct-browser-access", "true")
-	// x-stainless-* headers
-	h.Set("x-stainless-arch", "arm64")
-	h.Set("x-stainless-lang", "js")
-	h.Set("x-stainless-os", "MacOS")
-	h.Set("x-stainless-package-version", "0.81.0")
-	h.Set("x-stainless-retry-count", "0")
-	h.Set("x-stainless-runtime", "node")
-	h.Set("x-stainless-runtime-version", "v24.3.0")
-	h.Set("x-stainless-timeout", "300")
 	h.Set("X-Claude-Code-Session-Id", sessionID)
 	if req.Stream {
-		h.Set("x-stainless-helper-method", "stream")
+		h.Set("Accept", "text/event-stream")
 	}
 
 	return fullURL, h, body, nil
