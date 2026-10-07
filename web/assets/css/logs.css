@@ -132,6 +132,11 @@
       transform: none;
     }
 
+    .status-pending,
+    .logs-abort-btn {
+      font-size: 11px;
+    }
+
     .logs-abort-btn {
       padding: 1px 6px;
       border: 1px solid var(--error-300, #fca5a5);
@@ -139,7 +144,6 @@
       background: transparent;
       color: var(--error-600);
       cursor: pointer;
-      font-size: 11px;
       line-height: 1.4;
       white-space: nowrap;
       transition: background 0.2s ease;

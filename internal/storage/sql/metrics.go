@@ -468,44 +468,26 @@ func buildLatestEntryRequestQuery(entryIndexes map[statsRequestKey]int, filter *
 
 func buildLatestChannelLogQuery(entryIndexesByChannel map[int][]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder)) (string, []any) {
 	scopeSQL, scopeArgs := buildChannelScope(entryIndexesByChannel)
-	if scalarProjection {
-		// SQLite 会扁平化下面的相关 JOIN，并把 logs l 提到 scope 前做全表扫描。
-		// 标量投影让小 scope 驱动查询，每列都沿 channel_id,time,id 索引直接定位最新行。
-		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, false, applyStatePredicate)
-		query := fmt.Sprintf(`
-			SELECT scope.channel_id, %s
-			FROM (%s) scope`, strings.Join(projections, ", "), scopeSQL)
-		args := make([]any, 0, len(projectionArgs)+len(scopeArgs))
-		args = append(args, projectionArgs...)
-		args = append(args, scopeArgs...)
-		return query, args
-	}
-
-	subQB := NewQueryBuilder("SELECT id FROM logs").
-		Where("channel_id = scope.channel_id").
-		Where("channel_id > 0")
-	applyStatePredicate(subQB)
-	subQB.ApplyFilter(filter)
-	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
-
-	query := fmt.Sprintf(`
-		SELECT scope.channel_id, %s
-		FROM (%s) scope
-		JOIN logs l ON l.id = (%s)`, strings.Join(selectColumns, ", "), scopeSQL, subQuery)
-
-	args := make([]any, 0, len(scopeArgs)+len(subArgs))
-	args = append(args, scopeArgs...)
-	args = append(args, subArgs...)
-	return query, args
+	return buildLatestLogQuery(scopeSQL, scopeArgs, filter, selectColumns, scalarProjection, false, applyStatePredicate)
 }
 
 func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *model.LogFilter, selectColumns []string, scalarProjection bool, applyStatePredicate func(*QueryBuilder)) (string, []any) {
 	scopeSQL, scopeArgs := buildEntryScope(entryIndexes)
+	return buildLatestLogQuery(scopeSQL, scopeArgs, filter, selectColumns, scalarProjection, true, applyStatePredicate)
+}
+
+func buildLatestLogQuery(scopeSQL string, scopeArgs []any, filter *model.LogFilter, selectColumns []string, scalarProjection, byEntry bool, applyStatePredicate func(*QueryBuilder)) (string, []any) {
+	scopeColumns := "scope.channel_id"
+	if byEntry {
+		scopeColumns += ", scope.model"
+	}
 	if scalarProjection {
-		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, true, applyStatePredicate)
+		// SQLite 会扁平化相关 JOIN，并把 logs l 提到 scope 前做全表扫描。
+		// 标量投影让小 scope 驱动查询，每列沿 channel_id,time,id 索引定位最新行。
+		projections, projectionArgs := buildLatestScalarProjections(selectColumns, filter, byEntry, applyStatePredicate)
 		query := fmt.Sprintf(`
-			SELECT scope.channel_id, scope.model, %s
-			FROM (%s) scope`, strings.Join(projections, ", "), scopeSQL)
+			SELECT %s, %s
+			FROM (%s) scope`, scopeColumns, strings.Join(projections, ", "), scopeSQL)
 		args := make([]any, 0, len(projectionArgs)+len(scopeArgs))
 		args = append(args, projectionArgs...)
 		args = append(args, scopeArgs...)
@@ -513,17 +495,19 @@ func buildLatestEntryLogQuery(entryIndexes map[statsRequestKey]int, filter *mode
 	}
 
 	subQB := NewQueryBuilder("SELECT id FROM logs").
-		Where("channel_id = scope.channel_id").
-		Where("COALESCE(model, '') = scope.model").
-		Where("channel_id > 0")
+		Where("channel_id = scope.channel_id")
+	if byEntry {
+		subQB.Where("COALESCE(model, '') = scope.model")
+	}
+	subQB.Where("channel_id > 0")
 	applyStatePredicate(subQB)
 	subQB.ApplyFilter(filter)
 	subQuery, subArgs := subQB.BuildWithSuffix("ORDER BY time DESC, id DESC LIMIT 1")
 
 	query := fmt.Sprintf(`
-		SELECT scope.channel_id, scope.model, %s
+		SELECT %s, %s
 		FROM (%s) scope
-		JOIN logs l ON l.id = (%s)`, strings.Join(selectColumns, ", "), scopeSQL, subQuery)
+		JOIN logs l ON l.id = (%s)`, scopeColumns, strings.Join(selectColumns, ", "), scopeSQL, subQuery)
 
 	args := make([]any, 0, len(scopeArgs)+len(subArgs))
 	args = append(args, scopeArgs...)

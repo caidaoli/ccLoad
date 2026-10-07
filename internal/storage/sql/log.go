@@ -426,21 +426,25 @@ func logRowArgs(e *model.LogEntry) []any {
 	}
 }
 
+const logListQuery = `SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
+	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits
+	FROM logs`
+
 // ListLogs 查询日志列表
 func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	// 使用查询构建器构建复杂查询
-	// 消除 N+1：渠道过滤/名称解析用一次批量查询完成
-	baseQuery := `
-			SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits
-			FROM logs`
+	qb := NewQueryBuilder(logListQuery).Where("time >= ?", since.UnixMilli())
+	return s.listLogs(ctx, qb, limit, offset, filter)
+}
 
-	// time字段现在是BIGINT毫秒时间戳，需要转换为Unix毫秒进行比较
-	sinceMs := since.UnixMilli()
+// ListLogsRange 查询指定时间范围内的日志（支持精确日期范围如"昨日"）
+func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
+	qb := NewQueryBuilder(logListQuery).
+		Where("time >= ?", since.UnixMilli()).
+		Where("time <= ?", until.UnixMilli())
+	return s.listLogs(ctx, qb, limit, offset, filter)
+}
 
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", sinceMs)
-
+func (s *SQLStore) listLogs(ctx context.Context, qb *QueryBuilder, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
 	// 应用渠道名称或 ID 过滤。
 	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return nil, err
@@ -448,7 +452,6 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 		return []*model.LogEntry{}, nil
 	}
 
-	// 其余过滤条件（model等）
 	qb.ApplyFilter(filter)
 
 	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
@@ -488,103 +491,24 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 
 // CountLogs 返回符合条件的日志总数（用于分页）
 func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
-	baseQuery := `SELECT COUNT(*) FROM logs`
-	sinceMs := since.UnixMilli()
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", sinceMs)
-
-	// 应用渠道过滤（与ListLogs保持一致）
-	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
-		return 0, err
-	} else if isEmpty {
-		return 0, nil
-	}
-
-	// 其余过滤条件（model等）
-	qb.ApplyFilter(filter)
-
-	query, args := qb.Build()
-	var count int
-	err := s.QueryRowContext(ctx, query, args...).Scan(&count)
-	return count, err
-}
-
-// ListLogsRange 查询指定时间范围内的日志（支持精确日期范围如"昨日"）
-func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	baseQuery := `
-		SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits
-		FROM logs`
-
-	sinceMs := since.UnixMilli()
-	untilMs := until.UnixMilli()
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", sinceMs).
-		Where("time <= ?", untilMs)
-
-	// 应用渠道名称或 ID 过滤。
-	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
-		return nil, err
-	} else if isEmpty {
-		return []*model.LogEntry{}, nil
-	}
-
-	qb.ApplyFilter(filter)
-
-	suffix := "ORDER BY time DESC LIMIT ? OFFSET ?"
-	query, args := qb.BuildWithSuffix(suffix)
-	args = append(args, limit, offset)
-
-	rows, err := s.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := []*model.LogEntry{}
-	channelIDsToFetch := make(map[int64]bool)
-
-	for rows.Next() {
-		e, err := scanLogEntry(rows)
-		if err != nil {
-			return nil, err
-		}
-
-		if e.ChannelID != 0 {
-			channelIDsToFetch[e.ChannelID] = true
-		}
-		out = append(out, e)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	s.fillLogChannelNames(ctx, out, channelIDsToFetch)
-	s.fillLogAuthTokenDescriptions(ctx, out)
-
-	return out, nil
+	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs").Where("time >= ?", since.UnixMilli())
+	return s.countLogs(ctx, qb, filter)
 }
 
 // CountLogsRange 返回指定时间范围内符合条件的日志总数
 func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
-	baseQuery := `SELECT COUNT(*) FROM logs`
-	sinceMs := since.UnixMilli()
-	untilMs := until.UnixMilli()
+	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs").
+		Where("time >= ?", since.UnixMilli()).
+		Where("time <= ?", until.UnixMilli())
+	return s.countLogs(ctx, qb, filter)
+}
 
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", sinceMs).
-		Where("time <= ?", untilMs)
-
-	// 应用渠道名称或 ID 过滤。
+func (s *SQLStore) countLogs(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (int, error) {
 	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return 0, err
 	} else if isEmpty {
 		return 0, nil
 	}
-
 	qb.ApplyFilter(filter)
 
 	query, args := qb.Build()
@@ -683,9 +607,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		qb := NewQueryBuilder(`SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-			input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits
-			FROM logs`).
+		qb := NewQueryBuilder(logListQuery).
 			Where("time >= ?", sinceMs).
 			Where("time <= ?", untilMs)
 		applySharedConditions(qb)

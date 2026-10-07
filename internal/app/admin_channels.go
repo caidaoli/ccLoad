@@ -203,11 +203,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
 	for i := range out {
-		for j := range out[i].ModelEntries {
-			if out[i].Config.ModelEntries[j].RedirectModel == "" {
-				out[i].Config.ModelEntries[j].RedirectModel = out[i].Config.ModelEntries[j].Model
-			}
-		}
+		fillChannelRedirectModels(out[i].Config)
 	}
 
 	if hasPagination {
@@ -458,19 +454,9 @@ func channelCostMultiplierRange(cfg *model.Config, apiKeys []*model.APIKey) (flo
 }
 
 func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config, metadata channelOAuthMetadata) ChannelWithCooldown {
-	oc := ChannelWithCooldown{
-		Config:                       cfg,
-		CodexPlanType:                metadata.planType,
-		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
-		AnthropicPlanType:            metadata.anthropicPlanType,
-		OAuthUsage:                   metadata.oauthUsage,
-		AntigravityPaidTier:          metadata.antigravityPaidTier,
-		XAIEmail:                     metadata.xaiEmail,
-		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
-		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
-		CodeBuddyEnterprise:          metadata.codeBuddyEnterprise,
-		CodeBuddyInternational:       metadata.codeBuddyInternational,
-	}
+	oc := metadata.channelView(cfg)
+	oc.CodeBuddyEnterprise = metadata.codeBuddyEnterprise
+	oc.CodeBuddyInternational = metadata.codeBuddyInternational
 
 	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
 	if until, cooled := ectx.channelCooldownsMap[cfg.ID]; cooled && until.After(ectx.now) {
@@ -541,6 +527,29 @@ type channelOAuthMetadata struct {
 	codeBuddyInternational  bool
 	tracksQuotaCost         bool
 	quotaUsage              *oauthcost.Usage
+}
+
+// channelView 投影列表与详情共有的 OAuth 字段；CodeBuddy 标志仅由列表添加。
+func (metadata channelOAuthMetadata) channelView(cfg *model.Config) ChannelWithCooldown {
+	return ChannelWithCooldown{
+		Config:                       cfg,
+		CodexPlanType:                metadata.planType,
+		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		AnthropicPlanType:            metadata.anthropicPlanType,
+		OAuthUsage:                   metadata.oauthUsage,
+		AntigravityPaidTier:          metadata.antigravityPaidTier,
+		XAIEmail:                     metadata.xaiEmail,
+		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
+		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
+	}
+}
+
+func fillChannelRedirectModels(cfg *model.Config) {
+	for i := range cfg.ModelEntries {
+		if cfg.ModelEntries[i].RedirectModel == "" {
+			cfg.ModelEntries[i].RedirectModel = cfg.ModelEntries[i].Model
+		}
+	}
 }
 
 func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
@@ -861,11 +870,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 
 func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Config) (ChannelWithCooldown, []*model.APIKey, error) {
 	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
-	for i := range cfg.ModelEntries {
-		if cfg.ModelEntries[i].RedirectModel == "" {
-			cfg.ModelEntries[i].RedirectModel = cfg.ModelEntries[i].Model
-		}
-	}
+	fillChannelRedirectModels(cfg)
 
 	apiKeys, err := s.getAPIKeys(ctx, id)
 	if err != nil {
@@ -883,20 +888,10 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 	now := time.Now()
 	metadata := []channelOAuthMetadata{channelOAuthMetadataFromCredential(cfg)}
 	s.attachChannelQuotaCosts(ctx, []*model.Config{cfg}, metadata, now)
-	detail := ChannelWithCooldown{
-		Config:                       cfg,
-		CodexPlanType:                metadata[0].planType,
-		CodexSubscriptionActiveUntil: metadata[0].subscriptionActiveUntil,
-		AnthropicPlanType:            metadata[0].anthropicPlanType,
-		OAuthUsage:                   metadata[0].oauthUsage,
-		AntigravityPaidTier:          metadata[0].antigravityPaidTier,
-		XAIEmail:                     metadata[0].xaiEmail,
-		XAISubscriptionTier:          metadata[0].xaiSubscriptionTier,
-		ManagementAccount:            s.managementAccountView(cfg),
-		XAIEntitlementStatus:         metadata[0].xaiEntitlementStatus,
-		KeyStrategy:                  channelKeyStrategy(apiKeys),
-		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], now),
-	}
+	detail := metadata[0].channelView(cfg)
+	detail.ManagementAccount = s.managementAccountView(cfg)
+	detail.KeyStrategy = channelKeyStrategy(apiKeys)
+	detail.ModelCooldowns = activeModelCooldownInfos(allModelCooldowns[id], now)
 	applyProtocolProbeRetrySummary(&detail, s.protocolCapabilities.unsupportedRetrySummaries(now)[id], now)
 	return detail, apiKeys, nil
 }

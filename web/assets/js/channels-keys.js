@@ -1134,39 +1134,30 @@ function renderInlineKeyTable() {
 
     tbody.innerHTML = '';
     tbody.appendChild(fragment);
-
-    updateSelectAllCheckbox();
-    updateBatchDeleteButton();
-
-    if (window.i18n && window.i18n.translatePage) {
-      window.i18n.translatePage();
+  } else {
+    virtualScrollState.enabled = true;
+    const shouldResetScroll = !virtualScrollState.filteredIndices ||
+      virtualScrollState.filteredIndices.length !== visibleIndices.length;
+    if (shouldResetScroll) {
+      virtualScrollState.scrollTop = 0;
     }
-    return;
-  }
+    virtualScrollState.filteredIndices = visibleIndices;
 
-  virtualScrollState.enabled = true;
-  const shouldResetScroll = !virtualScrollState.filteredIndices ||
-    virtualScrollState.filteredIndices.length !== visibleIndices.length;
-  if (shouldResetScroll) {
-    virtualScrollState.scrollTop = 0;
-  }
-  virtualScrollState.filteredIndices = visibleIndices;
+    const { visibleStart, visibleEnd } = calculateVisibleRange(visibleIndices.length);
+    virtualScrollState.visibleStart = visibleStart;
+    virtualScrollState.visibleEnd = visibleEnd;
 
-  const { visibleStart, visibleEnd } = calculateVisibleRange(visibleIndices.length);
-  virtualScrollState.visibleStart = visibleStart;
-  virtualScrollState.visibleEnd = visibleEnd;
+    renderVirtualRows(tbody, visibleStart, visibleEnd, visibleIndices);
+    initVirtualScroll();
 
-  renderVirtualRows(tbody, visibleStart, visibleEnd, visibleIndices);
-  initVirtualScroll();
-
-  // 同步容器滚动位置
-  if (shouldResetScroll) {
-    const tableContainer = tbody.closest('.inline-table-container');
-    if (tableContainer) {
-      tableContainer.scrollTop = 0;
+    // 同步容器滚动位置
+    if (shouldResetScroll) {
+      const tableContainer = tbody.closest('.inline-table-container');
+      if (tableContainer) {
+        tableContainer.scrollTop = 0;
+      }
     }
   }
-
 
   updateSelectAllCheckbox();
   updateBatchDeleteButton();
@@ -1303,6 +1294,31 @@ function copyKeyToClipboard(index) {
   });
 }
 
+function deleteInlineKeysAtIndices(indices) {
+  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
+  const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+
+  indices.forEach(index => {
+    inlineKeyTableData.splice(index, 1);
+
+    currentChannelKeyCooldowns = currentChannelKeyCooldowns
+      .filter(kc => kc.key_index !== index)
+      .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
+  });
+
+  selectedKeyIndices.clear();
+  updateBatchDeleteButton();
+
+  renderInlineKeyTable();
+  markChannelFormDirty();
+
+  setTimeout(() => {
+    if (tableContainer) {
+      tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
+    }
+  }, 50);
+}
+
 async function deleteInlineKey(index) {
   if (isChannelKeyEditorReadOnly()) return;
   if (inlineKeyTableData.length === 1) {
@@ -1311,26 +1327,7 @@ async function deleteInlineKey(index) {
   }
 
   if (await window.showConfirm({ message: window.t('channels.confirmDeleteKey', { index: index + 1 }), danger: true })) {
-    const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
-    const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
-
-    inlineKeyTableData.splice(index, 1);
-
-    currentChannelKeyCooldowns = currentChannelKeyCooldowns
-      .filter(kc => kc.key_index !== index)
-      .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
-
-    selectedKeyIndices.clear();
-    updateBatchDeleteButton();
-
-    renderInlineKeyTable();
-    markChannelFormDirty();
-
-    setTimeout(() => {
-      if (tableContainer) {
-        tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
-      }
-    }, 50);
+    deleteInlineKeysAtIndices([index]);
   }
 }
 
@@ -1422,30 +1419,8 @@ async function batchDeleteSelectedKeys() {
     return;
   }
 
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
-  const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
-
   const indicesToDelete = Array.from(selectedKeyIndices).sort((a, b) => b - a);
-
-  indicesToDelete.forEach(index => {
-    inlineKeyTableData.splice(index, 1);
-
-    currentChannelKeyCooldowns = currentChannelKeyCooldowns
-      .filter(kc => kc.key_index !== index)
-      .map(kc => kc.key_index > index ? { ...kc, key_index: kc.key_index - 1 } : kc);
-  });
-
-  selectedKeyIndices.clear();
-  updateBatchDeleteButton();
-
-  renderInlineKeyTable();
-  markChannelFormDirty();
-
-  setTimeout(() => {
-    if (tableContainer) {
-      tableContainer.scrollTop = Math.min(scrollTop, tableContainer.scrollHeight - tableContainer.clientHeight);
-    }
-  }, 50);
+  deleteInlineKeysAtIndices(indicesToDelete);
 }
 
 function filterKeysByStatus(status) {
