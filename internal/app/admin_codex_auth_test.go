@@ -6190,7 +6190,7 @@ func TestLatestCodexOAuthUsageIgnoresPassiveOnlyWindows(t *testing.T) {
 			{LimitName: "codex", Kind: "secondary", UsedPercent: 2, RemainingPercent: 98, LimitWindowSeconds: 604800, ResetAt: 1788532795},
 		},
 	}
-	merged := latestOAuthUsage(active, activeSampledAt, passive, passiveSampledAt.Format(time.RFC3339Nano))
+	merged := latestOAuthUsage(active, activeSampledAt, passive, passiveSampledAt.Format(time.RFC3339Nano), nil)
 	if merged == nil || len(merged.Windows) != 3 {
 		t.Fatalf("merged Codex windows = %#v, want the 3 official windows only", merged)
 	}
@@ -6242,7 +6242,7 @@ func TestLatestCodexOAuthUsageRequiresSameQuotaPeriod(t *testing.T) {
 				LimitName: "codex", Kind: "primary", LimitWindowSeconds: tc.seconds,
 				ResetAt: tc.resetAt, UsedPercent: 80, RemainingPercent: 20,
 			}}}
-			got := latestOAuthUsage(active, base, passive, base.Add(time.Minute).Format(time.RFC3339Nano))
+			got := latestOAuthUsage(active, base, passive, base.Add(time.Minute).Format(time.RFC3339Nano), nil)
 			if len(got.Windows) != 1 || got.Windows[0].UsedPercent != tc.wantUsed ||
 				got.Windows[0].RemainingPercent != 100-tc.wantUsed || got.Windows[0].ResetAt != resetAt ||
 				got.Windows[0].LimitWindowSeconds != 604800 {
@@ -6424,6 +6424,109 @@ func TestHandleChannelsCodexQuotaUsesCurrentPassivePeriod(t *testing.T) {
 			persisted, err := store.GetConfig(context.Background(), channel.ID)
 			if err != nil || persisted.OAuthCredential != raw {
 				t.Fatalf("listing changed persisted quota history: %v", err)
+			}
+		})
+	}
+}
+
+// Business accounts can restart the weekly period early together with a new
+// 5h period. A newer passive sample accepted by the cost ledger must replace
+// the official snapshot's unfinished period, or the window loses its cost.
+func TestHandleChannelsCodexQuotaFollowsEarlyWeeklyReset(t *testing.T) {
+	t.Parallel()
+	const week = 7 * 24 * time.Hour
+	for _, tc := range []struct {
+		name          string
+		ledgerFollows bool
+	}{
+		{name: "ledger restarted the week", ledgerFollows: true},
+		{name: "ledger kept the official week"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			base := time.Now().UTC().Truncate(time.Second)
+			activeAt := base.Add(-3 * 24 * time.Hour)
+			oldWeeklyReset := base.Add(3 * 24 * time.Hour)
+			newStart := base.Add(-10 * time.Minute)
+			snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+				RequestedAt: activeAt.Format(time.RFC3339Nano), SampledAt: activeAt.Format(time.RFC3339Nano),
+				Summary: oauthUsageSummary{
+					Provider: "codex", PlanType: "team",
+					Windows: []oauthUsageWindow{
+						{LimitName: "codex", Kind: "primary", LimitWindowSeconds: 18000,
+							ResetAt: activeAt.Add(time.Hour).Unix(), UsedPercent: 66, RemainingPercent: 34},
+						{LimitName: "codex", Kind: "secondary", LimitWindowSeconds: 604800,
+							ResetAt: oldWeeklyReset.Unix(), UsedPercent: 56, RemainingPercent: 44},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			passiveWindows := []codexauth.PassiveUsageWindow{
+				{Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 100, LimitWindowSeconds: 18000,
+					ResetAt: newStart.Add(5 * time.Hour).Unix(), SampledAt: newStart.Format(time.RFC3339Nano)},
+				{Scope: "codex", LimitName: "codex", Kind: "secondary", UsedPercent: 16, LimitWindowSeconds: 604800,
+					ResetAt: newStart.Add(week).Unix(), SampledAt: newStart.Format(time.RFC3339Nano)},
+			}
+			oldUsed := float64(56)
+			credential := &codexauth.Credential{
+				Type: codexauth.ChannelType, AccessToken: "at", RefreshToken: "rt", AccountID: "account-early-weekly",
+				PlanType: "team", Expired: base.Add(24 * time.Hour).Format(time.RFC3339), OAuthUsage: snapshot,
+				QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+					Key: "codex|secondary", Family: oauthcost.FamilyCodex, WindowSeconds: 604800,
+					StartedAt: oldWeeklyReset.Add(-week).Unix(), ResetAt: oldWeeklyReset.Unix(),
+					SampledUpstreamUsedPercent: &oldUsed, SampledUpstreamAtUnixNano: activeAt.UnixNano(),
+				}}},
+			}
+			if !tc.ledgerFollows {
+				// The passive sample reached the display without the ledger adopting it.
+				credential.PassiveUsage = &codexauth.PassiveUsage{
+					SampledAt: newStart.Format(time.RFC3339Nano), Windows: passiveWindows,
+				}
+			}
+			raw, err := credential.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), &model.Config{
+				Name: "Codex early weekly reset", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: raw,
+				URLs: model.ChannelURLs{{URL: "https://example.test"}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedQuotaLedger(t, store, channel.ID, base.Add(-2*24*time.Hour), "gpt-5.5", 50_000_000)
+			seedQuotaLedger(t, store, channel.ID, newStart.Add(time.Minute), "gpt-5.5", 11_100_000)
+			if tc.ledgerFollows {
+				manager := newCodexCredentialManager(codexauth.NewService(nil), store, nil, nil)
+				if updated, err := manager.updatePassiveUsage(context.Background(), channel, codexPassiveUsageUpdate{
+					SampledAt: newStart.Format(time.RFC3339Nano), Windows: passiveWindows,
+				}); err != nil || !updated {
+					t.Fatalf("persist passive quota = (%v, %v)", updated, err)
+				}
+			}
+
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(c)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || len(list.Data) != 1 || list.Data[0].OAuthUsage == nil {
+				t.Fatalf("channel list status=%d response=%#v", w.Code, list)
+			}
+			var weekly *oauthUsageWindow
+			for i := range list.Data[0].OAuthUsage.Windows {
+				if list.Data[0].OAuthUsage.Windows[i].Kind == "secondary" {
+					weekly = &list.Data[0].OAuthUsage.Windows[i]
+				}
+			}
+			wantUsed, wantReset, wantCost := float64(56), oldWeeklyReset.Unix(), int64(61_100_000)
+			if tc.ledgerFollows {
+				wantUsed, wantReset, wantCost = 16, newStart.Add(week).Unix(), 11_100_000
+			}
+			if weekly == nil || weekly.UsedPercent != wantUsed || weekly.ResetAt != wantReset ||
+				weekly.StandardCostMicroUSD == nil || *weekly.StandardCostMicroUSD != wantCost {
+				t.Fatalf("weekly window = %#v, want used=%v reset=%d cost=%d", weekly, wantUsed, wantReset, wantCost)
 			}
 		})
 	}
@@ -7350,7 +7453,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			}
 			if wantCredits {
 				passive := &oauthUsageSummary{Provider: anthropicauth.ChannelType, Windows: []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 80}}}
-				merged := latestOAuthUsage(list.Data[0].OAuthUsage, time.Now(), passive, time.Now().Add(time.Minute).Format(time.RFC3339Nano))
+				merged := latestOAuthUsage(list.Data[0].OAuthUsage, time.Now(), passive, time.Now().Add(time.Minute).Format(time.RFC3339Nano), nil)
 				if merged.AnthropicResetCredits == nil || merged.AnthropicResetCredits.AvailableCount != test.wantResetCount || merged.Windows[0].UsedPercent != 80 {
 					t.Fatalf("passive merged usage = %#v", merged)
 				}

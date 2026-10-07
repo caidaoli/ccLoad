@@ -591,14 +591,15 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		if credential.PassiveUsage != nil {
 			passiveSampledAt = credential.PassiveUsage.SampledAt
 		}
+		quotaUsage := oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage)
 		usage := latestOAuthUsage(
-			active, activeSampledAt, anthropicPassiveUsageSummary(credential), passiveSampledAt,
+			active, activeSampledAt, anthropicPassiveUsageSummary(credential), passiveSampledAt, quotaUsage,
 		)
 		return channelOAuthMetadata{
 			anthropicPlanType: strings.TrimSpace(credential.PlanType),
 			oauthUsage:        usage,
 			tracksQuotaCost:   true,
-			quotaUsage:        oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
+			quotaUsage:        quotaUsage,
 		}
 	}
 	if cfg.UsesZAIOAuth() {
@@ -649,14 +650,15 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 	if credential.PassiveUsage != nil {
 		passiveSampledAt = credential.PassiveUsage.SampledAt
 	}
+	quotaUsage := oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage)
 	usage := latestOAuthUsage(
-		active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt,
+		active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt, quotaUsage,
 	)
 	metadata := channelOAuthMetadata{
 		planType:        credential.PlanType,
 		oauthUsage:      usage,
 		tracksQuotaCost: true,
-		quotaUsage:      oauthcost.EffectiveUsage(credential.QuotaCostUsage, credential.OAuthUsage),
+		quotaUsage:      quotaUsage,
 	}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until

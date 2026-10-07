@@ -1781,6 +1781,7 @@ func latestOAuthUsage(
 	activeSampledAt time.Time,
 	passive *oauthUsageSummary,
 	passiveSampledAt string,
+	quotaUsage *oauthcost.Usage,
 ) *oauthUsageSummary {
 	if active == nil {
 		return passive
@@ -1791,7 +1792,7 @@ func latestOAuthUsage(
 	passiveTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(passiveSampledAt))
 	if err == nil && passiveTime.After(activeSampledAt) {
 		if strings.EqualFold(strings.TrimSpace(active.Provider), codexauth.ChannelType) {
-			return mergeLatestCodexOAuthUsage(active, activeSampledAt, passive, passiveTime)
+			return mergeLatestCodexOAuthUsage(active, activeSampledAt, passive, passiveTime, quotaUsage)
 		}
 		merged := *passive
 		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
@@ -1807,7 +1808,15 @@ func latestOAuthUsage(
 // the official endpoint stopped returning it); allowing those groups to
 // replace the whole snapshot makes the admin page display phantom windows.
 // The official window identities therefore define the result set.
-func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.Time, passive *oauthUsageSummary, passiveSampledAt time.Time) *oauthUsageSummary {
+// quotaUsage is the persisted cost ledger state; it decides whether a passive
+// period that starts before the official deadline is an upstream early reset.
+func mergeLatestCodexOAuthUsage(
+	active *oauthUsageSummary,
+	activeSampledAt time.Time,
+	passive *oauthUsageSummary,
+	passiveSampledAt time.Time,
+	quotaUsage *oauthcost.Usage,
+) *oauthUsageSummary {
 	if active == nil {
 		return passive
 	}
@@ -1867,11 +1876,15 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 				window.ResetAt = passiveWindow.ResetAt
 			} else if !oauthQuotaCostMatchesSampledWindow(passiveWindow, window.LimitWindowSeconds, window.ResetAt) {
 				// A completed official period cannot pin the display forever.
-				// Accept a forward rollover only once both periods' boundaries
-				// and the passive sample prove the new period is current.
+				// Accept a forward rollover once the passive sample is inside
+				// its own period and the official period has ended. Upstream
+				// can also restart a period early (Business weekly restarts with
+				// a new 5h period); the cost ledger already decided that case,
+				// so follow it instead of re-deriving the decision here.
 				at := sampledAt.Unix()
-				if passiveWindow.ResetAt <= window.ResetAt || at < window.ResetAt ||
-					at < passiveWindow.ResetAt-passiveWindow.LimitWindowSeconds || at >= passiveWindow.ResetAt {
+				if passiveWindow.ResetAt <= window.ResetAt ||
+					at < passiveWindow.ResetAt-passiveWindow.LimitWindowSeconds || at >= passiveWindow.ResetAt ||
+					(at < window.ResetAt && !oauthQuotaLedgerFollowsSample(quotaUsage, key, passiveWindow)) {
 					continue
 				}
 				window.ResetAt = passiveWindow.ResetAt
@@ -1888,6 +1901,14 @@ func mergeLatestCodexOAuthUsage(active *oauthUsageSummary, activeSampledAt time.
 	}
 	merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
 	return &merged
+}
+
+// oauthQuotaLedgerFollowsSample reports whether the persisted cost window for
+// key has adopted the sampled period.
+func oauthQuotaLedgerFollowsSample(quotaUsage *oauthcost.Usage, key string, sample oauthUsageWindow) bool {
+	window := oauthcost.Find(quotaUsage, key)
+	return window != nil && window.WindowSeconds == sample.LimitWindowSeconds &&
+		oauthQuotaCostMatchesSampledWindow(sample, window.WindowSeconds, window.ResetAt)
 }
 
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
