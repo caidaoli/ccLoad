@@ -4455,6 +4455,54 @@ func TestProxy_AntigravityOAuthHandlesCountTokensLocally(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityOAuthMixedWebSearchUsesAgentRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, model, path string
+		body              map[string]any
+	}{
+		{name: "anthropic", model: "claude-sonnet-4-6", path: "/v1/messages", body: map[string]any{
+			"model": "claude-sonnet-4-6", "max_tokens": 100,
+			"messages": []any{map[string]any{"role": "user", "content": "weather"}},
+			"tools": []any{
+				map[string]any{"type": "web_search_20250305", "name": "web_search"},
+				map[string]any{"name": "get_weather", "input_schema": map[string]any{"type": "object"}},
+			},
+		}},
+		{name: "gemini", model: "gemini-3.8-flash-high", path: "/v1beta/models/gemini-3.8-flash-high:generateContent", body: map[string]any{
+			"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "weather"}}}},
+			"tools": []any{
+				map[string]any{"googleSearch": map[string]any{}},
+				map[string]any{"functionDeclarations": []any{map[string]any{"name": "get_weather", "parameters": map[string]any{"type": "object"}}}},
+			},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wireBody, _ := io.ReadAll(r.Body)
+				// Antigravity 拒绝内置搜索与函数混用，只能保留原模型按普通 agent 请求发送。
+				if gjson.GetBytes(wireBody, "requestType").String() != "agent" ||
+					gjson.GetBytes(wireBody, "model").String() != tc.model ||
+					strings.Contains(string(wireBody), `"googleSearch"`) ||
+					gjson.GetBytes(wireBody, "request.tools.0.functionDeclarations.0.name").String() != "get_weather" {
+					t.Errorf("mixed tools wire=%s", wireBody)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			t.Cleanup(upstream.Close)
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-mixed-" + tc.name, upstreamProtocol: "gemini", models: tc.model, priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-mixed"),
+			}}, map[int]string{0: upstream.URL})
+			if response := doProxyRequest(t, env.engine, tc.path, tc.body, nil); response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 	t.Parallel()
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4465,8 +4513,11 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 		if got := gjson.GetBytes(wireBody, "requestType").String(); got != "web_search" {
 			t.Errorf("requestType=%q body=%s", got, wireBody)
 		}
-		if got := gjson.GetBytes(wireBody, "model").String(); got != antigravityWebSearchFallbackModel {
+		if got := gjson.GetBytes(wireBody, "model").String(); got != "gemini-3.8-flash-high" {
 			t.Errorf("model=%q body=%s", got, wireBody)
+		}
+		if !gjson.GetBytes(wireBody, "request.tools.0.googleSearch").Exists() {
+			t.Errorf("googleSearch tool missing: %s", wireBody)
 		}
 		if got := gjson.GetBytes(wireBody, "request.systemInstruction.parts.0.text").String(); !strings.Contains(got, "You are Antigravity") {
 			t.Errorf("identity prompt missing: %q", got)
@@ -4512,8 +4563,8 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 		}
 	}
 	entry := logs[0]
-	if entry.ActualModel != antigravityWebSearchFallbackModel || math.Abs(entry.Cost-0.003) > 1e-12 {
-		t.Fatalf("Web Search actual model=%q cost=%v, want %s and 0.003", entry.ActualModel, entry.Cost, antigravityWebSearchFallbackModel)
+	if entry.ActualModel != "gemini-3.8-flash-high" || math.Abs(entry.Cost-0.003) > 1e-12 {
+		t.Fatalf("Web Search actual model=%q cost=%v, want gemini-3.8-flash-high and 0.003", entry.ActualModel, entry.Cost)
 	}
 	if projected := projectDashboardLogs(logs, env.server.logModelPrices(ctx, logs)); projected[0].CostBreakdown != nil {
 		t.Fatalf("Web Search cost=%v exposed mismatched breakdown=%+v", entry.Cost, projected[0].CostBreakdown)
@@ -15946,12 +15997,15 @@ func TestProxy_AntigravityResponsesWebSearch(t *testing.T) {
 				if got := gjson.GetBytes(raw, "requestType").String(); (got == "web_search") != search {
 					t.Errorf("requestType=%s body=%s", got, raw)
 				}
+				if gjson.GetBytes(raw, "model").String() != "gemini-3-flash" {
+					t.Errorf("Gemini model replaced: %s", raw)
+				}
 				if search {
-					if gjson.GetBytes(raw, "model").String() != "gemini-2.5-flash" || gjson.GetBytes(raw, "request.tools.0.googleSearch.includedDomains.0").String() != "example.com" {
+					if gjson.GetBytes(raw, "request.tools.0.googleSearch.includedDomains.0").String() != "example.com" {
 						t.Errorf("missing search wire: %s", raw)
 					}
-				} else if gjson.GetBytes(raw, "model").String() != "gemini-3-flash" || strings.Contains(string(raw), `"googleSearch"`) {
-					t.Errorf("non-search request changed model/tools: %s", raw)
+				} else if strings.Contains(string(raw), `"googleSearch"`) {
+					t.Errorf("non-search request kept googleSearch: %s", raw)
 				}
 				body := `{"response":{"responseId":"search-response","candidates":[{"content":{"role":"model","parts":[{"text":"答案"}]},"groundingMetadata":{"webSearchQueries":["question"],"groundingChunks":[{"web":{"uri":"https://example.com/result","title":"Source"}}],"groundingSupports":[{"groundingChunkIndices":[0],"segment":{"startIndex":0,"endIndex":6,"text":"答案"}}]},"finishReason":"STOP"}]}}`
 				if tc.stream {

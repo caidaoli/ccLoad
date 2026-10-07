@@ -181,7 +181,7 @@ runtime-only dynamic capability veto test is explicitly excluded in the manifest
 provider isolation is checked through generic versus dedicated search requests. Grounding and citation behavior is tested through public converter
 outputs rather than private merge helpers. The new search test file follows its
 upstream source; previously backported duplicate tests were consolidated into it.
-Antigravity keeps app-selected dedicated search routing and request-driven
+Antigravity keeps app-selected search models and request-driven
 thinking visibility. Claude usage/cache accounting and stream termination fixes
 remain local contracts. Codex Responses Lite HTTP/WS header recognition stays
 excluded because it is only used by upstream runtime executors and handlers.

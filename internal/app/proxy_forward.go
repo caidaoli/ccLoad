@@ -2957,7 +2957,7 @@ func (s *Server) forwardAttempt(
 	reqCtx.debugData = nil
 	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
 	if cfg.UsesAntigravityOAuth() && (wantsAntigravityWebSearch(reqCtx.body) || wantsAntigravityWebSearch(bodyToSend)) {
-		actualModel = antigravityWebSearchFallbackModel
+		actualModel = antigravityWebSearchModel(actualModel)
 	}
 	if reqCtx.routingSession != nil {
 		reqCtx.routingSession.noteActualModel(actualModel)

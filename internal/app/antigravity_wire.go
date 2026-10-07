@@ -34,7 +34,7 @@ import (
 
 const (
 	zeroWidthSpace                    = "\u200B"
-	antigravityWebSearchFallbackModel = "gemini-2.5-flash"
+	antigravityWebSearchFallbackModel = "gemini-3.8-flash-high"
 	antigravityBaseURLFallbackDelay   = time.Second
 	antigravityModelCapacityAttempts  = 3
 	antigravityIdentityPrompt         = `<identity>
@@ -260,6 +260,16 @@ func prepareAntigravityRequestBody(
 
 	request = deleteJSONPath(request, "model")
 
+	// Antigravity 只在专用 web_search 请求里执行 googleSearch，且拒绝内置工具与
+	// functionDeclarations 混用（include_server_side_tool_invocations 也无效）。
+	webSearch := gjson.GetBytes(body, "requestType").String() == "web_search" || wantsAntigravityWebSearch(sourceBody)
+	if webSearch {
+		modelName = antigravityWebSearchModel(modelName)
+		request = ensureAntigravityGoogleSearchTool(request)
+	} else {
+		request = stripAntigravityGoogleSearchTools(request)
+	}
+
 	// system_instruction → systemInstruction（snake_case 到 camelCase）
 	if sysInst := gjson.GetBytes(request, "system_instruction"); sysInst.Exists() {
 		if !gjson.GetBytes(request, "systemInstruction").Exists() {
@@ -292,9 +302,8 @@ func prepareAntigravityRequestBody(
 
 	requestType := "agent"
 	requestID := "agent-" + util.NewUUIDv4()
-	if wantsAntigravityWebSearch(sourceBody) || gjson.GetBytes(body, "requestType").String() == "web_search" {
+	if webSearch {
 		requestType = "web_search"
-		modelName = antigravityWebSearchFallbackModel
 	} else if strings.Contains(strings.ToLower(modelName), "image") {
 		requestType = "image_gen"
 		requestID = fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), util.NewUUIDv4())
@@ -483,40 +492,91 @@ func wantsAntigravityWebSearch(body []byte) bool {
 	if gjson.GetBytes(body, "input").Exists() {
 		return antigravityresponses.WantsWebSearch(body)
 	}
-	return hasAntigravityWebSearchTool(body)
+	return hasOnlyAntigravityWebSearchTools(body)
 }
 
-func hasAntigravityWebSearchTool(body []byte) bool {
+// Antigravity 的 Claude/GPT 模型静默忽略 googleSearch，搜索交给 Gemini；Gemini 模型原生支持搜索。
+func antigravityWebSearchModel(modelName string) string {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if strings.HasPrefix(name, "claude-") || strings.HasPrefix(name, "gpt-") {
+		return antigravityWebSearchFallbackModel
+	}
+	return modelName
+}
+
+// 只有内置搜索工具且 tool_choice 未禁用时才走专用搜索请求；客户端同名函数不算内置搜索。
+func hasOnlyAntigravityWebSearchTools(body []byte) bool {
 	if len(body) == 0 {
+		return false
+	}
+	toolChoice := gjson.GetBytes(body, "tool_choice")
+	if toolChoice.String() == "none" || toolChoice.Get("type").String() == "none" {
 		return false
 	}
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
 		return false
 	}
+	hasSearch := false
 	for _, tool := range tools.Array() {
-		if !tool.IsObject() {
-			continue
+		if !tool.IsObject() || !isAntigravityBuiltinWebSearchTool(tool) {
+			return false
 		}
-		if isAntigravityWebSearchName(jsonStringValue(tool.Get("type"))) ||
-			isAntigravityWebSearchName(jsonStringValue(tool.Get("name"))) {
-			return true
-		}
-		if tool.Get("googleSearch").Exists() || tool.Get("google_search").Exists() {
-			return true
-		}
-		if isAntigravityWebSearchName(jsonStringValue(tool.Get("function.name"))) {
-			return true
-		}
-		for _, key := range []string{"functionDeclarations", "function_declarations"} {
-			for _, declaration := range tool.Get(key).Array() {
-				if isAntigravityWebSearchName(jsonStringValue(declaration.Get("name"))) {
-					return true
-				}
-			}
+		hasSearch = true
+	}
+	return hasSearch
+}
+
+func isAntigravityBuiltinWebSearchTool(tool gjson.Result) bool {
+	if isAntigravityWebSearchName(jsonStringValue(tool.Get("type"))) {
+		return true
+	}
+	// Gemini 原生工具对象可以同时携带 googleSearch 和 functionDeclarations。
+	fields := tool.Map()
+	if len(fields) != 1 {
+		return false
+	}
+	_, camel := fields["googleSearch"]
+	_, snake := fields["google_search"]
+	return camel || snake
+}
+
+func ensureAntigravityGoogleSearchTool(request []byte) []byte {
+	for _, tool := range gjson.GetBytes(request, "tools").Array() {
+		if tool.Get("googleSearch").Exists() {
+			return request
 		}
 	}
-	return false
+	return setJSONRaw(request, "tools", `[{"googleSearch":{}}]`)
+}
+
+func stripAntigravityGoogleSearchTools(request []byte) []byte {
+	tools := gjson.GetBytes(request, "tools")
+	if !tools.IsArray() {
+		return request
+	}
+	kept := make([]string, 0, len(tools.Array()))
+	stripped := false
+	for _, tool := range tools.Array() {
+		raw := tool.Raw
+		for _, key := range []string{"googleSearch", "google_search"} {
+			if tool.Get(key).Exists() {
+				raw = string(deleteJSONPath([]byte(raw), key))
+				stripped = true
+			}
+		}
+		if gjson.Parse(raw).IsObject() && len(gjson.Parse(raw).Map()) == 0 {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if !stripped {
+		return request
+	}
+	if len(kept) == 0 {
+		return deleteJSONPath(request, "tools")
+	}
+	return setJSONRaw(request, "tools", "["+strings.Join(kept, ",")+"]")
 }
 
 func isAntigravityWebSearchName(value string) bool {

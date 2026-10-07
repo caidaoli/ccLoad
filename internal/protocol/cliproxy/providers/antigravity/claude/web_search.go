@@ -27,10 +27,10 @@ const antigravityWebSearchSystemInstruction = "You are a search engine bot. You 
 
 func antigravitySupportsNativeGoogleSearch(model string) bool {
 	_ = model
-	// ccLoad owns Antigravity's web-search envelope and fallback model at the app
-	// boundary. The pure adapter must not consult mutable runtime registries or
-	// emit a second envelope.
-	return false
+	// ccLoad selects the Antigravity search model at the app boundary. The pure
+	// adapter must not consult mutable runtime registries, but still builds the
+	// dedicated googleSearch request that grounding translation depends on.
+	return true
 }
 
 func isClaudeTypedWebSearchToolType(toolType string) bool {

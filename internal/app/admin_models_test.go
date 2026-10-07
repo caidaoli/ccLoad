@@ -1015,8 +1015,6 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		{Model: "gemini-3.1-flash-image", RedirectModel: "gemini-3.1-flash-image"},
 		{Model: "gemini-3.1-flash-lite", RedirectModel: "gemini-3.1-flash-lite"},
 		{Model: "gemini-3.1-pro-low", RedirectModel: "gemini-3.1-pro-low"},
-		{Model: "gemini-3.5-flash-extra-low", RedirectModel: "gemini-3.5-flash-extra-low"},
-		{Model: "gemini-3.5-flash-low", RedirectModel: "gemini-3.5-flash-low"},
 		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
 		{Model: "gemini-3.7-flash", RedirectModel: "gemini-3.7-flash"},
 		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},

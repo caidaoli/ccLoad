@@ -38,8 +38,6 @@ var antigravityOAuthDefaultModels = []string{
 	"gemini-3.1-pro-low",
 	"gpt-oss-120b-medium",
 	"gemini-3.1-flash-lite",
-	"gemini-3.5-flash-low",
-	"gemini-3.5-flash-extra-low",
 }
 
 func createAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential) (*model.Config, error) {
