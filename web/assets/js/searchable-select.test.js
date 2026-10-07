@@ -31,6 +31,7 @@ class FakeElement {
     this.classList = new FakeClassList();
     this.listeners = new Map();
     this.children = [];
+    this.dataset = {};
     this.disabled = false;
     this.isConnected = true;
   }
@@ -129,6 +130,7 @@ class FakeSelect extends FakeElement {
 test('native select enhancement preserves semantic values, events and disabled state', () => {
   const previousCombobox = global.createSearchableCombobox;
   const previousEvent = global.Event;
+  const previousIconSVG = global.channelProviderIconSVG;
   const label = { textContent: '认证类型', htmlFor: 'oauthProviderSelect' };
   const elements = [];
   const document = {
@@ -165,12 +167,14 @@ test('native select enhancement preserves semantic values, events and disabled s
     };
   };
 
+  global.channelProviderIconSVG = authType => `<svg data-provider="${authType}"></svg>`;
+
   const modulePath = require.resolve('./searchable-select.js');
   delete require.cache[modulePath];
   try {
     const { enhanceNativeSelect } = require(modulePath);
     const select = new FakeSelect(document, [
-      { value: 'codex', label: 'Codex', disabled: false },
+      { value: 'codex', label: 'Codex', disabled: false, dataset: { description: '浏览器 OAuth', iconAuthType: 'codex_oauth' }, ownerDocument: document },
       { value: 'antigravity', label: 'Antigravity', disabled: false },
       { value: 'loading', label: '加载中', disabled: true },
       { value: 'zed', label: 'Zed', disabled: false },
@@ -191,6 +195,13 @@ test('native select enhancement preserves semantic values, events and disabled s
       comboboxConfig.getOptions().map(option => option.value),
       ['codex', 'antigravity', 'loading', 'zed', 'custom']
     );
+    const [codexOption, antigravityOption] = comboboxConfig.getOptions();
+    assert.equal(codexOption.description, '浏览器 OAuth');
+    const icon = codexOption.icon();
+    assert.equal(icon.dataset.authType, 'codex_oauth');
+    assert.equal(icon.innerHTML, '<svg data-provider="codex_oauth"></svg>');
+    assert.equal(antigravityOption.description, undefined);
+    assert.equal(antigravityOption.icon, undefined);
 
     select.value = 'zed';
     assert.equal(comboboxValue, 'zed');
@@ -223,6 +234,8 @@ test('native select enhancement preserves semantic values, events and disabled s
     else global.createSearchableCombobox = previousCombobox;
     if (previousEvent === undefined) delete global.Event;
     else global.Event = previousEvent;
+    if (previousIconSVG === undefined) delete global.channelProviderIconSVG;
+    else global.channelProviderIconSVG = previousIconSVG;
   }
 });
 

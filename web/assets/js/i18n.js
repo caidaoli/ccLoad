@@ -185,6 +185,12 @@
       if (key) el.value = t(key);
     });
 
+    // data-i18n-description: 替换 data-description (用于可搜索下拉选项的说明文字)
+    document.querySelectorAll('[data-i18n-description]').forEach(el => {
+      const key = el.getAttribute('data-i18n-description');
+      if (key) el.dataset.description = t(key);
+    });
+
     // data-i18n-content: 替换 meta content
     document.querySelectorAll('[data-i18n-content]').forEach(el => {
       const key = el.getAttribute('data-i18n-content');

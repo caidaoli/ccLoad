@@ -22,15 +22,14 @@
   <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/settings.js?v=__VERSION__"></script>
 </head>
-<body>
+<body class="top-layout">
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <section id="settings-group-nav-section" class="mt-2 mb-2 settings-group-nav-section" hidden>
+        <!-- 默认显示并由空导航占位，避免分组按钮渲染后推移下方表格；仅一个分组时由脚本隐藏 -->
+        <section id="settings-group-nav-section" class="mt-2 mb-2 settings-group-nav-section">
           <div class="time-range-container settings-group-nav-container">
-            <div id="settings-group-nav" class="time-range-selector settings-group-nav">
-              <!-- 动态填充：分组快捷跳转 -->
-            </div>
+            <div id="settings-group-nav" class="time-range-selector settings-group-nav"></div>
           </div>
         </section>
 
@@ -43,9 +42,7 @@
                 <col class="settings-col-value">
                 <col class="settings-col-actions">
               </colgroup>
-              <tbody id="settings-tbody">
-                <!-- 动态填充 -->
-              </tbody>
+              <tbody id="settings-tbody"></tbody>
             </table>
           </div>
           <div class="settings-save-actions">

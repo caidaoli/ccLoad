@@ -49,7 +49,7 @@
   <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
 </head>
 
-<body>
+<body class="top-layout">
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
@@ -175,34 +175,40 @@
           </div>
         </header>
 
-        <dialog id="oauthLoginDialog" class="oauth-dialog"
+        <dialog id="oauthLoginDialog" class="oauth-dialog oauth-dialog--compact"
           aria-labelledby="oauthLoginDialogTitle" aria-describedby="oauthLoginDialogDescription">
           <div class="oauth-dialog-header">
-            <div>
-              <p class="oauth-dialog-eyebrow">OAuth</p>
+            <div class="oauth-dialog-heading">
               <h2 id="oauthLoginDialogTitle" data-i18n="channels.oauth.loginDialogTitle">OAuth 登录</h2>
+              <p id="oauthLoginDialogDescription" class="oauth-dialog-description"
+                data-i18n="channels.oauth.loginDialogDescription">
+                选择认证类型，然后生成授权链接。
+              </p>
             </div>
             <button type="button" class="close-btn" data-action="close-oauth-login"
               data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
           </div>
           <div class="oauth-dialog-body">
-            <p id="oauthLoginDialogDescription" class="oauth-dialog-description"
-              data-i18n="channels.oauth.loginDialogDescription">
-              选择认证类型，然后生成授权链接。
-            </p>
-
             <form id="oauthLoginForm" class="oauth-dialog-section">
               <div class="oauth-field">
                 <label for="oauthProviderSelect" data-i18n="channels.oauth.credentialType">认证类型</label>
                 <select id="oauthProviderSelect" name="oauth_provider" class="form-input">
-                  <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
-                  <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
-                  <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
-                  <option value="codebuddy" data-i18n="channels.oauth.providerCodeBuddy">CodeBuddy</option>
-                  <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
-                  <option value="cursor" data-i18n="channels.oauth.providerCursor">Cursor</option>
-                  <option value="zed" data-i18n="channels.oauth.providerZed">Zed</option>
-                  <option value="zai" data-i18n="channels.oauth.providerZAI">Z.ai</option>
+                  <option value="codex" data-i18n="channels.oauth.providerCodex" data-icon-auth-type="codex_oauth"
+                    data-i18n-description="channels.oauth.providerCodexDesc" data-description="浏览器 OAuth 或 Personal Access Token">Codex</option>
+                  <option value="anthropic" data-i18n="channels.oauth.providerAnthropic" data-icon-auth-type="anthropic_oauth"
+                    data-i18n-description="channels.oauth.providerAnthropicDesc" data-description="浏览器登录后粘贴授权码">Anthropic</option>
+                  <option value="antigravity" data-i18n="channels.oauth.providerAntigravity" data-icon-auth-type="antigravity_oauth"
+                    data-i18n-description="channels.oauth.providerAntigravityDesc" data-description="浏览器 OAuth 登录">Antigravity</option>
+                  <option value="codebuddy" data-i18n="channels.oauth.providerCodeBuddy" data-icon-auth-type="codebuddy_oauth"
+                    data-i18n-description="channels.oauth.providerCodeBuddyDesc" data-description="国内版 / 国际版，浏览器 OAuth 或认证文件">CodeBuddy</option>
+                  <option value="xai" data-i18n="channels.oauth.providerXAI" data-icon-auth-type="xai_oauth"
+                    data-i18n-description="channels.oauth.providerXAIDesc" data-description="刷新令牌、SSO Cookie 或手动授权">xAI</option>
+                  <option value="cursor" data-i18n="channels.oauth.providerCursor" data-icon-auth-type="cursor_oauth"
+                    data-i18n-description="channels.oauth.providerCursorDesc" data-description="粘贴 Cursor User API Key">Cursor</option>
+                  <option value="zed" data-i18n="channels.oauth.providerZed" data-icon-auth-type="zed_oauth"
+                    data-i18n-description="channels.oauth.providerZedDesc" data-description="使用 Zed 原生应用登录">Zed</option>
+                  <option value="zai" data-i18n="channels.oauth.providerZAI" data-icon-auth-type="zai_oauth"
+                    data-i18n-description="channels.oauth.providerZAIDesc" data-description="ZCode 登录或 Coding Plan API Key">Z.ai</option>
                 </select>
               </div>
               <div id="codexOAuthControls">
@@ -330,10 +336,10 @@
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">
-                <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
-                  data-i18n="channels.oauth.startAuthorization">开始授权</button>
                 <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
                   data-i18n="common.close">关闭</button>
+                <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
+                  data-i18n="channels.oauth.startAuthorization">开始授权</button>
               </div>
             </form>
 
@@ -367,10 +373,10 @@
                   localhost 页面打不开是正常的；复制浏览器地址栏中的完整 URL，粘贴后提交即可。
                 </p>
                 <div class="oauth-actions">
-                  <button id="oauthSubmitCallback" type="submit" class="btn btn-primary"
-                    data-i18n="channels.oauth.submitCallback">提交回调 URL</button>
                   <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
                     data-i18n="common.close">关闭</button>
+                  <button id="oauthSubmitCallback" type="submit" class="btn btn-primary"
+                    data-i18n="channels.oauth.submitCallback">提交回调 URL</button>
                 </div>
               </form>
             </div>
@@ -382,18 +388,17 @@
         <dialog id="oauthCredentialImportDialog" class="oauth-dialog oauth-dialog--compact"
           aria-labelledby="oauthCredentialImportDialogTitle" aria-describedby="oauthCredentialImportDialogDescription">
           <div class="oauth-dialog-header">
-            <div>
-              <p class="oauth-dialog-eyebrow">OAuth</p>
+            <div class="oauth-dialog-heading">
               <h2 id="oauthCredentialImportDialogTitle" data-i18n="channels.oauth.importDialogTitle">导入 OAuth 凭证</h2>
+              <p id="oauthCredentialImportDialogDescription" class="oauth-dialog-description"
+                data-i18n="channels.oauth.importDialogDescription">
+                系统会自动判断凭证类型；无法判断的文件将跳过。
+              </p>
             </div>
             <button type="button" class="close-btn" data-action="close-oauth-import"
               data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
           </div>
           <form id="oauthCredentialImportForm" class="oauth-dialog-body">
-            <p id="oauthCredentialImportDialogDescription" class="oauth-dialog-description"
-              data-i18n="channels.oauth.importDialogDescription">
-              系统会自动判断凭证类型；无法判断的文件将跳过。
-            </p>
             <div class="oauth-field">
               <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">认证类型</label>
               <select id="oauthImportProviderSelect" name="oauth_import_provider" class="form-input">
@@ -422,10 +427,10 @@
                 data-i18n="channels.oauth.credentialFilesHint">支持同时选择 JSON、TXT、ZIP、tar.gz 或 tgz 文件；JSON/TXT 可包含 CLIProxyAPI 或 Sub2API 聚合凭证。</p>
             </div>
             <div class="oauth-actions">
-              <button id="oauthCredentialImportSubmit" type="submit" class="btn btn-primary"
-                data-i18n="channels.oauth.importCredentials">导入凭证</button>
               <button type="button" class="btn btn-secondary" data-action="close-oauth-import"
                 data-i18n="common.close">关闭</button>
+              <button id="oauthCredentialImportSubmit" type="submit" class="btn btn-primary"
+                data-i18n="channels.oauth.importCredentials">导入凭证</button>
             </div>
             <div id="oauthCredentialImportProgress" class="oauth-import-progress" hidden>
               <div class="oauth-import-progress-header">
@@ -452,19 +457,18 @@
           aria-labelledby="oauthCredentialCleanupDialogTitle"
           aria-describedby="oauthCredentialCleanupDialogDescription">
           <div class="oauth-dialog-header">
-            <div>
-              <p class="oauth-dialog-eyebrow">OAuth</p>
+            <div class="oauth-dialog-heading">
               <h2 id="oauthCredentialCleanupDialogTitle"
                 data-i18n="channels.oauth.cleanupDialogTitle">清理 OAuth 凭证</h2>
+              <p id="oauthCredentialCleanupDialogDescription" class="oauth-dialog-description"
+                data-i18n="channels.oauth.cleanupDialogDescription">
+                选择凭证类型、模型和失效渠道的处理方式。关闭窗口不会中断正在运行的任务。
+              </p>
             </div>
             <button type="button" class="close-btn" data-action="close-oauth-cleanup"
               data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
           </div>
           <form id="oauthCredentialCleanupForm" class="oauth-dialog-body">
-            <p id="oauthCredentialCleanupDialogDescription" class="oauth-dialog-description"
-              data-i18n="channels.oauth.cleanupDialogDescription">
-              选择凭证类型、模型和失效渠道的处理方式。关闭窗口不会中断正在运行的任务。
-            </p>
             <div class="credential-cleanup-selection">
               <div class="oauth-field">
                 <label for="oauthCredentialCleanupAuthType"
@@ -499,12 +503,12 @@
               </div>
             </div>
             <div class="oauth-actions">
+              <button type="button" class="btn btn-secondary" data-action="close-oauth-cleanup"
+                data-i18n="common.close">关闭</button>
               <button id="oauthCredentialCleanupBtn" type="submit" class="btn btn-secondary"
                 data-i18n-title="channels.oauth.cleanupTitle" title="开始清理" disabled>
                 <span data-i18n="channels.oauth.cleanupStart">开始清理</span>
               </button>
-              <button type="button" class="btn btn-secondary" data-action="close-oauth-cleanup"
-                data-i18n="common.close">关闭</button>
             </div>
             <div id="oauthCredentialCleanupProgress" class="oauth-import-progress credential-cleanup-progress"
               tabindex="-1" aria-labelledby="oauthCredentialCleanupProgressTitle" hidden>

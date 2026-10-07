@@ -19,7 +19,6 @@
   <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/filter-state.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/filter-query.js?v=__VERSION__"></script>
-  <script defer src="/web/assets/js/page-filters.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
@@ -27,12 +26,14 @@
   <!-- echarts 体积大，放在页面脚本之后：顶栏先渲染，避免其执行推迟首帧顶栏 -->
   <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
 </head>
-<body>
+<body class="top-layout">
   <div class="app-container">
     <!-- 主内容区域 -->
     <main class="main-content">
       <div class="content-area">
         <div data-page-filters="stats"></div>
+        <!-- 同步渲染筛选栏：在下方内容排版前插入，避免首屏位移 -->
+        <script src="/web/assets/js/page-filters.js?v=__VERSION__"></script>
 
         <!-- 统计详情表格 -->
         <section class="mb-8">

@@ -11,14 +11,36 @@
   let nextSelectID = 0;
   let documentObserver = null;
 
+  // <option data-icon-auth-type="codex_oauth"> 显示渠道提供商头像（依赖 channel-provider-icons.js）
+  function optionIcon(option) {
+    const authType = option.dataset?.iconAuthType;
+    if (!authType || typeof root.channelProviderIconSVG !== 'function') return null;
+    return () => {
+      const icon = (option.ownerDocument || root.document).createElement('span');
+      icon.className = 'filter-dropdown-item__icon channel-provider-avatar';
+      icon.dataset.authType = authType;
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = root.channelProviderIconSVG(authType);
+      return icon;
+    };
+  }
+
   function selectOptions(select) {
     return Array.from(select?.options || [])
       .filter(option => option.hidden !== true)
-      .map((option) => ({
-        value: String(option.value ?? ''),
-        label: String(option.label || option.textContent || option.text || option.value || '').trim(),
-        disabled: option.disabled === true
-      }));
+      .map((option) => {
+        const item = {
+          value: String(option.value ?? ''),
+          label: String(option.label || option.textContent || option.text || option.value || '').trim(),
+          disabled: option.disabled === true
+        };
+        // <option data-description="..."> 显示为选项下方的说明文字
+        const description = String(option.dataset?.description || '').trim();
+        if (description) item.description = description;
+        const icon = optionIcon(option);
+        if (icon) item.icon = icon;
+        return item;
+      });
   }
 
   function selectedOption(select) {
@@ -143,9 +165,23 @@
     if (label) label.htmlFor = input.id;
 
     let combobox = null;
+    let selectedIcon = null;
+    // 选中项带图标时在输入框左侧同步显示
+    const syncSelectedIcon = (option) => {
+      selectedIcon?.remove();
+      selectedIcon = option?.icon?.() || null;
+      if (selectedIcon) {
+        selectedIcon.classList.add('searchable-select-icon');
+        wrapper.append(selectedIcon);
+        wrapper.classList.add('searchable-select-wrapper--with-icon');
+      } else {
+        wrapper.classList.remove('searchable-select-wrapper--with-icon');
+      }
+    };
     const syncFromSelect = () => {
       const option = selectedOption(select);
       combobox?.setValue(option?.value || '', option?.label || '');
+      syncSelectedIcon(option);
       combobox?.refresh();
       input.disabled = select.disabled === true;
       input.setAttribute('aria-required', select.required ? 'true' : 'false');

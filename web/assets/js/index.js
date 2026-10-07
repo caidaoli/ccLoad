@@ -229,13 +229,12 @@
 
     function showServiceHealthTooltip(cell, point, formatter, bucketMs) {
       const plot = cell.closest('.service-health-plot');
-      const card = plot && plot.closest('.service-health-card');
       const tooltip = document.getElementById('service-health-tooltip');
       const timeElement = document.getElementById('service-health-tooltip-time');
       const successElement = document.getElementById('service-health-tooltip-success');
       const errorElement = document.getElementById('service-health-tooltip-error');
       const rateElement = document.getElementById('service-health-tooltip-rate');
-      if (!plot || !card || !tooltip || !timeElement || !successElement || !errorElement || !rateElement) return;
+      if (!plot || !tooltip || !timeElement || !successElement || !errorElement || !rateElement) return;
 
       const intervalMs = bucketMs || 15 * 60 * 1000;
       timeElement.textContent = `${formatter.format(new Date(point.ts))} – ${formatter.format(new Date(point.ts + intervalMs))}`;
@@ -258,7 +257,9 @@
       const inset = 8;
       const maxLeft = Math.max(inset, plotRect.width - tooltipRect.width - inset);
       const left = Math.min(Math.max(cellCenter - tooltipRect.width / 2, inset), maxLeft);
-      const roomAbove = cellRect.top - card.getBoundingClientRect().top;
+      // 上方空间按视口计算，扣除固定顶栏
+      const topbar = document.querySelector('.topbar');
+      const roomAbove = cellRect.top - (topbar ? topbar.getBoundingClientRect().bottom : 0);
       let top = cellRect.top - plotRect.top - tooltipRect.height - 12;
 
       if (roomAbove < tooltipRect.height + 16) {
@@ -303,18 +304,6 @@
       rateElement.dataset.state = model.state;
       const periodElement = document.getElementById('service-health-period');
       if (periodElement) periodElement.textContent = period;
-      const earlierElement = document.getElementById('service-health-earlier');
-      const latestElement = document.getElementById('service-health-latest');
-      if (earlierElement) {
-        earlierElement.textContent = model.points.length > 0
-          ? timeFormatter.format(new Date(model.points[0].ts))
-          : '--';
-      }
-      if (latestElement) {
-        latestElement.textContent = model.points.length > 0
-          ? timeFormatter.format(new Date(model.points.at(-1).ts))
-          : '--';
-      }
       grid.setAttribute('aria-label', hasData
         ? overviewText(
           'index.health.summary',
@@ -501,10 +490,5 @@
       if (typeof window.createAutoRefresh === 'function') {
         window.createAutoRefresh({ load: loadDashboard }).init();
       }
-
-      // 添加页面动画
-      document.querySelectorAll('.animate-slide-up').forEach((el, index) => {
-        el.style.animationDelay = `${index * 0.1}s`;
-      });
       }
     });

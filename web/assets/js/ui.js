@@ -833,7 +833,6 @@ window.WebAuth = window.WebAuth || {
   }
 
   window.initTopbar = function initTopbar(activeKey) {
-    document.body.classList.add('top-layout');
     document.body.classList.toggle('web-role-api-token', window.isAPITokenRole());
     const app = document.querySelector('.app-container') || document.body;
     // 隐藏侧边栏与移动按钮
@@ -1872,9 +1871,21 @@ window.WebAuth = window.WebAuth || {
         }
       }
       if (shouldClear) {
+        // 清空便于搜索，用 placeholder 保留当前选中项提示
+        input.dataset.prevPlaceholder = input.placeholder;
+        if (input.value) input.placeholder = input.value;
         input.value = '';
       }
       activeIndex = -1;
+    }
+
+    function endPick() {
+      if (input.dataset.prevPlaceholder !== undefined) input.placeholder = input.dataset.prevPlaceholder;
+      delete input.dataset.prevPlaceholder;
+      delete input.dataset.pickActive;
+      delete input.dataset.prevInputValue;
+      delete input.dataset.prevValue;
+      delete input.dataset.pickEdited;
     }
 
     function cancelPick() {
@@ -1889,10 +1900,7 @@ window.WebAuth = window.WebAuth || {
       input.value = prevInputValue;
       currentValue = prevValue;
 
-      delete input.dataset.pickActive;
-      delete input.dataset.prevInputValue;
-      delete input.dataset.prevValue;
-      delete input.dataset.pickEdited;
+      endPick();
 
       closeDropdown();
       if (onCancel) onCancel();
@@ -1902,10 +1910,7 @@ window.WebAuth = window.WebAuth || {
       currentValue = value;
       input.value = label;
 
-      delete input.dataset.pickActive;
-      delete input.dataset.prevInputValue;
-      delete input.dataset.prevValue;
-      delete input.dataset.pickEdited;
+      endPick();
 
       closeDropdown();
       if (onSelect) onSelect(value, label);
@@ -1996,6 +2001,7 @@ window.WebAuth = window.WebAuth || {
         row.id = `${dropdown.id}-option-${idx}`;
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
+        let content = [item.label];
         if (item.description) {
           // 图文选项：标题 + 说明两行
           row.classList.add('filter-dropdown-item--described');
@@ -2005,9 +2011,18 @@ window.WebAuth = window.WebAuth || {
           const description = document.createElement('span');
           description.className = 'filter-dropdown-item__desc';
           description.textContent = item.description;
-          row.append(label, description);
+          content = [label, description];
+        }
+        // icon 为返回 DOM 节点的函数：每次渲染生成新节点，避免共享节点在重绘时被移走
+        const icon = typeof item.icon === 'function' ? item.icon() : null;
+        if (icon) {
+          row.classList.add('filter-dropdown-item--with-icon');
+          const text = document.createElement('span');
+          text.className = 'filter-dropdown-item__text';
+          text.append(...content);
+          row.append(icon, text);
         } else {
-          row.textContent = item.label;
+          row.append(...content);
         }
         if (item.className) {
           row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
@@ -2058,11 +2073,19 @@ window.WebAuth = window.WebAuth || {
       dropdown.style.width = `${Math.round(width)}px`;
       dropdown.style.top = `${Math.round(rect.bottom + margin)}px`;
 
-      const dropdownHeight = dropdown.offsetHeight || 0;
-      const viewportBottom = window.innerHeight || 0;
-      if (dropdownHeight && rect.bottom + margin + dropdownHeight > viewportBottom && rect.top - margin - dropdownHeight >= 0) {
-        dropdown.style.top = `${Math.round(rect.top - margin - dropdownHeight)}px`;
-      }
+      // 高度受视口约束：下方放不下且上方更宽裕时向上展开，超出部分由 overflow 滚动
+      const scrollTop = dropdown.scrollTop;
+      dropdown.style.maxHeight = '';
+      const naturalHeight = dropdown.offsetHeight || 0;
+      const viewportHeight = window.innerHeight || 0;
+      if (!naturalHeight || !viewportHeight) return;
+      const spaceBelow = viewportHeight - rect.bottom - margin * 2;
+      const spaceAbove = rect.top - margin * 2;
+      const openUp = naturalHeight > spaceBelow && spaceAbove > spaceBelow;
+      const height = Math.min(naturalHeight, Math.max(0, openUp ? spaceAbove : spaceBelow));
+      if (height < naturalHeight) dropdown.style.maxHeight = `${Math.floor(height)}px`;
+      if (openUp) dropdown.style.top = `${Math.round(rect.top - margin - height)}px`;
+      dropdown.scrollTop = scrollTop;
     }
 
     function openDropdown() {
@@ -2086,7 +2109,11 @@ window.WebAuth = window.WebAuth || {
       document.addEventListener('mousedown', outsideHandler, true);
 
       clearRepositionHandler();
-      repositionHandler = () => positionDropdown();
+      repositionHandler = (e) => {
+        // 列表自身滚动不影响定位；若重新测量会清空 maxHeight 并把 scrollTop 归零
+        if (e?.type === 'scroll' && dropdown.contains(e.target)) return;
+        positionDropdown();
+      };
       window.addEventListener('resize', repositionHandler, true);
       window.addEventListener('scroll', repositionHandler, true);
     }
@@ -2103,6 +2130,8 @@ window.WebAuth = window.WebAuth || {
       }
       activeIndex = nextIndex;
       renderDropdown();
+      // 列表可滚动时让键盘选中项保持可见
+      dropdown.querySelector?.('.filter-dropdown-item.active')?.scrollIntoView?.({ block: 'nearest' });
     }
 
     // 事件绑定
@@ -2171,6 +2200,9 @@ window.WebAuth = window.WebAuth || {
         }
       }
     });
+
+    // 按住列表空白或滚动条时保持输入框焦点，避免 blur 提前收起下拉
+    dropdown.addEventListener('mousedown', (e) => e.preventDefault());
 
     input.addEventListener('blur', () => {
       if (dropdown.dataset.open !== '1') return;

@@ -23,7 +23,7 @@
   <script defer src="/web/assets/js/channel-provider-icons.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/index.js?v=__VERSION__"></script>
 </head>
-<body class="page-index">
+<body class="page-index top-layout">
   <div class="app-container">
 
     <!-- 主内容区域 -->
@@ -42,7 +42,7 @@
         </header>
 
         <!-- 全局指标 -->
-        <section class="overview-kpis mb-4 animate-slide-up animate-delay-1">
+        <section class="overview-kpis mb-4">
           <div class="glass-card overview-kpi">
             <span class="overview-kpi-icon overview-kpi-icon--requests" aria-hidden="true">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05"/><path d="M12 22.08V12"/></svg>
@@ -82,63 +82,9 @@
           </div>
         </section>
 
-        <!-- 按客户端入口协议统计：仅列有请求的协议 -->
-        <section id="protocol-usage-section" class="mb-4" hidden>
-          <div class="glass-card usage-card animate-slide-up animate-delay-1">
-            <h2 class="usage-card-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
-              <span data-i18n="index.overview.protocolUsage">请求协议用量</span>
-            </h2>
-            <div class="usage-table-wrap">
-              <table class="usage-table">
-                <thead>
-                  <tr>
-                    <th scope="col" data-i18n="index.overview.colProtocol">协议</th>
-                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
-                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
-                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
-                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
-                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
-                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
-                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
-                  </tr>
-                </thead>
-                <tbody id="protocol-usage-body"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <!-- 按渠道认证类型统计：仅列有请求的类型 -->
-        <section id="auth-type-section" class="mb-4" hidden>
-          <div class="glass-card usage-card animate-slide-up animate-delay-1">
-            <h2 class="usage-card-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M10.5 7.6 6.5 16.4"/><path d="m13.5 7.6 4 8.8"/></svg>
-              <span data-i18n="index.overview.channelUsage">渠道用量</span>
-            </h2>
-            <div class="usage-table-wrap">
-              <table class="usage-table">
-                <thead>
-                  <tr>
-                    <th scope="col" data-i18n="index.overview.colChannel">渠道</th>
-                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
-                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
-                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
-                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
-                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
-                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
-                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
-                  </tr>
-                </thead>
-                <tbody id="auth-type-usage-body"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
         <!-- 服务健康监测 -->
-        <section class="mb-6">
-          <div class="glass-card service-health-card animate-slide-up animate-delay-2" aria-labelledby="service-health-title">
+        <section class="mb-4">
+          <div class="glass-card service-health-card" aria-labelledby="service-health-title">
             <div class="service-health-header">
               <div class="service-health-heading">
                 <h2 id="service-health-title" class="service-health-title">
@@ -170,18 +116,62 @@
                   <span id="service-health-tooltip-rate" class="service-health-tooltip-rate">--</span>
                 </div>
               </div>
-              <div class="service-health-footer">
-                <span id="service-health-earlier" class="service-health-edge">--</span>
-                <div class="service-health-legend" data-i18n-aria-label="index.health.legendLabel" aria-label="健康状态图例">
-                  <span class="service-health-legend-item"><i class="service-health-swatch unknown" aria-hidden="true"></i><span data-i18n="index.health.noRequests">无请求</span></span>
-                  <span class="service-health-legend-item"><i class="service-health-swatch critical" aria-hidden="true"></i><span data-i18n="index.health.critical">异常</span></span>
-                  <span class="service-health-legend-item"><i class="service-health-swatch warning" aria-hidden="true"></i><span data-i18n="index.health.warning">波动</span></span>
-                  <span class="service-health-legend-item"><i class="service-health-swatch healthy" aria-hidden="true"></i><span data-i18n="index.health.healthy">健康</span></span>
-                </div>
-                <span id="service-health-latest" class="service-health-edge">--</span>
-              </div>
             </div>
             <p id="service-health-message" class="service-health-message" role="status" hidden></p>
+          </div>
+        </section>
+
+        <!-- 按客户端入口协议统计：仅列有请求的协议 -->
+        <section id="protocol-usage-section" class="mb-4" hidden>
+          <div class="glass-card usage-card">
+            <h2 class="usage-card-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+              <span data-i18n="index.overview.protocolUsage">请求协议用量</span>
+            </h2>
+            <div class="usage-table-wrap">
+              <table class="usage-table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="index.overview.colProtocol">协议</th>
+                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
+                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
+                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
+                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
+                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
+                  </tr>
+                </thead>
+                <tbody id="protocol-usage-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 按渠道认证类型统计：仅列有请求的类型 -->
+        <section id="auth-type-section" class="mb-4" hidden>
+          <div class="glass-card usage-card">
+            <h2 class="usage-card-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M10.5 7.6 6.5 16.4"/><path d="m13.5 7.6 4 8.8"/></svg>
+              <span data-i18n="index.overview.channelUsage">渠道用量</span>
+            </h2>
+            <div class="usage-table-wrap">
+              <table class="usage-table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="index.overview.colChannel">渠道</th>
+                    <th scope="col" data-i18n="index.overview.colRequests">请求数</th>
+                    <th scope="col" data-i18n="index.overview.colSuccessRate">成功率</th>
+                    <th scope="col" data-i18n="index.overview.colCost">费用</th>
+                    <th scope="col" data-i18n="index.overview.colInput">输入 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colOutput">输出 Tokens</th>
+                    <th scope="col" data-i18n="index.overview.colCacheRead">缓存读取</th>
+                    <th scope="col" data-i18n="index.overview.colCacheCreate">缓存创建</th>
+                  </tr>
+                </thead>
+                <tbody id="auth-type-usage-body"></tbody>
+              </table>
+            </div>
           </div>
         </section>
 
