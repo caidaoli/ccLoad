@@ -2089,7 +2089,6 @@ async function saveAllSettings() {
   const confirmed = await window.showConfirm({
     title: t('settings.saveAll'),
     message: t('settings.msg.confirmSave'),
-    detail: savedKeys.map(settingLabel).join(t('settings.msg.listSeparator')),
     confirmText: t('settings.saveAll')
   });
   if (!confirmed) return;
