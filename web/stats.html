@@ -129,7 +129,7 @@
                       <span data-i18n="stats.cacheUtil">缓存命中</span>
                     </th>
                     <th class="sortable stats-header-accent--cost" data-column="total_cost">
-                      <span data-i18n="stats.costUsd">成本</span>
+                      <span data-i18n="stats.costUsd">费用</span>
                       <span class="sort-indicator" id="sort-total_cost"></span>
                     </th>
                   </tr>
@@ -162,12 +162,12 @@
                 <!-- 第2行：成本 -->
                 <!-- 渠道成本饼图 -->
                 <div class="chart-card chart-card--channel">
-                  <h4 class="chart-title" data-i18n="stats.chartChannelCost">渠道成本</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartChannelCost">渠道费用</h4>
                   <div id="chart-channel-cost" class="pie-chart-container"></div>
                 </div>
                 <!-- 模型成本饼图 -->
                 <div class="chart-card">
-                  <h4 class="chart-title" data-i18n="stats.chartModelCost">模型成本</h4>
+                  <h4 class="chart-title" data-i18n="stats.chartModelCost">模型费用</h4>
                   <div id="chart-model-cost" class="pie-chart-container"></div>
                 </div>
                 <!-- 第3行：Token用量 -->
@@ -194,7 +194,7 @@
     <tr>
       <td colspan="{{colspan}}" class="loading-state">
         <div class="loading-spinner loading-spinner--block"></div>
-        <span data-i18n="stats.loading">正在加载统计数据...</span>
+        <span data-i18n="stats.loading">{{loadingText}}</span>
       </td>
     </tr>
   </template>
@@ -206,8 +206,9 @@
         <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.864-.833-2.634 0L4.18 16.5c-.77.833.192 2.5 1.732 2.5z"/>
         </svg>
-        <div class="empty-state-title empty-state-title--error" data-i18n="stats.loadFailed">加载失败</div>
-        <div data-i18n="stats.checkNetwork">请检查网络连接或重试</div>
+        <div class="empty-state-title empty-state-title--error" data-i18n="stats.loadFailed">{{title}}</div>
+        <div data-i18n="stats.checkNetwork">{{message}}</div>
+        <button type="button" class="btn btn-secondary btn-sm load-retry-btn" data-stats-retry data-i18n="common.retry">{{retryText}}</button>
       </td>
     </tr>
   </template>
@@ -219,8 +220,8 @@
         <svg class="w-12 h-12 mx-auto mb-4 empty-state-icon--neutral" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
         </svg>
-        <div class="empty-state-title" data-i18n="stats.noData">暂无统计数据</div>
-        <div data-i18n="stats.adjustFilter">请调整筛选条件或检查时间范围</div>
+        <div class="empty-state-title" data-i18n="stats.noData">{{title}}</div>
+        <div data-i18n="stats.adjustFilter">{{message}}</div>
       </td>
     </tr>
   </template>
@@ -229,7 +230,7 @@
   <template id="tpl-stats-row">
     <tr class="mobile-card-row stats-data-row">
       <td class="stats-col-channel" data-mobile-label="{{mobileLabelChannel}}">
-        <a href="#" class="config-name channel-link" data-channel-name="{{channelNameAttr}}" title="查看该渠道的日志">{{channelName}}</a>
+        <a href="#" class="config-name channel-link" data-channel-name="{{channelNameAttr}}" title="{{channelLogsTitle}}" data-i18n-title="stats.viewChannelLogsTitle">{{channelName}}</a>
         {{{channelIdBadge}}}
         {{{healthIndicator}}}
       </td>
@@ -251,7 +252,7 @@
   <!-- 合计行模板 -->
   <template id="tpl-stats-total">
     <tr class="mobile-card-row stats-total-row">
-      <td colspan="{{colspan}}" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">合计</td>
+      <td colspan="{{colspan}}" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">{{totalLabel}}</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
       <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>

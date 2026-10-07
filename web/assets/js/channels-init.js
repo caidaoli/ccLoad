@@ -165,6 +165,10 @@ function initChannelsPageActions() {
       boundKey: 'channelsPageActionsBound',
       click: {
         'show-add-modal': () => showAddModal(),
+        'retry-load-channels': (button) => {
+          button.disabled = true;
+          void reloadChannelsList();
+        },
         'first-channels-page': () => firstChannelsPage(),
         'prev-channels-page': () => prevChannelsPage(),
         'next-channels-page': () => nextChannelsPage(),
@@ -250,6 +254,8 @@ window.initPageBootstrap({
     if (typeof initChannelFormDirtyTracking === 'function') {
       initChannelFormDirtyTracking();
     }
+    window.guardUnsavedChanges(() =>
+      Boolean(document.getElementById('channelModal')?.classList.contains('show')) && channelFormDirty);
     if (typeof updateBatchChannelSelectionUI === 'function') {
       updateBatchChannelSelectionUI();
     }
@@ -369,7 +375,8 @@ document.addEventListener('pointerdown', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
+  // 原生 <dialog>（如 showConfirm）自行处理 Esc，避免冒泡后再关闭底层模态框
+  if (e.key === 'Escape' && !e.target?.closest?.('dialog[open]')) {
     const modelImportModal = document.getElementById('modelImportModal');
     const keyImportModal = document.getElementById('keyImportModal');
     const keyExportModal = document.getElementById('keyExportModal');

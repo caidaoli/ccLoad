@@ -90,6 +90,18 @@
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', resolvedTheme === 'dark' ? '#0f172a' : '#3b82f6');
 
+  // CSS 只认 data-resolved-theme：system 模式下跟随系统切换实时更新
+  const systemQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  if (systemQuery && systemQuery.addEventListener) {
+    systemQuery.addEventListener('change', () => {
+      const root = document.documentElement;
+      if (root.dataset.theme !== 'system') return;
+      const next = systemQuery.matches ? 'dark' : 'light';
+      root.dataset.resolvedTheme = next;
+      root.style.colorScheme = next;
+    });
+  }
+
   function clearInitialPaintStyle() {
     document.documentElement.style.removeProperty('background-color');
     document.documentElement.style.removeProperty('color');

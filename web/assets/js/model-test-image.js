@@ -7,7 +7,7 @@
 
   const STORAGE_PREFIX = 'ccload_model_test_image_';
   const IMAGES_SIZE_OPTIONS = [
-    ['auto', '自动'],
+    ['auto', '自动', 'modelTest.image.auto'],
     ['1024x1024', '1024 × 1024'],
     ['1536x1024', '1536 × 1024'],
     ['1024x1536', '1024 × 1536'],
@@ -17,7 +17,7 @@
     ['256x256', '256 × 256']
   ];
   const CHAT_SIZE_OPTIONS = [
-    ['auto', '自动'],
+    ['auto', '自动', 'modelTest.image.auto'],
     ['1:1@1k', '1:1 · 1K'],
     ['1:1@2k', '1:1 · 2K'],
     ['16:9@1k', '16:9 · 1K'],
@@ -546,7 +546,7 @@
     if (Number.isFinite(Number(data?.duration_ms))) {
       summaryParts.push(text('modelTest.image.duration', `${Number(data.duration_ms)} ms`, { duration: Number(data.duration_ms) }));
     }
-    if (Number(data?.cost_usd) > 0) summaryParts.push(`$${Number(data.cost_usd).toFixed(6)}`);
+    if (Number(data?.cost_usd) > 0) summaryParts.push(root.formatCost(Number(data.cost_usd)));
     if (summary) summary.textContent = summaryParts.join(' · ');
   }
 

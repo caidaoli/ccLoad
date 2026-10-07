@@ -7,6 +7,36 @@
     let serviceHealthModel = null;
     let dashboardLoadGeneration = 0;
 
+    // 时间范围同步到 URL（range/start_time/end_time）与 localStorage，刷新/分享后保持一致
+    const INDEX_FILTER_KEY = 'index.filters';
+    const INDEX_RANGE_VALUES = ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'custom'];
+    const INDEX_FILTER_FIELDS = [
+      {
+        key: 'range',
+        queryKeys: ['range'],
+        defaultValue: 'today',
+        includeInQuery(value) {
+          return Boolean(value) && value !== 'today';
+        }
+      },
+      {
+        key: 'customStartTime',
+        queryKeys: ['start_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        }
+      },
+      {
+        key: 'customEndTime',
+        queryKeys: ['end_time'],
+        defaultValue: '',
+        includeInQuery(value, values) {
+          return values?.range === 'custom' && Boolean(value);
+        }
+      }
+    ];
+
     // 入口协议固定展示，顺序即表格行序
     const PROTOCOL_USAGE_ROWS = Object.freeze([
       { key: 'anthropic', label: 'Claude Code', icon: '<path d="M12 2L2 22h20L12 2zm0 4.5L18.5 20h-13L12 6.5z"/>' },
@@ -67,14 +97,10 @@
       return totals;
     }
 
-    function formatRate(rate) {
-      return rate === null ? '--' : `${(rate * 100).toFixed(1)}%`;
-    }
-
     function formatOverviewCost(stat) {
       const total = toNumber(stat && stat.total_cost);
       return buildCostStackHtml(total, effectiveCostOf(stat), { tone: 'warning', inline: true })
-        || escapeHtml(formatCost(0, 3));
+        || escapeHtml(formatCost(0));
     }
 
     function protocolIconHtml(row) {
@@ -100,7 +126,7 @@
         const requests = toNumber(stat.total_requests);
         const rate = toNumber(stat.success_requests) / requests;
         const rateState = window.ServiceHealth ? window.ServiceHealth.classifyRate(rate) : 'unknown';
-        const rateText = `${Number((rate * 100).toFixed(1))}%`;
+        const rateText = formatPercent(rate);
         return `<tr>
           <th scope="row"><span class="usage-name">${iconHtml}<span>${escapeHtml(label)}</span></span></th>
           <td>${formatNumber(requests)}</td>
@@ -138,7 +164,7 @@
 
     function renderOverviewKpis(totals) {
       document.getElementById('overview-requests').textContent = formatNumber(totals.requests);
-      document.getElementById('overview-rate').textContent = formatRate(totals.rate);
+      document.getElementById('overview-rate').textContent = formatPercent(totals.rate);
       document.getElementById('overview-counts').textContent = overviewText(
         'index.overview.successFailed',
         `${totals.success} 成功 · ${totals.error} 失败`,
@@ -192,6 +218,10 @@
         : currentTimeRange;
     }
 
+    function serviceHealthRateLimitedText(count) {
+      return overviewText('index.health.rateLimited', `其中限流\u00a0${count}`, { count: formatNumber(count) });
+    }
+
     function hideServiceHealthTooltip() {
       const tooltip = document.getElementById('service-health-tooltip');
       if (tooltip) tooltip.hidden = true;
@@ -211,7 +241,12 @@
       timeElement.textContent = `${formatter.format(new Date(point.ts))} – ${formatter.format(new Date(point.ts + intervalMs))}`;
       successElement.textContent = formatNumber(point.success);
       errorElement.textContent = formatNumber(point.error);
-      rateElement.textContent = point.rate === null ? '--' : `(${(point.rate * 100).toFixed(1)}%)`;
+      rateElement.textContent = `(${formatPercent(point.rate)})`;
+      const rateLimitedElement = document.getElementById('service-health-tooltip-rate-limited');
+      if (rateLimitedElement) {
+        rateLimitedElement.hidden = !(point.rateLimited > 0);
+        rateLimitedElement.textContent = point.rateLimited > 0 ? serviceHealthRateLimitedText(point.rateLimited) : '';
+      }
 
       tooltip.hidden = false;
       tooltip.dataset.placement = 'top';
@@ -262,7 +297,7 @@
       grid.onmouseleave = hideServiceHealthTooltip;
 
       const hasData = model.rate !== null;
-      const rate = hasData ? `${(model.rate * 100).toFixed(1)}%` : '--';
+      const rate = formatPercent(model.rate);
       const period = serviceHealthPeriodText();
       rateElement.textContent = rate;
       rateElement.dataset.state = model.state;
@@ -294,13 +329,16 @@
         : overviewText('index.health.noData', `${period}暂无请求数据`, { period }));
       const countsElement = document.getElementById('service-health-counts');
       if (countsElement) {
-        countsElement.textContent = hasData
+        const successFailed = hasData
           ? overviewText(
             'index.overview.successFailed',
             `${model.success} 成功 · ${model.error} 失败`,
             { success: formatNumber(model.success), error: formatNumber(model.error) }
           )
           : '';
+        countsElement.textContent = hasData && model.rateLimited > 0
+          ? `${successFailed} · ${serviceHealthRateLimitedText(model.rateLimited)}`
+          : successFailed;
       }
       message.hidden = true;
       message.textContent = '';
@@ -319,6 +357,12 @@
           'index.health.unavailable',
           '健康数据暂时无法加载，将在下次刷新时重试。'
         );
+        const retryButton = document.createElement('button');
+        retryButton.type = 'button';
+        retryButton.className = 'btn btn-secondary btn-sm load-retry-btn';
+        retryButton.textContent = overviewText('common.retry', '重试');
+        retryButton.addEventListener('click', loadDashboard);
+        message.appendChild(retryButton);
       }
     }
 
@@ -347,7 +391,7 @@
         updateStatsDisplay();
       } else {
         console.error('Failed to load stats:', statsResult.reason);
-        showError('无法加载统计数据');
+        showError(overviewText('index.overview.loadFailed', '无法加载统计数据'));
       }
 
       if (healthResult.status === 'fulfilled') {
@@ -378,22 +422,66 @@
 
     // 自动刷新由 createAutoRefresh 统一管理（system_settings.auto_refresh_interval_seconds）
 
+    function getIndexFilters() {
+      const hasCustomRange = currentTimeRange === 'custom' && currentCustomTimeRange;
+      return {
+        range: currentTimeRange,
+        customStartTime: hasCustomRange ? String(currentCustomTimeRange.startMs) : '',
+        customEndTime: hasCustomRange ? String(currentCustomTimeRange.endMs) : ''
+      };
+    }
+
+    // 解析 URL/本地保存的时间范围；非法值或残缺的自定义区间回落到"本日"
+    function resolveIndexTimeRange(values) {
+      const range = INDEX_RANGE_VALUES.includes(values?.range) ? values.range : 'today';
+      if (range !== 'custom') return { range, customRange: null };
+      const startMs = Number(values.customStartTime);
+      const endMs = Number(values.customEndTime);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+        return { range: 'today', customRange: null };
+      }
+      return { range, customRange: { startMs: Math.trunc(startMs), endMs: Math.trunc(endMs) } };
+    }
+
+    function restoreIndexTimeRange() {
+      if (!window.FilterState) return;
+      const restored = resolveIndexTimeRange(window.FilterState.restore({
+        search: location.search,
+        savedFilters: window.FilterState.load(INDEX_FILTER_KEY),
+        fields: INDEX_FILTER_FIELDS
+      }));
+      currentTimeRange = restored.range;
+      currentCustomTimeRange = restored.customRange;
+    }
+
+    function persistIndexTimeRange() {
+      window.persistFilterState({
+        key: INDEX_FILTER_KEY,
+        values: getIndexFilters(),
+        pathname: location.pathname,
+        fields: INDEX_FILTER_FIELDS,
+        historyMethod: 'replaceState'
+      });
+    }
+
     if (typeof module !== 'undefined' && module.exports) {
-      module.exports = { buildOverviewTotals };
+      module.exports = { buildOverviewTotals, resolveIndexTimeRange };
     }
 
     // 页面初始化
     if (typeof window !== 'undefined') window.initPageBootstrap({
       topbarKey: 'index',
       run: () => {
+      restoreIndexTimeRange();
       window.bindTimeRangeSelector({
         containerId: 'index-time-range',
-        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'custom'],
+        values: INDEX_RANGE_VALUES,
         initialValue: currentTimeRange,
         customRange: currentCustomTimeRange,
         onChange: (range, customRange) => {
           currentTimeRange = range;
           if (range === 'custom') currentCustomTimeRange = customRange;
+          persistIndexTimeRange();
           loadDashboard();
         }
       });

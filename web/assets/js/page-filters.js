@@ -71,11 +71,6 @@
         ${buildInput('text', 'f_model', 'stats.containsTextPlaceholder', '包含文本...')}`,
         groupClass
       ),
-      modelSelect: buildFilterGroup(
-        `${buildFilterLabel('f_model', 'common.model', '模型')}
-        ${buildSelect('f_model', '\n                <option value="" data-i18n="trend.allModels">全部模型</option>\n                <!-- 动态加载模型列表 -->\n              ', 'filter-control--wide')}`,
-        groupClass
-      ),
       channelNameCombobox: buildFilterGroup(
         `${buildFilterLabel('f_name', 'stats.channelName', '渠道名')}
         <div class="filter-combobox-wrapper filter-control--channel-name">
@@ -165,7 +160,7 @@
       controlsClass: 'filter-controls trend-filter-controls',
       groupClass: '',
       actionsClass: '',
-      items: ['timeRange', 'clientProtocol', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
+      items: ['timeRange', 'clientProtocol', 'channelNameCombobox', 'modelCombobox', 'authToken', 'filterButton']
     }
   };
 

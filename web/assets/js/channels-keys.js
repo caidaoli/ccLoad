@@ -690,7 +690,7 @@ function buildCooldownHtml(index) {
     return tpl ? tpl.innerHTML.replaceAll('{{text}}', cooldownText) : window.t('channels.cooldownBadge', { time: cooldownText });
   }
   const normalTpl = document.getElementById('tpl-key-normal-status');
-  return normalTpl ? normalTpl.innerHTML : `<span style="color: var(--success-600); font-size: 12px;">✓ ${window.t('channels.statusNormal')}</span>`;
+  return normalTpl ? normalTpl.innerHTML : `<span class="key-status-normal">✓ ${window.t('channels.statusNormal')}</span>`;
 }
 
 /**
@@ -1057,13 +1057,13 @@ function initKeyTableEventDelegation() {
     if (btn) {
       const action = btn.dataset.action;
       if (action === 'copy') {
-        btn.style.background = '#f0fdf4';
-        btn.style.borderColor = '#86efac';
-        btn.style.color = '#16a34a';
+        btn.style.background = 'var(--success-50)';
+        btn.style.borderColor = 'var(--success-300)';
+        btn.style.color = 'var(--success-600)';
       } else if (action === 'delete') {
-        btn.style.background = '#fef2f2';
-        btn.style.borderColor = '#fca5a5';
-        btn.style.color = '#dc2626';
+        btn.style.background = 'var(--error-50)';
+        btn.style.borderColor = 'var(--error-300)';
+        btn.style.color = 'var(--error-600)';
       }
     }
   });
@@ -1303,14 +1303,14 @@ function copyKeyToClipboard(index) {
   });
 }
 
-function deleteInlineKey(index) {
+async function deleteInlineKey(index) {
   if (isChannelKeyEditorReadOnly()) return;
   if (inlineKeyTableData.length === 1) {
-    alert(window.t('channels.keepOneKey'));
+    window.showNotification(window.t('channels.keepOneKey'), 'warning');
     return;
   }
 
-  if (confirm(window.t('channels.confirmDeleteKey', { index: index + 1 }))) {
+  if (await window.showConfirm({ message: window.t('channels.confirmDeleteKey', { index: index + 1 }), danger: true })) {
     const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
     const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
 
@@ -1378,9 +1378,9 @@ function updateBatchDeleteButton() {
     if (textSpan) textSpan.textContent = window.t('channels.deleteSelectedCount', { count });
     btn.style.cursor = 'pointer';
     btn.style.opacity = '1';
-    btn.style.background = 'linear-gradient(135deg, #fef2f2 0%, #fecaca 100%)';
-    btn.style.borderColor = '#fca5a5';
-    btn.style.color = '#dc2626';
+    btn.style.background = 'linear-gradient(135deg, var(--error-50) 0%, var(--error-200) 100%)';
+    btn.style.borderColor = 'var(--error-300)';
+    btn.style.color = 'var(--error-600)';
   } else {
     btn.disabled = true;
     if (textSpan) textSpan.textContent = window.t('channels.deleteSelected');
@@ -1408,17 +1408,17 @@ function updateSelectAllCheckbox() {
     visibleIndices.some(index => selectedKeyIndices.has(index));
 }
 
-function batchDeleteSelectedKeys() {
+async function batchDeleteSelectedKeys() {
   if (isChannelKeyEditorReadOnly()) return;
   const count = selectedKeyIndices.size;
   if (count === 0) return;
 
   if (inlineKeyTableData.length - count < 1) {
-    alert(window.t('channels.keepOneKey'));
+    window.showNotification(window.t('channels.keepOneKey'), 'warning');
     return;
   }
 
-  if (!confirm(window.t('channels.confirmBatchDeleteKeys', { count }))) {
+  if (!await window.showConfirm({ message: window.t('channels.confirmBatchDeleteKeys', { count }), danger: true })) {
     return;
   }
 
@@ -1487,14 +1487,14 @@ function confirmInlineKeyImport() {
   const input = textarea.value.trim();
 
   if (!input) {
-    alert(window.t('channels.enterAtLeastOneKey'));
+    window.showNotification(window.t('channels.enterAtLeastOneKey'), 'warning');
     return;
   }
 
   const newKeys = parseKeys(input);
 
   if (newKeys.length === 0) {
-    alert(window.t('channels.noValidKeyParsed'));
+    window.showNotification(window.t('channels.noValidKeyParsed'), 'warning');
     return;
   }
 

@@ -24,27 +24,104 @@
     let selectedChannelsForAdd = new Set();   // 渠道选择对话框中已选的渠道ID
     let currentVisibleChannels = [];          // 当前可见的渠道列表（用于全选功能）
     let initialEditExpiryState = { type: 'never', value: '' };
+    let releaseFormGuard = null;             // 创建/编辑对话框的未保存改动保护
 
     // 对话框栈，用于 ESC 键层级关闭
     const modalStack = [];
 
     /** 注册全局 ESC 键处理 */
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && modalStack.length > 0) {
-        const topModal = modalStack[modalStack.length - 1];
-        topModal.close();
+      if (e.key !== 'Escape' || modalStack.length === 0 || e.defaultPrevented) return;
+      // showConfirm 等原生 <dialog> 自行处理 Esc，不连带关闭底层对话框
+      if (document.querySelector('dialog[open]')) return;
+      // 有内容的搜索框：Esc 只清空关键字
+      const target = e.target;
+      if (target instanceof HTMLInputElement && target.type === 'search' && target.value) {
+        target.value = '';
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
       }
+      modalStack[modalStack.length - 1].close();
     });
 
-    /** 压入对话框栈 */
-    function pushModal(closeFunc) {
-      modalStack.push({ close: closeFunc });
+    /** 显示对话框并压栈 */
+    function openModal(id, closeFunc) {
+      document.getElementById(id).classList.add('show');
+      modalStack.push({ id, close: closeFunc });
     }
 
-    /** 弹出对话框栈 */
-    function popModal() {
-      modalStack.pop();
+    /** 隐藏对话框并出栈 */
+    function hideModal(id) {
+      document.getElementById(id).classList.remove('show');
+      const index = modalStack.findIndex(entry => entry.id === id);
+      if (index !== -1) modalStack.splice(index, 1);
     }
+
+    /** 表单值快照不同于打开时即视为未保存 */
+    function guardFormChanges(snapshot) {
+      clearFormGuard();
+      const initial = snapshot();
+      releaseFormGuard = window.guardUnsavedChanges(() => snapshot() !== initial);
+    }
+
+    function clearFormGuard() {
+      if (releaseFormGuard) releaseFormGuard();
+      releaseFormGuard = null;
+    }
+
+    function snapshotFields(ids) {
+      return ids.map((id) => {
+        const el = document.getElementById(id);
+        return el.type === 'checkbox' ? el.checked : el.value;
+      });
+    }
+
+    const CREATE_FORM_FIELDS = ['tokenDescription', 'tokenExpiry', 'customExpiry', 'tokenDailyCostLimitUSD',
+      'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency', 'tokenActive'];
+    const EDIT_FORM_FIELDS = ['editTokenDescription', 'editTokenExpiry', 'editCustomExpiry', 'editDailyCostLimitUSD',
+      'editMonthlyCostLimitUSD', 'editCostLimitUSD', 'editMaxConcurrency', 'editTokenActive'];
+
+    function snapshotCreateForm() {
+      return JSON.stringify(snapshotFields(CREATE_FORM_FIELDS));
+    }
+
+    function snapshotEditForm() {
+      return JSON.stringify([
+        snapshotFields(EDIT_FORM_FIELDS),
+        editAllowedModels,
+        editAllowedChannelIDs,
+        editChannelRestrictionMode
+      ]);
+    }
+
+    /** 标记字段校验失败并聚焦 */
+    function rejectField(inputId, message) {
+      const input = document.getElementById(inputId);
+      if (input) {
+        input.classList.add('is-invalid');
+        input.setAttribute('aria-invalid', 'true');
+        input.focus();
+      }
+      window.showNotification(message, 'error');
+    }
+
+    function clearInvalidFields(modalId) {
+      document.querySelectorAll(`#${modalId} .is-invalid`).forEach((el) => {
+        el.classList.remove('is-invalid');
+        el.removeAttribute('aria-invalid');
+      });
+    }
+
+    // 用户修改字段后撤销错误标记
+    ['input', 'change'].forEach((type) => {
+      document.addEventListener(type, (e) => {
+        const el = e.target;
+        if (el && el.classList && el.classList.contains('is-invalid')) {
+          el.classList.remove('is-invalid');
+          el.removeAttribute('aria-invalid');
+        }
+      });
+    });
 
     function initExpirySelects() {
       const template = document.getElementById('tpl-token-expiry-options');
@@ -111,6 +188,7 @@
         boundKey: 'tokensPageActionsBound',
         click: {
           'show-create-modal': () => showCreateModal(),
+          'reload-tokens': () => loadTokens(),
           'close-create-modal': () => closeCreateModal(),
           'create-token': () => createToken(),
           'close-token-result-modal': () => closeTokenResultModal(),
@@ -232,7 +310,18 @@
         
         console.error('Failed to load tokens:', error);
         window.showNotification(t('tokens.msg.loadFailed') + ': ' + error.message, 'error');
+        if (allTokens.length === 0) renderLoadError(error);
       }
+    }
+
+    function renderLoadError(error) {
+      document.getElementById('empty-state').style.display = 'none';
+      document.getElementById('tokens-container').innerHTML = `
+        <div class="glass-card tokens-load-error" role="alert">
+          <p>${escapeHtml(t('tokens.msg.loadFailed') + ': ' + (error?.message || ''))}</p>
+          <button type="button" class="btn btn-secondary" data-action="reload-tokens">${escapeHtml(t('common.retry'))}</button>
+        </div>
+      `;
     }
 
     function renderTokens() {
@@ -306,13 +395,6 @@
       }
     }
 
-    // 格式化 Token 数量为 M 单位
-    function formatTokenCount(count) {
-      if (!count || count === 0) return '0M';
-      const millions = count / 1000000;
-      return millions.toFixed(2) + 'M';
-    }
-
     /**
      * 使用模板引擎渲染令牌行
      */
@@ -328,11 +410,10 @@
       const successCount = token.success_count || 0;
       const failureCount = token.failure_count || 0;
       const totalCount = successCount + failureCount;
-      const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
 
       // 预构建各个HTML片段(保留条件逻辑在JS中)
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
+      const successRateHtml = buildSuccessRateHtml(successCount, totalCount);
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
@@ -464,17 +545,18 @@
     /**
      * 构建成功率HTML
      */
-    function buildSuccessRateHtml(successRate, totalCount) {
+    function buildSuccessRateHtml(successCount, totalCount) {
       if (totalCount === 0) {
         return '<span class="token-value-muted">-</span>';
       }
 
+      const ratio = successCount / totalCount;
       let className = 'stats-badge';
-      if (successRate >= 95) className += ' success-rate-high';
-      else if (successRate >= 80) className += ' success-rate-medium';
+      if (ratio >= 0.95) className += ' success-rate-high';
+      else if (ratio >= 0.8) className += ' success-rate-medium';
       else className += ' success-rate-low';
 
-      return `<span class="${className}">${successRate}%</span>`;
+      return `<span class="${className}">${window.formatPercent(ratio)}</span>`;
     }
 
     /**
@@ -496,7 +578,7 @@
         items.push(
           `<span class="token-usage-item token-usage-item--${variant}" title="${title}">` +
             `<span class="token-usage-label">${label}</span>` +
-            `<span class="token-usage-value">${formatTokenCount(count)}</span>` +
+            `<span class="token-usage-value">${window.formatNumber(count)}</span>` +
           `</span>`
         );
       };
@@ -556,7 +638,7 @@
       if (usedDisplay) {
         const costUsed = Number(usedUSD);
         const used = Number.isFinite(costUsed) ? costUsed : 0;
-        usedDisplay.textContent = `${t('tokens.costUsedPrefix')}: $${used.toFixed(4)}`;
+        usedDisplay.textContent = `${t('tokens.costUsedPrefix')}: ${window.formatCost(used, 4)}`;
       }
     }
 
@@ -593,8 +675,7 @@
 
       // 预构建HTML片段
       const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const successRate = totalCount > 0 ? ((successCount / totalCount) * 100).toFixed(1) : 0;
-      const successRateHtml = buildSuccessRateHtml(successRate, totalCount);
+      const successRateHtml = buildSuccessRateHtml(successCount, totalCount);
       const rpmHtml = buildRpmHtml(token);
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
@@ -651,19 +732,46 @@
       document.getElementById('tokenCostLimitUSD').value = 0;
       document.getElementById('tokenMaxConcurrency').value = 0;
       document.getElementById('tokenActive').checked = true;
+      document.getElementById('customExpiry').value = '';
       document.getElementById('customExpiryContainer').style.display = 'none';
-      document.getElementById('createModal').style.display = 'block';
+      clearInvalidFields('createModal');
+      openModal('createModal', closeCreateModal);
+      guardFormChanges(snapshotCreateForm);
+      document.getElementById('tokenDescription').focus();
     }
 
     function closeCreateModal() {
-      document.getElementById('createModal').style.display = 'none';
+      hideModal('createModal');
+      clearFormGuard();
+    }
+
+    /**
+     * 读取并校验限额字段；失败时返回出错字段 ID 与提示
+     */
+    function readLimitFields(ids) {
+      const daily = parseFloat(document.getElementById(ids.daily).value) || 0;
+      const monthly = parseFloat(document.getElementById(ids.monthly).value) || 0;
+      const total = parseFloat(document.getElementById(ids.total).value) || 0;
+      const negative = [[ids.daily, daily], [ids.monthly, monthly], [ids.total, total]].find(([, value]) => value < 0);
+      if (negative) {
+        return { field: negative[0], error: t('tokens.msg.costLimitNegative') };
+      }
+      const maxConcurrencyResult = parseMaxConcurrencyInput(document.getElementById(ids.concurrency).value);
+      if (maxConcurrencyResult.error) {
+        return { field: ids.concurrency, error: maxConcurrencyResult.error };
+      }
+      const maxConcurrency = maxConcurrencyResult.value;
+      if ((daily > 0 || monthly > 0 || total > 0) && maxConcurrency <= 0) {
+        return { field: ids.concurrency, error: t('tokens.msg.costLimitRequiresConcurrency') };
+      }
+      return { daily, monthly, total, maxConcurrency };
     }
 
     async function createToken() {
-      
+      clearInvalidFields('createModal');
       const description = document.getElementById('tokenDescription').value.trim();
       if (!description) {
-        window.showNotification(t('tokens.msg.enterDescription'), 'error');
+        rejectField('tokenDescription', t('tokens.msg.enterDescription'));
         return;
       }
       const expiryType = document.getElementById('tokenExpiry').value;
@@ -672,7 +780,7 @@
         if (expiryType === 'custom') {
           const customDate = document.getElementById('customExpiry').value;
           if (!customDate) {
-            window.showNotification(t('tokens.msg.selectExpiry'), 'error');
+            rejectField('customExpiry', t('tokens.msg.selectExpiry'));
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -682,19 +790,16 @@
         }
       }
       const isActive = document.getElementById('tokenActive').checked;
-      const dailyCostLimitUSD = parseFloat(document.getElementById('tokenDailyCostLimitUSD').value) || 0;
-      const monthlyCostLimitUSD = parseFloat(document.getElementById('tokenMonthlyCostLimitUSD').value) || 0;
-      const costLimitUSD = parseFloat(document.getElementById('tokenCostLimitUSD').value) || 0;
-      const maxConcurrencyResult = parseMaxConcurrencyInput(document.getElementById('tokenMaxConcurrency').value);
-      if (dailyCostLimitUSD < 0 || monthlyCostLimitUSD < 0 || costLimitUSD < 0) {
-        window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
+      const limits = readLimitFields({
+        daily: 'tokenDailyCostLimitUSD',
+        monthly: 'tokenMonthlyCostLimitUSD',
+        total: 'tokenCostLimitUSD',
+        concurrency: 'tokenMaxConcurrency'
+      });
+      if (limits.error) {
+        rejectField(limits.field, limits.error);
         return;
       }
-      if (maxConcurrencyResult.error) {
-        window.showNotification(maxConcurrencyResult.error, 'error');
-        return;
-      }
-      const maxConcurrency = maxConcurrencyResult.value;
       try {
         const data = await fetchDataWithAuth(`${API_BASE}/auth-tokens`, {
           method: 'POST',
@@ -705,16 +810,16 @@
             description,
             expires_at: expiresAt,
             is_active: isActive,
-            cost_daily_limit_usd: dailyCostLimitUSD,
-            cost_monthly_limit_usd: monthlyCostLimitUSD,
-            cost_limit_usd: costLimitUSD,
-            max_concurrency: maxConcurrency
+            cost_daily_limit_usd: limits.daily,
+            cost_monthly_limit_usd: limits.monthly,
+            cost_limit_usd: limits.total,
+            max_concurrency: limits.maxConcurrency
           })
         });
 
         closeCreateModal();
         document.getElementById('newTokenValue').value = data.token;
-        document.getElementById('tokenResultModal').style.display = 'block';
+        openModal('tokenResultModal', closeTokenResultModal);
         loadTokens();
         window.showNotification(t('tokens.msg.createSuccess'), 'success');
       } catch (error) {
@@ -737,7 +842,7 @@
     }
 
     function closeTokenResultModal() {
-      document.getElementById('tokenResultModal').style.display = 'none';
+      hideModal('tokenResultModal');
       document.getElementById('newTokenValue').value = '';
     }
 
@@ -791,12 +896,14 @@
         loadChannelsData().then(() => renderAllowedChannelsTable());
       }
 
-      document.getElementById('editModal').style.display = 'block';
-      pushModal(closeEditModal);
+      clearInvalidFields('editModal');
+      openModal('editModal', closeEditModal);
+      guardFormChanges(snapshotEditForm);
     }
 
     function closeEditModal() {
-      document.getElementById('editModal').style.display = 'none';
+      hideModal('editModal');
+      clearFormGuard();
       document.getElementById('editTokenValue').value = '';
       document.getElementById('editCustomExpiry').value = '';
       document.getElementById('editCustomExpiryContainer').style.display = 'none';
@@ -812,35 +919,31 @@
       const modeSelect = document.getElementById('editChannelRestrictionMode');
       if (modeSelect) modeSelect.value = 'allow';
       updateChannelRestrictionModeUI();
-      popModal();
     }
 
     async function updateToken() {
-      
+      clearInvalidFields('editModal');
       const id = document.getElementById('editTokenId').value;
       const description = document.getElementById('editTokenDescription').value.trim();
       const isActive = document.getElementById('editTokenActive').checked;
       const expiryType = document.getElementById('editTokenExpiry').value;
-      const dailyCostLimitUSD = parseFloat(document.getElementById('editDailyCostLimitUSD').value) || 0;
-      const monthlyCostLimitUSD = parseFloat(document.getElementById('editMonthlyCostLimitUSD').value) || 0;
-      const costLimitUSD = parseFloat(document.getElementById('editCostLimitUSD').value) || 0;
-      const maxConcurrencyResult = parseMaxConcurrencyInput(document.getElementById('editMaxConcurrency').value);
-      if (dailyCostLimitUSD < 0 || monthlyCostLimitUSD < 0 || costLimitUSD < 0) {
-        window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
+      const limits = readLimitFields({
+        daily: 'editDailyCostLimitUSD',
+        monthly: 'editMonthlyCostLimitUSD',
+        total: 'editCostLimitUSD',
+        concurrency: 'editMaxConcurrency'
+      });
+      if (limits.error) {
+        rejectField(limits.field, limits.error);
         return;
       }
-      if (maxConcurrencyResult.error) {
-        window.showNotification(maxConcurrencyResult.error, 'error');
-        return;
-      }
-      const maxConcurrency = maxConcurrencyResult.value;
       let customDate = '';
       let expiresAt = null;
       if (expiryType !== 'never') {
         if (expiryType === 'custom') {
           customDate = document.getElementById('editCustomExpiry').value;
           if (!customDate) {
-            window.showNotification(t('tokens.msg.selectExpiry'), 'error');
+            rejectField('editCustomExpiry', t('tokens.msg.selectExpiry'));
             return;
           }
           expiresAt = new Date(customDate).getTime();
@@ -867,10 +970,10 @@
             allowed_channel_ids: editAllowedChannelIDs,
             channel_restriction_mode: normalizeChannelRestrictionMode(editChannelRestrictionMode),
             allowed_models: editAllowedModels,  // 2026-01新增：模型限制
-            cost_daily_limit_usd: dailyCostLimitUSD,
-            cost_monthly_limit_usd: monthlyCostLimitUSD,
-            cost_limit_usd: costLimitUSD,        // 总限额
-            max_concurrency: maxConcurrency      // 2026-04新增：并发上限
+            cost_daily_limit_usd: limits.daily,
+            cost_monthly_limit_usd: limits.monthly,
+            cost_limit_usd: limits.total,               // 总限额
+            max_concurrency: limits.maxConcurrency      // 2026-04新增：并发上限
           })
         });
         closeEditModal();
@@ -883,8 +986,15 @@
     }
 
     async function deleteToken(id) {
-      
-      if (!confirm(t('tokens.msg.deleteConfirm'))) return;
+      const token = allTokens.find(item => item.id === id);
+      const confirmed = await window.showConfirm({
+        title: t('tokens.deleteConfirmTitle'),
+        message: t('tokens.msg.deleteConfirm'),
+        detail: token ? token.description : '',
+        confirmText: t('common.delete'),
+        danger: true
+      });
+      if (!confirmed) return;
       try {
         await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
           method: 'DELETE'
@@ -1133,14 +1243,12 @@
       selectedChannelsForAdd.clear();
       document.getElementById('channelSearchInput').value = '';
       renderAvailableChannels('');
-      document.getElementById('channelSelectModal').style.display = 'block';
-      pushModal(closeChannelSelectModal);
+      openModal('channelSelectModal', closeChannelSelectModal);
     }
 
     function closeChannelSelectModal() {
-      document.getElementById('channelSelectModal').style.display = 'none';
+      hideModal('channelSelectModal');
       selectedChannelsForAdd.clear();
-      popModal();
     }
 
     function filterAvailableChannels(searchText) {
@@ -1496,17 +1604,15 @@
       selectedModelsForAdd.clear();
       document.getElementById('modelSearchInput').value = '';
       renderAvailableModels('');
-      document.getElementById('modelSelectModal').style.display = 'block';
-      pushModal(closeModelSelectModal);
+      openModal('modelSelectModal', closeModelSelectModal);
     }
 
     /**
      * 关闭模型选择对话框
      */
     function closeModelSelectModal() {
-      document.getElementById('modelSelectModal').style.display = 'none';
+      hideModal('modelSelectModal');
       selectedModelsForAdd.clear();
-      popModal();
     }
 
     /**
@@ -1687,17 +1793,15 @@
     function showModelImportModal() {
       document.getElementById('tokenModelImportTextarea').value = '';
       document.getElementById('tokenModelImportPreview').style.display = 'none';
-      document.getElementById('modelImportModal').style.display = 'block';
+      openModal('modelImportModal', closeModelImportModal);
       setTimeout(() => document.getElementById('tokenModelImportTextarea').focus(), 100);
-      pushModal(closeModelImportModal);
     }
 
     /**
      * 关闭模型导入对话框
      */
     function closeModelImportModal() {
-      document.getElementById('modelImportModal').style.display = 'none';
-      popModal();
+      hideModal('modelImportModal');
     }
 
     /**

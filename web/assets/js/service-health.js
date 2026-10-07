@@ -57,9 +57,10 @@
       if (timestamp === null) continue;
       const bucketTs = Math.floor(timestamp / bucketMs) * bucketMs;
 
-      const current = totalsByBucket.get(bucketTs) || { success: 0, error: 0 };
+      const current = totalsByBucket.get(bucketTs) || { success: 0, error: 0, rateLimited: 0 };
       current.success += toCount(metric.success);
       current.error += toCount(metric.error);
+      current.rateLimited += toCount(metric.rate_limited);
       totalsByBucket.set(bucketTs, current);
       startBucketMs = Math.min(startBucketMs, bucketTs);
       endBucketMs = Math.max(endBucketMs, bucketTs);
@@ -67,21 +68,24 @@
 
     let success = 0;
     let error = 0;
+    let rateLimited = 0;
     const pointCount = totalsByBucket.size === 0
       ? 0
       : Math.floor((endBucketMs - startBucketMs) / bucketMs) + 1;
     const points = new Array(pointCount);
     for (let index = 0; index < pointCount; index += 1) {
       const ts = startBucketMs + index * bucketMs;
-      const counts = totalsByBucket.get(ts) || { success: 0, error: 0 };
+      const counts = totalsByBucket.get(ts) || { success: 0, error: 0, rateLimited: 0 };
       const total = counts.success + counts.error;
       const rate = total > 0 ? counts.success / total : null;
       success += counts.success;
       error += counts.error;
+      rateLimited += counts.rateLimited;
       points[index] = {
         ts,
         success: counts.success,
         error: counts.error,
+        rateLimited: counts.rateLimited,
         rate,
         state: classifyRate(rate)
       };
@@ -93,6 +97,7 @@
       points,
       success,
       error,
+      rateLimited,
       rate,
       state: classifyRate(rate),
       bucketMs,

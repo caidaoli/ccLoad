@@ -70,7 +70,7 @@
                     <th class="logs-col-cache-read" data-i18n="logs.colCacheRead">缓存读</th>
                     <th class="logs-col-cache-write" data-i18n="logs.colCacheWrite">缓存建</th>
                     <th class="logs-col-cache-util" data-i18n="logs.colCacheUtil">缓存命中%</th>
-                    <th class="logs-col-cost" data-i18n="logs.colCost" data-i18n-title="logs.costTooltipHeader" title="标准成本：单价（美元/百万 Token）× 数量 = 费用">成本</th>
+                    <th class="logs-col-cost" data-i18n="logs.colCost" data-i18n-title="logs.costTooltipHeader" title="标准成本：单价（美元/百万 Token）× 数量 = 费用">费用</th>
                     <th class="logs-col-message" data-i18n="logs.colMessage">信息</th>
                   </tr>
                 </thead>
@@ -142,11 +142,11 @@
   </div>
 
   <!-- 测试 API Key 模态框 -->
-  <div id="testKeyModal" class="modal">
+  <div id="testKeyModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="testKeyModalTitle">
     <div class="modal-content test-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title"><span data-i18n="logs.testKeyTitle">测试 API Key</span> - <span id="testKeyChannelName"></span></h2>
-        <button type="button" class="close-btn" data-action="close-test-key-modal">&times;</button>
+        <h2 id="testKeyModalTitle" class="modal-title"><span data-i18n="logs.testKeyTitle">测试 API Key</span> - <span id="testKeyChannelName"></span></h2>
+        <button type="button" class="close-btn" data-action="close-test-key-modal" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
 
       <div class="form-group">
@@ -210,19 +210,19 @@
   </template>
 
   <!-- Debug Log 模态框 -->
-  <div id="debugLogModal" class="modal">
+  <div id="debugLogModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="debugLogModalTitle">
     <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title">
+        <h2 id="debugLogModalTitle" class="modal-title">
           <span data-i18n="logs.debugLogTitle">Debug Log</span>
           <span id="debugLogStatus" class="debug-log-status" hidden></span>
         </h2>
-        <button type="button" class="close-btn" data-action="close-debug-log-modal">&times;</button>
+        <button type="button" class="close-btn" data-action="close-debug-log-modal" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
       <div id="debugLogLoading" style="text-align: center; padding: 2rem; display: none;">
         <span data-i18n="logs.loading">加载中...</span>
       </div>
-      <div id="debugLogError" style="text-align: center; padding: 2rem; color: var(--danger-600); display: none;"></div>
+      <div id="debugLogError" style="text-align: center; padding: 2rem; color: var(--error-600); display: none;"></div>
       <div id="debugLogContent" style="display: none; flex: 1; min-height: 0; flex-direction: column;">
         <div class="upstream-detail-tabs">
           <button type="button" id="debugRequestTabBtn" class="upstream-tab active" data-tab="request" data-i18n="logs.debugRequest">Request</button>
@@ -270,6 +270,7 @@
         </svg>
         <div class="empty-state-title empty-state-title--error" data-i18n="logs.loadFailed">加载失败</div>
         <div data-i18n="logs.checkNetwork">请检查网络连接或重试</div>
+        <button type="button" class="btn btn-secondary btn-sm logs-retry-btn" data-action="retry-logs-load" data-i18n="common.retry">重试</button>
       </td>
     </tr>
   </template>

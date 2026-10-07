@@ -56,6 +56,7 @@ test('returning via reload or bfcache restores channel name search with the othe
   setGlobal('window', {
     t: (key) => key === 'channels.channelNameAll' ? '所有渠道' : key,
     initPageBootstrap: (config) => { bootstrap = config; },
+    guardUnsavedChanges: () => () => {},
     addEventListener: (type, handler) => { windowListeners[type] = handler; },
     i18n: { onLocaleChange() {} }
   });

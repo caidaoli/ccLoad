@@ -51,13 +51,13 @@
               <!-- 控件与图例 -->
               <div class="flex items-center trend-chart-toolbar gap-space-3 flex-wrap">
                 <!-- 趋势类型切换 -->
-                <div class="toggle-group" id="trend-type-group">
-                  <div class="toggle-btn active" data-type="count" data-i18n="trend.typeCount">调用次数</div>
-                  <div class="toggle-btn" data-type="rpm" data-i18n="trend.typeRpm">RPM</div>
-                  <div class="toggle-btn" data-type="first_byte" data-i18n="trend.typeFirstByte">首字响应</div>
-                  <div class="toggle-btn" data-type="duration" data-i18n="trend.typeDuration">总耗时</div>
-                  <div class="toggle-btn" data-type="tokens" data-i18n="trend.typeTokens">Token用量</div>
-                  <div class="toggle-btn" data-type="cost" data-i18n="trend.typeCost">费用消耗</div>
+                <div class="toggle-group" id="trend-type-group" role="group" data-i18n-aria-label="trend.trendType" aria-label="趋势类型">
+                  <button type="button" class="toggle-btn active" data-type="count" aria-pressed="true" data-i18n="trend.typeCount">调用次数</button>
+                  <button type="button" class="toggle-btn" data-type="rpm" aria-pressed="false" data-i18n="trend.typeRpm">RPM</button>
+                  <button type="button" class="toggle-btn" data-type="first_byte" aria-pressed="false" data-i18n="trend.typeFirstByte">首字响应</button>
+                  <button type="button" class="toggle-btn" data-type="duration" aria-pressed="false" data-i18n="trend.typeDuration">总耗时</button>
+                  <button type="button" class="toggle-btn" data-type="tokens" aria-pressed="false" data-i18n="trend.typeTokens">Token用量</button>
+                  <button type="button" class="toggle-btn" data-type="cost" aria-pressed="false" data-i18n="trend.typeCost">费用</button>
                 </div>
                 <!-- 图表样式切换 -->
                 <div
@@ -118,6 +118,7 @@
                 </svg>
                 <div class="error-title" data-i18n="trend.loadFailed">加载失败</div>
                 <div class="error-message" data-i18n="trend.checkNetwork">请检查网络连接或重试</div>
+                <button type="button" id="btn_trend_retry" class="btn btn-secondary btn-sm load-retry-btn" data-i18n="common.retry">重试</button>
               </div>
               <!-- ECharts 容器 -->
               <div id="chart" class="w-full h-full hidden"></div>
@@ -129,13 +130,13 @@
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                <span id="bucket-interval">数据更新间隔：--</span>
+                <span id="bucket-interval">--</span>
               </div>
               <div class="info-item">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
-                <span id="data-timerange">1小时数据展示</span>
+                <span id="data-timerange">--</span>
               </div>
             </div>
           </div>

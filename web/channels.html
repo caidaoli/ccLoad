@@ -486,6 +486,8 @@
                 <select id="oauthCredentialCleanupModel" class="form-input" name="model" required disabled>
                   <option value="" data-i18n="channels.oauth.cleanupModelsLoading">正在加载模型…</option>
                 </select>
+                <button id="oauthCredentialCleanupModelRetry" type="button" class="btn btn-secondary btn-sm"
+                  data-i18n="common.retry" hidden>重试</button>
               </div>
               <div class="oauth-field credential-cleanup-action">
                 <label for="oauthCredentialCleanupAction"
@@ -541,7 +543,7 @@
                 <input id="channelAuthTypeFilter" class="filter-select filter-combobox" type="text"
                   autocomplete="off" spellcheck="false" />
                 <div id="channelAuthTypeFilterDropdown" class="filter-dropdown" role="listbox"
-                  aria-label="认证类型"></div>
+                  data-i18n-aria-label="channels.filterAuthType" aria-label="认证类型"></div>
               </div>
             </div>
 
@@ -550,7 +552,7 @@
               <div class="filter-combobox-wrapper filter-control--compact">
                 <input id="modelFilter" class="filter-select filter-combobox" type="text" autocomplete="off"
                   spellcheck="false" />
-                <div id="modelFilterDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                <div id="modelFilterDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="channels.filterModel" aria-label="模型"></div>
               </div>
             </div>
             <div class="filter-group channel-search-filter-group">
@@ -559,9 +561,21 @@
                 <div class="filter-combobox-wrapper filter-control--compact">
                   <input id="searchInput" class="filter-select filter-combobox" type="text" autocomplete="off"
                     spellcheck="false" />
-                  <div id="searchInputDropdown" class="filter-dropdown" role="listbox" aria-label="渠道名称"></div>
+                  <div id="searchInputDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="channels.filterSearch" aria-label="渠道名称"></div>
                 </div>
               </div>
+            </div>
+            <!-- 窄屏隐藏表头后由此控件排序，与表头共用 channelsSort -->
+            <div class="filter-group channel-sort-filter-group">
+              <label class="filter-label" for="channelSortSelect" data-i18n="channels.sortBy">排序</label>
+              <select id="channelSortSelect" class="filter-select filter-control--compact">
+                <option value="priority:desc" data-i18n="channels.sortOption.priorityDesc">优先级（高→低）</option>
+                <option value="priority:asc" data-i18n="channels.sortOption.priorityAsc">优先级（低→高）</option>
+                <option value="name:asc" data-i18n="channels.sortOption.nameAsc">名称（A→Z）</option>
+                <option value="name:desc" data-i18n="channels.sortOption.nameDesc">名称（Z→A）</option>
+                <option value="enabled:desc" data-i18n="channels.sortOption.enabledDesc">启用优先</option>
+                <option value="enabled:asc" data-i18n="channels.sortOption.enabledAsc">禁用优先</option>
+              </select>
             </div>
             <div class="channel-filter-summary">
               <div class="filter-info" id="filterInfo"><span id="filteredCount">0</span> / <span id="totalCount">0</span>
@@ -779,7 +793,7 @@
                       </button>
                     </div>
                     <span id="batchDailyCostLimitHint" class="channel-batch-advanced__hint"
-                      data-i18n="channels.batchDailyCostLimitHint">0 表示不限制每日成本（美元）</span>
+                      data-i18n="channels.batchDailyCostLimitHint">0 表示不限制每日费用（美元）</span>
                     <span id="batchDailyCostLimitError" class="channel-batch-advanced__error" role="alert" hidden></span>
                   </div>
                   <div class="channel-batch-advanced__field">
@@ -1772,11 +1786,11 @@
   </div>
 
   <!-- 删除确认模态框 -->
-  <div id="deleteModal" class="modal">
+  <div id="deleteModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
     <div class="modal-content confirm-modal">
-      <h2 class="modal-title" data-i18n="channels.confirmDeleteTitle">确认删除</h2>
+      <h2 id="deleteModalTitle" class="modal-title" data-i18n="channels.confirmDeleteTitle">确认删除</h2>
       <p id="deleteModalMessage" data-i18n="channels.confirmDeleteMsg">确定要删除渠道吗？</p>
-      <p style="color: var(--error-600); font-size: 0.875rem;" data-i18n="channels.deleteWarning">此操作不可恢复！</p>
+      <p class="channel-delete-warning" data-i18n="channels.deleteWarning">此操作不可恢复！</p>
       <div class="confirm-actions">
         <button type="button" class="btn btn-secondary" data-action="close-delete-modal" data-i18n="common.cancel">取消</button>
         <button type="button" class="btn btn-danger" data-action="confirm-delete-channel" data-i18n="common.delete">删除</button>
@@ -1785,10 +1799,10 @@
   </div>
 
   <!-- 测试渠道模态框 -->
-  <div id="testModal" class="modal">
+  <div id="testModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="testModalTitle">
     <div class="modal-content test-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title"><span data-i18n="channels.testChannelTitle">测试渠道</span> - <span
+        <h2 id="testModalTitle" class="modal-title"><span data-i18n="channels.testChannelTitle">测试渠道</span> - <span
             id="testChannelName"></span></h2>
         <button type="button" class="close-btn" data-action="close-test-modal">&times;</button>
       </div>
@@ -1875,10 +1889,10 @@
   </div>
 
   <!-- Key导入模态框 -->
-  <div id="keyImportModal" class="modal">
+  <div id="keyImportModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="keyImportModalTitle">
     <div class="modal-content modal-content--md">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.importKeysTitle">批量导入 API Keys</h2>
+        <h2 id="keyImportModalTitle" class="modal-title" data-i18n="channels.importKeysTitle">批量导入 API Keys</h2>
         <button type="button" class="close-btn channel-modal-close-btn channel-hover-modal-close-btn"
           data-action="close-key-import-modal">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1937,10 +1951,10 @@
   </div>
 
   <!-- Key导出模态框 -->
-  <div id="keyExportModal" class="modal">
+  <div id="keyExportModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="keyExportModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.exportKeysTitle">导出 API Keys</h2>
+        <h2 id="keyExportModalTitle" class="modal-title" data-i18n="channels.exportKeysTitle">导出 API Keys</h2>
         <button type="button" class="close-btn channel-modal-close-btn channel-hover-modal-close-btn"
           data-action="close-key-export-modal">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -2104,10 +2118,10 @@
   </div>
 
   <!-- 渠道排序模态框 -->
-  <div id="sortModal" class="modal">
+  <div id="sortModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="sortModalTitle">
     <div class="modal-content modal-content--xl modal-content--tall channel-sort-modal">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.sortModalTitle">渠道排序</h2>
+        <h2 id="sortModalTitle" class="modal-title" data-i18n="channels.sortModalTitle">渠道排序</h2>
         <button type="button" class="close-btn" data-action="close-sort-modal">&times;</button>
       </div>
       <div class="channel-sort-modal-body">
@@ -2230,13 +2244,12 @@
   </template>
 
   <template id="tpl-cooldown-badge">
-    <span
-      style="color: #dc2626; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #fca5a5; white-space: nowrap;"
+    <span class="key-cooldown-badge"
       data-i18n-template="channels.cooldownBadge" data-i18n-time="{{text}}">⚠️ 冷却中·{{text}}</span>
   </template>
 
   <template id="tpl-key-normal-status">
-    <span style="color: var(--success-600); font-size: 12px;" data-i18n="channels.statusNormal">✓ 正常</span>
+    <span class="key-status-normal" data-i18n="channels.statusNormal">✓ 正常</span>
   </template>
 
   <template id="tpl-key-actions">
@@ -2357,19 +2370,19 @@
           <span class="ch-actions-divider" aria-hidden="true"></span>
           <div class="ch-action-group">
             <button class="btn-icon channel-action-btn" data-action="edit" data-channel-id="{{id}}"
-              data-i18n-title="common.edit" title="编辑" aria-label="编辑">
+              data-i18n-title="common.edit" data-i18n-aria-label="common.edit" title="编辑" aria-label="编辑">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 17.25V21H6.75L17.81 9.94L14.06 6.19L3 17.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.71 7.04C21.1 6.65 21.1 6.02 20.71 5.63L18.37 3.29C17.98 2.9 17.35 2.9 16.96 3.29L15.13 5.12L18.88 8.87L20.71 7.04Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button class="btn-icon channel-action-btn" data-action="test" data-channel-id="{{id}}"
-              data-channel-name="{{name}}" data-i18n-title="channels.testApiKey" title="测试API Key" aria-label="测试API Key">
+              data-channel-name="{{name}}" data-i18n-title="channels.testApiKey" data-i18n-aria-label="channels.testApiKey" title="测试API Key" aria-label="测试API Key">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M13 2L4 14H11L9 22L20 10H13L13 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button class="btn-icon channel-action-btn" data-action="copy" data-channel-id="{{id}}"
-              data-channel-name="{{name}}" data-i18n-title="channels.copyChannelTitle" title="复制渠道" aria-label="复制渠道">
+              data-channel-name="{{name}}" data-i18n-title="channels.copyChannelTitle" data-i18n-aria-label="channels.copyChannelTitle" title="复制渠道" aria-label="复制渠道">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
             <button class="btn-icon btn-danger channel-action-btn" data-action="delete" data-channel-id="{{id}}"
-              data-channel-name="{{name}}" data-i18n-title="common.delete" title="删除" aria-label="删除">
+              data-channel-name="{{name}}" data-i18n-title="common.delete" data-i18n-aria-label="common.delete" title="删除" aria-label="删除">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
           </div>
@@ -2424,7 +2437,7 @@
               </svg>
             </button>
             <button type="button" class="redirect-delete-btn" data-index="{{index}}"
-              data-i18n-title="channels.deleteThisModel" title="删除此模型" aria-label="删除此模型">
+              data-i18n-title="channels.deleteThisModel" data-i18n-aria-label="channels.deleteThisModel" title="删除此模型" aria-label="删除此模型">
               <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
                 aria-hidden="true" focusable="false">
                 <path
@@ -2493,10 +2506,10 @@
   </template>
 
   <!-- 上游详情 Modal -->
-  <div id="upstreamDetailModal" class="modal">
+  <div id="upstreamDetailModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="upstreamDetailModalTitle">
     <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
+        <h2 id="upstreamDetailModalTitle" class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
         <button type="button" class="close-btn" data-action="close-upstream-detail">&times;</button>
       </div>
       <div class="upstream-detail-tabs">

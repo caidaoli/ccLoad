@@ -165,6 +165,8 @@
 
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
+      // showConfirm 的原生 <dialog> 自行处理 Esc，不连带关闭底层抽屉
+      if (document.querySelector('dialog[open]')) return;
 
       const modelImportModal = document.getElementById('modelImportModal');
       const keyImportModal = document.getElementById('keyImportModal');
@@ -219,6 +221,8 @@
     }
     if (typeof initChannelFormDirtyTracking === 'function') {
       initChannelFormDirtyTracking();
+      window.guardUnsavedChanges(() =>
+        Boolean(document.getElementById('channelModal')?.classList.contains('show')) && channelFormDirty);
     }
     if (typeof setupKeyImportPreview === 'function') {
       setupKeyImportPreview();

@@ -1586,6 +1586,7 @@ function createChannelCard(channel) {
   // 行class
   const rowClasses = ['channel-table-row'];
   if (isCooldown) rowClasses.push('channel-card-cooldown');
+  if (!channel.enabled) rowClasses.push('channel-card-disabled');
   if (batchRefreshResult && batchRefreshResult.status) {
     rowClasses.push(`channel-row-refresh-${batchRefreshResult.status}`);
   }
@@ -1799,16 +1800,20 @@ function initChannelEventDelegation() {
         if (typeof resetCodexQuota === 'function') {
           const count = Math.max(0, Number(btn.dataset.resetCount) || 0);
           const expiry = btn.dataset.resetExpiry || window.t('channels.oauth.resetCreditExpiresUnknown');
-          const confirmed = window.confirm(window.t('channels.oauth.resetConfirm', { count, time: expiry }));
-          if (!confirmed) break;
-          resetCodexQuota(channelId).then(result => {
-            const hasWarnings = Array.isArray(result?.warnings) && result.warnings.length > 0;
-            const message = !result?.usage || hasWarnings
-              ? window.t('channels.oauth.resetSuccessNeedsRefresh')
-              : window.t('channels.oauth.resetSuccess');
-            if (window.showSuccess) window.showSuccess(message);
+          window.showConfirm({
+            message: window.t('channels.oauth.resetConfirm', { count, time: expiry }),
+            danger: true
+          }).then(confirmed => {
+            if (!confirmed) return;
+            return resetCodexQuota(channelId).then(result => {
+              const hasWarnings = Array.isArray(result?.warnings) && result.warnings.length > 0;
+              const message = !result?.usage || hasWarnings
+                ? window.t('channels.oauth.resetSuccessNeedsRefresh')
+                : window.t('channels.oauth.resetSuccess');
+              window.showSuccess(message);
+            });
           }).catch(error => {
-            if (window.showError) window.showError(error?.message || window.t('channels.oauth.resetFailed'));
+            window.showError(error?.message || window.t('channels.oauth.resetFailed'));
           });
         }
         break;
@@ -1847,6 +1852,16 @@ function buildChannelSortHeader(key, className, label) {
 
 function renderChannels(channelsToRender = channels) {
   const el = document.getElementById('channels-container');
+  if ((!channelsToRender || channelsToRender.length === 0) && typeof channelsLoadFailed !== 'undefined' && channelsLoadFailed) {
+    el.innerHTML = `<div class="glass-card channels-load-error" role="alert">
+      <p>${window.t('channels.loadChannelsFailed')}</p>
+      <button type="button" class="btn btn-secondary btn-sm" data-action="retry-load-channels">${window.t('common.retry')}</button>
+    </div>`;
+    if (typeof updateBatchChannelSelectionUI === 'function') {
+      updateBatchChannelSelectionUI();
+    }
+    return;
+  }
   if (!channelsToRender || channelsToRender.length === 0) {
     el.innerHTML = `<div class="glass-card">${window.t('channels.noChannels')}</div>`;
     if (typeof updateBatchChannelSelectionUI === 'function') {

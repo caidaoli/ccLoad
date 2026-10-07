@@ -7,7 +7,7 @@ function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } = {}) {
+async function loadSettingsPage(t, settings, inputValues, { filterModels = [], initialLoadError = null } = {}) {
   const clickListeners = [];
   const bodyListeners = new Map();
   const multimodalModalListeners = new Map();
@@ -264,7 +264,9 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
   }
 
   let bootstrap;
+  let unsavedGuard = null;
   let allowSave = false;
+  let failNextLoad = null;
   const prompts = [];
   const notifications = [];
   const requests = [];
@@ -279,12 +281,24 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
   global.window = {
     t(key, params = {}) {
       if (key === 'settings.msg.confirmSave') return confirmMessage;
-      if (key === 'settings.msg.invalidValue') return `请检查 ${params.key}：${params.reason}`;
+      if (key === 'settings.msg.invalidValue') return `请检查 ${params.name}：${params.reason}`;
+      if (key === 'settings.msg.invalidValues') return `${params.count} 项无效：${params.details}`;
+      if (key === 'settings.msg.savedRestart') return `需重启：${params.names}`;
+      if (key === 'settings.msg.listSeparator') return '、';
+      if (key === 'settings.msg.detailSeparator') return '；';
       if (key === 'settings.validation.oauthURLDuplicatedScheme') return `协议头重复，请改为 ${params.url}。`;
       return key;
     },
     showNotification(message, type) {
       notifications.push({ message, type });
+    },
+    async showConfirm(options) {
+      prompts.push(options.message);
+      return allowSave;
+    },
+    guardUnsavedChanges(isDirty) {
+      unsavedGuard = isDirty;
+      return () => {};
     },
     initPageBootstrap(config) {
       bootstrap = config;
@@ -318,10 +332,6 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
   global.escapeHtml = (value) => String(value);
   global.showError = (error) => { errors.push(error); };
   global.showSuccess = (message) => { successes.push(message); };
-  global.confirm = (message) => {
-    prompts.push(message);
-    return allowSave;
-  };
   global.fetchDataWithAuth = async (url, options) => {
     requests.push({ url, options });
     if (url.startsWith('/admin/model-pricing?')) {
@@ -329,7 +339,14 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
         resolveModelPricingRequest = resolve;
       });
     }
-    if (!options) return settings;
+    if (!options) {
+      if (failNextLoad) {
+        const error = failNextLoad;
+        failNextLoad = null;
+        throw error;
+      }
+      return settings;
+    }
     if (url === '/admin/update/check') {
       if (nextUpdateError) {
         const error = nextUpdateError;
@@ -360,7 +377,6 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
       'escapeHtml',
       'showError',
       'showSuccess',
-      'confirm',
       'fetchDataWithAuth'
     ]) {
       delete global[name];
@@ -368,6 +384,7 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
   });
 
   require(settingsModule);
+  if (initialLoadError) failNextLoad = new Error(initialLoadError);
   bootstrap.run();
   await flushAsyncWork();
 
@@ -381,6 +398,18 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [] } 
     renderCalls,
     requests,
     saveButton,
+    settingsBody,
+    hasUnsavedChanges: () => unsavedGuard?.(),
+    editInput(key, value) {
+      const input = inputs[key];
+      input.value = value;
+      bodyListeners.get('input')?.({ target: { closest: () => input } });
+    },
+    clickRetryLoad() {
+      bodyListeners.get('click')?.({
+        target: { closest: (selector) => (selector === '[data-action="retry-load-settings"]' ? { disabled: false } : null) }
+      });
+    },
     updateButton,
     typeSafeButton,
     clickTypeSafe() { bodyListeners.get('click')?.({ target: typeSafeButton }); },
@@ -970,4 +999,76 @@ test('TypeSafe test sends entered or saved key without saving and restores butto
   await flushAsyncWork();
   assert.equal(page.typeSafeButton.disabled, false);
   assert.match(page.errors.at(-1), /connection failed/);
+});
+
+test('一次保存报告全部无效设置的可读名称并标记每个输入', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'max_key_retries', value: '3', value_type: 'int', description: '单渠道最大Key重试次数' },
+    { key: 'max_concurrency', value: '10', value_type: 'int', description: '最大并发请求数' },
+    { key: 'log_retention_days', value: '7', value_type: 'int', description: '日志保留天数' }
+  ], { max_key_retries: '0', max_concurrency: '0', log_retention_days: '30' });
+  page.setAllowSave(true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.equal(saveRequests(page).length, 0);
+  assert.equal(page.prompts.length, 0);
+  assert.equal(page.errors.length, 1);
+  assert.match(page.errors[0], /^2 项无效：/);
+  assert.match(page.errors[0], /请检查 单渠道最大Key重试次数：/);
+  assert.match(page.errors[0], /请检查 最大并发请求数：/);
+  assert.doesNotMatch(page.errors[0], /max_key_retries|max_concurrency/);
+  assert.equal(page.inputs.max_key_retries.getAttribute('aria-invalid'), 'true');
+  assert.equal(page.inputs.max_concurrency.getAttribute('aria-invalid'), 'true');
+  assert.equal(page.inputs.log_retention_days.getAttribute('aria-invalid'), null);
+  assert.equal(global.document.activeElement, page.inputs.max_key_retries);
+
+  page.editInput('max_key_retries', '5');
+  assert.equal(page.inputs.max_key_retries.getAttribute('aria-invalid'), null);
+  assert.equal(page.inputs.max_concurrency.getAttribute('aria-invalid'), 'true');
+});
+
+test('保存成功后汇总需重启生效的设置', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'max_concurrency', value: '10', value_type: 'int', description: '最大并发请求数' }
+  ], { max_concurrency: '20' });
+  page.setAllowSave(true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(page.successes, ['需重启：最大并发请求数']);
+});
+
+test('存在未保存修改时离开页面受保护，保存后解除', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'max_concurrency', value: '10', value_type: 'int', description: '' }
+  ], { max_concurrency: '10' });
+  page.setAllowSave(true);
+
+  assert.equal(page.hasUnsavedChanges(), false);
+  page.editInput('max_concurrency', '20');
+  assert.equal(page.hasUnsavedChanges(), true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(page.hasUnsavedChanges(), false);
+});
+
+test('设置加载失败时提供重试入口并重新加载', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'max_concurrency', value: '10', value_type: 'int', description: '' }
+  ], { max_concurrency: '10' }, { initialLoadError: '网络错误' });
+
+  assert.match(page.settingsBody.innerHTML, /网络错误/);
+  assert.match(page.settingsBody.innerHTML, /data-action="retry-load-settings"/);
+  const loadsBefore = page.requests.filter(({ url }) => url === '/admin/settings').length;
+
+  page.clickRetryLoad();
+  await flushAsyncWork();
+
+  assert.equal(page.requests.filter(({ url }) => url === '/admin/settings').length, loadsBefore + 1);
+  assert.equal(page.renderCalls.some(({ template }) => template === 'tpl-setting-row'), true);
 });

@@ -36,6 +36,7 @@ async function loadChannels(options = {}) {
     }
 
     channels = Array.isArray(resp.data) ? resp.data : [];
+    channelsLoadFailed = false;
     if (typeof syncAnthropicResetCreditsFromChannels === 'function') {
       syncAnthropicResetCreditsFromChannels(channels);
     }
@@ -64,8 +65,11 @@ async function loadChannels(options = {}) {
   } catch (e) {
     if (loadSequence !== channelsLoadSequence) return;
     console.error('Failed to load channels', e);
+    channelsLoadFailed = true;
     if (options.throwOnError) throw e;
-    if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
+    // 已有列表时保留旧数据仅提示；空列表由 renderChannels 渲染就地错误与重试按钮
+    if (channels.length === 0) renderChannels();
+    else window.showError(window.t('channels.loadChannelsFailed'));
   }
 }
 

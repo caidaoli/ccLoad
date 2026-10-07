@@ -35,6 +35,7 @@
         </section>
 
         <section class="glass-card mb-6">
+          <p class="settings-restart-note" data-i18n="settings.restartNote">以下设置保存后需重启服务生效。</p>
           <div class="table-container settings-table-container mobile-card-table-container">
             <table class="modern-table settings-table mobile-card-table">
               <colgroup>
@@ -55,17 +56,24 @@
               多模态回退
             </button>
             <span id="model-multimodal-fallback-summary" class="settings-multimodal-fallback-summary"></span>
+            <span class="settings-effect-badge settings-effect-badge--hot" data-i18n="settings.effect.hot">立即生效</span>
             <input type="hidden" id="model_multimodal_fallback" value="{}">
             <button id="model-custom-pricing-btn" type="button" class="btn btn-secondary settings-custom-pricing-btn" data-i18n="settings.customPricing.edit">
               模型价格
             </button>
             <span id="model-custom-pricing-summary" class="settings-custom-pricing-summary"></span>
+            <span class="settings-effect-badge settings-effect-badge--hot" data-i18n="settings.effect.hot">立即生效</span>
             <input type="hidden" id="model_custom_pricing" value="{}">
-            <button id="save-all-btn" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
-              保存所有更改
-            </button>
           </div>
         </section>
+
+        <!-- 保存栏置于卡片之外：.glass-card 的 overflow:hidden 会让 sticky 失效 -->
+        <div class="settings-savebar" role="region" data-i18n-aria-label="settings.savebar.label" aria-label="保存设置">
+          <span id="settings-dirty-status" class="settings-savebar-status" aria-live="polite"></span>
+          <button id="save-all-btn" type="button" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
+            保存所有更改
+          </button>
+        </div>
       </div>
     </main>
   </div>
@@ -232,7 +240,9 @@
   <!-- 设置行模板 -->
   <template id="tpl-setting-row">
     <tr class="mobile-card-row setting-data-row" data-key="{{key}}">
-      <td class="setting-col-description" data-mobile-label="{{mobileLabelDescription}}">{{description}}</td>
+      <td class="setting-col-description" data-mobile-label="{{mobileLabelDescription}}">
+        <span class="setting-description-text">{{description}}</span>
+      </td>
       <td class="setting-col-value" data-mobile-label="{{mobileLabelValue}}">{{{inputHtml}}}</td>
       <td class="setting-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <button type="button" class="btn-icon setting-reset-btn" data-key="{{key}}" data-i18n-title="settings.resetToDefault" data-i18n-aria-label="settings.resetToDefault" title="重置为默认值" aria-label="恢复默认值">

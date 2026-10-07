@@ -69,7 +69,18 @@ function toggleChannelsSort(key) {
   const order = channelsSort.key === key
     ? (channelsSort.order === 'asc' ? 'desc' : 'asc')
     : defaultChannelSortOrder(key);
-  channelsSort = normalizeChannelsSort({ key, order });
+  applyChannelsSort({ key, order });
+}
+
+// 窄屏排序下拉的取值为 "key:order"，与表头排序共用 channelsSort
+function syncChannelSortSelect() {
+  const select = document.getElementById('channelSortSelect');
+  if (select) select.value = `${channelsSort.key}:${channelsSort.order}`;
+}
+
+function applyChannelsSort(sort) {
+  channelsSort = normalizeChannelsSort(sort);
+  syncChannelSortSelect();
   channelsCurrentPage = 1;
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
   loadChannels();
@@ -121,6 +132,15 @@ function setupFilterListeners() {
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     loadChannels();
   });
+
+  const sortSelect = document.getElementById('channelSortSelect');
+  if (sortSelect) {
+    syncChannelSortSelect();
+    sortSelect.addEventListener('change', (e) => {
+      const [key, order] = String(e.target.value).split(':');
+      applyChannelsSort({ key, order });
+    });
+  }
 
   const authTypeFilterInput = document.getElementById('channelAuthTypeFilter');
   if (authTypeFilterInput) {

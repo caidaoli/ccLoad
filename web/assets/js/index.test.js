@@ -25,8 +25,8 @@ test('service health normalizes only the metric buckets returned for the selecte
   const bucketMs = 15 * 60 * 1000;
   const metrics = [
     { ts: new Date(startMs).toISOString(), success: 19, error: 1 },
-    { ts: new Date(startMs + bucketMs).toISOString(), success: 4, error: 1 },
-    { ts: new Date(startMs + 2 * bucketMs).toISOString(), success: 1, error: 4 },
+    { ts: new Date(startMs + bucketMs).toISOString(), success: 4, error: 1, rate_limited: 1 },
+    { ts: new Date(startMs + 2 * bucketMs).toISOString(), success: 1, error: 4, rate_limited: 2 },
     { ts: 'invalid', success: 100, error: 0 }
   ];
 
@@ -42,6 +42,8 @@ test('service health normalizes only the metric buckets returned for the selecte
   assert.deepEqual(model.points.map(point => point.rate), [0.95, 0.8, 0.2]);
   assert.equal(model.success, 24);
   assert.equal(model.error, 6);
+  assert.deepEqual(model.points.map(point => point.rateLimited), [0, 1, 2]);
+  assert.equal(model.rateLimited, 3);
   assert.equal(model.rate, 0.8);
   assert.equal(model.state, 'warning');
 });
@@ -81,4 +83,18 @@ test('overview totals take request counts from the summary and sum cost and outp
   assert.deepEqual(buildOverviewTotals({}), {
     requests: 0, success: 0, error: 0, rate: null, cost: 0, effectiveCost: 0, outputTokens: 0
   });
+});
+
+test('dashboard time range restored from URL/storage falls back to today when invalid', () => {
+  const { resolveIndexTimeRange } = require('./index.js');
+
+  assert.deepEqual(resolveIndexTimeRange({ range: 'this_week' }), { range: 'this_week', customRange: null });
+  assert.deepEqual(
+    resolveIndexTimeRange({ range: 'custom', customStartTime: '1785456000000', customEndTime: '1785542399000' }),
+    { range: 'custom', customRange: { startMs: 1785456000000, endMs: 1785542399000 } }
+  );
+  // 自定义区间缺失或倒置、未知范围值都回落到本日
+  assert.deepEqual(resolveIndexTimeRange({ range: 'custom', customStartTime: '', customEndTime: '' }), { range: 'today', customRange: null });
+  assert.deepEqual(resolveIndexTimeRange({ range: 'custom', customStartTime: '200', customEndTime: '100' }), { range: 'today', customRange: null });
+  assert.deepEqual(resolveIndexTimeRange({ range: 'last_year' }), { range: 'today', customRange: null });
 });

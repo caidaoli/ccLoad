@@ -5,21 +5,12 @@
       --logs-pending-badge-fg: var(--warning-700);
     }
 
-    html[data-theme="dark"] {
+    html[data-resolved-theme="dark"] {
       --logs-pending-row-bg: rgba(14, 116, 144, 0.16);
       --logs-pending-row-hover-bg: rgba(14, 116, 144, 0.24);
       --logs-pending-badge-bg: rgba(14, 116, 144, 0.22);
       --logs-pending-badge-fg: #67e8f9;
     }
-
-    html[data-theme="system"][data-resolved-theme="dark"] {
-      --logs-pending-row-bg: rgba(14, 116, 144, 0.16);
-      --logs-pending-row-hover-bg: rgba(14, 116, 144, 0.24);
-      --logs-pending-badge-bg: rgba(14, 116, 144, 0.22);
-      --logs-pending-badge-fg: #67e8f9;
-    }
-
-    /* API Key 测试按钮样式 */
 
     /* 列显隐切换按钮 */
     .logs-col-toggle-btn {
@@ -115,7 +106,7 @@
       border: none;
       background: transparent;
       cursor: pointer;
-      font-size: 14px;
+      font-size: var(--text-sm);
       border-radius: 4px;
       transition: all 0.2s ease;
       line-height: 1;
@@ -308,10 +299,6 @@
       font-feature-settings: "tnum";
     }
 
-    .token-metric-value.token-empty {
-      color: var(--neutral-500);
-    }
-
     .stream-flag {
       display: inline-block;
       margin-left: 6px;
@@ -424,7 +411,7 @@
     .logs-jump-input:focus {
       outline: none;
       border-color: var(--primary-500);
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      box-shadow: var(--focus-ring);
       background: var(--field-bg-focus);
     }
 
@@ -449,10 +436,6 @@
       flex: 0 0 auto;
     }
 
-    .logs-filter-group--channel-id {
-      flex: 0 1 134px;
-    }
-
     .logs-filter-group--token {
       flex: 0 0 auto;
     }
@@ -475,10 +458,6 @@
       min-width: 0;
     }
 
-    .logs-filter-control--channel-id {
-      max-width: 72px;
-    }
-
     .logs-filter-control--token {
       max-width: 120px;
     }
@@ -491,10 +470,6 @@
     .logs-filter-controls .filter-control--status {
       min-width: 80px;
       max-width: 90px;
-    }
-
-    .logs-filter-info {
-      white-space: nowrap;
     }
 
     .log-source-badge {
@@ -526,7 +501,7 @@
 
     .log-source-badge--manual {
       color: var(--success-600);
-      background: #d1fae5;
+      background: var(--success-100);
     }
 
     .log-source-badge--checkin {
@@ -593,7 +568,7 @@
       align-items: center;
       margin-left: var(--space-2);
       padding: 2px 8px;
-      font-size: 0.75rem;
+      font-size: var(--text-xs);
       font-weight: var(--font-medium);
       border-radius: 999px;
       line-height: 1.4;
@@ -621,11 +596,6 @@
       color: var(--neutral-700);
       background: var(--neutral-100);
       border: 1px solid var(--neutral-200);
-    }
-
-    @keyframes debug-log-status-pulse {
-      0%, 100% { opacity: 0.4; transform: scale(0.8); }
-      50% { opacity: 1; transform: scale(1.1); }
     }
 
     .debug-log-unavailable {
@@ -948,13 +918,6 @@
         align-items: center;
       }
 
-      .logs-filter-summary-row .logs-filter-info {
-        width: auto;
-        min-width: 0;
-        text-align: left;
-        justify-self: start;
-      }
-
       .logs-filter-summary-row .logs-filter-actions {
         width: auto;
         justify-self: end;
@@ -1000,8 +963,10 @@
       }
     }
 
+    /* 表头不折行：列宽不足时由 .table-container 横向滚动，而不是把表头挤成竖排 */
     .logs-table th {
       text-align: center;
+      white-space: nowrap;
     }
 
     /* 列背景交替（按列斑马纹） */
@@ -1013,45 +978,53 @@
       background: var(--surface-bg-muted);
     }
 
-    /* 固定宽度列 */
-    .logs-table th:nth-child(1),
-    .logs-table td:nth-child(1) {
-      width: 110px;
-      /* 时间: MM-DD HH:mm:ss */
-      min-width: 110px;
-      max-width: 110px;
+    /* 桌面端列宽（按列 class 而非序号，列显隐后不会错位；移动卡片布局由 mobile-card-table 重置宽度） */
+    @media (min-width: 769px) {
+      .logs-table .logs-col-time {
+        /* 时间: MM-DD HH:mm:ss */
+        min-width: 110px;
+        white-space: nowrap;
+      }
+
+      .logs-table .logs-col-ip {
+        /* IP: xxx.xxx.*.* */
+        min-width: 110px;
+        text-align: center;
+      }
+
+      .logs-table .logs-col-status {
+        min-width: 60px;
+        text-align: center;
+      }
+
+      .logs-table .logs-col-cache-util {
+        min-width: 70px;
+        padding-right: var(--space-2);
+      }
+
+      .logs-table .logs-col-message {
+        min-width: 240px;
+        max-width: 420px;
+      }
+
+      /* 长上游错误截断为 3 行，完整文本见 title / Debug 详情 */
+      .logs-table .logs-message-text {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+      }
     }
 
-    .logs-table th:nth-child(2),
-    .logs-table td:nth-child(2) {
-      width: 110px;
-      /* IP: xxx.xxx.*.* */
-      min-width: 110px;
-      max-width: 110px;
-      text-align: center;
+    .logs-table .logs-col-status .status-warning {
+      color: var(--warning-600);
+      font-weight: var(--font-medium);
     }
 
-    .logs-table th:nth-child(7),
-    .logs-table td:nth-child(7) {
-      width: 60px;
-      /* 状态码: 200/403/500 */
-      min-width: 60px;
-      max-width: 60px;
-      text-align: center;
-    }
-
-    .logs-table th:nth-child(14),
-    .logs-table td:nth-child(14) {
-      width: 70px;
-      /* 缓存命中 */
-      min-width: 70px;
-      max-width: 70px;
-      padding-right: var(--space-2);
-    }
-
-    .logs-table th:nth-child(16),
-    .logs-table td:nth-child(16) {
-      min-width: 120px;
+    .logs-retry-btn {
+      margin-top: var(--space-3);
     }
 
     .logs-table .logs-col-model {
@@ -1175,18 +1148,6 @@
       background: var(--logs-pending-badge-bg);
       color: var(--logs-pending-badge-fg);
       animation: none;
-    }
-
-    @keyframes pulse-pending {
-
-      0%,
-      100% {
-        opacity: 1;
-      }
-
-      50% {
-        opacity: 0.6;
-      }
     }
 
     /* 进行中行高亮 */

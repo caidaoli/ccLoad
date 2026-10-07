@@ -43,6 +43,7 @@ function normalizeChannelsSort(value) {
 let channelsSort = normalizeChannelsSort(null);
 let channelsTotalPages = 1;
 let channelsTotalCount = 0;
+let channelsLoadFailed = false; // 最近一次列表加载失败：空列表时渲染就地错误与重试
 let allAvailableModels = [];
 let allAvailableChannelNames = [];
 let batchRefreshResultsByChannelId = new Map();

@@ -266,7 +266,7 @@ window.WebAuth = window.WebAuth || {
     }
     root.querySelectorAll && root.querySelectorAll('.theme-option').forEach((option) => {
       const active = option.getAttribute('data-theme-mode') === currentThemeMode;
-      option.setAttribute('aria-pressed', active ? 'true' : 'false');
+      option.setAttribute('aria-checked', active ? 'true' : 'false');
       option.classList.toggle('active', active);
     });
   }
@@ -688,7 +688,8 @@ window.WebAuth = window.WebAuth || {
       ...NAVS.filter((item) => visibleNavKeys.has(item.key)).map(n => h('a', {
         class: `topnav-link ${n.key === active ? 'active' : ''}`,
         href: n.href,
-        'data-nav-key': n.key
+        'data-nav-key': n.key,
+        ...(n.key === active ? { 'aria-current': 'page' } : {})
       }, [n.icon(), h('span', { 'data-i18n': n.labelKey }, t(n.labelKey))]))
     ]);
     const loggedIn = isLoggedIn();
@@ -770,7 +771,7 @@ window.WebAuth = window.WebAuth || {
       class: 'theme-option',
       role: 'menuitemradio',
       'data-theme-mode': mode,
-      'aria-pressed': mode === currentThemeMode ? 'true' : 'false',
+      'aria-checked': mode === currentThemeMode ? 'true' : 'false',
       onclick: (event) => {
         setThemeMode(mode);
         setThemeSwitcherOpen(event.currentTarget.closest('.theme-switcher'), false);
@@ -788,7 +789,7 @@ window.WebAuth = window.WebAuth || {
   }
 
   async function onLogout() {
-    if (!confirm(t('confirm.logout'))) return;
+    if (!(await showConfirm({ message: t('confirm.logout') }))) return;
 
     // 先清理本地Token，避免后续请求触发token检查
     const token = localStorage.getItem('ccload_token');
@@ -841,19 +842,28 @@ window.WebAuth = window.WebAuth || {
     const mobileBtn = document.getElementById('mobile-menu-btn');
     if (mobileBtn) mobileBtn.style.display = 'none';
 
-    // 插入顶部条；角色变化后重复调用时原位替换
+    // 插入顶部条；放在 body 最前，键盘 Tab 先到导航。角色变化后重复调用时原位替换
     const topbar = buildTopbar(activeKey);
     const existing = document.querySelector('body > .topbar');
     if (existing) existing.replaceWith(topbar);
-    else document.body.appendChild(topbar);
+    else document.body.prepend(topbar);
 
-    // 窄屏导航横向滚动时，让当前页可见
+    // 窄屏导航横向滚动时，让当前页可见，并用两侧渐隐提示还有更多项
     const nav = topbar.querySelector('.topnav');
     const activeLink = nav && nav.querySelector('.topnav-link.active');
     if (activeLink && nav.scrollWidth > nav.clientWidth) {
       const navRect = nav.getBoundingClientRect();
       const linkRect = activeLink.getBoundingClientRect();
       nav.scrollLeft += linkRect.left - navRect.left - (navRect.width - linkRect.width) / 2;
+    }
+    if (nav) {
+      const updateNavOverflow = () => {
+        nav.classList.toggle('has-more-start', nav.scrollLeft > 2);
+        nav.classList.toggle('has-more-end', nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 2);
+      };
+      nav.addEventListener('scroll', updateNavOverflow, { passive: true });
+      window.addEventListener('resize', updateNavOverflow);
+      updateNavOverflow();
     }
 
     // 背景动效
@@ -871,13 +881,12 @@ window.WebAuth = window.WebAuth || {
   window.onActiveRequestsData = onActiveRequestsData;
   window.getChartTheme = getChartTheme;
 
-  // 通知系统（全局复用，DRY）
+  // 通知系统（全局复用，DRY）；外观全部由 styles.css 的 .notification* 定义
   function ensureNotifyHost() {
     let host = document.getElementById('notify-host');
     if (!host) {
       host = document.createElement('div');
       host.id = 'notify-host';
-      host.style.cssText = `position: fixed; top: var(--space-6); right: var(--space-6); display: flex; flex-direction: column; gap: var(--space-2); z-index: 9999; pointer-events: none;`;
       document.body.appendChild(host);
     }
     return host;
@@ -888,58 +897,94 @@ window.WebAuth = window.WebAuth || {
   window.showNotification = function (message, type = 'info') {
     const el = document.createElement('div');
     el.className = `notification notification-${type}`;
-    el.style.cssText = `
-      background: var(--glass-bg);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--glass-border);
-      border-radius: var(--radius-lg);
-      padding: var(--space-4) var(--space-6);
-      color: var(--neutral-900);
-      font-weight: var(--font-medium);
-      opacity: 0;
-      transform: translateX(20px);
-      transition: all var(--duration-normal) var(--timing-function);
-      max-width: 360px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.12);
-      overflow: hidden;
-      overflow-wrap: anywhere;
-      white-space: pre-wrap;
-      isolation: isolate;
-      pointer-events: auto;
-    `;
-    if (type === 'success') {
-      el.style.background = 'var(--notification-success-bg)';
-      el.style.color = 'var(--notification-success-fg)';
-      el.style.borderColor = 'var(--notification-success-border)';
-      el.style.boxShadow = '0 6px 28px rgba(16,185,129,0.18)';
-    } else if (type === 'error') {
-      el.style.background = 'var(--notification-error-bg)';
-      el.style.color = 'var(--notification-error-fg)';
-      el.style.borderColor = 'var(--notification-error-border)';
-      el.style.boxShadow = '0 6px 28px rgba(239,68,68,0.18)';
-    } else if (type === 'warning') {
-      el.style.background = 'var(--notification-warning-bg)';
-      el.style.color = 'var(--notification-warning-fg)';
-      el.style.borderColor = 'var(--notification-warning-border)';
-      el.style.boxShadow = '0 6px 28px rgba(245,158,11,0.18)';
-    } else if (type === 'info') {
-      el.style.background = 'var(--notification-info-bg)';
-      el.style.color = 'var(--notification-info-fg)';
-      el.style.borderColor = 'var(--notification-info-border)';
-    }
     el.textContent = message;
     el.setAttribute('role', type === 'error' ? 'alert' : 'status');
-    const host = ensureNotifyHost();
-    host.appendChild(el);
-    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
+    ensureNotifyHost().appendChild(el);
+    requestAnimationFrame(() => el.classList.add('is-visible'));
     setTimeout(() => {
-      el.style.opacity = '0'; el.style.transform = 'translateX(20px)';
-      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+      el.classList.remove('is-visible');
+      setTimeout(() => el.remove(), 320);
     }, 3600);
-  }
+  };
   window.showSuccess = (msg) => window.showNotification(msg, 'success');
   window.showError = (msg) => window.showNotification(msg, 'error');
   window.showWarning = (msg) => window.showNotification(msg, 'warning');
+
+  /**
+   * 统一确认框（替代原生 confirm）。基于 <dialog>：顶层渲染、Esc 取消、焦点受控。
+   * @param {string|{title?: string, message: string, detail?: string, confirmText?: string, cancelText?: string, danger?: boolean}} options
+   * @returns {Promise<boolean>}
+   */
+  function showConfirm(options) {
+    const opts = typeof options === 'string' ? { message: options } : (options || {});
+    const tr = (key, fallback) => (typeof window.t === 'function' ? window.t(key) : fallback);
+    const dialog = document.createElement('dialog');
+    dialog.className = 'app-confirm-dialog';
+    dialog.setAttribute('aria-modal', 'true');
+
+    const titleId = `app-confirm-title-${Date.now()}`;
+    const title = document.createElement('h2');
+    title.className = 'modal-title';
+    title.id = titleId;
+    title.textContent = opts.title || tr('common.confirm', '确认');
+    dialog.setAttribute('aria-labelledby', titleId);
+
+    const message = document.createElement('p');
+    message.className = 'app-confirm-message';
+    message.textContent = opts.message || '';
+    dialog.append(title, message);
+
+    if (opts.detail) {
+      const detail = document.createElement('p');
+      detail.className = 'app-confirm-detail';
+      detail.textContent = opts.detail;
+      dialog.appendChild(detail);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = opts.cancelText || tr('common.cancel', '取消');
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = opts.danger ? 'btn btn-danger' : 'btn btn-primary';
+    okBtn.textContent = opts.confirmText || tr('common.confirm', '确认');
+    actions.append(cancelBtn, okBtn);
+    dialog.appendChild(actions);
+    document.body.appendChild(dialog);
+
+    return new Promise((resolve) => {
+      let result = false;
+      cancelBtn.addEventListener('click', () => dialog.close());
+      okBtn.addEventListener('click', () => { result = true; dialog.close(); });
+      dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+      dialog.addEventListener('close', () => { dialog.remove(); resolve(result); }, { once: true });
+      // 推迟到下一任务打开：若由 Esc keydown 触发，该按键的关闭请求会立即取消同步打开的对话框
+      setTimeout(() => {
+        dialog.showModal();
+        (opts.danger ? cancelBtn : okBtn).focus();
+      }, 0);
+    });
+  }
+  window.showConfirm = showConfirm;
+
+  /**
+   * 未保存改动离开保护。isDirty 返回 true 时刷新/关闭页面会触发浏览器确认。
+   * @param {() => boolean} isDirty
+   * @returns {() => void} 解除保护
+   */
+  function guardUnsavedChanges(isDirty) {
+    const handler = (e) => {
+      if (!isDirty()) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }
+  window.guardUnsavedChanges = guardUnsavedChanges;
 })();
 
 // ============================================================
@@ -1353,18 +1398,24 @@ window.WebAuth = window.WebAuth || {
   /**
    * 格式化成本（美元）
    * @param {number} cost - 成本值
-   * @param {number} [decimalPlaces=3] - 小数位数
+   * @param {number} [decimalPlaces] - 小数位数；省略时默认 3 位，不足 $0.01 的小额保留两位有效数字（最多 6 位）
    * @returns {string} 格式化后的字符串
    */
   function formatCost(cost, decimalPlaces) {
     const value = Number(cost);
     if (!Number.isFinite(value)) return '';
-    const hasExplicitDecimalPlaces = Number.isInteger(decimalPlaces);
-    const places = hasExplicitDecimalPlaces
-      ? Math.max(0, Math.min(6, decimalPlaces))
-      : 3;
-    if (value === 0) return hasExplicitDecimalPlaces && places > 0 ? '$0.' + '0'.repeat(places) : '$0';
-    return '$' + value.toFixed(places);
+    if (Number.isInteger(decimalPlaces)) {
+      const places = Math.max(0, Math.min(6, decimalPlaces));
+      if (value === 0) return places > 0 ? '$0.' + '0'.repeat(places) : '$0';
+      return '$' + value.toFixed(places);
+    }
+    if (value === 0) return '$0';
+    const abs = Math.abs(value);
+    if (value > 0 && abs < 0.000001) return '<$0.000001';
+    if (abs >= 0.01) return '$' + value.toFixed(3);
+    // 小额成本按有效数字展开，避免单次请求显示成 $0.000
+    const places = Math.min(6, Math.ceil(-Math.log10(abs)) + 1);
+    return '$' + value.toFixed(places).replace(/0+$/, '');
   }
 
   /**
@@ -1495,6 +1546,17 @@ window.WebAuth = window.WebAuth || {
     return n.toString();
   }
 
+  /**
+   * 百分比统一格式：保留 1 位小数，0/100 等整数也不省略（100.0%）
+   * @param {number} ratio - 0~1 的比例
+   * @returns {string} 无效值返回 '--'
+   */
+  function formatPercent(ratio) {
+    const n = Number(ratio);
+    if (ratio === null || ratio === undefined || !Number.isFinite(n)) return '--';
+    return `${(n * 100).toFixed(1)}%`;
+  }
+
   // RPM 颜色：低流量绿色，中等橙色，高流量红色
   function getRpmColor(rpm) {
     const n = Number(rpm);
@@ -1546,6 +1608,7 @@ window.WebAuth = window.WebAuth || {
   window.getFirstByteTimingColor = getFirstByteTimingColor;
   window.getDurationTimingColor = getDurationTimingColor;
   window.formatNumber = formatNumber;
+  window.formatPercent = formatPercent;
   window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;
   window.toggleResponse = toggleResponse;

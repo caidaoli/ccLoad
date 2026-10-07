@@ -131,7 +131,7 @@
                   data-i18n-placeholder="modelTest.modelInputPlaceholder"
                   placeholder="输入或选择模型"
                 >
-                <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="common.model" aria-label="模型"></div>
               </div>
             </label>
             <label class="chat-control chat-control--selector">
@@ -221,7 +221,7 @@
                     data-i18n-placeholder="modelTest.modelInputPlaceholder"
                     placeholder="输入或选择模型"
                   >
-                  <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                  <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="common.model" aria-label="模型"></div>
                 </div>
               </label>
               <div id="keySelectorLabel" class="model-test-control model-test-control--key">
@@ -307,7 +307,7 @@
             <div class="model-test-toolbar-section model-test-toolbar-section--meta">
               <label class="model-test-control model-test-control--name-filter">
                 <span class="model-test-control__label" data-i18n="common.search">搜索</span>
-                <input type="text" id="modelTestMobileNameFilter" value="" class="model-test-inline-input" autocomplete="off" spellcheck="false" placeholder="搜索模型名称...">
+                <input type="text" id="modelTestMobileNameFilter" value="" class="model-test-inline-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="modelTest.filterModelPlaceholder" placeholder="搜索模型名称...">
               </label>
               <span id="testProgress" class="model-test-progress"></span>
             </div>
@@ -392,10 +392,11 @@
                       autocomplete="off"
                       spellcheck="false"
                       data-i18n-title="modelTest.chat.thinkingLevel"
+                      data-i18n-aria-label="modelTest.chat.thinkingLevel"
                       title="思考等级"
                       aria-label="思考等级"
                     >
-                    <div id="chatThinkingLevelDropdown" class="filter-dropdown" role="listbox" aria-label="思考等级"></div>
+                    <div id="chatThinkingLevelDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.chat.thinkingLevel" aria-label="思考等级"></div>
                   </div>
                 </div>
                 <button
@@ -429,7 +430,7 @@
                   <span class="chat-control__label" data-i18n="common.model">模型</span>
                   <div class="filter-combobox-wrapper image-test-model-combobox">
                     <input id="imageModelInput" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" required data-i18n-placeholder="modelTest.modelInputPlaceholder" placeholder="输入或选择模型">
-                    <div id="imageModelDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                    <div id="imageModelDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="common.model" aria-label="模型"></div>
                   </div>
                 </label>
                 <label class="chat-control chat-control--selector image-test-target-control">
@@ -511,11 +512,11 @@
   </div>
 
   <!-- 对话高级选项弹窗 -->
-  <div id="chatAdvancedOptionsModal" class="modal">
+  <div id="chatAdvancedOptionsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="chatAdvancedOptionsModalTitle">
     <div class="modal-content modal-content--md chat-advanced-modal-content">
       <div class="modal-header modal-header--compact">
-        <h2 class="modal-title" data-i18n="modelTest.chat.advancedTitle">高级选项</h2>
-        <button type="button" class="close-btn" data-action="close-chat-advanced-options" aria-label="Close">&times;</button>
+        <h2 id="chatAdvancedOptionsModalTitle" class="modal-title" data-i18n="modelTest.chat.advancedTitle">高级选项</h2>
+        <button type="button" class="close-btn" data-action="close-chat-advanced-options" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
       <div class="chat-advanced-form">
         <label class="chat-advanced-field chat-advanced-field--full">
@@ -580,7 +581,7 @@
         <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}</button>
       </td>
       <td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}"><div class="ch-priority-editor-wrap" data-channel-id="{{channelId}}"><input class="ch-priority-input" type="number" min="-99999" max="9999999" step="1" value="{{channelPriority}}" data-channel-id="{{channelId}}" data-original-priority="{{channelPriority}}"></div>{{{dynamicPriorityHtml}}}</td>
-      <td class="model-test-col-enabled" data-mobile-label="{{mobileLabelEnabled}}"><button class="channel-enable-switch {{toggleSwitchClass}}" data-channel-id="{{channelId}}" data-enabled="{{modelEnabled}}" role="switch" aria-checked="{{modelEnabled}}" title="{{toggleTitle}}" aria-label="{{toggleTitle}}"><span class="channel-enable-switch__knob" aria-hidden="true"></span></button></td>
+      <td class="model-test-col-enabled" data-mobile-label="{{mobileLabelEnabled}}"><button type="button" class="channel-enable-switch {{toggleSwitchClass}}" data-channel-id="{{channelId}}" data-enabled="{{modelEnabled}}" role="switch" aria-checked="{{modelEnabled}}" title="{{toggleTitle}}" aria-label="{{toggleTitle}}"><span class="channel-enable-switch__knob" aria-hidden="true"></span></button></td>
       <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>
@@ -599,11 +600,11 @@
   </template>
 
   <!-- 上游请求/响应详情弹窗 -->
-  <div id="upstreamDetailModal" class="modal">
+  <div id="upstreamDetailModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="upstreamDetailModalTitle">
     <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
-        <button type="button" class="close-btn" data-action="close-upstream-detail">&times;</button>
+        <h2 id="upstreamDetailModalTitle" class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
+        <button type="button" class="close-btn" data-action="close-upstream-detail" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
       <div class="upstream-detail-tabs">
         <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
@@ -623,11 +624,11 @@
   </div>
 
   <!-- 批量添加模型弹窗 -->
-  <div id="addModelsModal" class="modal">
+  <div id="addModelsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="addModelsModalTitle">
     <div class="modal-content modal-content--lg">
       <div class="modal-header modal-header--compact">
-        <h2 class="modal-title" data-i18n="modelTest.addModelsTitle">批量添加模型</h2>
-        <button id="addModelsCloseBtn" class="close-btn" aria-label="Close">&times;</button>
+        <h2 id="addModelsModalTitle" class="modal-title" data-i18n="modelTest.addModelsTitle">批量添加模型</h2>
+        <button id="addModelsCloseBtn" type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
       <label class="model-test-add-field">
         <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型（逗号或换行分隔）</span>
@@ -651,26 +652,26 @@
         </ul>
       </div>
       <div class="confirm-actions confirm-actions--end">
-        <button id="addModelsCancelBtn" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
-        <button id="addModelsConfirmBtn" class="btn btn-primary" data-i18n="modelTest.addModelsConfirm">确认添加</button>
+        <button id="addModelsCancelBtn" type="button" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
+        <button id="addModelsConfirmBtn" type="button" class="btn btn-primary" data-i18n="modelTest.addModelsConfirm">确认添加</button>
       </div>
     </div>
   </div>
 
   <!-- 删除预览确认弹窗 -->
-  <div id="deletePreviewModal" class="modal">
+  <div id="deletePreviewModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="deletePreviewModalTitle">
     <div class="modal-content modal-content--lg">
       <div class="modal-header modal-header--compact">
-        <h2 class="modal-title" data-i18n="modelTest.deletePreviewTitle">确认删除模型</h2>
-        <button id="deletePreviewCloseBtn" class="close-btn" aria-label="Close">&times;</button>
+        <h2 id="deletePreviewModalTitle" class="modal-title" data-i18n="modelTest.deletePreviewTitle">确认删除模型</h2>
+        <button id="deletePreviewCloseBtn" type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
       </div>
       <p class="modal-description" data-i18n="modelTest.deletePreviewDesc">将按以下分组删除，请确认：</p>
       <pre id="deletePreviewContent" class="delete-preview-text">-</pre>
       <p id="deletePreviewProgress" class="model-test-delete-preview-progress hidden">-</p>
       <pre id="deletePreviewRuntimeLog" class="delete-preview-text model-test-delete-preview-log hidden">-</pre>
       <div class="confirm-actions confirm-actions--end">
-        <button id="deletePreviewCancelBtn" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
-        <button id="deletePreviewConfirmBtn" class="btn btn-danger" data-i18n="modelTest.deletePreviewConfirm">确认删除</button>
+        <button id="deletePreviewCancelBtn" type="button" class="btn btn-secondary" data-i18n="common.cancel">取消</button>
+        <button id="deletePreviewConfirmBtn" type="button" class="btn btn-danger" data-i18n="modelTest.deletePreviewConfirm">确认删除</button>
       </div>
     </div>
   </div>

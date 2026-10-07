@@ -38,7 +38,6 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, 
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
     fetchAPIWithAuth: onFetch,
-    alert: onError,
     console: { ...console, error: () => {} }
   };
   const previous = new Map();
@@ -714,6 +713,7 @@ function installBatchProtocolModeGlobals(response) {
       showSuccess: message => notifications.push({ type: 'success', message }),
       showError: message => notifications.push({ type: 'error', message }),
       showWarning: message => notifications.push({ type: 'warning', message }),
+      showConfirm: async () => true,
       ModelEntryParser,
       localStorage: { getItem: () => null, setItem() {} }
     },
@@ -738,7 +738,6 @@ function installBatchProtocolModeGlobals(response) {
     saveChannelsFilters: () => { filterSaves++; },
     reloadChannelsList: async () => { reloads++; },
     setTimeout: callback => { callback(); return 1; },
-    confirm: () => true,
     console: { ...console, error: () => {} }
   };
   const previous = new Map();
@@ -805,7 +804,6 @@ function installFetchKeyRateGlobals({
       return response;
     },
     markChannelFormDirty: () => { dirty = true; },
-    alert: message => notifications.push({ type: 'alert', message }),
     console: { ...console, error: () => {} }
   };
   const previous = new Map();
@@ -970,8 +968,7 @@ function installCommonModelsGlobals(initialRows = []) {
     },
     redirectTableData: rows,
     renderRedirectTable: () => { renders++; },
-    markChannelFormDirty: () => { dirty = true; },
-    alert: () => {}
+    markChannelFormDirty: () => { dirty = true; }
   };
   const previous = new Map();
   for (const [name, value] of Object.entries(globals)) {
@@ -1076,8 +1073,7 @@ function installWebsocketProbeGlobals({
       requests.push({ url, body: JSON.parse(options.body) });
       return { supported, error: supported ? '' : '426 Upgrade Required' };
     },
-    markChannelFormDirty: () => { dirty = true; },
-    alert: () => {}
+    markChannelFormDirty: () => { dirty = true; }
   };
   const previous = new Map();
   for (const [name, value] of Object.entries(globals)) {
@@ -1336,6 +1332,46 @@ test('saving rejects invalid daily schedules and focuses the field with an inlin
     }
     assert.deepEqual(fixture.requests, ['/admin/channels/80/editor']);
   } finally {
+    fixture.restore();
+  }
+});
+
+test('saving names every missing required field and focuses the first one', async () => {
+  const channel = { id: 81, name: '', auth_type: 'api_key', urls: [{ url: 'https://example.com' }], models: [] };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  const previousValidKeyRows = Object.getOwnPropertyDescriptor(global, 'getValidInlineKeyRows');
+  const previousValidURLs = Object.getOwnPropertyDescriptor(global, 'getValidInlineURLConfigs');
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    global.window.t = (key, params) => {
+      if (key === 'channels.channelName') return 'Name *';
+      if (key === 'channels.apiKey') return 'API Key *';
+      if (key === 'channels.modelConfig') return 'Model Configuration *';
+      if (key === 'channels.requiredFieldSeparator') return ', ';
+      return params?.fields !== undefined ? `${key}:${params.fields}` : key;
+    };
+    global.getValidInlineURLConfigs = () => channel.urls;
+    global.getValidInlineKeyRows = () => [];
+    fixture.getElement('channelScheduledCheckIntervalMinutes').value = '30';
+    fixture.getElement('channelScheduledCheckStartTime').value = '08:30';
+    const nameInput = fixture.getElement('channelName');
+    nameInput.tagName = 'INPUT';
+    nameInput.value = '  ';
+    let focused = false;
+    nameInput.focus = () => { focused = true; };
+
+    await saveChannel({ preventDefault() {} });
+
+    assert.equal(fixture.errors.at(-1), 'channels.fillAllRequired:Name, API Key, Model Configuration');
+    assert.equal(nameInput.classList.contains('is-invalid'), true);
+    assert.equal(focused, true);
+    assert.deepEqual(fixture.requests, ['/admin/channels/81/editor']);
+  } finally {
+    for (const [key, descriptor] of [['getValidInlineKeyRows', previousValidKeyRows], ['getValidInlineURLConfigs', previousValidURLs]]) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
     fixture.restore();
   }
 });
@@ -2846,19 +2882,19 @@ test('渠道保存载荷仅在 API Key 渠道携带 management_account，且绝�
   }
 });
 
-test('multi-Key channel asks for confirmation even when a single Key changed', () => {
+test('multi-Key channel asks for confirmation even when a single Key changed', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
   const prompts = [];
   Object.defineProperty(global, 'window', {
     configurable: true,
     value: {
       t: (key, params) => `${key}:${params?.count ?? ''}`,
-      confirm: message => { prompts.push(message); return true; }
+      showConfirm: async message => { prompts.push(message); return true; }
     }
   });
   try {
     const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
-    assert.equal(fetchedKeyModelApplyAccepted(1), true);
+    assert.equal(await fetchedKeyModelApplyAccepted(1), true);
     assert.deepEqual(prompts, ['channels.applyFetchedKeyModelsConfirm:1']);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
@@ -2866,19 +2902,19 @@ test('multi-Key channel asks for confirmation even when a single Key changed', (
   }
 });
 
-test('multi Key model scope detection asks for confirmation with the changed count', () => {
+test('multi Key model scope detection asks for confirmation with the changed count', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
   const prompts = [];
   Object.defineProperty(global, 'window', {
     configurable: true,
     value: {
       t: (key, params) => `${key}:${params?.count ?? ''}`,
-      confirm: message => { prompts.push(message); return true; }
+      showConfirm: async message => { prompts.push(message); return true; }
     }
   });
   try {
     const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
-    assert.equal(fetchedKeyModelApplyAccepted(2), true);
+    assert.equal(await fetchedKeyModelApplyAccepted(2), true);
     assert.deepEqual(prompts, ['channels.applyFetchedKeyModelsConfirm:2']);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
@@ -2886,55 +2922,39 @@ test('multi Key model scope detection asks for confirmation with the changed cou
   }
 });
 
-test('multi Key model scope detection respects a declined confirm prompt', () => {
+test('multi Key model scope detection respects a declined confirm prompt', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
   Object.defineProperty(global, 'window', {
     configurable: true,
     value: {
       t: key => key,
-      confirm: () => false
+      showConfirm: async () => false
     }
   });
   try {
     const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
-    assert.equal(fetchedKeyModelApplyAccepted(2), false);
+    assert.equal(await fetchedKeyModelApplyAccepted(2), false);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
     else delete global.window;
   }
 });
 
-test('multi Key model scope detection never applies without a confirm function', () => {
-  const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
-  Object.defineProperty(global, 'window', {
-    configurable: true,
-    value: { t: key => key }
-  });
-  try {
-    const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
-    assert.equal(fetchedKeyModelApplyAccepted(2), false);
-    assert.equal(fetchedKeyModelApplyAccepted(1), false, '多 Key 渠道无 confirm 时单个 Key 变更也不应用');
-  } finally {
-    if (previousWindow) Object.defineProperty(global, 'window', previousWindow);
-    else delete global.window;
-  }
-});
-
-test('single-Key channel never applies fetched Key model scopes', () => {
+test('single-Key channel never applies fetched Key model scopes', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(global, 'window');
   let confirmCalls = 0;
   Object.defineProperty(global, 'window', {
     configurable: true,
     value: {
       t: key => key,
-      confirm: () => { confirmCalls++; return true; }
+      showConfirm: async () => { confirmCalls++; return true; }
     }
   });
   try {
     const { fetchedKeyModelApplyAccepted } = loadChannelsModals();
     // 单 Key 渠道没有分流需求,不应把模型范围写进唯一 Key,也不弹确认框
-    assert.equal(fetchedKeyModelApplyAccepted(1, true), false);
-    assert.equal(fetchedKeyModelApplyAccepted(2, true), false);
+    assert.equal(await fetchedKeyModelApplyAccepted(1, true), false);
+    assert.equal(await fetchedKeyModelApplyAccepted(2, true), false);
     assert.equal(confirmCalls, 0);
   } finally {
     if (previousWindow) Object.defineProperty(global, 'window', previousWindow);

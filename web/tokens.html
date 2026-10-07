@@ -70,11 +70,11 @@
   </div>
 
   <!-- 创建令牌对话框 -->
-  <div id="createModal" class="modal">
+  <div id="createModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="createModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.createModalTitle">创建API令牌</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-create-modal">&times;</button>
+        <h2 class="modal-title" id="createModalTitle" data-i18n="tokens.createModalTitle">创建API令牌</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-create-modal">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -151,11 +151,11 @@
   </div>
 
   <!-- 显示新令牌对话框 -->
-  <div id="tokenResultModal" class="modal">
+  <div id="tokenResultModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenResultModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.resultModalTitle">令牌创建成功</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-token-result-modal">&times;</button>
+        <h2 class="modal-title" id="tokenResultModalTitle" data-i18n="tokens.resultModalTitle">令牌创建成功</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-token-result-modal">&times;</button>
       </div>
       <div class="modal-body">
         <div class="token-result-warning">
@@ -182,18 +182,18 @@
   </div>
 
   <!-- 编辑令牌对话框 -->
-  <div id="editModal" class="modal">
-    <div class="modal-content modal-content--wide token-edit-modal">
+  <div id="editModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
+    <div class="modal-content token-edit-modal">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.editModalTitle">编辑令牌</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-edit-modal">&times;</button>
+        <h2 class="modal-title" id="editModalTitle" data-i18n="tokens.editModalTitle">编辑令牌</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-edit-modal">&times;</button>
       </div>
       <div class="modal-body token-edit-body token-edit-layout">
         <input type="hidden" id="editTokenId">
 
         <div class="token-edit-sidebar">
           <section class="token-edit-section token-edit-section--basic" data-token-edit-section="basic">
-            <h3 class="token-edit-section-title">基础信息</h3>
+            <h3 class="token-edit-section-title" data-i18n="tokens.sectionBasic">基础信息</h3>
 
             <div class="form-group form-row-inline token-edit-field token-edit-field--token">
               <label class="form-label form-row-inline__label" data-i18n="tokens.table.token">令牌</label>
@@ -219,7 +219,7 @@
           </section>
 
           <section class="token-edit-section token-edit-section--quota" data-token-edit-section="quota">
-            <h3 class="token-edit-section-title">配额信息</h3>
+            <h3 class="token-edit-section-title" data-i18n="tokens.sectionQuota">配额信息</h3>
 
             <div class="form-group form-row-inline token-edit-field token-edit-field--cost">
               <label class="form-label form-row-inline__label" data-i18n="tokens.dailyCostLimitLabel">日限额</label>
@@ -301,7 +301,7 @@
                     data-i18n-placeholder="tokens.searchChannelPlaceholder" placeholder="搜索渠道..."
                     data-input-action="filter-allowed-channels">
                 </label>
-                <select id="editChannelRestrictionMode" class="form-input token-edit-channels-mode" data-change-action="change-channel-restriction-mode" title="渠道限制模式">
+                <select id="editChannelRestrictionMode" class="form-input token-edit-channels-mode" data-change-action="change-channel-restriction-mode" data-i18n-title="tokens.channelModeTitle" title="渠道限制模式" data-i18n-aria-label="tokens.channelModeTitle" aria-label="渠道限制模式">
                   <option value="allow" data-i18n="tokens.channelModeAllow">白名单</option>
                   <option value="deny" data-i18n="tokens.channelModeDeny">黑名单</option>
                 </select>
@@ -319,7 +319,7 @@
                 <thead>
                   <tr class="allowed-channels-table-head">
                     <th class="allowed-channel-col-select-head">
-                      <input type="checkbox" id="selectAllAllowedChannels" data-change-action="toggle-select-all-allowed-channels">
+                      <input type="checkbox" id="selectAllAllowedChannels" data-i18n-aria-label="tokens.selectAllCurrent" aria-label="全选当前列表" data-change-action="toggle-select-all-allowed-channels">
                     </th>
                     <th class="allowed-channel-col-name-head" data-i18n="tokens.channelName">渠道</th>
                     <th class="allowed-channel-col-actions-head"></th>
@@ -363,7 +363,7 @@
                 <thead>
                   <tr class="allowed-models-table-head">
                     <th class="allowed-model-col-select-head">
-                      <input type="checkbox" id="selectAllAllowedModels" data-change-action="toggle-select-all-allowed-models">
+                      <input type="checkbox" id="selectAllAllowedModels" data-i18n-aria-label="tokens.selectAllCurrent" aria-label="全选当前列表" data-change-action="toggle-select-all-allowed-models">
                     </th>
                     <th class="allowed-model-col-name-head" data-i18n="tokens.modelName">模型名称</th>
                     <th class="allowed-model-col-actions-head"></th>
@@ -385,11 +385,11 @@
   </div>
 
   <!-- 渠道选择对话框 -->
-  <div id="channelSelectModal" class="modal">
+  <div id="channelSelectModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="channelSelectModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.selectChannelTitle">选择渠道</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-channel-select-modal">&times;</button>
+        <h2 class="modal-title" id="channelSelectModalTitle" data-i18n="tokens.selectChannelTitle">选择渠道</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-channel-select-modal">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group channel-select-filter-row">
@@ -417,11 +417,11 @@
   </div>
 
   <!-- 模型选择对话框 -->
-  <div id="modelSelectModal" class="modal">
+  <div id="modelSelectModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modelSelectModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.selectModelTitle">选择模型</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-model-select-modal">&times;</button>
+        <h2 class="modal-title" id="modelSelectModalTitle" data-i18n="tokens.selectModelTitle">选择模型</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-model-select-modal">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -449,11 +449,11 @@
   </div>
 
   <!-- 批量导入模型对话框 -->
-  <div id="modelImportModal" class="modal token-model-import-modal">
+  <div id="modelImportModal" class="modal token-model-import-modal" role="dialog" aria-modal="true" aria-labelledby="modelImportModalTitle">
     <div class="modal-content modal-content--sm">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="tokens.importModelTitle">手动输入模型</h2>
-        <button type="button" class="close-btn" aria-label="Close" data-action="close-model-import-modal">&times;</button>
+        <h2 class="modal-title" id="modelImportModalTitle" data-i18n="tokens.importModelTitle">手动输入模型</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-model-import-modal">&times;</button>
       </div>
       <div class="modal-body token-model-import-body">
         <div class="form-group model-import-group">
@@ -509,15 +509,15 @@
       <td class="tokens-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="token-row-actions">
           <button type="button" class="btn-copy-token btn-icon token-row-action-btn" data-token="{{token}}"
-            data-i18n-title="common.copy" title="复制" aria-label="复制">
+            data-i18n-title="common.copy" title="复制" data-i18n-aria-label="common.copy" aria-label="复制">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
           <button type="button" class="btn-icon btn-edit token-row-action-btn"
-            data-i18n-title="common.edit" title="编辑" aria-label="编辑">
+            data-i18n-title="common.edit" title="编辑" data-i18n-aria-label="common.edit" aria-label="编辑">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 17.25V21H6.75L17.81 9.94L14.06 6.19L3 17.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.71 7.04C21.1 6.65 21.1 6.02 20.71 5.63L18.37 3.29C17.98 2.9 17.35 2.9 16.96 3.29L15.13 5.12L18.88 8.87L20.71 7.04Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <button type="button" class="btn-icon btn-danger btn-delete token-row-action-btn"
-            data-i18n-title="common.delete" title="删除" aria-label="删除">
+            data-i18n-title="common.delete" title="删除" data-i18n-aria-label="common.delete" aria-label="删除">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
         </div>

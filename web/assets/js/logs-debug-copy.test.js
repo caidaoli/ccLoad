@@ -201,7 +201,10 @@ async function withLoadedLogsPage(options, assertions) {
   };
 
   setGlobal('window', {
-    t: (key) => key === 'logs.sourceCheckinBadge' ? '签到' : key,
+    t: (key, params) => {
+      if (key === 'logs.sourceCheckinBadge') return '签到';
+      return params ? `${key} ${Object.values(params).join(' ')}` : key;
+    },
     initPageBootstrap() {},
     addEventListener: (type, handler) => {
       windowListeners[type] = handler;
@@ -337,11 +340,68 @@ test('token channel visibility also controls actual model text and hover', async
         const html = tbody.innerHTML;
         assert.match(html, /requested-model/);
         if (isTokenRole && !showChannels) {
-          assert.doesNotMatch(html, /private-upstream-model|model-actual|实际模型:/);
+          assert.doesNotMatch(html, /private-upstream-model|model-actual|logs\.titleActualModel/);
         } else {
-          assert.match(html, /实际模型: private-upstream-model/);
+          assert.match(html, /logs\.titleActualModel private-upstream-model/);
         }
       });
+    }
+  }
+});
+
+test('small request costs keep significant digits instead of rounding to $0.000', () => {
+  const previousGlobals = new Map();
+  const setGlobal = (key, value) => {
+    previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const noop = () => {};
+  const element = () => ({
+    style: { setProperty: noop },
+    dataset: {},
+    classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
+    appendChild: noop,
+    setAttribute: noop,
+    getAttribute: () => null,
+    addEventListener: noop,
+    querySelectorAll: () => [],
+    querySelector: () => null
+  });
+  setGlobal('window', {
+    location: { pathname: '/', search: '', href: '' },
+    addEventListener: noop,
+    dispatchEvent: noop,
+    matchMedia: () => ({ matches: false, addEventListener: noop })
+  });
+  setGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop });
+  setGlobal('document', {
+    addEventListener: noop,
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: () => null,
+    createElement: element,
+    body: element(),
+    documentElement: element()
+  });
+  setGlobal('CustomEvent', function CustomEvent() {});
+
+  try {
+    delete require.cache[require.resolve('./ui.js')];
+    require('./ui.js');
+    const { formatCost } = global.window;
+
+    assert.equal(formatCost(0.0002), '$0.0002');
+    assert.equal(formatCost(0.00012345), '$0.00012');
+    assert.equal(formatCost(0.005), '$0.005');
+    assert.equal(formatCost(0.0000004), '<$0.000001');
+    assert.equal(formatCost(1.23456), '$1.235');
+    assert.equal(formatCost(0), '$0');
+    assert.equal(formatCost(0.0002, 2), '$0.00');
+  } finally {
+    delete require.cache[require.resolve('./ui.js')];
+    for (const [key, descriptor] of previousGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
     }
   }
 });

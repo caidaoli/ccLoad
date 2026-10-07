@@ -2118,7 +2118,7 @@ async function confirmAnthropicQuotaReset(channelID, fetcher = fetchDataWithAuth
     windows: anthropicResetWindowLabels(credit?.clears) || '—',
     count: Math.max(0, state.data.credits.reduce((sum, item) => sum + Math.max(0, Number(item.resets_left) || 0), 0) - 1)
   });
-  if (!window.confirm(message)) return null;
+  if (!await window.showConfirm({ message, danger: true })) return null;
   return redeemAnthropicResetCredit(channelID, fetcher, options);
 }
 
@@ -2961,8 +2961,10 @@ function setupOAuthActions() {
       });
       return flow.cancelPromise;
     };
+    const cleanupModelRetry = document.getElementById('oauthCredentialCleanupModelRetry');
     const refreshCleanupModels = async () => {
       cleanupModel.removeAttribute?.('aria-invalid');
+      if (cleanupModelRetry) cleanupModelRetry.hidden = true;
       try {
         await loadOAuthCredentialCleanupModels(
           cleanupAuthType.value,
@@ -2971,8 +2973,10 @@ function setupOAuthActions() {
         );
       } catch (error) {
         console.warn('Failed to load OAuth credential cleanup models', error);
+        if (cleanupModelRetry) cleanupModelRetry.hidden = false;
       }
     };
+    cleanupModelRetry?.addEventListener('click', () => { void refreshCleanupModels(); });
     if (cleanupOpenButton && !cleanupOpenButton.dataset.bound) {
       cleanupOpenButton.addEventListener('click', () => {
         if (!openOAuthCredentialCleanupDialog(cleanupOpenButton)) return;
@@ -3019,10 +3023,10 @@ function setupOAuthActions() {
       const confirmKey = action === 'delete'
         ? 'channels.oauth.cleanupConfirmDelete'
         : 'channels.oauth.cleanupConfirmDisable';
-      if (typeof window.confirm === 'function' && !window.confirm(window.t(confirmKey, {
-        provider,
-        model: modelName
-      }))) return;
+      if (!await window.showConfirm({
+        message: window.t(confirmKey, { provider, model: modelName }),
+        danger: true
+      })) return;
 
       const flow = {
         jobID: '',

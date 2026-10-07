@@ -535,6 +535,17 @@
     return hoursMap[rangeKey] || 24;
   };
 
+  /**
+   * 图表/健康条时间标签统一格式：MM-DD HH:mm（本地时区，补零）
+   * @param {number|string|Date} ts - 时间戳或可解析的时间
+   * @returns {string} 无效时间返回 '--'
+   */
+  window.formatMonthDayTime = function(ts) {
+    const date = ts instanceof Date ? ts : new Date(ts);
+    if (!Number.isFinite(date.getTime())) return '--';
+    return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  };
+
   window.getDateRangePresets = getDateRangePresets;
   window.renderDateRangeButtons = renderDateRangeButtons;
   window.buildDateRangeQuery = buildDateRangeQuery;

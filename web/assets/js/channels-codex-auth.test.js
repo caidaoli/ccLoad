@@ -89,7 +89,7 @@ test('Claude cached reset credits can be redeemed without refreshing or cached e
   global.channels = [{ id: 8120, auth_type: 'anthropic_oauth', oauth_usage: { anthropic_reset_credits: data } }];
   let confirmed = false;
   let calls = 0;
-  global.window = { t: key => key, confirm: () => confirmed };
+  global.window = { t: key => key, showConfirm: async () => confirmed };
   const fetcher = async (url, options) => {
     calls++;
     assert.equal(url, '/admin/channels/8120/anthropic-reset-credits/redeem');
@@ -140,7 +140,7 @@ test('Claude reset requires confirmation and sends one operation while refreshin
   const previousWindow = global.window;
   global.channels = [{ id: 8110, auth_type: 'anthropic_oauth' }];
   let confirmed = false;
-  global.window = { t: key => key, confirm: () => confirmed };
+  global.window = { t: key => key, showConfirm: async () => confirmed };
   const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1, redeemable: true, clears: ['seven_day'] }] };
   let resolveRequest;
   let calls = 0;
@@ -159,6 +159,7 @@ test('Claude reset requires confirmation and sends one operation while refreshin
     assert.equal(calls, 0);
     confirmed = true;
     const pending = confirmAnthropicQuotaReset(8110, fetcher, { reload: false });
+    await new Promise(resolve => setImmediate(resolve)); // 等待确认对话框结果
     assert.equal(getAnthropicResetCreditsState(8110).reset_status, 'loading');
     assert.equal(await confirmAnthropicQuotaReset(8110, fetcher), null);
     await loadAnthropicUsage(8110, () => assert.fail('must not query during redemption'));
@@ -183,7 +184,7 @@ test('Claude reset requires a fresh query and confirmation after transport failu
   const previousWindow = global.window;
   global.channels = [{ id: 8111, auth_type: 'anthropic_oauth', updated_at: 'before' }];
   let confirmations = 0;
-  global.window = { t: key => key, confirm: () => { confirmations++; return true; } };
+  global.window = { t: key => key, showConfirm: async () => { confirmations++; return true; } };
   const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1, redeemable: true }] };
   try {
     await loadAnthropicUsage(8111, async () => credits);
@@ -217,7 +218,7 @@ test('Claude reset coded rejection keeps credits while other server failures sta
   const previousChannels = global.channels;
   const previousWindow = global.window;
   global.channels = [{ id: 8115, auth_type: 'anthropic_oauth' }];
-  global.window = { t: key => key, confirm: () => true };
+  global.window = { t: key => key, showConfirm: async () => true };
   const credits = { eligible: true, available_count: 1, credits: [{ resets_left: 1, redeemable: true }] };
   const serverFailure = (data) => Object.assign(new Error('rejected'), { response: { success: false, error: 'rejected', data } });
   try {
@@ -241,7 +242,7 @@ test('Claude reset unknown outcome invalidates credits without claiming usage wa
   const previousChannels = global.channels;
   const previousWindow = global.window;
   global.channels = [{ id: 8112, auth_type: 'anthropic_oauth' }];
-  global.window = { t: key => key, confirm: () => true };
+  global.window = { t: key => key, showConfirm: async () => true };
   try {
     await loadAnthropicUsage(8112, async () => ({ eligible: true, available_count: 1, credits: [{ resets_left: 1 }] }));
     const result = await redeemAnthropicResetCredit(8112, async () => ({
@@ -816,7 +817,7 @@ test('completed OAuth credential cleanup keeps a valid model selected and can st
   });
   setGlobal('window', {
     t: key => key,
-    confirm: () => true,
+    showConfirm: async () => true,
     showSuccess() {},
     showError() {}
   });
