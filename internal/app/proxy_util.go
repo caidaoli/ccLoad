@@ -477,8 +477,7 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 		}
 
 		// 不透传客户端指定的路由头（x-ccload-channel-id, x-ccload-channel，仅供 ccLoad 内部路由）
-		if strings.EqualFold(k, "x-ccload-channel-id") ||
-			strings.EqualFold(k, "x-ccload-channel") {
+		if strings.EqualFold(k, "X-CCLoad-Channel-ID") || strings.EqualFold(k, "X-CCLoad-Channel") {
 			continue
 		}
 		// 不透传认证头（由上游注入）

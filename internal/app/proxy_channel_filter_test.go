@@ -54,11 +54,12 @@ func TestExtractRequestedChannelFilter(t *testing.T) {
 			wantName:   "[公益] https://image.mlgb7.com",
 		},
 		{
-			name:       "header x-ccload-channel numeric id fallback",
+			name:       "header x-ccload-channel numeric matches id and name",
 			reqURL:     "/v1/chat/completions",
 			headers:    map[string]string{"x-ccload-channel": "364"},
 			wantFilter: true,
 			wantID:     364,
+			wantName:   "364",
 		},
 		{
 			name:       "header X-CCLoad-Channel canonical by name",
@@ -126,6 +127,14 @@ func TestFilterByRequestedChannel(t *testing.T) {
 		res, applied := filterByRequestedChannel(cands, requestedChannelFilter{hasFilter: true, channelName: "CHANNEL-20"})
 		if !applied || len(res) != 1 || res[0].ID != 20 {
 			t.Fatalf("expected channel 20, got %+v", res)
+		}
+	})
+
+	t.Run("numeric name matches channel named by digits", func(t *testing.T) {
+		named := &model.Config{ID: 7, Name: "9001"}
+		res, applied := filterByRequestedChannel(append([]*model.Config{named}, cands...), requestedChannelFilter{hasFilter: true, channelID: 9001, channelName: "9001"})
+		if !applied || len(res) != 1 || res[0].ID != 7 {
+			t.Fatalf("expected channel 7, got %+v", res)
 		}
 	})
 

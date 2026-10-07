@@ -15,33 +15,29 @@ type requestedChannelFilter struct {
 	channelName string
 }
 
-// extractRequestedChannelFilter 仅从 HTTP Header 中解析指定的渠道限制。
-// 规范 header 形式为小写的：
-// - x-ccload-channel-id (或标准大小写 X-CCLoad-Channel-ID)
-// - x-ccload-channel    (或标准大小写 X-CCLoad-Channel)
-// 优先使用 ID，其次使用 Name（若 Name 传纯数字则兼容作为 ID 处理）。
+// requestedChannelUnavailableMessage 指定渠道不存在、不支持当前模型或被 Token 限制时的统一错误
+const requestedChannelUnavailableMessage = "requested channel not found or not available for this model/token"
+
+// extractRequestedChannelFilter 从 HTTP Header 解析客户端指定的渠道（Header 名大小写不敏感）：
+// - x-ccload-channel-id：渠道数字 ID，优先
+// - x-ccload-channel：渠道名称（忽略大小写）；纯数字时同时按 ID 匹配
 func extractRequestedChannelFilter(req *http.Request) requestedChannelFilter {
 	if req == nil {
 		return requestedChannelFilter{}
 	}
 
-	// 1. 尝试从 Header 获取 Channel ID
-	for _, h := range []string{"x-ccload-channel-id", "X-CCLoad-Channel-ID"} {
-		if val := strings.TrimSpace(req.Header.Get(h)); val != "" {
-			if id, err := strconv.ParseInt(val, 10, 64); err == nil && id > 0 {
-				return requestedChannelFilter{hasFilter: true, channelID: id}
-			}
+	if val := strings.TrimSpace(req.Header.Get("x-ccload-channel-id")); val != "" {
+		if id, err := strconv.ParseInt(val, 10, 64); err == nil && id > 0 {
+			return requestedChannelFilter{hasFilter: true, channelID: id}
 		}
 	}
 
-	// 2. 尝试从 Header 获取 Channel Name（若传入纯数字则兼作为 ID 处理）
-	for _, h := range []string{"x-ccload-channel", "X-CCLoad-Channel"} {
-		if val := strings.TrimSpace(req.Header.Get(h)); val != "" {
-			if id, err := strconv.ParseInt(val, 10, 64); err == nil && id > 0 {
-				return requestedChannelFilter{hasFilter: true, channelID: id}
-			}
-			return requestedChannelFilter{hasFilter: true, channelName: val}
+	if val := strings.TrimSpace(req.Header.Get("x-ccload-channel")); val != "" {
+		filter := requestedChannelFilter{hasFilter: true, channelName: val}
+		if id, err := strconv.ParseInt(val, 10, 64); err == nil && id > 0 {
+			filter.channelID = id
 		}
+		return filter
 	}
 
 	return requestedChannelFilter{}
@@ -58,14 +54,9 @@ func filterByRequestedChannel(cands []*model.Config, filter requestedChannelFilt
 		if cfg == nil {
 			continue
 		}
-		if filter.channelID > 0 {
-			if cfg.ID == filter.channelID {
-				filtered = append(filtered, cfg)
-			}
-		} else if filter.channelName != "" {
-			if cfg.Name == filter.channelName || strings.EqualFold(cfg.Name, filter.channelName) {
-				filtered = append(filtered, cfg)
-			}
+		if (filter.channelID > 0 && cfg.ID == filter.channelID) ||
+			(filter.channelName != "" && strings.EqualFold(cfg.Name, filter.channelName)) {
+			filtered = append(filtered, cfg)
 		}
 	}
 
