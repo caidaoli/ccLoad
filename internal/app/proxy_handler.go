@@ -611,6 +611,16 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 		}
 	}
+
+	// 客户端请求指定渠道（通过 Header 或 Query 传 channel_id / channel_name）
+	reqChannelFilter := extractRequestedChannelFilter(c.Request)
+	if reqChannelFilter.hasFilter {
+		cands, _ = filterByRequestedChannel(cands, reqChannelFilter)
+		if len(cands) == 0 {
+			writeLocalProxyError(c, http.StatusNotFound, "requested channel not found or not available for this model/token")
+			return
+		}
+	}
 	var sessionAffinityKey string
 	switch {
 	case clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages:

@@ -458,6 +458,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 			candidates = filtered
 		}
 	}
+	reqChannelFilter := extractRequestedChannelFilter(c.Request)
+	if reqChannelFilter.hasFilter {
+		candidates, _ = filterByRequestedChannel(candidates, reqChannelFilter)
+	}
 	if len(candidates) == 0 {
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
