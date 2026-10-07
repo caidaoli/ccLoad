@@ -7,6 +7,7 @@ type MetricPoint struct {
 	Ts                      time.Time                `json:"ts"`
 	Success                 int                      `json:"success"`
 	Error                   int                      `json:"error"`
+	RateLimited             int                      `json:"rate_limited,omitempty"`                // 429 次数（Error 的子集）
 	AvgFirstByteTimeSeconds *float64                 `json:"avg_first_byte_time_seconds,omitempty"` // 平均首字节响应时间(秒)
 	AvgDurationSeconds      *float64                 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
 	TotalCost               *float64                 `json:"total_cost,omitempty"`                  // 标准成本（美元）

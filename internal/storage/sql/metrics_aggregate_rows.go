@@ -16,7 +16,7 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 	for rows.Next() {
 		var bucketTsFloat float64
 		var channelID sql.NullInt64
-		var success, errorCount int
+		var success, errorCount, rateLimited int
 		var avgFirstByteTime sql.NullFloat64
 		var avgDuration sql.NullFloat64
 		var streamSuccessFirstByteCount int
@@ -24,7 +24,7 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 		var totalCost, effectiveCost float64
 		var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
 
-		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &effectiveCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
+		if err := rows.Scan(&bucketTsFloat, &channelID, &success, &errorCount, &rateLimited, &avgFirstByteTime, &avgDuration, &streamSuccessFirstByteCount, &durationSuccessCount, &totalCost, &effectiveCost, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens); err != nil {
 			return nil, nil, nil, err
 		}
 		bucketTs := int64(bucketTsFloat)
@@ -46,6 +46,7 @@ func scanAggregatedMetricsRows(rows *sql.Rows) (map[int64]*model.MetricPoint, ma
 
 		mp.Success += success
 		mp.Error += errorCount
+		mp.RateLimited += rateLimited
 
 		if mp.TotalCost == nil {
 			mp.TotalCost = new(float64)

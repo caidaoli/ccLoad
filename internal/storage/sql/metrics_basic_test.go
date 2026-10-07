@@ -919,3 +919,43 @@ func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 		t.Fatalf("expected effective_cost=0, got %v", *stats[0].EffectiveCost)
 	}
 }
+
+func TestAggregateRangeWithFilter_CountsRateLimitedWithinError(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "rate-limited-channel",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now()
+	logs := []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 429, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 429, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 500, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 429, LogSource: model.LogSourceManualTest},
+	}
+	if err := store.BatchAddLogs(ctx, logs); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	pts, err := store.AggregateRangeWithFilter(ctx, now.Add(-time.Minute), now.Add(time.Minute), time.Minute, &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil {
+		t.Fatalf("AggregateRangeWithFilter failed: %v", err)
+	}
+	success, errorCount, rateLimited := 0, 0, 0
+	for _, p := range pts {
+		success += p.Success
+		errorCount += p.Error
+		rateLimited += p.RateLimited
+	}
+	if success != 1 || errorCount != 3 || rateLimited != 2 {
+		t.Fatalf("success=%d error=%d rate_limited=%d, want 1/3/2", success, errorCount, rateLimited)
+	}
+}
