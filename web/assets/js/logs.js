@@ -676,10 +676,10 @@ function buildLogCostDisplay(entry, costInfo = getLogCostInfo(entry)) {
   const openingTag = `<span class="${costClasses}">`;
 
   if (!costInfo.hasMultiplier) {
-    return `${openingTag}${badgesHtml}<span class="log-cost-effective">${formatCost(costInfo.standardCost)}</span></span>`;
+    return `${openingTag}${badgesHtml}<span class="log-cost-effective">${formatCost(costInfo.standardCost, 3)}</span></span>`;
   }
 
-  return `${openingTag}${badgesHtml}<span class="log-cost-standard">${formatCost(costInfo.standardCost)}</span><span class="log-cost-effective">${formatCost(costInfo.effectiveCost)}</span></span>`;
+  return `${openingTag}${badgesHtml}<span class="log-cost-standard">${formatCost(costInfo.standardCost, 3)}</span><span class="log-cost-effective">${formatCost(costInfo.effectiveCost, 3)}</span></span>`;
 }
 
 function formatDebugSettingValue(setting) {
