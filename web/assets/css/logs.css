@@ -1,15 +1,13 @@
     :root {
       --logs-pending-row-bg: var(--warning-50);
       --logs-pending-row-hover-bg: var(--warning-100);
-      --logs-pending-badge-bg: var(--warning-100);
-      --logs-pending-badge-fg: var(--warning-700);
+      --logs-pending-status-fg: var(--warning-700);
     }
 
     html[data-resolved-theme="dark"] {
       --logs-pending-row-bg: rgba(14, 116, 144, 0.16);
       --logs-pending-row-hover-bg: rgba(14, 116, 144, 0.24);
-      --logs-pending-badge-bg: rgba(14, 116, 144, 0.22);
-      --logs-pending-badge-fg: #67e8f9;
+      --logs-pending-status-fg: #67e8f9;
     }
 
     /* 列显隐切换按钮 */
@@ -1140,14 +1138,7 @@
 
     /* 进行中状态样式 */
     .status-pending {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.85em;
-      font-weight: 500;
-      background: var(--logs-pending-badge-bg);
-      color: var(--logs-pending-badge-fg);
-      animation: none;
+      color: var(--logs-pending-status-fg);
     }
 
     /* 进行中行高亮 */
