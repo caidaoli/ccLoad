@@ -24,7 +24,7 @@ const (
 	// CLIVersion is the official @tencent-ai/codebuddy-code version used on
 	// chat and catalog requests. FetchModels historically pinned 2.148.0;
 	// keep one value so UA and X-IDE-Version cannot drift.
-	CLIVersion  = "2.151.0"
+	CLIVersion  = "2.162.0"
 	RefreshLead = time.Minute
 	LoginTTL    = 5 * time.Minute
 )

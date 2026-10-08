@@ -12,7 +12,7 @@ const (
 	// APIBaseURL is the Cursor control-plane origin used by the CLI.
 	APIBaseURL = "https://api2.cursor.sh"
 	// ClientVersion is the CLI fingerprint accepted by control-plane JSON RPCs.
-	ClientVersion = "2026.08.11-e8db854"
+	ClientVersion = "2026.10.01-e373342"
 	// ClientType is Cursor's CLI client-type header.
 	ClientType = "cli"
 	// GhostMode matches the CLI's x-ghost-mode value for unattended calls.

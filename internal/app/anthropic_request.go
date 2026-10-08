@@ -199,6 +199,14 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, betaHeader string) []byte {
 			}
 		}
 	}
+	// display:"updates" needs thinking-display-updates-2026-08-18. Drop the
+	// field (model default omitted) instead of killing adaptive thinking.
+	if !hasBeta("thinking-display-updates-2026-08-18") {
+		display := strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.display")))
+		if strings.EqualFold(display, "updates") {
+			body = deleteJSONPath(body, "thinking.display")
+		}
+	}
 	return body
 }
 

@@ -398,6 +398,15 @@ func isAnthropicThinkingBudgetError(errorText string) bool {
 }
 
 func isAnthropicThinkingBlockError(errorText string) bool {
+	// Display/schema mismatches are fixed by beta sync or field sanitize.
+	// Downgrading would disable adaptive thinking and waste the model.
+	if strings.Contains(errorText, "thinking.display") ||
+		(strings.Contains(errorText, "display") && strings.Contains(errorText, "extra inputs")) {
+		return false
+	}
+	if isAnthropicInvalidThinkingSignatureError(errorText) {
+		return false
+	}
 	return strings.Contains(errorText, "thinking") || strings.Contains(errorText, "redacted_thinking")
 }
 

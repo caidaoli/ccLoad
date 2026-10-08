@@ -28,7 +28,7 @@ import (
 const (
 	// anthropicCLIVersion 是 Claude Code wire 的内置最低版本/离线回退值。
 	// 运行中的服务会由 anthropic_cli_version_sync.go 向前同步官方稳定版。
-	anthropicCLIVersion  = "2.1.292"
+	anthropicCLIVersion  = "2.1.293"
 	anthropicBillingSalt = "59cf53e54c78"
 
 	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
@@ -2347,6 +2347,9 @@ func anthropicClaudeCodeMimicBetas(body []byte, oauth bool) string {
 	if !slices.Contains(betas, "thinking-binding-controls-2026-08-01") &&
 		gjson.GetBytes(body, "thinking.block_binding").Exists() {
 		betas = append(betas, "thinking-binding-controls-2026-08-01")
+	}
+	if strings.EqualFold(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.display"))), "updates") {
+		betas = append(betas, "thinking-display-updates-2026-08-18")
 	}
 	if strings.EqualFold(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "speed"))), "fast") {
 		betas = append(betas, "fast-mode-2026-02-01")
