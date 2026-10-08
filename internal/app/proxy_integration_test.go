@@ -8334,7 +8334,7 @@ func TestProxy_CodexPriorityRequestBillsFastModeWithoutResponseTier(t *testing.T
 	if entry.ServiceTier != "priority" {
 		t.Fatalf("ServiceTier=%q, want priority", entry.ServiceTier)
 	}
-	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 2.5
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 2
 	if !floatEquals(entry.Cost, wantCost) {
 		t.Fatalf("Cost=%v, want fast-mode cost %v", entry.Cost, wantCost)
 	}
@@ -8369,7 +8369,7 @@ func TestProxy_CodexPriorityRequestBillsFastModeDespiteUpstreamDefaultTier(t *te
 	if entry.ServiceTier != "priority" {
 		t.Fatalf("ServiceTier=%q, want priority", entry.ServiceTier)
 	}
-	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 2.5
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 2
 	if !floatEquals(entry.Cost, wantCost) {
 		t.Fatalf("Cost=%v, want fast-mode cost %v", entry.Cost, wantCost)
 	}
@@ -8404,13 +8404,13 @@ func TestProxy_CodexAutoResponseChargesFastMode(t *testing.T) {
 	if entry.ServiceTier != "auto" {
 		t.Fatalf("ServiceTier=%q, want auto", entry.ServiceTier)
 	}
-	wantCost := util.CalculateCostDetailed("gpt-5.6-sol", 1000, 1000, 0, 0, 0) * 2.5
+	wantCost := util.CalculateCostDetailed("gpt-5.6-sol", 1000, 1000, 0, 0, 0) * 2
 	if !floatEquals(entry.Cost, wantCost) {
 		t.Fatalf("Cost=%v, want auto fast-mode cost %v", entry.Cost, wantCost)
 	}
 }
 
-func TestProxy_CodexUltrafastResponseChargesTenfold(t *testing.T) {
+func TestProxy_CodexUltrafastResponseChargesSixfold(t *testing.T) {
 	t.Parallel()
 
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -8439,7 +8439,7 @@ func TestProxy_CodexUltrafastResponseChargesTenfold(t *testing.T) {
 	if entry.ServiceTier != "ultrafast" {
 		t.Fatalf("ServiceTier=%q, want ultrafast", entry.ServiceTier)
 	}
-	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 10
+	wantCost := util.CalculateCostDetailed("gpt-5.6", 1000, 1000, 0, 0, 0) * 6
 	if !floatEquals(entry.Cost, wantCost) {
 		t.Fatalf("Cost=%v, want ultrafast cost %v", entry.Cost, wantCost)
 	}

@@ -155,7 +155,7 @@ func TestCalculateCost_Opus55(t *testing.T) {
 		wantServiceMultiplier float64
 	}{
 		{name: "standard", wantInputPrice: 4, wantOutputPrice: 20, wantCacheReadPrice: 0.2, wantCacheWritePrice: 5},
-		{name: "fast", serviceTier: "fast", wantInputPrice: 8, wantOutputPrice: 40, wantCacheReadPrice: 0.2, wantCacheWritePrice: 5, wantServiceMultiplier: 2},
+		{name: "fast", serviceTier: "fast", wantInputPrice: 8, wantOutputPrice: 40, wantCacheReadPrice: 0.4, wantCacheWritePrice: 10, wantServiceMultiplier: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, nil, 1_000, 1_000, 1_000, 1_000, 0)
@@ -170,14 +170,31 @@ func TestCalculateCost_Opus55(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_Sonnet55(t *testing.T) {
-	// 不能模糊命中 claude-sonnet-5 的 $3/$15。
-	breakdown := CalculateStandardCostBreakdownWithPrice("claude-sonnet-5-5", "", nil, 1_000, 1_000, 1_000, 1_000, 0)
-	if breakdown.Input.PricePerMillion != 2 ||
-		breakdown.Output.PricePerMillion != 10 ||
-		breakdown.CacheRead.PricePerMillion != 0.2 ||
-		breakdown.CacheWrite.PricePerMillion != 2.5 {
-		t.Fatalf("breakdown=%#v", breakdown)
+func TestCalculateCost_Sonnet5Pricing(t *testing.T) {
+	for _, test := range []struct {
+		model          string
+		cacheReadPrice float64
+	}{
+		{model: "claude-sonnet-5-5", cacheReadPrice: 0.1},
+		{model: "claude-sonnet-5-5-20260928", cacheReadPrice: 0.1},
+		{model: "claude-sonnet-5", cacheReadPrice: 0.2},
+		{model: "claude-sonnet-5-20260827", cacheReadPrice: 0.2},
+	} {
+		t.Run(test.model, func(t *testing.T) {
+			breakdown := CalculateStandardCostBreakdownWithPrice(test.model, "", nil, 1_000, 1_000, 1_000, 1_000, 0)
+			if breakdown.Input.PricePerMillion != 2 ||
+				breakdown.Output.PricePerMillion != 10 ||
+				breakdown.CacheRead.PricePerMillion != test.cacheReadPrice ||
+				breakdown.CacheWrite.PricePerMillion != 2.5 {
+				t.Fatalf("breakdown=%#v", breakdown)
+			}
+			// 超过 200K 的完整 prompt 仍使用标准价，包含 5 分钟和 1 小时缓存写入。
+			cost := CalculateCostDetailed(test.model, 250_000, 1_000, 100_000, 1_000, 1_000)
+			want := 0.5 + 0.01 + test.cacheReadPrice*0.1 + 0.0025 + 0.004
+			if !floatEquals(cost, want, 1e-12) {
+				t.Fatalf("cost=%v, want %v", cost, want)
+			}
+		})
 	}
 }
 
@@ -462,14 +479,14 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		{"gpt-6-sol", 1000, 1000, 1000, 0.0122},             // 缓存读取 $0.20/1M
 		{"gpt-6-luna", 1000, 1000, 0, 0.0006},               // $0.10/1M input, $0.50/1M output
 		{"gpt-6-luna", 1000, 1000, 1000, 0.00061},           // 缓存读取 $0.01/1M
-		{"gpt-5.6", 1000, 1000, 0, 0.035},                   // GPT-5.6裸模型名按Sol价格兜底
-		{"gpt-5.6-sol", 1000, 1000, 0, 0.035},               // $5.00/1M input, $30/1M output
+		{"gpt-5.6", 1000, 1000, 0, 0.024},                   // GPT-5.6裸模型名按Sol价格兜底
+		{"gpt-5.6-sol", 1000, 1000, 0, 0.024},               // $4.00/1M input, $20/1M output
 		{"gpt-5.6-terra", 1000, 1000, 0, 0.014},             // $2.00/1M input, $12/1M output
 		{"gpt-5.6-terra", 1000, 1000, 1000, 0.0142},         // 缓存读取 $0.20/1M
 		{"gpt-5.6-luna", 1000, 1000, 0, 0.0014},             // $0.20/1M input, $1.20/1M output
 		{"gpt-5.6-luna", 1000, 1000, 1000, 0.00142},         // 缓存读取 $0.02/1M
-		{"gpt-5.6-sol-2026-06-26", 1000, 1000, 0, 0.035},    // 模糊匹配到gpt-5.6-sol
-		{"gpt-5.6-sol", 1000, 1000, 1000, 0.0355},           // 缓存读取90%折扣：1000×($5×0.1)/1M
+		{"gpt-5.6-sol-2026-06-26", 1000, 1000, 0, 0.024},    // 模糊匹配到gpt-5.6-sol
+		{"gpt-5.6-sol", 1000, 1000, 1000, 0.0244},           // 缓存读取90%折扣：1000×($4×0.1)/1M
 		{"gpt-5.5", 1000, 1000, 0, 0.035},                   // $5.00/1M input, $30/1M output (<=272K); 2× gpt-5.4
 		{"gpt-5.5", 300000, 1000, 0, 3.045},                 // $10.00/1M input, $45/1M output (>272K); 2× gpt-5.4
 		{"gpt-5.4", 1000, 1000, 0, 0.0175},                  // $2.50/1M input, $15/1M output (<=272K)
@@ -488,6 +505,12 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		{"gpt-5-mini", 10000, 5000, 0, 0.0125},              // $0.25/1M input, $2/1M output
 		{"gpt-5-nano", 100000, 50000, 0, 0.025},             // $0.05/1M input, $0.4/1M output
 		{"gpt-5-pro", 1000, 1000, 0, 0.135},                 // $15/1M input, $120/1M output
+
+		{"gpt-5.5-pro", 1000, 1000, 0, 0.21},
+		{"gpt-5.5-pro", 272_001, 1000, 0, 16.59006},
+		{"gpt-5.6-cyber", 300_000, 1000, 1000, 3.82625},
+		{"gpt-5.5-cyber", 300_000, 1000, 1000, 3.82625},
+		{"gpt-3.5-turbo-1106", 1_000_000, 1_000_000, 0, 3.00},
 
 		// GPT-4.1 系列（新）
 		{"gpt-4.1", 1000, 1000, 0, 0.01},         // $2.00/1M input, $8/1M output
@@ -527,6 +550,33 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+// 多模态模型这里只校验目录中的文本 token 费率。
+func TestCalculateCostOpenAIMultimodalTextPrices(t *testing.T) {
+	for _, test := range []struct {
+		model                string
+		input, output, cache float64
+	}{
+		{"gpt-realtime", 4, 16, 0.4},
+		{"gpt-realtime-mini", 0.6, 2.4, 0.06},
+		{"gpt-realtime-1.5", 4, 16, 0.4},
+		{"gpt-realtime-2", 4, 24, 0.4},
+		{"gpt-realtime-2.1", 4, 24, 0.4},
+		{"gpt-realtime-2.1-mini", 0.6, 2.4, 0.06},
+		{"gpt-image-1.5", 5, 10, 1.25},
+		{"chatgpt-image-latest", 5, 10, 1.25},
+		{"gpt-image-1", 5, 0, 1.25},
+		{"gpt-image-1-mini", 2, 0, 0.2},
+	} {
+		t.Run(test.model, func(t *testing.T) {
+			got := CalculateCostDetailed(test.model, 1000, 1000, 1000, 0, 0)
+			want := (test.input + test.output + test.cache) / 1000
+			if !floatEquals(got, want, 1e-12) {
+				t.Fatalf("cost=%v, want %v", got, want)
+			}
+		})
+	}
+}
+
 // GPT-5.6/GPT-6 等长上下文模型的分段计费：>272K 整段改用高价。
 // 这些模型用 InputPriceHigh/OutputPriceHigh 表达（而非 TokenPricingTiers），
 // 以便自定义价格能整份替换；本测试断言的是分段行为本身，与表达方式无关。
@@ -546,9 +596,9 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 		{name: "astra boundary", model: "gpt-6-astra", inputTokens: 272_000, outputTokens: 1_000, expected: 2.77},
 		{name: "astra above boundary", model: "gpt-6-astra", inputTokens: 272_001, outputTokens: 1_000, expected: 5.51502},
 		{name: "astra cache crosses boundary", model: "gpt-6-astra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 2.475},
-		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
-		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.76501},
-		{name: "bare name boundary", model: "gpt-5.6", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
+		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.108},
+		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.206008},
+		{name: "bare name boundary", model: "gpt-5.6", inputTokens: 272_000, outputTokens: 1_000, expected: 1.108},
 		{name: "astra base row", model: "gpt-6-astra", inputTokens: 1000, outputTokens: 1000, expected: 0.06},
 		{name: "gpt-6 sol boundary", model: "gpt-6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 0.554},
 		{name: "gpt-6 sol above boundary", model: "gpt-6-sol", inputTokens: 272_001, outputTokens: 1_000, expected: 1.103004},
@@ -558,7 +608,7 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 		{name: "terra above boundary", model: "gpt-5.6-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 1.106004},
 		{name: "luna boundary", model: "gpt-5.6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.0556},
 		{name: "luna above boundary", model: "gpt-5.6-luna", inputTokens: 272_001, outputTokens: 1_000, expected: 0.1106004},
-		{name: "sol cache crosses boundary", model: "gpt-5.6-sol", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 1.245},
+		{name: "sol cache crosses boundary", model: "gpt-5.6-sol", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 0.99},
 		{name: "terra cache crosses boundary", model: "gpt-5.6-terra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 0.498},
 		{name: "luna cache crosses boundary and write uses high tier", model: "gpt-5.6-luna", inputTokens: 100_000, cacheRead: 200_000, cacheWrite: 1_000, expected: 0.0485},
 	}
@@ -568,6 +618,56 @@ func TestCalculateCost_OpenAIContextTieredPricing(t *testing.T) {
 			cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheRead, tc.cacheWrite, 0)
 			if !floatEquals(cost, tc.expected, 0.000001) {
 				t.Fatalf("cost = %.6f, expected %.6f", cost, tc.expected)
+			}
+		})
+	}
+}
+
+func TestCalculateCostGPT54And55CachedInputTierBoundary(t *testing.T) {
+	for _, model := range []string{"gpt-5.4", "gpt-5.4-2026-03-05", "gpt-5.5"} {
+		t.Run(model, func(t *testing.T) {
+			inputPrice, outputPrice, cachePrice := 2.5, 15.0, 0.25
+			if model == "gpt-5.5" {
+				inputPrice, outputPrice, cachePrice = 5, 30, 0.5
+			}
+			for _, cached := range []int{172_000, 172_001} {
+				in, out, cache := inputPrice, outputPrice, cachePrice
+				if cached == 172_001 {
+					in, out, cache = in*2, out*1.5, cache*2
+				}
+				got := CalculateCostDetailed(model, 100_000, 1000, cached, 0, 0)
+				want := (100_000*in + 1000*out + float64(cached)*cache) / 1e6
+				if !floatEquals(got, want, 1e-12) {
+					t.Fatalf("cached=%d cost=%v, want %v", cached, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCalculateCostOpenAIFastPrices(t *testing.T) {
+	for _, test := range []struct {
+		model                string
+		input, output, cache float64
+	}{
+		{"gpt-6-astra", 20, 100, 2},
+		{"gpt-5.6-sol", 8, 40, 0.8},
+		{"gpt-5.6-terra", 4, 24, 0.4},
+		{"gpt-5.6-luna", 0.4, 2.4, 0.04},
+		{"gpt-5-mini", 0.45, 3.6, 0.045},
+		{"gpt-4.1", 3.5, 14, 0.875},
+		{"gpt-4.1-mini", 0.7, 2.8, 0.175},
+		{"gpt-4.1-nano", 0.2, 0.8, 0.05},
+		{"gpt-4o", 4.25, 17, 2.125},
+		{"gpt-4o-mini", 0.25, 1, 0.125},
+	} {
+		t.Run(test.model, func(t *testing.T) {
+			for _, tier := range []string{"fast", "priority", "auto"} {
+				got := CalculateStandardCostBreakdownWithPrice(test.model, tier, nil, 1000, 1000, 1000, 0, 0)
+				want := (test.input + test.output + test.cache) / 1000
+				if !floatEquals(got.Total, want, 1e-12) || !floatEquals(got.CacheRead.PricePerMillion, test.cache, 1e-12) {
+					t.Fatalf("tier=%s breakdown=%+v, want total %v", tier, got, want)
+				}
 			}
 		})
 	}
@@ -610,24 +710,24 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		tier       string
 		multiplier float64
 	}{
-		{"gpt-6-astra", "fast", 2.5},
+		{"gpt-6-astra", "fast", 2.0},
 		{"gpt-6-astra", "ultrafast", 6.0},
 		{"gpt-6-astra-2026-09-24", "ultrafast", 6.0},
 		{"GPT-6-ASTRA", " ULTRAFAST ", 6.0},
 		{"gpt-6-astra", "flex", 0.5},
 		{"gpt-6-sol", "fast", 2.0},
 		{"gpt-6-sol", "priority", 2.0},
-		{"gpt-6-sol", "ultrafast", 10.0},
+		{"gpt-6-sol", "ultrafast", 6.0},
 		{"gpt-6-luna", "fast", 2.0},
 		{"gpt-6-luna", "flex", 0.5},
-		{"gpt-5.6", "priority", 2.5},
-		{"gpt-5.6", "auto", 2.5},
-		{"gpt-5.6", "ultrafast", 10.0},
-		{"gpt-5.6-sol", "priority", 2.5},
-		{"gpt-5.6-sol", "auto", 2.5},
+		{"gpt-5.6", "priority", 2.0},
+		{"gpt-5.6", "auto", 2.0},
+		{"gpt-5.6", "ultrafast", 6.0},
+		{"gpt-5.6-sol", "priority", 2.0},
+		{"gpt-5.6-sol", "auto", 2.0},
 		{"gpt-5.6-terra", "flex", 0.5},
-		{"gpt-5.6-luna-2026-06-26", "priority", 2.5},
-		{"gpt-5.6", "fast", 2.5},
+		{"gpt-5.6-luna-2026-06-26", "priority", 2.0},
+		{"gpt-5.6", "fast", 2.0},
 		{"gpt-5.5", "priority", 2.5},
 		{"gpt-5.5", "fast", 2.5},
 		{"gpt-5.5", "flex", 0.5},
@@ -636,7 +736,7 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"gpt-5", "default", 1.0},
 		{"gpt-5", "", 1.0},
 		{"gpt-5", "auto", 2.0},
-		{"gpt-4o", "priority", 2.0},
+		{"gpt-4o", "priority", 1.7},
 		{"gpt-4.1-mini", "flex", 0.5},
 		{"o3", "priority", 2.0},
 		{"o4-mini", "flex", 0.5},
@@ -646,7 +746,7 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"gpt-5.4-2026-03-01", "fast", 2.0},
 		{"gpt-5.4-mini", "priority", 2.0},
 		{"gpt-5.4-nano", "flex", 0.5},
-		{"gpt-4o-2024-05-13", "priority", 2.0},
+		{"gpt-4o-2024-05-13", "priority", 1.75},
 		{"o3-2026-01", "flex", 0.5},
 	}
 
@@ -697,9 +797,9 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_AstraUltrafastWithCustomPrices(t *testing.T) {
+func TestCalculateCost_UltrafastWithCustomPrices(t *testing.T) {
 	t.Cleanup(func() { _ = InstallCustomModelPricing(nil) })
-	if err := InstallCustomModelPricingJSON(`{"gpt-6-astra":{"input_price":7,"output_price":11,"cache_read_price":0.7,"cache_write_price":8}}`); err != nil {
+	if err := InstallCustomModelPricingJSON(`{"gpt-5.6-sol":{"input_price":7,"output_price":11,"cache_read_price":0.7,"cache_write_price":8}}`); err != nil {
 		t.Fatal(err)
 	}
 	price := &CustomModelPrice{}
@@ -715,28 +815,32 @@ func TestCalculateCost_AstraUltrafastWithCustomPrices(t *testing.T) {
 		{name: "channel", price: price, want: 6 * (3 + 5 + 0.3 + 4 + 6) / 1000},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			got := CalculateStandardCostBreakdownWithPrice("gpt-6-astra", "ultrafast", scenario.price, 1000, 1000, 1000, 1000, 1000)
+			got := CalculateStandardCostBreakdownWithPrice("gpt-5.6-sol", "ultrafast", scenario.price, 1000, 1000, 1000, 1000, 1000)
 			if !floatEquals(got.Total, scenario.want, 1e-12) || got.ServiceTierMultiplier != 6 ||
 				!floatEquals(got.Input.Cost+got.Output.Cost+got.CacheRead.Cost+got.CacheWrite.Cost, got.Total, 1e-12) {
-				t.Fatalf("Astra Ultrafast breakdown = %+v, want total %v and 6x", got, scenario.want)
+				t.Fatalf("Ultrafast breakdown = %+v, want total %v and 6x", got, scenario.want)
 			}
 		})
 	}
 }
 
-// Claude 长上下文按 input + cache_read + cache_creation 判定 200K：
-// Claude Code 的大上下文几乎全是缓存读，只看非缓存 input 会让整单漏计高档价。
-func TestCalculateCost_ClaudeLongContextCountsPromptCache(t *testing.T) {
-	high := CalculateCostDetailed("claude-sonnet-4-5-20250929", 1_000, 1_000, 150_000, 40_000, 20_000)
-	wantHigh := (1_000*6.00 + 1_000*22.50 + 150_000*6.00*0.1 + 40_000*6.00*1.25 + 20_000*6.00*2) / 1_000_000
-	if !floatEquals(high, wantHigh, 0.000001) {
-		t.Errorf("sonnet-4-5 211K prompt = %.6f, 期望高档 %.6f", high, wantHigh)
-	}
-
-	low := CalculateCostDetailed("claude-sonnet-4-5-20250929", 1_000, 1_000, 150_000, 49_000, 0)
-	wantLow := (1_000*3.00 + 1_000*15.00 + 150_000*3.00*0.1 + 49_000*3.00*1.25) / 1_000_000
-	if !floatEquals(low, wantLow, 0.000001) {
-		t.Errorf("sonnet-4-5 200K prompt = %.6f, 期望低档 %.6f", low, wantLow)
+// 已退役的 1M beta 不再提供内置高价；自定义分档仍按完整 prompt 判断。
+func TestCalculateCost_SonnetRetiredLongContextPricing(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-4-5-20250929", "claude-sonnet-4-20250514"} {
+		t.Run(model, func(t *testing.T) {
+			got := CalculateCostDetailed(model, 1_000, 1_000, 150_000, 40_000, 20_000)
+			want := (1_000*3.0 + 1_000*15.0 + 150_000*0.3 + 40_000*3.75 + 20_000*6.0) / 1_000_000
+			if !floatEquals(got, want, 1e-12) {
+				t.Fatalf("cost=%v, want %v", got, want)
+			}
+			input, output, highInput, highOutput := 3.0, 15.0, 6.0, 22.5
+			price := &CustomModelPrice{InputPrice: &input, OutputPrice: &output, InputPriceHigh: &highInput, OutputPriceHigh: &highOutput}
+			got = CalculateCostDetailedWithPrice(model, price, 1_000, 1_000, 150_000, 40_000, 20_000)
+			want = (1_000*6.0 + 1_000*22.5 + 150_000*0.6 + 40_000*7.5 + 20_000*12.0) / 1_000_000
+			if !floatEquals(got, want, 1e-12) {
+				t.Fatalf("custom cost=%v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -1740,19 +1844,41 @@ func TestFastModeCost_Basic(t *testing.T) {
 }
 
 func TestFastModeCost_WithCache(t *testing.T) {
-	// 场景：Fast mode + 缓存
-	// [P1-3] 缓存成本基于「基础 input 价 $5」而非 fast 价 $10
-	//   （缓存倍率常量定义为相对基础 input 价，且与标准计费路径 CalculateCostDetailed 一致）
-	// Input:  1000 × $10 / 1M = $0.010000（input/output 仍按 fast 价）
-	// Output: 500 × $50 / 1M = $0.025000
-	// Cache Read: 5000 × ($5 × 0.1) / 1M  = $0.002500
-	// 5m Write:   2000 × ($5 × 1.25) / 1M = $0.012500
-	// 1h Write:   1000 × ($5 × 2.0) / 1M  = $0.010000
-	// Total: $0.060000
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 1000, 500, 5000, 2000, 1000).Total
-	expected := 0.060
-	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("Fast mode 缓存成本 = %.6f, 期望 %.6f", cost, expected)
+	for _, test := range []struct {
+		model string
+		want  float64
+	}{
+		{"claude-opus-5", 0.085},
+		{"claude-opus-4-8", 0.085},
+		{"claude-opus-5-5", 0.066},
+	} {
+		t.Run(test.model, func(t *testing.T) {
+			// 缓存读、5m 写、1h 写均叠加 fast 倍率；Opus 5.5 读缓存按输入价的 5%。
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "fast", nil, 1000, 500, 5000, 2000, 1000)
+			if !floatEquals(got.Total, test.want, 1e-12) {
+				t.Fatalf("fast cost=%v, want %v", got.Total, test.want)
+			}
+		})
+	}
+}
+
+func TestCalculateCost_Mythos(t *testing.T) {
+	for _, test := range []struct {
+		model          string
+		cacheReadPrice float64
+	}{
+		{"claude-mythos-5", 1},
+		{"claude-mythos-5-1", 0.25},
+		{"claude-mythos-5-1-20261001", 0.25},
+	} {
+		t.Run(test.model, func(t *testing.T) {
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "", nil, 250_000, 1_000, 100_000, 1_000, 1_000)
+			want := 2.5 + 0.05 + 0.1*test.cacheReadPrice + 0.0125 + 0.02
+			if got.Input.PricePerMillion != 10 || got.Output.PricePerMillion != 50 ||
+				got.CacheRead.PricePerMillion != test.cacheReadPrice || !floatEquals(got.Total, want, 1e-12) {
+				t.Fatalf("breakdown=%+v, want total %v", got, want)
+			}
+		})
 	}
 }
 

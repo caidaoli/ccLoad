@@ -175,8 +175,8 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 		costBreakdown.CacheRead.Quantity != 250 || costBreakdown.CacheWrite.Quantity != 125 {
 		t.Fatalf("unexpected cost breakdown quantities: %+v", costBreakdown)
 	}
-	if costBreakdown.ServiceTierMultiplier != 2.5 {
-		t.Fatalf("service_tier_multiplier=%v, want 2.5", costBreakdown.ServiceTierMultiplier)
+	if costBreakdown.ServiceTierMultiplier != 2 {
+		t.Fatalf("service_tier_multiplier=%v, want 2", costBreakdown.ServiceTierMultiplier)
 	}
 	var message string
 	if err := json.Unmarshal(entry["message"], &message); err != nil {

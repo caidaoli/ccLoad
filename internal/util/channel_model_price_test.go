@@ -48,10 +48,10 @@ func TestCalculateCostWithPriceKeepsSystemTierSemantics(t *testing.T) {
 
 func TestCalculateStandardCostBreakdownWithPriceAppliesFastMode(t *testing.T) {
 	price := &util.CustomModelPrice{InputPrice: priceOf(2), OutputPrice: priceOf(10)}
-	// input/output 按渠道价翻倍，缓存读仍按渠道基础价。
-	fast := util.CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", price, 1_000_000, 1_000_000, 1_000_000, 0, 0)
-	if math.Abs(fast.Total-24.2) > 1e-12 || fast.ServiceTierMultiplier != 2 {
-		t.Fatalf("fast breakdown=%#v, want total 24.2 with multiplier 2", fast)
+	// 渠道输入、输出及缓存读写均叠加 fast 倍率。
+	fast := util.CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", price, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	if math.Abs(fast.Total-37.4) > 1e-12 || fast.ServiceTierMultiplier != 2 {
+		t.Fatalf("fast breakdown=%#v, want total 37.4 with multiplier 2", fast)
 	}
 }
 

@@ -243,7 +243,7 @@ func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, input
 // serviceTier 与实际请求计费语义一致，包含 OpenAI priority/flex 和 Anthropic fast 定价。
 // price 非空时用它整份替换目录与全局自定义价格
 // （渠道模型价格）。model 仍决定长上下文阈值、缓存倍率回退与 service_tier 倍率；
-// Anthropic fast 模式按该价格的 input/output 翻倍，缓存仍按基础价，与官方 fast 定价同构。
+// Anthropic fast 模式按该价格的全部 token 费用翻倍，包括缓存读写。
 func CalculateStandardCostBreakdownWithPrice(
 	model, serviceTier string,
 	price *CustomModelPrice,
@@ -257,7 +257,7 @@ func CalculateStandardCostBreakdownWithPrice(
 		breakdown := calculateCostBreakdownDetailed(
 			model, override, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
 		)
-		return scaleFastModeInputOutput(breakdown)
+		return scaleFastModeCostBreakdown(breakdown)
 	}
 	breakdown := calculateCostBreakdownDetailed(
 		model,
@@ -557,9 +557,8 @@ func modelSupportsTier(model string) bool {
 }
 
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
-// Codex 的 auto/priority 表示 Fast 模式：GPT-5.6/5.5=2.5x，
-// GPT-6 Sol/Luna 和 GPT-5.4=2x；其他 priority 模型=2x，Astra ultrafast=6x，
-// 其他 ultrafast=10x，flex=0.5x，
+// Codex 的 auto 按 Fast 计费；priority 与 fast 使用相同官方倍率。
+// Ultrafast 按项目计费规则统一为 6x；flex=0.5x。
 // default/standard/""=1x（标准）。
 func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
@@ -571,19 +570,11 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	}
 	switch serviceTier {
 	case "ultrafast":
-		if IsOpenAIAstraModel(model) {
-			return 6.0
-		}
-		return 10.0
-	case "auto", "priority":
-		if multiplier := openAIFastModeMultiplier(model); multiplier != 1.0 {
-			return multiplier
-		}
-		return 2.0
+		return 6.0
+	case "auto", "priority", "fast":
+		return openAIFastModeMultiplier(model)
 	case "flex":
 		return 0.5
-	case "fast":
-		return openAIFastModeMultiplier(model)
 	default:
 		return 1.0
 	}
@@ -603,17 +594,27 @@ func IsOpenAIAstraModel(model string) bool {
 	return err == nil
 }
 
+// 调用方已通过模型白名单过滤；日期快照沿用对应模型的 Fast 费率。
+// https://developers.openai.com/api/docs/pricing （2026-10-08）
 func openAIFastModeMultiplier(model string) float64 {
 	lowerModel := strings.ToLower(model)
 	switch {
-	case strings.HasPrefix(lowerModel, "gpt-6-astra"), strings.HasPrefix(lowerModel, "gpt-5.6"), strings.HasPrefix(lowerModel, "gpt-5.5"):
+	case strings.HasPrefix(lowerModel, "gpt-5.5"):
 		return 2.5
-	case strings.HasPrefix(lowerModel, "gpt-6.1-sol"), strings.HasPrefix(lowerModel, "gpt-6-sol"), strings.HasPrefix(lowerModel, "gpt-6-luna"):
+	case strings.HasPrefix(lowerModel, "gpt-5-mini"):
+		return 1.8
+	case strings.HasPrefix(lowerModel, "gpt-4o-2024-05-13"):
+		return 1.75
+	case strings.HasPrefix(lowerModel, "gpt-4o-mini"):
+		return 5.0 / 3.0
+	case strings.HasPrefix(lowerModel, "gpt-4o"):
+		return 1.7
+	case strings.HasPrefix(lowerModel, "gpt-4.1-nano"):
 		return 2.0
-	case strings.HasPrefix(lowerModel, "gpt-5.4"):
-		return 2.0
+	case strings.HasPrefix(lowerModel, "gpt-4.1"):
+		return 1.75
 	default:
-		return 1.0
+		return 2.0
 	}
 }
 
@@ -633,26 +634,20 @@ func IsFastModeModel(model string) bool {
 		strings.HasPrefix(lowerModel, "claude-opus-4-8")
 }
 
-// anthropicFastModeMultiplier 是 fast 模式 input/output 相对基础价的倍率。
+// anthropicFastModeMultiplier 是 fast 模式全部 token 费用相对标准价的倍率。
 const anthropicFastModeMultiplier = 2.0
 
-// scaleFastModeInputOutput 把按基础价算出的明细换算为 fast 模式：只放大 input/output，缓存保持基础价。
-func scaleFastModeInputOutput(breakdown StandardCostBreakdown) StandardCostBreakdown {
-	for _, component := range []*CostComponent{&breakdown.Input, &breakdown.Output} {
-		component.PricePerMillion *= anthropicFastModeMultiplier
-		component.Cost *= anthropicFastModeMultiplier
-	}
-	breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
-		breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
+// scaleFastModeCostBreakdown 将输入、输出及缓存读写统一换算为 fast 价格。
+func scaleFastModeCostBreakdown(breakdown StandardCostBreakdown) StandardCostBreakdown {
+	breakdown = scaleCostBreakdown(breakdown, anthropicFastModeMultiplier)
 	breakdown.ServiceTierMultiplier = anthropicFastModeMultiplier
 	return breakdown
 }
 
 // calculateFastModeCostBreakdown 计算 Anthropic fast mode 费用明细。
 // Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
-// 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
-// 故缓存成本基于模型基础价而非 fast 价，与标准路径 CalculateCostDetailed 一致。
-// 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
+// 缓存倍率叠加在 fast 价格上，包括显式缓存读价和两种缓存写入时长。
+// 参考: https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
 func calculateFastModeCostBreakdown(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
 		return StandardCostBreakdown{}
@@ -664,7 +659,7 @@ func calculateFastModeCostBreakdown(model string, inputTokens, outputTokens, cac
 	breakdown := calculateCostBreakdownDetailed(
 		model, &pricing, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens,
 	)
-	return scaleFastModeInputOutput(breakdown)
+	return scaleFastModeCostBreakdown(breakdown)
 }
 
 // getOpenAICacheMultiplier 获取OpenAI模型的缓存价格倍数
