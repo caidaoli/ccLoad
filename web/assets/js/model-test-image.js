@@ -6,6 +6,10 @@
   'use strict';
 
   const STORAGE_PREFIX = 'ccload_model_test_image_';
+  // base64 图片动辄数 MB，超出 localStorage 配额，结果改存 IndexedDB
+  const RESULT_DB_NAME = 'ccload_model_test_image';
+  const RESULT_STORE = 'results';
+  const LAST_RESULT_KEY = 'last';
   const IMAGES_SIZE_OPTIONS = [
     ['auto', '自动', 'modelTest.image.auto'],
     ['1024x1024', '1024 × 1024'],
@@ -56,6 +60,7 @@
   let channels = [];
   let initialized = false;
   let requestID = 0;
+  let resultVersion = 0;
   let submitting = false;
   let modelCombobox = null;
   let channelCombobox = null;
@@ -108,6 +113,67 @@
     try {
       root?.localStorage?.setItem(STORAGE_PREFIX + key, String(value ?? ''));
     } catch (_) { /* ignore */ }
+  }
+
+  function openResultDB() {
+    const factory = root?.indexedDB;
+    if (!factory) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      try {
+        const request = factory.open(RESULT_DB_NAME, 1);
+        request.onupgradeneeded = () => request.result.createObjectStore(RESULT_STORE);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+        request.onblocked = () => resolve(null);
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  async function withResultStore(mode, operate) {
+    const db = await openResultDB();
+    if (!db) return undefined;
+    try {
+      return await new Promise((resolve) => {
+        const transaction = db.transaction(RESULT_STORE, mode);
+        const request = operate(transaction.objectStore(RESULT_STORE));
+        transaction.oncomplete = () => resolve(request.result);
+        transaction.onerror = () => resolve(undefined);
+        transaction.onabort = () => resolve(undefined);
+      });
+    } catch (_) {
+      return undefined;
+    } finally {
+      db.close();
+    }
+  }
+
+  function resultRecord(data) {
+    const images = normalizeImages(data);
+    if (!images.length) return null;
+    const record = { images, output_format: data?.output_format || 'png' };
+    if (Number.isFinite(Number(data?.duration_ms))) record.duration_ms = Number(data.duration_ms);
+    if (Number(data?.cost_usd) > 0) record.cost_usd = Number(data.cost_usd);
+    return record;
+  }
+
+  async function saveResult(data) {
+    const record = resultRecord(data);
+    if (!record) return false;
+    await withResultStore('readwrite', store => store.put(record, LAST_RESULT_KEY));
+    return true;
+  }
+
+  async function loadSavedResult() {
+    return resultRecord(await withResultStore('readonly', store => store.get(LAST_RESULT_KEY)));
+  }
+
+  function restoreSavedResult() {
+    const version = resultVersion;
+    loadSavedResult().then((record) => {
+      if (record && version === resultVersion) renderResults(record);
+    });
   }
 
   function buildRequestPayload(values) {
@@ -599,7 +665,9 @@
         body: JSON.stringify(payload)
       });
       if (!data?.success) throw new Error(data?.error || text('modelTest.image.failed', '图片生成失败'));
+      resultVersion += 1;
       renderResults(data);
+      saveResult(data);
       setStatus(text('modelTest.image.success', '图片生成完成'));
     } catch (error) {
       setStatus(error?.message || text('modelTest.image.failed', '图片生成失败'), true);
@@ -641,6 +709,7 @@
     });
     syncModelOptions();
     syncChannelOptions();
+    restoreSavedResult();
   }
 
   function setChannels(nextChannels) {
@@ -660,6 +729,8 @@
     normalizeImages,
     dataURLFromImage,
     imageSizeOptions,
+    saveResult,
+    loadSavedResult,
     init,
     setChannels,
     open
