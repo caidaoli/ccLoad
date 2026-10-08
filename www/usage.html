@@ -65,6 +65,94 @@
       </div>
     </section>
 
+    <section class="www-section" id="clients">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2 data-i18n-html="www.usage.clients.title">Connect Claude Code and Codex</h2>
+          <p data-i18n-html="www.usage.clients.desc">Replace <code>your-api-token</code> with the ccLoad token from the previous step. On a server, replace <code>localhost</code> with the server IP or domain.</p>
+        </div>
+
+        <div class="www-tabs">
+          <div class="www-tab-list">
+            <button class="www-tab-button active">Claude Code</button>
+            <button class="www-tab-button">Codex CLI</button>
+          </div>
+
+          <!-- Claude Code -->
+          <div class="www-tab-panel active">
+            <p data-i18n-html="www.usage.clients.claude.step1">1. Edit <code>~/.claude/settings.json</code> (<code>%USERPROFILE%\.claude\settings.json</code> on Windows). Create it if it does not exist; if it already has other settings, merge just these two entries into <code>env</code>. Leave <code>/v1</code> off the address; Claude Code appends <code>/v1/messages</code> itself. Settings in this file apply to every terminal and IDE extension.</p>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">json</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8080",
+    "ANTHROPIC_AUTH_TOKEN": "your-api-token"
+  }
+}</code></pre>
+              </div>
+            </div>
+            <p data-i18n-html="www.usage.clients.claude.step2">2. Make sure the model names match. Besides the main model, Claude Code uses a Haiku model (such as <code>claude-haiku-4-5</code>) for background tasks like title generation, and every one of these names must appear in some channel's model list. If your channels lack them, point them at models your channels do have; the full file becomes:</p>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">json</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8080",
+    "ANTHROPIC_AUTH_TOKEN": "your-api-token",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "model-name-from-your-channel",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "model-name-from-your-channel",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "model-name-from-your-channel"
+  }
+}</code></pre>
+              </div>
+            </div>
+            <p data-i18n-html="www.usage.clients.claude.step3">3. Verify: run <code>claude -p "hello"</code>; a reply means it works. In interactive mode, <code>/status</code> shows the current base URL.</p>
+          </div>
+
+          <!-- Codex CLI -->
+          <div class="www-tab-panel">
+            <p data-i18n-html="www.usage.clients.codex.step1">1. Log in with your ccLoad token. This replaces any existing ChatGPT login in Codex; the same command works in Windows PowerShell.</p>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>echo your-api-token | codex login --with-api-key</code></pre>
+              </div>
+            </div>
+            <p data-i18n-html="www.usage.clients.codex.step2">2. Edit <code>~/.codex/config.toml</code> (<code>%USERPROFILE%\.codex\config.toml</code> on Windows). If the file does not exist, create it and paste everything below. If it already has content, add the two parts separately: the <code>model_provider = "ccload"</code> line at the <strong>very top of the file</strong> (before any <code>[...]</code> section, or it will not take effect), and the whole <code>[model_providers.ccload]</code> block at the <strong>end of the file</strong>.</p>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">toml</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>model_provider = "ccload"
+
+[model_providers.ccload]
+name = "OpenAI"
+base_url = "http://localhost:8080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = true</code></pre>
+              </div>
+            </div>
+            <p data-i18n-html="www.usage.clients.codex.step2note"><code>base_url</code> must include <code>/v1</code>. <code>requires_openai_auth = true</code> makes Codex use the token from step 1, and <code>supports_websockets = true</code> enables Responses WebSocket.</p>
+            <p class="www-mt-4" data-i18n-html="www.usage.clients.codex.step3">3. Verify: run <code>codex exec --skip-git-repo-check "hello"</code>; a reply means it works.</p>
+            <div class="www-callout www-mt-4" data-i18n-html="www.usage.clients.codex.daemon"><strong>If you use the app-server daemon</strong> (for example <code>codex agents</code> or <code>codex remote-control</code>), not every change applies right away: sessions already open keep the old <code>config.toml</code> settings, and after <code>codex login</code> with a new token the daemon keeps the old token until it restarts. After changing the config or logging in again, run <code>codex app-server daemon restart</code>. If <code>codex app-server daemon version</code> reports <code>failed to connect</code>, the daemon is not running and needs no restart.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="www-section www-section-alt">
       <div class="www-container">
         <div class="www-section-header">

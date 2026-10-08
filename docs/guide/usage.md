@@ -48,7 +48,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Codex CLI (recommended configuration)**:
 
-Keep the built-in `openai` provider and change only its address; do not define a custom `[model_providers.*]` entry for ccLoad:
+Define a custom provider for ccLoad and select it with `model_provider`:
 
 ```bash
 # Log in with an API key; use your ccLoad API token as the key
@@ -57,10 +57,17 @@ printenv CCLOAD_API_TOKEN | codex login --with-api-key
 
 ```toml
 # ~/.codex/config.toml
-openai_base_url = "http://localhost:8080/v1"
+model_provider = "ccload"   # top-level key: keep it before any [...] section
+
+[model_providers.ccload]
+name = "OpenAI"
+base_url = "http://localhost:8080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = true
 ```
 
-The built-in provider sends the `version` header and enables Responses WebSocket and standalone web search. With API-key login and a custom address, the client uses only its bundled model catalog (per-model instructions, tool shapes and the responses-lite switch ship with each client release) and never fetches ccLoad's synthesized `/models`. Custom providers omit `version` and WebSocket by default, so their wire traffic diverges from a direct official client.
+`requires_openai_auth = true` makes the provider use the API key stored by `codex login --with-api-key`. Custom providers do not use WebSocket unless `supports_websockets = true` is set. They also omit the `version` header, so the Codex backend does not apply per-model `minimal_client_version` gating to these requests.
 
 **Codex Responses WebSocket**:
 

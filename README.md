@@ -141,24 +141,67 @@ curl -X POST http://localhost:8080/v1/messages \
 
 **Claude Code**:
 
-```bash
-export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_AUTH_TOKEN=your-api-token
-claude
-```
+1. Edit `~/.claude/settings.json` (`%USERPROFILE%\.claude\settings.json` on Windows). Create it if it does not exist; if it already has other settings, merge just these two entries into `env`:
 
-Add the exports to `~/.zshrc` or `~/.bashrc` to keep them.
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "http://localhost:8080",
+       "ANTHROPIC_AUTH_TOKEN": "your-api-token"
+     }
+   }
+   ```
 
-**Codex CLI**: log in with your ccLoad token, then change the address:
+   Leave `/v1` off the address; Claude Code appends `/v1/messages` itself. Settings in this file apply to every terminal and IDE extension, so no shell profile changes are needed.
 
-```bash
-echo your-api-token | codex login --with-api-key
-```
+2. Make sure the model names match. Besides the main model, Claude Code uses a Haiku model (such as `claude-haiku-4-5`) for background tasks like title generation, and every one of these names must appear in some channel's model list. If your channels lack them, point them at models your channels do have; the full file becomes:
 
-```toml
-# ~/.codex/config.toml
-openai_base_url = "http://localhost:8080/v1"
-```
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "http://localhost:8080",
+       "ANTHROPIC_AUTH_TOKEN": "your-api-token",
+       "ANTHROPIC_DEFAULT_OPUS_MODEL": "model-name-from-your-channel",
+       "ANTHROPIC_DEFAULT_SONNET_MODEL": "model-name-from-your-channel",
+       "ANTHROPIC_DEFAULT_HAIKU_MODEL": "model-name-from-your-channel"
+     }
+   }
+   ```
+
+3. Verify: run `claude -p "hello"`; a reply means it works. In interactive mode, `/status` shows the current base URL.
+
+**Codex CLI**:
+
+1. Log in with your ccLoad token (this replaces any existing ChatGPT login in Codex; the same command works in Windows PowerShell):
+
+   ```bash
+   echo your-api-token | codex login --with-api-key
+   ```
+
+2. Edit `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows), If the file does not exist, create it and paste everything below. If it already has content, add the two parts separately: the `model_provider = "ccload"` line at the **very top of the file** (before any `[...]` section, or it will not take effect), and the whole `[model_providers.ccload]` block at the **end of the file**:
+
+   ```toml
+   model_provider = "ccload"
+
+   [model_providers.ccload]
+   name = "OpenAI"
+   base_url = "http://localhost:8080/v1"
+   wire_api = "responses"
+   requires_openai_auth = true
+   supports_websockets = true
+   ```
+
+   `base_url` must include `/v1`. `requires_openai_auth = true` makes Codex use the token from the previous step, and `supports_websockets = true` enables Responses WebSocket.
+
+3. Verify: run `codex exec --skip-git-repo-check "hello"`; a reply means it works.
+
+   > **If you use the app-server daemon** (for example `codex agents` or `codex remote-control`): the daemon is a long-running process, so not every change applies right away. After you edit `config.toml`, sessions already open keep the old settings and only new sessions pick up the change; after you run `codex login` again with a new token, the daemon keeps using the old token until it restarts. After changing the config or logging in again, run:
+   >
+   > ```bash
+   > codex app-server daemon restart
+   > ```
+   >
+   > To check whether the daemon is running, run `codex app-server daemon version`; a `failed to connect` error means it is not running and needs no restart.
 
 **Other OpenAI-compatible tools** (Cherry Studio, SDKs, and so on): set the base URL to `http://localhost:8080/v1` and the API key to your ccLoad token.
 

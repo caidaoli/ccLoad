@@ -52,7 +52,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Codex CLI 接入（推荐配置）**：
 
-沿用官方内置的 `openai` provider，只改地址；不要为 ccLoad 自定义 `[model_providers.*]`：
+为 ccLoad 定义自定义 provider，并用 `model_provider` 选中它：
 
 ```bash
 # 以 API Key 方式登录，Key 填 ccLoad 的 API 令牌
@@ -61,10 +61,17 @@ printenv CCLOAD_API_TOKEN | codex login --with-api-key
 
 ```toml
 # ~/.codex/config.toml
-openai_base_url = "http://localhost:8080/v1"
+model_provider = "ccload"   # 顶层配置，必须写在任何 [...] 段落之前
+
+[model_providers.ccload]
+name = "OpenAI"
+base_url = "http://localhost:8080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = true
 ```
 
-内置 provider 会发送 `version` 头、启用 Responses WebSocket 与独立 web search；API Key 登录且设置了地址时，客户端只使用自带模型目录（每个模型的指令、工具形态和 responses-lite 开关都随客户端版本发布），不会拉取 ccLoad 合成的 `/models`。自定义 provider 默认不发 `version`、不启用 WebSocket，线上请求与官方客户端直连不一致。
+`requires_openai_auth = true` 让该 provider 使用 `codex login --with-api-key` 保存的 Key。自定义 provider 默认不启用 WebSocket，必须显式设置 `supports_websockets = true`；它也不发送 `version` 头，Codex 后端因此不会按模型的 `minimal_client_version` 拦截这些请求。
 
 **Codex Responses WebSocket**：
 

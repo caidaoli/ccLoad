@@ -141,24 +141,67 @@ curl -X POST http://localhost:8080/v1/messages \
 
 **Claude Code**：
 
-```bash
-export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_AUTH_TOKEN=your-api-token
-claude
-```
+1. 编辑 `~/.claude/settings.json`（Windows 为 `%USERPROFILE%\.claude\settings.json`），文件不存在就新建；已有其他配置时，只把这两项合并进 `env`：
 
-写进 `~/.zshrc` 或 `~/.bashrc` 可以长期生效。
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "http://localhost:8080",
+       "ANTHROPIC_AUTH_TOKEN": "your-api-token"
+     }
+   }
+   ```
 
-**Codex CLI**：先用 ccLoad 令牌登录，再修改地址：
+   地址不带 `/v1`，Claude Code 会自己拼接 `/v1/messages`。写在这个文件里对所有终端和 IDE 插件都生效，不用再改 shell 配置。
 
-```bash
-echo your-api-token | codex login --with-api-key
-```
+2. 确认模型名对得上。Claude Code 除了主对话模型，还会用 Haiku 模型（如 `claude-haiku-4-5`）处理标题生成等后台任务，这些模型名都要出现在某个渠道的模型列表里。渠道没有对应模型时，在 `env` 里把它们指向渠道已配置的模型名，完整文件如下：
 
-```toml
-# ~/.codex/config.toml
-openai_base_url = "http://localhost:8080/v1"
-```
+   ```json
+   {
+     "env": {
+       "ANTHROPIC_BASE_URL": "http://localhost:8080",
+       "ANTHROPIC_AUTH_TOKEN": "your-api-token",
+       "ANTHROPIC_DEFAULT_OPUS_MODEL": "渠道里的模型名",
+       "ANTHROPIC_DEFAULT_SONNET_MODEL": "渠道里的模型名",
+       "ANTHROPIC_DEFAULT_HAIKU_MODEL": "渠道里的模型名"
+     }
+   }
+   ```
+
+3. 验证：运行 `claude -p "hello"`，有回复即成功；交互模式下输入 `/status` 可以看到当前的 Base URL。
+
+**Codex CLI**：
+
+1. 用 ccLoad 令牌登录（会替换掉 Codex 原有的 ChatGPT 登录状态；Windows PowerShell 同样可用）：
+
+   ```bash
+   echo your-api-token | codex login --with-api-key
+   ```
+
+2. 编辑 `~/.codex/config.toml`（Windows 为 `%USERPROFILE%\.codex\config.toml`），文件不存在就新建并直接粘贴下面全部内容。文件已有内容时分两处加：`model_provider = "ccload"` 这一行加到**文件最开头**（任何 `[...]` 段落之前，否则不生效），`[model_providers.ccload]` 整段加到**文件末尾**：
+
+   ```toml
+   model_provider = "ccload"
+
+   [model_providers.ccload]
+   name = "OpenAI"
+   base_url = "http://localhost:8080/v1"
+   wire_api = "responses"
+   requires_openai_auth = true
+   supports_websockets = true
+   ```
+
+   `base_url` 必须带 `/v1`。`requires_openai_auth = true` 让 Codex 使用上一步登录的令牌，`supports_websockets = true` 启用 Responses WebSocket。
+
+3. 验证：运行 `codex exec --skip-git-repo-check "hello"`，有回复即成功。
+
+   > **用了 app-server daemon 时**（例如 `codex agents`、`codex remote-control`）：daemon 是常驻进程，改了配置不会全部立即生效。修改 `config.toml` 后，已打开的会话仍沿用旧配置，只有新会话会读到新配置；重新执行 `codex login` 换了令牌，daemon 重启前会一直用旧令牌。所以改完配置或重新登录后，执行：
+   >
+   > ```bash
+   > codex app-server daemon restart
+   > ```
+   >
+   > 不确定 daemon 有没有在运行，可以执行 `codex app-server daemon version`：报 `failed to connect` 说明没在运行，不用重启。
 
 **其他 OpenAI 兼容工具**（Cherry Studio、各类 SDK 等）：Base URL 填 `http://localhost:8080/v1`，API Key 填 ccLoad 令牌。
 
