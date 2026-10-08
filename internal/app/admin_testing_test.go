@@ -5227,7 +5227,7 @@ func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
-	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-invalid-key"}}); err != nil {
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-invalid-key", CostMultiplier: 0.5}}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 	}
 
@@ -5267,6 +5267,10 @@ func TestHandleChannelTest_WritesManualTestLog(t *testing.T) {
 	}
 	if entry.BaseURL != upstream.URL {
 		t.Fatalf("BaseURL=%q, want %q", entry.BaseURL, upstream.URL)
+	}
+	// api_key 渠道的检测日志按所选 Key 快照倍率，与代理日志一致。
+	if entry.CostMultiplier != 0.5 {
+		t.Fatalf("CostMultiplier=%v, want key multiplier 0.5", entry.CostMultiplier)
 	}
 }
 
@@ -6159,6 +6163,7 @@ func TestHandleChannelImageGeneration_AntigravityNoImagePersistsDebugBody(t *tes
 	srv.client = upstream.Client()
 	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
 	created.ModelEntries = []model.ModelEntry{{Model: "gemini-3.1-flash-image"}}
+	created.CostMultiplier = 1.5
 	updated, err := srv.store.UpdateConfig(context.Background(), created.ID, created)
 	if err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
@@ -6185,6 +6190,10 @@ func TestHandleChannelImageGeneration_AntigravityNoImagePersistsDebugBody(t *tes
 	)
 	if err != nil || len(logs) != 1 {
 		t.Fatalf("ListLogsRange logs=%v err=%v", logs, err)
+	}
+	// OAuth 渠道的检测日志按渠道级倍率快照，而不是零值。
+	if logs[0].CostMultiplier != 1.5 {
+		t.Fatalf("CostMultiplier=%v, want channel multiplier 1.5", logs[0].CostMultiplier)
 	}
 	debugLog, err := srv.store.GetDebugLogByLogID(context.Background(), logs[0].ID)
 	if err != nil || debugLog == nil {

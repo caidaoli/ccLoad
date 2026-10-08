@@ -117,7 +117,9 @@ func (s *Server) addChannelCheckinAuditLog(ctx context.Context, cfg *model.Confi
 		ChannelID:  cfg.ID,
 		StatusCode: statusCode,
 		LogSource:  model.LogSourceCheckin,
-		Message:    string(message),
+		// 签到属于渠道级操作，倍率快照取渠道级，避免零值被渲染成免费渠道。
+		CostMultiplier: cfg.CostMultiplier,
+		Message:        string(message),
 	})
 }
 

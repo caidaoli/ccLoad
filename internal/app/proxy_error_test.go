@@ -541,7 +541,7 @@ func TestProxyJevAnalysis(t *testing.T) {
 					if err := json.Unmarshal([]byte(entry.Message), &audit); err != nil {
 						t.Fatal(err)
 					}
-					if entry.InputTokens != 23 || entry.ResponseModel != "jev-1.13.0" {
+					if entry.InputTokens != 23 || entry.ResponseModel != "jev-1.13.0" || entry.CostMultiplier != 1 {
 						t.Fatalf("audit fields: %+v", entry)
 					}
 					wantCost := util.CalculateCostDetailed("jev-latest", 23, 0, 0, 0, 0)

@@ -745,7 +745,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		c.Request.Context(), runtimeCfg, keySelection.keyIndex, &testReq,
 		keySelection.updatePersistedCooldown, testResult,
 	)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, logModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), logThinking, testResult))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, logModel, channelTestActualModel(testResult, testReq.Model), keySelection, c.ClientIP(), logThinking, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
@@ -870,6 +870,8 @@ type channelTestKeySelection struct {
 	apiKey                  string
 	requestCredential       string
 	updatePersistedCooldown bool
+	// costMultiplier 是检测日志的倍率快照，与代理一致：api_key 取所选 Key，OAuth 取渠道级。
+	costMultiplier float64
 }
 
 type oauthCredentialLoadMode uint8
@@ -949,6 +951,7 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 	if cfg == nil || !cfg.UsesOAuth() {
 		return nil, selection, false, nil
 	}
+	selection.costMultiplier = cfg.CostMultiplier
 
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
@@ -1147,11 +1150,17 @@ func (s *Server) selectChannelTestKey(
 			keyIndex = *requestedKeyIndex
 		}
 		matchedKey, ok := findAPIKeyByIndex(apiKeys, keyIndex)
+		persisted := ok && matchedKey.APIKey == requestAPIKey
+		costMultiplier := cfg.CostMultiplier
+		if persisted {
+			costMultiplier = matchedKey.CostMultiplier
+		}
 		return channelTestKeySelection{
 			keyIndex:                keyIndex,
 			apiKey:                  requestAPIKey,
 			requestCredential:       requestAPIKey,
-			updatePersistedCooldown: ok && matchedKey.APIKey == requestAPIKey,
+			updatePersistedCooldown: persisted,
+			costMultiplier:          costMultiplier,
 		}, nil
 	}
 	if requestedKeyIndex == nil {
@@ -1164,6 +1173,7 @@ func (s *Server) selectChannelTestKey(
 			apiKey:                  apiKey,
 			requestCredential:       apiKey,
 			updatePersistedCooldown: true,
+			costMultiplier:          apiKeyCostMultiplierAt(cfg, apiKeys, keyIndex),
 		}, nil
 	}
 
@@ -1179,7 +1189,16 @@ func (s *Server) selectChannelTestKey(
 		apiKey:                  requestedKey.APIKey,
 		requestCredential:       requestedKey.APIKey,
 		updatePersistedCooldown: true,
+		costMultiplier:          requestedKey.CostMultiplier,
 	}, nil
+}
+
+// apiKeyCostMultiplierAt 按语义索引取 Key 倍率；找不到时回落渠道级，与代理 attempt 的默认值一致。
+func apiKeyCostMultiplierAt(cfg *model.Config, apiKeys []*model.APIKey, keyIndex int) float64 {
+	if key, ok := findAPIKeyByIndex(apiKeys, keyIndex); ok {
+		return key.CostMultiplier
+	}
+	return cfg.CostMultiplier
 }
 
 func findAPIKeyByIndex(apiKeys []*model.APIKey, keyIndex int) (*model.APIKey, bool) {

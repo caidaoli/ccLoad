@@ -242,7 +242,8 @@ func (s *Server) prepareJevError(ctx context.Context, cfg *model.Config, reqCtx 
 			debugData.RespStatus = status
 			debugData.RespBody = append([]byte(nil), data...)
 			actualModel := response.Model
-			s.AddLogAsync(&model.LogEntry{Time: model.JSONTime{Time: started}, LogSource: model.LogSourceJev, ChannelID: cfg.ID, Model: jevModel, ResponseModel: actualModel, StatusCode: status, Duration: time.Since(started).Seconds(), InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, Cost: util.CalculateCostDetailed(jevModel, response.Usage.InputTokens, response.Usage.OutputTokens, 0, 0, 0), Message: string(data), DebugData: debugData})
+			// Jev 走 TypeSafe 独立账户计价，不继承被诊断渠道的倍率。
+			s.AddLogAsync(&model.LogEntry{Time: model.JSONTime{Time: started}, LogSource: model.LogSourceJev, CostMultiplier: 1, ChannelID: cfg.ID, Model: jevModel, ResponseModel: actualModel, StatusCode: status, Duration: time.Since(started).Seconds(), InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, Cost: util.CalculateCostDetailed(jevModel, response.Usage.InputTokens, response.Usage.OutputTokens, 0, 0, 0), Message: string(data), DebugData: debugData})
 		}()
 		reply, err := client.Do(request)
 		if err != nil {

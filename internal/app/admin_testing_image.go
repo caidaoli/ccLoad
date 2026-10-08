@@ -282,7 +282,7 @@ func (s *Server) HandleChannelImageGeneration(c *gin.Context) {
 	result["generation_api"] = imageReq.GenerationAPI
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(
 		cfg, model.LogSourceManualTest, model.RoutingModelName(imageReq.Model),
-		channelTestActualModel(result, imageReq.Model), keySelection.apiKey,
+		channelTestActualModel(result, imageReq.Model), keySelection,
 		c.ClientIP(), "", result,
 	))
 	delete(result, "debug_data")

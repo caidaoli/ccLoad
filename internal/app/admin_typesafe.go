@@ -78,7 +78,7 @@ func (s *Server) AdminTestTypeSafe(c *gin.Context) {
 		data, _ := json.Marshal(audit)
 		debugData.RespStatus = status
 		debugData.RespBody = append([]byte(nil), data...)
-		s.AddLogAsync(&model.LogEntry{Time: model.JSONTime{Time: started}, LogSource: model.LogSourceJev, Model: jevModel, ResponseModel: response.Model, StatusCode: status, Duration: time.Since(started).Seconds(), InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, Cost: util.CalculateCostDetailed(jevModel, response.Usage.InputTokens, response.Usage.OutputTokens, 0, 0, 0), Message: string(data), DebugData: debugData})
+		s.AddLogAsync(&model.LogEntry{Time: model.JSONTime{Time: started}, LogSource: model.LogSourceJev, CostMultiplier: 1, Model: jevModel, ResponseModel: response.Model, StatusCode: status, Duration: time.Since(started).Seconds(), InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, Cost: util.CalculateCostDetailed(jevModel, response.Usage.InputTokens, response.Usage.OutputTokens, 0, 0, 0), Message: string(data), DebugData: debugData})
 	}()
 	reply, err := client.Do(request)
 	if err != nil {

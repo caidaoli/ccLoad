@@ -159,7 +159,7 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 	}
 	logModel, logThinking := channelTestLogIdentity(req.Model, req.ThinkingEffort)
 	result := s.executeChannelTestWithCooldown(ctx, runtimeCfg, keySelection.keyIndex, keySelection.requestCredential, req, keySelection.updatePersistedCooldown)
-	s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, channelTestActualModel(result, req.Model), keySelection.apiKey, "", logThinking, result))
+	s.persistDetectionLog(ctx, detectionLogFromResult(cfg, model.LogSourceScheduledCheck, logModel, channelTestActualModel(result, req.Model), keySelection, "", logThinking, result))
 	logScheduledChannelCheckResult(cfg, keySelection.keyIndex, req.Model, result)
 }
 
@@ -191,6 +191,7 @@ func (s *Server) prepareScheduledChannelCheckAuth(ctx context.Context, cfg *mode
 		apiKey:                  apiKey,
 		requestCredential:       apiKey,
 		updatePersistedCooldown: true,
+		costMultiplier:          apiKeyCostMultiplierAt(cfg, compatible, keyIndex),
 	}, err
 }
 

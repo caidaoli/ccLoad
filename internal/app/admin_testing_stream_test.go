@@ -885,7 +885,7 @@ func TestStreamChatWithURLHandlesJSONResponseAsFrontendSSE(t *testing.T) {
 			}
 
 			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
-			attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
+			attempt := srv.streamChatWithURLForProtocol(c, cfg, channelTestKeySelection{apiKey: "sk-test", requestCredential: "sk-test"}, testReq, "openai", "openai", upstream.URL, testReq.Model)
 			if !attempt.handled {
 				t.Fatal("expected JSON chat response to be handled without URL fallback")
 			}
@@ -1242,7 +1242,7 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 
 	done := make(chan chatURLAttemptResult, 1)
 	go func() {
-		done <- srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
+		done <- srv.streamChatWithURLForProtocol(c, cfg, channelTestKeySelection{apiKey: "sk-test", requestCredential: "sk-test"}, testReq, "openai", "openai", upstream.URL, testReq.Model)
 	}()
 
 	select {
@@ -1291,7 +1291,7 @@ func TestStreamChatWithURLDoesNotTreatDoneEventAsFirstContent(t *testing.T) {
 	}
 
 	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/78/chat", nil))
-	attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
+	attempt := srv.streamChatWithURLForProtocol(c, cfg, channelTestKeySelection{apiKey: "sk-test", requestCredential: "sk-test"}, testReq, "openai", "openai", upstream.URL, testReq.Model)
 	if !attempt.handled {
 		t.Fatal("expected stream attempt to be handled")
 	}

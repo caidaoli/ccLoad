@@ -63,7 +63,9 @@ func TestCodeBuddyUsageRefreshAndScheduledCheckin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := srv.store.CreateConfig(context.Background(), newCodeBuddyChannel("scheduled-codebuddy", raw))
+	scheduled := newCodeBuddyChannel("scheduled-codebuddy", raw)
+	scheduled.CostMultiplier = 1.5
+	cfg, err := srv.store.CreateConfig(context.Background(), scheduled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +111,8 @@ func TestCodeBuddyUsageRefreshAndScheduledCheckin(t *testing.T) {
 	if len(logs) != 1 {
 		t.Fatalf("CodeBuddy check-in audit count=%d, want 1", len(logs))
 	}
-	if logs[0].ChannelID != cfg.ID || logs[0].LogSource != model.LogSourceCheckin {
+	// 签到日志按渠道级倍率快照，零值会被日志页渲染成免费渠道。
+	if logs[0].ChannelID != cfg.ID || logs[0].LogSource != model.LogSourceCheckin || logs[0].CostMultiplier != 1.5 {
 		t.Fatalf("unexpected CodeBuddy audit entry: %#v", logs[0])
 	}
 	var audit channelCheckinAuditMessage
