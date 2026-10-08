@@ -11,7 +11,7 @@ const (
 	ModelsURL         = CloudBaseURL + "/models"
 	LLMTokensURL      = CloudBaseURL + "/client/llm_tokens"
 	CurrentUserURL    = CloudBaseURL + "/client/users/me"
-	ZedVersion        = "1.8.2"
+	ZedVersion        = "1.23.2"
 	maxCredentialSize = 256 << 10
 	maxResponseSize   = 1 << 20
 	ProviderOpenAI    = "open_ai"
