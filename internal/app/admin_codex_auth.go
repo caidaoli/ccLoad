@@ -51,10 +51,15 @@ var codexOAuthDefaultModels = []string{
 
 var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
 	"free": {
-		"gpt-6-astra": {},
-		"gpt-6.1-sol": {},
-		"gpt-6-sol":   {},
-		"gpt-5.6-sol": {},
+		"gpt-6-astra":            {},
+		"gpt-6.1-sol":            {},
+		"gpt-6-sol":              {},
+		"gpt-5.6-sol":            {},
+		"gpt-image-1.5":          {},
+		"gpt-image-2":            {},
+		"gpt-image-2.5":          {},
+		"gpt-image-2.5-flare":    {},
+		"gpt-image-2.5-sunburst": {},
 	},
 }
 

@@ -4239,7 +4239,7 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 			if !channel.SupportsModel("gpt-5.5") {
 				t.Fatalf("plan %q lost the shared model", tt.plan)
 			}
-			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"} {
+			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-image-2", "gpt-image-2.5"} {
 				if channel.SupportsModel(name) != tt.paidModelsAllowed {
 					t.Fatalf("plan %q allows %q = %v, want %v", tt.plan, name, channel.SupportsModel(name), tt.paidModelsAllowed)
 				}
