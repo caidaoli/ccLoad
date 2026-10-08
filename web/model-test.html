@@ -30,6 +30,7 @@
   <script defer src="/web/assets/js/model-test-image.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/oauth-plan-badge.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -578,7 +579,7 @@
     <tr class="mobile-card-row model-test-row" data-channel-id="{{channelId}}" data-model="{{model}}" data-channel-base-name="{{channelBaseName}}" data-channel-enabled="{{channelEnabled}}" data-cost-multiplier="{{costMultiplier}}">
       <td class="model-test-col-select mobile-card-no-label" data-mobile-label="{{mobileLabelSelect}}"><input type="checkbox" class="row-checkbox channel-checkbox" checked></td>
       <td class="model-test-col-name truncate-cell" data-mobile-label="{{mobileLabelName}}">
-        <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}</button>
+        <span class="model-test-channel-name"><button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}</button>{{{oauthPlanBadge}}}</span>
       </td>
       <td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}"><div class="ch-priority-editor-wrap" data-channel-id="{{channelId}}"><input class="ch-priority-input" type="number" min="-99999" max="9999999" step="1" value="{{channelPriority}}" data-channel-id="{{channelId}}" data-original-priority="{{channelPriority}}"></div>{{{dynamicPriorityHtml}}}</td>
       <td class="model-test-col-enabled" data-mobile-label="{{mobileLabelEnabled}}"><button type="button" class="channel-enable-switch {{toggleSwitchClass}}" data-channel-id="{{channelId}}" data-enabled="{{modelEnabled}}" role="switch" aria-checked="{{modelEnabled}}" title="{{toggleTitle}}" aria-label="{{toggleTitle}}"><span class="channel-enable-switch__knob" aria-hidden="true"></span></button></td>

@@ -1850,6 +1850,7 @@ function renderModelModeRows() {
       channelId: String(ch.id),
       channelName,
       channelBaseName: baseName,
+      oauthPlanBadge: buildOAuthPlanBadge(ch),
       channelEnabled: String(channelEnabled),
       channelPriority: String(priorityValue),
       dynamicPriorityHtml: buildModelTestDynamicPriorityHtml(ch, priorityValue),

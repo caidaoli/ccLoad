@@ -1274,64 +1274,6 @@
       width: 100%;
     }
 
-    .channel-editor-switch {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 34px;
-      margin: 0;
-      cursor: pointer;
-      user-select: none;
-    }
-
-    .channel-editor-switch > input[type="checkbox"] {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      opacity: 0;
-      pointer-events: none;
-    }
-
-    .channel-editor-switch__track {
-      position: relative;
-      flex: 0 0 auto;
-      width: 32px;
-      height: 18px;
-      border-radius: 999px;
-      background: var(--neutral-300);
-      transition: background-color 0.15s ease;
-    }
-
-    .channel-editor-switch__track::after {
-      content: "";
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      background: #fff;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-      transition: transform 0.15s ease;
-    }
-
-    .channel-editor-switch > input:checked + .channel-editor-switch__track {
-      background: var(--success-500);
-    }
-
-    .channel-editor-switch > input:checked + .channel-editor-switch__track::after {
-      transform: translateX(14px);
-    }
-
-    .channel-editor-switch > input:focus-visible + .channel-editor-switch__track {
-      outline: 2px solid var(--primary-500);
-      outline-offset: 2px;
-    }
-
-    .channel-editor-switch > input:disabled + .channel-editor-switch__track {
-      opacity: 0.5;
-    }
-
     #channelEditorSectionLimits {
       --channel-connection-label-width: 5em;
     }
@@ -3111,50 +3053,6 @@
       width: 1px;
       height: 18px;
       background: var(--surface-border);
-    }
-
-    .channel-enable-switch {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      width: 42px;
-      height: 24px;
-      padding: 0;
-      border: 1px solid transparent;
-      border-radius: 999px;
-      cursor: pointer;
-      transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-    }
-
-    .channel-enable-switch:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
-    }
-
-    .channel-enable-switch__knob {
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 18px;
-      height: 18px;
-      border-radius: 999px;
-      background: #ffffff;
-      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
-      transition: transform 0.18s ease;
-    }
-
-    .channel-enable-switch--on {
-      background: #22c55e;
-      border-color: #16a34a;
-    }
-
-    .channel-enable-switch--on .channel-enable-switch__knob {
-      transform: translateX(18px);
-    }
-
-    .channel-enable-switch--off {
-      background: #cbd5e1;
-      border-color: #94a3b8;
     }
 
     /* 渠道名称行 */

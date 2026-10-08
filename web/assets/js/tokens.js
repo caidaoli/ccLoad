@@ -6,10 +6,11 @@
     // 当前选中的时间范围(默认为本日)
     let currentTimeRange = 'today';
     let currentCustomTimeRange = null;
+    // 列表客户端筛选：状态 all|active|inactive|expired + 描述/令牌关键字
+    const tokenFilters = { status: 'all', search: '' };
 
     // 模型限制相关状态（2026-01新增）
     let editAllowedModels = [];              // 编辑模态框中当前的模型限制列表
-    let selectedAllowedModelIndices = new Set(); // 已选中的模型索引（批量删除用）
     let allChannels = [];                    // 渠道数据缓存
     let availableModelsCache = [];           // 可用模型缓存
     let protocolDisplayNameMap = new Map(); // 协议显示名缓存
@@ -18,13 +19,13 @@
     let currentVisibleModels = [];            // 当前可见的模型列表（用于全选功能）
     let editAllowedChannelIDs = [];           // 编辑模态框中当前的渠道限制列表
     let editChannelRestrictionMode = 'allow'; // allow|deny
-    let selectedAllowedChannelIDs = new Set(); // 已选中的渠道ID（批量删除用）
     let currentAllowedChannelFilter = '';
     let currentAllowedModelFilter = '';
     let selectedChannelsForAdd = new Set();   // 渠道选择对话框中已选的渠道ID
     let currentVisibleChannels = [];          // 当前可见的渠道列表（用于全选功能）
     let initialEditExpiryState = { type: 'never', value: '' };
     let releaseFormGuard = null;             // 创建/编辑对话框的未保存改动保护
+    let editingTokenId = null;               // 编辑对话框当前令牌（语言切换时重绘状态徽标）
 
     // 对话框栈，用于 ESC 键层级关闭
     const modalStack = [];
@@ -137,17 +138,23 @@
       });
     }
 
+    function setCustomExpiryVisible(containerId, visible) {
+      document.getElementById(containerId).hidden = !visible;
+    }
+
     window.initPageBootstrap({
       topbarKey: 'tokens',
       run: () => {
       initExpirySelects();
 
-      window.bindTimeRangeSelector({
-        containerId: 'tokens-time-range',
+      window.initSavedDateRangeFilter({
+        selectId: 'tokensRange',
+        defaultValue: currentTimeRange,
         values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'custom', 'all'],
         includeAll: true,
-        initialValue: currentTimeRange,
+        includeCustom: true,
         customRange: currentCustomTimeRange,
+        customPickerContainerId: 'tokensRangeHost',
         onChange: (range, customRange) => {
           currentTimeRange = range;
           if (range === 'custom') currentCustomTimeRange = customRange;
@@ -169,8 +176,10 @@
 
       // 监听语言切换事件，重新渲染令牌相关动态内容
       window.i18n.onLocaleChange(() => {
-        renderAllowedChannelsTable();
-        renderAllowedModelsTable();
+        renderAllowedChannels();
+        renderAllowedModels();
+        renderEditQuotaUsage();
+        renderEditStatusPill();
         renderTokens();
       });
 
@@ -189,17 +198,32 @@
         click: {
           'show-create-modal': () => showCreateModal(),
           'reload-tokens': () => loadTokens(),
+          'clear-token-filters': () => clearTokenFilters(),
+          'toggle-token-active': (actionTarget) => toggleTokenActive(actionTarget),
           'close-create-modal': () => closeCreateModal(),
           'create-token': () => createToken(),
           'close-token-result-modal': () => closeTokenResultModal(),
           'copy-token-result': () => copyToken(),
           'close-edit-modal': () => closeEditModal(),
           'update-token': () => updateToken(),
+          'copy-edit-token': () => copyTokenToClipboard(document.getElementById('editTokenValue').value),
+          'switch-restriction-tab': (actionTarget) => setRestrictionTab(actionTarget.dataset.tab),
+          'set-channel-restriction-mode': (actionTarget) => {
+            editChannelRestrictionMode = normalizeChannelRestrictionMode(actionTarget.dataset.mode);
+            updateChannelRestrictionModeUI();
+            renderAllowedChannels();
+          },
+          'clear-allowed-channels': () => {
+            editAllowedChannelIDs = [];
+            renderAllowedChannels();
+          },
+          'clear-allowed-models': () => {
+            editAllowedModels = [];
+            renderAllowedModels();
+          },
           'show-model-select-modal': () => showModelSelectModal(),
           'show-model-import-modal': () => showModelImportModal(),
-          'batch-delete-allowed-models': () => batchDeleteSelectedAllowedModels(),
           'show-channel-select-modal': () => showChannelSelectModal(),
-          'batch-delete-allowed-channels': () => batchDeleteSelectedAllowedChannels(),
           'close-channel-select-modal': () => closeChannelSelectModal(),
           'confirm-channel-selection': () => confirmChannelSelection(),
           'close-model-select-modal': () => closeModelSelectModal(),
@@ -220,36 +244,19 @@
           }
         },
         change: {
+          'filter-tokens': () => applyTokenFilters(),
           'toggle-custom-expiry': (actionTarget) => {
-            document.getElementById('customExpiryContainer').style.display =
-              actionTarget.value === 'custom' ? 'block' : 'none';
+            setCustomExpiryVisible('customExpiryContainer', actionTarget.value === 'custom');
           },
           'toggle-edit-custom-expiry': (actionTarget) => {
-            document.getElementById('editCustomExpiryContainer').style.display =
-              actionTarget.value === 'custom' ? 'block' : 'none';
-          },
-          'toggle-select-all-allowed-channels': (actionTarget) => toggleSelectAllAllowedChannels(actionTarget.checked),
-          'change-channel-restriction-mode': (actionTarget) => {
-            editChannelRestrictionMode = normalizeChannelRestrictionMode(actionTarget.value);
-            updateChannelRestrictionModeUI();
+            setCustomExpiryVisible('editCustomExpiryContainer', actionTarget.value === 'custom');
           },
           'toggle-select-all-channels': (actionTarget) => toggleSelectAllChannels(actionTarget.checked),
-          'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
-          'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
-          'toggle-allowed-channel': (actionTarget) => {
-            const channelID = Number(actionTarget.dataset.channelId);
-            if (!Number.isNaN(channelID)) {
-              toggleAllowedChannelSelection(channelID, actionTarget.checked);
-            }
-          },
-          'toggle-allowed-model': (actionTarget) => {
-            const index = Number(actionTarget.dataset.index);
-            if (!Number.isNaN(index)) {
-              toggleAllowedModelSelection(index, actionTarget.checked);
-            }
-          }
+          'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked)
         },
         input: {
+          'filter-tokens': () => applyTokenFilters(),
+          'update-quota-usage': () => renderEditQuotaUsage(),
           'filter-available-channels': (actionTarget) => filterAvailableChannels(actionTarget.value),
           'filter-available-models': (actionTarget) => filterAvailableModels(actionTarget.value),
           'filter-allowed-channels': (actionTarget) => filterAllowedChannels(actionTarget.value),
@@ -258,6 +265,7 @@
         }
       });
     }
+
 
     /**
      * 初始化事件委托(统一处理表格内按钮点击)
@@ -316,7 +324,9 @@
 
     function renderLoadError(error) {
       document.getElementById('empty-state').style.display = 'none';
-      document.getElementById('tokens-container').innerHTML = `
+      const container = document.getElementById('tokens-container');
+      container.hidden = false;
+      container.innerHTML = `
         <div class="glass-card tokens-load-error" role="alert">
           <p>${escapeHtml(t('tokens.msg.loadFailed') + ': ' + (error?.message || ''))}</p>
           <button type="button" class="btn btn-secondary" data-action="reload-tokens">${escapeHtml(t('common.retry'))}</button>
@@ -324,65 +334,74 @@
       `;
     }
 
+    function getFilteredTokens() {
+      const search = tokenFilters.search.trim().toLowerCase();
+      return allTokens.filter((token) => {
+        if (tokenFilters.status !== 'all' && getTokenStatus(token).class !== tokenFilters.status) return false;
+        if (!search) return true;
+        return String(token.description || '').toLowerCase().includes(search) ||
+          String(token.token || '').toLowerCase().includes(search);
+      });
+    }
+
+    function applyTokenFilters() {
+      tokenFilters.status = document.getElementById('tokensStatusFilter').value || 'all';
+      tokenFilters.search = document.getElementById('tokensSearchInput').value || '';
+      renderTokens();
+    }
+
+    function clearTokenFilters() {
+      const statusSelect = document.getElementById('tokensStatusFilter');
+      statusSelect.value = 'all';
+      statusSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('tokensSearchInput').value = '';
+      applyTokenFilters();
+    }
+
     function renderTokens() {
       const container = document.getElementById('tokens-container');
       const emptyState = document.getElementById('empty-state');
+      const tokens = getFilteredTokens();
+
+      document.getElementById('tokensFilteredCount').textContent = tokens.length;
+      document.getElementById('tokensTotalCount').textContent = allTokens.length;
 
       if (allTokens.length === 0) {
         container.innerHTML = '';
+        container.hidden = true;
         emptyState.style.display = 'block';
         return;
       }
 
+      container.hidden = false;
       emptyState.style.display = 'none';
 
-      // 构建表格结构
       const table = document.createElement('table');
-      table.className = 'mobile-card-table tokens-table';
-      
+      table.className = 'modern-table mobile-card-table tokens-table';
       table.innerHTML = `
-        <colgroup>
-          <col class="tokens-colgroup-token">
-          <col class="tokens-colgroup-calls">
-          <col class="tokens-colgroup-success-rate">
-          <col class="tokens-colgroup-rpm">
-          <col class="tokens-colgroup-token-usage">
-          <col class="tokens-colgroup-cost">
-          <col class="tokens-colgroup-concurrency">
-          <col class="tokens-colgroup-stream">
-          <col class="tokens-colgroup-non-stream">
-          <col class="tokens-colgroup-last-used">
-          <col class="tokens-colgroup-actions">
-        </colgroup>
         <thead>
           <tr>
             <th>${t('tokens.table.token')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.callCount')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.successRate')}</th>
-            <th class="tokens-table-head-center" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.tokenUsage')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.totalCost')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.concurrency')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.streamAvg')}</th>
-            <th class="tokens-table-head-center">${t('tokens.table.nonStreamAvg')}</th>
+            <th class="tokens-col-num">${t('tokens.table.callsSuccess')}</th>
+            <th class="tokens-col-num" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
+            <th class="tokens-col-num">${t('tokens.table.tokenUsage')}</th>
+            <th>${t('tokens.table.costLimit')}</th>
+            <th class="tokens-col-num">${t('tokens.table.concurrency')}</th>
+            <th class="tokens-col-num" title="${t('tokens.table.latencyTitle')}">${t('tokens.table.latency')}</th>
             <th>${t('tokens.table.lastUsed')}</th>
-            <th class="tokens-actions-col">${t('tokens.table.actions')}</th>
+            <th class="tokens-col-actions">${t('tokens.table.actions')}</th>
           </tr>
         </thead>
       `;
 
       const tbody = document.createElement('tbody');
-
-      // 使用模板引擎渲染行，降级处理
-      if (typeof TemplateEngine !== 'undefined') {
-        allTokens.forEach(token => {
-          const row = createTokenRowWithTemplate(token);
+      if (tokens.length === 0) {
+        tbody.innerHTML = `<tr class="tokens-no-match-row"><td colspan="9">${escapeHtml(t('tokens.noMatchingTokens'))}</td></tr>`;
+      } else {
+        tokens.forEach((token) => {
+          const row = createTokenRow(token);
           if (row) tbody.appendChild(row);
         });
-      } else {
-        // 降级：模板引擎不可用时使用原有方式
-        console.warn('[Tokens] TemplateEngine not available, using fallback rendering');
-        tbody.innerHTML = allTokens.map(token => createTokenRowFallback(token)).join('');
       }
 
       table.appendChild(tbody);
@@ -395,74 +414,52 @@
       }
     }
 
-    /**
-     * 使用模板引擎渲染令牌行
-     */
-    function createTokenRowWithTemplate(token) {
-      
+    function maskToken(value) {
+      const token = String(value || '');
+      return token.length > 8 ? token.substring(0, 4) + '****' + token.slice(-4) : token;
+    }
+
+    function createTokenRow(token) {
       const locale = window.i18n?.getLocale?.() || 'en';
       const status = getTokenStatus(token);
       const createdAt = new Date(token.created_at).toLocaleString(locale);
-      const lastUsed = formatLastUsedHtml(token.last_used_at, locale);
-      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
-
-      // 计算统计信息
+      const expiryText = token.expires_at
+        ? t('tokens.expiresAt', { time: new Date(token.expires_at).toLocaleString(locale) })
+        : t('tokens.expiryNever');
       const successCount = token.success_count || 0;
       const failureCount = token.failure_count || 0;
-      const totalCount = successCount + failureCount;
-
-      // 预构建各个HTML片段(保留条件逻辑在JS中)
-      const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const successRateHtml = buildSuccessRateHtml(successCount, totalCount);
-      const rpmHtml = buildRpmHtml(token);
-      const tokensHtml = buildTokensHtml(token);
-      const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
-      const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
-      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
-      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
-      const costCellClass = token.total_cost_usd > 0 ? '' : 'mobile-empty-cell';
-      const streamCellClass = token.stream_count ? '' : 'mobile-empty-cell';
-      const nonStreamCellClass = token.non_stream_count ? '' : 'mobile-empty-cell';
-
-      // 使用模板引擎渲染
-      const maskedToken = token.token.length > 8
-        ? token.token.substring(0, 4) + '****' + token.token.slice(-4)
-        : token.token;
+      const hasLatency = Boolean(token.stream_count || token.non_stream_count);
 
       return TemplateEngine.render('tpl-token-row', {
         id: token.id,
         description: token.description,
         token: token.token,
-        maskedToken: maskedToken,
+        maskedToken: maskToken(token.token),
         statusClass: status.class,
-        createdAt: createdAt,
-        createdLabel: t('tokens.createdSuffix'),
-        expiresAt: expiresAt,
-        callsHtml: callsHtml,
-        rpmHtml: rpmHtml,
-        successRateHtml: successRateHtml,
-        tokensHtml: tokensHtml,
-        costHtml: costHtml,
-        costCellClass: costCellClass,
-        concurrencyHtml: concurrencyHtml,
-        streamAvgHtml: streamAvgHtml,
-        streamCellClass: streamCellClass,
-        nonStreamAvgHtml: nonStreamAvgHtml,
-        nonStreamCellClass: nonStreamCellClass,
-        lastUsed: lastUsed,
-        mobileLabelToken: t('tokens.table.token'),
-        mobileLabelCalls: t('tokens.table.callCount'),
-        mobileLabelSuccessRate: t('tokens.table.successRate'),
+        statusText: status.text,
+        expiryText,
+        createdTitle: t('tokens.createdAt', { time: createdAt }),
+        callsHtml: buildCallsHtml(successCount, failureCount),
+        rpmHtml: buildRpmHtml(token),
+        tokensHtml: buildTokensHtml(token),
+        tokensCellClass: hasTokenUsage(token) ? '' : 'mobile-empty-cell',
+        costHtml: buildCostHtml(token),
+        concurrencyHtml: buildConcurrencyHtml(token.max_concurrency),
+        latencyHtml: buildLatencyHtml(token),
+        latencyCellClass: hasLatency ? '' : 'mobile-empty-cell',
+        lastUsedHtml: formatLastUsedHtml(token.last_used_at, locale),
+        toggleHtml: buildToggleHtml(token),
+        mobileLabelCalls: t('tokens.table.callsSuccess'),
         mobileLabelRpm: t('tokens.table.rpm'),
         mobileLabelTokenUsage: t('tokens.table.tokenUsage'),
-        mobileLabelCost: t('tokens.table.totalCost'),
+        mobileLabelCost: t('tokens.table.costLimit'),
         mobileLabelConcurrency: t('tokens.table.concurrency'),
-        mobileLabelStream: t('tokens.table.streamAvg'),
-        mobileLabelNonStream: t('tokens.table.nonStreamAvg'),
-        mobileLabelLastUsed: t('tokens.table.lastUsed'),
-        mobileLabelActions: t('tokens.table.actions')
+        mobileLabelLatency: t('tokens.table.latency'),
+        mobileLabelLastUsed: t('tokens.table.lastUsed')
       });
     }
+
+    const MUTED_DASH_HTML = '<span class="token-value-muted">-</span>';
 
     function formatLastUsedHtml(value, locale) {
       if (!value) {
@@ -471,40 +468,32 @@
 
       const usedAt = new Date(value);
       if (Number.isNaN(usedAt.getTime())) {
-        return '<span class="token-value-muted">-</span>';
+        return MUTED_DASH_HTML;
       }
-
-      const dateText = usedAt.toLocaleDateString(locale);
-      const timeText = usedAt.toLocaleTimeString(locale, { hour12: false });
-      return `
-        <span class="token-last-used">
-          <span class="token-last-used-date">${dateText}</span>
-          <span class="token-last-used-time">${timeText}</span>
-        </span>
-      `;
+      return `<span class="token-last-used">${usedAt.toLocaleString(locale, { hour12: false })}</span>`;
     }
 
     /**
-     * 构建调用次数HTML
+     * 构建调用次数与成功率HTML（失败次数放在悬浮提示）
      */
-    function buildCallsHtml(successCount, failureCount, totalCount) {
+    function buildCallsHtml(successCount, failureCount) {
+      const totalCount = successCount + failureCount;
       if (totalCount === 0) {
-        return '<span class="token-value-muted">-</span>';
+        return MUTED_DASH_HTML;
       }
 
-      let html = '<div class="token-call-stats">';
-      html += `<span class="stats-badge token-call-badge token-call-badge--success" title="${t('tokens.successCall')}">`;
-      html += `<span class="token-call-icon token-call-icon--success">✓</span> ${successCount.toLocaleString()}`;
-      html += `</span>`;
+      const ratio = successCount / totalCount;
+      let rateClass = 'success-rate-low';
+      if (ratio >= 0.95) rateClass = 'success-rate-high';
+      else if (ratio >= 0.8) rateClass = 'success-rate-medium';
 
-      if (failureCount > 0) {
-        html += `<span class="stats-badge token-call-badge token-call-badge--failure" title="${t('tokens.failedCall')}">`;
-        html += `<span class="token-call-icon token-call-icon--failure">✗</span> ${failureCount.toLocaleString()}`;
-        html += `</span>`;
-      }
-
-      html += '</div>';
-      return html;
+      const title = `${t('tokens.successCall')}: ${successCount.toLocaleString()} · ${t('tokens.failedCall')}: ${failureCount.toLocaleString()}`;
+      return `
+        <div class="token-metric-stack" title="${escapeHtml(title)}">
+          <span class="metric-value">${totalCount.toLocaleString()}</span>
+          <span class="token-success-rate ${rateClass}">${window.formatPercent(ratio)}</span>
+        </div>
+      `;
     }
 
     /**
@@ -515,12 +504,10 @@
       const avgRPM = token.avg_rpm || 0;
       const recentRPM = token.recent_rpm || 0;
 
-      // 如果都是0，返回空
       if (peakRPM < 0.01 && avgRPM < 0.01 && recentRPM < 0.01) {
-        return '<span class="token-value-muted">-</span>';
+        return MUTED_DASH_HTML;
       }
 
-      // 格式化RPM值
       const formatRpm = (rpm) => {
         if (rpm < 0.01) return '-';
         if (rpm >= 1000) return (rpm / 1000).toFixed(1) + 'K';
@@ -532,6 +519,7 @@
       const avgText = formatRpm(avgRPM);
       const recentText = isToday ? formatRpm(recentRPM) : '-';
 
+      // 低流量绿色，中等橙色，高流量红色
       let rpmClass = 'token-rpm token-rpm--high';
       if (peakRPM < 10) rpmClass = 'token-rpm token-rpm--low';
       else if (peakRPM < 100) rpmClass = 'token-rpm token-rpm--medium';
@@ -539,37 +527,19 @@
       return `<span class="${rpmClass}">${peakText}/${avgText}/${recentText}</span>`;
     }
 
-    /**
-     * RPM 颜色：低流量绿色，中等橙色，高流量红色
-     */
-    /**
-     * 构建成功率HTML
-     */
-    function buildSuccessRateHtml(successCount, totalCount) {
-      if (totalCount === 0) {
-        return '<span class="token-value-muted">-</span>';
-      }
-
-      const ratio = successCount / totalCount;
-      let className = 'stats-badge';
-      if (ratio >= 0.95) className += ' success-rate-high';
-      else if (ratio >= 0.8) className += ' success-rate-medium';
-      else className += ' success-rate-low';
-
-      return `<span class="${className}">${window.formatPercent(ratio)}</span>`;
+    function hasTokenUsage(token) {
+      return token.prompt_tokens_total > 0 ||
+        token.completion_tokens_total > 0 ||
+        token.cache_read_tokens_total > 0 ||
+        token.cache_creation_tokens_total > 0;
     }
 
     /**
      * 构建Token用量HTML
      */
     function buildTokensHtml(token) {
-      const hasTokens = token.prompt_tokens_total > 0 ||
-                        token.completion_tokens_total > 0 ||
-                        token.cache_read_tokens_total > 0 ||
-                        token.cache_creation_tokens_total > 0;
-
-      if (!hasTokens) {
-        return '<span class="token-value-muted">-</span>';
+      if (!hasTokenUsage(token)) {
+        return MUTED_DASH_HTML;
       }
 
       const items = [];
@@ -591,18 +561,61 @@
       return `<div class="token-usage-metrics">${items.join('')}</div>`;
     }
 
-    /**
-     * 构建总费用HTML
-     */
-    function buildCostHtml(totalCostUsd, effectiveCostUsd) {
-      if (!totalCostUsd || totalCostUsd <= 0) {
-        return '<span class="token-value-muted">-</span>';
-      }
+    const COST_LIMIT_FIELDS = [
+      { labelKey: 'tokens.limitShortDaily', limit: 'cost_daily_limit_usd', used: 'cost_daily_used_usd' },
+      { labelKey: 'tokens.limitShortMonthly', limit: 'cost_monthly_limit_usd', used: 'cost_monthly_used_usd' },
+      { labelKey: 'tokens.limitShortTotal', limit: 'cost_limit_usd', used: 'cost_used_usd' }
+    ];
 
-      const costStack = buildCostStackHtml(totalCostUsd, effectiveCostUsd, { tone: 'warning' });
+    function toNonNegativeNumber(value) {
+      const num = Number(value);
+      return Number.isFinite(num) && num > 0 ? num : 0;
+    }
+
+    /** 已设置的限额中消耗占比最高的一项；全部未设置时返回 null */
+    function getTightestCostLimit(token) {
+      let tightest = null;
+      COST_LIMIT_FIELDS.forEach((field) => {
+        const limit = toNonNegativeNumber(token[field.limit]);
+        if (limit <= 0) return;
+        const used = toNonNegativeNumber(token[field.used]);
+        const ratio = used / limit;
+        if (!tightest || ratio > tightest.ratio) {
+          tightest = { labelKey: field.labelKey, limit, used, ratio };
+        }
+      });
+      return tightest;
+    }
+
+    function buildProgressHtml(ratio) {
+      let tone = '';
+      if (ratio >= 1) tone = ' token-progress--danger';
+      else if (ratio >= 0.8) tone = ' token-progress--warn';
+      const percent = Math.min(100, Math.max(0, ratio * 100));
+      return `<div class="token-progress${tone}"><span class="token-progress__bar" style="width: ${percent.toFixed(1)}%;"></span></div>`;
+    }
+
+    /**
+     * 构建费用与最紧限额HTML
+     */
+    function buildCostHtml(token) {
+      const totalCost = Number(token.total_cost_usd) || 0;
+      const costHtml = totalCost > 0
+        ? `<div class="token-cost">${buildCostStackHtml(totalCost, token.effective_cost_usd, { tone: 'warning' })}</div>`
+        : MUTED_DASH_HTML;
+
+      const limit = getTightestCostLimit(token);
+      if (!limit) {
+        return `${costHtml}<div class="token-limit token-limit--none">${t('tokens.noCostLimit')}</div>`;
+      }
       return `
-        <div class="token-cost">
-          ${costStack}
+        ${costHtml}
+        <div class="token-limit">
+          <div class="token-limit__text">
+            <span class="token-limit__label">${t(limit.labelKey)}</span>
+            <span>${window.formatCost(limit.used, 2)} / ${window.formatCost(limit.limit, 2)}</span>
+          </div>
+          ${buildProgressHtml(limit.ratio)}
         </div>
       `;
     }
@@ -613,6 +626,20 @@
         return '<span class="token-value-muted">∞</span>';
       }
       return `<span class="metric-value">${limit.toLocaleString()}</span>`;
+    }
+
+    function buildToggleHtml(token) {
+      if (token.is_expired) return '';
+      const on = Boolean(token.is_active);
+      const title = t(on ? 'tokens.disableTokenTitle' : 'tokens.enableTokenTitle');
+      return `
+        <button type="button" class="channel-enable-switch ${on ? 'channel-enable-switch--on' : 'channel-enable-switch--off'}"
+          role="switch" aria-checked="${on}" data-action="toggle-token-active" data-token-id="${token.id}"
+          title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+          <span class="channel-enable-switch__knob" aria-hidden="true"></span>
+        </button>
+        <span class="token-actions-divider" aria-hidden="true"></span>
+      `;
     }
 
     function parseMaxConcurrencyInput(rawValue) {
@@ -629,93 +656,79 @@
       return { value: parsed };
     }
 
-    function fillCostLimitField(inputId, usedDisplayId, limitUSD, usedUSD) {
-      const input = document.getElementById(inputId);
-      const usedDisplay = document.getElementById(usedDisplayId);
-      if (input) {
-        input.value = limitUSD || 0;
-      }
-      if (usedDisplay) {
-        const costUsed = Number(usedUSD);
-        const used = Number.isFinite(costUsed) ? costUsed : 0;
-        usedDisplay.textContent = `${t('tokens.costUsedPrefix')}: ${window.formatCost(used, 4)}`;
-      }
+    // 编辑对话框中的限额输入及其已消耗展示
+    const EDIT_QUOTA_FIELDS = [
+      { input: 'editDailyCostLimitUSD', used: 'editDailyCostUsedDisplay', limitKey: 'cost_daily_limit_usd', usedKey: 'cost_daily_used_usd' },
+      { input: 'editMonthlyCostLimitUSD', used: 'editMonthlyCostUsedDisplay', limitKey: 'cost_monthly_limit_usd', usedKey: 'cost_monthly_used_usd' },
+      { input: 'editCostLimitUSD', used: 'editCostUsedDisplay', limitKey: 'cost_limit_usd', usedKey: 'cost_used_usd' }
+    ];
+
+    function fillEditQuotaFields(token) {
+      EDIT_QUOTA_FIELDS.forEach((field) => {
+        const limit = toNonNegativeNumber(token[field.limitKey]);
+        document.getElementById(field.input).value = limit > 0 ? limit : '';
+        document.getElementById(field.used).dataset.used = String(toNonNegativeNumber(token[field.usedKey]));
+      });
+      renderEditQuotaUsage();
     }
 
-    /**
-     * 构建响应时间HTML
-     */
-    function buildResponseTimeHtml(time, count, colorFn) {
-      if (!count || count === 0) {
-        return '<span class="token-value-muted">-</span>';
-      }
+    /** 按当前输入的上限实时重算已消耗进度 */
+    function renderEditQuotaUsage() {
+      EDIT_QUOTA_FIELDS.forEach((field) => {
+        const usedDisplay = document.getElementById(field.used);
+        if (!usedDisplay || usedDisplay.dataset.used === undefined) return;
+        const used = Number(usedDisplay.dataset.used) || 0;
+        const limit = toNonNegativeNumber(document.getElementById(field.input).value);
+        const usedText = window.formatCost(used, 4);
+        usedDisplay.innerHTML = limit > 0
+          ? `<span class="token-quota-used__text">${usedText}</span>${buildProgressHtml(used / limit)}`
+          : `<span class="token-quota-used__text">${usedText}</span>`;
+      });
+    }
 
+    function buildTimingValueHtml(time, count, colorFn) {
       const num = Number(time);
-      if (!Number.isFinite(num) || num <= 0) {
+      if (!count || !Number.isFinite(num) || num <= 0) {
         return '<span class="token-value-muted">-</span>';
       }
       return `<span class="metric-value" style="color: ${colorFn(num)};">${num.toFixed(2)}s</span>`;
     }
 
     /**
-     * 降级：模板引擎不可用时的渲染方式
+     * 构建首字/非流耗时HTML
      */
-    function createTokenRowFallback(token) {
-      
-      const locale = window.i18n?.getLocale?.() || 'en';
-      const status = getTokenStatus(token);
-      const createdAt = new Date(token.created_at).toLocaleString(locale);
-      const lastUsed = formatLastUsedHtml(token.last_used_at, locale);
-      const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
-
-      // 计算统计信息
-      const successCount = token.success_count || 0;
-      const failureCount = token.failure_count || 0;
-      const totalCount = successCount + failureCount;
-
-      // 预构建HTML片段
-      const callsHtml = buildCallsHtml(successCount, failureCount, totalCount);
-      const successRateHtml = buildSuccessRateHtml(successCount, totalCount);
-      const rpmHtml = buildRpmHtml(token);
-      const tokensHtml = buildTokensHtml(token);
-      const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
-      const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
-      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
-      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
-      const costCellClass = token.total_cost_usd > 0 ? '' : ' mobile-empty-cell';
-      const streamCellClass = token.stream_count ? '' : ' mobile-empty-cell';
-      const nonStreamCellClass = token.non_stream_count ? '' : ' mobile-empty-cell';
-
-      const maskedToken = token.token.length > 8
-        ? token.token.substring(0, 4) + '****' + token.token.slice(-4)
-        : token.token;
-
-      return `
-        <tr class="mobile-card-row token-card-row" data-token-id="${token.id}">
-          <td class="tokens-col-token" data-mobile-label="${t('tokens.table.token')}">
-            <div class="token-row-primary"><span class="token-display token-display-${status.class}">${escapeHtml(maskedToken)}</span></div>
-            <div class="token-row-description">${escapeHtml(token.description)}</div>
-            <div class="token-row-meta">${createdAt}${t('tokens.createdSuffix')} · ${expiresAt}</div>
-          </td>
-          <td class="tokens-col-calls" data-mobile-label="${t('tokens.table.callCount')}">${callsHtml}</td>
-          <td class="tokens-col-success-rate" data-mobile-label="${t('tokens.table.successRate')}">${successRateHtml}</td>
-          <td class="tokens-col-rpm" data-mobile-label="${t('tokens.table.rpm')}">${rpmHtml}</td>
-          <td class="tokens-col-token-usage" data-mobile-label="${t('tokens.table.tokenUsage')}">${tokensHtml}</td>
-          <td class="tokens-col-cost${costCellClass}" data-mobile-label="${t('tokens.table.totalCost')}">${costHtml}</td>
-          <td class="tokens-col-concurrency" data-mobile-label="${t('tokens.table.concurrency')}">${concurrencyHtml}</td>
-          <td class="tokens-col-stream${streamCellClass}" data-mobile-label="${t('tokens.table.streamAvg')}">${streamAvgHtml}</td>
-          <td class="tokens-col-non-stream${nonStreamCellClass}" data-mobile-label="${t('tokens.table.nonStreamAvg')}">${nonStreamAvgHtml}</td>
-          <td class="tokens-col-last-used" data-mobile-label="${t('tokens.table.lastUsed')}">${lastUsed}</td>
-          <td class="tokens-col-actions" data-mobile-label="${t('tokens.table.actions')}">
-            <div class="token-row-actions">
-              <button class="btn-copy-token btn btn-secondary token-row-action-btn" data-token="${escapeHtml(token.token)}">${t('common.copy')}</button>
-              <button class="btn btn-secondary btn-edit token-row-action-btn">${t('common.edit')}</button>
-              <button class="btn btn-danger btn-delete token-row-action-btn">${t('common.delete')}</button>
-            </div>
-          </td>
-        </tr>
-      `;
+    function buildLatencyHtml(token) {
+      if (!token.stream_count && !token.non_stream_count) {
+        return MUTED_DASH_HTML;
+      }
+      const ttfb = buildTimingValueHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
+      const nonStream = buildTimingValueHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
+      return `<span class="token-latency">${ttfb}<span class="token-latency__sep">/</span>${nonStream}</span>`;
     }
+
+    async function toggleTokenActive(actionTarget) {
+      const id = Number(actionTarget.dataset.tokenId);
+      const token = allTokens.find(item => item.id === id);
+      if (!token || token.is_expired) return;
+
+      const nextActive = !token.is_active;
+      actionTarget.disabled = true;
+      try {
+        await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_active: nextActive })
+        });
+        token.is_active = nextActive;
+        renderTokens();
+        window.showNotification(t(nextActive ? 'tokens.msg.enabled' : 'tokens.msg.disabled'), 'success');
+      } catch (error) {
+        actionTarget.disabled = false;
+        console.error('Failed to toggle token:', error);
+        window.showNotification(t('tokens.msg.toggleFailed') + ': ' + error.message, 'error');
+      }
+    }
+
 
     function getTokenStatus(token) {
       
@@ -727,13 +740,12 @@
     function showCreateModal() {
       document.getElementById('tokenDescription').value = '';
       document.getElementById('tokenExpiry').value = 'never';
-      document.getElementById('tokenDailyCostLimitUSD').value = 0;
-      document.getElementById('tokenMonthlyCostLimitUSD').value = 0;
-      document.getElementById('tokenCostLimitUSD').value = 0;
-      document.getElementById('tokenMaxConcurrency').value = 0;
+      ['tokenDailyCostLimitUSD', 'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency'].forEach((id) => {
+        document.getElementById(id).value = '';
+      });
       document.getElementById('tokenActive').checked = true;
       document.getElementById('customExpiry').value = '';
-      document.getElementById('customExpiryContainer').style.display = 'none';
+      setCustomExpiryVisible('customExpiryContainer', false);
       clearInvalidFields('createModal');
       openModal('createModal', closeCreateModal);
       guardFormChanges(snapshotCreateForm);
@@ -849,77 +861,88 @@
     function editToken(id) {
       const token = allTokens.find(t => t.id === id);
       if (!token) return;
+      editingTokenId = id;
       document.getElementById('editTokenId').value = id;
       document.getElementById('editTokenValue').value = token.token || '';
       document.getElementById('editTokenDescription').value = token.description;
       document.getElementById('editTokenActive').checked = token.is_active;
+      renderEditStatusPill();
       const expiryTypeInput = document.getElementById('editTokenExpiry');
       const customExpiryInput = document.getElementById('editCustomExpiry');
       if (!token.expires_at) {
         expiryTypeInput.value = 'never';
         customExpiryInput.value = '';
-        document.getElementById('editCustomExpiryContainer').style.display = 'none';
       } else {
         expiryTypeInput.value = 'custom';
-        document.getElementById('editCustomExpiryContainer').style.display = 'block';
         customExpiryInput.value = TokenExpiry.formatDateTimeLocal(token.expires_at);
       }
+      setCustomExpiryVisible('editCustomExpiryContainer', expiryTypeInput.value === 'custom');
       initialEditExpiryState = { type: expiryTypeInput.value, value: customExpiryInput.value };
 
-      fillCostLimitField('editDailyCostLimitUSD', 'editDailyCostUsedDisplay', token.cost_daily_limit_usd, token.cost_daily_used_usd);
-      fillCostLimitField('editMonthlyCostLimitUSD', 'editMonthlyCostUsedDisplay', token.cost_monthly_limit_usd, token.cost_monthly_used_usd);
-      fillCostLimitField('editCostLimitUSD', 'editCostUsedDisplay', token.cost_limit_usd, token.cost_used_usd);
-
-      const maxConcurrencyInput = document.getElementById('editMaxConcurrency');
-      maxConcurrencyInput.value = token.max_concurrency || 0;
+      fillEditQuotaFields(token);
+      document.getElementById('editMaxConcurrency').value = token.max_concurrency || '';
 
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
-      selectedAllowedModelIndices.clear();
       currentAllowedModelFilter = '';
-      const allowedModelFilterInput = document.getElementById('allowedModelFilterInput');
-      if (allowedModelFilterInput) allowedModelFilterInput.value = '';
-      renderAllowedModelsTable();
+      document.getElementById('allowedModelFilterInput').value = '';
+      renderAllowedModels();
 
       // 初始化渠道限制状态（2026-04新增）
       editAllowedChannelIDs = (token.allowed_channel_ids || []).slice();
       editChannelRestrictionMode = normalizeChannelRestrictionMode(token.channel_restriction_mode);
-      selectedAllowedChannelIDs.clear();
       currentAllowedChannelFilter = '';
-      const allowedChannelFilterInput = document.getElementById('allowedChannelFilterInput');
-      if (allowedChannelFilterInput) allowedChannelFilterInput.value = '';
-      const modeSelect = document.getElementById('editChannelRestrictionMode');
-      if (modeSelect) modeSelect.value = editChannelRestrictionMode;
+      document.getElementById('allowedChannelFilterInput').value = '';
       updateChannelRestrictionModeUI();
-      renderAllowedChannelsTable();
+      renderAllowedChannels();
       if (allChannels.length === 0) {
-        loadChannelsData().then(() => renderAllowedChannelsTable());
+        loadChannelsData().then(() => renderAllowedChannels());
       }
+      setRestrictionTab('channels');
 
       clearInvalidFields('editModal');
       openModal('editModal', closeEditModal);
       guardFormChanges(snapshotEditForm);
     }
 
+    function renderEditStatusPill() {
+      const pill = document.getElementById('editTokenStatusPill');
+      const token = allTokens.find(item => item.id === editingTokenId);
+      if (!pill || !token) return;
+      const status = getTokenStatus(token);
+      pill.className = `token-status-pill token-status-pill--${status.class}`;
+      pill.textContent = status.text;
+    }
+
+    function setRestrictionTab(tab) {
+      const active = tab === 'models' ? 'models' : 'channels';
+      [['channels', 'tokenRestrictionTabChannels', 'tokenRestrictionPaneChannels'],
+        ['models', 'tokenRestrictionTabModels', 'tokenRestrictionPaneModels']].forEach(([name, tabId, paneId]) => {
+        const selected = name === active;
+        const tabEl = document.getElementById(tabId);
+        tabEl.classList.toggle('active', selected);
+        tabEl.setAttribute('aria-selected', String(selected));
+        document.getElementById(paneId).classList.toggle('active', selected);
+      });
+    }
+
     function closeEditModal() {
       hideModal('editModal');
       clearFormGuard();
+      editingTokenId = null;
       document.getElementById('editTokenValue').value = '';
       document.getElementById('editCustomExpiry').value = '';
-      document.getElementById('editCustomExpiryContainer').style.display = 'none';
+      setCustomExpiryVisible('editCustomExpiryContainer', false);
       initialEditExpiryState = { type: 'never', value: '' };
-      // 清理模型限制状态
+      // 清理模型/渠道限制状态
       editAllowedModels = [];
-      selectedAllowedModelIndices.clear();
       currentAllowedModelFilter = '';
       editAllowedChannelIDs = [];
       editChannelRestrictionMode = 'allow';
-      selectedAllowedChannelIDs.clear();
       currentAllowedChannelFilter = '';
-      const modeSelect = document.getElementById('editChannelRestrictionMode');
-      if (modeSelect) modeSelect.value = 'allow';
       updateChannelRestrictionModeUI();
     }
+
 
     async function updateToken() {
       clearInvalidFields('editModal');
@@ -1044,14 +1067,13 @@
     }
 
     function updateChannelRestrictionModeUI() {
-      const suffix = document.getElementById('editChannelCountSuffix');
-      if (!suffix) return;
-      const key = editChannelRestrictionMode === 'deny'
-        ? 'tokens.channelCountSuffixDeny'
-        : 'tokens.channelCountSuffixAllow';
-      suffix.setAttribute('data-i18n', key);
-      suffix.textContent = t(key);
+      document.querySelectorAll('[data-action="set-channel-restriction-mode"]').forEach((btn) => {
+        const selected = btn.dataset.mode === editChannelRestrictionMode;
+        btn.classList.toggle('active', selected);
+        btn.setAttribute('aria-pressed', String(selected));
+      });
     }
+
 
     function getAvailableModelsForCurrentChannelRestriction() {
       if (editAllowedChannelIDs.length === 0) {
@@ -1111,12 +1133,12 @@
 
     function filterAllowedChannels(searchText) {
       currentAllowedChannelFilter = searchText;
-      renderAllowedChannelsTable();
+      renderAllowedChannels();
     }
 
     function filterAllowedModels(searchText) {
       currentAllowedModelFilter = searchText;
-      renderAllowedModelsTable();
+      renderAllowedModels();
     }
 
     function sortAllowedChannelIDs() {
@@ -1129,111 +1151,78 @@
       });
     }
 
-    function renderAllowedChannelsTable() {
-      const tbody = document.getElementById('allowedChannelsTableBody');
-      const countSpan = document.getElementById('editAllowedChannelsCount');
-      const selectAllCheckbox = document.getElementById('selectAllAllowedChannels');
-      const mobileLabelChannelName = t('tokens.channelName');
-      const mobileLabelActions = t('tokens.table.actions');
+    function buildChipHtml({ label, meta, removeAttrs, deny }) {
+      const removeLabel = escapeHtml(t('tokens.removeItem', { name: label }));
+      return `
+        <span class="token-chip${deny ? ' token-chip--deny' : ''}">
+          <span class="token-chip__label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+          ${meta ? `<span class="token-chip__meta">${escapeHtml(meta)}</span>` : ''}
+          <button type="button" class="token-chip__remove" ${removeAttrs} title="${removeLabel}" aria-label="${removeLabel}">&times;</button>
+        </span>
+      `;
+    }
+
+    function buildRestrictionEmptyHtml(message, actionsHtml) {
+      return `
+        <div class="token-restriction-empty">
+          <p>${escapeHtml(message)}</p>
+          <div class="token-restriction-empty__actions">${actionsHtml}</div>
+        </div>
+      `;
+    }
+
+    /** 同步限制面板的计数、提示与工具栏可用状态 */
+    function updateRestrictionPane({ countId, hintId, clearId, filterId, count, hint }) {
+      document.getElementById(countId).textContent = count;
+      const hintEl = document.getElementById(hintId);
+      hintEl.textContent = hint;
+      hintEl.hidden = count === 0;
+      document.getElementById(clearId).disabled = count === 0;
+      document.getElementById(filterId).disabled = count === 0;
+    }
+
+    function renderAllowedChannels() {
+      const list = document.getElementById('allowedChannelsList');
+      if (!list) return;
+
+      const deny = editChannelRestrictionMode === 'deny';
+      const count = editAllowedChannelIDs.length;
+      updateRestrictionPane({
+        countId: 'editAllowedChannelsCount',
+        hintId: 'allowedChannelsHint',
+        clearId: 'clearAllowedChannelsBtn',
+        filterId: 'allowedChannelFilterInput',
+        count,
+        hint: t(deny ? 'tokens.channelHintDeny' : 'tokens.channelHintAllow', { count })
+      });
+
+      if (count === 0) {
+        list.innerHTML = buildRestrictionEmptyHtml(
+          t(deny ? 'tokens.channelEmptyDeny' : 'tokens.channelEmptyAllow'),
+          `<button type="button" class="btn btn-primary btn-sm" data-action="show-channel-select-modal">${escapeHtml(t('tokens.selectChannel'))}</button>`
+        );
+        return;
+      }
+
       const visibleChannelIDs = getVisibleAllowedChannelIDs();
-
-      if (!tbody) return;
-
-      if (countSpan) countSpan.textContent = editAllowedChannelIDs.length;
-      updateBatchDeleteChannelsBtn();
-
-      if (selectAllCheckbox) {
-        const selectedVisibleCount = visibleChannelIDs.filter((channelID) => selectedAllowedChannelIDs.has(channelID)).length;
-        selectAllCheckbox.checked = visibleChannelIDs.length > 0 && selectedVisibleCount === visibleChannelIDs.length;
-        selectAllCheckbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleChannelIDs.length;
-      }
-
-      if (editAllowedChannelIDs.length === 0) {
-        tbody.innerHTML = `
-          <tr class="allowed-channels-empty-row">
-            <td colspan="3" class="allowed-channels-empty-cell">
-              ${t('tokens.noChannelRestriction')}
-            </td>
-          </tr>
-        `;
-        return;
-      }
       if (visibleChannelIDs.length === 0) {
-        tbody.innerHTML = `
-          <tr class="allowed-channels-empty-row">
-            <td colspan="3" class="allowed-channels-empty-cell">
-              ${t('tokens.noMatchingChannel')}
-            </td>
-          </tr>
-        `;
+        list.innerHTML = `<div class="token-chip-list__empty">${escapeHtml(t('tokens.noMatchingChannel'))}</div>`;
         return;
       }
 
-      tbody.innerHTML = visibleChannelIDs.map((channelID) => `
-        <tr class="mobile-inline-row allowed-channel-row">
-          <td class="allowed-channel-col-select mobile-inline-no-label">
-            <input type="checkbox" class="allowed-channel-checkbox" data-channel-id="${channelID}"
-              data-change-action="toggle-allowed-channel"
-              ${selectedAllowedChannelIDs.has(channelID) ? 'checked' : ''}
-            >
-          </td>
-          <td class="allowed-channel-col-name" data-mobile-label="${mobileLabelChannelName}">${escapeHtml(getChannelDisplayName(channelID))}</td>
-          <td class="allowed-channel-col-actions" data-mobile-label="${mobileLabelActions}">
-            <button type="button" class="allowed-channel-remove-btn btn btn-secondary btn-sm" data-action="remove-allowed-channel" data-channel-id="${channelID}">${t('common.delete')}</button>
-          </td>
-        </tr>
-      `).join('');
-    }
-
-    function toggleAllowedChannelSelection(channelID, checked) {
-      if (checked) {
-        selectedAllowedChannelIDs.add(channelID);
-      } else {
-        selectedAllowedChannelIDs.delete(channelID);
-      }
-      updateBatchDeleteChannelsBtn();
-      updateSelectAllAllowedChannelsCheckbox();
-    }
-
-    function toggleSelectAllAllowedChannels(checked) {
-      if (checked) {
-        getVisibleAllowedChannelIDs().forEach(channelID => selectedAllowedChannelIDs.add(channelID));
-      } else {
-        getVisibleAllowedChannelIDs().forEach(channelID => selectedAllowedChannelIDs.delete(channelID));
-      }
-      renderAllowedChannelsTable();
-    }
-
-    function updateBatchDeleteChannelsBtn() {
-      const btn = document.getElementById('batchDeleteAllowedChannelsBtn');
-      if (btn) {
-        btn.disabled = selectedAllowedChannelIDs.size === 0;
-      }
-    }
-
-    function updateSelectAllAllowedChannelsCheckbox() {
-      const checkbox = document.getElementById('selectAllAllowedChannels');
-      if (checkbox) {
-        const visibleChannelIDs = getVisibleAllowedChannelIDs();
-        const selectedVisibleCount = visibleChannelIDs.filter((channelID) => selectedAllowedChannelIDs.has(channelID)).length;
-        checkbox.checked = visibleChannelIDs.length > 0 && selectedVisibleCount === visibleChannelIDs.length;
-        checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleChannelIDs.length;
-      }
+      list.innerHTML = visibleChannelIDs.map((channelID) => buildChipHtml({
+        label: getChannelDisplayName(channelID),
+        meta: `#${channelID}`,
+        removeAttrs: `data-action="remove-allowed-channel" data-channel-id="${channelID}"`,
+        deny
+      })).join('');
     }
 
     function removeAllowedChannel(channelID) {
       editAllowedChannelIDs = editAllowedChannelIDs.filter(id => id !== channelID);
-      selectedAllowedChannelIDs.delete(channelID);
-      renderAllowedChannelsTable();
+      renderAllowedChannels();
     }
 
-    function batchDeleteSelectedAllowedChannels() {
-      if (selectedAllowedChannelIDs.size === 0) return;
-
-      editAllowedChannelIDs = editAllowedChannelIDs.filter(id => !selectedAllowedChannelIDs.has(id));
-      selectedAllowedChannelIDs.clear();
-      renderAllowedChannelsTable();
-    }
 
     async function showChannelSelectModal() {
       if (allChannels.length === 0) {
@@ -1448,120 +1437,46 @@
 
       sortAllowedChannelIDs();
       closeChannelSelectModal();
-      renderAllowedChannelsTable();
+      renderAllowedChannels();
       window.showNotification(t('tokens.msg.channelsAdded', { count: addedCount }), 'success');
     }
 
     /**
-     * 渲染模型限制表格
+     * 渲染模型限制列表
      */
-    function renderAllowedModelsTable() {
-      const tbody = document.getElementById('allowedModelsTableBody');
-      const countSpan = document.getElementById('editAllowedModelsCount');
-      const selectAllCheckbox = document.getElementById('selectAllAllowedModels');
-      const mobileLabelModelName = t('tokens.modelName');
-      const mobileLabelActions = t('tokens.table.actions');
+    function renderAllowedModels() {
+      const list = document.getElementById('allowedModelsList');
+      if (!list) return;
+
+      const count = editAllowedModels.length;
+      updateRestrictionPane({
+        countId: 'editAllowedModelsCount',
+        hintId: 'allowedModelsHint',
+        clearId: 'clearAllowedModelsBtn',
+        filterId: 'allowedModelFilterInput',
+        count,
+        hint: t('tokens.modelHint', { count })
+      });
+
+      if (count === 0) {
+        list.innerHTML = buildRestrictionEmptyHtml(
+          t('tokens.modelEmpty'),
+          `<button type="button" class="btn btn-secondary btn-sm" data-action="show-model-import-modal">${escapeHtml(t('tokens.manualInput'))}</button>` +
+          `<button type="button" class="btn btn-primary btn-sm" data-action="show-model-select-modal">${escapeHtml(t('tokens.selectFromList'))}</button>`
+        );
+        return;
+      }
+
       const visibleModelEntries = getVisibleAllowedModelEntries();
-
-      if (!tbody) return;
-
-      // 更新计数
-      if (countSpan) countSpan.textContent = editAllowedModels.length;
-
-      // 更新批量删除按钮状态
-      updateBatchDeleteBtn();
-
-      // 更新全选复选框状态
-      if (selectAllCheckbox) {
-        const selectedVisibleCount = visibleModelEntries.filter(({ index }) => selectedAllowedModelIndices.has(index)).length;
-        selectAllCheckbox.checked = visibleModelEntries.length > 0 && selectedVisibleCount === visibleModelEntries.length;
-        selectAllCheckbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleModelEntries.length;
-      }
-
-      if (editAllowedModels.length === 0) {
-        tbody.innerHTML = `
-          <tr class="allowed-models-empty-row">
-            <td colspan="3" class="allowed-models-empty-cell">
-              ${t('tokens.noModelRestriction')}
-            </td>
-          </tr>
-        `;
-        return;
-      }
       if (visibleModelEntries.length === 0) {
-        tbody.innerHTML = `
-          <tr class="allowed-models-empty-row">
-            <td colspan="3" class="allowed-models-empty-cell">
-              ${t('tokens.noMatchingModel')}
-            </td>
-          </tr>
-        `;
+        list.innerHTML = `<div class="token-chip-list__empty">${escapeHtml(t('tokens.noMatchingModel'))}</div>`;
         return;
       }
 
-      tbody.innerHTML = visibleModelEntries.map(({ model, index }) => {
-        return `
-        <tr class="mobile-inline-row allowed-model-row">
-          <td class="allowed-model-col-select mobile-inline-no-label">
-            <input type="checkbox" class="allowed-model-checkbox" data-index="${index}"
-              data-change-action="toggle-allowed-model"
-              ${selectedAllowedModelIndices.has(index) ? 'checked' : ''}
-            >
-          </td>
-          <td class="allowed-model-col-name" data-mobile-label="${mobileLabelModelName}">${escapeHtml(model)}</td>
-          <td class="allowed-model-col-actions" data-mobile-label="${mobileLabelActions}">
-            <button type="button" class="allowed-model-remove-btn btn btn-secondary btn-sm" data-action="remove-allowed-model" data-index="${index}">${t('common.delete')}</button>
-          </td>
-        </tr>
-      `}).join('');
-    }
-
-    /**
-     * 切换单个模型的选中状态
-     */
-    function toggleAllowedModelSelection(index, checked) {
-      if (checked) {
-        selectedAllowedModelIndices.add(index);
-      } else {
-        selectedAllowedModelIndices.delete(index);
-      }
-      updateBatchDeleteBtn();
-      updateSelectAllCheckbox();
-    }
-
-    /**
-     * 全选/取消全选模型
-     */
-    function toggleSelectAllAllowedModels(checked) {
-      if (checked) {
-        getVisibleAllowedModelEntries().forEach(({ index }) => selectedAllowedModelIndices.add(index));
-      } else {
-        getVisibleAllowedModelEntries().forEach(({ index }) => selectedAllowedModelIndices.delete(index));
-      }
-      renderAllowedModelsTable();
-    }
-
-    /**
-     * 更新批量删除按钮状态
-     */
-    function updateBatchDeleteBtn() {
-      const btn = document.getElementById('batchDeleteAllowedModelsBtn');
-      if (btn) {
-        btn.disabled = selectedAllowedModelIndices.size === 0;
-      }
-    }
-
-    /**
-     * 更新全选复选框状态
-     */
-    function updateSelectAllCheckbox() {
-      const checkbox = document.getElementById('selectAllAllowedModels');
-      if (checkbox) {
-        const visibleModelEntries = getVisibleAllowedModelEntries();
-        const selectedVisibleCount = visibleModelEntries.filter(({ index }) => selectedAllowedModelIndices.has(index)).length;
-        checkbox.checked = visibleModelEntries.length > 0 && selectedVisibleCount === visibleModelEntries.length;
-        checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleModelEntries.length;
-      }
+      list.innerHTML = visibleModelEntries.map(({ model, index }) => buildChipHtml({
+        label: model,
+        removeAttrs: `data-action="remove-allowed-model" data-index="${index}"`
+      })).join('');
     }
 
     /**
@@ -1569,30 +1484,9 @@
      */
     function removeAllowedModel(index) {
       editAllowedModels.splice(index, 1);
-      // 重建选中索引（删除后索引会变化）
-      const newIndices = new Set();
-      selectedAllowedModelIndices.forEach(i => {
-        if (i < index) newIndices.add(i);
-        else if (i > index) newIndices.add(i - 1);
-      });
-      selectedAllowedModelIndices = newIndices;
-      renderAllowedModelsTable();
+      renderAllowedModels();
     }
 
-    /**
-     * 批量删除选中的模型
-     */
-    function batchDeleteSelectedAllowedModels() {
-      if (selectedAllowedModelIndices.size === 0) return;
-
-      // 从大到小排序，避免删除时索引偏移问题
-      const indices = Array.from(selectedAllowedModelIndices).sort((a, b) => b - a);
-      indices.forEach(index => {
-        editAllowedModels.splice(index, 1);
-      });
-      selectedAllowedModelIndices.clear();
-      renderAllowedModelsTable();
-    }
 
     /**
      * 显示模型选择对话框
@@ -1771,7 +1665,7 @@
       editAllowedModels.sort();
 
       closeModelSelectModal();
-      renderAllowedModelsTable();
+      renderAllowedModels();
       window.showNotification(t('tokens.msg.modelsAdded', { count: addedCount }), 'success');
     }
 
@@ -1865,7 +1759,7 @@
       editAllowedModels.sort();
 
       closeModelImportModal();
-      renderAllowedModelsTable();
+      renderAllowedModels();
 
       const duplicateCount = models.length - newModels.length;
       const msg = duplicateCount > 0

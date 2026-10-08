@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+const { buildOAuthPlanBadge } = require('./oauth-plan-badge.js');
 const {
-  buildOAuthPlanBadge,
   buildOAuthUsageStatusHtml,
   toggleOAuthUsageWindows,
   buildChannelMetricsHtml,
