@@ -4297,7 +4297,7 @@ func TestAnthropicNativeTitleHelperPreservesStructuredOutput(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			headers := http.Header{
-				"User-Agent":                  {"claude-cli/2.1.292 (external, cli)"},
+				"User-Agent":                  {"claude-cli/2.1.293 (external, cli)"},
 				"X-App":                       {"cli"},
 				"Anthropic-Beta":              {test.betas},
 				"X-Stainless-Package-Version": {"0.128.0"},
