@@ -13,10 +13,10 @@
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
 
   <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261004-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261008-8">
 
   <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261004-1"></script>
+  <script defer src="assets/js/www.js?v=20261008-4"></script>
 </head>
 <body class="www-page www-home">
 <main>
@@ -24,46 +24,72 @@
   <section class="www-hero">
     <div class="www-hero-inner">
     <div class="www-hero-content">
-      <p class="www-hero-eyebrow" data-i18n="www.home.hero.eyebrow">Open source · Self-hosted · MIT licensed</p>
-      <h1 class="www-hero-title" data-i18n="www.home.hero.title">Self-hosted AI API gateway for Claude Code, Codex and Gemini</h1>
-      <p class="www-hero-tagline" data-i18n="www.home.hero.subtitle">
-        Pool your API keys and subscription accounts behind one endpoint.
-      </p>
-      <p class="www-hero-subtitle" data-i18n="www.home.hero.description">
-        Change one base URL. ccLoad picks a working upstream for every request, switches to the next one before your client sees an error, converts between Anthropic, OpenAI, Codex and Gemini protocols, and records what each call cost.
-      </p>
+      <p class="www-hero-eyebrow"><span class="www-hero-dot" aria-hidden="true"></span><span data-i18n="www.home.hero.eyebrow">Open source · Self-hosted · MIT licensed</span></p>
+      <h1 class="www-hero-title" data-i18n-html="www.home.hero.title"><span class="www-hero-slogan">Calmer connections<br>for AI coding.</span><span class="www-hero-kicker">Self-hosted API gateway for Claude Code, Codex and Gemini</span></h1>
+      <p class="www-hero-subtitle" data-i18n-html="www.home.hero.description">One endpoint for every client, automatic switch to a working upstream.<br>Usage and cost are visible on every request.</p>
       <div class="www-hero-actions">
-        <a href="#quickstart" class="www-btn www-btn-primary" data-i18n="www.home.hero.getStarted">Get Started</a>
-        <a href="#overview" class="www-btn www-btn-secondary" data-i18n="www.home.hero.watch">Watch the 47-second overview</a>
-        <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn www-btn-secondary">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-          </svg>
-          <span>GitHub</span>
-        </a>
+        <a href="#quickstart" class="www-btn www-btn-primary www-btn-lg"><span data-i18n="www.home.hero.getStarted">Get Started</span><span class="www-btn-icon" data-icon="arrow-right"></span></a>
+        <a href="#overview" class="www-btn www-btn-secondary www-btn-lg"><span class="www-btn-icon" data-icon="play"></span><span data-i18n="www.home.hero.watch">Watch the demo</span></a>
       </div>
-      <ul class="www-hero-stats">
-        <li><strong>4</strong><span data-i18n="www.home.hero.stat.protocols">client protocols on every channel</span></li>
-        <li><strong>8</strong><span data-i18n="www.home.hero.stat.accounts">account providers: Codex, Claude, xAI and more</span></li>
-        <li><strong>1</strong><span data-i18n="www.home.hero.stat.binary">Go binary with embedded SQLite</span></li>
-      </ul>
     </div>
     <div class="www-hero-visual" aria-hidden="true">
-      <div class="www-term">
-        <div class="www-term-bar"><span class="www-term-dots"></span><span class="www-term-title">ccload — request log</span></div>
-        <div class="www-term-body">
-          <p class="www-term-line"><span class="t-prompt">$</span> export ANTHROPIC_BASE_URL=http://localhost:8080</p>
-          <p class="www-term-line"><span class="t-prompt">$</span> claude</p>
-          <p class="www-term-line t-req"><span class="t-method">POST</span> /v1/messages <span class="t-dim">·</span> claude-sonnet-4-5 <span class="t-dim">· stream</span></p>
-          <p class="www-term-line"><span class="t-bad">✕</span> anthropic-official <span class="t-dim">key#2</span> <span class="t-tag t-tag-bad">429</span> <span class="t-dim">cooldown 60s</span></p>
-          <p class="www-term-line"><span class="t-bad">✕</span> relay-east <span class="t-dim">url#1</span> <span class="t-tag t-tag-bad">502</span> <span class="t-dim">url cooled</span></p>
-          <p class="www-term-line"><span class="t-ok">✓</span> claude-max-account <span class="t-dim">oauth</span> <span class="t-tag t-tag-ok">200</span> <span class="t-dim">ttfb 412ms</span></p>
-          <p class="www-term-line t-sum"><span class="t-dim">tokens</span> 12.4k in / 1.1k out <span class="t-dim">· cost</span> $0.0183</p>
-          <p class="www-term-line t-final"><span class="t-ok">●</span> client received 1 response, 0 errors<span class="www-term-caret"></span></p>
+      <div class="www-route">
+        <div class="www-route-head">
+          <span class="www-route-brand"><img src="brand-mark.svg" alt="" width="30" height="20"><strong>ccLoad</strong><span>/</span><span data-i18n="www.home.route.title">Request routing</span></span>
+          <span class="www-route-chip"><span data-i18n="www.home.route.chip">Illustration</span><span data-icon="info"></span></span>
+        </div>
+        <div class="www-route-map">
+          <svg class="www-route-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <path d="M24 18 C32 18 32 50 40 50"/>
+            <path d="M24 50 L40 50"/>
+            <path d="M24 82 C32 82 32 50 40 50"/>
+            <path class="is-dim" d="M60 50 C68 50 66 18 76 18"/>
+            <path class="is-dim" d="M60 50 L76 50"/>
+            <path d="M60 50 C68 50 66 82 76 82"/>
+          </svg>
+          <ul class="www-route-clients">
+            <li><span class="www-route-logo is-claude" data-icon="asterisk"></span>Claude Code</li>
+            <li><span class="www-route-logo is-codex" data-icon="openai"></span>Codex</li>
+            <li><span class="www-route-logo is-gemini" data-icon="sparkles"></span>Gemini</li>
+          </ul>
+          <div class="www-route-hub"><img src="brand-mark.svg" alt="" width="54" height="36"><span><strong>ccLoad</strong><span data-i18n="www.home.route.hub">API gateway</span></span></div>
+          <ul class="www-route-upstreams">
+            <li class="is-warn"><code>anthropic-official</code><span class="www-route-status"><span data-icon="snowflake"></span>429 · <span data-i18n="www.home.route.cooling">cooling down</span></span></li>
+            <li class="is-bad"><code>relay-east</code><span class="www-route-status"><span data-icon="x-circle"></span>502 · <span data-i18n="www.home.route.skipped">skipped</span></span></li>
+            <li class="is-ok"><code>claude-max-account</code><span class="www-route-status"><span data-icon="check-circle"></span>200 · <span data-i18n="www.home.route.served">served</span></span></li>
+          </ul>
+        </div>
+        <div class="www-route-panels">
+          <div class="www-route-log">
+            <div class="www-route-log-head"><span class="www-route-dots"><span></span></span><span class="www-route-tag" data-i18n="www.home.route.sample">Sample data</span></div>
+            <p class="www-route-req"><b>POST</b> /v1/messages</p>
+            <p class="www-route-meta"><span class="is-ok">● 200 OK</span> · 412 ms · $0.0183</p>
+            <pre><code>{
+  "model": "claude-sonnet-4-5",
+  "usage": { ... }
+}</code></pre>
+          </div>
+          <div class="www-route-chart">
+            <div class="www-route-chart-head"><span><span data-icon="bar-chart"></span><span data-i18n="www.home.route.usage">Usage &amp; cost</span></span><span class="www-route-tag" data-i18n="www.home.route.range">Last 7 days</span></div>
+            <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+              <g class="www-route-bars"><rect x="8" y="58" width="12" height="22"/><rect x="36" y="62" width="12" height="18"/><rect x="64" y="50" width="12" height="30"/><rect x="92" y="54" width="12" height="26"/><rect x="120" y="44" width="12" height="36"/><rect x="148" y="38" width="12" height="42"/><rect x="176" y="24" width="12" height="56"/></g>
+              <path class="www-route-area" d="M14 46 C30 30 40 52 56 40 S84 22 98 34 S126 30 140 22 S168 6 182 12 L182 80 L14 80Z"/>
+              <path class="www-route-line" d="M14 46 C30 30 40 52 56 40 S84 22 98 34 S126 30 140 22 S168 6 182 12"/>
+            </svg>
+          </div>
+        </div>
+        <div class="www-route-float">
+          <span class="www-route-float-icon" data-icon="zap"></span>
+          <span><strong data-i18n="www.home.route.failover">Automatic failover</strong><span data-i18n="www.home.route.failoverDesc">When an upstream fails, the next working channel is tried.</span></span>
         </div>
       </div>
     </div>
     </div>
+    <ul class="www-hero-strip">
+      <li><span class="www-strip-icon" data-icon="plug"></span><span><strong data-i18n="www.home.strip.unified.title">Unified access</strong><span data-i18n="www.home.strip.unified.desc">One base URL for your everyday AI coding tools.</span></span></li>
+      <li><span class="www-strip-icon" data-icon="zap"></span><span><strong data-i18n="www.home.strip.failover.title">Automatic failover</strong><span data-i18n="www.home.strip.failover.desc">When an upstream fails, the next working channel is tried.</span></span></li>
+      <li><span class="www-strip-icon" data-icon="bar-chart"></span><span><strong data-i18n="www.home.strip.cost.title">Usage and cost in view</strong><span data-i18n="www.home.strip.cost.desc">See model, channel and cost for every request.</span></span></li>
+    </ul>
   </section>
 
   <!-- What it is / how it works -->

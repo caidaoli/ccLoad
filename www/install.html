@@ -11,10 +11,10 @@
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
   <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261004-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261008-8">
 
   <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261004-1"></script>
+  <script defer src="assets/js/www.js?v=20261008-4"></script>
 </head>
 <body class="www-page www-install">
   <header class="www-page-hero">
@@ -35,79 +35,83 @@
   </header>
 
   <main class="www-main">
-    <section class="www-section">
+    <section class="www-section" id="choose" data-toc-icon="grid">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.install.choose.title">Choose the deployment path first</h2>
           <p data-i18n-html="www.install.choose.desc">ccLoad has one hard startup requirement: set <code>CCLOAD_PASS</code> in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
         </div>
 
-        <div class="www-doc-grid www-doc-grid-3">
-          <article class="www-doc-card">
-            <span class="www-doc-icon" data-icon="layers"></span>
-            <h3>Docker Compose</h3>
-            <p data-i18n-html="www.install.choose.docker.desc">Recommended path. Image, ports, environment variables and volumes live in <code>docker-compose.yml</code>, which is suitable for long-running servers.</p>
-            <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#docker" data-i18n-html="www.install.choose.docker.action">View Docker steps</a>
-            </div>
-          </article>
+        <div class="www-path-grid">
+          <a class="www-path-card is-selected" href="#docker">
+            <span class="www-path-icon www-tone-blue" data-icon="docker"></span>
+            <span class="www-path-body">
+              <span class="www-path-head"><strong>Docker</strong><span class="www-path-badge" data-i18n="www.install.choose.docker.badge">Production</span></span>
+              <span class="www-path-desc" data-i18n-html="www.install.choose.docker.desc">Recommended path. Image, ports, environment variables and volumes live in <code>docker-compose.yml</code>, which is suitable for long-running servers.</span>
+            </span>
+            <span class="www-path-radio" aria-hidden="true"></span>
+          </a>
 
-          <article class="www-doc-card">
-            <span class="www-doc-icon" data-icon="smile"></span>
-            <h3>Hugging Face Spaces</h3>
-            <p data-i18n-html="www.install.choose.hf.desc">Good for low-cost hosting. Spaces are publicly reachable by default, so admin passwords and API access tokens are mandatory.</p>
-            <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#huggingface" data-i18n-html="www.install.choose.hf.action">View Spaces steps</a>
-            </div>
-          </article>
+          <a class="www-path-card" href="#huggingface">
+            <span class="www-path-icon www-tone-amber" data-icon="smile"></span>
+            <span class="www-path-body">
+              <span class="www-path-head"><strong>Hugging Face Spaces</strong><span class="www-path-badge" data-i18n="www.install.choose.hf.badge">Quick trial</span></span>
+              <span class="www-path-desc" data-i18n-html="www.install.choose.hf.desc">Good for low-cost hosting. Spaces are publicly reachable by default, so admin passwords and API access tokens are mandatory.</span>
+            </span>
+            <span class="www-path-radio" aria-hidden="true"></span>
+          </a>
 
-          <article class="www-doc-card">
-            <span class="www-doc-icon" data-icon="wrench"></span>
-            <h3 data-i18n-html="www.install.choose.source.title">Source or Binary</h3>
-            <p data-i18n-html="www.install.choose.source.desc">Use this for development, private environments and lightweight deployments. Source builds must use <code>-tags sonic</code>.</p>
-            <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#source-binary" data-i18n-html="www.install.choose.source.action">View runtime options</a>
-            </div>
-          </article>
+          <a class="www-path-card" href="#homebrew">
+            <span class="www-path-icon www-tone-violet" data-icon="laptop"></span>
+            <span class="www-path-body">
+              <span class="www-path-head"><strong data-i18n="www.install.choose.local.title">Run locally</strong><span class="www-path-badge" data-i18n="www.install.choose.local.badge">Homebrew · Source · Binary</span></span>
+              <span class="www-path-desc" data-i18n-html="www.install.choose.local.desc">Homebrew, source builds or binaries for development, private environments and lightweight deployments. Source builds must use <code>-tags sonic</code>.</span>
+            </span>
+            <span class="www-path-radio" aria-hidden="true"></span>
+          </a>
         </div>
       </div>
     </section>
 
-    <section class="www-section" id="docker">
+    <section class="www-section" id="docker" data-toc-icon="docker">
       <div class="www-container">
-        <div class="www-section-header">
-          <h2 data-i18n-html="www.install.docker.title">Docker Deployment</h2>
-          <p data-i18n-html="www.install.docker.desc">This is the production path with the fewest moving parts. Download the compose file and environment template, set the password, then start the service.</p>
-        </div>
+        <div class="www-deploy-card">
+          <div class="www-deploy-head">
+            <span class="www-deploy-icon" data-icon="docker"></span>
+            <div>
+              <h2 data-i18n-html="www.install.docker.title">Docker Deployment</h2>
+              <p data-i18n-html="www.install.docker.desc">This is the production path with the fewest moving parts. Download the compose file and environment template, set the password, then start the service.</p>
+            </div>
+          </div>
 
-        <div class="www-step-list">
-          <div class="www-step">
-            <div>
-              <h3 data-i18n-html="www.install.docker.step1.title">Prepare configuration</h3>
-              <p data-i18n-html="www.install.docker.step1.desc">Copy the official <code>docker-compose.yml</code> and <code>.env.docker.example</code>, then set a strong <code>CCLOAD_PASS</code> in <code>.env</code>.</p>
+          <div class="www-step-list www-step-flow">
+            <div class="www-step">
+              <div>
+                <h3 data-i18n-html="www.install.docker.step1.title">Prepare configuration</h3>
+                <p data-i18n-html="www.install.docker.step1.desc">Copy the official <code>docker-compose.yml</code> and <code>.env.docker.example</code>, then set a strong <code>CCLOAD_PASS</code> in <code>.env</code>.</p>
+              </div>
+            </div>
+            <div class="www-step">
+              <div>
+                <h3 data-i18n-html="www.install.docker.step2.title">Start the service</h3>
+                <p data-i18n-html="www.install.docker.step2.desc">The default port is <code>8080</code>; the admin console is under <code>/web/</code>, and API proxy endpoints are under <code>/v1/*</code> and <code>/v1beta/*</code>.</p>
+              </div>
+            </div>
+            <div class="www-step">
+              <div>
+                <h3 data-i18n-html="www.install.docker.step3.title">Create access tokens</h3>
+                <p data-i18n-html="www.install.docker.step3.desc">After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
+              </div>
             </div>
           </div>
-          <div class="www-step">
-            <div>
-              <h3 data-i18n-html="www.install.docker.step2.title">Start the service</h3>
-              <p data-i18n-html="www.install.docker.step2.desc">The default port is <code>8080</code>; the admin console is under <code>/web/</code>, and API proxy endpoints are under <code>/v1/*</code> and <code>/v1beta/*</code>.</p>
-            </div>
-          </div>
-          <div class="www-step">
-            <div>
-              <h3 data-i18n-html="www.install.docker.step3.title">Create access tokens</h3>
-              <p data-i18n-html="www.install.docker.step3.desc">After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
-            </div>
-          </div>
-        </div>
 
-        <div class="www-code-block">
-          <div class="www-code-header">
-            <span class="www-code-lang">bash</span>
-            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
-          </div>
-          <div class="www-code-content">
-            <pre><code>curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+          <div class="www-code-block">
+            <div class="www-code-header">
+              <span class="www-code-lang">bash</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code>curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
 
 <span data-i18n-html="www.install.docker.code.password"># Required: set the admin console password</span>
@@ -115,20 +119,91 @@ nano .env
 
 docker-compose up -d
 docker-compose logs -f ccload</code></pre>
+            </div>
           </div>
+
+          <div class="www-deploy-panels">
+            <div class="www-deploy-panel">
+              <h3 data-i18n="www.install.docker.config.title">1. Configuration</h3>
+              <table class="www-kv-table">
+                <tbody>
+                  <tr>
+                    <th>CCLOAD_PASS</th>
+                    <td><code>&lt;your-admin-password&gt;</code></td>
+                    <td data-i18n="www.install.docker.config.pass">Required in production</td>
+                  </tr>
+                  <tr>
+                    <th data-i18n="www.install.docker.config.storage">Storage</th>
+                    <td data-i18n="www.install.docker.config.sqlite">SQLite (default)</td>
+                    <td data-i18n="www.install.docker.config.sqliteNote">No external database needed for a single instance</td>
+                  </tr>
+                  <tr>
+                    <th>CCLOAD_MYSQL</th>
+                    <td><code>&lt;mysql-dsn&gt;</code></td>
+                    <td rowspan="2" data-i18n="www.install.docker.config.external">External persistence: set only one</td>
+                  </tr>
+                  <tr>
+                    <th>CCLOAD_POSTGRES</th>
+                    <td><code>&lt;postgres-dsn&gt;</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="www-deploy-panel">
+              <h3 data-i18n="www.install.docker.service.title">2. Service</h3>
+              <table class="www-kv-table">
+                <tbody>
+                  <tr>
+                    <th data-i18n="www.install.docker.service.port">Port</th>
+                    <td><code>8080</code></td>
+                    <td data-i18n="www.install.docker.service.portNote">Default service port</td>
+                  </tr>
+                  <tr>
+                    <th data-i18n="www.install.docker.service.admin">Admin console</th>
+                    <td><code>/web/</code></td>
+                    <td data-i18n="www.install.docker.service.adminNote">Open it in a browser</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="www-callout www-callout-warn" data-i18n-html="www.install.docker.service.warning"><strong>Always set <code>CCLOAD_PASS</code> in production.</strong> It is the administrator password; never deploy without it.</p>
+            </div>
+          </div>
+
+          <div class="www-callout" data-i18n-html="www.install.docker.note.image">
+            <strong>The official GHCR image uses a Debian/glibc runtime for the Cursor SDK Bridge companion.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not update in process. Set the Compose image Tag, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>. Pin a release with <code>ghcr.io/caidaoli/ccload:v4.9.0</code>.
+          </div>
+
+          <a class="www-verify-banner" href="#verify">
+            <span class="www-verify-icon" data-icon="check"></span>
+            <strong data-i18n="www.install.verify.title">Post-deployment verification</strong>
+            <span data-i18n="www.install.docker.verifyHint">Open the admin console, create an access token and send a test request.</span>
+            <span class="www-verify-arrow" data-icon="chevron-right"></span>
+          </a>
         </div>
 
-        <div class="www-callout" data-i18n-html="www.install.docker.note.sqlite">
-          <strong>An external database is not required by default.</strong> Start with SQLite for single-instance deployments. Set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code> when you need external persistence or data retention after Hugging Face restarts.
-        </div>
-
-        <div class="www-callout www-mt-4" data-i18n-html="www.install.docker.note.image">
-          <strong>The official GHCR image uses a Debian/glibc runtime for the Cursor SDK Bridge companion.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not update in process. Set the Compose image Tag, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>. Pin a release with <code>ghcr.io/caidaoli/ccload:v4.9.0</code>.
+        <div class="www-path-more">
+          <a class="www-path-card" href="#homebrew">
+            <span class="www-path-icon www-tone-violet" data-icon="apple"></span>
+            <span class="www-path-body">
+              <span class="www-path-head"><strong>Homebrew</strong><span class="www-path-badge" data-i18n="www.install.more.brew.badge">Local runtime</span></span>
+              <span class="www-path-desc" data-i18n="www.install.more.brew.desc">Install stable releases on macOS/Linux and run ccLoad as a service.</span>
+            </span>
+            <span class="www-path-arrow" data-icon="chevron-right"></span>
+          </a>
+          <a class="www-path-card" href="#source-binary">
+            <span class="www-path-icon www-tone-blue" data-icon="code"></span>
+            <span class="www-path-body">
+              <span class="www-path-head"><strong data-i18n-html="www.install.source.title">Source Builds and Binary Runtime</strong><span class="www-path-badge" data-i18n="www.install.more.source.badge">Flexible</span></span>
+              <span class="www-path-desc" data-i18n="www.install.more.source.desc">Build from source or run a prebuilt binary for custom builds and specific platforms.</span>
+            </span>
+            <span class="www-path-arrow" data-icon="chevron-right"></span>
+          </a>
         </div>
       </div>
     </section>
 
-    <section class="www-section www-section-alt" id="huggingface">
+    <section class="www-section www-section-alt" id="huggingface" data-toc-icon="smile">
       <div class="www-container">
         <div class="www-section-header">
           <h2>Hugging Face Spaces</h2>
@@ -176,7 +251,7 @@ EXPOSE 7860
       </div>
     </section>
 
-    <section class="www-section" id="homebrew">
+    <section class="www-section" id="homebrew" data-toc-icon="apple">
       <div class="www-container">
         <div class="www-section-header">
           <h2>Homebrew</h2>
@@ -216,7 +291,7 @@ brew services stop caidaoli/ccload/ccload</code></pre></div>
       </div>
     </section>
 
-    <section class="www-section" id="source-binary">
+    <section class="www-section" id="source-binary" data-toc-icon="code">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.install.source.title">Source Builds and Binary Runtime</h2>
@@ -270,7 +345,7 @@ export CCLOAD_PASS=your_admin_password
       </div>
     </section>
 
-    <section class="www-section www-section-alt" id="verify">
+    <section class="www-section www-section-alt" id="verify" data-toc-icon="check-circle">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.install.verify.title">Post-deployment verification</h2>

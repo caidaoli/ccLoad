@@ -11,10 +11,10 @@
 
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
   <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261004-1">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261008-8">
 
   <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261004-1"></script>
+  <script defer src="assets/js/www.js?v=20261008-4"></script>
 </head>
 <body class="www-page www-usage">
   <header class="www-page-hero">
@@ -35,7 +35,7 @@
   </header>
 
   <main class="www-main">
-    <section class="www-section">
+    <section class="www-section" id="before" data-toc-icon="list-check">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.before.title">Before calling the API</h2>
@@ -65,7 +65,7 @@
       </div>
     </section>
 
-    <section class="www-section" id="clients">
+    <section class="www-section" id="clients" data-toc-icon="terminal">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.clients.title">Connect Claude Code and Codex</h2>
@@ -153,7 +153,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section www-section-alt">
+    <section class="www-section www-section-alt" id="endpoints" data-toc-icon="link">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.endpoints.title">Endpoint Reference</h2>
@@ -221,7 +221,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section">
+    <section class="www-section" id="thinking" data-toc-icon="lightbulb">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.thinking.title">Model thinking suffix</h2>
@@ -250,7 +250,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section www-section-alt" id="oauth-channels">
+    <section class="www-section www-section-alt" id="oauth-channels" data-toc-icon="key">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.oauth.title">First-party account channels</h2>
@@ -302,7 +302,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section">
+    <section class="www-section" id="websocket" data-toc-icon="zap">
       <div class="www-container">
         <div class="www-section-header">
           <h2>Codex Responses WebSocket</h2>
@@ -334,7 +334,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section">
+    <section class="www-section" id="search" data-toc-icon="globe">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.search.title">Built-in Search Across Protocols</h2>
@@ -389,7 +389,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section" id="api-examples">
+    <section class="www-section" id="api-examples" data-toc-icon="code">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.examples.title">API Examples</h2>
@@ -570,7 +570,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section www-section-alt">
+    <section class="www-section www-section-alt" id="admin" data-toc-icon="user">
       <div class="www-container">
         <div class="www-split">
           <div>
@@ -597,7 +597,7 @@ supports_websockets = true</code></pre>
       </div>
     </section>
 
-    <section class="www-section">
+    <section class="www-section" id="api" data-toc-icon="blocks">
       <div class="www-container">
         <div class="www-section-header">
           <h2 data-i18n-html="www.usage.api.title">Channel Management API</h2>
@@ -678,7 +678,7 @@ curl -X POST -H "Authorization: Bearer your_token" \
       </div>
     </section>
 
-    <section class="www-section www-section-alt">
+    <section class="www-section www-section-alt" id="logs" data-toc-icon="chart">
       <div class="www-container">
         <div class="www-split">
           <figure class="www-media-frame">

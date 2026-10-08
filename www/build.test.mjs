@@ -26,7 +26,7 @@ test('每个页面按语言预渲染，不残留运行时 i18n', () => {
     assert.match(html, /<footer class="www-footer"/, rel);
   }
   const zhHome = pages.find(p => p.page === 'index' && p.locale.code === 'zh-CN').html;
-  assert.match(zhHome, /<h1 class="www-hero-title">为 Claude Code、Codex、Gemini 打造的自托管 AI API 网关<\/h1>/);
+  assert.match(zhHome, /<h1 class="www-hero-title">.*让 AI 编程.*为 Claude Code、Codex、Gemini 打造的自托管 API 网关.*<\/h1>/);
   assert.match(zhHome, /src="\.\.\/assets\/video\/ccload-promo\.zh-CN\.mp4/);
 });
 

@@ -15,6 +15,11 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.nav.switchTheme': 'Switch theme',
   'www.nav.toggleMenu': 'Toggle menu',
 
+  // Docs layout
+  'www.docs.breadcrumb': 'Breadcrumb',
+  'www.docs.onThisPage': 'On this page',
+  'www.docs.github': 'View on GitHub',
+
   // Footer
   'www.footer.tagline': 'Open-source, self-hosted AI API gateway for Claude Code, Codex, Gemini and OpenAI-compatible clients.',
   'www.footer.docs': 'Documentation',

@@ -81,10 +81,26 @@ const ICONS = {
   star: '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  'bar-chart': '<path d="M5 21V12"/><path d="M12 21V4"/><path d="M19 21v-6"/>',
+  docker: '<path d="M2 13h17.5c1 0 1.9-.5 2.5-1.4-.7-.4-1.6-.5-2.4-.2-.2-1-.8-1.8-1.6-2.3"/><path d="M2.4 13c.4 4.4 3.7 7 8.4 7 4.4 0 7.5-2.4 8.7-7"/><rect x="4.5" y="9.4" width="2.6" height="2.6" rx=".3"/><rect x="8" y="9.4" width="2.6" height="2.6" rx=".3"/><rect x="11.5" y="9.4" width="2.6" height="2.6" rx=".3"/><rect x="8" y="5.9" width="2.6" height="2.6" rx=".3"/>',
+  apple: '<path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"/><path d="M10 2c1 .5 2 2 2 5"/>',
+  laptop: '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
+  grid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+  openai: '<g stroke-width="1.6"><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75"/><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75" transform="rotate(60 12 12)"/><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75" transform="rotate(120 12 12)"/><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75" transform="rotate(180 12 12)"/><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75" transform="rotate(240 12 12)"/><rect x="9.25" y="2.75" width="5.5" height="11" rx="2.75" transform="rotate(300 12 12)"/></g>',
+  play: '<circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4z"/>',
+  'arrow-right': '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  'check-circle': '<circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/>',
+  'x-circle': '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  'git-branch': '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10"/><path d="M18 10c0 4-6 3-11.5 7.5"/>',
+  'external-link': '<path d="M7 17 17 7"/><path d="M8 7h9v9"/>',
   server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>'
 };
 
 const GITHUB_ICON = '<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>';
+const CHEVRON_ICON = '<path d="m6 9 6 6 6-6"/>';
 const LANG_ICON = '<path d="M12.87 15.07 10.33 12.56l.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56L2.58 17.58 4 19l5-5 3.11 3.11.76-2.04ZM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12Zm-2.62 7 1.62-4.33L19.12 17h-3.24Z"/>';
 
 // 发布到站点的静态资源；语言包只在构建期使用，不发布
@@ -215,7 +231,7 @@ ${items}
       </ul>
       <div class="www-nav-actions">
         <a href="${GITHUB_URL}" target="_blank" rel="noopener" class="www-btn-secondary www-icon-button www-github-button" aria-label="GitHub" title="GitHub"><svg class="www-action-icon" viewBox="0 0 24 24" aria-hidden="true">${GITHUB_ICON}</svg></a>
-        <a href="${alternate.href}" hreflang="${alternate.locale.code}" lang="${alternate.locale.code}" data-locale="${alternate.locale.code}" id="www-lang-switch" class="www-btn-secondary www-icon-button www-lang-button" title="${t('www.nav.switchLanguage')}"><svg class="www-action-icon" viewBox="0 0 24 24" aria-hidden="true">${LANG_ICON}</svg><span>${alternate.locale.label}</span></a>
+        <a href="${alternate.href}" hreflang="${alternate.locale.code}" lang="${alternate.locale.code}" data-locale="${alternate.locale.code}" id="www-lang-switch" class="www-btn-secondary www-icon-button www-lang-button" title="${t('www.nav.switchLanguage')}"><svg class="www-action-icon" viewBox="0 0 24 24" aria-hidden="true">${LANG_ICON}</svg><span>${alternate.locale.label}</span><svg class="www-action-chevron" viewBox="0 0 24 24" aria-hidden="true">${CHEVRON_ICON}</svg></a>
         <button type="button" id="www-theme-switch" class="www-btn-secondary www-icon-button" aria-label="${t('www.nav.switchTheme')}" title="${t('www.nav.switchTheme')}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></button>
         <button type="button" class="www-nav-toggle" id="www-nav-toggle" aria-label="${t('www.nav.toggleMenu')}" aria-controls="www-nav-menu" aria-expanded="false"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
       </div>
@@ -254,10 +270,53 @@ function renderFooter(t) {
 }
 
 // 源 HTML 用 <span class="..." data-icon="name"></span> 占位，构建时内联为线性 SVG；未知图标名直接失败
+function iconSvg(name) {
+  if (!ICONS[name]) throw new Error(`unknown icon: ${name}`);
+  return `<svg class="www-i" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
+}
+
 function renderIcons(html) {
-  return html.replace(/<span class="([^"]+)" data-icon="([\w-]+)"><\/span>/g, (_, cls, name) => {
-    if (!ICONS[name]) throw new Error(`unknown icon: ${name}`);
-    return `<span class="${cls}" aria-hidden="true"><svg viewBox="0 0 24 24">${ICONS[name]}</svg></span>`;
+  return html.replace(/<span(?: class="([^"]+)")? data-icon="([\w-]+)"><\/span>/g, (_, cls, name) =>
+    `<span${cls ? ` class="${cls}"` : ''} aria-hidden="true">${iconSvg(name)}</span>`);
+}
+
+// 文档页：标题区加面包屑；带 id 的 section 不少于 3 个时，按其 h2 生成左侧本页导航（data-toc-icon 为条目图标）
+function renderDocShell(html, page, t) {
+  const hero = '<header class="www-page-hero">';
+  if (page === 'index' || !html.includes(hero)) return html;
+  const current = NAV_ITEMS.find(item => item.page === page);
+  const crumb = `<nav class="www-breadcrumb" aria-label="${t('www.docs.breadcrumb')}"><a href="./">ccLoad</a><span aria-hidden="true">/</span><span aria-current="page">${t(current.key)}</span></nav>`;
+  html = html.replace(/(<div class="www-page-hero-inner">\n)/, `$1      ${crumb}\n`);
+
+  const sections = [...html.matchAll(/<section\b([^>]*)>[\s\S]*?<h2\b[^>]*>([\s\S]*?)<\/h2>/g)]
+    .map(([, attrs, title]) => ({
+      id: attrs.match(/\sid="([^"]+)"/)?.[1],
+      icon: attrs.match(/\sdata-toc-icon="([\w-]+)"/)?.[1],
+      title: escapeHtml(decodeText(title))
+    }))
+    .filter(s => s.id);
+  if (sections.length < 3) return html;
+
+  const links = sections.map(s => `<li><a href="#${s.id}">${s.icon ? `<span aria-hidden="true">${iconSvg(s.icon)}</span>` : ''}<span>${s.title}</span></a></li>`).join('');
+  const sidebar = `<aside class="www-doc-sidebar">
+    <nav class="www-doc-toc" aria-label="${t('www.docs.onThisPage')}">
+      <p class="www-doc-toc-title">${t(current.key)}</p>
+      <ul>${links}</ul>
+    </nav>
+    <a class="www-doc-toc-github" href="${GITHUB_URL}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true">${GITHUB_ICON}</svg><span>${t('www.docs.github')}</span></a>
+  </aside>`;
+  return html
+    .replace(hero, `<div class="www-doc-shell">\n  ${sidebar}\n  <div class="www-doc-body">\n  ${hero}`)
+    .replace(/<\/main>/, '</main>\n  </div>\n  </div>');
+}
+
+// 代码块左侧行号：独立于 <pre>，复制时不会带上
+function renderCodeGutters(html) {
+  return html.replace(/(<div class="www-code-content">\s*)(<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>)/g, (_, head, pre, code) => {
+    const count = code.split('\n').length;
+    if (count < 2) return head + pre;
+    const lines = Array.from({ length: count }, (__, i) => i + 1).join('\n');
+    return `${head}<span class="www-code-lines" aria-hidden="true">${lines}</span>${pre}`;
   });
 }
 
@@ -364,6 +423,8 @@ export function renderPage(source, page, locale, messages) {
     .replace(/<html lang="[^"]*">/, `<html lang="${locale.code}">`);
 
   html = translate(html, key => dict[key], { strict: locale.code !== 'en' });
+  html = renderDocShell(html, page, t);
+  html = renderCodeGutters(html);
   html = html.replace(/\shref="index\.html(#[^"]*)?"/g, (_, hash = '') => ` href="./${hash}"`);
   html = html.replace(/(<meta name="viewport"[^>]*>\n)/, `$1${renderLocaleRedirect(locale, alternate)}\n`);
   html = html.replace(/(\n)(\s*<\/head>)/, `$1${renderHead(page, locale, html)}\n$2`);

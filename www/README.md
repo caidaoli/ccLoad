@@ -50,6 +50,8 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 
 图标不用 emoji：源 HTML 写 `<span class="www-feature-icon" data-icon="key"></span>`（也可用 `www-doc-icon` / `www-deployment-icon`），构建时由 `build.mjs` 的 `ICONS` 内联为线性 SVG；图标名未知时构建直接失败。
 
+子页面布局由构建生成：`<header class="www-page-hero">` 自动加面包屑；带 `id` 的 `<section>`（取其 `h2`）不少于 3 个时，生成左侧本页导航，`<section data-toc-icon="名称">` 为条目配 `ICONS` 图标。多行代码块自动加行号栏。
+
 ## 技术栈
 
 - **构建**：`build.mjs`（Node ESM，零依赖）预渲染双语静态页

@@ -1,6 +1,6 @@
 /**
  * Shared interactions for the website
- * Features: code copy, tab switching, and smooth anchor scrolling. Text is pre-rendered per language by build.mjs.
+ * Features: code copy, tab switching, smooth anchor scrolling and doc TOC highlighting. Text is pre-rendered per language by build.mjs.
  */
 (function() {
   'use strict';
@@ -60,11 +60,8 @@
         const targetElement = document.querySelector(targetId);
         if (targetElement) {
           e.preventDefault();
-          const navHeight = document.querySelector('.www-nav')?.offsetHeight || 64;
-          window.scrollTo({
-            top: targetElement.offsetTop - navHeight - 20,
-            behavior: 'smooth'
-          });
+          // 顶部留白由 html 的 scroll-padding-top 统一给出
+          targetElement.scrollIntoView({ behavior: 'smooth' });
           history.replaceState(null, '', targetId);
         }
       });
@@ -109,11 +106,40 @@
     });
   }
 
+  // 文档页左侧导航高亮当前阅读的区块：取顶部已越过视口 30% 线的最后一节；滚到底时高亮最后一节
+  function initTocSpy() {
+    const pairs = Array.from(document.querySelectorAll('.www-doc-toc a[href^="#"]'))
+      .map(link => [link, document.getElementById(link.getAttribute('href').slice(1))])
+      .filter(([, section]) => section);
+    if (!pairs.length) return;
+
+    let pending = false;
+    const update = () => {
+      pending = false;
+      const line = window.innerHeight * 0.3;
+      let current = 0;
+      pairs.forEach(([, section], i) => {
+        if (section.getBoundingClientRect().top <= line) current = i;
+      });
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        current = pairs.length - 1;
+      }
+      pairs.forEach(([link], i) => link.classList.toggle('active', i === current));
+    };
+    window.addEventListener('scroll', () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(update);
+    }, { passive: true });
+    update();
+  }
+
   function init() {
     initCodeCopy();
     initTabs();
     initSmoothScroll();
     initReveal();
+    initTocSpy();
   }
 
   if (document.readyState === 'loading') {
