@@ -59,3 +59,9 @@
 - 每个 HTTP 请求及每个 Responses WS turn 跨重试累计等待最多 3 秒；不重试远程分析，全局最多 8 并发、滚动一秒最多 10 次，容量不足直接回退。冷却数据库写入继续使用独立 3 秒上下文。
 - 同次失败的已准备判定供换 Key、换渠、延迟冷却复用。网络故障、WS transport tracker、取消和人工中断不分析；已提交响应只应用冷却，不重放请求。分析不触发凭据禁用、请求体修复或付费回退。
 - 每次实际调用写 `log_source=jev`，message 为有大小上限的版本化 JSON，保留脱敏输入、响应、概率、采用/回退原因、调用 ID；同时把脱敏的 TypeSafe 请求和审计结果关联到 `debug_logs`，供管理端 Debug 弹窗查看。代理日志携带同一调用 ID 及 adopted/fallback 结果；未调用则记跳过原因。Jev 日志成本按现有 `jev-latest` 模型价格目录计算，未配置价格时为 0；审计仍不计入渠道/URL/Token/OAuth 用量；API Token 网页用户仅能查询自身 proxy 来源日志。
+
+## OAuth 额度输出
+
+- 渠道高级设置 → OAuth 凭证的 `oauth_quota_passthrough`（输出额度信息）默认关闭，旧渠道迁移同样为关闭。仅 Codex、Anthropic 返回账号额度，界面只对二者展示该开关，过滤也只对二者生效；其他 OAuth 渠道隐藏开关并保持原样透传；开启后保留原有透传行为，后台额度查询不受影响；API Key 渠道不受此开关影响。
+- 关闭时，在下游输出边界过滤账号额度响应头（Anthropic/Codex/rate-limit）、额度 SSE/WS 事件和协议 JSON 中的额度字段，包括最终错误响应；保留请求 ID、Codex turn-state、正常错误和模型输出。用户自定义 metadata 与 token usage 不作为账号额度删除。
+- 原始响应仍先用于内部额度采样、计费、冷却和故障切换，过滤只作用于客户端输出。HTTP、SSE 与 Responses WebSocket 共用该边界；不能在 usage parser 前删事件。

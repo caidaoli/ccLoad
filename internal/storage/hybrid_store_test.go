@@ -156,6 +156,7 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 	}
 	updated := created.Clone()
 	updated.Name = "final"
+	updated.OAuthQuotaPassthrough = true
 	if _, err := hybrid.UpdateConfig(ctx, created.ID, updated); err != nil {
 		t.Fatalf("UpdateConfig: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 		disabled, disabledErr := primary.LoadDisabledURLs(ctx)
 		// The model cooldown replicates as its own queued entity, so waiting on
 		// the channel state alone can observe a queue that is still draining.
-		return cfgErr == nil && cfg.Name == "final" &&
+		return cfgErr == nil && cfg.Name == "final" && cfg.OAuthQuotaPassthrough &&
 			keysErr == nil && len(keys) == 1 && keys[0].Disabled && keys[0].Priority == -9 &&
 			disabledErr == nil && len(disabled[created.ID]) == 1 &&
 			hybrid.RuntimeMetrics().PrimarySyncPending == 0

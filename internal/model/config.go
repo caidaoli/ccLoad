@@ -623,6 +623,7 @@ type Config struct {
 	Name                          string      `json:"name"`
 	AuthType                      string      `json:"auth_type"`
 	Websockets                    bool        `json:"websockets,omitempty"`
+	OAuthQuotaPassthrough         bool        `json:"oauth_quota_passthrough"`
 	ProtocolTransformMode         string      `json:"protocol_transform_mode"`
 	URLs                          ChannelURLs `json:"urls"`
 	Priority                      int         `json:"priority"`
@@ -705,6 +706,7 @@ func (c *Config) Clone() *Config {
 		Name:                          c.Name,
 		AuthType:                      c.AuthType,
 		Websockets:                    c.Websockets,
+		OAuthQuotaPassthrough:         c.OAuthQuotaPassthrough,
 		ProtocolTransformMode:         c.ProtocolTransformMode,
 		URLs:                          c.URLs.Clone(),
 		Priority:                      c.Priority,

@@ -463,6 +463,7 @@ window.I18N_LOCALES['en'] = {
   'channels.anthropic.credentialRefreshFailed': 'Unable to refresh the Anthropic credential. Try again.',
   'channels.anthropic.credentialRefreshInvalid': 'The refresh response is missing an access token.',
   'channels.oauthCredentialFullDescription': 'Decoded view is shown by default. Switch to Raw before backing up or copying the credential for import.',
+  'channels.oauthQuotaPassthrough': 'Allow upstream account quota information to be returned to clients',
   'channels.oauthCredentialJSONLabel': 'OAuth credential JSON',
   'channels.filterStatus': 'Status',
   'channels.filterAuthType': 'Authentication type',

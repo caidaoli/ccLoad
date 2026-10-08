@@ -1311,6 +1311,67 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
   }
 });
 
+test('quota output refills and submits booleans without leaking the previous channel choice', async () => {
+  const channel = {
+    id: 79, name: 'quota-output', auth_type: 'codex_oauth',
+    oauth_quota_passthrough: true,
+    urls: [{ url: 'https://upstream.test' }],
+    models: []
+  };
+  const fixture = installEditChannelGlobals(channel);
+  const previous = new Map();
+  const setGlobal = (name, value) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const submitted = [];
+  try {
+    const { editChannel, saveChannel, showAddModal } = loadChannelsModals();
+    setGlobal('getValidInlineURLConfigs', () => channel.urls);
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'test-key' }]);
+    setGlobal('fetchAPIWithAuth', async (_url, options) => {
+      submitted.push(JSON.parse(options.body));
+      return { success: false, error: 'captured' };
+    });
+    const checkbox = fixture.getElement('channelOAuthQuotaPassthrough');
+    for (const stored of [true, false, undefined]) {
+      channel.oauth_quota_passthrough = stored;
+      checkbox.checked = true;
+      await editChannel(channel.id);
+      assert.equal(checkbox.checked, stored === true);
+      global.redirectTableData.push({ model: 'gpt-5', redirect_model: '' });
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted.at(-1).oauth_quota_passthrough, stored === true);
+    }
+    checkbox.checked = true;
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.at(-1).oauth_quota_passthrough, true);
+    checkbox.checked = false;
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.at(-1).oauth_quota_passthrough, false);
+
+    // applyChannelAuthEditorMode disables the switch for unsupported channels.
+    checkbox.checked = true;
+    checkbox.disabled = true;
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.at(-1).oauth_quota_passthrough, false);
+    checkbox.disabled = false;
+
+    fixture.getElement('channelForm').reset = () => {};
+    setGlobal('emptyInlineURLConfig', () => ({ url: '' }));
+    setGlobal('makeInlineKeyRow', () => ({ api_key: '' }));
+    checkbox.checked = true;
+    await showAddModal();
+    assert.equal(checkbox.checked, false);
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+    fixture.restore();
+  }
+});
+
 test('saving rejects invalid daily schedules and focuses the field with an inline error', async () => {
   const channel = { id: 80, name: 'invalid-schedule', auth_type: 'api_key', urls: [{ url: 'https://example.com' }], models: [] };
   const fixture = installEditChannelGlobals(channel, { editorKeys: [] });

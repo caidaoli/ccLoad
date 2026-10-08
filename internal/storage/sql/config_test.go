@@ -1821,3 +1821,36 @@ func TestConfig_ModelVariantsPersistAndProject(t *testing.T) {
 		t.Fatal("mismatched model_variants must fail to load")
 	}
 }
+
+func TestConfigOAuthQuotaPassthroughPersistence(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "quota", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-5"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OAuthQuotaPassthrough {
+		t.Fatal("new channel must default to false")
+	}
+	for _, enabled := range []bool{true, false} {
+		cfg.OAuthQuotaPassthrough = enabled
+		cfg, err = store.UpdateConfig(ctx, cfg.ID, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configs, err := store.ListConfigs(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		routed, err := store.GetEnabledChannelsByModel(ctx, "gpt-5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, got := range []*model.Config{cfg, cfg.Clone(), configs[0], routed[0]} {
+			if got.OAuthQuotaPassthrough != enabled {
+				t.Fatalf("quota passthrough=%v want %v", got.OAuthQuotaPassthrough, enabled)
+			}
+		}
+	}
+}

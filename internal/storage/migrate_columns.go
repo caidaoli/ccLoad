@@ -713,6 +713,12 @@ func ensureChannelsWebsockets(ctx context.Context, db *sql.DB, dialect Dialect) 
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func ensureChannelsOAuthQuotaPassthrough(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "oauth_quota_passthrough",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "protocol_transform_mode",
 		"VARCHAR(32) NOT NULL DEFAULT 'auto'",

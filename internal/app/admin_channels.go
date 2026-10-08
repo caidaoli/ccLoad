@@ -1280,6 +1280,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
+	if !req.oauthQuotaPassthroughSet {
+		req.OAuthQuotaPassthrough = existing.OAuthQuotaPassthrough
+	}
 	rawAuthType := strings.TrimSpace(req.AuthType)
 	if rawAuthType == "" {
 		req.AuthType = existing.GetAuthType()

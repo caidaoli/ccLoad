@@ -2949,3 +2949,45 @@ func TestHandleCreateChannelRejectsInvalidKeyPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleUpdateChannelOAuthQuotaPassthrough(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "quota", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true, OAuthQuotaPassthrough: true, ModelEntries: []model.ModelEntry{{Model: "gpt-5"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		field string
+		want  bool
+	}{{"", true}, {`,"oauth_quota_passthrough":false`, false}, {`,"oauth_quota_passthrough":true`, true}} {
+		body := fmt.Sprintf(`{"name":"quota","api_key":"sk-quota","urls":[{"url":"https://example.com"}],"enabled":true,"models":[{"model":"gpt-5"}]%s}`, tc.field)
+		c, w := newTestContext(t, newRequest(http.MethodPut, fmt.Sprintf("/admin/channels/%d", cfg.ID), strings.NewReader(body)))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+		server.handleUpdateChannel(c, cfg.ID)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		updated, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.OAuthQuotaPassthrough != tc.want {
+			t.Fatalf("passthrough=%v want %v", updated.OAuthQuotaPassthrough, tc.want)
+		}
+		editorC, editorW := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/editor", cfg.ID), nil))
+		editorC.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
+		server.HandleChannelEditor(editorC)
+		editor := mustParseAPIResponse[channelEditorData](t, editorW.Body.Bytes())
+		if editor.Data.Channel.OAuthQuotaPassthrough != tc.want {
+			t.Fatalf("editor returned wrong quota passthrough: %s", editorW.Body.String())
+		}
+		listC, listW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+		server.handleListChannels(listC)
+		list := mustParseAPIResponse[[]ChannelWithCooldown](t, listW.Body.Bytes())
+		if len(list.Data) != 1 || list.Data[0].OAuthQuotaPassthrough != tc.want {
+			t.Fatalf("list did not return actual value: %s", listW.Body.String())
+		}
+	}
+}

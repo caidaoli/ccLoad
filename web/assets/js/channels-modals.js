@@ -542,6 +542,8 @@ async function showAddModal() {
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = false;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
+  const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
+  if (quotaPassthroughCheckbox) quotaPassthroughCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
   document.getElementById('channelScheduledCheckIntervalMinutes').value = '300';
   document.getElementById('channelScheduledCheckStartTime').value = '00:00';
@@ -660,6 +662,8 @@ async function editChannel(id) {
   document.getElementById('channelEnabled').checked = channel.enabled;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
+  const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
+  if (quotaPassthroughCheckbox) quotaPassthroughCheckbox.checked = channel.oauth_quota_passthrough === true;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
   document.getElementById('channelScheduledCheckIntervalMinutes').value = channel.scheduled_check_interval_minutes ?? 300;
@@ -1041,6 +1045,7 @@ async function saveChannel(event) {
   const models = collectModelsForSubmit(redirectTableData);
 
 
+  const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
   const formData = {
     name: document.getElementById('channelName').value.trim(),
     auth_type: isOAuth ? editingChannelAuthType : 'api_key',
@@ -1064,6 +1069,7 @@ async function saveChannel(event) {
     enabled: document.getElementById('channelEnabled').checked,
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
     websockets: !!document.getElementById('channelWebsockets')?.checked,
+    oauth_quota_passthrough: !!quotaPassthroughCheckbox && !quotaPassthroughCheckbox.disabled && quotaPassthroughCheckbox.checked,
     scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
     scheduled_check_interval_minutes: Number(document.getElementById('channelScheduledCheckIntervalMinutes').value),
     scheduled_check_start_time: document.getElementById('channelScheduledCheckStartTime').value.trim(),
@@ -2132,6 +2138,8 @@ async function copyChannel(id, name) {
   document.getElementById('channelEnabled').checked = true;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
+  const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
+  if (quotaPassthroughCheckbox) quotaPassthroughCheckbox.checked = channel.oauth_quota_passthrough === true;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
   document.getElementById('channelScheduledCheckIntervalMinutes').value = channel.scheduled_check_interval_minutes ?? 300;
@@ -4025,6 +4033,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseQuickAddChannelInfo,
     proposeFetchedKeyModelScopes,
     saveChannel,
+    showAddModal,
     testRedirectModel,
     toggleModelDisabledState
   };

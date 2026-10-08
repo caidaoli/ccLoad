@@ -25,6 +25,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("auth_type VARCHAR(32) NOT NULL DEFAULT 'api_key'").
 		Column("oauth_credential TEXT").
 		Column("websockets TINYINT NOT NULL DEFAULT 0").
+		Column("oauth_quota_passthrough TINYINT NOT NULL DEFAULT 0").
 		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").

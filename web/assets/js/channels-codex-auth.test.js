@@ -2844,6 +2844,9 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     'batchDeleteKeysBtn',
     'selectAllKeys',
     'codexCredentialTab',
+    'advancedSettingsPanelCredential',
+    'channelOAuthQuotaPassthrough',
+    'channelOAuthQuotaPassthroughField',
     'codexCredentialContent',
     'codexCredentialViewDescription',
     'codexCredentialViewSwitch',
@@ -2872,6 +2875,18 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     })[selector] || []
   };
   try {
+    for (const authType of [
+      'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth',
+      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'
+    ]) {
+      elements.get('channelOAuthQuotaPassthrough').checked = true;
+      applyChannelAuthEditorMode(authType);
+      assert.equal(elements.get('advancedSettingsPanelCredential').hidden, false, authType);
+      const supported = authType === 'codex_oauth' || authType === 'anthropic_oauth';
+      assert.equal(elements.get('channelOAuthQuotaPassthroughField').hidden, !supported, authType);
+      assert.equal(elements.get('channelOAuthQuotaPassthrough').disabled, !supported, authType);
+      assert.equal(elements.get('channelOAuthQuotaPassthrough').checked, supported, 'only supported providers preserve the pending choice');
+    }
     const credential = {
       type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus'
     };
@@ -2980,6 +2995,9 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('importKeysBtn').disabled, false);
     assert.equal(elements.get('selectAllKeys').disabled, false);
     assert.equal(elements.get('codexCredentialTab').hidden, true);
+    assert.equal(elements.get('advancedSettingsPanelCredential').hidden, true);
+    assert.equal(elements.get('channelOAuthQuotaPassthrough').disabled, true);
+    assert.equal(elements.get('channelOAuthQuotaPassthrough').checked, false);
     assert.equal(elements.get('codexCredentialViewDescription').hidden, true);
     assert.equal(elements.get('codexCredentialViewSwitch').hidden, true);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);

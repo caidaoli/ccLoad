@@ -463,6 +463,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.anthropic.credentialRefreshFailed': '刷新 Anthropic 凭证失败，请重试',
   'channels.anthropic.credentialRefreshInvalid': '刷新结果缺少访问令牌',
   'channels.oauthCredentialFullDescription': '默认显示解码视图；如需备份或复制用于重新导入，请切换到原始视图。',
+  'channels.oauthQuotaPassthrough': '允许向客户端返回上游账号的额度信息',
   'channels.oauthCredentialJSONLabel': 'OAuth 凭证 JSON',
   'channels.filterStatus': '状态',
   'channels.filterAuthType': '认证类型',

@@ -2292,7 +2292,15 @@ func (s *Server) handleResponse(
 		return res, duration, err
 	}
 
-	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
+	if !hideOAuthQuota(cfg) {
+		return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
+	}
+	filtered := &oauthQuotaResponseWriter{ResponseWriter: w, streaming: reqCtx.isStreaming}
+	result, duration, err := s.handleSuccessResponse(reqCtx, resp, hdrClone, filtered, upstreamProtocol, readStats, observer)
+	if finishErr := filtered.finish(); finishErr != nil && err == nil {
+		err = finishErr
+	}
+	return result, duration, err
 }
 
 // ============================================================================
@@ -4257,6 +4265,7 @@ func prioritizePinnedCodexWebsocketURL(
 }
 
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (result *proxyResult, err error) {
+	defer func() { filterOAuthQuotaResult(cfg, result) }()
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	reqCtx.abortChannel = cancel

@@ -322,8 +322,8 @@ func TestCSVModelPricingImportAndCarry(t *testing.T) {
 	parse := func(pricing string, hasColumn bool, existing map[string][]model.ModelEntry) (*model.ChannelWithKeys, string) {
 		channel, message, _ := (&Server{}).parseChannelImportRow(
 			[]string{"priced", "sk-imported", `[{"url":"https://api.example.com"}]`, "model-a,model-b", pricing},
-			columns, 2, false, false, false, false, false, false, false, false, false, hasColumn,
-			nil, nil, nil, nil, nil, nil, nil, existing,
+			columns, 2, false, false, false, false, false, false, false, false, false, false, hasColumn,
+			nil, nil, nil, nil, nil, nil, nil, nil, existing,
 		)
 		return channel, message
 	}

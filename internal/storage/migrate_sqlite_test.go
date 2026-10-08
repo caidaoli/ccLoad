@@ -2500,3 +2500,34 @@ func TestInitDefaultSettings_RefreshesTokenVisibilityDescription(t *testing.T) {
 		t.Fatalf("saved value changed or description not refreshed: %q %q %q", value, defaultValue, description)
 	}
 }
+
+func TestMigrateSQLiteOAuthQuotaPassthroughDefault(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "quota.db")
+	store, err := createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "legacy", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExecContext(ctx, "ALTER TABLE channels DROP COLUMN oauth_quota_passthrough"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	got, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OAuthQuotaPassthrough {
+		t.Fatal("legacy channel must migrate with false default")
+	}
+}

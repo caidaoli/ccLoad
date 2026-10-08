@@ -309,6 +309,14 @@ function applyChannelAuthEditorMode(
   if (credentialTab) credentialTab.hidden = !credentialVisible;
   const credentialPanel = document.getElementById('advancedSettingsPanelCredential');
   if (credentialPanel) credentialPanel.hidden = !credentialVisible;
+  const supportsQuotaOutput = codexOAuth || anthropicOAuth;
+  const quotaPassthroughField = document.getElementById('channelOAuthQuotaPassthroughField');
+  if (quotaPassthroughField) quotaPassthroughField.hidden = !supportsQuotaOutput;
+  const quotaPassthrough = document.getElementById('channelOAuthQuotaPassthrough');
+  if (quotaPassthrough) {
+    quotaPassthrough.disabled = !supportsQuotaOutput;
+    if (!supportsQuotaOutput) quotaPassthrough.checked = false;
+  }
   if (credentialViewDescription) credentialViewDescription.hidden = !codexOAuth;
   if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {

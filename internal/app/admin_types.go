@@ -24,6 +24,7 @@ type ChannelRequest struct {
 	APIKey                        string                        `json:"api_key"`
 	APIKeys                       []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
 	Websockets                    bool                          `json:"websockets,omitempty"`
+	OAuthQuotaPassthrough         bool                          `json:"oauth_quota_passthrough"`
 	ProtocolTransformMode         string                        `json:"protocol_transform_mode,omitempty"`
 	KeyStrategy                   string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
 	URLs                          model.ChannelURLs             `json:"urls" binding:"required,min=1"`
@@ -45,6 +46,7 @@ type ChannelRequest struct {
 	RetryOtherKeysOnFailure       bool                          `json:"retry_other_keys_on_failure"`
 	ManagementAccount             *channelManagementInput       `json:"management_account,omitempty"`
 
+	oauthQuotaPassthroughSet  bool
 	managementAccountSet      bool
 	forbiddenCredentialFields bool
 }
@@ -62,6 +64,7 @@ func (cr *ChannelRequest) UnmarshalJSON(data []byte) error {
 	}
 	*cr = ChannelRequest(decoded)
 	_, cr.managementAccountSet = fields["management_account"]
+	_, cr.oauthQuotaPassthroughSet = fields["oauth_quota_passthrough"]
 	for _, field := range []string{"oauth_credential", "credential", "access_token"} {
 		if _, present := fields[field]; present {
 			cr.forbiddenCredentialFields = true
@@ -515,6 +518,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		Name:                          strings.TrimSpace(cr.Name),
 		AuthType:                      cr.AuthType,
 		Websockets:                    cr.Websockets,
+		OAuthQuotaPassthrough:         cr.OAuthQuotaPassthrough,
 		ProtocolTransformMode:         cr.ProtocolTransformMode,
 		URLs:                          cr.URLs.Clone(),
 		Priority:                      cr.Priority,
