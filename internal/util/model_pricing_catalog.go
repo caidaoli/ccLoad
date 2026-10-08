@@ -172,6 +172,13 @@ var basePricing = map[string]ModelPricing{
 		InputPriceHigh: 6.00, OutputPriceHigh: 22.50, // >200k context
 		CacheReadCountsTowardTier: true,
 	},
+	// https://platform.claude.com/docs/en/about-claude/pricing （2026-10-08）
+	// 完整 prompt 超过 100K 后，整次请求（含缓存读写）按高档计费。
+	"claude-haiku-5-5": {
+		InputPrice: 0.10, OutputPrice: 0.50,
+		InputPriceHigh: 0.50, OutputPriceHigh: 2.50,
+		CacheReadCountsTowardTier: true,
+	},
 	"claude-haiku-4-5": {InputPrice: 1.00, OutputPrice: 5.00},
 	"claude-opus-4-1":  {InputPrice: 15.00, OutputPrice: 75.00},
 	"claude-opus-4-0":  {InputPrice: 15.00, OutputPrice: 75.00},

@@ -80,6 +80,44 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_Haiku55(t *testing.T) {
+	for _, model := range []string{"claude-haiku-5-5", "claude-haiku-5-5-latest"} {
+		for _, tc := range []struct {
+			name                    string
+			input, read, five, hour int
+			high                    bool
+		}{
+			{name: "below", input: 99_999},
+			{name: "boundary", input: 100_000},
+			{name: "above", input: 100_001, high: true},
+			{name: "cached_boundary", input: 1_000, read: 60_000, five: 20_000, hour: 19_000},
+			{name: "read_crosses", input: 1_000, read: 60_001, five: 20_000, hour: 19_000, high: true},
+			{name: "five_crosses", input: 1_000, read: 60_000, five: 20_001, hour: 19_000, high: true},
+			{name: "hour_crosses", input: 1_000, read: 60_000, five: 20_000, hour: 19_001, high: true},
+		} {
+			t.Run(model+"/"+tc.name, func(t *testing.T) {
+				input, output, read, five, hour := 0.10, 0.50, 0.01, 0.125, 0.20
+				if tc.high {
+					input, output, read, five, hour = 0.50, 2.50, 0.05, 0.625, 1.00
+				}
+				// 输出不参与阈值；缓存读和两种时长的缓存写均参与。
+				got := CalculateStandardCostBreakdownWithPrice(model, "", nil, tc.input, 2_000, tc.read, tc.five, tc.hour)
+				wantInput := float64(tc.input) * input / 1_000_000
+				wantOutput := 2_000 * output / 1_000_000
+				wantRead := float64(tc.read) * read / 1_000_000
+				wantWrite := (float64(tc.five)*five + float64(tc.hour)*hour) / 1_000_000
+				if !floatEquals(got.Input.Cost, wantInput, 1e-12) ||
+					!floatEquals(got.Output.Cost, wantOutput, 1e-12) ||
+					!floatEquals(got.CacheRead.Cost, wantRead, 1e-12) ||
+					!floatEquals(got.CacheWrite.Cost, wantWrite, 1e-12) ||
+					!floatEquals(got.Total, wantInput+wantOutput+wantRead+wantWrite, 1e-12) {
+					t.Fatalf("Haiku 5.5 breakdown = %+v, want input/output/read/write = %v/%v/%v/%v", got, wantInput, wantOutput, wantRead, wantWrite)
+				}
+			})
+		}
+	}
+}
+
 func TestCalculateCost_Fable51(t *testing.T) {
 	breakdown := CalculateStandardCostBreakdownWithPrice(
 		"claude-fable-5-1", "", nil,

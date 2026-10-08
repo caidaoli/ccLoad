@@ -1157,7 +1157,7 @@ func TestAdminModels_HandleFetchModels_AntigravityDefaultEndpoints(t *testing.T)
 	}
 }
 
-func TestAdminModels_HandleFetchModels_AnthropicOAuthIncludesFable51(t *testing.T) {
+func TestAdminModels_HandleFetchModels_AnthropicOAuthIncludesCurrentModels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	server.channelCache = storage.NewChannelCache(store, time.Minute)
@@ -1182,12 +1182,18 @@ func TestAdminModels_HandleFetchModels_AnthropicOAuthIncludesFable51(t *testing.
 	if !resp.Success || resp.Data.Protocol != "anthropic" || resp.Data.Source != "predefined" {
 		t.Fatalf("unexpected response: %s", w.Body.String())
 	}
-	for _, entry := range resp.Data.Models {
-		if entry.Model == "claude-fable-5-1" && entry.RedirectModel == "claude-fable-5-1" {
-			return
+	for _, name := range []string{"claude-fable-5-1", "claude-haiku-5-5"} {
+		found := false
+		for _, entry := range resp.Data.Models {
+			if entry.Model == name && entry.RedirectModel == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s missing from fetched models: %#v", name, resp.Data.Models)
 		}
 	}
-	t.Fatalf("claude-fable-5-1 missing from fetched models: %#v", resp.Data.Models)
 }
 
 func TestAdminModels_HandleFetchModels_AntigravityCapacityDoesNotCooldownURLs(t *testing.T) {

@@ -178,6 +178,8 @@ const (
 func getTierThresholdForModel(model string) int {
 	lowerModel := strings.ToLower(model)
 	switch {
+	case strings.HasPrefix(lowerModel, "claude-haiku-5-5"):
+		return 100_000
 	case strings.HasPrefix(lowerModel, "gpt-6"),
 		strings.HasPrefix(lowerModel, "gpt-5.6"),
 		strings.HasPrefix(lowerModel, "gpt-5.5"),
