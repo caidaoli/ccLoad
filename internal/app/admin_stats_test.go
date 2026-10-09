@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"testing"
@@ -27,8 +28,10 @@ func TestStatsHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConfig: %v", err)
 	}
+	end := time.Date(2026, 1, 2, 0, 10, 0, 0, time.UTC)
+	start := end.Add(-4 * time.Hour)
 	if err := store.AddLog(ctx, &model.LogEntry{
-		Time:          model.JSONTime{Time: time.Now().Add(-30 * time.Minute)},
+		Time:          model.JSONTime{Time: end.Add(-30 * time.Minute)},
 		Model:         "claude-test",
 		ActualModel:   "claude-test",
 		ChannelID:     cfg.ID,
@@ -42,7 +45,8 @@ func TestStatsHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 		t.Fatalf("写入日志失败: %v", err)
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/stats?range=today&health_timeline=1", nil))
+	query := fmt.Sprintf("/admin/stats?range=custom&start_time=%d&end_time=%d&health_timeline=1", start.UnixMilli(), end.UnixMilli())
+	c, w := newTestContext(t, newRequest(http.MethodGet, query, nil))
 	server.HandleStats(c)
 	type statsResp struct {
 		Stats []model.StatsEntry `json:"stats"`

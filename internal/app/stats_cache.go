@@ -132,7 +132,7 @@ func cachedLoad[T any](sc *StatsCache, key string, endTime time.Time, load func(
 
 // GetStats 获取统计数据（带缓存）
 func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
-	return cachedLoad(sc, buildCacheKey("stats", startTime, endTime, filter), endTime, func() ([]model.StatsEntry, error) {
+	return cachedLoad(sc, buildCacheKey(fmt.Sprintf("stats:%t", isToday), startTime, endTime, filter), endTime, func() ([]model.StatsEntry, error) {
 		return sc.store.GetStats(ctx, startTime, endTime, filter, isToday)
 	})
 }
@@ -160,7 +160,7 @@ func (sc *StatsCache) GetAuthTypeStats(ctx context.Context, startTime, endTime t
 
 // GetRPMStats 获取 RPM 统计（带缓存）
 func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
-	return cachedLoad(sc, buildCacheKey("rpm", startTime, endTime, filter), endTime, func() (*model.RPMStats, error) {
+	return cachedLoad(sc, buildCacheKey(fmt.Sprintf("rpm:%t", isToday), startTime, endTime, filter), endTime, func() (*model.RPMStats, error) {
 		return sc.store.GetRPMStats(ctx, startTime, endTime, filter, isToday)
 	})
 }
@@ -198,7 +198,7 @@ func (sc *StatsCache) GetDistinctModels(ctx context.Context, startTime, endTime 
 
 // GetAuthTokenRangeStats 获取时间范围内各令牌的统计与 RPM（带缓存）。
 func (sc *StatsCache) GetAuthTokenRangeStats(ctx context.Context, startTime, endTime time.Time, isToday bool) (map[int64]*model.AuthTokenRangeStats, error) {
-	return cachedLoad(sc, buildCacheKey("auth_token_range", startTime, endTime, nil), endTime, func() (map[int64]*model.AuthTokenRangeStats, error) {
+	return cachedLoad(sc, buildCacheKey(fmt.Sprintf("auth_token_range:%t", isToday), startTime, endTime, nil), endTime, func() (map[int64]*model.AuthTokenRangeStats, error) {
 		stats, err := sc.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
 		if err != nil {
 			return nil, err
