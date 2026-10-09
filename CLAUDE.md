@@ -4,9 +4,9 @@ ccLoad 是 Claude/OpenAI/Gemini/Codex 多协议 API 网关，负责渠道选择�
 
 ## 工作方式
 
-- 修改任务完成到实现、相关验证及本次引入问题的修复；常规本地操作按现有授权连续执行。仅审查、解释或诊断时保持只读。
-- 按下表读取与当前改动有关的契约；小改动不要求通读全部参考文档。新增或修正规则写入对应专题，根文件只保留通用约束与入口。
-- 发布使用仓库 `ccload-release`；CLIProxyAPI 核心及 provider adapter 的同步/同步审计使用 `sync-cliproxy-core`。阅读或编辑技能不等于执行其中的发布、同步操作。
+- 修改任务完成到实现、相关验证及本次引入问题的修复；常规本地操作按现有授权连续执行。
+- 按下表读取与当前改动有关的契约。新增或修正规则写入对应专题，根文件只保留通用约束与入口。
+- 发布使用仓库 `ccload-release`；CLIProxyAPI 核心及 provider adapter 的同步/同步审计使用 `sync-cliproxy-core`。
 - 上游参照源码优先用本机 checkout：CLIProxyAPI `~/Source/go/CLIProxyAPI`、sub2api `~/Source/go/sub2api`（`~/Source` 即 `~/Share/Source`）。checkout 不钉提交，对照时按专题文档或 `internal/protocol/cliproxy/UPSTREAM.md` 记录的提交用 `git -C <repo> show <commit>:<path>` 读，不读 HEAD；本机不存在时按记录的仓库与提交获取。
 
 ## 命令与验证
@@ -23,8 +23,8 @@ make race-fast                # 并发相关改动；全量使用 make race
 golangci-lint run ./...        # Go 改动提交前零警告
 ```
 
-- 迭代运行受影响包；Go 改动提交前运行全量 `./internal/...` 与 lint，前端改动运行 `make verify-web`。文档、文案和布局改动只做相关检查，不新增行为测试。
-- 不用 `-count=1`，除非排查缓存、不稳定测试或测量性能。独立检查可并行；检查通过后，仅在新改动或未解决问题需要时重跑。
+- 迭代运行受影响包；Go 改动提交前运行全量 `./internal/...` 与 lint，前端改动运行 `make verify-web`。
+- 不用 `-count=1`，除非排查缓存、不稳定测试或测量性能。独立检查可并行。
 - 调整测试并行度时读 [测试并行化](.claude/agent-guide/testing.md)。发布和核心同步的专属验证命令见各自技能。
 
 ## 通用代码约束
