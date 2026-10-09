@@ -432,13 +432,13 @@ const logListQuery = `SELECT id, time, model, actual_model, response_model, log_
 
 // ListLogs 查询日志列表
 func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	qb := NewQueryBuilder(logListQuery).Where("time >= ?", since.UnixMilli())
+	qb := NewQueryBuilder(logListQuery+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).Where("time >= ?", since.UnixMilli())
 	return s.listLogs(ctx, qb, limit, offset, filter)
 }
 
 // ListLogsRange 查询指定时间范围内的日志（支持精确日期范围如"昨日"）
 func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	qb := NewQueryBuilder(logListQuery).
+	qb := NewQueryBuilder(logListQuery+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).
 		Where("time >= ?", since.UnixMilli()).
 		Where("time <= ?", until.UnixMilli())
 	return s.listLogs(ctx, qb, limit, offset, filter)
@@ -491,13 +491,13 @@ func (s *SQLStore) listLogs(ctx context.Context, qb *QueryBuilder, limit, offset
 
 // CountLogs 返回符合条件的日志总数（用于分页）
 func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
-	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs").Where("time >= ?", since.UnixMilli())
+	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs"+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).Where("time >= ?", since.UnixMilli())
 	return s.countLogs(ctx, qb, filter)
 }
 
 // CountLogsRange 返回指定时间范围内符合条件的日志总数
 func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
-	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs").
+	qb := NewQueryBuilder("SELECT COUNT(*) FROM logs"+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).
 		Where("time >= ?", since.UnixMilli()).
 		Where("time <= ?", until.UnixMilli())
 	return s.countLogs(ctx, qb, filter)
@@ -607,7 +607,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		qb := NewQueryBuilder(logListQuery).
+		qb := NewQueryBuilder(logListQuery+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).
 			Where("time >= ?", sinceMs).
 			Where("time <= ?", untilMs)
 		applySharedConditions(qb)
@@ -636,7 +636,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 
 	go func() {
 		defer wg.Done()
-		qb := NewQueryBuilder(`SELECT COUNT(*) FROM logs`).
+		qb := NewQueryBuilder(`SELECT COUNT(*) FROM logs`+s.logsRangeIndexHint(logsTimeRangeIndex, filter)).
 			Where("time >= ?", sinceMs).
 			Where("time <= ?", untilMs)
 		applySharedConditions(qb)

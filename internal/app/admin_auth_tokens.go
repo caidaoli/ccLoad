@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/model"
@@ -42,10 +43,11 @@ func (v *optionalInt64JSON) UnmarshalJSON(data []byte) error {
 // HandleListAuthTokens 列出所有API访问令牌（支持时间范围统计，2025-12扩展）
 // GET /admin/auth-tokens?range=today
 func (s *Server) HandleListAuthTokens(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	ctx := c.Request.Context()
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	tokens, err := s.store.ListAuthTokens(ctx)
+	tokens, err := s.store.ListAuthTokens(listCtx)
 	if err != nil {
 		log.Print("[ERROR] 列出令牌失败: " + err.Error())
 		RespondError(c, http.StatusInternalServerError, err)
@@ -84,66 +86,74 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 		isToday := timeRange == "today"
 		resp.IsToday = isToday
 
-		// 获取全局RPM统计（峰值、平均、最近一分钟）
-		rpmStats, err := s.store.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		// 范围聚合与统计接口一样只受请求 context 约束：大范围（如上月）不能挤在列表的 10s 预算里。
+		// 全局RPM与按令牌统计互不依赖，并行查询。
+		var (
+			rpmStats *model.RPMStats
+			rpmErr   error
+			wg       sync.WaitGroup
+		)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// 获取全局RPM统计（峰值、平均、最近一分钟）
+			rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		}()
+
+		// 从logs表聚合时间范围内每个token的统计与RPM（峰值、平均、最近）
+		rangeStats, err := s.statsCache.GetAuthTokenRangeStats(ctx, startTime, endTime, isToday)
+		wg.Wait()
 		if err != nil {
-			log.Printf("[WARN]  查询RPM统计失败: %v", err)
+			// 不能降级为累计统计：前端会把累计值当成所选范围的数据展示
+			log.Print("[ERROR] 查询令牌时间范围统计失败: " + err.Error())
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if rpmErr != nil {
+			log.Printf("[WARN]  查询RPM统计失败: %v", rpmErr)
 			// 降级处理
 		}
 		resp.RPMStats = rpmStats
 
-		// 从logs表聚合时间范围内的统计
-		rangeStats, err := s.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
-		if err != nil {
-			log.Printf("[WARN]  查询时间范围统计失败: %v", err)
-			// 降级处理：统计查询失败不影响token列表返回，仅记录警告
-		} else {
-			// 计算每个token的RPM统计（峰值、平均、最近）
-			if err := s.store.FillAuthTokenRPMStats(ctx, rangeStats, startTime, endTime, isToday); err != nil {
-				log.Printf("[WARN]  计算token RPM统计失败: %v", err)
-			}
-
-			// 将时间范围统计叠加到每个token的响应中
-			for _, t := range tokens {
-				if stat, ok := rangeStats[t.ID]; ok {
-					// 用时间范围统计覆盖累计统计字段（前端透明）
-					t.SuccessCount = stat.SuccessCount
-					t.FailureCount = stat.FailureCount
-					t.PromptTokensTotal = stat.PromptTokens
-					t.CompletionTokensTotal = stat.CompletionTokens
-					t.CacheReadTokensTotal = stat.CacheReadTokens
-					t.CacheCreationTokensTotal = stat.CacheCreationTokens
-					t.TotalCostUSD = stat.TotalCost
-					t.EffectiveCostUSD = stat.EffectiveCost
-					t.StreamAvgTTFB = stat.StreamAvgTTFB
-					t.NonStreamAvgRT = stat.NonStreamAvgRT
-					t.StreamCount = stat.StreamCount
-					t.NonStreamCount = stat.NonStreamCount
-					// RPM统计
-					t.PeakRPM = stat.PeakRPM
-					t.AvgRPM = stat.AvgRPM
-					t.RecentRPM = stat.RecentRPM
-				} else {
-					// 该token在此时间范围内无数据，清零统计字段
-					t.SuccessCount = 0
-					t.FailureCount = 0
-					t.PromptTokensTotal = 0
-					t.CompletionTokensTotal = 0
-					t.CacheReadTokensTotal = 0
-					t.CacheCreationTokensTotal = 0
-					t.TotalCostUSD = 0
-					t.EffectiveCostUSD = 0
-					t.StreamAvgTTFB = 0
-					t.NonStreamAvgRT = 0
-					t.StreamCount = 0
-					t.NonStreamCount = 0
-					t.PeakRPM = 0
-					t.AvgRPM = 0
-					t.RecentRPM = 0
-				}
+		// 将时间范围统计叠加到每个token的响应中
+		for _, t := range tokens {
+			if stat, ok := rangeStats[t.ID]; ok {
+				// 用时间范围统计覆盖累计统计字段（前端透明）
+				t.SuccessCount = stat.SuccessCount
+				t.FailureCount = stat.FailureCount
+				t.PromptTokensTotal = stat.PromptTokens
+				t.CompletionTokensTotal = stat.CompletionTokens
+				t.CacheReadTokensTotal = stat.CacheReadTokens
+				t.CacheCreationTokensTotal = stat.CacheCreationTokens
+				t.TotalCostUSD = stat.TotalCost
+				t.EffectiveCostUSD = stat.EffectiveCost
+				t.StreamAvgTTFB = stat.StreamAvgTTFB
+				t.NonStreamAvgRT = stat.NonStreamAvgRT
+				t.StreamCount = stat.StreamCount
+				t.NonStreamCount = stat.NonStreamCount
+				// RPM统计
+				t.PeakRPM = stat.PeakRPM
+				t.AvgRPM = stat.AvgRPM
+				t.RecentRPM = stat.RecentRPM
+			} else {
+				// 该token在此时间范围内无数据，清零统计字段
+				t.SuccessCount = 0
+				t.FailureCount = 0
+				t.PromptTokensTotal = 0
+				t.CompletionTokensTotal = 0
+				t.CacheReadTokensTotal = 0
+				t.CacheCreationTokensTotal = 0
+				t.TotalCostUSD = 0
+				t.EffectiveCostUSD = 0
+				t.StreamAvgTTFB = 0
+				t.NonStreamAvgRT = 0
+				t.StreamCount = 0
+				t.NonStreamCount = 0
+				t.PeakRPM = 0
+				t.AvgRPM = 0
+				t.RecentRPM = 0
 			}
 		}
-
 	}
 
 	RespondJSON(c, http.StatusOK, resp)

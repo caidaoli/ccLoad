@@ -666,12 +666,25 @@ func TestPostgres(t *testing.T) {
 			assertStats(t, stats)
 		})
 
+		// 最近成功/请求查询失败只记 WARN，必须断言字段确实被填充，才能证明 PG 方言 SQL 可执行。
+		assertLatest := func(t *testing.T, stats []model.StatsEntry) {
+			t.Helper()
+			want := now.Add(-10 * time.Second).UnixMilli()
+			if got := stats[0].LastSuccessAt; got == nil || *got != want {
+				t.Fatalf("last success at=%v want=%d", got, want)
+			}
+			if got := stats[0].LastRequestAt; got == nil || *got != want {
+				t.Fatalf("last request at=%v want=%d", got, want)
+			}
+		}
+
 		t.Run("GetStats", func(t *testing.T) {
 			stats, err := store.GetStats(ctx, start, end, filter, false)
 			if err != nil {
 				t.Fatalf("GetStats: %v", err)
 			}
 			assertStats(t, stats)
+			assertLatest(t, stats)
 
 			modelFilter := *filter
 			modelFilter.Model = "gpt-4o"
@@ -680,6 +693,7 @@ func TestPostgres(t *testing.T) {
 				t.Fatalf("GetStats model filter: %v", err)
 			}
 			assertStats(t, stats)
+			assertLatest(t, stats)
 		})
 
 		t.Run("AggregateRangeWithFilter", func(t *testing.T) {

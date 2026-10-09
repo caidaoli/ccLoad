@@ -9,34 +9,30 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
 
-func TestFillHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
-	store, err := storage.CreateSQLiteStore(t.TempDir() + "/test.db")
+func TestStatsHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "timeline-channel",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "claude-test"}},
+		Enabled:      true,
+	})
 	if err != nil {
-		t.Fatalf("创建测试数据库失败: %v", err)
+		t.Fatalf("CreateConfig: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	s := &Server{store: store}
-
-	now := time.Now().Truncate(time.Second)
-	startTime := now.Add(-24 * time.Hour)
-	endTime := now
-
-	channelID64 := int64(1)
-	channelID := int(channelID64)
-	modelName := "claude-test"
-
-	logTime := now.Add(-12 * time.Hour)
-	if err := store.AddLog(context.Background(), &model.LogEntry{
-		Time:          model.JSONTime{Time: logTime},
-		Model:         modelName,
-		ActualModel:   modelName,
-		ChannelID:     channelID64,
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:          model.JSONTime{Time: time.Now().Add(-30 * time.Minute)},
+		Model:         "claude-test",
+		ActualModel:   "claude-test",
+		ChannelID:     cfg.ID,
+		LogSource:     model.LogSourceProxy,
 		StatusCode:    200,
 		Message:       "ok",
 		Duration:      2.3,
@@ -46,21 +42,14 @@ func TestFillHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 		t.Fatalf("写入日志失败: %v", err)
 	}
 
-	stats := []model.StatsEntry{
-		{
-			ChannelID: ptrInt(channelID),
-			Model:     modelName,
-		},
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/stats?range=today&health_timeline=1", nil))
+	server.HandleStats(c)
+	type statsResp struct {
+		Stats []model.StatsEntry `json:"stats"`
 	}
-	filter := &model.LogFilter{
-		ChannelID: ptrInt64(channelID64),
-		Model:     modelName,
-	}
-
-	s.fillHealthTimeline(context.Background(), stats, startTime, endTime, filter, false)
-
-	if len(stats) == 0 {
-		t.Fatal("stats 切片为空")
+	stats := mustParseAPIResponse[statsResp](t, w.Body.Bytes()).Data.Stats
+	if len(stats) != 1 {
+		t.Fatalf("stats=%d entries, want 1: %s", len(stats), w.Body.String())
 	}
 	if len(stats[0].HealthTimeline) != 48 {
 		t.Fatalf("期望 health timeline 长度=48，实际=%d", len(stats[0].HealthTimeline))
@@ -116,10 +105,6 @@ func TestHealthPointJSON_EmptyBucketOnlyCarriesTimestampAndRate(t *testing.T) {
 	}
 }
 
-func ptrInt64(v int64) *int64 { return &v }
-
-func ptrInt(v int) *int { return &v }
-
 // 健康时间线、逐渠道拆分和 RPM 都是额外查询/大体积字段，只有显式需要的页面才拿到。
 func TestStatsEndpoints_HeavyFieldsAreOptIn(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
@@ -166,6 +151,10 @@ func TestStatsEndpoints_HeavyFieldsAreOptIn(t *testing.T) {
 	}
 	if !statsHas("&health_timeline=1", "health_timeline") {
 		t.Fatal("health_timeline=1 时应附带 health_timeline")
+	}
+	// 统计结果有缓存，附带时间线的请求不能污染之后的默认请求
+	if statsHas("", "health_timeline") {
+		t.Fatal("health_timeline=1 之后的默认 stats 不应附带 health_timeline")
 	}
 
 	metricsHasChannels := func(query string) bool {

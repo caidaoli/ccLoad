@@ -108,134 +108,106 @@ func (sc *StatsCache) Close() {
 	sc.stopWg.Wait()
 }
 
-// GetStats 获取统计数据（带缓存）
-func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
-	key := buildCacheKey("stats", startTime, endTime, filter)
-
-	// 尝试缓存
+// cachedLoad 命中未过期缓存直接返回，否则加载并按 endTime 计算 TTL 写入。
+// 缓存值在请求间共享，调用方不得修改返回结果。
+func cachedLoad[T any](sc *StatsCache, key string, endTime time.Time, load func() (T, error)) (T, error) {
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
+			return cs.data.(T), nil
 		}
 	}
 
-	// 缓存未命中，查询数据库
-	result, err := sc.store.GetStats(ctx, startTime, endTime, filter, isToday)
+	result, err := load()
 	if err != nil {
-		return nil, err
+		var zero T
+		return zero, err
 	}
-
-	// 写入缓存
-	ttl := calculateTTL(endTime)
 	sc.storeCache(key, &cachedStats{
 		data:   result,
-		expiry: time.Now().Add(ttl),
+		expiry: time.Now().Add(calculateTTL(endTime)),
 	})
-
 	return result, nil
+}
+
+// GetStats 获取统计数据（带缓存）
+func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
+	return cachedLoad(sc, buildCacheKey("stats", startTime, endTime, filter), endTime, func() ([]model.StatsEntry, error) {
+		return sc.store.GetStats(ctx, startTime, endTime, filter, isToday)
+	})
 }
 
 // GetStatsLite 获取轻量统计数据（带缓存）
 func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
-	key := buildCacheKey("stats_lite", startTime, endTime, filter)
-
-	// 尝试缓存
-	if cached, ok := sc.cache.Load(key); ok {
-		cs := cached.(*cachedStats)
-		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
-		}
-	}
-
-	// 缓存未命中，查询数据库
-	result, err := sc.store.GetStatsLite(ctx, startTime, endTime, filter)
-	if err != nil {
-		return nil, err
-	}
-
-	// 写入缓存
-	ttl := calculateTTL(endTime)
-	sc.storeCache(key, &cachedStats{
-		data:   result,
-		expiry: time.Now().Add(ttl),
+	return cachedLoad(sc, buildCacheKey("stats_lite", startTime, endTime, filter), endTime, func() ([]model.StatsEntry, error) {
+		return sc.store.GetStatsLite(ctx, startTime, endTime, filter)
 	})
-
-	return result, nil
 }
 
 // GetClientProtocolStats 获取按客户端入口协议聚合的首页统计（带缓存）。
 func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
-	key := buildCacheKey("client_protocol_stats", startTime, endTime, filter)
-
-	if cached, ok := sc.cache.Load(key); ok {
-		cs := cached.(*cachedStats)
-		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.ClientProtocolStats), nil
-		}
-	}
-
-	result, err := sc.store.GetClientProtocolStats(ctx, startTime, endTime, filter)
-	if err != nil {
-		return nil, err
-	}
-
-	sc.storeCache(key, &cachedStats{
-		data:   result,
-		expiry: time.Now().Add(calculateTTL(endTime)),
+	return cachedLoad(sc, buildCacheKey("client_protocol_stats", startTime, endTime, filter), endTime, func() ([]model.ClientProtocolStats, error) {
+		return sc.store.GetClientProtocolStats(ctx, startTime, endTime, filter)
 	})
-	return result, nil
 }
 
 // GetAuthTypeStats 获取按渠道认证类型聚合的首页统计（带缓存）。
 func (sc *StatsCache) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
-	key := buildCacheKey("auth_type_stats", startTime, endTime, filter)
-
-	if cached, ok := sc.cache.Load(key); ok {
-		cs := cached.(*cachedStats)
-		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.AuthTypeStats), nil
-		}
-	}
-
-	result, err := sc.store.GetAuthTypeStats(ctx, startTime, endTime, filter)
-	if err != nil {
-		return nil, err
-	}
-
-	sc.storeCache(key, &cachedStats{
-		data:   result,
-		expiry: time.Now().Add(calculateTTL(endTime)),
+	return cachedLoad(sc, buildCacheKey("auth_type_stats", startTime, endTime, filter), endTime, func() ([]model.AuthTypeStats, error) {
+		return sc.store.GetAuthTypeStats(ctx, startTime, endTime, filter)
 	})
-	return result, nil
 }
 
 // GetRPMStats 获取 RPM 统计（带缓存）
 func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
-	key := buildCacheKey("rpm", startTime, endTime, filter)
-
-	// 尝试缓存
-	if cached, ok := sc.cache.Load(key); ok {
-		cs := cached.(*cachedStats)
-		if time.Now().Before(cs.expiry) {
-			return cs.data.(*model.RPMStats), nil
-		}
-	}
-
-	// 缓存未命中，查询数据库
-	result, err := sc.store.GetRPMStats(ctx, startTime, endTime, filter, isToday)
-	if err != nil {
-		return nil, err
-	}
-
-	// 写入缓存
-	ttl := calculateTTL(endTime)
-	sc.storeCache(key, &cachedStats{
-		data:   result,
-		expiry: time.Now().Add(ttl),
+	return cachedLoad(sc, buildCacheKey("rpm", startTime, endTime, filter), endTime, func() (*model.RPMStats, error) {
+		return sc.store.GetRPMStats(ctx, startTime, endTime, filter, isToday)
 	})
+}
 
-	return result, nil
+// GetHealthTimeline 获取健康时间线分桶数据（带缓存）。
+func (sc *StatsCache) GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error) {
+	since, until := time.UnixMilli(params.SinceMs), time.UnixMilli(params.UntilMs)
+	key := buildCacheKey(fmt.Sprintf("health_timeline:%d", params.BucketMs), since, until, params.Filter)
+	return cachedLoad(sc, key, until, func() ([]model.HealthTimelineRow, error) {
+		return sc.store.GetHealthTimeline(ctx, params)
+	})
+}
+
+// AggregateRangeWithFilter 获取趋势指标分桶数据（带缓存）。
+func (sc *StatsCache) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
+	key := buildCacheKey(fmt.Sprintf("metrics:%d", bucket/time.Second), since, until, filter)
+	return cachedLoad(sc, key, until, func() ([]model.MetricPoint, error) {
+		return sc.store.AggregateRangeWithFilter(ctx, since, until, bucket, filter)
+	})
+}
+
+// GetDistinctChannels 获取时间范围内出现过的渠道（带缓存）。
+func (sc *StatsCache) GetDistinctChannels(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ChannelNameID, error) {
+	return cachedLoad(sc, buildCacheKey("distinct_channels", startTime, endTime, filter), endTime, func() ([]model.ChannelNameID, error) {
+		return sc.store.GetDistinctChannels(ctx, startTime, endTime, filter)
+	})
+}
+
+// GetDistinctModels 获取时间范围内出现过的模型（带缓存）。
+func (sc *StatsCache) GetDistinctModels(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]string, error) {
+	return cachedLoad(sc, buildCacheKey("distinct_models", startTime, endTime, filter), endTime, func() ([]string, error) {
+		return sc.store.GetDistinctModels(ctx, startTime, endTime, filter)
+	})
+}
+
+// GetAuthTokenRangeStats 获取时间范围内各令牌的统计与 RPM（带缓存）。
+func (sc *StatsCache) GetAuthTokenRangeStats(ctx context.Context, startTime, endTime time.Time, isToday bool) (map[int64]*model.AuthTokenRangeStats, error) {
+	return cachedLoad(sc, buildCacheKey("auth_token_range", startTime, endTime, nil), endTime, func() (map[int64]*model.AuthTokenRangeStats, error) {
+		stats, err := sc.store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
+		if err != nil {
+			return nil, err
+		}
+		if err := sc.store.FillAuthTokenRPMStats(ctx, stats, startTime, endTime, isToday); err != nil {
+			return nil, err
+		}
+		return stats, nil
+	})
 }
 
 // buildCacheKey 生成缓存键

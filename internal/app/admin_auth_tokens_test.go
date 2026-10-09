@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
@@ -574,4 +576,27 @@ func TestHandleListAuthTokens_StatsZeroForNoData(t *testing.T) {
 		}
 	}
 	t.Errorf("token ID=%d not found in response", token.ID)
+}
+
+type authTokenRangeStatsFailureStore struct {
+	storage.Store
+}
+
+func (s *authTokenRangeStatsFailureStore) GetAuthTokenStatsInRange(context.Context, time.Time, time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
+	return nil, errors.New("forced range stats failure")
+}
+
+// 范围统计失败时不能返回累计统计：前端会把它当作所选范围的数据展示。
+func TestHandleListAuthTokens_RangeStatsFailureReturnsError(t *testing.T) {
+	server := newInMemoryServerWithCustomStore(t, func(s storage.Store) storage.Store {
+		return &authTokenRangeStatsFailureStore{Store: s}
+	})
+	createTestToken(t, server, "range-failure")
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/auth-tokens?range=last_month", nil))
+	server.HandleListAuthTokens(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("Expected 500, got %d: %s", w.Code, w.Body.String())
+	}
 }

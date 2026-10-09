@@ -38,34 +38,29 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(COALESCE(logs.output_tokens, 0)) as output_tokens,
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
-		FROM logs
+		FROM logs`+s.logsRangeIndexHint(logsMinuteRangeIndex, filter)+`
 	`).
 		Where("logs.minute_bucket >= ?", sinceBucket).
 		Where("logs.minute_bucket <= ?", untilBucket).
 		Where("logs.status_code != 499").
 		Where("logs.channel_id > 0")
 
-	// 渠道名称先解析为 ID；其余条件统一交给 LogFilter，避免不同统计端点口径漂移。
-	if filter != nil {
-		channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
-		if err != nil {
-			return nil, fmt.Errorf("resolve channel filter: %w", err)
-		}
-		if isEmpty {
-			return buildEmptyMetricPoints(since, until, bucket), nil
-		}
-		if len(channelIDs) > 0 {
-			values := make([]any, len(channelIDs))
-			for i, channelID := range channelIDs {
-				values[i] = channelID
-			}
-			qb.WhereIn("logs.channel_id", values)
-		}
+	// 渠道名称先解析为 ID；其余条件统一交给 LogFilter（nil 即只统计 proxy），避免不同统计端点口径漂移。
+	channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel filter: %w", err)
 	}
-
-	if filter != nil {
-		qb.ApplyFilter(filter)
+	if isEmpty {
+		return buildEmptyMetricPoints(since, until, bucket), nil
 	}
+	if len(channelIDs) > 0 {
+		values := make([]any, len(channelIDs))
+		for i, channelID := range channelIDs {
+			values[i] = channelID
+		}
+		qb.WhereIn("logs.channel_id", values)
+	}
+	qb.ApplyFilter(filter)
 	query, args := qb.BuildWithSuffix(`
 		GROUP BY bucket_ts, logs.channel_id
 		ORDER BY bucket_ts ASC
@@ -138,7 +133,7 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 
 	query := `
 		SELECT DISTINCT logs.model
-		FROM logs
+		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, filter) + `
 		WHERE logs.time >= ? AND logs.time <= ? AND logs.model != '' AND logs.channel_id > 0
 	`
 
@@ -182,7 +177,7 @@ func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time
 	args := []any{since.UnixMilli(), until.UnixMilli()}
 	query := `
 		SELECT DISTINCT logs.status_code
-		FROM logs
+		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, filter) + `
 		WHERE logs.time >= ? AND logs.time <= ?
 			AND logs.status_code BETWEEN 100 AND 999
 	`
@@ -223,7 +218,7 @@ func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Ti
 
 	query := `
 		SELECT DISTINCT l.channel_id, c.name
-		FROM logs l JOIN channels c ON l.channel_id = c.id
+		FROM logs l` + s.logsRangeIndexHint(logsTimeRangeIndex, filter) + ` JOIN channels c ON l.channel_id = c.id
 		WHERE l.time >= ? AND l.time <= ? AND l.channel_id > 0
 	`
 

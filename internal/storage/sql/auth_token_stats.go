@@ -31,7 +31,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			AVG(CASE WHEN is_streaming = 0 THEN duration ELSE NULL END) AS non_stream_avg_rt,
 			SUM(CASE WHEN is_streaming = 1 AND status_code != 499 THEN 1 ELSE 0 END) AS stream_count,
 			SUM(CASE WHEN is_streaming = 0 AND status_code != 499 THEN 1 ELSE 0 END) AS non_stream_count
-		FROM logs
+		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, nil) + `
 		WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND log_source = 'proxy'
 		GROUP BY auth_token_id
 	`
@@ -100,7 +100,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		SELECT auth_token_id, MAX(cnt) AS peak_rpm
 		FROM (
 			SELECT auth_token_id, COUNT(*) AS cnt
-			FROM logs
+			FROM logs` + s.logsRangeIndexHint(logsMinuteRangeIndex, nil) + `
 			WHERE minute_bucket >= ? AND minute_bucket <= ? AND auth_token_id > 0 AND status_code != 499 AND log_source = 'proxy'
 			GROUP BY auth_token_id, minute_bucket
 		) t
@@ -132,7 +132,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 
 		recentQuery := `
 			SELECT auth_token_id, COUNT(*) AS cnt
-			FROM logs
+			FROM logs` + s.logsRangeIndexHint(logsMinuteRangeIndex, nil) + `
 			WHERE minute_bucket >= ? AND minute_bucket <= ? AND auth_token_id > 0 AND status_code != 499 AND log_source = 'proxy'
 			GROUP BY auth_token_id
 		`

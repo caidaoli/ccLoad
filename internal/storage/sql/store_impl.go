@@ -68,7 +68,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 			SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_tokens,
 			SUM(COALESCE(cost, 0.0)) AS total_cost,
 			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
-		FROM logs
+		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, params.Filter) + `
 	`
 
 	qb := NewQueryBuilder(baseQuery).
