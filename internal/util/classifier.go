@@ -91,6 +91,9 @@ const (
 	codexUsageFrequencyLimitReason = "CODEX_USAGE_FREQUENCY_LIMIT"
 	// anthropicRateLimitUnifiedResetHeader 是 Anthropic 当前被拒绝配额窗口的 Unix 秒重置时间。
 	anthropicRateLimitUnifiedResetHeader = "Anthropic-Ratelimit-Unified-Reset"
+	// anthropicMaxRateLimitWindow 是 Anthropic 最长限流窗口（7d）加 1h 时钟偏差余量；
+	// 更晚的时间戳是计费周期边界，不是可恢复的限流。
+	anthropicMaxRateLimitWindow = 7*24*time.Hour + time.Hour
 	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
 	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
 	WebsocketConnectionLimitCooldown = 5 * time.Second
@@ -714,16 +717,33 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 
 func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (time.Time, bool) {
 	for _, value := range headerValuesFold(headers, anthropicRateLimitUnifiedResetHeader) {
-		resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-		if err != nil {
-			continue
-		}
-		until := time.Unix(resetUnix, 0)
-		if until.After(now) {
+		if until, ok := anthropicRateLimitDeadline(headers, anthropicRateLimitUnifiedResetHeader, value, now); ok {
 			return until, true
 		}
 	}
 	return time.Time{}, false
+}
+
+// anthropicRateLimitDeadline 解析 reset 头为可用的冷却截止时间。
+// 超过最长窗口的时间，以及 overage claim 下与 Overage-Reset 相同的统一 reset，
+// 都是计费周期边界：按它冷却会把模型或凭证挂到下个计费周期。
+func anthropicRateLimitDeadline(headers map[string][]string, name, value string, now time.Time) (time.Time, bool) {
+	resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	until := time.Unix(resetUnix, 0)
+	if !until.After(now) || until.Sub(now) > anthropicMaxRateLimitWindow {
+		return time.Time{}, false
+	}
+	if strings.EqualFold(name, anthropicRateLimitUnifiedResetHeader) &&
+		strings.Contains(strings.ToLower(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-Representative-Claim")), "overage") {
+		overageUnix, err := strconv.ParseInt(firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-Overage-Reset"), 10, 64)
+		if err == nil && overageUnix == resetUnix {
+			return time.Time{}, false
+		}
+	}
+	return until, true
 }
 
 // anthropicUnifiedWindowRejected 判断 Anthropic 是否明确拒绝了共享 5h/7d 订阅窗口。
@@ -763,20 +783,23 @@ func anthropicOverageOnlyRejection(headers map[string][]string, status5h, status
 		return healthy("5h")
 	case allowed(status5h) && status7d == "":
 		return healthy("7d")
+	case status5h == "" && status7d == "" && strings.Contains(claim, "overage"):
+		// 调用方已确认统一状态为 rejected。Anthropic 未评估共享窗口时两个状态头都缺失；
+		// 只有 overage claim 使用这种缺失，其他 overage 信号不放宽此例外。
+		absentOrHealthy := func(window string) bool {
+			return firstHeaderValueFold(headers, "Anthropic-Ratelimit-Unified-"+window+"-Utilization") == "" || healthy(window)
+		}
+		return absentOrHealthy("5h") && absentOrHealthy("7d")
 	}
 	return false
 }
 
-// anthropicRejectedWindowReset 取被拒窗口与统一 reset 中最晚的未来时间。
+// anthropicRejectedWindowReset 取被拒窗口与统一 reset 中最晚的有效截止时间。
 func anthropicRejectedWindowReset(headers map[string][]string, now time.Time) (time.Time, bool) {
 	var latest time.Time
 	consider := func(name string) {
 		for _, value := range headerValuesFold(headers, name) {
-			resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-			if err != nil {
-				continue
-			}
-			if until := time.Unix(resetUnix, 0); until.After(now) && until.After(latest) {
+			if until, ok := anthropicRateLimitDeadline(headers, name, value, now); ok && until.After(latest) {
 				latest = until
 			}
 		}

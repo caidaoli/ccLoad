@@ -1833,6 +1833,112 @@ func TestClassifyAnthropicOverageOnlyRejectionStaysModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyAnthropicRateLimitIgnoresBillingBoundaryResets(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	unix := func(d time.Duration) string { return strconv.FormatInt(now.Add(d).Unix(), 10) }
+	monthEnd := unix(23 * 24 * time.Hour)
+
+	tests := []struct {
+		name           string
+		headers        map[string][]string
+		wantCredential bool
+		wantUntil      time.Duration // 0 表示不应设置固定截止时间
+	}{
+		{
+			name: "overage claim reset equals overage billing boundary",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":               {"rejected"},
+				"anthropic-ratelimit-unified-5h-status":            {"allowed"},
+				"anthropic-ratelimit-unified-7d-status":            {"allowed"},
+				"anthropic-ratelimit-unified-representative-claim": {"overage"},
+				"anthropic-ratelimit-unified-overage-reset":        {unix(2 * 24 * time.Hour)},
+				"anthropic-ratelimit-unified-reset":                {unix(2 * 24 * time.Hour)},
+			},
+		},
+		{
+			name: "overage claim keeps distinct unified reset",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":               {"rejected"},
+				"anthropic-ratelimit-unified-5h-status":            {"allowed"},
+				"anthropic-ratelimit-unified-7d-status":            {"allowed"},
+				"anthropic-ratelimit-unified-representative-claim": {"overage"},
+				"anthropic-ratelimit-unified-overage-reset":        {monthEnd},
+				"anthropic-ratelimit-unified-reset":                {unix(3 * time.Hour)},
+			},
+			wantUntil: 3 * time.Hour,
+		},
+		{
+			name:    "unified reset beyond longest window",
+			headers: map[string][]string{"anthropic-ratelimit-unified-reset": {monthEnd}},
+		},
+		{
+			name: "rejected shared window ignores billing boundary unified reset",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":    {"rejected"},
+				"anthropic-ratelimit-unified-5h-status": {"rejected"},
+				"anthropic-ratelimit-unified-5h-reset":  {unix(2 * time.Hour)},
+				"anthropic-ratelimit-unified-reset":     {monthEnd},
+			},
+			wantCredential: true,
+			wantUntil:      2 * time.Hour,
+		},
+		{
+			name: "unevaluated shared windows with overage claim stay model scoped",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":               {"rejected"},
+				"anthropic-ratelimit-unified-representative-claim": {"overage"},
+				"anthropic-ratelimit-unified-5h-utilization":       {"0.40"},
+				"anthropic-ratelimit-unified-reset":                {unix(time.Hour)},
+			},
+			wantUntil: time.Hour,
+		},
+		{
+			name: "unevaluated shared windows with exhausted utilization",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":               {"rejected"},
+				"anthropic-ratelimit-unified-representative-claim": {"overage"},
+				"anthropic-ratelimit-unified-7d-utilization":       {"1.0"},
+				"anthropic-ratelimit-unified-reset":                {unix(time.Hour)},
+			},
+			wantCredential: true,
+			wantUntil:      time.Hour,
+		},
+		{
+			name: "unevaluated shared windows without overage claim",
+			headers: map[string][]string{
+				"anthropic-ratelimit-unified-status":         {"rejected"},
+				"anthropic-ratelimit-unified-overage-status": {"rejected"},
+				"anthropic-ratelimit-unified-reset":          {unix(time.Hour)},
+			},
+			wantCredential: true,
+			wantUntil:      time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, tt.headers, nil, now)
+
+			if got.CredentialScoped != tt.wantCredential || got.ModelScoped == tt.wantCredential {
+				t.Fatalf("classification=%+v, want credential scoped=%v", got, tt.wantCredential)
+			}
+			hasUntil, until := got.HasModelCooldownUntil, got.ModelCooldownUntil
+			if tt.wantCredential {
+				hasUntil, until = got.HasKeyCooldownUntil, got.KeyCooldownUntil
+			}
+			if tt.wantUntil == 0 {
+				if hasUntil {
+					t.Fatalf("cooldown until=%s, want exponential backoff without fixed deadline", until)
+				}
+				return
+			}
+			if want := now.Add(tt.wantUntil); !hasUntil || !until.Equal(want) {
+				t.Fatalf("cooldown until=%s (set=%v), want %s", until, hasUntil, want)
+			}
+		})
+	}
+}
+
 func TestClassifyAnthropicFastModeCreditsIsRequestLevel(t *testing.T) {
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."}}`)
 	headers := map[string][]string{"anthropic-ratelimit-unified-reset": {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}}

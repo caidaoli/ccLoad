@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -26,6 +27,7 @@ import (
 const (
 	responsesWebsocketRequestCreate      = "response.create"
 	responsesWebsocketRequestAppend      = "response.append"
+	responsesWebsocketRequestInterrupt   = "response.interrupt"
 	responsesWebsocketIdleTimeout        = 5 * time.Minute
 	responsesWebsocketPingInterval       = 2 * time.Minute
 	responsesWebsocketWriteTimeout       = 30 * time.Second
@@ -150,7 +152,8 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	startResponsesWebsocketPingLoop(connectionCtx, cancelConnection, conn, pingInterval, func() bool {
 		return s.authService != nil && s.authService.IsTokenActive(tokenHashString)
 	})
-	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn, idleTimeout)
+	interrupt := &responsesWebsocketInterrupt{}
+	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn, idleTimeout, interrupt)
 	var executionSession *responsesExecutionSession
 	var releaseExecutionSession func()
 	defer func() {
@@ -224,9 +227,13 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				}
 				continue
 			}
+			turnCtx, cancelTurn := context.WithCancel(connectionCtx)
+			interrupt.begin(cancelTurn, executionSession.upstream)
 			turnResult, errTurn := s.executeResponsesWebsocketTurn(
-				connectionCtx, c, conn, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm,
+				turnCtx, c, conn, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
 			)
+			interrupt.end()
+			cancelTurn()
 			if errTurn != nil {
 				if turnResult.interrupted {
 					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
@@ -261,6 +268,14 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			}
 			s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
 			executionSession.releaseTurn()
+		case responsesWebsocketRequestInterrupt:
+			// 进行中的回合已由读协程直接中断；到这里说明没有可中断的回合，
+			// 对应响应的终结事件已发出。此时回错误会被客户端算到它的下一个回合上。
+			if responsesWebsocketInterruptResponseID(message.payload) == "" {
+				if errWrite := writeResponsesWebsocketError(conn, "invalid_request", "response.interrupt requires response_id"); errWrite != nil {
+					return
+				}
+			}
 		default:
 			if errWrite := writeResponsesWebsocketError(conn, "unsupported_event", "unsupported websocket request type"); errWrite != nil {
 				return
@@ -274,11 +289,14 @@ type responsesWebsocketInboundMessage struct {
 	payload     []byte
 }
 
+// readResponsesWebsocketMessages 是下游连接唯一的读者。response.interrupt 在这里
+// 直接交给进行中的回合，否则它会排在要中断的回合之后，等回合结束才被读到。
 func readResponsesWebsocketMessages(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	conn *websocket.Conn,
 	idleTimeout time.Duration,
+	interrupt *responsesWebsocketInterrupt,
 ) <-chan responsesWebsocketInboundMessage {
 	messages := make(chan responsesWebsocketInboundMessage)
 	go func() {
@@ -289,6 +307,9 @@ func readResponsesWebsocketMessages(
 				return
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
+			if messageType == websocket.TextMessage && interrupt.deliver(payload) {
+				continue
+			}
 			select {
 			case messages <- responsesWebsocketInboundMessage{messageType: messageType, payload: payload}:
 			case <-ctx.Done():
@@ -297,6 +318,94 @@ func readResponsesWebsocketMessages(
 		}
 	}()
 	return messages
+}
+
+// responsesWebsocketInterrupt 把 response.interrupt 路由到当前回合。原生上游 WS
+// 回合把原帧原样写到在用的上游 socket，由上游回 response.incomplete 结束回合；
+// 其余回合（HTTP、协议转换、上游 socket 已失效）在本地取消，再由回合层合成
+// response.incomplete。
+type responsesWebsocketInterrupt struct {
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	upstream *codexUpstreamWebsocketSession
+	local    []byte
+}
+
+func (i *responsesWebsocketInterrupt) begin(cancel context.CancelFunc, upstream *codexUpstreamWebsocketSession) {
+	i.mu.Lock()
+	i.cancel, i.upstream, i.local = cancel, upstream, nil
+	i.mu.Unlock()
+}
+
+func (i *responsesWebsocketInterrupt) end() {
+	i.mu.Lock()
+	i.cancel, i.upstream, i.local = nil, nil, nil
+	i.mu.Unlock()
+}
+
+// deliver 处理一个下游帧；返回 false 表示它不是可交给当前回合的中断帧。
+func (i *responsesWebsocketInterrupt) deliver(payload []byte) bool {
+	if i == nil || !json.Valid(payload) ||
+		strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != responsesWebsocketRequestInterrupt ||
+		responsesWebsocketInterruptResponseID(payload) == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.cancel == nil {
+		return false
+	}
+	if i.local != nil || i.upstream.forwardInterrupt(payload) {
+		return true
+	}
+	i.local = bytes.Clone(payload)
+	i.cancel()
+	return true
+}
+
+// localPayload 返回本地取消当前回合的中断帧；未本地中断时为 nil。
+func (i *responsesWebsocketInterrupt) localPayload() []byte {
+	if i == nil {
+		return nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.local
+}
+
+func responsesWebsocketInterruptResponseID(payload []byte) string {
+	responseID := gjson.GetBytes(payload, "response_id")
+	if responseID.Type != gjson.String {
+		return ""
+	}
+	return strings.TrimSpace(responseID.String())
+}
+
+// writeResponsesWebsocketLocalInterrupt 以 response.incomplete（reason=interrupted）
+// 结束本地取消的回合，与上游确认中断的事件同形；output 只含已完成的 item，
+// 客户端随后可以在同一连接继续下一回合。
+func writeResponsesWebsocketLocalInterrupt(
+	conn *websocket.Conn,
+	interruptPayload []byte,
+	output []byte,
+) (responsesWebsocketTurnResult, error) {
+	responseID := responsesWebsocketInterruptResponseID(interruptPayload)
+	incomplete := []byte(`{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"interrupted"}}}`)
+	incomplete, err := sjson.SetBytes(incomplete, "response.id", responseID)
+	if err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	if incomplete, err = sjson.SetRawBytes(incomplete, "response.output", output); err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	if err = writeResponsesWebsocketPayload(conn, incomplete); err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	return responsesWebsocketTurnResult{
+		completedOutput:     output,
+		completedResponseID: responseID,
+		pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
+	}, nil
 }
 
 func startResponsesWebsocketPingLoop(
@@ -397,6 +506,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	nativeRequestBody []byte,
 	executionSession *responsesExecutionSession,
 	allowLocalPrewarm bool,
+	interrupt *responsesWebsocketInterrupt,
 ) (responsesWebsocketTurnResult, error) {
 	nativeCodexWS := executionSession.upstream
 	requestedModel := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
@@ -551,6 +661,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 	)
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
+	}
+	// 本地中断按客户端取消收尾（499、不冷却、不换渠道）；上游抢先终结时以上游为准。
+	if payload := interrupt.localPayload(); payload != nil && !bridgeWriter.completed {
+		return writeResponsesWebsocketLocalInterrupt(conn, payload, bridgeWriter.collectedOutput())
 	}
 	if clientReplay && !succeeded {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{}

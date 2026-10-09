@@ -15066,7 +15066,7 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 }
 
 // 上游静默中止：response.incomplete 无 output 且 output_tokens=0，首包前按流中断切渠道；
-// content_filter 是确定性结果，原样返回不切渠道。
+// content_filter 与 interrupted（上游确认 response.interrupt）原样返回不切渠道。
 func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
 	t.Parallel()
 
@@ -15078,6 +15078,7 @@ func TestProxy_ResponsesEmptyIncompleteBeforeOutput(t *testing.T) {
 	}{
 		{name: "silent abort retries next channel", reason: "max_output_tokens", wantRetry: true, wantInBody: "resp-ch2"},
 		{name: "content filter is returned", reason: "content_filter", wantRetry: false, wantInBody: "resp-ch1-incomplete"},
+		{name: "interrupt acknowledgement is returned", reason: "interrupted", wantRetry: false, wantInBody: "resp-ch1-incomplete"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

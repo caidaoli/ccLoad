@@ -1277,6 +1277,199 @@ func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketInterruptForwardsToNativeUpstream(t *testing.T) {
+	t.Parallel()
+	interrupts := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade native upstream: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		var request map[string]any
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read first native request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-native-1"}})
+		_ = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "partial"})
+		var interrupt map[string]any
+		if err := conn.ReadJSON(&interrupt); err != nil {
+			t.Errorf("read native interrupt: %v", err)
+			return
+		}
+		interrupts <- interrupt
+		_ = conn.WriteJSON(map[string]any{"type": "response.incomplete", "response": map[string]any{
+			"id": "resp-native-1", "status": "incomplete",
+			"incomplete_details": map[string]any{"reason": "interrupted"}, "output": []any{},
+		}})
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read second native request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{
+			"id": "resp-native-2", "output": []any{},
+			"usage": map[string]any{"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+		}})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-codex", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set downstream read deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "long task"}},
+	}); err != nil {
+		t.Fatalf("write first turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.output_text.delta")
+	if err := downstream.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-native-1"}); err != nil {
+		t.Fatalf("write interrupt: %v", err)
+	}
+	incomplete := readWebsocketUntilType(t, downstream, "response.incomplete")
+	response, _ := incomplete["response"].(map[string]any)
+	details, _ := response["incomplete_details"].(map[string]any)
+	if response["id"] != "resp-native-1" || details["reason"] != "interrupted" {
+		t.Fatalf("interrupt acknowledgement=%#v", incomplete)
+	}
+	select {
+	case interrupt := <-interrupts:
+		if interrupt["type"] != "response.interrupt" || interrupt["response_id"] != "resp-native-1" {
+			t.Fatalf("native upstream interrupt=%#v", interrupt)
+		}
+	default:
+		t.Fatal("interrupt was not forwarded to native upstream")
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-native-1",
+		"input": []any{map[string]any{"role": "user", "content": "next"}},
+	}); err != nil {
+		t.Fatalf("write second turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+}
+
+func TestResponsesWebsocketInterruptCancelsHTTPTurnLocally(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	canceled := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls.Add(1) == 1 {
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n")
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				close(canceled)
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-http", upstreamProtocol: "codex",
+		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set websocket read deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "long task"}},
+	}); err != nil {
+		t.Fatalf("write first turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.output_text.delta")
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-1"}); err != nil {
+		t.Fatalf("write interrupt: %v", err)
+	}
+	incomplete := readWebsocketUntilType(t, conn, "response.incomplete")
+	response, _ := incomplete["response"].(map[string]any)
+	details, _ := response["incomplete_details"].(map[string]any)
+	if response["id"] != "resp-1" || response["status"] != "incomplete" || details["reason"] != "interrupted" {
+		t.Fatalf("local interrupt event=%#v", incomplete)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream HTTP request was not canceled by interrupt")
+	}
+	if entry := waitForProxyLog(t, env, "gpt-test"); entry.StatusCode != StatusClientClosedRequest {
+		t.Fatalf("interrupted turn status=%d, want %d (message=%q)", entry.StatusCode, StatusClientClosedRequest, entry.Message)
+	}
+
+	// 同一连接继续下一轮：渠道未冷却，previous_response_id 指向被中断的响应。
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-1",
+		"input": []any{map[string]any{"role": "user", "content": "next"}},
+	}); err != nil {
+		t.Fatalf("write second turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls.Load())
+	}
+}
+
+func TestResponsesWebsocketInterruptWithoutActiveTurn(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-http", upstreamProtocol: "codex",
+		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set websocket read deadline: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt"}); err != nil {
+		t.Fatalf("write interrupt: %v", err)
+	}
+	var event struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read websocket error event: %v", err)
+	}
+	if event.Type != "error" || event.Status != http.StatusBadRequest || event.Error.Type != "invalid_request_error" {
+		t.Fatalf("missing response_id event=%+v", event)
+	}
+
+	// 轮次已结束后到达的合法中断静默忽略，不能把错误归到客户端下一轮。
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-0"}); err != nil {
+		t.Fatalf("write late interrupt: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hi"}},
+	}); err != nil {
+		t.Fatalf("write turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+}
+
 func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 	t.Parallel()
 	requestSeen := make(chan map[string]any, 1)
