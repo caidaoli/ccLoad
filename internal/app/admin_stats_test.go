@@ -77,6 +77,58 @@ func TestStatsHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 	}
 }
 
+// 当日开始不足4小时时，窗口仍须以当前时刻结尾：最近的请求落在最后一个桶，而不是让末尾桶落在未来。
+func TestHealthTimelineToday_EndsAtNowWhenDayIsShorterThanWindow(t *testing.T) {
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "timeline-early-day",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "claude-test"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	now := time.Date(2026, 1, 2, 1, 0, 0, 0, time.UTC)
+	dayStart := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: now.Add(-time.Minute)},
+		Model:      "claude-test",
+		ChannelID:  cfg.ID,
+		LogSource:  model.LogSourceProxy,
+		StatusCode: 200,
+		Message:    "ok",
+	}); err != nil {
+		t.Fatalf("写入日志失败: %v", err)
+	}
+
+	lf := model.LogFilter{LogSource: model.LogSourceProxy}
+	stats, err := store.GetStats(ctx, dayStart, now, &lf, true)
+	if err != nil || len(stats) != 1 {
+		t.Fatalf("GetStats: %v, entries=%d", err, len(stats))
+	}
+	params := healthTimelineParams(dayStart, now, &lf, true)
+	rows, err := store.GetHealthTimeline(ctx, params)
+	if err != nil {
+		t.Fatalf("GetHealthTimeline: %v", err)
+	}
+	fillHealthTimeline(stats, params, rows)
+
+	points := stats[0].HealthTimeline
+	if len(points) != healthTimelineBuckets {
+		t.Fatalf("health points=%d, want %d", len(points), healthTimelineBuckets)
+	}
+	if want := now.Add(-4 * time.Hour); !points[0].Ts.Equal(want) {
+		t.Fatalf("first bucket ts=%v, want %v", points[0].Ts, want)
+	}
+	if last := points[len(points)-1]; last.SuccessCount != 1 {
+		t.Fatalf("最近一分钟的请求应落在最后一个桶，实际 last=%+v", last)
+	}
+}
+
 func TestHealthPointJSON_EmptyBucketOnlyCarriesTimestampAndRate(t *testing.T) {
 	ts := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {

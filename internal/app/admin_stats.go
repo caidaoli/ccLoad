@@ -454,7 +454,8 @@ func (s *Server) HandleHealth(c *gin.Context) {
 const healthTimelineBuckets = 48
 
 // healthTimelineParams 计算健康时间线的查询窗口与桶大小
-// isToday=true: 显示最近4小时，每5分钟一个状态（48个）
+// isToday=true: 显示最近4小时，每5分钟一个状态（48个）；窗口始终以 endTime 结尾，
+// 不截到当日零点，否则当日不足4小时时末尾的桶落在未来，恒为无数据
 // isToday=false: 按总时间跨度/48计算时间桶
 func healthTimelineParams(startTime, endTime time.Time, filter *model.LogFilter, isToday bool) model.HealthTimelineParams {
 	// 计算健康指示器的时间范围和桶大小
@@ -465,10 +466,6 @@ func healthTimelineParams(startTime, endTime time.Time, filter *model.LogFilter,
 		// 当日：最近4小时，每5分钟一个桶
 		bucketSeconds = 5 * 60 // 5分钟
 		healthStart = endTime.Add(-4 * time.Hour)
-		// 确保不早于查询开始时间
-		if healthStart.Before(startTime) {
-			healthStart = startTime
-		}
 	} else {
 		// 其他时间范围：按总时长/48计算
 		duration := endTime.Sub(startTime)
