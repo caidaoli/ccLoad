@@ -6,6 +6,7 @@
 package claude
 
 import (
+	"encoding/base64"
 	"strings"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
@@ -20,18 +21,20 @@ import (
 // ConvertClaudeRequestToOpenAI parses and transforms an Anthropic API request into OpenAI Chat Completions API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
-func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, false)
+
 }
 
 // ConvertClaudeRequestToOpenAIWithCompat preserves assistant thinking text
 // for configured compatibility endpoints.
-func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, true)
 }
 
-func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) []byte {
+func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	var drops translatorcommon.UserTurnDrops
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
 
@@ -206,9 +209,11 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "redacted_thinking":
 					// Explicitly ignore redacted_thinking - never map to reasoning_content (AC2)
 
-					case "text", "image", "document":
+					case "text", "image", "document", "container_upload":
 						if contentItem, ok := convertClaudeContentPart(part); ok {
 							contentItems = append(contentItems, []byte(contentItem))
+						} else if role == "user" && partType != "text" {
+							drops.Drop(partType)
 						}
 
 					case "tool_use":
@@ -264,6 +269,9 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				hasContent := len(contentItems) > 0
 				hasReasoning := reasoningContent != ""
 				hasToolCalls := len(toolCalls) > 0
+				if role == "user" {
+					drops.EndTurn(len(contentItems) + len(toolResults))
+				}
 
 				// OpenAI requires: tool messages MUST immediately follow the assistant message with tool_calls.
 				// Therefore, we emit tool_result messages FIRST (they respond to the previous assistant's tool_calls),
@@ -396,7 +404,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		out, _ = sjson.SetBytes(out, "user", user.String())
 	}
 
-	return out
+	return out, drops.Err()
 }
 
 func normalizeObjectSchemaProperties(schema any) any {
@@ -531,39 +539,54 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 
 		return string(imageContent), true
 
-	case "document":
-		source := part.Get("source")
-		fileContent := []byte(`{"type":"file","file":{}}`)
-		switch source.Get("type").String() {
-		case "base64":
-			data := source.Get("data").String()
-			if data == "" {
-				return "", false
-			}
-			fileContent, _ = sjson.SetBytes(fileContent, "file.file_data", data)
-		case "url":
-			url := source.Get("url").String()
-			if url == "" {
-				return "", false
-			}
-			fileContent, _ = sjson.SetBytes(fileContent, "file.file_url", url)
-		case "file":
-			fileID := source.Get("file_id").String()
-			if fileID == "" {
-				return "", false
-			}
-			fileContent, _ = sjson.SetBytes(fileContent, "file.file_id", fileID)
-		default:
-			return "", false
-		}
-		if title := part.Get("title").String(); title != "" {
-			fileContent, _ = sjson.SetBytes(fileContent, "file.filename", title)
-		}
-		return string(fileContent), true
+	case "document", "container_upload":
+		return convertClaudeFilePartToOpenAI(part)
 
 	default:
 		return "", false
 	}
+}
+
+// convertClaudeFilePartToOpenAI emits an OpenAI file part. Inline base64 bytes
+// become a data URL; ccLoad also forwards a url as file_url and a file id as
+// file_id. Anything else stays unconverted and the caller reports it.
+func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
+	source := part.Get("source")
+	fileContent := []byte(`{"type":"file","file":{}}`)
+	switch source.Get("type").String() {
+	case "base64":
+		data, errDecode := base64.StdEncoding.DecodeString(strings.TrimSpace(source.Get("data").String()))
+		if errDecode != nil || len(data) == 0 {
+			return "", false
+		}
+		mimeType := source.Get("media_type").String()
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		fileContent, _ = sjson.SetBytes(fileContent, "file.file_data", "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(data))
+	case "url":
+		url := source.Get("url").String()
+		if url == "" {
+			return "", false
+		}
+		fileContent, _ = sjson.SetBytes(fileContent, "file.file_url", url)
+	case "file":
+		fileID := source.Get("file_id").String()
+		if fileID == "" {
+			return "", false
+		}
+		fileContent, _ = sjson.SetBytes(fileContent, "file.file_id", fileID)
+	default:
+		return "", false
+	}
+	filename := part.Get("title").String()
+	if filename == "" {
+		filename = part.Get("filename").String()
+	}
+	if filename != "" {
+		fileContent, _ = sjson.SetBytes(fileContent, "file.filename", filename)
+	}
+	return string(fileContent), true
 }
 
 func convertClaudeToolResultContent(content gjson.Result) (string, bool) {

@@ -9,7 +9,7 @@ import (
 func TestConvertClaudeRequestToOpenAIWithCompatPreservesEmptySignatureThinking(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":""}]}]}`)
 
-	withCompat := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
+	withCompat, _ := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
 	if gjson.GetBytes(withCompat, "messages.0.reasoning_content").String() != "reason" {
 		t.Fatalf("compat translation missing reasoning_content: %s", withCompat)
 	}
@@ -18,7 +18,7 @@ func TestConvertClaudeRequestToOpenAIWithCompatPreservesEmptySignatureThinking(t
 func TestConvertClaudeRequestToOpenAIWithCompatPreservesThinkingWithToolCalls(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":""},{"type":"text","text":"Reading files."},{"type":"tool_use","id":"call_1","name":"Read","input":{"path":"main.go"}}]}]}`)
 
-	result := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
+	result, _ := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
 	assistant := gjson.GetBytes(result, "messages.0")
 	if got := assistant.Get("reasoning_content").String(); got != "reason" {
 		t.Fatalf("reasoning_content = %q, want %q; output: %s", got, "reason", result)
@@ -31,7 +31,7 @@ func TestConvertClaudeRequestToOpenAIWithCompatPreservesThinkingWithToolCalls(t 
 func TestConvertClaudeRequestToOpenAIWithCompatDoesNotAddReasoningWithoutThinking(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"Read","input":{}}]}]}`)
 
-	result := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
+	result, _ := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
 	assistant := gjson.GetBytes(result, "messages.0")
 	if assistant.Get("reasoning_content").Exists() {
 		t.Fatalf("compatible translation added reasoning_content without thinking: %s", result)
@@ -44,7 +44,7 @@ func TestConvertClaudeRequestToOpenAIWithCompatDoesNotAddReasoningWithoutThinkin
 func TestConvertClaudeRequestToOpenAIWithCompatPreservesIncompatibleThinking(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":"claude#opaque"},{"type":"tool_use","id":"call_1","name":"Read","input":{}}]}]}`)
 
-	result := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
+	result, _ := ConvertClaudeRequestToOpenAIWithCompat("deepseek-v4", payload, false)
 	assistant := gjson.GetBytes(result, "messages.0")
 	if got := assistant.Get("reasoning_content").String(); got != "reason" {
 		t.Fatalf("reasoning_content = %q, want %q; output: %s", got, "reason", result)
@@ -57,7 +57,7 @@ func TestConvertClaudeRequestToOpenAIWithCompatPreservesIncompatibleThinking(t *
 func TestConvertClaudeRequestToOpenAIWithoutCompatDoesNotAddReasoningForToolCalls(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"Read","input":{}}]}]}`)
 
-	result := ConvertClaudeRequestToOpenAI("deepseek-v4", payload, false)
+	result, _ := ConvertClaudeRequestToOpenAI("deepseek-v4", payload, false)
 	if gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
 		t.Fatalf("default translation added reasoning_content: %s", result)
 	}

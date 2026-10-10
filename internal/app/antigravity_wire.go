@@ -79,17 +79,21 @@ func buildAntigravitySensitiveWordMatcher(words []string) *regexp.Regexp {
 
 func translateAntigravityRequest(clientProtocol protocol.Protocol, modelName string, body []byte, stream bool) ([]byte, error) {
 	var translated []byte
+	var err error
 	switch clientProtocol {
 	case protocol.Anthropic:
-		translated = antigravityclaude.ConvertClaudeRequestToAntigravity(modelName, body, stream)
+		translated, err = antigravityclaude.ConvertClaudeRequestToAntigravity(modelName, body, stream)
 	case protocol.Codex:
-		translated = antigravityresponses.ConvertOpenAIResponsesRequestToAntigravity(modelName, body, stream)
+		translated, err = antigravityresponses.ConvertOpenAIResponsesRequestToAntigravity(modelName, body, stream)
 	case protocol.OpenAI:
-		translated = antigravitychat.ConvertOpenAIRequestToAntigravity(modelName, body, stream)
+		translated, err = antigravitychat.ConvertOpenAIRequestToAntigravity(modelName, body, stream)
 	case protocol.Gemini:
-		translated = antigravitygemini.ConvertGeminiRequestToAntigravity(modelName, body, stream)
+		translated, err = antigravitygemini.ConvertGeminiRequestToAntigravity(modelName, body, stream)
 	default:
 		return nil, &protocol.RequestTranslationError{From: clientProtocol, To: protocol.Gemini, Err: fmt.Errorf("unsupported Antigravity client protocol")}
+	}
+	if err != nil {
+		return nil, &protocol.RequestTranslationError{From: clientProtocol, To: protocol.Gemini, Err: err}
 	}
 	if !gjson.ValidBytes(translated) {
 		return nil, &protocol.RequestTranslationError{From: clientProtocol, To: protocol.Gemini, Err: fmt.Errorf("antigravity adapter produced invalid JSON")}

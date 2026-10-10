@@ -24,7 +24,7 @@ func BenchmarkResponsesLongHistory(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				ConvertOpenAIResponsesRequestToOpenAIChatCompletions("test", request, true)
+				_, _ = ConvertOpenAIResponsesRequestToOpenAIChatCompletions("test", request, true)
 			}
 		})
 	}

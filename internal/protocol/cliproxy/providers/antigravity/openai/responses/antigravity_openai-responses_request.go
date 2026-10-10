@@ -15,15 +15,15 @@ import (
 )
 
 // ConvertOpenAIResponsesRequestToAntigravity converts a Responses request to the Antigravity Gemini envelope.
-func ConvertOpenAIResponsesRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertOpenAIResponsesRequestToAntigravity(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	if WantsWebSearch(inputRawJSON) {
 		return buildAntigravityResponsesWebSearchRequest(modelName, inputRawJSON, stream)
 	}
-	rawJSON := inputRawJSON
-	rawJSON = coreresponses.ConvertOpenAIResponsesRequestToGemini(modelName, rawJSON, stream)
+	rawJSON, errConvert := coreresponses.ConvertOpenAIResponsesRequestToGemini(modelName, inputRawJSON, stream)
 	rawJSON = stripAntigravityResponsesGoogleSearch(rawJSON)
 	rawJSON = rewriteOpenAIResponsesReasoningForAntigravityClaude(modelName, inputRawJSON, rawJSON)
-	return antigravitygemini.ConvertGeminiRequestToAntigravity(modelName, rawJSON, stream)
+	out, _ := antigravitygemini.ConvertGeminiRequestToAntigravity(modelName, rawJSON, stream)
+	return out, errConvert
 }
 
 type antigravityClaudeReasoningSignature struct {
@@ -198,15 +198,15 @@ func WantsWebSearch(payload []byte) bool {
 	return coreresponses.HasOnlyResponsesWebSearchTools(root) && coreresponses.AllowsResponsesWebSearchToolChoice(root)
 }
 
-func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) []byte {
+func buildAntigravityResponsesWebSearchRequest(model string, payload []byte, stream bool) ([]byte, error) {
 	includedDomains := coreresponses.ExtractResponsesWebSearchAllowedDomains(gjson.ParseBytes(payload))
-	rawJSON := coreresponses.ConvertOpenAIResponsesRequestToGemini(model, payload, stream)
+	rawJSON, errConvert := coreresponses.ConvertOpenAIResponsesRequestToGemini(model, payload, stream)
 	rawJSON = rewriteOpenAIResponsesReasoningForAntigravityClaude(model, payload, rawJSON)
-	out := antigravitygemini.ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
+	out, _ := antigravitygemini.ConvertGeminiRequestToAntigravity(model, rawJSON, stream)
 	out, _ = sjson.SetBytes(out, "requestType", "web_search")
 	out = ensureAntigravityResponsesWebSearchTool(out, includedDomains)
 	out = ensureAntigravityResponsesWebSearchSystemInstruction(out)
-	return out
+	return out, errConvert
 }
 
 func ensureAntigravityResponsesWebSearchTool(payload []byte, includedDomains []string) []byte {

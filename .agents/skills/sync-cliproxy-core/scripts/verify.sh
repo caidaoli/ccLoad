@@ -571,12 +571,9 @@ if grep -Eq 'github.com/(router-for-me|caidaoli)/CLIProxyAPI' go.mod; then
 fi
 
 if [[ -f "$register_file" ]]; then
-  request_count="$(grep -c 'reg\.RegisterRequest' "$register_file" || true)"
-  stream_count="$(grep -c 'reg\.RegisterStreamResponse' "$register_file" || true)"
-  non_stream_count="$(grep -c 'reg\.RegisterNonStreamResponse' "$register_file" || true)"
-  [[ "$request_count" == "12" ]] || fail "expected 12 request registrations, found $request_count"
-  [[ "$stream_count" == "12" ]] || fail "expected 12 stream response registrations, found $stream_count"
-  [[ "$non_stream_count" == "12" ]] || fail "expected 12 non-stream response registrations, found $non_stream_count"
+  # Each register(...) call installs the request, stream and non-stream transforms of one pair.
+  pair_count="$(grep -Ec '^[[:space:]]*register\(protocol\.' "$register_file" || true)"
+  [[ "$pair_count" == "12" ]] || fail "expected 12 protocol pair registrations, found $pair_count"
 fi
 
 test_count="$(find "$snapshot" -type f -name '*_test.go' 2>/dev/null | wc -l | tr -d '[:space:]')"

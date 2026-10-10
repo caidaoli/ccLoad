@@ -27,8 +27,16 @@ const geminiFunctionThoughtSignature = "skip_thought_signature_validator"
 //
 // Returns:
 //   - []byte: The transformed request data in Gemini API format
-func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertOpenAIRequestToGemini(modelName, inputRawJSON, stream)
+
+}
+
+// convertOpenAIRequestToGemini also reports a file part Gemini cannot receive
+// when nothing else was left to send.
+func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	var drops translatorcommon.UserTurnDrops
 	// Base envelope (no default thinkingConfig)
 	out := []byte(`{"contents":[]}`)
 
@@ -153,24 +161,22 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 								partItems = append(partItems, geminiTextPart(geminiDemotedSystemText(text, isDemotedSystem)))
 							}
 						case "image_url":
+							// A data URL is inlined; any other URL is passed to Gemini as fileData.
 							imageURL := item.Get("image_url.url").String()
-							if strings.HasPrefix(imageURL, "data:") && len(imageURL) > 5 {
-								pieces := strings.SplitN(imageURL[5:], ";", 2)
-								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
-								}
-							} else if imageURL != "" {
+							if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData("", "", imageURL); ok {
+								partItems = append(partItems, geminiInlineDataPart(mimeType, data, ""))
+							} else if imageURL != "" && !strings.HasPrefix(strings.ToLower(imageURL), "data:") {
 								part := []byte(`{"fileData":{"fileUri":"","mimeType":"image/*"}}`)
 								part, _ = sjson.SetBytes(part, "fileData.fileUri", imageURL)
 								partItems = append(partItems, part)
+							} else {
+								drops.Drop("image_url")
 							}
 						case "video_url":
-							videoURL := item.Get("video_url.url").String()
-							if len(videoURL) > 5 {
-								pieces := strings.SplitN(videoURL[5:], ";", 2)
-								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
-								}
+							if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData("", "", item.Get("video_url.url").String()); ok {
+								partItems = append(partItems, geminiInlineDataPart(mimeType, data, ""))
+							} else {
+								drops.Drop("video_url")
 							}
 						case "file":
 							filename := item.Get("file.filename").String()
@@ -179,16 +185,21 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 								partItems = append(partItems, geminiInlineDataPart(mimeType, data, ""))
 							} else {
 								log.Print("Invalid file data or unknown file name extension in user message, skip")
+								drops.Drop("file")
 							}
 						case "input_audio":
 							audioData := item.Get("input_audio.data").String()
 							if audioData != "" {
 								mimeType := openAIInputAudioMimeType(item.Get("input_audio.format").String())
 								partItems = append(partItems, geminiInlineDataPart(mimeType, audioData, ""))
+							} else {
+								drops.Drop("input_audio")
 							}
 						}
 					}
 				}
+				// Whitespace-only text is forwarded but never keeps an emptied turn alive.
+				drops.EndTurn(translatorcommon.CountSendableGeminiParts(partItems))
 				if len(partItems) > 0 {
 					contentItems = append(contentItems, geminiContentNode("user", partItems))
 				}
@@ -542,7 +553,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 
-	return out
+	return out, drops.Err()
 }
 
 func geminiTextPart(text string) []byte {

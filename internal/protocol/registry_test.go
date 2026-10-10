@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 
 	"github.com/tidwall/gjson"
@@ -1202,26 +1204,60 @@ func TestRegistry_TranslateResponseStream_OpenAIToAnthropic_EventHeaderAndRespon
 	}
 }
 
-func TestRegistry_TranslateResponseStream_OpenAIToAnthropic_DoneAfterFinishedChunkEmitsNothing(t *testing.T) {
+func TestRegistry_TranslateResponseStream_OpenAIToAnthropic_FinishedChunkDefersTerminalUntilDone(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
+	// finish_reason 块上的 usage 只是初值，权威 usage（如 cached_tokens）可能在尾部 usage 块，
+	// 所以 message_delta/message_stop 要等尾部 usage 块或 [DONE]。
 	var state any
 	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"), &state)
 	if err != nil {
 		t.Fatalf("TranslateResponseStream finished chunk failed: %v", err)
 	}
 	joined := string(bytes.Join(chunks, nil))
-	if !strings.Contains(joined, "event: message_stop") {
-		t.Fatalf("expected finished chunk to emit message_stop, got %#v", chunks)
+	if strings.Contains(joined, "event: message_delta") || strings.Contains(joined, "event: message_stop") {
+		t.Fatalf("finished chunk must not emit terminal events, got:\n%s", joined)
 	}
 
 	done, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "claude-3-5-sonnet", nil, nil, []byte("data: [DONE]\n\n"), &state)
 	if err != nil {
 		t.Fatalf("TranslateResponseStream done failed: %v", err)
 	}
-	if done != nil {
-		t.Fatalf("expected DONE sentinel to emit nothing after finished chunk, got %#v", done)
+	joined = string(bytes.Join(done, nil))
+	if !strings.Contains(joined, `"stop_reason":"end_turn"`) || !strings.Contains(joined, `"output_tokens":5`) || !strings.Contains(joined, "event: message_stop") {
+		t.Fatalf("expected DONE to emit message_delta with usage and message_stop, got:\n%s", joined)
+	}
+}
+
+func TestRegistry_TranslateRequest_EmptiedUserTurnIsRequestTranslationError(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	claudeNoDocument := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":[{"type":"document","source":{"type":"file"}}]}]}`)
+	responsesNoFile := []byte(`{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_file","filename":"a.pdf"}]}]}`)
+	chatNoAudio := []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"","format":"wav"}}]}]}`)
+	cases := []struct {
+		from, to protocol.Protocol
+		raw      []byte
+		partType string
+	}{
+		{protocol.Anthropic, protocol.OpenAI, claudeNoDocument, "document"},
+		{protocol.Anthropic, protocol.Gemini, claudeNoDocument, "document"},
+		{protocol.Anthropic, protocol.Codex, claudeNoDocument, "document"},
+		{protocol.Codex, protocol.OpenAI, responsesNoFile, "input_file"},
+		{protocol.Codex, protocol.Gemini, responsesNoFile, "input_file"},
+		{protocol.OpenAI, protocol.Gemini, chatNoAudio, "input_audio"},
+	}
+	for _, tc := range cases {
+		_, err := reg.TranslateRequest(tc.from, tc.to, "m", tc.raw, false)
+		var translationErr *protocol.RequestTranslationError
+		var unsupported *translatorcommon.UnsupportedPartError
+		if !errors.As(err, &translationErr) || !errors.As(err, &unsupported) || unsupported.Type != tc.partType {
+			t.Fatalf("%s -> %s: err = %v, want RequestTranslationError wrapping unsupported content part: %s", tc.from, tc.to, err, tc.partType)
+		}
 	}
 }
 

@@ -36,8 +36,16 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Claude Code API format
-func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertGeminiRequestToClaude(modelName, inputRawJSON, stream)
+
+}
+
+// convertGeminiRequestToClaude also reports a user turn that was left empty
+// because its only attachment has no Claude equivalent.
+func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	var drops translatorcommon.UserTurnDrops
 
 	userID := translatorcommon.DeriveClaudeUserID(rawJSON)
 
@@ -249,6 +257,8 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			role := translatorcommon.GeminiMessageRole(content.Get("role").String())
 
 			contentItems := make([][]byte, 0, 4)
+			// Counts what this turn sends; whitespace-only text is forwarded but never sendable.
+			sendable := 0
 			if parts := content.Get("parts"); parts.Exists() && parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {
 					if translatorcommon.IsGeminiThoughtPart(part) {
@@ -260,6 +270,9 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						textContent := []byte(`{"type":"text","text":""}`)
 						textContent, _ = sjson.SetBytes(textContent, "text", text.String())
 						contentItems = append(contentItems, textContent)
+						if strings.TrimSpace(text.String()) != "" {
+							sendable++
+						}
 						return true
 					}
 
@@ -283,6 +296,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 							toolUse, _ = sjson.SetRawBytes(toolUse, "input", []byte(args.Raw))
 						}
 						contentItems = append(contentItems, toolUse)
+						sendable++
 						return true
 					}
 
@@ -314,13 +328,19 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 							toolResult, _ = sjson.SetBytes(toolResult, "content", response.Raw)
 						}
 						contentItems = append(contentItems, toolResult)
+						sendable++
 						return true
 					}
 
-					// Inline data conversion to Claude Code content format
+					// Inline data conversion to Claude Code content format. Only model content
+					// keeps a placeholder for media Claude cannot read; a user attachment is
+					// never replaced by text, so it is recorded as dropped instead.
 					if inlineData := geminiClaudeInlineData(part); inlineData.Exists() {
-						if contentPart, ok := claudeContentPartFromGeminiInlineData(inlineData); ok {
+						if contentPart, ok := claudeContentPartFromGeminiInlineData(inlineData, role == "assistant"); ok {
 							contentItems = append(contentItems, contentPart)
+							sendable++
+						} else if role != "assistant" {
+							drops.Drop("inlineData")
 						}
 						return true
 					}
@@ -329,12 +349,18 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					if fileData := geminiClaudeFileData(part); fileData.Exists() {
 						if contentPart, ok := claudeContentPartFromGeminiFileData(fileData); ok {
 							contentItems = append(contentItems, contentPart)
+							sendable++
+						} else if role != "assistant" {
+							drops.Drop("fileData")
 						}
 						return true
 					}
 
 					return true
 				})
+			}
+			if role != "assistant" {
+				drops.EndTurn(sendable)
 			}
 
 			// Only add message if it has content.
@@ -398,7 +424,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Stream setting configuration
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
-	return out
+	return out, drops.Err()
 }
 
 func normalizeClaudeToolSchema(parameters gjson.Result) []byte {
@@ -474,7 +500,10 @@ func geminiClaudeFileData(part gjson.Result) gjson.Result {
 	return part.Get("file_data")
 }
 
-func claudeContentPartFromGeminiInlineData(inlineData gjson.Result) ([]byte, bool) {
+// claudeContentPartFromGeminiInlineData maps inline bytes onto a Claude block.
+// Media that Claude cannot read becomes placeholder text only when
+// keepPlaceholder is set; otherwise it reports false so the caller can refuse it.
+func claudeContentPartFromGeminiInlineData(inlineData gjson.Result, keepPlaceholder bool) ([]byte, bool) {
 	mimeType := inlineData.Get("mimeType").String()
 	if mimeType == "" {
 		mimeType = inlineData.Get("mime_type").String()
@@ -496,6 +525,9 @@ func claudeContentPartFromGeminiInlineData(inlineData gjson.Result) ([]byte, boo
 		documentContent, _ = sjson.SetBytes(documentContent, "source.data", data)
 		return documentContent, true
 	default:
+		if !keepPlaceholder {
+			return nil, false
+		}
 		return claudeTextContentPart(fmt.Sprintf("Media content: inline data (Type: %s)", mimeType)), true
 	}
 }

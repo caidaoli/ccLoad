@@ -1,10 +1,12 @@
 package claude
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	internalsignature "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/tidwall/gjson"
@@ -34,7 +36,7 @@ func TestConvertClaudeRequestToGemini_ToolChoice_SpecificTool(t *testing.T) {
 		"tool_choice": {"type": "tool", "name": "json"}
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	if got := gjson.GetBytes(output, "toolConfig.functionCallingConfig.mode").String(); got != "ANY" {
 		t.Fatalf("Expected toolConfig.functionCallingConfig.mode 'ANY', got '%s'", got)
@@ -52,7 +54,7 @@ func TestConvertClaudeRequestToGemini_StringSystemInstruction(t *testing.T) {
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	if got := gjson.GetBytes(output, "systemInstruction.parts.0.text").String(); got != "Be concise" {
 		t.Fatalf("Expected systemInstruction text %q, got %q", "Be concise", got)
@@ -86,7 +88,7 @@ func TestConvertClaudeRequestToGemini_ImageContent(t *testing.T) {
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	parts := gjson.GetBytes(output, "contents.0.parts").Array()
 	if len(parts) != 2 {
@@ -114,7 +116,7 @@ func TestConvertClaudeRequestToGemini_StripsClaudeCodeAttribution(t *testing.T) 
 		"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	parts := gjson.GetBytes(output, "systemInstruction.parts").Array()
 	if len(parts) != 2 {
@@ -142,7 +144,7 @@ func TestConvertClaudeRequestToGemini_ConvertsMessageSystemRoleToUserContent(t *
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	if systemContent := gjson.GetBytes(output, `contents.#(role=="system")`); systemContent.Exists() {
 		t.Fatalf("system role should not be emitted in contents: %s", systemContent.Raw)
@@ -189,7 +191,7 @@ func TestConvertClaudeRequestToGemini_MessageLevelDeveloperInstructionsBecomeMer
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	if devContent := gjson.GetBytes(output, `contents.#(role=="developer")`); devContent.Exists() {
 		t.Fatalf("developer role should not be emitted in contents: %s", devContent.Raw)
@@ -254,7 +256,7 @@ func TestConvertClaudeRequestToGemini_PreservesToolPairingWithInterveningSystemM
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(output); errPairing != nil {
 		t.Fatalf("ValidateGeminiFunctionCallPairing failed: %v\noutput: %s", errPairing, output)
@@ -306,7 +308,7 @@ func TestConvertClaudeRequestToGemini_SkipsEmptyTextParts(t *testing.T) {
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	parts := gjson.GetBytes(output, "contents.0.parts").Array()
 	if len(parts) != 1 {
@@ -343,7 +345,7 @@ func TestConvertClaudeRequestToGemini_StructuredToolResult(t *testing.T) {
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	fr := gjson.GetBytes(output, "contents.1.parts.0.functionResponse")
 	if !fr.Exists() {
@@ -382,7 +384,7 @@ func TestConvertClaudeRequestToGemini_AlignsPermutedParallelToolResultsWithMixed
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3.7-flash-high", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3.7-flash-high", inputJSON, false)
 	callParts := gjson.GetBytes(output, "contents.0.parts").Array()
 	responseParts := gjson.GetBytes(output, "contents.1.parts").Array()
 	if len(callParts) != 3 || len(responseParts) != 5 {
@@ -432,7 +434,7 @@ func TestConvertClaudeRequestToGemini_StringToolResult(t *testing.T) {
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
 
 	fr := gjson.GetBytes(output, "contents.1.parts.0.functionResponse")
 	if !fr.Exists() {
@@ -468,7 +470,7 @@ func TestConvertClaudeRequestToGemini_ToolResultWithTrailingSystemReminderReorde
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
 
 	contents := gjson.GetBytes(output, "contents").Array()
 	if len(contents) != 3 {
@@ -552,7 +554,7 @@ func TestConvertClaudeRequestToGemini_ToolStrictMapsToValidatedMode(t *testing.T
 				]
 			}`, tt.toolChoice)
 
-			result := ConvertClaudeRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
+			result, _ := ConvertClaudeRequestToGemini("gemini-3.8-flash", []byte(inputJSON), false)
 			if gjson.GetBytes(result, "tools.0.functionDeclarations.0.strict").Exists() {
 				t.Fatalf("strict must be removed from functionDeclarations: %s", result)
 			}
@@ -593,7 +595,7 @@ func TestConvertClaudeRequestToGemini_ToolStrictMapsToValidatedMode(t *testing.T
 				}
 			]
 		}`)
-		result := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
+		result, _ := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
 		mode := gjson.GetBytes(result, "toolConfig.functionCallingConfig.mode").String()
 		if mode != "VALIDATED" {
 			t.Fatalf("expected mode = 'VALIDATED' for mixed tools, got %q", mode)
@@ -618,7 +620,7 @@ func TestConvertClaudeRequestToGemini_ToolStrictMapsToValidatedMode(t *testing.T
 				}
 			]
 		}`)
-		result := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
+		result, _ := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
 		if gjson.GetBytes(result, "toolConfig").Exists() {
 			t.Fatalf("expected toolConfig not to be set when no strict tools and no tool_choice, got: %s", result)
 		}
@@ -652,7 +654,7 @@ func TestConvertClaudeRequestToGemini_ParametersJsonSchema_PreservesAdditionalPr
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-2.5-flash", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-2.5-flash", inputJSON, false)
 	schema := gjson.GetBytes(output, "tools.0.functionDeclarations.0.parametersJsonSchema")
 	if !schema.Exists() {
 		t.Fatalf("parametersJsonSchema missing. Output: %s", output)
@@ -698,12 +700,186 @@ func TestConvertClaudeRequestToGemini_FunctionResponseJSONRef(t *testing.T) {
 		]
 	}`)
 
-	output := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3.8-flash", inputJSON, false)
 	result := gjson.GetBytes(output, "contents.1.parts.0.functionResponse.response.result")
 	if result.Type != gjson.String {
 		t.Fatalf("expected functionResponse.response.result to be string, got %s (raw: %s)", result.Type, result.Raw)
 	}
 	if !strings.Contains(result.String(), "#/components/schemas/ErrorModel") {
 		t.Fatalf("expected result to contain ref target, got %q", result.String())
+	}
+}
+
+func TestConvertClaudeRequestToGemini_Issue5960_DocumentPreservation(t *testing.T) {
+	// Case 1: basic user document with base64 PDF
+	pdfInput := []byte(`{
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "document",
+						"source": {
+							"type": "base64",
+							"media_type": "application/pdf",
+							"data": "JVBERi0xLjQK"
+						}
+					}
+				]
+			}
+		]
+	}`)
+	pdfOut, _ := ConvertClaudeRequestToGemini("gemini-2.5-pro", pdfInput, false)
+	pdfParts := gjson.GetBytes(pdfOut, "contents.0.parts").Array()
+	if len(pdfParts) == 0 {
+		t.Fatalf("expected non-empty parts for base64 document, got: %s", string(pdfOut))
+	}
+	if gotMime := gjson.GetBytes(pdfOut, "contents.0.parts.0.inlineData.mimeType").String(); gotMime != "application/pdf" {
+		t.Fatalf("expected inlineData.mimeType application/pdf, got %q (output: %s)", gotMime, string(pdfOut))
+	}
+	if gotData := gjson.GetBytes(pdfOut, "contents.0.parts.0.inlineData.data").String(); gotData != "JVBERi0xLjQK" {
+		t.Fatalf("expected inlineData.data JVBERi0xLjQK, got %q (output: %s)", gotData, string(pdfOut))
+	}
+
+	// Mixed text and PDF document preserves both in order
+	mixedInput := []byte(`{
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "Please summarize this document:"},
+					{
+						"type": "document",
+						"source": {
+							"type": "base64",
+							"media_type": "application/pdf",
+							"data": "JVBERi0xLjQK"
+						}
+					}
+				]
+			}
+		]
+	}`)
+	mixedOut, _ := ConvertClaudeRequestToGemini("gemini-2.5-pro", mixedInput, false)
+	mixedParts := gjson.GetBytes(mixedOut, "contents.0.parts").Array()
+	if len(mixedParts) != 2 {
+		t.Fatalf("expected 2 parts for mixed text + document, got %d (output: %s)", len(mixedParts), string(mixedOut))
+	}
+	if mixedParts[0].Get("text").String() != "Please summarize this document:" {
+		t.Fatalf("expected first part to be text, got %s", mixedParts[0].Raw)
+	}
+	if mixedParts[1].Get("inlineData.mimeType").String() != "application/pdf" {
+		t.Fatalf("expected second part to be inlineData PDF, got %s", mixedParts[1].Raw)
+	}
+
+	// Multiple PDFs interleaved with text
+	interleavedInput := []byte(`{
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "document",
+						"source": {
+							"type": "base64",
+							"media_type": "application/pdf",
+							"data": "PDF_ONE"
+						}
+					},
+					{"type": "text", "text": "compare with"},
+					{
+						"type": "document",
+						"source": {
+							"type": "base64",
+							"media_type": "application/pdf",
+							"data": "PDF_TWO"
+						}
+					}
+				]
+			}
+		]
+	}`)
+	interleavedOut, _ := ConvertClaudeRequestToGemini("gemini-2.5-pro", interleavedInput, false)
+	interleavedParts := gjson.GetBytes(interleavedOut, "contents.0.parts").Array()
+	if len(interleavedParts) != 3 {
+		t.Fatalf("expected 3 parts for interleaved documents, got %d (output: %s)", len(interleavedParts), string(interleavedOut))
+	}
+	if interleavedParts[0].Get("inlineData.data").String() != "PDF_ONE" || interleavedParts[2].Get("inlineData.data").String() != "PDF_TWO" {
+		t.Fatalf("expected PDF data to be preserved in order, got: %s", string(interleavedOut))
+	}
+
+	// Prevent empty turn when all content parts are skipped/unsupported
+	unsupportedInput := []byte(`{
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "unsupported_unknown_block", "foo": "bar"}
+				]
+			}
+		]
+	}`)
+	unsupportedOut, _ := ConvertClaudeRequestToGemini("gemini-2.5-pro", unsupportedInput, false)
+	contents := gjson.GetBytes(unsupportedOut, "contents").Array()
+	if len(contents) != 0 {
+		t.Fatalf("expected 0 contents turns instead of empty parts turn, got: %s", string(unsupportedOut))
+	}
+}
+
+func TestConvertClaudeRequestToGemini_ContainerUploadKeepsOtherText(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3-flash-preview",
+		"messages": [{"role": "user", "content": [
+			{"type": "text", "text": "keep me"},
+			{"type": "container_upload", "file_id": "file-example"}
+		]}]
+	}`)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	if len(parts) != 1 || parts[0].Get("text").String() != "keep me" {
+		t.Fatalf("text was dropped with the file: %s", output)
+	}
+}
+
+func TestConvertClaudeRequestToGemini_UnsendableFileNamesTheDroppedPart(t *testing.T) {
+	for partType, block := range map[string]string{
+		"container_upload": `{"type": "container_upload", "file_id": "file-example"}`,
+		"document":         `{"type": "document", "source": {"type": "file"}}`,
+	} {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash-preview",
+			"messages": [{"role": "user", "content": [` + block + `]}]
+		}`)
+		output, err := ConvertClaudeRequestToGeminiWithCompat("gemini-3-flash-preview", inputJSON, false)
+		if err == nil {
+			t.Fatalf("%s: expected unsupported part error, output=%s", partType, output)
+		}
+		if got, want := err.Error(), "unsupported content part: "+partType; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+		var unsupported *translatorcommon.UnsupportedPartError
+		if !errors.As(err, &unsupported) || unsupported.StatusCode() != 400 || !unsupported.IsRequestScoped() {
+			t.Fatalf("%s: error = %#v", partType, err)
+		}
+	}
+}
+
+func TestConvertClaudeRequestToGemini_UnsendableImageAndRedactedThinkingStaySkipped(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3-flash-preview",
+		"messages": [{"role": "user", "content": [
+			{"type": "text", "text": "keep me"},
+			{"type": "image", "source": {"type": "file", "file_id": "file-1"}},
+			{"type": "redacted_thinking", "data": "abc"}
+		]}]
+	}`)
+	output, _ := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+	parts := gjson.GetBytes(output, "contents.0.parts").Array()
+	if len(parts) != 1 || parts[0].Get("text").String() != "keep me" {
+		t.Fatalf("old skip paths changed the turn: %s", output)
 	}
 }

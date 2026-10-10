@@ -56,7 +56,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testin
 	}`)
 
 	// Capable model should receive googleSearch tool
-	capableOut := ConvertOpenAIResponsesRequestToGemini(capableModel, req, false)
+	capableOut, _ := ConvertOpenAIResponsesRequestToGemini(capableModel, req, false)
 	toolsCapable := gjson.GetBytes(capableOut, "tools").Array()
 	foundGoogleSearch := false
 	for _, tool := range toolsCapable {
@@ -70,7 +70,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchCapabilityGate(t *testin
 	}
 
 	// Incapable model must NOT receive googleSearch tool
-	incapableOut := ConvertOpenAIResponsesRequestToGemini(incapableModel, req, false)
+	incapableOut, _ := ConvertOpenAIResponsesRequestToGemini(incapableModel, req, false)
 	toolsIncapable := gjson.GetBytes(incapableOut, "tools")
 	if toolsIncapable.Exists() {
 		for _, tool := range toolsIncapable.Array() {
@@ -95,7 +95,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchAllowedDomains(t *testin
 		}]
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
+	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
 	domains := gjson.GetBytes(out, "tools.0.googleSearch.includedDomains").Array()
 	if len(domains) != 2 {
 		t.Fatalf("expected 2 includedDomains, got %d: %s", len(domains), out)
@@ -115,7 +115,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchToolChoiceNoneSuppresses
 		"tool_choice": "none"
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
+	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
 	if tools := gjson.GetBytes(out, "tools"); tools.Exists() {
 		for _, tool := range tools.Array() {
 			if tool.Get("googleSearch").Exists() {
@@ -244,8 +244,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearch(t *testing.T) {
 	}`)
 
 	var param any
-	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(events1, events2...)
 	var eventTypes []string
@@ -315,8 +315,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_NoGroundingDoesNotEmitWebS
 	}`)
 
 	var param any
-	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(events1, events2...)
 	for _, ev := range allEvents {
@@ -377,7 +377,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchOnlyToolChoiceRequiredNo
 		"tool_choice": "required"
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
+	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
 	parsed := gjson.ParseBytes(out)
 
 	// googleSearch should be present
@@ -491,8 +491,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateGroundingMetadataAndCJ
 	}`)
 
 	var param any
-	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	events1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	events2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(events1, events2...)
 
@@ -654,7 +654,7 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchPreview20250311(t *testi
 		"tool_choice": {"type": "web_search_preview_2025_03_11"}
 	}`)
 
-	out := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
+	out, _ := ConvertOpenAIResponsesRequestToGemini(modelID, req, false)
 	if !gjson.GetBytes(out, "tools.0.googleSearch").Exists() {
 		t.Fatalf("expected googleSearch tool for web_search_preview_2025_03_11 declaration and tool_choice, got: %s", out)
 	}
@@ -819,10 +819,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndFunction
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -930,11 +930,11 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_OutputIndexMatchesComplete
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
-	e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk5, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
+	e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk5, &param)
 
 	allEvents := append(append(append(append(e1, e2...), e3...), e4...), e5...)
 
@@ -1398,7 +1398,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DisablesBufferingWhenSearc
 		}`)
 
 		var param any
-		events := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
+		events := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
 
 		foundDelta := false
 		for _, ev := range events {
@@ -1517,10 +1517,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -1611,10 +1611,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -1703,10 +1703,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -1791,10 +1791,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -1904,11 +1904,11 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultiChunkCitationsAndExpl
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
-		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk5, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
+		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk5, &param)
 
 		allEvents := append(append(append(append(e1, e2...), e3...), e4...), e5...)
 
@@ -1994,10 +1994,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -2131,10 +2131,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_InterleavedTextAndThought(
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 		allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -2306,12 +2306,12 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
-		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk5, &param)
-		e6 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk6, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
+		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk5, &param)
+		e6 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk6, &param)
 
 		allEvents := append(append(append(append(append(e1, e2...), e3...), e4...), e5...), e6...)
 
@@ -2443,12 +2443,12 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveBufferedTextChu
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
-		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk5, &param)
-		e6 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk6, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+		e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
+		e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk5, &param)
+		e6 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk6, &param)
 
 		allEvents := append(append(append(append(append(e1, e2...), e3...), e4...), e5...), e6...)
 
@@ -2570,11 +2570,11 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_ConsecutiveFunctionCallsAd
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
-	e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk5, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
+	e5 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk5, &param)
 
 	allEvents := append(append(append(append(e1, e2...), e3...), e4...), e5...)
 
@@ -2684,9 +2684,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_MultipleGroundingUpdates(t
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 	_, e1ByType := collectResponsesStreamEvents(e1)
 	if len(e1ByType["response.web_search_call.completed"]) > 0 {
@@ -2797,8 +2797,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalSupportsWithout
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(e1, e2...)
 
@@ -2890,9 +2890,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_IncrementalGroundingQuerie
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 	_, e1ByType := collectResponsesStreamEvents(e1)
 	if len(e1ByType["response.output_item.added"]) == 0 {
@@ -3019,10 +3019,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateSourcesAfterInterleave
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 	_, e1ByType := collectResponsesStreamEvents(e1)
 	if len(e1ByType["response.web_search_call.completed"]) > 0 {
@@ -3147,10 +3147,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationsSpanAcrossMessage
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -3254,9 +3254,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SupportsArriveFirstThenDup
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 	allEvents := append(append(e1, e2...), e3...)
 
@@ -3363,10 +3363,10 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_SignatureBoundaryContinuat
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
-	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk4, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
+	e4 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk4, &param)
 
 	allEvents := append(append(append(e1, e2...), e3...), e4...)
 
@@ -3470,9 +3470,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_Frame2DuplicateChunksThenF
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 	allEvents := append(append(e1, e2...), e3...)
 
@@ -3562,8 +3562,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_PendingSupportResolvesToCu
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(e1, e2...)
 
@@ -3654,8 +3654,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedChunksResolveF
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(e1, e2...)
 
@@ -3747,8 +3747,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_DeduplicatedFrame1ChunksFr
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 	allEvents := append(e1, e2...)
 
@@ -3847,9 +3847,9 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 		allEvents := append(append(e1, e2...), e3...)
 
@@ -3922,7 +3922,7 @@ func TestConvertGeminiResponseToOpenAIResponses_NonWebGrounding_NoWebSearchCallO
 		}`)
 
 		var param any
-		outBytes := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), respJSON, &param)
+		outBytes := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), respJSON, &param)
 		outParsed := gjson.ParseBytes(outBytes)
 
 		if outParsed.Get("tool_usage.web_search").Exists() {
@@ -3994,8 +3994,8 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
 
 		// Verify chunk 2 closed message 0 without citations
 		foundMsgDoneWithoutCitations := false
@@ -4018,7 +4018,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 			t.Fatal("expected message 0 to be closed without citations on chunk 2")
 		}
 
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 		allEvents := append(append(e1, e2...), e3...)
 
 		var annotationAddedEvents []gjson.Result
@@ -4181,9 +4181,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_LateCitations_AnnotationAd
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 		allEvents := append(append(e1, e2...), e3...)
 
@@ -4324,9 +4324,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 	}`)
 
 	var param any
-	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+	e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+	e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+	e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 
 	allEvents := append(append(e1, e2...), e3...)
 
@@ -4367,7 +4367,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_WebSearchBufferingSignatur
 	// Translate the completed response outputs back to Gemini request to verify signature binding.
 	replayReq := []byte(`{"model":"gemini-search-sig-boundary-buffering","input":[]}`)
 	replayReq, _ = sjson.SetRawBytes(replayReq, "input", []byte(completedJSON.Get("response.output").Raw))
-	translated := ConvertOpenAIResponsesRequestToGemini("gemini-search-sig-boundary-buffering", replayReq, false)
+	translated, _ := ConvertOpenAIResponsesRequestToGemini("gemini-search-sig-boundary-buffering", replayReq, false)
 
 	var visibleParts []gjson.Result
 	for _, part := range gjson.GetBytes(translated, "contents.0.parts").Array() {
@@ -4538,9 +4538,9 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTim
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 		eventTypes, byType := collectResponsesStreamEvents(append(append(e1, e2...), e3...))
 		assertAnnotationMatches(t, eventTypes, byType, "https://example.com/hello", "Hello", 0, 5, false)
 	})
@@ -4573,7 +4573,7 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTim
 		}`)
 
 		var param any
-		events := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
+		events := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
 		eventTypes, byType := collectResponsesStreamEvents(events)
 		assertAnnotationMatches(t, eventTypes, byType, "https://example.com/hello", "Hello", 0, 5, false)
 	})
@@ -4622,10 +4622,15 @@ func TestConvertGeminiResponseToOpenAIResponsesStream_CitationAnnotationAddedTim
 		}`)
 
 		var param any
-		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk1, &param)
-		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk2, &param)
-		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, ConvertOpenAIResponsesRequestToGemini(modelID, req, true), chunk3, &param)
+		e1 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk1, &param)
+		e2 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk2, &param)
+		e3 := ConvertGeminiResponseToOpenAIResponses(context.Background(), modelID, req, geminiRequestBody(modelID, req, true), chunk3, &param)
 		eventTypes, byType := collectResponsesStreamEvents(append(append(e1, e2...), e3...))
 		assertAnnotationMatches(t, eventTypes, byType, "https://weather.example.com/paris", "Paris Weather", 0, 5, true)
 	})
+}
+
+func geminiRequestBody(modelName string, req []byte, stream bool) []byte {
+	out, _ := ConvertOpenAIResponsesRequestToGemini(modelName, req, stream)
+	return out
 }

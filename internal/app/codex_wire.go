@@ -96,7 +96,8 @@ func prepareCodexOAuthResponsesBody(
 		return body
 	}
 
-	body = codexresponses.ConvertOpenAIResponsesRequestToCodex(
+	// The Responses-to-Codex normalizer never reports an unsendable part.
+	body, _ = codexresponses.ConvertOpenAIResponsesRequestToCodex(
 		gjson.GetBytes(body, "model").String(), body, true,
 	)
 	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Type == gjson.String &&

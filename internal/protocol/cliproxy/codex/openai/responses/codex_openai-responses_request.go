@@ -14,7 +14,7 @@ import (
 )
 
 // ConvertOpenAIResponsesRequestToCodex prepares a Responses request for Codex.
-func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 
 	inputResult := util.GetGJSONBytesNoCopy(rawJSON, "input")
@@ -62,7 +62,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON = normalizeCodexBuiltinTools(rawJSON)
 	rawJSON = normalizeEmptyFunctionCallArguments(rawJSON)
 
-	return rawJSON
+	return rawJSON, nil
 }
 
 // normalizeEmptyFunctionCallArguments rewrites blank string arguments on

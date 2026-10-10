@@ -35,7 +35,7 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Codex API format
-func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	// Base template
 	out := []byte(`{"model":"","instructions":"","input":[]}`)
@@ -341,7 +341,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	if input := gjson.GetBytes(out, "input"); input.IsArray() && len(input.Array()) == 0 {
 		out, _ = sjson.DeleteBytes(out, "input")
 	}
-	return out
+	return out, nil
 }
 
 func setCodexToolChoiceFromGeminiToolConfig(out []byte, functionCallingConfig gjson.Result) []byte {

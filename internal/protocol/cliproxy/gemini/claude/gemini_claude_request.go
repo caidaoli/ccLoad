@@ -102,18 +102,20 @@ func geminiThinkingLevelIndex(level string) int {
 //
 // Returns:
 //   - []byte: The transformed request in Gemini format.
-func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertClaudeRequestToGemini(modelName, inputRawJSON, stream, false)
+
 }
 
 // ConvertClaudeRequestToGeminiWithCompat preserves assistant thinking blocks
 // with empty signatures for configured compatibility endpoints.
-func ConvertClaudeRequestToGeminiWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+func ConvertClaudeRequestToGeminiWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertClaudeRequestToGemini(modelName, inputRawJSON, stream, true)
 }
 
-func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) []byte {
+func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) ([]byte, error) {
 	rawJSON := inputRawJSON
+	var drops translatorcommon.UserTurnDrops
 	// Build output Gemini request JSON
 	out := []byte(`{"contents":[]}`)
 	out, _ = sjson.SetBytes(out, "model", modelName)
@@ -281,62 +283,28 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 							partItems = append(partItems, imagePart)
 						}
 
-					case "image":
-						source := contentResult.Get("source")
-						switch source.Get("type").String() {
-						case "base64":
-							mimeType := source.Get("media_type").String()
-							data := source.Get("data").String()
-							if mimeType != "" && data != "" {
-								part := []byte(`{"inlineData":{"mimeType":"","data":""}}`)
-								part, _ = sjson.SetBytes(part, "inlineData.mimeType", mimeType)
-								part, _ = sjson.SetBytes(part, "inlineData.data", data)
-								partItems = append(partItems, part)
-							}
-						case "url":
-							if url := source.Get("url").String(); url != "" {
-								part := []byte(`{"fileData":{"fileUri":"","mimeType":"image/*"}}`)
-								part, _ = sjson.SetBytes(part, "fileData.fileUri", url)
-								if mediaType := source.Get("media_type").String(); mediaType != "" {
-									part, _ = sjson.SetBytes(part, "fileData.mimeType", mediaType)
-								}
-								partItems = append(partItems, part)
-							}
+					case "image", "document", "container_upload":
+						if part := claudeSourceToGeminiPart(contentResult.Get("type").String(), contentResult.Get("source")); part != nil {
+							partItems = append(partItems, part)
+						} else if originalRole == "user" {
+							// A part with no Gemini equivalent is dropped; the turn is refused only if nothing else is left.
+							drops.Drop(contentResult.Get("type").String())
 						}
-
-					case "document":
-						source := contentResult.Get("source")
-						switch source.Get("type").String() {
-						case "base64":
-							if data := source.Get("data").String(); data != "" {
-								part := []byte(`{"inlineData":{"mimeType":"application/octet-stream","data":""}}`)
-								part, _ = sjson.SetBytes(part, "inlineData.data", data)
-								if mediaType := source.Get("media_type").String(); mediaType != "" {
-									part, _ = sjson.SetBytes(part, "inlineData.mimeType", mediaType)
-								}
-								partItems = append(partItems, part)
-							}
-						case "url", "file":
-							uri := source.Get("url").String()
-							if uri == "" {
-								uri = source.Get("file_id").String()
-							}
-							if uri != "" {
-								part := []byte(`{"fileData":{"fileUri":"","mimeType":"application/octet-stream"}}`)
-								part, _ = sjson.SetBytes(part, "fileData.fileUri", uri)
-								if mediaType := source.Get("media_type").String(); mediaType != "" {
-									part, _ = sjson.SetBytes(part, "fileData.mimeType", mediaType)
-								}
-								partItems = append(partItems, part)
-							}
-						}
+					default:
+						return true
 					}
 					return true
 				})
 				if role == "user" {
 					partItems = translatorcommon.ReorderGeminiUserParts(partItems)
 				}
-				contentItems = append(contentItems, geminiContentWithParts(role, partItems))
+				if originalRole == "user" {
+					// Whitespace-only text is forwarded but never keeps an emptied turn alive.
+					drops.EndTurn(translatorcommon.CountSendableGeminiParts(partItems))
+				}
+				if len(partItems) > 0 {
+					contentItems = append(contentItems, geminiContentWithParts(role, partItems))
+				}
 			} else if contentsResult.Type == gjson.String {
 				part := []byte(`{"text":""}`)
 				part, _ = sjson.SetBytes(part, "text", contentsResult.String())
@@ -493,7 +461,61 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 	result := out
 	result = common.AttachDefaultSafetySettings(result, "safetySettings")
 
-	return result
+	return result, drops.Err()
+}
+
+// claudeSourceToGeminiPart maps a Claude image or document source to a Gemini
+// part. Base64 sources are inlined; url and file sources become fileData.
+func claudeSourceToGeminiPart(blockType string, source gjson.Result) []byte {
+	switch blockType {
+	case "image":
+		switch source.Get("type").String() {
+		case "base64":
+			mimeType := source.Get("media_type").String()
+			data := source.Get("data").String()
+			if mimeType != "" && data != "" {
+				part := []byte(`{"inlineData":{"mimeType":"","data":""}}`)
+				part, _ = sjson.SetBytes(part, "inlineData.mimeType", mimeType)
+				part, _ = sjson.SetBytes(part, "inlineData.data", data)
+				return part
+			}
+		case "url":
+			if url := source.Get("url").String(); url != "" {
+				part := []byte(`{"fileData":{"fileUri":"","mimeType":"image/*"}}`)
+				part, _ = sjson.SetBytes(part, "fileData.fileUri", url)
+				if mediaType := source.Get("media_type").String(); mediaType != "" {
+					part, _ = sjson.SetBytes(part, "fileData.mimeType", mediaType)
+				}
+				return part
+			}
+		}
+	case "document":
+		switch source.Get("type").String() {
+		case "base64":
+			if data := source.Get("data").String(); data != "" {
+				part := []byte(`{"inlineData":{"mimeType":"application/octet-stream","data":""}}`)
+				part, _ = sjson.SetBytes(part, "inlineData.data", data)
+				if mediaType := source.Get("media_type").String(); mediaType != "" {
+					part, _ = sjson.SetBytes(part, "inlineData.mimeType", mediaType)
+				}
+				return part
+			}
+		case "url", "file":
+			uri := source.Get("url").String()
+			if uri == "" {
+				uri = source.Get("file_id").String()
+			}
+			if uri != "" {
+				part := []byte(`{"fileData":{"fileUri":"","mimeType":"application/octet-stream"}}`)
+				part, _ = sjson.SetBytes(part, "fileData.fileUri", uri)
+				if mediaType := source.Get("media_type").String(); mediaType != "" {
+					part, _ = sjson.SetBytes(part, "fileData.mimeType", mediaType)
+				}
+				return part
+			}
+		}
+	}
+	return nil
 }
 
 func geminiContentWithParts(role string, parts [][]byte) []byte {

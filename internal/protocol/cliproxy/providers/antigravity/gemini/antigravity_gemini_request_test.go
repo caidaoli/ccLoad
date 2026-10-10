@@ -26,7 +26,7 @@ func TestConvertGeminiRequestToAntigravity_ReplacesClientSignatureOnFunctionCall
 		]
 	}`, validSignature))
 
-	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	outputStr := string(output)
 
 	parts := gjson.Get(outputStr, "request.contents.0.parts").Array()
@@ -55,7 +55,7 @@ func TestConvertGeminiRequestToAntigravity_DropsIncompatibleClientSignatureOnTex
 		]
 	}`, validSignature))
 
-	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	if signature := gjson.GetBytes(output, "request.contents.0.parts.0.thoughtSignature"); signature.Exists() {
 		t.Fatalf("incompatible text signature should be dropped, got %s", signature.Raw)
 	}
@@ -74,7 +74,7 @@ func TestConvertGeminiRequestToAntigravity_LeavesUnsignedThoughtPartUnsigned(t *
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	if signature := gjson.GetBytes(output, "request.contents.0.parts.0.thoughtSignature"); signature.Exists() {
 		t.Fatalf("unsigned thought should remain unsigned, got %s", signature.Raw)
 	}
@@ -93,7 +93,7 @@ func TestConvertGeminiRequestToAntigravity_SkipsUppercaseClaudeModel(t *testing.
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("Claude-Test", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("Claude-Test", inputJSON, false)
 	outputStr := string(output)
 
 	if got := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
@@ -125,7 +125,7 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelNormalizesStrictClaudeThou
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
 
 	part := gjson.GetBytes(output, "request.contents.0.parts.0")
 	if !part.Get("thought").Bool() {
@@ -159,7 +159,7 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelDropsNonStrictEPrefixThoug
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
 
 	if gjson.GetBytes(output, `request.contents.#.parts.#(thought=true)#`).Int() != 0 {
 		t.Fatalf("non-strict E-prefix thought block should be dropped. Output: %s", output)
@@ -188,7 +188,7 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelDropsEmptyThoughtText(t *t
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
 
 	if gjson.GetBytes(output, `request.contents.#.parts.#(thought=true)#`).Int() != 0 {
 		t.Fatalf("empty-text thought block should be dropped for Antigravity Claude. Output: %s", output)
@@ -212,7 +212,7 @@ func TestConvertGeminiRequestToAntigravity_ClaudeModelStripsUnneededFunctionCall
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("claude-opus-4-6-thinking", inputJSON, false)
 
 	part := gjson.GetBytes(output, "request.contents.0.parts.0")
 	if !part.Get("functionCall").Exists() {
@@ -237,7 +237,7 @@ func TestConvertGeminiRequestToAntigravity_AddSkipSentinelToFunctionCall(t *test
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	outputStr := string(output)
 
 	// Check that skip_thought_signature_validator is added to functionCall
@@ -284,7 +284,7 @@ func TestConvertGeminiRequestToAntigravity_ParallelFunctionCallsOnlyFirstGetsSen
 		]
 	}`)
 
-	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
+	output, _ := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
 	if len(parts) != 2 {
 		t.Fatalf("Expected 2 parts, got %d", len(parts))
@@ -650,7 +650,7 @@ func TestConvertGeminiRequestToAntigravityDeduplicatesRequestWideAndDisambiguate
 		"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["` + second + `"]}}
 	}`)
 
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
 	if got := len(gjson.GetBytes(out, "request.tools").Array()); got != 2 {
 		t.Fatalf("tool count = %d, want 2 after removing the empty duplicate node. Output: %s", got, out)
 	}
@@ -691,7 +691,7 @@ func TestConvertGeminiRequestToAntigravityMapsSnakeCaseFunctionReferences(t *tes
 		"tool_config":{"function_calling_config":{"allowed_function_names":["read_file"]}}
 	}`)
 
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
 	mapped := gjson.GetBytes(out, "request.tools.0.function_declarations.1.name").String()
 	if mapped == "" {
 		t.Fatalf("mapped declaration name is empty. Output: %s", out)
@@ -1151,7 +1151,7 @@ func TestConvertGeminiRequestToAntigravity_PreservesSiblingToolImageOnUserRole(t
 			]}
 		]
 	}`)
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", input, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", input, false)
 	contents := gjson.GetBytes(out, "request.contents").Array()
 	if len(contents) != 3 {
 		t.Fatalf("contents = %d, want 3. Output: %s", len(contents), out)
@@ -1192,7 +1192,7 @@ func TestNormalizeRoles_InvalidRoleWithoutFunctionResponseAlternates(t *testing.
 			{"role": "invalid", "parts": [{"text": "second"}]}
 		]
 	}`)
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
 	contents := gjson.GetBytes(out, "request.contents").Array()
 	if len(contents) != 2 {
 		t.Fatalf("expected 2 contents, got %d", len(contents))
@@ -1210,7 +1210,7 @@ func TestNormalizeRoles_InvalidRoleWithFunctionResponseNormalizesToUser(t *testi
 			{"role": "invalid", "parts": [{"functionResponse": {"name": "test", "response": {}}}]}
 		]
 	}`)
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
 	// Role functionResponse should NEVER be normalized to model
 	for _, content := range gjson.GetBytes(out, "request.contents").Array() {
 		if content.Get("parts.0.functionResponse").Exists() {
@@ -1258,7 +1258,7 @@ func TestConvertGeminiRequestToAntigravity_TranslatesResponseJsonSchemaToRespons
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := ConvertGeminiRequestToAntigravity("gemini-3-flash", []byte(tt.inputJSON), false)
+			out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", []byte(tt.inputJSON), false)
 
 			schema := gjson.GetBytes(out, "request.generationConfig.responseSchema")
 			if !schema.Exists() {
@@ -1293,7 +1293,7 @@ func TestConvertGeminiRequestToAntigravity_PreservesExistingResponseSchema(t *te
 			}
 		}
 	}`)
-	out := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
+	out, _ := ConvertGeminiRequestToAntigravity("gemini-3-flash", inputJSON, false)
 
 	schema := gjson.GetBytes(out, "request.generationConfig.responseSchema")
 	if !schema.Exists() {

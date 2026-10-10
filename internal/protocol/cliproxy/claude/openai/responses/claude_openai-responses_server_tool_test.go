@@ -68,7 +68,7 @@ func TestWebSearchCallItemReplaysAsClaudeServerToolBlocks(t *testing.T) {
 		"action":{"type":"search","query":"lindorm vector"},
 		"results":[{"title":"Lindorm Vector","url":"https://example.com/a","encrypted_content":"ENC_A"}]
 	}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	if got := claudeAssistantBlockTypes(t, out); strings.Join(got, ",") != "server_tool_use,web_search_tool_result" {
 		t.Fatalf("assistant blocks = %v", got)
 	}
@@ -90,7 +90,7 @@ func TestWebSearchCallWithoutEncryptedContentReplaysEmptyResults(t *testing.T) {
 		"action":{"type":"search","query":"q"},
 		"results":[{"title":"T","url":"https://example.com/a"}]
 	}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	if got := gjson.GetBytes(out, "messages.0.content.1.content.#").Int(); got != 0 {
 		t.Fatalf("result content entries = %d, want 0", got)
 	}
@@ -103,7 +103,7 @@ func TestOutputTextAnnotationsReplayAsClaudeCitations(t *testing.T) {
 			{"type":"web_search_result_location","url":"https://example.com/a","encrypted_index":"IDX_A"}
 		]}]
 	}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	block := gjson.GetBytes(out, "messages.0.content.0")
 	if got := block.Get("citations.0.encrypted_index").String(); got != "IDX_A" {
 		t.Fatalf("encrypted_index = %q", got)
@@ -117,7 +117,7 @@ func TestAnnotationsWithoutEncryptedIndexAreNotReplayedAsCitations(t *testing.T)
 			{"type":"url_citation","url":"https://example.com/a"}
 		]}]
 	}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	if gjson.GetBytes(out, "messages.0.content.0.citations").Exists() {
 		t.Fatal("citation without encrypted_index must not be replayed")
 	}
@@ -128,7 +128,7 @@ func TestRefusalPartReplaysAsClaudeText(t *testing.T) {
 		"type":"message","role":"assistant",
 		"content":[{"type":"refusal","refusal":"I cannot help with that."}]
 	}`)
-	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 	content := gjson.GetBytes(out, "messages.0.content")
 	text := content.Get("0.text").String()
 	if content.Type == gjson.String {
@@ -146,7 +146,7 @@ func TestWebSearchCallIDNormalisedToClaudeServerToolPattern(t *testing.T) {
 		{"ws_00112233-aabb.cc", "srvtoolu_00112233_aabb_cc"},
 	} {
 		raw := responsesRequestFromItems(`{"type":"web_search_call","id":"` + tc.responsesID + `","action":{"type":"search","query":"q"}}`)
-		out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 		if got := gjson.GetBytes(out, "messages.0.content.0.id").String(); got != tc.want {
 			t.Fatalf("id %q became %q, want %q", tc.responsesID, got, tc.want)
 		}
@@ -202,7 +202,7 @@ func TestWebSearchCallQueryAcceptsNativeOpenAIActionShapes(t *testing.T) {
 		{`{"type":"open_page","url":"https://go.dev/dl"}`, "https://go.dev/dl"},
 	} {
 		raw := responsesRequestFromItems(`{"type":"web_search_call","id":"ws_srvtoolu_1","action":` + tc.action + `}`)
-		out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
 		if got := gjson.GetBytes(out, "messages.0.content.0.input.query").String(); got != tc.want {
 			t.Fatalf("input.query = %q, want %q", got, tc.want)
 		}
@@ -222,7 +222,7 @@ func TestClaudeWebSearchErrorResultSurvivesRoundTrip(t *testing.T) {
 	if item.Get("type").String() != "web_search_call" || item.Get("results.0.type").String() != "web_search_tool_result_error" {
 		t.Fatalf("web search error was not preserved: %s", item.Raw)
 	}
-	replayed := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item.Raw), false)
+	replayed, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item.Raw), false)
 	if got := gjson.GetBytes(replayed, "messages.0.content.1.content.0.type").String(); got != "web_search_tool_result_error" {
 		t.Fatalf("replayed error type = %q", got)
 	}
@@ -253,7 +253,7 @@ func TestRoundTripPreservesReachableClaudeBlocks(t *testing.T) {
 		}
 	}
 	item := completed.Get("response.output.0")
-	replayed := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item.Raw), false)
+	replayed, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", responsesRequestFromItems(item.Raw), false)
 	if got := strings.Join(claudeAssistantBlockTypes(t, replayed), ","); got != "server_tool_use,web_search_tool_result" {
 		t.Fatalf("round trip blocks = %s", got)
 	}
@@ -262,7 +262,8 @@ func TestRoundTripPreservesReachableClaudeBlocks(t *testing.T) {
 func TestWebSearchCallWithoutIDProducesNoBlocks(t *testing.T) {
 	for _, id := range []string{"", "ws_"} {
 		raw := responsesRequestFromItems(`{"type":"web_search_call","id":"` + id + `","action":{"type":"search","query":"q"}}`)
-		if got := claudeAssistantBlockTypes(t, ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)); len(got) != 0 {
+		out, _ := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+		if got := claudeAssistantBlockTypes(t, out); len(got) != 0 {
 			t.Fatalf("id=%q produced %v", id, got)
 		}
 	}

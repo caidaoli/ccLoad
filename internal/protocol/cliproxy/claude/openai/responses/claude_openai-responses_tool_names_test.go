@@ -12,7 +12,7 @@ import (
 
 func claudeWireToolNames(t *testing.T, request []byte) []string {
 	t.Helper()
-	translated := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
 	var names []string
 	for _, tool := range gjson.GetBytes(translated, "tools").Array() {
 		name := tool.Get("name").String()
@@ -101,7 +101,7 @@ func TestBuildClaudeToolNames_DeclaredToolsPrecedeHistory(t *testing.T) {
 	if len(names) != 1 || names[0] != "tool_x" {
 		t.Fatalf("history replaced declared tool: %v", names)
 	}
-	translated := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", request, false)
 	var historyName string
 	for _, message := range gjson.GetBytes(translated, "messages").Array() {
 		for _, block := range message.Get("content").Array() {

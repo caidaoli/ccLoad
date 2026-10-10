@@ -19,7 +19,7 @@ func TestToolSearchRequestMapsCallOutputAndLoadedNamespaceTools(t *testing.T) {
 		]
 	}`)
 
-	out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError("gpt-5.4", raw, false)
+	out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
 	if err != nil {
 		t.Fatalf("convert request: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestToolSearchRequestRejectsMissingHistoryEvenWithPreviousResponse(t *testi
 		"previous_response_id":"resp_1",
 		"input":[{"type":"tool_search_output","execution":"client","call_id":"ts_1","status":"completed","tools":[{"type":"function","name":"get_eta","parameters":{"type":"object"}}]}]
 	}`)
-	_, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError("gpt-5.4", raw, false)
+	_, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
 	if err == nil || !strings.Contains(err.Error(), "matching tool_search_call") {
 		t.Fatalf("expected missing history error, got %v", err)
 	}
@@ -111,7 +111,7 @@ func TestToolSearchRequestRejectsUnsupportedHistoryAndModes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError("gpt-5.4", []byte(tt.raw), false)
+			_, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", []byte(tt.raw), false)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
@@ -121,7 +121,7 @@ func TestToolSearchRequestRejectsUnsupportedHistoryAndModes(t *testing.T) {
 
 func TestToolSearchValidationLeavesOrdinaryUnsupportedToolsUntouched(t *testing.T) {
 	raw := []byte(`{"tools":[{"type":"mcp","server_label":"existing"}],"input":"hello"}`)
-	if _, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletionsWithError("gpt-5.4", raw, false); err != nil {
+	if _, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false); err != nil {
 		t.Fatalf("ordinary tool validation changed without tool_search: %v", err)
 	}
 }
