@@ -44,6 +44,7 @@ type ChannelRequest struct {
 	AvailableTimeStart            string                        `json:"available_time_start,omitempty"`
 	AvailableTimeEnd              string                        `json:"available_time_end,omitempty"`
 	RetryOtherKeysOnFailure       bool                          `json:"retry_other_keys_on_failure"`
+	SameChannelRetries            int                           `json:"same_channel_retries"`
 	ManagementAccount             *channelManagementInput       `json:"management_account,omitempty"`
 
 	oauthQuotaPassthroughSet  bool
@@ -430,6 +431,9 @@ func (cr *ChannelRequest) Validate() error {
 	if cr.MaxConcurrency < 0 {
 		return fmt.Errorf("max_concurrency must be >= 0 (got %d)", cr.MaxConcurrency)
 	}
+	if cr.SameChannelRetries < 0 || cr.SameChannelRetries > model.MaxSameChannelRetries {
+		return fmt.Errorf("same_channel_retries must be between 0 and %d (got %d)", model.MaxSameChannelRetries, cr.SameChannelRetries)
+	}
 
 	return nil
 }
@@ -538,6 +542,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		AvailableTimeStart:            cr.AvailableTimeStart,
 		AvailableTimeEnd:              cr.AvailableTimeEnd,
 		RetryOtherKeysOnFailure:       cr.RetryOtherKeysOnFailure,
+		SameChannelRetries:            cr.SameChannelRetries,
 	}
 }
 

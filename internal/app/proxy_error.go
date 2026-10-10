@@ -41,6 +41,16 @@ func (s *Server) applyCooldownDecision(
 
 	in = s.completeCooldownInput(cfg, in)
 
+	// 同渠道重试期间，可重试故障的冷却先登记不落库，由重试循环在放弃该渠道时统一提交；
+	// 换 Key 回退本身就是重试手段，照常冷却当前 Key。
+	if pending := pendingSameChannelCooldownsFrom(ctx); pending != nil &&
+		(!cfg.RetryOtherKeysOnFailure || !s.cooldownManager.CanFallbackToOtherKey(in)) {
+		if action := s.cooldownManager.DecideAction(ctx, in); sameChannelRetryableFailure(action, in) {
+			pending.inputs = append(pending.inputs, in)
+			return action
+		}
+	}
+
 	var action cooldown.Action
 	if cfg.RetryOtherKeysOnFailure {
 		action = s.cooldownManager.HandleErrorWithKeyFallback(cooldownCtx, in)

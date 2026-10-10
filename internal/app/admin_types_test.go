@@ -163,6 +163,39 @@ func TestChannelRequestToConfigPreservesRetryOtherKeysOnFailure(t *testing.T) {
 	}
 }
 
+func TestChannelRequestValidate_SameChannelRetriesRange(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		retries int
+		wantErr bool
+	}{
+		{retries: 0}, {retries: model.MaxSameChannelRetries},
+		{retries: -1, wantErr: true}, {retries: model.MaxSameChannelRetries + 1, wantErr: true},
+	} {
+		req := ChannelRequest{
+			Name:               "flaky",
+			APIKey:             "sk-test",
+			URLs:               model.ChannelURLs{{URL: "https://example.com"}},
+			Models:             []model.ModelEntry{{Model: "test-model"}},
+			SameChannelRetries: tt.retries,
+		}
+		err := req.Validate()
+		if tt.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "same_channel_retries") {
+				t.Fatalf("retries=%d Validate() error=%v, want same_channel_retries error", tt.retries, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("retries=%d Validate() error=%v", tt.retries, err)
+		}
+		if got := req.ToConfig().SameChannelRetries; got != tt.retries {
+			t.Fatalf("ToConfig same_channel_retries=%d, want %d", got, tt.retries)
+		}
+	}
+}
+
 func TestChannelRequestValidate_NormalizesAPIKeyAllowedModels(t *testing.T) {
 	t.Parallel()
 

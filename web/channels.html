@@ -1329,6 +1329,13 @@
             </div>
             <small id="channelAvailableTimeHelp" class="advanced-settings-field-help" data-i18n="channels.availableTimeHelp">格式 HH:MM；留空表示全天可用，支持跨午夜时段，例如 22:00–08:00。</small>
           </div>
+          <label class="advanced-settings-proxy-field" for="channelSameChannelRetries">
+            <span class="form-label" data-i18n="channels.sameChannelRetries">同渠道重试</span>
+            <input type="number" id="channelSameChannelRetries" class="form-input" value="0" min="0" max="10" step="1"
+              aria-describedby="channelSameChannelRetriesHelp">
+            <small id="channelSameChannelRetriesHelp" class="advanced-settings-field-help"
+              data-i18n="channels.sameChannelRetriesHelp">上游网络错误或 5xx 时在本渠道原地重试的次数（0–10），用尽后才冷却并切换渠道；适合偶发失败但长期可用的渠道。</small>
+          </label>
           <label class="form-label channel-editor-checkbox-label advanced-settings-retry-label" for="channelRetryOtherKeysOnFailure"
             title="渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。"
             data-i18n-title="channels.retryOtherKeysOnFailureHelp">

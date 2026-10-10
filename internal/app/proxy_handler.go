@@ -857,7 +857,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 				continue
 			}
 		}
-		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+		result, err := s.tryChannelWithSameChannelRetries(ctx, cfg, reqCtx, w)
 		if errors.Is(err, errNoAvailableModelRow) {
 			continue
 		}
@@ -928,6 +928,55 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	}
 
 	return lastResult, false
+}
+
+// pendingSameChannelCooldowns 收集同渠道重试期间暂缓落库的冷却输入。
+type pendingSameChannelCooldowns struct {
+	inputs []cooldown.ErrorInput
+}
+
+type pendingSameChannelCooldownsKey struct{}
+
+func pendingSameChannelCooldownsFrom(ctx context.Context) *pendingSameChannelCooldowns {
+	pending, _ := ctx.Value(pendingSameChannelCooldownsKey{}).(*pendingSameChannelCooldowns)
+	return pending
+}
+
+// sameChannelRetryableFailure 报告故障是否值得在同渠道原地重试：
+// 模型/渠道级的网络错误或 5xx（596 额度耗尽除外）。Key 级与客户端错误照常处理。
+func sameChannelRetryableFailure(action cooldown.Action, in cooldown.ErrorInput) bool {
+	if action != cooldown.ActionRetryModel && action != cooldown.ActionRetryChannel {
+		return false
+	}
+	return in.IsNetworkError || (in.StatusCode >= 500 && in.StatusCode != util.StatusQuotaExceeded)
+}
+
+// tryChannelWithSameChannelRetries 在渠道配置了 same_channel_retries 时，对未提交响应的
+// 可重试故障原地重试同一渠道。中间失败的冷却不落库，避免偶发故障把指数退避连翻几轮；
+// 放弃该渠道时只提交最后一次尝试的冷却，成功则丢弃。
+func (s *Server) tryChannelWithSameChannelRetries(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	if cfg.SameChannelRetries <= 0 {
+		return s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
+	}
+	for attempt := 0; ; attempt++ {
+		pending := &pendingSameChannelCooldowns{}
+		result, err := s.tryChannelWithKeys(context.WithValue(ctx, pendingSameChannelCooldownsKey{}, pending), cfg, reqCtx, w)
+		if attempt < cfg.SameChannelRetries && err == nil && len(pending.inputs) > 0 && ctx.Err() == nil &&
+			result != nil && !result.succeeded && !result.isClientCanceled && !result.operatorAborted {
+			log.Printf("[RETRY] 渠道 %s (ID=%d) 同渠道重试 %d/%d (status=%d)",
+				cfg.Name, cfg.ID, attempt+1, cfg.SameChannelRetries, result.status)
+			continue
+		}
+		for _, in := range pending.inputs {
+			s.applyCooldownDecision(ctx, cfg, in)
+		}
+		return result, err
+	}
 }
 
 func writeEmptyAlphaSearchResponse(w http.ResponseWriter) {

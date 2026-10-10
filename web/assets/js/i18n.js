@@ -157,60 +157,34 @@
     return interpolate(text, params);
   }
 
+  // data-i18n-* 属性 → 写入目标；不支持 data-i18n-html 以避免 XSS 风险
+  const I18N_BINDINGS = [
+    ['data-i18n', el => el.textContent, (el, v) => { el.textContent = v; }],
+    ['data-i18n-placeholder', el => el.placeholder, (el, v) => { el.placeholder = v; }],
+    ['data-i18n-title', el => el.title, (el, v) => { el.title = v; }],
+    ['data-i18n-value', el => el.value, (el, v) => { el.value = v; }],
+    ['data-i18n-description', el => el.dataset.description, (el, v) => { el.dataset.description = v; }],
+    ['data-i18n-content', el => el.getAttribute('content'), (el, v) => { el.setAttribute('content', v); }],
+    ['data-i18n-alt', el => el.getAttribute('alt'), (el, v) => { el.setAttribute('alt', v); }],
+    ['data-i18n-aria-label', el => el.getAttribute('aria-label'), (el, v) => { el.setAttribute('aria-label', v); }]
+  ];
+
   /**
-   * 翻译页面中所有带 data-i18n 属性的元素
+   * 翻译 root（默认整页）内带 data-i18n-* 属性的元素。
+   * 文本未变化时不写 DOM：动态渲染后频繁调用，无谓写入会使整页布局失效并触发 MutationObserver。
+   * @param {ParentNode} [root=document]
    */
-  function translatePage() {
-    // data-i18n: 替换 textContent
-    document.querySelectorAll('[data-i18n]').forEach(el => {
-      const key = el.getAttribute('data-i18n');
-      if (key) el.textContent = t(key);
-    });
-
-    // data-i18n-placeholder: 替换 placeholder
-    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-      const key = el.getAttribute('data-i18n-placeholder');
-      if (key) el.placeholder = t(key);
-    });
-
-    // data-i18n-title: 替换 title
-    document.querySelectorAll('[data-i18n-title]').forEach(el => {
-      const key = el.getAttribute('data-i18n-title');
-      if (key) el.title = t(key);
-    });
-
-    // data-i18n-value: 替换 value (用于 option 等)
-    document.querySelectorAll('[data-i18n-value]').forEach(el => {
-      const key = el.getAttribute('data-i18n-value');
-      if (key) el.value = t(key);
-    });
-
-    // data-i18n-description: 替换 data-description (用于可搜索下拉选项的说明文字)
-    document.querySelectorAll('[data-i18n-description]').forEach(el => {
-      const key = el.getAttribute('data-i18n-description');
-      if (key) el.dataset.description = t(key);
-    });
-
-    // data-i18n-content: 替换 meta content
-    document.querySelectorAll('[data-i18n-content]').forEach(el => {
-      const key = el.getAttribute('data-i18n-content');
-      if (key) el.setAttribute('content', t(key));
-    });
-
-    // data-i18n-alt: 替换 image alt
-    document.querySelectorAll('[data-i18n-alt]').forEach(el => {
-      const key = el.getAttribute('data-i18n-alt');
-      if (key) el.setAttribute('alt', t(key));
-    });
-
-    // data-i18n-aria-label: 替换 aria-label
-    document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
-      const key = el.getAttribute('data-i18n-aria-label');
-      if (key) el.setAttribute('aria-label', t(key));
-    });
-
-    // 注意: 不支持 data-i18n-html 以避免 XSS 风险
-    // 如需 HTML 内容，应在 JS 中使用 DOM API 构建
+  function translatePage(root = document) {
+    for (const [attr, read, write] of I18N_BINDINGS) {
+      const nodes = Array.from(root.querySelectorAll(`[${attr}]`));
+      if (root !== document && root.hasAttribute?.(attr)) nodes.push(root);
+      for (const el of nodes) {
+        const key = el.getAttribute(attr);
+        if (!key) continue;
+        const text = t(key);
+        if (read(el) !== text) write(el, text);
+      }
+    }
   }
 
   /**

@@ -1164,7 +1164,7 @@ function renderInlineKeyTable() {
 
   // Translate dynamically rendered elements
   if (window.i18n && window.i18n.translatePage) {
-    window.i18n.translatePage();
+    window.i18n.translatePage(tbody);
   }
 }
 

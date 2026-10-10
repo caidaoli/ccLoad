@@ -58,6 +58,7 @@ type testChannel struct {
 	customRequestRules      *model.CustomRequestRules
 	cooldownDetectionRules  *model.CooldownDetectionRules
 	retryOtherKeysOnFailure bool
+	sameChannelRetries      int
 	models                  string // 逗号分隔的模型列表
 	modelEntries            []model.ModelEntry
 	apiKey                  string
@@ -903,6 +904,7 @@ func setupProxyTestEnvWithSettings(
 			CustomRequestRules:      ch.customRequestRules,
 			CooldownDetectionRules:  ch.cooldownDetectionRules,
 			RetryOtherKeysOnFailure: ch.retryOtherKeysOnFailure,
+			SameChannelRetries:      ch.sameChannelRetries,
 			Priority:                priority,
 			Enabled:                 true,
 			ModelEntries:            modelEntries,
@@ -7144,6 +7146,105 @@ func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 				if len(cooldowns[1]) != 0 {
 					t.Fatalf("key-fallback mode must not cool the model, got %+v", cooldowns[1])
 				}
+			}
+		})
+	}
+}
+
+func TestProxy_SameChannelRetries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                 string
+		sameChannelRetries   int
+		failures             int64 // 主渠道前 N 次请求失败
+		failStatus           int
+		wantPrimaryAttempts  int64
+		wantFallbackAttempts int64
+		wantPrimaryCooled    bool
+	}{
+		{
+			name: "disabled switches channel on first 5xx", failures: 1, failStatus: http.StatusBadGateway,
+			wantPrimaryAttempts: 1, wantFallbackAttempts: 1, wantPrimaryCooled: true,
+		},
+		{
+			name: "transient 5xx recovers on same channel without cooldown", sameChannelRetries: 2, failures: 2, failStatus: http.StatusBadGateway,
+			wantPrimaryAttempts: 3, wantFallbackAttempts: 0,
+		},
+		{
+			name: "exhausted retries cool once then switch", sameChannelRetries: 2, failures: 100, failStatus: http.StatusBadGateway,
+			wantPrimaryAttempts: 3, wantFallbackAttempts: 1, wantPrimaryCooled: true,
+		},
+		{
+			name: "rate limit is not retried on same channel", sameChannelRetries: 2, failures: 100, failStatus: http.StatusTooManyRequests,
+			wantPrimaryAttempts: 1, wantFallbackAttempts: 1, wantPrimaryCooled: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var primaryAttempts, fallbackAttempts atomic.Int64
+			primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if primaryAttempts.Add(1) <= tt.failures {
+					w.WriteHeader(tt.failStatus)
+					_, _ = w.Write([]byte(`{"error":{"message":"upstream flaky"}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":"primary","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer primary.Close()
+			fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackAttempts.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"fallback","choices":[{"message":{"content":"fallback"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer fallback.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "flaky", models: "gpt-test", priority: 100, sameChannelRetries: tt.sameChannelRetries},
+				{name: "fallback", models: "gpt-test", priority: 50},
+			}, map[int]string{0: primary.URL, 1: fallback.URL})
+
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-test", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if got := primaryAttempts.Load(); got != tt.wantPrimaryAttempts {
+				t.Fatalf("primary attempts=%d, want %d", got, tt.wantPrimaryAttempts)
+			}
+			if got := fallbackAttempts.Load(); got != tt.wantFallbackAttempts {
+				t.Fatalf("fallback attempts=%d, want %d", got, tt.wantFallbackAttempts)
+			}
+
+			ctx := context.Background()
+			cfg, err := env.store.GetConfig(ctx, 1)
+			if err != nil {
+				t.Fatalf("get primary config: %v", err)
+			}
+			modelCooldowns, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatalf("get model cooldowns: %v", err)
+			}
+			cooledUntil := time.Unix(cfg.CooldownUntil, 0)
+			for _, until := range modelCooldowns[1] {
+				if until.After(cooledUntil) {
+					cooledUntil = until
+				}
+			}
+			now := time.Now()
+			if !tt.wantPrimaryCooled {
+				if cooledUntil.After(now) {
+					t.Fatalf("recovered channel must not be cooled, until=%v", cooledUntil)
+				}
+				return
+			}
+			if !cooledUntil.After(now) {
+				t.Fatalf("primary channel should be cooled after giving up")
+			}
+			// 只提交最后一次失败：冷却停在退避首档，没有因重试翻倍。
+			if remaining := cooledUntil.Sub(now); remaining > 3*time.Minute {
+				t.Fatalf("cooldown applied more than once, remaining=%v", remaining)
 			}
 		})
 	}

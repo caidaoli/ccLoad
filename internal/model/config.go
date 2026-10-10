@@ -615,6 +615,9 @@ type ChannelInfo struct {
 	CostMultiplierMax float64
 }
 
+// MaxSameChannelRetries 是渠道级同渠道原地重试次数上限。
+const MaxSameChannelRetries = 10
+
 // Config 渠道配置
 type Config struct {
 	// AntigravityCredits is request-local; never accepted or persisted by admin APIs.
@@ -665,6 +668,10 @@ type Config struct {
 	// 渠道故障时先将当前 Key 冷却并尝试同渠道其他 Key。
 	// 用于一个中转站下的 Key 实际对应不同上游服务商的场景；默认关闭，保持原有渠道/模型级切换语义。
 	RetryOtherKeysOnFailure bool `json:"retry_other_keys_on_failure"`
+
+	// 同渠道原地重试次数：上游网络错误或 5xx 时在同一渠道再试 N 次后才切换，
+	// 中间失败不累计冷却。0 表示不重试（默认）。
+	SameChannelRetries int `json:"same_channel_retries"`
 
 	// OAuthCredential is the private CLIProxy-compatible OAuth JSON stored in
 	// the channels table. It must never be serialized by an API response.
@@ -727,6 +734,7 @@ func (c *Config) Clone() *Config {
 		AvailableTimeStart:            c.AvailableTimeStart,
 		AvailableTimeEnd:              c.AvailableTimeEnd,
 		RetryOtherKeysOnFailure:       c.RetryOtherKeysOnFailure,
+		SameChannelRetries:            c.SameChannelRetries,
 		OAuthCredential:               c.OAuthCredential,
 		CodexAccessToken:              c.CodexAccessToken,
 		CodexAccountID:                c.CodexAccountID,

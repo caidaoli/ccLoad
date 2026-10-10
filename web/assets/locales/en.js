@@ -666,6 +666,8 @@ window.I18N_LOCALES['en'] = {
   'channels.availableTimeHelp': 'Use HH:MM; leave both blank for all day. Overnight windows such as 22:00–08:00 are supported.',
   'channels.retryOtherKeysOnFailure': 'Try another key on failure',
   'channels.retryOtherKeysOnFailureHelp': 'On a channel- or model-level upstream failure, cool the current key and try another key in this channel first. Use this when keys route to independent providers behind one relay.',
+  'channels.sameChannelRetries': 'Same-channel retries',
+  'channels.sameChannelRetriesHelp': 'Retry this channel in place on upstream network errors or 5xx (0–10) before cooling it down and switching channels. Useful for channels that fail occasionally but stay usable.',
 
   // Delete Confirmation (flattened keys)
   'channels.confirmDeleteTitle': 'Confirm Delete',

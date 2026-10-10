@@ -581,7 +581,6 @@ function chatStatPart(labelKey, fallback, valueHtml) {
 
 const MODEL_TEST_PRIORITY_MIN = -99999;
 const MODEL_TEST_PRIORITY_MAX = 9999999;
-let modelTestPrioritySaveTimers = new Map();
 
 function normalizeModelTestPriorityValue(value, fallback) {
   const fallbackValue = Number.isFinite(Number(fallback)) ? Number(fallback) : 0;
@@ -748,31 +747,6 @@ function reorderModelTestRowsByChannelPriority() {
       row.dataset.baseOrder = String(index);
     });
   applyCurrentSort();
-}
-
-function queueModelTestPrioritySave(input, delay = 1000) {
-  if (!input) return;
-  const channelId = Number(input.dataset.channelId);
-  if (!Number.isFinite(channelId) || channelId <= 0) return;
-  input.classList.add('is-dirty');
-  const existingTimer = modelTestPrioritySaveTimers.get(channelId);
-  if (existingTimer) clearTimeout(existingTimer);
-  const timer = setTimeout(() => {
-    modelTestPrioritySaveTimers.delete(channelId);
-    saveModelTestInlinePriority(input);
-  }, delay);
-  modelTestPrioritySaveTimers.set(channelId, timer);
-}
-
-function flushModelTestPrioritySave(input) {
-  if (!input) return;
-  const channelId = Number(input.dataset.channelId);
-  const existingTimer = modelTestPrioritySaveTimers.get(channelId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    modelTestPrioritySaveTimers.delete(channelId);
-  }
-  return saveModelTestInlinePriority(input);
 }
 
 function findChannelModelEntry(channel, modelName) {
@@ -3402,7 +3376,8 @@ function bindEvents() {
   tbody.addEventListener('input', (event) => {
     const input = event.target.closest('.ch-priority-input');
     if (!input) return;
-    queueModelTestPrioritySave(input);
+    // 只标记脏状态：保存期间禁用输入框会夺走焦点并吞掉后续按键
+    input.classList.add('is-dirty');
   });
 
   tbody.addEventListener('keydown', (event) => {
@@ -3410,7 +3385,7 @@ function bindEvents() {
     if (!input) return;
     if (event.key === 'Enter') {
       event.preventDefault();
-      flushModelTestPrioritySave(input);
+      saveModelTestInlinePriority(input);
     } else if (event.key === 'Escape') {
       const originalPriority = normalizeModelTestPriorityValue(input.dataset.originalPriority, 0);
       input.value = String(originalPriority);
@@ -3421,7 +3396,7 @@ function bindEvents() {
   tbody.addEventListener('focusout', (event) => {
     const input = event.target.closest('.ch-priority-input');
     if (!input) return;
-    flushModelTestPrioritySave(input);
+    saveModelTestInlinePriority(input);
   });
 
   tbody.addEventListener('change', (event) => {

@@ -46,6 +46,7 @@ func TestConfig_CreateAndGet(t *testing.T) {
 		Websockets:              true,
 		ProtocolTransformMode:   model.ProtocolTransformModeLocal,
 		RetryOtherKeysOnFailure: true,
+		SameChannelRetries:      2,
 		AvailableTimeStart:      "22:00",
 		AvailableTimeEnd:        "08:00",
 		RPMLimit:                60,
@@ -98,6 +99,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if !got.RetryOtherKeysOnFailure {
 		t.Error("expected retry_other_keys_on_failure=true")
+	}
+	if got.SameChannelRetries != 2 {
+		t.Errorf("same_channel_retries: got %d, want 2", got.SameChannelRetries)
 	}
 	if got.AvailableTimeStart != "22:00" || got.AvailableTimeEnd != "08:00" {
 		t.Errorf("available time: got %q-%q, want 22:00-08:00", got.AvailableTimeStart, got.AvailableTimeEnd)

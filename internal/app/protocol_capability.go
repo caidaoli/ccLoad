@@ -319,6 +319,7 @@ func protocolCapabilityRelevantConfig(cfg *model.Config) *model.Config {
 	relevant.AvailableTimeStart = ""
 	relevant.AvailableTimeEnd = ""
 	relevant.RetryOtherKeysOnFailure = false
+	relevant.SameChannelRetries = 0
 	relevant.CreatedAt = model.JSONTime{}
 	relevant.UpdatedAt = model.JSONTime{}
 	relevant.KeyCount = 0

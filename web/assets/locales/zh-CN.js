@@ -666,6 +666,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.availableTimeHelp': '格式 HH:MM；留空表示全天可用，支持跨午夜时段，例如 22:00–08:00。',
   'channels.retryOtherKeysOnFailure': '渠道故障优先换 Key',
   'channels.retryOtherKeysOnFailureHelp': '渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。',
+  'channels.sameChannelRetries': '同渠道重试',
+  'channels.sameChannelRetriesHelp': '上游网络错误或 5xx 时在本渠道原地重试的次数（0–10），用尽后才冷却并切换渠道；适合偶发失败但长期可用的渠道。',
 
   // 删除确认（扁平化键名）
   'channels.confirmDeleteTitle': '确认删除',

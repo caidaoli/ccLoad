@@ -42,6 +42,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			},
 			Enabled:                 true,
 			RetryOtherKeysOnFailure: true,
+			SameChannelRetries:      3,
 		},
 		{
 			Name:     "Test-Export-2",
@@ -114,7 +115,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -131,6 +132,10 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	retryIndex := slices.Index(header, "retry_other_keys_on_failure")
 	if retryIndex < 0 || records[1][retryIndex] != "true" {
 		t.Errorf("retry_other_keys_on_failure 导出值错误: row=%v", records[1])
+	}
+	sameChannelRetriesIndex := slices.Index(header, "same_channel_retries")
+	if sameChannelRetriesIndex < 0 || records[1][sameChannelRetriesIndex] != "3" {
+		t.Errorf("same_channel_retries 导出值错误: row=%v", records[1])
 	}
 	allowedModelsIndex := slices.Index(header, "api_key_allowed_models")
 	if allowedModelsIndex < 0 || records[1][allowedModelsIndex] != `[["model-1"]]` {
@@ -1119,6 +1124,7 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		ModelEntries:                  []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
 		Enabled:                       true,
 		RetryOtherKeysOnFailure:       true,
+		SameChannelRetries:            4,
 		ScheduledCheckEnabled:         true,
 		ScheduledCheckModel:           "old-model",
 		ScheduledCheckIntervalMinutes: 17,
@@ -1194,6 +1200,9 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	}
 	if !updated.RetryOtherKeysOnFailure {
 		t.Fatal("缺少 retry_other_keys_on_failure 列时应保留旧值 true")
+	}
+	if updated.SameChannelRetries != 4 {
+		t.Fatalf("缺少 same_channel_retries 列时应保留旧值 4，实际为 %d", updated.SameChannelRetries)
 	}
 	if !updated.OAuthQuotaPassthrough {
 		t.Fatal("missing quota passthrough column should preserve true")

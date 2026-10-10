@@ -16,7 +16,6 @@ function buildPriorityRow(rowClass, valueClass, value) {
 
 const CHANNEL_PRIORITY_MIN = -99999;
 const CHANNEL_PRIORITY_MAX = 9999999;
-let channelPrioritySaveTimers = new Map();
 
 function channelModelDisplayGroups(models) {
   const groups = new Map();
@@ -62,40 +61,50 @@ function channelModelChipNaturalWidth(chip) {
   return chip.scrollWidth + chip.offsetWidth - chip.clientWidth;
 }
 
-// 按行宽决定可见标签数：至少保留第一个（过长时由 CSS 省略），其余折成 +N
-function fitChannelModelLine(line) {
-  const available = line.clientWidth;
-  if (available <= 0) return;
-  const more = line.querySelector('.ch-model-chip--more');
-  const chips = Array.from(line.querySelectorAll('.ch-model-chip:not(.ch-model-chip--more)'));
-  const total = Number(line.dataset.total) || chips.length;
-  const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+// 按行宽决定可见标签数：至少保留第一个（过长时由 CSS 省略），其余折成 +N。
+// 所有行先统一读、再统一写：逐行读写交替会让每行触发两次整页强制布局。
+function fitChannelModelLineList(lines) {
+  const items = lines.map(line => ({
+    line,
+    available: line.clientWidth,
+    more: line.querySelector('.ch-model-chip--more'),
+    chips: Array.from(line.querySelectorAll('.ch-model-chip:not(.ch-model-chip--more)'))
+  })).filter(item => item.available > 0 && item.more);
 
-  chips.forEach(chip => { chip.hidden = false; });
-  more.hidden = false;
-  more.textContent = `+${total}`;
-  const moreWidth = channelModelChipNaturalWidth(more);
+  items.forEach(item => {
+    item.total = Number(item.line.dataset.total) || item.chips.length;
+    item.chips.forEach(chip => { chip.hidden = false; });
+    item.more.hidden = false;
+    item.more.textContent = `+${item.total}`;
+  });
 
-  let visible = 0;
-  let used = 0;
-  for (const chip of chips) {
-    const next = used + (visible > 0 ? gap : 0) + channelModelChipNaturalWidth(chip);
-    const reserve = visible + 1 < total ? gap + moreWidth : 0;
-    if (visible > 0 && next + reserve > available) break;
-    used = next;
-    visible++;
-  }
+  items.forEach(item => {
+    const gap = parseFloat(getComputedStyle(item.line).columnGap) || 0;
+    const moreWidth = channelModelChipNaturalWidth(item.more);
+    let visible = 0;
+    let used = 0;
+    for (const chip of item.chips) {
+      const next = used + (visible > 0 ? gap : 0) + channelModelChipNaturalWidth(chip);
+      const reserve = visible + 1 < item.total ? gap + moreWidth : 0;
+      if (visible > 0 && next + reserve > item.available) break;
+      used = next;
+      visible++;
+    }
+    item.visible = visible;
+  });
 
-  chips.forEach((chip, index) => { chip.hidden = index >= visible; });
-  more.hidden = visible >= total;
-  more.textContent = `+${total - visible}`;
+  items.forEach(({ chips, more, total, visible }) => {
+    chips.forEach((chip, index) => { chip.hidden = index >= visible; });
+    more.hidden = visible >= total;
+    more.textContent = `+${total - visible}`;
+  });
 }
 
 let channelModelLineObserver = null;
 
 // 容器宽度变化时重新计算；只在宽度变化时触发，避免高度抖动引起循环
 function fitChannelModelLines(container) {
-  container.querySelectorAll('.ch-model-line').forEach(fitChannelModelLine);
+  fitChannelModelLineList(Array.from(container.querySelectorAll('.ch-model-line')));
   if (channelModelLineObserver || typeof ResizeObserver !== 'function') return;
   let lastWidth = container.clientWidth;
   let frame = 0;
@@ -104,7 +113,7 @@ function fitChannelModelLines(container) {
     lastWidth = container.clientWidth;
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
-      container.querySelectorAll('.ch-model-line').forEach(fitChannelModelLine);
+      fitChannelModelLineList(Array.from(container.querySelectorAll('.ch-model-line')));
     });
   });
   channelModelLineObserver.observe(container);
@@ -446,31 +455,6 @@ async function saveInlineChannelPriority(input) {
   } finally {
     setInlinePrioritySaving(input, false);
   }
-}
-
-function queueInlineChannelPrioritySave(input, delay = 1000) {
-  if (!input || isTokenChannelsReadOnly()) return;
-  const channelId = Number(input.dataset.channelId);
-  if (!Number.isFinite(channelId) || channelId <= 0) return;
-  input.classList.add('is-dirty');
-  const existingTimer = channelPrioritySaveTimers.get(channelId);
-  if (existingTimer) clearTimeout(existingTimer);
-  const timer = setTimeout(() => {
-    channelPrioritySaveTimers.delete(channelId);
-    saveInlineChannelPriority(input);
-  }, delay);
-  channelPrioritySaveTimers.set(channelId, timer);
-}
-
-function flushInlineChannelPrioritySave(input) {
-  if (!input || isTokenChannelsReadOnly()) return;
-  const channelId = Number(input.dataset.channelId);
-  const existingTimer = channelPrioritySaveTimers.get(channelId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    channelPrioritySaveTimers.delete(channelId);
-  }
-  return saveInlineChannelPriority(input);
 }
 
 const CHANNEL_METRIC_ICONS = {
@@ -1618,7 +1602,8 @@ function initChannelEventDelegation() {
   container.addEventListener('input', (e) => {
     const input = e.target.closest('.ch-priority-input');
     if (!input || isTokenChannelsReadOnly()) return;
-    queueInlineChannelPrioritySave(input);
+    // 只标记脏状态：保存会重渲染列表，输入中途自动保存会夺走焦点并吞掉后续按键
+    input.classList.add('is-dirty');
   });
 
   container.addEventListener('keydown', (e) => {
@@ -1632,7 +1617,7 @@ function initChannelEventDelegation() {
     if (!input || isTokenChannelsReadOnly()) return;
     if (e.key === 'Enter') {
       e.preventDefault();
-      flushInlineChannelPrioritySave(input);
+      saveInlineChannelPriority(input);
     } else if (e.key === 'Escape') {
       const originalPriority = normalizeInlinePriorityValue(input.dataset.originalPriority, 0);
       input.value = String(originalPriority);
@@ -1643,7 +1628,7 @@ function initChannelEventDelegation() {
   container.addEventListener('focusout', (e) => {
     const input = e.target.closest('.ch-priority-input');
     if (!input || isTokenChannelsReadOnly()) return;
-    flushInlineChannelPrioritySave(input);
+    saveInlineChannelPriority(input);
   });
 
   // 事件委托：处理所有渠道操作按钮
@@ -1829,6 +1814,9 @@ function renderChannels(channelsToRender = channels) {
 
   el.innerHTML = `<div class="table-container channel-table-container"><table class="modern-table channel-table">${thead}</table></div>`;
   el.querySelector('table').appendChild(tbody);
+  if (window.i18n && window.i18n.translatePage) {
+    window.i18n.translatePage(el);
+  }
   fitChannelModelLines(el);
 
   // 模板渲染后设置 checkbox 选中态
@@ -1836,10 +1824,6 @@ function renderChannels(channelsToRender = channels) {
     cb.checked = selectedChannelIds.has(normalizeSelectedChannelID(cb.dataset.channelId));
   });
 
-  // Translate dynamically rendered elements
-  if (window.i18n && window.i18n.translatePage) {
-    window.i18n.translatePage();
-  }
 
   if (typeof updateBatchChannelSelectionUI === 'function') {
     updateBatchChannelSelectionUI();

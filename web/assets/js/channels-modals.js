@@ -540,6 +540,8 @@ async function showAddModal() {
   document.getElementById('channelScheduledCheckEnabled').checked = false;
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = false;
+  const sameChannelRetriesInput = document.getElementById('channelSameChannelRetries');
+  if (sameChannelRetriesInput) sameChannelRetriesInput.value = '0';
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
@@ -670,6 +672,8 @@ async function editChannel(id) {
   document.getElementById('channelScheduledCheckStartTime').value = channel.scheduled_check_start_time ?? '00:00';
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
+  const sameChannelRetriesInput = document.getElementById('channelSameChannelRetries');
+  if (sameChannelRetriesInput) sameChannelRetriesInput.value = String(channel.same_channel_retries || 0);
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   const modelCooldowns = new Map(
@@ -1078,7 +1082,8 @@ async function saveChannel(event) {
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
     available_time_start: (document.getElementById('channelAvailableTimeStart')?.value || '').trim(),
     available_time_end: (document.getElementById('channelAvailableTimeEnd')?.value || '').trim(),
-    retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
+    retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked,
+    same_channel_retries: parseInt(document.getElementById('channelSameChannelRetries')?.value, 10) || 0
   };
   if (isOAuth) {
     // OAuth 凭证 1:1：倍率经合成 Key 行提交（后端 ToConfig 取 APIKeys[0].CostMultiplier 写入渠道列）。
@@ -2152,6 +2157,8 @@ async function copyChannel(id, name) {
   if (availableTimeEnd) availableTimeEnd.value = channel.available_time_end || '';
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
+  const sameChannelRetriesInput = document.getElementById('channelSameChannelRetries');
+  if (sameChannelRetriesInput) sameChannelRetriesInput.value = String(channel.same_channel_retries || 0);
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
@@ -2864,9 +2871,13 @@ function getVisibleModelIndices() {
 /**
  * 按关键字筛选模型
  */
+let modelKeywordRenderTimer = null;
+
 function filterModelsByKeyword(keyword) {
   currentModelFilter = (keyword || '').trim();
-  renderRedirectTable();
+  // 整表重建数百行，连续输入时只渲染最后一次
+  clearTimeout(modelKeywordRenderTimer);
+  modelKeywordRenderTimer = setTimeout(renderRedirectTable, 120);
 }
 
 function renderRedirectTable() {
@@ -2920,7 +2931,7 @@ function renderRedirectTable() {
 
   // Translate dynamically rendered elements
   if (window.i18n && window.i18n.translatePage) {
-    window.i18n.translatePage();
+    window.i18n.translatePage(tbody);
   }
 }
 
