@@ -7250,6 +7250,67 @@ func TestProxy_SameChannelRetries(t *testing.T) {
 	}
 }
 
+func TestProxy_SameChannelRetriesToleratesCommittedStreamInterruptions(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name               string
+		sameChannelRetries int
+		outcomes           []bool // 依次每个请求上游是否中途断流
+		wantCooled         bool
+	}{
+		{name: "disabled cools on first interruption", outcomes: []bool{true}, wantCooled: true},
+		{name: "interruptions within limit do not cool", sameChannelRetries: 2, outcomes: []bool{true, true}},
+		{name: "interruption beyond limit cools", sameChannelRetries: 2, outcomes: []bool{true, true, true}, wantCooled: true},
+		{name: "success resets consecutive count", sameChannelRetries: 2, outcomes: []bool{true, true, false, true, true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var interrupt atomic.Bool
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: response.output_text.delta\n"+
+					`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}`+"\n\n")
+				if interrupt.Load() {
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					panic(http.ErrAbortHandler)
+				}
+				_, _ = io.WriteString(w, "event: response.completed\n"+
+					`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "flaky", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+				sameChannelRetries: tt.sameChannelRetries,
+			}}, map[int]string{0: upstream.URL})
+
+			for i, interrupted := range tt.outcomes {
+				interrupt.Store(interrupted)
+				response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+					"model": "gpt-test", "stream": true, "input": "hi",
+				}, nil)
+				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "partial") {
+					t.Fatalf("request %d status=%d body=%s", i, response.Code, response.Body.String())
+				}
+			}
+
+			modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("get model cooldowns: %v", err)
+			}
+			cooled := false
+			for _, until := range modelCooldowns[1] {
+				cooled = cooled || until.After(time.Now())
+			}
+			if cooled != tt.wantCooled {
+				t.Fatalf("cooled=%v, want %v (cooldowns=%v)", cooled, tt.wantCooled, modelCooldowns[1])
+			}
+		})
+	}
+}
+
 func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
 	t.Parallel()
 	var phase atomic.Int32

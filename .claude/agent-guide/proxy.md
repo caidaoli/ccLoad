@@ -28,7 +28,7 @@
 - 客户端错误(406,404 非模型 `does not exist`,400/413/597 上下文超限,413 `message_too_big` WebSocket close 1009)→ 直接返回,不重试;普通 HTTP 413 请求体超限仍按模型级换渠
 - 成本限额达到 → 跳过该渠道
 - Key/模型/渠道共用指数退避:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),翻倍并 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
-- **同渠道重试**(`same_channel_retries`,0–10,默认 0;`proxy_handler.go:tryChannelWithSameChannelRetries` + `proxy_error.go:applyCooldownDecision`):未提交响应的模型/渠道级故障中,仅网络错误与 5xx(596 除外)在本渠道原地再试 N 次,无间隔、每次照常写尝试日志。期间冷却只登记不落库:重试成功即丢弃,用尽或放弃时只提交最后一次尝试的冷却,不因中间失败翻倍退避。适用 `retry_other_keys_on_failure` 换 Key 回退时当前 Key 照常冷却。CSV 列 `same_channel_retries`,缺列导入保留原值
+- **同渠道重试**(`same_channel_retries`,0–10,默认 0;`proxy_handler.go:tryChannelWithSameChannelRetries` + `proxy_error.go:applyCooldownDecision`):未提交响应的模型/渠道级故障中,仅网络错误与 5xx(596 除外)在本渠道原地再试 N 次,无间隔、每次照常写尝试日志。期间冷却只登记不落库:重试成功即丢弃,用尽或放弃时只提交最后一次尝试的冷却,不因中间失败翻倍退避。是否提交按渠道+模型的跨请求连续失败计数(`sameChannelFailureCounter`,内存态,任一成功清零)判定:超过 N 才冷却。已提交响应的中途断流(599)无法原地重试,靠客户端重发;连续不超过 N 次时不冷却,重发仍可回到本渠道。适用 `retry_other_keys_on_failure` 换 Key 回退时当前 Key 照常冷却。CSV 列 `same_channel_retries`,缺列导入保留原值
 - **冷却探测规则**(`cooldown/detection.go`):渠道 `cooldown_detection_rules` 为空时继承系统设置 `global_cooldown_detection_rules`;按 rules 数组顺序(提交后重编号 0..N-1)匹配 status+正则,命名捕获组可解析精确 reset 时间。网络故障故意不进匹配器(没有可信上游错误体);规则命中但不可执行时回退内置分类器,不猜冷却时长。`EvaluateCooldownDetectionRules` 无副作用,代理链路与 admin 规则测试端点共用
 - **全冷却兜底**(`selector_cooldown.go`,`cooldown_fallback_enabled` 默认 true):所有渠道都冷却时不直接拒绝,挑「最早恢复」渠道打 `CooldownFallback` 标记继续正常流程,Key 也改选最早恢复的(`SelectCooldownFallbackKey`)。排查「明明全冷却了为什么还在发请求」先看这里;设 false 才直接拒绝
 - **日志模型字段**(`model/log.go`+`logs` 表):`actual_model` 记实际发给上游的模型(空=未重定向),`response_model`(`LogEntry.ResponseModel`)记**上游成功响应声明的模型**,三库增量迁移齐全、前端日志页展示;它只用于记录与排查,成本归集、冷却与维度聚合仍以 `ActualModel` 为准

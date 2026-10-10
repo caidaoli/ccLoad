@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/config"
@@ -951,9 +952,38 @@ func sameChannelRetryableFailure(action cooldown.Action, in cooldown.ErrorInput)
 	return in.IsNetworkError || (in.StatusCode >= 500 && in.StatusCode != util.StatusQuotaExceeded)
 }
 
+type sameChannelFailureKey struct {
+	channelID int64
+	model     string
+}
+
+// sameChannelFailureCounter 跨请求记录渠道+模型的连续可重试故障次数（内存态，零值可用）。
+// 已提交响应的中途断流无法原地重试，只能靠客户端重发；未超过 same_channel_retries 时不冷却，
+// 让重发还能回到该渠道。任一成功清零。
+type sameChannelFailureCounter struct {
+	mu       sync.Mutex
+	failures map[sameChannelFailureKey]int
+}
+
+func (c *sameChannelFailureCounter) add(key sameChannelFailureKey, n int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failures == nil {
+		c.failures = make(map[sameChannelFailureKey]int)
+	}
+	c.failures[key] += n
+	return c.failures[key]
+}
+
+func (c *sameChannelFailureCounter) reset(key sameChannelFailureKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.failures, key)
+}
+
 // tryChannelWithSameChannelRetries 在渠道配置了 same_channel_retries 时，对未提交响应的
 // 可重试故障原地重试同一渠道。中间失败的冷却不落库，避免偶发故障把指数退避连翻几轮；
-// 放弃该渠道时只提交最后一次尝试的冷却，成功则丢弃。
+// 放弃该渠道时按跨请求连续失败次数决定：超过 same_channel_retries 才提交最后一次尝试的冷却，成功则丢弃。
 func (s *Server) tryChannelWithSameChannelRetries(
 	ctx context.Context,
 	cfg *model.Config,
@@ -971,6 +1001,16 @@ func (s *Server) tryChannelWithSameChannelRetries(
 			log.Printf("[RETRY] 渠道 %s (ID=%d) 同渠道重试 %d/%d (status=%d)",
 				cfg.Name, cfg.ID, attempt+1, cfg.SameChannelRetries, result.status)
 			continue
+		}
+		if len(pending.inputs) == 0 {
+			return result, err
+		}
+		last := pending.inputs[len(pending.inputs)-1]
+		key := sameChannelFailureKey{channelID: cfg.ID, model: last.Model}
+		if failures := s.sameChannelFailures.add(key, attempt+1); failures <= cfg.SameChannelRetries {
+			log.Printf("[COOLDOWN] 渠道 %s (ID=%d) 连续失败 %d/%d 次，暂不冷却 (status=%d)",
+				cfg.Name, cfg.ID, failures, cfg.SameChannelRetries, last.StatusCode)
+			return result, err
 		}
 		for _, in := range pending.inputs {
 			s.applyCooldownDecision(ctx, cfg, in)

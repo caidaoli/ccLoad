@@ -667,7 +667,7 @@ window.I18N_LOCALES['en'] = {
   'channels.retryOtherKeysOnFailure': 'Try another key on failure',
   'channels.retryOtherKeysOnFailureHelp': 'On a channel- or model-level upstream failure, cool the current key and try another key in this channel first. Use this when keys route to independent providers behind one relay.',
   'channels.sameChannelRetries': 'Same-channel retries',
-  'channels.sameChannelRetriesHelp': 'Retry this channel in place on upstream network errors or 5xx (0–10) before cooling it down and switching channels. Useful for channels that fail occasionally but stay usable.',
+  'channels.sameChannelRetriesHelp': 'Retry this channel in place on upstream network errors or 5xx (0–10) before cooling it down and switching channels. Streams interrupted after output has started cannot be retried in place; they do not cool the channel until consecutive failures exceed this count. Useful for channels that fail occasionally but stay usable.',
 
   // Delete Confirmation (flattened keys)
   'channels.confirmDeleteTitle': 'Confirm Delete',

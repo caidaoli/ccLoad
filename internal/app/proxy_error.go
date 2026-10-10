@@ -655,6 +655,9 @@ func (s *Server) handleProxySuccess(
 		// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
 		s.invalidateChannelRelatedCache(cfg.ID)
 	}
+	if cfg.SameChannelRetries > 0 {
+		s.sameChannelFailures.reset(sameChannelFailureKey{channelID: cfg.ID, model: actualModel})
+	}
 	if !cfg.AntigravityCredits && s.antigravityCredentials.standardQuotaUntil(cfg, actualModel).After(time.Now()) {
 		s.antigravityCredentials.updateQuotaState(ctx, cfg, actualModel, time.Time{}, false)
 	}
