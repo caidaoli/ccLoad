@@ -208,6 +208,21 @@ func TestGetTimeRange_AllBranches(t *testing.T) {
 		},
 	}
 
+	for _, hours := range []int{1, 6, 24} {
+		rng := "last_" + strconv.Itoa(hours) + "h"
+		cases = append(cases, struct {
+			name      string
+			rng       string
+			startTime time.Time
+			endTime   time.Time
+			check     func(t *testing.T, start, end time.Time)
+		}{name: rng, rng: rng, check: func(t *testing.T, start, end time.Time) {
+			if !start.Equal(now.Add(-time.Duration(hours)*time.Hour)) || !end.Equal(now) {
+				t.Fatalf("range=%s: got %v .. %v", rng, start, end)
+			}
+		}})
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &PaginationParams{Range: tc.rng, StartTime: tc.startTime, EndTime: tc.endTime}

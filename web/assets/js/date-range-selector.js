@@ -6,7 +6,7 @@
  * 1. 在HTML中引入: <script src="/web/assets/js/date-range-selector.js"></script>
  * 2. 调用 initDateRangeSelector(elementId, defaultRange, onChangeCallback)
  *
- * 后端API参数: range=today|yesterday|day_before_yesterday|this_week|last_week|this_month|last_month|custom
+ * 后端API参数: range=last_1h|last_6h|last_24h|today|yesterday|day_before_yesterday|this_week|last_week|this_month|last_month|custom
  * 自定义区间额外参数: start_time=<Unix毫秒>&end_time=<Unix毫秒>
  */
 
@@ -24,6 +24,9 @@
   // 时间范围预设 (key → i18n key)
   // key与后端GetTimeRange()支持的range参数一致
   const BASE_DATE_RANGE_PRESETS = [
+    { value: 'last_1h', i18nKey: 'index.timeRange.last1h', fallback: 'Last 1 hour' },
+    { value: 'last_6h', i18nKey: 'index.timeRange.last6h', fallback: 'Last 6 hours' },
+    { value: 'last_24h', i18nKey: 'index.timeRange.last24h', fallback: 'Last 24 hours' },
     { value: 'today', i18nKey: 'index.timeRange.today', fallback: 'Today' },
     { value: 'yesterday', i18nKey: 'index.timeRange.yesterday', fallback: 'Yesterday' },
     { value: 'day_before_yesterday', i18nKey: 'index.timeRange.dayBeforeYesterday', fallback: 'Day Before' },
@@ -522,6 +525,9 @@
    */
   window.getRangeHours = function(rangeKey) {
     const hoursMap = {
+      'last_1h': 1,
+      'last_6h': 6,
+      'last_24h': 24,
       'today': 24,
       'yesterday': 24,
       'day_before_yesterday': 24,

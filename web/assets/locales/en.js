@@ -99,6 +99,9 @@ window.I18N_LOCALES['en'] = {
   // Index Overview
   // ============================================================
   'index.title': 'Claude Code & Codex Proxy Service',
+  'index.timeRange.last1h': 'Last 1 hour',
+  'index.timeRange.last6h': 'Last 6 hours',
+  'index.timeRange.last24h': 'Last 24 hours',
   'index.timeRange.today': 'Today',
   'index.timeRange.yesterday': 'Yesterday',
   'index.timeRange.dayBeforeYesterday': 'Day Before',

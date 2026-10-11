@@ -1,7 +1,7 @@
     const t = window.t;
     const API_BASE = '/admin';
     let allTokens = [];
-    let isToday = true;      // 是否为本日（本日才显示最近一分钟）
+    let isToday = true;      // 是否为实时范围（显示最近一分钟）
 
     // 当前选中的时间范围(默认为本日)
     let currentTimeRange = 'today';
@@ -150,7 +150,7 @@
       window.initSavedDateRangeFilter({
         selectId: 'tokensRange',
         defaultValue: currentTimeRange,
-        values: ['today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'custom', 'all'],
+        values: ['last_1h', 'last_6h', 'last_24h', 'today', 'yesterday', 'day_before_yesterday', 'this_week', 'this_month', 'last_month', 'custom', 'all'],
         includeAll: true,
         includeCustom: true,
         customRange: currentCustomTimeRange,

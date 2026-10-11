@@ -97,4 +97,23 @@ test('dashboard time range restored from URL/storage falls back to today when in
   assert.deepEqual(resolveIndexTimeRange({ range: 'custom', customStartTime: '', customEndTime: '' }), { range: 'today', customRange: null });
   assert.deepEqual(resolveIndexTimeRange({ range: 'custom', customStartTime: '200', customEndTime: '100' }), { range: 'today', customRange: null });
   assert.deepEqual(resolveIndexTimeRange({ range: 'last_year' }), { range: 'today', customRange: null });
+  for (const range of ['last_1h', 'last_6h', 'last_24h']) {
+    assert.deepEqual(resolveIndexTimeRange({ range }), { range: 'today', customRange: null });
+  }
+});
+
+
+test('rolling date presets retain exact durations and calendar presets', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const window = {};
+  vm.runInNewContext(fs.readFileSync(require.resolve('./date-range-selector.js'), 'utf8'), { window });
+  for (const hours of [1, 6, 24]) {
+    const range = `last_${hours}h`;
+    assert.equal(window.getRangeHours(range), hours);
+    assert.equal(window.getDateRangePresets().some(preset => preset.value === range), true);
+    assert.equal(new URLSearchParams(window.buildDateRangeQuery(range)).get('range'), range);
+  }
+  assert.equal(window.getRangeHours('last_week'), 168);
+  assert.equal(window.getRangeHours('last_month'), 720);
 });

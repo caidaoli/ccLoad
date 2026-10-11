@@ -600,3 +600,32 @@ func TestHandleListAuthTokens_RangeStatsFailureReturnsError(t *testing.T) {
 		t.Fatalf("Expected 500, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestHandleListAuthTokens_RollingRange(t *testing.T) {
+	for _, tc := range []struct {
+		rng     string
+		seconds float64
+		live    bool
+	}{
+		{"last_1h", 3600, true}, {"last_6h", 21600, true}, {"last_24h", 86400, true},
+		{"last_week", 0, false}, {"last_month", 0, false},
+	} {
+		t.Run(tc.rng, func(t *testing.T) {
+			server := newInMemoryServer(t)
+			createTestToken(t, server, "rolling-token")
+			req := newRequest(http.MethodGet, "/admin/auth-tokens?range="+tc.rng, nil)
+			c, w := newTestContext(t, req)
+			server.HandleListAuthTokens(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+			}
+			resp := mustParseAPIResponse[authTokenListResponse](t, w.Body.Bytes())
+			if !resp.Success || resp.Data.IsToday != tc.live {
+				t.Fatalf("unexpected response: %+v", resp)
+			}
+			if tc.seconds != 0 && resp.Data.DurationSeconds != tc.seconds {
+				t.Fatalf("duration=%v, want %v", resp.Data.DurationSeconds, tc.seconds)
+			}
+		})
+	}
+}

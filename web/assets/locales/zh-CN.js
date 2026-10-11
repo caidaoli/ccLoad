@@ -99,6 +99,9 @@ window.I18N_LOCALES['zh-CN'] = {
   // 首页概览
   // ============================================================
   'index.title': 'Claude Code & Codex Proxy 代理服务',
+  'index.timeRange.last1h': '最近 1 小时',
+  'index.timeRange.last6h': '最近 6 小时',
+  'index.timeRange.last24h': '最近 24 小时',
   'index.timeRange.today': '本日',
   'index.timeRange.yesterday': '昨日',
   'index.timeRange.dayBeforeYesterday': '前日',

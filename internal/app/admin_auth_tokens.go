@@ -82,8 +82,8 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 			resp.DurationSeconds = 1 // 防止除零
 		}
 
-		// 判断是否为本日（本日才计算最近一分钟）
-		isToday := timeRange == "today"
+		// 实时范围计算最近一分钟统计。
+		isToday := rangeEndsLive(timeRange)
 		resp.IsToday = isToday
 
 		// 范围聚合与统计接口一样只受请求 context 约束：大范围（如上月）不能挤在列表的 10s 预算里。

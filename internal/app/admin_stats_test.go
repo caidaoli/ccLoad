@@ -254,3 +254,56 @@ func TestStatsEndpoints_HeavyFieldsAreOptIn(t *testing.T) {
 		}
 	}
 }
+
+func TestStatsHealthTimeline_RollingRangesUseSelectedWindow(t *testing.T) {
+	for _, hours := range []int{1, 6, 24} {
+		t.Run(fmt.Sprintf("last_%dh", hours), func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "rolling-channel", URLs: model.ChannelURLs{{URL: "https://example.com"}},
+				ModelEntries: []model.ModelEntry{{Model: "test-model"}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AddLog(ctx, &model.LogEntry{
+				Time: model.JSONTime{Time: time.Now().Add(-time.Minute)}, Model: "test-model",
+				ChannelID: cfg.ID, StatusCode: 200,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			query := fmt.Sprintf("/admin/stats?range=last_%dh&health_timeline=1", hours)
+			before := time.Now()
+			c, w := newTestContext(t, newRequest(http.MethodGet, query, nil))
+			server.HandleStats(c)
+			after := time.Now()
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			type statsResponse struct {
+				Stats    []model.StatsEntry `json:"stats"`
+				Duration float64            `json:"duration_seconds"`
+				Live     bool               `json:"is_today"`
+			}
+			resp := mustParseAPIResponse[statsResponse](t, w.Body.Bytes()).Data
+			if !resp.Live || resp.Duration != float64(hours*3600) {
+				t.Fatalf("unexpected stats response: %+v", resp)
+			}
+			if len(resp.Stats) != 1 || len(resp.Stats[0].HealthTimeline) != 48 {
+				t.Fatalf("unexpected timeline: %+v", resp.Stats)
+			}
+			points := resp.Stats[0].HealthTimeline
+			window := time.Duration(hours) * time.Hour
+			start := points[0].Ts
+			if start.Before(before.Add(-window).Truncate(time.Second)) || start.After(after.Add(-window)) {
+				t.Fatalf("start=%v, expected selected %dh window", start, hours)
+			}
+			bucket := window / 48
+			if !points[47].Ts.Equal(start.Add(47 * bucket)) {
+				t.Fatalf("last bucket=%v, start=%v, bucket=%v", points[47].Ts, start, bucket)
+			}
+		})
+	}
+}

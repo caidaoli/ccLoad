@@ -139,8 +139,8 @@ func (s *Server) HandleStats(c *gin.Context) {
 
 	startTime, endTime := params.GetTimeRange()
 
-	// 判断是否为本日（本日才计算最近一分钟）
-	isToday := params.Range == "today" || params.Range == ""
+	// 实时范围计算最近一分钟统计。
+	isToday := rangeEndsLive(params.Range)
 
 	// 统计、RPM（峰值、平均、最近一分钟）与健康时间线互不依赖，大范围时都是秒级，并行查询。
 	// 健康时间线需要额外的分桶查询，只有统计页的健康条使用。
@@ -166,7 +166,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, &lf, isToday)
 	}()
 	if withTimeline {
-		timelineParams = healthTimelineParams(startTime, endTime, &lf, isToday)
+		timelineParams = healthTimelineParams(startTime, endTime, &lf, params.Range == "today" || params.Range == "")
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -250,8 +250,8 @@ func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, incl
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
 
-	// 判断是否为本日（本日才计算最近一分钟）
-	isToday := params.Range == "today" || params.Range == ""
+	// 实时范围计算最近一分钟统计。
+	isToday := rangeEndsLive(params.Range)
 	ctx := c.Request.Context()
 
 	// 协议摘要、认证类型摘要与 RPM 相互独立，并行查询。

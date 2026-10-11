@@ -41,6 +41,12 @@ func (p *PaginationParams) GetTimeRange() (startTime, endTime time.Time) {
 func (p *PaginationParams) GetTimeRangeAt(now time.Time) (startTime, endTime time.Time) {
 
 	switch p.Range {
+	case "last_1h":
+		startTime, endTime = now.Add(-time.Hour), now
+	case "last_6h":
+		startTime, endTime = now.Add(-6*time.Hour), now
+	case "last_24h":
+		startTime, endTime = now.Add(-24*time.Hour), now
 	case "custom":
 		if !p.StartTime.IsZero() && !p.EndTime.IsZero() && p.StartTime.Before(now) && p.EndTime.After(p.StartTime) {
 			startTime = p.StartTime
@@ -91,6 +97,16 @@ func (p *PaginationParams) GetTimeRangeAt(now time.Time) (startTime, endTime tim
 	}
 
 	return
+}
+
+// rangeEndsLive 标记需要最近一分钟统计的实时范围；历史日历范围不包含在内。
+func rangeEndsLive(r string) bool {
+	switch r {
+	case "", "today", "last_1h", "last_6h", "last_24h":
+		return true
+	default:
+		return false
+	}
 }
 
 // beginningOfDay 返回某一天的0:00:00
