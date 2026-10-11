@@ -320,10 +320,12 @@ function validateReasoningAuto(value) {
 let reasoningAutoDraft = null;
 let reasoningAutoModels = [];
 let reasoningAutoPreviousFocus = null;
+let reasoningShowSelectedOnly = false;
 
 function renderReasoningAutoEditor(value) {
   reasoningAutoDraft = parseReasoningAuto(value);
   reasoningAutoLocked = Boolean(validateReasoningAuto(value));
+  reasoningShowSelectedOnly = false;
   const config = reasoningAutoDraft;
   const disabled = reasoningAutoLocked ? ' disabled' : '';
   const label = key => `<span data-i18n="settings.reasoningAuto.${key}">${escapeHtml(t('settings.reasoningAuto.' + key))}</span>`;
@@ -347,7 +349,7 @@ function renderReasoningAutoEditor(value) {
     </div>
     <div class="settings-dialog-toolbar">
       <h3 id="reasoningBusinessModelsTitle" class="settings-dialog-section-title">${label('businessModels')}
-        <span id="reasoningModelsCount" class="settings-dialog-count"></span>
+        <button type="button" id="reasoningModelsCount" class="settings-dialog-count" data-action="toggle-reasoning-selected" aria-pressed="false" data-i18n-title="settings.reasoningAuto.showSelectedOnly" title="${escapeHtml(t('settings.reasoningAuto.showSelectedOnly'))}"></button>
       </h3>
       <input type="search" id="reasoningModelSearch" class="form-input settings-dialog-search" data-i18n-placeholder="settings.reasoningAuto.search" placeholder="${escapeHtml(t('settings.reasoningAuto.search'))}" data-i18n-aria-label="settings.reasoningAuto.search" aria-label="${escapeHtml(t('settings.reasoningAuto.search'))}">
     </div>
@@ -375,9 +377,10 @@ function renderReasoningBusinessModels() {
   const selected = new Set(reasoningAutoDraft.business_models);
   const filter = (document.getElementById('reasoningModelSearch')?.value || '').trim().toLowerCase();
   const models = [...new Set([...reasoningAutoModels, ...selected])].sort((a, b) => a.localeCompare(b))
-    .filter(model => model.toLowerCase().includes(filter));
+    .filter(model => (!reasoningShowSelectedOnly || selected.has(model)) && model.toLowerCase().includes(filter));
   container.innerHTML = models.map(model => `<tr><td><input type="checkbox" data-reasoning-model value="${escapeHtml(model)}" aria-label="${escapeHtml(model)}" ${selected.has(model) ? 'checked' : ''}${reasoningAutoLocked ? ' disabled' : ''}></td><td>${escapeHtml(model)}</td></tr>`).join('');
   document.getElementById('reasoningModelsEmpty').hidden = models.length > 0;
+  document.getElementById('reasoningModelsCount')?.setAttribute('aria-pressed', String(reasoningShowSelectedOnly));
   updateReasoningModelsSelectAll();
 }
 
@@ -486,6 +489,11 @@ function bindReasoningAutoModal() {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (event.target === modal || action === 'close-reasoning-auto') closeReasoningAutoModal();
     else if (action === 'apply-reasoning-auto') applyReasoningAuto();
+    else if (action === 'toggle-reasoning-selected') {
+      // 只看已选：取消勾选的行保留到下次重绘，误点可直接勾回
+      reasoningShowSelectedOnly = !reasoningShowSelectedOnly;
+      renderReasoningBusinessModels();
+    }
     else if (action === 'reset-reasoning-auto') {
       renderReasoningAutoEditor(settingDefinitions.get('reasoning_auto')?.default_value || formatReasoningAuto(reasoningAutoDefaults));
       showReasoningAutoError(null);

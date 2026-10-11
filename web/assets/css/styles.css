@@ -4380,6 +4380,25 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+button.settings-dialog-count {
+  appearance: none;
+  border: 0;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+button.settings-dialog-count:hover,
+button.settings-dialog-count:focus-visible {
+  background: color-mix(in srgb, var(--primary-500) 22%, transparent);
+  outline: none;
+}
+
+button.settings-dialog-count[aria-pressed="true"] {
+  background: var(--primary-600);
+  color: #fff;
+}
+
 .settings-dialog-search {
   width: min(280px, 100%);
 }
@@ -4528,10 +4547,14 @@ body {
   text-align: center;
 }
 
+/* 吸顶单元格自带不透明底色；折叠边框不随吸顶移动，用内阴影画分隔线 */
 .reasoning-model-table thead th {
   position: sticky;
   top: 0;
   z-index: 1;
+  background: var(--neutral-100);
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--neutral-200);
 }
 
 .reasoning-model-table td:last-child {
