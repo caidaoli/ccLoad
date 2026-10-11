@@ -36,94 +36,39 @@ function channelModelDisplayGroups(models) {
 
 function formatChannelModelLabel(group) {
   const targets = group.targets.filter((target) => target !== group.model);
-  if (targets.length === 0) return group.model;
-  const visible = targets.slice(0, 2).join(', ');
-  const suffix = targets.length > 2 ? ', ...' : '';
-  return `${group.model}(${visible}${suffix})`;
+  return targets.length > 0 ? `${group.model}(${targets.join(', ')})` : group.model;
 }
 
-// 可见数量由实际行宽决定（fitChannelModelLine）；渲染上限只为控制 DOM 规模，再多一行也放不下。
-const CHANNEL_MODEL_CHIP_RENDER_CAP = 40;
+// 模型列只放数量按钮；标签在展开时按渠道数据生成，避免每行常驻全部模型 DOM。
+function buildChannelModelToggleHtml(channelID, models) {
+  const count = channelModelDisplayGroups(models).length;
+  if (count === 0) return '';
+  const label = escapeChannelRefreshText(window.t('channels.table.modelCount', { count }));
+  return `<div class="ch-model-picker"><button type="button" class="ch-model-toggle" data-channel-id="${channelID}" aria-expanded="false">${label}<span class="ch-model-toggle__caret" aria-hidden="true"></span></button></div>`;
+}
 
-// 列表只占一行：放得下的模型做标签，其余折成 +N，完整列表放在 title。
-function buildChannelModelLineHtml(models) {
-  const groups = channelModelDisplayGroups(models);
-  if (groups.length === 0) return '';
-  const chips = groups.slice(0, CHANNEL_MODEL_CHIP_RENDER_CAP)
+function buildChannelModelPopoverHtml(models) {
+  const chips = channelModelDisplayGroups(models)
     .map(group => `<span class="ch-model-chip">${escapeChannelRefreshText(formatChannelModelLabel(group))}</span>`);
-  const rest = groups.length - chips.length;
-  chips.push(`<span class="ch-model-chip ch-model-chip--more"${rest > 0 ? '' : ' hidden'}>+${rest}</span>`);
-  return `<div class="ch-model-line" data-total="${groups.length}" title="${escapeChannelRefreshText(formatChannelModelTitle(models))}">${chips.join('')}</div>`;
+  return `<div class="ch-model-popover">${chips.join('')}</div>`;
 }
 
-// scrollWidth 是内容自然宽度，不受 flex 收缩影响；再补上边框
-function channelModelChipNaturalWidth(chip) {
-  return chip.scrollWidth + chip.offsetWidth - chip.clientWidth;
-}
-
-// 按行宽决定可见标签数：至少保留第一个（过长时由 CSS 省略），其余折成 +N。
-// 所有行先统一读、再统一写：逐行读写交替会让每行触发两次整页强制布局。
-function fitChannelModelLineList(lines) {
-  const items = lines.map(line => ({
-    line,
-    available: line.clientWidth,
-    more: line.querySelector('.ch-model-chip--more'),
-    chips: Array.from(line.querySelectorAll('.ch-model-chip:not(.ch-model-chip--more)'))
-  })).filter(item => item.available > 0 && item.more);
-
-  items.forEach(item => {
-    item.total = Number(item.line.dataset.total) || item.chips.length;
-    item.chips.forEach(chip => { chip.hidden = false; });
-    item.more.hidden = false;
-    item.more.textContent = `+${item.total}`;
-  });
-
-  items.forEach(item => {
-    const gap = parseFloat(getComputedStyle(item.line).columnGap) || 0;
-    const moreWidth = channelModelChipNaturalWidth(item.more);
-    let visible = 0;
-    let used = 0;
-    for (const chip of item.chips) {
-      const next = used + (visible > 0 ? gap : 0) + channelModelChipNaturalWidth(chip);
-      const reserve = visible + 1 < item.total ? gap + moreWidth : 0;
-      if (visible > 0 && next + reserve > item.available) break;
-      used = next;
-      visible++;
-    }
-    item.visible = visible;
-  });
-
-  items.forEach(({ chips, more, total, visible }) => {
-    chips.forEach((chip, index) => { chip.hidden = index >= visible; });
-    more.hidden = visible >= total;
-    more.textContent = `+${total - visible}`;
+function closeChannelModelPopovers() {
+  document.querySelectorAll('.ch-model-toggle[aria-expanded="true"]').forEach((btn) => {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.parentElement.querySelector('.ch-model-popover')?.remove();
   });
 }
 
-let channelModelLineObserver = null;
-
-// 容器宽度变化时重新计算；只在宽度变化时触发，避免高度抖动引起循环
-function fitChannelModelLines(container) {
-  fitChannelModelLineList(Array.from(container.querySelectorAll('.ch-model-line')));
-  if (channelModelLineObserver || typeof ResizeObserver !== 'function') return;
-  let lastWidth = container.clientWidth;
-  let frame = 0;
-  channelModelLineObserver = new ResizeObserver(() => {
-    if (container.clientWidth === lastWidth) return;
-    lastWidth = container.clientWidth;
-    cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => {
-      fitChannelModelLineList(Array.from(container.querySelectorAll('.ch-model-line')));
-    });
-  });
-  channelModelLineObserver.observe(container);
-}
-
-function formatChannelModelTitle(models) {
-  return channelModelDisplayGroups(models).map((group) => {
-    const targets = group.targets.filter((target) => target !== group.model);
-    return targets.length > 0 ? `${group.model}(${targets.join(', ')})` : group.model;
-  }).join(', ');
+function toggleChannelModelPopover(btn) {
+  const wasOpen = btn.getAttribute('aria-expanded') === 'true';
+  closeChannelModelPopovers();
+  if (wasOpen) return;
+  const channelID = Number(btn.dataset.channelId);
+  const channel = channels.find(item => item.id === channelID);
+  if (!channel) return;
+  btn.insertAdjacentHTML('afterend', buildChannelModelPopoverHtml(channel.models));
+  btn.setAttribute('aria-expanded', 'true');
 }
 
 function escapeChannelRefreshText(value) {
@@ -460,6 +405,7 @@ async function saveInlineChannelPriority(input) {
 const CHANNEL_METRIC_ICONS = {
   clock: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>',
+  coin: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5c-.5-1-1.5-1.5-2.5-1.5-1.4 0-2.5.8-2.5 2s1.1 1.6 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2c-1 0-2-.5-2.5-1.5M12 6.5v1.5M12 16v1.5"/></svg>',
   check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5L20 7"/></svg>'
 };
 
@@ -520,7 +466,7 @@ function buildChannelMetricsHtml(stats, { omitCalls = false } = {}) {
   });
   const tokenTotal = (Number(stats.totalInputTokens) || 0) + (Number(stats.totalOutputTokens) || 0);
   const usageValue = costHtml || `<b>${formatMetricNumber(tokenTotal)}</b> tok`;
-  items.push(`<span class="ch-metric ch-metric--usage" title="${escapeChannelRefreshText(usageLines.join(' · '))}">${usageValue}</span>`);
+  items.push(`<span class="ch-metric ch-metric--usage" title="${escapeChannelRefreshText(usageLines.join(' · '))}">${CHANNEL_METRIC_ICONS.coin}${usageValue}</span>`);
 
   return `<div class="ch-metrics">${items.join('')}</div>`;
 }
@@ -548,14 +494,17 @@ function formatChannelRelativeTime(timestampMs, nowMs = Date.now()) {
   return window.t('channels.lastSuccess.daysAgo', { count: days });
 }
 
-function buildChannelLastRequestFailureHtml(stats) {
+// 最近一次请求：成功显示请求时间，失败显示错误码与详情；客户端取消（499）不展示。
+function buildChannelLastRequestHtml(stats) {
   if (!stats) return '';
 
   const lastRequestAt = Number(stats.lastRequestAt || 0);
   const status = Number(stats.lastRequestStatus);
-  const hasRequest = lastRequestAt > 0 && Number.isFinite(status) && status > 0;
-  const requestFailed = hasRequest && (status < 200 || status >= 300) && status !== 499;
-  if (!requestFailed) return '';
+  if (lastRequestAt <= 0 || !Number.isFinite(status) || status <= 0 || status === 499) return '';
+  if (status >= 200 && status < 300) {
+    const text = window.t('channels.lastSuccess.succeededAt', { time: formatChannelRelativeTime(lastRequestAt) });
+    return `<div class="ch-last-request ch-last-request--ok">${escapeChannelRefreshText(text)}</div>`;
+  }
 
   const statusText = escapeChannelRefreshText(window.t('channels.lastSuccess.failedStatus', { status }));
   const relativeTime = formatChannelRelativeTime(lastRequestAt);
@@ -563,8 +512,8 @@ function buildChannelLastRequestFailureHtml(stats) {
   const message = String(stats.lastRequestMessage || window.t('channels.lastSuccess.failedNoMessage'));
   const escapedMessage = escapeChannelRefreshText(message);
   return `<div class="ch-last-request">
-    <span class="ch-last-request__state">${statusText}</span>
     <span class="ch-last-request__time">${timeText}</span>
+    <span class="ch-last-request__state">${statusText}</span>
     <details class="ch-last-request__detail">
       <summary>${escapeChannelRefreshText(window.t('channels.lastSuccess.detail'))}</summary>
       <div class="ch-last-request__panel">
@@ -1402,39 +1351,15 @@ function buildManagementAccountStatusHtml(channel) {
 
 const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 
-// 渠道没有额度可显示时，额度列用成功率条承载调用表现，与额度条同一视觉。
-const SUCCESS_RATE_FILL_LEVEL = { good: 'high', warn: 'medium', bad: 'low' };
-
-function buildChannelPerformanceHtml(channelID, stats) {
-  const metricsHtml = buildChannelMetricsHtml(stats, { omitCalls: true });
-  if (!metricsHtml) return '';
-  const success = Number(stats.success) || 0;
-  const failure = Number(stats.error) || 0;
-  const rate = success / (success + failure);
-  const rateText = `${(rate * 100).toFixed(1)}%`;
-  const label = window.t('channels.stats.successRateLabel');
-  const amount = `${success} / ${failure} ${window.t('stats.unitTimes')}`;
-  return `<div class="ch-oauth-usage ch-channel-performance">${buildOAuthUsageWindowHtml({
-    tooltipID: oauthUsageTooltipID('ch-performance-tooltip', channelID, 0),
-    label,
-    amount,
-    value: rateText,
-    detailLines: [window.t('channels.stats.callsTitle'), `${amount} · ${rateText}`],
-    ariaLabel: `${label} ${rateText}`,
-    percent: rate * 100,
-    level: SUCCESS_RATE_FILL_LEVEL[channelSuccessRateLevel(rate)]
-  })}${metricsHtml}</div>`;
-}
-
-// 无调用、也无额度时：API 渠道给出配置管理账户的入口（只读身份不显示）。
+// 没有额度时：API 渠道给出配置管理账户的入口（只读身份不显示）。
 function buildChannelQuotaHintHtml(channel) {
   const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
   if (channel?.auth_type !== 'api_key' || readOnly) return '';
   return `<div class="ch-quota-hint"><button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
 }
 
-// quotaHtml：额度区内容（OAuth/管理账户额度，或无额度时的成功率条/配置入口）。
-function buildChannelRuntimeStatusHtml(channel, quotaHtml = '') {
+// 冷却状态以轻量徽标排在健康度列顶部。
+function buildChannelCooldownStatusHtml(channel) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
   if (channelCooldownMS > 0) {
@@ -1448,41 +1373,47 @@ function buildChannelRuntimeStatusHtml(channel, quotaHtml = '') {
     .filter(remainingMS => remainingMS > 0);
   if (coolingKeys.length > 0) {
     const nextRecoveryMS = Math.min(...coolingKeys);
-    const text = window.t('channels.status.keyCooldowns', {
-      count: coolingKeys.length,
-      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
-    });
+    const text = escapeChannelRefreshText(window.t('channels.status.keyCooldowns', { count: coolingKeys.length }));
+    const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery'));
     const label = window.t('channels.status.viewKeyCooldowns', { count: coolingKeys.length });
-    statuses.push(`<button type="button" class="ch-runtime-status ch-runtime-status--keys channel-action-btn" data-action="edit-cooling-keys" data-channel-id="${channel.id}" aria-label="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(text)}</button>`);
+    statuses.push(`<button type="button" class="ch-runtime-status ch-runtime-status--keys channel-action-btn" data-action="edit-cooling-keys" data-channel-id="${channel.id}" aria-label="${escapeChannelRefreshText(label)}"><span>${text}</span><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></button>`);
   }
 
-  const coolingModels = (Array.isArray(channel.model_cooldowns) ? channel.model_cooldowns : [])
+  // 渠道级冷却已覆盖全部模型，模型冷却不再重复展示。
+  const coolingModels = channelCooldownMS > 0 ? [] : (Array.isArray(channel.model_cooldowns) ? channel.model_cooldowns : [])
     .map(model => Number(model?.cooldown_remaining_ms || 0))
     .filter(remainingMS => remainingMS > 0);
   if (coolingModels.length > 0) {
     const nextRecoveryMS = Math.min(...coolingModels);
-    const text = escapeChannelRefreshText(window.t('channels.status.modelCooldowns', {
-      count: coolingModels.length,
-      time: formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery')
-    }));
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span class="ch-runtime-status__text">${text}</span></div>`);
+    const text = escapeChannelRefreshText(window.t('channels.status.modelCooldowns', { count: coolingModels.length }));
+    const timeText = escapeChannelRefreshText(formatCooldownRecoveryTime(nextRecoveryMS, 'channels.status.daysHoursUntilRecovery'));
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models"><span>${text}</span><span class="ch-runtime-status__clock">${COOLDOWN_CLOCK_ICON}</span><span>${timeText}</span></div>`);
   }
-
-  const protocolProbeRetryCount = Number(channel.protocol_probe_retry_count || 0);
-  const protocolProbeRetryRemainingMS = Number(channel.protocol_probe_retry_remaining_ms || 0);
-  if (protocolProbeRetryCount > 0 && protocolProbeRetryRemainingMS > 0) {
-    const text = window.t('channels.status.protocolProbeRetries', {
-      count: protocolProbeRetryCount,
-      time: formatProtocolProbeRetryTime(protocolProbeRetryRemainingMS)
-    });
-    statuses.push(`<div class="ch-runtime-status ch-runtime-status--protocols">${escapeChannelRefreshText(text)}</div>`);
-  }
-
-  if (quotaHtml) statuses.push(quotaHtml);
 
   return statuses.length > 0
-    ? `<div class="ch-runtime-status-list">${statuses.join('')}</div>`
+    ? `<div class="ch-cooldown-line">${statuses.join('')}</div>`
     : '';
+}
+
+function buildChannelProtocolProbeHtml(channel) {
+  const count = Number(channel.protocol_probe_retry_count || 0);
+  const remainingMS = Number(channel.protocol_probe_retry_remaining_ms || 0);
+  if (count <= 0 || remainingMS <= 0) return '';
+  const text = window.t('channels.status.protocolProbeRetries', {
+    count,
+    time: formatProtocolProbeRetryTime(remainingMS)
+  });
+  return `<div class="ch-runtime-status ch-runtime-status--protocols">${escapeChannelRefreshText(text)}</div>`;
+}
+
+// 健康度列：冷却、调用指标、协议重探与最近一次失败。
+function buildChannelHealthHtml(channel, stats) {
+  return [
+    buildChannelCooldownStatusHtml(channel),
+    buildChannelMetricsHtml(stats),
+    buildChannelProtocolProbeHtml(channel),
+    buildChannelLastRequestHtml(stats)
+  ].join('');
 }
 
 /**
@@ -1495,14 +1426,10 @@ function createChannelCard(channel) {
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
-  // 没有额度可显示时，调用表现移到额度列，左侧不再重复。
-  const quotaHtml = buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel);
-  const performanceHtml = quotaHtml ? '' : buildChannelPerformanceHtml(channel.id, stats);
-  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(
-    channel,
-    quotaHtml || performanceHtml || buildChannelQuotaHintHtml(channel)
-  );
-  const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
+  const quotaHtml = buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel)
+    || buildChannelQuotaHintHtml(channel);
+  const healthHtml = buildChannelHealthHtml(channel, stats);
+  const modelsHtml = buildChannelModelToggleHtml(channel.id, channel.models);
 
   // 行class
   const rowClasses = ['channel-table-row'];
@@ -1530,18 +1457,20 @@ function createChannelCard(channel) {
     oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
-    // 一对多模型显示前两个重定向目标，悬停时显示全部目标。
-    modelsHtml: buildChannelModelLineHtml(channel.models),
-    metricsHtml: performanceHtml ? '' : buildChannelMetricsHtml(stats),
+    modelsHtml,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    runtimeStatusHtml: runtimeStatusHtml,
-    lastRequestFailureHtml: lastRequestFailureHtml,
+    quotaHtml,
+    healthHtml,
     enabled: channel.enabled,
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
     toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
-    statusCellClass: runtimeStatusHtml ? '' : 'ch-mobile-empty',
+    modelsCellClass: modelsHtml ? '' : 'ch-mobile-empty',
+    quotaCellClass: quotaHtml ? '' : 'ch-mobile-empty',
+    healthCellClass: healthHtml ? '' : 'ch-mobile-empty',
+    mobileLabelModels: window.t('channels.table.models'),
+    mobileLabelQuota: window.t('channels.table.quota'),
+    mobileLabelHealth: window.t('channels.table.health'),
     mobileLabelPriority: window.t('channels.table.priority'),
-    mobileLabelStatus: window.t('channels.table.quotaStatus'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
@@ -1636,6 +1565,12 @@ function initChannelEventDelegation() {
     const sortHeader = e.target.closest('th[data-sort-key]');
     if (sortHeader) {
       toggleChannelsSort(sortHeader.dataset.sortKey);
+      return;
+    }
+
+    const modelToggle = e.target.closest('.ch-model-toggle');
+    if (modelToggle) {
+      toggleChannelModelPopover(modelToggle);
       return;
     }
 
@@ -1754,15 +1689,19 @@ function initChannelEventDelegation() {
     }
   });
 
-  // 点击 details 外部时自动关闭（仅注册一次）
+  // 点击失败详情、模型弹层外部或按 Esc 时自动关闭（仅注册一次）
   if (!document._chLastRequestDetailListener) {
     document._chLastRequestDetailListener = true;
     document.addEventListener('click', (e) => {
+      if (!e.target.closest('.ch-model-picker')) closeChannelModelPopovers();
       if (e.target.closest('.ch-last-request__detail')) return;
       document.querySelectorAll('.ch-last-request__detail[open]').forEach((d) => {
         d.removeAttribute('open');
       });
     }, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeChannelModelPopovers();
+    });
   }
 }
 
@@ -1800,7 +1739,9 @@ function renderChannels(channelsToRender = channels) {
     <tr>
       <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" data-change-action="toggle-visible-channels-selection"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
       ${buildChannelSortHeader('name', 'ch-col-name', window.t('channels.table.nameAndUrl'))}
-      <th class="ch-col-status">${window.t('channels.table.quotaStatus')}</th>
+      <th class="ch-col-models">${window.t('channels.table.models')}</th>
+      <th class="ch-col-health">${window.t('channels.table.health')}</th>
+      <th class="ch-col-quota">${window.t('channels.table.quota')}</th>
       ${buildChannelSortHeader('priority', 'ch-col-priority', window.t('channels.table.priority'))}
       ${buildChannelSortHeader('enabled', 'ch-col-actions', window.t('channels.table.enabledAndActions'))}
     </tr>
@@ -1817,7 +1758,6 @@ function renderChannels(channelsToRender = channels) {
   if (window.i18n && window.i18n.translatePage) {
     window.i18n.translatePage(el);
   }
-  fitChannelModelLines(el);
 
   // 模板渲染后设置 checkbox 选中态
   el.querySelectorAll('.channel-select-checkbox').forEach(cb => {
@@ -1832,11 +1772,10 @@ function renderChannels(channelsToRender = channels) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    buildChannelModelLineHtml,
+    buildChannelModelToggleHtml,
+    buildChannelModelPopoverHtml,
     buildChannelMetricsHtml,
-    formatChannelModelTitle,
-    buildChannelRuntimeStatusHtml,
-    buildChannelPerformanceHtml,
+    buildChannelHealthHtml,
     buildChannelQuotaHintHtml,
     buildOAuthUsageStatusHtml,
     toggleOAuthUsageWindows,

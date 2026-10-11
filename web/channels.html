@@ -2364,13 +2364,12 @@
               <div class="ch-url-line" title="{{url}}">{{url}}</div>
             </div>
           </div>
-          {{{modelsHtml}}}
-          {{{metricsHtml}}}
           <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>
-          <div class="ch-last-request-slot">{{{lastRequestFailureHtml}}}</div>
         </div>
       </td>
-      <td class="ch-col-status {{statusCellClass}}" data-mobile-label="{{mobileLabelStatus}}">{{{runtimeStatusHtml}}}</td>
+      <td class="ch-col-models {{modelsCellClass}}" data-mobile-label="{{mobileLabelModels}}">{{{modelsHtml}}}</td>
+      <td class="ch-col-health {{healthCellClass}}" data-mobile-label="{{mobileLabelHealth}}"><div class="ch-health-cell">{{{healthHtml}}}</div></td>
+      <td class="ch-col-quota {{quotaCellClass}}" data-mobile-label="{{mobileLabelQuota}}">{{{quotaHtml}}}</td>
       <td class="ch-col-priority" data-mobile-label="{{mobileLabelPriority}}">
         {{{effectivePriorityHtml}}}
       </td>

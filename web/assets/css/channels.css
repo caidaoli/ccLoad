@@ -16,7 +16,6 @@
       --channel-runtime-status-key-fg: #92400e;
       --channel-runtime-status-protocol-accent: var(--primary-500);
       --channel-runtime-status-protocol-fg: var(--primary-700);
-      --channel-last-request-bg: rgba(254, 242, 242, 0.94);
       --channel-last-request-border: #fecaca;
       --channel-last-request-fg: #991b1b;
       --channel-last-request-summary-fg: #991b1b;
@@ -74,7 +73,6 @@
       --channel-runtime-status-key-fg: #fde68a;
       --channel-runtime-status-protocol-accent: var(--primary-400);
       --channel-runtime-status-protocol-fg: var(--primary-200);
-      --channel-last-request-bg: rgba(127, 29, 29, 0.24);
       --channel-last-request-border: rgba(248, 113, 113, 0.46);
       --channel-last-request-fg: #fecaca;
       --channel-last-request-summary-fg: #fca5a5;
@@ -2231,7 +2229,7 @@
 
     /* ===== 渠道表格布局 ===== */
     .channel-table {
-      min-width: 1120px;
+      min-width: 1260px;
       table-layout: fixed;
     }
 
@@ -2267,7 +2265,8 @@
     }
 
     .channel-table td.ch-col-name,
-    .channel-table td.ch-col-status {
+    .channel-table td.ch-col-quota,
+    .channel-table td.ch-col-health {
       padding-block: 10px;
     }
 
@@ -2277,7 +2276,9 @@
     }
 
     .channel-table thead th.ch-col-name,
-    .channel-table thead th.ch-col-status {
+    .channel-table thead th.ch-col-models,
+    .channel-table thead th.ch-col-quota,
+    .channel-table thead th.ch-col-health {
       text-align: left;
       padding-inline: 8px;
     }
@@ -2323,9 +2324,9 @@
     }
 
     .ch-col-priority {
-      width: 96px;
-      min-width: 96px;
-      max-width: 96px;
+      width: 80px;
+      min-width: 80px;
+      max-width: 80px;
       white-space: normal;
       text-align: center;
     }
@@ -2411,7 +2412,7 @@
     .ch-priority-editor {
       display: inline-flex;
       align-items: center;
-      width: 56px;
+      width: 66px;
       height: 30px;
       border: 1px solid var(--neutral-300);
       border-radius: 8px;
@@ -2426,7 +2427,7 @@
     }
 
     .ch-priority-input {
-      width: 56px;
+      width: 100%;
       height: 30px;
       border: 0;
       background: var(--field-bg);
@@ -2482,17 +2483,34 @@
       color: var(--error-600);
     }
 
-    .ch-col-status {
-      width: 400px;
-      min-width: 400px;
-      max-width: 400px;
+    .ch-col-models {
+      width: 96px;
+      min-width: 96px;
+      max-width: 96px;
+      text-align: left;
+    }
+
+    .ch-col-quota {
+      width: 340px;
+      min-width: 340px;
+      max-width: 340px;
+      white-space: normal;
+      text-align: left;
+    }
+
+    .ch-col-health {
+      width: 270px;
+      min-width: 270px;
+      max-width: 270px;
       white-space: normal;
       text-align: left;
     }
 
     @media (min-width: 769px) {
-      .channel-table td.ch-col-status {
-        padding-inline: 5px;
+      .channel-table td.ch-col-models,
+      .channel-table td.ch-col-quota,
+      .channel-table td.ch-col-health {
+        padding-inline: 8px;
       }
 
       .channel-table .ch-runtime-status {
@@ -2502,11 +2520,12 @@
       }
     }
 
-    .ch-runtime-status-list {
+    /* 健康度列：冷却徽标、调用指标、协议重探、最近失败自上而下 */
+    .ch-health-cell {
       display: flex;
       flex-direction: column;
-      align-items: stretch;
-      gap: 5px;
+      align-items: flex-start;
+      gap: 6px;
       width: 100%;
       min-width: 0;
     }
@@ -2516,6 +2535,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      gap: 4px;
       width: 100%;
       min-height: 24px;
       padding: 3px 7px;
@@ -2540,7 +2560,6 @@
     .ch-runtime-status--channel {
       border-left: 3px solid var(--channel-runtime-status-channel-accent);
       color: var(--channel-runtime-status-channel-fg);
-      gap: 4px;
     }
 
     .ch-runtime-status--keys {
@@ -2552,18 +2571,7 @@
     }
 
     .ch-runtime-status--models {
-      justify-content: flex-start;
-      gap: 6px;
-      padding: 4px 8px;
-      font-size: var(--text-xs);
-    }
-
-    .ch-runtime-status__text {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      text-align: start;
+      color: var(--channel-runtime-status-key-fg);
     }
 
     .ch-runtime-status__clock {
@@ -2652,6 +2660,16 @@
       transition-property: color, background-color, transform;
       transition-duration: 120ms;
       transition-timing-function: ease-out;
+    }
+
+    /* 抵消文字按钮内边距，让文字与进度条/单元格边缘对齐 */
+    .ch-oauth-usage__toolbar .ch-oauth-usage__refresh,
+    .ch-oauth-usage__credits .ch-oauth-usage__reset-action {
+      margin-inline-end: -6px;
+    }
+
+    .ch-quota-hint .ch-oauth-usage__refresh {
+      margin-inline-start: -6px;
     }
 
     .ch-oauth-usage__refresh:hover:not(:disabled),
@@ -2930,31 +2948,21 @@
       white-space: normal;
     }
 
+    /* 纯文字单行：失败为 时间 · 代码 · 详情 */
     .ch-last-request {
       display: flex;
       align-items: center;
       gap: 6px;
-      flex-wrap: nowrap;
       position: relative;
-      padding: 4px 8px;
-      border: 1px solid var(--channel-last-request-border);
-      border-radius: 6px;
-      background: var(--channel-last-request-bg);
       color: var(--channel-last-request-fg);
-      font-size: var(--text-xs);
-      line-height: 1.25;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.3;
+      white-space: nowrap;
     }
 
-    .ch-last-request__state {
-      flex: 0 0 auto;
+    .ch-last-request--ok {
       color: var(--neutral-500);
-      font-weight: 800;
-    }
-
-    .ch-last-request__time {
-      flex: 0 0 auto;
-      color: var(--neutral-500);
-      font-weight: 650;
     }
 
     .ch-last-request__detail {
@@ -2973,7 +2981,7 @@
       cursor: pointer;
       color: var(--channel-last-request-summary-fg);
       font-size: 11px;
-      font-weight: 700;
+      font-weight: 600;
       white-space: nowrap;
     }
 
@@ -3173,51 +3181,103 @@
       max-width: 100%;
     }
 
-    /* 单行模型标签：超出部分由 +N 汇总，完整列表在 title */
-    .ch-model-line {
-      display: flex;
-      gap: 4px;
-      margin-top: 6px;
-      overflow: hidden;
-      white-space: nowrap;
+    /* 模型列：数量按钮，点击弹出完整模型标签 */
+    .ch-model-picker {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
     }
 
-    /* 可见数量由 fitChannelModelLine 按行宽决定；只有首个标签允许收缩省略 */
+    .ch-model-toggle {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 100%;
+      padding: 4px 10px;
+      border: 1px solid var(--surface-border);
+      border-radius: 6px;
+      background: var(--surface-bg-muted);
+      color: var(--neutral-700);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 16px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .ch-model-toggle:hover,
+    .ch-model-toggle[aria-expanded="true"] {
+      border-color: var(--neutral-300);
+      background: var(--surface-hover);
+      color: var(--neutral-900);
+    }
+
+    .ch-model-toggle:focus-visible {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
+    }
+
+    .ch-model-toggle__caret {
+      color: var(--neutral-400);
+      border-top: 4px solid currentColor;
+      border-inline: 3.5px solid transparent;
+      transition: transform 0.15s ease;
+    }
+
+    .ch-model-toggle[aria-expanded="true"] .ch-model-toggle__caret {
+      transform: rotate(180deg);
+    }
+
+    .ch-model-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 30;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      box-sizing: border-box;
+      width: max-content;
+      max-width: min(440px, calc(100vw - 48px));
+      max-height: 280px;
+      overflow-y: auto;
+      padding: 10px;
+      border: 1px solid var(--surface-border);
+      border-radius: 10px;
+      background: var(--surface-bg-strong);
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+    }
+
+    /* 冷却条排在健康度列顶部，整列宽、内容居中 */
+    .ch-cooldown-line {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 5px;
+      width: 100%;
+    }
+
     .ch-model-chip {
-      flex: 0 0 auto;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      padding: 1px 7px;
+      max-width: 100%;
+      padding: 2px 8px;
       border: 1px solid var(--surface-border);
       border-radius: 5px;
       background: var(--surface-bg-muted);
       color: var(--neutral-700);
       font-family: var(--font-family-mono);
-      font-size: 11.5px;
+      font-size: 12px;
       line-height: 18px;
-    }
-
-    .ch-model-chip:first-child {
-      flex-shrink: 1;
-    }
-
-    .ch-model-chip[hidden] {
-      display: none;
-    }
-
-    .ch-model-chip--more {
-      color: var(--neutral-500);
-      font-family: inherit;
+      overflow-wrap: anywhere;
     }
 
     /* 指标行：耗时、速度、成功/失败·成功率、消耗 */
     .ch-metrics {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 14px;
-      margin-top: 7px;
-      overflow: hidden;
+      gap: 4px 12px;
       color: var(--neutral-500);
       font-size: var(--text-xs);
       white-space: nowrap;
@@ -3259,14 +3319,9 @@
       cursor: help;
     }
 
-    /* 额度列：无额度时的成功率条与指标、配置入口 */
-    .ch-channel-performance .ch-metrics {
-      margin-top: 0;
-    }
-
+    /* 额度列：无额度时的配置入口 */
     .ch-quota-hint {
       display: flex;
-      justify-content: flex-end;
     }
 
     .ch-metric--usage .cost-stack {
@@ -3278,16 +3333,7 @@
       display: none;
     }
 
-    .ch-last-request-slot {
-      margin-top: 5px;
-      max-width: 100%;
-    }
-
-    .ch-last-request-slot:empty {
-      display: none;
-    }
-
-    .ch-name-cell .ch-last-request {
+    .ch-health-cell .ch-last-request {
       width: fit-content;
       max-width: 100%;
     }
@@ -5819,10 +5865,25 @@
         grid-column: 1;
       }
 
-      .channel-table .ch-col-status {
+      .channel-table .ch-col-models {
+        order: 10;
+        grid-column: 1 / -1;
+      }
+
+      .channel-table .ch-col-health {
         order: 12;
         grid-column: 1 / -1;
+      }
+
+      .channel-table .ch-col-quota {
+        order: 14;
+        grid-column: 1 / -1;
         flex-wrap: wrap;
+      }
+
+      .channel-table .ch-model-popover {
+        left: auto;
+        right: 0;
       }
 
       .channel-table .ch-col-actions {
@@ -5834,7 +5895,7 @@
         padding-right: 0;
       }
 
-      .channel-table .ch-col-status {
+      .channel-table .ch-col-quota {
         background: var(--surface-bg-muted);
         border: 1px solid var(--surface-border);
         border-radius: 12px;
@@ -5854,7 +5915,8 @@
       }
 
       .channel-table .ch-col-priority,
-      .channel-table .ch-col-status {
+      .channel-table .ch-col-models,
+      .channel-table .ch-col-quota {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -5862,7 +5924,7 @@
       }
 
       .channel-table .ch-col-priority::before,
-      .channel-table .ch-col-status::before {
+      .channel-table .ch-col-models::before {
         margin-bottom: 0;
         flex: 0 0 auto;
       }
@@ -5884,15 +5946,7 @@
         visibility: visible;
       }
 
-      .channel-table .ch-col-status .ch-runtime-status-list {
-        flex: 1 1 auto;
-        align-items: stretch;
-        width: 100%;
-        min-width: 0;
-        margin-left: 0;
-      }
-
-      .channel-table .ch-col-status .ch-runtime-status {
+      .channel-table .ch-col-health .ch-runtime-status {
         width: auto;
         max-width: 100%;
       }
@@ -5917,7 +5971,7 @@
       }
 
       .channel-table td.ch-col-actions::before,
-      .channel-table td.ch-col-status::before {
+      .channel-table td.ch-col-quota::before {
         content: none;
         display: none;
       }
@@ -6277,6 +6331,10 @@
         flex-wrap: wrap;
         align-items: flex-start;
         gap: 6px;
+      }
+
+      .channel-table .ch-name-main {
+        flex-wrap: wrap;
       }
 
       .channel-table .ch-url-line {

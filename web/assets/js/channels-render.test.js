@@ -6,7 +6,9 @@ const {
   buildOAuthUsageStatusHtml,
   toggleOAuthUsageWindows,
   buildChannelMetricsHtml,
-  buildChannelPerformanceHtml,
+  buildChannelHealthHtml,
+  buildChannelModelToggleHtml,
+  buildChannelModelPopoverHtml,
   buildChannelQuotaHintHtml,
   buildManagementAccountStatusHtml,
   isOpenCodeGoChannel,
@@ -591,7 +593,26 @@ test('OAuth 额度超过 2 个窗口时折叠其余窗口，展开状态跨重�
   }
 });
 
-test('无额度渠道：有调用时显示成功率条（不重复调用次数），无调用时仅 API 渠道提供管理账户入口且只读不显示', () => {
+test('模型列显示去重后的模型数，弹层列出全部模型及重定向目标并转义', () => {
+  const saved = global.window;
+  global.window = { t: (key, values = {}) => `${key}:${values.count ?? ''}` };
+  try {
+    assert.equal(buildChannelModelToggleHtml(3, []), '');
+    const models = [
+      { model: 'gpt-5', redirect_model: '' },
+      { model: 'alias', redirect_model: 'a' },
+      { model: 'alias', redirect_model: 'b' },
+      { model: '<x>', redirect_model: '' }
+    ];
+    assert.match(buildChannelModelToggleHtml(3, models), /data-channel-id="3" aria-expanded="false">channels\.table\.modelCount:3</);
+    const chips = [...buildChannelModelPopoverHtml(models).matchAll(/class="ch-model-chip">([^<]*)</g)].map(m => m[1]);
+    assert.deepEqual(chips, ['gpt-5', 'alias(a, b)', '&lt;x&gt;']);
+  } finally {
+    global.window = saved;
+  }
+});
+
+test('健康度列：冷却状态在调用指标之前，最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空；额度列仅 API 渠道提供管理账户入口且只读不显示', () => {
   const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber, readOnly: global.isTokenChannelsReadOnly };
   global.window = { t: key => key, getFirstByteTimingColor: () => 'green', getDurationTimingColor: () => 'green' };
   global.buildCostStackHtml = () => '';
@@ -599,13 +620,22 @@ test('无额度渠道：有调用时显示成功率条（不重复调用次数�
   let readOnly = false;
   global.isTokenChannelsReadOnly = () => readOnly;
   try {
-    assert.equal(buildChannelPerformanceHtml(9, { success: 0, error: 0 }), '');
+    assert.equal(buildChannelHealthHtml({ id: 9 }, { success: 0, error: 0 }), '');
 
-    const html = buildChannelPerformanceHtml(9, { success: 9, error: 1, avgDurationSeconds: 2, totalInputTokens: 10, totalOutputTokens: 5 });
-    assert.match(html, /role="progressbar"[^>]*aria-valuenow="90"/);
-    assert.match(html, /ch-oauth-usage__fill--medium/);
-    assert.match(html, /9 \/ 1 stats\.unitTimes/);
-    assert.doesNotMatch(html, /ch-metric__ok/);
+    const stats = { success: 9, error: 1, avgDurationSeconds: 2, totalInputTokens: 10, totalOutputTokens: 5 };
+    const html = buildChannelHealthHtml({ id: 9, cooldown_remaining_ms: 60000 }, stats);
+    const cooldownAt = html.indexOf('ch-runtime-status--channel');
+    const metricsAt = html.indexOf('class="ch-metrics"');
+    assert.ok(cooldownAt >= 0 && metricsAt > cooldownAt);
+    assert.match(html, /ch-metric__rate--warn">90\.0%</);
+
+    const lastRequest = status => buildChannelHealthHtml({ id: 9 }, { ...stats, lastRequestAt: Date.now() - 120000, lastRequestStatus: status, lastRequestMessage: '<boom>' });
+    assert.match(lastRequest(200), /ch-last-request--ok">channels\.lastSuccess\.succeededAt</);
+    assert.doesNotMatch(lastRequest(200), /ch-last-request__detail/);
+    const failed = lastRequest(502);
+    assert.match(failed, /channels\.lastSuccess\.failedStatus/);
+    assert.match(failed, /&lt;boom&gt;/);
+    assert.doesNotMatch(lastRequest(499), /ch-last-request/);
 
     const action = /data-action="configure-management-account" data-channel-id="9"/;
     assert.match(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key' }), action);
