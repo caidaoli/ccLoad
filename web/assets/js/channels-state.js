@@ -53,7 +53,6 @@ function getChannelAuthTypeOptions() {
   return [
     { value: 'all', label: window.t('channels.authTypeAll') },
     { value: 'api_key', label: window.t('channels.authTypeAPI') },
-    { value: 'system_one', label: window.t('channels.authTypeSystemOne') },
     { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
     { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
@@ -61,7 +60,8 @@ function getChannelAuthTypeOptions() {
     { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },
     { value: 'zed_oauth', label: window.t('channels.authTypeZed') },
-    { value: 'zai_oauth', label: window.t('channels.authTypeZAI') }
+    { value: 'zai_oauth', label: window.t('channels.authTypeZAI') },
+    { value: 'system_one', label: window.t('channels.authTypeSystemOne') }
   ];
 }
 

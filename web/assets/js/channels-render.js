@@ -47,10 +47,21 @@ function buildChannelModelToggleHtml(channelID, models) {
   return `<div class="ch-model-picker"><button type="button" class="ch-model-toggle" data-channel-id="${channelID}" aria-expanded="false">${label}<span class="ch-model-toggle__caret" aria-hidden="true"></span></button></div>`;
 }
 
+// 标签显示重定向目标，点击复制的是客户端请求用的模型名。
 function buildChannelModelPopoverHtml(models) {
   const chips = channelModelDisplayGroups(models)
-    .map(group => `<span class="ch-model-chip">${escapeChannelRefreshText(formatChannelModelLabel(group))}</span>`);
+    .map(group => `<button type="button" class="ch-model-chip" data-model="${escapeChannelRefreshText(group.model)}">${escapeChannelRefreshText(formatChannelModelLabel(group))}</button>`);
   return `<div class="ch-model-popover">${chips.join('')}</div>`;
+}
+
+function copyChannelModelName(chip) {
+  const model = chip.dataset.model;
+  if (!model) return Promise.resolve();
+  return window.copyToClipboard(model).then(() => {
+    if (window.showSuccess) window.showSuccess(window.t('channels.modelCopied', { model }));
+  }).catch(() => {
+    if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
+  });
 }
 
 function closeChannelModelPopovers() {
@@ -1574,6 +1585,12 @@ function initChannelEventDelegation() {
       return;
     }
 
+    const modelChip = e.target.closest('.ch-model-chip');
+    if (modelChip) {
+      copyChannelModelName(modelChip);
+      return;
+    }
+
     const lastRequestCopyBtn = e.target.closest('.ch-last-request__copy');
     if (lastRequestCopyBtn) {
       copyChannelLastRequestFailure(lastRequestCopyBtn);
@@ -1774,6 +1791,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildChannelModelToggleHtml,
     buildChannelModelPopoverHtml,
+    copyChannelModelName,
     buildChannelMetricsHtml,
     buildChannelHealthHtml,
     buildChannelQuotaHintHtml,

@@ -9,6 +9,7 @@ const {
   buildChannelHealthHtml,
   buildChannelModelToggleHtml,
   buildChannelModelPopoverHtml,
+  copyChannelModelName,
   buildChannelQuotaHintHtml,
   buildManagementAccountStatusHtml,
   isOpenCodeGoChannel,
@@ -605,8 +606,31 @@ test('模型列显示去重后的模型数，弹层列出全部模型及重定�
       { model: '<x>', redirect_model: '' }
     ];
     assert.match(buildChannelModelToggleHtml(3, models), /data-channel-id="3" aria-expanded="false">channels\.table\.modelCount:3</);
-    const chips = [...buildChannelModelPopoverHtml(models).matchAll(/class="ch-model-chip">([^<]*)</g)].map(m => m[1]);
-    assert.deepEqual(chips, ['gpt-5', 'alias(a, b)', '&lt;x&gt;']);
+    const chips = [...buildChannelModelPopoverHtml(models).matchAll(/<button type="button" class="ch-model-chip" data-model="([^"]*)">([^<]*)</g)]
+      .map(m => [m[1], m[2]]);
+    assert.deepEqual(chips, [['gpt-5', 'gpt-5'], ['alias', 'alias(a, b)'], ['&lt;x&gt;', '&lt;x&gt;']]);
+  } finally {
+    global.window = saved;
+  }
+});
+
+test('点击模型标签复制请求模型名，失败时提示手动复制', async () => {
+  const saved = global.window;
+  const copied = [];
+  const toasts = [];
+  let fail = false;
+  global.window = {
+    t: (key, values = {}) => `${key}:${values.model ?? ''}`,
+    copyToClipboard: text => (fail ? Promise.reject(new Error('denied')) : (copied.push(text), Promise.resolve())),
+    showSuccess: msg => toasts.push(['success', msg]),
+    showError: msg => toasts.push(['error', msg])
+  };
+  try {
+    await copyChannelModelName({ dataset: { model: 'alias' } });
+    fail = true;
+    await copyChannelModelName({ dataset: { model: 'gpt-5' } });
+    assert.deepEqual(copied, ['alias']);
+    assert.deepEqual(toasts, [['success', 'channels.modelCopied:alias'], ['error', 'channels.keyCopyFailed:']]);
   } finally {
     global.window = saved;
   }
