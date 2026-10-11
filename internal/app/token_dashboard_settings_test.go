@@ -127,8 +127,8 @@ func TestTokenChannelVisibilityKeepsStatisticsRows(t *testing.T) {
 					if row.Total != 1 || row.TotalCost == nil {
 						t.Fatalf("changed row: %+v", row)
 					}
-					if hidden && row.ChannelID != nil {
-						t.Fatal("hidden channel ID exposed")
+					if hidden && (row.ChannelID != nil || row.ChannelAuthType != "") {
+						t.Fatal("hidden channel identity exposed")
 					}
 					cost += *row.TotalCost
 				}

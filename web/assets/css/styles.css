@@ -7149,6 +7149,31 @@ body.web-role-api-token .filter-group--auth-token {
   white-space: nowrap;
 }
 
+/* 渠道头像在名称 + 健康条左侧垂直居中，尺寸配色与渠道列表一致 */
+.stats-channel-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stats-channel-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.stats-channel-avatar {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
 @media (max-width: 768px) {
   .mobile-card-table-container {
     overflow-x: visible;
@@ -7430,8 +7455,15 @@ body.web-role-api-token .filter-group--auth-token {
     white-space: nowrap;
   }
 
-  .stats-table .stats-col-channel {
+  .stats-table .stats-col-channel .stats-channel-cell {
+    flex: 1 1 auto;
+  }
+
+  .stats-table .stats-col-channel .stats-channel-text {
+    display: flex;
     flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
   }
 
   .stats-table .stats-col-channel .channel-link {
@@ -7516,7 +7548,9 @@ body.web-role-api-token .filter-group--auth-token {
     overflow: hidden;
   }
 
+  /* 渠道头像占位后文本列不足 239px，格子按列宽等分，避免右端被裁掉 */
   .stats-table .health-track {
+    grid-template-columns: repeat(48, minmax(0, 1fr));
     width: min(100%, 335px);
     min-width: 0;
     flex: 1 1 auto;

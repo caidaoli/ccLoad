@@ -201,6 +201,7 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
+					stats[i].ChannelAuthType = info.AuthType
 					if info.CostMultiplierMin != 1 || info.CostMultiplierMax != 1 {
 						min := info.CostMultiplierMin
 						max := info.CostMultiplierMax

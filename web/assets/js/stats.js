@@ -499,6 +499,8 @@
           channelId: entry.channel_id,
           channelNameAttr: entry.channel_name,
           channelName: entry.channel_name,
+          channelAuthType: entry.channel_auth_type || 'api_key',
+          channelAvatarHtml: window.channelAvatarContentHTML(entry.channel_auth_type || 'api_key', entry.channel_name),
           channelLogsTitle: t('stats.viewChannelLogsTitle'),
           channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
           healthIndicator: healthIndicator,

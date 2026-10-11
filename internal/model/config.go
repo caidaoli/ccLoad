@@ -611,6 +611,7 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 type ChannelInfo struct {
 	Name              string
 	Priority          int
+	AuthType          string
 	CostMultiplierMin float64
 	CostMultiplierMax float64
 }

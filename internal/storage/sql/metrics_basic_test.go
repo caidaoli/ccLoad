@@ -127,7 +127,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			if e.Total != 2 || e.Success != 1 || e.Error != 1 {
 				t.Fatalf("openai stats=%+v, want total=2 success=1 error=1 (exclude 499)", e)
 			}
-			if e.ChannelName == "" || e.ChannelPriority == nil {
+			if e.ChannelName == "" || e.ChannelPriority == nil || e.ChannelAuthType != model.AuthTypeAPIKey {
 				t.Fatalf("expected channel info filled, got %+v", e)
 			}
 			if e.CostMultiplierMin == nil || *e.CostMultiplierMin != 0.85 || e.CostMultiplierMax == nil || *e.CostMultiplierMax != 0.85 {
@@ -147,6 +147,9 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			}
 			if got, ok := payload["cost_multiplier_max"].(float64); !ok || got != 0.85 {
 				t.Fatalf("expected cost_multiplier_max=0.85 in stats payload, got %+v", payload)
+			}
+			if got := payload["channel_auth_type"]; got != model.AuthTypeAPIKey {
+				t.Fatalf("expected channel_auth_type=api_key in stats payload, got %+v", payload)
 			}
 		}
 	}

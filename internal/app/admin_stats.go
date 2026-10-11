@@ -204,6 +204,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 		for i := range stats {
 			stats[i].ChannelID = nil
 			stats[i].ChannelName = ""
+			stats[i].ChannelAuthType = ""
 		}
 	}
 
