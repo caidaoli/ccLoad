@@ -557,8 +557,6 @@ function buildLogTokenDescDisplay(label) {
 
 function renderLogSourceBadge(logSource) {
   switch (logSource) {
-    case 'jev':
-      return '<span class="log-source-badge log-source-badge--manual">Jev</span>';
     case 'scheduled_check':
       return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceScheduledCheckBadge'))}</span>`;
     case 'manual_test':
@@ -576,23 +574,14 @@ function renderLogSourceBadge(logSource) {
 
 function canInspectDebugLog(entry) {
   const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
-  // Jev 审计与 count_tokens 本地估算没有渠道，但同样可能带 debug 记录。
-  const isChannelless = entry?.log_source === 'jev' || entry?.log_source === 'count_tokens';
+  // count_tokens 本地估算没有渠道，但同样可能带 debug 记录。
+  const isChannelless = entry?.log_source === 'count_tokens';
   return !isTokenSession && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
 }
 
 function buildLogMessageContent(entry) {
   const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
-  let messageText = entry.message || '';
-  if (entry.log_source === 'jev') {
-    try {
-      const audit = JSON.parse(messageText);
-      const adopted = Object.entries(audit.adopted || {}).map(([key, value]) => `${key}=${value}`).join(', ');
-      const fallback = Object.entries(audit.fallback || {}).map(([key, value]) => `fallback.${key}=${value}`).join(', ');
-      messageText = [audit.call_id && `call_id=${audit.call_id}`, adopted, fallback].filter(Boolean).join(', ');
-    } catch (_) { /* keep the stored message when old audit data is not JSON */ }
-  }
-  messageText = escapeHtml(messageText);
+  const messageText = escapeHtml(entry.message || '');
   if (!sourceBadge && !messageText) {
     return '';
   }

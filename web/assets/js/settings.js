@@ -43,7 +43,7 @@ function projectCustomPricingDefaults(pricing) {
 }
 
 const advancedSettingKeys = new Set([
-  'typesafe_enabled', 'typesafe_api_key', 'api_token_login_enabled', 'api_token_show_channels',
+  'api_token_login_enabled', 'api_token_show_channels',
   'auto_update_interval_hours', 'auto_update_channel',
   'auto_refresh_interval_seconds',
   'codex_map_429_to_503',
@@ -1566,8 +1566,6 @@ function getSettingOrder(key) {
     auto_update_channel: 701,
     api_token_login_enabled: 702,
     api_token_show_channels: 703,
-    typesafe_enabled: 705,
-    typesafe_api_key: 706,
     model_custom_pricing: 710
   };
   const normalizedKey = String(key || '').toLowerCase();
@@ -1766,11 +1764,6 @@ function initSettingsEventDelegation() {
       openGlobalCooldownRulesModal(editGlobalRulesBtn);
       return;
     }
-    const typeSafeTestBtn = e.target.closest('[data-action="test-typesafe"]');
-    if (typeSafeTestBtn) {
-      testTypeSafeKey(typeSafeTestBtn);
-      return;
-    }
     const updateCheckBtn = e.target.closest('[data-action="check-for-updates"]');
     if (updateCheckBtn) {
       checkForUpdates(updateCheckBtn);
@@ -1813,29 +1806,6 @@ async function checkForUpdates(button) {
   }
 }
 
-async function testTypeSafeKey(button) {
-  if (button.disabled) return;
-  const input = document.getElementById('TypeSafe_api_key');
-  const key = input.value.trim();
-  const payload = key || input.dataset.clearSecret === 'true' ? { api_key: key } : {};
-  button.disabled = true;
-  button.setAttribute?.('aria-busy', 'true');
-  button.textContent = t('settings.typeSafeTest.testing');
-  try {
-    const result = await fetchDataWithAuth('/admin/typesafe/test', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    });
-    if (result.valid) showSuccess(t('settings.typeSafeTest.success'));
-    else showError(t('settings.typeSafeTest.failed') + ': ' + result.message);
-  } catch (err) {
-    showError(t('settings.typeSafeTest.failed') + ': ' + err.message);
-  } finally {
-    button.disabled = false;
-    button.removeAttribute?.('aria-busy');
-    button.textContent = t('settings.typeSafeTest.test');
-  }
-}
-
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
@@ -1856,14 +1826,6 @@ function renderInput(setting) {
           ${escapeHtml(t('settings.globalCooldownRules.ruleCount', { count }))}
         </span>
       </div>`;
-  }
-
-  if (setting.key === 'TypeSafe_api_key') {
-    const hint = t(setting.configured ? 'settings.secretConfigured' : 'settings.secretUnconfigured');
-    return `<div class="settings-typesafe-control">
-      <input type="text" id="${safeKey}" value="" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(hint)}" aria-label="TypeSafe API Key" class="settings-input settings-input--text">
-      <button type="button" class="btn btn-secondary" data-action="test-typesafe" title="${escapeHtml(t('settings.typeSafeTest.hint'))}">${escapeHtml(t('settings.typeSafeTest.test'))}</button>
-    </div>`;
   }
 
   const selectOptions = selectSettingOptions.get(setting.key);
@@ -1948,8 +1910,7 @@ function focusSettingControl(key) {
 }
 
 function isSettingChanged(key, control) {
-  return control.value !== originalSettings[key]
-    || (key === 'TypeSafe_api_key' && control.input.dataset.clearSecret === 'true');
+  return control.value !== originalSettings[key];
 }
 
 function changedSettingKeys() {
@@ -2016,11 +1977,6 @@ function setSettingControlValue(key, value) {
 }
 
 function syncSettingState(key, value) {
-  if (key === 'TypeSafe_api_key') {
-    const input = document.getElementById(key);
-    if (input) delete input.dataset.clearSecret;
-    value = '';
-  }
   const normalizedValue = settingValueForDisplay(key, value);
   const control = setSettingControlValue(key, value);
 
@@ -2122,11 +2078,6 @@ function resetSetting(key) {
   }
 
   const control = setSettingControlValue(key, setting.default_value ?? '');
-  if (key === 'TypeSafe_api_key' && control?.input) {
-    control.input.dataset.clearSecret = 'true';
-    const enabled = setSettingControlValue('TypeSafe_enabled', 'false');
-    if (enabled?.input) markChanged(enabled.input);
-  }
   if (control?.input) markChanged(control.input);
 }
 

@@ -141,7 +141,6 @@ func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.Error
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
 	}
 	in := httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
-	in.ReceivedAt = res.errorReceivedAt
 	if res.UpstreamStatus != 0 {
 		in.UpstreamStatusCode = res.UpstreamStatus
 	}
@@ -269,9 +268,6 @@ func buildProxyLogEntry(
 		ModelPrice:       reqCtx.attemptModelPrice,
 		ThinkingEffort:   reqCtx.thinkingEffort,
 	})
-	if res != nil && res.jevNote != "" {
-		entry.Message += " [jev " + res.jevNote + "]"
-	}
 	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
 		entry.Message += " [credits]"
 	}
@@ -702,9 +698,6 @@ func (s *Server) handleStreamingErrorNoRetry(
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
-	if !res.UpstreamWebsocketTransportFailure {
-		input = s.prepareJevError(ctx, cfg, reqCtx, res, input, selectedKey)
-	}
 	// 记录错误日志；已提交的部分 usage 上游已收费，照常计入令牌费用
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 	s.updateTokenStatsForProxy(reqCtx, model.TokenStatsFailure, duration, res, actualModel)
@@ -807,9 +800,6 @@ func (s *Server) handleProxyErrorResponse(
 	}
 	if isAntigravityModelNotFound(cfg, res.Status) {
 		input.ModelScoped = true
-	}
-	if !forceReturnClient && !modelCapacityRateLimited {
-		input = s.prepareJevError(ctx, cfg, reqCtx, res, input, selectedKey)
 	}
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""

@@ -85,8 +85,6 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `cooldown_max_seconds` | `1800` | 指数退避冷却上限（秒；下限大于上限时整对回退默认值） |
 | `cooldown_fallback_enabled` | `true` | 所有渠道都在冷却时，兜底选取「最早恢复」的渠道继续服务（Key 同样选最早恢复的）；设为 `false` 则直接拒绝请求 |
 | `global_cooldown_detection_rules` | `{}` | 全局冷却探测规则，渠道未配置自身 `cooldown_detection_rules` 时继承 |
-| `TypeSafe_enabled` | `false` | 启用 TypeSafe（Jev）错误分析兜底；需配置密钥，保存后重启生效 |
-| `TypeSafe_api_key` | 空 | TypeSafe API 密钥；设置接口不回显，不修改则保留，重置时清除并关闭 TypeSafe |
 | `upstream_connection_reuse_limit_seconds` | `0` | 上游连接最长复用时间（秒，`0`=不限制）；统一约束 HTTP/1.1、HTTP/2 和 WebSocket，达到时限后不再接收新请求，在途请求跑完再关闭，下次按需重连 |
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON 字符串数组；命中的词在 Antigravity `systemInstruction` 和 CodeBuddy system/developer 消息文本中用零宽字符替换 |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |

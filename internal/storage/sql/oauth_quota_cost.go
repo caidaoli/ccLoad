@@ -43,8 +43,7 @@ func validateOAuthQuotaCostCredential(channelID int64, nextJSON string) error {
 }
 
 func isOAuthQuotaCreditLog(entry *model.LogEntry) bool {
-	return entry != nil && entry.ChannelID > 0 && entry.Cost > 0 &&
-		entry.LogSource != model.LogSourceJev && entry.CodexHasCredits
+	return entry != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.CodexHasCredits
 }
 
 // LogsChargeOAuthCredits 报告这批日志是否会改写凭据（仅 Codex 已购额度）。

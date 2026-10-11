@@ -2613,7 +2613,6 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	if res != nil {
-		res.errorReceivedAt = time.Now()
 		res.RetryStrategy = reqCtx.anthropicThinkingOmitStrategy
 	}
 	reqCtx.antigravityReplay.finish(res, err)
@@ -2841,9 +2840,6 @@ func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
 // ============================================================================
 
 func markSSEErrorForwardResult(res *fwResult) {
-	if res.errorReceivedAt.IsZero() {
-		res.errorReceivedAt = time.Now()
-	}
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
 	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {

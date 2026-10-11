@@ -83,8 +83,6 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `cooldown_max_seconds` | `1800` | Exponential backoff cooldown ceiling in seconds (an inverted floor/ceiling pair falls back to both defaults) |
 | `cooldown_fallback_enabled` | `true` | When every channel is cooling down, fall back to the channel that recovers soonest instead of failing (keys follow the same earliest-recovery rule); set to `false` to reject the request outright |
 | `global_cooldown_detection_rules` | `{}` | Global cooldown detection rules, inherited by channels that define no `cooldown_detection_rules` of their own |
-| `TypeSafe_enabled` | `false` | Enable TypeSafe (Jev) error analysis fallback; requires an API key and restart |
-| `TypeSafe_api_key` | empty | TypeSafe API key; never returned by the settings API. Reset clears the key and disables TypeSafe |
 | `upstream_connection_reuse_limit_seconds` | `0` | Maximum upstream connection reuse time in seconds (`0` = unlimited); applies to HTTP/1.1, HTTP/2, and WebSocket, drains active requests, then reconnects on demand |
 | `antigravity_sensitive_words` | `["API","proxy","Claude","Anthropic"]` | JSON string array of words replaced with zero-width characters in Antigravity `systemInstruction` and CodeBuddy system/developer message text |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |

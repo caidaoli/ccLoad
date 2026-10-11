@@ -79,9 +79,9 @@ func TracksQuotaCost(authType string) bool {
 }
 
 // CountsTowardQuotaWindows 判断日志的标准成本是否进入周期额度账本。
-func CountsTowardQuotaWindows(authType, logSource string, cost float64, codexHasCredits bool) bool {
+func CountsTowardQuotaWindows(authType string, cost float64, codexHasCredits bool) bool {
 	normalized := NormalizeAuthType(authType)
-	return TracksQuotaCost(normalized) && cost > 0 && logSource != LogSourceJev &&
+	return TracksQuotaCost(normalized) && cost > 0 &&
 		(!codexHasCredits || normalized != AuthTypeCodexOAuth)
 }
 

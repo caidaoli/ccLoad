@@ -15,12 +15,10 @@
 
 - **上游 HTTP/2 健康探测**(`server.go:buildHTTPTransport`+`codex_utls_transport.go:newCodexUTLSH2Transport`):普通 HTTPS 与专用 uTLS H2 连接共用 30 秒无入站帧后发 PING、15 秒无应答关闭连接的策略。只作用于实际使用 H2 的连接,不改变 H1/代理协议选择;这是连接级探测,不替代首字节/流式总超时、下游 SSE 心跳或 WebSocket 心跳,也不恢复已中断的生成。
 
-## TypeSafe 设置
+## 已下线设置
 
-- 密钥框右侧的测试按钮调用管理员接口 `POST /admin/typesafe/test`：显式 `api_key` 验证输入值，省略则读取持久化密钥；不修改设置或重启。使用独立 Jev 客户端、3 秒超时和共享限流，调用以 `credential_test` 用途写入脱敏 Jev 日志，并关联脱敏 Debug 数据供管理端查看。
-
-- `TypeSafe_enabled` 默认 false；启用前必须保存 `TypeSafe_api_key`。设置查询和单项写入响应只暴露已配置状态，不回显密钥；未提交密钥则保留，显式提交空值或重置密钥会原子关闭开关。沿用保存后重启契约。
-- 设置页将 API Token 登录和程序更新并入高级，按全局冷却规则、TypeSafe 开关/密钥、Token 登录/渠道显示、更新间隔/渠道/检查按钮排序；容器说明紧邻只读更新控件。
+- TypeSafe（Jev）错误分析已移除。`TypeSafe_enabled`/`TypeSafe_api_key` 旧行保留在 `system_settings` 中不删，迁移不再播种；`admin_settings.go:retiredSettingKeys` 让列表/单项查询不展示、批量写入按未知设置拒绝。历史 `log_source=jev` 日志行同样不删，但前后端不再识别该来源：读出按 proxy 归一，仅在“全部日志”中可见，不再有 Jev 专属标记、消息解析和 Debug 入口。
+- 设置页将 API Token 登录和程序更新并入高级，按全局冷却规则、Token 登录/渠道显示、更新间隔/渠道/检查按钮排序；容器说明紧邻只读更新控件。
 
 ## API Token 网页登录
 

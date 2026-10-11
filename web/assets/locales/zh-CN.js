@@ -66,15 +66,6 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   // 登录页
   // ============================================================
-  'settings.typeSafeTest.test': '测试',
-  'settings.typeSafeTest.testing': '测试中…',
-  'settings.typeSafeTest.success': '密钥验证成功，TypeSafe 可正常调用',
-  'settings.typeSafeTest.failed': 'TypeSafe 测试失败',
-  'settings.typeSafeTest.hint': '测试当前输入；留空则测试已保存的密钥，不保存设置',
-  'settings.desc.TypeSafe_enabled': 'TypeSafe 错误分析兜底（需配置密钥，保存后重启生效）',
-  'settings.desc.TypeSafe_api_key': 'TypeSafe API Key（不修改则保留，重置可清除并关闭 TypeSafe）',
-  'settings.secretConfigured': '已配置；留空保留，重置可清除',
-  'settings.secretUnconfigured': '未配置',
   'settings.desc.api_token_login_enabled': '允许 API Token 登录网页 （保存后重启生效）',
   'settings.desc.api_token_show_channels': 'API Token 登录时显示渠道名和实际模型名（默认禁用，保存后重启生效）',
   'login.title': '登录 - ccLoad',

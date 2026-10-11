@@ -532,8 +532,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	settings := []struct {
 		key, value, valueType, desc, defaultVal string
 	}{
-		{config.TypeSafeEnabledSettingKey, "false", "bool", "TypeSafe 错误分析兜底（需配置密钥，保存后重启生效）", "false"},
-		{config.TypeSafeAPIKeySettingKey, "", "string", "TypeSafe API Key（留空保留；重置可清除并关闭 TypeSafe）", ""},
 		{config.APITokenLoginEnabledSettingKey, "false", "bool", "允许 API Token 登录网页（保存后重启生效，不影响 API 调用）", "false"},
 		{config.APITokenShowChannelsSettingKey, "false", "bool", "API Token 登录时显示渠道名和实际模型名（默认禁用，保存后重启生效；不开放渠道配置）", "false"},
 		{config.CodexBaseURLSettingKey, "", "string", "Codex OAuth 完整 Responses URL(留空使用渠道URL；填写后覆盖渠道URL)", ""},

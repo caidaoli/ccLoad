@@ -73,7 +73,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 
 	now := model.JSONTime{Time: time.Now()}
 	for _, entry := range []*model.LogEntry{
-		{Time: now, Model: "jev-latest", LogSource: model.LogSourceJev, StatusCode: 200, AuthTokenID: 42, Message: "private audit"},
+		{Time: now, Model: "count-model", LogSource: model.LogSourceCountTokens, StatusCode: 200, AuthTokenID: 42, Message: "private estimate"},
 		{
 			Time:                     now,
 			Model:                    "gpt-5.6",

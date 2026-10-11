@@ -231,9 +231,6 @@ func (s *LogService) flushIfNeeded(batch []*model.LogEntry) {
 func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	// shutdown时不再写入日志
 	if s.isShuttingDown.Load() {
-		if entry != nil && entry.LogSource == model.LogSourceJev {
-			s.flushLogs([]*model.LogEntry{entry})
-		}
 		return
 	}
 
@@ -241,10 +238,6 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 	case s.logChan <- entry:
 		// 成功放入队列
 	default:
-		if entry != nil && entry.LogSource == model.LogSourceJev {
-			s.flushLogs([]*model.LogEntry{entry})
-			return
-		}
 		// 队列满，丢弃日志（计数用于监控）
 		count := s.logDropCount.Add(1)
 		// [FIX] 降低采样频率，每10次丢弃打印一次（原来是100次）

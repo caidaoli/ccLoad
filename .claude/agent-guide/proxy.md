@@ -54,14 +54,6 @@
 - **流终态有两套判据,判完整就必须给下游完整终止序列**(`proxy_sse_parser.go:parseEvent`+`proxy_forward.go`):除 `[DONE]`/`message_stop`/`response.completed` 外,OpenAI Chat 的非空 `finish_reason` 与 Gemini 的非空 `finishReason` 同样是终态——不少 OpenAI 兼容上游给完 `finish_reason` 就断流,只认 `[DONE]` 会把完整响应误记成 499/599。判据只有 `openAIStreamPayloadComplete`/`geminiStreamPayloadComplete` 一份,直通与跨协议两条路径共用,别再各写一份。而 `openai→{anthropic,codex,gemini}` 转换器的终止事件只挂在 `[DONE]` 上,Gemini 线协议本无 `[DONE]`,但 `gemini→Responses` 在 `finishReason` 后等 usage 或 `[DONE]` 才发终态(上游由 executor 在 EOF 补喂),所以上游省略它时由 `needsSynthesizedStreamTerminator`(OpenAI 上游的跨协议转换、Gemini 上游仅限 Responses 客户端;`gemini→Claude` 在 `[DONE]` 上不保留 finishReason,补喂会把 MAX_TOKENS 报成 end_turn;上游已报错时不补)在流结束后补喂一份合成 `data: [DONE]` 走同一个转换闭包收尾,Zed 的 Gemini 流在 `stream_ended` 且见过 finishReason 时同样补喂——不手搓终止帧,因为 open content block/stop_reason/usage 都在转换器内部状态里;同协议直通不补,避免改动透传字节。「上游没发 [DONE] 但客户端收到 message_stop」是预期行为
 - **429** 统计页/健康时间线计入 ErrorCount 与成功率,`rate_limited` 是 ErrorCount 子集;健康度排序(`GetChannelSuccessRates`/effective priority)排除 429,真实渠道级限流交给冷却过滤。全局设置 `codex_map_429_to_503` 默认关闭;开启后只把所有候选耗尽时返回给官方 Codex 客户端的最终 429 改为 503,内部冷却/统计、其他 Responses 客户端和 ccLoad 自身限额仍保留真实状态
 
-## TypeSafe 错误分析兜底
-
-- `TypeSafe_enabled` 默认关闭，`TypeSafe_api_key` 保存后重启生效。独立客户端请求 TypeSafe 官方 `/v1/systemone`，模型使用 `jev-latest`，审计记录实际返回版本。
-- `cooldown.Manager.PrepareError` 先执行自定义规则和本地分类；本地已有明确分类（包括已登记的 500/502/503/504）时直接处理，不调用 Jev，也不单独为其补时间；只有本地默认兜底的未知错误才调用 Jev 补类别，并可同时补充缺少的精确截止时间。分类与时间各自要求 confidence >= 0.95，非法概率分布、无依据/无时区/过期或超过 366 天的时间回退原策略。精确 reset 不受指数退避上限截断。
-- 每个 HTTP 请求及每个 Responses WS turn 跨重试累计等待最多 3 秒；不重试远程分析，全局最多 8 并发、滚动一秒最多 10 次，容量不足直接回退。冷却数据库写入继续使用独立 3 秒上下文。
-- 同次失败的已准备判定供换 Key、换渠、延迟冷却复用。网络故障、WS transport tracker、取消和人工中断不分析；已提交响应只应用冷却，不重放请求。分析不触发凭据禁用、请求体修复或付费回退。
-- 每次实际调用写 `log_source=jev`，message 为有大小上限的版本化 JSON，保留脱敏输入、响应、概率、采用/回退原因、调用 ID；同时把脱敏的 TypeSafe 请求和审计结果关联到 `debug_logs`，供管理端 Debug 弹窗查看。代理日志携带同一调用 ID 及 adopted/fallback 结果；未调用则记跳过原因。Jev 日志成本按现有 `jev-latest` 模型价格目录计算，未配置价格时为 0；审计仍不计入渠道/URL/Token/OAuth 用量；API Token 网页用户仅能查询自身 proxy 来源日志。
-
 ## OAuth 额度输出
 
 - 渠道高级设置 → OAuth 凭证的 `oauth_quota_passthrough`（输出额度信息）默认关闭，旧渠道迁移同样为关闭。仅 Codex、Anthropic 返回账号额度，界面只对二者展示该开关，过滤也只对二者生效；其他 OAuth 渠道隐藏开关并保持原样透传；开启后保留原有透传行为，后台额度查询不受影响；API Key 渠道不受此开关影响。

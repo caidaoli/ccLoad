@@ -129,8 +129,6 @@ type StatusCodeMeta struct {
 
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
-	ExplicitMatch         bool
-	DefaultFallback       bool
 	Level                 ErrorLevel
 	Model                 string
 	ModelScoped           bool
@@ -393,8 +391,7 @@ func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, r
 	return classifyHTTPResponseWithMetaAt(statusCode, headers, responseBody, time.Now())
 }
 
-func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) (result HTTPResponseClassification) {
-	defer func() { result.ExplicitMatch = !result.DefaultFallback }()
+func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) HTTPResponseClassification {
 	// 上游 HTTP 499 与本地 context.Canceled 不同：切换渠道，但只冷却当前实际模型。
 	if statusCode == StatusClientClosedRequest {
 		return HTTPResponseClassification{
@@ -493,10 +490,9 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 服务类错误切换渠道但只冷却当前模型；认证/限流类错误仍冷却 Key。
 	// 模型不可用（如 Codex WS 错误事件 "model is not supported"）与 HTTP 400 同口径：只冷却当前模型。
 	if statusCode == StatusSSEError {
-		level, matched := classifySSEError(responseBody)
+		level := classifySSEError(responseBody)
 		return HTTPResponseClassification{
-			Level:           level,
-			DefaultFallback: !matched,
+			Level: level,
 			ModelScoped: level == ErrorLevelChannel ||
 				(level == ErrorLevelKey && isModelUnavailableResponse(responseBody)),
 		}
@@ -584,9 +580,8 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 404错误：根据响应体智能分类
 	if statusCode == 404 {
 		return HTTPResponseClassification{
-			Level:           classify404Error(responseBody),
-			DefaultFallback: !isModelUnavailableResponse(responseBody),
-			ModelScoped:     isModelUnavailableResponse(responseBody),
+			Level:       classify404Error(responseBody),
+			ModelScoped: isModelUnavailableResponse(responseBody),
 		}
 	}
 
@@ -607,13 +602,12 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	// 仅分析401和403错误,其他状态码使用标准分类器
 	if statusCode != 401 && statusCode != 403 {
-		_, knownStatus := statusCodeMetaMap[statusCode]
-		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode), DefaultFallback: !knownStatus}
+		return HTTPResponseClassification{Level: ClassifyHTTPStatus(statusCode)}
 	}
 
 	// 401/403错误:分析响应体内容
 	if len(responseBody) == 0 {
-		return HTTPResponseClassification{Level: ErrorLevelKey, DefaultFallback: true} // 无响应体,默认Key级错误
+		return HTTPResponseClassification{Level: ErrorLevelKey} // 无响应体,默认Key级错误
 	}
 
 	bodyLower := strings.ToLower(string(responseBody))
@@ -639,16 +633,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
-	// 明确凭据拒绝优先于远程分类。
-	for _, pattern := range []string{"invalid_api_key", "authentication_error", "invalid api key", "invalid token", "permission_denied", "insufficient_quota"} {
-		if strings.Contains(bodyLower, pattern) {
-			return HTTPResponseClassification{Level: ErrorLevelKey}
-		}
-	}
 	// 默认:Key级错误
 	// 包括:认证失败、权限不足、额度用尽、余额不足等
 	// 让handleProxyError根据渠道Key数量决定是否升级为渠道级
-	return HTTPResponseClassification{Level: ErrorLevelKey, DefaultFallback: true}
+	return HTTPResponseClassification{Level: ErrorLevelKey}
 }
 
 // classifyRateLimitError 分析 429 的限流范围。
@@ -854,9 +842,9 @@ func anthropicAccountUnusable(body []byte) bool {
 //   - authentication_error: 认证错误 → Key级
 //   - invalid_request_error: 请求错误 → Key级
 //   - 其他/解析失败: 默认Key级（保守策略）
-func classifySSEError(responseBody []byte) (ErrorLevel, bool) {
+func classifySSEError(responseBody []byte) ErrorLevel {
 	if len(responseBody) == 0 {
-		return ErrorLevelKey, false
+		return ErrorLevelKey
 	}
 
 	// 解析SSE error JSON
@@ -866,20 +854,20 @@ func classifySSEError(responseBody []byte) (ErrorLevel, bool) {
 	var errResp sseErrorResponse
 
 	if err := json.Unmarshal(responseBody, &errResp); err != nil {
-		return ErrorLevelKey, false // 解析失败，保守处理
+		return ErrorLevelKey // 解析失败，保守处理
 	}
 
 	// 根据error.type/code判断错误级别
 	switch errResp.ErrorType() {
 	case "api_error", "overloaded_error", "service_unavailable_error", "server_is_overloaded", "1305":
 		// 上游服务错误或过载 → 渠道级冷却
-		return ErrorLevelChannel, true
+		return ErrorLevelChannel
 	case "rate_limit_error", "authentication_error", "invalid_request_error", "1308", "1310":
 		// 限流/认证/请求错误 → Key级冷却
-		return ErrorLevelKey, true
+		return ErrorLevelKey
 	default:
 		// 未知错误类型，保守处理为Key级
-		return ErrorLevelKey, false
+		return ErrorLevelKey
 	}
 }
 

@@ -92,7 +92,7 @@ func (s *SQLStore) loadChannelAuthTypesTx(ctx context.Context, tx *sql.Tx, chann
 func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) ([]int64, error) {
 	candidates := make(map[int64]struct{})
 	for _, entry := range logs {
-		if entry != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource != model.LogSourceJev {
+		if entry != nil && entry.ChannelID > 0 && entry.Cost > 0 {
 			candidates[entry.ChannelID] = struct{}{}
 		}
 	}
@@ -115,7 +115,7 @@ func (s *SQLStore) addOAuthQuotaLedgerTx(ctx context.Context, tx *sql.Tx, logs [
 			continue
 		}
 		authType, ok := authTypes[entry.ChannelID]
-		if !ok || !model.CountsTowardQuotaWindows(authType, entry.LogSource, entry.Cost, entry.CodexHasCredits) {
+		if !ok || !model.CountsTowardQuotaWindows(authType, entry.Cost, entry.CodexHasCredits) {
 			continue
 		}
 		costMicroUSD, err := util.USDToMicroUSDSafe(entry.Cost)

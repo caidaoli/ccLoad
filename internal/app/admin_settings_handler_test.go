@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -777,157 +775,48 @@ func TestAdminSettingsHandlers(t *testing.T) {
 	})
 }
 
-func TestTypeSafeSettingsSecretAndRestartContract(t *testing.T) {
+func TestAdminRetiredSettingsHiddenButPreserved(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
+	db := store.(*sqlstore.SQLStore)
+	for key, value := range map[string]string{"TypeSafe_enabled": "true", "TypeSafe_api_key": "legacy-secret"} {
+		if _, err := db.ExecContext(context.Background(),
+			"INSERT INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, ?, 'string', '', '', 1)",
+			key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
 	server.configService = NewConfigService(store)
 	if err := server.configService.LoadDefaults(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	restarted := make(chan struct{}, 8)
-	server.SetRestartFunc(func() { restarted <- struct{}{} })
-	save := func(payload string, want int) {
-		t.Helper()
-		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/settings/batch", strings.NewReader(payload)))
-		server.AdminBatchUpdateSettings(c)
-		if w.Code != want {
-			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-		}
-	}
-	save(`{"TypeSafe_enabled":"true"}`, http.StatusBadRequest)
-	save(`{"TypeSafe_enabled":"true","TypeSafe_api_key":"typesafe-private-value"}`, http.StatusOK)
-	select {
-	case <-restarted:
-	case <-time.After(time.Second):
-		t.Fatal("no restart requested")
-	}
-	if server.configService.GetBool("TypeSafe_enabled", false) {
-		t.Fatal("setting hot reloaded")
-	}
-	for _, key := range []string{"", "TypeSafe_api_key"} {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/"+key, nil))
-		if key == "" {
-			server.AdminListSettings(c)
-		} else {
-			c.Params = gin.Params{{Key: "key", Value: key}}
-			server.AdminGetSetting(c)
-		}
-		if strings.Contains(w.Body.String(), "typesafe-private-value") {
-			t.Fatal("secret exposed")
-		}
-		if key != "" {
-			view := mustParseAPIResponse[map[string]any](t, w.Body.Bytes()).Data
-			if view["configured"] != true || view["value"] != "" {
-				t.Fatalf("secret view=%v", view)
-			}
-		}
-	}
-	save(`{"TypeSafe_enabled":"false"}`, http.StatusOK)
-	key, err := store.GetSetting(context.Background(), "TypeSafe_api_key")
-	if err != nil || key.Value != "typesafe-private-value" {
-		t.Fatal("omitted secret lost")
-	}
-	save(`{"TypeSafe_enabled":"true"}`, http.StatusOK)
-	// 前端“恢复默认值”显式提交空密钥来清除
-	save(`{"TypeSafe_api_key":""}`, http.StatusOK)
-	enabled, err := store.GetSetting(context.Background(), "TypeSafe_enabled")
-	if err != nil || enabled.Value != "false" {
-		t.Fatal("clear did not disable TypeSafe")
-	}
-	key, err = store.GetSetting(context.Background(), "TypeSafe_api_key")
-	if err != nil || key.Value != "" {
-		t.Fatal("secret not cleared")
-	}
-}
+	restartCh := make(chan struct{}, 1)
+	server.SetRestartFunc(func() { restartCh <- struct{}{} })
 
-func TestAdminTestTypeSafe(t *testing.T) {
-	for _, tc := range []struct {
-		name, body, wantKey, reply string
-		upstream, wantStatus       int
-		valid, call                bool
-	}{
-		{"entered", `{"api_key":" entered-key "}`, "entered-key", "", 200, 200, true, true},
-		{"saved", `{}`, "saved-key", "", 200, 200, true, true},
-		{"empty", `{"api_key":""}`, "", "", 0, 400, false, false},
-		{"bad JSON", `{`, "", "", 0, 400, false, false},
-		{"rejected", `{"api_key":"entered-key"}`, "entered-key", `{"error":"entered-key"}`, 401, 200, false, true},
-		{"limited", `{}`, "saved-key", `{}`, 429, 200, false, true},
-		{"invalid response", `{}`, "saved-key", `{}`, 200, 502, false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			jevAdmission.Lock()
-			jevAdmission.starts = nil
-			jevAdmission.Unlock()
-			srv := newInMemoryServerWithSettings(t, map[string]string{config.TypeSafeAPIKeySettingKey: "saved-key", config.TypeSafeEnabledSettingKey: "false"})
-			var calls int
-			srv.jevClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				calls++
-				if r.Header.Get("Authorization") != "Bearer "+tc.wantKey || r.URL.String() != jevEndpoint {
-					t.Fatal("wrong credentials or endpoint")
-				}
-				if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) > jevWaitBudget {
-					t.Fatal("missing call timeout")
-				}
-				var req jevRequest
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model != "jev-latest" || len(req.Questions) != 1 {
-					t.Fatalf("invalid request: %+v %v", req, err)
-				}
-				reply := tc.reply
-				if reply == "" {
-					reply = `{"model":"jev-latest","answers":{"connection":{"type":"choice","choice":"ok","probabilities":{"ok":1,"other":0},"confidence":1}}}`
-				}
-				return &http.Response{StatusCode: tc.upstream, Body: io.NopCloser(strings.NewReader(reply)), Header: make(http.Header)}, nil
-			})}
-			c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/typesafe/test", []byte(tc.body)))
-			srv.AdminTestTypeSafe(c)
-			if w.Code != tc.wantStatus {
-				t.Fatalf("status %d: %s", w.Code, w.Body.String())
-			}
-			if (calls == 1) != tc.call {
-				t.Fatalf("calls=%d", calls)
-			}
-			if w.Code == 200 {
-				result := mustParseAPIResponse[struct {
-					Valid bool `json:"valid"`
-				}](t, w.Body.Bytes())
-				if result.Data.Valid != tc.valid {
-					t.Fatalf("result: %s", w.Body.String())
-				}
-			}
-			if tc.call {
-				deadline := time.Now().Add(2 * time.Second)
-				for {
-					logs, err := srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceJev})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if len(logs) > 0 {
-						var audit jevAudit
-						if len(logs) != 1 || json.Unmarshal([]byte(logs[0].Message), &audit) != nil || audit.Purpose != "credential_test" || audit.CallID == "" {
-							t.Fatal("missing test audit")
-						}
-						debug, debugErr := srv.store.GetDebugLogByLogID(context.Background(), logs[0].ID)
-						if debugErr != nil || debug == nil || debug.ReqURL != jevEndpoint || !strings.Contains(string(debug.RespBody), audit.CallID) {
-							t.Fatalf("missing TypeSafe debug audit: debug=%+v err=%v", debug, debugErr)
-						}
-						if strings.Contains(logs[0].Message, tc.wantKey) {
-							t.Fatal("key leaked to audit")
-						}
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatal("audit not persisted")
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-			}
-			if strings.Contains(w.Body.String(), "entered-key") || strings.Contains(w.Body.String(), "saved-key") {
-				t.Fatal("key echoed")
-			}
-			saved, err := srv.configService.GetSettingFresh(context.Background(), config.TypeSafeAPIKeySettingKey)
-			if err != nil || saved.Value != "saved-key" || srv.configService.GetBool(config.TypeSafeEnabledSettingKey, true) {
-				t.Fatal("test changed settings")
-			}
-		})
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
+	server.AdminListSettings(c)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "TypeSafe") {
+		t.Fatalf("list exposes retired settings: status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, key := range []string{"TypeSafe_enabled", "TypeSafe_api_key"} {
+		c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/settings/"+key, nil))
+		c.Params = gin.Params{{Key: "key", Value: key}}
+		server.AdminGetSetting(c)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("get %q status=%d body=%s", key, w.Code, w.Body.String())
+		}
+		if w := batchUpdateSetting(t, server, key, "false"); w.Code != http.StatusBadRequest {
+			t.Fatalf("update %q status=%d body=%s", key, w.Code, w.Body.String())
+		}
+	}
+	assertNoRestart(t, restartCh)
+
+	enabled, err := store.GetSetting(context.Background(), "TypeSafe_enabled")
+	if err != nil || enabled.Value != "true" {
+		t.Fatalf("retired enabled row changed: %+v %v", enabled, err)
+	}
+	apiKey, err := store.GetSetting(context.Background(), "TypeSafe_api_key")
+	if err != nil || apiKey.Value != "legacy-secret" {
+		t.Fatalf("retired key row changed: %+v %v", apiKey, err)
 	}
 }

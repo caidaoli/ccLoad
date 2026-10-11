@@ -76,8 +76,6 @@ func TestOAuthQuotaLedger_AggregatesEligibleLogsBySecondAndModel(t *testing.T) {
 			StatusCode: http.StatusBadGateway, Cost: 0.000002},
 		{Time: newJSONTime(base.Add(2 * time.Second)), ChannelID: antigravity, Model: "claude-opus-4-6",
 			StatusCode: http.StatusOK, Cost: 0.000045},
-		{Time: newJSONTime(base.Add(3 * time.Second)), ChannelID: antigravity, Model: "gemini-3.6-pro",
-			LogSource: model.LogSourceJev, StatusCode: http.StatusOK, Cost: 1},
 		{Time: newJSONTime(base.Add(4 * time.Second)), ChannelID: antigravity, Model: "gemini-3.6-pro",
 			StatusCode: http.StatusOK},
 		{Time: newJSONTime(base), ChannelID: codex, Model: "gpt-5.5", StatusCode: http.StatusOK, Cost: 0.25, CodexHasCredits: true},

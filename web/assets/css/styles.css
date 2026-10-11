@@ -9157,20 +9157,6 @@ body.web-hide-channels .chart-card--channel {
   display: none !important;
 }
 
-.settings-typesafe-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.settings-typesafe-control input {
-  flex: 1;
-  min-width: 0;
-}
-.settings-typesafe-control button {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 /* ===== 系统设置页（settings.html）：生效方式徽标、无效输入、底部粘性保存栏、加载失败重试 ===== */
 .settings-effect-badge {
   display: inline-flex;

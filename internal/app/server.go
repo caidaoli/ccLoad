@@ -164,7 +164,6 @@ type Server struct {
 	multimodalFallbackUpdateMu sync.Mutex
 	modelPricingUpdateMu       sync.Mutex
 	settingsUpdateMu           sync.Mutex
-	jevClient                  *http.Client
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -1890,7 +1889,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 		// 系统配置管理
 		admin.GET("/model-pricing", s.HandleGetModelPricing)
-		admin.POST("/typesafe/test", s.AdminTestTypeSafe)
 		admin.GET("/settings", s.AdminListSettings)
 		admin.GET("/settings/:key", s.AdminGetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
@@ -2012,7 +2010,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
 	if s == nil || s.urlSelector == nil || entry == nil ||
-		entry.LogSource == model.LogSourceJev || entry.LogSource == model.LogSourceCountTokens {
+		entry.LogSource == model.LogSourceCountTokens {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

@@ -304,21 +304,16 @@ test('model filter options contain request models but not redirected models', as
   });
 });
 
-test('Jev audit messages link to their upstream debug-log entry', async () => {
+test('channelless count_tokens logs link to their debug-log entry', async () => {
   await withLoadedLogsPage({
-    logSource: 'jev',
+    logSource: 'count_tokens',
     entries: [{
       id: 42,
       time: Date.now(),
-      model: 'jev-latest',
+      model: 'claude-sonnet-5-5',
       status_code: 200,
       duration: 0.2,
-      log_source: 'jev',
-      message: JSON.stringify({
-        call_id: 'audit-42',
-        adopted: { category: 'quota' },
-        fallback: { reset: 'no_valid_reset' }
-      })
+      log_source: 'count_tokens'
     }]
   }, ({ tbody }) => {
     assert.match(tbody.innerHTML, /debug-log-link has-upstream-detail[^>]*data-log-id="42"/);
