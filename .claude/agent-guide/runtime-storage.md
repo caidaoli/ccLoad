@@ -18,8 +18,8 @@
 ## 动态思考等级
 
 - 系统设置 `reasoning_auto` 使用 JSON：`enabled`、`decision_channel_id`、`decision_model`、`business_models`、`timeout_ms`。默认关闭，空业务模型名单不启用任何模型；名单按去除思考后缀后的逻辑模型精确匹配，不支持通配符。超时范围 100–10000 ms，默认 2000 ms；保存后重启生效。
-- 判断服务沿用渠道管理。普通判断渠道必须明确声明聊天协议，并能完成不带工具的单次生成；Cursor Agent bridge 不支持该调用。System One 渠道的每个 URL 只能声明 `system_one`，沿用 URL、API Key、模型录入和导入导出。它是独立上游决策能力，不增加聊天协议转换，不要求 `/models`，定时聊天检测跳过它；手动测试发送原生 `POST /v1/systemone`。
-- 业务日志可空 `reasoning_decision` JSON 与内部日志来源 `decision` 是持久化和管理 API 契约；三种数据库及混合存储读写均需保留。旧日志元数据为空时行为不变。TypeSafe 旧错误分析设置与 `jev` 日志来源继续退役。
+- 判断服务沿用渠道管理，判断渠道只能是 System One 渠道。System One 是认证类型 `auth_type=system_one`（由“添加 → 决策渠道”入口新建，中文界面统称“决策渠道”，之后不可改），URL 不声明协议，凭证与存储口径同 API Key（`model.UsesAPIKeyCredentials`），不可带 OAuth 凭证或管理账户。它是独立上游决策能力，不增加聊天协议转换，下游只经 `POST /v1/systemone` 透传使用；模型发现走 `GET /v1/models`（取 `models[].name`），定时聊天检测跳过它；手动测试发送原生 `POST /v1/systemone`，测试请求不带 `client_protocol`（带了返回 400），普通渠道仍必填。
+- 日志可空 `reasoning_decision` JSON 是持久化和管理 API 契约，决策调用日志以请求协议 `system_one` 区分（无独立来源）；开启 Debug 日志时，判断调用与手动测试同代理尝试一样保存实际发送的 System One 请求（凭证脱敏）及上游原始响应，未形成响应时记录传输错误；三种数据库及混合存储读写均需保留。旧日志元数据为空时行为不变。TypeSafe 旧错误分析设置与 `jev` 日志来源继续退役。
 
 ## 已下线设置
 
