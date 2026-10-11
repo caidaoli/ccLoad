@@ -7932,3 +7932,265 @@ func TestNativeCodexWebsocketStripsInputItemStatusBeforeFirstSend(t *testing.T) 
 		t.Fatalf("status strip must succeed on the first send, handshakes=%d", got)
 	}
 }
+
+func TestResponsesWebsocketTokenRPMSharedAdmissionAndRecovery(t *testing.T) {
+	requests := make(chan []byte, 10)
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- body
+		n := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-rpm-%d\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\ndata: [DONE]\n\n", n)
+	}))
+	var failedCalls atomic.Int32
+	failed := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		failedCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"type":"server_error","message":"retry elsewhere"}}`)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "rpm-failover", upstreamProtocol: "codex", models: "gpt-test", priority: 100},
+		{name: "rpm-success", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: failed.URL, 1: upstream.URL})
+	token := &model.AuthToken{Description: "shared RPM", RPMLimit: 2, MaxConcurrency: 1}
+	webSession := createDashboardSession(t, env, "rpm-shared", token)
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	env.server.authService.tokenRPMLimiter = newRPMLimiter(clock.Now)
+	conn := dialResponsesWebsocketWithToken(t, env.engine, "rpm-shared")
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	writeTurn := func(kind, content string) {
+		t.Helper()
+		if err := conn.WriteJSON(map[string]any{"type": kind, "model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": content}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Token concurrency rejection releases the acquired global/session slots
+	// without consuming any of the two available RPM admissions.
+	releaseToken, _, _, acquired := env.server.authService.acquireTokenConcurrencySlot(token.Token)
+	if !acquired {
+		t.Fatal("could not hold token concurrency slot")
+	}
+	writeTurn("response.create", "concurrency-rejected")
+	var concurrencyEvent struct {
+		Type  string `json:"type"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	errConcurrency := conn.ReadJSON(&concurrencyEvent)
+	releaseToken()
+	if errConcurrency != nil || concurrencyEvent.Type != "error" || concurrencyEvent.Error.Code != "upstream_error" {
+		t.Fatalf("concurrency event=%+v err=%v", concurrencyEvent, errConcurrency)
+	}
+	writeTurn("response.create", "first")
+	readWebsocketUntilType(t, conn, "response.completed")
+	<-requests
+	if failedCalls.Load() != 1 || calls.Load() != 1 {
+		t.Fatalf("failover calls=%d successful=%d", failedCalls.Load(), calls.Load())
+	}
+	// Control frames and the upgrade itself cannot consume a generation slot.
+	if err := conn.WriteControl(websocket.PingMessage, []byte("rpm"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-rpm-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// A control-event reply is the public boundary showing the previous turn's
+	// completion bookkeeping and concurrency release have finished.
+	if err := conn.WriteJSON(map[string]any{"type": "rpm-test-barrier"}); err != nil {
+		t.Fatal(err)
+	}
+	var controlEvent struct {
+		Type  string `json:"type"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&controlEvent); err != nil {
+		t.Fatal(err)
+	}
+	if controlEvent.Type != "error" || controlEvent.Error.Code != "unsupported_event" {
+		t.Fatalf("control event=%+v", controlEvent)
+	}
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-test", "input": "http", "stream": true}, map[string]string{"Authorization": "Bearer rpm-shared"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("HTTP status=%d body=%s", w.Code, w.Body.String())
+	}
+	<-requests
+	w = doProxyRequest(t, env.engine, "/dashboard/v1/responses", map[string]any{"model": "gpt-test", "input": "web"}, map[string]string{"Authorization": "Bearer " + webSession})
+	assertTokenRPMHTTPError(t, w, 60)
+	writeTurn("response.append", "rejected")
+	assertTokenRPMWebsocketError(t, conn, 60)
+	setLimit := func(limit int) {
+		token.RPMLimit = limit
+		if err := env.store.UpdateAuthToken(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.server.authService.ReloadAuthTokens(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setLimit(3)
+	writeTurn("response.append", "accepted")
+	readWebsocketUntilType(t, conn, "response.completed")
+	var body struct {
+		Input []struct {
+			Content string `json:"content"`
+		} `json:"input"`
+	}
+	mustUnmarshalJSON(t, <-requests, &body)
+	if len(body.Input) != 2 || body.Input[0].Content != "first" || body.Input[1].Content != "accepted" {
+		t.Fatalf("rejected turn polluted transcript: %+v", body.Input)
+	}
+	setLimit(1)
+	writeTurn("response.create", "limited")
+	assertTokenRPMWebsocketError(t, conn, 60)
+	clock.Advance(time.Minute)
+	writeTurn("response.append", "recovered")
+	readWebsocketUntilType(t, conn, "response.completed")
+	<-requests
+	setLimit(0)
+	writeTurn("response.append", "unlimited")
+	readWebsocketUntilType(t, conn, "response.completed")
+	<-requests
+	setLimit(1)
+	writeTurn("response.append", "still-limited")
+	assertTokenRPMWebsocketError(t, conn, 60)
+	// A different token has its own quota despite sharing upstream channels.
+	other := &model.AuthToken{Token: model.HashToken("rpm-other"), Description: "other", IsActive: true, RPMLimit: 1}
+	if err := env.store.CreateAuthToken(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	w = doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-test", "input": "other", "stream": true}, map[string]string{"Authorization": "Bearer rpm-other"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("different token status=%d body=%s", w.Code, w.Body.String())
+	}
+	<-requests
+}
+
+func assertTokenRPMWebsocketError(t testing.TB, conn *websocket.Conn, seconds int) {
+	t.Helper()
+	var event struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
+			Type, Code, Message string
+			RetryAfter          int `json:"retry_after"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "error" || event.Status != 429 || event.Error.Type != "rate_limit_error" || event.Error.Code != "token_rpm_exceeded" || event.Error.RetryAfter != seconds || event.Error.Message == "" {
+		t.Fatalf("RPM event=%+v", event)
+	}
+}
+
+func TestResponsesWebsocketTokenRPMInterruptWhileWaitingForGlobalSlot(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-after-wait\",\"output\":[]}}\n\ndata: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "rpm-wait", upstreamProtocol: "codex", models: "gpt-test"}}, map[int]string{0: upstream.URL}, map[string]string{"max_concurrency": "1"})
+	token := &model.AuthToken{Token: model.HashToken("rpm-wait"), Description: "wait", IsActive: true, RPMLimit: 1}
+	if err := env.store.CreateAuthToken(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	release, err := env.server.acquireConcurrencySlotForContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	conn := dialResponsesWebsocketWithToken(t, env.engine, "rpm-wait")
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": "waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the turn owns its execution-session slot; the global slot is
+	// still occupied, so no upstream request can have begun.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		active := false
+		env.server.responsesExecutionSessions.mu.Lock()
+		for _, session := range env.server.responsesExecutionSessions.sessions {
+			active = active || len(session.turn) > 0
+		}
+		env.server.responsesExecutionSessions.mu.Unlock()
+		if active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("turn did not reach global slot wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "response.interrupt", "response_id": "resp-waiting"}); err != nil {
+		t.Fatal(err)
+	}
+	event := readWebsocketUntilType(t, conn, "response.incomplete")
+	response := event["response"].(map[string]any)
+	if response["id"] != "resp-waiting" {
+		t.Fatalf("interrupt response=%+v", response)
+	}
+	release()
+	release = nil
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": "after-wait"}); err != nil {
+		t.Fatal(err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+}
+
+func TestResponsesWebsocketTokenRPMAdmittedLocalFailureCounts(t *testing.T) {
+	env := setupProxyTestEnv(t, nil, nil)
+	token := &model.AuthToken{Token: model.HashToken("rpm-failed-turn"), Description: "failed turn", IsActive: true, RPMLimit: 1}
+	if err := env.store.CreateAuthToken(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	env.server.authService.tokenRPMLimiter = newRPMLimiter(clock.Now)
+	conn := dialResponsesWebsocketWithToken(t, env.engine, "rpm-failed-turn")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "input": "missing model"}); err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Type  string `json:"type"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "error" || event.Error.Code != "invalid_request" {
+		t.Fatalf("invalid turn event=%+v", event)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-test", "input": "next"}); err != nil {
+		t.Fatal(err)
+	}
+	assertTokenRPMWebsocketError(t, conn, 60)
+}

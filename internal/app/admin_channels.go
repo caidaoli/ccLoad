@@ -2343,7 +2343,7 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 		s.urlSelector.RemoveChannel(id)
 	}
 	if s.channelRPMLimiter != nil {
-		s.channelRPMLimiter.RemoveChannel(id)
+		s.channelRPMLimiter.Remove(id)
 	}
 	if s.codexCredentials != nil {
 		s.codexCredentials.invalidate(id)

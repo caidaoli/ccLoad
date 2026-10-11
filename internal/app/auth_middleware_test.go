@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -533,5 +534,129 @@ func TestRequireAPIAuth_TokenPriority(t *testing.T) {
 	w := runMiddleware(t, svc.RequireAPIAuth(), req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (Bearer should take priority), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTokenRPMHTTPAdmissionAndReload(t *testing.T) {
+	srv := newInMemoryServer(t)
+	token := &model.AuthToken{Token: model.HashToken("rpm-http"), Description: "RPM", IsActive: true, MaxConcurrency: 1, RPMLimit: 1}
+	if err := srv.store.CreateAuthToken(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	srv.authService.tokenRPMLimiter = newRPMLimiter(clock.Now)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	request := func(method, path, key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader("{"))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+	for _, path := range []string{"/v1/models", "/v1beta/models", "/v1/responses"} {
+		if w := request(http.MethodGet, path, "rpm-http"); w.Code == http.StatusTooManyRequests {
+			t.Fatalf("read/handshake route consumed RPM: %s", path)
+		}
+	}
+	if w := request(http.MethodPost, "/v1/unsupported", "rpm-http"); w.Code == http.StatusTooManyRequests {
+		t.Fatal("unsupported route counted")
+	}
+	if w := request(http.MethodPost, "/v1/chat/completions", "wrong-key"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong key status=%d", w.Code)
+	}
+	// A token concurrency rejection must leave the RPM slot available.
+	releaseToken, _, _, ok := srv.authService.acquireTokenConcurrencySlot(token.Token)
+	if !ok {
+		t.Fatal("could not hold token slot")
+	}
+	w := request(http.MethodPost, "/v1/chat/completions", "rpm-http")
+	releaseToken()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("concurrency rejection status=%d", w.Code)
+	}
+	w = request(http.MethodPost, "/v1/chat/completions", "rpm-http")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("admitted invalid body status=%d body=%s", w.Code, w.Body.String())
+	}
+	clock.Advance(500 * time.Millisecond)
+	assertTokenRPMHTTPError(t, request(http.MethodPost, "/v1/messages/count_tokens", "rpm-http"), 60)
+	// Changing the limit is immediate, preserving previous admissions.
+	setLimit := func(limit int) {
+		token.RPMLimit = limit
+		if err := srv.store.UpdateAuthToken(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.authService.ReloadAuthTokens(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setLimit(2)
+	if w = request(http.MethodPost, "/v1/embeddings", "rpm-http"); w.Code != http.StatusBadRequest {
+		t.Fatalf("raised limit status=%d", w.Code)
+	}
+	setLimit(1)
+	assertTokenRPMHTTPError(t, request(http.MethodPost, "/v1/images/generations", "rpm-http"), 60)
+	setLimit(0)
+	if w = request(http.MethodPost, "/v1/alpha/search", "rpm-http"); w.Code != http.StatusBadRequest {
+		t.Fatalf("disabled limit status=%d", w.Code)
+	}
+	setLimit(1)
+	assertTokenRPMHTTPError(t, request(http.MethodPost, "/v1beta/models/gemini:generateContent", "rpm-http"), 60)
+	clock.Advance(60 * time.Second)
+	if w = request(http.MethodPost, "/v1/messages", "rpm-http"); w.Code != http.StatusBadRequest {
+		t.Fatalf("recovered status=%d", w.Code)
+	}
+	// Rejection must release the token concurrency slot as well.
+	assertTokenRPMHTTPError(t, request(http.MethodPost, "/v1/completions", "rpm-http"), 60)
+}
+
+func assertTokenRPMHTTPError(t testing.TB, w *httptest.ResponseRecorder, seconds int) {
+	t.Helper()
+	var body struct {
+		Error struct{ Type, Code, Message string } `json:"error"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &body)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != fmt.Sprint(seconds) ||
+		body.Error.Type != "rate_limit_error" || body.Error.Code != "token_rpm_exceeded" || body.Error.Message == "" {
+		t.Fatalf("RPM response: status=%d retry-after=%s body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+	}
+}
+
+func TestTokenRPMGlobalConcurrencyCancellationDoesNotCount(t *testing.T) {
+	srv := newInMemoryServerWithSettings(t, map[string]string{"max_concurrency": "1"})
+	token := &model.AuthToken{Token: model.HashToken("rpm-global"), Description: "RPM", IsActive: true, RPMLimit: 1}
+	if err := srv.store.CreateAuthToken(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	release, err := srv.acquireConcurrencySlotForContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{")).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer rpm-global")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	release()
+	if w.Code != StatusClientClosedRequest {
+		t.Fatalf("cancelled wait status=%d body=%s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{"))
+	req.Header.Set("Authorization", "Bearer rpm-global")
+	w = httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("cancelled wait consumed RPM: %d %s", w.Code, w.Body.String())
 	}
 }

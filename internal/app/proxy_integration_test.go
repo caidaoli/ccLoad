@@ -17002,3 +17002,45 @@ func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenRPMHTTPUpstreamRetriesAndFailureCountOnce(t *testing.T) {
+	for _, success := range []bool{true, false} {
+		t.Run(fmt.Sprintf("success=%t", success), func(t *testing.T) {
+			var hits atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				n := hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if n < 3 || !success {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = io.WriteString(w, `{"error":{"type":"server_error","message":"try again"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"id":"chat-rpm","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{name: "rpm-retry", models: "gpt-rpm", sameChannelRetries: 2}}, map[int]string{0: upstream.URL})
+			token := &model.AuthToken{Token: model.HashToken("rpm-retry"), Description: "retry", IsActive: true, RPMLimit: 1}
+			if err := env.store.CreateAuthToken(context.Background(), token); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.server.authService.ReloadAuthTokens(); err != nil {
+				t.Fatal(err)
+			}
+			clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+			env.server.authService.tokenRPMLimiter = newRPMLimiter(clock.Now)
+			request := func() *httptest.ResponseRecorder {
+				return doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "gpt-rpm", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}, map[string]string{"Authorization": "Bearer rpm-retry"})
+			}
+			w := request()
+			if success && w.Code != http.StatusOK || !success && w.Code != http.StatusInternalServerError {
+				t.Fatalf("first response status=%d body=%s", w.Code, w.Body.String())
+			}
+			if hits.Load() != 3 {
+				t.Fatalf("upstream attempts=%d, want 3", hits.Load())
+			}
+			assertTokenRPMHTTPError(t, request(), 60)
+			if hits.Load() != 3 {
+				t.Fatalf("rejected client request reached upstream: %d", hits.Load())
+			}
+		})
+	}
+}

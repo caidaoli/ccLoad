@@ -141,6 +141,10 @@
             <label for="tokenMaxConcurrency" class="form-label" data-i18n="tokens.maxConcurrencyLabel">并发上限</label>
             <input type="number" id="tokenMaxConcurrency" class="form-input" min="0" step="1" data-i18n-placeholder="tokens.unlimitedPlaceholder" placeholder="不限制">
           </div>
+          <div class="token-limit-field">
+            <label for="tokenRPMLimit" class="form-label" data-i18n="tokens.rpmLimitLabel">RPM 上限</label>
+            <input type="number" id="tokenRPMLimit" class="form-input" min="0" step="1" data-i18n-placeholder="tokens.unlimitedPlaceholder" placeholder="不限制">
+          </div>
         </div>
         <p class="token-form-hint" data-i18n="tokens.createRestrictionHint">渠道与模型访问范围可在创建后通过「编辑」设置。</p>
       </div>
@@ -256,6 +260,9 @@
               <div id="editCostUsedDisplay" class="token-quota-used"></div>
               <label for="editMaxConcurrency" class="form-label" data-i18n="tokens.maxConcurrencyLabel">并发上限</label>
               <input type="number" id="editMaxConcurrency" class="form-input" min="0" step="1" data-i18n-placeholder="tokens.unlimitedPlaceholder" placeholder="不限制">
+              <div class="token-quota-used token-value-muted">—</div>
+              <label for="editRPMLimit" class="form-label" data-i18n="tokens.rpmLimitLabel">RPM 上限</label>
+              <input type="number" id="editRPMLimit" class="form-input" min="0" step="1" data-i18n-placeholder="tokens.unlimitedPlaceholder" placeholder="不限制">
               <div class="token-quota-used token-value-muted">—</div>
           </div>
         </div>

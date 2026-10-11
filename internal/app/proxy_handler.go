@@ -420,6 +420,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	defer release()
 
+	if !s.admitHTTPTokenRPM(c) {
+		return
+	}
+
 	// 特殊路由优先处理
 	if s.handleSpecialRoutes(c) {
 		return

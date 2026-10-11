@@ -1062,7 +1062,7 @@ func TestPostgres(t *testing.T) {
 			const tokenValue = "pg-query-auth-token"
 			token := &model.AuthToken{
 				Token: tokenValue, Description: "query compatibility", IsActive: true, CreatedAt: time.Now(),
-				AllowedModels: []string{"gpt-4o"}, MaxConcurrency: 2,
+				AllowedModels: []string{"gpt-4o"}, MaxConcurrency: 2, RPMLimit: 12,
 			}
 			if err := store.CreateAuthToken(ctx, token); err != nil {
 				t.Fatalf("CreateAuthToken: %v", err)
@@ -1085,6 +1085,10 @@ func TestPostgres(t *testing.T) {
 				t.Fatalf("ListActiveAuthTokens: tokens=%v err=%v", tokens, err)
 			}
 
+			if got.RPMLimit != 12 {
+				t.Fatalf("rpm_limit=%d, want 12", got.RPMLimit)
+			}
+			got.RPMLimit = 24
 			got.Description = "query compatibility updated"
 			got.AllowedChannelIDs = []int64{11, 22}
 			got.ChannelRestrictionMode = model.ChannelRestrictionModeDeny
@@ -1097,6 +1101,9 @@ func TestPostgres(t *testing.T) {
 			}
 			if err := sqlStore.UpsertAuthTokenAllFields(ctx, got); err != nil {
 				t.Fatalf("UpsertAuthTokenAllFields: %v", err)
+			}
+			if mirrored, err := store.GetAuthToken(ctx, token.ID); err != nil || mirrored.RPMLimit != 24 {
+				t.Fatalf("updated/upserted token=%+v err=%v", mirrored, err)
 			}
 			if err := store.UpdateTokenLastUsed(ctx, tokenValue, time.Now()); err != nil {
 				t.Fatalf("UpdateTokenLastUsed: %v", err)

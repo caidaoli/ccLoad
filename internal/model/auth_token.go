@@ -72,6 +72,7 @@ type AuthToken struct {
 	ChannelRestrictionMode string  `json:"channel_restriction_mode,omitempty"` // allow|deny，空视为 allow
 
 	// 并发限制（2026-04新增）
+	RPMLimit       int `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
 	MaxConcurrency int `json:"max_concurrency"` // 最大并发请求数，0表示无限制
 }
 
@@ -319,6 +320,9 @@ func (t *AuthToken) ValidateUsageLimits() error {
 	if t.CostMonthlyLimitMicroUSD < 0 {
 		return errors.New("cost_monthly_limit_usd must be >= 0")
 	}
+	if t.RPMLimit < 0 {
+		return errors.New("rpm_limit must be >= 0")
+	}
 	if t.MaxConcurrency < 0 {
 		return errors.New("max_concurrency must be >= 0")
 	}
@@ -361,6 +365,7 @@ type authTokenJSON struct {
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
 	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
 	ChannelRestrictionMode   string    `json:"channel_restriction_mode,omitempty"`
+	RPMLimit                 int       `json:"rpm_limit"`
 	MaxConcurrency           int       `json:"max_concurrency"`
 }
 
@@ -404,6 +409,7 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		AllowedModels:            t.AllowedModels,
 		AllowedChannelIDs:        t.AllowedChannelIDs,
 		ChannelRestrictionMode:   channelRestrictionMode,
+		RPMLimit:                 t.RPMLimit,
 		MaxConcurrency:           t.MaxConcurrency,
 	})
 }

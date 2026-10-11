@@ -63,7 +63,7 @@ type Server struct {
 	cooldownManager               *cooldown.Manager          // 统一冷却管理器
 	healthCache                   *HealthCache               // 渠道健康度缓存
 	costCache                     *CostCache                 // 渠道每日成本缓存
-	channelRPMLimiter             *channelRPMLimiter         // 渠道RPM限制器（内存滑动窗口）
+	channelRPMLimiter             *rpmLimiter                // 渠道RPM限制器（内存滑动窗口）
 	sessionAffinity               *sessionAffinityStore      // Anthropic/Codex 会话 → 渠道/Key 绑定
 	sameChannelFailures           sameChannelFailureCounter  // same_channel_retries 跨请求连续失败计数(零值可用)
 	channelConcurrencyLimiter     *channelConcurrencyLimiter // 渠道并发限制器（内存计数）
@@ -323,7 +323,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 				defaultResponsesWebsocketConnectionPerSubjectLimit,
 			),
 		),
-		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
+		channelRPMLimiter:         newRPMLimiter(time.Now),
 		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
 		sessionAffinity:           newSessionAffinityStore(),
 	}
@@ -1979,6 +1979,9 @@ func (s *Server) stateCleanupLoop() {
 
 			if s.channelRPMLimiter != nil {
 				s.channelRPMLimiter.CleanupExpired()
+			}
+			if s.authService != nil {
+				s.authService.tokenRPMLimiter.CleanupExpired()
 			}
 			s.sessionAffinity.cleanupExpired(time.Now())
 		}

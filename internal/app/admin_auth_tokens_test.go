@@ -629,3 +629,48 @@ func TestHandleListAuthTokens_RollingRange(t *testing.T) {
 		})
 	}
 }
+
+func TestAdminAPI_AuthTokenRPMLimit(t *testing.T) {
+	server := newInMemoryServer(t)
+	for _, limit := range []int{15, -1} {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+			"description": "RPM token", "rpm_limit": limit,
+		}))
+		server.HandleCreateAuthToken(c)
+		if limit < 0 {
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("negative RPM create status=%d", w.Code)
+			}
+			continue
+		}
+		var response struct {
+			Data struct {
+				ID       int64 `json:"id"`
+				RPMLimit int   `json:"rpm_limit"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+		if w.Code != http.StatusOK || response.Data.RPMLimit != 15 {
+			t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+		}
+		for _, tc := range []struct {
+			payload      map[string]any
+			status, want int
+		}{
+			{map[string]any{"description": "keep RPM"}, http.StatusOK, 15},
+			{map[string]any{"rpm_limit": -1}, http.StatusBadRequest, 15},
+			{map[string]any{"rpm_limit": 0}, http.StatusOK, 0},
+		} {
+			c, w = newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", tc.payload))
+			c.Params = append(c.Params, struct{ Key, Value string }{Key: "id", Value: strconv.FormatInt(response.Data.ID, 10)})
+			server.HandleUpdateAuthToken(c)
+			if w.Code != tc.status {
+				t.Fatalf("update status=%d body=%s", w.Code, w.Body.String())
+			}
+			got, err := server.store.GetAuthToken(context.Background(), response.Data.ID)
+			if err != nil || got.RPMLimit != tc.want {
+				t.Fatalf("stored token=%+v err=%v, want RPM %d", got, err, tc.want)
+			}
+		}
+	}
+}

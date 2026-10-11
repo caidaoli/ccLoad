@@ -10,7 +10,7 @@ import (
 	"ccLoad/internal/model"
 )
 
-type channelRPMReservation struct {
+type rpmReservation struct {
 	allowed    bool
 	retryAfter time.Duration
 }
@@ -27,42 +27,42 @@ func (e *channelRPMExceededError) Unwrap() error {
 	return ErrChannelRPMExceeded
 }
 
-type channelRPMLimiter struct {
+type rpmLimiter struct {
 	mu       sync.Mutex
 	requests map[int64][]time.Time
 	now      func() time.Time
 }
 
-func newChannelRPMLimiter(now func() time.Time) *channelRPMLimiter {
+func newRPMLimiter(now func() time.Time) *rpmLimiter {
 	if now == nil {
 		now = time.Now
 	}
-	return &channelRPMLimiter{
+	return &rpmLimiter{
 		requests: make(map[int64][]time.Time),
 		now:      now,
 	}
 }
 
-func (l *channelRPMLimiter) RemoveChannel(channelID int64) {
-	if l == nil || channelID <= 0 {
+func (l *rpmLimiter) Remove(id int64) {
+	if l == nil || id <= 0 {
 		return
 	}
 	l.mu.Lock()
-	delete(l.requests, channelID)
+	delete(l.requests, id)
 	l.mu.Unlock()
 }
 
-func (l *channelRPMLimiter) CleanupExpired() {
+func (l *rpmLimiter) CleanupExpired() {
 	if l == nil {
 		return
 	}
 
-	cutoff := l.now().Add(-time.Minute)
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for channelID, events := range l.requests {
+	cutoff := l.now().Add(-time.Minute)
+
+	for id, events := range l.requests {
 		kept := 0
 		for _, ts := range events {
 			if ts.After(cutoff) {
@@ -71,25 +71,25 @@ func (l *channelRPMLimiter) CleanupExpired() {
 			}
 		}
 		if kept == 0 {
-			delete(l.requests, channelID)
+			delete(l.requests, id)
 			continue
 		}
-		l.requests[channelID] = events[:kept]
+		l.requests[id] = events[:kept]
 	}
 }
 
-func (l *channelRPMLimiter) reserve(channelID int64, limit int) channelRPMReservation {
-	if l == nil || channelID <= 0 || limit <= 0 {
-		return channelRPMReservation{allowed: true}
+func (l *rpmLimiter) reserve(id int64, limit int) rpmReservation {
+	if l == nil || id <= 0 || limit <= 0 {
+		return rpmReservation{allowed: true}
 	}
-
-	now := l.now()
-	cutoff := now.Add(-time.Minute)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	events := l.requests[channelID]
+	now := l.now()
+	cutoff := now.Add(-time.Minute)
+
+	events := l.requests[id]
 	kept := 0
 	for _, ts := range events {
 		if ts.After(cutoff) {
@@ -100,27 +100,22 @@ func (l *channelRPMLimiter) reserve(channelID int64, limit int) channelRPMReserv
 	events = events[:kept]
 
 	if len(events) >= limit {
-		retryAfter := time.Minute
-		if len(events) > 0 {
-			retryAfter = events[0].Add(time.Minute).Sub(now)
-			if retryAfter < 0 {
-				retryAfter = 0
-			}
-		}
-		l.requests[channelID] = events
-		return channelRPMReservation{allowed: false, retryAfter: retryAfter}
+		// A lower limit may need several events to expire before a slot opens.
+		retryAfter := events[len(events)-limit].Add(time.Minute).Sub(now)
+		l.requests[id] = events
+		return rpmReservation{allowed: false, retryAfter: retryAfter}
 	}
 
-	l.requests[channelID] = append(events, now)
-	return channelRPMReservation{allowed: true}
+	l.requests[id] = append(events, now)
+	return rpmReservation{allowed: true}
 }
 
-func (s *Server) reserveChannelRPM(cfg *model.Config) channelRPMReservation {
+func (s *Server) reserveChannelRPM(cfg *model.Config) rpmReservation {
 	if cfg == nil || cfg.RPMLimit <= 0 {
-		return channelRPMReservation{allowed: true}
+		return rpmReservation{allowed: true}
 	}
 	if s == nil || s.channelRPMLimiter == nil {
-		return channelRPMReservation{allowed: true}
+		return rpmReservation{allowed: true}
 	}
 	return s.channelRPMLimiter.reserve(cfg.ID, cfg.RPMLimit)
 }

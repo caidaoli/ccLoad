@@ -1107,6 +1107,10 @@ func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *te
 		t.Fatalf("migrate legacy auth_tokens: %v", err)
 	}
 
+	var rpmLimit int
+	if err := db.QueryRowContext(ctx, `SELECT rpm_limit FROM auth_tokens WHERE token = 'limited-legacy'`).Scan(&rpmLimit); err != nil || rpmLimit != 0 {
+		t.Fatalf("legacy rpm_limit=%d err=%v, want 0", rpmLimit, err)
+	}
 	var limitedMaxConcurrency int
 	if err := db.QueryRowContext(ctx, `
 		SELECT max_concurrency FROM auth_tokens WHERE token = 'limited-legacy'
@@ -1133,7 +1137,7 @@ func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *te
 	}
 	for _, col := range []string{
 		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
-		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
+		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start", "rpm_limit",
 	} {
 		if !cols[col] {
 			t.Errorf("legacy migrate missing column %s", col)

@@ -28,7 +28,7 @@ func (c *channelRPMFakeClock) Advance(d time.Duration) {
 
 func TestChannelRPMLimiterZeroLimitIsUnlimited(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
-	limiter := newChannelRPMLimiter(clock.Now)
+	limiter := newRPMLimiter(clock.Now)
 
 	for i := 0; i < 1000; i++ {
 		if !limiter.reserve(42, 0).allowed {
@@ -39,7 +39,7 @@ func TestChannelRPMLimiterZeroLimitIsUnlimited(t *testing.T) {
 
 func TestChannelRPMLimiterRejectsAfterLimitWithinRollingMinute(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
-	limiter := newChannelRPMLimiter(clock.Now)
+	limiter := newRPMLimiter(clock.Now)
 
 	if !limiter.reserve(7, 2).allowed {
 		t.Fatal("first request rejected")
@@ -64,7 +64,7 @@ func TestChannelRPMLimiterRejectsAfterLimitWithinRollingMinute(t *testing.T) {
 
 func TestChannelRPMLimiterReportsRetryAfter(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
-	limiter := newChannelRPMLimiter(clock.Now)
+	limiter := newRPMLimiter(clock.Now)
 
 	if result := limiter.reserve(7, 2); !result.allowed {
 		t.Fatalf("first request rejected: %+v", result)
@@ -93,7 +93,7 @@ func TestChannelRPMLimiterReportsRetryAfter(t *testing.T) {
 
 func TestChannelRPMLimiterRemoveChannelClearsRequests(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
-	limiter := newChannelRPMLimiter(clock.Now)
+	limiter := newRPMLimiter(clock.Now)
 
 	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("first request rejected")
@@ -102,7 +102,7 @@ func TestChannelRPMLimiterRemoveChannelClearsRequests(t *testing.T) {
 		t.Fatal("second request allowed before removal")
 	}
 
-	limiter.RemoveChannel(7)
+	limiter.Remove(7)
 	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("request rejected after channel RPM state removal")
 	}
@@ -110,7 +110,7 @@ func TestChannelRPMLimiterRemoveChannelClearsRequests(t *testing.T) {
 
 func TestChannelRPMLimiterCleanupExpiredRemovesEmptyChannels(t *testing.T) {
 	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
-	limiter := newChannelRPMLimiter(clock.Now)
+	limiter := newRPMLimiter(clock.Now)
 
 	if !limiter.reserve(7, 1).allowed {
 		t.Fatal("first request rejected")
@@ -159,5 +159,63 @@ func TestDeleteChannelByIDRemovesChannelRPMState(t *testing.T) {
 	srv.channelRPMLimiter.mu.Unlock()
 	if exists {
 		t.Fatal("deleteChannelByID did not remove channel RPM state")
+	}
+}
+
+func TestRPMLimiterDynamicLimitKeepsRollingWindow(t *testing.T) {
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	limiter := newRPMLimiter(clock.Now)
+	for i := 0; i < 10; i++ {
+		if !limiter.reserve(7, 10).allowed {
+			t.Fatal("initial request rejected")
+		}
+		if i < 9 {
+			clock.Advance(5 * time.Second)
+		}
+	}
+	clock.Advance(time.Second)
+	if got := limiter.reserve(7, 2); got.allowed || got.retryAfter != 54*time.Second {
+		t.Fatalf("reduced limit result=%+v, want rejection for 54s", got)
+	}
+	if !limiter.reserve(7, 0).allowed {
+		t.Fatal("disabled limit rejected")
+	}
+	if got := limiter.reserve(7, 2); got.allowed || got.retryAfter != 54*time.Second {
+		t.Fatalf("reenabled limit lost original window: %+v", got)
+	}
+	clock.Advance(14 * time.Second)
+	if got := limiter.reserve(7, 2); got.allowed || got.retryAfter != 40*time.Second {
+		t.Fatalf("oldest event expiry allowed early admission: %+v", got)
+	}
+	clock.Advance(40 * time.Second)
+	if !limiter.reserve(7, 2).allowed || limiter.reserve(7, 2).allowed {
+		t.Fatal("expected exactly one recovered slot at 100s")
+	}
+	if !limiter.reserve(7, 3).allowed {
+		t.Fatal("raising limit did not provide new slot")
+	}
+}
+
+func TestRPMLimiterConcurrentAdmission(t *testing.T) {
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	limiter := newRPMLimiter(clock.Now)
+	var mu sync.Mutex
+	var accepted int
+	var workers sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		workers.Go(func() {
+			if limiter.reserve(7, 10).allowed {
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			}
+		})
+	}
+	workers.Wait()
+	if accepted != 10 {
+		t.Fatalf("accepted=%d, want 10", accepted)
+	}
+	if !limiter.reserve(8, 10).allowed {
+		t.Fatal("different ID shared rate limit")
 	}
 }

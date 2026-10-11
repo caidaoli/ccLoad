@@ -172,7 +172,8 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		CostLimitUSD           *float64 `json:"cost_limit_usd"`           // 总限额（0=无限制）
 		CostDailyLimitUSD      *float64 `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
 		CostMonthlyLimitUSD    *float64 `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
-		MaxConcurrency         *int     `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
+		RPMLimit               *int     `json:"rpm_limit"`
+		MaxConcurrency         *int     `json:"max_concurrency"` // 最大并发请求数（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -189,6 +190,10 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
+		return
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "rpm_limit must be >= 0")
 		return
 	}
 	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
@@ -236,6 +241,9 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	if req.CostMonthlyLimitUSD != nil {
 		authToken.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
 	}
+	if req.RPMLimit != nil {
+		authToken.RPMLimit = *req.RPMLimit
+	}
 	if req.MaxConcurrency != nil {
 		authToken.MaxConcurrency = *req.MaxConcurrency
 	}
@@ -272,6 +280,7 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		"allowed_channel_ids":      authToken.AllowedChannelIDs,
 		"channel_restriction_mode": authToken.ChannelRestrictionMode,
 		"max_concurrency":          authToken.MaxConcurrency,
+		"rpm_limit":                authToken.RPMLimit,
 	})
 }
 
@@ -294,7 +303,8 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		CostLimitUSD           *float64          `json:"cost_limit_usd"`           // 总限额（0=无限制）
 		CostDailyLimitUSD      *float64          `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
 		CostMonthlyLimitUSD    *float64          `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
-		MaxConcurrency         *int              `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
+		RPMLimit               *int              `json:"rpm_limit"`
+		MaxConcurrency         *int              `json:"max_concurrency"` // 最大并发请求数（0=无限制）
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -311,6 +321,10 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
+		return
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "rpm_limit must be >= 0")
 		return
 	}
 	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
@@ -364,6 +378,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.CostMonthlyLimitUSD != nil {
 		token.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
+	}
+	if req.RPMLimit != nil {
+		token.RPMLimit = *req.RPMLimit
 	}
 	if req.MaxConcurrency != nil {
 		token.MaxConcurrency = *req.MaxConcurrency

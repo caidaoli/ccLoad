@@ -1,3 +1,16 @@
+(function(window) {
+    'use strict';
+
+    function buildRpmLimitPayload(rawValue) {
+      if (rawValue === undefined || rawValue === null) return {};
+      const value = Number(String(rawValue).trim());
+      if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('rpm_limit must be a non-negative integer');
+      return { rpm_limit: value };
+    }
+
+    if (typeof module !== 'undefined' && module.exports) module.exports = { buildRpmLimitPayload };
+    if (!window) return;
+
     const t = window.t;
     const API_BASE = '/admin';
     let allTokens = [];
@@ -78,9 +91,9 @@
     }
 
     const CREATE_FORM_FIELDS = ['tokenDescription', 'tokenExpiry', 'customExpiry', 'tokenDailyCostLimitUSD',
-      'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency', 'tokenActive'];
+      'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency', 'tokenRPMLimit', 'tokenActive'];
     const EDIT_FORM_FIELDS = ['editTokenDescription', 'editTokenExpiry', 'editCustomExpiry', 'editDailyCostLimitUSD',
-      'editMonthlyCostLimitUSD', 'editCostLimitUSD', 'editMaxConcurrency', 'editTokenActive'];
+      'editMonthlyCostLimitUSD', 'editCostLimitUSD', 'editMaxConcurrency', 'editRPMLimit', 'editTokenActive'];
 
     function snapshotCreateForm() {
       return JSON.stringify(snapshotFields(CREATE_FORM_FIELDS));
@@ -444,7 +457,7 @@
         tokensHtml: buildTokensHtml(token),
         tokensCellClass: hasTokenUsage(token) ? '' : 'mobile-empty-cell',
         costHtml: buildCostHtml(token),
-        concurrencyHtml: buildConcurrencyHtml(token.max_concurrency),
+        concurrencyHtml: `${buildConcurrencyHtml(token.max_concurrency)} / ${buildConcurrencyHtml(token.rpm_limit)}`,
         latencyHtml: buildLatencyHtml(token),
         latencyCellClass: hasLatency ? '' : 'mobile-empty-cell',
         lastUsedHtml: formatLastUsedHtml(token.last_used_at, locale),
@@ -740,7 +753,7 @@
     function showCreateModal() {
       document.getElementById('tokenDescription').value = '';
       document.getElementById('tokenExpiry').value = 'never';
-      ['tokenDailyCostLimitUSD', 'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency'].forEach((id) => {
+      ['tokenDailyCostLimitUSD', 'tokenMonthlyCostLimitUSD', 'tokenCostLimitUSD', 'tokenMaxConcurrency', 'tokenRPMLimit'].forEach((id) => {
         document.getElementById(id).value = '';
       });
       document.getElementById('tokenActive').checked = true;
@@ -776,7 +789,13 @@
       if ((daily > 0 || monthly > 0 || total > 0) && maxConcurrency <= 0) {
         return { field: ids.concurrency, error: t('tokens.msg.costLimitRequiresConcurrency') };
       }
-      return { daily, monthly, total, maxConcurrency };
+      let rpmPayload;
+      try {
+        rpmPayload = buildRpmLimitPayload(document.getElementById(ids.rpm).value);
+      } catch {
+        return { field: ids.rpm, error: t('tokens.msg.rpmLimitInteger') };
+      }
+      return { daily, monthly, total, maxConcurrency, rpmPayload };
     }
 
     async function createToken() {
@@ -806,7 +825,8 @@
         daily: 'tokenDailyCostLimitUSD',
         monthly: 'tokenMonthlyCostLimitUSD',
         total: 'tokenCostLimitUSD',
-        concurrency: 'tokenMaxConcurrency'
+        concurrency: 'tokenMaxConcurrency',
+        rpm: 'tokenRPMLimit'
       });
       if (limits.error) {
         rejectField(limits.field, limits.error);
@@ -825,7 +845,8 @@
             cost_daily_limit_usd: limits.daily,
             cost_monthly_limit_usd: limits.monthly,
             cost_limit_usd: limits.total,
-            max_concurrency: limits.maxConcurrency
+            max_concurrency: limits.maxConcurrency,
+            ...limits.rpmPayload
           })
         });
 
@@ -881,6 +902,7 @@
 
       fillEditQuotaFields(token);
       document.getElementById('editMaxConcurrency').value = token.max_concurrency || '';
+      document.getElementById('editRPMLimit').value = token.rpm_limit || '';
 
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
@@ -954,7 +976,8 @@
         daily: 'editDailyCostLimitUSD',
         monthly: 'editMonthlyCostLimitUSD',
         total: 'editCostLimitUSD',
-        concurrency: 'editMaxConcurrency'
+        concurrency: 'editMaxConcurrency',
+        rpm: 'editRPMLimit'
       });
       if (limits.error) {
         rejectField(limits.field, limits.error);
@@ -996,7 +1019,8 @@
             cost_daily_limit_usd: limits.daily,
             cost_monthly_limit_usd: limits.monthly,
             cost_limit_usd: limits.total,               // 总限额
-            max_concurrency: limits.maxConcurrency      // 2026-04新增：并发上限
+            max_concurrency: limits.maxConcurrency,
+            ...limits.rpmPayload
           })
         });
         closeEditModal();
@@ -1767,3 +1791,5 @@
         : t('tokens.msg.importSuccess', { count: newModels.length });
       window.showNotification(msg, 'success');
     }
+
+})(typeof window !== 'undefined' ? window : null);

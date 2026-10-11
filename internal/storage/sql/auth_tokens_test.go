@@ -11,6 +11,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
 )
 
 func TestAuthToken_CreateAndGet(t *testing.T) {
@@ -29,6 +30,7 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 		AllowedModels:     []string{"gpt-4", "claude-3"},
 		AllowedChannelIDs: []int64{11, 22},
 		MaxConcurrency:    3,
+		RPMLimit:          60,
 		CreatedAt:         time.Now(),
 	}
 	if err := store.CreateAuthToken(ctx, token); err != nil {
@@ -48,6 +50,9 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 11 || got.AllowedChannelIDs[1] != 22 {
 		t.Fatalf("allowed_channel_ids: got %+v, want [11 22]", got.AllowedChannelIDs)
+	}
+	if got.RPMLimit != 60 {
+		t.Fatalf("rpm_limit: got %d, want 60", got.RPMLimit)
 	}
 	if got.MaxConcurrency != 3 {
 		t.Fatalf("max_concurrency: got %d, want 3", got.MaxConcurrency)
@@ -493,5 +498,44 @@ func TestAuthToken_UpdateLastUsed(t *testing.T) {
 	}
 	if got.LastUsedAt == nil || *got.LastUsedAt <= 0 {
 		t.Fatalf("expected last_used_at to be set, got=%v", got.LastUsedAt)
+	}
+}
+
+func TestAuthToken_RPMLimitWritePaths(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+	token := &model.AuthToken{Token: "rpm-write-paths", Description: "RPM", IsActive: true, RPMLimit: 12}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{25, 0} {
+		token.RPMLimit = limit
+		if err := store.UpdateAuthToken(ctx, token); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.GetAuthToken(ctx, token.ID)
+		if err != nil || got.RPMLimit != limit {
+			t.Fatalf("updated token=%+v err=%v, want limit %d", got, err, limit)
+		}
+	}
+	token.RPMLimit = 42
+	if err := store.(*sqlstore.SQLStore).UpsertAuthTokenAllFields(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetAuthTokenByValue(ctx, token.Token)
+	if err != nil || got.RPMLimit != 42 {
+		t.Fatalf("upsert token=%+v err=%v", got, err)
+	}
+	token.RPMLimit = -1
+	if err := store.UpdateAuthToken(ctx, token); err == nil {
+		t.Fatal("negative RPM update accepted")
+	}
+	if err := store.(*sqlstore.SQLStore).UpsertAuthTokenAllFields(ctx, token); err == nil {
+		t.Fatal("negative RPM upsert accepted")
+	}
+	token.ID = 0
+	if err := store.CreateAuthToken(ctx, token); err == nil {
+		t.Fatal("negative RPM insert accepted")
 	}
 }

@@ -100,7 +100,7 @@ func (r *foundRowsRows) Columns() []string {
 		"cost_used_microusd", "cost_limit_microusd",
 		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
 		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
-		"allowed_models", "allowed_channel_ids", "channel_restriction_mode", "max_concurrency",
+		"allowed_models", "allowed_channel_ids", "channel_restriction_mode", "max_concurrency", "rpm_limit",
 	}
 }
 
@@ -154,6 +154,7 @@ func authTokenDriverValues(token *model.AuthToken) []driver.Value {
 		`[42]`,
 		mode,
 		token.MaxConcurrency,
+		token.RPMLimit,
 	}
 }
 
@@ -196,6 +197,7 @@ func TestEnsureAuthToken_MySQLClientFoundRowsBackfillsExistingToken(t *testing.T
 		AllowedModels:     []string{"gpt-4o"},
 		AllowedChannelIDs: []int64{42},
 		MaxConcurrency:    2,
+		RPMLimit:          12,
 	}
 	store := newFoundRowsTestStore(t, &foundRowsState{
 		tokenHash: tokenHash,
@@ -220,6 +222,7 @@ func TestEnsureAuthToken_MySQLClientFoundRowsBackfillsExistingToken(t *testing.T
 		token.Description != existing.Description ||
 		token.CostLimitMicroUSD != existing.CostLimitMicroUSD ||
 		token.MaxConcurrency != existing.MaxConcurrency ||
+		token.RPMLimit != existing.RPMLimit ||
 		len(token.AllowedModels) != 1 || token.AllowedModels[0] != "gpt-4o" ||
 		len(token.AllowedChannelIDs) != 1 || token.AllowedChannelIDs[0] != 42 {
 		t.Fatalf("token was not backfilled from existing row: %+v", token)

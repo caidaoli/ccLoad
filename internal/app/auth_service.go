@@ -50,6 +50,8 @@ type AuthService struct {
 	authTokenChannels   map[string]model.ChannelRestriction // Token哈希 → 已校验的渠道限制策略
 	authTokenCostLimits map[string]tokenCostLimit           // Token哈希 → 费用限额状态（仅限额>0的令牌）
 	authTokenMaxConns   map[string]int                      // Token哈希 → 最大并发请求数（0=无限制）
+	authTokenRPMLimits  map[int64]int                       // Token ID → RPM上限
+	tokenRPMLimiter     *rpmLimiter                         // HTTP、WS和网页代理共享
 	authTokenActiveReqs map[string]int                      // Token哈希 → 当前进行中请求数
 	authTokensMux       sync.RWMutex                        // 并发保护（支持热更新）
 	authTokensRefreshMu sync.Mutex
@@ -172,6 +174,8 @@ func NewAuthService(
 		authTokenChannels:      make(map[string]model.ChannelRestriction),
 		authTokenCostLimits:    make(map[string]tokenCostLimit),
 		authTokenMaxConns:      make(map[string]int),
+		authTokenRPMLimits:     make(map[int64]int),
+		tokenRPMLimiter:        newRPMLimiter(time.Now),
 		authTokenActiveReqs:    make(map[string]int),
 		loginRateLimiter:       loginRateLimiter,
 		apiTokenSessionLimiter: newAPITokenSessionLimiter(nil),
@@ -657,6 +661,7 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			delete(s.authTokenChannels, tokenHash)
 			delete(s.authTokenCostLimits, tokenHash)
 			delete(s.authTokenMaxConns, tokenHash)
+			delete(s.authTokenRPMLimits, tokenID)
 			s.authTokensMux.Unlock()
 			if tokenID > 0 {
 				if err := s.revokeWebSessions([]int64{tokenID}); err != nil {
@@ -877,6 +882,7 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 	newTokenChannels := make(map[string]model.ChannelRestriction, len(tokens))
 	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
 	newTokenMaxConns := make(map[string]int, len(tokens))
+	newTokenRPMLimits := make(map[int64]int, len(tokens))
 	for _, t := range tokens {
 		if err := t.ValidateUsageLimits(); err != nil {
 			return fmt.Errorf("invalid auth token %d: %w", t.ID, err)
@@ -914,6 +920,9 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 				monthlyLimitMicroUSD: t.CostMonthlyLimitMicroUSD,
 				monthlyPeriodStart:   monthStart,
 			}
+		}
+		if t.RPMLimit > 0 {
+			newTokenRPMLimits[t.ID] = t.RPMLimit
 		}
 		if t.MaxConcurrency > 0 {
 			newTokenMaxConns[t.Token] = t.MaxConcurrency
@@ -958,6 +967,7 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 	s.authTokenChannels = newTokenChannels
 	s.authTokenCostLimits = newTokenCostLimits
 	s.authTokenMaxConns = newTokenMaxConns
+	s.authTokenRPMLimits = newTokenRPMLimits
 	s.authTokensMux.Unlock()
 	s.authTokensReloadAt.Store(time.Now().UnixMilli())
 	if err := s.revokeWebSessions(revokedTokenIDs); err != nil {

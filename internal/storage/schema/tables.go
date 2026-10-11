@@ -152,6 +152,7 @@ func DefineAuthTokensTable() *TableBuilder {
 		Column("allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''").
 		Column("channel_restriction_mode VARCHAR(16) NOT NULL DEFAULT 'allow'").
 		Column("max_concurrency INT NOT NULL DEFAULT 0").
+		Column("rpm_limit INT NOT NULL DEFAULT 0").
 		Index("idx_auth_tokens_active", "is_active").
 		Index("idx_auth_tokens_expires", "expires_at")
 }

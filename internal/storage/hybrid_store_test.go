@@ -386,6 +386,7 @@ func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {
 	token := &model.AuthToken{
 		Token:                  "hybrid-delete-channel-token",
 		Description:            "hybrid channel restriction",
+		RPMLimit:               12,
 		IsActive:               true,
 		AllowedChannelIDs:      []int64{created.ID},
 		ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
@@ -395,7 +396,7 @@ func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {
 	}
 	waitForCondition(t, 3*time.Second, func() bool {
 		primaryToken, tokenErr := primary.GetAuthToken(ctx, token.ID)
-		return tokenErr == nil && len(primaryToken.AllowedChannelIDs) == 1 &&
+		return tokenErr == nil && primaryToken.RPMLimit == 12 && len(primaryToken.AllowedChannelIDs) == 1 &&
 			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
 	if err := hybrid.DeleteConfig(ctx, created.ID); err != nil {
@@ -404,7 +405,7 @@ func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {
 	waitForCondition(t, 3*time.Second, func() bool {
 		_, getErr := primary.GetConfig(ctx, created.ID)
 		primaryToken, tokenErr := primary.GetAuthToken(ctx, token.ID)
-		return getErr != nil && tokenErr == nil && !primaryToken.IsActive && len(primaryToken.AllowedChannelIDs) == 0 &&
+		return getErr != nil && tokenErr == nil && primaryToken.RPMLimit == 12 && !primaryToken.IsActive && len(primaryToken.AllowedChannelIDs) == 0 &&
 			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
 	if _, err := hybrid.GetConfig(ctx, created.ID); err == nil {

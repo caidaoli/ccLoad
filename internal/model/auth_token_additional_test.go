@@ -145,6 +145,8 @@ func TestAuthToken_ValidateUsageLimits(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "unlimited", token: AuthToken{}},
+		{name: "RPM without concurrency", token: AuthToken{RPMLimit: 2}},
+		{name: "negative RPM", token: AuthToken{RPMLimit: -1}, wantErr: true},
 		{name: "total limit with concurrency", token: AuthToken{CostLimitMicroUSD: 1, MaxConcurrency: 1}},
 		{name: "daily limit with concurrency", token: AuthToken{CostDailyLimitMicroUSD: 1, MaxConcurrency: 1}},
 		{name: "monthly limit with concurrency", token: AuthToken{CostMonthlyLimitMicroUSD: 1, MaxConcurrency: 1}},
@@ -190,6 +192,7 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 		AllowedChannelIDs:        []int64{11, 22},
 		ChannelRestrictionMode:   ChannelRestrictionModeDeny,
 		MaxConcurrency:           3,
+		RPMLimit:                 60,
 	}
 
 	b, err := json.Marshal(token)
@@ -207,6 +210,7 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 		AllowedChannelID       []int64 `json:"allowed_channel_ids"`
 		ChannelRestrictionMode string  `json:"channel_restriction_mode"`
 		MaxConcurrency         int     `json:"max_concurrency"`
+		RPMLimit               int     `json:"rpm_limit"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
@@ -235,6 +239,9 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 	if got.ChannelRestrictionMode != ChannelRestrictionModeDeny {
 		t.Fatalf("channel_restriction_mode = %#v, want %q", got.ChannelRestrictionMode, ChannelRestrictionModeDeny)
+	}
+	if got.RPMLimit != 60 {
+		t.Fatalf("rpm_limit=%d, want 60", got.RPMLimit)
 	}
 	if got.MaxConcurrency != 3 {
 		t.Fatalf("max_concurrency = %#v, want 3", got.MaxConcurrency)

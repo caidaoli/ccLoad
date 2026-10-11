@@ -628,6 +628,24 @@ func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dia
 	}
 }
 
+// ensureAuthTokensRPMLimit adds the token rolling-minute limit.
+func ensureAuthTokensRPMLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	switch dialect {
+	case DialectMySQL:
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "rpm_limit", definition: "INT NOT NULL DEFAULT 0"},
+		})
+	case DialectPostgres:
+		return ensurePostgresColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "rpm_limit", definition: "INT NOT NULL DEFAULT 0"},
+		})
+	default:
+		return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+			{name: "rpm_limit", definition: "INTEGER NOT NULL DEFAULT 0"},
+		})
+	}
+}
+
 // ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段
 func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "daily_cost_limit",

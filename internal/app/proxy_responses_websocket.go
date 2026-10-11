@@ -203,10 +203,38 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				}
 				continue
 			}
+			turnCtx, cancelTurn := context.WithCancel(connectionCtx)
+			interrupt.begin(cancelTurn, executionSession.upstream)
+			releaseSlots, errSlots := s.acquireResponsesWebsocketTurnSlots(turnCtx, tokenHashString, c.GetInt64("token_id"))
+			if errSlots != nil {
+				localInterrupt := interrupt.localPayload()
+				interrupt.end()
+				cancelTurn()
+				executionSession.releaseTurn()
+				var rpmErr *tokenRPMExceededError
+				var errWrite error
+				if localInterrupt != nil {
+					_, errWrite = writeResponsesWebsocketLocalInterrupt(conn, localInterrupt, []byte("[]"))
+				} else if errors.As(errSlots, &rpmErr) {
+					errWrite = writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, responsesWebsocketErrorBody{
+						Type: "rate_limit_error", Code: "token_rpm_exceeded", Message: rpmErr.Error(),
+						RetryAfter: rpmErr.retryAfterSeconds(),
+					})
+				} else {
+					errWrite = writeResponsesWebsocketError(conn, "upstream_error", errSlots.Error())
+				}
+				if errWrite != nil {
+					return
+				}
+				continue
+			}
 			emptySession := len(executionSession.transcript.lastRequest) == 0
 			allowLocalPrewarm := emptySession
 			requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
 			if errNormalize != nil {
+				interrupt.end()
+				cancelTurn()
+				releaseSlots()
 				executionSession.releaseTurn()
 				if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
 					s.responsesExecutionSessions.recordPreviousResponseMiss(
@@ -227,13 +255,12 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				}
 				continue
 			}
-			turnCtx, cancelTurn := context.WithCancel(connectionCtx)
-			interrupt.begin(cancelTurn, executionSession.upstream)
 			turnResult, errTurn := s.executeResponsesWebsocketTurn(
 				turnCtx, c, conn, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
 			)
 			interrupt.end()
 			cancelTurn()
+			releaseSlots()
 			if errTurn != nil {
 				if turnResult.interrupted {
 					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
@@ -498,6 +525,34 @@ func (e *responsesWebsocketClientRetryError) responseStatus() int {
 	return http.StatusBadGateway
 }
 
+// acquireResponsesWebsocketTurnSlots admits one client turn before transcript
+// normalization or execution. Replays and retries inside the turn reuse it.
+func (s *Server) acquireResponsesWebsocketTurnSlots(ctx context.Context, tokenHash string, tokenID int64) (func(), error) {
+	releaseGlobal, err := s.acquireConcurrencySlotForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	releaseToken, active, limit, acquired := s.authService.acquireTokenConcurrencySlot(tokenHash)
+	if !acquired {
+		releaseGlobal()
+		return nil, fmt.Errorf("token concurrency limit exceeded: %d active of %d limit", active, limit)
+	}
+	if err := ctx.Err(); err != nil {
+		releaseToken()
+		releaseGlobal()
+		return nil, err
+	}
+	if err := s.authService.reserveTokenRPM(tokenID); err != nil {
+		releaseToken()
+		releaseGlobal()
+		return nil, err
+	}
+	return func() {
+		releaseToken()
+		releaseGlobal()
+	}, nil
+}
+
 func (s *Server) executeResponsesWebsocketTurn(
 	ctx context.Context,
 	c *gin.Context,
@@ -527,23 +582,8 @@ func (s *Server) executeResponsesWebsocketTurn(
 	thinkingEffort := thinkingEffortFromRequest(requestedModel, requestBody)
 	modelName := model.RoutingModelName(requestedModel)
 
-	release, err := s.acquireConcurrencySlotForContext(ctx)
-	if err != nil {
-		return responsesWebsocketTurnResult{}, err
-	}
-	defer release()
-
 	tokenHash, _ := c.Get("token_hash")
 	tokenHashString, _ := tokenHash.(string)
-	releaseTokenSlot, activeTokenRequests, maxTokenRequests, acquired := s.authService.acquireTokenConcurrencySlot(tokenHashString)
-	if !acquired {
-		return responsesWebsocketTurnResult{}, fmt.Errorf(
-			"token concurrency limit exceeded: %d active of %d limit",
-			activeTokenRequests,
-			maxTokenRequests,
-		)
-	}
-	defer releaseTokenSlot()
 
 	if tokenHashString != "" && !s.authService.IsModelAllowed(tokenHashString, modelName) {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("model %q is not allowed for this token", modelName)
@@ -1221,6 +1261,7 @@ func writeResponsesWebsocketClientRetryError(
 }
 
 type responsesWebsocketErrorBody struct {
+	RetryAfter   int    `json:"retry_after,omitempty"`
 	Message      string `json:"message"`
 	Type         string `json:"type"`
 	Code         string `json:"code"`
