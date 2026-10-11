@@ -144,6 +144,7 @@ window.I18N_LOCALES['en'] = {
   'index.health.loading': 'Loading service health data',
   'index.health.unavailable': 'Health data is temporarily unavailable. The next refresh will retry.',
   'index.health.noData': 'No request data for {period}',
+  'index.health.pending': 'Not yet reached',
   'index.health.rateLimited': '{count}\u00a0rate-limited',
   'index.health.summary': 'Service success rate for {period}: {rate}; {success} succeeded and {error} failed',
   // ============================================================

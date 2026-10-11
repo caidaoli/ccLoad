@@ -238,6 +238,13 @@
 
       const intervalMs = bucketMs || 15 * 60 * 1000;
       timeElement.textContent = `${formatter.format(new Date(point.ts))} – ${formatter.format(new Date(point.ts + intervalMs))}`;
+      const pendingElement = document.getElementById('service-health-tooltip-pending');
+      const statsElement = document.getElementById('service-health-tooltip-stats');
+      if (pendingElement && statsElement) {
+        pendingElement.hidden = !point.pending;
+        pendingElement.textContent = point.pending ? overviewText('index.health.pending', '未到') : '';
+        statsElement.hidden = Boolean(point.pending);
+      }
       successElement.textContent = formatNumber(point.success);
       errorElement.textContent = formatNumber(point.error);
       rateElement.textContent = `(${formatPercent(point.rate)})`;
@@ -386,7 +393,8 @@
       if (healthResult.status === 'fulfilled') {
         serviceHealthModel = window.ServiceHealth.buildModel(
           healthResult.value,
-          healthRequest.bucketMinutes
+          healthRequest.bucketMinutes,
+          window.ServiceHealth.rangeEndMs(currentTimeRange, currentCustomTimeRange)
         );
         renderServiceHealth(serviceHealthModel);
       } else {

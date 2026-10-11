@@ -1517,6 +1517,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.service-health-tooltip-stats[hidden] {
+  display: none;
+}
+
+.service-health-tooltip-pending {
+  color: var(--neutral-500);
+  font-size: var(--text-xs);
+}
+
 .service-health-tooltip-stats strong {
   font-weight: var(--font-semibold);
 }

@@ -144,6 +144,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.health.loading': '正在加载服务健康数据',
   'index.health.unavailable': '健康数据暂时无法加载，将在下次刷新时重试。',
   'index.health.noData': '{period}暂无请求数据',
+  'index.health.pending': '未到',
   'index.health.rateLimited': '其中限流\u00a0{count}',
   'index.health.summary': '{period}服务成功率 {rate}，成功 {success} 次，失败 {error} 次',
   // ============================================================

@@ -48,6 +48,35 @@ test('service health normalizes only the metric buckets returned for the selecte
   assert.equal(model.state, 'warning');
 });
 
+test('service health pads an in-progress range with unknown buckets up to its last bucket', () => {
+  const now = new Date(2026, 9, 14, 10, 7).getTime(); // 周三
+  const dayStart = new Date(2026, 9, 14).getTime();
+  const bucketMs = 15 * 60 * 1000;
+  const endOfToday = ServiceHealth.rangeEndMs('today', null, now);
+  assert.equal(endOfToday, new Date(2026, 9, 15).getTime() - 1);
+  assert.equal(ServiceHealth.rangeEndMs('this_week', null, now), new Date(2026, 9, 19).getTime() - 1);
+  assert.equal(ServiceHealth.rangeEndMs('this_month', null, now), new Date(2026, 10, 1).getTime() - 1);
+  assert.equal(ServiceHealth.rangeEndMs('custom', { startMs: dayStart, endMs: now + 3600000 }, now), now + 3600000);
+  assert.equal(ServiceHealth.rangeEndMs('yesterday', null, now), null);
+
+  const metrics = [
+    { ts: dayStart, success: 10, error: 0 },
+    { ts: dayStart + 40 * bucketMs, success: 9, error: 1 }
+  ];
+  const model = ServiceHealth.buildModel(metrics, 15, endOfToday);
+
+  assert.equal(model.points.length, 96);
+  assert.equal(model.points.at(-1).ts, new Date(2026, 9, 14, 23, 45).getTime());
+  assert.equal(model.points[40].state, 'warning');
+  assert.ok(model.points.slice(41).every(point => point.state === 'unknown' && point.rate === null && point.pending));
+  assert.ok(model.points.slice(0, 41).every(point => !point.pending));
+  assert.equal(model.success, 19);
+  assert.equal(model.error, 1);
+
+  assert.equal(ServiceHealth.buildModel(metrics, 15).points.length, 41);
+  assert.deepEqual(ServiceHealth.buildModel([], 15, endOfToday).points, []);
+});
+
 test('service health treats empty and malformed metrics as unknown instead of healthy', () => {
   const model = ServiceHealth.buildModel([
     { ts: 'invalid', success: -1, error: 'bad' }
