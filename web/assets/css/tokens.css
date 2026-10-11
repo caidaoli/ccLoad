@@ -74,6 +74,30 @@
   color: var(--neutral-500);
 }
 
+/* 令牌名首字母头像，与渠道列表头像同尺寸同配色 */
+.token-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.token-name-text {
+  min-width: 0;
+}
+
+.token-avatar {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
 .token-name-line {
   display: flex;
   align-items: center;

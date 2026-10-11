@@ -477,6 +477,7 @@
       return TemplateEngine.render('tpl-token-row', {
         id: token.id,
         description: token.description,
+        avatarLetter: (Array.from(String(token.description || '').trim())[0] || '?').toUpperCase(),
         token: token.token,
         maskedToken: maskToken(token.token),
         statusClass: status.class,
