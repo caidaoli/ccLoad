@@ -1,6 +1,28 @@
 (function(window) {
     'use strict';
 
+    function buildClientConfigSnippets(origin, token) {
+      const baseUrl = String(origin).replace(/\/+$/, '');
+      const claudeCode = JSON.stringify({ env: {
+        ANTHROPIC_BASE_URL: baseUrl,
+        ANTHROPIC_AUTH_TOKEN: String(token)
+      } }, null, 2);
+      // Escape DEL as well: TOML forbids literal control characters in basic strings.
+      const tomlString = (value) => JSON.stringify(value).replace(/\x7f/g, '\\u007f');
+      const codexToml = [
+        'model_provider = "ccload"', '',
+        '[model_providers.ccload]',
+        'name = "OpenAI"',
+        `base_url = ${tomlString(baseUrl + '/v1')}`,
+        'wire_api = "responses"',
+        'requires_openai_auth = true',
+        'supports_websockets = true'
+      ].join('\n');
+      const shellToken = "'" + String(token).replace(/'/g, "'\\''") + "'";
+      const codexLogin = `printf '%s\\n' ${shellToken} | codex login --with-api-key`;
+      return { claudeCode, codexToml, codexLogin };
+    }
+
     function buildRpmLimitPayload(rawValue) {
       if (rawValue === undefined || rawValue === null) return {};
       const value = Number(String(rawValue).trim());
@@ -8,7 +30,7 @@
       return { rpm_limit: value };
     }
 
-    if (typeof module !== 'undefined' && module.exports) module.exports = { buildRpmLimitPayload };
+    if (typeof module !== 'undefined' && module.exports) module.exports = { buildClientConfigSnippets, buildRpmLimitPayload };
     if (!window) return;
 
     const t = window.t;
@@ -217,6 +239,10 @@
           'create-token': () => createToken(),
           'close-token-result-modal': () => closeTokenResultModal(),
           'copy-token-result': () => copyToken(),
+          'show-client-config-result': () => showClientConfigModal(document.getElementById('newTokenValue').value),
+          'close-client-config-modal': () => closeClientConfigModal(),
+          'switch-client-config': (target) => setClientConfigTab(target.dataset.client),
+          'copy-client-config': (target) => copyClientConfig(target.dataset.snippet),
           'close-edit-modal': () => closeEditModal(),
           'update-token': () => updateToken(),
           'copy-edit-token': () => copyTokenToClipboard(document.getElementById('editTokenValue').value),
@@ -288,8 +314,13 @@
       if (!container) return;
 
       container.addEventListener('click', (e) => {
-        const target = e.target.closest('.btn-copy-token, .btn-edit, .btn-delete');
+        const target = e.target.closest('.btn-copy-token, .btn-client-config, .btn-edit, .btn-delete');
         if (!target) return;
+
+        if (target.classList.contains('btn-client-config')) {
+          showClientConfigModal(target.dataset.token);
+          return;
+        }
 
         // 处理复制令牌按钮
         if (target.classList.contains('btn-copy-token')) {
@@ -859,6 +890,46 @@
         console.error('Failed to create token:', error);
         window.showNotification(t('tokens.msg.createFailed') + ': ' + error.message, 'error');
       }
+    }
+
+    // 对话框当前展示的配置片段；关闭时清空，避免令牌残留在 DOM 中
+    let clientConfigSnippets = null;
+
+    function showClientConfigModal(token) {
+      clientConfigSnippets = buildClientConfigSnippets(window.location.origin, token);
+      document.getElementById('clientConfigClaudeCode').textContent = clientConfigSnippets.claudeCode;
+      document.getElementById('clientConfigCodexLogin').textContent = clientConfigSnippets.codexLogin;
+      document.getElementById('clientConfigCodexToml').textContent = clientConfigSnippets.codexToml;
+      setClientConfigTab('claude');
+      openModal('clientConfigModal', closeClientConfigModal);
+    }
+
+    function closeClientConfigModal() {
+      hideModal('clientConfigModal');
+      clientConfigSnippets = null;
+      ['clientConfigClaudeCode', 'clientConfigCodexLogin', 'clientConfigCodexToml'].forEach((id) => {
+        document.getElementById(id).textContent = '';
+      });
+    }
+
+    function setClientConfigTab(client) {
+      [['claude', 'Claude'], ['codex', 'Codex']].forEach(([key, suffix]) => {
+        const active = key === client;
+        const tab = document.getElementById('clientConfigTab' + suffix);
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+        document.getElementById('clientConfigPane' + suffix).hidden = !active;
+      });
+    }
+
+    function copyClientConfig(snippetKey) {
+      const snippet = clientConfigSnippets?.[snippetKey];
+      if (!snippet) return;
+      window.copyToClipboard(snippet).then(() => {
+        window.showNotification(t('tokens.msg.clientConfigCopied'), 'success');
+      }).catch(() => {
+        window.showNotification(t('tokens.msg.clientConfigCopyFailed'), 'error');
+      });
     }
 
     function copyToken() {

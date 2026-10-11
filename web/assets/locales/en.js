@@ -860,6 +860,13 @@ window.I18N_LOCALES['en'] = {
   'tokens.willAddSuffix': 'models',
   // Legacy compatibility
   'tokens.msg.deleteSuccess': 'Token deleted successfully',
+  'tokens.clientConfig': 'Client configuration',
+  'tokens.clientConfigClaudeTarget': 'Merge into ~/.claude/settings.json',
+  'tokens.clientConfigCodexLogin': '1. Log in to Codex with the token (POSIX shell)',
+  'tokens.clientConfigCodexTarget': '2. Merge into ~/.codex/config.toml',
+  'tokens.clientConfigCodexHint': 'Keep model_provider at the top of the file, before any [section]; append the [model_providers.ccload] block at the end.',
+  'tokens.msg.clientConfigCopied': 'Client configuration copied',
+  'tokens.msg.clientConfigCopyFailed': 'Copy failed. Please try again.',
   'tokens.msg.copySuccess': 'Key copied to clipboard',
   // Table headers
   'tokens.table.token': 'Token',

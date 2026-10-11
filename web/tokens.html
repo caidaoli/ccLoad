@@ -181,7 +181,57 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button type="button" data-action="show-client-config-result" class="btn btn-secondary" data-i18n="tokens.clientConfig">客户端配置</button>
         <button type="button" data-action="close-token-result-modal" class="btn btn-primary" data-i18n="tokens.resultSavedBtn">我已保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 客户端配置对话框：位于令牌结果对话框之后，叠加时显示在上层 -->
+  <div id="clientConfigModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="clientConfigModalTitle">
+    <div class="modal-content modal-content--md">
+      <div class="modal-header">
+        <h2 class="modal-title" id="clientConfigModalTitle" data-i18n="tokens.clientConfig">客户端配置</h2>
+        <button type="button" class="close-btn" data-i18n-aria-label="common.close" aria-label="关闭" data-action="close-client-config-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="token-segmented client-config-tabs" role="tablist">
+          <button type="button" id="clientConfigTabClaude" class="token-segmented__btn active" role="tab" aria-selected="true"
+            aria-controls="clientConfigPaneClaude" data-action="switch-client-config" data-client="claude">Claude Code</button>
+          <button type="button" id="clientConfigTabCodex" class="token-segmented__btn" role="tab" aria-selected="false"
+            aria-controls="clientConfigPaneCodex" data-action="switch-client-config" data-client="codex">Codex</button>
+        </div>
+
+        <div id="clientConfigPaneClaude" class="client-config-pane" role="tabpanel" aria-labelledby="clientConfigTabClaude">
+          <div class="client-config-block">
+            <div class="client-config-block__head">
+              <span class="client-config-block__title" data-i18n="tokens.clientConfigClaudeTarget">合并到 ~/.claude/settings.json</span>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="copy-client-config" data-snippet="claudeCode" data-i18n="common.copy">复制</button>
+            </div>
+            <pre class="client-config-code"><code id="clientConfigClaudeCode"></code></pre>
+          </div>
+        </div>
+
+        <div id="clientConfigPaneCodex" class="client-config-pane" role="tabpanel" aria-labelledby="clientConfigTabCodex" hidden>
+          <div class="client-config-block">
+            <div class="client-config-block__head">
+              <span class="client-config-block__title" data-i18n="tokens.clientConfigCodexLogin">1. 用令牌登录 Codex（POSIX shell）</span>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="copy-client-config" data-snippet="codexLogin" data-i18n="common.copy">复制</button>
+            </div>
+            <pre class="client-config-code"><code id="clientConfigCodexLogin"></code></pre>
+          </div>
+          <div class="client-config-block">
+            <div class="client-config-block__head">
+              <span class="client-config-block__title" data-i18n="tokens.clientConfigCodexTarget">2. 合并到 ~/.codex/config.toml</span>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="copy-client-config" data-snippet="codexToml" data-i18n="common.copy">复制</button>
+            </div>
+            <p class="client-config-hint" data-i18n="tokens.clientConfigCodexHint">model_provider 放在文件顶部、任何 [section] 之前；[model_providers.ccload] 段追加到文件末尾。</p>
+            <pre class="client-config-code"><code id="clientConfigCodexToml"></code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" data-action="close-client-config-modal" class="btn btn-primary" data-i18n="common.close">关闭</button>
       </div>
     </div>
   </div>
@@ -440,6 +490,10 @@
           <button type="button" class="btn-copy-token token-inline-copy" data-token="{{token}}"
             data-i18n-title="common.copy" title="复制" data-i18n-aria-label="common.copy" aria-label="复制">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" class="btn-client-config token-inline-copy" data-token="{{token}}"
+            data-i18n-title="tokens.clientConfig" title="客户端配置" data-i18n-aria-label="tokens.clientConfig" aria-label="客户端配置">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M6 9L9 12L6 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15H17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
           <span class="token-expiry token-expiry--{{statusClass}}">· {{expiryText}}</span>
         </div>

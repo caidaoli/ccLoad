@@ -775,6 +775,51 @@
   font-size: 13px;
 }
 
+/* ===== 客户端配置对话框 ===== */
+.client-config-tabs {
+  margin-bottom: 16px;
+}
+
+.client-config-block + .client-config-block {
+  margin-top: 16px;
+}
+
+.client-config-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.client-config-block__title {
+  color: var(--neutral-800);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.client-config-hint {
+  margin: 0 0 6px;
+  color: var(--neutral-500);
+  font-size: var(--text-xs);
+}
+
+.client-config-code {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--neutral-200);
+  border-radius: 8px;
+  background: var(--neutral-50);
+  color: var(--neutral-800);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ===== 对话框通用间距 ===== */
 .modal-header {
   margin-bottom: 0;

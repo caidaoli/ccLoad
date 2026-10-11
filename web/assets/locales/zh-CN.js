@@ -860,6 +860,13 @@ window.I18N_LOCALES['zh-CN'] = {
   'tokens.willAddSuffix': '个模型',
   // 旧版兼容
   'tokens.msg.deleteSuccess': '令牌删除成功',
+  'tokens.clientConfig': '客户端配置',
+  'tokens.clientConfigClaudeTarget': '合并到 ~/.claude/settings.json',
+  'tokens.clientConfigCodexLogin': '1. 用令牌登录 Codex（POSIX shell）',
+  'tokens.clientConfigCodexTarget': '2. 合并到 ~/.codex/config.toml',
+  'tokens.clientConfigCodexHint': 'model_provider 放在文件顶部、任何 [section] 之前；[model_providers.ccload] 段追加到文件末尾。',
+  'tokens.msg.clientConfigCopied': '客户端配置已复制',
+  'tokens.msg.clientConfigCopyFailed': '复制失败，请重试',
   'tokens.msg.copySuccess': '密钥已复制到剪贴板',
   // 新增：表头
   'tokens.table.token': '令牌',
