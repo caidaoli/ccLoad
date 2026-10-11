@@ -351,7 +351,7 @@ func TestReasoningAutoResponsesSummaryDoesNotSpecifyEffort(t *testing.T) {
 	for _, transport := range []string{"http", "websocket"} {
 		t.Run(transport, func(t *testing.T) {
 			t.Parallel()
-			judge := newReasoningAutoJudge(t, "high")
+			judge := newReasoningAutoJudge(t, "high", "high")
 			business := newReasoningAutoBusiness(t)
 			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 				name: "summary", upstreamProtocol: "codex", models: "gpt-5.6-sol",
@@ -379,15 +379,86 @@ func TestReasoningAutoResponsesSummaryDoesNotSpecifyEffort(t *testing.T) {
 					reasoningAutoRequest(t, env, "/v1/responses", body, map[string]string{"Session-Id": "summary"})
 				}
 			}
-			if got := len(judge.snapshot()); got != 1 {
-				t.Fatalf("decision calls=%d, want 1", got)
+			if got := len(judge.snapshot()); got != 2 {
+				t.Fatalf("decision calls=%d, want 2", got)
 			}
 			requests := business.snapshot()
-			assertReasoningAutoEfforts(t, requests, "high", "low")
+			assertReasoningAutoEfforts(t, requests, "high", "high")
 			for _, body := range requests {
 				if got := gjson.GetBytes(body, "reasoning.summary").String(); got != "auto" {
 					t.Fatalf("summary=%q, want auto", got)
 				}
+			}
+		})
+	}
+}
+
+func TestReasoningAutoRequestEffortPolicy(t *testing.T) {
+	t.Parallel()
+	for _, transport := range []string{"chat", "responses", "websocket"} {
+		t.Run(transport, func(t *testing.T) {
+			t.Parallel()
+			for _, policy := range []struct {
+				name, suffix, bodyEffort, decision, upstreamEffort string
+				decisionCalls                                      int
+			}{
+				{name: "body_low", bodyEffort: "low", decision: "high", upstreamEffort: "high", decisionCalls: 1},
+				{name: "auto_body_high", suffix: "(auto)", bodyEffort: "high", decision: "low", upstreamEffort: "low", decisionCalls: 1},
+				{name: "auto_case_whitespace", suffix: "( AuTo )", bodyEffort: "high", decision: "low", upstreamEffort: "low", decisionCalls: 1},
+				{name: "auto_numeric", suffix: "(-1)", bodyEffort: "high", decision: "low", upstreamEffort: "low", decisionCalls: 1},
+				{name: "low_suffix", suffix: "(low)", bodyEffort: "high", upstreamEffort: "low"},
+				{name: "none_suffix", suffix: "(none)", bodyEffort: "high", upstreamEffort: "none"},
+				{name: "budget_suffix", suffix: "(8192)", bodyEffort: "high", upstreamEffort: "medium"},
+			} {
+				t.Run(policy.name, func(t *testing.T) {
+					t.Parallel()
+					var efforts []string
+					if policy.decisionCalls != 0 {
+						efforts = append(efforts, policy.decision)
+					}
+					judge := newReasoningAutoJudge(t, efforts...)
+					business := newReasoningAutoBusiness(t)
+					upstreamProtocol := "codex"
+					if transport == "chat" {
+						upstreamProtocol = "openai"
+					}
+					env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+						name: "effort-policy", upstreamProtocol: upstreamProtocol, models: "gpt-5.6-sol",
+					}}, []string{business.server.URL})
+					body := map[string]any{"model": "gpt-5.6-sol" + policy.suffix}
+					if transport == "chat" {
+						body["messages"] = []any{map[string]any{"role": "user", "content": "Choose effort for this task."}}
+						body["reasoning_effort"] = policy.bodyEffort
+						reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+					} else {
+						body["input"] = []any{map[string]any{"role": "user", "content": "Choose effort for this task."}}
+						body["reasoning"] = map[string]any{"effort": policy.bodyEffort, "summary": "auto"}
+						if transport == "websocket" {
+							conn := dialResponsesWebsocketWithSessionID(t, env.engine, "effort-policy")
+							if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+								t.Fatal(err)
+							}
+							body["type"] = "response.create"
+							if err := conn.WriteJSON(body); err != nil {
+								t.Fatal(err)
+							}
+							readWebsocketUntilType(t, conn, "response.completed")
+						} else {
+							reasoningAutoRequest(t, env, "/v1/responses", body, nil)
+						}
+					}
+					requests := business.snapshot()
+					assertReasoningAutoEfforts(t, requests, policy.upstreamEffort)
+					if got := gjson.GetBytes(requests[0], "model").String(); got != "gpt-5.6-sol" {
+						t.Fatalf("upstream model=%q, want base model", got)
+					}
+					if transport != "chat" && gjson.GetBytes(requests[0], "reasoning.summary").String() != "auto" {
+						t.Fatalf("reasoning summary lost: %s", requests[0])
+					}
+					if got := len(judge.snapshot()); got != policy.decisionCalls {
+						t.Fatalf("decision calls=%d, want %d", got, policy.decisionCalls)
+					}
+				})
 			}
 		})
 	}
@@ -398,9 +469,9 @@ func TestReasoningAutoExplicitSettingsRequireFreshDecision(t *testing.T) {
 	for _, explicit := range []struct {
 		name, model, effort, upstreamEffort string
 	}{
-		{name: "body", model: "gpt-5.6-sol", effort: "low", upstreamEffort: "low"},
-		{name: "suffix", model: "gpt-5.6-sol(low)", effort: "high", upstreamEffort: "low"},
-		{name: "auto_suffix", model: "gpt-5.6-sol(auto)", effort: "high"},
+		{name: "low_suffix", model: "gpt-5.6-sol(low)", effort: "high", upstreamEffort: "low"},
+		{name: "none_suffix", model: "gpt-5.6-sol(none)", effort: "high", upstreamEffort: "none"},
+		{name: "budget_suffix", model: "gpt-5.6-sol(8192)", effort: "high", upstreamEffort: "medium"},
 	} {
 		t.Run(explicit.name, func(t *testing.T) {
 			t.Parallel()
@@ -1120,14 +1191,14 @@ func TestReasoningAutoWebsocketIncrementalAndReplayShareDecision(t *testing.T) {
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-5.6-sol", "input": []any{
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "gpt-5.6-sol(auto)", "reasoning": map[string]any{"effort": "high", "summary": "auto"}, "input": []any{
 		map[string]any{"type": "reasoning", "id": "rs-history", "encrypted_content": "opaque-encrypted-context"},
 		map[string]any{"role": "user", "content": "Migrate the database without losing concurrent writes."},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	readWebsocketUntilType(t, conn, "response.completed")
-	if err := conn.WriteJSON(map[string]any{"type": "response.create", "previous_response_id": "resp-first", "input": []any{
+	if err := conn.WriteJSON(map[string]any{"type": "response.create", "previous_response_id": "resp-first", "reasoning": map[string]any{"effort": "low", "summary": "auto"}, "input": []any{
 		map[string]any{"role": "user", "content": "Continue; now prove the rollback remains lock-free."},
 	}}); err != nil {
 		t.Fatal(err)
@@ -1135,6 +1206,11 @@ func TestReasoningAutoWebsocketIncrementalAndReplayShareDecision(t *testing.T) {
 	readWebsocketUntilType(t, conn, "response.completed")
 	first, incremental, replay := <-requests, <-requests, <-requests
 	assertReasoningAutoEfforts(t, [][]byte{first, incremental, replay}, "low", "xhigh", "xhigh")
+	for _, body := range [][]byte{first, incremental, replay} {
+		if gjson.GetBytes(body, "model").String() != "gpt-5.6-sol" || gjson.GetBytes(body, "reasoning.summary").String() != "auto" {
+			t.Fatalf("native WS model or summary changed: %s", body)
+		}
+	}
 	if gjson.GetBytes(incremental, "input.#").Int() != 1 || gjson.GetBytes(incremental, "previous_response_id").String() != "resp-first" {
 		t.Fatalf("native turn was not incremental: %s", incremental)
 	}
@@ -1280,7 +1356,7 @@ func TestReasoningAutoZedProviderEnvelopeCommitsEffort(t *testing.T) {
 
 func TestReasoningAutoWebsocketInheritedEffortIsNotClientExplicit(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "xhigh", "low", "medium")
+	judge := newReasoningAutoJudge(t, "xhigh", "low", "medium", "high")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "ws-explicit", upstreamProtocol: "codex", models: "gpt-5.6-sol",
@@ -1289,7 +1365,7 @@ func TestReasoningAutoWebsocketInheritedEffortIsNotClientExplicit(t *testing.T) 
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	for turn, text := range []string{"Complex migration.", "Use my explicit low effort.", "Continue.", "Finish the settled plan."} {
+	for turn, text := range []string{"Complex migration.", "Use a low effort body hint.", "Continue.", "Finish the settled plan."} {
 		body := map[string]any{"type": "response.create", "input": []any{map[string]any{"role": "user", "content": text}}}
 		if turn == 0 {
 			body["model"] = "gpt-5.6-sol"
@@ -1303,15 +1379,12 @@ func TestReasoningAutoWebsocketInheritedEffortIsNotClientExplicit(t *testing.T) 
 			t.Fatal(err)
 		}
 		readWebsocketUntilType(t, conn, "response.completed")
-		wantCalls := turn
-		if turn == 0 {
-			wantCalls = 1
-		}
+		wantCalls := turn + 1
 		if got := len(judge.snapshot()); got != wantCalls {
 			t.Fatalf("after WS turn %d decision calls=%d, want %d", turn+1, got, wantCalls)
 		}
 	}
-	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "low", "xhigh", "medium")
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "xhigh", "medium", "high")
 }
 
 func TestReasoningAutoLogsCorrelateAndDecisionDoesNotChargeClient(t *testing.T) {

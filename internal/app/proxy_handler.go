@@ -673,7 +673,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		reqCtx.nativeCodexBody = nativeRequestBody
 	}
 	if requestMethod == http.MethodPost && reasoningTurnEndpoint(effectiveRequestPath) && s.reasoningTarget(reqCtx) {
-		reasoningExplicit := originalReasoningExplicit(originalReasoningBody, reasoningModel)
+		reasoningExplicit := hasExplicitThinkingSuffix(reasoningModel)
 		transcript := all
 		if len(executionSessionRequestBody) > 0 {
 			transcript = executionSessionRequestBody

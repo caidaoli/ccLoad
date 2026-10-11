@@ -11,6 +11,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/cliproxy/thinking"
 	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
@@ -234,11 +235,11 @@ func (r *proxyRequestContext) reasoningLogMetadata() *model.ReasoningDecision {
 	return &m
 }
 
-func originalReasoningExplicit(body []byte, requestedModel string) bool {
-	if _, _, ok := model.ParseThinkingSuffix(requestedModel); ok {
-		return true
-	}
-	return reasoningFieldExists(body)
+// A concrete model suffix opts out of automatic decisions; auto explicitly
+// delegates effort selection to the gateway. Body effort fields may be replaced.
+func hasExplicitThinkingSuffix(requestedModel string) bool {
+	_, cfg, ok := model.ParseThinkingSuffix(requestedModel)
+	return ok && cfg.Mode != thinking.ModeAuto
 }
 
 // Only the generation endpoint itself is a business turn. Request families also
@@ -323,16 +324,6 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 func containsExact(values []string, value string) bool {
 	for _, item := range values {
 		if item == value {
-			return true
-		}
-	}
-	return false
-}
-
-func reasoningFieldExists(body []byte) bool {
-	paths := []string{"reasoning_effort", "reasoning.effort", "thinking", "output_config.effort", "generationConfig.thinkingConfig"}
-	for _, path := range paths {
-		if jsonPathExists(body, path) {
 			return true
 		}
 	}

@@ -21,8 +21,6 @@ type reasoningProjection struct {
 	incomplete bool
 }
 
-func jsonPathExists(body []byte, path string) bool { return gjson.GetBytes(body, path).Exists() }
-
 // Only conversation fields enter the decision state. Tool definitions, credentials
 // and client sampling parameters are not needed to estimate the next step.
 // withText=false only checks completeness, for turns that reuse the last level.
