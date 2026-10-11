@@ -187,6 +187,9 @@ func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[s
 
 // ensureLogsNewColumns 确保logs表有新增字段(2025-12新增,支持MySQL和SQLite)
 func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "logs", "reasoning_decision", "TEXT NULL", "TEXT NULL"); err != nil {
+		return err
+	}
 	switch dialect {
 	case DialectMySQL:
 		if err := ensureLogsMinuteBucketMySQL(ctx, db); err != nil {

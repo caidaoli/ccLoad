@@ -638,6 +638,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			if authType == "" {
 				return fmt.Errorf("import channel %s: invalid auth_type %q", config.Name, config.AuthType)
 			}
+			if config.IsSystemOne() && authType != model.AuthTypeAPIKey {
+				return fmt.Errorf("import channel %s: system one channels require api_key authentication", config.Name)
+			}
 			if authType != model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) == "" {
 				return fmt.Errorf("import channel %s: %s channel requires a credential", config.Name, authType)
 			}

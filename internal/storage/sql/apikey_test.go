@@ -478,6 +478,26 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 	}
 }
 
+func TestAPIKey_ImportChannelBatchRejectsOAuthSystemOne(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	_, _, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{
+		Config: &model.Config{
+			Name: "decision-oauth", AuthType: model.AuthTypeCodexOAuth,
+			OAuthCredential: `{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`,
+			URLs:            model.ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}},
+			Enabled:         true, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}},
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "system one channels require api_key authentication") {
+		t.Fatalf("ImportChannelBatch() error = %v, want system one auth rejection", err)
+	}
+	configs, err := store.ListConfigs(ctx)
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("configs after rejected import = (%d, %v)", len(configs), err)
+	}
+}
+
 func TestAPIKey_ImportChannelBatchUpdatesExistingOAuthChannel(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

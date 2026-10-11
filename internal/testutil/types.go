@@ -85,7 +85,7 @@ func (tr *TestChannelRequest) Validate() error {
 	}
 	tr.ClientProtocol = strings.ToLower(strings.TrimSpace(tr.ClientProtocol))
 	switch tr.ClientProtocol {
-	case "anthropic", "codex", "openai", "gemini":
+	case "anthropic", "codex", "openai", "gemini", "system_one":
 		return nil
 	case "":
 		return fmt.Errorf("client_protocol cannot be empty")

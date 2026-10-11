@@ -1123,10 +1123,10 @@ func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Tim
 	query := `
 		SELECT channel_id, COALESCE(SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)), 0) as total_cost
 		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, nil) + `
-		WHERE time >= ? AND channel_id > 0 AND log_source = ?
+		WHERE time >= ? AND channel_id > 0 AND log_source IN (?, ?)
 		GROUP BY channel_id`
 
-	rows, err := s.QueryContext(ctx, query, todayStartMs, model.LogSourceProxy)
+	rows, err := s.QueryContext(ctx, query, todayStartMs, model.LogSourceProxy, model.LogSourceDecision)
 	if err != nil {
 		return nil, err
 	}

@@ -256,7 +256,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				continue
 			}
 			turnResult, errTurn := s.executeResponsesWebsocketTurn(
-				turnCtx, c, conn, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
+				turnCtx, c, conn, message.payload, requestBody, nativeRequestBody, executionSession, allowLocalPrewarm, interrupt,
 			)
 			interrupt.end()
 			cancelTurn()
@@ -557,6 +557,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	ctx context.Context,
 	c *gin.Context,
 	conn *websocket.Conn,
+	clientPayload []byte,
 	requestBody []byte,
 	nativeRequestBody []byte,
 	executionSession *responsesExecutionSession,
@@ -569,6 +570,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return responsesWebsocketTurnResult{}, errors.New("missing model in normalized websocket request")
 	}
 	clientModel := model.RoutingModelName(requestedModel)
+	// 原始帧可省略 model，归一化会继承上一轮带后缀的模型名；
+	// 仅非 auto 后缀跳过判断，请求体中本轮或继承的等级都允许自动改写。
+	reasoningModel := requestedModel
 	// 多模态回退：按完整 transcript 检测。一旦某轮带图，历史里会一直留着这张图，
 	// 用完整体检测才能让后续每一轮的判定保持稳定。改写必须在 Token 白名单
 	// （:431 modelName）与候选选择之前，与 HTTP 入口同契约。
@@ -660,6 +664,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 		sessionAffinityKey: sessionAffinityKey,
 		sessionAffinity:    sessionAffinity,
 	}
+	if s.reasoningTarget(reqCtx) {
+		s.prepareReasoningTurn(ctx, reqCtx, requestBody, clientPayload, hasExplicitThinkingSuffix(reasoningModel))
+	}
+	ctx = withReasoningRequest(ctx, reqCtx)
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
 			s.activeRequests.AddBytes(reqCtx.activeReqID, n)

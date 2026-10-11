@@ -240,6 +240,8 @@ async function withLoadedLogsPage(options, assertions) {
   setGlobal('TemplateEngine', { render: () => null });
   setGlobal('escapeHtml', (value) => String(value ?? ''));
   setGlobal('calculateTokenSpeed', () => null);
+  setGlobal('getCostDisplayInfo', (standardCost, effectiveCost) => ({standardCost, effectiveCost, hasMultiplier: false}));
+  setGlobal('formatCost', value => '$' + value);
   setGlobal('fetchDataWithAuth', async (url) => {
     if (url.startsWith('/dashboard/models?')) return { models: [], channels: [] };
     throw new Error(`unexpected fetchDataWithAuth call: ${url}`);
@@ -399,4 +401,26 @@ test('small request costs keep significant digits instead of rounding to $0.000'
       else Object.defineProperty(global, key, descriptor);
     }
   }
+});
+
+test('reasoning logs show decision metadata, actual effort and unknown cost without exposing hidden channels', async () => {
+  for (const isTokenRole of [false, true]) {
+    await withLoadedLogsPage({isTokenRole, entries: [{time: Date.now(), model: 'business', thinking_effort: 'medium', status_code: 200, duration: 0,
+      log_source: 'decision', reasoning_decision: {status: 'decided', suggested_effort: 'high', decision_model: 'private-judge', duration_ms: 12, cost_unknown: true}}]}, ({tbody}) => {
+      assert.match(tbody.innerHTML, /logs.sourceDecision/);
+      assert.match(tbody.innerHTML, /logs.reasoning.suggested_effort: high/);
+      assert.match(tbody.innerHTML, /logs.reasoning.final: medium/);
+      assert.match(tbody.innerHTML, /logs.costUnknown/);
+      if (isTokenRole) assert.doesNotMatch(tbody.innerHTML, /private-judge/);
+      else assert.match(tbody.innerHTML, /private-judge/);
+    });
+  }
+});
+
+test('unknown decision cost does not replace known business request cost', async () => {
+  await withLoadedLogsPage({entries: [{time: Date.now(), model: 'business', status_code: 200, duration: 0, cost: 0.25, log_source: 'proxy', reasoning_decision: {cost_unknown: true}}]}, ({tbody}) => {
+    assert.doesNotMatch(tbody.innerHTML, /logs.costUnknown/);
+    assert.match(tbody.innerHTML, /0.25/);
+    assert.match(tbody.innerHTML, /logs.reasoning.costUnknown/);
+  });
 });

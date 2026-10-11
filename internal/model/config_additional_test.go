@@ -493,3 +493,29 @@ func TestChannelURLs_NormalizeRejectsInvalidData(t *testing.T) {
 		})
 	}
 }
+
+func TestSystemOneChannelURLs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		urls  ChannelURLs
+		valid bool
+	}{
+		{"native", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example/v1", Protocols: []string{"SYSTEM_ONE"}}}, true},
+		{"same URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one", "openai"}}}, false},
+		{"implicit URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example"}}, false},
+		{"explicit URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example", Protocols: []string{"openai"}}}, false},
+		{"legacy", ChannelURLs{{URL: "https://one.example"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.urls.Normalize()
+			if (err == nil) != tc.valid {
+				t.Fatalf("Normalize() error = %v, valid = %v", err, tc.valid)
+			}
+		})
+	}
+	legacy := ChannelURL{URL: "https://legacy.example"}
+	if legacy.SupportsProtocol("system_one") || !legacy.SupportsProtocol("openai") {
+		t.Fatal("automatic detection must remain chat-only")
+	}
+}

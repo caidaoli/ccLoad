@@ -164,6 +164,9 @@ type Server struct {
 	multimodalFallbackUpdateMu sync.Mutex
 	modelPricingUpdateMu       sync.Mutex
 	settingsUpdateMu           sync.Mutex
+	reasoningAuto              model.ReasoningAutoConfig
+	reasoningStates            reasoningStateStore
+	reasoningDecisionSlots     chan struct{}
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -233,6 +236,10 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	runtimeCfg := loadServerRuntimeConfig(configService)
+	reasoningAuto, reasoningErr := ParseReasoningAutoConfig(configService.GetString(reasoningAutoSettingKey, "{}"))
+	if reasoningErr != nil {
+		log.Fatalf("[FATAL] 无效的 reasoning_auto: %v", reasoningErr)
+	}
 	warnMigratedEnvSettings()
 
 	// 运行时配置必须归属具体 Server/存储实例，构造函数不修改进程级状态。
@@ -264,10 +271,12 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 
 	s := &Server{
-		startedAt:        startedAt,
-		store:            store,
-		configService:    configService,
-		loginRateLimiter: util.NewLoginRateLimiter(),
+		startedAt:              startedAt,
+		store:                  store,
+		configService:          configService,
+		reasoningAuto:          reasoningAuto,
+		reasoningDecisionSlots: make(chan struct{}, 16),
+		loginRateLimiter:       util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
 		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
@@ -1998,7 +2007,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 	// 更新成本缓存（用于每日成本限额功能）
 	// 语义：缓存累加倍率后成本（effective），与 daily_cost_limit 直接比较
-	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
+	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && (entry.LogSource == model.LogSourceProxy || entry.LogSource == model.LogSourceDecision) {
 		multiplier := entry.CostMultiplier
 		if multiplier < 0 {
 			multiplier = 1
@@ -2014,7 +2023,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
 	if s == nil || s.urlSelector == nil || entry == nil ||
-		entry.LogSource == model.LogSourceCountTokens {
+		(entry.LogSource == model.LogSourceCountTokens || entry.LogSource == model.LogSourceDecision) {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

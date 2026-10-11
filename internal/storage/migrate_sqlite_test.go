@@ -2179,7 +2179,7 @@ func TestEnsureLogsNewColumns_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqliteExistingColumns: %v", err)
 	}
-	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "response_model", "log_source"} {
+	for _, col := range []string{"minute_bucket", "auth_token_id", "client_ip", "actual_model", "response_model", "reasoning_decision", "log_source"} {
 		if !cols[col] {
 			t.Errorf("column %s not found in logs", col)
 		}
@@ -2533,5 +2533,49 @@ func TestMigrateSQLiteOAuthQuotaPassthroughDefault(t *testing.T) {
 	}
 	if got.OAuthQuotaPassthrough {
 		t.Fatal("legacy channel must migrate with false default")
+	}
+}
+
+func TestReasoningDecisionMigrationAndRoundTripSQLite(t *testing.T) {
+	db := openTestDB(t)
+	if err := migrate(context.Background(), db, DialectSQLite); err != nil {
+		t.Fatal(err)
+	}
+	verifyReasoningDecisionMigrationAndRoundTrip(t, db, sqlstore.NewSQLStore(db, "sqlite"), DialectSQLite)
+}
+
+func verifyReasoningDecisionMigrationAndRoundTrip(t *testing.T, db *sql.DB, store Store, dialect Dialect) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	legacy := &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "legacy", StatusCode: 200, Message: "legacy"}
+	if err := store.AddLog(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE logs DROP COLUMN reasoning_decision"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, db, dialect); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, db, dialect); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
+	if err != nil || len(logs) != 1 || logs[0].ReasoningDecision != nil {
+		t.Fatalf("legacy log after migration: %+v, error = %v", logs, err)
+	}
+	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", DecisionID: "roundtrip", CostUnknown: true}
+	decision := &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "jev-latest", LogSource: model.LogSourceDecision,
+		StatusCode: 200, Message: "decision", AuthTokenID: 100, ReasoningDecision: metadata, InputTokens: 25, Cost: 0.5}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{decision}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err = store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceDecision})
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("decision logs: %+v, error = %v", logs, err)
+	}
+	if got := logs[0]; got.AuthTokenID != 0 || got.ReasoningDecision == nil || *got.ReasoningDecision != *metadata || got.InputTokens != 25 || got.Cost != 0.5 {
+		t.Fatalf("decision metadata = %+v", got)
 	}
 }

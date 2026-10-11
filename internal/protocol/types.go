@@ -9,6 +9,9 @@ import (
 // Protocol identifies a client-facing or upstream request/response protocol.
 type Protocol string
 
+// SystemOne is an upstream decision capability, excluded from chat conversions.
+const SystemOne Protocol = "system_one"
+
 const (
 	// Anthropic is the Anthropic Messages protocol surface.
 	Anthropic Protocol = "anthropic"

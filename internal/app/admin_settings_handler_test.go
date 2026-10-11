@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -818,5 +819,77 @@ func TestAdminRetiredSettingsHiddenButPreserved(t *testing.T) {
 	apiKey, err := store.GetSetting(context.Background(), "TypeSafe_api_key")
 	if err != nil || apiKey.Value != "legacy-secret" {
 		t.Fatalf("retired key row changed: %+v %v", apiKey, err)
+	}
+}
+
+func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+	channel, err := server.store.CreateConfig(ctx, &model.Config{Name: "decision", Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.CreateConfig(ctx, &model.Config{Name: "business", Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "gpt-5", RedirectModel: "gpt-5.4"}}}); err != nil {
+		t.Fatal(err)
+	}
+	policy := fmt.Sprintf(`{"enabled":true,"decision_channel_id":%d,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":2000}`, channel.ID)
+	w := batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing credentials status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: channel.ID, KeyIndex: 0, APIKey: "decision-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := make(chan struct{}, 1)
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid policy status=%d body=%s", w.Code, w.Body.String())
+	}
+	setting, err := server.store.GetSetting(ctx, reasoningAutoSettingKey)
+	if err != nil || setting.Value != policy {
+		t.Fatalf("persisted policy = %+v, error = %v", setting, err)
+	}
+	select {
+	case <-restarted:
+	case <-time.After(time.Second):
+		t.Fatal("settings update must request restart")
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, strings.Replace(policy, `"gpt-5"`, `"missing-model"`, 1))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing business model status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, field := range []string{"enabled", "decision_channel_id", "decision_model", "business_models", "timeout_ms"} {
+		w = batchUpdateSetting(t, server, reasoningAutoSettingKey, fmt.Sprintf(`{"enabled":false,%q:null}`, field))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("null %s status=%d body=%s", field, w.Code, w.Body.String())
+		}
+		setting, err = server.store.GetSetting(ctx, reasoningAutoSettingKey)
+		if err != nil || setting.Value != policy {
+			t.Fatalf("null %s changed persisted policy: %+v, error=%v", field, setting, err)
+		}
+	}
+	assertNoRestart(t, restarted)
+	cursor, err := server.store.CreateConfig(ctx, &model.Config{Name: "cursor decision", Enabled: true,
+		AuthType: model.AuthTypeCursorOAuth, OAuthCredential: `{"access_token":"cursor-test"}`,
+		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorPolicy := strings.Replace(policy, fmt.Sprintf(`"decision_channel_id":%d`, channel.ID), fmt.Sprintf(`"decision_channel_id":%d`, cursor.ID), 1)
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, cursorPolicy)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "cursor Agent bridge") {
+		t.Fatalf("Cursor decision status=%d body=%s", w.Code, w.Body.String())
+	}
+	channel.URLs = model.ChannelURLs{{URL: "https://chat.example"}}
+	if _, err := server.store.UpdateConfig(ctx, channel.ID, channel); err != nil {
+		t.Fatal(err)
+	}
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("implicit protocol status=%d body=%s", w.Code, w.Body.String())
 	}
 }

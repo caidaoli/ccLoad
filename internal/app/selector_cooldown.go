@@ -656,6 +656,9 @@ func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) [
 	if cfg == nil {
 		return nil
 	}
+	if cfg.IsSystemOne() {
+		return []protocol.Protocol{protocol.SystemOne}
+	}
 	seen := make(map[protocol.Protocol]struct{})
 	result := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
 	appendProtocol := func(candidate protocol.Protocol) {

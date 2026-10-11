@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1358,6 +1359,27 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	keyIndex int,
 	updatePersistedCooldown bool,
 ) map[string]any {
+	if cfg.IsSystemOne() {
+		if testReq.Stream {
+			return map[string]any{"success": false, "error": "System One does not support streaming chat"}
+		}
+		testCfg := cfg
+		if baseURL := strings.TrimSpace(testReq.BaseURL); baseURL != "" {
+			idx := slices.IndexFunc(cfg.URLs, func(endpoint model.ChannelURL) bool {
+				return endpoint.RuntimeURL() == baseURL || endpoint.URL == baseURL
+			})
+			if idx < 0 {
+				return map[string]any{"success": false, "error": "System One test URL must belong to the channel"}
+			}
+			testCfg = cfg.Clone()
+			testCfg.URLs = model.ChannelURLs{cfg.URLs[idx]}
+		}
+		ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, false, s.resolveProtocolTimeouts(protocol.TransformPlan{
+			UpstreamProtocol: protocol.Protocol(util.ProtocolSystemOne),
+		}))
+		defer timeout.cancelAll()
+		return s.testSystemOneChannel(ctx, testCfg, apiKey, testReq.Model, testReq.Content)
+	}
 	// 设置默认测试内容（从配置读取）
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = configuredChannelTestContent(s.configService)

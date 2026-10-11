@@ -4285,6 +4285,129 @@ body {
   text-align: center;
 }
 
+.modal-content.reasoning-auto-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, calc(100vw - 48px));
+  max-width: none;
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.reasoning-auto-modal > .modal-header {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.reasoning-auto-modal .modal-description {
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+.reasoning-auto-panel {
+  min-height: 0;
+  padding: 18px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.reasoning-auto-modal > .custom-rules-footer {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--surface-border);
+}
+
+.reasoning-auto-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 14px 18px;
+  margin-bottom: 20px;
+}
+
+.reasoning-auto-fields > * {
+  min-width: 0;
+}
+
+.reasoning-auto-fields .form-input,
+.reasoning-auto-fields .settings-input {
+  width: 100%;
+}
+
+.reasoning-model-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.reasoning-model-toolbar h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.reasoning-model-toolbar input {
+  width: min(280px, 100%);
+  min-width: 0;
+}
+
+.reasoning-model-table-container {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.reasoning-model-table {
+  table-layout: fixed;
+}
+
+.reasoning-model-table th:first-child,
+.reasoning-model-table td:first-child {
+  width: 64px;
+  text-align: center;
+}
+
+.reasoning-model-table td:last-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .modal-content.reasoning-auto-modal {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .reasoning-auto-modal > .modal-header,
+  .reasoning-auto-panel,
+  .reasoning-auto-modal > .custom-rules-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .reasoning-auto-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reasoning-model-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reasoning-model-toolbar input {
+    width: 100%;
+  }
+}
+
 .modal-content.custom-pricing-modal {
   display: flex;
   flex-direction: column;

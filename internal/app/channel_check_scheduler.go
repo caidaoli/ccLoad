@@ -74,7 +74,7 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context, now time.Time) e
 	}
 	due := configs[:0]
 	for _, cfg := range configs {
-		if cfg.ScheduledCheckDueAt(now) && cfg.UpdatedAt.Before(now.Truncate(time.Minute)) {
+		if !cfg.IsSystemOne() && cfg.ScheduledCheckDueAt(now) && cfg.UpdatedAt.Before(now.Truncate(time.Minute)) {
 			due = append(due, cfg)
 		}
 	}

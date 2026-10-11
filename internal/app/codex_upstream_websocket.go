@@ -1254,6 +1254,7 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 		}
 		return nil, nil, err
 	}
+	reasoningBusinessSending(ctx, prepared)
 	if err = s.writeRequest(conn, prepared); err != nil {
 		s.invalidate(conn)
 		return nil, nil, err
@@ -1508,6 +1509,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		s.mu.Unlock()
 	}
 
+	reasoningBusinessSending(ctx, preparedBody)
 	err = s.writeRequest(conn, preparedBody)
 	if err != nil {
 		s.invalidate(conn)

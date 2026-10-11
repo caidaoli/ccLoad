@@ -557,6 +557,8 @@ function buildLogTokenDescDisplay(label) {
 
 function renderLogSourceBadge(logSource) {
   switch (logSource) {
+    case 'decision':
+      return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceDecision'))}</span>`;
     case 'scheduled_check':
       return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceScheduledCheckBadge'))}</span>`;
     case 'manual_test':
@@ -579,9 +581,29 @@ function canInspectDebugLog(entry) {
   return !isTokenSession && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
 }
 
+function reasoningDecisionDescription(entry) {
+  const decision = entry?.reasoning_decision;
+  if (!decision || typeof decision !== 'object') return '';
+  const parts = [];
+  for (const key of ['status', 'trigger', 'reason', 'previous_effort', 'suggested_effort', 'decision_channel_id', 'decision_model', 'duration_ms', 'decision_id']) {
+    if (window.shouldHideChannels?.() && ['decision_channel_id', 'decision_model', 'decision_id'].includes(key)) continue;
+    const value = decision[key];
+    if (value !== undefined && value !== null && value !== '') {
+      const translated = ['status', 'trigger', 'reason'].includes(key) ? t('logs.reasoningValue.' + value) : value;
+      parts.push(t('logs.reasoning.' + key) + ': ' + (translated === 'logs.reasoningValue.' + value ? value : translated));
+    }
+  }
+  if (entry.thinking_effort) parts.push(t('logs.reasoning.final') + ': ' + entry.thinking_effort);
+  if (decision.cost_unknown) parts.push(t('logs.reasoning.costUnknown'));
+  if (decision.context_truncated) parts.push(t('logs.reasoning.truncated'));
+  if (decision.context_incomplete) parts.push(t('logs.reasoning.incomplete'));
+  return parts.join(' · ');
+}
+
 function buildLogMessageContent(entry) {
   const sourceBadge = renderLogSourceBadge(entry.log_source || 'proxy');
-  const messageText = escapeHtml(entry.message || '');
+  const decisionText = reasoningDecisionDescription(entry);
+  const messageText = escapeHtml([entry.message, decisionText].filter(Boolean).join(' · '));
   if (!sourceBadge && !messageText) {
     return '';
   }
@@ -638,6 +660,7 @@ function buildLogCostTooltip(entry, costInfo) {
 }
 
 function buildLogCostDisplay(entry, costInfo = getLogCostInfo(entry)) {
+  if (entry?.reasoning_decision?.cost_unknown && ['decision', 'manual_test'].includes(entry?.log_source)) return escapeHtml(t('logs.costUnknown'));
   if (!costInfo) return '';
 
   const badgeParts = [];

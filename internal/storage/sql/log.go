@@ -3,6 +3,8 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -34,6 +36,7 @@ func scanLogEntry(scanner interface {
 	var responseModel sql.NullString
 	var serviceTier sql.NullString
 	var thinkingEffort sql.NullString
+	var reasoningDecision sql.NullString
 	var inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens, cache5mTokens, cache1hTokens sql.NullInt64
 	var cost sql.NullFloat64
 	var costMultiplier sql.NullFloat64
@@ -41,10 +44,15 @@ func scanLogEntry(scanner interface {
 
 	if err := scanner.Scan(&e.ID, &timeMs, &e.Model, &actualModel, &responseModel, &logSource, &e.ChannelID,
 		&e.StatusCode, &e.Message, &duration, &isStreamingInt, &upstreamWebsocketInt, &firstByteTime, &apiKeyUsed, &apiKeyHash, &e.AuthTokenID, &clientProtocol, &upstreamProtocol, &clientIP, &baseURL, &serviceTier, &thinkingEffort,
-		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &codexHasCredits); err != nil {
+		&inputTokens, &outputTokens, &reasoningTokens, &cacheReadTokens, &cacheCreationTokens, &cache5mTokens, &cache1hTokens, &cost, &costMultiplier, &codexHasCredits, &reasoningDecision); err != nil {
 		return nil, err
 	}
 
+	if reasoningDecision.Valid && reasoningDecision.String != "" {
+		if err := json.Unmarshal([]byte(reasoningDecision.String), &e.ReasoningDecision); err != nil {
+			return nil, fmt.Errorf("decode log reasoning_decision: %w", err)
+		}
+	}
 	e.CodexHasCredits = codexHasCredits != 0
 	e.Time = model.JSONTime{Time: time.UnixMilli(timeMs)}
 
@@ -220,11 +228,11 @@ func (s *SQLStore) addLog(ctx context.Context, e *model.LogEntry, updateOAuthQuo
 }
 
 const logsInsertColumns = `INSERT INTO logs(time, minute_bucket, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits) VALUES `
+				input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision) VALUES `
 
-const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const logRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-const logRowParams = 32
+const logRowParams = 33
 
 // BatchAddLogs 批量写入日志（单事务，多值 INSERT 提升刷盘吞吐）
 // 设计：
@@ -413,21 +421,30 @@ func logRowArgs(e *model.LogEntry) []any {
 		maskedKey = util.MaskAPIKey(maskedKey)
 	}
 
+	var decisionJSON any
+	if e.ReasoningDecision != nil {
+		encoded, _ := json.Marshal(e.ReasoningDecision)
+		decisionJSON = string(encoded)
+	}
+	authTokenID := e.AuthTokenID
+	if model.NormalizeStoredLogSource(e.LogSource) == model.LogSourceDecision {
+		authTokenID = 0
+	}
 	return []any{
 		timeMs, minuteBucket, e.Model, e.ActualModel, e.ResponseModel,
 		model.NormalizeStoredLogSource(e.LogSource),
 		e.ChannelID, e.StatusCode, e.Message, e.Duration,
 		e.IsStreaming, e.UpstreamWebsocket, e.FirstByteTime, maskedKey, apiKeyHash,
-		e.AuthTokenID, e.ClientProtocol, e.UpstreamProtocol, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
+		authTokenID, e.ClientProtocol, e.UpstreamProtocol, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
 		normalizeCostMultiplier(e.CostMultiplier),
-		e.CodexHasCredits,
+		e.CodexHasCredits, decisionJSON,
 	}
 }
 
 const logListQuery = `SELECT id, time, model, actual_model, response_model, log_source, channel_id, status_code, message, duration, is_streaming, upstream_websocket, first_byte_time, api_key_used, api_key_hash, auth_token_id, client_protocol, upstream_protocol, client_ip, base_url, service_tier, thinking_effort,
-	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits
+	input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_5m_input_tokens, cache_1h_input_tokens, cost, cost_multiplier, codex_has_credits, reasoning_decision
 	FROM logs`
 
 // ListLogs 查询日志列表
@@ -539,7 +556,7 @@ func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Ti
 		WHERE time >= ?
 			AND channel_id > 0
 			AND base_url <> ''
-			AND log_source <> 'count_tokens'
+			AND log_source NOT IN ('count_tokens', 'decision')
 		GROUP BY channel_id, base_url
 		ORDER BY channel_id ASC, base_url ASC
 	`

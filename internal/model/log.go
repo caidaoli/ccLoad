@@ -9,6 +9,7 @@ import (
 // LogSource* constants define persisted log sources plus special filter aliases.
 const (
 	LogSourceProxy          = "proxy"
+	LogSourceDecision       = "decision"
 	LogSourceScheduledCheck = "scheduled_check"
 	LogSourceManualTest     = "manual_test"
 	LogSourceManualChat     = "manual_chat"
@@ -25,6 +26,8 @@ func NormalizeStoredLogSource(raw string) string {
 	switch strings.TrimSpace(raw) {
 	case "", LogSourceProxy:
 		return LogSourceProxy
+	case LogSourceDecision:
+		return LogSourceDecision
 	case LogSourceScheduledCheck:
 		return LogSourceScheduledCheck
 	case LogSourceManualTest:
@@ -70,31 +73,32 @@ func (jt *JSONTime) UnmarshalJSON(data []byte) error {
 
 // LogEntry 请求日志条目
 type LogEntry struct {
-	ID                   int64    `json:"id"`
-	Time                 JSONTime `json:"time"`
-	Model                string   `json:"model"`
-	ActualModel          string   `json:"actual_model,omitempty"`   // 实际发给上游的模型（空表示未重定向）
-	ResponseModel        string   `json:"response_model,omitempty"` // 上游成功响应声明的模型
-	LogSource            string   `json:"log_source,omitempty"`
-	ChannelID            int64    `json:"channel_id"`
-	ChannelName          string   `json:"channel_name,omitempty"`
-	StatusCode           int      `json:"status_code"`
-	Message              string   `json:"message"`
-	Duration             float64  `json:"duration"`                     // 总耗时（秒）
-	IsStreaming          bool     `json:"is_streaming"`                 // 是否为流式请求
-	UpstreamWebsocket    bool     `json:"upstream_websocket,omitempty"` // 实际上游请求是否使用WebSocket
-	FirstByteTime        float64  `json:"first_byte_time"`              // 上游首字节响应时间（秒）
-	APIKeyUsed           string   `json:"api_key_used"`                 // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
-	APIKeyHash           string   `json:"api_key_hash,omitempty"`       // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
-	AuthTokenID          int64    `json:"auth_token_id"`                // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
-	AuthTokenDescription string   `json:"auth_token_description"`       // API令牌描述（查询时从auth_tokens表JOIN获取）
-	ClientProtocol       string   `json:"client_protocol,omitempty"`    // 客户端入口协议（anthropic/openai/gemini/codex）
-	UpstreamProtocol     string   `json:"upstream_protocol,omitempty"`  // 当前尝试实际使用的上游协议
-	ClientIP             string   `json:"client_ip"`                    // 客户端IP地址（新增2025-12）
-	BaseURL              string   `json:"base_url,omitempty"`           // 请求使用的上游URL（多URL场景）
-	ServiceTier          string   `json:"service_tier,omitempty"`       // 上游 service_tier/speed；Codex ultrafast 按模型计10倍
-	CodexHasCredits      bool     `json:"codex_has_credits,omitempty"`  // 窗口耗尽且使用购买额度，排除窗口成本对账
-	ThinkingEffort       string   `json:"thinking_effort,omitempty"`
+	ID                   int64              `json:"id"`
+	Time                 JSONTime           `json:"time"`
+	Model                string             `json:"model"`
+	ActualModel          string             `json:"actual_model,omitempty"`   // 实际发给上游的模型（空表示未重定向）
+	ResponseModel        string             `json:"response_model,omitempty"` // 上游成功响应声明的模型
+	LogSource            string             `json:"log_source,omitempty"`
+	ChannelID            int64              `json:"channel_id"`
+	ChannelName          string             `json:"channel_name,omitempty"`
+	StatusCode           int                `json:"status_code"`
+	Message              string             `json:"message"`
+	Duration             float64            `json:"duration"`                     // 总耗时（秒）
+	IsStreaming          bool               `json:"is_streaming"`                 // 是否为流式请求
+	UpstreamWebsocket    bool               `json:"upstream_websocket,omitempty"` // 实际上游请求是否使用WebSocket
+	FirstByteTime        float64            `json:"first_byte_time"`              // 上游首字节响应时间（秒）
+	APIKeyUsed           string             `json:"api_key_used"`                 // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
+	APIKeyHash           string             `json:"api_key_hash,omitempty"`       // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
+	AuthTokenID          int64              `json:"auth_token_id"`                // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
+	AuthTokenDescription string             `json:"auth_token_description"`       // API令牌描述（查询时从auth_tokens表JOIN获取）
+	ClientProtocol       string             `json:"client_protocol,omitempty"`    // 客户端入口协议（anthropic/openai/gemini/codex）
+	UpstreamProtocol     string             `json:"upstream_protocol,omitempty"`  // 当前尝试实际使用的上游协议
+	ClientIP             string             `json:"client_ip"`                    // 客户端IP地址（新增2025-12）
+	BaseURL              string             `json:"base_url,omitempty"`           // 请求使用的上游URL（多URL场景）
+	ServiceTier          string             `json:"service_tier,omitempty"`       // 上游 service_tier/speed；Codex ultrafast 按模型计10倍
+	CodexHasCredits      bool               `json:"codex_has_credits,omitempty"`  // 窗口耗尽且使用购买额度，排除窗口成本对账
+	ReasoningDecision    *ReasoningDecision `json:"reasoning_decision,omitempty"`
+	ThinkingEffort       string             `json:"thinking_effort,omitempty"`
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
 	InputTokens              int     `json:"input_tokens"`

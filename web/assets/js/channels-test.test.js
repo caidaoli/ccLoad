@@ -56,6 +56,7 @@ function installTestChannelGlobals(defaultContent = 'hello') {
     },
     TemplateEngine: { render: () => null },
     handleChannelUpdateSuccess: async update => updates.push(update),
+    escapeHtml: value => String(value),
     maskKey: value => value
   };
   const previous = new Map();
@@ -142,4 +143,20 @@ test('逐行测试固定目标，重新打开普通测试恢复组轮转', async
     delete require.cache[modulePath];
     fixture.restore();
   }
+});
+
+test('System One channel test sends a native non-streaming decision request', async () => {
+  const fixture = installTestChannelGlobals();
+  const modulePath = require.resolve('./channels-test.js');
+  delete require.cache[modulePath];
+  try {
+    const { testChannel, runChannelTest } = require(modulePath);
+    await testChannel({ id: 3, name: 'decision', urls: [{url: 'https://api.typesafe.ai', protocols: ['system_one']}], models: ['jev-latest'] });
+    fixture.elements.get('testStreamEnabled').checked = true;
+    await runChannelTest();
+    assert.equal(fixture.requests[0].body.client_protocol, 'system_one');
+    assert.equal(fixture.requests[0].body.stream, false);
+    await testChannel({ id: 4, name: 'chat', models: ['chat-model'] });
+    assert.equal(fixture.elements.get('testStreamEnabled').disabled, false);
+  } finally { delete require.cache[modulePath]; fixture.restore(); }
 });

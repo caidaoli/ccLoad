@@ -2514,7 +2514,14 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		// 就得负责解码。
 		if err == nil && req != nil && runtimeUpstreamProtocol(reqCtx) == string(protocol.Anthropic) &&
 			anthropicHeaderValue(req.Header, "Accept-Encoding") != "" {
+			wasEncoded := resp.Header.Get("Content-Encoding") != ""
 			err = decodeAnthropicResponse(resp)
+			if err == nil && wasEncoded {
+				if evidence, _ := reqCtx.ctx.Value(reasoningResponseLimitKey{}).(*reasoningResponseEvidence); evidence != nil && resp.Header.Get("Content-Encoding") == "" {
+					evidence.body = nil
+					resp.Body = &reasoningResponseReader{body: resp.Body, remaining: reasoningResponseMaxBytes, evidence: evidence}
+				}
+			}
 		}
 	}
 	if req != nil {
@@ -3085,6 +3092,7 @@ func (s *Server) forwardAttempt(
 			actualModel,
 		)
 		incrementalBody = replaceJSONRequestModel(incrementalBody, actualModel)
+		incrementalBody = applyAutomaticReasoning(incrementalBody, reqCtx, upstreamProtocol, actualModel)
 		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
 		nativeAttempt = &nativeCodexWebsocketAttempt{
 			session:                     reqCtx.nativeCodexWS,

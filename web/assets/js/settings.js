@@ -126,6 +126,8 @@ const numericSettingConstraints = new Map([
 
 function settingValueForDisplay(key, value) {
   const normalizedValue = String(value ?? '');
+  // 持久化 JSON 的格式与编辑器序列化不同，统一成编辑器形式避免误判为已修改。
+  if (key === 'reasoning_auto' && !validateReasoningAuto(normalizedValue)) return formatReasoningAuto(parseReasoningAuto(normalizedValue));
   if (!byteSettingKeys.has(key)) return normalizedValue;
 
   const bytes = Number(normalizedValue);
@@ -201,6 +203,8 @@ function validateSettingInput(setting, value) {
     return validateOptionalOAuthURLInput(normalizedValue);
   }
 
+  if (setting.key === 'reasoning_auto') return validateReasoningAuto(normalizedValue);
+
   if (setting.key === modelCustomPricingSettingKey) {
     return validateCustomPricingInput(normalizedValue);
   }
@@ -271,6 +275,248 @@ function validateCustomPricingInput(value) {
     if (!checkObjectFields(object, allowedFields) || !checkPrices(object)) return t('settings.validation.customPricingFields');
   }
   return '';
+}
+
+const reasoningAutoDefaults = { enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 };
+let reasoningAutoChannels = [];
+// 持久化值无效时编辑器锁定：控件只能显示默认值，任何编辑都会覆盖真实配置，只允许通过重置恢复。
+let reasoningAutoLocked = false;
+
+// 与后端 model.RoutingModelName 一致：只有尾部括号内是已知等级、特殊值或非负整数预算才算思考后缀，
+// 其余带括号的模型名（如上游真的叫 foo(bar)）是合法的精确名。
+function hasThinkingSuffix(name) {
+  const match = /^(.*)\(([^(]*)\)$/.exec(name);
+  if (!match || !match[1].trim()) return false;
+  return /^(none|auto|-1|minimal|low|medium|high|xhigh|max|\+?\d+)$/i.test(match[2].trim());
+}
+
+function parseReasoningAuto(value) {
+  return validateReasoningAuto(value) ? { ...reasoningAutoDefaults } : { ...reasoningAutoDefaults, ...JSON.parse(value) };
+}
+
+function formatReasoningAuto(config) {
+  const { enabled, decision_channel_id, decision_model, business_models, timeout_ms } = config;
+  return JSON.stringify({ enabled, decision_channel_id, decision_model, business_models, timeout_ms });
+}
+
+function validateReasoningAuto(value) {
+  let config;
+  try { config = JSON.parse(value); } catch (_) { return t('settings.reasoningAuto.invalid'); }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return t('settings.reasoningAuto.invalid');
+  config = { ...reasoningAutoDefaults, ...config };
+  if (typeof config.enabled !== 'boolean'
+    || !Number.isSafeInteger(config.decision_channel_id) || config.decision_channel_id < 0
+    || typeof config.decision_model !== 'string'
+    || !Array.isArray(config.business_models)
+    || config.business_models.some(model => typeof model !== 'string' || !model.trim() || /[*?]/.test(model) || hasThinkingSuffix(model.trim()))
+    || new Set(config.business_models.map(model => model.trim())).size !== config.business_models.length
+    || !Number.isSafeInteger(config.timeout_ms) || config.timeout_ms < 100 || config.timeout_ms > 10000
+    || (config.enabled && (!config.decision_channel_id || !config.decision_model.trim() || !config.business_models.length))) {
+    return t('settings.reasoningAuto.invalid');
+  }
+  return '';
+}
+
+let reasoningAutoDraft = null;
+let reasoningAutoModels = [];
+let reasoningAutoPreviousFocus = null;
+
+function renderReasoningAutoEditor(value) {
+  reasoningAutoDraft = parseReasoningAuto(value);
+  reasoningAutoLocked = Boolean(validateReasoningAuto(value));
+  const config = reasoningAutoDraft;
+  const disabled = reasoningAutoLocked ? ' disabled' : '';
+  const label = key => `<span data-i18n="settings.reasoningAuto.${key}">${escapeHtml(t('settings.reasoningAuto.' + key))}</span>`;
+  document.getElementById('reasoningAutoContent').innerHTML = `<div id="reasoningAutoEditor">
+    ${reasoningAutoLocked ? `<p role="alert">${label('locked')} <code>${escapeHtml(value)}</code></p>` : ''}
+    <div class="reasoning-auto-fields">
+      <label class="settings-bool-option"><input type="checkbox" data-reasoning-field="enabled" ${config.enabled ? 'checked' : ''}${disabled}>${label('enabled')}</label>
+      <label class="form-label" for="reasoningTimeout">${label('timeout')}
+        <input class="form-input" id="reasoningTimeout" type="number" min="100" max="10000" step="1" data-reasoning-field="timeout_ms" value="${config.timeout_ms}"${disabled}>
+      </label>
+      <div><label class="form-label" for="reasoningDecisionChannel">${label('channel')}</label>
+        <select class="form-input" id="reasoningDecisionChannel" data-reasoning-field="decision_channel_id"${disabled}></select>
+      </div>
+      <div><label class="form-label" for="reasoningDecisionModel">${label('model')}</label>
+        <select class="form-input" id="reasoningDecisionModel" data-reasoning-field="decision_model"${disabled}></select>
+      </div>
+    </div>
+    <div class="reasoning-model-toolbar">
+      <h3 id="reasoningBusinessModelsTitle">${label('businessModels')}</h3>
+      <input type="search" id="reasoningModelSearch" class="form-input" data-i18n-placeholder="settings.reasoningAuto.search" placeholder="${escapeHtml(t('settings.reasoningAuto.search'))}" data-i18n-aria-label="settings.reasoningAuto.search" aria-label="${escapeHtml(t('settings.reasoningAuto.search'))}">
+    </div>
+    <div class="table-container reasoning-model-table-container">
+      <table class="modern-table reasoning-model-table" aria-labelledby="reasoningBusinessModelsTitle">
+        <thead><tr><th><input type="checkbox" id="reasoningModelsSelectAll" data-i18n-aria-label="common.selectAll" aria-label="${escapeHtml(t('common.selectAll'))}"></th><th>${label('businessModels')}</th></tr></thead>
+        <tbody id="reasoningBusinessModels"></tbody>
+      </table>
+      <p id="reasoningModelsEmpty" data-i18n="settings.reasoningAuto.empty" hidden>${escapeHtml(t('settings.reasoningAuto.empty'))}</p>
+    </div>
+    <p class="common-models-description">${label('note')}</p>
+  </div>`;
+  refreshReasoningChannelOptions();
+  renderReasoningBusinessModels();
+}
+
+function renderReasoningBusinessModels() {
+  const container = document.getElementById('reasoningBusinessModels');
+  if (!container || !reasoningAutoDraft) return;
+  const selected = new Set(reasoningAutoDraft.business_models);
+  const filter = (document.getElementById('reasoningModelSearch')?.value || '').trim().toLowerCase();
+  const models = [...new Set([...reasoningAutoModels, ...selected])].sort((a, b) => a.localeCompare(b))
+    .filter(model => model.toLowerCase().includes(filter));
+  container.innerHTML = models.map(model => `<tr><td><input type="checkbox" data-reasoning-model value="${escapeHtml(model)}" aria-label="${escapeHtml(model)}" ${selected.has(model) ? 'checked' : ''}${reasoningAutoLocked ? ' disabled' : ''}></td><td>${escapeHtml(model)}</td></tr>`).join('');
+  document.getElementById('reasoningModelsEmpty').hidden = models.length > 0;
+  updateReasoningModelsSelectAll();
+}
+
+function updateReasoningModelsSelectAll() {
+  const checkbox = document.getElementById('reasoningModelsSelectAll');
+  const rows = Array.from(document.getElementById('reasoningBusinessModels').querySelectorAll('[data-reasoning-model]'));
+  const count = rows.filter(row => row.checked).length;
+  checkbox.checked = rows.length > 0 && count === rows.length;
+  checkbox.indeterminate = count > 0 && count < rows.length;
+  checkbox.disabled = reasoningAutoLocked || rows.length === 0;
+}
+
+function refreshReasoningModelOptions(selected) {
+  const channel = reasoningAutoChannels.find(item => item.id === Number(document.getElementById('reasoningDecisionChannel')?.value));
+  const select = document.getElementById('reasoningDecisionModel');
+  if (!select) return;
+  const models = [...new Set((channel?.models || []).filter(item => !item.disabled).map(item => typeof item === 'string' ? item : item.model).filter(Boolean))];
+  if (selected && !models.includes(selected)) models.unshift(selected);
+  select.innerHTML = `<option value="">—</option>` + models.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('');
+  select.value = selected || '';
+}
+
+function refreshReasoningChannelOptions() {
+  const select = document.getElementById('reasoningDecisionChannel');
+  if (!select || !reasoningAutoDraft) return;
+  const selected = String(reasoningAutoDraft.decision_channel_id);
+  const channels = reasoningAutoChannels.filter(channel => channel.enabled || String(channel.id) === selected);
+  select.innerHTML = '<option value="0">—</option>' + channels.map(channel => `<option value="${channel.id}">${escapeHtml(channel.name)}</option>`).join('');
+  if (selected !== '0' && !channels.some(channel => String(channel.id) === selected)) {
+    select.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
+  }
+  select.value = selected;
+  refreshReasoningModelOptions(reasoningAutoDraft.decision_model);
+}
+
+function showReasoningAutoError(message) {
+  const error = document.getElementById('reasoningAutoError');
+  error.textContent = message || '';
+  error.hidden = !message;
+}
+
+async function loadReasoningAutoOptions() {
+  const draft = reasoningAutoDraft;
+  try {
+    const [channels, options] = await Promise.all([
+      fetchDataWithAuth('/admin/channels'),
+      fetchDataWithAuth('/admin/channels/filter-options?status=enabled')
+    ]);
+    if (reasoningAutoDraft !== draft) return;
+    reasoningAutoChannels = Array.isArray(channels) ? channels : [];
+    reasoningAutoModels = [...new Set([...reasoningAutoModels, ...(options?.models || [])])].filter(model => typeof model === 'string' && model.trim() && !/[*?]/.test(model) && !hasThinkingSuffix(model));
+    refreshReasoningChannelOptions();
+    renderReasoningBusinessModels();
+  } catch (error) {
+    if (reasoningAutoDraft === draft) showReasoningAutoError(t('settings.reasoningAuto.loadFailed') + ': ' + error.message);
+  }
+}
+
+function openReasoningAutoModal(trigger) {
+  const modal = document.getElementById('reasoningAutoModal');
+  const input = document.getElementById('reasoning_auto');
+  if (!modal || !input || !settingDefinitions.has('reasoning_auto')) return;
+  reasoningAutoPreviousFocus = trigger || document.activeElement;
+  reasoningAutoModels = [...parseReasoningAuto(input.value).business_models];
+  renderReasoningAutoEditor(input.value);
+  showReasoningAutoError(null);
+  document.querySelector('.app-container')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  modal.querySelector('.close-btn')?.focus();
+  loadReasoningAutoOptions();
+}
+
+function closeReasoningAutoModal() {
+  const modal = document.getElementById('reasoningAutoModal');
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.querySelector('.app-container')?.removeAttribute('inert');
+  if (reasoningAutoPreviousFocus?.isConnected) reasoningAutoPreviousFocus.focus();
+  reasoningAutoPreviousFocus = null;
+  reasoningAutoDraft = null;
+}
+
+function applyReasoningAuto() {
+  if (!reasoningAutoDraft || reasoningAutoLocked) return;
+  const value = formatReasoningAuto(reasoningAutoDraft);
+  const error = validateReasoningAuto(value);
+  if (error) {
+    showReasoningAutoError(error);
+    return;
+  }
+  document.getElementById('reasoning_auto').value = value;
+  setSettingInvalid('reasoning_auto', false);
+  updateDirtyStatus();
+  closeReasoningAutoModal();
+}
+
+function bindReasoningAutoModal() {
+  const modal = document.getElementById('reasoningAutoModal');
+  if (!modal || modal.dataset.bound) return;
+  modal.dataset.bound = '1';
+  modal.addEventListener('click', event => {
+    const action = event.target.closest('[data-action]')?.dataset.action;
+    if (event.target === modal || action === 'close-reasoning-auto') closeReasoningAutoModal();
+    else if (action === 'apply-reasoning-auto') applyReasoningAuto();
+    else if (action === 'reset-reasoning-auto') {
+      renderReasoningAutoEditor(settingDefinitions.get('reasoning_auto')?.default_value || formatReasoningAuto(reasoningAutoDefaults));
+      showReasoningAutoError(null);
+      loadReasoningAutoOptions();
+    }
+  });
+  modal.addEventListener('input', event => {
+    if (event.target.id === 'reasoningModelSearch') renderReasoningBusinessModels();
+    else if (!reasoningAutoLocked && reasoningAutoDraft && event.target.id === 'reasoningTimeout') {
+      reasoningAutoDraft.timeout_ms = Number(event.target.value);
+    }
+  });
+  modal.addEventListener('change', event => {
+    if (!reasoningAutoDraft || reasoningAutoLocked) return;
+    const input = event.target;
+    const field = input.dataset.reasoningField;
+    if (input.id === 'reasoningModelsSelectAll') {
+      const models = new Set(reasoningAutoDraft.business_models);
+      document.getElementById('reasoningBusinessModels').querySelectorAll('[data-reasoning-model]').forEach(row => {
+        row.checked = input.checked;
+        if (input.checked) models.add(row.value);
+        else models.delete(row.value);
+      });
+      reasoningAutoDraft.business_models = [...models];
+      updateReasoningModelsSelectAll();
+    } else if (input.hasAttribute('data-reasoning-model')) {
+      const models = new Set(reasoningAutoDraft.business_models);
+      if (input.checked) models.add(input.value);
+      else models.delete(input.value);
+      reasoningAutoDraft.business_models = [...models];
+      updateReasoningModelsSelectAll();
+    } else if (field === 'enabled') reasoningAutoDraft.enabled = input.checked;
+    else if (field === 'decision_channel_id') {
+      reasoningAutoDraft.decision_channel_id = Number(input.value);
+      reasoningAutoDraft.decision_model = '';
+      refreshReasoningModelOptions('');
+    } else if (field === 'decision_model') reasoningAutoDraft.decision_model = input.value;
+    else if (field === 'timeout_ms') reasoningAutoDraft.timeout_ms = Number(input.value);
+  });
+  modal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeReasoningAutoModal();
+    } else if (event.key === 'Tab') trapModalFocus(modal, event);
+  });
 }
 
 const runtimeMetricDomains = [
@@ -402,6 +648,12 @@ function bindSettingsPageActions() {
     runtimeMetricsBtn.dataset.bound = '1';
   }
 
+  const reasoningAutoBtn = document.getElementById('reasoning-auto-btn');
+  if (reasoningAutoBtn && !reasoningAutoBtn.dataset.bound) {
+    reasoningAutoBtn.addEventListener('click', event => openReasoningAutoModal(event.currentTarget));
+    reasoningAutoBtn.dataset.bound = '1';
+  }
+
   const multimodalFallbackBtn = document.getElementById('model-multimodal-fallback-btn');
   if (multimodalFallbackBtn && !multimodalFallbackBtn.dataset.bound) {
     multimodalFallbackBtn.addEventListener('click', (event) => openMultimodalFallbackModal(event.currentTarget));
@@ -437,6 +689,7 @@ function bindSettingsPageActions() {
     modal.dataset.bound = '1';
   }
 
+  bindReasoningAutoModal();
   bindGlobalCooldownRulesModal();
   bindMultimodalFallbackModal();
   bindCustomPricingModal();
@@ -1510,7 +1763,7 @@ function getSettingGroupInfo(key) {
 
   const defs = [
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
-    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
+    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' || k === 'reasoning_auto' },
 
     { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
@@ -1573,7 +1826,7 @@ function getSettingOrder(key) {
 }
 
 function isModalSettingKey(key) {
-  return hotReloadSettingKeys.has(key);
+  return key === 'reasoning_auto' || hotReloadSettingKeys.has(key);
 }
 
 function settingEffectMode(key) {
@@ -1714,7 +1967,7 @@ function renderSettings(settings) {
     const target = document.getElementById(s.key);
     if (target) target.value = displayValue;
     if (s.key === modelMultimodalFallbackSettingKey) updateMultimodalFallbackSummary(displayValue);
-    else updateCustomPricingSummary(displayValue);
+    else if (s.key === modelCustomPricingSettingKey) updateCustomPricingSummary(displayValue);
   }
 
   const groups = groupSettings(settings)
@@ -1891,10 +2144,17 @@ function markChanged(input) {
   updateDirtyStatus();
 }
 
+// reasoning_auto 的值存放在 hidden input，错误标记与聚焦需落到可见的编辑器控件上。
+function reasoningAutoEditorControls() {
+  const editor = document.getElementById('reasoningAutoEditor');
+  return editor ? Array.from(editor.querySelectorAll('input, select')) : [];
+}
+
 function setSettingInvalid(key, invalid) {
   const control = getSettingControl(key);
   if (!control) return;
-  const inputs = control.radios ? Array.from(control.radios) : [control.input];
+  const editorControls = key === 'reasoning_auto' ? reasoningAutoEditorControls() : [];
+  const inputs = control.radios ? Array.from(control.radios) : [control.input, ...editorControls.filter(item => item !== control.input)];
   for (const input of inputs) {
     if (invalid) input.setAttribute?.('aria-invalid', 'true');
     else input.removeAttribute?.('aria-invalid');
@@ -1906,7 +2166,9 @@ function focusSettingControl(key) {
   const control = getSettingControl(key);
   if (!control?.input) return;
   control.row?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-  control.input.focus?.({ preventScroll: true });
+  if (key === 'reasoning_auto') openReasoningAutoModal(document.getElementById('reasoning-auto-btn'));
+  const target = key === 'reasoning_auto' ? reasoningAutoEditorControls().find(item => item.type !== 'hidden' && !item.disabled) : null;
+  (target || control.input).focus?.({ preventScroll: true });
 }
 
 function isSettingChanged(key, control) {
