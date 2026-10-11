@@ -31,6 +31,7 @@
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/oauth-plan-badge.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-test-route-preview.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -114,6 +115,14 @@
                   <rect x="3" y="14" width="7" height="7"></rect>
                 </svg>
                 <span data-i18n="modelTest.mode.model">按模型测试</span>
+              </button>
+              <button id="modeTabPreview" type="button" class="mode-tab-btn" role="tab" aria-selected="false" aria-controls="routePreviewPanel" tabindex="-1" data-action="set-test-mode" data-mode="preview">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="6" cy="19" r="3"></circle>
+                  <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path>
+                  <circle cx="18" cy="5" r="3"></circle>
+                </svg>
+                <span data-i18n="modelTest.mode.preview">选路预演</span>
               </button>
             </div>
           </div>
@@ -200,6 +209,35 @@
               </div>
             </div>
             <button id="chatClearBtn" type="button" class="btn btn-secondary" data-action="clear-chat" data-i18n="modelTest.chat.clear">清空</button>
+          </div>
+
+          <div id="routePreviewPanel" class="hidden" role="tabpanel" aria-labelledby="modeTabPreview">
+            <form id="routePreviewForm" class="route-preview-toolbar">
+              <label class="model-test-control route-preview-control--token" for="routePreviewToken">
+                <span class="model-test-control__label" data-i18n="modelTest.routePreview.token">令牌</span>
+                <select id="routePreviewToken" class="filter-select"><option value="" data-i18n="modelTest.routePreview.noToken">不限令牌</option></select>
+              </label>
+              <label class="model-test-control route-preview-control--protocol" for="routePreviewProtocol">
+                <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
+                <select id="routePreviewProtocol" class="filter-select"></select>
+              </label>
+              <label class="model-test-control route-preview-control--model" for="routePreviewModel">
+                <span class="model-test-control__label" data-i18n="common.model">模型</span>
+                <select id="routePreviewModel" class="filter-select" required></select>
+              </label>
+              <div class="model-test-run-controls">
+                <label class="model-test-toggle">
+                  <input id="routePreviewMultimodal" type="checkbox" class="control-checkbox control-checkbox--sm">
+                  <span data-i18n="modelTest.routePreview.multimodal">多模态请求</span>
+                </label>
+                <button id="routePreviewRun" type="submit" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.routePreview.run">开始预演</button>
+              </div>
+            </form>
+            <div class="route-preview-meta">
+              <span class="route-preview-hint" data-i18n="modelTest.routePreview.scope">普通生成候选预演，不发送请求；同档渠道轮转，表格顺序不代表实际首选。</span>
+              <span id="routePreviewStatus" class="model-test-progress" role="status" aria-live="polite"></span>
+            </div>
+            <div id="routePreviewResults"></div>
           </div>
 
           <div id="modelTestTablePanel" role="tabpanel" aria-labelledby="modeTabChannel">

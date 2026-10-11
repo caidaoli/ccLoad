@@ -39,10 +39,48 @@ func (s *Server) sortChannelsByHealth(
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
+	return s.sortChannelsByHealthInternal(channels, keyCooldowns, now, false)
+}
+
+func (s *Server) sortChannelsByHealthInternal(
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+	dryRun bool,
+) []*modelpkg.Config {
 	if len(channels) == 0 {
 		return channels
 	}
 
+	scored := s.scoreChannelsByHealth(channels)
+
+	// 按有效优先级排序（越大越优先，与原有逻辑一致）
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].effPriority > scored[j].effPriority
+	})
+
+	// 同有效优先级内按 KeyCount 平滑加权轮询（负载均衡）
+	// 说明：healthCache 开启后仍需按 Key 数量分流。
+	// 这里仅把“本轮选中的渠道”移动到组首，确保首选渠道按权重分布；其余顺序保持稳定，便于失败回退时可预测。
+	result := make([]*modelpkg.Config, len(scored))
+	groupStart := 0
+	for i := 1; i <= len(scored); i++ {
+		if i == len(scored) || effPriorityBucket(scored[i].effPriority) != effPriorityBucket(scored[groupStart].effPriority) {
+			if !dryRun && i-groupStart > 1 {
+				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
+			}
+			groupStart = i
+		}
+	}
+
+	for i, item := range scored {
+		result[i] = item.config
+	}
+	return result
+}
+
+// scoreChannelsByHealth uses the candidate set for the relative TTFB median.
+func (s *Server) scoreChannelsByHealth(channels []*modelpkg.Config) []channelWithScore {
 	cfg := s.healthCache.Config()
 
 	// Preload stats and compute candidate median TTFB for relative penalty.
@@ -66,29 +104,7 @@ func (s *Server) sortChannelsByHealth(
 		}
 	}
 
-	// 按有效优先级排序（越大越优先，与原有逻辑一致）
-	sort.SliceStable(scored, func(i, j int) bool {
-		return scored[i].effPriority > scored[j].effPriority
-	})
-
-	// 同有效优先级内按 KeyCount 平滑加权轮询（负载均衡）
-	// 说明：healthCache 开启后仍需按 Key 数量分流。
-	// 这里仅把“本轮选中的渠道”移动到组首，确保首选渠道按权重分布；其余顺序保持稳定，便于失败回退时可预测。
-	result := make([]*modelpkg.Config, len(scored))
-	groupStart := 0
-	for i := 1; i <= len(scored); i++ {
-		if i == len(scored) || effPriorityBucket(scored[i].effPriority) != effPriorityBucket(scored[groupStart].effPriority) {
-			if i-groupStart > 1 {
-				s.balanceScoredChannelsInPlace(scored[groupStart:i], keyCooldowns, now)
-			}
-			groupStart = i
-		}
-	}
-
-	for i, item := range scored {
-		result[i] = item.config
-	}
-	return result
+	return scored
 }
 
 // calculateEffectivePriority 计算渠道的有效优先级

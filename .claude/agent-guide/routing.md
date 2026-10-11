@@ -17,3 +17,48 @@
 - **模型名思考后缀**(`thinking_suffix.go`+`model/thinking_suffix.go`):`gpt-5.6-luna(max)` 只是「客户端在 body 里写思考参数」的语法糖。入口先用 `applyThinkingSuffix` 在**客户端协议的原始 body** 上写字段,位置在协议转换**之前**;选定渠道后 `prepareRequestBody` 再用请求原始后缀和重定向/模糊匹配后的实际上游模型收敛等级,原生 Responses WS 的完整 transcript 与增量体必须使用同一实际模型。入口共三个:HTTP 代理 handler、Responses WS turn、管理测试 `buildChannelTestRequestPlan`——三处必须同步登记,漏一处该入口的后缀就是静默空操作。跨协议管理测试还要在 `upstreamTester.Build` 之后再写一次上游协议 body,否则 `patchUpstreamTestFields` 会用 Codex 模板默认 `reasoning.effort=medium` 盖掉后缀。**别挪进 `prepareTranslatedUpstreamBody`**:那里的 body 形态取决于上游,Antigravity 的 `{"request":{...}}` 信封会把顶层字段整段丢弃。跨协议映射与模型能力裁剪归 registry 转换器;同协议直通按客户端协议写字段,OpenAI/Codex 的等级按实际上游模型查 catalog `thinking.levels` 收敛(有 max 就保留,没有则夹到最近档;`auto` 删字段)。Anthropic 等级走 `adaptive`+`MapToClaudeEffort`,数字预算走 `enabled`+`budget_tokens`;Gemini 收敛到 low/medium/high,`none` 用 `thinkingBudget=0`。后缀不是模型身份:`model.RoutingModelName` 是唯一剥离入口,`GetModels()`/`FuzzyMatchModel`/模型索引按基名归一(条目字面写 `x(max)` 也能按 `x` 路由,显式基名条目优先不被别名覆盖),选路/鉴权/冷却/上游模型名与路径一律基名。渠道 `custom_request_rules` 在上游边界应用,晚于后缀,所以渠道规则覆盖后缀——与其它 body 字段一致
 - **Claude Code `[1m]` 上下文后缀**(`proxy_handler.go:parseIncomingRequest`):`[1m]` 是 Claude Code 客户端的上下文选择器,正常发请求前由客户端去掉;泄漏时只在 Messages/count_tokens 入口大小写无关地剥掉(含重复形式),同时改写 body `model`,选路、计费、上游模型名一律用基名(对齐 sub2api)。其它协议入口不动:`deepseek-flash[1m]` 这类写法在 OpenAI 兼容入口按字面处理
 - **多模态回退路由**(`multimodal_fallback.go`+`proxy_handler.go`+`proxy_responses_websocket.go`,系统设置 `model_multimodal_fallback`):值为裸 map `{"文本模型":"回退模型"}`,上限 64 映射/8 KB;key 按基名小写、剥思考后缀归一,value 保留管理员原始写法(可带后缀),from==to 或两个原始 key 归一后重复都是配置错误。请求含非文本内容时触发:HTTP 侧检测客户端协议的原始 body 整体,Responses WS 侧检测**完整 transcript**——某轮带图后历史里会一直留着这张图,必须整体检测才能让后续每轮判定稳定。触发后把 incoming 模型整体改写为回退模型,发生在 `applyThinkingSuffix` 与 Token 白名单、渠道候选过滤、模型冷却过滤、Key 白名单**之前**,因此选路/冷却/日志全部跟随回退模型(事后换模型只会换来渠道未声明的模型+404+逐渠道失败)。改写入口共两处(HTTP 代理 handler、Responses WS turn),两层必须同一契约;管理测试不参与回退。该键是唯一热重载系统设置(见「系统设置无热重载」条)
+
+## 普通生成选路预演
+
+`POST /admin/route-preview` 仅供管理员预演普通生成候选，入参为
+`{auth_token_id?, client_protocol, model, multimodal?}`。协议只接受 `anthropic`、
+`openai`、`codex`、`gemini`，分别对应 POST Messages、Chat Completions、Responses、
+Gemini generateContent/streamGenerateContent；不接受任意 method/path，不预演
+count_tokens/countTokens、Responses compact、alpha/search、模型列表、Embeddings 或独立图像/音频接口。
+令牌 ID 可省略或为 null（不限制令牌范围）；提供时必须为有效、启用且未过期的令牌。
+
+管理接口沿用 `{success, data}` 包装。`data` 包含回退后剥离思考后缀的 `model`、
+归一化的 `client_protocol`、`model_denied`、`candidates`、`excluded` 和 `limitations`。
+多模态回退在模型授权和候选解析前执行；令牌拒绝模型时返回 200、
+`model_denied=true` 及空候选/排除数组。候选复用真实生成的模型解析与令牌模型/渠道范围、
+成本、可用时段、模型行/Key 授权和冷却过滤；Credits 追加候选留在真实代理流程。
+
+候选字段为 `id`、`name`、`priority`、`effective_priority`、`available_key_count`、
+`priority_group`、`cooldown_fallback`、`same_tier_rotation`。`priority_group` 是真实同档分组值，
+健康评分关闭时等于配置优先级，开启时按现有 0.1 精度截断有效优先级；界面将其显示为单表优先级列，候选与排除渠道合并展示。模型使用渠道模型并集的可搜索下拉，结果说明默认折叠。健康评分关闭时按配置优先级降序分组；
+开启时按有效优先级排序，健康评分的相对 TTFB 中位数只使用最终候选集合。
+同档含多个渠道时标记 `same_tier_rotation=true`（健康评分的同档精度沿用 0.1），
+表中顺序不承诺实际请求的同档首选。预演不调用渠道平滑加权轮询，也不推进模型行或 Key 游标，
+不转发、不记代理日志、不占用或消耗 RPM/并发额度。
+
+`available_key_count` 统计启用模型行允许的、同时满足逻辑模型/上游模型白名单且启用、
+Key 自身未冷却的凭据；模型级冷却不重复扣减 Key 数。OAuth 通常为 1，
+其凭据以渠道冷却表达，仍在渠道冷却中的 OAuth 兜底候选为 0；无 Key 的普通渠道为 0，
+现有候选筛选仍会保留这类渠道，由真实转发边界处理缺少凭据。
+
+`excluded` 只记录实际进入模型候选解析后被过滤的渠道，不枚举未匹配模型或禁用的全部渠道。
+每个渠道最多一项，最终候选（包括全冷却兜底）会清除其排除记录，精确/模糊/严格过滤多遍不会重复。
+拒绝码包括 `token_channel_scope`、`cost_limit`、`time_window`、`key_load_failed`、
+`no_model_row`、`model_disabled`（匹配的模型行全部停用）、`credits_not_applicable`（Credits 渠道当前不承接该模型）、
+`keys_disabled`（Key 全部禁用）、`key_model_scope`（启用 Key 的模型白名单不含该模型）、
+`channel_cooldown`、`model_cooldown`、`all_keys_cooling`；模型行未授权时按 停用 → Credits 适用性 → Key 的顺序
+取走得最远的那道闸门。
+冷却原因以真实过滤顺序及最早可恢复的授权模型/Key 组合为准：组合需要同时等待模型和 Key 时，
+以该组合较晚的阻塞项作为原因；`until` 为对应的 RFC3339 冷却截止时间。
+
+`limitations` 返回未评估项原因码：`session_affinity`（会话粘性）、
+`execution_session_pinning`（执行会话钉住）、`channel_header`（请求头指定渠道）、
+`antigravity_credits`（Credits 追加资格和候选）、`key_rotation`、`model_row_rotation`、
+`live_rpm_concurrency`（瞬时额度/占用）、`protocol_capabilities`（完整请求的协议能力/转换可表达性）、
+`token_budget`（令牌费用准入）。预演只返回普通生成候选和优先级分组，
+不承诺带完整请求体、会话、请求头或变化中的额度时的最终渠道选择。

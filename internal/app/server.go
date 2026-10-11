@@ -1884,6 +1884,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		// API访问令牌管理
 		admin.GET("/auth-tokens", s.HandleListAuthTokens)
 		admin.POST("/auth-tokens", s.HandleCreateAuthToken)
+		admin.POST("/route-preview", s.HandleRoutePreview)
 		admin.PUT("/auth-tokens/:id", s.HandleUpdateAuthToken)
 		admin.DELETE("/auth-tokens/:id", s.HandleDeleteAuthToken)
 

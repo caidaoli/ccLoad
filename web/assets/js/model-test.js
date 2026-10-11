@@ -2,6 +2,7 @@ const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 const TEST_MODE_CHAT = 'chat';
 const TEST_MODE_IMAGE = 'image';
+const TEST_MODE_PREVIEW = 'preview';
 
 // localStorage keys
 const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
@@ -1756,6 +1757,7 @@ function renderChannelModeRows() {
 }
 
 function populateModelSelector() {
+  window.ModelTestRoutePreview.refreshModels();
   const models = getAllModels();
   const typedModel = getModelInputValue();
 
@@ -1864,7 +1866,8 @@ const MODEL_TEST_MODE_TABS = [
   { id: 'modeTabChat', mode: TEST_MODE_CHAT },
   { id: 'modeTabImage', mode: TEST_MODE_IMAGE },
   { id: 'modeTabChannel', mode: TEST_MODE_CHANNEL },
-  { id: 'modeTabModel', mode: TEST_MODE_MODEL }
+  { id: 'modeTabModel', mode: TEST_MODE_MODEL },
+  { id: 'modeTabPreview', mode: TEST_MODE_PREVIEW }
 ];
 
 function syncModeTabState() {
@@ -1913,7 +1916,8 @@ function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
   const isChatMode = testMode === TEST_MODE_CHAT;
   const isImageMode = testMode === TEST_MODE_IMAGE;
-  const isStandaloneMode = isChatMode || isImageMode;
+  const isPreviewMode = testMode === TEST_MODE_PREVIEW;
+  const isStandaloneMode = isChatMode || isImageMode || isPreviewMode;
   const fetchModelsBtn = getFetchModelsBtn();
   const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
@@ -1928,6 +1932,7 @@ function updateModeUI() {
   chatToolbar?.classList.toggle('hidden', !isChatMode);
   chatPanel?.classList.toggle('hidden', !isChatMode);
   imagePanel?.classList.toggle('hidden', !isImageMode);
+  document.getElementById('routePreviewPanel')?.classList.toggle('hidden', !isPreviewMode);
   modelTestCard?.classList.toggle('model-test-card--chat-mode', isChatMode);
 
   if (isStandaloneMode) return;
@@ -3408,7 +3413,7 @@ function bindEvents() {
 }
 
 function setTestMode(mode) {
-  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_IMAGE) return;
+  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_IMAGE && mode !== TEST_MODE_PREVIEW) return;
   if (testMode === mode) return;
 
   const previousMode = testMode;
@@ -3420,6 +3425,11 @@ function setTestMode(mode) {
   saveTestModeToStorage(mode);
   clearProgress();
 
+  if (testMode === TEST_MODE_PREVIEW) {
+    updateModeUI();
+    window.ModelTestRoutePreview.open();
+    return;
+  }
   if (testMode === TEST_MODE_CHAT) {
     updateModeUI();
     initChatPanel();
@@ -3468,7 +3478,7 @@ function saveTestModeToStorage(mode) {
 function loadTestModeFromStorage() {
   try {
     const mode = localStorage.getItem(STORAGE_KEY_TEST_MODE);
-    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_IMAGE) {
+    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_IMAGE || mode === TEST_MODE_PREVIEW) {
       return mode;
     }
   } catch (_) { /* ignore */ }
@@ -3999,7 +4009,7 @@ function initChatPanel() {
   }
 }
 
-/** 收集所有渠道的模型并集（去重 + 字母排序），供 chat 模式模型下拉使用 */
+/** 收集所有渠道的具体模型并集（去重 + 字母排序），供模型下拉使用 */
 function getAllChatModelOptions() {
   const set = new Set();
   channelsList.forEach(ch => {
@@ -4960,6 +4970,7 @@ async function bootstrap() {
   bindEvents();
   initChatExportDropdown();
   initModeTabKeyboard();
+  window.ModelTestRoutePreview.init({ t: i18nText, protocols: getClientProtocols(), protocolLabel, getModelOptions: getAllChatModelOptions });
   window.ModelTestImage?.init({
     t: i18nText,
     getModelName,
@@ -5021,6 +5032,8 @@ async function bootstrap() {
     initChatPanel();
   } else if (testMode === TEST_MODE_IMAGE) {
     window.ModelTestImage?.open();
+  } else if (testMode === TEST_MODE_PREVIEW) {
+    window.ModelTestRoutePreview.open();
   }
 }
 

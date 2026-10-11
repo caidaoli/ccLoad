@@ -323,6 +323,13 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 		return s.selectAlphaSearchCandidates(ctx, originalModel)
 	}
 
+	_, effectivePath := clientRequestMetadata(c)
+	if isOrdinaryGenerationRequest(requestMethod, effectivePath, protocol.Protocol(clientProtocol)) {
+		return s.resolveGenerationCandidates(ctx, generationRouteInput{
+			Model: originalModel, ClientProtocol: clientProtocol,
+			TokenHash: channelRestrictionTokenFromContext(ctx),
+		})
+	}
 	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol)
 }
 
@@ -464,7 +471,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	// 模型冷却过滤、Key 白名单全部按模型名做决策，事后换模型只会换来
 	// 渠道未声明的模型 + 404 + 逐渠道失败。改 incoming 字段后下游全部自动跟随。
 	clientModel := incoming.originalModel
-	if fallback := s.multimodalFallbackModel(incoming.originalModel, requestHasNonTextContent(clientProtocol, all)); fallback != "" {
+	if isOrdinaryGenerationRequest(requestMethod, effectiveRequestPath, clientProtocol) {
+		incoming.requestedModel = s.generationRoutingModel(generationRouteInput{
+			Model: incoming.requestedModel, ClientProtocol: string(clientProtocol),
+			Multimodal: requestHasNonTextContent(clientProtocol, all),
+		})
+		incoming.originalModel = model.RoutingModelName(incoming.requestedModel)
+	} else if fallback := s.multimodalFallbackModel(incoming.originalModel, requestHasNonTextContent(clientProtocol, all)); fallback != "" {
 		incoming.originalModel = model.RoutingModelName(fallback)
 		incoming.requestedModel = fallback
 	}
@@ -561,6 +574,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		cands = s.appendAntigravityCreditsCandidates(ctx, cands, originalModel, string(clientProtocol), all)
 	}
 	if err != nil {
+		if errors.Is(err, errGenerationModelDenied) {
+			writeLocalProxyError(c, http.StatusForbidden, fmt.Sprintf("model '%s' is not allowed for this token", originalModel))
+			return
+		}
 		if errors.Is(err, errUnknownClientProtocol) {
 			writeLocalProxyError(c, http.StatusNotFound, "unsupported path")
 			return

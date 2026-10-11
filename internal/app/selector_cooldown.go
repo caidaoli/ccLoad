@@ -76,9 +76,11 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	if len(channels) == 0 {
 		return channels, nil
 	}
+	sink := routeRejectSinkFromContext(ctx)
 	if tokenHash := channelRestrictionTokenFromContext(ctx); tokenHash != "" && s.authService != nil {
 		filtered, restricted := s.authService.FilterAllowedChannels(tokenHash, channels)
 		if restricted {
+			sink.rejectRemoved(channels, filtered, "token_channel_scope")
 			// 空集合必须保持为空，不能让越权渠道重新参与冷却兜底。
 			channels = filtered
 			if state, _ := ctx.Value(channelRestrictionTokenContextKey{}).(*channelRestrictionState); state != nil {
@@ -91,9 +93,14 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 	}
 
 	now := time.Now()
+	if sink != nil {
+		now = sink.now
+	}
 
 	// === 成本限额过滤（在冷却过滤之前）===
-	channels = s.filterCostLimitExceededChannels(channels)
+	costFiltered := s.filterCostLimitExceededChannels(channels)
+	sink.rejectRemoved(channels, costFiltered, "cost_limit")
+	channels = costFiltered
 	if len(channels) == 0 {
 		log.Print("[INFO] 所有渠道均已达每日成本上限")
 		return nil, nil
@@ -101,7 +108,9 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// 渠道可用时段是硬路由约束，必须在冷却兜底前过滤；不在时段内的渠道
 	// 不能因为“所有渠道冷却”而被强行选中。
-	channels = filterAvailableTimeChannels(channels, now)
+	timeFiltered := filterAvailableTimeChannels(channels, now)
+	sink.rejectRemoved(channels, timeFiltered, "time_window")
+	channels = timeFiltered
 	if len(channels) == 0 {
 		log.Print("[INFO] 当前时间没有可用时段内的渠道")
 		return nil, nil
@@ -109,7 +118,13 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// 批量查询冷却状态（优先走缓存层）
 	paid := slices.ContainsFunc(channels, func(cfg *modelpkg.Config) bool { return cfg.AntigravityCredits })
-	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
+	var channelCooldowns map[int64]time.Time
+	var err error
+	if sink != nil && sink.snapshotsLoaded {
+		channelCooldowns = sink.channelCooldowns
+	} else {
+		channelCooldowns, err = s.getAllChannelCooldowns(ctx)
+	}
 	if err != nil {
 		if paid {
 			return nil, err
@@ -117,9 +132,15 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		// 降级策略：无法获取冷却数据时，跳过冷却过滤；仍保留后续健康度/负载均衡逻辑，避免直接返回未排序列表。
 		log.Printf("[ERROR] 获取渠道冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		channelCooldowns = make(map[int64]time.Time)
+		err = nil
 	}
 
-	keyCooldowns, err := s.getAllKeyCooldowns(ctx)
+	var keyCooldowns map[int64]map[int]time.Time
+	if sink != nil && sink.snapshotsLoaded {
+		keyCooldowns = sink.keyCooldowns
+	} else {
+		keyCooldowns, err = s.getAllKeyCooldowns(ctx)
+	}
 	if err != nil {
 		if paid {
 			return nil, err
@@ -127,11 +148,16 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		// 降级策略：同上。
 		log.Printf("[ERROR] 获取 Key 冷却状态失败，跳过冷却过滤（降级模式）: %v", err)
 		keyCooldowns = make(map[int64]map[int]time.Time)
+		err = nil
 	}
 
 	modelCooldowns := make(map[int64]map[string]time.Time)
 	if requestModel != "" && requestModel != "*" {
-		modelCooldowns, err = s.getAllModelCooldowns(ctx)
+		if sink != nil && sink.snapshotsLoaded {
+			modelCooldowns = sink.modelCooldowns
+		} else {
+			modelCooldowns, err = s.getAllModelCooldowns(ctx)
+		}
 		if err != nil {
 			if paid {
 				return nil, err
@@ -141,6 +167,11 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		}
 	}
 
+	if sink != nil && !sink.snapshotsLoaded {
+		sink.channelCooldowns, sink.keyCooldowns, sink.modelCooldowns = channelCooldowns, keyCooldowns, modelCooldowns
+		sink.snapshotsLoaded = true
+	}
+
 	// Compute actual row/Key combinations once for both filtering and fallback.
 	rowReadiness := make(map[int64]time.Time, len(channels))
 	if requestModel != "" && requestModel != "*" {
@@ -148,13 +179,21 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		for _, cfg := range channels {
 			var keys []*modelpkg.APIKey
 			if !cfg.UsesOAuth() {
-				keys, err = s.getAPIKeysSnapshot(ctx, cfg.ID)
+				if cached, ok := sinkKeys(sink, cfg.ID); ok {
+					keys, err = cached, nil
+				} else {
+					keys, err = s.getAPIKeysSnapshot(ctx, cfg.ID)
+				}
 				if err != nil {
 					if ctx.Err() != nil {
 						return nil, ctx.Err()
 					}
+					sink.reject(cfg, "key_load_failed", time.Time{})
 					log.Printf("[ERROR] 获取渠道 %d 的 Key 失败，跳过该渠道: %v", cfg.ID, err)
 					continue
+				}
+				if sink != nil {
+					sink.keys[cfg.ID] = keys
 				}
 				// Channels without credentials retain model-only candidate
 				// selection; the forwarding boundary reports the missing Key.
@@ -164,11 +203,12 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 			}
 			found := false
 			var earliest time.Time
-			for _, row := range s.enumerateModelRows(cfg, requestModel) {
+			rows := s.enumerateModelRows(cfg, requestModel)
+			for _, row := range rows {
 				if row.entry.Disabled || (cfg.AntigravityCredits && !s.modelRowApplicable(cfg, row, now)) {
 					continue
 				}
-				readyAt, authorized := s.modelRowWithKeysReadyAt(cfg, row, requestProtocol, modelCooldowns[cfg.ID], keys, now)
+				readyAt, authorized, reason := s.modelRowWithKeysReadiness(cfg, row, requestProtocol, modelCooldowns[cfg.ID], keys, now)
 				if !authorized {
 					continue
 				}
@@ -179,19 +219,26 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 				}
 				if !found || readyAt.Before(earliest) {
 					earliest = readyAt
+					if sink != nil {
+						sink.rowReasons[cfg.ID] = reason
+					}
 				}
 				found = true
 			}
 			if found {
 				rowReadiness[cfg.ID] = earliest
 				eligible = append(eligible, cfg)
+			} else if len(rows) == 0 {
+				sink.reject(cfg, "no_model_row", time.Time{})
+			} else if sink != nil {
+				sink.reject(cfg, s.routePreviewRowRejectReason(cfg, rows, keys, now), time.Time{})
 			}
 		}
 		channels = eligible
 	}
 
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooledChannels(channels, requestModel, channelCooldowns, keyCooldowns, rowReadiness, now)
+	filtered := s.filterCooledChannels(channels, requestModel, channelCooldowns, keyCooldowns, rowReadiness, now, sink)
 	if len(filtered) == 0 {
 		if !allowAllCooledFallback {
 			return nil, nil
@@ -217,7 +264,12 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// 启用健康度排序：对"已通过冷却过滤"的渠道按健康度排序
 	if s.healthCache != nil && s.healthCache.Config().Enabled {
-		return s.sortChannelsByHealth(filtered, keyCooldowns, now), nil
+		return s.sortChannelsByHealthInternal(filtered, keyCooldowns, now, sink != nil), nil
+	}
+
+	if sink != nil {
+		slices.SortStableFunc(filtered, func(a, b *modelpkg.Config) int { return cmp.Compare(b.Priority, a.Priority) })
+		return filtered, nil
 	}
 
 	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
@@ -361,15 +413,18 @@ func (s *Server) filterCooledChannels(
 	keyCooldowns map[int64]map[int]time.Time,
 	rowReadiness map[int64]time.Time,
 	now time.Time,
+	sink *routeRejectSink,
 ) []*modelpkg.Config {
 	filtered := channels[:0]
 	for _, cfg := range channels {
 		if requestModel != "*" && requestModel != "" && len(s.applicableModelRows(cfg, requestModel, now)) == 0 {
+			sink.reject(cfg, "model_cooldown", rowReadiness[cfg.ID])
 			continue
 		}
 		// 1. 检查渠道级冷却
 		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
 			if cooldownUntil.After(now) {
+				sink.reject(cfg, "channel_cooldown", cooldownUntil)
 				continue
 			}
 		}
@@ -378,6 +433,8 @@ func (s *Server) filterCooledChannels(
 		if until, exists := rowReadiness[cfg.ID]; exists {
 			if !until.After(now) {
 				filtered = append(filtered, cfg)
+			} else if sink != nil {
+				sink.reject(cfg, sink.rowReasons[cfg.ID], until)
 			}
 			continue
 		}
@@ -394,6 +451,13 @@ func (s *Server) filterCooledChannels(
 					}
 				}
 				if !hasAvailableKey {
+					var earliest time.Time
+					for _, until := range keyMap {
+						if earliest.IsZero() || until.Before(earliest) {
+							earliest = until
+						}
+					}
+					sink.reject(cfg, "all_keys_cooling", earliest)
 					continue
 				}
 			}
@@ -431,9 +495,15 @@ func (s *Server) modelRowApplicable(cfg *modelpkg.Config, selected modelRoutingS
 // modelRowWithKeysReadyAt evaluates complete protocol/Key combinations. A
 // zero time means ready now; false means no authorized combination exists.
 func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRoutingSelection, requestProtocol string, cooldowns map[string]time.Time, keys []*modelpkg.APIKey, now time.Time) (time.Time, bool) {
+	readyAt, authorized, _ := s.modelRowWithKeysReadiness(cfg, selected, requestProtocol, cooldowns, keys, now)
+	return readyAt, authorized
+}
+
+func (s *Server) modelRowWithKeysReadiness(cfg *modelpkg.Config, selected modelRoutingSelection, requestProtocol string, cooldowns map[string]time.Time, keys []*modelpkg.APIKey, now time.Time) (time.Time, bool, string) {
 	protocols := possibleUpstreamProtocols(cfg, protocol.Protocol(util.NormalizeProtocol(requestProtocol)))
 	var earliest time.Time
 	found := false
+	reason := "model_cooldown"
 	for _, upstream := range protocols {
 		actual := s.resolveFinalUpstreamModel(cfg, selected, string(upstream))
 		modelUntil := cooldowns[actual]
@@ -443,6 +513,7 @@ func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRou
 		if keys == nil {
 			if !found || modelUntil.Before(earliest) {
 				earliest = modelUntil
+				reason = "model_cooldown"
 			}
 			found = true
 			continue
@@ -452,18 +523,21 @@ func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRou
 				continue
 			}
 			readyAt := modelUntil
+			combinationReason := "model_cooldown"
 			if key.IsCoolingDown(now) {
 				if until := time.Unix(key.CooldownUntil, 0); until.After(readyAt) {
 					readyAt = until
+					combinationReason = "all_keys_cooling"
 				}
 			}
 			// OAuth 渠道 (AntigravityCredits) 不走 Key 循环，CooldownFallback 需尾部
 			// standardQuotaUntil 合并；此守卫只对普通 API Key 渠道生效。
 			if readyAt.IsZero() && !cfg.AntigravityCredits && !cfg.CooldownFallback {
-				return readyAt, true
+				return readyAt, true, ""
 			}
 			if !found || readyAt.Before(earliest) {
 				earliest = readyAt
+				reason = combinationReason
 			}
 			found = true
 		}
@@ -472,9 +546,10 @@ func (s *Server) modelRowWithKeysReadyAt(cfg *modelpkg.Config, selected modelRou
 		actual := s.resolveFinalUpstreamModel(cfg, selected, string(protocol.Gemini))
 		if until := s.antigravityCredentials.standardQuotaUntil(cfg, actual); until.After(now) && until.After(earliest) {
 			earliest = until
+			reason = "model_cooldown"
 		}
 	}
-	return earliest, found
+	return earliest, found, reason
 }
 
 func (s *Server) keyAllowsModelRow(cfg *modelpkg.Config, key *modelpkg.APIKey, selected modelRoutingSelection, requestProtocol string) bool {
