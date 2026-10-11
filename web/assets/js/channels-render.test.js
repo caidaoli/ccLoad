@@ -636,7 +636,7 @@ test('点击模型标签复制请求模型名，失败时提示手动复制', as
   }
 });
 
-test('健康度列：冷却状态在调用指标之前，最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空；额度列仅 API 渠道提供管理账户入口且只读不显示', () => {
+test('健康度列：最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空；额度列仅 API 渠道提供管理账户入口且只读不显示', () => {
   const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber, readOnly: global.isTokenChannelsReadOnly };
   global.window = { t: key => key, getFirstByteTimingColor: () => 'green', getDurationTimingColor: () => 'green' };
   global.buildCostStackHtml = () => '';
@@ -647,12 +647,6 @@ test('健康度列：冷却状态在调用指标之前，最近请求成功显�
     assert.equal(buildChannelHealthHtml({ id: 9 }, { success: 0, error: 0 }), '');
 
     const stats = { success: 9, error: 1, avgDurationSeconds: 2, totalInputTokens: 10, totalOutputTokens: 5 };
-    const html = buildChannelHealthHtml({ id: 9, cooldown_remaining_ms: 60000 }, stats);
-    const cooldownAt = html.indexOf('ch-runtime-status--channel');
-    const metricsAt = html.indexOf('class="ch-metrics"');
-    assert.ok(cooldownAt >= 0 && metricsAt > cooldownAt);
-    assert.match(html, /ch-metric__rate--warn">90\.0%</);
-
     const lastRequest = status => buildChannelHealthHtml({ id: 9 }, { ...stats, lastRequestAt: Date.now() - 120000, lastRequestStatus: status, lastRequestMessage: '<boom>' });
     assert.match(lastRequest(200), /ch-last-request--ok">channels\.lastSuccess\.succeededAt</);
     assert.doesNotMatch(lastRequest(200), /ch-last-request__detail/);

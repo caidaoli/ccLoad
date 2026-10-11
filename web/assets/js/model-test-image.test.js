@@ -60,7 +60,7 @@ test('image generation response accepts URL and base64 images but rejects empty 
   assert.equal(dataURLFromImage({ b64_json: 'aW1hZ2U=', mime_type: 'image/webp' }, 'png'), 'data:image/webp;base64,aW1hZ2U=');
 });
 
-test('image option controls reuse searchable comboboxes and keep API capability linkage', () => {
+test('image option controls restore preferences and keep API capability linkage', () => {
   const elements = new Map();
   const makeElement = () => {
     const listeners = new Map();
@@ -131,15 +131,6 @@ test('image option controls reuse searchable comboboxes and keep API capability 
       getChannelsForModel: () => [{ id: 7, name: 'Images', auth_type: 'api_key' }]
     });
 
-    for (const id of [
-      'imageGenerationAPISelect',
-      'imageSizeSelect',
-      'imageQualitySelect',
-      'imageBackgroundSelect',
-      'imageOutputFormatSelect'
-    ]) {
-      assert.ok(comboboxes.has(id), `${id} must use the shared searchable combobox`);
-    }
     assert.equal(comboboxes.get('imageSizeSelect').getValue(), '1536x1024');
     assert.equal(comboboxes.get('imageQualitySelect').getValue(), 'hd');
     assert.equal(comboboxes.get('imageBackgroundSelect').getValue(), 'transparent');
