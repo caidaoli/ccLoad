@@ -638,13 +638,16 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			if authType == "" {
 				return fmt.Errorf("import channel %s: invalid auth_type %q", config.Name, config.AuthType)
 			}
-			if config.IsSystemOne() && authType != model.AuthTypeAPIKey {
-				return fmt.Errorf("import channel %s: system one channels require api_key authentication", config.Name)
+			if err := config.URLs.ValidateForAuthType(authType); err != nil {
+				return fmt.Errorf("import channel %s: %w", config.Name, err)
 			}
-			if authType != model.AuthTypeAPIKey && strings.TrimSpace(config.OAuthCredential) == "" {
+			if authType == model.AuthTypeSystemOne && strings.TrimSpace(config.OAuthCredential) != "" {
+				return fmt.Errorf("import channel %s: system_one channel cannot contain an OAuth credential", config.Name)
+			}
+			if !model.UsesAPIKeyCredentials(authType) && strings.TrimSpace(config.OAuthCredential) == "" {
 				return fmt.Errorf("import channel %s: %s channel requires a credential", config.Name, authType)
 			}
-			if authType != model.AuthTypeAPIKey && len(cwk.APIKeys) != 0 {
+			if !model.UsesAPIKeyCredentials(authType) && len(cwk.APIKeys) != 0 {
 				return fmt.Errorf("import channel %s: OAuth channel API keys are read-only", config.Name)
 			}
 			if authType == model.AuthTypeAPIKey {
@@ -723,7 +726,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			}
 
 			// 删除旧的API Keys（模型索引统一交给 saveModelEntriesImpl 处理）
-			if isUpdate && authType == model.AuthTypeAPIKey {
+			if isUpdate && model.UsesAPIKeyCredentials(authType) {
 				if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
 					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
 				}
@@ -894,7 +897,7 @@ func (s *SQLStore) ensureAPIKeyChannelMutable(ctx context.Context, channelID int
 		}
 		return fmt.Errorf("query channel auth_type: %w", err)
 	}
-	if model.NormalizeAuthType(authType) != model.AuthTypeAPIKey {
+	if !model.UsesAPIKeyCredentials(authType) {
 		return errors.New("OAuth channel API keys are read-only")
 	}
 	return nil

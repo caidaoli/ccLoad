@@ -100,6 +100,17 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			OutputTokens:   6,
 			Cost:           0.005,
 		},
+		{
+			Time:           model.JSONTime{Time: now},
+			Model:          "jev-latest",
+			ChannelID:      anth.ID,
+			LogSource:      model.LogSourceProxy,
+			ClientProtocol: "system_one",
+			StatusCode:     200,
+			Duration:       0.05,
+			InputTokens:    4,
+			OutputTokens:   1,
+		},
 	}
 	if err := store.BatchAddLogs(ctx, logs); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
@@ -127,8 +138,11 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		if !resp.Success {
 			t.Fatalf("expected success=true, body=%s", w.Body.String())
 		}
-		if resp.Data.TotalRequests != 3 || resp.Data.SuccessRequests != 2 || resp.Data.ErrorRequests != 1 {
+		if resp.Data.TotalRequests != 4 || resp.Data.SuccessRequests != 3 || resp.Data.ErrorRequests != 1 {
 			t.Fatalf("unexpected totals: %+v", resp.Data)
+		}
+		if systemOne := resp.Data.ByClientProtocol["system_one"]; systemOne.TotalRequests != 1 || systemOne.TotalInputTokens != 4 {
+			t.Fatalf("unexpected system_one summary: %+v", systemOne)
 		}
 
 		anthTS, ok := resp.Data.ByClientProtocol["anthropic"]
@@ -168,7 +182,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected api_key in by_auth_type: %#v", resp.Data.ByAuthType)
 		}
-		if apiKeyTS.TotalRequests != 3 || apiKeyTS.SuccessRequests != 2 || apiKeyTS.ErrorRequests != 1 {
+		if apiKeyTS.TotalRequests != 4 || apiKeyTS.SuccessRequests != 3 || apiKeyTS.ErrorRequests != 1 {
 			t.Fatalf("unexpected api_key summary: %+v", apiKeyTS)
 		}
 	})

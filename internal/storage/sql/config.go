@@ -88,8 +88,18 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	return config, nil
 }
 
-// GetEnabledChannelsByModel 查询支持指定模型的启用渠道（按优先级排序）
+// GetEnabledChannelsByModel 查询支持指定模型的启用聊天渠道（按优先级排序）
 func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	return s.enabledChannelsByModel(ctx, modelName, false)
+}
+
+// GetEnabledSystemOneChannelsByModel 查询支持指定模型的启用 System One 渠道（按优先级排序）
+func (s *SQLStore) GetEnabledSystemOneChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	return s.enabledChannelsByModel(ctx, modelName, true)
+}
+
+// System One 只服务 /v1/systemone，与聊天渠道互不进入对方的候选。
+func (s *SQLStore) enabledChannelsByModel(ctx context.Context, modelName string, systemOne bool) ([]*model.Config, error) {
 	var query string
 	var args []any
 	routingModel := model.RoutingModelName(modelName)
@@ -146,7 +156,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
-	configs = slices.DeleteFunc(configs, func(cfg *model.Config) bool { return cfg.IsSystemOne() })
+	configs = slices.DeleteFunc(configs, func(cfg *model.Config) bool { return cfg.IsSystemOne() != systemOne })
 	if routingModel != "*" {
 		matched := configs[:0]
 		for _, cfg := range configs {
@@ -176,14 +186,14 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	if authType == "" {
 		return nil, fmt.Errorf("invalid auth_type %q", c.AuthType)
 	}
-	if c.IsSystemOne() && authType != model.AuthTypeAPIKey {
-		return nil, errors.New("system one channels require api_key authentication")
+	if err := c.URLs.ValidateForAuthType(authType); err != nil {
+		return nil, err
 	}
-	if authType != model.AuthTypeAPIKey && strings.TrimSpace(c.OAuthCredential) == "" {
+	if !model.UsesAPIKeyCredentials(authType) && strings.TrimSpace(c.OAuthCredential) == "" {
 		return nil, fmt.Errorf("%s channel requires a credential", authType)
 	}
-	if authType == model.AuthTypeAPIKey && strings.TrimSpace(c.OAuthCredential) != "" {
-		return nil, errors.New("api_key channel cannot contain an OAuth credential")
+	if model.UsesAPIKeyCredentials(authType) && strings.TrimSpace(c.OAuthCredential) != "" {
+		return nil, fmt.Errorf("%s channel cannot contain an OAuth credential", authType)
 	}
 
 	protocolTransformMode := c.GetProtocolTransformMode()
@@ -203,7 +213,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 				return err
 			}
 			existingAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, id)
-			if loadErr == nil && (model.NormalizeAuthType(existingAuthType) != model.AuthTypeAPIKey || authType != model.AuthTypeAPIKey) {
+			if loadErr == nil && (!model.UsesAPIKeyCredentials(existingAuthType) || !model.UsesAPIKeyCredentials(authType)) {
 				return errors.New("OAuth channel cannot replace or be replaced through CreateConfig")
 			}
 			if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
@@ -331,11 +341,11 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	}
 
 	name := strings.TrimSpace(upd.Name)
-	if upd.IsSystemOne() && existing.GetAuthType() != model.AuthTypeAPIKey {
-		return nil, errors.New("system one channels require api_key authentication")
-	}
 	urls := upd.URLs.Clone()
 	if err := urls.Normalize(); err != nil {
+		return nil, err
+	}
+	if err := urls.ValidateForAuthType(existing.GetAuthType()); err != nil {
 		return nil, err
 	}
 	if err := upd.NormalizeAvailableTime(); err != nil {
@@ -399,7 +409,7 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 	expectedAuthType, expectedCredential, nextCredential string,
 ) (bool, error) {
 	authType := model.NormalizeAuthType(expectedAuthType)
-	if authType == "" || authType == model.AuthTypeAPIKey {
+	if authType == "" || model.UsesAPIKeyCredentials(authType) {
 		return false, errors.New("OAuth auth type is invalid")
 	}
 	if strings.TrimSpace(expectedCredential) == "" {
@@ -504,7 +514,7 @@ func (s *SQLStore) DisableOAuthChannelIfCredentialMatches(
 	expectedAuthType, expectedCredential string,
 ) (bool, error) {
 	authType := model.NormalizeAuthType(expectedAuthType)
-	if authType == "" || authType == model.AuthTypeAPIKey {
+	if authType == "" || model.UsesAPIKeyCredentials(authType) {
 		return false, errors.New("OAuth auth type is invalid")
 	}
 	if strings.TrimSpace(expectedCredential) == "" {
@@ -558,7 +568,7 @@ func (s *SQLStore) syncConfigReplicaTx(ctx context.Context, tx *sql.Tx, cfg *mod
 		return err
 	}
 	authType := cfg.GetAuthType()
-	if authType != model.AuthTypeAPIKey && strings.TrimSpace(cfg.OAuthCredential) == "" {
+	if !model.UsesAPIKeyCredentials(authType) && strings.TrimSpace(cfg.OAuthCredential) == "" {
 		return errors.New("replica OAuth config is invalid")
 	}
 	name := cfg.Name
@@ -669,7 +679,7 @@ func (s *SQLStore) UpdateModelStateIfSnapshotMatches(
 		return false, errors.New("expected model state is required")
 	}
 	authType := expected.GetAuthType()
-	if authType != model.AuthTypeAPIKey && strings.TrimSpace(expected.OAuthCredential) == "" {
+	if !model.UsesAPIKeyCredentials(authType) && strings.TrimSpace(expected.OAuthCredential) == "" {
 		return false, errors.New("expected OAuth credential cannot be empty")
 	}
 	matched := false
@@ -809,7 +819,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			nextCostMultiplier := state.costMultiplier
 			keyMultiplierChanged := false
 			if patch.CostMultiplier != nil {
-				if model.NormalizeAuthType(state.authType) == model.AuthTypeAPIKey {
+				if model.UsesAPIKeyCredentials(state.authType) {
 					targetMultiplier := normalizeCostMultiplier(*patch.CostMultiplier)
 					for _, currentMultiplier := range state.keyCostMultipliers {
 						if currentMultiplier != targetMultiplier {
@@ -1401,7 +1411,7 @@ func validateOAuthChannelSnapshot(expected *model.Config) error {
 		return errors.New("expected OAuth channel snapshot is invalid")
 	}
 	authType := expected.GetAuthType()
-	if authType == "" || authType == model.AuthTypeAPIKey {
+	if authType == "" || model.UsesAPIKeyCredentials(authType) {
 		return errors.New("OAuth auth type is invalid")
 	}
 	if strings.TrimSpace(expected.OAuthCredential) == "" {

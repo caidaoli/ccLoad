@@ -16,13 +16,14 @@ import (
 // ChannelCache 高性能渠道缓存层
 // 内存查询比数据库查询快 1000 倍+
 type ChannelCache struct {
-	store           Store
-	channelsByModel map[string][]*modelpkg.Config // model → channels
-	allChannels     []*modelpkg.Config            // 所有渠道
-	lastUpdate      time.Time
-	mutex           sync.RWMutex
-	refreshMutex    sync.Mutex // 串行化刷新动作，避免数据库 IO 在 mutex 锁内阻塞读者
-	ttl             time.Duration
+	store            Store
+	channelsByModel  map[string][]*modelpkg.Config // model → channels
+	allChannels      []*modelpkg.Config            // 所有渠道
+	systemOneByModel map[string][]*modelpkg.Config // model → System One channels
+	lastUpdate       time.Time
+	mutex            sync.RWMutex
+	refreshMutex     sync.Mutex // 串行化刷新动作，避免数据库 IO 在 mutex 锁内阻塞读者
+	ttl              time.Duration
 
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
@@ -43,10 +44,11 @@ type ChannelCache struct {
 // NewChannelCache 创建渠道缓存实例
 func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	return &ChannelCache{
-		store:           store,
-		channelsByModel: make(map[string][]*modelpkg.Config),
-		allChannels:     make([]*modelpkg.Config, 0),
-		ttl:             ttl,
+		store:            store,
+		channelsByModel:  make(map[string][]*modelpkg.Config),
+		systemOneByModel: make(map[string][]*modelpkg.Config),
+		allChannels:      make([]*modelpkg.Config, 0),
+		ttl:              ttl,
 
 		// 初始化扩展缓存
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
@@ -129,6 +131,18 @@ func (c *ChannelCache) GetEnabledChannelsSnapshotByModel(ctx context.Context, mo
 	return copyConfigPointers(c.channelsByModel[model]), nil
 }
 
+// GetEnabledSystemOneChannelsSnapshotByModel 返回 /v1/systemone 路由使用的只读快照，
+// 所有权约束同 GetEnabledChannelsSnapshotByModel。
+func (c *ChannelCache) GetEnabledSystemOneChannelsSnapshotByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
+	if err := c.refreshIfNeeded(ctx); err != nil {
+		return c.store.GetEnabledSystemOneChannelsByModel(ctx, model)
+	}
+
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return copyConfigPointers(c.systemOneByModel[model]), nil
+}
+
 // GetConfig 获取指定ID的渠道配置
 // 直接查询数据库，保证数据永远是最新的
 func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
@@ -174,6 +188,11 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 		return err
 	}
 
+	systemOneChannels, err := c.store.GetEnabledSystemOneChannelsByModel(ctx, "*")
+	if err != nil {
+		return err
+	}
+
 	byModel := make(map[string][]*modelpkg.Config)
 
 	for _, channel := range allChannels {
@@ -182,11 +201,18 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 			byModel[model] = append(byModel[model], channel) // 内部共享
 		}
 	}
+	systemOneByModel := make(map[string][]*modelpkg.Config)
+	for _, channel := range systemOneChannels {
+		for _, model := range channel.GetModels() {
+			systemOneByModel[model] = append(systemOneByModel[model], channel)
+		}
+	}
 
 	// 原子性更新缓存（整体替换指针，临界区只覆盖赋值瞬间）
 	c.mutex.Lock()
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
+	c.systemOneByModel = systemOneByModel
 	c.lastUpdate = time.Now()
 	c.mutex.Unlock()
 

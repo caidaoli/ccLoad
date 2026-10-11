@@ -42,6 +42,7 @@ type ActiveRequest struct {
 	UpstreamWebsocket   bool    `json:"upstream_websocket,omitempty"`     // 实际上游请求是否使用WebSocket
 	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
 	ThinkingEffort      string  `json:"thinking_effort,omitempty"`
+	ClientEffort        string  `json:"client_effort,omitempty"` // 动态思考改变等级前的客户端等级，未改变时为空
 	UpstreamStatus      string  `json:"upstream_status"`
 	Abortable           bool    `json:"abortable,omitempty"` // 当前上游尝试是否登记了可中断句柄
 }
@@ -63,6 +64,7 @@ type activeRequest struct {
 	CostMultiplier    float64 // 渠道成本倍率
 	UpstreamWebsocket bool
 	ThinkingEffort    string
+	ClientEffort      string
 	UpstreamStatus    string
 	debugCapture      *debugCapture
 	// abort 取消当前这次上游尝试（不是整条请求链路），由 BeginAttempt 登记。
@@ -133,6 +135,7 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	req.CostMultiplier = attempt.CostMultiplier
 	req.UpstreamWebsocket = false
 	req.ThinkingEffort = normalizeThinkingEffort(attempt.ThinkingEffort)
+	req.ClientEffort = ""
 	req.debugCapture = nil
 	req.abort = attempt.Abort
 	req.clientFirstByteTimeUsec.Store(0)
@@ -149,6 +152,19 @@ func (m *activeRequestManager) SetUpstreamProtocol(id int64, upstreamProtocol st
 }
 
 // Retry 标记同一渠道、Key 和 URL 上的内部重试。
+// SetThinkingEffort 记录实际发送的思考等级；client 仅在客户端指定了不同等级时保留。
+func (m *activeRequestManager) SetThinkingEffort(id int64, sent, client string) {
+	sent, client = normalizeThinkingEffort(sent), normalizeThinkingEffort(client)
+	if client == sent {
+		client = ""
+	}
+	m.mu.Lock()
+	if req := m.requests[id]; req != nil {
+		req.ThinkingEffort, req.ClientEffort = sent, client
+	}
+	m.mu.Unlock()
+}
+
 func (m *activeRequestManager) Retry(id int64) {
 	m.mu.Lock()
 	if req := m.requests[id]; req != nil {
@@ -287,6 +303,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			UpstreamWebsocket: req.UpstreamWebsocket,
 			DebugLogAvailable: req.debugCapture != nil,
 			ThinkingEffort:    req.ThinkingEffort,
+			ClientEffort:      req.ClientEffort,
 			UpstreamStatus:    req.UpstreamStatus,
 			Abortable:         req.abort != nil,
 		}

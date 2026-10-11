@@ -83,12 +83,11 @@ func (tr *TestChannelRequest) Validate() error {
 	if tr.Model == "" {
 		return fmt.Errorf("model cannot be empty")
 	}
+	// 是否必填取决于渠道：决策渠道固定发原生 POST /v1/systemone，由处理器加载渠道后校验。
 	tr.ClientProtocol = strings.ToLower(strings.TrimSpace(tr.ClientProtocol))
 	switch tr.ClientProtocol {
-	case "anthropic", "codex", "openai", "gemini", "system_one":
+	case "", "anthropic", "codex", "openai", "gemini":
 		return nil
-	case "":
-		return fmt.Errorf("client_protocol cannot be empty")
 	default:
 		return fmt.Errorf("unsupported client_protocol %q", tr.ClientProtocol)
 	}

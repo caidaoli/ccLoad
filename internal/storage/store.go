@@ -33,6 +33,8 @@ type Store interface {
 	BatchDeleteModels(ctx context.Context, operations []model.BatchModelDeleteOperation) (model.BatchModelDeleteResult, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
+	// GetEnabledSystemOneChannelsByModel 只返回 System One 渠道；聊天路由查询永不包含它们。
+	GetEnabledSystemOneChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
 		ID       int64
 		Priority int

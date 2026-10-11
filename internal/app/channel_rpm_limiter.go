@@ -189,13 +189,6 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		release()
 		return resp, nil
 	}
-	if evidence, _ := req.Context().Value(reasoningResponseLimitKey{}).(*reasoningResponseEvidence); evidence != nil {
-		var capture *reasoningResponseEvidence
-		if resp.Header.Get("Content-Encoding") == "" {
-			capture = evidence
-		}
-		resp.Body = &reasoningResponseReader{body: resp.Body, remaining: reasoningResponseMaxBytes, evidence: capture}
-	}
 	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	return resp, nil
 }

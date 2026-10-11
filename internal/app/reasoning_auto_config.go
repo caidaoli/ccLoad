@@ -84,35 +84,12 @@ func (s *Server) validateReasoningAutoChannel(ctx context.Context, cfg model.Rea
 	if !channel.Enabled {
 		return fmt.Errorf("decision channel must be enabled")
 	}
-	if channel.UsesCursorOAuth() {
-		return fmt.Errorf("cursor Agent bridge does not support pure reasoning decisions")
+	// Ordinary chat channels are too slow to decide before every business request.
+	if !channel.IsSystemOne() {
+		return fmt.Errorf("decision channel must be a System One channel")
 	}
 	if !channel.SupportsModel(cfg.DecisionModel) {
 		return fmt.Errorf("decision model %q is not enabled on the channel", cfg.DecisionModel)
-	}
-	urls := channel.URLs.Clone()
-	if err := urls.Normalize(); err != nil {
-		return fmt.Errorf("decision channel URLs: %w", err)
-	}
-	var declared string
-	for _, endpoint := range urls {
-		if len(endpoint.Protocols) != 1 {
-			return fmt.Errorf("decision channel must declare one explicit protocol on every URL")
-		}
-		value := endpoint.Protocols[0]
-		if value != "system_one" && !protocol.IsValid(protocol.Protocol(value)) {
-			return fmt.Errorf("unsupported decision protocol %q", value)
-		}
-		if declared != "" && declared != value {
-			return fmt.Errorf("decision channel must declare the same protocol on every URL")
-		}
-		declared = value
-	}
-	if channel.UsesOAuth() {
-		if channel.IsSystemOne() || strings.TrimSpace(channel.OAuthCredential) == "" {
-			return fmt.Errorf("decision channel has no usable credential")
-		}
-		return nil
 	}
 	keys, err := s.store.GetAPIKeys(ctx, channel.ID)
 	if err != nil {
@@ -123,7 +100,7 @@ func (s *Server) validateReasoningAutoChannel(ctx context.Context, cfg model.Rea
 		return fmt.Errorf("decision model has no usable row")
 	}
 	for _, key := range keys {
-		if !key.Disabled && strings.TrimSpace(key.APIKey) != "" && s.keyModelScopeAllowsRow(channel, key, selected, []protocol.Protocol{protocol.Protocol(declared)}) {
+		if !key.Disabled && strings.TrimSpace(key.APIKey) != "" && s.keyModelScopeAllowsRow(channel, key, selected, []protocol.Protocol{protocol.SystemOne}) {
 			return nil
 		}
 	}

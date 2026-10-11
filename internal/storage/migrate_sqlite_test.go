@@ -2565,17 +2565,17 @@ func verifyReasoningDecisionMigrationAndRoundTrip(t *testing.T, db *sql.DB, stor
 	if err != nil || len(logs) != 1 || logs[0].ReasoningDecision != nil {
 		t.Fatalf("legacy log after migration: %+v, error = %v", logs, err)
 	}
-	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", DecisionID: "roundtrip", CostUnknown: true}
-	decision := &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "jev-latest", LogSource: model.LogSourceDecision,
-		StatusCode: 200, Message: "decision", AuthTokenID: 100, ReasoningDecision: metadata, InputTokens: 25, Cost: 0.5}
+	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", ClientEffort: "xhigh", CostUnknown: true}
+	decision := &model.LogEntry{Time: model.JSONTime{Time: now}, Model: "jev-latest", ClientProtocol: "system_one",
+		StatusCode: 200, Message: "decision", ReasoningDecision: metadata, InputTokens: 25, Cost: 0.5}
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{decision}); err != nil {
 		t.Fatal(err)
 	}
-	logs, err = store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceDecision})
+	logs, err = store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{ClientProtocol: "system_one"})
 	if err != nil || len(logs) != 1 {
 		t.Fatalf("decision logs: %+v, error = %v", logs, err)
 	}
-	if got := logs[0]; got.AuthTokenID != 0 || got.ReasoningDecision == nil || *got.ReasoningDecision != *metadata || got.InputTokens != 25 || got.Cost != 0.5 {
+	if got := logs[0]; got.ReasoningDecision == nil || *got.ReasoningDecision != *metadata || got.InputTokens != 25 || got.Cost != 0.5 {
 		t.Fatalf("decision metadata = %+v", got)
 	}
 }

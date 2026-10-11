@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,8 @@ func NewModelsFetcher(upstreamProtocol string, client *http.Client) ModelsFetche
 		return &GeminiModelsFetcher{client: client}
 	case ProtocolCodex:
 		return &CodexModelsFetcher{client: client}
+	case ProtocolSystemOne:
+		return &SystemOneModelsFetcher{client: client}
 	default:
 		return &AnthropicModelsFetcher{client: client}
 	}
@@ -242,6 +245,53 @@ type CodexModelsFetcher struct {
 func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	openAIFetcher := &OpenAIModelsFetcher{client: f.client}
 	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
+}
+
+// SystemOneModelsFetcher 实现 TypeSafe System One 决策渠道的模型列表获取。
+type SystemOneModelsFetcher struct {
+	client *http.Client
+}
+
+type systemOneModelsResponse struct {
+	Models []struct {
+		Name string `json:"name"`
+	} `json:"models"`
+}
+
+// FetchModels 从 System One API 获取可用模型（别名）列表。
+func (f *SystemOneModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
+	// System One Models API: https://docs.typesafe.ai/models
+	// 与决策调用一致：基础 URL 已以 /v1 结尾时只追加 /models。
+	endpoint := strings.TrimRight(strings.TrimSuffix(baseURL, "#"), "/")
+	if strings.HasSuffix(endpoint, "/v1") {
+		endpoint += "/models"
+	} else {
+		endpoint += "/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	body, err := doHTTPRequest(f.client, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var result systemOneModelsResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	models := make([]string, 0, len(result.Models))
+	for _, m := range result.Models {
+		if m.Name != "" {
+			models = append(models, m.Name)
+		}
+	}
+	return models, nil
 }
 
 // ============================================================

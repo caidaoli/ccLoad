@@ -129,10 +129,16 @@ func clampOpenAIStyleEffort(effort, baseModel string) string {
 		return ""
 	}
 	info := modelregistry.LookupModelInfo(baseModel, "openai")
-	if info == nil || info.Thinking == nil || len(info.Thinking.Levels) == 0 {
+	if info == nil || info.Thinking == nil {
 		return effort
 	}
-	if thinking.HasLevel(info.Thinking.Levels, effort) {
+	return clampEffortToLevels(effort, info.Thinking.Levels)
+}
+
+// clampEffortToLevels picks the nearest supported level, preferring the lower
+// one on a tie; unknown inputs and empty level lists pass through.
+func clampEffortToLevels(effort string, levels []string) string {
+	if len(levels) == 0 || thinking.HasLevel(levels, effort) {
 		return effort
 	}
 	pos := indexOfOpenAIStyleLevel(effort)
@@ -140,7 +146,7 @@ func clampOpenAIStyleEffort(effort, baseModel string) string {
 		return effort
 	}
 	bestIdx, bestDist := -1, len(openAIStyleLevelOrder)+1
-	for _, supported := range info.Thinking.Levels {
+	for _, supported := range levels {
 		idx := indexOfOpenAIStyleLevel(supported)
 		if idx < 0 {
 			continue

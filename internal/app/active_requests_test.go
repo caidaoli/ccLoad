@@ -186,3 +186,22 @@ func TestActiveRequestManager_AbortMisses(t *testing.T) {
 		t.Fatal("Abort must miss after the request is removed")
 	}
 }
+
+func TestActiveRequestManager_SetThinkingEffort(t *testing.T) {
+	m := newActiveRequestManager()
+	id := beginTestActiveRequest(m, time.UnixMilli(100), "m", "1.1.1.1", true)
+
+	m.SetThinkingEffort(id, "low", "xhigh")
+	if got := m.List()[0]; got.ThinkingEffort != "low" || got.ClientEffort != "xhigh" {
+		t.Fatalf("changed effort=%q client=%q, want low/xhigh", got.ThinkingEffort, got.ClientEffort)
+	}
+	m.SetThinkingEffort(id, "high", "high")
+	if got := m.List()[0]; got.ThinkingEffort != "high" || got.ClientEffort != "" {
+		t.Fatalf("unchanged effort=%q client=%q, want high with no client level", got.ThinkingEffort, got.ClientEffort)
+	}
+	m.SetThinkingEffort(id, "low", "xhigh")
+	m.BeginAttempt(id, activeRequestAttempt{StartTime: time.UnixMilli(200), Model: "m", ThinkingEffort: "xhigh"})
+	if got := m.List()[0]; got.ThinkingEffort != "xhigh" || got.ClientEffort != "" {
+		t.Fatalf("retry effort=%q client=%q, want the new attempt's client level only", got.ThinkingEffort, got.ClientEffort)
+	}
+}

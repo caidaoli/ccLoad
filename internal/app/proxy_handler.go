@@ -319,6 +319,12 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 	if clientProtocol == "" {
 		return nil, errUnknownClientProtocol
 	}
+	if clientProtocol == util.ProtocolSystemOne {
+		if requestMethod != http.MethodPost {
+			return nil, errUnknownClientProtocol
+		}
+		return s.selectSystemOneCandidates(ctx, originalModel)
+	}
 	if requestFamily == protocol.RequestFamilyAlphaSearch {
 		return s.selectAlphaSearchCandidates(ctx, originalModel)
 	}
@@ -718,6 +724,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		},
 		OnDebugCapture: func(dc *debugCapture) {
 			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
+		},
+		OnThinkingEffort: func(sent, client string) {
+			s.activeRequests.SetThinkingEffort(reqCtx.activeReqID, sent, client)
 		},
 	}
 	defer func() {

@@ -233,6 +233,7 @@ type ForwardObserver struct {
 	OnFirstByteRead     func(time.Duration) // 客户端首字节耗时回调（可选）
 	OnUpstreamWebsocket func(bool)          // 实际上游传输变化回调（可选）
 	OnDebugCapture      func(*debugCapture)
+	OnThinkingEffort    func(sent, client string) // 动态思考确定实际发送等级（可选）
 }
 
 // proxyRequestContext 代理请求上下文（封装请求信息，遵循DIP原则）
@@ -345,6 +346,10 @@ type proxyResult struct {
 // - Gemini: 路径包含 :streamGenerateContent
 // - Claude/OpenAI: 请求体中 stream=true
 func isStreamingRequest(path string, body []byte) bool {
+	// System One 只有 JSON 响应。
+	if protocol.DetectRequestFamily(path) == protocol.RequestFamilySystemOne {
+		return false
+	}
 	// Gemini流式请求特征：路径包含 :streamGenerateContent
 	if strings.Contains(path, ":streamGenerateContent") {
 		return true
@@ -508,6 +513,8 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol stri
 	case util.ProtocolGemini:
 		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
+	case util.ProtocolSystemOne:
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	case util.ProtocolAnthropic:
 		req.Header.Set("x-api-key", apiKey)
 		if anthropicAPIKeyAuthorizationAllowed(req.URL) {
@@ -1040,7 +1047,7 @@ func extractThinkingEffortFromPayload(payload map[string]any) string {
 		return ""
 	}
 
-	for _, key := range []string{"response", "message", "provider_request"} {
+	for _, key := range []string{"response", "message", "provider_request", "request"} {
 		if nested, ok := payload[key].(map[string]any); ok {
 			if effort := extractThinkingEffortFromPayload(nested); effort != "" {
 				return effort

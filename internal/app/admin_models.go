@@ -53,6 +53,7 @@ type FetchModelsRequest struct {
 	PerKey                 bool              `json:"per_key,omitempty"`
 	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
 	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
+	AuthType               string            `json:"auth_type,omitempty"` // 空值按 api_key；system_one 固定走决策模型接口
 }
 
 // FetchModelsResponse 获取模型列表响应
@@ -156,7 +157,16 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	req.Protocol = strings.TrimSpace(req.Protocol)
+	authType := model.NormalizeAuthType(req.AuthType)
+	if !model.UsesAPIKeyCredentials(authType) {
+		RespondErrorMsg(c, http.StatusBadRequest, "auth_type 无效")
+		return
+	}
+	var err error
+	if req.Protocol, err = modelDiscoveryProtocol(authType, req.Protocol); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	var perKeyAPIKeys []*model.APIKey
 	if req.PerKey {
 		perKeyAPIKeys = make([]*model.APIKey, 0, len(req.APIKeys))
@@ -173,8 +183,7 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	var err error
-	req.URLs, err = validateChannelURLConfigs(req.URLs, model.AuthTypeAPIKey)
+	req.URLs, err = validateChannelURLConfigs(req.URLs, authType)
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "urls无效: "+err.Error())
 		return
@@ -428,7 +437,7 @@ func (s *Server) applyFetchedModels(
 		}
 		expected := cfg.Clone()
 		var keys []*model.APIKey
-		if cfg.GetAuthType() == model.AuthTypeAPIKey &&
+		if !cfg.UsesOAuth() &&
 			(mode == "replace" || normalization.lowercaseModels || normalization.stripModelSourcePrefix) {
 			keys, err = s.store.GetAPIKeys(ctx, item.ChannelID)
 			if err != nil {
@@ -852,8 +861,9 @@ func (s *Server) fetchModelsForChannel(
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
-	if cfg.IsSystemOne() {
-		return nil, fmt.Errorf("system one does not provide model discovery; configure models manually")
+	overrideProtocol, err := modelDiscoveryProtocol(cfg.GetAuthType(), overrideProtocol)
+	if err != nil {
+		return nil, err
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
@@ -904,6 +914,19 @@ func (s *Server) fetchModelsForChannel(
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys, client)
+}
+
+// modelDiscoveryProtocol 决定模型发现的上游协议：决策渠道固定走 System One，
+// 其余渠道只接受聊天协议覆盖。
+func modelDiscoveryProtocol(authType, override string) (string, error) {
+	if model.NormalizeAuthType(authType) == model.AuthTypeSystemOne {
+		return util.ProtocolSystemOne, nil
+	}
+	override = strings.ToLower(strings.TrimSpace(override))
+	if override != "" && !protocol.IsValid(protocol.Protocol(override)) {
+		return "", fmt.Errorf("不支持的上游协议: %s", override)
+	}
+	return override, nil
 }
 
 // OAuth 模型目录由系统生成，不能把上游或静态表的偶然顺序当成展示顺序。
@@ -1389,9 +1412,6 @@ func (s *Server) fetchModelsWithURLFallback(
 	apiKeys []string,
 	client *http.Client,
 ) (*FetchModelsResponse, error) {
-	if configuredURLs.IsSystemOne() {
-		return nil, fmt.Errorf("system one does not provide model discovery; configure models manually")
-	}
 	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
 	}
@@ -1400,7 +1420,7 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, fmt.Errorf("API Key为空")
 	}
 	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
-	if overrideProtocol != "" && !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+	if overrideProtocol != "" && overrideProtocol != util.ProtocolSystemOne && !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
 		return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
 	}
 
@@ -1676,7 +1696,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 // determineSource 判断模型列表来源（辅助函数）
 func determineSource(upstreamProtocol string) string {
 	switch util.NormalizeProtocol(upstreamProtocol) {
-	case util.ProtocolOpenAI, util.ProtocolGemini, util.ProtocolAnthropic, util.ProtocolCodex:
+	case util.ProtocolOpenAI, util.ProtocolGemini, util.ProtocolAnthropic, util.ProtocolCodex, util.ProtocolSystemOne:
 		return "api" // 从API获取
 	default:
 		return "predefined" // 预定义列表

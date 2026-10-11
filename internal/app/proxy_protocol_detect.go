@@ -68,6 +68,8 @@ func detectClientProtocolFromPath(path string) protocol.Protocol {
 		return protocol.OpenAI
 	case protocol.RequestFamilyGenerateContent:
 		return protocol.Gemini
+	case protocol.RequestFamilySystemOne:
+		return protocol.SystemOne
 	default:
 		return ""
 	}
@@ -127,8 +129,9 @@ var (
 //     （Claude Code 截图最常见的位置）；
 //   - OpenAI：messages[].content[] 的 type，content 可以是字符串、对象或数组；
 //   - Codex：input[].content[] 的 type，input 本身也可能是纯字符串；
-//   - Gemini：contents[].parts[] 存在 inlineData/inline_data/fileData/file_data，
-//     图片/文档/音视频共用 part 形状，只能按字段存在性判定。
+//   - Gemini：contents[].parts[] 或其 functionResponse.parts[] 存在
+//     inlineData/inline_data/fileData/file_data，图片/文档/音视频共用 part 形状，
+//     只能按字段存在性判定。
 func requestHasNonTextContent(clientProtocol protocol.Protocol, body []byte) bool {
 	for _, marker := range multimodalMarkerWords {
 		if bytes.Contains(body, marker) {
@@ -189,15 +192,29 @@ func hasNonTextType(body []byte, path string, tags map[string]bool) bool {
 // hasGeminiNonTextPart 逐 part 检查四个字段名。Gemini 的 part 没有 type tag，
 // 只能按字段存在性判定；对 `#` 聚合路径做 Exists() 会因 gjson 把空命中返回成
 // `[]`/`[[]]`（JSON 数组）而恒真，所以必须落到单个 part 对象上逐个查。
+// functionResponse.parts 承载工具返回的截图/文件（形状同顶层 part），与 Anthropic
+// tool_result 嵌套 content 对应，同样计入。
 func hasGeminiNonTextPart(body []byte) bool {
 	return forEachJSONValue(gjson.GetBytes(body, "contents.#.parts"), 0, func(part gjson.Result) bool {
-		for _, key := range geminiNonTextKeys {
-			if part.Get(key).Exists() {
+		if geminiMediaPart(part) {
+			return true
+		}
+		for _, path := range []string{"functionResponse.parts", "function_response.parts"} {
+			if forEachJSONValue(part.Get(path), 0, geminiMediaPart) {
 				return true
 			}
 		}
 		return false
 	})
+}
+
+func geminiMediaPart(part gjson.Result) bool {
+	for _, key := range geminiNonTextKeys {
+		if part.Get(key).Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeOpenAIChatCompletionsBody(body []byte) bool {

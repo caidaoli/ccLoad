@@ -2007,7 +2007,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 	// 更新成本缓存（用于每日成本限额功能）
 	// 语义：缓存累加倍率后成本（effective），与 daily_cost_limit 直接比较
-	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && (entry.LogSource == model.LogSourceProxy || entry.LogSource == model.LogSourceDecision) {
+	if s.costCache != nil && entry.ChannelID > 0 && entry.Cost > 0 && entry.LogSource == model.LogSourceProxy {
 		multiplier := entry.CostMultiplier
 		if multiplier < 0 {
 			multiplier = 1
@@ -2022,8 +2022,7 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 }
 
 func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
-	if s == nil || s.urlSelector == nil || entry == nil ||
-		(entry.LogSource == model.LogSourceCountTokens || entry.LogSource == model.LogSourceDecision) {
+	if s == nil || s.urlSelector == nil || entry == nil || entry.LogSource == model.LogSourceCountTokens {
 		return
 	}
 	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)

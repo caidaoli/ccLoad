@@ -309,7 +309,7 @@ func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, incl
 		totalSuccess += stat.SuccessRequests
 		totalError += stat.ErrorRequests
 
-		if protocol.IsValid(protocol.Protocol(stat.ClientProtocol)) {
+		if p := protocol.Protocol(stat.ClientProtocol); protocol.IsValid(p) || p == protocol.SystemOne {
 			byClientProtocol[stat.ClientProtocol] = stat
 		}
 	}

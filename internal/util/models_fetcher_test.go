@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -163,6 +164,25 @@ func TestOpenAIModelsFetcher(t *testing.T) {
 	for _, model := range models {
 		if !expectedModels[model] {
 			t.Errorf("意外的模型: %s", model)
+		}
+	}
+}
+
+func TestSystemOneModelsFetcher(t *testing.T) {
+	for _, tc := range []struct{ baseURL, wantPath string }{
+		{"https://api.typesafe.test", "/v1/models"},
+		{"https://api.typesafe.test/v1/", "/v1/models"},
+		{"https://api.typesafe.test/proxy/v1", "/proxy/v1/models"},
+	} {
+		fetcher := NewModelsFetcher(ProtocolSystemOne, newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != tc.wantPath || r.Header.Get("Authorization") != "Bearer ts-key" {
+				t.Fatalf("request = %s auth=%q, want %s", r.URL.Path, r.Header.Get("Authorization"), tc.wantPath)
+			}
+			return newJSONResponse(http.StatusOK, `{"models":[{"name":"jev-latest","description":"stable","release_date":"2026-01-01"},{"name":""},{"name":"jev-preview"}]}`), nil
+		}))
+		models, err := fetcher.FetchModels(context.Background(), tc.baseURL, "ts-key")
+		if err != nil || !reflect.DeepEqual(models, []string{"jev-latest", "jev-preview"}) {
+			t.Fatalf("FetchModels(%s) = (%v, %v)", tc.baseURL, models, err)
 		}
 	}
 }

@@ -889,7 +889,7 @@ func setupProxyTestEnvWithSettings(
 		}
 
 		urls := channelURLsForTest(upURL)
-		if transformMode == model.ProtocolTransformModeLocal {
+		if transformMode == model.ProtocolTransformModeLocal && ch.authType != model.AuthTypeSystemOne {
 			for urlIndex := range urls {
 				urls[urlIndex].Protocols = []string{upstreamProtocol}
 			}
@@ -17042,5 +17042,61 @@ func TestTokenRPMHTTPUpstreamRetriesAndFailureCountOnce(t *testing.T) {
 				t.Fatalf("rejected client request reached upstream: %d", hits.Load())
 			}
 		})
+	}
+}
+
+// /v1/systemone 只透传到 System One 渠道；聊天入口也永不选中 System One 渠道。
+func TestProxySystemOneEndpointRoutesOnlySystemOneChannels(t *testing.T) {
+	t.Parallel()
+	var systemOneCalls, chatCalls atomic.Int32
+	systemOne := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		systemOneCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "Bearer sk-one" || r.Header.Get("X-Api-Key") != "" {
+			t.Errorf("System One wire: path=%s authorization=%q x-api-key=%q", r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"))
+		}
+		if gjson.GetBytes(body, "model").String() != "jev-1" || gjson.GetBytes(body, "state").String() != "task data" ||
+			gjson.GetBytes(body, "questions.effort.type").String() != "choice" {
+			t.Errorf("System One body was not passed through: %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"jev-1.13.0","answers":{"effort":{"type":"choice","choice":"high"}},"usage":{"input_tokens":12,"output_tokens":6}}`)
+	}))
+	t.Cleanup(systemOne.Close)
+	chat := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatCalls.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)
+	}))
+	t.Cleanup(chat.Close)
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "decision", authType: model.AuthTypeSystemOne, apiKey: "sk-one",
+			modelEntries: []model.ModelEntry{{Model: "jev-latest", RedirectModel: "jev-1"}}},
+		{name: "chat", upstreamProtocol: "openai", models: "jev-latest,gpt-chat", apiKey: "sk-chat", priority: 100},
+	}, map[int]string{0: systemOne.URL, 1: chat.URL})
+
+	decision := map[string]any{"model": "jev-latest", "state": "task data", "stream": true,
+		"questions": map[string]any{"effort": map[string]any{"type": "choice", "criteria": map[string]string{"low": "easy", "high": "hard"}}}}
+	w := doProxyRequest(t, env.engine, "/v1/systemone", decision, nil)
+	if w.Code != http.StatusOK || gjson.Get(w.Body.String(), "answers.effort.choice").String() != "high" {
+		t.Fatalf("System One status=%d body=%s", w.Code, w.Body.String())
+	}
+	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool { return entry.ClientProtocol == util.ProtocolSystemOne })
+	if entry.UpstreamProtocol != util.ProtocolSystemOne || entry.IsStreaming || entry.InputTokens != 12 || entry.OutputTokens != 6 ||
+		entry.ActualModel != "jev-1" || entry.ResponseModel != "jev-1.13.0" {
+		t.Fatalf("System One log = %+v", entry)
+	}
+
+	// 只有聊天渠道支持的模型不会被转换后发给聊天渠道。
+	if w = doProxyRequest(t, env.engine, "/v1/systemone", map[string]any{"model": "gpt-chat", "state": "x"}, nil); w.Code == http.StatusOK {
+		t.Fatalf("chat-only model served by /v1/systemone: %s", w.Body.String())
+	}
+	if w = doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "jev-latest",
+		"messages": []any{map[string]string{"role": "user", "content": "hi"}}}, nil); w.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if systemOneCalls.Load() != 1 || chatCalls.Load() != 1 {
+		t.Fatalf("upstream calls: system_one=%d chat=%d", systemOneCalls.Load(), chatCalls.Load())
 	}
 }

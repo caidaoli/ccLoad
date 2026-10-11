@@ -31,8 +31,8 @@ func (s *SQLStore) FetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 			c.priority,
 			c.auth_type,
 			COALESCE(c.cost_multiplier, 1),
-			MIN(CASE WHEN c.auth_type = 'api_key' AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END),
-			MAX(CASE WHEN c.auth_type = 'api_key' AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END)
+			MIN(CASE WHEN c.auth_type IN ('api_key', 'system_one') AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END),
+			MAX(CASE WHEN c.auth_type IN ('api_key', 'system_one') AND k.disabled = 0 THEN COALESCE(k.cost_multiplier, 1) END)
 		FROM channels c
 		LEFT JOIN api_keys k ON k.channel_id = c.id
 		GROUP BY c.id
@@ -57,7 +57,7 @@ func (s *SQLStore) FetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		}
 		multiplierMin := normalizeCostMultiplier(channelMultiplier)
 		multiplierMax := multiplierMin
-		if authType == model.AuthTypeAPIKey && keyMin.Valid && keyMax.Valid {
+		if model.UsesAPIKeyCredentials(authType) && keyMin.Valid && keyMax.Valid {
 			multiplierMin = normalizeCostMultiplier(keyMin.Float64)
 			multiplierMax = normalizeCostMultiplier(keyMax.Float64)
 		}

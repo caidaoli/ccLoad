@@ -28,6 +28,8 @@ import (
 type reasoningAutoJudgeRequest struct {
 	Conversation   string `json:"conversation"`
 	PreviousEffort string `json:"previous_effort"`
+	// Levels are the criteria keys in request order.
+	Levels []string `json:"-"`
 }
 
 type reasoningAutoJudgeFixture struct {
@@ -46,11 +48,16 @@ func newReasoningAutoJudge(t testing.TB, efforts ...string) *reasoningAutoJudgeF
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		// "effort:confidence" adds the model's confidence score to the answer.
+		choice, confidence, scored := strings.Cut(efforts[index], ":")
+		answer := map[string]any{"type": "choice", "choice": choice}
+		if scored {
+			answer["confidence"] = json.RawMessage(confidence)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"model": "judge", "answers": map[string]any{
-				"effort": map[string]any{"type": "choice", "choice": efforts[index]},
-			}, "usage": map[string]any{"input_tokens": 1000, "output_tokens": 100},
+			"model": "judge", "answers": map[string]any{"effort": answer},
+			"usage": map[string]any{"input_tokens": 1000, "output_tokens": 100},
 		})
 	}
 	judge.server = newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,8 +67,13 @@ func newReasoningAutoJudge(t testing.TB, efforts ...string) *reasoningAutoJudgeF
 			return
 		}
 		var body struct {
-			Model string `json:"model"`
-			State string `json:"state"`
+			Model     string `json:"model"`
+			State     string `json:"state"`
+			Questions struct {
+				Effort struct {
+					Criteria json.RawMessage `json:"criteria"`
+				} `json:"effort"`
+			} `json:"questions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode decision request: %v", err)
@@ -77,6 +89,10 @@ func newReasoningAutoJudge(t testing.TB, efforts ...string) *reasoningAutoJudgeF
 		if body.Model != "judge" || !utf8.ValidString(request.Conversation) {
 			t.Errorf("invalid decision state: model=%q, valid UTF-8=%v", body.Model, utf8.ValidString(request.Conversation))
 		}
+		gjson.ParseBytes(body.Questions.Effort.Criteria).ForEach(func(level, _ gjson.Result) bool {
+			request.Levels = append(request.Levels, level.String())
+			return true
+		})
 		judge.mu.Lock()
 		index := len(judge.requests)
 		judge.requests = append(judge.requests, request)
@@ -120,6 +136,11 @@ func newReasoningAutoBusiness(t testing.TB) *reasoningAutoBusinessFixture {
 			_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", encoded)
 			return
 		}
+		if r.URL.Path == "/v1/messages" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"msg-auto","type":"message","role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"business answer"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`)
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("unexpected business path=%q", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -156,7 +177,7 @@ func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testCha
 		t.Fatal("business channel and URL counts differ")
 	}
 	allChannels := append([]testChannel{{
-		name: "reasoning-judge", upstreamProtocol: "system_one", models: "judge", apiKey: "sk-judge",
+		name: "reasoning-judge", authType: model.AuthTypeSystemOne, models: "judge", apiKey: "sk-judge",
 	}}, channels...)
 	upstreamURLs := map[int]string{0: judgeURL}
 	for i, url := range urls {
@@ -164,7 +185,7 @@ func setupReasoningAutoTestEnv(t testing.TB, judgeURL string, channels []testCha
 	}
 	policy, err := json.Marshal(model.ReasoningAutoConfig{
 		Enabled: true, DecisionChannelID: 1, DecisionModel: "judge",
-		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna"}, TimeoutMS: 2000,
+		BusinessModels: []string{"gpt-5.6-sol", "gpt-5.6-luna", "kimi-k3", "grok-4.7"}, TimeoutMS: 2000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,9 +226,10 @@ func assertReasoningAutoEfforts(t testing.TB, requests [][]byte, want ...string)
 	t.Helper()
 	got := make([]string, len(requests))
 	for i, request := range requests {
-		got[i] = gjson.GetBytes(request, "reasoning_effort").String()
-		if got[i] == "" {
-			got[i] = gjson.GetBytes(request, "reasoning.effort").String()
+		for _, path := range []string{"reasoning_effort", "reasoning.effort", "output_config.effort"} {
+			if got[i] == "" {
+				got[i] = gjson.GetBytes(request, path).String()
+			}
 		}
 	}
 	if !slices.Equal(got, want) {
@@ -241,6 +263,94 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 	}
 	if !strings.Contains(decisions[2].Conversation, "lock-free migration") || !strings.Contains(decisions[2].Conversation, "继续") || !strings.Contains(decisions[3].Conversation, "finish the mechanical work") {
 		t.Fatalf("decision lost the original task or latest instruction: %q", decisions[3].Conversation)
+	}
+}
+
+// The judge chooses among the business model's own catalog levels, listed in
+// ascending order, so a model with max can be sent max. Catalogs ccLoad has no
+// executor for (kimi, xai) still supply levels for generic channels.
+func TestReasoningAutoDecisionOffersCatalogLevels(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		model, choice string
+		levels        []string
+	}{
+		{"gpt-5.6-sol", "max", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"kimi-k3", "max", []string{"low", "high", "max"}},
+		{"grok-4.7", "xhigh", []string{"low", "medium", "high", "xhigh"}},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			judge := newReasoningAutoJudge(t, tc.choice)
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+				name: "business", upstreamProtocol: "openai", models: tc.model,
+			}}, []string{business.server.URL})
+			body := reasoningAutoChatBody("Prove the scheduler never deadlocks under any interleaving.")
+			body["model"] = tc.model
+			reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+			assertReasoningAutoEfforts(t, business.snapshot(), tc.choice)
+			decisions := judge.snapshot()
+			if len(decisions) != 1 || !slices.Equal(decisions[0].Levels, tc.levels) {
+				t.Fatalf("decision levels=%v, want the %s catalog in ascending order", decisions, tc.model)
+			}
+		})
+	}
+}
+
+// The live request list shows the level actually sent, with the client's own
+// level alongside only when the automatic decision changed it.
+func TestReasoningAutoActiveRequestShowsSentEffort(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "xhigh")
+	var envRef atomic.Pointer[proxyTestEnv]
+	var seen []*ActiveRequest
+	business := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		seen = envRef.Load().server.activeRequests.List()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-auto","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)
+	}))
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
+	}}, []string{business.URL})
+	envRef.Store(env)
+	body := reasoningAutoChatBody("Prove the scheduler never deadlocks under any interleaving.")
+	body["reasoning_effort"] = "low"
+	reasoningAutoRequest(t, env, "/v1/chat/completions", body, nil)
+	if len(seen) != 1 || seen[0].ThinkingEffort != "xhigh" || seen[0].ClientEffort != "low" {
+		t.Fatalf("active requests=%+v, want sent xhigh with client low", seen)
+	}
+}
+
+// An unsure answer is recorded but decides nothing: the client's own level or
+// the session's established level stands, and the next turn asks again.
+func TestReasoningAutoLowConfidenceKeepsLevel(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "medium:0.1", "high:0.9", "low:0.2", "low:0.8")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "business", upstreamProtocol: "openai", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	headers := map[string]string{"Session-Id": "low-confidence"}
+	messages := []any{map[string]any{"role": "user", "content": "Explain this error."}}
+	reasoningAutoRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-5.6-sol", "messages": messages, "reasoning_effort": "xhigh"}, headers)
+	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
+		return entry.ClientProtocol != util.ProtocolSystemOne && entry.ReasoningDecision != nil && entry.ReasoningDecision.Reason == "low_confidence"
+	})
+	if decision := entry.ReasoningDecision; decision.Status != "fallback" || decision.SuggestedEffort != "medium" ||
+		decision.Confidence == nil || *decision.Confidence != 0.1 || decision.AppliedEffort != "" {
+		t.Fatalf("low confidence decision=%+v", decision)
+	}
+	for _, next := range []string{"Redesign the storage engine for concurrent writers.", "继续"} {
+		messages = append(messages, map[string]any{"role": "user", "content": next})
+		reasoningAutoRequest(t, env, "/v1/chat/completions", map[string]any{"model": "gpt-5.6-sol", "messages": messages}, headers)
+	}
+	// A tool continuation would reuse the level; the unsure turn forces a new decision.
+	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoToolBody("completed"), headers)
+	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "high", "high", "high")
+	decisions := judge.snapshot()
+	if len(decisions) != 4 || decisions[3].PreviousEffort != "high" {
+		t.Fatalf("decisions=%d, last previous effort=%q", len(decisions), decisions[len(decisions)-1].PreviousEffort)
 	}
 }
 
@@ -302,11 +412,11 @@ func TestReasoningAutoNullToolContentKeepsReevaluation(t *testing.T) {
 	}
 }
 
-// Array content is judged by its first text line, like string content: a
+// Tool content is judged by its first text line, array or string: a
 // marker deep in a dump is not a failure, a failing status line is.
 func TestReasoningAutoArrayToolContentUsesFirstLine(t *testing.T) {
 	t.Parallel()
-	judge := newReasoningAutoJudge(t, "low", "high")
+	judge := newReasoningAutoJudge(t, "low", "high", "xhigh")
 	business := newReasoningAutoBusiness(t)
 	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
 		name: "array-tool-content", upstreamProtocol: "openai", models: "gpt-5.6-sol",
@@ -320,7 +430,10 @@ func TestReasoningAutoArrayToolContentUsesFirstLine(t *testing.T) {
 	reasoningAutoRequest(t, env, "/v1/chat/completions", body, headers)
 	tool["content"] = []any{map[string]any{"type": "text", "text": "migration failed: conflicting writes\nstack trace"}}
 	reasoningAutoRequest(t, env, "/v1/chat/completions", body, headers)
-	assertReasoningAutoEfforts(t, business.snapshot(), "low", "low", "high")
+	// Coded compiler diagnostics (rustc error[E0382]:) are a failing status line too.
+	tool["content"] = "error[E0382]: borrow of moved value: `snapshot`\n --> src/raft.rs:12:5"
+	reasoningAutoRequest(t, env, "/v1/chat/completions", body, headers)
+	assertReasoningAutoEfforts(t, business.snapshot(), "low", "low", "high", "xhigh")
 }
 
 func TestReasoningAutoCodexOriginalTaskSkipsInjectedContext(t *testing.T) {
@@ -344,6 +457,316 @@ func TestReasoningAutoCodexOriginalTaskSkipsInjectedContext(t *testing.T) {
 	if len(decisions) != 1 || !strings.HasPrefix(decisions[0].Conversation, "original task: Migrate the billing ledger") {
 		t.Fatalf("truncated decision lost the real original task: %+v", decisions)
 	}
+}
+
+// Codex CLI leads with additional_tools and may end a turn with
+// configuration_update; neither makes the context incomplete or hides user input.
+func TestReasoningAutoCodexMetadataItems(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "low", "xhigh")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-metadata", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	message := func(role, kind, text string) map[string]any {
+		return map[string]any{"type": "message", "role": role, "content": []any{map[string]any{"type": kind, "text": text}}}
+	}
+	input := []any{
+		map[string]any{"type": "additional_tools", "role": "developer", "tools": []any{map[string]any{
+			"type": "custom", "name": "exec", "description": "Run JavaScript code to orchestrate tool calls"}}},
+		message("user", "input_text", "Review the uncommitted changes."),
+		map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "high"}},
+	}
+	headers := map[string]string{"Session-Id": "codex-metadata"}
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+	input = append(input,
+		message("assistant", "output_text", "The changes look fine."),
+		message("user", "input_text", "Now redesign the ledger migration for zero downtime."),
+		map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "high"}},
+	)
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+	assertReasoningAutoEfforts(t, business.snapshot(), "low", "xhigh")
+	decisions := judge.snapshot()
+	if len(decisions) != 2 {
+		t.Fatalf("decision requests=%d, want 2", len(decisions))
+	}
+	if strings.Contains(decisions[0].Conversation, "orchestrate tool calls") || !strings.Contains(decisions[0].Conversation, "Review the uncommitted changes.") {
+		t.Fatalf("decision context mishandled Codex metadata items: %s", decisions[0].Conversation)
+	}
+}
+
+// Codex multi-agent v2 delivers tasks and reports as agent_message items whose
+// payload may be encrypted; they are conversation, not unknown items.
+func TestReasoningAutoCodexAgentMessages(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high", "xhigh")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-agents", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	part := func(kind, value string) map[string]any { return map[string]any{"type": kind, "text": value} }
+	agentMessage := func(author, recipient string, content ...any) map[string]any {
+		return map[string]any{"type": "agent_message", "author": author, "recipient": recipient, "content": content}
+	}
+	input := []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{part("input_text", "Review the uncommitted changes.")}},
+		agentMessage("/root", "/root/storage_review", part("input_text", "Message Type: NEW_TASK\nTask name: /root/storage_review\nSender: /root\nPayload:\n"),
+			map[string]any{"type": "encrypted_content", "encrypted_content": "gAAAAABqy1lo" + strings.Repeat("Ab0-", 120) + "=="}),
+	}
+	headers := map[string]string{"Session-Id": "codex-root", "Thread-Id": "storage-review"}
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+	input = append(input,
+		agentMessage("/root/web_review", "/root/storage_review", part("input_text", "Message Type: FINAL_ANSWER\nTask name: /root/storage_review\nSender: /root/web_review\nPayload:\nNo frontend findings.")),
+		map[string]any{"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": `{"command":"go test ./internal/storage"}`},
+		map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "Exit code: 1\nFAIL hybrid_store_test.go"},
+	)
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+	assertReasoningAutoEfforts(t, business.snapshot(), "high", "xhigh")
+	decisions := judge.snapshot()
+	if len(decisions) != 2 {
+		t.Fatalf("decision requests=%d, want 2 (agent messages must not mark context incomplete)", len(decisions))
+	}
+	first, second := decisions[0].Conversation, decisions[1].Conversation
+	if !strings.Contains(first, "Task name: /root/storage_review") || !strings.Contains(first, "[encrypted]") || strings.Contains(first, "gAAAAA") ||
+		!strings.Contains(second, "No frontend findings.") {
+		t.Fatalf("agent messages mishandled: first=%s\nsecond=%s", first, second)
+	}
+}
+
+// A subagent thread's only user messages are injected context; its task is the
+// parent's NEW_TASK and must survive truncation as the task digest.
+func TestReasoningAutoCodexSubagentTaskSurvivesTruncation(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-subagent", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	text := func(value string) map[string]any { return map[string]any{"type": "input_text", "text": value} }
+	encrypted := map[string]any{"type": "encrypted_content", "encrypted_content": "gAAAAABqy1lo" + strings.Repeat("Ab0-", 120) + "=="}
+	agentMessage := func(author, header string) map[string]any {
+		return map[string]any{"type": "agent_message", "author": author, "recipient": "/root/storage_review",
+			"content": []any{text(header + "Task name: /root/storage_review\nSender: " + author + "\nPayload:\n"), encrypted}}
+	}
+	input := []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{text("# AGENTS.md instructions for /repo\n\nUse gofmt.")}},
+		agentMessage("/root", "Message Type: NEW_TASK\n"),
+		map[string]any{"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": `{"command":"rg -n state"}`},
+		map[string]any{"type": "function_call_output", "call_id": "call_1", "output": strings.Repeat("internal/app/reasoning_state.go: match\n", 1200)},
+		agentMessage("/root/web_review", "Message Type: MESSAGE\n"),
+		agentMessage("/root", "Message Type: MESSAGE\n"),
+	}
+	headers := map[string]string{"Session-Id": "codex-root", "Thread-Id": "storage-review"}
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+	decisions := judge.snapshot()
+	if len(decisions) != 1 {
+		t.Fatalf("decision requests=%d, want 1", len(decisions))
+	}
+	conversation := decisions[0].Conversation
+	head, _, _ := strings.Cut(conversation, "[context truncated")
+	if !strings.Contains(head, "original task: Message Type: NEW_TASK\nTask name: /root/storage_review") ||
+		!strings.Contains(head, "latest user request: Message Type: MESSAGE\nTask name: /root/storage_review\nSender: /root\n") {
+		t.Fatalf("subagent task digest missing: %s", head)
+	}
+}
+
+// Codex prewarms a session with generate:false and no user input. It is not a
+// turn: no decision, the client's level is sent, and session state is untouched.
+func TestReasoningAutoPrewarmLeavesStateUntouched(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "high")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-prewarm", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	headers := map[string]string{"Session-Id": "codex-prewarm"}
+	input := []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "Fix the flaky migration test."}}}}
+	request := func(body map[string]any) {
+		body["model"], body["stream"] = "gpt-5.6-sol", true
+		reasoningAutoRequest(t, env, "/v1/responses", body, headers)
+	}
+	request(map[string]any{"input": input})
+	for i := range 2 {
+		input = append(input,
+			map[string]any{"type": "function_call", "call_id": fmt.Sprintf("call-%d", i), "name": "shell", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": fmt.Sprintf("call-%d", i), "output": "ok"})
+		if i == 1 {
+			request(map[string]any{"generate": false, "reasoning": map[string]any{"effort": "low"}, "input": []any{
+				map[string]any{"type": "message", "role": "developer", "content": []any{map[string]any{"type": "input_text", "text": "You are Codex."}}}}})
+		}
+		request(map[string]any{"input": input})
+	}
+	assertReasoningAutoEfforts(t, business.snapshot(), "high", "high", "low", "high")
+	if got := len(judge.snapshot()); got != 1 {
+		t.Fatalf("decision calls=%d, want 1: prewarm must neither call nor force a re-decision", got)
+	}
+	entry := waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool {
+		return e.ReasoningDecision != nil && e.ReasoningDecision.Reason == "prewarm"
+	})
+	if d := entry.ReasoningDecision; d.Status != "skipped" || d.Trigger != "" || d.ContextIncomplete {
+		t.Fatalf("prewarm log metadata=%+v", d)
+	}
+}
+
+// Codex's guardian reviewer keeps the level Codex chose and never calls the judge.
+func TestReasoningAutoCodexGuardianSkipsDecision(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t)
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-guardian", upstreamProtocol: "codex", models: "gpt-5.6-luna",
+	}}, []string{business.server.URL})
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "stream": true, "reasoning": map[string]any{"effort": "low"},
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text",
+			"text": "Assess the exact planned action below: git fetch upstream"}}}}},
+		map[string]string{"Session-Id": "codex-guardian", "X-OpenAI-Subagent": "guardian"})
+	assertReasoningAutoEfforts(t, business.snapshot(), "low")
+	if got := len(judge.snapshot()); got != 0 {
+		t.Fatalf("decision calls=%d, want 0 for the guardian reviewer", got)
+	}
+	entry := waitForProxyLogMatching(t, env, func(e *model.LogEntry) bool {
+		return e.ReasoningDecision != nil && e.ReasoningDecision.Reason == "guardian"
+	})
+	if d := entry.ReasoningDecision; d.Status != "skipped" || d.Trigger != "" {
+		t.Fatalf("guardian log metadata=%+v", d)
+	}
+}
+
+// Encrypted payloads in tool calls and their outputs are unreadable noise; the
+// judge sees a placeholder while the readable arguments stay.
+func TestReasoningAutoDropsEncryptedPayloads(t *testing.T) {
+	t.Parallel()
+	judge := newReasoningAutoJudge(t, "medium")
+	business := newReasoningAutoBusiness(t)
+	env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+		name: "codex-encrypted", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+	}}, []string{business.server.URL})
+	token := func(seed string) string { return "gAAAAABqy1lo" + strings.Repeat(seed, 120) + "==" }
+	spawn, _ := json.Marshal(map[string]any{"task_name": "storage_review", "fork_turns": "none", "message": token("Ab0-")})
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "Review the storage layer with sub-agents."}}},
+		map[string]any{"type": "function_call", "call_id": "call-1", "name": "spawn_agent", "arguments": string(spawn)},
+		map[string]any{"type": "function_call_output", "call_id": "call-1", "output": "spawned storage_review"},
+		map[string]any{"type": "custom_tool_call", "call_id": "call-2", "name": "exec", "input": `await tools.followup_task({target:"storage_review",message:"` + token("x_9Z") + `"})`},
+		map[string]any{"type": "custom_tool_call_output", "call_id": "call-2", "output": `{"agent_message":"` + token("Qq1_") + `"}`},
+	}}, map[string]string{"Session-Id": "codex-encrypted"})
+	decisions := judge.snapshot()
+	if len(decisions) != 1 {
+		t.Fatalf("decision calls=%d, want 1", len(decisions))
+	}
+	conversation := decisions[0].Conversation
+	if strings.Contains(conversation, "gAAAAA") || strings.Count(conversation, "[encrypted]") != 3 ||
+		!strings.Contains(conversation, "storage_review") || !strings.Contains(conversation, "followup_task") {
+		t.Fatalf("encrypted payloads not replaced or readable arguments lost: %s", conversation)
+	}
+}
+
+// The decision belongs to the business model: Claude Code and Gemini clients are
+// judged from their own wire format, and the level reaches any upstream protocol.
+func TestReasoningAutoAnthropicAndGeminiClients(t *testing.T) {
+	t.Parallel()
+	text := func(value string) map[string]any { return map[string]any{"type": "text", "text": value} }
+	claudeTurn := func(stream bool, blocks ...any) map[string]any {
+		// No thinking field, like Claude Code side requests: the level must still
+		// reach a codex upstream instead of the translator's medium default.
+		return map[string]any{"model": "gpt-5.6-sol", "max_tokens": 1024, "stream": stream,
+			"output_config": map[string]any{"effort": "medium"},
+			"system":        []any{text("You are Claude Code.")},
+			"messages": []any{
+				map[string]any{"role": "user", "content": []any{text("<system-reminder>\nUse gofmt.\n</system-reminder>"), text("Plan a zero-downtime ledger migration.")}},
+				map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "private", "signature": "sig"},
+					map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": map[string]any{"command": "go test ./..."}}}},
+				map[string]any{"role": "user", "content": blocks},
+				map[string]any{"role": "system", "content": "SessionStart hook additional context"},
+			}}
+	}
+	for _, upstream := range []string{"codex", "anthropic"} {
+		t.Run("claude_code_to_"+upstream, func(t *testing.T) {
+			t.Parallel()
+			judge := newReasoningAutoJudge(t, "high", "xhigh", "xhigh")
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+				name: "claude-code", upstreamProtocol: upstream, models: "gpt-5.6-sol",
+			}}, []string{business.server.URL})
+			headers := map[string]string{"X-Claude-Code-Session-Id": "6f1c1a52-7a43-4c39-9a51-0d3c1c1f4e10"}
+			result := func(output string, isError bool) map[string]any {
+				return map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": isError,
+					"content": []any{text(output), map[string]any{"type": "tool_reference", "tool_name": "Bash"}}}
+			}
+			// The codex mock only speaks SSE, so that leg streams like Claude Code does.
+			stream := upstream == "codex"
+			// Local slash commands and their output are neither task nor instructions.
+			reasoningAutoRequest(t, env, "/v1/messages", claudeTurn(stream, text("<local-command-caveat>Caveat: DO NOT respond to these messages.</local-command-caveat>"),
+				text("<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"),
+				text("<local-command-stdout>Set model to sol</local-command-stdout>"), text("Start with the schema.")), headers)
+			// A tool result with appended reminder text is a continuation, not user input.
+			reasoningAutoRequest(t, env, "/v1/messages", claudeTurn(stream, result("ok", false), text("<system-reminder>\ntodo\n</system-reminder>")), headers)
+			reasoningAutoRequest(t, env, "/v1/messages", claudeTurn(stream, result("FAIL ledger_test.go: lost writes", true)), headers)
+			// Input typed during a tool run rides in the tool result message and is reevaluated at once.
+			reasoningAutoRequest(t, env, "/v1/messages", claudeTurn(stream, result("ok", false), text("Also keep the v1 API readable.")), headers)
+			assertReasoningAutoEfforts(t, business.snapshot(), "high", "high", "xhigh", "xhigh")
+			decisions := judge.snapshot()
+			if len(decisions) != 3 {
+				t.Fatalf("decision requests=%d, want 3 (continuation reused, failure and new input reevaluated)", len(decisions))
+			}
+			conversation := decisions[0].Conversation
+			if !strings.Contains(conversation, "Plan a zero-downtime ledger migration.") || !strings.Contains(conversation, "go test ./...") ||
+				strings.Contains(conversation, "private") || strings.Contains(conversation, "local-command") || strings.Contains(conversation, "/model") {
+				t.Fatalf("decision context mishandled Claude Code blocks: %s", conversation)
+			}
+		})
+	}
+	t.Run("claude_code_over_responses", func(t *testing.T) {
+		t.Parallel()
+		judge := newReasoningAutoJudge(t, "medium")
+		business := newReasoningAutoBusiness(t)
+		env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+			name: "responses-client", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+		}}, []string{business.server.URL})
+		part := func(value string) map[string]any { return map[string]any{"type": "input_text", "text": value} }
+		reminder := "<system-reminder>\n" + strings.Repeat("CLAUDE.md rule\n", 2048) + "</system-reminder>"
+		input := []any{
+			map[string]any{"type": "message", "role": "user", "content": []any{part(reminder), part("Draw a pelican riding a bicycle in SVG.")}},
+			map[string]any{"type": "message", "role": "user", "content": []any{part("<system-reminder>\nSessionStart hook\n</system-reminder>")}},
+		}
+		headers := map[string]string{"Session-Id": "claude-code-responses"}
+		reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+		input = append(input,
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "Write", "arguments": `{"file_path":"pelican.html"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "File created"},
+			map[string]any{"type": "message", "role": "user", "content": []any{part("<system-reminder>\ntodo\n</system-reminder>")}},
+			map[string]any{"type": "message", "role": "user", "content": []any{part("<local-command-caveat>Caveat</local-command-caveat>"),
+				part("<local-command-stdout>Context compacted</local-command-stdout>")}})
+		reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "stream": true, "input": input}, headers)
+		assertReasoningAutoEfforts(t, business.snapshot(), "medium", "medium")
+		decisions := judge.snapshot()
+		if len(decisions) != 1 {
+			t.Fatalf("decision requests=%d, want 1 (reminder or local command after tool output is a continuation)", len(decisions))
+		}
+		if !strings.Contains(decisions[0].Conversation, "latest user request: Draw a pelican riding a bicycle in SVG.") {
+			t.Fatalf("truncated context lost the task behind reminders: %.300s", decisions[0].Conversation)
+		}
+		// Injected instructions only get the bounded digest, not the tail as well.
+		if got := strings.Count(decisions[0].Conversation, "CLAUDE.md rule"); got > 4096/len("CLAUDE.md rule\n") {
+			t.Fatalf("instruction text repeated in truncated tail: %d copies", got)
+		}
+	})
+	t.Run("gemini", func(t *testing.T) {
+		t.Parallel()
+		judge := newReasoningAutoJudge(t, "low")
+		business := newReasoningAutoBusiness(t)
+		env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+			name: "gemini-client", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+		}}, []string{business.server.URL})
+		reasoningAutoRequest(t, env, "/v1beta/models/gpt-5.6-sol:streamGenerateContent?alt=sse", map[string]any{
+			"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "Be brief."}}},
+			"contents":          []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "What does HTTP 503 mean?"}}}},
+		}, nil)
+		assertReasoningAutoEfforts(t, business.snapshot(), "low")
+		if decisions := judge.snapshot(); len(decisions) != 1 || !strings.Contains(decisions[0].Conversation, "HTTP 503") {
+			t.Fatalf("gemini decision requests=%+v", decisions)
+		}
+	})
 }
 
 func TestReasoningAutoResponsesSummaryDoesNotSpecifyEffort(t *testing.T) {
@@ -504,10 +927,10 @@ func TestReasoningAutoExplicitSettingsRequireFreshDecision(t *testing.T) {
 
 func TestReasoningAutoFallbackBreaksDowngradeSequence(t *testing.T) {
 	t.Parallel()
-	for _, fallback := range []string{"invalid_answer", "incomplete_history", "incomplete_tool_history", "multimodal", "unknown_content_block", "unknown_input_item"} {
+	for _, fallback := range []string{"invalid_answer", "incomplete_history", "incomplete_tool_history", "multimodal"} {
 		t.Run(fallback, func(t *testing.T) {
 			t.Parallel()
-			responsesContext := fallback == "incomplete_history" || fallback == "incomplete_tool_history" || fallback == "unknown_content_block" || fallback == "unknown_input_item"
+			responsesContext := fallback == "incomplete_history" || fallback == "incomplete_tool_history"
 			efforts := []string{"high", "low", "low", "low", "medium"}
 			if fallback == "invalid_answer" {
 				efforts[2] = "not-an-effort"
@@ -541,12 +964,6 @@ func TestReasoningAutoFallbackBreaksDowngradeSequence(t *testing.T) {
 			case "incomplete_tool_history":
 				body["previous_response_id"] = "unavailable-history"
 				body["input"] = []any{map[string]any{"type": "function_call_output", "call_id": "call-migration", "output": "mechanical step completed"}}
-			case "unknown_content_block":
-				body["input"] = []any{map[string]any{"role": "user", "content": []any{
-					map[string]any{"type": "unrecognized_content", "text": "opaque unresolved constraint"},
-				}}}
-			case "unknown_input_item":
-				body["input"] = append(body["input"].([]any), map[string]any{"type": "future_context", "output": "opaque unresolved constraint"})
 			case "multimodal":
 				body["messages"] = []any{map[string]any{"role": "user", "content": []any{
 					map[string]any{"type": "text", "text": "Finish using the attached diagram."},
@@ -571,7 +988,7 @@ func TestReasoningAutoFallbackBreaksDowngradeSequence(t *testing.T) {
 				}
 				decision := entry.ReasoningDecision
 				switch fallback {
-				case "incomplete_history", "incomplete_tool_history", "multimodal", "unknown_content_block", "unknown_input_item":
+				case "incomplete_history", "incomplete_tool_history", "multimodal":
 					return decision.ContextIncomplete && decision.Status == "fallback" && decision.Reason == "incomplete_context"
 				default:
 					return decision.Status == "fallback" && decision.Reason == "invalid_response"
@@ -580,6 +997,79 @@ func TestReasoningAutoFallbackBreaksDowngradeSequence(t *testing.T) {
 			if entry == nil {
 				t.Fatalf("%s did not persist an explanatory decision log", fallback)
 			}
+		})
+	}
+}
+
+// The full history is replayed every turn: media and unknown types that the
+// model has already answered must not void every later decision.
+func TestReasoningAutoHistoricalMediaAndUnknownTypesStayJudged(t *testing.T) {
+	t.Parallel()
+	const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+	for _, tc := range []struct {
+		name, path string
+		body       map[string]any
+		markers    []string
+	}{
+		{
+			name: "codex", path: "/v1/responses",
+			body: map[string]any{"model": "gpt-5.6-sol", "input": []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "input_text", "text": "Why does this layout overflow?"},
+					map[string]any{"type": "input_image", "image_url": image},
+				}},
+				map[string]any{"type": "function_call", "name": "screenshot", "call_id": "call-1", "arguments": "{}"},
+				map[string]any{"type": "function_call_output", "call_id": "call-1", "output": []any{
+					map[string]any{"type": "input_text", "text": "Captured."},
+					map[string]any{"type": "input_image", "image_url": image},
+				}},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "output_text", "text": "The grid has a fixed width."},
+					map[string]any{"type": "future_annotation"},
+				}},
+				map[string]any{"type": "compaction", "encrypted_content": "opaque"},
+				map[string]any{"role": "user", "content": "Fix the grid and add a regression test."},
+			}},
+			markers: []string{"[input_image]", "[future_annotation]", "[compaction]", "Captured."},
+		},
+		{
+			name: "claude_code", path: "/v1/messages",
+			body: map[string]any{"model": "gpt-5.6-sol", "max_tokens": 1024, "stream": true, "messages": []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "Why does this layout overflow?"},
+					map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": image}},
+				}},
+				map[string]any{"role": "assistant", "content": []any{
+					map[string]any{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"},
+					map[string]any{"type": "text", "text": "The grid has a fixed width."},
+				}},
+				map[string]any{"role": "user", "content": "Fix the grid and add a regression test."},
+			}},
+			markers: []string{"[image]", "[server_tool_use]"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			judge := newReasoningAutoJudge(t, "xhigh")
+			business := newReasoningAutoBusiness(t)
+			env := setupReasoningAutoTestEnv(t, judge.server.URL, []testChannel{{
+				name: "history", upstreamProtocol: "codex", models: "gpt-5.6-sol",
+			}}, []string{business.server.URL})
+			reasoningAutoRequest(t, env, tc.path, tc.body, nil)
+			decisions := judge.snapshot()
+			if len(decisions) != 1 {
+				t.Fatalf("decision requests=%d, want 1", len(decisions))
+			}
+			conversation := decisions[0].Conversation
+			for _, marker := range append(tc.markers, "Fix the grid and add a regression test.") {
+				if !strings.Contains(conversation, marker) {
+					t.Errorf("decision context omitted %q: %s", marker, conversation)
+				}
+			}
+			if strings.Contains(conversation, "iVBORw0KGgo") {
+				t.Fatalf("decision context leaked media payload: %s", conversation)
+			}
+			assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
 		})
 	}
 }
@@ -764,7 +1254,7 @@ func TestReasoningAutoTruncatedContextCountsTowardDowngrade(t *testing.T) {
 	}
 	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
 		decision := entry.ReasoningDecision
-		return decision != nil && decision.ContextTruncated && decision.Status == "decided" && decision.AppliedEffort == "low"
+		return decision != nil && decision.Status == "decided" && decision.AppliedEffort == "low"
 	})
 	if entry == nil {
 		t.Fatal("truncated downgrade did not persist its decision log")
@@ -806,7 +1296,7 @@ func TestReasoningAutoChannelRulesOverrideAppliedEffort(t *testing.T) {
 		t.Fatalf("unapplied suggestion became effective state: decisions=%+v", decisions)
 	}
 	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
-		return entry.ReasoningDecision != nil && entry.ReasoningDecision.SuggestedEffort == "xhigh"
+		return entry.ClientProtocol != util.ProtocolSystemOne && entry.ReasoningDecision != nil && entry.ReasoningDecision.SuggestedEffort == "xhigh"
 	})
 	if entry == nil || entry.ThinkingEffort != "low" || entry.ReasoningDecision.AppliedEffort != "low" || entry.ReasoningDecision.Reason != "channel_rules_override" {
 		t.Fatalf("channel override was not explained in the business log: %+v", entry)
@@ -1272,7 +1762,7 @@ func TestReasoningAutoHTTPAndWebsocketShareState(t *testing.T) {
 		t.Fatalf("HTTP continuation lost locally owned WS history: %q", decisions[2].Conversation)
 	}
 	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
-		return entry.ReasoningDecision != nil && entry.ReasoningDecision.SuggestedEffort == "medium"
+		return entry.ClientProtocol != util.ProtocolSystemOne && entry.ReasoningDecision != nil && entry.ReasoningDecision.SuggestedEffort == "medium"
 	})
 	if entry == nil || entry.ThinkingEffort != "medium" || entry.ReasoningDecision.AppliedEffort != "medium" || entry.ReasoningDecision.ContextIncomplete {
 		t.Fatalf("valid opaque reasoning history incorrectly caused fallback: %+v", entry)
@@ -1342,15 +1832,19 @@ func TestReasoningAutoZedProviderEnvelopeCommitsEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	counts := map[string]int{}
+	counts, businessLogs := map[string]int{}, 0
 	for _, entry := range logs {
+		if entry.ClientProtocol == util.ProtocolSystemOne {
+			continue // 决策调用同属代理流量
+		}
 		if entry.ReasoningDecision == nil || entry.ReasoningDecision.AppliedEffort != entry.ThinkingEffort {
 			t.Fatalf("Zed business log disagrees with actual effort: %+v", entry)
 		}
 		counts[entry.ThinkingEffort]++
+		businessLogs++
 	}
-	if len(logs) != 4 || counts["high"] != 2 || counts["low"] != 2 {
-		t.Fatalf("Zed business log efforts=%v, log count=%d", counts, len(logs))
+	if businessLogs != 4 || counts["high"] != 2 || counts["low"] != 2 {
+		t.Fatalf("Zed business log efforts=%v, log count=%d", counts, businessLogs)
 	}
 }
 
@@ -1387,7 +1881,7 @@ func TestReasoningAutoWebsocketInheritedEffortIsNotClientExplicit(t *testing.T) 
 	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "xhigh", "medium", "high")
 }
 
-func TestReasoningAutoLogsCorrelateAndDecisionDoesNotChargeClient(t *testing.T) {
+func TestReasoningAutoDecisionLogDoesNotChargeClient(t *testing.T) {
 	t.Parallel()
 	judge := newReasoningAutoJudge(t, "xhigh")
 	business := newReasoningAutoBusiness(t)
@@ -1419,12 +1913,14 @@ func TestReasoningAutoLogsCorrelateAndDecisionDoesNotChargeClient(t *testing.T) 
 	if err := env.server.authService.ReloadAuthTokens(); err != nil {
 		t.Fatal(err)
 	}
-	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Complex task with independent decision billing."), map[string]string{"Session-Id": "billing"})
+	body := reasoningAutoChatBody("Complex task with independent decision billing.")
+	body["reasoning_effort"] = "low"
+	reasoningAutoRequest(t, env, "/v1/chat/completions", body, map[string]string{"Session-Id": "billing"})
 	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh")
 	proxyLog := waitForProxyLog(t, env, "gpt-5.6-sol")
 	var decisionLog *model.LogEntry
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		logs, err := env.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceDecision})
+		logs, err := env.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, &model.LogFilter{ClientProtocol: util.ProtocolSystemOne})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1436,11 +1932,9 @@ func TestReasoningAutoLogsCorrelateAndDecisionDoesNotChargeClient(t *testing.T) 
 	if decisionLog == nil || proxyLog.ReasoningDecision == nil || decisionLog.ReasoningDecision == nil {
 		t.Fatalf("missing decision logs/metadata: proxy=%+v decision=%+v", proxyLog, decisionLog)
 	}
-	if proxyLog.ThinkingEffort != "xhigh" || proxyLog.ReasoningDecision.AppliedEffort != "xhigh" || proxyLog.ReasoningDecision.SuggestedEffort != "xhigh" {
+	if proxyLog.ThinkingEffort != "xhigh" || proxyLog.ReasoningDecision.AppliedEffort != "xhigh" || proxyLog.ReasoningDecision.SuggestedEffort != "xhigh" ||
+		proxyLog.ReasoningDecision.ClientEffort != "low" {
 		t.Fatalf("business log did not retain suggested/applied effort: %+v", proxyLog)
-	}
-	if proxyLog.ReasoningDecision.DecisionID == "" || proxyLog.ReasoningDecision.DecisionID != decisionLog.ReasoningDecision.DecisionID {
-		t.Fatalf("decision correlation mismatch: proxy=%+v decision=%+v", proxyLog.ReasoningDecision, decisionLog.ReasoningDecision)
 	}
 	if decisionLog.AuthTokenID != 0 || decisionLog.ChannelID != 1 || decisionLog.InputTokens != 1000 || decisionLog.OutputTokens != 100 || decisionLog.Cost <= 0 || decisionLog.ReasoningDecision.CostUnknown {
 		t.Fatalf("decision call lost independent usage/cost identity: %+v", decisionLog)

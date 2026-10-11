@@ -826,8 +826,8 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 	t.Parallel()
 	server := newInMemoryServer(t)
 	ctx := context.Background()
-	channel, err := server.store.CreateConfig(ctx, &model.Config{Name: "decision", Enabled: true,
-		URLs: model.ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+	channel, err := server.store.CreateConfig(ctx, &model.Config{Name: "decision", Enabled: true, AuthType: model.AuthTypeSystemOne,
+		URLs: model.ChannelURLs{{URL: "https://one.example"}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,23 +873,18 @@ func TestReasoningAutoSettingsValidateChannelAndPersist(t *testing.T) {
 		}
 	}
 	assertNoRestart(t, restarted)
-	cursor, err := server.store.CreateConfig(ctx, &model.Config{Name: "cursor decision", Enabled: true,
-		AuthType: model.AuthTypeCursorOAuth, OAuthCredential: `{"access_token":"cursor-test"}`,
+	// 普通聊天渠道即使声明协议并配置 Key，也不能作为判断渠道。
+	chat, err := server.store.CreateConfig(ctx, &model.Config{Name: "chat decision", Enabled: true,
 		URLs: model.ChannelURLs{{URL: "https://chat.example", Protocols: []string{"openai"}}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorPolicy := strings.Replace(policy, fmt.Sprintf(`"decision_channel_id":%d`, channel.ID), fmt.Sprintf(`"decision_channel_id":%d`, cursor.ID), 1)
-	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, cursorPolicy)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "cursor Agent bridge") {
-		t.Fatalf("Cursor decision status=%d body=%s", w.Code, w.Body.String())
-	}
-	channel.URLs = model.ChannelURLs{{URL: "https://chat.example"}}
-	if _, err := server.store.UpdateConfig(ctx, channel.ID, channel); err != nil {
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: chat.ID, KeyIndex: 0, APIKey: "chat-key"}}); err != nil {
 		t.Fatal(err)
 	}
-	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, policy)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("implicit protocol status=%d body=%s", w.Code, w.Body.String())
+	chatPolicy := strings.Replace(policy, fmt.Sprintf(`"decision_channel_id":%d`, channel.ID), fmt.Sprintf(`"decision_channel_id":%d`, chat.ID), 1)
+	w = batchUpdateSetting(t, server, reasoningAutoSettingKey, chatPolicy)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "System One") {
+		t.Fatalf("chat decision status=%d body=%s", w.Code, w.Body.String())
 	}
 }

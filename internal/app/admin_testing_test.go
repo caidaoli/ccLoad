@@ -7300,14 +7300,14 @@ func TestHandleChannelTestSystemOneNative(t *testing.T) {
 	server := newInMemoryServer(t)
 	ctx := context.Background()
 	channel, err := server.store.CreateConfig(ctx, &model.Config{Name: "system-one-test", Enabled: true,
-		URLs: model.ChannelURLs{{URL: upstream.URL + "/v1", Protocols: []string{"system_one"}}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+		AuthType: model.AuthTypeSystemOne, URLs: model.ChannelURLs{{URL: upstream.URL + "/v1"}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: channel.ID, KeyIndex: 0, APIKey: "decision-key"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "jev-latest", "client_protocol": "system_one", "content": "simple task"}))
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "jev-latest", "content": "simple task", "stream": true}))
 	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
 	server.HandleChannelTest(c)
 	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
@@ -7317,6 +7317,32 @@ func TestHandleChannelTestSystemOneNative(t *testing.T) {
 	logs, err := server.store.ListLogs(ctx, time.Time{}, 10, 0, &model.LogFilter{LogSource: model.LogSourceManualTest})
 	if err != nil || len(logs) != 1 || logs[0].UpstreamProtocol != "system_one" || logs[0].ReasoningDecision == nil || !logs[0].ReasoningDecision.CostUnknown {
 		t.Fatalf("native test log = %+v, error = %v", logs, err)
+	}
+
+	// 决策渠道不模拟客户端协议；普通渠道仍必须声明。
+	chatChannel, err := server.store.CreateConfig(ctx, &model.Config{Name: "chat-test", Enabled: true,
+		URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "chat-model"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		channelID int64
+		body      map[string]any
+		wantError string
+	}{
+		{channel.ID, map[string]any{"model": "jev-latest", "client_protocol": "openai"}, "client_protocol is not supported for System One channels"},
+		{chatChannel.ID, map[string]any{"model": "chat-model"}, "client_protocol cannot be empty"},
+	} {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", tc.body))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(tc.channelID, 10)}}
+		server.HandleChannelTest(c)
+		response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		if w.Code != http.StatusBadRequest || response.Error != tc.wantError {
+			t.Fatalf("channel %d body %v = %d %s", tc.channelID, tc.body, w.Code, w.Body.String())
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("rejected requests reached upstream, calls=%d", calls.Load())
 	}
 }
 
@@ -7329,7 +7355,7 @@ func TestHandleChannelTestSystemOneRecordsUsageAndCost(t *testing.T) {
 	server := newInMemoryServer(t)
 	ctx := context.Background()
 	channel, err := server.store.CreateConfig(ctx, &model.Config{Name: "system-one-priced", Enabled: true,
-		URLs:         model.ChannelURLs{{URL: upstream.URL + "/v1", Protocols: []string{"system_one"}}},
+		AuthType: model.AuthTypeSystemOne, URLs: model.ChannelURLs{{URL: upstream.URL + "/v1"}},
 		ModelEntries: []model.ModelEntry{{Model: "jev-priced", Pricing: channelPrice(1, 2)}}})
 	if err != nil {
 		t.Fatal(err)
@@ -7337,7 +7363,7 @@ func TestHandleChannelTestSystemOneRecordsUsageAndCost(t *testing.T) {
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: channel.ID, KeyIndex: 0, APIKey: "decision-key"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "jev-priced", "client_protocol": "system_one", "content": "simple task"}))
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "jev-priced", "content": "simple task"}))
 	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
 	server.HandleChannelTest(c)
 	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
@@ -7365,14 +7391,14 @@ func TestHandleChannelTestSystemOneChallengeKeepsClassification(t *testing.T) {
 	}))
 	server := newInMemoryServer(t)
 	ctx := context.Background()
-	cfg, err := server.store.CreateConfig(ctx, &model.Config{Name: "judge", Enabled: true, URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"system_one"}}}, ModelEntries: []model.ModelEntry{{Model: "judge"}}})
+	cfg, err := server.store.CreateConfig(ctx, &model.Config{Name: "judge", Enabled: true, AuthType: model.AuthTypeSystemOne, URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "judge"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-one"}, {ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-two"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "judge", "client_protocol": "system_one", "content": "task", "key_index": 0}))
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/test", map[string]any{"model": "judge", "content": "task", "key_index": 0}))
 	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(cfg.ID, 10)}}
 	server.HandleChannelTest(c)
 	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
@@ -7411,7 +7437,7 @@ func TestSystemOneChannelTestLocalLimitsDoNotCooldown(t *testing.T) {
 			}))
 			server := newInMemoryServer(t)
 			ctx := context.Background()
-			cfg := &model.Config{Name: "native-local-limit", Enabled: true, URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"system_one"}}}, ModelEntries: []model.ModelEntry{{Model: "judge"}}}
+			cfg := &model.Config{Name: "native-local-limit", Enabled: true, AuthType: model.AuthTypeSystemOne, URLs: model.ChannelURLs{{URL: upstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "judge"}}}
 			if kind == "rpm" {
 				cfg.RPMLimit = 1
 			} else {
@@ -7431,7 +7457,7 @@ func TestSystemOneChannelTestLocalLimitsDoNotCooldown(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = response.Body.Close() }()
-			result := server.executeChannelTestWithCooldown(ctx, cfg, 0, "test-key", &testutil.TestChannelRequest{Model: "judge", ClientProtocol: "system_one", Content: "task"}, true)
+			result := server.executeChannelTestWithCooldown(ctx, cfg, 0, "test-key", &testutil.TestChannelRequest{Model: "judge", Content: "task"}, true)
 			if result["success"] != false || result[kind+"_limited"] != true || result["cooldown_action"] != kind+"_limited_no_cooldown" {
 				t.Fatalf("native %s limit result = %+v", kind, result)
 			}

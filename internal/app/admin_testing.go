@@ -265,6 +265,21 @@ func newChannelTester(protocolName string) testutil.ChannelTester {
 	}
 }
 
+// validateTestClientProtocol 校验测试请求的客户端协议：决策渠道固定发原生 POST /v1/systemone，
+// 不模拟客户端协议；其余渠道必须声明。
+func validateTestClientProtocol(cfg *model.Config, testReq *testutil.TestChannelRequest) error {
+	if cfg.IsSystemOne() {
+		if testReq.ClientProtocol != "" {
+			return errors.New("client_protocol is not supported for System One channels")
+		}
+		return nil
+	}
+	if testReq.ClientProtocol == "" {
+		return errors.New("client_protocol cannot be empty")
+	}
+	return nil
+}
+
 func resolveClientProtocol(testReq *testutil.TestChannelRequest) string {
 	if protocolName := strings.TrimSpace(testReq.ClientProtocol); protocolName != "" {
 		return strings.ToLower(protocolName)
@@ -669,6 +684,10 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	cfg, err := s.store.GetConfig(c.Request.Context(), id)
 	if err != nil {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+	if err := validateTestClientProtocol(cfg, &testReq); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if forcedBaseURL != "" {
@@ -1359,10 +1378,8 @@ func (s *Server) testChannelAPIWithCooldownTarget(
 	keyIndex int,
 	updatePersistedCooldown bool,
 ) map[string]any {
+	// 决策调用固定非流式：忽略 stream，前端流式开关不影响决策渠道测试。
 	if cfg.IsSystemOne() {
-		if testReq.Stream {
-			return map[string]any{"success": false, "error": "System One does not support streaming chat"}
-		}
 		testCfg := cfg
 		if baseURL := strings.TrimSpace(testReq.BaseURL); baseURL != "" {
 			idx := slices.IndexFunc(cfg.URLs, func(endpoint model.ChannelURL) bool {

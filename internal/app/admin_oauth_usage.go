@@ -1625,7 +1625,7 @@ func (s *Server) persistOAuthUsage(
 	if s == nil || s.store == nil || cfg == nil || summary == nil {
 		return nil, errors.New("OAuth usage persistence is unavailable")
 	}
-	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+	if !cfg.UsesOAuth() {
 		return summary, nil
 	}
 

@@ -496,26 +496,22 @@ func TestChannelURLs_NormalizeRejectsInvalidData(t *testing.T) {
 
 func TestSystemOneChannelURLs(t *testing.T) {
 	t.Parallel()
+	declared := ChannelURLs{{URL: "https://one.example", Protocols: []string{"openai"}}}
 	for _, tc := range []struct {
-		name  string
-		urls  ChannelURLs
-		valid bool
+		authType string
+		urls     ChannelURLs
+		valid    bool
 	}{
-		{"native", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example/v1", Protocols: []string{"SYSTEM_ONE"}}}, true},
-		{"same URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one", "openai"}}}, false},
-		{"implicit URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example"}}, false},
-		{"explicit URL mixed", ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}, {URL: "https://two.example", Protocols: []string{"openai"}}}, false},
-		{"legacy", ChannelURLs{{URL: "https://one.example"}}, true},
+		{AuthTypeSystemOne, ChannelURLs{{URL: "https://one.example"}, {URL: "https://two.example/v1"}}, true},
+		{AuthTypeSystemOne, declared, false},
+		{AuthTypeAPIKey, declared, true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.urls.Normalize()
-			if (err == nil) != tc.valid {
-				t.Fatalf("Normalize() error = %v, valid = %v", err, tc.valid)
-			}
-		})
+		if err := tc.urls.ValidateForAuthType(tc.authType); (err == nil) != tc.valid {
+			t.Fatalf("ValidateForAuthType(%s, %+v) error = %v, valid = %v", tc.authType, tc.urls, err, tc.valid)
+		}
 	}
-	legacy := ChannelURL{URL: "https://legacy.example"}
-	if legacy.SupportsProtocol("system_one") || !legacy.SupportsProtocol("openai") {
-		t.Fatal("automatic detection must remain chat-only")
+	cfg := &Config{AuthType: AuthTypeSystemOne}
+	if !cfg.IsSystemOne() || cfg.UsesOAuth() || !UsesAPIKeyCredentials(cfg.AuthType) {
+		t.Fatal("System One must be a decision-only API key channel")
 	}
 }

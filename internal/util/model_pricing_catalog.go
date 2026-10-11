@@ -738,6 +738,13 @@ var basePricing = map[string]ModelPricing{
 	"gpt-oss-120b":          {InputPrice: 0.039, OutputPrice: 0.18, CacheReadPrice: 0.055, HasCacheReadPrice: true},
 	"gpt-oss-120b:exacto":   {InputPrice: 0.039, OutputPrice: 0.19, CacheReadPrice: 0.04, HasCacheReadPrice: true},
 	"gpt-oss-safeguard-20b": {InputPrice: 0.075, OutputPrice: 0.30, CacheReadPrice: 0.037, HasCacheReadPrice: true},
+
+	// ========== System One 模型（只按输入 token 计费，输出免费） ==========
+	// 前缀匹配覆盖别名与版本号（jev-latest、jev-1.13.0、drex-latest、drex-v1.5 等）
+	// 来源: https://typesafe.ai/blog/introducing-system-one-models-and-jev（$42/十亿输入 token）
+	"jev": {InputPrice: 0.042, OutputPrice: 0},
+	// 来源: Nace Drex 文档 /docs/drex/reference/pricing（50 nUSD/输入 token；退役版本按 drex-v1.5 计价）
+	"drex": {InputPrice: 0.05, OutputPrice: 0},
 }
 
 // modelAliases 模型别名映射（多对一）

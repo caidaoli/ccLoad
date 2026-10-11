@@ -184,6 +184,9 @@ func TestRequestHasNonTextContent(t *testing.T) {
 		{name: "gemini_file_data_camel", protocol: protocol.Gemini, body: `{"contents":[{"parts":[{"fileData":{"mimeType":"application/pdf","fileUri":"https://example.com/a.pdf"}}]}]}`, want: true},
 		{name: "gemini_file_data_snake", protocol: protocol.Gemini, body: `{"contents":[{"parts":[{"file_data":{"mimeType":"application/pdf","fileUri":"https://example.com/a.pdf"}}]}]}`, want: true},
 		{name: "gemini_text_only", protocol: protocol.Gemini, body: `{"contents":[{"parts":[{"text":"hello"}]}]}`, want: false},
+		{name: "gemini_function_response_nested_image", protocol: protocol.Gemini, body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"screenshot","response":{"ok":true},"parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}]}`, want: true},
+		{name: "gemini_function_response_nested_file_snake", protocol: protocol.Gemini, body: `{"contents":[{"role":"user","parts":[{"function_response":{"name":"read","response":{},"parts":[{"file_data":{"mime_type":"application/pdf","file_uri":"https://example.com/a.pdf"}}]}}]}]}`, want: true},
+		{name: "gemini_function_response_text_only", protocol: protocol.Gemini, body: `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"read","response":{"content":"inline file not found"}}}]}]}`, want: false},
 	}
 
 	for _, tt := range tests {

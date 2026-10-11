@@ -681,6 +681,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 		OnDebugCapture: func(dc *debugCapture) {
 			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
 		},
+		OnThinkingEffort: func(sent, client string) {
+			s.activeRequests.SetThinkingEffort(reqCtx.activeReqID, sent, client)
+		},
 	}
 	defer func() {
 		if reqCtx.activeReqID > 0 {

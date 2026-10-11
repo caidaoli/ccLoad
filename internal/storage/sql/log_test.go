@@ -1363,37 +1363,30 @@ func TestLog_CodexPurchasedCreditsStayOutsideWindows(t *testing.T) {
 	}
 }
 
-func TestDecisionLogMetadataAndCostIsolation(t *testing.T) {
+func TestDecisionLogMetadataAndChannelCost(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "decision-log")
 	now := time.Now()
-	decision := &model.ReasoningDecision{Status: "fallback", SuggestedEffort: "high", CostUnknown: true, ContextTruncated: true}
+	decision := &model.ReasoningDecision{Status: "fallback", SuggestedEffort: "high", CostUnknown: true, ClientEffort: "xhigh"}
 	entry := &model.LogEntry{Time: newJSONTime(now), Model: "decision-model", ChannelID: channelID,
-		LogSource: model.LogSourceDecision, AuthTokenID: 123, StatusCode: 200, Cost: 0.25, CostMultiplier: 2,
+		ClientProtocol: "system_one", StatusCode: 200, Cost: 0.25, CostMultiplier: 2,
 		ReasoningDecision: decision, InputTokens: 50, OutputTokens: 10}
 	if err := store.AddLog(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
-	logs, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
-	if err != nil || len(logs) != 0 {
-		t.Fatalf("default proxy logs = %v, error = %v", logs, err)
-	}
-	logs, err = store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{LogSource: model.LogSourceDecision})
+	// 决策调用属于代理流量，按请求协议 system_one 区分。
+	logs, err := store.ListLogs(ctx, now.Add(-time.Minute), 10, 0, &model.LogFilter{ClientProtocol: "system_one"})
 	if err != nil || len(logs) != 1 {
 		t.Fatalf("decision logs = %v, error = %v", logs, err)
 	}
 	got := logs[0]
-	if got.AuthTokenID != 0 || got.ReasoningDecision == nil || *got.ReasoningDecision != *decision || got.InputTokens != 50 || got.Cost != 0.25 {
+	if got.LogSource != model.LogSourceProxy || got.ReasoningDecision == nil || *got.ReasoningDecision != *decision || got.InputTokens != 50 || got.Cost != 0.25 {
 		t.Fatalf("decision round trip = %+v", got)
 	}
 	costs, err := store.GetTodayChannelCosts(ctx, now.Add(-time.Minute))
 	if err != nil || costs[channelID] != 0.5 {
 		t.Fatalf("channel costs = %v, error = %v", costs, err)
-	}
-	stats, err := store.GetAuthTokenStatsInRange(ctx, now.Add(-time.Minute), now.Add(time.Minute))
-	if err != nil || len(stats) != 0 {
-		t.Fatalf("client stats = %v, error = %v", stats, err)
 	}
 }

@@ -25,6 +25,8 @@ const (
 	AuthTypeCursorOAuth      = "cursor_oauth"
 	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
+	// AuthTypeSystemOne is a decision-only channel authenticated by API keys.
+	AuthTypeSystemOne = "system_one"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -59,8 +61,21 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeZedOAuth
 	case AuthTypeCodeBuddyOAuth:
 		return AuthTypeCodeBuddyOAuth
+	case AuthTypeSystemOne:
+		return AuthTypeSystemOne
 	default:
 		return ""
+	}
+}
+
+// UsesAPIKeyCredentials reports whether the auth type stores credentials as
+// api_keys rows rather than one channel-level OAuth credential.
+func UsesAPIKeyCredentials(authType string) bool {
+	switch NormalizeAuthType(authType) {
+	case AuthTypeAPIKey, AuthTypeSystemOne:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -116,11 +131,10 @@ func StripExactUpstreamURLMarker(raw string) string {
 }
 
 var supportedURLProtocols = map[string]struct{}{
-	"anthropic":  {},
-	"codex":      {},
-	"openai":     {},
-	"gemini":     {},
-	"system_one": {},
+	"anthropic": {},
+	"codex":     {},
+	"openai":    {},
+	"gemini":    {},
 }
 
 // ChannelURL is one configured upstream endpoint. Protocols is the ordered list
@@ -144,7 +158,7 @@ func (u ChannelURL) UsesAutomaticProtocolDetection() bool {
 // explicit declaration remain eligible for automatic detection.
 func (u ChannelURL) SupportsProtocol(value string) bool {
 	if u.UsesAutomaticProtocolDetection() {
-		return strings.ToLower(strings.TrimSpace(value)) != "system_one"
+		return true
 	}
 	value = strings.ToLower(strings.TrimSpace(value))
 	return slices.Contains(u.Protocols, value)
@@ -202,29 +216,26 @@ func (urls *ChannelURLs) Normalize() error {
 		}
 		seenURLs[runtimeURL] = i
 	}
-	if (*urls).IsSystemOne() {
-		for i, entry := range *urls {
-			if len(entry.Protocols) != 1 || entry.Protocols[0] != "system_one" {
-				return fmt.Errorf("urls[%d]: System One channels require only system_one on every URL", i)
-			}
+	return nil
+}
+
+// ValidateForAuthType rejects chat protocol declarations on System One channels,
+// whose native decision API is never negotiated or converted.
+func (urls ChannelURLs) ValidateForAuthType(authType string) error {
+	if NormalizeAuthType(authType) != AuthTypeSystemOne {
+		return nil
+	}
+	for i, entry := range urls {
+		if len(entry.Protocols) != 0 {
+			return fmt.Errorf("urls[%d]: System One channels cannot declare URL protocols", i)
 		}
 	}
 	return nil
 }
 
-// IsSystemOne reports whether this channel declares the independent decision capability.
-func (urls ChannelURLs) IsSystemOne() bool {
-	for _, entry := range urls {
-		if slices.Contains(entry.Protocols, "system_one") {
-			return true
-		}
-	}
-	return false
-}
-
 // IsSystemOne reports whether the channel is dedicated to decision requests.
 func (c *Config) IsSystemOne() bool {
-	return c != nil && c.URLs.IsSystemOne()
+	return c != nil && c.GetAuthType() == AuthTypeSystemOne
 }
 
 // Clone returns a deep copy of URL configuration.
@@ -826,7 +837,7 @@ func (c *Config) UsesZedOAuth() bool {
 
 // UsesOAuth reports whether API keys are replaced by a private OAuth credential.
 func (c *Config) UsesOAuth() bool {
-	return c != nil && c.GetAuthType() != AuthTypeAPIKey
+	return c != nil && !UsesAPIKeyCredentials(c.GetAuthType())
 }
 
 // GetModels 获取所有已启用的模型名称列表

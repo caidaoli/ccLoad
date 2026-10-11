@@ -119,7 +119,7 @@ func (s *Server) runScheduledChannelCheck(ctx context.Context, cfg *model.Config
 		return
 	}
 	var rowAvailable func(modelRoutingSelection) bool
-	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+	if !cfg.UsesOAuth() {
 		protocols := scheduledCheckUpstreamProtocols(cfg)
 		now := time.Now()
 		rowAvailable = func(selected modelRoutingSelection) bool {

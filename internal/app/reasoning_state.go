@@ -20,6 +20,10 @@ import (
 const (
 	reasoningStateLimit         = 1024
 	reasoningStateSweepInterval = time.Minute
+	// Replays of real traffic put reliable answers at 0.39 and above, while
+	// answers at 0.25 and below flipped between distant levels on identical
+	// input; such an answer is recorded but treated as no decision.
+	reasoningMinConfidence = 0.3
 )
 
 type reasoningState struct {
@@ -95,6 +99,8 @@ func reasoningRank(effort string) int {
 		return 3
 	case "xhigh":
 		return 4
+	case "max":
+		return 5
 	}
 	return 0
 }
@@ -129,6 +135,12 @@ func (t *reasoningTurn) fallback(reason string) {
 
 func (s *Server) reasoningStateFor(r *proxyRequestContext) *reasoningState {
 	identity := responsesExecutionSessionID(r.header)
+	if r.clientProtocol == protocol.Anthropic {
+		// Claude Code names its session in a header or metadata.user_id.
+		if identity = anthropicSessionIDFromHeaders(r.header); identity == "" {
+			identity = anthropicSessionIDFromBody(r.body)
+		}
+	}
 	if identity == "" || r.tokenHash == "" {
 		return &reasoningState{}
 	}
@@ -160,9 +172,12 @@ func reasoningBusinessSending(ctx context.Context, body []byte) {
 	applied := false
 	r.reasoningApplied = ""
 	if r.reasoningExpected != "" {
-		actual := wireReasoningEffort(body)
+		actual := extractThinkingEffortFromJSON(body)
 		r.thinkingEffort, r.reasoningApplied = actual, actual
 		applied = actual == r.reasoningExpected
+		if r.observer != nil && r.observer.OnThinkingEffort != nil {
+			r.observer.OnThinkingEffort(actual, t.metadata.ClientEffort)
+		}
 		if !applied {
 			r.reasoningApplyReason = "channel_rules_override"
 		}
@@ -185,19 +200,6 @@ func reasoningBusinessSending(ctx context.Context, body []byte) {
 	t.state.version++
 	t.state.effort, t.state.pending, t.state.pendingCount = t.effort, t.pending, t.pendingCount
 	t.state.toolTurns, t.state.force = t.toolTurns, t.force
-}
-
-// The automatic value is only written to OpenAI/Codex wire bodies, optionally
-// wrapped in a Zed provider envelope.
-func wireReasoningEffort(body []byte) string {
-	for _, path := range []string{"reasoning_effort", "reasoning.effort", "provider_request.reasoning_effort", "provider_request.reasoning.effort"} {
-		if value := gjson.GetBytes(body, path); value.Type == gjson.String {
-			if effort := strings.TrimSpace(value.String()); effort != "" {
-				return normalizeThinkingEffort(effort)
-			}
-		}
-	}
-	return ""
 }
 
 // Only an applied automatic value needs the wire body to detect channel rule
@@ -248,7 +250,8 @@ func hasExplicitThinkingSuffix(requestedModel string) bool {
 func reasoningTurnEndpoint(path string) bool {
 	path = strings.TrimSuffix(path, "/")
 	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/responses") ||
-		strings.HasSuffix(path, "/codex/responses")
+		strings.HasSuffix(path, "/codex/responses") || strings.HasSuffix(path, "/v1/messages") ||
+		strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
 }
 
 func (s *Server) reasoningTarget(r *proxyRequestContext) bool {
@@ -259,7 +262,18 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	if !s.reasoningTarget(r) {
 		return
 	}
-	cfg := s.reasoningAuto
+	// Codex prewarms with generate:false and no user input: there is nothing to
+	// judge, and it must not touch the session's level or pending downgrade.
+	if gjson.GetBytes(original, "generate").Type == gjson.False {
+		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "prewarm"}}
+		return
+	}
+	// Codex's guardian sub-agent reviews another agent's planned action at the
+	// level Codex picked; the judge would rate the reviewed task instead.
+	if strings.EqualFold(r.header.Get("X-OpenAI-Subagent"), "guardian") {
+		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "guardian"}}
+		return
+	}
 	state := s.reasoningStateFor(r)
 	state.mu.Lock()
 	state.version++
@@ -267,17 +281,11 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 		pending: state.pending, pendingCount: state.pendingCount, toolTurns: state.toolTurns, force: state.force}
 	state.lastAccess = time.Now()
 	state.mu.Unlock()
-	t.metadata = model.ReasoningDecision{Status: "skipped", PreviousEffort: t.effort,
-		DecisionChannelID: cfg.DecisionChannelID, DecisionModel: cfg.DecisionModel}
+	t.metadata = model.ReasoningDecision{Status: "skipped", ClientEffort: r.thinkingEffort, PreviousEffort: t.effort}
 	r.reasoning = t
 	if explicit {
 		t.pending, t.pendingCount, t.force = "", 0, true
 		t.metadata.Reason = "client_explicit"
-		return
-	}
-	if r.clientProtocol != protocol.OpenAI && r.clientProtocol != protocol.Codex {
-		t.effort = ""
-		t.metadata.Reason = "unsupported_client_protocol"
 		return
 	}
 	user, failed := reasoningTurnInput(original, r.clientProtocol)
@@ -301,7 +309,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	t.metadata.Trigger = trigger
 	// Reused turns only need completeness; skip building the decision text.
 	projection := projectReasoningContext(transcript, r.clientProtocol, !reuse)
-	t.metadata.ContextTruncated, t.metadata.ContextIncomplete = projection.truncated, projection.incomplete
+	t.metadata.ContextIncomplete = projection.incomplete
 	if projection.incomplete {
 		t.fallback("incomplete_context")
 		return
@@ -310,10 +318,17 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 		t.metadata.Status = "reused"
 		return
 	}
-	result, err := s.executeReasoningDecision(ctx, projection.text, t.effort)
-	t.metadata.DurationMS, t.metadata.DecisionID, t.metadata.CostUnknown = result.duration.Milliseconds(), result.decisionID, result.costUnknown
+	result, err := s.executeReasoningDecision(ctx, projection.text, t.effort, reasoningDecisionLevels(r.originalModel))
+	// Decision cost belongs to the System One log row, not the business turn.
+	t.metadata.DurationMS = result.duration.Milliseconds()
 	if err != nil {
 		t.fallback(result.reason)
+		return
+	}
+	t.metadata.Confidence = result.confidence
+	if result.confidence != nil && *result.confidence < reasoningMinConfidence {
+		t.metadata.SuggestedEffort = result.effort
+		t.fallback("low_confidence")
 		return
 	}
 	// Truncation keeps the original task, latest request and recent tail, so it
@@ -341,7 +356,7 @@ func reasoningDecisionContext(ctx context.Context) context.Context {
 // manual-test log records them instead of a free call.
 func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) map[string]any {
 	start := time.Now()
-	result, err := s.callSystemOne(ctx, cfg, apiKey, modelName, state, "")
+	result, err := s.callSystemOne(ctx, cfg, apiKey, modelName, state, "", reasoningDefaultLevels)
 	if errors.Is(err, ErrChannelRPMExceeded) {
 		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
 	}
@@ -350,13 +365,16 @@ func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, ap
 	}
 	result.costUnknown = s.reasoningCostUnknown(cfg, modelName, result)
 	out := map[string]any{"success": err == nil, "status_code": result.status, "duration_ms": result.duration.Milliseconds(),
-		"effort": result.effort, "cost_unknown": result.costUnknown, "upstream_protocol": util.ProtocolSystemOne,
+		"effort": result.effort, "cost_unknown": result.costUnknown, "client_protocol": util.ProtocolSystemOne, "upstream_protocol": util.ProtocolSystemOne,
 		"base_url": result.baseURL, "actual_model": result.actualModel}
 	if result.responseBody != nil {
 		out["raw_response"] = string(result.responseBody)
 	}
 	if result.responseHeader != nil {
 		out["response_headers"] = flattenHeader(result.responseHeader)
+	}
+	if result.debug != nil {
+		out["debug_data"] = result.debug
 	}
 	if result.usage != nil {
 		out["usage"] = map[string]any{"input_tokens": result.usage.InputTokens, "output_tokens": result.usage.OutputTokens}

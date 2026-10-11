@@ -273,6 +273,9 @@ func validateChannelURLConfigs(urls model.ChannelURLs, authType string) (model.C
 	if err := urls.Normalize(); err != nil {
 		return nil, err
 	}
+	if err := urls.ValidateForAuthType(authType); err != nil {
+		return nil, err
+	}
 	return urls, nil
 }
 
@@ -292,11 +295,11 @@ func (cr *ChannelRequest) Validate() error {
 		return errors.New("zed OAuth channels do not support WebSocket transport")
 	}
 	apiKeys := cr.normalizeAPIKeys()
-	if authType == model.AuthTypeAPIKey && len(apiKeys) == 0 {
+	if model.UsesAPIKeyCredentials(authType) && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
 	}
 	// OAuth 渠道最多携带一条合成 Key 行（管理页现场合成），只用来回传倍率，永不落库。
-	if authType != model.AuthTypeAPIKey && len(apiKeys) > 1 {
+	if !model.UsesAPIKeyCredentials(authType) && len(apiKeys) > 1 {
 		return fmt.Errorf("OAuth channel accepts at most one synthetic API key row")
 	}
 	for i, key := range apiKeys {
@@ -313,7 +316,7 @@ func (cr *ChannelRequest) Validate() error {
 			return fmt.Errorf("api_keys[%d].model_scope_empty requires empty allowed_models", i)
 		}
 		if key.Priority != nil {
-			if authType != model.AuthTypeAPIKey {
+			if !model.UsesAPIKeyCredentials(authType) {
 				return fmt.Errorf("OAuth channel API key priority is read-only")
 			}
 			if *key.Priority < -99999 || *key.Priority > 9999999 {
@@ -514,7 +517,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	// 倍率属于凭证：OAuth 渠道从合成 Key 行取，api_key 渠道的渠道级字段固定写 1
 	// （0 在 channels.cost_multiplier 语义是「免费」，渠道级写 0 会让 api_key 渠道整体免费）。
 	costMultiplier := 1.0
-	if model.NormalizeAuthType(cr.AuthType) != model.AuthTypeAPIKey && len(cr.APIKeys) > 0 && cr.APIKeys[0].CostMultiplier != nil {
+	if !model.UsesAPIKeyCredentials(cr.AuthType) && len(cr.APIKeys) > 0 && cr.APIKeys[0].CostMultiplier != nil {
 		costMultiplier = *cr.APIKeys[0].CostMultiplier
 	}
 

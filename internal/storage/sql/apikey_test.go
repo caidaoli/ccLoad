@@ -483,14 +483,14 @@ func TestAPIKey_ImportChannelBatchRejectsOAuthSystemOne(t *testing.T) {
 	ctx := context.Background()
 	_, _, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{
 		Config: &model.Config{
-			Name: "decision-oauth", AuthType: model.AuthTypeCodexOAuth,
+			Name: "decision-oauth", AuthType: model.AuthTypeSystemOne,
 			OAuthCredential: `{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`,
-			URLs:            model.ChannelURLs{{URL: "https://one.example", Protocols: []string{"system_one"}}},
+			URLs:            model.ChannelURLs{{URL: "https://one.example"}},
 			Enabled:         true, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}},
 		},
 	}})
-	if err == nil || !strings.Contains(err.Error(), "system one channels require api_key authentication") {
-		t.Fatalf("ImportChannelBatch() error = %v, want system one auth rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "OAuth credential") {
+		t.Fatalf("ImportChannelBatch() error = %v, want OAuth credential rejection", err)
 	}
 	configs, err := store.ListConfigs(ctx)
 	if err != nil || len(configs) != 0 {

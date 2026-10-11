@@ -80,6 +80,23 @@ func TestCalculateCost_Haiku45(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_SystemOneInputOnly(t *testing.T) {
+	// System One 模型只按输入计费，输出免费；别名与版本号都按前缀命中
+	for model, expected := range map[string]float64{
+		"jev-latest": 0.042, "jev-preview": 0.042, "jev-1.13.0": 0.042,
+		"drex-latest": 0.05, "drex-v1.5": 0.05, "drex-v1.1": 0.05,
+	} {
+		cost := CalculateCostDetailed(model, 1_000_000, 500_000, 0, 0, 0)
+		if !floatEquals(cost, expected, 0.0000001) {
+			t.Errorf("%s 成本 = %.7f, 期望 %.3f", model, cost, expected)
+		}
+	}
+	// Drex 文档示例：106 输入 token × 50 nUSD = $0.0000053
+	if cost := CalculateCostDetailed("drex-v1.5", 106, 212, 0, 0, 0); !floatEquals(cost, 0.0000053, 1e-12) {
+		t.Errorf("drex 示例成本 = %.10f, 期望 0.0000053", cost)
+	}
+}
+
 func TestCalculateCost_Haiku55(t *testing.T) {
 	for _, model := range []string{"claude-haiku-5-5", "claude-haiku-5-5-latest"} {
 		for _, tc := range []struct {

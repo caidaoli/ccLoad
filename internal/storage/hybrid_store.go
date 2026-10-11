@@ -395,6 +395,12 @@ func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName s
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
+func (h *HybridStore) GetEnabledSystemOneChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	h.oauthCredentialMu.RLock()
+	defer h.oauthCredentialMu.RUnlock()
+	return h.sqlite.GetEnabledSystemOneChannelsByModel(ctx, modelName)
+}
+
 func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	ID       int64
 	Priority int

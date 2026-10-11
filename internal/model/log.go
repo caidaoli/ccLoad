@@ -9,7 +9,6 @@ import (
 // LogSource* constants define persisted log sources plus special filter aliases.
 const (
 	LogSourceProxy          = "proxy"
-	LogSourceDecision       = "decision"
 	LogSourceScheduledCheck = "scheduled_check"
 	LogSourceManualTest     = "manual_test"
 	LogSourceManualChat     = "manual_chat"
@@ -26,8 +25,6 @@ func NormalizeStoredLogSource(raw string) string {
 	switch strings.TrimSpace(raw) {
 	case "", LogSourceProxy:
 		return LogSourceProxy
-	case LogSourceDecision:
-		return LogSourceDecision
 	case LogSourceScheduledCheck:
 		return LogSourceScheduledCheck
 	case LogSourceManualTest:

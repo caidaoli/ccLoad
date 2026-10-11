@@ -9,7 +9,8 @@ import (
 // Protocol identifies a client-facing or upstream request/response protocol.
 type Protocol string
 
-// SystemOne is an upstream decision capability, excluded from chat conversions.
+// SystemOne is the native System One decision protocol. It is excluded from
+// chat conversions: its client endpoint only passes through to System One channels.
 const SystemOne Protocol = "system_one"
 
 const (
@@ -57,6 +58,8 @@ const (
 	// RequestFamilyAlphaSearch is the Codex /v1/alpha/search surface.
 	// It is native passthrough only — not a protocol-transform family.
 	RequestFamilyAlphaSearch RequestFamily = "alpha_search"
+	// RequestFamilySystemOne is the native /v1/systemone decision surface.
+	RequestFamilySystemOne RequestFamily = "system_one"
 )
 
 // TransformPlan captures the chosen transform metadata for one proxy attempt.
@@ -180,6 +183,8 @@ func DetectRequestFamily(path string) RequestFamily {
 		return RequestFamilyEmbeddings
 	case strings.Contains(path, "/v1/images/"):
 		return RequestFamilyImages
+	case matchesCanonicalEndpoint(path, "/v1/systemone"):
+		return RequestFamilySystemOne
 	default:
 		return RequestFamilyUnknown
 	}

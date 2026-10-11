@@ -589,10 +589,10 @@ func (s *Server) parseChannelImportRow(
 	if name == "" {
 		missing = append(missing, "name")
 	}
-	if authType == model.AuthTypeAPIKey && apiKey == "" {
+	if model.UsesAPIKeyCredentials(authType) && apiKey == "" {
 		missing = append(missing, "api_key")
 	}
-	if authType != model.AuthTypeAPIKey && oauthCredential == "" {
+	if !model.UsesAPIKeyCredentials(authType) && oauthCredential == "" {
 		missing = append(missing, "oauth_credential")
 	}
 	if urlsRaw == "" {
@@ -617,7 +617,10 @@ func (s *Server) parseChannelImportRow(
 			return nil, fmt.Sprintf("第%d行 API Key 渠道管理账号无效: %v", lineNo, err), true
 		}
 	}
-	if authType != model.AuthTypeAPIKey && apiKey != "" {
+	if authType == model.AuthTypeSystemOne && oauthCredential != "" {
+		return nil, fmt.Sprintf("第%d行 System One 渠道不能包含 OAuth 凭证", lineNo), true
+	}
+	if !model.UsesAPIKeyCredentials(authType) && apiKey != "" {
 		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含 API Key", lineNo), true
 	}
 	managementCheckinEnabled := false
@@ -640,7 +643,7 @@ func (s *Server) parseChannelImportRow(
 	if authType != model.AuthTypeAPIKey && (rawManagementCheckinEnabled != "" || managementCheckinTime != "") {
 		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含管理账号设置", lineNo), true
 	}
-	if authType != model.AuthTypeAPIKey {
+	if !model.UsesAPIKeyCredentials(authType) {
 		var err error
 		oauthCredential, err = normalizeCSVImportOAuthCredential(authType, oauthCredential)
 		if err != nil {

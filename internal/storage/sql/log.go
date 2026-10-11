@@ -426,16 +426,12 @@ func logRowArgs(e *model.LogEntry) []any {
 		encoded, _ := json.Marshal(e.ReasoningDecision)
 		decisionJSON = string(encoded)
 	}
-	authTokenID := e.AuthTokenID
-	if model.NormalizeStoredLogSource(e.LogSource) == model.LogSourceDecision {
-		authTokenID = 0
-	}
 	return []any{
 		timeMs, minuteBucket, e.Model, e.ActualModel, e.ResponseModel,
 		model.NormalizeStoredLogSource(e.LogSource),
 		e.ChannelID, e.StatusCode, e.Message, e.Duration,
 		e.IsStreaming, e.UpstreamWebsocket, e.FirstByteTime, maskedKey, apiKeyHash,
-		authTokenID, e.ClientProtocol, e.UpstreamProtocol, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
+		e.AuthTokenID, e.ClientProtocol, e.UpstreamProtocol, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
 		normalizeCostMultiplier(e.CostMultiplier),
@@ -556,7 +552,7 @@ func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Ti
 		WHERE time >= ?
 			AND channel_id > 0
 			AND base_url <> ''
-			AND log_source NOT IN ('count_tokens', 'decision')
+			AND log_source <> 'count_tokens'
 		GROUP BY channel_id, base_url
 		ORDER BY channel_id ASC, base_url ASC
 	`

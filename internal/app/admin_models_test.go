@@ -135,6 +135,51 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+	t.Run("system one discovery uses decision models API", func(t *testing.T) {
+		systemOneUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer ts-key" {
+				http.Error(w, "unexpected request", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"models":[{"name":"jev-latest"},{"name":"jev-preview"}]}`))
+		}))
+		t.Cleanup(systemOneUpstream.Close)
+
+		payload := map[string]any{
+			"auth_type": model.AuthTypeSystemOne,
+			"urls":      []map[string]any{{"url": systemOneUpstream.URL}},
+			"api_keys":  []string{"ts-key"},
+			"per_key":   true,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if w.Code != http.StatusOK || !resp.Success || resp.Data.Protocol != "system_one" || len(resp.Data.Models) != 2 || resp.Data.Models[0].Model != "jev-latest" {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+
+		payload["urls"] = []map[string]any{{"url": systemOneUpstream.URL, "protocols": []string{"openai"}}}
+		c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("System One URL protocols status=%d body=%s", w.Code, w.Body.String())
+		}
+
+		cfg, err := server.store.CreateConfig(context.Background(), &model.Config{Name: "jev", Enabled: true, AuthType: model.AuthTypeSystemOne,
+			URLs: model.ChannelURLs{{URL: systemOneUpstream.URL}}, ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := server.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "ts-key"}}); err != nil {
+			t.Fatal(err)
+		}
+		fetched, err := server.fetchModelsForChannel(context.Background(), cfg, "openai", modelFetchFirstAvailableKey)
+		if err != nil || fetched.Protocol != "system_one" || len(fetched.Models) != 2 {
+			t.Fatalf("saved System One discovery = (%+v, %v)", fetched, err)
+		}
+	})
+
 	t.Run("multiple keys fall back after key error", func(t *testing.T) {
 		var authSequence []string
 		multiKeyUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,8 @@ package registry
 import (
 	_ "embed"
 	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -48,9 +50,20 @@ type modelCatalog struct {
 
 var staticModels modelCatalog
 
+// allCatalogs is every top-level catalog in models.json, sorted by key, including
+// providers modelCatalog leaves out of Lookup.
+var allCatalogs [][]*ModelInfo
+
 func init() {
 	if err := json.Unmarshal(modelsJSON, &staticModels); err != nil {
 		panic("decode embedded CLIProxyAPI model catalog: " + err.Error())
+	}
+	var catalogs map[string][]*ModelInfo
+	if err := json.Unmarshal(modelsJSON, &catalogs); err != nil {
+		panic("decode embedded CLIProxyAPI model catalog: " + err.Error())
+	}
+	for _, key := range slices.Sorted(maps.Keys(catalogs)) {
+		allCatalogs = append(allCatalogs, catalogs[key])
 	}
 }
 
@@ -73,6 +86,25 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 		}
 	}
 	return nil
+}
+
+// LookupThinkingLevels returns the longest level list any catalog in models.json
+// gives the model; earlier catalog keys win ties. Unlike Lookup it also reads
+// catalogs of providers ccLoad has no executor for.
+func LookupThinkingLevels(modelID string) []string {
+	modelID = strings.TrimSpace(modelID)
+	var levels []string
+	for _, models := range allCatalogs {
+		for _, model := range models {
+			if model != nil && model.Thinking != nil && (model.ID == modelID || model.Name == modelID) && len(model.Thinking.Levels) > len(levels) {
+				levels = model.Thinking.Levels
+			}
+		}
+	}
+	if modelID == "" || len(levels) == 0 {
+		return nil
+	}
+	return slices.Clone(levels)
 }
 
 func modelsForProvider(provider string) [][]*ModelInfo {

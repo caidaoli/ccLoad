@@ -1863,8 +1863,8 @@ func TestSystemOneConfigExcludedFromChatCandidates(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	ctx := context.Background()
-	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "decision-only", Enabled: true,
-		URLs:         model.ChannelURLs{{URL: "https://one.example/v1", Protocols: []string{"system_one"}}},
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "decision-only", Enabled: true, AuthType: model.AuthTypeSystemOne,
+		URLs:         model.ChannelURLs{{URL: "https://one.example/v1"}},
 		ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -1879,8 +1879,8 @@ func TestSystemOneConfigExcludedFromChatCandidates(t *testing.T) {
 			t.Fatalf("chat candidates(%s) = %+v, error = %v", name, candidates, err)
 		}
 	}
-	got.URLs = append(got.URLs, model.ChannelURL{URL: "https://chat.example"})
+	got.URLs = append(got.URLs, model.ChannelURL{URL: "https://chat.example", Protocols: []string{"openai"}})
 	if _, err := store.UpdateConfig(ctx, cfg.ID, got); err == nil {
-		t.Fatal("mixed capabilities must be rejected")
+		t.Fatal("System One URL protocols must be rejected")
 	}
 }

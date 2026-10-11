@@ -909,19 +909,19 @@ func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 	hybrid := NewHybridStore(sqlite, primary)
 	t.Cleanup(func() { _ = hybrid.Close() })
 	ctx := context.Background()
-	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", DecisionID: "hybrid-decision", CostUnknown: true}
-	entry := &model.LogEntry{Time: model.JSONTime{Time: time.Now()}, LogSource: model.LogSourceDecision, ReasoningDecision: metadata,
-		Model: "jev-latest", StatusCode: 200, AuthTokenID: 500, Cost: 0.1, InputTokens: 20}
+	metadata := &model.ReasoningDecision{Status: "applied", SuggestedEffort: "high", ClientEffort: "xhigh", CostUnknown: true}
+	entry := &model.LogEntry{Time: model.JSONTime{Time: time.Now()}, ClientProtocol: "system_one", ReasoningDecision: metadata,
+		Model: "jev-latest", StatusCode: 200, Cost: 0.1, InputTokens: 20}
 	if err := hybrid.AddLog(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
-	filter := &model.LogFilter{LogSource: model.LogSourceDecision}
+	filter := &model.LogFilter{ClientProtocol: "system_one"}
 	logs, err := hybrid.ListLogs(ctx, time.Time{}, 10, 0, filter)
-	if err != nil || len(logs) != 1 || logs[0].ReasoningDecision == nil || *logs[0].ReasoningDecision != *metadata || logs[0].AuthTokenID != 0 {
+	if err != nil || len(logs) != 1 || logs[0].ReasoningDecision == nil || *logs[0].ReasoningDecision != *metadata {
 		t.Fatalf("SQLite metadata = %+v, error = %v", logs, err)
 	}
 	waitForCondition(t, time.Second, func() bool {
 		logs, err := primary.ListLogs(ctx, time.Time{}, 10, 0, filter)
-		return err == nil && len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata && logs[0].AuthTokenID == 0
+		return err == nil && len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata
 	})
 }

@@ -239,6 +239,9 @@ func (s *Server) buildProxyRequest(
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
+	if upstreamProtocol == protocol.SystemOne {
+		upstreamURL = systemOneURL(baseURL)
+	}
 	if isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
 		isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
 		upstreamURL = buildAnthropicClaudeCodeURL(baseURL, requestPath, upstreamQuery)
@@ -2514,14 +2517,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		// 就得负责解码。
 		if err == nil && req != nil && runtimeUpstreamProtocol(reqCtx) == string(protocol.Anthropic) &&
 			anthropicHeaderValue(req.Header, "Accept-Encoding") != "" {
-			wasEncoded := resp.Header.Get("Content-Encoding") != ""
 			err = decodeAnthropicResponse(resp)
-			if err == nil && wasEncoded {
-				if evidence, _ := reqCtx.ctx.Value(reasoningResponseLimitKey{}).(*reasoningResponseEvidence); evidence != nil && resp.Header.Get("Content-Encoding") == "" {
-					evidence.body = nil
-					resp.Body = &reasoningResponseReader{body: resp.Body, remaining: reasoningResponseMaxBytes, evidence: evidence}
-				}
-			}
 		}
 	}
 	if req != nil {
@@ -4049,6 +4045,11 @@ func (s *Server) attemptKeyAcrossURLs(
 			protocolCandidates = []protocol.Protocol{protocol.Codex}
 			declared = true
 		}
+		if cfg.IsSystemOne() {
+			// System One 渠道不声明聊天协议，只原样透传 /v1/systemone。
+			protocolCandidates = []protocol.Protocol{protocol.SystemOne}
+			declared = true
+		}
 		learnCapability := transformMode == model.ProtocolTransformModeAuto && !declared
 		if learnCapability {
 			if cachedProtocol, known := s.protocolCapabilities.get(capabilityKey); known {
@@ -4296,7 +4297,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		return buildCtxDoneResult(cfg, ctxErr), nil
 	}
 	var apiKeys []*model.APIKey
-	if cfg.GetAuthType() == model.AuthTypeAPIKey {
+	if !cfg.UsesOAuth() {
 		apiKeys, err = s.getAPIKeys(ctx, cfg.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get API keys: %w", err)

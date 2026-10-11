@@ -8,6 +8,7 @@ import (
 
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
@@ -26,6 +27,24 @@ func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientPro
 		return nil, err
 	}
 	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol)
+}
+
+// selectSystemOneCandidates 只从 System One 渠道精确匹配模型：它不做协议转换，
+// 聊天渠道既不能服务 /v1/systemone，也不会被模糊匹配补进来。
+func (s *Server) selectSystemOneCandidates(ctx context.Context, model string) ([]*modelpkg.Config, error) {
+	channels, err := readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
+			return cache.GetEnabledSystemOneChannelsSnapshotByModel(ctx, model)
+		},
+		func() ([]*modelpkg.Config, error) {
+			return s.store.GetEnabledSystemOneChannelsByModel(ctx, model)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterCooldownChannels(ctx, channels, model, util.ProtocolSystemOne)
 }
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and

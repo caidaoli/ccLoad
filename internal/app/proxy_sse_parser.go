@@ -168,7 +168,7 @@ func (u *usageAccumulator) captureResponseModel(payload map[string]any, upstream
 
 	var candidates []string
 	switch strings.ToLower(strings.TrimSpace(upstreamProtocol)) {
-	case "openai", "codex":
+	case "openai", "codex", "system_one":
 		candidates = []string{nestedResponseModel(payload, "response"), responseModelValue(payload, "model")}
 	case "anthropic":
 		candidates = []string{nestedResponseModel(payload, "message"), responseModelValue(payload, "model")}
@@ -1575,8 +1575,8 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, upstreamProtocol str
 			log.Printf("[WARN] OpenAI 渠道返回未知的 usage 格式，keys: %v", getUsageKeys(usage))
 		}
 
-	case "anthropic":
-		// Anthropic平台:input_tokens + output_tokens + cache字段
+	case "anthropic", "system_one":
+		// Anthropic平台:input_tokens + output_tokens + cache字段；System One 同名字段
 		u.applyAnthropicOrResponsesUsage(usage)
 
 	default:
