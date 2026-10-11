@@ -15,6 +15,12 @@
 
 - **上游 HTTP/2 健康探测**(`server.go:buildHTTPTransport`+`codex_utls_transport.go:newCodexUTLSH2Transport`):普通 HTTPS 与专用 uTLS H2 连接共用 30 秒无入站帧后发 PING、15 秒无应答关闭连接的策略。只作用于实际使用 H2 的连接,不改变 H1/代理协议选择;这是连接级探测,不替代首字节/流式总超时、下游 SSE 心跳或 WebSocket 心跳,也不恢复已中断的生成。
 
+## 动态思考等级
+
+- 系统设置 `reasoning_auto` 使用 JSON：`enabled`、`decision_channel_id`、`decision_model`、`business_models`、`timeout_ms`。默认关闭，空业务模型名单不启用任何模型；名单按去除思考后缀后的逻辑模型精确匹配，不支持通配符。超时范围 100–10000 ms，默认 2000 ms；保存后重启生效。
+- 判断服务沿用渠道管理。普通判断渠道必须明确声明聊天协议，并能完成不带工具的单次生成；Cursor Agent bridge 不支持该调用。System One 渠道的每个 URL 只能声明 `system_one`，沿用 URL、API Key、模型录入和导入导出。它是独立上游决策能力，不增加聊天协议转换，不要求 `/models`，定时聊天检测跳过它；手动测试发送原生 `POST /v1/systemone`。
+- 业务日志可空 `reasoning_decision` JSON 与内部日志来源 `decision` 是持久化和管理 API 契约；三种数据库及混合存储读写均需保留。旧日志元数据为空时行为不变。TypeSafe 旧错误分析设置与 `jev` 日志来源继续退役。
+
 ## 已下线设置
 
 - TypeSafe（Jev）错误分析已移除。`TypeSafe_enabled`/`TypeSafe_api_key` 旧行保留在 `system_settings` 中不删，迁移不再播种；`admin_settings.go:retiredSettingKeys` 让列表/单项查询不展示、批量写入按未知设置拒绝。历史 `log_source=jev` 日志行同样不删，但前后端不再识别该来源：读出按 proxy 归一，仅在“全部日志”中可见，不再有 Jev 专属标记、消息解析和 Debug 入口。

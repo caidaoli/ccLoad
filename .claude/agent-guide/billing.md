@@ -2,6 +2,8 @@
 
 修改成本、Token/Key 白名单、额度窗口、采样对账或手动重置时读取。
 
+- **内部思考判断**：`log_source=decision` 的 usage、成本及渠道/模型单独记录；它是网关运营开销，`auth_token_id=0`，不累计客户端业务令牌或费用限额。已知成本计入判断渠道日成本与适用的 OAuth 账本，业务请求数、健康度与默认业务汇总继续只统计 `proxy`。缺 usage 或定价时使用 `reasoning_decision.cost_unknown=true` 明确标记未知费用，不把零金额当成免费。业务日志的 `reasoning_decision` 保留建议、实际应用/覆盖状态、耗时和回退原因；`thinking_effort` 仍表示实际发送等级。
+
 - **原生 Images 计费**(`proxy_sse_parser.go`、`proxy_util.go:computeRequestCost`):原生 Images 的顶层 usage 保留普通 token 统计，并独立提取 text/image/cache 明细；`cached_tokens_details` 从含缓存的输入明细扣除后计费。已登记图片费率时以图片专项成本替代普通 token 成本，不重复累加 Responses tool cost。flare/sunburst 使用已登记官方费率，不套 Image 2 按尺寸估算。基础 `gpt-image-2.5` 官方独立费率尚未确认（2026-09-10 模型文档返回 404），不假定等同某变体，维持现有普通价格目录/自定义价格回退；该回退不代表已核实的图片专项费率。
 - **Anthropic web_search 按次计费**(`proxy_sse_parser.go`、`util.CalculateWebSearchToolCost`):`usage.server_tool_use.web_search_requests` 是累计快照，只采纳正值（与 token 字段同一占位 0 规则），按官方 $10/1K 次、与模型无关计入 `GetToolCostUSD`，经 `computeRequestCost` 的工具成本项叠加到标准 token 成本（不受渠道模型价格覆盖）；搜索结果进入上下文的 token 照常计费。text/plain SSE 回退复制原始字段而非合计，避免 JSON 扫描与 SSE 回退各计一次。web_fetch 无额外费用，不计。
 

@@ -353,6 +353,8 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 	switch strings.TrimSpace(c.Query("log_source")) {
 	case "", model.LogSourceProxy:
 		lf.LogSource = model.LogSourceProxy
+	case model.LogSourceDecision:
+		lf.LogSource = model.LogSourceDecision
 	case model.LogSourceScheduledCheck:
 		lf.LogSource = model.LogSourceScheduledCheck
 	case model.LogSourceManualTest:

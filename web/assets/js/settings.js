@@ -126,6 +126,8 @@ const numericSettingConstraints = new Map([
 
 function settingValueForDisplay(key, value) {
   const normalizedValue = String(value ?? '');
+  // 持久化 JSON 的格式与编辑器序列化不同，统一成编辑器形式避免误判为已修改。
+  if (key === 'reasoning_auto' && !validateReasoningAuto(normalizedValue)) return formatReasoningAuto(parseReasoningAuto(normalizedValue));
   if (!byteSettingKeys.has(key)) return normalizedValue;
 
   const bytes = Number(normalizedValue);
@@ -201,6 +203,8 @@ function validateSettingInput(setting, value) {
     return validateOptionalOAuthURLInput(normalizedValue);
   }
 
+  if (setting.key === 'reasoning_auto') return validateReasoningAuto(normalizedValue);
+
   if (setting.key === modelCustomPricingSettingKey) {
     return validateCustomPricingInput(normalizedValue);
   }
@@ -271,6 +275,121 @@ function validateCustomPricingInput(value) {
     if (!checkObjectFields(object, allowedFields) || !checkPrices(object)) return t('settings.validation.customPricingFields');
   }
   return '';
+}
+
+const reasoningAutoDefaults = { enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 };
+let reasoningAutoChannels = [];
+// 持久化值无效时编辑器锁定：控件只能显示默认值，任何编辑都会覆盖真实配置，只允许通过重置恢复。
+let reasoningAutoLocked = false;
+
+// 与后端 model.RoutingModelName 一致：只有尾部括号内是已知等级、特殊值或非负整数预算才算思考后缀，
+// 其余带括号的模型名（如上游真的叫 foo(bar)）是合法的精确名。
+function hasThinkingSuffix(name) {
+  const match = /^(.*)\(([^(]*)\)$/.exec(name);
+  if (!match || !match[1].trim()) return false;
+  return /^(none|auto|-1|minimal|low|medium|high|xhigh|max|\+?\d+)$/i.test(match[2].trim());
+}
+
+function parseReasoningAuto(value) {
+  return validateReasoningAuto(value) ? { ...reasoningAutoDefaults } : { ...reasoningAutoDefaults, ...JSON.parse(value) };
+}
+
+function formatReasoningAuto(config) {
+  const { enabled, decision_channel_id, decision_model, business_models, timeout_ms } = config;
+  return JSON.stringify({ enabled, decision_channel_id, decision_model, business_models, timeout_ms });
+}
+
+function validateReasoningAuto(value) {
+  let config;
+  try { config = JSON.parse(value); } catch (_) { return t('settings.reasoningAuto.invalid'); }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return t('settings.reasoningAuto.invalid');
+  config = { ...reasoningAutoDefaults, ...config };
+  if (typeof config.enabled !== 'boolean'
+    || !Number.isSafeInteger(config.decision_channel_id) || config.decision_channel_id < 0
+    || typeof config.decision_model !== 'string'
+    || !Array.isArray(config.business_models)
+    || config.business_models.some(model => typeof model !== 'string' || !model.trim() || /[*?]/.test(model) || hasThinkingSuffix(model.trim()))
+    || new Set(config.business_models.map(model => model.trim())).size !== config.business_models.length
+    || !Number.isSafeInteger(config.timeout_ms) || config.timeout_ms < 100 || config.timeout_ms > 10000
+    || (config.enabled && (!config.decision_channel_id || !config.decision_model.trim() || !config.business_models.length))) {
+    return t('settings.reasoningAuto.invalid');
+  }
+  return '';
+}
+
+// 文案通过 data-i18n* 绑定，切换语言时由 i18n.translatePage 原地更新，无需重建编辑器而丢失未保存的编辑。
+function renderReasoningBusinessModelRow(model, disabled = '') {
+  return `<div class="multimodal-fallback-row"><input class="form-input" data-reasoning-model value="${escapeHtml(model)}" data-i18n-aria-label="settings.reasoningAuto.businessModels" aria-label="${escapeHtml(t('settings.reasoningAuto.businessModels'))}"${disabled}><button type="button" class="btn-icon" data-action="remove-reasoning-model" data-i18n-aria-label="settings.reasoningAuto.removeModel" aria-label="${escapeHtml(t('settings.reasoningAuto.removeModel'))}"${disabled}>&times;</button></div>`;
+}
+
+function renderReasoningAutoInput(value) {
+  const config = parseReasoningAuto(value);
+  const error = validateReasoningAuto(value);
+  if (error) showError(t('settings.msg.invalidValue', { name: settingLabel('reasoning_auto'), reason: error }));
+  reasoningAutoLocked = Boolean(error);
+  const disabled = reasoningAutoLocked ? ' disabled' : '';
+  const label = key => `<span data-i18n="settings.reasoningAuto.${key}">${escapeHtml(t('settings.reasoningAuto.' + key))}</span>`;
+  const lockedNote = reasoningAutoLocked
+    ? `<p class="common-models-description" role="alert">${label('locked')} <code>${escapeHtml(value)}</code></p>`
+    : '';
+  return `<div id="reasoningAutoEditor">
+    <input type="hidden" id="reasoning_auto" value="${escapeHtml(value)}">
+    ${lockedNote}
+    <label class="settings-bool-option"><input type="checkbox" data-reasoning-field="enabled" ${config.enabled ? 'checked' : ''}${disabled}>${label('enabled')}</label>
+    <label class="form-label" for="reasoningDecisionChannel">${label('channel')}</label>
+    <select class="form-input" id="reasoningDecisionChannel" data-reasoning-field="decision_channel_id"${disabled}><option value="${config.decision_channel_id}">${config.decision_channel_id || '—'}</option></select>
+    <label class="form-label" for="reasoningDecisionModel">${label('model')}</label>
+    <select class="form-input" id="reasoningDecisionModel" data-reasoning-field="decision_model"${disabled}><option value="${escapeHtml(config.decision_model)}">${escapeHtml(config.decision_model) || '—'}</option></select>
+    <label class="form-label">${label('businessModels')}</label>
+    <div id="reasoningBusinessModels">${config.business_models.map(model => renderReasoningBusinessModelRow(model, disabled)).join('')}</div>
+    <button type="button" class="btn btn-secondary btn-sm" data-action="add-reasoning-model"${disabled}>${label('addModel')}</button>
+    <label class="form-label" for="reasoningTimeout">${label('timeout')}</label>
+    <input class="settings-input settings-input--number" id="reasoningTimeout" type="number" min="100" max="10000" step="1" data-reasoning-field="timeout_ms" value="${config.timeout_ms}"${disabled}>
+    <p class="common-models-description">${label('note')}</p>
+  </div>`;
+}
+
+function refreshReasoningModelOptions(selected) {
+  const channel = reasoningAutoChannels.find(item => item.id === Number(document.getElementById('reasoningDecisionChannel')?.value));
+  const select = document.getElementById('reasoningDecisionModel');
+  if (!select) return;
+  const models = [...new Set((channel?.models || []).map(item => typeof item === 'string' ? item : item.model).filter(Boolean))];
+  if (selected && !models.includes(selected)) models.unshift(selected);
+  select.innerHTML = `<option value="">—</option>` + models.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('');
+  select.value = selected || '';
+}
+
+async function loadReasoningAutoChannels() {
+  const input = document.getElementById('reasoning_auto');
+  if (!input) return;
+  try {
+    const channels = await fetchDataWithAuth('/admin/channels');
+    if (input !== document.getElementById('reasoning_auto')) return;
+    const select = document.getElementById('reasoningDecisionChannel');
+    const selected = select.value;
+    // 后端要求判断渠道已启用；已选的禁用渠道仍保留，避免下拉框静默改值。
+    reasoningAutoChannels = (Array.isArray(channels) ? channels : []).filter(channel => channel.enabled || String(channel.id) === selected);
+    select.innerHTML = '<option value="0">—</option>' + reasoningAutoChannels.map(channel => `<option value="${channel.id}">${escapeHtml(channel.name)}</option>`).join('');
+    if (!reasoningAutoChannels.some(channel => String(channel.id) === selected) && selected !== '0') {
+      select.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
+    }
+    select.value = selected;
+    refreshReasoningModelOptions(parseReasoningAuto(input.value).decision_model);
+  } catch (error) { showError(t('settings.reasoningAuto.loadFailed') + ': ' + error.message); }
+}
+
+function collectReasoningAutoEditor() {
+  const editor = document.getElementById('reasoningAutoEditor');
+  const input = document.getElementById('reasoning_auto');
+  if (!editor || !input || reasoningAutoLocked) return;
+  input.value = formatReasoningAuto({
+    enabled: editor.querySelector('[data-reasoning-field="enabled"]').checked,
+    decision_channel_id: Number(document.getElementById('reasoningDecisionChannel').value),
+    decision_model: document.getElementById('reasoningDecisionModel').value,
+    business_models: Array.from(editor.querySelectorAll('[data-reasoning-model]')).map(item => item.value.trim()),
+    timeout_ms: Number(document.getElementById('reasoningTimeout').value)
+  });
+  markChanged(input);
 }
 
 const runtimeMetricDomains = [
@@ -1510,7 +1629,7 @@ function getSettingGroupInfo(key) {
 
   const defs = [
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
-    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
+    { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' || k === 'reasoning_auto' },
 
     { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
@@ -1742,6 +1861,7 @@ function renderSettings(settings) {
       if (row) tbody.appendChild(row);
     }
   }
+  loadReasoningAutoChannels();
   updateDirtyStatus();
 }
 
@@ -1769,6 +1889,17 @@ function initSettingsEventDelegation() {
       checkForUpdates(updateCheckBtn);
       return;
     }
+    const addModel = e.target.closest('[data-action="add-reasoning-model"]');
+    const removeModel = e.target.closest('[data-action="remove-reasoning-model"]');
+    if (addModel || removeModel) {
+      if (addModel) {
+        const container = document.getElementById('reasoningBusinessModels');
+        container.insertAdjacentHTML('beforeend', renderReasoningBusinessModelRow(''));
+        container.lastElementChild.querySelector('input').focus();
+      } else removeModel.closest('.multimodal-fallback-row').remove();
+      collectReasoningAutoEditor();
+      return;
+    }
     const resetBtn = e.target.closest('.setting-reset-btn');
     if (resetBtn) {
       resetSetting(resetBtn.dataset.key);
@@ -1778,7 +1909,10 @@ function initSettingsEventDelegation() {
   // 输入变更：input 让脏状态与错误标记随键入即时更新，change 覆盖 radio/select
   const onEdit = (e) => {
     const input = e.target.closest('input, select');
-    if (input) markChanged(input);
+    if (input?.hasAttribute?.('data-reasoning-field') || input?.hasAttribute?.('data-reasoning-model')) {
+      if (input.id === 'reasoningDecisionChannel' && e.type === 'change') refreshReasoningModelOptions('');
+      collectReasoningAutoEditor();
+    } else if (input) markChanged(input);
   };
   tbody.addEventListener('input', onEdit);
   tbody.addEventListener('change', onEdit);
@@ -1807,6 +1941,7 @@ async function checkForUpdates(button) {
 }
 
 function renderInput(setting) {
+  if (setting.key === 'reasoning_auto') return renderReasoningAutoInput(setting.value);
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
   const placeholder = oauthBaseURLPlaceholders.get(setting.key);
@@ -1891,10 +2026,17 @@ function markChanged(input) {
   updateDirtyStatus();
 }
 
+// reasoning_auto 的值存放在 hidden input，错误标记与聚焦需落到可见的编辑器控件上。
+function reasoningAutoEditorControls() {
+  const editor = document.getElementById('reasoningAutoEditor');
+  return editor ? Array.from(editor.querySelectorAll('input, select')) : [];
+}
+
 function setSettingInvalid(key, invalid) {
   const control = getSettingControl(key);
   if (!control) return;
-  const inputs = control.radios ? Array.from(control.radios) : [control.input];
+  const editorControls = key === 'reasoning_auto' ? reasoningAutoEditorControls() : [];
+  const inputs = control.radios ? Array.from(control.radios) : [control.input, ...editorControls.filter(item => item !== control.input)];
   for (const input of inputs) {
     if (invalid) input.setAttribute?.('aria-invalid', 'true');
     else input.removeAttribute?.('aria-invalid');
@@ -1906,7 +2048,8 @@ function focusSettingControl(key) {
   const control = getSettingControl(key);
   if (!control?.input) return;
   control.row?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-  control.input.focus?.({ preventScroll: true });
+  const target = key === 'reasoning_auto' ? reasoningAutoEditorControls().find(item => item.type !== 'hidden' && !item.disabled) : null;
+  (target || control.input).focus?.({ preventScroll: true });
 }
 
 function isSettingChanged(key, control) {
@@ -1970,6 +2113,12 @@ function setSettingControlValue(key, value) {
     control.input.value = normalizedValue;
   }
 
+  if (key === 'reasoning_auto' && control?.input) {
+    const editor = document.getElementById('reasoningAutoEditor');
+    if (editor) editor.outerHTML = renderReasoningAutoInput(normalizedValue);
+    loadReasoningAutoChannels();
+    return getSettingControl(key); // 重建替换了 hidden input，旧节点已脱离文档
+  }
   if (key === globalCooldownRulesSettingKey) updateGlobalCooldownRulesSummary(normalizedValue);
   if (key === modelMultimodalFallbackSettingKey) updateMultimodalFallbackSummary(normalizedValue);
   if (key === modelCustomPricingSettingKey) updateCustomPricingSummary(normalizedValue);

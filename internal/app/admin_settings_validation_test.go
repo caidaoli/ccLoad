@@ -123,3 +123,36 @@ func buildManyFallbackPairs(count int) string {
 	}
 	return "{" + strings.Join(pairs, ",") + "}"
 }
+
+func TestReasoningAutoSettingValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		raw   string
+		valid bool
+	}{
+		{`{"enabled":false}`, true},
+		{`{"enabled":true,"decision_channel_id":1,"decision_model":"jev-latest","business_models":["gpt-5"],"timeout_ms":100}`, true},
+		{`{"enabled":true}`, false},
+		{`{"timeout_ms":99}`, false}, {`{"timeout_ms":10001}`, false},
+		{`{"business_models":["gpt-*"]}`, false}, {`{"business_models":["gpt-5(high)"]}`, false},
+		{`{"enabled":null}`, false}, {`{"decision_channel_id":null}`, false},
+		{`{"decision_model":null}`, false}, {`{"business_models":null}`, false}, {`{"timeout_ms":null}`, false},
+		{`{"ENABLED":null}`, false}, {`{"BUSINESS_MODELS":null}`, false},
+		{`{"enabled":null,"ENABLED":false}`, true}, {`{"business_models":null,"business_models":[]}`, true},
+		{`{"enabled":"false"}`, false}, {`{"decision_channel_id":"0"}`, false},
+		{`{"decision_model":0}`, false}, {`{"business_models":{}}`, false}, {`{"timeout_ms":"2000"}`, false},
+		{`null`, false}, {`[]`, false},
+	} {
+		err := validateSettingValue(reasoningAutoSettingKey, "json", tc.raw)
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: error = %v, valid = %v", tc.raw, err, tc.valid)
+		}
+	}
+	cfg, err := ParseReasoningAutoConfig(`{"enabled":false}`)
+	if err != nil || cfg.TimeoutMS != 2000 || cfg.BusinessModels == nil || len(cfg.BusinessModels) != 0 {
+		t.Fatalf("default = %+v, error = %v", cfg, err)
+	}
+	if !settingsRequireRestart(map[string]string{reasoningAutoSettingKey: `{"enabled":false}`}) {
+		t.Fatal("reasoning settings must require restart")
+	}
+}

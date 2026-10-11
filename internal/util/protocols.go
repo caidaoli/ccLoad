@@ -14,4 +14,5 @@ const (
 	ProtocolCodex     = "codex"
 	ProtocolOpenAI    = "openai"
 	ProtocolGemini    = "gemini"
+	ProtocolSystemOne = "system_one"
 )

@@ -7,7 +7,7 @@ function flushAsyncWork() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function loadSettingsPage(t, settings, inputValues, { filterModels = [], initialLoadError = null } = {}) {
+async function loadSettingsPage(t, settings, inputValues, { filterModels = [], initialLoadError = null, extraElements = {} } = {}) {
   const clickListeners = [];
   const bodyListeners = new Map();
   const multimodalModalListeners = new Map();
@@ -208,7 +208,8 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], i
     ['customPricingRows', customPricingRowsContainer],
     ['customPricingSearch', customPricingSearch],
     ['customPricingEmpty', customPricingEmpty],
-    ['customPricingError', customPricingError]
+    ['customPricingError', customPricingError],
+    ...Object.entries(extraElements)
   ]);
   const definitions = new Map(settings.map((setting) => [setting.key, setting]));
   for (const [key, value] of Object.entries(inputValues)) {
@@ -399,6 +400,10 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], i
       const input = inputs[key];
       input.value = value;
       bodyListeners.get('input')?.({ target: { closest: () => input } });
+    },
+    editReasoningField(id) {
+      const field = { id, hasAttribute: (name) => name === 'data-reasoning-field' };
+      bodyListeners.get('input')?.({ type: 'input', target: { closest: () => field } });
     },
     clickRetryLoad() {
       bodyListeners.get('click')?.({
@@ -1012,4 +1017,112 @@ test('设置加载失败时提供重试入口并重新加载', async (t) => {
 
   assert.equal(page.requests.filter(({ url }) => url === '/admin/settings').length, loadsBefore + 1);
   assert.equal(page.renderCalls.some(({ template }) => template === 'tpl-setting-row'), true);
+});
+
+test('dynamic reasoning setting validates and saves its JSON contract through the restart workflow', async (t) => {
+  const initial = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
+  const value = JSON.stringify({ enabled: true, decision_channel_id: 7, decision_model: 'jev-latest', business_models: ['gpt-5'], timeout_ms: 1500 });
+  const page = await loadSettingsPage(t, [{key: 'reasoning_auto', value: initial, value_type: 'string'}], {reasoning_auto: initial});
+  page.inputs.reasoning_auto.value = value;
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), JSON.parse(value));
+  assert.equal(page.prompts.length, 1);
+  page.inputs.reasoning_auto.value = JSON.stringify({...JSON.parse(value), timeout_ms: 99});
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.equal(page.inputs.reasoning_auto.getAttribute('aria-invalid'), 'true');
+});
+
+test('invalid persisted reasoning JSON leaves settings reload and repair usable', async (t) => {
+  const invalid = JSON.stringify({ enabled: false, business_models: null });
+  const settings = [
+    { key: 'reasoning_auto', value: invalid, value_type: 'json' },
+    { key: 'max_concurrency', value: '10', value_type: 'int' }
+  ];
+  const page = await loadSettingsPage(t, settings, { reasoning_auto: invalid, max_concurrency: '10' });
+  assert.equal(page.renderCalls.filter(({ template }) => template === 'tpl-setting-row').length, 2);
+  assert.equal(page.errors.filter(error => error.includes('settings.reasoningAuto.invalid')).length, 1);
+  page.clickRetryLoad();
+  await flushAsyncWork();
+  assert.equal(page.renderCalls.filter(({ template }) => template === 'tpl-setting-row').length, 4);
+  page.setAllowSave(true);
+  page.editInput('reasoning_auto', invalid + ' ');
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 0);
+  assert.equal(page.inputs.reasoning_auto.getAttribute('aria-invalid'), 'true');
+  page.editInput('reasoning_auto', JSON.stringify({ enabled: false }));
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), { enabled: false });
+});
+
+test('persisted reasoning JSON formatting does not mark the page dirty', async (t) => {
+  const persisted = '{ "enabled": false, "timeout_ms": 2000 }';
+  const rendered = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
+  const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: persisted, value_type: 'json' }], { reasoning_auto: rendered });
+  assert.equal(page.hasUnsavedChanges(), false);
+});
+
+test('reasoning editor rejects explicit null and incorrect field types', async (t) => {
+  const initial = JSON.stringify({ enabled: false });
+  const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: initial, value_type: 'json' }], { reasoning_auto: initial });
+  page.setAllowSave(true);
+  for (const [field, invalid] of Object.entries({ enabled: 'false', decision_channel_id: '0', decision_model: 0, business_models: {}, timeout_ms: '2000' })) {
+    for (const value of [null, invalid]) {
+      page.editInput('reasoning_auto', JSON.stringify({ enabled: false, [field]: value }));
+      page.saveButton.click();
+      await flushAsyncWork();
+      assert.equal(saveRequests(page).length, 0, field);
+      assert.equal(page.inputs.reasoning_auto.getAttribute('aria-invalid'), 'true', field);
+    }
+  }
+});
+
+test('reasoning business models reject only parseable thinking suffixes and wildcards', async (t) => {
+  const initial = JSON.stringify({ enabled: false });
+  const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: initial, value_type: 'json' }], { reasoning_auto: initial });
+  page.setAllowSave(true);
+  for (const model of ['gpt-5(high)', 'gpt-5( Auto )', 'gpt-5(8192)', 'gpt-5(none)', 'gpt-*', 'gpt-5?']) {
+    page.editInput('reasoning_auto', JSON.stringify({ enabled: false, business_models: [model] }));
+    page.saveButton.click();
+    await flushAsyncWork();
+    assert.equal(saveRequests(page).length, 0, model);
+    assert.equal(page.inputs.reasoning_auto.getAttribute('aria-invalid'), 'true', model);
+  }
+  const accepted = JSON.stringify({ enabled: false, business_models: ['foo(bar)', 'gpt-5(preview)', '(high)'] });
+  page.editInput('reasoning_auto', accepted);
+  page.saveButton.click();
+  await flushAsyncWork();
+  assert.equal(saveRequests(page).length, 1);
+  assert.deepEqual(JSON.parse(JSON.parse(saveRequests(page)[0].options.body).reasoning_auto), JSON.parse(accepted));
+});
+
+test('invalid persisted reasoning value is not overwritten by editor edits until reset', async (t) => {
+  const invalid = JSON.stringify({ enabled: true, decision_channel_id: 7, decision_model: 'judge', business_models: ['gpt-5(high)'], timeout_ms: 1500 });
+  const defaults = JSON.stringify({ enabled: false, decision_channel_id: 0, decision_model: '', business_models: [], timeout_ms: 2000 });
+  const extraElements = {
+    reasoningAutoEditor: {
+      querySelector: (selector) => (selector === '[data-reasoning-field="enabled"]' ? { checked: true } : null),
+      querySelectorAll: () => []
+    },
+    reasoningDecisionChannel: { value: '0' },
+    reasoningDecisionModel: { value: '' },
+    reasoningTimeout: { value: '2000' }
+  };
+  const page = await loadSettingsPage(t, [{ key: 'reasoning_auto', value: invalid, value_type: 'json', default_value: defaults }],
+    { reasoning_auto: invalid }, { extraElements });
+  page.editReasoningField('reasoningTimeout');
+  assert.equal(page.inputs.reasoning_auto.value, invalid);
+  assert.equal(page.hasUnsavedChanges(), false);
+
+  page.clickReset('reasoning_auto');
+  page.editReasoningField('reasoningTimeout');
+  assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...JSON.parse(defaults), enabled: true });
+  assert.equal(page.hasUnsavedChanges(), true);
 });

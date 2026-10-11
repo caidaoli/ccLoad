@@ -2,6 +2,8 @@
 
 修改模型解析、候选过滤、Key/URL 选择、请求规则或多模态回退时读取。
 
+- **动态思考等级**(`reasoning_auto`)只在客户端未提供思考后缀或显式等级时补充；`(auto)` 仍表示使用模型默认行为，并跳过网关判断。自动建议不改变业务模型名或路由身份，每次实际发送按重定向后的模型目录裁剪；渠道 body rules 继续最后生效。System One 渠道只服务内部判断和原生管理测试，普通模型列表、聊天候选、自动协议探测与聊天定时检测均排除它。
+
 - **选择顺序**:成本限额检查 → 可用时段过滤 → 冷却过滤(正确性优先;模型冷却按各渠道解析重定向/模糊匹配后的实际上游模型过滤)→ 排序二选一:`enable_health_score` 默认 **false** 走渠道平滑加权轮询(按有效 Key 数),开启才走健康度排序(`calculateEffectivePriority`:`P_eff = Priority - 失败惩罚 - TTFB惩罚`,两种惩罚各按样本量打置信度折扣,TTFB 部分还要 `enable_ttfb_score` 单独开)
 - **会话粘性**(`session_affinity.go`):`/v1/messages` 以「令牌 + 会话 ID」绑定上次成功的渠道与 Key,TTL 1h(对齐最长 prompt cache),每次成功覆盖写并续期。会话 ID 取 `X-Claude-Code-Session-Id` → `metadata.user_id` 的 session,两者都没有就不绑定(不按内容哈希猜)。只替代同层轮询:绑定渠道须仍在候选中且配置优先级不低于任何候选,否则按常规顺序选路;绑定 Key 须可用且处于最高可用 Key 档。绑定渠道冷却/失败后,下一次成功自然改绑,旧渠道恢复也不回迁。进程内状态,重启即失;count_tokens 不参与。Codex Responses(HTTP `/v1/responses` 含 compact,以及下游 WS 每个 turn)共用同一存储与规则,会话 ID 取执行会话的 `Session-Id`(+`Thread-Id`),键带 `codex` 协议段与 Anthropic 不相交;无 `Session-Id` 不绑定,不用 `prompt_cache_key` 猜会话。执行会话已钉住的渠道(在用的上游 WS 亲和或 RetryOtherKeys 首选渠道)优先于会话粘性
 - **渠道可用时段**(`model/config.go:IsAvailableAt`+`selector_cooldown.go:filterAvailableTimeChannels`):`available_time_start/end`(HH:MM,服务器本地时间)必须成对设置,均空=全天;支持跨午夜(如 22:00–08:00),半开区间,起止相等视为全天。硬路由约束:在冷却过滤与全冷却兜底**之前**过滤,时段外渠道绝不因「所有渠道冷却」被兜底选中

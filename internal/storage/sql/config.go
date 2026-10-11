@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -145,6 +146,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	if err := s.loadConfigsAuxConcurrent(ctx, configs); err != nil {
 		return nil, err
 	}
+	configs = slices.DeleteFunc(configs, func(cfg *model.Config) bool { return cfg.IsSystemOne() })
 	if routingModel != "*" {
 		matched := configs[:0]
 		for _, cfg := range configs {
@@ -173,6 +175,9 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	authType := model.NormalizeAuthType(c.AuthType)
 	if authType == "" {
 		return nil, fmt.Errorf("invalid auth_type %q", c.AuthType)
+	}
+	if c.IsSystemOne() && authType != model.AuthTypeAPIKey {
+		return nil, errors.New("system one channels require api_key authentication")
 	}
 	if authType != model.AuthTypeAPIKey && strings.TrimSpace(c.OAuthCredential) == "" {
 		return nil, fmt.Errorf("%s channel requires a credential", authType)
@@ -326,6 +331,9 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	}
 
 	name := strings.TrimSpace(upd.Name)
+	if upd.IsSystemOne() && existing.GetAuthType() != model.AuthTypeAPIKey {
+		return nil, errors.New("system one channels require api_key authentication")
+	}
 	urls := upd.URLs.Clone()
 	if err := urls.Normalize(); err != nil {
 		return nil, err

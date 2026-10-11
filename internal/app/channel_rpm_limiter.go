@@ -179,10 +179,12 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if err != nil {
 		return nil, err
 	}
+	reasoningBody := reasoningHTTPRequestBody(req)
 	if errCompress := compressCodexOAuthResponsesBody(cfg, req); errCompress != nil {
 		release()
 		return nil, errCompress
 	}
+	reasoningBusinessSending(req.Context(), reasoningBody)
 	resp, err := s.getClientForChannel(cfg).Do(req)
 	if err != nil {
 		release()
@@ -191,6 +193,13 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if resp == nil || resp.Body == nil {
 		release()
 		return resp, nil
+	}
+	if evidence, _ := req.Context().Value(reasoningResponseLimitKey{}).(*reasoningResponseEvidence); evidence != nil {
+		var capture *reasoningResponseEvidence
+		if resp.Header.Get("Content-Encoding") == "" {
+			capture = evidence
+		}
+		resp.Body = &reasoningResponseReader{body: resp.Body, remaining: reasoningResponseMaxBytes, evidence: capture}
 	}
 	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	return resp, nil

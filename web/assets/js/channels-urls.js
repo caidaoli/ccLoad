@@ -1,6 +1,6 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
 const INLINE_EXACT_URL_MARKER = '#';
-const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
+const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini', 'system_one'];
 const inlineURLProtocolComboboxes = new Map();
 
 function getInlineURLProtocolOptions() {
@@ -9,7 +9,8 @@ function getInlineURLProtocolOptions() {
     { value: 'anthropic', label: 'Anthropic' },
     { value: 'codex', label: 'Codex' },
     { value: 'openai', label: 'OpenAI' },
-    { value: 'gemini', label: 'Gemini' }
+    { value: 'gemini', label: 'Gemini' },
+    { value: 'system_one', label: window.t('channels.systemOne') }
   ];
 }
 
@@ -437,12 +438,14 @@ async function testInlineURL(index, buttonElement) {
   }
 
   const firstModel = models[0];
-  const url = runtimeInlineURL(inlineURLTableData[index]);
+  const urlConfig = normalizeInlineURLConfig(inlineURLTableData[index]);
+  const url = runtimeInlineURL(urlConfig);
   if (!url) {
     window.showNotification(window.t('channels.fillApiUrlFirst'), 'warning');
     return;
   }
 
+  const isSystemOne = urlConfig.protocols.includes('system_one');
   const firstKey = (getValidInlineKeyRows()[0] || {}).api_key || '';
   if (!firstKey) {
     window.showNotification(window.t('channels.emptyKeyCannotTest'), 'warning');
@@ -460,9 +463,9 @@ async function testInlineURL(index, buttonElement) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: firstModel,
-        stream: true,
+        stream: !isSystemOne,
         content: 'test',
-        client_protocol: 'anthropic',
+        client_protocol: isSystemOne ? 'system_one' : 'anthropic',
         key_index: 0,
         base_url: url
       })
@@ -599,6 +602,7 @@ if (typeof module !== 'undefined' && module.exports) {
     createURLRow,
     normalizeInlineURLConfig,
     normalizeInlineURLConfigs,
-    runtimeInlineURL
+    runtimeInlineURL,
+    testInlineURL
   };
 }

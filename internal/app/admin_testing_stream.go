@@ -45,6 +45,11 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 
+	if cfg.IsSystemOne() {
+		writeChatErrorEvent(c, "System One channels only support native decision tests")
+		return
+	}
+
 	persistedCfg := cfg
 	cfg, err = s.selectChannelTestModel(cfg, &testReq, false)
 	if err != nil {

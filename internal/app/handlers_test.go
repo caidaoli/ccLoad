@@ -398,6 +398,15 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
+			name:  "log_source_decision",
+			query: "log_source=decision",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.LogSource != model.LogSourceDecision {
+					t.Errorf("LogSource=%q, want decision", lf.LogSource)
+				}
+			},
+		},
+		{
 			name:  "log_source_checkin",
 			query: "log_source=checkin",
 			check: func(t *testing.T, lf model.LogFilter) {

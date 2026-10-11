@@ -1858,3 +1858,29 @@ func TestConfigOAuthQuotaPassthroughPersistence(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemOneConfigExcludedFromChatCandidates(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{Name: "decision-only", Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://one.example/v1", Protocols: []string{"system_one"}}},
+		ModelEntries: []model.ModelEntry{{Model: "jev-latest"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil || !got.IsSystemOne() {
+		t.Fatalf("GetConfig() = %+v, error = %v", got, err)
+	}
+	for _, name := range []string{"*", "jev-latest"} {
+		candidates, err := store.GetEnabledChannelsByModel(ctx, name)
+		if err != nil || len(candidates) != 0 {
+			t.Fatalf("chat candidates(%s) = %+v, error = %v", name, candidates, err)
+		}
+	}
+	got.URLs = append(got.URLs, model.ChannelURL{URL: "https://chat.example"})
+	if _, err := store.UpdateConfig(ctx, cfg.ID, got); err == nil {
+		t.Fatal("mixed capabilities must be rejected")
+	}
+}

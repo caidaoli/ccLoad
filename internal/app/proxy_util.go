@@ -270,6 +270,10 @@ type proxyRequestContext struct {
 	debugData               *model.DebugLogEntry   // Debug日志数据（debug开启时填充）
 	skipProxyLog            bool                   // 管理测试等外层会统一持久化日志的调用路径
 	thinkingEffort          string
+	reasoning               *reasoningTurn
+	reasoningExpected       string
+	reasoningApplied        string
+	reasoningApplyReason    string
 	routingSession          *responsesExecutionSession // 当前 Responses execution session 的首选渠道
 	sessionAffinityKey      string                     // Anthropic/Codex 会话绑定键（令牌+会话 ID），空表示不绑定
 	sessionAffinity         sessionAffinityTarget      // 请求开始时的会话绑定，channelID=0 表示无
@@ -884,6 +888,7 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	}
 	// 后缀来自客户端字面模型名，能力却属于重定向/模糊匹配后的实际上游模型。
 	bodyToSend = applyThinkingSuffixForModel(bodyToSend, reqCtx.clientProtocol, requestedModel, actualModel)
+	bodyToSend = applyAutomaticReasoning(bodyToSend, reqCtx, upstreamProtocol, actualModel)
 	// billing/CCH 块是真 Claude Code 请求的身份与签名载体。只有跨协议
 	// 转换时才能删除；Anthropic -> Anthropic 必须保留，供 OAuth finalizer
 	// 识别并保留原生 Claude Code prompt。
@@ -1035,14 +1040,11 @@ func extractThinkingEffortFromPayload(payload map[string]any) string {
 		return ""
 	}
 
-	if response, ok := payload["response"].(map[string]any); ok {
-		if effort := extractThinkingEffortFromPayload(response); effort != "" {
-			return effort
-		}
-	}
-	if message, ok := payload["message"].(map[string]any); ok {
-		if effort := extractThinkingEffortFromPayload(message); effort != "" {
-			return effort
+	for _, key := range []string{"response", "message", "provider_request"} {
+		if nested, ok := payload[key].(map[string]any); ok {
+			if effort := extractThinkingEffortFromPayload(nested); effort != "" {
+				return effort
+			}
 		}
 	}
 

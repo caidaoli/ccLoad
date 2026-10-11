@@ -139,7 +139,7 @@ func (s *Server) fuzzyModelCandidates(ctx context.Context, model string) ([]*mod
 
 	candidates := make([]*modelpkg.Config, 0, len(source))
 	for _, cfg := range source {
-		if cfg == nil || !cfg.Enabled {
+		if cfg == nil || !cfg.Enabled || cfg.IsSystemOne() {
 			continue
 		}
 		if s.configSupportsModelWithFuzzyMatch(cfg, model) {

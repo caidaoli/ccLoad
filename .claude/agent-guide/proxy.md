@@ -2,6 +2,12 @@
 
 修改代理重试、冷却、取消、SSE 或 Responses WebSocket 时读取相关章节。路径相对仓库根目录；省略目录的 app 文件位于 `internal/app/`。
 
+## 动态思考等级
+
+- 自动写入支持 OpenAI Chat 与 Responses（HTTP/WS）入口，仅生成端点本身（`/v1/chat/completions`、`/v1/responses`、`/codex/responses`）是业务轮；`/responses/compact`、`/responses/input_tokens` 等子资源不调用判断模型也不推进状态。客户端是否显式指定思考等级在历史继承和自动注入之前记录。同一轮只执行一次判断，Key/URL/协议/渠道重试与 WS 完整回放、原生增量发送共用结果；目标模型能力不明确时跳过注入。
+- 判断读取可获得的完整会话，最多 24 KiB 文本且保持 UTF-8 边界。无可靠会话 ID 时仅做独立请求判断；有身份时按认证主体、协议、会话/线程及业务模型隔离，状态不落数据库。状态最多保留 1024 个身份，按执行会话 TTL 清理；满时新身份独立判断，已有身份继续复用。升级立即生效，降级需连续两次有效低等级建议；工具续轮每三轮重评，失败或新约束提前重评（结构化错误/退出码优先，否则只看输出首行标记）。上下文不完整、错误与取消不会推进降级；超 24 KiB 截断（保留原始任务、最新要求、指令摘要和尾部）的建议仍计入降级确认；指令摘要覆盖顶层 instructions、system/developer 消息和 Codex AGENTS/user_instructions，多个来源共享独立预算。工具结果的数组或字符串化内容含图片/文件时同样视为上下文不完整，复用轮也须检查。状态在业务发送边界按实际 wire 等级提交，提交后版本递增，同轮后续重试不能撤销。
+- 整个判断过程（包括失败后的冷却写入）共用一个超时预算；预算耗尽允许冷却写入失败，不能延迟业务回退。容量满直接回退，不递归判断、不执行客户端工具、不跨渠道重试。失败保留先前有效等级，无有效等级则使用原请求默认行为；在实际业务发送前取消不提交新状态。较旧的并发 HTTP 判断不能覆盖较新的状态。
+
 ## Responses WebSocket 会话与资源
 
 - **执行身份**:同 Token 下以 `Session-Id` 标识顶层会话;存在 `Thread-Id` 时组合两者,隔离 Codex 主/子代理的 transcript、Response ID、turn lock;无 `Thread-Id` 回退原 `Session-Id` 契约。禁止改用请求体 `session_id`、`prompt_cache_key` 或每回合变化的 request/turn/window ID

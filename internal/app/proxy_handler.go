@@ -441,6 +441,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 	all := incoming.body
+	// 后续改写都经 sjson 生成新切片，incoming.body 保持客户端原文。
+	originalReasoningBody := incoming.body
 	isStreaming := incoming.isStreaming
 	httpMetrics.observeRequest(isStreaming, len(all))
 
@@ -450,6 +452,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 	requestFamily := protocol.DetectRequestFamily(effectiveRequestPath)
+	reasoningModel := incoming.requestedModel // 多模态回退改写前的客户端模型名
 	countTokensRequest := requestFamily == protocol.RequestFamilyCountTokens
 	if requestFamily == protocol.RequestFamilyAlphaSearch {
 		all = sanitizeCodexAlphaSearchBody(all)
@@ -668,6 +671,19 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream
 		reqCtx.nativeCodexBody = nativeRequestBody
+	}
+	if requestMethod == http.MethodPost && reasoningTurnEndpoint(effectiveRequestPath) && s.reasoningTarget(reqCtx) {
+		reasoningExplicit := originalReasoningExplicit(originalReasoningBody, reasoningModel)
+		transcript := all
+		if len(executionSessionRequestBody) > 0 {
+			transcript = executionSessionRequestBody
+		} else if !reasoningExplicit {
+			if local := s.localReasoningTranscript(reqCtx); local != nil {
+				transcript = local
+			}
+		}
+		s.prepareReasoningTurn(ctx, reqCtx, transcript, originalReasoningBody, reasoningExplicit)
+		ctx = withReasoningRequest(ctx, reqCtx)
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {

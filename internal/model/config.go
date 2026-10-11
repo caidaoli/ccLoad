@@ -116,10 +116,11 @@ func StripExactUpstreamURLMarker(raw string) string {
 }
 
 var supportedURLProtocols = map[string]struct{}{
-	"anthropic": {},
-	"codex":     {},
-	"openai":    {},
-	"gemini":    {},
+	"anthropic":  {},
+	"codex":      {},
+	"openai":     {},
+	"gemini":     {},
+	"system_one": {},
 }
 
 // ChannelURL is one configured upstream endpoint. Protocols is the ordered list
@@ -143,7 +144,7 @@ func (u ChannelURL) UsesAutomaticProtocolDetection() bool {
 // explicit declaration remain eligible for automatic detection.
 func (u ChannelURL) SupportsProtocol(value string) bool {
 	if u.UsesAutomaticProtocolDetection() {
-		return true
+		return strings.ToLower(strings.TrimSpace(value)) != "system_one"
 	}
 	value = strings.ToLower(strings.TrimSpace(value))
 	return slices.Contains(u.Protocols, value)
@@ -201,7 +202,29 @@ func (urls *ChannelURLs) Normalize() error {
 		}
 		seenURLs[runtimeURL] = i
 	}
+	if (*urls).IsSystemOne() {
+		for i, entry := range *urls {
+			if len(entry.Protocols) != 1 || entry.Protocols[0] != "system_one" {
+				return fmt.Errorf("urls[%d]: System One channels require only system_one on every URL", i)
+			}
+		}
+	}
 	return nil
+}
+
+// IsSystemOne reports whether this channel declares the independent decision capability.
+func (urls ChannelURLs) IsSystemOne() bool {
+	for _, entry := range urls {
+		if slices.Contains(entry.Protocols, "system_one") {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSystemOne reports whether the channel is dedicated to decision requests.
+func (c *Config) IsSystemOne() bool {
+	return c != nil && c.URLs.IsSystemOne()
 }
 
 // Clone returns a deep copy of URL configuration.

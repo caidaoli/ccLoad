@@ -51,6 +51,9 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 	if actualModel != "" && actualModel != requestModel {
 		entry.ActualModel = actualModel
 	}
+	if result["cost_unknown"] == true {
+		entry.ReasoningDecision = &model.ReasoningDecision{Status: "manual_test", CostUnknown: true}
+	}
 	populateDetectionUsage(entry, result, entry.UpstreamProtocol)
 	entry.Message = detectionMessage(result)
 	if debugData, ok := getResultDebugData(result, "debug_data"); ok {

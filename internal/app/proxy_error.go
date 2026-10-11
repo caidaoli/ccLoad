@@ -271,6 +271,7 @@ func buildProxyLogEntry(
 	if cfg.UsesAntigravityOAuth() && cfg.AntigravityCredits {
 		entry.Message += " [credits]"
 	}
+	entry.ReasoningDecision = reqCtx.reasoningLogMetadata()
 	if reqCtx.countTokens() {
 		entry.LogSource = model.LogSourceCountTokens
 		entry.Cost = 0

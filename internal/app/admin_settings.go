@@ -249,6 +249,17 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 			return
 		}
 
+		if key == reasoningAutoSettingKey {
+			policy, err := ParseReasoningAutoConfig(value)
+			if err == nil {
+				err = s.validateReasoningAutoChannel(c.Request.Context(), policy)
+			}
+			if err != nil {
+				RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid value for %s: %v", key, err))
+				return
+			}
+			continue // already parsed; validateSettingValue would parse it again
+		}
 		if err := validateSettingValue(key, setting.ValueType, value); err != nil {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid value for %s: %v", key, err))
 			return
@@ -429,6 +440,9 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "json":
 		switch key {
+		case reasoningAutoSettingKey:
+			_, err := ParseReasoningAutoConfig(value)
+			return err
 		case "antigravity_sensitive_words":
 			return validateJSONStringArray(value)
 		case modelCustomPricingSettingKey:

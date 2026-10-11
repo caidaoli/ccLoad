@@ -852,6 +852,9 @@ func (s *Server) fetchModelsForChannel(
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
+	if cfg.IsSystemOne() {
+		return nil, fmt.Errorf("system one does not provide model discovery; configure models manually")
+	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	if cfg.UsesCodeBuddyOAuth() {
@@ -1386,6 +1389,9 @@ func (s *Server) fetchModelsWithURLFallback(
 	apiKeys []string,
 	client *http.Client,
 ) (*FetchModelsResponse, error) {
+	if configuredURLs.IsSystemOne() {
+		return nil, fmt.Errorf("system one does not provide model discovery; configure models manually")
+	}
 	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
 	}
