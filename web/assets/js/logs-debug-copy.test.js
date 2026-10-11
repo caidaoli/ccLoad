@@ -403,16 +403,26 @@ test('small request costs keep significant digits instead of rounding to $0.000'
   }
 });
 
-test('reasoning logs show decision metadata, actual effort and unknown cost without exposing hidden channels', async () => {
+test('reasoning logs show a level change on the model badge and the judgment in the message', async () => {
+  const business = (client, sent, extra = {}) => ({time: Date.now(), model: 'business', thinking_effort: sent, status_code: 200, duration: 0, log_source: 'proxy',
+    reasoning_decision: {status: 'decided', trigger: 'user_input', client_effort: client, suggested_effort: sent, confidence: 0.6, ...extra}});
   for (const isTokenRole of [false, true]) {
-    await withLoadedLogsPage({isTokenRole, entries: [{time: Date.now(), model: 'business', thinking_effort: 'medium', status_code: 200, duration: 0,
-      log_source: 'decision', reasoning_decision: {status: 'decided', suggested_effort: 'high', decision_model: 'private-judge', duration_ms: 12, cost_unknown: true}}]}, ({tbody}) => {
-      assert.match(tbody.innerHTML, /logs.sourceDecision/);
-      assert.match(tbody.innerHTML, /logs.reasoning.suggested_effort: high/);
-      assert.match(tbody.innerHTML, /logs.reasoning.final: medium/);
+    await withLoadedLogsPage({isTokenRole, entries: [
+      {...business('xhigh', 'low', {decision_channel_id: 1507, decision_model: 'private-judge', decision_id: 'corr-1', context_truncated: true}), reasoning_tokens: 72},
+      business('', 'high'),
+      business('max', 'xhigh'),
+      business('medium', 'medium'),
+      {time: Date.now(), model: 'judge', status_code: 200, duration: 0, log_source: 'proxy', client_protocol: 'system_one',
+        reasoning_decision: {status: 'decided', suggested_effort: 'xhigh', confidence: 0.554, duration_ms: 12, cost_unknown: true}},
+      {time: Date.now(), model: 'judge', status_code: 504, duration: 0, log_source: 'proxy', client_protocol: 'system_one',
+        reasoning_decision: {status: 'fallback', reason: 'timeout'}}]}, ({tbody}) => {
+      const badges = [...tbody.innerHTML.matchAll(/<sup[^>]*>([^<]*)<\/sup>/g)].map(match => match[1]);
+      assert.deepEqual(badges, ['xhigh→low 72', 'high', 'max→xhigh', 'medium']);
+      assert.doesNotMatch(tbody.innerHTML, /logs\.reasoning\.changed/);
+      assert.match(tbody.innerHTML, /logs.reasoning.judged xhigh(logs.reasoning.confidence 0.55)?/);
+      assert.match(tbody.innerHTML, /logs.reasoning.failed timeout/);
       assert.match(tbody.innerHTML, /logs.costUnknown/);
-      if (isTokenRole) assert.doesNotMatch(tbody.innerHTML, /private-judge/);
-      else assert.match(tbody.innerHTML, /private-judge/);
+      assert.doesNotMatch(tbody.innerHTML, /private-judge|1507|corr-1|truncated|user_input/);
     });
   }
 });
@@ -421,6 +431,5 @@ test('unknown decision cost does not replace known business request cost', async
   await withLoadedLogsPage({entries: [{time: Date.now(), model: 'business', status_code: 200, duration: 0, cost: 0.25, log_source: 'proxy', reasoning_decision: {cost_unknown: true}}]}, ({tbody}) => {
     assert.doesNotMatch(tbody.innerHTML, /logs.costUnknown/);
     assert.match(tbody.innerHTML, /0.25/);
-    assert.match(tbody.innerHTML, /logs.reasoning.costUnknown/);
   });
 });

@@ -87,6 +87,7 @@
                 <option value="codex" data-i18n="modelTest.clientProtocolCodex">Codex</option>
                 <option value="openai" data-i18n="modelTest.clientProtocolOpenAI">OpenAI</option>
                 <option value="gemini" data-i18n="modelTest.clientProtocolGemini">Gemini</option>
+                <option value="system_one" data-i18n="modelTest.clientProtocolSystemOne">System One</option>
               `, 'filter-control--compact')}`,
         groupClass
       ),
@@ -117,7 +118,6 @@
                 <option value="proxy" data-i18n="logs.sourceProxy">请求日志</option>
                 <option value="detection" data-i18n="logs.sourceDetection">检测日志</option>
                 <option value="checkin" data-i18n="logs.sourceCheckin">签到</option>
-                <option value="decision" data-i18n="logs.sourceDecision">思考判断</option>
                 <option value="count_tokens" data-i18n="logs.sourceCountTokens">Token 计数</option>
                 <option value="all" data-i18n="logs.sourceAll">全部日志</option>
               `, 'filter-control--compact')}`,

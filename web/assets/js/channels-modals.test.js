@@ -849,6 +849,7 @@ function installEditChannelGlobals(channel, {
       classList: {
         add: (...names) => names.forEach(name => classes.add(name)),
         remove: (...names) => names.forEach(name => classes.delete(name)),
+        toggle: (name, force = !classes.has(name)) => (force ? classes.add(name) : classes.delete(name), force),
         contains: name => classes.has(name)
       },
       setAttribute() {},
@@ -1363,6 +1364,15 @@ test('quota output refills and submits booleans without leaking the previous cha
     checkbox.checked = true;
     await showAddModal();
     assert.equal(checkbox.checked, false);
+
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'test-key', priority: 0 }]);
+    for (const [entry, authType] of [[undefined, 'api_key'], ['system_one', 'system_one']]) {
+      await showAddModal(entry);
+      fixture.getElement('channelName').value = 'new-channel';
+      global.redirectTableData.push({ model: 'jev-latest', redirect_model: '' });
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted.at(-1).auth_type, authType);
+    }
   } finally {
     for (const [name, descriptor] of previous) {
       if (descriptor) Object.defineProperty(global, name, descriptor);

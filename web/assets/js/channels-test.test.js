@@ -151,10 +151,10 @@ test('System One channel test sends a native non-streaming decision request', as
   delete require.cache[modulePath];
   try {
     const { testChannel, runChannelTest } = require(modulePath);
-    await testChannel({ id: 3, name: 'decision', urls: [{url: 'https://api.typesafe.ai', protocols: ['system_one']}], models: ['jev-latest'] });
+    await testChannel({ id: 3, name: 'decision', auth_type: 'system_one', urls: [{url: 'https://api.typesafe.ai'}], models: ['jev-latest'] });
     fixture.elements.get('testStreamEnabled').checked = true;
     await runChannelTest();
-    assert.equal(fixture.requests[0].body.client_protocol, 'system_one');
+    assert.equal(Object.hasOwn(fixture.requests[0].body, 'client_protocol'), false);
     assert.equal(fixture.requests[0].body.stream, false);
     await testChannel({ id: 4, name: 'chat', models: ['chat-model'] });
     assert.equal(fixture.elements.get('testStreamEnabled').disabled, false);

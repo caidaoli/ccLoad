@@ -1266,6 +1266,7 @@ body {
 .usage-avatar--codex,
 .usage-avatar--openai { background: #10a37f; }
 .usage-avatar--gemini { background: #4285f4; }
+.usage-avatar--system_one { background: #7c3aed; }
 
 .usage-rate {
   display: inline-block;
@@ -4218,6 +4219,11 @@ body {
   content: none;
 }
 
+/* 摘要与生效徽标成组：桌面端照常参与按钮行排列，移动端合并为一行 */
+.settings-action-meta {
+  display: contents;
+}
+
 .settings-multimodal-fallback-summary {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
@@ -4232,70 +4238,31 @@ body {
   font-size: var(--text-sm);
 }
 
-.multimodal-fallback-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.multimodal-fallback-intro {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 0.86rem;
-  line-height: 1.55;
-}
-
-.multimodal-fallback-rows {
+/* ===== 设置页弹窗共用外壳：固定头尾、主体滚动 ===== */
+.modal-content.settings-dialog {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.multimodal-fallback-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.multimodal-fallback-select {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.multimodal-fallback-arrow {
-  color: var(--color-text-secondary);
-  flex: 0 0 auto;
-}
-
-.multimodal-fallback-remove-btn {
-  flex: 0 0 auto;
-}
-
-.multimodal-fallback-empty {
-  border: 1px dashed var(--color-text-secondary);
-  border-radius: 8px;
-  color: var(--color-text-secondary);
-  margin: 0;
-  padding: 16px;
-  text-align: center;
-}
-
-.modal-content.reasoning-auto-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(820px, calc(100vw - 48px));
+  width: min(760px, calc(100vw - 48px));
   max-width: none;
   max-height: calc(100vh - 48px);
   padding: 0;
   overflow: hidden;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 14px;
+  background: var(--surface-bg-strong);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
 }
 
-.reasoning-auto-modal > .modal-header {
+.modal-content.settings-dialog--lg {
+  width: min(1080px, calc(100vw - 48px));
+}
+
+.modal-content.settings-dialog--full {
+  width: min(1440px, calc(100vw - 48px));
+  height: calc(100vh - 48px);
+}
+
+.settings-dialog-header {
   flex: 0 0 auto;
   flex-wrap: nowrap;
   align-items: flex-start;
@@ -4305,44 +4272,87 @@ body {
   border-bottom: 1px solid var(--surface-border);
 }
 
-.reasoning-auto-modal .modal-description {
-  margin-top: 5px;
-  line-height: 1.5;
+.settings-dialog-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.reasoning-auto-panel {
+.settings-dialog-header .close-btn {
+  flex: 0 0 auto;
+}
+
+.settings-dialog-header .modal-title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-dialog-header .modal-description {
+  margin-top: 4px;
+  line-height: 1.55;
+}
+
+.settings-dialog-body {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 18px 24px;
+  padding: 20px 24px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.reasoning-auto-modal > .custom-rules-footer {
+.settings-dialog-footer {
+  display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  margin: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   padding: 14px 24px;
   border-top: 1px solid var(--surface-border);
+  background: var(--surface-bg-muted);
 }
 
-.reasoning-auto-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: end;
-  gap: 14px 18px;
-  margin-bottom: 20px;
+.settings-dialog-footer-start,
+.settings-dialog-footer-meta {
+  margin-inline-end: auto;
 }
 
-.reasoning-auto-fields > * {
-  min-width: 0;
+.settings-dialog-footer-meta {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
-.reasoning-auto-fields .form-input,
-.reasoning-auto-fields .settings-input {
-  width: 100%;
+.settings-dialog-footer .btn:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
-.reasoning-model-toolbar {
+/* 弹窗内表单控件统一为紧凑尺寸，与设置表格一致 */
+.settings-dialog .form-input {
+  padding: 7px 10px;
+  border-width: 1px;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+}
+
+.settings-dialog .form-label {
+  margin-bottom: 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.settings-dialog .modern-table th {
+  padding: 10px 12px;
+  border-bottom-width: 1px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.settings-dialog-toolbar .btn {
+  padding: 7px 14px;
+}
+
+.settings-dialog-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4350,13 +4360,147 @@ body {
   margin-bottom: 12px;
 }
 
-.reasoning-model-toolbar h3 {
+.settings-dialog-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
+  color: var(--color-text);
   font-size: var(--text-sm);
+  font-weight: 600;
 }
 
-.reasoning-model-toolbar input {
+.settings-dialog-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+  color: var(--primary-600);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-dialog-search {
   width: min(280px, 100%);
+}
+
+.settings-dialog-empty,
+.multimodal-fallback-empty,
+.custom-pricing-empty {
+  margin: 0;
+  padding: 28px 16px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.settings-dialog-note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-bg-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.settings-dialog-add-btn {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px dashed var(--surface-border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.settings-dialog-add-btn:hover,
+.settings-dialog-add-btn:focus-visible {
+  border-color: var(--primary-500);
+  background: color-mix(in srgb, var(--primary-500) 6%, transparent);
+  color: var(--primary-600);
+  outline: none;
+}
+
+.settings-dialog .custom-rules-error {
+  margin: 12px 0 0;
+}
+
+/* ===== 多模态回退 ===== */
+.multimodal-fallback-list {
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.multimodal-fallback-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.multimodal-fallback-head {
+  padding-top: 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-bg-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.multimodal-fallback-rows .multimodal-fallback-row + .multimodal-fallback-row {
+  border-top: 1px solid var(--surface-border);
+}
+
+.multimodal-fallback-arrow {
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.multimodal-fallback-remove-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+/* ===== 动态思考等级 ===== */
+.reasoning-auto-switch {
+  margin-bottom: 16px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.reasoning-auto-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.6fr);
+  gap: 10px 20px;
+  margin-bottom: 22px;
+}
+
+.reasoning-auto-fields > * {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.reasoning-auto-fields .form-label {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.reasoning-auto-fields .form-input,
+.reasoning-auto-fields .searchable-select-wrapper {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -4364,16 +4508,30 @@ body {
   max-height: 320px;
   overflow: auto;
   overscroll-behavior: contain;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
 }
 
 .reasoning-model-table {
   table-layout: fixed;
 }
 
+.reasoning-model-table th,
+.reasoning-model-table td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 .reasoning-model-table th:first-child,
 .reasoning-model-table td:first-child {
-  width: 64px;
+  width: 48px;
   text-align: center;
+}
+
+.reasoning-model-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .reasoning-model-table td:last-child {
@@ -4381,145 +4539,31 @@ body {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 720px) {
-  .modal-content.reasoning-auto-modal {
-    width: calc(100vw - 24px);
-    max-height: calc(100vh - 24px);
-  }
-
-  .reasoning-auto-modal > .modal-header,
-  .reasoning-auto-panel,
-  .reasoning-auto-modal > .custom-rules-footer {
-    padding-left: 14px;
-    padding-right: 14px;
-  }
-
-  .reasoning-auto-fields {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .reasoning-model-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .reasoning-model-toolbar input {
-    width: 100%;
-  }
-}
-
-.modal-content.custom-pricing-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(1180px, calc(100vw - 48px));
-  max-width: none;
-  height: auto;
-  min-height: min(420px, calc(100vh - 48px));
-  max-height: calc(100vh - 48px);
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--surface-border-strong);
-  border-radius: 16px;
-  background: var(--surface-bg-strong);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
-}
-
-.custom-pricing-modal > .modal-header {
-  flex: 0 0 auto;
-  align-items: flex-start;
-  gap: 16px;
-  margin: 0;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--surface-border);
-}
-
-.custom-pricing-modal .modal-title {
-  margin: 0;
-}
-
-.custom-pricing-modal .modal-description {
-  margin-top: 5px;
-  line-height: 1.5;
-}
-
-.custom-pricing-panel {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin: 0;
-  padding: 18px 24px 24px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.custom-pricing-modal > .custom-rules-footer {
-  flex: 0 0 auto;
-  margin: 0;
-  padding: 14px 24px;
-  border-top: 1px solid var(--surface-border);
-  background: var(--surface-bg);
-}
-
-.custom-pricing-toolbar {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.custom-pricing-search {
-  display: flex;
-  flex: 1 1 20rem;
-  flex-direction: column;
-  gap: 6px;
-  max-width: 28rem;
-  color: var(--color-text-secondary);
-  font-size: 0.86rem;
-}
-
+/* ===== 自定义模型价格 ===== */
 .custom-pricing-table-container {
   overflow-x: auto;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
 }
 
 .custom-pricing-table {
-  min-width: 820px;
+  min-width: 780px;
 }
 
-.custom-pricing-table th,
-.custom-pricing-table td {
-  vertical-align: top;
+.custom-pricing-table th:nth-child(1) {
+  width: 26%;
 }
 
-.custom-pricing-table th:nth-child(1),
-.custom-pricing-table td:nth-child(1) {
-  min-width: 180px;
-}
-
-.custom-pricing-table th:nth-child(2),
-.custom-pricing-table th:nth-child(3),
-.custom-pricing-table th:nth-child(4),
-.custom-pricing-table th:nth-child(5) {
-  min-width: 125px;
-}
-
-/* 高上下文行的操作列为空，只约束基础价行的删除按钮列。 */
 .custom-pricing-table th:last-child,
 .custom-pricing-model-row > td:last-child {
-  width: 58px;
-  min-width: 58px;
-  white-space: nowrap;
+  width: 64px;
   text-align: center;
 }
 
-/* 同一模型的两行靠近，模型组之间保留双倍间距；横向 padding 保持一致以对齐列。 */
-.custom-pricing-model-row > td {
-  padding: 8px 10px 4px;
-  vertical-align: middle;
-}
-
+.custom-pricing-model-row > td,
 .custom-pricing-high-row > td {
-  padding: 4px 10px 8px;
-  vertical-align: middle;
+  padding: 10px 8px;
+  vertical-align: top;
 }
 
 .custom-pricing-model-row > td:first-child,
@@ -4527,16 +4571,26 @@ body {
   padding-left: 14px;
 }
 
-.custom-pricing-model-row > td:last-child,
-.custom-pricing-high-row > td:last-child {
-  padding-right: 12px;
+/* 高上下文行展开时紧贴所属模型行，两行视为一组 */
+.custom-pricing-model-row:has(+ .custom-pricing-high-row:not([data-collapsed])) > td {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+
+.custom-pricing-high-row > td {
+  padding-top: 4px;
+}
+
+.custom-pricing-table .custom-pricing-high-row[data-collapsed] {
+  display: none;
 }
 
 .custom-pricing-model-cell {
   display: flex;
-  min-width: 170px;
   flex-direction: column;
-  gap: 5px;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 170px;
 }
 
 .custom-pricing-model-id-input {
@@ -4551,6 +4605,15 @@ body {
   line-height: 1.15;
 }
 
+/* 渠道模型价格弹窗的高上下文分组标题 */
+.custom-pricing-high-label {
+  display: block;
+  color: var(--primary-600, #2563eb);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .custom-pricing-model-status[data-state="success"] {
   color: var(--success-600, #16a34a);
 }
@@ -4563,95 +4626,58 @@ body {
   color: var(--primary-600, #2563eb);
 }
 
+.custom-pricing-high-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.custom-pricing-high-toggle::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  flex: 0 0 auto;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.custom-pricing-high-toggle[aria-expanded="true"] {
+  color: var(--primary-600);
+}
+
+.custom-pricing-high-toggle[aria-expanded="true"]::before {
+  transform: rotate(45deg);
+}
+
+.custom-pricing-high-toggle:hover {
+  color: var(--primary-600);
+}
+
 .custom-pricing-number {
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.custom-pricing-high-label {
+.custom-pricing-high-row .custom-pricing-number {
+  background: color-mix(in srgb, var(--primary-500) 4%, var(--field-bg));
+}
+
+.custom-pricing-table-container .custom-pricing-empty:not([hidden]) {
   display: block;
-  color: var(--primary-600, #2563eb);
-  font-size: 0.86rem;
-  font-weight: 600;
-  line-height: 1.35;
 }
 
-/* 高上下文价格行：输入框就是表格单元格，列宽由表格列算法统一决定。
-   任何独立容器（grid/flex）都会算出与列宽无关的宽度，两行输入框必然错位。 */
-.custom-pricing-high-row > td {
-  border-bottom: 1px solid var(--neutral-200);
-  background: color-mix(in srgb, var(--surface-bg-muted) 45%, transparent);
-}
-
-.custom-pricing-empty {
-  border: 1px dashed var(--color-text-secondary);
-  border-radius: 8px;
-  color: var(--color-text-secondary);
-  margin: 12px 0 0;
-  padding: 16px;
-  text-align: center;
-}
-
-@media (max-width: 720px) {
-  .modal-content.custom-pricing-modal {
-    width: calc(100vw - 24px);
-    height: calc(100vh - 24px);
-    border-radius: 12px;
-  }
-
-  .custom-pricing-modal > .modal-header,
-  .custom-pricing-panel,
-  .custom-pricing-modal > .custom-rules-footer {
-    padding-left: 14px;
-    padding-right: 14px;
-  }
-
-  .custom-pricing-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .custom-pricing-search {
-    max-width: none;
-  }
-
-  .custom-pricing-toolbar > .btn {
-    align-self: flex-start;
-  }
-}
-
-.modal-content.runtime-metrics-modal {
-  display: flex;
-  flex-direction: column;
-  width: 90vw;
-  max-width: none;
-  height: 90vh;
-  max-height: none;
-  padding: 0;
-  overflow: hidden;
-}
-
-.runtime-metrics-modal-header {
-  flex: 0 0 auto;
-  align-items: flex-start;
-  gap: 16px;
-  margin: 0;
-  padding: 20px 22px 16px;
-  border-bottom: 1px solid var(--surface-border);
-}
-
-.runtime-metrics-modal-header .modal-description {
-  margin-top: 4px;
-}
-
-.runtime-metrics-content {
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 18px 22px;
-  overflow-y: auto;
-}
-
+/* ===== 运行状态 ===== */
 .runtime-metrics-section + .runtime-metrics-section {
-  margin-top: 26px;
+  margin-top: 28px;
 }
 
 .runtime-metrics-section-header {
@@ -4659,20 +4685,20 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 4px;
 }
 
 .runtime-metrics-section-header h3 {
   margin: 0;
   color: var(--color-text);
   font-size: var(--text-sm);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .runtime-metrics-section-description {
-  margin: -2px 0 12px;
+  margin: 0 0 12px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 
@@ -4686,48 +4712,50 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .runtime-metrics-subsection-header h4 {
   margin: 0;
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 700;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
 }
 
 .runtime-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 8px;
 }
 
 .runtime-metric-card {
   display: flex;
   flex-direction: column;
+  gap: 6px;
   min-width: 0;
-  padding: 12px;
+  padding: 12px 14px;
   background: var(--surface-bg-muted);
   border: 1px solid var(--surface-border);
   border-radius: 10px;
 }
 
 .runtime-metric-label {
-  min-height: 34px;
+  overflow: hidden;
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
   line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .runtime-metric-value {
-  margin: 5px 0 8px;
   color: var(--color-text);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
-.runtime-metric-key,
 .runtime-transcript-details code {
   color: var(--color-text-secondary);
   font-family: var(--font-family-mono);
@@ -4872,35 +4900,6 @@ body {
   border-radius: 10px;
 }
 
-.runtime-metrics-modal-footer {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 22px;
-  border-top: 1px solid var(--surface-border);
-}
-
-.runtime-metrics-updated-at {
-  color: var(--color-text-secondary);
-  font-size: 11px;
-}
-
-.runtime-metrics-footer-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.runtime-metrics-footer-actions .btn {
-  padding: 8px 16px;
-}
-
-.runtime-metrics-footer-actions .btn:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
 @media (max-width: 768px) {
   .settings-save-actions {
     flex-direction: column;
@@ -4911,24 +4910,91 @@ body {
     width: 100%;
   }
 
-  .runtime-metrics-modal-header,
-  .runtime-metrics-content,
-  .runtime-metrics-modal-footer {
+  .settings-action-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .modal-content.settings-dialog,
+  .modal-content.settings-dialog--lg,
+  .modal-content.settings-dialog--full {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    border-radius: 12px;
+  }
+
+  .modal-content.settings-dialog--full {
+    height: calc(100vh - 24px);
+  }
+
+  .settings-dialog-header,
+  .settings-dialog-body,
+  .settings-dialog-footer {
     padding-left: 14px;
     padding-right: 14px;
+  }
+
+  .settings-dialog-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-dialog-search {
+    width: 100%;
+  }
+
+  /* 模型价格复用 mobile-card-table：每个模型一张卡片，高上下文行作为紧贴的同组卡片 */
+  .custom-pricing-table-container.mobile-card-table-container {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .custom-pricing-table {
+    min-width: 0;
+  }
+
+  .custom-pricing-model-row > td:first-child {
+    grid-column: 1 / -1;
+    padding-right: 40px !important;
+  }
+
+  .custom-pricing-model-row > td:last-child {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+  }
+
+  .mobile-card-table tbody .custom-pricing-model-row:has(+ .custom-pricing-high-row:not([data-collapsed])) {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .mobile-card-table tbody tr.custom-pricing-high-row {
+    margin-top: -12px;
+    border-top: 1px dashed var(--surface-border);
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    box-shadow: none;
+  }
+
+  .reasoning-auto-fields {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px 12px;
+  }
+
+  .reasoning-auto-fields > * {
+    display: contents;
   }
 
   .runtime-metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .runtime-metrics-modal-footer {
-    align-items: flex-end;
-  }
 }
 
 @media (max-width: 480px) {
-  .runtime-metrics-grid,
   .runtime-transcript-details {
     grid-template-columns: 1fr;
   }
@@ -4939,18 +5005,35 @@ body {
     gap: 2px;
   }
 
-  .runtime-metrics-modal-footer {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 8px;
+  .settings-dialog-footer {
+    flex-wrap: wrap;
   }
 
-  .runtime-metrics-footer-actions {
-    width: 100%;
+  .settings-dialog-footer-meta {
+    flex-basis: 100%;
   }
 
-  .runtime-metrics-footer-actions .btn {
+  .settings-dialog-footer .btn {
     flex: 1 1 0;
+  }
+
+  .multimodal-fallback-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+    row-gap: 6px;
+  }
+
+  .multimodal-fallback-row > :not(.multimodal-fallback-remove-btn) {
+    grid-column: 1;
+  }
+
+  .multimodal-fallback-row > .multimodal-fallback-remove-btn {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .multimodal-fallback-arrow,
+  .multimodal-fallback-head {
+    display: none;
   }
 }
 
@@ -7335,6 +7418,11 @@ body.web-role-api-token .filter-group--auth-token {
     position: relative;
   }
 
+  /* 作者样式的 display:grid 会盖过 UA 的 [hidden]，筛选隐藏的卡片需显式收起 */
+  .mobile-card-table tbody .mobile-card-row[hidden] {
+    display: none;
+  }
+
   .mobile-card-table tbody .mobile-card-row.model-test-row--muted {
     background: rgba(148, 163, 184, 0.18);
   }
@@ -7377,7 +7465,7 @@ body.web-role-api-token .filter-group--auth-token {
     display: none;
   }
 
-  .mobile-card-table td.mobile-empty-cell {
+  .mobile-card-table tbody .mobile-card-row td.mobile-empty-cell {
     display: none;
   }
 

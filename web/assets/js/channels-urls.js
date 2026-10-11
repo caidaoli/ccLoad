@@ -1,6 +1,6 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
 const INLINE_EXACT_URL_MARKER = '#';
-const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini', 'system_one'];
+const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 const inlineURLProtocolComboboxes = new Map();
 
 function getInlineURLProtocolOptions() {
@@ -9,8 +9,7 @@ function getInlineURLProtocolOptions() {
     { value: 'anthropic', label: 'Anthropic' },
     { value: 'codex', label: 'Codex' },
     { value: 'openai', label: 'OpenAI' },
-    { value: 'gemini', label: 'Gemini' },
-    { value: 'system_one', label: window.t('channels.systemOne') }
+    { value: 'gemini', label: 'Gemini' }
   ];
 }
 
@@ -49,8 +48,14 @@ function runtimeInlineURL(value) {
   return entry.exact ? `${entry.url}${INLINE_EXACT_URL_MARKER}` : entry.url;
 }
 
+// System One 是认证方式而非 URL 协议：其 URL 只走原生决策接口，不声明聊天协议。
+function isSystemOneChannelEditor() {
+  return typeof editingChannelAuthType !== 'undefined' && editingChannelAuthType === 'system_one';
+}
+
 function getValidInlineURLConfigs() {
-  return normalizeInlineURLConfigs(inlineURLTableData);
+  const configs = normalizeInlineURLConfigs(inlineURLTableData);
+  return isSystemOneChannelEditor() ? configs.map(entry => ({ ...entry, protocols: [] })) : configs;
 }
 
 function getValidInlineURLs() {
@@ -233,6 +238,8 @@ function renderInlineURLTable() {
   }
 
   initInlineURLTableEventDelegation();
+  // 决策渠道的协议处理与 URL 协议是固定的，由表单级 class 隐藏相关控件。
+  document.getElementById('channelForm')?.classList?.toggle('channel-editor--system-one', isSystemOneChannelEditor());
 	updateInlineURLCount();
   updateURLStatsHeader();
 
@@ -445,7 +452,7 @@ async function testInlineURL(index, buttonElement) {
     return;
   }
 
-  const isSystemOne = urlConfig.protocols.includes('system_one');
+  const isSystemOne = isSystemOneChannelEditor();
   const firstKey = (getValidInlineKeyRows()[0] || {}).api_key || '';
   if (!firstKey) {
     window.showNotification(window.t('channels.emptyKeyCannotTest'), 'warning');
@@ -465,7 +472,7 @@ async function testInlineURL(index, buttonElement) {
         model: firstModel,
         stream: !isSystemOne,
         content: 'test',
-        client_protocol: isSystemOne ? 'system_one' : 'anthropic',
+        client_protocol: isSystemOne ? undefined : 'anthropic',
         key_index: 0,
         base_url: url
       })

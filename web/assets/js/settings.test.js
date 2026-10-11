@@ -357,8 +357,10 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
       bootstrap = config;
     }
   };
+  const documentListeners = new Map();
   global.document = {
     activeElement: null,
+    addEventListener: (type, listener) => documentListeners.set(type, listener),
     documentElement: { lang: 'zh-CN' },
     getElementById(id) {
       return elements.get(id) || null;
@@ -465,6 +467,11 @@ async function loadSettingsPage(t, settings, inputValues, { filterModels = [], c
     async openReasoning() {
       reasoningButton.click();
       await flushAsyncWork();
+    },
+    pressDocumentKey(key, { defaultPrevented = false } = {}) {
+      const event = { key, defaultPrevented, preventDefault() { this.defaultPrevented = true; } };
+      documentListeners.get('keydown')?.(event);
+      return event;
     },
     reasoningAction(action) {
       const button = { dataset: { action }, closest: () => button };
@@ -1196,7 +1203,11 @@ async function loadReasoningPage(t, config = reasoningConfigured, options = {}) 
   const value = JSON.stringify(config);
   return loadSettingsPage(t, [{ key: 'reasoning_auto', value, value_type: 'json', default_value: JSON.stringify(reasoningDefaults) }],
     { reasoning_auto: value }, {
-      channels: [{ id: 7, enabled: true, name: 'Judge', models: ['judge'] }, { id: 8, enabled: true, name: 'Other', models: ['other-judge'] }],
+      channels: [
+        { id: 7, enabled: true, auth_type: 'system_one', name: 'Judge', models: ['judge'] },
+        { id: 8, enabled: true, auth_type: 'system_one', name: 'Other', models: ['other-judge'] },
+        { id: 9, enabled: true, auth_type: 'api_key', name: 'Chat', models: ['gpt-5'] }
+      ],
       filterModels: ['gpt-5', 'claude', 'foo(bar)', 'gpt-5(high)', 'wild-*'], ...options
     });
 }
@@ -1228,14 +1239,33 @@ test('reasoning modal cancellation discards edits and restores the persisted dra
   const page = await loadReasoningPage(t);
   const original = page.inputs.reasoning_auto.value;
   await page.openReasoning();
-  page.editReasoningField('timeout_ms', 3000);
+  page.editReasoningField('timeout_ms', 3);
   page.selectReasoningModel('claude', true);
   page.reasoningAction('close-reasoning-auto');
   assert.equal(page.inputs.reasoning_auto.value, original);
   assert.equal(page.hasUnsavedChanges(), false);
   await page.openReasoning();
-  assert.equal(page.reasoningField('reasoningTimeout').value, '1500');
+  assert.equal(page.reasoningField('reasoningTimeout').value, '1.5');
   assert.equal(page.reasoningModels().find(input => input.value === 'claude').checked, false);
+});
+
+test('Escape closes the reasoning modal even when focus left the modal', async (t) => {
+  const page = await loadReasoningPage(t);
+  const original = page.inputs.reasoning_auto.value;
+  await page.openReasoning();
+  page.editReasoningField('timeout_ms', 3);
+  page.pressDocumentKey('Escape', { defaultPrevented: true });
+  assert.equal(page.reasoningModal.classList.contains('show'), true);
+  assert.equal(page.pressDocumentKey('Escape').defaultPrevented, true);
+  assert.equal(page.reasoningModal.classList.contains('show'), false);
+  assert.equal(page.inputs.reasoning_auto.value, original);
+});
+
+test('reasoning decision channel offers only System One channels', async (t) => {
+  const page = await loadReasoningPage(t);
+  await page.openReasoning();
+  const values = [...page.reasoningField('reasoningDecisionChannel').innerHTML.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
+  assert.deepEqual(values, ['0', '7', '8']);
 });
 
 test('changing reasoning decision channel clears the old decision model', async (t) => {
@@ -1255,7 +1285,7 @@ test('invalid reasoning timeout cannot apply a modal draft', async (t) => {
   const page = await loadReasoningPage(t);
   const original = page.inputs.reasoning_auto.value;
   await page.openReasoning();
-  for (const timeout of [99, 10001, 100.5]) {
+  for (const timeout of [0.099, 10.001, '']) {
     page.editReasoningField('timeout_ms', timeout);
     page.reasoningAction('apply-reasoning-auto');
     assert.equal(page.inputs.reasoning_auto.value, original);
@@ -1287,12 +1317,12 @@ test('invalid persisted reasoning is locked until reset and reset cancellation p
   const original = page.inputs.reasoning_auto.value;
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningTimeout').disabled, true);
-  page.editReasoningField('timeout_ms', 3000);
+  page.editReasoningField('timeout_ms', 3);
   page.reasoningAction('apply-reasoning-auto');
   assert.equal(page.inputs.reasoning_auto.value, original);
   page.reasoningAction('reset-reasoning-auto');
   assert.equal(page.reasoningField('reasoningTimeout').disabled, false);
-  page.editReasoningField('timeout_ms', 3000);
+  page.editReasoningField('timeout_ms', 3);
   assert.equal(page.inputs.reasoning_auto.value, original);
   page.reasoningAction('close-reasoning-auto');
   assert.equal(page.inputs.reasoning_auto.value, original);
@@ -1300,7 +1330,7 @@ test('invalid persisted reasoning is locked until reset and reset cancellation p
   await page.openReasoning();
   assert.equal(page.reasoningField('reasoningTimeout').disabled, true);
   page.reasoningAction('reset-reasoning-auto');
-  page.editReasoningField('timeout_ms', 3000);
+  page.editReasoningField('timeout_ms', 3);
   page.reasoningAction('apply-reasoning-auto');
   assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...reasoningDefaults, timeout_ms: 3000 });
 });
@@ -1312,7 +1342,7 @@ test('reasoning option load failure preserves the stored decision and selected m
   assert.equal(page.reasoningField('reasoningDecisionChannel').value, '7');
   assert.equal(page.reasoningField('reasoningDecisionModel').value, 'judge');
   assert.deepEqual(page.reasoningModels().map(input => [input.value, input.checked]), [['gpt-5', true]]);
-  page.editReasoningField('timeout_ms', 2500);
+  page.editReasoningField('timeout_ms', 2.5);
   page.reasoningAction('apply-reasoning-auto');
   assert.deepEqual(JSON.parse(page.inputs.reasoning_auto.value), { ...reasoningConfigured, timeout_ms: 2500 });
 });

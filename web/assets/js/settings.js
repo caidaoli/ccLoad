@@ -328,34 +328,45 @@ function renderReasoningAutoEditor(value) {
   const disabled = reasoningAutoLocked ? ' disabled' : '';
   const label = key => `<span data-i18n="settings.reasoningAuto.${key}">${escapeHtml(t('settings.reasoningAuto.' + key))}</span>`;
   document.getElementById('reasoningAutoContent').innerHTML = `<div id="reasoningAutoEditor">
-    ${reasoningAutoLocked ? `<p role="alert">${label('locked')} <code>${escapeHtml(value)}</code></p>` : ''}
+    ${reasoningAutoLocked ? `<p class="custom-rules-error" role="alert">${label('locked')} <code>${escapeHtml(value)}</code></p>` : ''}
+    <label class="channel-editor-switch reasoning-auto-switch">
+      <input type="checkbox" data-reasoning-field="enabled" ${config.enabled ? 'checked' : ''}${disabled}>
+      <span class="channel-editor-switch__track" aria-hidden="true"></span>
+      ${label('enabled')}
+    </label>
     <div class="reasoning-auto-fields">
-      <label class="settings-bool-option"><input type="checkbox" data-reasoning-field="enabled" ${config.enabled ? 'checked' : ''}${disabled}>${label('enabled')}</label>
-      <label class="form-label" for="reasoningTimeout">${label('timeout')}
-        <input class="form-input" id="reasoningTimeout" type="number" min="100" max="10000" step="1" data-reasoning-field="timeout_ms" value="${config.timeout_ms}"${disabled}>
-      </label>
       <div><label class="form-label" for="reasoningDecisionChannel">${label('channel')}</label>
         <select class="form-input" id="reasoningDecisionChannel" data-reasoning-field="decision_channel_id"${disabled}></select>
       </div>
       <div><label class="form-label" for="reasoningDecisionModel">${label('model')}</label>
         <select class="form-input" id="reasoningDecisionModel" data-reasoning-field="decision_model"${disabled}></select>
       </div>
+      <div><label class="form-label" for="reasoningTimeout">${label('timeout')}</label>
+        <input class="form-input" id="reasoningTimeout" type="number" min="0.1" max="10" step="0.1" data-reasoning-field="timeout_ms" value="${config.timeout_ms / 1000}"${disabled}>
+      </div>
     </div>
-    <div class="reasoning-model-toolbar">
-      <h3 id="reasoningBusinessModelsTitle">${label('businessModels')}</h3>
-      <input type="search" id="reasoningModelSearch" class="form-input" data-i18n-placeholder="settings.reasoningAuto.search" placeholder="${escapeHtml(t('settings.reasoningAuto.search'))}" data-i18n-aria-label="settings.reasoningAuto.search" aria-label="${escapeHtml(t('settings.reasoningAuto.search'))}">
+    <div class="settings-dialog-toolbar">
+      <h3 id="reasoningBusinessModelsTitle" class="settings-dialog-section-title">${label('businessModels')}
+        <span id="reasoningModelsCount" class="settings-dialog-count"></span>
+      </h3>
+      <input type="search" id="reasoningModelSearch" class="form-input settings-dialog-search" data-i18n-placeholder="settings.reasoningAuto.search" placeholder="${escapeHtml(t('settings.reasoningAuto.search'))}" data-i18n-aria-label="settings.reasoningAuto.search" aria-label="${escapeHtml(t('settings.reasoningAuto.search'))}">
     </div>
     <div class="table-container reasoning-model-table-container">
       <table class="modern-table reasoning-model-table" aria-labelledby="reasoningBusinessModelsTitle">
-        <thead><tr><th><input type="checkbox" id="reasoningModelsSelectAll" data-i18n-aria-label="common.selectAll" aria-label="${escapeHtml(t('common.selectAll'))}"></th><th>${label('businessModels')}</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="reasoningModelsSelectAll" data-i18n-aria-label="common.selectAll" aria-label="${escapeHtml(t('common.selectAll'))}"></th><th data-i18n="common.model">${escapeHtml(t('common.model'))}</th></tr></thead>
         <tbody id="reasoningBusinessModels"></tbody>
       </table>
-      <p id="reasoningModelsEmpty" data-i18n="settings.reasoningAuto.empty" hidden>${escapeHtml(t('settings.reasoningAuto.empty'))}</p>
+      <p id="reasoningModelsEmpty" class="settings-dialog-empty" data-i18n="settings.reasoningAuto.empty" hidden>${escapeHtml(t('settings.reasoningAuto.empty'))}</p>
     </div>
-    <p class="common-models-description">${label('note')}</p>
+    <p class="settings-dialog-note">${label('note')}</p>
   </div>`;
   refreshReasoningChannelOptions();
   renderReasoningBusinessModels();
+}
+
+// 界面以秒输入，持久化契约仍为整数毫秒；取整消除 0.3 * 1000 这类浮点误差。
+function reasoningTimeoutMs(seconds) {
+  return Math.round(Number(seconds) * 1000);
 }
 
 function renderReasoningBusinessModels() {
@@ -377,6 +388,8 @@ function updateReasoningModelsSelectAll() {
   checkbox.checked = rows.length > 0 && count === rows.length;
   checkbox.indeterminate = count > 0 && count < rows.length;
   checkbox.disabled = reasoningAutoLocked || rows.length === 0;
+  const counter = document.getElementById('reasoningModelsCount');
+  if (counter) counter.textContent = t('settings.reasoningAuto.selectedCount', { count: reasoningAutoDraft.business_models.length });
 }
 
 function refreshReasoningModelOptions(selected) {
@@ -393,7 +406,8 @@ function refreshReasoningChannelOptions() {
   const select = document.getElementById('reasoningDecisionChannel');
   if (!select || !reasoningAutoDraft) return;
   const selected = String(reasoningAutoDraft.decision_channel_id);
-  const channels = reasoningAutoChannels.filter(channel => channel.enabled || String(channel.id) === selected);
+  // 只有决策渠道（System One）够快，能在每个业务请求前完成判断。
+  const channels = reasoningAutoChannels.filter(channel => channel.auth_type === 'system_one' && (channel.enabled || String(channel.id) === selected));
   select.innerHTML = '<option value="0">—</option>' + channels.map(channel => `<option value="${channel.id}">${escapeHtml(channel.name)}</option>`).join('');
   if (selected !== '0' && !channels.some(channel => String(channel.id) === selected)) {
     select.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
@@ -481,7 +495,7 @@ function bindReasoningAutoModal() {
   modal.addEventListener('input', event => {
     if (event.target.id === 'reasoningModelSearch') renderReasoningBusinessModels();
     else if (!reasoningAutoLocked && reasoningAutoDraft && event.target.id === 'reasoningTimeout') {
-      reasoningAutoDraft.timeout_ms = Number(event.target.value);
+      reasoningAutoDraft.timeout_ms = reasoningTimeoutMs(event.target.value);
     }
   });
   modal.addEventListener('change', event => {
@@ -509,13 +523,10 @@ function bindReasoningAutoModal() {
       reasoningAutoDraft.decision_model = '';
       refreshReasoningModelOptions('');
     } else if (field === 'decision_model') reasoningAutoDraft.decision_model = input.value;
-    else if (field === 'timeout_ms') reasoningAutoDraft.timeout_ms = Number(input.value);
+    else if (field === 'timeout_ms') reasoningAutoDraft.timeout_ms = reasoningTimeoutMs(input.value);
   });
   modal.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeReasoningAutoModal();
-    } else if (event.key === 'Tab') trapModalFocus(modal, event);
+    if (event.key === 'Tab') trapModalFocus(modal, event);
   });
 }
 
@@ -683,17 +694,32 @@ function bindSettingsPageActions() {
     modal.addEventListener('click', (event) => {
       if (event.target === modal) closeRuntimeMetricsModal();
     });
-    modal.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeRuntimeMetricsModal();
-    });
     modal.dataset.bound = '1';
   }
+
+  // Esc 挂在 document：点击弹窗空白处或聚焦元素被重渲染后焦点落到 body，弹窗自身收不到 keydown。
+  // 弹窗内下拉框处理 Esc 时会 preventDefault，此时只收起下拉、不关弹窗。
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    const close = settingsModalClosers.find(([id]) => document.getElementById(id)?.classList.contains('show'))?.[1];
+    if (!close) return;
+    event.preventDefault();
+    close();
+  });
 
   bindReasoningAutoModal();
   bindGlobalCooldownRulesModal();
   bindMultimodalFallbackModal();
   bindCustomPricingModal();
 }
+
+const settingsModalClosers = [
+  ['runtimeMetricsModal', closeRuntimeMetricsModal],
+  ['reasoningAutoModal', closeReasoningAutoModal],
+  ['customRulesModal', closeGlobalCooldownRulesModal],
+  ['multimodalFallbackModal', closeMultimodalFallbackModal],
+  ['customPricingModal', closeCustomPricingModal]
+];
 
 function bindGlobalCooldownRulesModal() {
   const modal = document.getElementById('customRulesModal');
@@ -729,11 +755,6 @@ function bindGlobalCooldownRulesModal() {
     }
   });
   modal.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeGlobalCooldownRulesModal();
-      return;
-    }
     if (event.key === 'Tab') trapModalFocus(modal, event);
   });
   modal.dataset.bound = '1';
@@ -1064,11 +1085,6 @@ function bindMultimodalFallbackModal() {
     }
   });
   modal.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMultimodalFallbackModal();
-      return;
-    }
     if (event.key === 'Tab') trapModalFocus(modal, event);
   });
   modal.dataset.bound = '1';
@@ -1122,6 +1138,12 @@ function customPricingNumberControl(field, value) {
     aria-label="${label}" title="${label}">`;
 }
 
+// 桌面端由表头标注列；移动端卡片布局没有表头，靠 data-mobile-label 显示字段名。
+function customPricingNumberCell(field, value) {
+  const label = escapeHtml(t(customPricingFieldLabelKeys[field] || field));
+  return `<td data-mobile-label="${label}">${customPricingNumberControl(field, value)}</td>`;
+}
+
 function renderCustomPricingModel(entry, modelIndex) {
   const pricing = entry.pricing || {};
   const highContextDescription = escapeHtml(t('settings.customPricing.highContextDescription'));
@@ -1130,29 +1152,30 @@ function renderCustomPricingModel(entry, modelIndex) {
   // 关键：输入框必须落在真正的 <td> 里，列宽由表格列算法统一决定。
   // 用 grid/flex 容器会算出与列宽无关的宽度，两行输入框永远对不齐。
   const highContextCells = customPricingHighContextFields
-    .map((field) => `<td>${customPricingNumberControl(field, pricing[field])}</td>`)
+    .map((field) => customPricingNumberCell(field, pricing[field]))
     .join('');
+  // 高上下文价多数模型用不到：无值时折叠，有值时展开，避免每个模型都占两行空输入。
+  const highExpanded = customPricingHighContextFields.some((field) => typeof pricing[field] === 'number');
 
   return `
-    <tr class="custom-pricing-model-row" data-model-index="${modelIndex}">
-      <td>
+    <tr class="custom-pricing-model-row mobile-card-row" data-model-index="${modelIndex}">
+      <td class="mobile-card-no-label">
         <div class="custom-pricing-model-cell">
           <input type="text" class="form-input custom-pricing-model-id-input" data-cp-field="model_id" value="${escapeHtml(entry.model || '')}" spellcheck="false" required aria-label="${escapeHtml(t('settings.customPricing.modelId'))}" title="${escapeHtml(t('settings.customPricing.modelId'))}">
           <span class="custom-pricing-model-status" data-cp-status role="status" hidden></span>
+          <button type="button" class="custom-pricing-high-toggle" data-action="toggle-custom-pricing-high" aria-expanded="${highExpanded}" title="${highContextDescription}">${escapeHtml(t('settings.customPricing.highContextPricing'))}</button>
         </div>
       </td>
-      <td>${customPricingNumberControl('input_price', pricing.input_price)}</td>
-      <td>${customPricingNumberControl('output_price', pricing.output_price)}</td>
-      <td>${customPricingNumberControl('cache_read_price', pricing.cache_read_price)}</td>
-      <td>${customPricingNumberControl('cache_write_price', pricing.cache_write_price)}</td>
-      <td><button type="button" class="btn-icon" data-action="remove-custom-pricing-model" data-model-index="${modelIndex}" aria-label="${escapeHtml(t('settings.customPricing.removeModel'))}">&times;</button></td>
+      ${customPricingNumberCell('input_price', pricing.input_price)}
+      ${customPricingNumberCell('output_price', pricing.output_price)}
+      ${customPricingNumberCell('cache_read_price', pricing.cache_read_price)}
+      ${customPricingNumberCell('cache_write_price', pricing.cache_write_price)}
+      <td class="mobile-card-no-label"><button type="button" class="btn-icon" data-action="remove-custom-pricing-model" data-model-index="${modelIndex}" aria-label="${escapeHtml(t('settings.customPricing.removeModel'))}">&times;</button></td>
     </tr>
-    <tr class="custom-pricing-high-row" data-model-index="${modelIndex}">
-      <td>
-        <span class="custom-pricing-high-label" title="${highContextDescription}">${escapeHtml(t('settings.customPricing.highContextPricing'))}</span>
-      </td>
+    <tr class="custom-pricing-high-row mobile-card-row" data-model-index="${modelIndex}"${highExpanded ? '' : ' data-collapsed'}>
+      <td class="mobile-empty-cell"></td>
       ${highContextCells}
-      <td></td>
+      <td class="mobile-empty-cell"></td>
     </tr>`;
 }
 
@@ -1175,6 +1198,15 @@ function customPricingHighRow(modelRow) {
     if (row.classList.contains('custom-pricing-high-row')) return row;
   }
   return null;
+}
+
+function toggleCustomPricingHighRow(button) {
+  const high = customPricingHighRow(button.closest('.custom-pricing-model-row'));
+  if (!high) return;
+  const expanded = button.getAttribute('aria-expanded') !== 'true';
+  button.setAttribute('aria-expanded', String(expanded));
+  high.toggleAttribute('data-collapsed', !expanded);
+  if (expanded) high.querySelector('input')?.focus();
 }
 
 function collectCustomPricingEntries() {
@@ -1441,6 +1473,7 @@ function bindCustomPricingModal() {
       case 'apply-custom-pricing': applyCustomPricing(); break;
       case 'add-custom-pricing-model': addCustomPricingModel(); break;
       case 'remove-custom-pricing-model': removeCustomPricingModel(button); break;
+      case 'toggle-custom-pricing-high': toggleCustomPricingHighRow(button); break;
     }
   });
   modal.addEventListener('input', (event) => {
@@ -1453,11 +1486,6 @@ function bindCustomPricingModal() {
     if (event.key === 'Enter' && event.target.matches('[data-cp-field="model_id"]')) {
       event.preventDefault();
       loadCustomPricingDefaults(event.target);
-      return;
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeCustomPricingModal();
       return;
     }
     if (event.key === 'Tab') trapModalFocus(modal, event);
@@ -1590,10 +1618,9 @@ function formatRuntimeMetric(metric, stats) {
 
 function renderRuntimeMetricCard(metric, stats) {
   return `
-    <div class="runtime-metric-card">
+    <div class="runtime-metric-card" title="${escapeHtml(metric.key)}">
       <span class="runtime-metric-label">${escapeHtml(t(metric.labelKey))}</span>
       <strong class="runtime-metric-value">${escapeHtml(formatRuntimeMetric(metric, stats))}</strong>
-      <code class="runtime-metric-key">${escapeHtml(metric.key)}</code>
     </div>`;
 }
 

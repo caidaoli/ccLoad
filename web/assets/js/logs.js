@@ -430,8 +430,18 @@ function normalizeThinkingEffortDisplay(value) {
   return effort;
 }
 
-function thinkingEffortBadgeText(value) {
-  return normalizeThinkingEffortDisplay(value);
+// 动态思考改变了等级时显示“客户端等级→发送等级”，未改变只显示发送等级。
+function thinkingEffortBadgeText(effort, clientEffort) {
+  return clientEffort ? `${clientEffort}→${effort}` : effort;
+}
+
+// 业务日志的客户端原等级；只有客户端指定了等级且动态思考实际改变了它才返回。
+function reasoningClientEffort(entry) {
+  const decision = entry?.reasoning_decision;
+  if (!decision || typeof decision !== 'object' || entry.client_protocol === 'system_one') return '';
+  const sent = normalizeThinkingEffortDisplay(entry.thinking_effort);
+  const client = normalizeThinkingEffortDisplay(decision.client_effort);
+  return sent && client && sent !== client ? client : '';
 }
 
 function normalizeReasoningTokens(value) {
@@ -439,15 +449,16 @@ function normalizeReasoningTokens(value) {
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
 }
 
-function buildThinkingEffortBadge(thinkingEffort, reasoningTokens) {
+function buildThinkingEffortBadge(thinkingEffort, reasoningTokens, clientEffort = '') {
   const effort = normalizeThinkingEffortDisplay(thinkingEffort);
   const tokens = normalizeReasoningTokens(reasoningTokens);
   if (!effort && tokens === 0) return '';
-  const text = [thinkingEffortBadgeText(effort), tokens > 0 ? String(tokens) : '']
+  const effortText = effort ? thinkingEffortBadgeText(effort, clientEffort) : '';
+  const text = [effortText, tokens > 0 ? String(tokens) : '']
     .filter(Boolean)
     .join(' ');
   const titleParts = [];
-  if (effort) titleParts.push(escapeHtml(t('logs.titleThinkingEffort', { effort })));
+  if (effort) titleParts.push(escapeHtml(t('logs.titleThinkingEffort', { effort: effortText })));
   if (tokens > 0) titleParts.push(escapeHtml(t('logs.titleReasoningTokens', { tokens })));
   const title = titleParts.join('&#10;');
   return `<sup class="thinking-effort-badge" title="${title}">${escapeHtml(text)}</sup>`;
@@ -473,7 +484,7 @@ function isPrefixOrSuffixVariant(model, actualModel) {
   return prefixLen > 0 && suffixLen > 0 && prefixLen + suffixLen === short.length;
 }
 
-function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningTokens) {
+function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningTokens, clientEffort = '') {
   if (!model) {
     return '<span style="color: var(--neutral-500);">-</span>';
   }
@@ -489,7 +500,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   }
   if (effort) {
     classes.push('model-thinking');
-    titleParts.push(escapeHtml(t('logs.titleThinkingEffort', { effort })));
+    titleParts.push(escapeHtml(t('logs.titleThinkingEffort', { effort: thinkingEffortBadgeText(effort, clientEffort) })));
   }
   if (tokens > 0) {
     classes.push('model-thinking');
@@ -497,7 +508,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   }
   const title = titleParts.length > 0 ? ` title="${titleParts.join('&#10;')}"` : '';
   const badgeHtml = effort || tokens > 0
-    ? `<span class="model-badges">${buildThinkingEffortBadge(effort, tokens)}</span>`
+    ? `<span class="model-badges">${buildThinkingEffortBadge(effort, tokens, clientEffort)}</span>`
     : '';
 
   return `<span class="model-display">
@@ -557,8 +568,6 @@ function buildLogTokenDescDisplay(label) {
 
 function renderLogSourceBadge(logSource) {
   switch (logSource) {
-    case 'decision':
-      return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceDecision'))}</span>`;
     case 'scheduled_check':
       return `<span class="log-source-badge log-source-badge--scheduled">${escapeHtml(t('logs.sourceScheduledCheckBadge'))}</span>`;
     case 'manual_test':
@@ -581,23 +590,25 @@ function canInspectDebugLog(entry) {
   return !isTokenSession && (Number(entry?.channel_id) > 0 || (isChannelless && Number(entry?.id) > 0));
 }
 
+function reasoningValueText(value) {
+  const key = 'logs.reasoningValue.' + value;
+  const text = t(key);
+  return text === key ? value : text;
+}
+
+// Only the System One row describes the judgment; a business row's level change
+// is shown on the model badge.
 function reasoningDecisionDescription(entry) {
   const decision = entry?.reasoning_decision;
   if (!decision || typeof decision !== 'object') return '';
-  const parts = [];
-  for (const key of ['status', 'trigger', 'reason', 'previous_effort', 'suggested_effort', 'decision_channel_id', 'decision_model', 'duration_ms', 'decision_id']) {
-    if (window.shouldHideChannels?.() && ['decision_channel_id', 'decision_model', 'decision_id'].includes(key)) continue;
-    const value = decision[key];
-    if (value !== undefined && value !== null && value !== '') {
-      const translated = ['status', 'trigger', 'reason'].includes(key) ? t('logs.reasoningValue.' + value) : value;
-      parts.push(t('logs.reasoning.' + key) + ': ' + (translated === 'logs.reasoningValue.' + value ? value : translated));
-    }
+  if (entry.client_protocol === 'system_one') {
+    if (decision.status === 'manual_test') return t('logs.reasoning.manualTest');
+    if (decision.status === 'fallback') return t('logs.reasoning.failed', {reason: reasoningValueText(decision.reason || '')});
+    if (!decision.suggested_effort) return '';
+    const confidence = Number.isFinite(decision.confidence) ? t('logs.reasoning.confidence', {value: decision.confidence.toFixed(2)}) : '';
+    return t('logs.reasoning.judged', {effort: decision.suggested_effort}) + confidence;
   }
-  if (entry.thinking_effort) parts.push(t('logs.reasoning.final') + ': ' + entry.thinking_effort);
-  if (decision.cost_unknown) parts.push(t('logs.reasoning.costUnknown'));
-  if (decision.context_truncated) parts.push(t('logs.reasoning.truncated'));
-  if (decision.context_incomplete) parts.push(t('logs.reasoning.incomplete'));
-  return parts.join(' · ');
+  return '';
 }
 
 function buildLogMessageContent(entry) {
@@ -660,7 +671,8 @@ function buildLogCostTooltip(entry, costInfo) {
 }
 
 function buildLogCostDisplay(entry, costInfo = getLogCostInfo(entry)) {
-  if (entry?.reasoning_decision?.cost_unknown && ['decision', 'manual_test'].includes(entry?.log_source)) return escapeHtml(t('logs.costUnknown'));
+  // 决策调用（请求协议 System One）缺 usage 或定价时成本未知；业务日志的同名标记只是决策元数据。
+  if (entry?.reasoning_decision?.cost_unknown && entry?.client_protocol === 'system_one') return escapeHtml(t('logs.costUnknown'));
   if (!costInfo) return '';
 
   const badgeParts = [];
@@ -957,7 +969,7 @@ function renderActiveRequests(activeRequests) {
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
     const statusDisplay = buildActiveRequestStatusHtml(req);
-    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens);
+    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens, req.client_effort);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
     const abortDisplay = buildActiveRequestAbortHtml(req, id, startMs);
@@ -985,6 +997,9 @@ function renderActiveRequests(activeRequests) {
       if (compactStatus && !statusCell) compactStatus.textContent = activeRequestStatusLabel(req);
       const msgCell = existingRow.querySelector('.logs-col-message');
       if (msgCell) msgCell.innerHTML = infoContent;
+      // 动态思考在发送时才确定等级，晚于行创建
+      const modelCell = existingRow.querySelector('.logs-col-model, .active-model-slot');
+      if (modelCell) modelCell.innerHTML = modelDisplay;
       // 中断入口随渠道切换与中断状态变化，必须每轮重画
       const speedCell = existingRow.querySelector('.logs-col-speed');
       if (speedCell) {
@@ -1005,7 +1020,7 @@ function renderActiveRequests(activeRequests) {
               ${statusDisplay}
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
               <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
-              <span style="margin-left: 8px;">${modelDisplay}</span>
+              <span class="active-model-slot" style="margin-left: 8px;">${modelDisplay}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px;">${infoContent}</span>
               <span class="active-abort-slot" style="margin-left: 8px;">${abortDisplay}</span>
@@ -1177,7 +1192,7 @@ function renderLogs(data) {
 
     // 3. 模型显示（支持重定向与思考等级角标）
     const displayedActualModel = entry.actual_model || entry.response_model;
-    const modelDisplay = buildLogModelDisplay(entry.model, displayedActualModel, entry.thinking_effort, entry.reasoning_tokens);
+    const modelDisplay = buildLogModelDisplay(entry.model, displayedActualModel, entry.thinking_effort, entry.reasoning_tokens, reasoningClientEffort(entry));
 
     // 4. 响应时间显示(流式/非流式)
     const hasDuration = entry.duration !== undefined && entry.duration !== null;
@@ -2237,11 +2252,13 @@ async function runKeyTest() {
 
   try {
     // 构建测试请求（使用用户选择的模型）
+    // 决策渠道日志（system_one）测试不带 client_protocol，后端固定发原生 /v1/systemone
+    const clientProtocol = testingKeyData.clientProtocol || 'anthropic';
     const testRequest = {
       model: selectedModel,
       stream: streamEnabled,
       content: testContent,
-      client_protocol: testingKeyData.clientProtocol || 'anthropic'
+      client_protocol: clientProtocol === 'system_one' ? undefined : clientProtocol
     };
     if (testingKeyData && testingKeyData.keyIndex !== null && testingKeyData.keyIndex !== undefined) {
       testRequest.key_index = testingKeyData.keyIndex;

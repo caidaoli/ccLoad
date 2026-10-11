@@ -1498,13 +1498,25 @@ function syncClientProtocolCombobox() {
     });
   }
 
-  const label = protocolLabel(selectedProtocol);
+  // 渠道模式选中决策渠道时固定原生 /v1/systemone，协议不可选
+  const decision = testMode === TEST_MODE_CHANNEL && isSystemOneChannel(selectedChannel);
+  const label = decision ? i18nText('modelTest.clientProtocolSystemOne', 'System One') : protocolLabel(selectedProtocol);
   if (clientProtocolCombobox) {
-    clientProtocolCombobox.setValue(selectedProtocol, label);
+    clientProtocolCombobox.setValue(decision ? 'system_one' : selectedProtocol, label);
     clientProtocolCombobox.refresh();
   } else if (clientProtocolSelect) {
     clientProtocolSelect.value = label;
   }
+  if (clientProtocolSelect) clientProtocolSelect.disabled = decision;
+}
+
+function isSystemOneChannel(channel) {
+  return channel?.auth_type === 'system_one';
+}
+
+// 决策渠道测试不带 client_protocol（带了后端返回 400）；JSON 序列化会省略 undefined
+function testClientProtocolFor(channel) {
+  return isSystemOneChannel(channel) ? undefined : selectedProtocol;
 }
 
 function syncChatClientProtocolCombobox() {
@@ -1977,7 +1989,7 @@ function getSelectedTargets() {
           row,
           model: row.dataset.model || selectedModelName,
           channelId: channel.id,
-          clientProtocol: selectedProtocol
+          clientProtocol: testClientProtocolFor(channel)
         };
       }
 
@@ -1986,7 +1998,7 @@ function getSelectedTargets() {
         row,
         model: row.dataset.model,
         channelId: selectedChannel.id,
-        clientProtocol: selectedProtocol,
+        clientProtocol: testClientProtocolFor(selectedChannel),
         keyIndex: selectedKeyIndex
       };
     })

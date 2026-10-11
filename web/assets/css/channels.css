@@ -7626,3 +7626,11 @@
       text-align: center;
       color: var(--error-600);
     }
+
+/* 决策渠道（System One）的协议处理与 URL 协议固定，不展示相关控件 */
+.channel-editor--system-one .channel-editor-field--protocol,
+.channel-editor--system-one .channel-editor-exact-url-hint,
+.channel-editor--system-one .inline-url-table .inline-url-col-protocols,
+.channel-editor--system-one .inline-url-table tbody .mobile-inline-row td.inline-url-col-protocols {
+  display: none;
+}

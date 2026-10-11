@@ -53,6 +53,7 @@ function getChannelAuthTypeOptions() {
   return [
     { value: 'all', label: window.t('channels.authTypeAll') },
     { value: 'api_key', label: window.t('channels.authTypeAPI') },
+    { value: 'system_one', label: window.t('channels.authTypeSystemOne') },
     { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
     { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },

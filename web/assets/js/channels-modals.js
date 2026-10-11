@@ -17,6 +17,7 @@ function setChannelDrawerIdentityVisible(visible) {
 
 function channelDrawerAuthLabel(authType) {
   if (!authType || authType === 'api_key') return window.t('channels.drawer.authApiKey');
+  if (authType === 'system_one') return window.t('channels.authTypeSystemOne');
   return window.t('channels.drawer.authOAuth', { provider: channelAuthTypeFilterLabel(authType) });
 }
 
@@ -528,13 +529,14 @@ function resetModalKeyStatusFilter() {
   if (filter) filter.value = 'all';
 }
 
-async function showAddModal() {
+// 认证方式由新建入口决定（API Key / System One），创建后不可改；OAuth 渠道由登录或导入创建。
+async function showAddModal(authType = 'api_key') {
   editingChannelId = null;
-  editingChannelAuthType = 'api_key';
+  editingChannelAuthType = authType === 'system_one' ? 'system_one' : 'api_key';
   currentChannelKeyCooldowns = [];
   resetModalKeyStatusFilter();
 
-  setChannelModalTitle('channels.addChannel');
+  setChannelModalTitle(editingChannelAuthType === 'system_one' ? 'channels.addSystemOneChannel' : 'channels.addChannel');
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = false;
@@ -569,7 +571,7 @@ async function showAddModal() {
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
-  invokeChannelEditorAction('resetManagementAccountDraft', null, getValidInlineURLConfigs(), 'api_key');
+  invokeChannelEditorAction('resetManagementAccountDraft', null, getValidInlineURLConfigs(), editingChannelAuthType);
   renderInlineKeyTable();
   if (typeof applyChannelAuthEditorMode === 'function') applyChannelAuthEditorMode(editingChannelAuthType, null);
 
@@ -608,7 +610,7 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
-  editingChannelAuthType = ['codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type)
+  editingChannelAuthType = ['system_one', 'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'].includes(channel.auth_type)
     ? channel.auth_type
     : 'api_key';
   clearChannelDuplicateHint();
@@ -1052,7 +1054,7 @@ async function saveChannel(event) {
   const quotaPassthroughCheckbox = document.getElementById('channelOAuthQuotaPassthrough');
   const formData = {
     name: document.getElementById('channelName').value.trim(),
-    auth_type: isOAuth ? editingChannelAuthType : 'api_key',
+    auth_type: editingChannelAuthType,
     urls: validURLConfigs,
     api_key: validKeys.join(','),
     api_keys: validKeyRows.map(row => ({
@@ -2111,6 +2113,7 @@ async function copyChannel(id, name) {
   const copiedName = generateCopyName(name);
 
   editingChannelId = null;
+  editingChannelAuthType = channel.auth_type === 'system_one' ? 'system_one' : 'api_key';
   clearChannelDuplicateHint();
   currentChannelKeyCooldowns = [];
   resetModalKeyStatusFilter();
@@ -3673,6 +3676,7 @@ async function fetchModelsFromAPI() {
         urls,
         api_keys: availableKeys,
         per_key: true,
+        auth_type: editingChannelAuthType,
         ...(proxyURL ? { proxy_url: proxyURL } : {})
       })
     };

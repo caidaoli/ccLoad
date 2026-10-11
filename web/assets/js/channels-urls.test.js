@@ -90,15 +90,11 @@ test('URL row echoes the persisted exact flag in its checkbox', () => {
   }
 });
 
-test('System One URL capability survives channel configuration serialization', () => {
-  assert.deepEqual(normalizeInlineURLConfigs([{ url: 'https://api.typesafe.ai', protocols: ['system_one'] }]),
-    [{ url: 'https://api.typesafe.ai', exact: false, protocols: ['system_one'] }]);
-});
-
 test('URL testing submits the native System One protocol without streaming', async t => {
   const requests = [];
   const globals = {
     editingChannelId: 7,
+    editingChannelAuthType: 'api_key',
     redirectTableData: [{ model: 'test-model' }],
     inlineURLTableData: [],
     getValidInlineKeyRows: () => [{ api_key: 'test-key' }],
@@ -115,15 +111,16 @@ test('URL testing submits the native System One protocol without streaming', asy
 
   Object.assign(global, globals);
   try {
-    for (const protocols of [
-      ['system_one'], [' SYSTEM_ONE '], [], ['anthropic'], ['codex'], ['openai'], ['gemini']
+    for (const [authType, protocols] of [
+      ['system_one', []], ['system_one', ['openai']], ['api_key', []], ['api_key', ['codex']], ['api_key', ['gemini']]
     ]) {
-      await t.test(protocols.join(', ') || 'automatic', async () => {
+      await t.test(`${authType}: ${protocols.join(', ') || 'automatic'}`, async () => {
         requests.length = 0;
+        global.editingChannelAuthType = authType;
         global.inlineURLTableData = [{ url: 'https://upstream.test/v1', exact: true, protocols }];
         await testInlineURL(0, { innerHTML: 'Test', disabled: false });
 
-        const systemOne = protocols.length > 0 && protocols[0].trim().toLowerCase() === 'system_one';
+        const systemOne = authType === 'system_one';
         assert.deepEqual(requests, [{
           url: '/admin/channels/7/test-url',
           method: 'POST',
@@ -131,7 +128,7 @@ test('URL testing submits the native System One protocol without streaming', asy
             model: 'test-model',
             stream: !systemOne,
             content: 'test',
-            client_protocol: systemOne ? 'system_one' : 'anthropic',
+            ...(systemOne ? {} : { client_protocol: 'anthropic' }),
             key_index: 0,
             base_url: 'https://upstream.test/v1#'
           }
