@@ -420,6 +420,12 @@ body {
   color: var(--primary-800);
 }
 
+/* 暗色下 --primary-200 不翻转（仍作亮色文字），选中底色需单独定义 */
+html[data-resolved-theme="dark"] ::selection {
+  background-color: rgba(76, 194, 255, 0.35);
+  color: #fff;
+}
+
 /* ===== 动画和关键帧 ===== */
 @keyframes slideInUp {
   from {
