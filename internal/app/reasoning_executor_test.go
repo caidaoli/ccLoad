@@ -72,7 +72,7 @@ func TestReasoningDecisionSystemOneFixtures(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = io.WriteString(w, tc.response)
 			})
-			result, err := env.server.executeReasoningDecision(context.Background(), "task data", "medium", reasoningDefaultLevels)
+			result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 			if (err == nil) != tc.valid {
 				t.Fatalf("decision=%+v, error=%v", result, err)
 			}
@@ -146,7 +146,7 @@ func TestReasoningDecisionDebugLog(t *testing.T) {
 				env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
 				env.server.configService.mu.Unlock()
 			}
-			_, _ = env.server.executeReasoningDecision(context.Background(), "task data", "medium", reasoningDefaultLevels)
+			_, _ = env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 			entry := waitForDecisionLog(t, env)
 			var debug *model.DebugLogEntry
 			for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
@@ -193,7 +193,7 @@ func TestReasoningDecisionTimeoutCancellationAndCapacity(t *testing.T) {
 	})
 	env.server.reasoningAuto.TimeoutMS = 100
 	start := time.Now()
-	result, err := env.server.executeReasoningDecision(context.Background(), "task data", "", reasoningDefaultLevels)
+	result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 	if err == nil || result.reason != "timeout" || time.Since(start) > time.Second {
 		t.Fatalf("timeout result=%+v, error=%v", result, err)
 	}
@@ -201,7 +201,7 @@ func TestReasoningDecisionTimeoutCancellationAndCapacity(t *testing.T) {
 		env.server.reasoningDecisionSlots <- struct{}{}
 	}
 	start = time.Now()
-	result, err = env.server.executeReasoningDecision(context.Background(), "task data", "", reasoningDefaultLevels)
+	result, err = env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 	if err == nil || result.reason != "queue_full" || time.Since(start) > 100*time.Millisecond {
 		t.Fatalf("capacity result=%+v, error=%v", result, err)
 	}
@@ -210,7 +210,7 @@ func TestReasoningDecisionTimeoutCancellationAndCapacity(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = env.server.executeReasoningDecision(ctx, "task data", "", reasoningDefaultLevels)
+	_, err = env.server.executeReasoningDecision(ctx, "task data", reasoningDefaultLevels)
 	if err == nil || calls.Load() != 1 {
 		t.Fatalf("cancel error=%v, calls=%d", err, calls.Load())
 	}
@@ -227,7 +227,7 @@ func TestReasoningDecisionMissingUsageWithCustomPrice(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"answers":{"effort":{"type":"choice","choice":"high"}}`+usage+`}`)
 			})
-			result, err := env.server.executeReasoningDecision(context.Background(), "task data", "", reasoningDefaultLevels)
+			result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 			if err != nil || result.effort != "high" || !result.costUnknown || calls.Load() != 1 {
 				t.Fatalf("decision=%+v error=%v calls=%d", result, err, calls.Load())
 			}
@@ -243,7 +243,7 @@ func TestReasoningDecisionRejectsChatChannel(t *testing.T) {
 	env, calls := reasoningExecutorEnv(t, testChannel{name: "judge", models: "gpt-5.6", apiKey: "judge-key", upstreamProtocol: "openai"}, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	result, err := env.server.executeReasoningDecision(context.Background(), "task data", "", reasoningDefaultLevels)
+	result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 	if err == nil || result.effort != "" || calls.Load() != 0 {
 		t.Fatalf("decision=%+v error=%v calls=%d", result, err, calls.Load())
 	}
@@ -271,7 +271,7 @@ func TestReasoningDecisionSystemOneRedirectAndCustomPrice(t *testing.T) {
 	if err = env.store.UpdateAPIKeyCostMultipliers(context.Background(), 2, map[int]float64{0: 1}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := env.server.executeReasoningDecision(context.Background(), "task data", "", reasoningDefaultLevels)
+	result, err := env.server.executeReasoningDecision(context.Background(), "task data", reasoningDefaultLevels)
 	if err != nil || result.effort != "high" || result.actualModel != "jev-latest" || result.costUnknown || calls.Load() != 1 {
 		t.Fatalf("decision=%+v error=%v calls=%d", result, err, calls.Load())
 	}

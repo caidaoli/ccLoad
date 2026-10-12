@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,8 +27,7 @@ import (
 )
 
 type reasoningAutoJudgeRequest struct {
-	Conversation   string `json:"conversation"`
-	PreviousEffort string `json:"previous_effort"`
+	Conversation string `json:"conversation"`
 	// Levels are the criteria keys in request order.
 	Levels []string `json:"-"`
 }
@@ -80,8 +80,11 @@ func newReasoningAutoJudge(t testing.TB, efforts ...string) *reasoningAutoJudgeF
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		// The state carries only the conversation; the effective level stays local.
 		var request reasoningAutoJudgeRequest
-		if err := json.Unmarshal([]byte(body.State), &request); err != nil {
+		state := json.NewDecoder(strings.NewReader(body.State))
+		state.DisallowUnknownFields()
+		if err := state.Decode(&request); err != nil {
 			t.Errorf("decode decision state: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -107,6 +110,37 @@ func (j *reasoningAutoJudgeFixture) snapshot() []reasoningAutoJudgeRequest {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return slices.Clone(j.requests)
+}
+
+// reasoningAutoJudgedPreviousEfforts returns the effective level each judged
+// business turn started from, in request order.
+func reasoningAutoJudgedPreviousEfforts(t testing.TB, env *proxyTestEnv, want int) []string {
+	t.Helper()
+	var judged []*model.LogEntry
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), want*4+100, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		judged = judged[:0]
+		for _, entry := range logs {
+			if entry.ClientProtocol != util.ProtocolSystemOne && entry.ReasoningDecision != nil && entry.ReasoningDecision.SuggestedEffort != "" {
+				judged = append(judged, entry)
+			}
+		}
+		if len(judged) >= want {
+			break
+		}
+	}
+	if len(judged) != want {
+		t.Fatalf("judged business logs=%d, want %d", len(judged), want)
+	}
+	slices.SortFunc(judged, func(a, b *model.LogEntry) int { return cmp.Compare(a.ID, b.ID) })
+	previous := make([]string, len(judged))
+	for i, entry := range judged {
+		previous[i] = entry.ReasoningDecision.PreviousEffort
+	}
+	return previous
 }
 
 type reasoningAutoBusinessFixture struct {
@@ -257,8 +291,7 @@ func TestReasoningAutoUpgradeAndConfirmedDowngrade(t *testing.T) {
 	if len(decisions) != 4 {
 		t.Fatalf("decision calls=%d, want 4", len(decisions))
 	}
-	previous := []string{decisions[0].PreviousEffort, decisions[1].PreviousEffort, decisions[2].PreviousEffort, decisions[3].PreviousEffort}
-	if !slices.Equal(previous, []string{"", "low", "xhigh", "xhigh"}) {
+	if previous := reasoningAutoJudgedPreviousEfforts(t, env, 4); !slices.Equal(previous, []string{"", "low", "xhigh", "xhigh"}) {
 		t.Fatalf("previous efforts=%v", previous)
 	}
 	if !strings.Contains(decisions[2].Conversation, "lock-free migration") || !strings.Contains(decisions[2].Conversation, "继续") || !strings.Contains(decisions[3].Conversation, "finish the mechanical work") {
@@ -349,8 +382,11 @@ func TestReasoningAutoLowConfidenceKeepsLevel(t *testing.T) {
 	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoToolBody("completed"), headers)
 	assertReasoningAutoEfforts(t, business.snapshot(), "xhigh", "high", "high", "high")
 	decisions := judge.snapshot()
-	if len(decisions) != 4 || decisions[3].PreviousEffort != "high" {
-		t.Fatalf("decisions=%d, last previous effort=%q", len(decisions), decisions[len(decisions)-1].PreviousEffort)
+	if len(decisions) != 4 {
+		t.Fatalf("decisions=%d, want 4", len(decisions))
+	}
+	if previous := reasoningAutoJudgedPreviousEfforts(t, env, 4); previous[3] != "high" {
+		t.Fatalf("previous efforts=%v", previous)
 	}
 }
 
@@ -1292,7 +1328,7 @@ func TestReasoningAutoChannelRulesOverrideAppliedEffort(t *testing.T) {
 	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoToolBody("completed"), headers)
 	assertReasoningAutoEfforts(t, business.snapshot(), "low", "low")
 	decisions := judge.snapshot()
-	if len(decisions) != 2 || decisions[1].PreviousEffort != "" {
+	if len(decisions) != 2 || reasoningAutoJudgedPreviousEfforts(t, env, 2)[1] != "" {
 		t.Fatalf("unapplied suggestion became effective state: decisions=%+v", decisions)
 	}
 	entry := waitForProxyLogMatching(t, env, func(entry *model.LogEntry) bool {
@@ -1357,7 +1393,7 @@ func TestReasoningAutoIdentityIsolation(t *testing.T) {
 			reasoningAutoRequest(t, env, path, body, headers)
 			assertReasoningAutoEfforts(t, business.snapshot(), "high", "low")
 			decisions := judge.snapshot()
-			if len(decisions) != 2 || decisions[1].PreviousEffort != "" {
+			if len(decisions) != 2 || reasoningAutoJudgedPreviousEfforts(t, env, 2)[1] != "" {
 				t.Fatalf("reasoning state leaked across %s: %+v", dimension, decisions)
 			}
 		})
@@ -1379,7 +1415,7 @@ func TestReasoningAutoStateExpiresWithExecutionSessionTTL(t *testing.T) {
 	reasoningAutoRequest(t, env, "/v1/chat/completions", reasoningAutoChatBody("Independent mechanical work after expiry."), headers)
 	assertReasoningAutoEfforts(t, business.snapshot(), "high", "low")
 	decisions := judge.snapshot()
-	if len(decisions) != 2 || decisions[1].PreviousEffort != "" {
+	if len(decisions) != 2 || reasoningAutoJudgedPreviousEfforts(t, env, 2)[1] != "" {
 		t.Fatalf("expired state remained available to the decision service: %+v", decisions)
 	}
 }
@@ -1411,8 +1447,11 @@ func TestReasoningAutoStateCapacityKeepsExistingSessionsAndIndependentOverflow(t
 		"Session-Id": fmt.Sprintf("retained-session-%d", retainedSessions-1),
 	})
 	decisions := judge.snapshot()
-	if len(decisions) != retainedSessions+2 || decisions[retainedSessions].PreviousEffort != "" || decisions[retainedSessions+1].PreviousEffort != "" {
-		t.Fatalf("overflow retained state or displaced an existing session: decision count=%d", len(decisions))
+	if len(decisions) != retainedSessions+2 {
+		t.Fatalf("decision count=%d, want %d", len(decisions), retainedSessions+2)
+	}
+	if previous := reasoningAutoJudgedPreviousEfforts(t, env, retainedSessions+2); previous[retainedSessions] != "" || previous[retainedSessions+1] != "" {
+		t.Fatalf("overflow retained state or displaced an existing session: previous=%v", previous[retainedSessions:])
 	}
 	requests := business.snapshot()
 	if len(requests) != retainedSessions+3 {
@@ -1755,7 +1794,7 @@ func TestReasoningAutoHTTPAndWebsocketShareState(t *testing.T) {
 	}, headers)
 	assertReasoningAutoEfforts(t, business.snapshot(), "high", "high", "medium")
 	decisions := judge.snapshot()
-	if len(decisions) != 3 || decisions[1].PreviousEffort != "high" || decisions[2].PreviousEffort != "high" {
+	if len(decisions) != 3 || !slices.Equal(reasoningAutoJudgedPreviousEfforts(t, env, 3)[1:], []string{"high", "high"}) {
 		t.Fatalf("transport switch lost reasoning state: %+v", decisions)
 	}
 	if !strings.Contains(decisions[2].Conversation, "migration is settled") || !strings.Contains(decisions[2].Conversation, "business answer") || !strings.Contains(decisions[2].Conversation, "migration verification completed") {

@@ -54,7 +54,7 @@ type reasoningCallResult struct {
 	debug          *model.DebugLogEntry
 }
 
-func (s *Server) executeReasoningDecision(parent context.Context, transcript, previous string, levels []string) (result reasoningCallResult, err error) {
+func (s *Server) executeReasoningDecision(parent context.Context, transcript string, levels []string) (result reasoningCallResult, err error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(reasoningDecisionContext(parent), time.Duration(s.reasoningAuto.TimeoutMS)*time.Millisecond)
 	defer cancel()
@@ -116,7 +116,7 @@ func (s *Server) executeReasoningDecision(parent context.Context, transcript, pr
 	if modelCooldowns[channel.ID][actual].After(time.Now()) {
 		return result, errors.New("reasoning decision model cooling down")
 	}
-	result, err = s.callSystemOne(ctx, channel, selected.requestCredential, modelName, transcript, previous, levels)
+	result, err = s.callSystemOne(ctx, channel, selected.requestCredential, modelName, transcript, levels)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}
@@ -216,7 +216,7 @@ func (s *Server) decisionURL(cfg *model.Config) (string, error) {
 	return value, nil
 }
 
-func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, modelName, transcript, previous string, levels []string) (result reasoningCallResult, err error) {
+func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, modelName, transcript string, levels []string) (result reasoningCallResult, err error) {
 	start := time.Now()
 	defer func() { result.duration = time.Since(start) }()
 	result.actualModel = modelName
@@ -228,7 +228,9 @@ func (s *Server) callSystemOne(ctx context.Context, cfg *model.Config, key, mode
 		return result, err
 	}
 	result.baseURL = baseURL
-	state, _ := json.Marshal(map[string]string{"conversation": transcript, "previous_effort": previous})
+	// The effective level is not sent: it anchors the judge toward the current
+	// level, and downgrade confirmation already provides the hysteresis.
+	state, _ := json.Marshal(map[string]string{"conversation": transcript})
 	body, err := json.Marshal(map[string]any{"model": result.actualModel, "state": string(state), "questions": map[string]any{
 		"effort": map[string]any{"type": "choice", "instructions": reasoningDecisionInstructions, "criteria": reasoningDecisionCriteria(levels)}}})
 	if err != nil {

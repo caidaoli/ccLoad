@@ -318,7 +318,7 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 		t.metadata.Status = "reused"
 		return
 	}
-	result, err := s.executeReasoningDecision(ctx, projection.text, t.effort, reasoningDecisionLevels(r.originalModel))
+	result, err := s.executeReasoningDecision(ctx, projection.text, reasoningDecisionLevels(r.originalModel))
 	// Decision cost belongs to the System One log row, not the business turn.
 	t.metadata.DurationMS = result.duration.Milliseconds()
 	if err != nil {
@@ -356,7 +356,7 @@ func reasoningDecisionContext(ctx context.Context) context.Context {
 // manual-test log records them instead of a free call.
 func (s *Server) testSystemOneChannel(ctx context.Context, cfg *model.Config, apiKey, modelName, state string) map[string]any {
 	start := time.Now()
-	result, err := s.callSystemOne(ctx, cfg, apiKey, modelName, state, "", reasoningDefaultLevels)
+	result, err := s.callSystemOne(ctx, cfg, apiKey, modelName, state, reasoningDefaultLevels)
 	if errors.Is(err, ErrChannelRPMExceeded) {
 		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
 	}
