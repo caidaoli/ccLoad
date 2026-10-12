@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -33,17 +34,26 @@ const (
 //   - max_output_tokens -> max_tokens
 //   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, false, ClientToolSearchEnabled())
 
 }
 
 // ConvertOpenAIResponsesRequestToClaudeWithCompat preserves reasoning items
 // whose encrypted content is empty for configured compatibility endpoints.
 func ConvertOpenAIResponsesRequestToClaudeWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
-	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true)
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, ClientToolSearchEnabled())
 }
 
-func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks bool) ([]byte, error) {
+// ConvertOpenAIResponsesRequestToClaudeWithCompatContext is
+// ConvertOpenAIResponsesRequestToClaudeWithCompat with the
+// upstream.claude.tool-search value pinned in ctx, if any.
+func ConvertOpenAIResponsesRequestToClaudeWithCompatContext(ctx context.Context, modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertOpenAIResponsesRequestToClaude(modelName, inputRawJSON, stream, true, ClientToolSearchEnabledFor(ctx))
+}
+
+// toolSearch carries upstream.claude.tool-search for the whole translation so
+// a config reload cannot mix the two behaviors within one request.
+func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream, preserveEmptyThinkingBlocks, toolSearch bool) ([]byte, error) {
 	rawJSON := normalizeCodexAgentMessages(inputRawJSON)
 	var drops common.UserTurnDrops
 
@@ -192,7 +202,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		appendSystemText(formatInstruction, gjson.Result{})
 	}
 
-	names := buildClaudeToolNames(root)
+	names := buildClaudeToolNames(root, toolSearch)
+	winners := responsesToolWinners(root, toolSearch)
+	// Native tool search declares discovered tools as deferred and replays
+	// search results as tool_reference blocks, which keeps the cached prefix.
+	nativeToolSearch := responsesClientToolSearchWins(responsesToolDescriptors(root, toolSearch))
 
 	// input array processing
 	var pendingRole string
@@ -528,6 +542,39 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 			appendParts("user", toolResult)
 
+		case "tool_search_call":
+			if !toolSearch {
+				continue
+			}
+			toolUse, rawCallID := convertResponsesToolSearchCallToClaude(item, names.claudeName(responsesToolSearchType))
+			if toolUse == nil {
+				continue
+			}
+			emittedRawToolUses[rawCallID] = struct{}{}
+			appendToolUse(toolUse)
+
+		case "tool_search_output":
+			if !toolSearch {
+				continue
+			}
+			rawID := strings.TrimSpace(item.Get("call_id").String())
+			if rawID != "" {
+				if _, exists := emittedToolResults[rawID]; exists {
+					continue
+				}
+				emittedToolResults[rawID] = struct{}{}
+			}
+			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
+				text := []byte(`{"type":"text","text":""}`)
+				text, _ = sjson.SetBytes(text, "text", responsesToolSearchOutputText(item, names))
+				appendParts("user", text)
+				continue
+			}
+			toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":""}`)
+			toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", util.SanitizeClaudeToolID(rawID))
+			toolResult, _ = sjson.SetRawBytes(toolResult, "content", responsesToolSearchOutputContent(item, names, winners, nativeToolSearch))
+			appendParts("user", toolResult)
+
 		default:
 			// Unknown item types have no Claude equivalent. Keep conversion pure
 			// and omit them from the wire payload.
@@ -567,8 +614,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// one winner for each final name, while keeping the original order for the
 	// tools that survive conversion.
 	var toolItems [][]byte
-	winners := responsesToolWinners(root)
-	for _, descriptor := range responsesToolDescriptors(root) {
+	for _, descriptor := range responsesToolDescriptors(root, toolSearch) {
 		winner, ok := winners[descriptor.name]
 		if !ok || winner.order != descriptor.order {
 			continue
@@ -578,6 +624,11 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		if !ok {
 			continue
 		}
+		if nativeToolSearch && descriptor.sourcePriority == responsesDiscoveredToolPriority {
+			// Anthropic rejects cache_control on deferred tools.
+			tJSON, _ = sjson.DeleteBytes(tJSON, "cache_control")
+			tJSON, _ = sjson.SetBytes(tJSON, "defer_loading", true)
+		}
 		toolName := gjson.GetBytes(tJSON, "name").String()
 		if toolName != "" {
 			includedToolNames[descriptor.name] = struct{}{}
@@ -585,7 +636,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 		toolItems = append(toolItems, tJSON)
 	}
-	toolNameMap = responsesToolNameMap(root, includedToolNames)
+	toolNameMap = responsesToolNameMap(root, includedToolNames, toolSearch)
 	if len(toolItems) > 0 {
 		out, _ = sjson.SetRawBytes(out, "tools", common.JoinRawArray(toolItems))
 	}
@@ -1231,6 +1282,9 @@ func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor, 
 	if overrideName == "" && !descriptor.direct {
 		overrideName = descriptor.name
 	}
+	if descriptor.clientSearch {
+		return convertResponsesToolSearchToolToClaude(descriptor.tool, claudeName)
+	}
 	switch descriptor.toolType {
 	case "function":
 		return convertResponsesFunctionToolToClaude(descriptor.tool, overrideName)
@@ -1249,12 +1303,16 @@ func convertResponsesToolDescriptorToClaude(descriptor responsesToolDescriptor, 
 	}
 }
 
+// responsesDiscoveredToolPriority ranks tools loaded by a tool_search_output
+// after every declared tool, so they append to tools[] in discovery order.
+const responsesDiscoveredToolPriority = 2
+
 type responsesToolSource struct {
 	tools    gjson.Result
-	priority int // Top-level tools use 0; all additional_tools sources use 1.
+	priority int // Top-level tools use 0, additional_tools 1, tool_search_output results 2.
 }
 
-func responsesToolSources(root gjson.Result) []responsesToolSource {
+func responsesToolSources(root gjson.Result, toolSearch bool) []responsesToolSource {
 	var sources []responsesToolSource
 	appendSource := func(tools gjson.Result, priority int) {
 		if tools.Exists() && tools.IsArray() {
@@ -1270,6 +1328,14 @@ func responsesToolSources(root gjson.Result) []responsesToolSource {
 			}
 			return true
 		})
+		if toolSearch {
+			input.ForEach(func(_, item gjson.Result) bool {
+				if item.Get("type").String() == "tool_search_output" {
+					appendSource(item.Get("tools"), responsesDiscoveredToolPriority)
+				}
+				return true
+			})
+		}
 	}
 	return sources
 }
@@ -1283,11 +1349,47 @@ type responsesToolDescriptor struct {
 	sourcePriority int
 	direct         bool
 	order          int
+	// clientSearch marks the Codex client tool_search declaration, which only
+	// exists while upstream.claude.tool-search is on.
+	clientSearch bool
 }
 
-func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
+func responsesToolDescriptors(root gjson.Result, toolSearch bool) []responsesToolDescriptor {
 	var descriptors []responsesToolDescriptor
-	appendDescriptor := func(tool gjson.Result, name, childName, namespaceName, toolType string, sourcePriority int, direct bool) {
+	for _, source := range responsesToolSources(root, toolSearch) {
+		descriptors = appendResponsesToolDescriptors(descriptors, source.tools, source.priority, toolSearch)
+	}
+	if !responsesClientToolSearchWins(descriptors) {
+		return descriptors
+	}
+	// With client tool search, declared defer_loading tools stay hidden until
+	// a tool_search_output in history loads them.
+	kept := descriptors[:0]
+	for _, descriptor := range descriptors {
+		if descriptor.sourcePriority != responsesDiscoveredToolPriority && descriptor.tool.Get("defer_loading").Bool() {
+			continue
+		}
+		descriptor.order = len(kept)
+		kept = append(kept, descriptor)
+	}
+	return kept
+}
+
+// responsesClientToolSearchWins reports whether the client tool_search
+// declaration owns the tool_search name. A same-named function that wins
+// instead leaves no search tool, so deferred tools must stay declared.
+func responsesClientToolSearchWins(descriptors []responsesToolDescriptor) bool {
+	var winner *responsesToolDescriptor
+	for i := range descriptors {
+		if descriptors[i].name == responsesToolSearchType && (winner == nil || responsesToolDescriptorPrecedes(descriptors[i], *winner)) {
+			winner = &descriptors[i]
+		}
+	}
+	return winner != nil && winner.clientSearch
+}
+
+func appendResponsesToolDescriptors(descriptors []responsesToolDescriptor, tools gjson.Result, sourcePriority int, toolSearch bool) []responsesToolDescriptor {
+	appendDescriptor := func(tool gjson.Result, name, childName, namespaceName, toolType string, direct bool) {
 		if name == "" {
 			return
 		}
@@ -1302,7 +1404,7 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			order:          len(descriptors),
 		})
 	}
-	appendNamespaceChildren := func(namespaceTool gjson.Result, sourcePriority int) {
+	appendNamespaceChildren := func(namespaceTool gjson.Result) {
 		namespaceName := strings.TrimSpace(namespaceTool.Get("name").String())
 		children := namespaceTool.Get("tools")
 		if !children.Exists() || !children.IsArray() {
@@ -1316,41 +1418,52 @@ func responsesToolDescriptors(root gjson.Result) []responsesToolDescriptor {
 			qualifiedName := qualifyResponsesNamespaceToolName(namespaceName, childName)
 			switch strings.TrimSpace(child.Get("type").String()) {
 			case "", "function":
-				appendDescriptor(child, qualifiedName, childName, namespaceName, "function", sourcePriority, false)
+				appendDescriptor(child, qualifiedName, childName, namespaceName, "function", false)
 			case "custom":
-				appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", sourcePriority, false)
+				appendDescriptor(child, qualifiedName, childName, namespaceName, "custom", false)
 			}
 			return true
 		})
 	}
-	for _, source := range responsesToolSources(root) {
-		source.tools.ForEach(func(_, tool gjson.Result) bool {
-			toolType := strings.TrimSpace(tool.Get("type").String())
-			switch toolType {
-			case "", "function":
-				appendDescriptor(tool, responsesToolName(tool), "", "", "function", source.priority, true)
-			case "custom":
-				appendDescriptor(tool, responsesToolName(tool), "", "", "custom", source.priority, true)
-			case "namespace":
-				appendNamespaceChildren(tool, source.priority)
-			case "web_search":
-				if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
-					return true
-				}
-				name := strings.TrimSpace(tool.Get("name").String())
-				if name == "" {
-					name = "web_search"
-				}
-				appendDescriptor(tool, name, "", "", "web_search", source.priority, true)
-			default:
-				if isUnsupportedOpenAIBuiltinToolType(toolType) {
-					return true
-				}
-				appendDescriptor(tool, strings.TrimSpace(tool.Get("name").String()), "", "", toolType, source.priority, true)
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		toolType := strings.TrimSpace(tool.Get("type").String())
+		switch toolType {
+		case "", "function":
+			appendDescriptor(tool, responsesToolName(tool), "", "", "function", true)
+		case "custom":
+			appendDescriptor(tool, responsesToolName(tool), "", "", "custom", true)
+		case "namespace":
+			appendNamespaceChildren(tool)
+		case responsesToolSearchType:
+			if !toolSearch {
+				// Without tool search support a declaration is a generic tool,
+				// as it was before tool_search was translated.
+				appendDescriptor(tool, strings.TrimSpace(tool.Get("name").String()), "", "", toolType, true)
+				return true
 			}
-			return true
-		})
-	}
+			// Hosted search cannot run on Claude, and the raw declaration must
+			// never reach Claude, so only client search is kept.
+			if isResponsesClientToolSearch(tool) {
+				appendDescriptor(tool, responsesToolSearchType, "", "", responsesToolSearchType, true)
+				descriptors[len(descriptors)-1].clientSearch = true
+			}
+		case "web_search":
+			if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
+				return true
+			}
+			name := strings.TrimSpace(tool.Get("name").String())
+			if name == "" {
+				name = "web_search"
+			}
+			appendDescriptor(tool, name, "", "", "web_search", true)
+		default:
+			if isUnsupportedOpenAIBuiltinToolType(toolType) {
+				return true
+			}
+			appendDescriptor(tool, strings.TrimSpace(tool.Get("name").String()), "", "", toolType, true)
+		}
+		return true
+	})
 	return descriptors
 }
 
@@ -1366,9 +1479,9 @@ func responsesToolDescriptorPrecedes(left, right responsesToolDescriptor) bool {
 	return left.order < right.order
 }
 
-func responsesToolWinners(root gjson.Result) map[string]responsesToolDescriptor {
+func responsesToolWinners(root gjson.Result, toolSearch bool) map[string]responsesToolDescriptor {
 	winners := map[string]responsesToolDescriptor{}
-	for _, descriptor := range responsesToolDescriptors(root) {
+	for _, descriptor := range responsesToolDescriptors(root, toolSearch) {
 		current, exists := winners[descriptor.name]
 		if !exists || responsesToolDescriptorPrecedes(descriptor, current) {
 			winners[descriptor.name] = descriptor
@@ -1377,10 +1490,10 @@ func responsesToolWinners(root gjson.Result) map[string]responsesToolDescriptor 
 	return winners
 }
 
-func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct{}) map[string]string {
+func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct{}, toolSearch bool) map[string]string {
 	toolNameMap := map[string]string{}
-	descriptors := responsesToolDescriptors(root)
-	winners := responsesToolWinners(root)
+	descriptors := responsesToolDescriptors(root, toolSearch)
+	winners := responsesToolWinners(root, toolSearch)
 
 	// Direct tool names are canonical aliases and must win over namespace
 	// child aliases, regardless of declaration order.
@@ -1416,8 +1529,9 @@ func responsesToolNameMap(root gjson.Result, acceptedToolNames map[string]struct
 func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
 	names := make(map[string]struct{})
 	root := gjson.ParseBytes(requestRawJSON)
-	winners := responsesToolWinners(root)
-	toolNames := buildClaudeToolNamesWithWinners(root, winners)
+	toolSearch := ClientToolSearchEnabled()
+	winners := responsesToolWinners(root, toolSearch)
+	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
 	for name, descriptor := range winners {
 		if descriptor.toolType == "custom" {
 			names[name] = struct{}{}
@@ -1614,15 +1728,15 @@ func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {
 	return namespaceName + "__" + childName
 }
 
-func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
+func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string, toolSearch bool) (name, namespace string) {
 	qualifiedName = strings.TrimSpace(qualifiedName)
 	if qualifiedName == "" {
 		return "", ""
 	}
 
 	root := gjson.ParseBytes(requestRawJSON)
-	winners := responsesToolWinners(root)
-	toolNames := buildClaudeToolNamesWithWinners(root, winners)
+	winners := responsesToolWinners(root, toolSearch)
+	toolNames := buildClaudeToolNamesWithWinners(root, winners, toolSearch)
 	identity := toolNames.identity(qualifiedName)
 
 	descriptor, ok := winners[identity]

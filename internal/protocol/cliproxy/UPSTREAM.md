@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v8`
-- Last synchronized commit: `3042bc989b41366f12f8d6c67c5a483e919b49d7` (`fork/v11.1.0`)
-- Synchronized at: `2026-10-09`
+- Last synchronized commit: `f0f13cfda531da02a077748512f78a07679efd08` (`fork/v11.2.0`)
+- Synchronized at: `2026-10-12`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -21,6 +21,25 @@ verification compares the previous immutable commit with the commit above and
 fails on every unclassified or unstamped core change. The manifest deliberately
 does not carry a second commit or date; the previous commit is anchored to the
 version of this file stored in Git `HEAD` before the synchronization edits.
+
+## Synchronization adaptations (2026-10-12)
+
+The core and the allowlisted Antigravity adapter share the target above.
+Adopted: Gemini schema cleanup that strips the unsupported `dependentRequired`,
+`dependentSchemas`, and `dependencies` keywords; Chat-to-Codex shortening of over-length `call_id`s, applied identically to the
+assistant call and its tool result; and Antigravity Chat stream deltas that omit
+`tool_calls: null`.
+
+Upstream's Claude-target Responses `tool_search` translation is imported with
+its process switch (`SetClientToolSearchEnabled`, default off) and request pin
+(`WithClientToolSearch`). ccLoad never enables the switch, so the default wire
+output equals upstream's `dev_golden.json` fixture, and the Registry still
+rejects `tool_search_call`/`tool_search_output` input for the Anthropic and
+Gemini targets. ccLoad's native non-stream path, which converts a Claude message
+JSON directly instead of replaying SSE, follows the same switch. The
+`RequestEnvelope` entry point is SDK code and stays excluded, so
+`TestToolSearchPinnedContextWinsOverSwitch` is recorded as `skip-test`; the
+unmapped-item counter feeds the excluded runtime logger and is dropped.
 
 ## Synchronization adaptations (2026-10-09)
 
@@ -244,13 +263,13 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 99 `_test.go` files from the same commit as the
+The core snapshot includes 102 `_test.go` files from the same commit as the
 production sources:
 
 - `applypatch`: 1
 - `claude/gemini`: 3
 - `claude/openai/chat-completions`: 6
-- `claude/openai/responses`: 12
+- `claude/openai/responses`: 15
 - `codex/claude`: 5
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 3
