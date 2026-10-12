@@ -30,7 +30,7 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 
 func TestCalculateStandardCostBreakdown_ExposesFormulaComponents(t *testing.T) {
 	breakdown := CalculateStandardCostBreakdownWithPrice(
-		"claude-sonnet-4-5-20250929", "", nil,
+		"claude-sonnet-4-5-20250929", "", OpenAIRateCardAPI, nil,
 		12, 73, 17_558, 278, 100,
 	)
 
@@ -118,7 +118,7 @@ func TestCalculateCost_Haiku55(t *testing.T) {
 					input, output, read, five, hour = 0.50, 2.50, 0.05, 0.625, 1.00
 				}
 				// 输出不参与阈值；缓存读和两种时长的缓存写均参与。
-				got := CalculateStandardCostBreakdownWithPrice(model, "", nil, tc.input, 2_000, tc.read, tc.five, tc.hour)
+				got := CalculateStandardCostBreakdownWithPrice(model, "", OpenAIRateCardAPI, nil, tc.input, 2_000, tc.read, tc.five, tc.hour)
 				wantInput := float64(tc.input) * input / 1_000_000
 				wantOutput := 2_000 * output / 1_000_000
 				wantRead := float64(tc.read) * read / 1_000_000
@@ -137,7 +137,7 @@ func TestCalculateCost_Haiku55(t *testing.T) {
 
 func TestCalculateCost_Fable51(t *testing.T) {
 	breakdown := CalculateStandardCostBreakdownWithPrice(
-		"claude-fable-5-1", "", nil,
+		"claude-fable-5-1", "", OpenAIRateCardAPI, nil,
 		1_000, 2_000, 4_000, 500, 250,
 	)
 	for _, test := range []struct {
@@ -175,7 +175,7 @@ func TestCalculateCost_Opus55(t *testing.T) {
 		{name: "fast", serviceTier: "fast", wantInputPrice: 8, wantOutputPrice: 40, wantCacheReadPrice: 0.4, wantCacheWritePrice: 10, wantServiceMultiplier: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, nil, 1_000, 1_000, 1_000, 1_000, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice("claude-opus-5-5", test.serviceTier, OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0)
 			if breakdown.Input.PricePerMillion != test.wantInputPrice ||
 				breakdown.Output.PricePerMillion != test.wantOutputPrice ||
 				breakdown.CacheRead.PricePerMillion != test.wantCacheReadPrice ||
@@ -198,7 +198,7 @@ func TestCalculateCost_Sonnet5Pricing(t *testing.T) {
 		{model: "claude-sonnet-5-20260827", cacheReadPrice: 0.2},
 	} {
 		t.Run(test.model, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice(test.model, "", nil, 1_000, 1_000, 1_000, 1_000, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 1_000, 1_000, 1_000, 1_000, 0)
 			if breakdown.Input.PricePerMillion != 2 ||
 				breakdown.Output.PricePerMillion != 10 ||
 				breakdown.CacheRead.PricePerMillion != test.cacheReadPrice ||
@@ -680,7 +680,7 @@ func TestCalculateCostOpenAIFastPrices(t *testing.T) {
 	} {
 		t.Run(test.model, func(t *testing.T) {
 			for _, tier := range []string{"fast", "priority", "auto"} {
-				got := CalculateStandardCostBreakdownWithPrice(test.model, tier, nil, 1000, 1000, 1000, 0, 0)
+				got := CalculateStandardCostBreakdownWithPrice(test.model, tier, OpenAIRateCardAPI, nil, 1000, 1000, 1000, 0, 0)
 				want := (test.input + test.output + test.cache) / 1000
 				if !floatEquals(got.Total, want, 1e-12) || !floatEquals(got.CacheRead.PricePerMillion, test.cache, 1e-12) {
 					t.Fatalf("tier=%s breakdown=%+v, want total %v", tier, got, want)
@@ -768,7 +768,7 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		m := OpenAIServiceTierMultiplier(tc.model, tc.tier)
+		m := OpenAIServiceTierMultiplier(tc.model, tc.tier, OpenAIRateCardAPI)
 		if m != tc.multiplier {
 			t.Errorf("model=%q tier=%q: multiplier = %.1f, 期望 %.1f", tc.model, tc.tier, m, tc.multiplier)
 		}
@@ -793,21 +793,44 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		{"deepseek-r1", "priority"},
 	}
 	for _, tc := range unsupportedCases {
-		m := OpenAIServiceTierMultiplier(tc.model, tc.tier)
+		m := OpenAIServiceTierMultiplier(tc.model, tc.tier, OpenAIRateCardAPI)
 		if m != 1.0 {
 			t.Errorf("不支持的model=%q tier=%q: multiplier = %.1f, 期望 1.0", tc.model, tc.tier, m)
 		}
 	}
 
+	// Codex 订阅额度与购买积分使用各自统一倍率，不沿用模型 API 倍率。
+	codexCases := []struct {
+		model      string
+		tier       string
+		rateCard   OpenAIRateCard
+		multiplier float64
+	}{
+		{"gpt-6-astra", "fast", OpenAIRateCardCodexAllowance, 2.5},
+		{"gpt-5.6-sol", "auto", OpenAIRateCardCodexAllowance, 2.5},
+		{"gpt-6-astra", "priority", OpenAIRateCardCodexCredits, 2.0},
+		{"gpt-5.5", "priority", OpenAIRateCardCodexCredits, 2.0},
+		{"gpt-6-astra", "ultrafast", OpenAIRateCardCodexAllowance, 8.0},
+		{"gpt-6.1-sol", "ultrafast", OpenAIRateCardCodexCredits, 6.0},
+		{"gpt-6-astra", "default", OpenAIRateCardCodexAllowance, 1.0},
+		{"gpt-5-pro", "priority", OpenAIRateCardCodexAllowance, 1.0},
+	}
+	for _, tc := range codexCases {
+		m := OpenAIServiceTierMultiplier(tc.model, tc.tier, tc.rateCard)
+		if m != tc.multiplier {
+			t.Errorf("model=%q tier=%q rateCard=%d: multiplier = %.1f, 期望 %.1f", tc.model, tc.tier, tc.rateCard, m, tc.multiplier)
+		}
+	}
+
 	// 验证 gpt-5 priority 具体数值: input $2.50/1M, output $20/1M
-	priorityCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "priority")
+	priorityCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "priority", OpenAIRateCardAPI)
 	expectedPriority := (2.50*1000 + 20.0*1000) / 1_000_000
 	if !floatEquals(priorityCost, expectedPriority, 0.000001) {
 		t.Errorf("gpt-5 priority: cost = %.6f, 期望 %.6f", priorityCost, expectedPriority)
 	}
 
 	// 验证 gpt-5 flex 具体数值: input $0.625/1M, output $5/1M
-	flexCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "flex")
+	flexCost := baseCost * OpenAIServiceTierMultiplier("gpt-5", "flex", OpenAIRateCardAPI)
 	expectedFlex := (0.625*1000 + 5.0*1000) / 1_000_000
 	if !floatEquals(flexCost, expectedFlex, 0.000001) {
 		t.Errorf("gpt-5 flex: cost = %.6f, 期望 %.6f", flexCost, expectedFlex)
@@ -832,7 +855,7 @@ func TestCalculateCost_UltrafastWithCustomPrices(t *testing.T) {
 		{name: "channel", price: price, want: 6 * (3 + 5 + 0.3 + 4 + 6) / 1000},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			got := CalculateStandardCostBreakdownWithPrice("gpt-5.6-sol", "ultrafast", scenario.price, 1000, 1000, 1000, 1000, 1000)
+			got := CalculateStandardCostBreakdownWithPrice("gpt-5.6-sol", "ultrafast", OpenAIRateCardAPI, scenario.price, 1000, 1000, 1000, 1000, 1000)
 			if !floatEquals(got.Total, scenario.want, 1e-12) || got.ServiceTierMultiplier != 6 ||
 				!floatEquals(got.Input.Cost+got.Output.Cost+got.CacheRead.Cost+got.CacheWrite.Cost, got.Total, 1e-12) {
 				t.Fatalf("Ultrafast breakdown = %+v, want total %v and 6x", got, scenario.want)
@@ -1845,7 +1868,7 @@ func TestFastModeCost_Basic(t *testing.T) {
 	// Input: 1000 × $10 / 1M = $0.010
 	// Output: 2000 × $50 / 1M = $0.100
 	// Total: $0.110
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 1000, 2000, 0, 0, 0).Total
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, 1000, 2000, 0, 0, 0).Total
 	expected := 0.110
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Fast mode 基础成本 = %.6f, 期望 %.6f", cost, expected)
@@ -1863,7 +1886,7 @@ func TestFastModeCost_WithCache(t *testing.T) {
 	} {
 		t.Run(test.model, func(t *testing.T) {
 			// 缓存读、5m 写、1h 写均叠加 fast 倍率；Opus 5.5 读缓存按输入价的 5%。
-			got := CalculateStandardCostBreakdownWithPrice(test.model, "fast", nil, 1000, 500, 5000, 2000, 1000)
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "fast", OpenAIRateCardAPI, nil, 1000, 500, 5000, 2000, 1000)
 			if !floatEquals(got.Total, test.want, 1e-12) {
 				t.Fatalf("fast cost=%v, want %v", got.Total, test.want)
 			}
@@ -1881,7 +1904,7 @@ func TestCalculateCost_Mythos(t *testing.T) {
 		{"claude-mythos-5-1-20261001", 0.25},
 	} {
 		t.Run(test.model, func(t *testing.T) {
-			got := CalculateStandardCostBreakdownWithPrice(test.model, "", nil, 250_000, 1_000, 100_000, 1_000, 1_000)
+			got := CalculateStandardCostBreakdownWithPrice(test.model, "", OpenAIRateCardAPI, nil, 250_000, 1_000, 100_000, 1_000, 1_000)
 			want := 2.5 + 0.05 + 0.1*test.cacheReadPrice + 0.0125 + 0.02
 			if got.Input.PricePerMillion != 10 || got.Output.PricePerMillion != 50 ||
 				got.CacheRead.PricePerMillion != test.cacheReadPrice || !floatEquals(got.Total, want, 1e-12) {
@@ -1898,7 +1921,7 @@ func TestFastModeCost_VsStandard(t *testing.T) {
 	inputTokens := 250000
 
 	standardCost := CalculateCostDetailed("claude-opus-5", inputTokens, 1000, 0, 0, 0)
-	fastCost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, inputTokens, 1000, 0, 0, 0).Total
+	fastCost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, inputTokens, 1000, 0, 0, 0).Total
 
 	// 标准: 250000×$5/1M + 1000×$25/1M = $1.275
 	expectedStandard := 1.275
@@ -1932,7 +1955,7 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			breakdown := CalculateStandardCostBreakdownWithPrice(tt.model, "fast", nil, 1_000, 1_000, 0, 0, 0)
+			breakdown := CalculateStandardCostBreakdownWithPrice(tt.model, "fast", OpenAIRateCardAPI, nil, 1_000, 1_000, 0, 0, 0)
 			if breakdown.Input.PricePerMillion != tt.wantInputPrice || breakdown.Output.PricePerMillion != tt.wantOutputPrice {
 				t.Fatalf("fast pricing for %q = input %.2f/output %.2f, want %.2f/%.2f", tt.model,
 					breakdown.Input.PricePerMillion, breakdown.Output.PricePerMillion, tt.wantInputPrice, tt.wantOutputPrice)
@@ -1942,14 +1965,14 @@ func TestCalculateStandardCostBreakdown_FastModeEligibility(t *testing.T) {
 }
 
 func TestFastModeCost_NegativeTokens(t *testing.T) {
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, -1, 100, 0, 0, 0).Total
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, -1, 100, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("负数token应返回0, 实际 %.6f", cost)
 	}
 }
 
 func TestFastModeCost_ZeroTokens(t *testing.T) {
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", nil, 0, 0, 0, 0, 0).Total
+	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, 0, 0, 0, 0, 0).Total
 	if cost != 0.0 {
 		t.Errorf("零token应返回0, 实际 %.6f", cost)
 	}

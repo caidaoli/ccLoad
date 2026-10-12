@@ -240,12 +240,14 @@ func CalculateCostDetailedWithPrice(model string, price *CustomModelPrice, input
 }
 
 // CalculateStandardCostBreakdownWithPrice 返回日志页展示所需的标准成本计算过程。
-// serviceTier 与实际请求计费语义一致，包含 OpenAI priority/flex 和 Anthropic fast 定价。
+// serviceTier 与实际请求计费语义一致，包含 OpenAI priority/flex 和 Anthropic fast 定价；
+// rateCard 选择 OpenAI service_tier 倍率依据的价目（API 或 Codex 订阅额度/积分）。
 // price 非空时用它整份替换目录与全局自定义价格
 // （渠道模型价格）。model 仍决定长上下文阈值、缓存倍率回退与 service_tier 倍率；
 // Anthropic fast 模式按该价格的全部 token 费用翻倍，包括缓存读写。
 func CalculateStandardCostBreakdownWithPrice(
 	model, serviceTier string,
+	rateCard OpenAIRateCard,
 	price *CustomModelPrice,
 	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
 ) StandardCostBreakdown {
@@ -268,7 +270,7 @@ func CalculateStandardCostBreakdownWithPrice(
 		cache5mTokens,
 		cache1hTokens,
 	)
-	multiplier := OpenAIServiceTierMultiplier(model, serviceTier)
+	multiplier := OpenAIServiceTierMultiplier(model, serviceTier, rateCard)
 	if multiplier != 1 {
 		breakdown.ServiceTierMultiplier = multiplier
 	}
@@ -556,11 +558,24 @@ func modelSupportsTier(model string) bool {
 	return false
 }
 
+// OpenAIRateCard 是 OpenAI service_tier 倍率依据的价目。
+type OpenAIRateCard uint8
+
+const (
+	// OpenAIRateCardAPI 是 API token 价目（含 API Key 渠道与中转）。
+	OpenAIRateCardAPI OpenAIRateCard = iota
+	// OpenAIRateCardCodexAllowance 是 Codex 订阅额度：Fast 2.5x、Ultrafast 8x。
+	OpenAIRateCardCodexAllowance
+	// OpenAIRateCardCodexCredits 是 Codex 购买积分/Enterprise PAYG：Fast 2x、Ultrafast 6x。
+	OpenAIRateCardCodexCredits
+)
+
 // OpenAIServiceTierMultiplier 返回 OpenAI service_tier 的费用倍率。
 // Codex 的 auto 按 Fast 计费；priority 与 fast 使用相同官方倍率。
-// Ultrafast 按项目计费规则统一为 6x；flex=0.5x。
+// API 价目的 Ultrafast 按项目计费规则统一为 6x；flex=0.5x。
 // default/standard/""=1x（标准）。
-func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
+// https://developers.openai.com/codex/speed （2026-10-12）
+func OpenAIServiceTierMultiplier(model, serviceTier string, rateCard OpenAIRateCard) float64 {
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
 	if serviceTier == "" || serviceTier == "default" {
 		return 1.0
@@ -570,8 +585,17 @@ func OpenAIServiceTierMultiplier(model, serviceTier string) float64 {
 	}
 	switch serviceTier {
 	case "ultrafast":
+		if rateCard == OpenAIRateCardCodexAllowance {
+			return 8.0
+		}
 		return 6.0
 	case "auto", "priority", "fast":
+		switch rateCard {
+		case OpenAIRateCardCodexAllowance:
+			return 2.5
+		case OpenAIRateCardCodexCredits:
+			return 2.0
+		}
 		return openAIFastModeMultiplier(model)
 	case "flex":
 		return 0.5

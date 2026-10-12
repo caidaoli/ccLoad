@@ -45,7 +45,7 @@ func TestLogModelPricesUsesFuzzyMatchedRow(t *testing.T) {
 		t.Fatalf("fuzzy route = %+v, ok=%v", selected, ok)
 	}
 	entry := &model.LogEntry{ChannelID: cfg.ID, Model: "gemini-3-flash", ActualModel: "middle", Cost: 1}
-	if got, ok := server.logModelPrices(ctx, []*model.LogEntry{entry})(entry); !ok || !got.Equal(price) {
+	if got, _, ok := server.logModelPrices(ctx, []*model.LogEntry{entry})(entry); !ok || !got.Equal(price) {
 		t.Fatalf("log price = %+v, identifiable=%v, want %+v", got, ok, price)
 	}
 }

@@ -214,6 +214,8 @@ type fwResult struct {
 	// OpenAI service_tier（2026-03新增）。请求中的 priority 是 Fast 模式标记，
 	// 计费时不能被上游回显的 default/standard 降档。
 	ServiceTier string
+	// RateCard 是 service_tier 倍率依据的价目，由渠道认证与 CodexHasCredits 决定。
+	RateCard util.OpenAIRateCard
 
 	// ThinkingEffort 记录请求或上游响应声明的思考等级；上游响应非空时覆盖请求值。
 	ThinkingEffort string
@@ -1299,6 +1301,7 @@ func computeRequestCostWithPrice(model string, serviceTier string, price *util.C
 	return util.CalculateStandardCostBreakdownWithPrice(
 		model,
 		serviceTier,
+		res.RateCard,
 		price,
 		res.InputTokens,
 		res.OutputTokens,
@@ -1306,6 +1309,19 @@ func computeRequestCostWithPrice(model string, serviceTier string, price *util.C
 		res.Cache5mInputTokens,
 		res.Cache1hInputTokens,
 	).Total + res.ToolCostUSD
+}
+
+// openAIRateCard 选择 service_tier 倍率价目：Codex OAuth 按本次是否落入购买积分区分
+// 订阅额度与积分，其余渠道按 API 价目。
+func openAIRateCard(codexOAuth, codexHasCredits bool) util.OpenAIRateCard {
+	switch {
+	case !codexOAuth:
+		return util.OpenAIRateCardAPI
+	case codexHasCredits:
+		return util.OpenAIRateCardCodexCredits
+	default:
+		return util.OpenAIRateCardCodexAllowance
+	}
 }
 
 func requestedServiceTier(reqCtx *proxyRequestContext) string {

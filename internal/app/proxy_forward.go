@@ -2645,6 +2645,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if res != nil {
 		res.UpstreamWebsocket = usedNativeWebsocket
 		res.CodexHasCredits = cfg.UsesCodexOAuth() && res.CodexHasCredits
+		res.RateCard = openAIRateCard(cfg.UsesCodexOAuth(), res.CodexHasCredits)
 		var transportErr *codexWebsocketTransportError
 		res.UpstreamWebsocketTransportFailure = usedNativeWebsocket && errors.As(err, &transportErr)
 	}

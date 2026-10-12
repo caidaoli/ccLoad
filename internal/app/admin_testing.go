@@ -2800,6 +2800,7 @@ func (s *Server) bindChannelTestBilling(cfg *model.Config, testReq *testutil.Tes
 		return
 	}
 	testReq.RequestModel = testReq.Model
+	testReq.CodexOAuth = cfg.UsesCodexOAuth()
 	if selected, ok := s.firstModelRow(cfg, testReq.Model); ok {
 		testReq.ChannelModelPrice = selected.entry.Pricing
 	}
@@ -2829,6 +2830,7 @@ func channelTestCostUSD(testReq *testutil.TestChannelRequest, actualModel, reque
 		Cache5mInputTokens:       cache5m,
 		Cache1hInputTokens:       cache1h,
 		ServiceTier:              serviceTier,
+		RateCard:                 openAIRateCard(testReq.CodexOAuth, parser.GetCodexHasCredits()),
 		ToolCostUSD:              toolCost,
 	}), true
 }

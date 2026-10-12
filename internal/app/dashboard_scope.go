@@ -57,8 +57,8 @@ type dashboardLogEntry struct {
 	CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
 }
 
-// logModelPriceFunc 返回当前可确定的渠道价格；无法辨别选中行时不展示重算明细。
-type logModelPriceFunc func(entry *model.LogEntry) (*util.CustomModelPrice, bool)
+// logModelPriceFunc 返回当前可确定的渠道价格与 service_tier 价目；无法辨别选中行时不展示重算明细。
+type logModelPriceFunc func(entry *model.LogEntry) (*util.CustomModelPrice, util.OpenAIRateCard, bool)
 
 // logModelPrices 为一页日志预加载渠道配置，按渠道当前的模型价格重算成本明细。
 // 渠道已删除或读取失败时明细回退全局价格——明细只用于展示，日志成本已在写入时定格。
@@ -77,10 +77,12 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 		}
 		configs[entry.ChannelID] = cfg
 	}
-	return func(entry *model.LogEntry) (*util.CustomModelPrice, bool) {
+	return func(entry *model.LogEntry) (*util.CustomModelPrice, util.OpenAIRateCard, bool) {
 		cfg := configs[entry.ChannelID]
+		// 只有 Codex OAuth 日志会带 CodexHasCredits，渠道已删除时仍可确定积分价目。
+		rateCard := openAIRateCard(entry.CodexHasCredits || cfg.UsesCodexOAuth(), entry.CodexHasCredits)
 		if cfg == nil {
-			return nil, true
+			return nil, rateCard, true
 		}
 		actual := entry.ActualModel
 		if actual == "" {
@@ -100,7 +102,7 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 			}
 			if strings.EqualFold(s.resolveFinalUpstreamModel(cfg, selected, entry.UpstreamProtocol), actual) {
 				if matches > 0 && !matched.Equal(row.Pricing) {
-					return nil, false
+					return nil, rateCard, false
 				}
 				matched = row.Pricing
 				matches++
@@ -109,9 +111,9 @@ func (s *Server) logModelPrices(ctx context.Context, logs []*model.LogEntry) log
 		if matches == 0 && cfg.UsesAntigravityOAuth() && strings.EqualFold(actual, antigravityWebSearchFallbackModel) {
 			// Web Search replaces the routed model after row selection. Its log retains
 			// the selected row's price, which cannot be recovered from this model name.
-			return nil, false
+			return nil, rateCard, false
 		}
-		return matched, true
+		return matched, rateCard, true
 	}
 }
 
@@ -120,9 +122,10 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 		return nil
 	}
 	var price *util.CustomModelPrice
+	rateCard := openAIRateCard(entry.CodexHasCredits, entry.CodexHasCredits)
 	if modelPrice != nil {
 		var identifiable bool
-		price, identifiable = modelPrice(entry)
+		price, rateCard, identifiable = modelPrice(entry)
 		if !identifiable {
 			return nil
 		}
@@ -137,6 +140,7 @@ func buildLogCostBreakdown(entry *model.LogEntry, modelPrice logModelPriceFunc) 
 	breakdown := util.CalculateStandardCostBreakdownWithPrice(
 		billingModel,
 		entry.ServiceTier,
+		rateCard,
 		price,
 		entry.InputTokens,
 		entry.OutputTokens,

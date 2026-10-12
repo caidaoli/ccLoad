@@ -5494,6 +5494,68 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 	}
 }
 
+func TestProxy_CodexFastModeBillsByRateCard(t *testing.T) {
+	t.Parallel()
+	const modelName = "gpt-6-astra"
+	standard := util.CalculateStandardCostBreakdownWithPrice(modelName, "", util.OpenAIRateCardAPI, nil, 1000, 100, 0, 0, 0).Total
+	for _, tc := range []struct {
+		name       string
+		authType   string
+		credits    bool
+		multiplier float64
+	}{
+		{"subscription allowance", model.AuthTypeCodexOAuth, false, 2.5},
+		{"purchased credits", model.AuthTypeCodexOAuth, true, 2.0},
+		{"api key", model.AuthTypeAPIKey, false, 2.0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.credits {
+					_, _ = io.WriteString(w, `data: {"type":"codex.rate_limits","rate_limits":{"allowed":false,"limit_reached":true,"primary":{"used_percent":100,"window_minutes":300,"reset_at":1789995625}},"credits":{"has_credits":true,"unlimited":false,"balance":null}}`+"\n\n")
+				}
+				_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-fast","status":"completed","service_tier":"priority","output":[],"usage":{"input_tokens":1000,"output_tokens":100}}}`+"\n\n")
+			}))
+			channel := testChannel{name: "codex-fast", upstreamProtocol: "codex", models: modelName, priority: 100, authType: tc.authType}
+			if tc.authType == model.AuthTypeCodexOAuth {
+				channel.oauthCredential = codexProxyTestCredential(t, "at-fast", "rt-fast", "account-fast")
+			}
+			env := setupProxyTestEnv(t, []testChannel{channel}, map[int]string{0: upstream.URL})
+
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": modelName, "stream": false, "input": "hello", "service_tier": "priority",
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			ctx := context.Background()
+			var logs []*model.LogEntry
+			for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				var err error
+				logs, err = env.store.ListLogs(ctx, time.Now().Add(-time.Minute), 10, 0, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(logs) == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("proxy log not persisted: %+v", logs)
+				}
+			}
+			entry := logs[0]
+			if entry.CodexHasCredits != tc.credits || math.Abs(entry.Cost-standard*tc.multiplier) > 1e-12 {
+				t.Fatalf("credits=%t cost=%v, want credits=%t cost=%v", entry.CodexHasCredits, entry.Cost, tc.credits, standard*tc.multiplier)
+			}
+			breakdown := projectDashboardLogs(logs, env.server.logModelPrices(ctx, logs))[0].CostBreakdown
+			if breakdown == nil || breakdown.ServiceTierMultiplier != tc.multiplier || math.Abs(breakdown.Total-entry.Cost) > 1e-12 {
+				t.Fatalf("breakdown=%+v, want multiplier %v total %v", breakdown, tc.multiplier, entry.Cost)
+			}
+		})
+	}
+}
+
 func TestProxy_CodexOAuthQuotaMergesIndependentResponseGroups(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32

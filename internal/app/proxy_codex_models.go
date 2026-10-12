@@ -164,7 +164,7 @@ func (source codexRouteTierSource) serviceTiers(actualModel string) json.RawMess
 	encoded, _ := json.Marshal([]codexauth.ServiceTier{
 		{ID: "priority", Name: "Fast", Description: "Priority processing for lower latency."},
 		{ID: "ultrafast", Name: "Ultrafast", Description: fmt.Sprintf("Lowest latency; %gx Standard token pricing.",
-			util.OpenAIServiceTierMultiplier(actualModel, "ultrafast"))},
+			util.OpenAIServiceTierMultiplier(actualModel, "ultrafast", util.OpenAIRateCardAPI))},
 	})
 	return encoded
 }

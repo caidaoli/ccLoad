@@ -57,6 +57,7 @@ type TestChannelRequest struct {
 	ImageGeneration   *ImageGenerationOptions `json:"-"`                         // 生图 Tab 的 Chat Completions 请求选项
 	ChannelModelPrice *util.CustomModelPrice  `json:"-"`                         // 渠道此模型的价格（nil 按全局价格计费）
 	RequestModel      string                  `json:"-"`                         // 重定向前的请求模型；Model 改写为上游模型后仍供计费模型回退
+	CodexOAuth        bool                    `json:"-"`                         // Codex OAuth 渠道：service_tier 按订阅额度/积分倍率计费
 	resolvedSessionID string
 }
 
