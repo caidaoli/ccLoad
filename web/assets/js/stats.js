@@ -1,6 +1,7 @@
     // 常量定义
     const t = window.t;
-    const STATS_TABLE_COLUMNS = 13; // 统计表列数
+    const STATS_TABLE_COLUMNS = 12; // 统计表可见列数：渠道/模型层级列（隐藏渠道时为模型列）+ 11 个指标列
+    const STATS_CHEVRON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>';
 
     let statsData = null;
     let rpmStats = null; // 全局RPM统计（峰值、平均、最近一分钟）
@@ -19,6 +20,7 @@
       column: null,
       order: null // null, 'asc', 'desc'
     };
+    const collapsedStatsChannels = new Set(); // 已折叠的渠道 ID（字符串），跨刷新/排序保留
 
     function normalizeStatsFilterValue(value) {
       return String(value || '').trim().toLowerCase();
@@ -130,9 +132,6 @@
         isToday = statsData.is_today !== false;
         populateStatsComboboxOptions();
 
-        // 初始化时应用默认排序（优先级→渠道名称→模型名称）
-        applyDefaultSorting();
-
         const scrollState = background ? captureStatsScroll() : null;
         renderStatsTable();
         updateRpmHeader(); // 更新表头标题
@@ -175,16 +174,13 @@
       }
     }
 
-    function statsColspan() {
-      return STATS_TABLE_COLUMNS - (window.shouldHideChannels?.() ? 1 : 0);
-    }
-
     // 模板不在文档树内，translatePage 覆盖不到，文本需在渲染时传入
     function renderStatsStateRow(templateId, data) {
       const tbody = document.getElementById('stats_tbody');
       tbody.innerHTML = '';
-      const row = TemplateEngine.render(templateId, { colspan: statsColspan(), ...data });
+      const row = TemplateEngine.render(templateId, { colspan: STATS_TABLE_COLUMNS, ...data });
       if (row) tbody.appendChild(row);
+      syncStatsToggleAll();
     }
 
     function renderStatsLoading() {
@@ -233,8 +229,7 @@
       // 更新表头样式
       updateSortHeaders();
       
-      // 执行排序并重新渲染
-      applySorting();
+      // 排序在渲染时进行（分组视图先排渠道，再排组内模型）
       renderStatsTable();
     }
 
@@ -255,94 +250,67 @@
       }
     }
 
-    function applySorting() {
-      // 如果没有排序状态，从原始数据恢复默认排序（优先级→渠道名称→模型名称）
-      if (!sortState.column || !sortState.order) {
-        if (statsData && statsData.originalStats) {
-          statsData.stats = [...statsData.originalStats];
-        }
-        return;
+    // 默认排序：渠道优先级降序 → 渠道名称升序 → 模型名称升序
+    function compareStatsDefault(a, b) {
+      const priorityA = a.channel_priority ?? 0;
+      const priorityB = b.channel_priority ?? 0;
+      if (priorityA !== priorityB) return priorityB - priorityA;
+
+      const channelA = (a.channel_name || '').toLowerCase();
+      const channelB = (b.channel_name || '').toLowerCase();
+      const channelCompare = channelA.localeCompare(channelB, 'zh-CN');
+      if (channelCompare !== 0) return channelCompare;
+
+      const modelA = (a.model || '').toLowerCase();
+      const modelB = (b.model || '').toLowerCase();
+      return modelA.localeCompare(modelB, 'zh-CN');
+    }
+
+    function getStatsSortValue(entry, column) {
+      switch (column) {
+        case 'channel_name':
+          return (entry.channel_name || '').toLowerCase();
+        case 'model':
+          return (entry.model || '').toLowerCase();
+        case 'success':
+          return entry.success || 0;
+        case 'error':
+          return entry.error || 0;
+        case 'rpm':
+          // 使用后端计算的峰值RPM排序
+          return entry.peak_rpm || 0;
+        case 'success_rate':
+          return entry.total > 0 ? (entry.success / entry.total) : 0;
+        case 'avg_first_byte_time':
+          // 优先按平均耗时排序，其次按平均首字时间
+          return entry.avg_duration_seconds || entry.avg_first_byte_time_seconds || 0;
+        case 'avg_speed':
+          return getStatsEntrySpeed(entry) || 0;
+        case 'total_input_tokens':
+          return entry.total_input_tokens || 0;
+        case 'total_output_tokens':
+          return entry.total_output_tokens || 0;
+        case 'total_cache_read':
+          return entry.total_cache_read_input_tokens || 0;
+        case 'total_cache_creation':
+          return entry.total_cache_creation_input_tokens || 0;
+        case 'total_cost':
+          return entry.total_cost || 0;
+        default:
+          return 0;
       }
+    }
 
-      // 保存原始数据（如果还没有保存）
-      if (!statsData.originalStats) {
-        statsData.originalStats = [...statsData.stats];
-      }
+    // 渠道行与模型行共用：按当前表头排序，未选排序或值相同时回落默认排序
+    function compareStatsEntries(a, b) {
+      if (!sortState.column || !sortState.order) return compareStatsDefault(a, b);
 
-      const column = sortState.column;
-      const isAsc = sortState.order === 'asc';
-
-      statsData.stats.sort((a, b) => {
-        let valueA, valueB;
-
-        switch (column) {
-          case 'channel_name':
-            valueA = (a.channel_name || '').toLowerCase();
-            valueB = (b.channel_name || '').toLowerCase();
-            break;
-          case 'model':
-            valueA = (a.model || '').toLowerCase();
-            valueB = (b.model || '').toLowerCase();
-            break;
-          case 'success':
-            valueA = a.success || 0;
-            valueB = b.success || 0;
-            break;
-          case 'error':
-            valueA = a.error || 0;
-            valueB = b.error || 0;
-            break;
-          case 'rpm':
-            // 使用后端计算的峰值RPM排序
-            valueA = a.peak_rpm || 0;
-            valueB = b.peak_rpm || 0;
-            break;
-          case 'success_rate':
-            valueA = a.total > 0 ? (a.success / a.total) : 0;
-            valueB = b.total > 0 ? (b.success / b.total) : 0;
-            break;
-          case 'avg_first_byte_time':
-            // 优先按平均耗时排序，其次按平均首字时间
-            valueA = a.avg_duration_seconds || a.avg_first_byte_time_seconds || 0;
-            valueB = b.avg_duration_seconds || b.avg_first_byte_time_seconds || 0;
-            break;
-          case 'avg_speed':
-            valueA = calculateAverageSpeed(a) || 0;
-            valueB = calculateAverageSpeed(b) || 0;
-            break;
-          case 'total_input_tokens':
-            valueA = a.total_input_tokens || 0;
-            valueB = b.total_input_tokens || 0;
-            break;
-          case 'total_output_tokens':
-            valueA = a.total_output_tokens || 0;
-            valueB = b.total_output_tokens || 0;
-            break;
-          case 'total_cache_read':
-            valueA = a.total_cache_read_input_tokens || 0;
-            valueB = b.total_cache_read_input_tokens || 0;
-            break;
-          case 'total_cache_creation':
-            valueA = a.total_cache_creation_input_tokens || 0;
-            valueB = b.total_cache_creation_input_tokens || 0;
-            break;
-          case 'total_cost':
-            valueA = a.total_cost || 0;
-            valueB = b.total_cost || 0;
-            break;
-          default:
-            return 0;
-        }
-
-        let result;
-        if (typeof valueA === 'string') {
-          result = valueA.localeCompare(valueB, 'zh-CN');
-        } else {
-          result = valueA - valueB;
-        }
-
-        return isAsc ? result : -result;
-      });
+      const valueA = getStatsSortValue(a, sortState.column);
+      const valueB = getStatsSortValue(b, sortState.column);
+      const result = typeof valueA === 'string'
+        ? valueA.localeCompare(valueB, 'zh-CN')
+        : valueA - valueB;
+      return (sortState.order === 'asc' ? result : -result) || compareStatsDefault(a, b);
     }
 
     function calculateAverageSpeed(entry) {
@@ -356,6 +324,11 @@
         Number(entry?.avg_duration_seconds),
         Number(entry?.avg_first_byte_time_seconds)
       );
+    }
+
+    // 渠道行/合计行由 StatsGrouping 按总输出/总生成秒数算好；单条统计按均值推算
+    function getStatsEntrySpeed(entry) {
+      return entry.aggregate_speed !== undefined ? entry.aggregate_speed : calculateAverageSpeed(entry);
     }
 
     function buildStatsTimingValue(seconds, color) {
@@ -391,19 +364,101 @@
       return `<span class="stats-value-success">${window.formatPercent(r / denom)}</span>`;
     }
 
-    function buildStatsModelDisplay(entry) {
+    function buildStatsModelLink(entry, className) {
       if (!entry.model) {
-        return `<span class="stats-value-muted">${t('stats.unknownModel')}</span>`;
+        return `<span class="stats-value-muted">${escapeHtml(t('stats.unknownModel'))}</span>`;
       }
+      return `<a href="#" class="${className} model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${escapeHtml(t('stats.viewLogsTitle'))}">${escapeHtml(entry.model)}</a>`;
+    }
 
-      const modelLink = `<a href="#" class="model-tag model-link" data-model="${escapeHtml(entry.model)}" data-channel-name="${escapeHtml(entry.channel_name)}" title="${t('stats.viewLogsTitle')}">${escapeHtml(entry.model)}</a>`;
+    // 隐藏渠道时的平铺模型列
+    function buildStatsModelDisplay(entry) {
+      const modelLink = buildStatsModelLink(entry, 'model-tag');
+      if (!entry.model) return modelLink;
       return `<span class="stats-model-cell">${modelLink}${buildCornerMultiplierBadge(entry.cost_multiplier_min, entry.cost_multiplier_max)}</span>`;
     }
 
-    function buildStatsCostDisplay(standardCost, effectiveCost) {
-      return buildCostStackHtml(standardCost, effectiveCost, { tone: 'warning' });
+    // 渠道行首列：折叠按钮 + 头像 + 名称/ID/模型数/倍率 + 渠道健康条；单模型渠道同样展开子行，结构统一
+    function buildStatsChannelCell(group, collapsed) {
+      const name = group.channel_name || '';
+      const authType = group.channel_auth_type || 'api_key';
+      const toggle = `<button type="button" class="stats-tree-toggle" aria-expanded="${!collapsed}" aria-label="${escapeHtml(t('stats.toggleChannelModels', { name }))}">${STATS_CHEVRON_SVG}</button>`;
+      const metaParts = [];
+      if (group.channel_id) metaParts.push(`ID ${group.channel_id}`);
+      metaParts.push(escapeHtml(t('stats.modelCount', { count: group.models.length })));
+      const meta = metaParts.join('<span class="stats-tree-meta-sep">·</span>') +
+        buildCornerMultiplierBadge(group.cost_multiplier_min, group.cost_multiplier_max);
+      const successRate = group.total > 0 ? group.success / group.total : 0;
+
+      return `<div class="stats-tree">${toggle}` +
+        `<span class="stats-channel-avatar channel-provider-avatar" data-auth-type="${escapeHtml(authType)}" aria-hidden="true">${window.channelAvatarContentHTML(authType, name)}</span>` +
+        '<div class="stats-tree-body"><div class="stats-tree-title">' +
+        `<a href="#" class="config-name channel-link" data-channel-name="${escapeHtml(name)}" title="${escapeHtml(t('stats.viewChannelLogsTitle'))}">${escapeHtml(name)}</a>` +
+        `<span class="stats-tree-meta">${meta}</span></div>` +
+        `${buildHealthIndicator(group.health_timeline, successRate)}</div></div>`;
     }
 
+    // 指标列（成功/失败/耗时/Tok/s/RPM/Token/缓存/费用）的模板字段，渠道行、模型行、合计行共用
+    function buildStatsMetricFields(entry, rpmHtml, inlineCost) {
+      const successRate = entry.total > 0 ? (entry.success / entry.total) * 100 : 0;
+      const speed = getStatsEntrySpeed(entry);
+      const timingText = buildStatsTimingText(entry.avg_first_byte_time_seconds, entry.avg_duration_seconds);
+      const speedText = speed === null
+        ? ''
+        : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
+      const inputText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
+      const outputText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
+      const cacheReadText = entry.total_cache_read_input_tokens
+        ? `<span class="stats-value-success">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
+      const cacheCreateText = entry.total_cache_creation_input_tokens
+        ? `<span class="stats-value-primary">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
+      const cacheUtilText = buildCacheUtilRate(
+        entry.total_input_tokens,
+        entry.total_cache_read_input_tokens,
+        entry.total_cache_creation_input_tokens
+      );
+      const costText = buildCostStackHtml(entry.total_cost, entry.effective_cost, { tone: 'warning', inline: inlineCost });
+      const emptyClass = text => (text ? '' : 'mobile-empty-cell');
+
+      return {
+        successDisplay: buildSuccessDisplay(
+          formatNumber(entry.success || 0),
+          formatSuccessRateText(successRate, entry.total || 0),
+          getSuccessRateClass(successRate)
+        ),
+        errorCount: formatNumber(entry.error || 0),
+        rpm: rpmHtml,
+        avgFirstByteTime: timingText,
+        timingCellClass: emptyClass(timingText),
+        avgSpeed: speedText,
+        speedCellClass: emptyClass(speedText),
+        inputTokens: inputText,
+        inputCellClass: emptyClass(inputText),
+        outputTokens: outputText,
+        outputCellClass: emptyClass(outputText),
+        cacheReadTokens: cacheReadText,
+        cacheReadCellClass: emptyClass(cacheReadText),
+        cacheCreationTokens: cacheCreateText,
+        cacheCreateCellClass: emptyClass(cacheCreateText),
+        cacheUtilText,
+        cacheUtilCellClass: emptyClass(cacheUtilText),
+        costText,
+        costCellClass: emptyClass(costText),
+        mobileLabelSuccess: t('common.success'),
+        mobileLabelError: t('common.failed'),
+        mobileLabelTiming: t('stats.avgFirstByte'),
+        mobileLabelSpeed: t('stats.avgSpeed'),
+        mobileLabelRpm: t('stats.rpm'),
+        mobileLabelInput: t('stats.inputTokens'),
+        mobileLabelOutput: t('stats.outputTokens'),
+        mobileLabelCacheRead: t('stats.cacheRead'),
+        mobileLabelCacheCreate: t('stats.cacheCreation'),
+        mobileLabelCacheUtil: t('stats.cacheUtil'),
+        mobileLabelCost: t('stats.costUsd')
+      };
+    }
+
+    // 渠道可见时按渠道分组（渠道行汇总 + 可折叠的模型子行）；隐藏渠道时退回按模型平铺
     function renderStatsTable() {
       const tbody = document.getElementById('stats_tbody');
 
@@ -422,222 +477,122 @@
         return;
       }
 
-      tbody.innerHTML = '';
-
-      // 初始化合计变量
-      let totalSuccess = 0;
-      let totalError = 0;
-      let totalRequests = 0;
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
-      let totalCacheRead = 0;
-      let totalCacheCreation = 0;
-      let totalCost = 0;
-      let totalEffectiveCost = 0;
-      // 首字/耗时按成功数加权
-      let firstByteTimeWeighted = 0;
-      let firstByteSuccessSum = 0;
-      let durationWeighted = 0;
-      let durationSuccessSum = 0;
-      // Tok/s 用 总输出 / 总生成秒数
-      let speedOutputTokensSum = 0;
-      let speedGenerationSecondsSum = 0;
-
+      const grouped = !window.shouldHideChannels?.();
       const fragment = document.createDocumentFragment();
-
-      for (const entry of filteredStats) {
-        const successRate = entry.total > 0 ? ((entry.success / entry.total) * 100) : 0;
-        const successCountText = formatNumber(entry.success || 0);
-        const errorCountText = formatNumber(entry.error || 0);
-        const successRateText = formatSuccessRateText(successRate, entry.total || 0);
-
-        // 使用后端返回的 RPM 数据（峰值/平均/最近）
-        const rpmHtml = formatEntryRpm(entry, isToday);
-
-        // 根据成功率设置颜色类
-        const successRateClass = getSuccessRateClass(successRate);
-        const successDisplay = buildSuccessDisplay(successCountText, successRateText, successRateClass);
-
-        const modelDisplay = buildStatsModelDisplay(entry);
-
-        // 格式化平均首字响应时间/平均耗时
-        const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
-        const avgDuration = entry.avg_duration_seconds || 0;
-        const avgTimeText = buildStatsTimingText(avgFirstByteTime, avgDuration);
-
-        const avgSpeed = calculateAverageSpeed(entry);
-        const avgSpeedText = avgSpeed === null
-          ? ''
-          : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${avgSpeed >= 100 ? avgSpeed.toFixed(0) : avgSpeed.toFixed(1)}</span>`;
-
-        // 格式化Token数据
-        const inputTokensText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
-        const outputTokensText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
-        const cacheReadTokensText = entry.total_cache_read_input_tokens ?
-          `<span class="stats-value-success">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
-        const cacheCreationTokensText = entry.total_cache_creation_input_tokens ?
-          `<span class="stats-value-primary">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
-        const cacheUtilText = buildCacheUtilRate(
-          entry.total_input_tokens,
-          entry.total_cache_read_input_tokens,
-          entry.total_cache_creation_input_tokens
-        );
-        const costText = buildStatsCostDisplay(entry.total_cost, entry.effective_cost);
-        const timingCellClass = avgTimeText ? '' : 'mobile-empty-cell';
-        const speedCellClass = avgSpeedText ? '' : 'mobile-empty-cell';
-        const inputCellClass = inputTokensText ? '' : 'mobile-empty-cell';
-        const outputCellClass = outputTokensText ? '' : 'mobile-empty-cell';
-        const cacheReadCellClass = cacheReadTokensText ? '' : 'mobile-empty-cell';
-        const cacheCreateCellClass = cacheCreationTokensText ? '' : 'mobile-empty-cell';
-        const cacheUtilCellClass = cacheUtilText ? '' : 'mobile-empty-cell';
-        const costCellClass = costText ? '' : 'mobile-empty-cell';
-
-        // 构建健康状态指示器
-        const healthIndicator = buildHealthIndicator(entry.health_timeline, successRate / 100);
-
-        const row = TemplateEngine.render('tpl-stats-row', {
-          channelId: entry.channel_id,
-          channelNameAttr: entry.channel_name,
-          channelName: entry.channel_name,
-          channelAuthType: entry.channel_auth_type || 'api_key',
-          channelAvatarHtml: window.channelAvatarContentHTML(entry.channel_auth_type || 'api_key', entry.channel_name),
-          channelLogsTitle: t('stats.viewChannelLogsTitle'),
-          channelIdBadge: entry.channel_id ? `<span class="channel-id">(ID: ${entry.channel_id})</span>` : '',
-          healthIndicator: healthIndicator,
-          modelDisplay: modelDisplay,
-          successDisplay: successDisplay,
-          errorCount: errorCountText,
-          rpm: rpmHtml,
-          avgFirstByteTime: avgTimeText,
-          timingCellClass: timingCellClass,
-          avgSpeed: avgSpeedText,
-          speedCellClass: speedCellClass,
-          inputTokens: inputTokensText,
-          inputCellClass: inputCellClass,
-          outputTokens: outputTokensText,
-          outputCellClass: outputCellClass,
-          cacheReadTokens: cacheReadTokensText,
-          cacheReadCellClass: cacheReadCellClass,
-          cacheCreationTokens: cacheCreationTokensText,
-          cacheCreateCellClass: cacheCreateCellClass,
-          cacheUtilText: cacheUtilText,
-          cacheUtilCellClass: cacheUtilCellClass,
-          costText: costText,
-          costCellClass: costCellClass,
-          mobileLabelChannel: t('stats.channelName'),
-          mobileLabelModel: t('common.model'),
-          mobileLabelSuccess: t('common.success'),
-          mobileLabelError: t('common.failed'),
-          mobileLabelTiming: t('stats.avgFirstByte'),
-          mobileLabelSpeed: t('stats.avgSpeed'),
-          mobileLabelRpm: t('stats.rpm'),
-          mobileLabelInput: t('stats.inputTokens'),
-          mobileLabelOutput: t('stats.outputTokens'),
-          mobileLabelCacheRead: t('stats.cacheRead'),
-          mobileLabelCacheCreate: t('stats.cacheCreation'),
-          mobileLabelCacheUtil: t('stats.cacheUtil'),
-          mobileLabelCost: t('stats.costUsd')
-        });
+      const appendRow = (data) => {
+        const row = TemplateEngine.render('tpl-stats-row', data);
         if (row) fragment.appendChild(row);
+        return row;
+      };
 
-        // 累加合计数据
-        totalSuccess += entry.success || 0;
-        totalError += entry.error || 0;
-        totalRequests += entry.total || 0;
-        totalInputTokens += entry.total_input_tokens || 0;
-        totalOutputTokens += entry.total_output_tokens || 0;
-        totalCacheRead += entry.total_cache_read_input_tokens || 0;
-        totalCacheCreation += entry.total_cache_creation_input_tokens || 0;
-        totalCost += entry.total_cost || 0;
-        totalEffectiveCost += (entry.effective_cost !== undefined && entry.effective_cost !== null)
-          ? Number(entry.effective_cost) || 0
-          : (entry.total_cost || 0);
+      if (grouped) {
+        const groups = window.StatsGrouping.groupStatsByChannel(filteredStats).sort(compareStatsEntries);
+        for (const group of groups) {
+          const channelKey = String(group.channel_id ?? '');
+          const collapsed = collapsedStatsChannels.has(channelKey);
 
-        const entrySuccess = Number(entry.success) || 0;
-        if (entrySuccess > 0) {
-          if (avgFirstByteTime > 0) {
-            firstByteTimeWeighted += avgFirstByteTime * entrySuccess;
-            firstByteSuccessSum += entrySuccess;
-          }
-          if (avgDuration > 0) {
-            durationWeighted += avgDuration * entrySuccess;
-            durationSuccessSum += entrySuccess;
+          appendRow({
+            rowClass: 'stats-data-row stats-channel-row',
+            channelId: channelKey,
+            labelCellClass: 'stats-col-tree mobile-card-no-label',
+            labelCellMobileLabel: t('stats.channelName'),
+            labelCell: buildStatsChannelCell(group, collapsed),
+            ...buildStatsMetricFields(group, formatEntryRpm(group, isToday), true)
+          });
 
-            const entryOutput = Number(entry.total_output_tokens) || 0;
-            if (entryOutput > 0) {
-              let perReqGen = avgDuration;
-              if (avgFirstByteTime > 0 && avgFirstByteTime < avgDuration) {
-                const gen = avgDuration - avgFirstByteTime;
-                if (gen >= 1) perReqGen = gen;
-              }
-              speedOutputTokensSum += entryOutput;
-              speedGenerationSecondsSum += perReqGen * entrySuccess;
-            }
-          }
+          const models = [...group.models].sort(compareStatsEntries);
+          models.forEach((entry, index) => {
+            const row = appendRow({
+              rowClass: index === models.length - 1 ? 'stats-data-row stats-model-row is-last' : 'stats-data-row stats-model-row',
+              channelId: channelKey,
+              labelCellClass: 'stats-col-tree mobile-card-no-label',
+              labelCellMobileLabel: t('common.model'),
+              labelCell: `<div class="stats-tree-model">${buildStatsModelLink(entry, 'stats-tree-model-link')}</div>`,
+              ...buildStatsMetricFields(entry, formatEntryRpm(entry, isToday), true)
+            });
+            if (row) row.hidden = collapsed;
+          });
+        }
+      } else {
+        for (const entry of [...filteredStats].sort(compareStatsEntries)) {
+          appendRow({
+            rowClass: 'stats-data-row',
+            channelId: '',
+            labelCellClass: 'stats-col-model',
+            labelCellMobileLabel: t('common.model'),
+            labelCell: buildStatsModelDisplay(entry),
+            ...buildStatsMetricFields(entry, formatEntryRpm(entry, isToday), false)
+          });
         }
       }
 
+      // 合计行使用全局 rpm_stats（峰值不可由各行相加）
+      appendRow({
+        rowClass: 'stats-total-row',
+        channelId: '',
+        labelCellClass: 'stats-col-total-label',
+        labelCellMobileLabel: t('stats.total'),
+        labelCell: escapeHtml(t('stats.total')),
+        ...buildStatsMetricFields(
+          window.StatsGrouping.aggregateStatsEntries(filteredStats),
+          formatGlobalRpm(rpmStats, isToday),
+          grouped
+        )
+      });
+
+      tbody.innerHTML = '';
       tbody.appendChild(fragment);
+      syncStatsToggleAll();
+    }
 
-      // 追加合计行（使用全局rpm_stats显示峰值/平均/最近）
-      const totalSuccessRateVal = totalRequests > 0 ? (totalSuccess / totalRequests) * 100 : 0;
-      const totalSuccessRate = formatSuccessRateText(totalSuccessRateVal, totalRequests);
-      const totalSuccessDisplay = buildSuccessDisplay(
-        formatNumber(totalSuccess),
-        totalSuccessRate,
-        getSuccessRateClass(totalSuccessRateVal)
-      );
-
-      // 使用全局rpm_stats格式化RPM
-      const totalRpmHtml = formatGlobalRpm(rpmStats, isToday);
-
-      // 合计行首字/耗时(秒)
-      const totalAvgFirstByte = firstByteSuccessSum > 0 ? firstByteTimeWeighted / firstByteSuccessSum : 0;
-      const totalAvgDuration = durationSuccessSum > 0 ? durationWeighted / durationSuccessSum : 0;
-      const totalTimingText = buildStatsTimingText(totalAvgFirstByte, totalAvgDuration);
-
-      // 合计行 Tok/s
-      let totalSpeedText = '';
-      if (speedOutputTokensSum > 0 && speedGenerationSecondsSum > 0) {
-        const speed = speedOutputTokensSum / speedGenerationSecondsSum;
-        totalSpeedText = `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
+    // 折叠/展开渠道下的模型子行：只切换现有行的 hidden，不整表重渲染
+    function setStatsChannelCollapsed(channelRow, collapsed) {
+      const channelKey = channelRow.dataset.channelId || '';
+      if (collapsed) {
+        collapsedStatsChannels.add(channelKey);
+      } else {
+        collapsedStatsChannels.delete(channelKey);
       }
 
-      const totalRow = TemplateEngine.render('tpl-stats-total', {
-        colspan: window.shouldHideChannels?.() ? 1 : 2,
-        totalLabel: t('stats.total'),
-        successDisplay: totalSuccessDisplay,
-        errorCount: formatNumber(totalError),
-        rpm: totalRpmHtml,
-        avgFirstByteTime: totalTimingText,
-        timingCellClass: totalTimingText ? '' : 'mobile-empty-cell',
-        avgSpeed: totalSpeedText,
-        speedCellClass: totalSpeedText ? '' : 'mobile-empty-cell',
-        // 与数据行一致：0 值留空，避免整列空白时合计行单独冒出 0
-        inputTokens: totalInputTokens ? formatNumber(totalInputTokens) : '',
-        outputTokens: totalOutputTokens ? formatNumber(totalOutputTokens) : '',
-        cacheReadTokens: totalCacheRead ? formatNumber(totalCacheRead) : '',
-        cacheCreationTokens: totalCacheCreation ? formatNumber(totalCacheCreation) : '',
-        inputCellClass: totalInputTokens ? '' : 'mobile-empty-cell',
-        outputCellClass: totalOutputTokens ? '' : 'mobile-empty-cell',
-        cacheReadCellClass: totalCacheRead ? '' : 'mobile-empty-cell',
-        cacheCreateCellClass: totalCacheCreation ? '' : 'mobile-empty-cell',
-        cacheUtilText: buildCacheUtilRate(totalInputTokens, totalCacheRead, totalCacheCreation),
-        costText: buildStatsCostDisplay(totalCost, totalEffectiveCost),
-        mobileLabelSummary: t('stats.total'),
-        mobileLabelSuccess: t('common.success'),
-        mobileLabelError: t('common.failed'),
-        mobileLabelTiming: t('stats.avgFirstByte'),
-        mobileLabelSpeed: t('stats.avgSpeed'),
-        mobileLabelRpm: t('stats.rpm'),
-        mobileLabelInput: t('stats.inputTokens'),
-        mobileLabelOutput: t('stats.outputTokens'),
-        mobileLabelCacheRead: t('stats.cacheRead'),
-        mobileLabelCacheCreate: t('stats.cacheCreation'),
-        mobileLabelCacheUtil: t('stats.cacheUtil'),
-        mobileLabelCost: t('stats.costUsd')
-      });
-      if (totalRow) tbody.appendChild(totalRow);
+      channelRow.querySelector('.stats-tree-toggle')?.setAttribute('aria-expanded', String(!collapsed));
+      let row = channelRow.nextElementSibling;
+      while (row && row.classList.contains('stats-model-row')) {
+        row.hidden = collapsed;
+        row = row.nextElementSibling;
+      }
+    }
+
+    function getStatsChannelRows() {
+      return [...document.querySelectorAll('#stats_tbody .stats-channel-row')];
+    }
+
+    function isStatsChannelExpanded(channelRow) {
+      return !collapsedStatsChannels.has(channelRow.dataset.channelId || '');
+    }
+
+    function toggleStatsChannel(channelRow) {
+      setStatsChannelCollapsed(channelRow, isStatsChannelExpanded(channelRow));
+      syncStatsToggleAll();
+    }
+
+    // 表头总开关：任一渠道展开时全部收起，否则全部展开
+    function toggleAllStatsChannels() {
+      const rows = getStatsChannelRows();
+      const collapse = rows.some(isStatsChannelExpanded);
+      rows.forEach(row => setStatsChannelCollapsed(row, collapse));
+      syncStatsToggleAll();
+    }
+
+    function syncStatsToggleAll() {
+      const button = document.querySelector('.stats-tree-toggle-all');
+      if (!button) return;
+      const rows = getStatsChannelRows();
+      const anyExpanded = rows.some(isStatsChannelExpanded);
+      const label = t(anyExpanded ? 'stats.collapseAllChannels' : 'stats.expandAllChannels');
+      button.disabled = rows.length === 0;
+      button.setAttribute('aria-expanded', String(anyExpanded));
+      button.setAttribute('aria-label', label);
+      button.title = label;
     }
 
     function formatSuccessRateText(successRate, totalRequests) {
@@ -866,43 +821,6 @@
           rpmHeader.setAttribute('data-i18n-title', titleKey);
         }
       }
-    }
-
-    // 应用默认排序:按渠道优先级降序,相同优先级按渠道名称升序,相同渠道按模型名称升序
-    // 如果用户已选择自定义排序，则保持用户的排序
-    function applyDefaultSorting() {
-      if (!statsData || !statsData.stats || statsData.stats.length === 0) return;
-
-      // 保存原始数据副本(仅首次)
-      if (!statsData.originalStats) {
-        statsData.originalStats = [...statsData.stats];
-      }
-
-      // 如果用户已选择自定义排序，应用用户的排序而非默认排序
-      if (sortState.column && sortState.order) {
-        applySorting();
-        updateSortHeaders();
-        return;
-      }
-
-      // 按渠道优先级降序，再按渠道名称和模型名称升序
-      statsData.stats.sort((a, b) => {
-        // 按优先级降序（数值大的在前）
-        const priorityA = a.channel_priority ?? 0;
-        const priorityB = b.channel_priority ?? 0;
-        if (priorityA !== priorityB) return priorityB - priorityA;
-
-        // 优先级相同时,按渠道名称升序
-        const channelA = (a.channel_name || '').toLowerCase();
-        const channelB = (b.channel_name || '').toLowerCase();
-        const channelCompare = channelA.localeCompare(channelB, 'zh-CN');
-        if (channelCompare !== 0) return channelCompare;
-
-        // 渠道名称相同时,按模型名称升序
-        const modelA = (a.model || '').toLowerCase();
-        const modelB = (b.model || '').toLowerCase();
-        return modelA.localeCompare(modelB, 'zh-CN');
-      });
     }
 
     // 渲染令牌选择器（支持语言切换时重新渲染）
@@ -1157,6 +1075,11 @@ ${t('stats.tooltipCost')}: ${formatCost(point.cost)}`;
       const thead = document.querySelector('.stats-table thead');
       if (thead && !thead.dataset.bound) {
         thead.addEventListener('click', (e) => {
+          if (e.target.closest('.stats-tree-toggle-all')) {
+            toggleAllStatsChannels();
+            return;
+          }
+
           const sortable = e.target.closest('.sortable[data-column]');
           if (!sortable) return;
 
@@ -1266,6 +1189,12 @@ ${t('stats.tooltipCost')}: ${formatCost(point.cost)}`;
               window.location.href = `/web/logs.html?${params.toString()}`;
             }
             return;
+          }
+
+          // 点击渠道行（链接以外区域或折叠按钮）折叠/展开其模型
+          const channelRow = e.target.closest('.stats-channel-row');
+          if (channelRow && !e.target.closest('a')) {
+            toggleStatsChannel(channelRow);
           }
         });
       }

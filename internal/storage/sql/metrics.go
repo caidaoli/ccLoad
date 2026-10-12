@@ -899,10 +899,11 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 	return stats, nil
 }
 
-// statsRPM 是按 channel_id+model 统计的峰值与最近一分钟 RPM。
+// statsRPM 是按 channel_id+model 统计的峰值与最近一分钟 RPM，以及按渠道合并的峰值。
 type statsRPM struct {
-	peak   map[statsRequestKey]float64
-	recent map[statsRequestKey]float64
+	peak        map[statsRequestKey]float64
+	recent      map[statsRequestKey]float64
+	channelPeak map[int]float64
 }
 
 // queryStatsRPM 查询每个channel_id+model组合的RPM统计数据
@@ -912,51 +913,42 @@ func (s *SQLStore) queryStatsRPM(ctx context.Context, startTime, endTime time.Ti
 	endBucket := endTime.UnixMilli() / minuteMs
 
 	rpm := statsRPM{
-		peak:   make(map[statsRequestKey]float64),
-		recent: make(map[statsRequestKey]float64),
+		peak:        make(map[statsRequestKey]float64),
+		recent:      make(map[statsRequestKey]float64),
+		channelPeak: make(map[int]float64),
 	}
 
 	// 1) 峰值RPM（分钟桶内最大请求数）
-	peakBaseQuery := `
-		SELECT channel_id, COALESCE(model, '') AS model, MAX(cnt) AS peak_rpm
-		FROM (
-			SELECT channel_id, COALESCE(model, '') AS model, COUNT(*) AS cnt
-			FROM logs` + s.logsRangeIndexHint(logsMinuteRangeIndex, filter)
-
-	peakQB := NewQueryBuilder(peakBaseQuery).
-		Where("minute_bucket >= ?", startBucket).
-		Where("minute_bucket <= ?", endBucket).
-		Where("channel_id > 0").
-		Where("status_code != 499")
-
-	isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
-	if err != nil {
-		return statsRPM{}, fmt.Errorf("apply channel filter for peak: %w", err)
-	}
-
-	// 仅当渠道过滤非空时才执行查询
-	if !isEmpty {
-		peakQB.ApplyFilter(filter)
-		peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY channel_id, model, minute_bucket) t GROUP BY channel_id, model")
-
-		peakRows, err := s.QueryContext(ctx, peakQuery, peakArgs...)
-		if err != nil {
-			return statsRPM{}, fmt.Errorf("query peak RPM: %w", err)
-		}
-		defer func() { _ = peakRows.Close() }()
-
-		for peakRows.Next() {
+	err := s.queryStatsPeakRPM(ctx, startBucket, endBucket, filter,
+		"channel_id, COALESCE(model, '') AS model", "channel_id, model",
+		func(rows *sql.Rows) error {
 			var channelID int
 			var model string
 			var peakRPM float64
-			if err := peakRows.Scan(&channelID, &model, &peakRPM); err != nil {
-				return statsRPM{}, fmt.Errorf("scan peak RPM: %w", err)
+			if err := rows.Scan(&channelID, &model, &peakRPM); err != nil {
+				return err
 			}
 			rpm.peak[statsRequestKey{channelID, model}] = peakRPM
-		}
-		if err := peakRows.Err(); err != nil {
-			return statsRPM{}, fmt.Errorf("iterate peak RPM rows: %w", err)
-		}
+			return nil
+		})
+	if err != nil {
+		return statsRPM{}, err
+	}
+
+	// 渠道峰值必须按渠道合并分钟桶后再取最大值，不能由各模型峰值相加
+	err = s.queryStatsPeakRPM(ctx, startBucket, endBucket, filter,
+		"channel_id", "channel_id",
+		func(rows *sql.Rows) error {
+			var channelID int
+			var peakRPM float64
+			if err := rows.Scan(&channelID, &peakRPM); err != nil {
+				return err
+			}
+			rpm.channelPeak[channelID] = peakRPM
+			return nil
+		})
+	if err != nil {
+		return statsRPM{}, err
 	}
 
 	// 2) 最近一分钟RPM（仅本日有效）
@@ -1007,12 +999,64 @@ func (s *SQLStore) queryStatsRPM(ctx context.Context, startTime, endTime time.Ti
 	return rpm, nil
 }
 
+// queryStatsPeakRPM 按 groupCols 统计分钟桶内的最大请求数；selectCols 是 groupCols 的取值表达式，
+// scan 依次读取 groupCols 与峰值。
+func (s *SQLStore) queryStatsPeakRPM(ctx context.Context, startBucket, endBucket int64, filter *model.LogFilter, selectCols, groupCols string, scan func(*sql.Rows) error) error {
+	baseQuery := `
+		SELECT ` + groupCols + `, MAX(cnt) AS peak_rpm
+		FROM (
+			SELECT ` + selectCols + `, COUNT(*) AS cnt
+			FROM logs` + s.logsRangeIndexHint(logsMinuteRangeIndex, filter)
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("minute_bucket >= ?", startBucket).
+		Where("minute_bucket <= ?", endBucket).
+		Where("channel_id > 0").
+		Where("status_code != 499")
+
+	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return fmt.Errorf("apply channel filter for peak: %w", err)
+	}
+	// 仅当渠道过滤非空时才执行查询
+	if isEmpty {
+		return nil
+	}
+
+	qb.ApplyFilter(filter)
+	query, args := qb.BuildWithSuffix("GROUP BY " + groupCols + ", minute_bucket) t GROUP BY " + groupCols)
+
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query peak RPM: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return fmt.Errorf("scan peak RPM: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate peak RPM rows: %w", err)
+	}
+	return nil
+}
+
 // fill 把 RPM 统计填充到 stats 中。
 func (rpm statsRPM) fill(stats []model.StatsEntry, startTime, endTime time.Time, isToday bool) {
 	// 计算时间跨度（秒）用于平均RPM
 	durationSeconds := endTime.Sub(startTime).Seconds()
 	if durationSeconds < 1 {
 		durationSeconds = 1
+	}
+
+	// 渠道最近一分钟请求数可按模型相加；峰值至少不低于它（与单条目口径一致）
+	channelRecent := make(map[int]float64)
+	if isToday {
+		for key, recentRPM := range rpm.recent {
+			channelRecent[key.channelID] += recentRPM
+		}
 	}
 
 	for i := range stats {
@@ -1039,6 +1083,11 @@ func (rpm statsRPM) fill(stats []model.StatsEntry, startTime, endTime time.Time,
 					entry.PeakRPM = &recentRPM
 				}
 			}
+		}
+
+		channelPeak := max(rpm.channelPeak[*entry.ChannelID], channelRecent[*entry.ChannelID])
+		if channelPeak > 0 {
+			entry.ChannelPeakRPM = &channelPeak
 		}
 	}
 }

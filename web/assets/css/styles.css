@@ -55,6 +55,8 @@
   --field-bg-focus: #ffffff;
   --table-bg: rgba(255, 255, 255, 0.92);
   --table-row-hover: rgba(17, 24, 39, 0.03);
+  --stats-group-head-bg: rgba(17, 24, 39, 0.045);
+  --stats-group-head-hover: rgba(17, 24, 39, 0.07);
   --body-fg: var(--neutral-800);
   --muted-fg: var(--neutral-600);
   --color-text: var(--neutral-900);
@@ -260,6 +262,8 @@ html[data-resolved-theme="dark"] {
   --field-bg-focus: rgba(15, 23, 42, 0.96);
   --table-bg: rgba(17, 24, 39, 0.88);
   --table-row-hover: rgba(255, 255, 255, 0.05);
+  --stats-group-head-bg: rgba(255, 255, 255, 0.05);
+  --stats-group-head-hover: rgba(255, 255, 255, 0.08);
   --body-fg: var(--neutral-800);
   --muted-fg: var(--neutral-600);
   --glass-bg: rgba(17, 24, 39, 0.92);
@@ -7384,19 +7388,7 @@ body.web-role-api-token .filter-group--auth-token {
   white-space: nowrap;
 }
 
-/* 渠道头像在名称 + 健康条左侧垂直居中，尺寸配色与渠道列表一致 */
-.stats-channel-cell {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.stats-channel-text {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
+/* 渠道头像尺寸配色与渠道列表一致 */
 .stats-channel-avatar {
   flex: 0 0 auto;
   display: inline-flex;
@@ -7407,6 +7399,151 @@ body.web-role-api-token .filter-group--auth-token {
   border-radius: 8px;
   font-size: var(--text-sm);
   font-weight: 700;
+}
+
+/* 按渠道分组：渠道行是浅灰底组标题（汇总指标），模型行缩进在其下且可折叠 */
+.stats-table .stats-col-tree {
+  min-width: 340px;
+  text-align: left;
+}
+
+/* 分组视图模型并入渠道/模型列；隐藏渠道时退回平铺模型列 */
+body:not(.web-hide-channels) .stats-table th[data-column="model"] {
+  display: none;
+}
+
+.stats-table .stats-channel-row > td {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  font-weight: 600;
+  background: var(--stats-group-head-bg);
+}
+
+.stats-table tbody .stats-channel-row:hover > td {
+  background: var(--stats-group-head-hover);
+}
+
+.stats-channel-row {
+  cursor: pointer;
+}
+
+.stats-tree {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stats-tree-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--neutral-400);
+  cursor: pointer;
+  transition: transform var(--duration-fast) ease, color var(--duration-fast);
+}
+
+.stats-channel-row:hover .stats-tree-toggle {
+  color: var(--neutral-600);
+}
+
+.stats-tree-toggle:focus-visible {
+  outline: 2px solid var(--primary-500);
+  outline-offset: 1px;
+}
+
+.stats-tree-toggle[aria-expanded="false"] {
+  transform: rotate(-90deg);
+}
+
+/* 表头总开关：与渠道行折叠箭头同列对齐 */
+.stats-tree-toggle-all {
+  margin-right: 10px;
+  vertical-align: middle;
+}
+
+.stats-tree-toggle-all:hover:not(:disabled) {
+  color: var(--neutral-600);
+}
+
+.stats-tree-toggle-all:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stats-tree-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stats-tree-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.stats-tree-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--neutral-500);
+}
+
+.stats-tree-meta-sep {
+  color: var(--neutral-300);
+}
+
+/* 渠道行倍率跟在元信息后面，不再作为单元格角标 */
+.stats-tree-meta .cell-multiplier-badge {
+  position: static;
+}
+
+.stats-channel-row .health-indicator {
+  margin: 0;
+}
+
+/* 模型行：缩进到渠道名起点（折叠按钮 18 + 头像 32 + 两个间距 20），组内不画分隔线 */
+.stats-table .stats-model-row > td {
+  padding-top: 7px;
+  padding-bottom: 7px;
+  font-size: 13px;
+  border-bottom-color: transparent;
+}
+
+.stats-table .stats-model-row.is-last > td {
+  border-bottom-color: var(--neutral-200);
+}
+
+.stats-tree-model {
+  display: flex;
+  align-items: center;
+  padding-left: 70px;
+}
+
+.stats-tree-model-link {
+  font-family: var(--font-family-mono);
+  font-size: 12.5px;
+  color: var(--neutral-700);
+  text-decoration: none;
+}
+
+.stats-tree-model-link:hover {
+  color: var(--primary-600);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 @media (max-width: 768px) {
@@ -7577,7 +7714,7 @@ body.web-role-api-token .filter-group--auth-token {
     display: none;
   }
 
-  .stats-table .stats-col-channel,
+  .stats-table .stats-col-tree,
   .stats-table .stats-col-model,
   .stats-table .stats-col-total-label {
     grid-column: 1 / -1;
@@ -7600,8 +7737,10 @@ body.web-role-api-token .filter-group--auth-token {
     grid-column: 1 / -1;
   }
 
+  /* 峰/均/近三段加粗后半列放不下，独占一行；其后输入/输出、缓存读/写恰好成对 */
   .stats-table .stats-col-rpm {
     order: 14;
+    grid-column: 1 / -1;
   }
 
   .stats-table .stats-col-input {
@@ -7680,14 +7819,12 @@ body.web-role-api-token .filter-group--auth-token {
     align-self: flex-start;
   }
 
-  .stats-table .stats-col-channel,
   .stats-table .stats-col-model {
     display: flex !important;
     align-items: center;
     gap: 8px 12px;
   }
 
-  .stats-table .stats-col-channel::before,
   .stats-table .stats-col-model::before {
     width: auto !important;
     margin-bottom: 0 !important;
@@ -7695,35 +7832,37 @@ body.web-role-api-token .filter-group--auth-token {
     white-space: nowrap;
   }
 
-  .stats-table .stats-col-channel .stats-channel-cell {
+  .stats-table .stats-col-tree {
+    min-width: 0;
+  }
+
+  .stats-table tbody .stats-channel-row {
+    background: linear-gradient(var(--stats-group-head-bg), var(--stats-group-head-bg)), var(--surface-bg-strong);
+  }
+
+  .stats-table tbody .stats-model-row {
+    margin-left: 16px;
+    padding: 12px 14px;
+    box-shadow: none;
+  }
+
+  .stats-table .stats-tree-body {
     flex: 1 1 auto;
   }
 
-  .stats-table .stats-col-channel .stats-channel-text {
-    display: flex;
+  .stats-table .stats-tree-title {
     flex-wrap: wrap;
-    align-items: center;
-    gap: 4px 8px;
+    row-gap: 2px;
   }
 
-  .stats-table .stats-col-channel .channel-link {
-    display: block;
-    flex: 1 1 auto;
+  .stats-table .stats-tree-title .channel-link {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .stats-table .stats-col-channel .channel-id {
-    margin-left: 0;
-    white-space: nowrap;
-    flex: 0 0 auto;
-  }
-
-  .stats-table .stats-col-channel .health-indicator {
-    flex: 0 0 100%;
-    margin-top: 2px;
+  .stats-table .stats-tree-model {
+    padding-left: 0;
   }
 
   .stats-table .stats-col-model .model-tag {
@@ -9548,7 +9687,6 @@ html[data-resolved-theme="dark"] .chat-message .chat-patch-number {
 
 /* Channel visibility is supplied by the authenticated Token session. */
 body.web-hide-channels .logs-col-channel,
-body.web-hide-channels .stats-col-channel,
 body.web-hide-channels th[data-column="channel_name"],
 body.web-hide-channels .filter-group--channel-name,
 body.web-hide-channels .channel-filter-container,

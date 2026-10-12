@@ -77,6 +77,8 @@ type StatsEntry struct {
 	PeakRPM   *float64 `json:"peak_rpm,omitempty"`   // 峰值RPM（该渠道+模型的最大每分钟请求数）
 	AvgRPM    *float64 `json:"avg_rpm,omitempty"`    // 平均RPM
 	RecentRPM *float64 `json:"recent_rpm,omitempty"` // 最近一分钟RPM（仅本日有效）
+	// 渠道峰值RPM（该渠道所有模型合并后的最大每分钟请求数，同渠道各条目相同；峰值不可按模型相加）
+	ChannelPeakRPM *float64 `json:"channel_peak_rpm,omitempty"`
 
 	// Token统计（2025-11新增）
 	TotalInputTokens              *int64   `json:"total_input_tokens,omitempty"`                // 总输入Token

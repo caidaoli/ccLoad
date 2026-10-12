@@ -205,6 +205,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 			stats[i].ChannelID = nil
 			stats[i].ChannelName = ""
 			stats[i].ChannelAuthType = ""
+			stats[i].ChannelPeakRPM = nil
 		}
 	}
 

@@ -23,6 +23,7 @@
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channel-provider-icons.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/stats-grouping.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/stats.js?v=__VERSION__"></script>
   <!-- echarts 体积大，放在页面脚本之后：顶栏先渲染，避免其执行推迟首帧顶栏 -->
   <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
@@ -83,8 +84,8 @@
               <table class="modern-table stats-table mobile-card-table">
                 <thead>
                   <tr>
-                    <th class="sortable" data-column="channel_name">
-                      <span data-i18n="stats.channelName">渠道名称</span>
+                    <th class="sortable stats-col-tree" data-column="channel_name">
+                      <button type="button" class="stats-tree-toggle stats-tree-toggle-all" aria-expanded="true" aria-label="全部收起" title="全部收起" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg></button><span data-i18n="stats.channelModel">渠道 / 模型</span>
                       <span class="sort-indicator" id="sort-channel_name"></span>
                     </th>
                     <th class="sortable" data-column="model">
@@ -138,7 +139,7 @@
                 </thead>
                 <tbody id="stats_tbody">
                   <tr>
-                    <td colspan="13" class="loading-state">
+                    <td colspan="12" class="loading-state">
                       <div class="loading-spinner loading-spinner--block"></div>
                       <span data-i18n="stats.loading">正在加载统计数据...</span>
                     </td>
@@ -228,20 +229,10 @@
     </tr>
   </template>
 
-  <!-- 数据行模板 -->
+  <!-- 数据行模板：渠道行、模型行、合计行共用，首列由 JS 生成 -->
   <template id="tpl-stats-row">
-    <tr class="mobile-card-row stats-data-row">
-      <td class="stats-col-channel" data-mobile-label="{{mobileLabelChannel}}">
-        <div class="stats-channel-cell">
-          <span class="stats-channel-avatar channel-provider-avatar" data-auth-type="{{channelAuthType}}" aria-hidden="true">{{{channelAvatarHtml}}}</span>
-          <div class="stats-channel-text">
-            <a href="#" class="config-name channel-link" data-channel-name="{{channelNameAttr}}" title="{{channelLogsTitle}}" data-i18n-title="stats.viewChannelLogsTitle">{{channelName}}</a>
-            {{{channelIdBadge}}}
-            {{{healthIndicator}}}
-          </div>
-        </div>
-      </td>
-      <td class="stats-col-model" data-mobile-label="{{mobileLabelModel}}">{{{modelDisplay}}}</td>
+    <tr class="mobile-card-row {{rowClass}}" data-channel-id="{{channelId}}">
+      <td class="{{labelCellClass}}" data-mobile-label="{{labelCellMobileLabel}}">{{{labelCell}}}</td>
       <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
       <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
       <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
@@ -253,24 +244,6 @@
       <td class="stats-col-cache-create {{cacheCreateCellClass}}" data-mobile-label="{{mobileLabelCacheCreate}}">{{{cacheCreationTokens}}}</td>
       <td class="stats-col-cache-util {{cacheUtilCellClass}}" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
       <td class="stats-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
-    </tr>
-  </template>
-
-  <!-- 合计行模板 -->
-  <template id="tpl-stats-total">
-    <tr class="mobile-card-row stats-total-row">
-      <td colspan="{{colspan}}" class="stats-col-total-label" data-mobile-label="{{mobileLabelSummary}}" data-i18n="stats.total">{{totalLabel}}</td>
-      <td class="stats-col-success" data-mobile-label="{{mobileLabelSuccess}}">{{{successDisplay}}}</td>
-      <td class="stats-col-error" data-mobile-label="{{mobileLabelError}}"><span class="error-count">{{errorCount}}</span></td>
-      <td class="stats-col-timing {{timingCellClass}}" data-mobile-label="{{mobileLabelTiming}}">{{{avgFirstByteTime}}}</td>
-      <td class="stats-col-speed {{speedCellClass}}" data-mobile-label="{{mobileLabelSpeed}}">{{{avgSpeed}}}</td>
-      <td class="stats-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpm}}}</td>
-      <td class="stats-col-input {{inputCellClass}}" data-mobile-label="{{mobileLabelInput}}">{{inputTokens}}</td>
-      <td class="stats-col-output {{outputCellClass}}" data-mobile-label="{{mobileLabelOutput}}">{{outputTokens}}</td>
-      <td class="stats-col-cache-read {{cacheReadCellClass}}" data-mobile-label="{{mobileLabelCacheRead}}"><span class="stats-value-success">{{cacheReadTokens}}</span></td>
-      <td class="stats-col-cache-create {{cacheCreateCellClass}}" data-mobile-label="{{mobileLabelCacheCreate}}"><span class="stats-value-primary">{{cacheCreationTokens}}</span></td>
-      <td class="stats-col-cache-util" data-mobile-label="{{mobileLabelCacheUtil}}">{{{cacheUtilText}}}</td>
-      <td class="stats-col-cost" data-mobile-label="{{mobileLabelCost}}">{{{costText}}}</td>
     </tr>
   </template>
 

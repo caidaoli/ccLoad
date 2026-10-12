@@ -589,6 +589,65 @@ func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(
 	}
 }
 
+func TestMetrics_ChannelPeakRPMMergesModelsPerMinute(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "peak-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+			{Model: "gpt-4.1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	// 两个分钟桶的渠道合计都是 3，单模型峰值都是 2；各模型峰值相加会得到错误的 4。
+	minuteA := time.Now().Add(-10 * time.Minute).Truncate(time.Minute).Add(10 * time.Second)
+	minuteB := minuteA.Add(5 * time.Minute)
+	logAt := func(at time.Time, modelName string, status int) *model.LogEntry {
+		return &model.LogEntry{Time: model.JSONTime{Time: at}, ChannelID: cfg.ID, Model: modelName, StatusCode: status, LogSource: model.LogSourceProxy}
+	}
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		logAt(minuteA, "gpt-4o", 200),
+		logAt(minuteA, "gpt-4o", 200),
+		logAt(minuteA, "gpt-4.1", 500),
+		logAt(minuteA, "gpt-4.1", 499), // 客户端取消不计入 RPM
+		logAt(minuteB, "gpt-4o", 200),
+		logAt(minuteB, "gpt-4.1", 200),
+		logAt(minuteB, "gpt-4.1", 200),
+	}); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, minuteA.Add(-time.Hour), minuteB.Add(time.Minute), nil, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	seen := 0
+	for _, e := range stats {
+		if e.ChannelID == nil || int64(*e.ChannelID) != cfg.ID {
+			continue
+		}
+		seen++
+		if e.PeakRPM == nil || *e.PeakRPM != 2 {
+			t.Fatalf("model %s PeakRPM=%v, want 2", e.Model, e.PeakRPM)
+		}
+		if e.ChannelPeakRPM == nil || *e.ChannelPeakRPM != 3 {
+			t.Fatalf("model %s ChannelPeakRPM=%v, want channel-wide 3", e.Model, e.ChannelPeakRPM)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("got %d entries for channel, want 2", seen)
+	}
+}
+
 func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
