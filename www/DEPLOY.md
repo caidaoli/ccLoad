@@ -28,6 +28,12 @@ make www-release   # 构建后 rsync --delete www/dist/ 到线上目录
 ### Nginx
 
 ```nginx
+# 带 ?v= 的资源 URL 随内容变化，可永久缓存；不带版本号的（favicon.ico、OG 图）只短缓存
+map $arg_v $www_asset_cache {
+    ""      "public, max-age=3600";
+    default "public, max-age=31536000, immutable";
+}
+
 server {
     listen 80;
     server_name your-domain.com;
@@ -38,18 +44,21 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    location ~* \.(css|js|jpg|jpeg|png|gif|svg|ico|mp4|woff2?)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
+    # add_header 不带 always：404 等错误响应不带长缓存头，避免 CDN 把"暂时缺失"缓存成永久
+    location ~* \.(css|js|jpg|jpeg|png|gif|svg|ico|webp|mp4|vtt|woff2?)$ {
+        add_header Cache-Control $www_asset_cache;
     }
 
+    # HTML 每次回源校验（可走 304），发布后立即生效
     location ~* (\.html|/)$ {
-        add_header Cache-Control "no-cache, must-revalidate";
+        add_header Cache-Control "no-cache";
     }
 }
 ```
 
-CSS/JS 通过 `?v=` 查询串做缓存失效，改动样式或脚本时同步更新 HTML 中的版本号。
+- 页面引用的本地资源由 `build.mjs` 按文件内容自动附 `?v=<hash>`，改了内容 URL 就变，发布不需要手动改版本号或清 CDN。
+- 字幕必须以 `text/vtt` 返回，Firefox 才会加载。nginx 自带的 `mime.types` 没有 `vtt` 时，在 http 块 `include mime.types;` 之后追加 `types { text/vtt vtt; }`。
+- 前置 Cloudflare 时：缓存规则不要对 4xx 强制长 Edge TTL，否则发布前被请求过的路径会在边缘一直 404；改了不带版本号的文件（favicon.ico、OG 图）才需要按 URL purge。
 
 ### 其他静态托管（GitHub Pages / Netlify / Vercel / Cloudflare Pages）
 
@@ -63,11 +72,11 @@ www/
 ├── build.test.mjs          # 构建产物测试（make verify-web 运行）
 ├── index.html / install.html / config.html / usage.html / feedback.html  # 英文源文 + data-i18n 标注
 ├── assets/
-│   ├── css/www.css         # 网站专用样式（styles.css 由 www-setup 复制）
+│   ├── css/www.css         # 网站样式（自带设计令牌，不依赖 web/ 的 styles.css）
 │   ├── js/nav.js           # 移动菜单、主题、语言偏好
-│   ├── js/www.js           # 代码复制、Tab、平滑滚动
-│   ├── images/             # Hero 背景、截图、视频封面
-│   ├── video/              # 介绍视频（不入库）
+│   ├── js/www.js           # 代码复制、Tab、渐入、文档目录高亮
+│   ├── images/             # 截图 WebP 变体（-1280/-2048）、视频封面
+│   ├── video/              # 介绍视频 .mp4（不入库）与字幕 .vtt（入库）
 │   └── locales/
 │       ├── en.js           # 构建生成的导航/页脚英文
 │       ├── zh-CN.js        # 首页、导航、页脚、页面标题中文
@@ -85,10 +94,10 @@ www/
 ego-browser nodejs -e "globalThis.PROMO={lang:'zh',out:'/tmp/promo-zh'};$(cat www/promo/render.mjs)"
 ffmpeg -framerate 30 -i /tmp/promo-zh/f%05d.jpg -c:v libx264 -crf 18 -preset slow \
   -pix_fmt yuv420p -movflags +faststart www/assets/video/ccload-promo.zh-CN.mp4
-www/promo/audio.sh zh    # 配旁白和背景音乐，原地替换
+www/promo/audio.sh zh    # 配旁白和背景音乐，原地替换；同时写出同名 .vtt 字幕
 ```
 
-英文版把 `zh` 换成 `en`，输出 `ccload-promo.en.mp4`。`make www-release` 在视频缺失时会直接失败，因为 rsync 带 `--delete`，缺文件发布会删掉线上视频。
+英文版把 `zh` 换成 `en`，输出 `ccload-promo.en.mp4`。字幕时间轴来自旁白，改了旁白要连同 `.vtt` 一起提交。`make www-release` 在视频缺失时会直接失败，因为 rsync 带 `--delete`，缺文件发布会删掉线上视频。
 
 ## 🔍 验证部署
 

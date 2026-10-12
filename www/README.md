@@ -8,7 +8,8 @@ ccLoad 项目的官方介绍网站。执行 `make www-setup` 复制共享资源�
 - ✅ **SEO 完整**：title/description、canonical、hreflang 互指、Open Graph/Twitter、JSON-LD（首页含 FAQPage）、`sitemap.xml`、`robots.txt`
 - ✅ **语言偏好**：英文页对 zh 浏览器且无保存偏好的访客跳转到 `/zh/`；手动切换写入 `localStorage.ccload_locale`
 - ✅ **主题切换**：light/dark/system 三种模式
-- ✅ **零依赖**：构建脚本只用 Node 内置模块，运行时只有导航、复制、Tab 三类交互脚本
+- ✅ **自动缓存失效**：构建时按文件内容给本地资源 URL 附 `?v=<hash>`，内容不变 URL 不变，源 HTML 不手写版本号
+- ✅ **零依赖**：构建脚本只用 Node 内置模块，运行时脚本只处理导航、复制、Tab、渐入与文档目录高亮
 
 ## 快速开始
 
@@ -33,7 +34,7 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 ```html
 <h2 data-i18n="www.home.why.title">Why ccLoad</h2>              <!-- 纯文本，构建时转义 -->
 <p data-i18n-html="www.install.docker.desc">Set <code>X</code></p> <!-- 允许行内 HTML -->
-<img data-i18n-alt="www.home.preview.alt" alt="...">              <!-- 属性：alt/aria-label/title/content/src/poster -->
+<img data-i18n-alt="www.home.preview.alt" alt="...">              <!-- 属性：alt/aria-label/title/content/src/poster/srclang/label -->
 ```
 
 中文构建是严格模式：任何 `data-i18n*` 键在中文语言包里缺失，`make www-build` 直接失败。改了英文源文要同步改对应中文键。所有 `data-i18n*` 属性在产物中被剥离。
@@ -46,9 +47,9 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 
 ### 样式
 
-在 `assets/css/www.css` 中添加，使用 `www-` 前缀；共享设计系统 `styles.css` 由 `make www-setup` 从 `web/` 复制。
+在 `assets/css/www.css` 中添加，使用 `www-` 前缀。`www.css` 开头自带设计令牌（颜色、字体、间距、圆角），不依赖管理后台的 `styles.css`；`make www-setup` 只从 `web/` 复制 `theme-init.js` 和图标。
 
-图标不用 emoji：源 HTML 写 `<span class="www-feature-icon" data-icon="key"></span>`（也可用 `www-doc-icon` / `www-deployment-icon`），构建时由 `build.mjs` 的 `ICONS` 内联为线性 SVG；图标名未知时构建直接失败。
+图标不用 emoji：源 HTML 写 `<span class="www-feature-icon" data-icon="key"></span>`（也可用 `www-doc-icon`），构建时由 `build.mjs` 的 `ICONS` 内联为线性 SVG；图标名未知时构建直接失败。
 
 子页面布局由构建生成：`<header class="www-page-hero">` 自动加面包屑；带 `id` 的 `<section>`（取其 `h2`）不少于 3 个时，生成左侧本页导航，`<section data-toc-icon="名称">` 为条目配 `ICONS` 图标。多行代码块自动加行号栏。
 
@@ -59,59 +60,27 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 - **样式**：CSS3 + CSS 变量
 - **后端**：无；任意静态 Web 服务器托管 `dist/`
 
-## 已完成功能
+## 页面
 
-### ✅ 首页（index.html）
-- Hero 区域：定位 H1、一句话价值、数据亮点
-- ccLoad 是什么（介绍视频）、为什么选 ccLoad（6 项差异点）、同类项目对比（CLIProxyAPI / GPT-Load / New API）、适用人群
-- FAQ（同步输出 FAQPage 结构化数据）
-- 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
-- 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / CodeBuddy / Z.ai / Cursor / Zed
-- 管理后台预览截图
-- 5 种部署方式卡片（Go 1.26+，官方 latest 二进制）
-- 快速开始 Tab 切换
-- 代码复制功能
+| 页面 | 内容 |
+| --- | --- |
+| `index.html` | 定位与介绍视频、差异点、同类对比、适用人群、能力、账号渠道、后台预览、快速开始、FAQ |
+| `install.html` | Docker / Hugging Face / Homebrew / 源码与二进制部署，部署后验证 |
+| `config.html` | 环境变量、存储模式、渠道与令牌配置、运行时设置、上线检查 |
+| `usage.html` | 各协议调用示例、端点速查、Responses WebSocket、管理 API |
+| `feedback.html` | 问题分流、贡献入口、反馈模板 |
 
-### ✅ 安装指南（install.html）
-- Docker Compose 部署（GHCR latest / beta / 精确版本）
-- Homebrew 安装、密码配置、后台服务及稳定版升级
-- Hugging Face Spaces 部署
-- 源码编译与二进制运行（含 Cursor SDK Bridge）
-- 部署后验证命令
+## 图片与视频
 
-### ✅ 配置手册（config.html）
-- 启动环境变量表（含 PORT、CURSOR_SDK_BRIDGE_BIN、TRUSTED_PROXIES）
-- SQLite / MySQL / PostgreSQL / Hybrid 存储模式对比
-- 渠道配置、OAuth auth_type、Key 模型白名单、单模型启停、可用时段、每日定时检测
-- 思考后缀、全局 OAuth 上游地址、冷却兜底
-- 全局流式总超时、首字节/非流式协议覆盖、上游连接复用时限和 WebSocket 会话限制（1024 会话 / 256 MiB）
-- 批量模型名小写与来源前缀清理
-- API Token 模型、渠道白名单/黑名单、费用和并发限制
-- 自定义模型价格：基础/高上下文输入、输出和缓存价，覆盖恢复及适用边界；渠道模型价格按渠道单独覆盖
-- 管理后台热配置说明
-- 安全上线检查
+截图是入库的 WebP 变体，页面用 `srcset` 按宽度选择。仓库根目录 `images/` 的原图更新后，在仓库根目录重新生成：
 
-### ✅ API 使用（usage.html）
-- Anthropic / OpenAI / Gemini / Codex / Images / Token 统计示例
-- 思考后缀、第一方账号渠道、Images API
-- HTTP 与 Responses WebSocket 端点速查表、会话隔离、连接轮换和故障切换边界
-- 多协议内置搜索映射说明
-- Antigravity Responses 原生搜索、域名过滤与引用返回
-- 管理后台的客户端协议统计、7 天服务健康度、缓存统计与模型测试 Key 备注/倍率
-- 渠道管理 API 与 CSV 导入导出
+```bash
+for n in dashboard logs; do for w in 1280 2048; do
+  cwebp -quiet -q 85 -m 6 -resize $w 0 images/ccload-$n.webp -o www/assets/images/ccload-$n-$w.webp
+done; done
+```
 
-### ✅ 反馈渠道（feedback.html）
-- Bug、功能建议、讨论、安全问题分流
-- 贡献代码入口
-- 高质量反馈模板
-
-### ✅ 基础组件
-- 导航栏（支持移动端汉堡菜单）
-- 语言切换器
-- 主题切换器
-- 代码块（带复制按钮）
-- Tab 切换
-- 页脚
+宽高比变了要同步 HTML 中 `<img>` 的 `width`/`height`。介绍视频 `.mp4` 不入库，生成方法见 [DEPLOY.md](DEPLOY.md#-介绍视频)；`promo/audio.sh` 同时按旁白时间轴写出同名 `.vtt` 字幕，字幕入库。
 
 ## 文档
 

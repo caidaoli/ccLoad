@@ -1,0 +1,26 @@
+WEBVTT
+
+00:00:00.500 --> 00:00:04.800
+ccLoad. The self-hosted AI API gateway.
+
+00:00:04.800 --> 00:00:11.300
+Rely on a single key and you will get stuck: rate limits, outages, and costs you can't see.
+
+00:00:11.300 --> 00:00:21.300
+ccLoad gives you one entry point and many routes. It picks channels by priority, and when one is rate limited, it fails over to the next.
+
+00:00:21.300 --> 00:00:27.300
+Any client, any upstream. Protocols are converted on the fly.
+
+00:00:27.300 --> 00:00:34.300
+Every dollar is visible: requests, tokens and cost, by channel, model and token.
+
+00:00:34.300 --> 00:00:39.800
+Upstream credentials stay in the gateway. Clients only get a scoped ccLoad token.
+
+00:00:39.800 --> 00:00:43.700
+Deploy in minutes with a single command.
+
+00:00:43.700 --> 00:00:47.500
+ccLoad. Open source, self-hosted. Try it today.
+

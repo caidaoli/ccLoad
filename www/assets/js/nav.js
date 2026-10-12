@@ -1,11 +1,11 @@
 /**
  * Navigation interactions
  * The navigation HTML is pre-rendered by build.mjs. This script only handles the mobile menu, theme switching, and remembering the language choice.
+ * Theme storage comes from theme-init.js (window.ccLoadTheme), which every page loads before this script.
  */
 (function() {
   'use strict';
 
-  const THEME_STORAGE_KEY = 'ccload_theme';
   const LOCALE_STORAGE_KEY = 'ccload_locale';
   const THEMES = ['system', 'light', 'dark'];
   const THEME_ICONS = {
@@ -14,81 +14,78 @@
     system: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'
   };
 
-  function initNav() {
+  function initMenu() {
     const navToggle = document.getElementById('www-nav-toggle');
     const navMenu = document.getElementById('www-nav-menu');
-    if (navToggle && navMenu) {
-      navToggle.addEventListener('click', () => {
-        navToggle.setAttribute('aria-expanded', String(navMenu.classList.toggle('open')));
-      });
-      navMenu.querySelectorAll('.www-nav-link').forEach(link => {
-        link.addEventListener('click', () => {
-          navMenu.classList.remove('open');
-          navToggle.setAttribute('aria-expanded', 'false');
-        });
-      });
-    }
+    if (!navToggle || !navMenu) return;
 
-    // An explicit language switch is remembered; the inline script in the page head redirects on the next visit.
+    const close = () => {
+      navMenu.classList.remove('open');
+      navToggle.setAttribute('aria-expanded', 'false');
+    };
+    navToggle.addEventListener('click', () => {
+      navToggle.setAttribute('aria-expanded', String(navMenu.classList.toggle('open')));
+    });
+    navMenu.querySelectorAll('.www-nav-link').forEach(link => link.addEventListener('click', close));
+    // Esc 收起并把焦点还给开关；点菜单外任意处收起
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !navMenu.classList.contains('open')) return;
+      close();
+      navToggle.focus();
+    });
+    document.addEventListener('click', event => {
+      if (navMenu.classList.contains('open') && !navMenu.contains(event.target) && !navToggle.contains(event.target)) close();
+    });
+  }
+
+  // An explicit language switch is remembered; the inline script in the page head redirects on the next visit.
+  function initLanguageSwitch() {
     const langSwitch = document.getElementById('www-lang-switch');
-    if (langSwitch) {
-      langSwitch.addEventListener('click', () => {
-        try {
-          localStorage.setItem(LOCALE_STORAGE_KEY, langSwitch.dataset.locale);
-        } catch (_) { /* Even if storage fails, the link still navigates to the target language. */ }
-        langSwitch.href = langSwitch.getAttribute('href').split('#')[0] + location.hash;
-      });
-    }
+    if (!langSwitch) return;
+    langSwitch.addEventListener('click', () => {
+      try {
+        localStorage.setItem(LOCALE_STORAGE_KEY, langSwitch.dataset.locale);
+      } catch (_) { /* Even if storage fails, the link still navigates to the target language. */ }
+      langSwitch.href = langSwitch.getAttribute('href').split('#')[0] + location.hash;
+    });
+  }
 
+  function initThemeSwitch() {
     const themeSwitch = document.getElementById('www-theme-switch');
-    if (themeSwitch) {
-      const initialTheme = getStoredTheme();
-      applyTheme(initialTheme);
-      themeSwitch.innerHTML = THEME_ICONS[initialTheme];
+    if (!themeSwitch || !window.ccLoadTheme) return;
 
-      themeSwitch.addEventListener('click', () => {
-        const nextTheme = THEMES[(THEMES.indexOf(getStoredTheme()) + 1) % THEMES.length];
-        applyTheme(nextTheme);
-        setStoredTheme(nextTheme);
-        themeSwitch.innerHTML = THEME_ICONS[nextTheme];
-      });
-    }
-  }
+    // 图标与可读标签都反映当前模式；标签文案由构建期按语言写在 data-label-<mode> 上
+    const render = mode => {
+      const label = themeSwitch.getAttribute(`data-label-${mode}`);
+      themeSwitch.innerHTML = THEME_ICONS[mode];
+      themeSwitch.setAttribute('aria-label', label);
+      themeSwitch.title = label;
+    };
+    // 当前模式以 theme-init.js 写到 <html> 上的为准，存储被禁用时也能正常轮换
+    render(document.documentElement.dataset.theme);
 
-  function getStoredTheme() {
-    if (window.ccLoadTheme && typeof window.ccLoadTheme.getStoredTheme === 'function') {
-      return window.ccLoadTheme.getStoredTheme();
-    }
-    try {
-      const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-      const mode = typeof savedTheme === 'string' ? savedTheme.split(':', 1)[0] : null;
-      return THEMES.includes(mode) ? mode : 'system';
-    } catch (_) {
-      return 'system';
-    }
-  }
-
-  function setStoredTheme(theme) {
-    if (window.ccLoadTheme && typeof window.ccLoadTheme.setStoredTheme === 'function') {
-      window.ccLoadTheme.setStoredTheme(theme);
-      return;
-    }
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, `${theme}:${Date.now()}`);
-    } catch (_) { /* The theme still applies to the current page. */ }
-  }
-
-  function resolveTheme(theme) {
-    if (theme !== 'system') return theme;
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    themeSwitch.addEventListener('click', () => {
+      const next = THEMES[(THEMES.indexOf(document.documentElement.dataset.theme) + 1) % THEMES.length];
+      applyTheme(next);
+      window.ccLoadTheme.setStoredTheme(next);
+      render(next);
+    });
   }
 
   function applyTheme(theme) {
-    const resolvedTheme = resolveTheme(theme);
+    const resolved = theme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme;
     const html = document.documentElement;
-    html.setAttribute('data-theme', theme);
-    html.setAttribute('data-resolved-theme', resolvedTheme);
-    html.style.colorScheme = resolvedTheme;
+    html.dataset.theme = theme;
+    html.dataset.resolvedTheme = resolved;
+    html.style.colorScheme = resolved;
+  }
+
+  function initNav() {
+    initMenu();
+    initLanguageSwitch();
+    initThemeSwitch();
   }
 
   if (document.readyState === 'loading') {

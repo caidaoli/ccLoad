@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 给宣传视频配旁白和背景音乐：edge-tts（微软 Edge 在线语音，免费、无需 Key）+ ffmpeg。
 #
-#   www/promo/audio.sh zh    # → www/assets/video/ccload-promo.zh-CN.mp4
-#   www/promo/audio.sh en    # → www/assets/video/ccload-promo.en.mp4
+#   www/promo/audio.sh zh    # → www/assets/video/ccload-promo.zh-CN.mp4 + .vtt
+#   www/promo/audio.sh en    # → www/assets/video/ccload-promo.en.mp4 + .vtt
 #
 # 画面流原样复制，只替换音轨；每句旁白的起始秒数对应 index.html 里的场景时间。
+# 同时按旁白写出 WebVTT 字幕（入库，网页 <track> 引用），每句显示到下一句开始。
 # 设置了 HTTPS_PROXY 时 edge-tts 走该代理。
 set -euo pipefail
 
@@ -54,6 +55,8 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/promo-audio.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 total="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$video")"
+vtt_time() { awk -v s="$1" 'BEGIN { m = int(s / 60); printf "00:%02d:%06.3f", m, s - m * 60 }'; }
+cues=""
 inputs=()
 filter=""
 mix=""
@@ -62,6 +65,7 @@ for i in "${!lines[@]}"; do
   # 下一句的起点（最后一句为视频结尾）就是本句的时限。
   end="$total"
   [ $((i + 1)) -lt ${#lines[@]} ] && end="${lines[$((i + 1))]%%|*}"
+  cues+="$(vtt_time "$start") --> $(vtt_time "$end")"$'\n'"$text"$'\n\n'
   uvx edge-tts ${HTTPS_PROXY:+--proxy "$HTTPS_PROXY"} --voice "$voice" --rate="$rate" \
     --text "$text" --write-media "$tmp/$i.raw.mp3" 2>/dev/null
   # edge-tts 的输出带约 0.8s 尾部静音，裁掉后再量时长。
@@ -93,4 +97,5 @@ filter+="[voice][duck]amix=inputs=2:normalize=0,alimiter=limit=0.95,apad=whole_d
 ffmpeg -v error -y -i "$video" "${inputs[@]}" -i "$tmp/music.mp3" -filter_complex "$filter" \
   -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -ac 2 -ar 48000 -t "$total" -movflags +faststart "$tmp/out.mp4"
 mv "$tmp/out.mp4" "$video"
-echo "$video"
+printf 'WEBVTT\n\n%s' "$cues" >"${video%.mp4}.vtt"
+echo "$video ${video%.mp4}.vtt"

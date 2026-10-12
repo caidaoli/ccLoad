@@ -28,15 +28,20 @@ test('每个页面按语言预渲染，不残留运行时 i18n', () => {
 test('站内引用的本地资源和页面都存在', () => {
   for (const { rel, html } of pages) {
     const base = path.dirname(path.join(outDir, rel));
-    for (const [, url] of html.matchAll(/\s(?:src|href|poster)="([^"]+)"/g)) {
+    const urls = [...html.matchAll(/\s(src|href|poster|srcset)="([^"]+)"/g)]
+      .flatMap(([, attr, value]) => attr === 'srcset' ? value.split(',').map(c => c.trim().split(/\s+/)[0]) : [value]);
+    for (const url of urls) {
       if (/^(?:[a-z]+:|#)/i.test(url)) continue;
       // 介绍视频不入库（CI 中不存在），由 make www-release 发布前单独校验
-      if (url.includes('assets/video/')) continue;
-      let target = path.resolve(base, url.split(/[?#]/)[0]);
-      if (url.split(/[?#]/)[0].endsWith('/') || fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+      if (url.includes('assets/video/') && url.includes('.mp4')) continue;
+      const file = url.split(/[?#]/)[0];
+      let target = path.resolve(base, file);
+      if (file.endsWith('/') || fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
         target = path.join(target, 'index.html');
       }
       assert.ok(fs.existsSync(target), `${rel} -> ${url}`);
+      // 静态资源带构建期内容版本号，内容变化即换 URL，长缓存不会拿到旧文件
+      if (!target.endsWith('.html')) assert.match(url, /\?v=[0-9a-f]{10}(?:#|$)/, `${rel} -> ${url}`);
     }
   }
 });

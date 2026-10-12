@@ -12,7 +12,9 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.nav.usage': 'API Usage',
   'www.nav.feedback': 'Support',
   'www.nav.switchLanguage': '切换到中文',
-  'www.nav.switchTheme': 'Switch theme',
+  'www.nav.theme.system': 'Switch theme (current: system)',
+  'www.nav.theme.light': 'Switch theme (current: light)',
+  'www.nav.theme.dark': 'Switch theme (current: dark)',
   'www.nav.toggleMenu': 'Toggle menu',
 
   // Docs layout

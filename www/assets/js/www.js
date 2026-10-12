@@ -1,88 +1,94 @@
 /**
  * Shared interactions for the website
- * Features: code copy, tab switching, smooth anchor scrolling and doc TOC highlighting. Text is pre-rendered per language by build.mjs.
+ * Features: code copy, accessible tabs, reveal-on-scroll and doc TOC highlighting. Text is pre-rendered per language by build.mjs.
+ * Anchor scrolling is native: html sets scroll-padding-top, and smooth scrolling only when reduced motion is not requested.
  */
 (function() {
   'use strict';
 
   const zh = document.documentElement.lang === 'zh-CN';
   const COPIED_TEXT = zh ? '已复制！' : 'Copied!';
-  const COPY_FAILED_TEXT = zh ? '复制失败，请手动选择复制' : 'Copy failed. Please select the text and copy it manually.';
+  const COPY_FAILED_TEXT = zh ? '复制失败' : 'Copy failed';
 
+  // 结果直接显示在按钮上（不弹 alert），2 秒后恢复；连续点击只延长显示，不会把提示当成原文
   function initCodeCopy() {
     document.querySelectorAll('.www-code-copy').forEach(button => {
+      const label = button.textContent;
+      let timer;
       button.addEventListener('click', async () => {
-        const codeBlock = button.closest('.www-code-block');
-        const codeContent = codeBlock.querySelector('pre')?.textContent || '';
-
+        const code = button.closest('.www-code-block').querySelector('pre')?.textContent || '';
+        let copied = true;
         try {
-          await navigator.clipboard.writeText(codeContent);
-          const originalText = button.textContent;
-          button.textContent = COPIED_TEXT;
-          button.classList.add('copied');
-
-          setTimeout(() => {
-            button.textContent = originalText;
-            button.classList.remove('copied');
-          }, 2000);
+          await navigator.clipboard.writeText(code);
         } catch (err) {
           console.error('Failed to copy code:', err);
-          alert(COPY_FAILED_TEXT);
+          copied = false;
         }
+        button.textContent = copied ? COPIED_TEXT : COPY_FAILED_TEXT;
+        button.classList.toggle('copied', copied);
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          button.textContent = label;
+          button.classList.remove('copied');
+        }, 2000);
       });
     });
   }
 
+  // WAI-ARIA tabs：tablist/tab/tabpanel 关联，左右方向键与 Home/End 切换，roving tabindex 让 Tab 键只停在当前页签
   function initTabs() {
-    document.querySelectorAll('.www-tabs').forEach(tabsContainer => {
-      const buttons = tabsContainer.querySelectorAll('.www-tab-button');
-      const panels = tabsContainer.querySelectorAll('.www-tab-panel');
+    document.querySelectorAll('.www-tabs').forEach((tabs, group) => {
+      const buttons = Array.from(tabs.querySelectorAll('.www-tab-button'));
+      const panels = Array.from(tabs.querySelectorAll('.www-tab-panel'));
+      tabs.querySelector('.www-tab-list')?.setAttribute('role', 'tablist');
 
-      buttons.forEach((button, index) => {
-        button.addEventListener('click', () => {
-          buttons.forEach(btn => btn.classList.remove('active'));
-          panels.forEach(panel => panel.classList.remove('active'));
-          button.classList.add('active');
-          if (panels[index]) {
-            panels[index].classList.add('active');
-          }
+      const select = (index, focus) => {
+        buttons.forEach((button, i) => {
+          const active = i === index;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-selected', String(active));
+          button.tabIndex = active ? 0 : -1;
+          panels[i]?.classList.toggle('active', active);
+        });
+        if (focus) buttons[index].focus();
+      };
+
+      buttons.forEach((button, i) => {
+        button.type = 'button';
+        button.id = `www-tab-${group}-${i}`;
+        button.setAttribute('role', 'tab');
+        if (panels[i]) {
+          panels[i].id = `${button.id}-panel`;
+          panels[i].setAttribute('role', 'tabpanel');
+          panels[i].setAttribute('aria-labelledby', button.id);
+          button.setAttribute('aria-controls', panels[i].id);
+        }
+        button.addEventListener('click', () => select(i, false));
+        button.addEventListener('keydown', event => {
+          const last = buttons.length - 1;
+          const next = { ArrowRight: i === last ? 0 : i + 1, ArrowLeft: i === 0 ? last : i - 1, Home: 0, End: last }[event.key];
+          if (next === undefined) return;
+          event.preventDefault();
+          select(next, true);
         });
       });
+      select(Math.max(0, buttons.findIndex(button => button.classList.contains('active'))), false);
     });
   }
 
-  function initSmoothScroll() {
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function(e) {
-        const targetId = this.getAttribute('href');
-        if (targetId === '#') return;
-
-        const targetElement = document.querySelector(targetId);
-        if (targetElement) {
-          e.preventDefault();
-          // 顶部留白由 html 的 scroll-padding-top 统一给出
-          targetElement.scrollIntoView({ behavior: 'smooth' });
-          history.replaceState(null, '', targetId);
-        }
-      });
-    });
-  }
-
-  // 区块内容进入视口时渐入；网格内卡片按序错开。不支持或偏好减少动效时保持静态
+  // 区块内容进入视口时渐入；网格内卡片按序错开。首屏已可见的内容不参与，避免加载后先消失再出现；
+  // 不支持或偏好减少动效时保持静态
   function initReveal() {
     if (!('IntersectionObserver' in window)) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-    const GRID = '.www-bento, .www-feature-grid, .www-deployment-grid, .www-doc-grid, .www-step-list';
+    const GRID = '.www-bento, .www-feature-grid, .www-doc-grid, .www-step-list';
     const targets = [];
     document.querySelectorAll('.www-section .www-container > *, .www-cta-inner').forEach(el => {
       if (el.matches(GRID)) {
-        Array.from(el.children).forEach((child, i) => {
-          child.style.transitionDelay = `${Math.min(i, 6) * 60}ms`;
-          targets.push(child);
-        });
+        Array.from(el.children).forEach((child, i) => targets.push([child, `${Math.min(i, 6) * 60}ms`]));
       } else {
-        targets.push(el);
+        targets.push([el, '']);
       }
     });
 
@@ -100,10 +106,14 @@
       });
     }, { rootMargin: '0px 0px -8% 0px' });
 
-    targets.forEach(el => {
-      el.classList.add('www-reveal');
-      observer.observe(el);
-    });
+    // 先统一读取位置再写样式，避免逐个强制重排
+    targets
+      .filter(([el]) => el.getBoundingClientRect().top >= window.innerHeight)
+      .forEach(([el, delay]) => {
+        el.style.transitionDelay = delay;
+        el.classList.add('www-reveal');
+        observer.observe(el);
+      });
   }
 
   // 文档页左侧导航高亮当前阅读的区块：取顶部已越过视口 30% 线的最后一节；滚到底时高亮最后一节
@@ -137,7 +147,6 @@
   function init() {
     initCodeCopy();
     initTabs();
-    initSmoothScroll();
     initReveal();
     initTocSpy();
   }

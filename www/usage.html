@@ -9,12 +9,11 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
-  <script src="assets/js/theme-init.js?v=20260904-1"></script>
-  <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261012-1">
+  <script src="assets/js/theme-init.js"></script>
+  <link rel="stylesheet" href="assets/css/www.css">
 
-  <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261008-4"></script>
+  <script defer src="assets/js/nav.js"></script>
+  <script defer src="assets/js/www.js"></script>
 </head>
 <body class="www-page www-usage">
   <header class="www-page-hero">
@@ -73,7 +72,7 @@
         </div>
 
         <div class="www-tabs">
-          <div class="www-tab-list">
+          <div class="www-tab-list" aria-label="Clients" data-i18n-aria-label="www.usage.clients.label">
             <button class="www-tab-button active">Claude Code</button>
             <button class="www-tab-button">Codex CLI</button>
           </div>
@@ -397,7 +396,7 @@ supports_websockets = true</code></pre>
         </div>
 
         <div class="www-tabs">
-          <div class="www-tab-list" role="tablist" aria-label="API examples" data-i18n-aria-label="www.usage.examples.label">
+          <div class="www-tab-list" aria-label="API examples" data-i18n-aria-label="www.usage.examples.label">
             <button class="www-tab-button active">Anthropic</button>
             <button class="www-tab-button">OpenAI</button>
             <button class="www-tab-button">Codex</button>
@@ -590,7 +589,7 @@ supports_websockets = true</code></pre>
             </ul>
           </div>
           <figure class="www-media-frame">
-            <img src="assets/images/ccload-dashboard.webp" width="3456" height="1992" loading="lazy" decoding="async" alt="ccLoad admin dashboard statistics screenshot" data-i18n-alt="www.usage.admin.imageAlt">
+            <img src="assets/images/ccload-dashboard-1280.webp" srcset="assets/images/ccload-dashboard-1280.webp 1280w, assets/images/ccload-dashboard-2048.webp 2048w" sizes="(min-width: 960px) 600px, 100vw" width="1280" height="738" loading="lazy" decoding="async" alt="ccLoad admin dashboard statistics screenshot" data-i18n-alt="www.usage.admin.imageAlt">
             <figcaption class="www-media-caption" data-i18n-html="www.usage.admin.caption">The statistics view puts channels, models, cost and latency into one working surface.</figcaption>
           </figure>
         </div>
@@ -682,7 +681,7 @@ curl -X POST -H "Authorization: Bearer your_token" \
       <div class="www-container">
         <div class="www-split">
           <figure class="www-media-frame">
-            <img src="assets/images/ccload-logs.webp" width="3456" height="2208" loading="lazy" decoding="async" alt="ccLoad request log screenshot" data-i18n-alt="www.usage.logs.imageAlt">
+            <img src="assets/images/ccload-logs-1280.webp" srcset="assets/images/ccload-logs-1280.webp 1280w, assets/images/ccload-logs-2048.webp 2048w" sizes="(min-width: 960px) 600px, 100vw" width="1280" height="818" loading="lazy" decoding="async" alt="ccLoad request log screenshot" data-i18n-alt="www.usage.logs.imageAlt">
             <figcaption class="www-media-caption" data-i18n-html="www.usage.logs.caption">The logs page tracks failures, rate limits, first-byte latency and upstream responses.</figcaption>
           </figure>
           <div>

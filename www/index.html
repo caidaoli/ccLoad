@@ -10,13 +10,12 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <!-- Theme bootstrap avoids a flash of the wrong theme. -->
-  <script src="assets/js/theme-init.js?v=20260904-1"></script>
+  <script src="assets/js/theme-init.js"></script>
 
-  <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261012-1">
+  <link rel="stylesheet" href="assets/css/www.css">
 
-  <script defer src="assets/js/nav.js?v=20261003-1"></script>
-  <script defer src="assets/js/www.js?v=20261008-4"></script>
+  <script defer src="assets/js/nav.js"></script>
+  <script defer src="assets/js/www.js"></script>
 </head>
 <body class="www-page www-home">
 <main>
@@ -102,10 +101,14 @@
       </p>
 
       <video class="www-video" controls preload="none" playsinline
-             poster="assets/images/ccload-promo.en.jpg?v=20261002" data-i18n-poster="www.home.how.videoPoster"
-             src="assets/video/ccload-promo.en.mp4?v=20261002" data-i18n-src="www.home.how.videoSrc"
+             poster="assets/images/ccload-promo.en.jpg" data-i18n-poster="www.home.how.videoPoster"
+             src="assets/video/ccload-promo.en.mp4" data-i18n-src="www.home.how.videoSrc"
              data-i18n-aria-label="www.home.how.videoLabel"
-             aria-label="ccLoad overview video, 47 seconds"></video>
+             aria-label="ccLoad overview video, 47 seconds">
+        <track kind="captions" src="assets/video/ccload-promo.en.vtt" data-i18n-src="www.home.how.captionsSrc"
+               srclang="en" data-i18n-srclang="www.home.how.captionsLang"
+               label="English" data-i18n-label="www.home.how.captionsLabel">
+      </video>
 
       <div class="www-flow">
         <div class="www-flow-col">
@@ -301,51 +304,31 @@
     </div>
   </section>
 
-  <!-- Core features -->
+  <!-- More features (headline capabilities live in Why / OAuth / Admin above) -->
   <section class="www-section">
     <div class="www-container www-feature-overview">
       <p class="www-eyebrow" data-i18n="www.home.eyebrow.features">Features</p>
-      <h2 class="www-section-title" data-i18n="www.home.features.title">Feature overview</h2>
-      <h3 class="www-feature-group" data-i18n="www.home.features.group.reliability">Routing and failover</h3>
+      <h2 class="www-section-title" data-i18n="www.home.features.title">More built-in capabilities</h2>
       <div class="www-feature-grid">
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="route"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.routing.title">Smart Routing</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.routing.title">Smart Routing</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.routing.desc">
             Higher-priority channels first; equal priority uses smooth weighted round-robin by usable keys. Optional health and first-byte scoring.
           </p>
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon" data-icon="refresh"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.failover.title">Auto Failover</h4>
-          <p class="www-feature-desc" data-i18n="www.home.features.failover.desc">
-            Isolate failures at key, model, channel, or URL scope. 401/403 cool only the current key; model-scoped errors do not disable the whole channel.
-          </p>
-        </div>
-
-        <div class="www-feature-card">
-          <span class="www-feature-icon" data-icon="shield-alert"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.detection.title">Soft Error Detection</h4>
-          <p class="www-feature-desc" data-i18n="www.home.features.detection.desc">
-            Detect errors disguised as HTTP 200. Explicit rate-limit markers in SSE streams are handled as 429.
-          </p>
-        </div>
-
-        <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="globe"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.proxy.title">Per-channel Proxy and Windows</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.proxy.title">Per-channel Proxy and Windows</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.proxy.desc">
             Route a channel through HTTP, HTTPS, or SOCKS5, and optionally restrict it to an HH:MM availability window. Outside the window it is excluded from routing.
           </p>
         </div>
-      </div>
 
-      <h3 class="www-feature-group" data-i18n="www.home.features.group.protocol">Protocol and client compatibility</h3>
-      <div class="www-feature-grid">
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="shuffle"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.protocol.title">Automatic Protocol Fallback</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.protocol.title">Automatic Protocol Fallback</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.protocol.desc">
             Try the client protocol first, then probe OpenAI, Anthropic, Codex, and Gemini without retrying it.
           </p>
@@ -353,7 +336,7 @@
 
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="link"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.websocket.title">Responses WebSocket</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.websocket.title">Responses WebSocket</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.websocket.desc">
             Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover.
           </p>
@@ -361,7 +344,7 @@
 
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="sparkles"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.thinking.title">Thinking Suffix</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.thinking.title">Thinking Suffix</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.thinking.desc">
             Append (high)/(xhigh)/(16384) to a model name to set thinking parameters across protocols. Routing, cooldown, and the upstream name always use the base name.
           </p>
@@ -369,42 +352,23 @@
 
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="zap"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.token.title">Local Token Count</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.token.title">Local Token Count</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.token.desc">
             &lt;5ms response, 93%+ accuracy, count tokens without calling upstream.
-          </p>
-        </div>
-      </div>
-
-      <h3 class="www-feature-group" data-i18n="www.home.features.group.control">Accounts, cost, and monitoring</h3>
-      <div class="www-feature-grid">
-        <div class="www-feature-card">
-          <span class="www-feature-icon" data-icon="key"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.oauth.title">OAuth Channels</h4>
-          <p class="www-feature-desc" data-i18n="www.home.features.oauth.desc">
-            Connect Codex, Anthropic, Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor, and Zed accounts. Refresh quotas and balances from the channel list.
           </p>
         </div>
 
         <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="list-check"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.keys.title">Per-Key Model Allowlists</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.keys.title">Per-Key Model Allowlists</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.keys.desc">
             Restrict which channel models each key serves. If every key declines the model, the channel is skipped with no cooldown and no failure recorded.
           </p>
         </div>
 
         <div class="www-feature-card">
-          <span class="www-feature-icon" data-icon="coins"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.cost.title">Cost Control</h4>
-          <p class="www-feature-desc" data-i18n="www.home.features.cost.desc">
-            Global and per-channel custom model prices, per-key multipliers, daily channel limits, and token total/daily/monthly limits. Track OAuth quota windows against upstream reset times.
-          </p>
-        </div>
-
-        <div class="www-feature-card">
           <span class="www-feature-icon" data-icon="chart"></span>
-          <h4 class="www-feature-title" data-i18n="www.home.features.monitoring.title">Real-time Monitoring</h4>
+          <h3 class="www-feature-title" data-i18n="www.home.features.monitoring.title">Real-time Monitoring</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.monitoring.desc">
             Seven-day service health, client-protocol statistics, cost analysis, trends, and live request monitoring.
           </p>
@@ -504,90 +468,21 @@
           </div>
         </div>
         <figure class="www-media-frame">
-          <img src="assets/images/ccload-dashboard.webp" width="3456" height="1992" loading="lazy" decoding="async" data-i18n-alt="www.home.admin.imageAlt" alt="ccLoad admin dashboard statistics screenshot">
+          <img src="assets/images/ccload-dashboard-1280.webp" srcset="assets/images/ccload-dashboard-1280.webp 1280w, assets/images/ccload-dashboard-2048.webp 2048w" sizes="(min-width: 960px) 600px, 100vw" width="1280" height="738" loading="lazy" decoding="async" data-i18n-alt="www.home.admin.imageAlt" alt="ccLoad admin dashboard statistics screenshot">
           <figcaption class="www-media-caption" data-i18n="www.home.admin.caption">The admin console exposes runtime state and cost accounting, so you do not have to guess.</figcaption>
         </figure>
       </div>
     </div>
   </section>
 
-  <!-- Deployment options -->
-  <section class="www-section www-section-alt">
-    <div class="www-container">
-      <p class="www-eyebrow" data-i18n="www.home.eyebrow.deployment">Deploy</p>
-      <h2 class="www-section-title" data-i18n="www.home.deployment.title">Deployment Options</h2>
-      <div class="www-deployment-grid">
-        <!-- Docker -->
-        <div class="www-deployment-card">
-          <span class="www-deployment-icon" data-icon="layers"></span>
-          <h3 class="www-deployment-title" data-i18n="www.home.deployment.docker.title">Docker</h3>
-          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.docker.difficulty">Difficulty: ⭐⭐</span>
-          <p class="www-deployment-desc" data-i18n="www.home.deployment.docker.desc">
-            Recommended for production. Official images use latest, beta, and exact version tags. Supports SQLite, MySQL, and PostgreSQL.
-          </p>
-          <a href="install.html#docker" class="www-btn www-btn-primary" data-i18n="www.home.deployment.docker.learnMore">
-            Learn More
-          </a>
-        </div>
-
-        <!-- Hugging Face -->
-        <div class="www-deployment-card">
-          <span class="www-deployment-icon" data-icon="smile"></span>
-          <h3 class="www-deployment-title" data-i18n="www.home.deployment.hf.title">Hugging Face</h3>
-          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.hf.difficulty">Difficulty: ⭐</span>
-          <p class="www-deployment-desc" data-i18n="www.home.deployment.hf.desc">
-            Free hosting, automatic HTTPS, ready to run, 2 CPU + 16GB RAM
-          </p>
-          <a href="install.html#huggingface" class="www-btn www-btn-primary" data-i18n="www.home.deployment.hf.learnMore">
-            Learn More
-          </a>
-        </div>
-
-        <!-- Source build -->
-        <div class="www-deployment-card">
-          <span class="www-deployment-icon" data-icon="wrench"></span>
-          <h3 class="www-deployment-title" data-i18n="www.home.deployment.source.title">From Source</h3>
-          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.source.difficulty">Difficulty: ⭐⭐⭐</span>
-          <p class="www-deployment-desc" data-i18n="www.home.deployment.source.desc">
-            For developers and custom builds, requires Go 1.27+
-          </p>
-          <a href="install.html#source" class="www-btn www-btn-primary" data-i18n="www.home.deployment.source.learnMore">
-            Learn More
-          </a>
-        </div>
-
-        <!-- Binary download -->
-        <div class="www-deployment-card">
-          <span class="www-deployment-icon" data-icon="mug"></span>
-          <h3 class="www-deployment-title">Homebrew</h3>
-          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.brew.difficulty">Difficulty: ⭐</span>
-          <p class="www-deployment-desc" data-i18n="www.home.deployment.brew.desc">Install stable releases on macOS/Linux (ARM64 or AMD64) and manage the service with brew.</p>
-          <a href="install.html#homebrew" class="www-btn www-btn-primary" data-i18n="www.home.deployment.brew.learnMore">View Homebrew steps</a>
-        </div>
-
-        <div class="www-deployment-card">
-          <span class="www-deployment-icon" data-icon="package"></span>
-          <h3 class="www-deployment-title" data-i18n="www.home.deployment.binary.title">Binary</h3>
-          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.binary.difficulty">Difficulty: ⭐⭐</span>
-          <p class="www-deployment-desc" data-i18n="www.home.deployment.binary.desc">
-            Download from GitHub Releases and run. Builds for Linux, macOS, and Windows.
-          </p>
-          <a href="install.html#binary" class="www-btn www-btn-primary" data-i18n="www.home.deployment.binary.learnMore">
-            Learn More
-          </a>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Quick start -->
-  <section class="www-section" id="quickstart">
+  <!-- Quick start: one tab per deployment method -->
+  <section class="www-section www-section-alt" id="quickstart">
     <div class="www-container">
       <p class="www-eyebrow" data-i18n="www.home.eyebrow.quickstart">Get running</p>
       <h2 class="www-section-title" data-i18n="www.home.quickstart.title">Quick Start</h2>
 
       <div class="www-tabs">
-        <div class="www-tab-list">
+        <div class="www-tab-list" aria-label="Deployment methods" data-i18n-aria-label="www.home.quickstart.label">
           <button class="www-tab-button active" data-i18n="www.home.quickstart.docker">Docker</button>
           <button class="www-tab-button" data-i18n="www.home.quickstart.hf">Hugging Face</button>
           <button class="www-tab-button" data-i18n="www.home.quickstart.source">From Source</button>
@@ -595,8 +490,8 @@
           <button class="www-tab-button">Homebrew</button>
         </div>
 
-        <!-- Docker -->
         <div class="www-tab-panel active">
+          <p data-i18n="www.home.quickstart.docker.desc">Recommended for production. Official images use latest, beta, and exact version tags. Supports SQLite, MySQL, and PostgreSQL.</p>
           <div class="www-code-block">
             <div class="www-code-header">
               <span class="www-code-lang">bash</span>
@@ -617,10 +512,11 @@ docker-compose up -d
 # http://localhost:8080/web/</code></pre>
             </div>
           </div>
+          <a href="install.html#docker" class="www-btn www-btn-secondary" data-i18n="www.home.quickstart.docker.more">View Docker steps</a>
         </div>
 
-        <!-- Hugging Face -->
         <div class="www-tab-panel">
+          <p data-i18n="www.home.quickstart.hf.desc">Free hosting with automatic HTTPS on 2 CPU and 16 GB RAM. No server to maintain.</p>
           <div class="www-code-block">
             <div class="www-code-header">
               <span class="www-code-lang">steps</span>
@@ -637,10 +533,11 @@ docker-compose up -d
 6. Open your Space URL</code></pre>
             </div>
           </div>
+          <a href="install.html#huggingface" class="www-btn www-btn-secondary" data-i18n="www.home.quickstart.hf.more">View Spaces steps</a>
         </div>
 
-        <!-- Source build -->
         <div class="www-tab-panel">
+          <p data-i18n="www.home.quickstart.source.desc">For developers and custom builds. Requires Go 1.27+.</p>
           <div class="www-code-block">
             <div class="www-code-header">
               <span class="www-code-lang">bash</span>
@@ -663,10 +560,11 @@ make build
 # Open http://localhost:8080/web/</code></pre>
             </div>
           </div>
+          <a href="install.html#source-binary" class="www-btn www-btn-secondary" data-i18n="www.home.quickstart.source.more">View source build</a>
         </div>
 
-        <!-- Binary -->
         <div class="www-tab-panel">
+          <p data-i18n="www.home.quickstart.binary.desc">Download from GitHub Releases and run. Builds for Linux, macOS, and Windows.</p>
           <div class="www-code-block">
             <div class="www-code-header">
               <span class="www-code-lang">bash</span>
@@ -690,15 +588,18 @@ export CCLOAD_PASS=your_admin_password
 # Open http://localhost:8080/web/</code></pre>
             </div>
           </div>
+          <a href="install.html#source-binary" class="www-btn www-btn-secondary" data-i18n="www.home.quickstart.binary.more">View binary setup</a>
         </div>
+
         <div class="www-tab-panel">
-          <p data-i18n="www.home.quickstart.brew.setup">When editing .env, set CCLOAD_PASS to a strong password before starting. Then open http://localhost:8080/web/.</p>
+          <p data-i18n="www.home.quickstart.brew.desc">Install stable releases on macOS/Linux (ARM64 or AMD64) and manage the service with brew. Set CCLOAD_PASS to a strong password in .env before starting, then open http://localhost:8080/web/.</p>
           <div class="www-code-block">
-          <div class="www-code-header">
-            <span class="www-code-lang">bash</span>
-            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
-          </div>
-          <div class="www-code-content"><pre><code>brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
+            <div class="www-code-header">
+              <span class="www-code-lang">bash</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code>brew tap caidaoli/ccload https://github.com/caidaoli/ccLoad.git
 brew install caidaoli/ccload/ccload
 
 mkdir -p "$(brew --prefix)/var/ccload"
@@ -707,16 +608,17 @@ cd "$(brew --prefix)/var/ccload"
 chmod 600 .env
 ${EDITOR:-vi} .env
 
-brew services start caidaoli/ccload/ccload</code></pre></div>
-        </div>
-          <a href="install.html#homebrew" class="www-btn www-btn-secondary" data-i18n="www.home.deployment.brew.learnMore">View Homebrew steps</a>
+brew services start caidaoli/ccload/ccload</code></pre>
+            </div>
+          </div>
+          <a href="install.html#homebrew" class="www-btn www-btn-secondary" data-i18n="www.home.quickstart.brew.more">View Homebrew steps</a>
         </div>
       </div>
     </div>
   </section>
 
   <!-- FAQ -->
-  <section class="www-section www-section-alt" id="faq">
+  <section class="www-section" id="faq">
     <div class="www-container www-faq">
       <p class="www-eyebrow" data-i18n="www.home.eyebrow.faq">FAQ</p>
       <h2 class="www-section-title" data-i18n="www.home.faq.title">Frequently asked questions</h2>

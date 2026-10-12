@@ -1,7 +1,35 @@
 /* ========================================
-   介绍网站专用 CSS 变量
+   设计令牌：介绍站自带，不依赖管理后台的 styles.css
    ======================================== */
 :root {
+  color-scheme: light;
+  --font-family-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-family-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  --primary-500: #3b82f6;
+  --success-500: #10b981;
+  --info-500: #06b6d4;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --radius-full: 9999px;
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);
+  --duration-fast: 0.15s;
+  --duration-normal: 0.3s;
+  --www-selection-bg: #b8dcff;
+  --www-selection-fg: #1e40af;
+
   --www-max-width: 1240px;
   --www-nav-height: 76px;
   --www-section-padding: 5.5rem 2rem;
@@ -46,7 +74,11 @@
   --www-bad: #dc2626;
 }
 
-html[data-theme="dark"] {
+/* 主题由 theme-init.js 解析为 data-resolved-theme（system 模式跟随系统实时更新），CSS 只认这一个属性 */
+html[data-resolved-theme="dark"] {
+  color-scheme: dark;
+  --www-selection-bg: rgba(76, 194, 255, 0.35);
+  --www-selection-fg: #ffffff;
   --color-bg-page: #0a0f1a;
   --color-bg-elevated: #0f1726;
   --color-bg-hover: rgba(148, 163, 184, 0.08);
@@ -80,47 +112,40 @@ html[data-theme="dark"] {
   --www-bad: #f87171;
 }
 
-@media (prefers-color-scheme: dark) {
-  html[data-theme="system"] {
-    --color-bg-page: #0a0f1a;
-    --color-bg-elevated: #0f1726;
-    --color-bg-hover: rgba(148, 163, 184, 0.08);
-    --color-bg-code: #0b1220;
-    --color-text-primary: #e8eef8;
-    --color-text-secondary: #9aa8bf;
-    --color-text-tertiary: #6b7a93;
-    --color-primary: #4cc2ff;
-    --color-primary-dark: #7fd4ff;
-    --color-primary-bg: rgba(76, 194, 255, 0.12);
-    --color-info-bg: rgba(76, 194, 255, 0.1);
-    --color-warning-bg: rgba(245, 158, 11, 0.1);
-    --color-warning-dark: #fbbf24;
-    --www-section-alt-bg: #0c1320;
-    --www-card-bg: #0f1726;
-    --www-card-border: rgba(148, 163, 184, 0.14);
-    --www-card-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
-    --www-card-shadow-hover: 0 18px 40px -20px rgba(76, 194, 255, 0.35);
-    --www-icon-bg: rgba(76, 194, 255, 0.12);
-    --www-icon-fg: #4cc2ff;
-    --www-btn-bg: linear-gradient(180deg, #5fd0ff, #3aa0ff);
-    --www-btn-fg: #04121f;
-    --www-btn-shadow: 0 10px 28px -12px rgba(76, 194, 255, 0.7);
-    --www-hero-bg:
-      radial-gradient(900px 520px at 72% 28%, rgba(58, 160, 255, 0.18), transparent 65%),
-      radial-gradient(600px 420px at 8% 0%, rgba(76, 194, 255, 0.08), transparent 60%),
-      #0a0f1a;
-    --www-grid-line: rgba(148, 163, 184, 0.06);
-    --www-ok: #34d399;
-    --www-warn: #fbbf24;
-    --www-bad: #f87171;
-  }
-}
-
 /* ========================================
    全局样式
    ======================================== */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--primary-500);
+  outline-offset: 2px;
+}
+
 html {
+  scrollbar-gutter: stable;
   scroll-padding-top: calc(var(--www-nav-height) + 16px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  font-family: var(--font-family-sans);
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+::selection {
+  background-color: var(--www-selection-bg);
+  color: var(--www-selection-fg);
 }
 
 .www-page {
@@ -1119,10 +1144,9 @@ html {
 }
 
 /* ========================================
-   图标底块（首页特性、部署、文档卡片共用）
+   图标底块（首页特性、文档卡片共用）
    ======================================== */
 .www-feature-icon,
-.www-deployment-icon,
 .www-doc-icon {
   display: inline-flex;
   align-items: center;
@@ -1137,7 +1161,6 @@ html {
 }
 
 .www-feature-icon svg,
-.www-deployment-icon svg,
 .www-doc-icon svg {
   width: 1.375rem;
   height: 1.375rem;
@@ -1340,38 +1363,8 @@ html {
 }
 
 /* ========================================
-   功能总览：左侧分组名，右侧无边框条目
+   更多能力：无边框图标条目，两列
    ======================================== */
-@media (min-width: 900px) {
-  .www-feature-overview {
-    display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
-    column-gap: var(--space-12);
-  }
-
-  .www-feature-overview > .www-eyebrow,
-  .www-feature-overview > .www-section-title {
-    grid-column: 1 / -1;
-  }
-
-  .www-feature-overview > .www-feature-group,
-  .www-feature-overview > .www-feature-grid {
-    margin: 0;
-    padding: var(--space-8) 0;
-    border-top: 1px solid var(--www-card-border);
-  }
-
-  .www-feature-overview > .www-feature-group {
-    align-self: start;
-    border-top-color: transparent;
-    box-shadow: 0 -1px 0 var(--www-card-border);
-  }
-
-  .www-feature-overview > .www-feature-group::after {
-    display: none;
-  }
-}
-
 .www-feature-overview .www-feature-grid {
   gap: var(--space-8) var(--space-10, 2.5rem);
 }
@@ -1445,104 +1438,6 @@ html {
 .www-feature-grid:last-child,
 .www-step-row {
   margin-bottom: 0;
-}
-
-/* ========================================
-   部署卡片
-   ======================================== */
-.www-deployment-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: var(--space-5);
-}
-
-.www-deployment-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: var(--space-6);
-  background: var(--www-card-bg);
-  border: 1px solid var(--www-card-border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--www-card-shadow);
-  overflow: hidden;
-  transition: transform var(--duration-normal), box-shadow var(--duration-normal), border-color var(--duration-normal);
-}
-
-.www-deployment-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--www-brand-gradient);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform var(--duration-normal);
-}
-
-.www-deployment-card:hover {
-  transform: var(--www-card-hover-lift);
-  box-shadow: var(--www-card-shadow-hover);
-  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
-}
-
-.www-deployment-card:hover::before {
-  transform: scaleX(1);
-}
-
-.www-deployment-title {
-  margin: 0 0 var(--space-2);
-  font-size: 1.125rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-}
-
-.www-deployment-difficulty {
-  display: inline-block;
-  margin-bottom: var(--space-3);
-  padding: 0.125rem var(--space-2);
-  border-radius: var(--radius-full);
-  background: var(--color-warning-bg);
-  color: var(--color-warning-dark);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.www-deployment-desc {
-  flex: 1;
-  margin: 0 0 var(--space-5);
-  color: var(--color-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.65;
-}
-
-/* 卡片内按钮降级为文字链接，避免一排蓝色大按钮 */
-.www-deployment-card .www-btn {
-  padding: 0;
-  background: none;
-  box-shadow: none;
-  border: 0;
-  border-radius: 0;
-  color: var(--color-primary);
-  font-size: 0.875rem;
-}
-
-.www-deployment-card .www-btn::after {
-  content: '→';
-  transition: transform var(--duration-fast);
-}
-
-.www-deployment-card .www-btn:hover {
-  background: none;
-  box-shadow: none;
-  transform: none;
-}
-
-.www-deployment-card .www-btn:hover::after {
-  transform: translateX(3px);
 }
 
 /* ========================================
@@ -1813,12 +1708,6 @@ html {
   padding: var(--space-6) 0;
 }
 
-.www-content {
-  max-width: var(--www-max-width);
-  margin: 0 auto;
-  padding: 0 var(--space-6);
-}
-
 .www-page-hero {
   position: relative;
   overflow: hidden;
@@ -1964,6 +1853,7 @@ html {
   border: 1px solid var(--www-card-border);
   border-radius: var(--radius-sm, 4px);
   background: var(--color-bg-code);
+  font-family: var(--font-family-mono);
   font-size: 0.875em;
 }
 
@@ -2263,7 +2153,6 @@ a.www-badge:hover {
     padding: 3.5rem var(--space-4);
   }
 
-  .www-content,
   .www-container,
   .www-page-hero-inner {
     padding-left: 0;
@@ -2629,14 +2518,8 @@ a.www-badge:hover {
   stroke-width: 1.5;
 }
 
-html[data-theme="dark"] .www-deploy-icon {
+html[data-resolved-theme="dark"] .www-deploy-icon {
   color: var(--color-primary);
-}
-
-@media (prefers-color-scheme: dark) {
-  html[data-theme="system"] .www-deploy-icon {
-    color: var(--color-primary);
-  }
 }
 
 @media (min-width: 960px) {
@@ -3110,24 +2993,12 @@ html[data-theme="dark"] .www-deploy-icon {
 /* ========================================
    工具类
    ======================================== */
-.www-text-center {
-  text-align: center;
-}
-
 .www-mt-4 {
   margin-top: var(--space-4);
 }
 
 .www-mt-8 {
   margin-top: var(--space-8);
-}
-
-.www-mb-8 {
-  margin-bottom: var(--space-8);
-}
-
-.www-mb-12 {
-  margin-bottom: var(--space-12);
 }
 
 /* ========================================
@@ -3292,17 +3163,16 @@ html[data-theme="dark"] .www-deploy-icon {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .www-reveal {
     opacity: 1;
     transform: none;
-    transition: none;
-  }
-
-  .www-feature-card,
-  .www-deployment-card,
-  .www-btn,
-  .www-tab-panel.active {
-    transition: none;
-    animation: none;
   }
 }
