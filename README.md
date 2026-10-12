@@ -263,8 +263,8 @@ A reverse proxy forwards requests. ccLoad is built for coding agents that stream
 - **Debug logs**: Raw upstream request and response capture with sensitive headers masked.
 - **Model testing workbench**: Test by channel, by model, or in a chat, with image upload, reasoning level, built-in search, and image generation.
 
-![ccLoad Dashboard](images/ccload-dashboard.jpeg)
-![ccLoad Logs](images/ccload-logs.jpg)
+![ccLoad Dashboard](images/ccload-dashboard.webp)
+![ccLoad Logs](images/ccload-logs.webp)
 
 ### Deployment
 

@@ -13,7 +13,7 @@
   <script src="assets/js/theme-init.js?v=20260904-1"></script>
 
   <link rel="stylesheet" href="assets/css/styles.css?v=20261003-1">
-  <link rel="stylesheet" href="assets/css/www.css?v=20261008-8">
+  <link rel="stylesheet" href="assets/css/www.css?v=20261012-1">
 
   <script defer src="assets/js/nav.js?v=20261003-1"></script>
   <script defer src="assets/js/www.js?v=20261008-4"></script>
@@ -25,8 +25,8 @@
     <div class="www-hero-inner">
     <div class="www-hero-content">
       <p class="www-hero-eyebrow"><span class="www-hero-dot" aria-hidden="true"></span><span data-i18n="www.home.hero.eyebrow">Open source · Self-hosted · MIT licensed</span></p>
-      <h1 class="www-hero-title" data-i18n-html="www.home.hero.title"><span class="www-hero-slogan">Calmer connections<br>for AI coding.</span><span class="www-hero-kicker">Self-hosted API gateway for Claude Code, Codex and Gemini</span></h1>
-      <p class="www-hero-subtitle" data-i18n-html="www.home.hero.description">One endpoint for every client, automatic switch to a working upstream.<br>Usage and cost are visible on every request.</p>
+      <h1 class="www-hero-title" data-i18n-html="www.home.hero.title"><span class="www-hero-slogan">One upstream fails.<br>Your coding session doesn't.</span><span class="www-hero-kicker">Self-hosted API gateway for Claude Code, Codex and Gemini</span></h1>
+      <p class="www-hero-subtitle" data-i18n-html="www.home.hero.description">API keys, compatible endpoints and account credentials behind one base URL.<br>Failover before the first byte, cost on every request.</p>
       <div class="www-hero-actions">
         <a href="#quickstart" class="www-btn www-btn-primary www-btn-lg"><span data-i18n="www.home.hero.getStarted">Get Started</span><span class="www-btn-icon" data-icon="arrow-right"></span></a>
         <a href="#overview" class="www-btn www-btn-secondary www-btn-lg"><span class="www-btn-icon" data-icon="play"></span><span data-i18n="www.home.hero.watch">Watch the demo</span></a>
@@ -86,9 +86,9 @@
     </div>
     </div>
     <ul class="www-hero-strip">
-      <li><span class="www-strip-icon" data-icon="plug"></span><span><strong data-i18n="www.home.strip.unified.title">Unified access</strong><span data-i18n="www.home.strip.unified.desc">One base URL for your everyday AI coding tools.</span></span></li>
-      <li><span class="www-strip-icon" data-icon="zap"></span><span><strong data-i18n="www.home.strip.failover.title">Automatic failover</strong><span data-i18n="www.home.strip.failover.desc">When an upstream fails, the next working channel is tried.</span></span></li>
-      <li><span class="www-strip-icon" data-icon="bar-chart"></span><span><strong data-i18n="www.home.strip.cost.title">Usage and cost in view</strong><span data-i18n="www.home.strip.cost.desc">See model, channel and cost for every request.</span></span></li>
+      <li><span class="www-strip-icon" data-icon="plug"></span><span><strong data-i18n="www.home.strip.unified.title">Any client, any upstream</strong><span data-i18n="www.home.strip.unified.desc">Claude Code, Codex and Gemini clients can use any channel that serves the model, including Codex Responses over WebSocket.</span></span></li>
+      <li><span class="www-strip-icon" data-icon="zap"></span><span><strong data-i18n="www.home.strip.failover.title">Failover before output</strong><span data-i18n="www.home.strip.failover.desc">429s, 5xx and errors disguised as HTTP 200 move to the next channel before the client sees any output.</span></span></li>
+      <li><span class="www-strip-icon" data-icon="bar-chart"></span><span><strong data-i18n="www.home.strip.cost.title">Cost on every request</strong><span data-i18n="www.home.strip.cost.desc">Priced with cache, long-context tiers and service_tier, with daily and monthly caps per token.</span></span></li>
     </ul>
   </section>
 
@@ -224,8 +224,60 @@
     </div>
   </section>
 
+  <!-- Similar projects -->
+  <section class="www-section www-compare" id="compare">
+    <div class="www-container">
+      <p class="www-eyebrow" data-i18n="www.home.eyebrow.compare">Compare</p>
+      <h2 class="www-section-title" data-i18n="www.home.compare.title">ccLoad and similar projects</h2>
+      <p class="www-section-lead" data-i18n="www.home.compare.desc">
+        CLIProxyAPI, GPT-Load and New API are solid self-hosted projects in the same space, each built for a different job. Pick the one that matches yours.
+      </p>
+      <div class="www-data-table-wrapper">
+        <table class="www-data-table">
+          <thead>
+            <tr>
+              <th data-i18n="www.home.compare.th.project">Project</th>
+              <th data-i18n="www.home.compare.th.focus">Built for</th>
+              <th data-i18n="www.home.compare.th.license">License</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="https://github.com/router-for-me/CLIProxyAPI" target="_blank" rel="noopener">CLIProxyAPI</a></td>
+              <td data-i18n="www.home.compare.cliproxy">Turning Codex, Claude Code, Antigravity, Grok and other account logins into OpenAI, Gemini, Claude and Codex compatible APIs, with multi-account round-robin.</td>
+              <td>MIT</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/tbphp/gpt-load" target="_blank" rel="noopener">GPT-Load</a></td>
+              <td data-i18n="www.home.compare.gptload">A general multi-credential gateway: API keys and subscription accounts with weights, retries, cooldown, blacklisting and session affinity.</td>
+              <td>MIT</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/QuantumNous/new-api" target="_blank" rel="noopener">New API</a></td>
+              <td data-i18n="www.home.compare.newapi">A model hub for aggregation and distribution, with users, groups, quotas, subscriptions and pricing for serving many users.</td>
+              <td>AGPL-3.0</td>
+            </tr>
+            <tr>
+              <td><strong>ccLoad</strong></td>
+              <td data-i18n="www.home.compare.ccload">Long-running Claude Code and Codex sessions: failover before the first byte, scoped cooldown and cost on every request, in one Go binary.</td>
+              <td>MIT</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <h3 class="www-feature-group" data-i18n="www.home.compare.choose.title">Choose ccLoad when</h3>
+      <ul class="www-check-list">
+        <li data-i18n="www.home.compare.choose.clients">Claude Code and Codex are your main clients, including Codex Responses over WebSocket.</li>
+        <li data-i18n="www.home.compare.choose.failover">Errors disguised as HTTP 200 and rate limits inside SSE streams should count as failures, and cooldown should hit only the failing key, model or URL.</li>
+        <li data-i18n="www.home.compare.choose.cost">You want cost per request (cache, long-context tiers and OpenAI service_tier) with daily and monthly caps per token.</li>
+        <li data-i18n="www.home.compare.choose.accounts">You also sign in CodeBuddy, Z.ai Coding Plan, Cursor or Zed accounts.</li>
+      </ul>
+      <p class="www-compare-note" data-i18n="www.home.compare.note">ccLoad's protocol conversion core is synchronized from CLIProxyAPI (MIT). Summaries follow each project's README as of October 2026.</p>
+    </div>
+  </section>
+
   <!-- Who it is for -->
-  <section class="www-section" id="use-cases">
+  <section class="www-section www-section-alt" id="use-cases">
     <div class="www-container">
       <p class="www-eyebrow" data-i18n="www.home.eyebrow.who">Use cases</p>
       <h2 class="www-section-title" data-i18n="www.home.who.title">Who uses ccLoad</h2>
@@ -452,7 +504,7 @@
           </div>
         </div>
         <figure class="www-media-frame">
-          <img src="assets/images/ccload-dashboard.jpeg" width="3456" height="1992" loading="lazy" decoding="async" data-i18n-alt="www.home.admin.imageAlt" alt="ccLoad admin dashboard statistics screenshot">
+          <img src="assets/images/ccload-dashboard.webp" width="3456" height="1992" loading="lazy" decoding="async" data-i18n-alt="www.home.admin.imageAlt" alt="ccLoad admin dashboard statistics screenshot">
           <figcaption class="www-media-caption" data-i18n="www.home.admin.caption">The admin console exposes runtime state and cost accounting, so you do not have to guess.</figcaption>
         </figure>
       </div>
@@ -687,6 +739,10 @@ brew services start caidaoli/ccload/ccload</code></pre></div>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.diff.q">How is ccLoad different from a regular API relay or reverse proxy?</summary>
         <p data-i18n="www.home.faq.diff.a">ccLoad retries the next channel before any output reaches the client, cools down only the failing key, model or URL, converts between four API protocols, accepts subscription account credentials as channels, and records the cost of every request with per-token limits.</p>
+      </details>
+      <details class="www-faq-item">
+        <summary data-i18n="www.home.faq.compare.q">How does ccLoad compare with CLIProxyAPI, GPT-Load and New API?</summary>
+        <p data-i18n="www.home.faq.compare.a">They solve different jobs. CLIProxyAPI turns account logins into compatible APIs, GPT-Load is a general multi-credential gateway, and New API serves many users with quotas and billing. ccLoad is built around Claude Code and Codex sessions: failover before the first byte, cooldown scoped to the key, model or URL, cost on every request, and Responses WebSocket. Its protocol conversion core is synchronized from CLIProxyAPI.</p>
       </details>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.data.q">Where are my keys and request data stored?</summary>

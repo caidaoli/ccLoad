@@ -63,7 +63,7 @@ make www-release    # 构建并 rsync www/dist/ 到线上
 
 ### ✅ 首页（index.html）
 - Hero 区域：定位 H1、一句话价值、数据亮点
-- ccLoad 是什么（介绍视频）、为什么选 ccLoad（6 项差异点）、适用人群
+- ccLoad 是什么（介绍视频）、为什么选 ccLoad（6 项差异点）、同类项目对比（CLIProxyAPI / GPT-Load / New API）、适用人群
 - FAQ（同步输出 FAQPage 结构化数据）
 - 核心特性卡片（OAuth、思考后缀、Key 模型白名单、渠道时段）
 - 第一方账号渠道：Codex / Anthropic / Antigravity / xAI / CodeBuddy / Z.ai / Cursor / Zed

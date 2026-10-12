@@ -370,8 +370,8 @@ Upgrade note: new CSV exports use only `model_entries_json` for ordered model ro
 
 The admin console shows requests, logs, token usage, and channel state in real time:
 
-![ccLoad Dashboard](../../images/ccload-dashboard.jpeg)
-![ccLoad Logs](../../images/ccload-logs.jpg)
+![ccLoad Dashboard](../../images/ccload-dashboard.webp)
+![ccLoad Logs](../../images/ccload-logs.webp)
 *Real-time Monitoring Dashboard: Claude Code, Codex, OpenAI, and Gemini platform metrics at a glance*
 
 **Core Features**:

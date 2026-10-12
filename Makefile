@@ -94,7 +94,7 @@ www-setup:
 	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
 	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
-	@cp -f images/ccload-dashboard.jpeg images/ccload-logs.jpg images/ccload-promo.zh-CN.jpg images/ccload-promo.en.jpg www/assets/images/ 2>/dev/null || true
+	@cp -f images/ccload-dashboard.webp images/ccload-logs.webp images/ccload-promo.zh-CN.jpg images/ccload-promo.en.jpg www/assets/images/ 2>/dev/null || true
 	@echo "✓ www 共享资源已就绪"
 
 # 预渲染 www：源 HTML + 语言包 → www/dist（/ 英文，/zh/ 中文，含 sitemap.xml、robots.txt）

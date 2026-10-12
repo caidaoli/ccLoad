@@ -374,8 +374,8 @@ Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[
 
 管理后台提供请求、日志、Token 和渠道状态的实时视图：
 
-![ccLoad管理界面](../../images/ccload-dashboard.jpeg)
-![ccLoad日志界面](../../images/ccload-logs.jpg)
+![ccLoad管理界面](../../images/ccload-dashboard.webp)
+![ccLoad日志界面](../../images/ccload-logs.webp)
 *实时监控大屏：Claude Code、Codex、OpenAI、Gemini四大平台数据一目了然*
 
 **核心功能**：

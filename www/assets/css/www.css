@@ -492,7 +492,7 @@ html {
 
 .www-hero-slogan {
   display: block;
-  font-size: clamp(2.75rem, 5.6vw, 5rem);
+  font-size: clamp(2.5rem, 4.6vw, 4rem);
   font-weight: 900;
   line-height: 1.08;
   letter-spacing: -0.04em;
@@ -2073,6 +2073,35 @@ html {
 
 .www-data-table tr:last-child td {
   border-bottom: 0;
+}
+
+.www-data-table a {
+  color: var(--color-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.www-data-table a:hover {
+  text-decoration: underline;
+}
+
+/* 首页同类项目对比：表格之后接选择清单与来源说明 */
+.www-compare .www-data-table td:last-child {
+  white-space: nowrap;
+}
+
+.www-compare .www-feature-group {
+  margin-top: var(--space-10);
+}
+
+.www-compare .www-check-list {
+  margin-top: 0;
+}
+
+.www-compare-note {
+  margin: var(--space-8) 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
 }
 
 .www-callout {

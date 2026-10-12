@@ -263,8 +263,8 @@ curl -X POST http://localhost:8080/v1/messages \
 - **调试日志**：捕获上游请求和响应原文，敏感头脱敏。
 - **模型测试工作台**：按渠道、按模型或对话方式测试，支持图片上传、思考等级、内置搜索和图片生成。
 
-![ccLoad 管理界面](images/ccload-dashboard.jpeg)
-![ccLoad 日志界面](images/ccload-logs.jpg)
+![ccLoad 管理界面](images/ccload-dashboard.webp)
+![ccLoad 日志界面](images/ccload-logs.webp)
 
 ### 部署
 
