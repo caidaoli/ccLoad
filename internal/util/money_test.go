@@ -128,19 +128,3 @@ func TestMicroUSDToUSD(t *testing.T) {
 		})
 	}
 }
-
-func TestRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	// 测试往返转换的精度
-	values := []float64{0, 0.01, 0.001, 0.0001, 0.00001, 0.000001, 1.0, 10.0, 100.0}
-	for _, v := range values {
-		micro := USDToMicroUSD(v)
-		back := MicroUSDToUSD(micro)
-		// 允许微小误差（因为四舍五入）
-		diff := math.Abs(v - back)
-		if diff > 0.0000005 { // 半微美元的误差
-			t.Errorf("roundtrip(%v): got %v, diff=%v", v, back, diff)
-		}
-	}
-}

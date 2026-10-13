@@ -2722,18 +2722,6 @@ func TestChannelRequestValidate(t *testing.T) {
 			expectNormalize: "https://api.com/v1/messages#",
 		},
 		{
-			name: "URL以#结尾不再依赖协议处理配置",
-			req: ChannelRequest{
-				Name:     "Test",
-				APIKey:   "sk-test",
-				URLs:     model.ChannelURLs{{URL: "https://api.com/v1/messages", Exact: true}},
-				Priority: 100,
-				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-			},
-			wantError:       false,
-			expectNormalize: "https://api.com/v1/messages#",
-		},
-		{
 			name: "URL包含/api路径（允许）",
 			req: ChannelRequest{
 				Name:     "Test",

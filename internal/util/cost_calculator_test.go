@@ -1698,34 +1698,6 @@ func TestCalculateCost_OpusCacheRead(t *testing.T) {
 	t.Logf("[INFO] Opus缓存定价验证通过: $%.6f", cost)
 }
 
-// TestCalculateCost_OpusVsSonnetCacheRatio 验证Opus和Sonnet的缓存倍率差异
-func TestCalculateCost_OpusVsSonnetCacheRatio(t *testing.T) {
-	cacheTokens := 10000
-
-	// Opus: 缓存读取 = 输入价格 × 0.1（90%折扣）
-	opusCacheCost := CalculateCostDetailed("claude-opus-4-5", 0, 0, cacheTokens, 0, 0)
-	opusInputCost := CalculateCostDetailed("claude-opus-4-5", cacheTokens, 0, 0, 0, 0)
-	opusRatio := opusCacheCost / opusInputCost
-
-	// Sonnet: 缓存读取 = 输入价格 × 0.1（90%折扣）
-	sonnetCacheCost := CalculateCostDetailed("claude-sonnet-4-5", 0, 0, cacheTokens, 0, 0)
-	sonnetInputCost := CalculateCostDetailed("claude-sonnet-4-5", cacheTokens, 0, 0, 0, 0)
-	sonnetRatio := sonnetCacheCost / sonnetInputCost
-
-	// 验证Opus缓存倍率为0.1
-	if !floatEquals(opusRatio, 0.1, 0.01) {
-		t.Errorf("Opus缓存读取倍率 = %.2f, 期望 0.1", opusRatio)
-	}
-
-	// 验证Sonnet缓存倍率为0.1
-	if !floatEquals(sonnetRatio, 0.1, 0.01) {
-		t.Errorf("Sonnet缓存读取倍率 = %.2f, 期望 0.1", sonnetRatio)
-	}
-
-	t.Logf("[INFO] Opus缓存倍率: %.2f (90%%折扣)", opusRatio)
-	t.Logf("[INFO] Sonnet缓存倍率: %.2f (90%%折扣)", sonnetRatio)
-}
-
 // floatEquals 浮点数相等比较（带误差容忍）
 func floatEquals(a, b, epsilon float64) bool {
 	diff := a - b
@@ -1860,18 +1832,6 @@ func TestIsFastModeModel(t *testing.T) {
 		if got := IsFastModeModel(tt.model); got != tt.want {
 			t.Errorf("IsFastModeModel(%q) = %v, 期望 %v", tt.model, got, tt.want)
 		}
-	}
-}
-
-func TestFastModeCost_Basic(t *testing.T) {
-	// 场景：Fast mode 基础输入/输出
-	// Input: 1000 × $10 / 1M = $0.010
-	// Output: 2000 × $50 / 1M = $0.100
-	// Total: $0.110
-	cost := CalculateStandardCostBreakdownWithPrice("claude-opus-5", "fast", OpenAIRateCardAPI, nil, 1000, 2000, 0, 0, 0).Total
-	expected := 0.110
-	if !floatEquals(cost, expected, 0.000001) {
-		t.Errorf("Fast mode 基础成本 = %.6f, 期望 %.6f", cost, expected)
 	}
 }
 

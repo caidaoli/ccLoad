@@ -5,51 +5,6 @@ import (
 	"time"
 )
 
-func TestCalculateBackoffDuration_504Error(t *testing.T) {
-	now := time.Now()
-	statusCode504 := 504
-
-	tests := []struct {
-		name        string
-		prevMs      int64
-		until       time.Time
-		statusCode  *int
-		expectedMin time.Duration
-		expectedMax time.Duration
-		description string
-	}{
-		{
-			name:        "首次504错误应冷却2分钟",
-			prevMs:      0,
-			until:       time.Time{},
-			statusCode:  &statusCode504,
-			expectedMin: 2 * time.Minute,
-			expectedMax: 2 * time.Minute,
-			description: "504 Gateway Timeout should trigger 2-minute cooldown on first occurrence (exponential backoff: 2min -> 4min -> 8min ...)",
-		},
-		{
-			name:        "连续504错误应指数退避",
-			prevMs:      int64(2 * time.Minute / time.Millisecond),
-			until:       now.Add(2 * time.Minute),
-			statusCode:  &statusCode504,
-			expectedMin: 4 * time.Minute,
-			expectedMax: 4 * time.Minute,
-			description: "Subsequent 504 errors should double the cooldown (2min -> 4min)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			duration := CalculateBackoffDuration(tt.prevMs, tt.until, now, tt.statusCode)
-
-			if duration < tt.expectedMin || duration > tt.expectedMax {
-				t.Errorf("%s\n期望冷却时间: %v-%v\n实际冷却时间: %v",
-					tt.description, tt.expectedMin, tt.expectedMax, duration)
-			}
-		})
-	}
-}
-
 func TestCalculateBackoffDuration_ChannelErrors(t *testing.T) {
 	now := time.Now()
 

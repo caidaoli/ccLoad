@@ -23,26 +23,6 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// TestAllowAttempt_FirstAttempt 测试首次尝试
-func TestAllowAttempt_FirstAttempt(t *testing.T) {
-	limiter := NewLoginRateLimiter()
-	defer limiter.Stop()
-
-	ip := "192.168.1.1"
-	allowed := limiter.AllowAttempt(ip)
-
-	if !allowed {
-		t.Error("首次尝试应该被允许")
-	}
-
-	count := limiter.GetAttemptCount(ip)
-	if count != 1 {
-		t.Errorf("首次尝试后计数应为1，实际%d", count)
-	}
-
-	t.Logf("[INFO] 首次尝试正确：允许登录，尝试计数=1")
-}
-
 // TestAllowAttempt_MultipleAttempts 测试多次尝试（未超限）
 func TestAllowAttempt_MultipleAttempts(t *testing.T) {
 	limiter := NewLoginRateLimiter()

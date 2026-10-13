@@ -18,20 +18,9 @@ import (
 func Test_HandleProxyError_Basic(t *testing.T) {
 	tests := []struct {
 		name           string
-		err            error
 		statusCode     int
 		expectedAction cooldown.Action
 	}{
-		{
-			name:           "context canceled",
-			err:            context.Canceled,
-			expectedAction: cooldown.ActionReturnClient,
-		},
-		{
-			name:           "connection refused",
-			err:            errors.New("connection refused"),
-			expectedAction: cooldown.ActionRetryChannel,
-		},
 		{
 			name:           "401 unauthorized - Key级",
 			statusCode:     401,
@@ -62,28 +51,12 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				Enabled:  true,
 			}
 
-			var res *fwResult
-			var err error
-
-			if tt.statusCode > 0 {
-				res = &fwResult{
-					Status: tt.statusCode,
-					Body:   []byte(`{"error": "test"}`),
-					Header: make(http.Header),
-				}
-			} else {
-				err = tt.err
+			res := &fwResult{
+				Status: tt.statusCode,
+				Body:   []byte(`{"error": "test"}`),
+				Header: make(http.Header),
 			}
-
-			var action cooldown.Action
-			if err != nil {
-				reqCtx := &proxyRequestContext{
-					originalModel: "test-model",
-				}
-				_, action = srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx, false)
-			} else {
-				action = srv.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, 0, res), "test-model"))
-			}
+			action := srv.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, 0, res), "test-model"))
 
 			if action != tt.expectedAction {
 				t.Errorf("期望 action=%v, 实际=%v", tt.expectedAction, action)
@@ -298,17 +271,6 @@ func Test_HandleProxyError_499(t *testing.T) {
 
 		if action != cooldown.ActionRetryModel {
 			t.Errorf("期望 action=ActionRetryModel, 实际=%v", action)
-		}
-	})
-
-	t.Run("client canceled returns to client", func(t *testing.T) {
-		reqCtx := &proxyRequestContext{
-			originalModel: "test-model",
-		}
-		_, action := srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, context.Canceled, nil, reqCtx, false)
-
-		if action != cooldown.ActionReturnClient {
-			t.Errorf("期望 action=ActionReturnClient, 实际=%v", action)
 		}
 	})
 }

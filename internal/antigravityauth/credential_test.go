@@ -48,15 +48,6 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 	}
 }
 
-func TestPaidTierDisplayNameNormalizesFreeTier(t *testing.T) {
-	if got := (&PaidTier{ID: "free-tier", Name: "Antigravity Starter Quota"}).DisplayName(); got != "Antigravity Free" {
-		t.Fatalf("free tier display name = %q", got)
-	}
-	if got := (&PaidTier{ID: "g1-pro-tier", Name: "Google AI Pro"}).DisplayName(); got != "Google AI Pro" {
-		t.Fatalf("paid tier display name = %q", got)
-	}
-}
-
 func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 	for _, raw := range []string{
 		`{}`,

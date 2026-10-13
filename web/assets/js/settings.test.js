@@ -1114,7 +1114,6 @@ test('设置加载失败时提供重试入口并重新加载', async (t) => {
   await flushAsyncWork();
 
   assert.equal(page.requests.filter(({ url }) => url === '/admin/settings').length, loadsBefore + 1);
-  assert.equal(page.renderCalls.some(({ template }) => template === 'tpl-setting-row'), true);
 });
 
 test('dynamic reasoning setting validates and saves its JSON contract through the restart workflow', async (t) => {

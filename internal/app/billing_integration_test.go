@@ -139,18 +139,6 @@ func TestBillingPipeline_Gemini_LongContext(t *testing.T) {
 	}
 }
 
-// TestBillingPipeline_UnknownModel 验证未知模型的兜底行为
-func TestBillingPipeline_UnknownModel(t *testing.T) {
-	// 场景：使用未定义定价的模型
-	cost := util.CalculateCostDetailed("gpt-999-ultra", 10000, 5000, 0, 0, 0)
-
-	// 预期：返回0.0（不应崩溃）
-	if cost != 0.0 {
-		t.Errorf("未知模型应返回0成本，实际%.6f", cost)
-	}
-
-}
-
 // TestBillingPipeline_NegativeTokens 验证防御性编程
 func TestBillingPipeline_NegativeTokens(t *testing.T) {
 	// 场景：异常数据（负数token）

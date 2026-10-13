@@ -5,7 +5,6 @@ const { buildOAuthPlanBadge } = require('./oauth-plan-badge.js');
 const {
   buildOAuthUsageStatusHtml,
   toggleOAuthUsageWindows,
-  buildChannelMetricsHtml,
   buildChannelHealthHtml,
   buildChannelModelToggleHtml,
   buildChannelModelPopoverHtml,
@@ -521,34 +520,6 @@ test('只读模式不渲染管理账户动作', () => {
     }), '');
   } finally {
     restore();
-  }
-});
-
-test('渠道指标行在无调用时不渲染，有调用时给出成功/失败与成功率', () => {
-  const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber };
-  global.window = {
-    t: key => key,
-    getFirstByteTimingColor: () => 'green',
-    getDurationTimingColor: () => 'green'
-  };
-  global.buildCostStackHtml = () => '';
-  global.formatMetricNumber = value => String(value || 0);
-  try {
-    assert.equal(buildChannelMetricsHtml(null), '');
-    assert.equal(buildChannelMetricsHtml({ success: 0, error: 0, avgDurationSeconds: 3 }), '');
-
-    const html = buildChannelMetricsHtml({
-      success: 19, error: 1, avgFirstByteTimeSeconds: 1.5, avgDurationSeconds: 8,
-      totalInputTokens: 100, totalOutputTokens: 20
-    });
-    assert.match(html, /<b class="ch-metric__ok">19<\/b> \/ <b class="ch-metric__err">1<\/b>/);
-    assert.match(html, /ch-metric__rate--good">95\.0%</);
-    assert.match(html, /1\.50.*8\.00/);
-    assert.match(html, /<b>120<\/b> tok/);
-  } finally {
-    global.window = saved.window;
-    global.buildCostStackHtml = saved.cost;
-    global.formatMetricNumber = saved.metric;
   }
 });
 

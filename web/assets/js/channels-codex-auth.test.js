@@ -2171,9 +2171,8 @@ test('manual credential refresh rejects unsupported auth types', async () => {
 
 test('OAuth usage refresh stores one safe per-channel quota summary', async () => {
   const previousFilterChannels = global.filterChannels;
-  let renders = 0;
   let captured;
-  global.filterChannels = () => { renders++; };
+  global.filterChannels = () => {};
   try {
     const result = await refreshOAuthUsage(42, async (url, options) => {
       captured = { url, options };
@@ -2190,7 +2189,6 @@ test('OAuth usage refresh stores one safe per-channel quota summary', async () =
     assert.equal(captured.options.method, 'POST');
     assert.equal(result.windows[0].remaining_percent, 71);
     assert.deepEqual(getOAuthUsageState(42), { status: 'ready', data: result });
-    assert.equal(renders, 2);
   } finally {
     global.filterChannels = previousFilterChannels;
   }

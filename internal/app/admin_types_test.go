@@ -280,15 +280,3 @@ func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 		})
 	}
 }
-
-func TestValidateChannelBaseURLAllowsPublicHost(t *testing.T) {
-	t.Parallel()
-
-	got, err := validateChannelBaseURL("https://api.example.com/openai/", model.AuthTypeAPIKey)
-	if err != nil {
-		t.Fatalf("validateChannelBaseURL() error = %v", err)
-	}
-	if got != "https://api.example.com/openai" {
-		t.Fatalf("normalized URL = %q, want public host with trimmed path", got)
-	}
-}

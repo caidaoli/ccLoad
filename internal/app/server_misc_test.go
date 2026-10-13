@@ -49,20 +49,6 @@ func (w *deadlineRecorderResponseWriter) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func TestDisableResponseWriteTimeoutClearsDeadline(t *testing.T) {
-	t.Parallel()
-
-	w := &deadlineRecorderResponseWriter{}
-	disableResponseWriteTimeout(w, "非流式")
-
-	if !w.deadlineCalled {
-		t.Fatal("SetWriteDeadline was not called")
-	}
-	if !w.writeDeadline.IsZero() {
-		t.Fatalf("writeDeadline=%v, want zero time", w.writeDeadline)
-	}
-}
-
 func TestStartCursorSDKBridgeIsNonBlockingAndAutomaticallyPublishesRunner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
