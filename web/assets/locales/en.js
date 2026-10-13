@@ -1946,7 +1946,6 @@ window.I18N_LOCALES['en'] = {
   'channels.batchModelImportReplaceConfirm': 'Replace all model configurations for {count} selected channels?',
   'channels.batchModelImportSummary': 'Model {mode} completed: updated {updated}, unchanged {unchanged}, not found {notFound}',
   'channels.batchRefreshProgress': 'Model {mode} refresh... ({current}/{total})',
-  'channels.batchRefreshCurrent': 'Processing: {name}',
   'channels.batchRefreshCounts': '✓ Updated: {updated}　— Unchanged: {unchanged}　✗ Failed: {failed}',
   'channels.batchRefreshSummary': 'Batch model refresh ({mode}) completed: updated {updated}, unchanged {unchanged}, failed {failed}',
   'channels.batchModeMerge': 'merge',

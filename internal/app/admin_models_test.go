@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -255,6 +257,52 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 		if resp.Data.KeyModels[2].KeyIndex != 2 || len(resp.Data.KeyModels[2].Models) != 2 {
 			t.Fatalf("key 2 result=%+v", resp.Data.KeyModels[2])
+		}
+	})
+
+	t.Run("per-key discovery probes keys concurrently and keeps key order", func(t *testing.T) {
+		var inFlight atomic.Int32
+		bothInFlight := make(chan struct{})
+		concurrentUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if inFlight.Add(1) == 2 {
+				close(bothInFlight)
+			}
+			select {
+			case <-bothInFlight:
+			case <-time.After(2 * time.Second):
+				http.Error(w, "keys were probed sequentially", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("Authorization") == "Bearer sk-slow" {
+				time.Sleep(50 * time.Millisecond)
+				_, _ = w.Write([]byte(`{"data":[{"id":"model-slow"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-fast"}]}`))
+		}))
+		t.Cleanup(concurrentUpstream.Close)
+
+		payload := map[string]any{
+			"protocol": "openai",
+			"urls":     []map[string]any{{"url": concurrentUpstream.URL, "protocols": []string{"openai"}}},
+			"api_keys": []string{"sk-slow", "sk-fast"},
+			"per_key":  true,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if !resp.Success || len(resp.Data.KeyModels) != 2 {
+			t.Fatalf("unexpected response: %s", w.Body.String())
+		}
+		for i, want := range []string{"model-slow", "model-fast"} {
+			got := resp.Data.KeyModels[i]
+			if got.KeyIndex != i || got.Error != "" || len(got.Models) != 1 || got.Models[0].Model != want {
+				t.Fatalf("key_models[%d]=%+v, want key %d with %s", i, got, i, want)
+			}
+			if resp.Data.Models[i].Model != want {
+				t.Fatalf("models[%d]=%q, want %q", i, resp.Data.Models[i].Model, want)
+			}
 		}
 	})
 
@@ -2364,14 +2412,19 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	t.Run("merge mode partial success", func(t *testing.T) {
 		t.Parallel()
 		// channel1: 返回 m1,m2（新增1个）
-		var upstream1Auth []string
+		var (
+			upstream1AuthMu sync.Mutex
+			upstream1Auth   []string
+		)
 		upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
 			}
 			auth := r.Header.Get("Authorization")
+			upstream1AuthMu.Lock()
 			upstream1Auth = append(upstream1Auth, auth)
+			upstream1AuthMu.Unlock()
 			if auth == "Bearer bad-k1" {
 				http.Error(w, "invalid api key", http.StatusUnauthorized)
 				return
@@ -2443,9 +2496,11 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Mode:       "merge",
 		}, "updated", "unchanged", "failed")
 
+		// Keys are probed concurrently; only the probed set is stable.
+		slices.Sort(upstream1Auth)
 		wantAuth := []string{"Bearer bad-k1", "Bearer k1", "Bearer other-k1"}
 		if !reflect.DeepEqual(upstream1Auth, wantAuth) {
-			t.Fatalf("Authorization sequence=%v, want %v", upstream1Auth, wantAuth)
+			t.Fatalf("Authorization set=%v, want %v", upstream1Auth, wantAuth)
 		}
 
 		got1, err := store.GetConfig(ctx, c1.ID)
@@ -2900,14 +2955,19 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 	t.Run("replace mode unions per-key models across groups", func(t *testing.T) {
 		t.Parallel()
-		var upstreamAuth []string
+		var (
+			upstreamAuthMu sync.Mutex
+			upstreamAuth   []string
+		)
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
 			}
 			auth := r.Header.Get("Authorization")
+			upstreamAuthMu.Lock()
 			upstreamAuth = append(upstreamAuth, auth)
+			upstreamAuthMu.Unlock()
 			switch auth {
 			case "Bearer group-a":
 				w.Header().Set("Content-Type", "application/json")
@@ -2957,9 +3017,10 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
 		}
 
+		slices.Sort(upstreamAuth)
 		wantAuth := []string{"Bearer group-a", "Bearer group-b"}
 		if !reflect.DeepEqual(upstreamAuth, wantAuth) {
-			t.Fatalf("Authorization sequence=%v, want %v", upstreamAuth, wantAuth)
+			t.Fatalf("Authorization set=%v, want %v", upstreamAuth, wantAuth)
 		}
 
 		keys, err := store.GetAPIKeys(ctx, cfg.ID)
@@ -3852,11 +3913,20 @@ func TestBatchRefreshKeepsDuplicateCredentialRowsIndependent(t *testing.T) {
 			if len(keys) != 2 {
 				t.Fatalf("unexpected key count: %d", len(keys))
 			}
-			if !keys[0].AllowsUpstreamModel("fresh-model") || keys[0].AllowsUpstreamModel("old-model") {
-				t.Fatalf("probed row did not adopt its own probe: %+v", keys[0])
+			// Rows are probed concurrently, so which row gets the successful probe is unordered;
+			// each row must still adopt only its own result.
+			adopted, kept := 0, 0
+			for _, key := range keys {
+				fresh, old := key.AllowsUpstreamModel("fresh-model"), key.AllowsUpstreamModel("old-model")
+				switch {
+				case fresh && !old:
+					adopted++
+				case old && !fresh:
+					kept++
+				}
 			}
-			if !keys[1].AllowsUpstreamModel("old-model") || keys[1].AllowsUpstreamModel("fresh-model") {
-				t.Fatalf("row adopted another row's probe: %+v", keys[1])
+			if adopted != 1 || kept != 1 {
+				t.Fatalf("rows did not keep independent probe results: %+v, %+v", keys[0], keys[1])
 			}
 		})
 	}

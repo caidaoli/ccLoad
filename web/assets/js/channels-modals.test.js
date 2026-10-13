@@ -2699,6 +2699,62 @@ test('batch RPM rejects fractional values without sending a request', async () =
   }
 });
 
+test('batch model refresh runs channels concurrently with a bounded pool', async () => {
+  const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
+  const extraGlobals = new Map();
+  const setGlobal = (key, value) => {
+    extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const channelIDs = [1, 2, 3, 4, 5, 6];
+  const pending = [];
+  const rowStatuses = new Map();
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const fakeElement = () => ({ style: {}, appendChild() {} });
+  fixture.selectedChannelIds.clear();
+  channelIDs.forEach(id => fixture.selectedChannelIds.add(String(id)));
+  global.document.createElement = fakeElement;
+  global.window.ensureNotifyHost = fakeElement;
+  setGlobal('requestAnimationFrame', callback => callback());
+  setGlobal('setBatchRefreshResult', (channelID, result) => rowStatuses.set(channelID, result.status));
+  setGlobal('fetchAPIWithAuth', (url, options) => {
+    fixture.requests.push({ url, options });
+    maxInFlight = Math.max(maxInFlight, ++inFlight);
+    return new Promise(resolve => pending.push(() => {
+      inFlight--;
+      resolve({ success: true, data: { results: [{ status: 'updated', fetched: 1, total: 1 }] } });
+    }));
+  });
+
+  try {
+    const { batchRefreshSelectedChannelsMerge } = loadChannelsModals();
+    const operation = batchRefreshSelectedChannelsMerge();
+    while (fixture.requests.length < channelIDs.length || pending.length > 0) {
+      await new Promise(resolve => setImmediate(resolve));
+      pending.splice(0).forEach(finish => finish());
+    }
+    await operation;
+
+    assert.equal(maxInFlight, 4);
+    const requestedIDs = fixture.requests.map(request => {
+      assert.equal(request.url, '/admin/channels/models/refresh-batch');
+      const body = JSON.parse(request.options.body);
+      assert.equal(body.mode, 'merge');
+      return body.channel_ids;
+    });
+    assert.deepEqual(requestedIDs, channelIDs.map(id => [id]));
+    assert.deepEqual([...rowStatuses.entries()].sort((a, b) => a[0] - b[0]), channelIDs.map(id => [id, 'updated']));
+    assert.equal(fixture.reloads, 1);
+  } finally {
+    for (const [key, descriptor] of extraGlobals) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
+    fixture.restore();
+  }
+});
+
 test('batch priority rejects values outside the editor range', async () => {
   const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
   fixture.elements.batchPriority.value = '10000000';

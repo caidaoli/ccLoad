@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/codebuddyauth"
@@ -28,9 +29,12 @@ import (
 
 var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 
-// Bound the whole batch's upstream probing; per-key discovery remains sequential
-// but cannot hold an admin request indefinitely when keys or endpoints hang.
+// Bound the whole batch's upstream probing so hanging keys or endpoints
+// cannot hold an admin request indefinitely.
 const batchModelRefreshTimeout = 30 * time.Second
+
+// Per-key discovery probes this many keys of one channel at a time.
+const modelFetchKeyConcurrency = 4
 
 type modelFetchKeyMode int
 
@@ -1560,24 +1564,44 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 		return nil, fmt.Errorf("API Key为空")
 	}
 
+	probeKeys := make([]*model.APIKey, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		if apiKey != nil && strings.TrimSpace(apiKey.APIKey) != "" {
+			probeKeys = append(probeKeys, apiKey)
+		}
+	}
+	// Probe concurrently, then aggregate in key order so the result matches a sequential run.
+	type keyProbe struct {
+		fetched *FetchModelsResponse
+		err     error
+	}
+	probes := make([]keyProbe, len(probeKeys))
+	sem := make(chan struct{}, modelFetchKeyConcurrency)
+	var wg sync.WaitGroup
+	for i, apiKey := range probeKeys {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			probes[i].fetched, probes[i].err = s.fetchModelsWithURLFallback(
+				ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client,
+			)
+		})
+	}
+	wg.Wait()
+
 	response := &FetchModelsResponse{
 		Models:    make([]model.ModelEntry, 0),
-		KeyModels: make([]FetchKeyModelsItem, 0, len(apiKeys)),
+		KeyModels: make([]FetchKeyModelsItem, 0, len(probeKeys)),
 	}
 	seenModels := make(map[string]struct{})
 	successfulKeys := 0
 	var firstKeyErr error
-	for _, apiKey := range apiKeys {
-		if apiKey == nil || strings.TrimSpace(apiKey.APIKey) == "" {
-			continue
-		}
+	for i, apiKey := range probeKeys {
 		item := FetchKeyModelsItem{
 			KeyIndex: apiKey.KeyIndex, Models: make([]model.ModelEntry, 0),
 			probedKey: probedAPIKey{id: apiKey.ID, apiKey: apiKey.APIKey},
 		}
-		fetched, err := s.fetchModelsWithURLFallback(
-			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client,
-		)
+		fetched, err := probes[i].fetched, probes[i].err
 		if err != nil {
 			item.Error = publicFetchModelsError(err)
 			response.KeyModels = append(response.KeyModels, item)

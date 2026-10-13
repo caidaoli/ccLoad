@@ -1946,7 +1946,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchModelImportReplaceConfirm': '将覆盖所选 {count} 个渠道的全部模型配置。确定继续吗？',
   'channels.batchModelImportSummary': '模型{mode}完成：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',
   'channels.batchRefreshProgress': '模型{mode}刷新中... ({current}/{total})',
-  'channels.batchRefreshCurrent': '正在处理: {name}',
   'channels.batchRefreshCounts': '✓ 更新: {updated}　— 未变化: {unchanged}　✗ 失败: {failed}',
   'channels.batchRefreshSummary': '批量模型刷新({mode})完成：更新 {updated}，未变化 {unchanged}，失败 {failed}',
   'channels.batchModeMerge': '增量',

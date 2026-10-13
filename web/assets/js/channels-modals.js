@@ -1937,6 +1937,8 @@ function modelNormalizationOptionsForRequest(storage) {
   };
 }
 
+const BATCH_REFRESH_CHANNEL_CONCURRENCY = 4;
+
 async function batchRefreshSelectedChannels(mode) {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
@@ -1999,16 +2001,11 @@ async function batchRefreshSelectedChannels(mode) {
   host.appendChild(progressEl);
   requestAnimationFrame(() => { progressEl.style.opacity = '1'; progressEl.style.transform = 'translateX(0)'; });
 
-  let updated = 0, unchanged = 0, failed = 0;
+  let updated = 0, unchanged = 0, failed = 0, completed = 0, nextIndex = 0;
 
-  for (let i = 0; i < channelIDs.length; i++) {
-    const channelID = channelIDs[i];
+  const refreshChannel = async (channelID) => {
     const info = channels.find(c => c.id === channelID);
     const name = info ? info.name : `#${channelID}`;
-
-    titleSpan.textContent = window.t('channels.batchRefreshProgress', { current: i, total, mode: modeLabel });
-    detailSpan.textContent = window.t('channels.batchRefreshCurrent', { name });
-    barInner.style.width = `${(i / total * 100).toFixed(0)}%`;
     setBatchRefreshRowResult(channelID, { status: 'processing', mode });
 
     try {
@@ -2046,8 +2043,19 @@ async function batchRefreshSelectedChannels(mode) {
       });
     }
 
+    completed++;
+    titleSpan.textContent = window.t('channels.batchRefreshProgress', { current: completed, total, mode: modeLabel });
+    barInner.style.width = `${(completed / total * 100).toFixed(0)}%`;
     detailSpan.textContent = window.t('channels.batchRefreshCounts', { updated, unchanged, failed });
-  }
+  };
+
+  // 有上限地并发刷新；每个渠道仍单独请求，以便逐行展示结果
+  const refreshWorker = async () => {
+    while (nextIndex < total) {
+      await refreshChannel(channelIDs[nextIndex++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BATCH_REFRESH_CHANNEL_CONCURRENCY, total) }, refreshWorker));
 
   // 完成：更新进度条到100%
   barInner.style.width = '100%';
@@ -4075,6 +4083,7 @@ if (typeof module !== 'undefined' && module.exports) {
     applyChannelManagementPayload,
     applyQuickAddChannelSetup,
     batchClearSelectedChannelCooldowns,
+    batchRefreshSelectedChannelsMerge,
     batchSetSelectedChannelsPriority,
     batchSetSelectedChannelsDailyCostLimit,
     batchSetSelectedChannelsCostMultiplier,
