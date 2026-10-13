@@ -2166,6 +2166,8 @@ window.WebAuth = window.WebAuth || {
       }
       activeIndex = -1;
       renderDropdown();
+      // 过滤改变列表高度，需重新锚定；否则向上展开的列表会停在视口顶部
+      positionDropdown();
     });
 
     input.addEventListener('keydown', (e) => {
@@ -2234,6 +2236,7 @@ window.WebAuth = window.WebAuth || {
       refresh: () => {
         if (dropdown.dataset.open === '1') {
           renderDropdown();
+          positionDropdown();
         }
       },
       getInput: () => input,
