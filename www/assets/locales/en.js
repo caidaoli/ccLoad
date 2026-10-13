@@ -16,6 +16,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.nav.theme.light': 'Switch theme (current: light)',
   'www.nav.theme.dark': 'Switch theme (current: dark)',
   'www.nav.toggleMenu': 'Toggle menu',
+  'www.nav.githubStars': 'GitHub, {count} stars',
 
   // Docs layout
   'www.docs.breadcrumb': 'Breadcrumb',

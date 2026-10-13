@@ -309,9 +309,16 @@ body {
   box-shadow: var(--www-card-shadow);
 }
 
-.www-github-button,
+.www-github-button:not(:has(.www-github-count)),
 #www-theme-switch {
   padding: 0;
+}
+
+.www-github-count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
 }
 
 .www-action-icon {

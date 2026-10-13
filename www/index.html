@@ -639,12 +639,20 @@ brew services start caidaoli/ccload/ccload</code></pre>
         <p data-i18n="www.home.faq.accounts.a">Yes. Import Codex (ChatGPT) or Claude credentials as channels in the admin console; Antigravity, xAI, CodeBuddy, Z.ai Coding Plan, Cursor and Zed accounts are supported too. ccLoad refreshes tokens and tracks quota windows. Make sure your usage follows each provider's terms.</p>
       </details>
       <details class="www-faq-item">
+        <summary data-i18n="www.home.faq.terms.q">Is using subscription accounts through ccLoad against provider terms?</summary>
+        <p data-i18n="www.home.faq.terms.a">It can be. Some providers limit subscription credentials to their own apps, and many forbid sharing one account among several people. ccLoad does not change those terms: check each provider's terms before adding account channels, and use only API-key channels where compliance is required.</p>
+      </details>
+      <details class="www-faq-item">
         <summary data-i18n="www.home.faq.diff.q">How is ccLoad different from a regular API relay or reverse proxy?</summary>
         <p data-i18n="www.home.faq.diff.a">ccLoad retries the next channel before any output reaches the client, cools down only the failing key, model or URL, converts between four API protocols, accepts subscription account credentials as channels, and records the cost of every request with per-token limits.</p>
       </details>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.compare.q">How does ccLoad compare with CLIProxyAPI, GPT-Load and New API?</summary>
         <p data-i18n="www.home.faq.compare.a">They solve different jobs. CLIProxyAPI turns account logins into compatible APIs, GPT-Load is a general multi-credential gateway, and New API serves many users with quotas and billing. ccLoad is built around Claude Code and Codex sessions: failover before the first byte, cooldown scoped to the key, model or URL, cost on every request, and Responses WebSocket. Its protocol conversion core is synchronized from CLIProxyAPI.</p>
+      </details>
+      <details class="www-faq-item">
+        <summary data-i18n="www.home.faq.migrate.q">Can I move from New API or One API to ccLoad?</summary>
+        <p data-i18n="www.home.faq.migrate.a">Clients only need a new base URL and a ccLoad token. Channels have to be added again in the admin console or imported from ccLoad's own CSV format; there is no importer for New API or One API data. User accounts, top-ups and group billing do not carry over, and ccLoad uses per-token model, cost and concurrency limits instead.</p>
       </details>
       <details class="www-faq-item">
         <summary data-i18n="www.home.faq.data.q">Where are my keys and request data stored?</summary>
