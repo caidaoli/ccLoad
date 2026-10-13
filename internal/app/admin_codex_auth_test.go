@@ -1926,7 +1926,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	wantURLs := []string{antigravityDailyBaseURL}
 	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
 		!channel.SupportsModel("gemini-3.7-flash") ||
-		!channel.SupportsModel("gemini-3.7-flash-high") ||
+		channel.SupportsModel("gemini-3.7-flash-high") ||
 		!channel.SupportsModel("gemini-3.8-flash") ||
 		!channel.SupportsModel("gemini-3.8-flash-high") ||
 		!channel.SupportsModel("gemini-3.8-flash-medium") ||

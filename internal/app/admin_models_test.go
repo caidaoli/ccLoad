@@ -1041,6 +1041,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 			"gemini-3-flash-agent":{},
 			"gemini-3.1-flash-image":{},
 			"gemini-pro-agent":{},
+			"gemini-3.1-pro":{},
 			"gemini-3.1-pro-low":{},
 			"gpt-oss-120b-medium":{},
 			"gemini-3.1-flash-lite":{},
@@ -1057,7 +1058,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
 			t.Errorf("fallback request = %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = io.WriteString(w, `{"models":{"gemini-3.7-flash-high":{}}}`)
+		_, _ = io.WriteString(w, `{"models":{"gemini-3.8-flash-high":{}}}`)
 	}))
 	t.Cleanup(fallback.Close)
 
@@ -1107,11 +1108,8 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		{Model: "gemini-3-flash", RedirectModel: "gemini-3-flash"},
 		{Model: "gemini-3.1-flash-image", RedirectModel: "gemini-3.1-flash-image"},
 		{Model: "gemini-3.1-flash-lite", RedirectModel: "gemini-3.1-flash-lite"},
-		{Model: "gemini-3.1-pro-low", RedirectModel: "gemini-3.1-pro-low"},
 		{Model: "gemini-3.5-flash-lite", RedirectModel: "gemini-3.5-flash-lite"},
-		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
 		{Model: "gemini-3.7-flash", RedirectModel: "gemini-3.7-flash"},
-		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},
 		{Model: "gemini-3.8-flash", RedirectModel: "gemini-3.8-flash"},
 		{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"},
 		{Model: "gemini-3.8-flash-medium", RedirectModel: "gemini-3.8-flash-medium"},
@@ -1174,7 +1172,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
 			server.HandleFetchModels(c)
 			resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
-			wantFallback := []model.ModelEntry{{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"}}
+			wantFallback := []model.ModelEntry{{Model: "gemini-3.8-flash-high", RedirectModel: "gemini-3.8-flash-high"}}
 			if w.Code != http.StatusOK || !resp.Success || !reflect.DeepEqual(resp.Data.Models, wantFallback) {
 				t.Fatalf("unexpected fallback response: %s", w.Body.String())
 			}
