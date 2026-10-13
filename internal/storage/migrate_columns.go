@@ -982,6 +982,14 @@ func ensureAPIKeysModelScopeEmpty(ctx context.Context, db *sql.DB, dialect Diale
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func ensureAPIKeysModelScopeAuto(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// Historical scopes may come from discovery or manual normalization.
+	// Without provenance, preserve them until a probe is explicitly applied.
+	return ensureColumn(ctx, db, dialect, "api_keys", "model_scope_auto",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 func deleteWildcardChannelModels(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `DELETE FROM channel_models WHERE model = '*'`); err != nil {
 		return fmt.Errorf("delete wildcard channel models: %w", err)

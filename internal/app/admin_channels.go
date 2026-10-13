@@ -810,6 +810,7 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			Note:            entry.Note,
 			AllowedModels:   append([]string(nil), entry.AllowedModels...),
 			DetectedModels:  append([]string(nil), entry.DetectedModels...),
+			ModelScopeAuto:  entry.ModelScopeAuto,
 			ModelScopeEmpty: entry.ModelScopeEmpty,
 			KeyStrategy:     keyStrategy,
 			Disabled:        entry.ModelScopeEmpty,
@@ -1139,6 +1140,7 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		scope := model.APIKeyModelScope{
 			AllowedModels:   append([]string(nil), key.AllowedModels...),
 			DetectedModels:  append([]string(nil), key.DetectedModels...),
+			ModelScopeAuto:  key.ModelScopeAuto,
 			ModelScopeEmpty: false,
 			Disabled:        true,
 		}
@@ -1154,6 +1156,7 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		scope := model.APIKeyModelScope{
 			AllowedModels:   append([]string(nil), key.AllowedModels...),
 			DetectedModels:  append([]string(nil), key.DetectedModels...),
+			ModelScopeAuto:  key.ModelScopeAuto,
 			ModelScopeEmpty: false,
 			Disabled:        false,
 		}
@@ -1419,10 +1422,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				multipliersByIndex[oldKey.KeyIndex] = *newKeys[i].CostMultiplier
 			}
 			if !slices.Equal(oldKey.AllowedModels, newKeys[i].AllowedModels) ||
-				!slices.Equal(oldKey.DetectedModels, newKeys[i].DetectedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty {
+				!slices.Equal(oldKey.DetectedModels, newKeys[i].DetectedModels) || oldKey.ModelScopeEmpty != newKeys[i].ModelScopeEmpty || oldKey.ModelScopeAuto != newKeys[i].ModelScopeAuto {
 				scopesByIndex[oldKey.KeyIndex] = model.APIKeyModelScope{
 					AllowedModels:   append([]string(nil), newKeys[i].AllowedModels...),
 					DetectedModels:  append([]string(nil), newKeys[i].DetectedModels...),
+					ModelScopeAuto:  newKeys[i].ModelScopeAuto,
 					ModelScopeEmpty: newKeys[i].ModelScopeEmpty,
 					// Only preserve a manually disabled key. A key disabled because
 					// its previous scope became empty is re-enabled by an explicit
@@ -1505,6 +1509,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				Note:            key.Note,
 				AllowedModels:   append([]string(nil), key.AllowedModels...),
 				DetectedModels:  append([]string(nil), key.DetectedModels...),
+				ModelScopeAuto:  key.ModelScopeAuto,
 				ModelScopeEmpty: key.ModelScopeEmpty,
 				KeyStrategy:     keyStrategy,
 				Disabled:        wasDisabled || key.ModelScopeEmpty,
@@ -1604,6 +1609,14 @@ func preserveOmittedAPIKeyMetadata(submitted []ChannelAPIKeyRequest, existing []
 			oldKey = existing[i]
 		}
 		if oldKey != nil {
+			// Old clients omit the source marker. Preserve it only when they
+			// leave the scope intact; an explicit range edit is manual policy.
+			if !submitted[i].modelScopeAutoSet {
+				allowedChanged := submitted[i].allowedModelsSet &&
+					(!slices.Equal(submitted[i].AllowedModels, oldKey.AllowedModels) || submitted[i].ModelScopeEmpty != oldKey.ModelScopeEmpty)
+				detectedChanged := submitted[i].detectedModelsSet && !slices.Equal(submitted[i].DetectedModels, oldKey.DetectedModels)
+				submitted[i].ModelScopeAuto = oldKey.ModelScopeAuto && !allowedChanged && !detectedChanged
+			}
 			if submitted[i].Priority == nil {
 				priority := oldKey.Priority
 				submitted[i].Priority = &priority

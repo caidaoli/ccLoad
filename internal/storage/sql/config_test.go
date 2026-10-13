@@ -1465,7 +1465,7 @@ func TestConfig_UpdatePrunesAPIKeyModelScopes(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-restricted", AllowedModels: []string{"MODEL-A", "model-b"}},
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-restricted", AllowedModels: []string{"MODEL-A", "model-b"}, ModelScopeAuto: true},
 		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-unrestricted"},
 		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-only-removed", AllowedModels: []string{"model-b"}},
 		{ChannelID: cfg.ID, KeyIndex: 3, APIKey: "sk-routing-name", AllowedModels: []string{"model-c"}},
@@ -1486,6 +1486,9 @@ func TestConfig_UpdatePrunesAPIKeyModelScopes(t *testing.T) {
 		len(keys[2].AllowedModels) != 0 || !keys[2].ModelScopeEmpty || !keys[2].Disabled ||
 		!slices.Equal(keys[3].AllowedModels, []string{"model-c"}) || keys[3].ModelScopeEmpty {
 		t.Fatalf("key model scopes after removal=%v", keys)
+	}
+	if !keys[0].ModelScopeAuto || keys[2].ModelScopeAuto {
+		t.Fatal("pruning changed automatic or manual scope source")
 	}
 
 	if err := store.UpdateAPIKeyModelScopes(ctx, cfg.ID, map[int]model.APIKeyModelScope{

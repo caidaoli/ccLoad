@@ -65,13 +65,22 @@ type FetchModelsResponse struct {
 	KeyModels []FetchKeyModelsItem `json:"key_models,omitempty"`
 }
 
-// FetchKeyModelsItem identifies keys by stable row index and never exposes the credential.
+// FetchKeyModelsItem identifies keys by row index and never exposes the credential.
+// probedKey records the probed row; it is unexported so it never reaches JSON.
 type FetchKeyModelsItem struct {
-	KeyIndex int                `json:"key_index"`
-	Models   []model.ModelEntry `json:"models"`
-	Protocol string             `json:"protocol,omitempty"`
-	Source   string             `json:"source,omitempty"`
-	Error    string             `json:"error,omitempty"`
+	KeyIndex  int                `json:"key_index"`
+	Models    []model.ModelEntry `json:"models"`
+	Protocol  string             `json:"protocol,omitempty"`
+	Source    string             `json:"source,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	probedKey probedAPIKey
+}
+
+// probedAPIKey identifies a probed row by its stable ID and credential.
+// The same credential may appear on several rows, so neither alone suffices.
+type probedAPIKey struct {
+	id     int64
+	apiKey string
 }
 
 // FetchModelsDebug 调试信息结构
@@ -427,7 +436,7 @@ func modelsRetainedFromFailedProbes(
 
 func (s *Server) applyFetchedModels(
 	ctx context.Context, item BatchRefreshModelsItem, fetched []model.ModelEntry,
-	keyModels []FetchKeyModelsItem, mode string, normalization modelNormalizationOptions,
+	probes []FetchKeyModelsItem, mode string, normalization modelNormalizationOptions,
 ) (BatchRefreshModelsItem, bool) {
 	for {
 		cfg, err := s.store.GetConfig(ctx, item.ChannelID)
@@ -437,14 +446,14 @@ func (s *Server) applyFetchedModels(
 		}
 		expected := cfg.Clone()
 		var keys []*model.APIKey
-		if !cfg.UsesOAuth() &&
-			(mode == "replace" || normalization.lowercaseModels || normalization.stripModelSourcePrefix) {
+		if !cfg.UsesOAuth() {
 			keys, err = s.store.GetAPIKeys(ctx, item.ChannelID)
 			if err != nil {
 				item.Status, item.Error = "failed", "读取 API Key 失败: "+err.Error()
 				return item, false
 			}
 		}
+		keyModels := bindKeyModelsToCurrentKeys(keys, probes)
 		modelEntriesChanged := false
 		if (normalization.lowercaseModels || normalization.stripModelSourcePrefix) && mode == "merge" {
 			normalizedExisting := normalizeExistingModelEntriesForRefresh(cfg.ModelEntries, normalization)
@@ -468,23 +477,38 @@ func (s *Server) applyFetchedModels(
 		item.Total = len(cfg.ModelEntries)
 		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
 		scopeUpdates := s.remapNormalizedAPIKeyScopes(keys, expected, cfg, normalization)
-		if mode == "replace" {
-			for _, result := range keyModels {
-				if strings.TrimSpace(result.Error) == "" {
-					delete(scopeUpdates, result.KeyIndex)
+		// Replace adopts every successful probe. Merge refreshes only scopes that
+		// came from discovery; unrestricted Keys and manual allowlists are policy,
+		// not stale probe data. DetectedModels also holds normalized manual
+		// boundaries, so only the explicit source marker permits refresh.
+		// Failed or skipped Keys retain their scope.
+		refreshed := keyModels
+		if mode == "merge" {
+			discovered := make(map[int]bool, len(keys))
+			for _, key := range keys {
+				if key != nil {
+					discovered[key.KeyIndex] = key.ModelScopeAuto
 				}
 			}
-			fetchedScopes, scopeErr := buildFetchedAPIKeyModelScopes(keys, cfg.ModelEntries, keyModels)
-			if scopeErr != nil {
-				item.Status, item.Error = "failed", scopeErr.Error()
-				return item, false
+			refreshed = slices.DeleteFunc(slices.Clone(keyModels), func(result FetchKeyModelsItem) bool {
+				return !discovered[result.KeyIndex]
+			})
+		}
+		for _, result := range refreshed {
+			if strings.TrimSpace(result.Error) == "" {
+				delete(scopeUpdates, result.KeyIndex)
 			}
-			for index, scope := range fetchedScopes {
-				if scopeUpdates == nil {
-					scopeUpdates = make(map[int]model.APIKeyModelScope)
-				}
-				scopeUpdates[index] = scope
+		}
+		fetchedScopes, scopeErr := s.buildFetchedAPIKeyModelScopes(keys, cfg, refreshed)
+		if scopeErr != nil {
+			item.Status, item.Error = "failed", scopeErr.Error()
+			return item, false
+		}
+		for index, scope := range fetchedScopes {
+			if scopeUpdates == nil {
+				scopeUpdates = make(map[int]model.APIKeyModelScope)
 			}
+			scopeUpdates[index] = scope
 		}
 		configChanged := modelEntriesChanged || scheduledCheckChanged
 		if !configChanged && len(scopeUpdates) == 0 {
@@ -512,6 +536,27 @@ func (s *Server) applyFetchedModels(
 		item.Status = "updated"
 		return item, true
 	}
+}
+
+// bindKeyModelsToCurrentKeys re-keys probe results to the rows just read.
+// Keys may be deleted, reindexed, or edited while probes are in flight; a row
+// that was not probed with its current credential stays unprobed and keeps its scope.
+func bindKeyModelsToCurrentKeys(keys []*model.APIKey, probes []FetchKeyModelsItem) []FetchKeyModelsItem {
+	byRow := make(map[probedAPIKey]FetchKeyModelsItem, len(probes))
+	for _, result := range probes {
+		byRow[result.probedKey] = result
+	}
+	bound := make([]FetchKeyModelsItem, 0, len(probes))
+	for _, key := range keys {
+		if key == nil {
+			continue
+		}
+		if result, ok := byRow[probedAPIKey{id: key.ID, apiKey: key.APIKey}]; ok {
+			result.KeyIndex = key.KeyIndex
+			bound = append(bound, result)
+		}
+	}
+	return bound
 }
 
 func fetchModelsResponseHasKeyErrors(response *FetchModelsResponse) bool {
@@ -648,7 +693,7 @@ func (s *Server) remapNormalizedAPIKeyScopes(
 			allowed = nil
 		}
 		scope := model.APIKeyModelScope{
-			AllowedModels: allowed, DetectedModels: detected, ModelScopeEmpty: scopeEmpty,
+			AllowedModels: allowed, DetectedModels: detected, ModelScopeEmpty: scopeEmpty, ModelScopeAuto: key.ModelScopeAuto,
 			Disabled: key.Disabled || scopeEmpty,
 		}
 		if !apiKeyModelScopeEqual(key, scope) {
@@ -664,9 +709,9 @@ func (s *Server) remapNormalizedAPIKeyScopes(
 // configured-model match is explicitly marked empty; an empty allowlist
 // without ModelScopeEmpty means unrestricted and would silently route that
 // Key to every model.
-func buildFetchedAPIKeyModelScopes(
+func (s *Server) buildFetchedAPIKeyModelScopes(
 	keys []*model.APIKey,
-	modelEntries []model.ModelEntry,
+	cfg *model.Config,
 	keyModels []FetchKeyModelsItem,
 ) (map[int]model.APIKeyModelScope, error) {
 	keysByIndex := make(map[int]*model.APIKey, len(keys))
@@ -687,7 +732,7 @@ func buildFetchedAPIKeyModelScopes(
 		detectedModels := []string(nil)
 		scopeEmpty := len(result.Models) == 0
 		if !scopeEmpty {
-			allowedModels, detectedModels = detectedChannelModelScope(modelEntries, result.Models)
+			allowedModels, detectedModels = s.detectedChannelModelScope(cfg, result.Models)
 			scopeEmpty = len(allowedModels) == 0
 		}
 		if scopeEmpty {
@@ -702,6 +747,7 @@ func buildFetchedAPIKeyModelScopes(
 		scope := model.APIKeyModelScope{
 			AllowedModels:   allowedModels,
 			DetectedModels:  detectedModels,
+			ModelScopeAuto:  true,
 			ModelScopeEmpty: scopeEmpty,
 			// A manually disabled Key is never probed, but preserve that
 			// state if a caller supplies one in a future fetch path.
@@ -716,7 +762,7 @@ func buildFetchedAPIKeyModelScopes(
 }
 
 func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool {
-	if key == nil || key.ModelScopeEmpty != scope.ModelScopeEmpty || key.Disabled != scope.Disabled ||
+	if key == nil || key.ModelScopeEmpty != scope.ModelScopeEmpty || key.ModelScopeAuto != scope.ModelScopeAuto || key.Disabled != scope.Disabled ||
 		!slices.Equal(key.DetectedModels, scope.DetectedModels) || len(key.AllowedModels) != len(scope.AllowedModels) {
 		return false
 	}
@@ -728,7 +774,7 @@ func apiKeyModelScopeEqual(key *model.APIKey, scope model.APIKeyModelScope) bool
 	return true
 }
 
-func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string, []string) {
+func (s *Server) detectedChannelModelScope(cfg *model.Config, fetched []model.ModelEntry) ([]string, []string) {
 	detected := make(map[string]struct{}, len(fetched)*2)
 	for _, entry := range fetched {
 		value := entry.RedirectModel
@@ -740,31 +786,41 @@ func detectedChannelModelScope(modelRows, fetched []model.ModelEntry) ([]string,
 		}
 	}
 
-	matched := make([]string, 0, len(modelRows))
-	actualModels := make([]string, 0, len(modelRows))
-	seen := make(map[string]struct{}, len(modelRows))
-	seenActual := make(map[string]struct{}, len(modelRows))
-	lookup := &model.Config{ModelEntries: modelRows}
-	for _, row := range modelRows {
+	matched := make([]string, 0, len(cfg.ModelEntries))
+	actualModels := make([]string, 0, len(cfg.ModelEntries))
+	seen := make(map[string]struct{}, len(cfg.ModelEntries))
+	seenActual := make(map[string]struct{}, len(cfg.ModelEntries))
+	var protocols []protocol.Protocol
+	for _, client := range automaticFallbackProtocolOrder {
+		for _, upstream := range possibleUpstreamProtocols(cfg, client) {
+			if !slices.Contains(protocols, upstream) {
+				protocols = append(protocols, upstream)
+			}
+		}
+	}
+	for _, row := range cfg.ModelEntries {
 		logicalModel := strings.TrimSpace(row.Model)
 		if logicalModel == "" {
 			continue
 		}
-		actual := resolveActualModel(lookup, modelRoutingSelection{logicalModel: logicalModel, entry: row})
-		if _, ok := detected[strings.ToLower(actual)]; !ok {
-			continue
+		selected := modelRoutingSelection{logicalModel: logicalModel, entry: row}
+		for _, upstream := range protocols {
+			// Match the same final model as routing, including body rules.
+			actual := model.RoutingModelName(s.resolveFinalUpstreamModel(cfg, selected, string(upstream)))
+			actualKey := strings.ToLower(actual)
+			if _, ok := detected[actualKey]; !ok {
+				continue
+			}
+			if _, exists := seenActual[actualKey]; !exists {
+				seenActual[actualKey] = struct{}{}
+				actualModels = append(actualModels, actual)
+			}
+			key := strings.ToLower(logicalModel)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				matched = append(matched, logicalModel)
+			}
 		}
-		actualKey := strings.ToLower(actual)
-		if _, exists := seenActual[actualKey]; !exists {
-			seenActual[actualKey] = struct{}{}
-			actualModels = append(actualModels, actual)
-		}
-		key := strings.ToLower(logicalModel)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		matched = append(matched, logicalModel)
 	}
 	return matched, actualModels
 }
@@ -1515,7 +1571,10 @@ func (s *Server) fetchModelsPerKeyWithURLFallback(
 		if apiKey == nil || strings.TrimSpace(apiKey.APIKey) == "" {
 			continue
 		}
-		item := FetchKeyModelsItem{KeyIndex: apiKey.KeyIndex, Models: make([]model.ModelEntry, 0)}
+		item := FetchKeyModelsItem{
+			KeyIndex: apiKey.KeyIndex, Models: make([]model.ModelEntry, 0),
+			probedKey: probedAPIKey{id: apiKey.ID, apiKey: apiKey.APIKey},
+		}
 		fetched, err := s.fetchModelsWithURLFallback(
 			ctx, channelID, configuredURLs, overrideProtocol, []string{apiKey.APIKey}, client,
 		)

@@ -2242,6 +2242,125 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			}
 		})
 	}
+	t.Run("merge refreshes stale key scopes without changing the model table", func(t *testing.T) {
+		t.Parallel()
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "Bearer broken" {
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("Authorization") == "Bearer other" {
+				_, _ = io.WriteString(w, `{"data":[{"id":"other"}]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"data":[{"id":"new-upstream"}]}`)
+		}))
+		server, store := newFixture(t)
+		server.channelCache = storage.NewChannelCache(store, time.Hour)
+		ctx := context.Background()
+		entries := []model.ModelEntry{{Model: "old"}, {Model: "new", RedirectModel: "new-upstream"}, {Model: "other"}}
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name: "stale-key-scopes", Enabled: true, ModelEntries: entries,
+			URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalKeys := []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy", AllowedModels: []string{"old"}, DetectedModels: []string{"old"}, ModelScopeAuto: true},
+			{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "broken", AllowedModels: []string{"old"}, DetectedModels: []string{"old"}, ModelScopeAuto: true},
+			{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "cooling", AllowedModels: []string{"old"}, DetectedModels: []string{"old"}, ModelScopeAuto: true, CooldownUntil: time.Now().Add(time.Hour).Unix()},
+			{ChannelID: cfg.ID, KeyIndex: 3, APIKey: "disabled", AllowedModels: []string{"old"}, DetectedModels: []string{"old"}, ModelScopeAuto: true, Disabled: true},
+			{ChannelID: cfg.ID, KeyIndex: 4, APIKey: "other", AllowedModels: []string{"other"}, DetectedModels: []string{"other"}, ModelScopeAuto: true},
+		}
+		if err := store.CreateAPIKeysBatch(ctx, originalKeys); err != nil {
+			t.Fatal(err)
+		}
+		payload := map[string]any{"client_protocol": "openai", "model": "new"}
+		if before := previewRoute(t, server, payload); len(before.Candidates) != 0 {
+			t.Fatalf("stale scope unexpectedly allowed new model: %+v", before)
+		}
+		request := BatchRefreshModelsRequest{ChannelIDs: []int64{cfg.ID}, Mode: "merge"}
+		refresh(t, server, ctx, request, "updated")
+		stored, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(stored.ModelEntries, entries) {
+			t.Fatalf("merge changed existing models: %+v", stored.ModelEntries)
+		}
+		keys, err := store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(keys[0].AllowedModels, []string{"new"}) ||
+			!reflect.DeepEqual(keys[0].DetectedModels, []string{"new-upstream"}) {
+			t.Fatalf("successful probe did not refresh both scopes: %+v", keys[0])
+		}
+		for i := 1; i < len(keys); i++ {
+			if !reflect.DeepEqual(keys[i].AllowedModels, originalKeys[i].AllowedModels) ||
+				!reflect.DeepEqual(keys[i].DetectedModels, originalKeys[i].DetectedModels) ||
+				keys[i].Disabled != originalKeys[i].Disabled || keys[i].ModelScopeAuto != originalKeys[i].ModelScopeAuto || keys[i].ModelScopeEmpty != originalKeys[i].ModelScopeEmpty {
+				t.Fatalf("key %d scope changed unexpectedly: %+v", i, keys[i])
+			}
+		}
+		if after := previewRoute(t, server, payload); len(after.Candidates) != 1 || after.Candidates[0].AvailableKeyCount != 1 {
+			t.Fatalf("new model is not routable with exactly its supporting key: %+v", after)
+		}
+		refresh(t, server, ctx, request, "unchanged")
+	})
+	for _, tc := range []struct {
+		protocol string
+		target   string
+		catalog  string
+	}{
+		{protocol: "openai", target: "forced", catalog: `{"data":[{"id":"forced"}]}`},
+		{protocol: "gemini", target: "base", catalog: `{"models":[{"name":"models/base"}]}`},
+	} {
+		t.Run("merge scope respects final model for "+tc.protocol, func(t *testing.T) {
+			t.Parallel()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.catalog)
+			}))
+			server, store := newFixture(t)
+			ctx := context.Background()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "final-model-scope", Enabled: true,
+				URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{tc.protocol}}},
+				ModelEntries: []model.ModelEntry{{Model: "logical", RedirectModel: "base"}},
+				CustomRequestRules: &model.CustomRequestRules{Body: []model.CustomBodyRule{
+					{Action: model.RuleActionOverride, Path: "model", Value: []byte(`"forced"`)},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+				ChannelID: cfg.ID, KeyIndex: 0, APIKey: "healthy",
+				AllowedModels: []string{"logical"}, DetectedModels: []string{tc.target, "stale"}, ModelScopeAuto: true,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			payload := map[string]any{"client_protocol": tc.protocol, "model": "logical"}
+			if before := previewRoute(t, server, payload); len(before.Candidates) != 1 || before.Candidates[0].AvailableKeyCount != 1 {
+				t.Fatalf("logical model was not routable before refresh: %+v", before)
+			}
+			refresh(t, server, ctx, BatchRefreshModelsRequest{ChannelIDs: []int64{cfg.ID}, Mode: "merge"}, "updated")
+			keys, err := store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !keys[0].AllowsModel("logical") || !reflect.DeepEqual(keys[0].DetectedModels, []string{tc.target}) {
+				t.Fatalf("successful probe lost final upstream capability: %+v", keys[0])
+			}
+			if after := previewRoute(t, server, payload); len(after.Candidates) != 1 || after.Candidates[0].AvailableKeyCount != 1 {
+				t.Fatalf("logical model lost its confirmed upstream route after refresh: %+v", after)
+			}
+		})
+	}
+
 	t.Run("merge mode partial success", func(t *testing.T) {
 		t.Parallel()
 		// channel1: 返回 m1,m2（新增1个）
@@ -2342,6 +2461,13 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if len(got2.ModelEntries) != 1 {
 			t.Fatalf("c2 model count=%d, want 1", len(got2.ModelEntries))
+		}
+		keys2, err := store.GetAPIKeys(ctx, c2.ID)
+		if err != nil {
+			t.Fatalf("GetAPIKeys c2 failed: %v", err)
+		}
+		if len(keys2) != 1 || len(keys2[0].AllowedModels) != 0 || len(keys2[0].DetectedModels) != 0 || keys2[0].Disabled {
+			t.Fatalf("merge restricted an unrestricted key: %+v", keys2)
 		}
 	})
 
@@ -3516,6 +3642,222 @@ func TestBatchRefreshMergeNormalizationKeepsOriginalTargetScope(t *testing.T) {
 				t.Fatal("merge broadened the unchanged group scope")
 			}
 
+		})
+	}
+}
+
+func TestBatchRefreshMergePreservesManualScopeAfterNormalization(t *testing.T) {
+	var second atomic.Bool
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer manual" {
+			if second.Load() {
+				_, _ = io.WriteString(w, `{"data":[{"id":"vendor/foo"},{"id":"other"}]}`)
+			} else {
+				_, _ = io.WriteString(w, `{"data":[{"id":"vendor/foo"}]}`)
+			}
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"other"}]}`)
+	}))
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name: "manual-policy", Enabled: true,
+		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		ModelEntries: []model.ModelEntry{{Model: "vendor/foo"}, {Model: "foo", RedirectModel: "other"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "manual", AllowedModels: []string{"vendor/foo"}},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "unrestricted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refresh := func(mode string) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID}, "mode": mode, "strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		var summary struct {
+			Failed int `json:"failed"`
+		}
+		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+		if summary.Failed != 0 {
+			t.Fatalf("refresh failed: %s", w.Body.String())
+		}
+	}
+	refresh("merge")
+	keys, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("first refresh: allowed=%v detected=%v", keys[0].AllowedModels, keys[0].DetectedModels)
+	if !keys[0].AllowsModel("foo") || !keys[0].AllowsUpstreamModel("vendor/foo") || keys[0].AllowsUpstreamModel("other") {
+		t.Fatalf("first refresh lost manual scope: %+v", keys[0])
+	}
+	second.Store(true)
+	refresh("merge")
+	keys, err = store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("second refresh: allowed=%v detected=%v", keys[0].AllowedModels, keys[0].DetectedModels)
+	if keys[0].AllowsUpstreamModel("other") || keys[0].ModelScopeAuto {
+		t.Fatalf("second merge broadened manual policy to other: %+v", keys[0])
+	}
+	// An explicit replacement opts the same Key into discovery updates.
+	refresh("replace")
+	keys, err = store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keys[0].ModelScopeAuto || !keys[0].AllowsUpstreamModel("other") {
+		t.Fatalf("replacement did not adopt discovery: %+v", keys[0])
+	}
+	second.Store(false)
+	refresh("merge")
+	keys, err = store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keys[0].ModelScopeAuto || keys[0].AllowsUpstreamModel("other") || !keys[0].AllowsUpstreamModel("vendor/foo") {
+		t.Fatalf("automatic scope did not follow the next probe: %+v", keys[0])
+	}
+
+}
+
+func TestBatchRefreshAppliesProbeToProbedKeyAfterReindex(t *testing.T) {
+	for _, mode := range []string{"merge", "replace"} {
+		t.Run(mode, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			var channelID atomic.Int64
+			var deleted atomic.Bool
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Header.Get("Authorization") == "Bearer first" {
+					// The admin deletes the first Key while its probe is in flight,
+					// shifting the second Key down to index 0.
+					if deleted.CompareAndSwap(false, true) {
+						if err := store.DeleteAPIKey(ctx, channelID.Load(), 0); err != nil {
+							t.Error(err)
+						}
+						if err := store.CompactKeyIndices(ctx, channelID.Load(), 0); err != nil {
+							t.Error(err)
+						}
+					}
+					_, _ = io.WriteString(w, `{"data":[{"id":"first-model"}]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"data":[{"id":"second-model"}]}`)
+			}))
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "reindexed", Enabled: true,
+				URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+				ModelEntries: []model.ModelEntry{{Model: "first-model"}, {Model: "second-model"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			channelID.Store(cfg.ID)
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "first", AllowedModels: []string{"first-model"}, DetectedModels: []string{"first-model"}, ModelScopeAuto: true},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "second", AllowedModels: []string{"second-model"}, DetectedModels: []string{"second-model"}, ModelScopeAuto: true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+				"channel_ids": []int64{cfg.ID}, "mode": mode,
+			}))
+			server.HandleBatchRefreshModels(c)
+			var summary struct {
+				Failed int `json:"failed"`
+			}
+			mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+			if summary.Failed != 0 || !deleted.Load() {
+				t.Fatalf("refresh failed or skipped the delete: %s", w.Body.String())
+			}
+			keys, err := store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(keys) != 1 || keys[0].APIKey != "second" {
+				t.Fatalf("unexpected keys after delete: %d", len(keys))
+			}
+			if !keys[0].AllowsUpstreamModel("second-model") || keys[0].AllowsUpstreamModel("first-model") {
+				t.Fatalf("applied the deleted Key's probe: %+v", keys[0])
+			}
+		})
+	}
+}
+
+func TestBatchRefreshKeepsDuplicateCredentialRowsIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode     string
+		secondDisabled bool
+		rateLimitLater bool
+	}{
+		{name: "merge skips disabled row", mode: "merge", secondDisabled: true},
+		{name: "replace keeps failed row", mode: "replace", rateLimitLater: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var probes atomic.Int32
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if probes.Add(1) > 1 && tc.rateLimitLater {
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"data":[{"id":"fresh-model"}]}`)
+			}))
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "duplicate-credential", Enabled: true,
+				URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+				ModelEntries: []model.ModelEntry{{Model: "old-model"}, {Model: "fresh-model"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "shared", AllowedModels: []string{"old-model"}, DetectedModels: []string{"old-model"}, ModelScopeAuto: true},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "shared", AllowedModels: []string{"old-model"}, DetectedModels: []string{"old-model"}, ModelScopeAuto: true, Disabled: tc.secondDisabled},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+				"channel_ids": []int64{cfg.ID}, "mode": tc.mode,
+			}))
+			server.HandleBatchRefreshModels(c)
+			var summary struct {
+				Failed int `json:"failed"`
+			}
+			mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
+			if summary.Failed != 0 {
+				t.Fatalf("refresh failed: %s", w.Body.String())
+			}
+			keys, err := store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(keys) != 2 {
+				t.Fatalf("unexpected key count: %d", len(keys))
+			}
+			if !keys[0].AllowsUpstreamModel("fresh-model") || keys[0].AllowsUpstreamModel("old-model") {
+				t.Fatalf("probed row did not adopt its own probe: %+v", keys[0])
+			}
+			if !keys[1].AllowsUpstreamModel("old-model") || keys[1].AllowsUpstreamModel("fresh-model") {
+				t.Fatalf("row adopted another row's probe: %+v", keys[1])
+			}
 		})
 	}
 }

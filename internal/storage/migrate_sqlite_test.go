@@ -1448,9 +1448,10 @@ func TestEnsureAPIKeysAllowedModels_SQLite(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE api_keys (
 			id INTEGER PRIMARY KEY,
-			api_key TEXT NOT NULL
+			api_key TEXT NOT NULL,
+			detected_models TEXT
 		);
-		INSERT INTO api_keys (id, api_key) VALUES (1, 'legacy-key')
+		INSERT INTO api_keys (id, api_key, detected_models) VALUES (1, 'legacy-key', '["legacy-model"]')
 	`); err != nil {
 		t.Fatalf("create legacy api_keys: %v", err)
 	}
@@ -1461,10 +1462,13 @@ func TestEnsureAPIKeysAllowedModels_SQLite(t *testing.T) {
 	if err := ensureAPIKeysModelScopeEmpty(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("ensureAPIKeysModelScopeEmpty: %v", err)
 	}
+	if err := ensureAPIKeysModelScopeAuto(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensureAPIKeysModelScopeAuto: %v", err)
+	}
 
 	var allowedModels string
-	var modelScopeEmpty int
-	if err := db.QueryRowContext(ctx, `SELECT allowed_models, model_scope_empty FROM api_keys WHERE id = 1`).Scan(&allowedModels, &modelScopeEmpty); err != nil {
+	var modelScopeEmpty, modelScopeAuto int
+	if err := db.QueryRowContext(ctx, `SELECT allowed_models, model_scope_empty, model_scope_auto FROM api_keys WHERE id = 1`).Scan(&allowedModels, &modelScopeEmpty, &modelScopeAuto); err != nil {
 		t.Fatalf("query migrated allowed_models: %v", err)
 	}
 	if allowedModels != "" {
@@ -1472,6 +1476,9 @@ func TestEnsureAPIKeysAllowedModels_SQLite(t *testing.T) {
 	}
 	if modelScopeEmpty != 0 {
 		t.Fatalf("legacy model_scope_empty=%d, want unrestricted", modelScopeEmpty)
+	}
+	if modelScopeAuto != 0 {
+		t.Fatalf("legacy model_scope_auto=%d, want unknown source preserved", modelScopeAuto)
 	}
 }
 

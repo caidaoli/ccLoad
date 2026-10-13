@@ -82,6 +82,7 @@ type ChannelAPIKeyRequest struct {
 	AllowedModels   []string `json:"allowed_models,omitempty"`
 	DetectedModels  []string `json:"detected_models,omitempty"`
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"`
+	ModelScopeAuto  bool     `json:"model_scope_auto,omitempty"`
 	// CostMultiplier 用指针区分「未提交」：nil 保留现值（Key 更新）或取默认 1（创建）；
 	// 0 是合法的「免费 Key」。OAuth 渠道的合成 Key 行也用它携带渠道倍率。
 	CostMultiplier *float64 `json:"cost_multiplier,omitempty"`
@@ -90,6 +91,7 @@ type ChannelAPIKeyRequest struct {
 	// Updates preserve an existing scope when old clients do not send the new field.
 	allowedModelsSet  bool
 	detectedModelsSet bool
+	modelScopeAutoSet bool
 }
 
 // UnmarshalJSON records whether allowed_models was submitted so updates can preserve omitted scopes.
@@ -100,6 +102,7 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 		AllowedModels   json.RawMessage `json:"allowed_models"`
 		DetectedModels  json.RawMessage `json:"detected_models"`
 		ModelScopeEmpty bool            `json:"model_scope_empty,omitempty"`
+		ModelScopeAuto  *bool           `json:"model_scope_auto"`
 		CostMultiplier  *float64        `json:"cost_multiplier"`
 		Priority        *int            `json:"priority"`
 	}
@@ -110,6 +113,8 @@ func (r *ChannelAPIKeyRequest) UnmarshalJSON(data []byte) error {
 	r.APIKey = raw.APIKey
 	r.Note = raw.Note
 	r.ModelScopeEmpty = raw.ModelScopeEmpty
+	r.modelScopeAutoSet = raw.ModelScopeAuto != nil
+	r.ModelScopeAuto = raw.ModelScopeAuto != nil && *raw.ModelScopeAuto
 	r.CostMultiplier = raw.CostMultiplier
 	r.Priority = raw.Priority
 	r.AllowedModels = nil
@@ -161,6 +166,8 @@ func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
 				AllowedModels:     append([]string(nil), item.AllowedModels...),
 				DetectedModels:    append([]string(nil), item.DetectedModels...),
 				ModelScopeEmpty:   item.ModelScopeEmpty,
+				ModelScopeAuto:    item.ModelScopeAuto,
+				modelScopeAutoSet: item.modelScopeAutoSet,
 				CostMultiplier:    item.CostMultiplier,
 				Priority:          item.Priority,
 				allowedModelsSet:  item.allowedModelsSet,

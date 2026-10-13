@@ -2979,3 +2979,64 @@ func TestHandleUpdateChannelOAuthQuotaPassthrough(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleChannelModelScopeSource(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	models := []model.ModelEntry{{Model: "a"}, {Model: "b"}}
+	payload := map[string]any{
+		"name": "scope-source", "enabled": true,
+		"urls": model.ChannelURLs{{URL: "https://example.com"}}, "models": models,
+		"api_keys": []map[string]any{{"api_key": "k", "allowed_models": []string{"a"}, "detected_models": []string{"a"}, "model_scope_auto": true}},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.HandleChannels(c)
+	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	var created model.Config
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &created)
+	assertSource := func(want bool) {
+		t.Helper()
+		keys, err := store.GetAPIKeys(ctx, created.ID)
+		if err != nil || len(keys) == 0 {
+			t.Fatalf("read keys: %v", err)
+		}
+		if keys[0].ModelScopeAuto != want {
+			t.Fatalf("model_scope_auto=%v, want %v", keys[0].ModelScopeAuto, want)
+		}
+	}
+	assertSource(true)
+	for _, tc := range []struct {
+		name      string
+		key       map[string]any
+		appendKey bool
+		want      bool
+	}{
+		{"old client note edit", map[string]any{"api_key": "k", "note": "edited"}, false, true},
+		{"old client unchanged scope", map[string]any{"api_key": "k", "allowed_models": []string{"a"}, "detected_models": []string{"a"}}, false, true},
+		{"old client manual allowlist", map[string]any{"api_key": "k", "allowed_models": []string{"b"}}, false, false},
+		{"explicit discovery", map[string]any{"api_key": "k", "allowed_models": []string{"a"}, "detected_models": []string{"a"}, "model_scope_auto": true}, false, true},
+		{"old client rebuild", map[string]any{"api_key": "k"}, true, true},
+		{"explicit manual with same range", map[string]any{"api_key": "k", "model_scope_auto": false}, true, false},
+		{"discovery with same range", map[string]any{"api_key": "k", "model_scope_auto": true}, true, true},
+		{"old client upstream range edit", map[string]any{"api_key": "k", "detected_models": []string{"b"}}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := []map[string]any{tc.key}
+			if tc.appendKey {
+				keys = append(keys, map[string]any{"api_key": "new"})
+			}
+			payload["api_keys"] = keys
+			path := "/admin/channels/" + strconv.FormatInt(created.ID, 10)
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, path, payload))
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+			server.HandleChannelByID(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+			}
+			assertSource(tc.want)
+		})
+	}
+}

@@ -270,6 +270,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAPIKeysModelScopeEmpty(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys model_scope_empty: %w", err)
 			}
+			if err := ensureAPIKeysModelScopeAuto(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate api_keys model_scope_auto: %w", err)
+			}
 			if err := ensureAPIKeysCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate api_keys cost_multiplier: %w", err)
 			}

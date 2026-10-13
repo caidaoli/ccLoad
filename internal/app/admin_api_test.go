@@ -115,7 +115,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
+	expectedHeaders := []string{"id", "name", "api_key", "api_key_allowed_models", "api_key_detected_models", "api_key_cost_multipliers", "api_key_priorities", "api_key_model_scope_empty", "api_key_model_scope_auto", "urls", "priority", "rpm_limit", "max_concurrency", "model_entries_json", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "management_daily_checkin_enabled", "management_daily_checkin_time", "websockets", "oauth_quota_passthrough", "scheduled_check_interval_minutes", "scheduled_check_start_time", "same_channel_retries"}
 	if len(header) != len(expectedHeaders) {
 		t.Fatalf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -508,7 +508,7 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 		t.Fatalf("CreateConfig: %v", err)
 	}
 	if err := source.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5, Priority: -8, DetectedModels: []string{"upstream-half"}},
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-half", CostMultiplier: 0.5, Priority: -8, DetectedModels: []string{"upstream-half"}, ModelScopeAuto: true},
 		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-double", CostMultiplier: 2.0, Priority: 20, DetectedModels: []string{"upstream-double"}},
 	}); err != nil {
 		t.Fatalf("CreateAPIKeysBatch: %v", err)
@@ -561,7 +561,11 @@ func TestAdminAPI_CSVExportImportRoundtripsAPIKeyCostMultipliers(t *testing.T) {
 	want := map[int]float64{0: 0.5, 1: 2.0}
 	wantPriority := map[int]int{0: -8, 1: 20}
 	wantDetected := map[int][]string{0: {"upstream-half"}, 1: {"upstream-double"}}
+	wantAuto := map[int]bool{0: true, 1: false}
 	for _, key := range keys {
+		if key.ModelScopeAuto != wantAuto[key.KeyIndex] {
+			t.Fatalf("model scope source lost: %+v", key)
+		}
 		if !slices.Equal(key.DetectedModels, wantDetected[key.KeyIndex]) {
 			t.Fatalf("detected model targets lost: %+v", key)
 		}

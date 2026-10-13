@@ -1037,6 +1037,7 @@ type APIKey struct {
 	AllowedModels   []string `json:"allowed_models,omitempty"`    // 空表示该 Key 不限制模型
 	DetectedModels  []string `json:"detected_models,omitempty"`   // 最近一次模型探测确认的上游模型；空表示尚未探测
 	ModelScopeEmpty bool     `json:"model_scope_empty,omitempty"` // true 表示该 Key 当前不允许任何模型
+	ModelScopeAuto  bool     `json:"model_scope_auto,omitempty"`  // true 表示范围来自明确应用的模型探测，可自动刷新
 
 	Priority    int    `json:"priority"`     // 数值越大越优先，仅在渠道内比较
 	KeyStrategy string `json:"key_strategy"` // 历史配置字段，保留读写；同优先级统一轮询
@@ -1059,6 +1060,7 @@ type APIKeyModelScope struct {
 	AllowedModels   []string
 	DetectedModels  []string
 	ModelScopeEmpty bool
+	ModelScopeAuto  bool
 	Disabled        bool
 }
 

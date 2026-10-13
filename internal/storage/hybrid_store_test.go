@@ -439,7 +439,7 @@ func TestHybridStore_ChannelReplicaUpdateIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := hybrid.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID: created.ID, KeyIndex: 0, APIKey: "key",
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "key", ModelScopeAuto: true,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -474,6 +474,10 @@ func TestHybridStore_ChannelReplicaUpdateIsAtomic(t *testing.T) {
 		cfg, getErr := primary.GetConfig(ctx, created.ID)
 		return getErr == nil && cfg.Name == "after" && hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
+	key, err := primary.GetAPIKey(ctx, created.ID, 0)
+	if err != nil || !key.ModelScopeAuto {
+		t.Fatalf("replica lost scope source: key=%+v err=%v", key, err)
+	}
 }
 
 func TestHybridStore_StaleNaturalKeysConvergeToSQLiteIDs(t *testing.T) {

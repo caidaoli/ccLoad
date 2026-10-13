@@ -1063,6 +1063,7 @@ async function saveChannel(event) {
       allowed_models: Array.isArray(row.allowed_models) ? [...row.allowed_models] : [],
       detected_models: Array.isArray(row.detected_models) ? [...row.detected_models] : [],
       model_scope_empty: row.model_scope_empty === true,
+      model_scope_auto: row.model_scope_auto === true,
       cost_multiplier: row.cost_multiplier,
       priority: row.priority
     })),
@@ -3199,7 +3200,52 @@ function resolveEditorActualModel(modelRows, row) {
   return routingModelNameForEditor(target);
 }
 
-function detectedChannelModelScope(modelRows, entries) {
+// 与后端 resolveFinalUpstreamModel 同源：顶层 body.model 规则只改写非 Gemini 上游，Gemini 模型在 URL 路径里。
+// protocols 对应后端 possibleUpstreamProtocols 对全部客户端协议的并集及顺序；无 body.model 规则时返回 null。
+function editorUpstreamModelRewrite(customRules, urlConfigs, transformMode, authType) {
+  let model;
+  for (const rule of Array.isArray(customRules?.body) ? customRules.body : []) {
+    const segments = String(rule?.path || '').trim().split('.').map(segment => segment.trim());
+    if (segments.length !== 1 || segments[0] !== 'model') continue;
+    if (rule.action === 'remove') model = '';
+    else if (rule.action === 'override') model = typeof rule.value === 'string' ? rule.value.trim() : '';
+  }
+  if (model === undefined) return null;
+  if (authType === 'system_one') return { model: routingModelNameForEditor(model), protocols: ['system_one'] };
+
+  const urls = Array.isArray(urlConfigs) ? urlConfigs : [];
+  const valid = ['openai', 'anthropic', 'codex', 'gemini'];
+  const automatic = urls.some(url => !Array.isArray(url?.protocols) || url.protocols.length === 0);
+  const supported = candidate => automatic || urls.some(url => url?.protocols?.includes(candidate));
+  let protocols = valid.filter(supported);
+  if (transformMode === 'local') {
+    const explicit = [...new Set(urls.flatMap(url => url?.protocols || []))].filter(candidate => valid.includes(candidate));
+    protocols = explicit.length > 0 ? explicit : ['anthropic', 'codex', 'openai', 'gemini'].filter(supported);
+  }
+  return { model: routingModelNameForEditor(model), protocols };
+}
+
+function currentEditorUpstreamModelRewrite() {
+  return editorUpstreamModelRewrite(
+    invokeChannelEditorAction('collectCustomRulesForSubmit'),
+    getValidInlineURLConfigs(),
+    getProtocolTransformMode(),
+    typeof editingChannelAuthType === 'undefined' ? '' : editingChannelAuthType
+  );
+}
+
+function editorFinalUpstreamModels(modelRows, row, rewrite) {
+  const actualModel = resolveEditorActualModel(modelRows, row);
+  if (!rewrite) return actualModel ? [actualModel] : [];
+  const targets = [];
+  for (const protocol of rewrite.protocols) {
+    const target = protocol === 'gemini' ? actualModel : rewrite.model;
+    if (target && !targets.some(name => name.toLowerCase() === target.toLowerCase())) targets.push(target);
+  }
+  return targets;
+}
+
+function detectedChannelModelScope(modelRows, entries, rewrite) {
   const detectedNames = normalizeDetectedModelNames(entries);
   const detected = new Set(detectedNames.map(name => routingModelNameForEditor(name).toLowerCase()));
   const matched = [];
@@ -3209,21 +3255,22 @@ function detectedChannelModelScope(modelRows, entries) {
   for (const row of Array.isArray(modelRows) ? modelRows : []) {
     const logicalModel = String(row?.model || '').trim();
     if (!logicalModel || logicalModel === '*') continue;
-    const actualModel = resolveEditorActualModel(modelRows, row);
-    if (!detected.has(actualModel.toLowerCase())) continue;
-    if (!seenActual.has(actualModel.toLowerCase())) {
-      seenActual.add(actualModel.toLowerCase());
-      actualModels.push(actualModel);
+    for (const actualModel of editorFinalUpstreamModels(modelRows, row, rewrite)) {
+      if (!detected.has(actualModel.toLowerCase())) continue;
+      if (!seenActual.has(actualModel.toLowerCase())) {
+        seenActual.add(actualModel.toLowerCase());
+        actualModels.push(actualModel);
+      }
+      const key = logicalModel.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matched.push(logicalModel);
     }
-    const key = logicalModel.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    matched.push(logicalModel);
   }
   return { allowedModels: matched, detectedModels: actualModels };
 }
 
-function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntries) {
+function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntries, rewrite = null) {
   const originalRows = (Array.isArray(keyRows) ? keyRows : []).map(row => ({
     ...row,
     allowed_models: Array.isArray(row?.allowed_models) ? [...row.allowed_models] : [],
@@ -3257,10 +3304,12 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
       const currentEmpty = row.model_scope_empty === true;
       if (current.length === next.length && current.every((name, index) => name === next[index]) &&
           currentDetected.length === nextDetected.length &&
-          currentDetected.every((name, index) => name === nextDetected[index]) && currentEmpty === scopeEmpty) {
+          currentDetected.every((name, index) => name === nextDetected[index]) && currentEmpty === scopeEmpty &&
+          row.model_scope_auto === true) {
         return;
       }
       row.allowed_models = allowedModels;
+      row.model_scope_auto = true;
       if (detectedModels.length > 0) row.detected_models = detectedModels;
       else delete row.detected_models;
       if (scopeEmpty) row.model_scope_empty = true;
@@ -3279,7 +3328,7 @@ function proposeFetchedKeyModelScopes(keyRows, modelRows, keyModels, requestEntr
       continue;
     }
 
-    const { allowedModels, detectedModels } = detectedChannelModelScope(modelRows, result.models);
+    const { allowedModels, detectedModels } = detectedChannelModelScope(modelRows, result.models, rewrite);
     if (allowedModels.length === 0) {
       unmatchedCount++;
       setScope([], true, detectedModels);
@@ -3718,7 +3767,8 @@ async function fetchModelsFromAPI() {
         getInlineKeyRows(),
         redirectTableData,
         keyModels,
-        modelFetchEntries
+        modelFetchEntries,
+        currentEditorUpstreamModelRewrite()
       );
       const shouldApply = scopeProposal.changedCount > 0 &&
         await fetchedKeyModelApplyAccepted(scopeProposal.changedCount, countConfiguredInlineKeys(getInlineKeyRows()) === 1);
@@ -4047,6 +4097,9 @@ if (typeof module !== 'undefined' && module.exports) {
     openBatchModelImportModal,
     parseQuickAddChannelInfo,
     proposeFetchedKeyModelScopes,
+    editorUpstreamModelRewrite,
+    currentEditorUpstreamModelRewrite,
+    editorFinalUpstreamModels,
     saveChannel,
     showAddModal,
     testRedirectModel,

@@ -19,7 +19,7 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	// 批量创建 API Keys
 	keys := []*model.APIKey{
 		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key-0", KeyStrategy: model.KeyStrategySequential},
-		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Priority: -8, AllowedModels: []string{"gpt-5", "gpt-4.1"}, KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Priority: -8, AllowedModels: []string{"gpt-5", "gpt-4.1"}, ModelScopeAuto: true, KeyStrategy: model.KeyStrategySequential},
 		{ChannelID: channelID, KeyIndex: 2, APIKey: "sk-key-2", ModelScopeEmpty: true, Disabled: true, KeyStrategy: model.KeyStrategySequential},
 	}
 	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
@@ -43,6 +43,9 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	if len(key.AllowedModels) != 2 || key.AllowedModels[0] != "gpt-5" || key.AllowedModels[1] != "gpt-4.1" {
 		t.Errorf("allowed models: got %v, want [gpt-5 gpt-4.1]", key.AllowedModels)
 	}
+	if !key.ModelScopeAuto {
+		t.Fatal("automatic scope source did not persist")
+	}
 
 	// 获取渠道所有 API Keys
 	allKeys, err := store.GetAPIKeys(ctx, channelID)
@@ -54,6 +57,9 @@ func TestAPIKey_CreateAndGet(t *testing.T) {
 	}
 	if !allKeys[2].ModelScopeEmpty || allKeys[2].AllowsModel("gpt-5") {
 		t.Fatalf("empty model scope did not persist: %+v", allKeys[2])
+	}
+	if allKeys[0].ModelScopeAuto || !allKeys[1].ModelScopeAuto || allKeys[2].ModelScopeAuto {
+		t.Fatalf("scope source changed on batch read: %+v", allKeys)
 	}
 }
 
@@ -72,7 +78,7 @@ func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
 		t.Fatalf("create api key: %v", err)
 	}
 	if err := store.UpdateAPIKeyModelScopes(ctx, channelID, map[int]model.APIKeyModelScope{
-		0: {AllowedModels: []string{"gpt-5", "gpt-4.1"}, Disabled: true},
+		0: {AllowedModels: []string{"gpt-5", "gpt-4.1"}, ModelScopeAuto: true, Disabled: true},
 	}); err != nil {
 		t.Fatalf("update allowed models: %v", err)
 	}
@@ -83,6 +89,9 @@ func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
 	}
 	if len(got.AllowedModels) != 2 || got.AllowedModels[0] != "gpt-5" || got.AllowedModels[1] != "gpt-4.1" {
 		t.Fatalf("allowed models = %v, want [gpt-5 gpt-4.1]", got.AllowedModels)
+	}
+	if !got.ModelScopeAuto {
+		t.Fatal("scope update lost automatic source")
 	}
 	if got.Note != "primary" || got.KeyStrategy != model.KeyStrategyRoundRobin || !got.Disabled ||
 		got.CooldownUntil != 1234 || got.CooldownDurationMs != 5678 {
@@ -99,8 +108,8 @@ func TestAPIKey_UpdateAllowedModelsPreservesRuntimeState(t *testing.T) {
 	if len(got.AllowedModels) != 0 {
 		t.Fatalf("allowed models after clear = %v, want unrestricted", got.AllowedModels)
 	}
-	if got.ModelScopeEmpty {
-		t.Fatal("explicit unrestricted scope remained deny-all")
+	if got.ModelScopeEmpty || got.ModelScopeAuto {
+		t.Fatal("explicit unrestricted scope remained deny-all or automatic")
 	}
 }
 
@@ -346,7 +355,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 				},
 			},
 			APIKeys: []model.APIKey{
-				{KeyIndex: 0, APIKey: "sk-import-key-1", KeyStrategy: model.KeyStrategySequential},
+				{KeyIndex: 0, APIKey: "sk-import-key-1", ModelScopeAuto: true, KeyStrategy: model.KeyStrategySequential},
 				{KeyIndex: 1, APIKey: "sk-import-key-2", KeyStrategy: model.KeyStrategySequential},
 			},
 		},
@@ -430,6 +439,9 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if len(keys1) != 2 {
 		t.Fatalf("expected 2 keys for imported-channel-1, got %d", len(keys1))
+	}
+	if !keys1[0].ModelScopeAuto || keys1[1].ModelScopeAuto || !allKeys[id1][0].ModelScopeAuto {
+		t.Fatal("import or all-channel read lost scope source")
 	}
 	keys2, err := store.GetAPIKeys(ctx, id2)
 	if err != nil {
