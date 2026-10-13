@@ -778,12 +778,10 @@ function isModelTestChannelEnabled(channel) {
   return channel?.enabled !== false;
 }
 
-function formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled) {
-  const tags = [];
-  if (!channelEnabled) tags.push(i18nText('channels.statusDisabled', '已禁用'));
-  if (!modelEnabled) tags.push(i18nText('channels.modelStatusDisabled', '已停用'));
-  if (tags.length === 0) return baseName;
-  return `${baseName} [${tags.join('] [')}]`;
+// 模型启停已由“启用”列展示，名称只标注渠道禁用
+function formatModelTestRowDisplayName(baseName, channelEnabled) {
+  if (channelEnabled) return baseName;
+  return `${baseName} [${i18nText('channels.statusDisabled', '已禁用')}]`;
 }
 
 function applyModelTestRowMuted(row, muted) {
@@ -802,13 +800,6 @@ function applyModelTestRowEnabledStyle(row, modelEnabled) {
     btn.classList.toggle('channel-enable-switch--off', !modelEnabled);
     btn.title = modelEnabled ? i18nText('modelTest.toggleDisable', '禁用模型') : i18nText('modelTest.toggleEnable', '启用模型');
     btn.setAttribute('aria-label', btn.title);
-  }
-  const link = row.querySelector('.channel-link');
-  const baseName = row.dataset.channelBaseName || '';
-  if (link && baseName) {
-    const displayName = formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled);
-    link.textContent = displayName;
-    link.title = displayName;
   }
   applyModelTestRowMuted(row, !channelEnabled || !modelEnabled);
 }
@@ -1831,13 +1822,12 @@ function renderModelModeRows() {
     const channelEnabled = isModelTestChannelEnabled(ch);
     const available = channelEnabled && modelEnabled;
     const baseName = isExact ? ch.name : `${ch.name} · ${model}`;
-    const channelName = formatModelTestRowDisplayName(baseName, channelEnabled, modelEnabled);
+    const channelName = formatModelTestRowDisplayName(baseName, channelEnabled);
     const priorityValue = (ch.priority !== null && ch.priority !== undefined && Number.isFinite(Number(ch.priority))) ? Number(ch.priority) : 0;
 
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
-      channelBaseName: baseName,
       oauthPlanBadge: buildOAuthPlanBadge(ch),
       channelEnabled: String(channelEnabled),
       channelPriority: String(priorityValue),
