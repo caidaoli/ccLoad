@@ -16035,6 +16035,63 @@ func TestProxy_SSEContextLengthExceededReturns400WithoutRetryOrCooldown(t *testi
 	}
 }
 
+func TestProxy_GeminiCachedContentNotFoundReturns403WithoutRetryOrCooldown(t *testing.T) {
+	t.Parallel()
+	const notFound = `{"error":{"code":403,"message":"CachedContent not found (or permission denied)","status":"PERMISSION_DENIED"}}`
+	var firstCalls atomic.Int32
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, notFound)
+	}))
+	defer upstream1.Close()
+
+	var secondCalls atomic.Int32
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"unexpected"}]}}]}`)
+	}))
+	defer upstream2.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "cache-missing", upstreamProtocol: "gemini", models: "gemini-test", apiKey: "sk-1", priority: 100},
+		{name: "must-not-run", upstreamProtocol: "gemini", models: "gemini-test", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1beta/models/gemini-test:generateContent", map[string]any{
+		"cachedContent": "cachedContents/unknown",
+		"contents":      []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "hi"}}}},
+	}, nil)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if got := gjson.GetBytes(w.Body.Bytes(), "error.status").String(); got != "PERMISSION_DENIED" {
+		t.Fatalf("error.status=%q, want upstream PERMISSION_DENIED; body=%s", got, w.Body.String())
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("upstream calls first=%d second=%d, want 1/0", firstCalls.Load(), secondCalls.Load())
+	}
+
+	ctx := context.Background()
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns: %v", err)
+	}
+	if len(keyCooldowns) != 0 {
+		t.Fatalf("key cooldowns=%v, want none", keyCooldowns)
+	}
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if len(channelCooldowns) != 0 {
+		t.Fatalf("channel cooldowns=%v, want none", channelCooldowns)
+	}
+}
+
 func TestProxy_MultimodalFallbackRewritesRequestModel(t *testing.T) {
 	t.Parallel()
 	upstreamModels := make(chan string, 4)

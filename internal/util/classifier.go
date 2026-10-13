@@ -612,6 +612,12 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	bodyLower := strings.ToLower(string(responseBody))
 
+	// Gemini 对不存在、已过期或属于其他项目的 cachedContent 统一返回此 403。缓存名由客户端
+	// 指定且不绑定 Key，换 Key/渠道无意义；按 Key 级处理会让任意请求冷却健康 Key。
+	if statusCode == http.StatusForbidden && strings.Contains(bodyLower, "cachedcontent not found") {
+		return HTTPResponseClassification{Level: ErrorLevelClient}
+	}
+
 	// 渠道级错误特征:**仅限账户级不可逆错误**
 	// 设计原则:保守策略,只有明确是渠道级错误时才返回ErrorLevelChannel
 	channelErrorPatterns := []string{
