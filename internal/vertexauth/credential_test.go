@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,6 +243,20 @@ func TestMintAccessTokenReportsTokenEndpointRejection(t *testing.T) {
 	_, err = credential.MintAccessToken(context.Background(), server.Client(), time.Now())
 	if err == nil || !strings.Contains(err.Error(), "invalid_grant") {
 		t.Fatalf("expected invalid_grant error, got %v", err)
+	}
+	var endpointFailure interface {
+		error
+		StatusCode() int
+		UpstreamResponseBody() string
+	}
+	if !errors.As(err, &endpointFailure) || endpointFailure.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("token endpoint status was not preserved: %v", err)
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(endpointFailure.UpstreamResponseBody()), &payload); err != nil || payload.Error != "invalid_grant" {
+		t.Fatalf("token endpoint response was not preserved: %+v, %v", payload, err)
 	}
 }
 

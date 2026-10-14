@@ -17,17 +17,16 @@ import (
 // publisher endpoint: a service account project, an express API key, or a relay.
 const vertexPublisherPathSuffix = "/publishers/google"
 
-// usesVertexPublisherLayout reports whether Gemini requests to baseURL use the
-// Vertex publisher layout ({base}/models/{model}:{action}) instead of the
-// Gemini API layout. Exact URLs are sent verbatim and never remapped.
-func usesVertexPublisherLayout(cfg *model.Config, upstreamProtocol protocol.Protocol, baseURL string) bool {
-	if upstreamProtocol != protocol.Gemini || model.HasExactUpstreamURLMarker(baseURL) {
+// usesVertexWire identifies Gemini requests that need Vertex body adaptation.
+// Exact URLs still need that adaptation; callers skip only their URL remapping.
+func usesVertexWire(cfg *model.Config, upstreamProtocol protocol.Protocol, baseURL string) bool {
+	if upstreamProtocol != protocol.Gemini {
 		return false
 	}
 	if cfg.UsesVertexOAuth() {
 		return true
 	}
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	parsed, err := url.Parse(strings.TrimSpace(model.StripExactUpstreamURLMarker(baseURL)))
 	return err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), vertexPublisherPathSuffix)
 }
 

@@ -200,53 +200,94 @@ func TestProxy_VertexOAuthMapsGeminiPassthroughToPublisherEndpoint(t *testing.T)
 	}
 }
 
-func TestProxy_VertexOAuthTranslatedResponsesStreamUsesSSEAndDropsCallIDs(t *testing.T) {
+func TestProxy_VertexOAuthExactURLNormalizesRoles(t *testing.T) {
 	t.Parallel()
 	upstream := newVertexTestUpstream(t)
-	env := setupVertexProxyTestEnv(t, upstream)
-
-	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": vertexTestModel, "stream": true,
-		"input": []any{
-			map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "weather?"}}},
-			map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": `{"q":"x"}`},
-			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
-		},
-		"tools": []any{map[string]any{
-			"type": "function", "name": "lookup",
-			"parameters": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
-		}},
+	endpoint := "/custom:generateContent?route=exact"
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "vertex", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel,
+		authType: model.AuthTypeVertexOAuth, oauthCredential: vertexTestCredential(t, upstream.tokenURI()),
+	}}, map[int]string{0: upstream.server.URL + endpoint + model.ExactUpstreamURLMarker})
+	response := doProxyRequest(t, env.engine, "/v1beta/models/"+vertexTestModel+":generateContent", map[string]any{
+		"contents": []any{map[string]any{"parts": []any{map[string]any{"text": "hi"}}}},
 	}, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-
 	requests, bodies := upstream.calls()
 	if len(requests) != 1 {
 		t.Fatalf("publisher calls=%d", len(requests))
 	}
-	if want := vertexTestRegionURL + "/models/" + vertexTestModel + ":streamGenerateContent"; requests[0].URL.Path != want ||
-		requests[0].URL.RawQuery != "alt=sse" {
-		t.Fatalf("URL=%s?%s, want %s?alt=sse", requests[0].URL.Path, requests[0].URL.RawQuery, want)
+	if requests[0].URL.RequestURI() != endpoint {
+		t.Fatalf("exact URL changed: %s", requests[0].URL)
 	}
-	var functionCalls, functionResponses int
-	gjson.GetBytes(bodies[0], "contents").ForEach(func(_, content gjson.Result) bool {
-		content.Get("parts").ForEach(func(_, part gjson.Result) bool {
-			if part.Get("functionCall").Exists() {
-				functionCalls++
+	if got := gjson.GetBytes(bodies[0], "contents.0.role").String(); got != "user" {
+		t.Fatalf("role=%q, want user", got)
+	}
+}
+
+func TestProxy_VertexOAuthTranslatedResponsesStreamUsesSSEAndDropsCallIDs(t *testing.T) {
+	t.Parallel()
+	for _, exact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exact=%v", exact), func(t *testing.T) {
+			t.Parallel()
+			upstream := newVertexTestUpstream(t)
+			baseURL := upstream.server.URL + vertexTestRegionURL
+			wantPath := vertexTestRegionURL + "/models/" + vertexTestModel + ":streamGenerateContent"
+			wantQuery := "alt=sse"
+			if exact {
+				wantPath = "/custom:streamGenerateContent"
+				wantQuery = "alt=sse&route=exact"
+				baseURL = upstream.server.URL + wantPath + "?" + wantQuery + model.ExactUpstreamURLMarker
 			}
-			if part.Get("functionResponse").Exists() {
-				functionResponses++
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "vertex", upstreamProtocol: util.ProtocolGemini, models: vertexTestModel,
+				authType: model.AuthTypeVertexOAuth, oauthCredential: vertexTestCredential(t, upstream.tokenURI()),
+			}}, map[int]string{0: baseURL})
+
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": vertexTestModel, "stream": true,
+				"input": []any{
+					map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "weather?"}}},
+					map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": `{"q":"x"}`},
+					map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+				},
+				"tools": []any{map[string]any{
+					"type": "function", "name": "lookup",
+					"parameters": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
+				}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			if part.Get("functionCall.id").Exists() || part.Get("functionResponse.id").Exists() {
-				t.Errorf("Vertex body kept a Responses call id: %s", part.Raw)
+
+			requests, bodies := upstream.calls()
+			if len(requests) != 1 {
+				t.Fatalf("publisher calls=%d", len(requests))
 			}
-			return true
+			if requests[0].URL.Path != wantPath || requests[0].URL.RawQuery != wantQuery {
+				t.Fatalf("URL=%s, want %s?%s", requests[0].URL, wantPath, wantQuery)
+			}
+			var functionCalls, functionResponses int
+			gjson.GetBytes(bodies[0], "contents").ForEach(func(_, content gjson.Result) bool {
+				content.Get("parts").ForEach(func(_, part gjson.Result) bool {
+					if part.Get("functionCall").Exists() {
+						functionCalls++
+					}
+					if part.Get("functionResponse").Exists() {
+						functionResponses++
+					}
+					if part.Get("functionCall.id").Exists() || part.Get("functionResponse.id").Exists() {
+						t.Errorf("Vertex body kept a Responses call id: %s", part.Raw)
+					}
+					return true
+				})
+				return true
+			})
+			if functionCalls != 1 || functionResponses != 1 {
+				t.Fatalf("functionCall=%d functionResponse=%d body=%s", functionCalls, functionResponses, bodies[0])
+			}
 		})
-		return true
-	})
-	if functionCalls != 1 || functionResponses != 1 {
-		t.Fatalf("functionCall=%d functionResponse=%d body=%s", functionCalls, functionResponses, bodies[0])
 	}
 }
 
@@ -340,44 +381,56 @@ func TestValidateChannelBaseURLAcceptsVertexPublisherBase(t *testing.T) {
 
 func TestAdminTestVertexOAuthUsesPublisherEndpointAndMintedToken(t *testing.T) {
 	t.Parallel()
-	upstream := newVertexTestUpstream(t)
-	srv := newInMemoryServer(t)
-	cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
-		Name: "vertex-admin-test", AuthType: model.AuthTypeVertexOAuth,
-		OAuthCredential:       vertexTestCredential(t, upstream.tokenURI()),
-		URLs:                  model.ChannelURLs{{URL: upstream.server.URL + vertexTestRegionURL, Protocols: []string{util.ProtocolGemini}}},
-		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		ModelEntries:          []model.ModelEntry{{Model: vertexTestModel}}, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, exact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exact=%v", exact), func(t *testing.T) {
+			t.Parallel()
+			upstream := newVertexTestUpstream(t)
+			srv := newInMemoryServer(t)
+			baseURL := upstream.server.URL + vertexTestRegionURL
+			if exact {
+				baseURL = upstream.server.URL + "/custom:streamGenerateContent?alt=sse&route=exact"
+			}
+			cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
+				Name: "vertex-admin-test", AuthType: model.AuthTypeVertexOAuth,
+				OAuthCredential:       vertexTestCredential(t, upstream.tokenURI()),
+				URLs:                  model.ChannelURLs{{URL: baseURL, Exact: exact, Protocols: []string{util.ProtocolGemini}}},
+				ProtocolTransformMode: model.ProtocolTransformModeLocal,
+				ModelEntries:          []model.ModelEntry{{Model: vertexTestModel}}, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	runtimeCfg, selection, handled, err := srv.prepareOAuthChannelTestAuth(context.Background(), cfg, oauthCredentialRefreshIfNeeded)
-	if !handled || err != nil {
-		t.Fatalf("prepare Vertex test auth handled=%v err=%v", handled, err)
-	}
-	for _, stream := range []bool{false, true} {
-		result := srv.executeChannelTestWithCooldown(context.Background(), runtimeCfg, selection.keyIndex, selection.requestCredential, &testutil.TestChannelRequest{
-			Model: vertexTestModel, ClientProtocol: util.ProtocolGemini, Content: "hi", Stream: stream,
-		}, true)
-		if success, _ := result["success"].(bool); !success {
-			t.Fatalf("stream=%v result=%+v", stream, result)
-		}
-	}
-	requests, _ := upstream.calls()
-	if len(requests) != 2 {
-		t.Fatalf("publisher calls=%d", len(requests))
-	}
-	base := vertexTestRegionURL + "/models/" + vertexTestModel
-	if requests[0].URL.Path != base+":generateContent" ||
-		requests[1].URL.Path != base+":streamGenerateContent" || requests[1].URL.Query().Get("alt") != "sse" {
-		t.Fatalf("URLs=%s, %s", requests[0].URL, requests[1].URL)
-	}
-	for _, request := range requests {
-		if request.Header.Get("Authorization") != "Bearer tok-1" || request.Header.Get("x-goog-api-key") != "" {
-			t.Fatalf("headers=%v", request.Header)
-		}
+			runtimeCfg, selection, handled, err := srv.prepareOAuthChannelTestAuth(context.Background(), cfg, oauthCredentialRefreshIfNeeded)
+			if !handled || err != nil {
+				t.Fatalf("prepare Vertex test auth handled=%v err=%v", handled, err)
+			}
+			for _, stream := range []bool{false, true} {
+				result := srv.executeChannelTestWithCooldown(context.Background(), runtimeCfg, selection.keyIndex, selection.requestCredential, &testutil.TestChannelRequest{
+					Model: vertexTestModel, ClientProtocol: util.ProtocolGemini, Content: "hi", Stream: stream,
+				}, true)
+				if success, _ := result["success"].(bool); !success {
+					t.Fatalf("stream=%v result=%+v", stream, result)
+				}
+			}
+			requests, _ := upstream.calls()
+			if len(requests) != 2 {
+				t.Fatalf("publisher calls=%d", len(requests))
+			}
+			base := vertexTestRegionURL + "/models/" + vertexTestModel
+			if !exact && (requests[0].URL.Path != base+":generateContent" ||
+				requests[1].URL.Path != base+":streamGenerateContent" || requests[1].URL.Query().Get("alt") != "sse") {
+				t.Fatalf("URLs=%s, %s", requests[0].URL, requests[1].URL)
+			}
+			for _, request := range requests {
+				if exact && (request.URL.Path != "/custom:streamGenerateContent" || request.URL.RawQuery != "alt=sse&route=exact") {
+					t.Fatalf("exact URL changed: %s", request.URL)
+				}
+				if request.Header.Get("Authorization") != "Bearer tok-1" || request.Header.Get("x-goog-api-key") != "" {
+					t.Fatalf("headers=%v", request.Header)
+				}
+			}
+		})
 	}
 }
 

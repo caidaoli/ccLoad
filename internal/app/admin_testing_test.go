@@ -920,6 +920,149 @@ func TestOAuthCredentialCleanupCancelDuringRefreshKeepsChannel(t *testing.T) {
 	}
 }
 
+func TestOAuthCredentialCleanupVertexMintFailures(t *testing.T) {
+	for _, action := range []string{oauthCredentialCleanupActionDisable, oauthCredentialCleanupActionDelete} {
+		for _, tc := range []struct {
+			name          string
+			status        int
+			body          string
+			networkError  bool
+			cached        bool
+			rejectedToken bool
+			edit          bool
+			wantStatus    string
+		}{
+			{name: "revoked", status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_description":"Invalid JWT Signature."}`},
+			{name: "revoked with usable cached token", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, cached: true},
+			{name: "revoked after API unauthorized", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, rejectedToken: true},
+			{name: "network failure", networkError: true, wantStatus: "failed"},
+			{name: "server failure with invalid grant", status: http.StatusServiceUnavailable, body: `{"error":"invalid_grant"}`, wantStatus: "failed"},
+			{name: "temporary grant error", status: http.StatusBadRequest, body: `{"error":"temporarily_unavailable"}`, wantStatus: "failed"},
+			{name: "malformed error", status: http.StatusBadRequest, body: `invalid_grant`, wantStatus: "failed"},
+			{name: "concurrent credential rotation", status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, edit: true, wantStatus: "skipped"},
+		} {
+			t.Run(action+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				var publisherCalls atomic.Int32
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					publisherCalls.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					if tc.rejectedToken {
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = io.WriteString(w, `{"error":{"code":401,"message":"revoked"}}`)
+						return
+					}
+					_, _ = io.WriteString(w, vertexGeminiReply)
+				}))
+				srv := newInMemoryServer(t)
+				srv.client = upstream.Client()
+				created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+					Name: "vertex-cleanup", AuthType: model.AuthTypeVertexOAuth,
+					OAuthCredential:       vertexTestCredential(t, "https://oauth.test/token"),
+					URLs:                  model.ChannelURLs{{URL: upstream.URL + vertexTestRegionURL, Protocols: []string{util.ProtocolGemini}}},
+					ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+					ModelEntries:          []model.ModelEntry{{Model: vertexTestModel}}, Enabled: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var mintCalls atomic.Int32
+				tokenClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					call := mintCalls.Add(1)
+					status, body := tc.status, tc.body
+					if call == 1 && (tc.cached || tc.rejectedToken) {
+						status, body = http.StatusOK, `{"access_token":"cached-token","expires_in":60}`
+					} else {
+						if tc.networkError {
+							return nil, errors.New("token endpoint connection failed")
+						}
+						if tc.edit {
+							rotated := string(vertexTestServiceAccount(t, "https://oauth.test/token", 1))
+							updated, updateErr := srv.store.CompareAndSwapOAuthCredential(
+								context.Background(), created.ID, model.AuthTypeVertexOAuth, created.OAuthCredential, rotated)
+							if updateErr != nil || !updated {
+								return nil, fmt.Errorf("rotate credential: updated=%v error=%v", updated, updateErr)
+							}
+						}
+					}
+					return &http.Response{
+						StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
+						Body: io.NopCloser(strings.NewReader(body)), Request: req,
+					}, nil
+				})}
+				srv.vertexCredentials = newVertexCredentialManager(func(*model.Config) *http.Client { return tokenClient })
+				if tc.cached {
+					request := newRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), strings.NewReader(
+						fmt.Sprintf(`{"model":%q,"client_protocol":"gemini","stream":false}`, vertexTestModel)))
+					requestContext, response := newTestContext(t, request)
+					requestContext.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+					srv.HandleChannelTest(requestContext)
+					result := mustParseAPIResponse[map[string]any](t, response.Body.Bytes()).Data
+					if !getResultBoolOrDefault(result, "success", false) {
+						t.Fatalf("prime cached token: status=%d body=%s", response.Code, response.Body.String())
+					}
+				}
+				request := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+					fmt.Sprintf(`{"auth_type":"vertex_oauth","model":%q,"action":%q}`, vertexTestModel, action)))
+				requestContext, response := newTestContext(t, request)
+				srv.HandleStartOAuthCredentialCleanupJob(requestContext)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("start cleanup: status=%d body=%s", response.Code, response.Body.String())
+				}
+				started := mustParseAPIResponse[oauthCredentialCleanupJobStart](t, response.Body.Bytes()).Data
+				var view oauthCredentialCleanupJobView
+				for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+					view, _, err = srv.oauthCredentialCleanupJobs.Get(started.JobID, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if view.Status != oauthCredentialCleanupJobRunning {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				if view.Status != oauthCredentialCleanupJobSucceeded {
+					t.Fatalf("cleanup did not finish: %+v", view)
+				}
+				wantStatus := tc.wantStatus
+				if wantStatus == "" {
+					wantStatus = "disabled"
+					if action == oauthCredentialCleanupActionDelete {
+						wantStatus = "deleted"
+					}
+				}
+				var finalEvent oauthCredentialCleanupEvent
+				for _, event := range view.Events {
+					if event.Event == "progress" {
+						finalEvent = event
+					}
+				}
+				if finalEvent.Status != wantStatus {
+					t.Fatalf("cleanup status=%q want %q; events=%+v", finalEvent.Status, wantStatus, view.Events)
+				}
+				persisted, loadErr := srv.store.GetConfig(context.Background(), created.ID)
+				if wantStatus == "deleted" {
+					if loadErr == nil {
+						t.Fatal("revoked credential channel was not deleted")
+					}
+				} else if loadErr != nil || persisted.Enabled != (wantStatus != "disabled") {
+					t.Fatalf("unexpected persisted channel: %+v error=%v", persisted, loadErr)
+				}
+				if tc.edit && persisted.OAuthCredential == created.OAuthCredential {
+					t.Fatalf("concurrent edit lost: %+v", persisted)
+				}
+				wantMintCalls, wantPublisherCalls := int32(1), int32(0)
+				if tc.cached || tc.rejectedToken {
+					wantMintCalls, wantPublisherCalls = 2, 1
+				}
+				if mintCalls.Load() != wantMintCalls || publisherCalls.Load() != wantPublisherCalls {
+					t.Fatalf("calls mint=%d publisher=%d; want mint=%d publisher=%d", mintCalls.Load(), publisherCalls.Load(), wantMintCalls, wantPublisherCalls)
+				}
+			})
+		}
+	}
+}
+
 func TestOAuthCredentialCleanupDisablesRejectedPersonalAccessTokenByDefault(t *testing.T) {
 	t.Parallel()
 	var upstreamAttempts atomic.Int32

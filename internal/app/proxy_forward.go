@@ -256,8 +256,8 @@ func (s *Server) buildProxyRequest(
 		}
 		upstreamURL = antigravityURL
 	}
-	vertexPublisherLayout := usesVertexPublisherLayout(cfg, upstreamProtocol, baseURL)
-	if vertexPublisherLayout {
+	vertexWire := usesVertexWire(cfg, upstreamProtocol, baseURL)
+	if vertexWire && !model.HasExactUpstreamURLMarker(baseURL) {
 		upstreamURL = buildVertexPublisherURL(baseURL, requestPath, upstreamQuery, reqCtx != nil && reqCtx.transformPlan.NeedsTransform)
 	}
 	parsedUpstreamURL, err := url.Parse(upstreamURL)
@@ -289,7 +289,7 @@ func (s *Server) buildProxyRequest(
 	if reqCtx != nil {
 		reqCtx.anthropicThinkingOmitStrategy = thinkingOmitStrategy
 	}
-	if vertexPublisherLayout {
+	if vertexWire {
 		body = prepareVertexRequestBody(body, reqCtx != nil && reqCtx.transformPlan.ClientProtocol == protocol.Codex)
 	}
 	// 重试回放的是已改写的 wire，沿用首轮映射；只有 OAuth 模拟路径改名。

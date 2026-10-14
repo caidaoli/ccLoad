@@ -762,6 +762,11 @@ func (s *Server) cleanupOAuthCredentialChannel(
 ) oauthCredentialCleanupEvent {
 	result, testedCfg, rejectedAccessToken, err := s.testOAuthCredentialChannel(ctx, cfg, event.Model)
 	if err != nil {
+		// Vertex must mint before its first conversation request; a rejected
+		// service-account grant is already definitive without an API 401.
+		if cfg.UsesVertexOAuth() && oauthRefreshTokenRejected(err) {
+			return s.cleanupRejectedOAuthCredential(ctx, job, cfg, event, err, finalizeDeletion)
+		}
 		event.Status = "failed"
 		event.Error = err.Error()
 		return event
@@ -795,50 +800,7 @@ func (s *Server) cleanupOAuthCredentialChannel(
 			event.Error = "refresh credential: " + refreshErr.Error()
 			return event
 		}
-		if ctx.Err() != nil {
-			event.Status = "failed"
-			event.Error = ctx.Err().Error()
-			return event
-		}
-		stage := "disabling"
-		if job.action == oauthCredentialCleanupActionDelete {
-			stage = "deleting"
-		}
-		mutationEvent := withOAuthCredentialCleanupStage(event, stage)
-		mutationEvent.Error = refreshErr.Error()
-		mutated, mutationErr := job.mutateIfNotCancelled(func() (bool, error) {
-			job.appendEvent(mutationEvent)
-			if job.action == oauthCredentialCleanupActionDelete {
-				return s.deleteChannelIfOAuthCredentialMatches(ctx, cfg)
-			}
-			return s.disableChannelIfOAuthSnapshotMatches(ctx, cfg)
-		})
-		if mutationErr != nil {
-			if errors.Is(mutationErr, context.Canceled) {
-				event.Status = "failed"
-				event.Error = mutationErr.Error()
-				return event
-			}
-			event.Status = "failed"
-			event.Error = fmt.Sprintf("refresh failed: %v; %s channel: %v", refreshErr, job.action, mutationErr)
-			return event
-		}
-		if !mutated {
-			event.Status = "skipped"
-			event.Error = "channel configuration changed while cleanup was running; kept current channel"
-			return event
-		}
-		event.Status = "disabled"
-		if job.action == oauthCredentialCleanupActionDelete {
-			event.Status = "deleted"
-		}
-		event.Error = refreshErr.Error()
-		if job.action == oauthCredentialCleanupActionDelete && finalizeDeletion != nil {
-			if finalizeErr := finalizeDeletion(); finalizeErr != nil {
-				event.Error += "; synchronize deleted channel state: " + finalizeErr.Error()
-			}
-		}
-		return event
+		return s.cleanupRejectedOAuthCredential(ctx, job, cfg, event, refreshErr, finalizeDeletion)
 	}
 	if ctx.Err() != nil {
 		event.Status = "failed"
@@ -875,6 +837,60 @@ func (s *Server) cleanupOAuthCredentialChannel(
 	return event
 }
 
+func (s *Server) cleanupRejectedOAuthCredential(
+	ctx context.Context,
+	job *oauthCredentialCleanupJob,
+	cfg *model.Config,
+	event oauthCredentialCleanupEvent,
+	credentialErr error,
+	finalizeDeletion func() error,
+) oauthCredentialCleanupEvent {
+	if ctx.Err() != nil {
+		event.Status = "failed"
+		event.Error = ctx.Err().Error()
+		return event
+	}
+	stage := "disabling"
+	if job.action == oauthCredentialCleanupActionDelete {
+		stage = "deleting"
+	}
+	mutationEvent := withOAuthCredentialCleanupStage(event, stage)
+	mutationEvent.Error = credentialErr.Error()
+	mutated, mutationErr := job.mutateIfNotCancelled(func() (bool, error) {
+		job.appendEvent(mutationEvent)
+		if job.action == oauthCredentialCleanupActionDelete {
+			return s.deleteChannelIfOAuthCredentialMatches(ctx, cfg)
+		}
+		return s.disableChannelIfOAuthSnapshotMatches(ctx, cfg)
+	})
+	if mutationErr != nil {
+		if errors.Is(mutationErr, context.Canceled) {
+			event.Status = "failed"
+			event.Error = mutationErr.Error()
+			return event
+		}
+		event.Status = "failed"
+		event.Error = fmt.Sprintf("refresh failed: %v; %s channel: %v", credentialErr, job.action, mutationErr)
+		return event
+	}
+	if !mutated {
+		event.Status = "skipped"
+		event.Error = "channel configuration changed while cleanup was running; kept current channel"
+		return event
+	}
+	event.Status = "disabled"
+	if job.action == oauthCredentialCleanupActionDelete {
+		event.Status = "deleted"
+	}
+	event.Error = credentialErr.Error()
+	if job.action == oauthCredentialCleanupActionDelete && finalizeDeletion != nil {
+		if finalizeErr := finalizeDeletion(); finalizeErr != nil {
+			event.Error += "; synchronize deleted channel state: " + finalizeErr.Error()
+		}
+	}
+	return event
+}
+
 type oauthTokenEndpointFailure interface {
 	error
 	StatusCode() int
@@ -893,8 +909,8 @@ func oauthRefreshTokenRejected(err error) bool {
 		return false
 	}
 	statusCode := endpointFailure.StatusCode()
-	// The upstream already rejected the access token before this refresh attempt.
-	// A token endpoint 401 is definitive even when the provider omits a JSON body.
+	// A token endpoint 401 rejects the credential, including Vertex
+	// service-account grants minted before the first conversation request.
 	if statusCode == http.StatusUnauthorized {
 		return true
 	}
@@ -937,7 +953,7 @@ func (s *Server) testOAuthCredentialChannel(
 	if !handled {
 		return nil, cfg, "", errors.New("channel does not use OAuth credentials")
 	}
-	if err != nil && runtimeCfg == nil {
+	if err != nil && (runtimeCfg == nil || (cfg.UsesVertexOAuth() && oauthRefreshTokenRejected(err))) {
 		return nil, cfg, "", err
 	}
 	testedAccessToken := oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection)

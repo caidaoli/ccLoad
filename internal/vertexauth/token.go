@@ -32,6 +32,21 @@ type Token struct {
 	ExpiresAt   time.Time
 }
 
+type tokenEndpointError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e *tokenEndpointError) Error() string {
+	return fmt.Sprintf("vertex token endpoint returned %d: %s", e.statusCode, strings.TrimSpace(e.responseBody))
+}
+
+// StatusCode exposes the token endpoint status for credential error classification.
+func (e *tokenEndpointError) StatusCode() int { return e.statusCode }
+
+// UpstreamResponseBody returns the bounded token endpoint response body.
+func (e *tokenEndpointError) UpstreamResponseBody() string { return e.responseBody }
+
 // MintAccessToken exchanges a self-signed RS256 assertion for a cloud-platform
 // access token (RFC 7523 JWT bearer grant), the same flow
 // google.CredentialsFromJSON uses for service account keys.
@@ -76,7 +91,7 @@ func (c *Credential) MintAccessToken(ctx context.Context, client *http.Client, n
 		return nil, fmt.Errorf("read vertex token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vertex token endpoint returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &tokenEndpointError{statusCode: response.StatusCode, responseBody: string(body)}
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`

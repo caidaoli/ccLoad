@@ -1166,6 +1166,9 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return nil, selection, true, fmt.Errorf("加载 Vertex 凭证失败: %w", err)
 		}
 		selection.requestCredential = accessToken
+		if err != nil {
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 Vertex 凭证失败: %w", err)
+		}
 		return cfg.Clone(), selection, true, nil
 	default:
 		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
@@ -2202,8 +2205,8 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
 		requestPlan.fullURL = buildAnthropicClaudeCodeURL(selectedURL, requestPath, "")
 	}
-	vertexPublisherLayout := usesVertexPublisherLayout(cfgForBuild, upstreamProtocolValue, selectedURL)
-	if vertexPublisherLayout {
+	vertexWire := usesVertexWire(cfgForBuild, upstreamProtocolValue, selectedURL)
+	if vertexWire && !model.HasExactUpstreamURLMarker(selectedURL) {
 		testerURL, parseErr := neturl.Parse(requestPlan.fullURL)
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("parse test upstream URL: %w", parseErr)
@@ -2241,7 +2244,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
 	}
-	if vertexPublisherLayout {
+	if vertexWire {
 		requestPlan.requestBody = prepareVertexRequestBody(requestPlan.requestBody, requestPlan.clientProtocol == string(protocol.Codex))
 	}
 	if cfgForBuild.UsesAnthropicOAuth() &&

@@ -5,14 +5,141 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/vertexauth"
 )
+
+func TestAdminAPI_CSVImportValidatesVertexBeforeWrite(t *testing.T) {
+	for _, existingAuth := range []string{"", model.AuthTypeVertexOAuth} {
+		for _, accepted := range []bool{false, true} {
+			name := existingAuth
+			if name == "" {
+				name = "new channel"
+			}
+			if accepted {
+				name += "/accepted"
+			} else {
+				name += "/rejected"
+			}
+			t.Run(name, func(t *testing.T) {
+				var tokenCalls atomic.Int32
+				tokenServer := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					tokenCalls.Add(1)
+					if err := r.ParseForm(); err != nil || r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" || r.Form.Get("assertion") == "" {
+						t.Error("mint request did not contain a JWT bearer grant")
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if !accepted {
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"access_token":"csv-validated-token","expires_in":3600,"token_type":"Bearer"}`)
+				}))
+				server := newInMemoryServer(t)
+				ctx := context.Background()
+				var original *model.Config
+				if existingAuth != "" {
+					var err error
+					original, err = server.store.CreateConfig(ctx, &model.Config{
+						Name: "Vertex CSV", AuthType: existingAuth, OAuthCredential: vertexTestCredential(t, tokenServer.URL),
+						URLs:         model.ChannelURLs{{URL: "https://original.example.com" + vertexTestRegionURL}},
+						ModelEntries: []model.ModelEntry{{Model: "gemini-original"}}, Enabled: false,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				var csvBody bytes.Buffer
+				csvWriter := csv.NewWriter(&csvBody)
+				if err := csvWriter.WriteAll([][]string{
+					{"name", "api_key", "urls", "models", "auth_type", "oauth_credential", "enabled"},
+					{"Other CSV", "sk-other", `[{"url":"https://other.example.com"}]`, "gpt-5", model.AuthTypeAPIKey, "", "true"},
+					{"Vertex CSV", "", `[{"url":"https://imported.example.com` + vertexTestRegionURL + `"}]`, vertexTestModel,
+						model.AuthTypeVertexOAuth, string(vertexTestServiceAccount(t, tokenServer.URL, 1)), "true"},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("file", "vertex.csv")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := part.Write(csvBody.Bytes()); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				request := newRequest(http.MethodPost, "/admin/channels/import", &body)
+				request.Header.Set("Content-Type", writer.FormDataContentType())
+				c, response := newTestContext(t, request)
+				server.HandleImportChannelsCSV(c)
+				wantStatus := http.StatusBadRequest
+				if accepted {
+					wantStatus = http.StatusOK
+				}
+				if response.Code != wantStatus {
+					t.Fatalf("import status=%d, want %d; body=%s", response.Code, wantStatus, response.Body.String())
+				}
+				if calls := tokenCalls.Load(); calls != 1 {
+					t.Fatalf("token mints=%d, want one validation per import", calls)
+				}
+				summary := mustParseAPIResponse[ChannelImportSummary](t, response.Body.Bytes()).Data
+				channels, err := server.store.ListConfigs(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !accepted {
+					wantChannels := 0
+					if original != nil {
+						wantChannels = 1
+					}
+					if len(channels) != wantChannels || summary.Created != 0 || summary.Updated != 0 || len(summary.Errors) != 1 {
+						t.Fatalf("failed validation changed the batch: channels=%d summary=%+v", len(channels), summary)
+					}
+					if original != nil && (channels[0].ID != original.ID || channels[0].GetAuthType() != original.GetAuthType() ||
+						channels[0].OAuthCredential != original.OAuthCredential || channels[0].Enabled ||
+						!channels[0].SupportsModel("gemini-original") || channels[0].URLs[0].URL != original.URLs[0].URL) {
+						t.Fatal("rejected credential changed the existing channel")
+					}
+					return
+				}
+				wantCreated, wantUpdated := 2, 0
+				if original != nil {
+					wantCreated, wantUpdated = 1, 1
+				}
+				if len(channels) != 2 || summary.Created != wantCreated || summary.Updated != wantUpdated || len(summary.Errors) != 0 {
+					t.Fatalf("unexpected successful import: channels=%d summary=%+v", len(channels), summary)
+				}
+				for _, cfg := range channels {
+					if cfg.Name != "Vertex CSV" {
+						continue
+					}
+					credential, err := vertexauth.ParseCredential([]byte(cfg.OAuthCredential))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !cfg.UsesVertexOAuth() || !cfg.Enabled || !cfg.SupportsModel(vertexTestModel) || credential.ServiceAccount["private_key_id"] != "kid-1" ||
+						cfg.URLs[0].URL != "https://imported.example.com"+vertexTestRegionURL || (original != nil && cfg.ID != original.ID) {
+						t.Fatal("successful import did not persist the validated Vertex channel")
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestCSVImportAPIKeyManagementEnvelopeValidation(t *testing.T) {
 	const secret = "must-not-persist"

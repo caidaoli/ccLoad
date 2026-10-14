@@ -416,7 +416,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 
 	// 批量导入所有有效记录(单事务 + 预编译语句)
 	if len(validChannels) > 0 {
-		if err := s.prepareExistingOAuthChannelUpdates(c.Request.Context(), validChannels); err != nil {
+		if err := s.prepareCSVImportOAuthCredentials(c.Request.Context(), validChannels); err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("批量导入失败: %v", err))
 			RespondErrorWithData(c, http.StatusBadRequest, err.Error(), summary)
 			return
@@ -1156,11 +1156,11 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	}
 }
 
-// prepareExistingOAuthChannelUpdates validates every credential that would
-// overwrite an existing OAuth channel. Network I/O deliberately happens before
+// prepareCSVImportOAuthCredentials validates every Vertex credential and every
+// credential that would overwrite an existing OAuth channel. Network I/O happens before
 // ImportChannelBatch opens its transaction; a failed or indeterminate probe
 // leaves the complete batch untouched.
-func (s *Server) prepareExistingOAuthChannelUpdates(
+func (s *Server) prepareCSVImportOAuthCredentials(
 	ctx context.Context,
 	channels []*model.ChannelWithKeys,
 ) error {
@@ -1192,7 +1192,12 @@ func (s *Server) prepareExistingOAuthChannelUpdates(
 		}
 		imported := channel.Config
 		existing := existingByName[imported.Name]
-		if existing == nil || existing.GetAuthType() != imported.GetAuthType() {
+		if existing == nil {
+			if !imported.UsesVertexOAuth() {
+				continue
+			}
+			existing = imported
+		} else if existing.GetAuthType() != imported.GetAuthType() {
 			continue
 		}
 		credential, err := s.validateCSVImportOAuthCredential(ctx, existing, imported)
