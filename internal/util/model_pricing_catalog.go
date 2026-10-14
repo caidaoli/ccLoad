@@ -363,8 +363,12 @@ var basePricing = map[string]ModelPricing{
 	"babbage-002":          {InputPrice: 0.40, OutputPrice: 0.40},
 
 	// ========== Gemini 模型 ==========
-	"gemini-3.5-flash": {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
-	"gemini-3-5-flash": {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	// 官方 2026-10-14 核实（Global，无长上下文分档）：Argon 优惠价至 2026-11-30，
+	// 2026-12-01 起为 $4/$20/$0.20；Cyber Permissive 不享受优惠价。
+	"gemini-4-argon":                  {InputPrice: 2.00, OutputPrice: 10.00, CacheReadPrice: 0.10, HasCacheReadPrice: true},
+	"gemini-4-argon-cyber-permissive": {InputPrice: 4.00, OutputPrice: 20.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"gemini-3.5-flash":                {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
+	"gemini-3-5-flash":                {InputPrice: 1.50, OutputPrice: 9.00, CacheReadPrice: 0.15, HasCacheReadPrice: true},
 	"gemini-3.1-pro": {
 		InputPrice: 2.00, OutputPrice: 12.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		InputPriceHigh: 4.00, OutputPriceHigh: 18.00, CacheReadPriceHigh: 0.40,

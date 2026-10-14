@@ -63,6 +63,22 @@ func TestCalculateCost_Gemini(t *testing.T) {
 			description:     "验证gemini-3.5-flash标准定价：1M input + 1M output = $10.50",
 		},
 		{
+			name:            "gemini-4-argon无长上下文分档",
+			model:           "gemini-4-argon",
+			inputTokens:     500_000,
+			outputTokens:    100_000,
+			expectedCostUSD: 2.00*0.5 + 10.00*0.1,
+			description:     "验证gemini-4-argon超过200k仍按单一价格：0.5M input + 0.1M output = $2.00",
+		},
+		{
+			name:            "gemini-4-argon-cyber-permissive不享受优惠价",
+			model:           "gemini-4-argon-cyber-permissive",
+			inputTokens:     1_000_000,
+			outputTokens:    1_000_000,
+			expectedCostUSD: 4.00 + 20.00,
+			description:     "验证cyber-permissive使用自身定价而非gemini-4-argon前缀优惠价：1M input + 1M output = $24.00",
+		},
+		{
 			name:            "gemini-2.5-flash基础用量",
 			model:           "gemini-2.5-flash",
 			inputTokens:     1_000_000,   // 1M tokens
