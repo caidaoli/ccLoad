@@ -135,6 +135,7 @@ window.I18N_LOCALES['en'] = {
   'index.channels.api': 'API channel',
   'index.channels.codex': 'Codex channel',
   'index.channels.antigravity': 'Antigravity channel',
+  'index.channels.codebuddy': 'CodeBuddy channel',
   'index.channels.xai': 'xAI channel',
   'index.channels.anthropic': 'Anthropic channel',
   'index.channels.zai': 'Z.ai channel',

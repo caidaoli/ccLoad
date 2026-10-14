@@ -51,6 +51,7 @@
       api_key: 'index.channels.api',
       codex_oauth: 'index.channels.codex',
       antigravity_oauth: 'index.channels.antigravity',
+      codebuddy_oauth: 'index.channels.codebuddy',
       xai_oauth: 'index.channels.xai',
       anthropic_oauth: 'index.channels.anthropic',
       zai_oauth: 'index.channels.zai',

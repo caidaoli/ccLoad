@@ -135,6 +135,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.channels.api': 'API渠道',
   'index.channels.codex': 'Codex渠道',
   'index.channels.antigravity': 'Antigravity渠道',
+  'index.channels.codebuddy': 'CodeBuddy渠道',
   'index.channels.xai': 'xAI渠道',
   'index.channels.anthropic': 'Anthropic渠道',
   'index.channels.zai': 'Z.ai渠道',
