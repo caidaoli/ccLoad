@@ -1153,6 +1153,20 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return cfg.Clone(), selection, true, fmt.Errorf("加载 Zed 凭证失败: %w", err)
 		}
 		return cfg.Clone(), selection, true, nil
+	case cfg.UsesVertexOAuth():
+		// Vertex 只存服务账号私钥，任何模式都得 mint；强制刷新只跳过被拒的 token。
+		if mode != oauthCredentialForceRefresh {
+			rejectedAccessToken = ""
+		}
+		accessToken, err := s.vertexCredentials.accessToken(ctx, cfg, rejectedAccessToken)
+		if accessToken == "" {
+			if err == nil {
+				err = errors.New("vertex credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Vertex 凭证失败: %w", err)
+		}
+		selection.requestCredential = accessToken
+		return cfg.Clone(), selection, true, nil
 	default:
 		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
 	}
@@ -2188,6 +2202,14 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
 		requestPlan.fullURL = buildAnthropicClaudeCodeURL(selectedURL, requestPath, "")
 	}
+	vertexPublisherLayout := usesVertexPublisherLayout(cfgForBuild, upstreamProtocolValue, selectedURL)
+	if vertexPublisherLayout {
+		testerURL, parseErr := neturl.Parse(requestPlan.fullURL)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse test upstream URL: %w", parseErr)
+		}
+		requestPlan.fullURL = buildVertexPublisherURL(selectedURL, requestPath, testerURL.RawQuery, true)
+	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	// 与代理链路一致：Anthropic CCH 签名按上游 origin 分流，最终化前必须先有 URL。
 	parsedTestURL, err := neturl.Parse(requestPlan.fullURL)
@@ -2218,6 +2240,9 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
+	}
+	if vertexPublisherLayout {
+		requestPlan.requestBody = prepareVertexRequestBody(requestPlan.requestBody, requestPlan.clientProtocol == string(protocol.Codex))
 	}
 	if cfgForBuild.UsesAnthropicOAuth() &&
 		(isAnthropicMessagesRequest(upstreamProtocolValue, requestPath) || isAnthropicCountTokensRequest(upstreamProtocolValue, requestPath)) {
@@ -2339,6 +2364,8 @@ func (s *Server) newTestUpstreamRequest(
 	} else if cfgForBuild.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, requestPlan.apiKey)
 		wireRebuilt = true
+	} else if cfgForBuild.UsesVertexOAuth() {
+		injectVertexAuthHeaders(req, requestPlan.apiKey)
 	} else if requestPlan.xaiOAuth {
 		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
 	} else if requestProtocol == protocol.Codex {

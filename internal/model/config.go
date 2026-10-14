@@ -25,6 +25,8 @@ const (
 	AuthTypeCursorOAuth      = "cursor_oauth"
 	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
+	// AuthTypeVertexOAuth authenticates Vertex AI with a Google service account.
+	AuthTypeVertexOAuth = "vertex_oauth"
 	// AuthTypeSystemOne is a decision-only channel authenticated by API keys.
 	AuthTypeSystemOne = "system_one"
 
@@ -61,6 +63,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeZedOAuth
 	case AuthTypeCodeBuddyOAuth:
 		return AuthTypeCodeBuddyOAuth
+	case AuthTypeVertexOAuth:
+		return AuthTypeVertexOAuth
 	case AuthTypeSystemOne:
 		return AuthTypeSystemOne
 	default:
@@ -833,6 +837,11 @@ func (c *Config) UsesCursorOAuth() bool {
 // UsesZedOAuth reports whether this channel is backed by a Zed credential.
 func (c *Config) UsesZedOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeZedOAuth
+}
+
+// UsesVertexOAuth reports whether this channel is backed by a Vertex AI service account.
+func (c *Config) UsesVertexOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeVertexOAuth
 }
 
 // UsesOAuth reports whether API keys are replaced by a private OAuth credential.

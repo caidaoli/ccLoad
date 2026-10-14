@@ -226,7 +226,13 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	// Z.ai Coding Plan is a second exception: ZCode publishes the routed
 	// endpoint (…/api/v1/ultra-zai/anthropic) and runtime appends /v1/messages.
 	isZAIRoutedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeZAIOAuth
-	if !exactURL && !isXAIVersionedBasePath && !isZAIRoutedBasePath && strings.Contains(u.Path, "/v1") {
+	// Vertex publisher bases are versioned (…/v1/projects/{p}/locations/{l}/publishers/google
+	// or …/v1/publishers/google); runtime appends /models/{model}:{action}.
+	isVertexPublisherBasePath := strings.HasSuffix(strings.TrimRight(u.Path, "/"), vertexPublisherPathSuffix)
+	if !exactURL && !isVertexPublisherBasePath && model.NormalizeAuthType(authType) == model.AuthTypeVertexOAuth {
+		return "", fmt.Errorf("vertex_oauth url must end with %s (current path: %q)", vertexPublisherPathSuffix, u.Path)
+	}
+	if !exactURL && !isXAIVersionedBasePath && !isZAIRoutedBasePath && !isVertexPublisherBasePath && strings.Contains(u.Path, "/v1") {
 		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
 	}
 

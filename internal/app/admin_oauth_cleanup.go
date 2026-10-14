@@ -443,7 +443,8 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth:
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth,
+		model.AuthTypeVertexOAuth:
 		return authType
 	default:
 		return ""
@@ -989,7 +990,8 @@ func oauthCredentialTestAccessToken(
 		return runtimeCfg.CodexAccessToken
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
-	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth():
+	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth(),
+		persisted.UsesVertexOAuth():
 		return selection.requestCredential
 	}
 	return ""
@@ -1002,7 +1004,7 @@ func oauthCredentialCleanupProtocol(cfg *model.Config) string {
 	switch {
 	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth(), cfg.UsesZedOAuth():
 		return string(protocol.Codex)
-	case cfg.UsesAntigravityOAuth():
+	case cfg.UsesAntigravityOAuth(), cfg.UsesVertexOAuth():
 		return string(protocol.Gemini)
 	default:
 		return string(protocol.Anthropic)

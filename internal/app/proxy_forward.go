@@ -256,6 +256,10 @@ func (s *Server) buildProxyRequest(
 		}
 		upstreamURL = antigravityURL
 	}
+	vertexPublisherLayout := usesVertexPublisherLayout(cfg, upstreamProtocol, baseURL)
+	if vertexPublisherLayout {
+		upstreamURL = buildVertexPublisherURL(baseURL, requestPath, upstreamQuery, reqCtx != nil && reqCtx.transformPlan.NeedsTransform)
+	}
 	parsedUpstreamURL, err := url.Parse(upstreamURL)
 	if err != nil {
 		return nil, err
@@ -284,6 +288,9 @@ func (s *Server) buildProxyRequest(
 	}
 	if reqCtx != nil {
 		reqCtx.anthropicThinkingOmitStrategy = thinkingOmitStrategy
+	}
+	if vertexPublisherLayout {
+		body = prepareVertexRequestBody(body, reqCtx != nil && reqCtx.transformPlan.ClientProtocol == protocol.Codex)
 	}
 	// 重试回放的是已改写的 wire，沿用首轮映射；只有 OAuth 模拟路径改名。
 	if reqCtx != nil && reqCtx.anthropicToolAliases == nil && cfg.UsesAnthropicOAuth() && !callerOwnsAnthropicWire &&
@@ -413,6 +420,8 @@ func (s *Server) buildProxyRequest(
 	} else if cfg.UsesZedOAuth() {
 		injectZedResponsesHeaders(req, apiKey)
 		wireRebuilt = true
+	} else if cfg.UsesVertexOAuth() {
+		injectVertexAuthHeaders(req, apiKey)
 	} else if cfg.UsesXAIOAuth() {
 		if isImagesResponsesPlan(reqCtx.transformPlan) {
 			injectXAIAPIResponsesHeaders(req, apiKey)
@@ -4342,6 +4351,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesZedOAuth() {
 		return s.tryZedOAuthChannel(ctx, cfg, reqCtx, w)
 	}
+	if cfg.UsesVertexOAuth() {
+		return s.tryVertexOAuthChannel(ctx, cfg, reqCtx, w)
+	}
 
 	channelModel := reqCtx.attemptModel.logicalModel
 	apiKeys, modelScoped := s.filterAPIKeysForModelRow(cfg, apiKeys, selectedModel, string(reqCtx.clientProtocol))
@@ -4749,6 +4761,23 @@ func (s *Server) tryZedOAuthChannel(
 		return cfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && !result.succeeded && zedCredentialRejected(result.status, result.body)
+	})
+}
+
+// tryVertexOAuthChannel retries once with a freshly minted token after a 401.
+// A mint failure cools the channel instead of disabling it; re-importing the
+// key clears the cooldown.
+func (s *Server) tryVertexOAuthChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Vertex", false, func(_ bool, rejectedAccessToken string) (*model.Config, string, error) {
+		accessToken, err := s.vertexCredentials.accessToken(ctx, cfg, rejectedAccessToken)
+		return cfg, accessToken, err
+	}, func(result *proxyResult) bool {
+		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})
 }
 

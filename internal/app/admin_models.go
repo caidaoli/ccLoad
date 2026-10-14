@@ -20,7 +20,9 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	cliproxyregistry "ccLoad/internal/protocol/cliproxy/registry"
 	"ccLoad/internal/util"
+	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
 
@@ -945,6 +947,9 @@ func (s *Server) fetchModelsForChannel(
 	if cfg.UsesZedOAuth() {
 		return sortOAuthFetchModels(s.fetchZedOAuthModels(ctx, cfg, overrideProtocol))
 	}
+	if cfg.UsesVertexOAuth() {
+		return sortOAuthFetchModels(s.fetchVertexOAuthModels(ctx, cfg, overrideProtocol))
+	}
 	if cfg.UsesAntigravityOAuth() {
 		return sortOAuthFetchModels(s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol))
 	}
@@ -1270,6 +1275,44 @@ func fetchXAIOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchMode
 			ChannelURL:         channelURL,
 		},
 	}, nil
+}
+
+// fetchVertexOAuthModels lists the Gemini models the channel's Vertex host
+// serves. The embedded catalog is only a fallback for an unreachable list.
+func (s *Server) fetchVertexOAuthModels(ctx context.Context, cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+	if overrideProtocol != "" && util.NormalizeProtocol(overrideProtocol) != util.ProtocolGemini {
+		return nil, errors.New("模型发现: Vertex 仅支持 gemini 协议")
+	}
+	if len(cfg.URLs) == 0 {
+		return nil, errors.New("模型发现: Vertex 渠道缺少 URL")
+	}
+	names, source := vertexCatalogModels(), "predefined"
+	if live, listErr := s.listVertexPublisherModels(ctx, cfg, cfg.URLs[0].URL); listErr != nil {
+		log.Printf("[WARN] Vertex 模型列表不可用，回退内置目录 (channel=%d): %v", cfg.ID, listErr)
+	} else {
+		names, source = live, "api"
+	}
+	models := make([]model.ModelEntry, len(names))
+	for i, name := range names {
+		models[i] = model.ModelEntry{Model: name}
+	}
+	return &FetchModelsResponse{
+		Models: models, Protocol: util.ProtocolGemini, Source: source,
+		Debug: &FetchModelsDebug{NormalizedProtocol: util.ProtocolGemini, Fetcher: "vertex_publisher_models", ChannelURL: cfg.URLs[0].RuntimeURL()},
+	}, nil
+}
+
+// vertexCatalogModels is the embedded Vertex catalog without Imagen, which
+// needs the predict API the proxy does not route.
+func vertexCatalogModels() []string {
+	ids := cliproxyregistry.CatalogModelIDs(vertexauth.ChannelType)
+	models := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !strings.HasPrefix(id, "imagen-") {
+			models = append(models, id)
+		}
+	}
+	return models
 }
 
 // Antigravity 和 Codex 是产品名称；注释与用户可见文本必须保持首字母大写。

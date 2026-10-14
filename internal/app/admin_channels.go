@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/util"
+	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -993,6 +994,12 @@ func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err e
 			return "", "", err
 		}
 		return credential.AccessToken, "Zed LLM JWT", nil
+	case cfg.UsesVertexOAuth():
+		credential, err := vertexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.Email, "Vertex Service Account", nil
 	}
 	return "", "", nil
 }
@@ -2372,5 +2379,8 @@ func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	}
 	if s.zedCredentials != nil {
 		s.zedCredentials.invalidate(id)
+	}
+	if s.vertexCredentials != nil {
+		s.vertexCredentials.invalidate(id)
 	}
 }

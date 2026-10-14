@@ -56,7 +56,8 @@
       anthropic_oauth: 'index.channels.anthropic',
       zai_oauth: 'index.channels.zai',
       cursor_oauth: 'index.channels.cursor',
-      zed_oauth: 'index.channels.zed'
+      zed_oauth: 'index.channels.zed',
+      vertex_oauth: 'index.channels.vertex'
     });
 
     const AUTH_TYPE_ORDER = Object.keys(AUTH_TYPE_LABEL_KEYS);

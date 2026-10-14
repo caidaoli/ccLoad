@@ -113,6 +113,7 @@ type Server struct {
 	zedOAuth                      *codexOAuthManager
 	cursorService                 *cursorauth.Service
 	cursorCredentials             *cursorCredentialManager
+	vertexCredentials             *vertexCredentialManager
 	cursorRunnerMu                sync.RWMutex
 	cursorRunner                  cursorauth.Runner
 	cursorBridgeRequired          atomic.Bool
@@ -433,6 +434,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.cursorCredentials.refreshTracker = s.oauthCredentialRefreshes
+	s.vertexCredentials = newVertexCredentialManager(s.getClientForChannel)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -1848,6 +1850,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/zed/oauth/callback", s.HandleSubmitZedOAuthCallback)
 		admin.POST("/channels/:id/zed-credential/refresh", s.HandleRefreshZedCredential)
 		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
+		admin.POST("/vertex/credentials/import", s.HandleImportVertexCredential)
 		admin.POST("/channels/:id/cursor-credential/refresh", s.HandleRefreshCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级

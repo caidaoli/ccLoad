@@ -133,6 +133,13 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerZAIDesc">ZCode 登录或 Coding Plan API Key</span>
                       </span>
                     </button>
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="vertex">
+                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="vertex_oauth" data-provider-icon aria-hidden="true"></span>
+                      <span class="channel-page-menu__text">
+                        <span class="channel-page-menu__title" data-i18n="channels.oauth.providerVertex">Vertex</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerVertexDesc">上传服务账号 JSON 密钥</span>
+                      </span>
+                    </button>
                     <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item" role="menuitem">
                       <span class="channel-page-menu__icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg></span>
                       <span class="channel-page-menu__text">
@@ -160,7 +167,7 @@
                       <span class="channel-page-menu__icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.menu.importCredentials">导入 OAuth 凭证文件</span>
-                        <span class="channel-page-menu__desc" data-i18n="channels.menu.importCredentialsDesc">Codex / Anthropic / Antigravity / CodeBuddy / xAI 凭证 JSON 或压缩包，自动识别提供商并按优先级递增创建渠道</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.menu.importCredentialsDesc">Codex / Anthropic / Antigravity / CodeBuddy / xAI / Vertex 凭证 JSON 或压缩包，自动识别提供商并按优先级递增创建渠道</span>
                       </span>
                     </button>
                   </div>
@@ -238,6 +245,8 @@
                     data-i18n-description="channels.oauth.providerZedDesc" data-description="使用 Zed 原生应用登录">Zed</option>
                   <option value="zai" data-i18n="channels.oauth.providerZAI" data-icon-auth-type="zai_oauth"
                     data-i18n-description="channels.oauth.providerZAIDesc" data-description="ZCode 登录或 Coding Plan API Key">Z.ai</option>
+                  <option value="vertex" data-i18n="channels.oauth.providerVertex" data-icon-auth-type="vertex_oauth"
+                    data-i18n-description="channels.oauth.providerVertexDesc" data-description="上传服务账号 JSON 密钥">Vertex</option>
                 </select>
               </div>
               <div id="codexOAuthControls">
@@ -364,6 +373,26 @@
                     data-i18n="channels.zed.systemIDHint">本机运行 ccLoad 时会自动读取 Zed。没有该值时仍可尝试登录，但 Zed 试用权限可能不可用；远程或容器部署可填写本机 Zed 数据库中的 system_id。</p>
                 </div>
               </div>
+              <div id="vertexOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="vertexCredentialFile" data-i18n="channels.vertex.fileLabel">服务账号密钥文件</label>
+                  <input id="vertexCredentialFile" type="file" class="form-input" accept=".json,application/json" aria-describedby="vertexCredentialFileHint">
+                  <label for="vertexCredentialContent" data-i18n="channels.vertex.contentLabel">服务账号密钥内容（JSON）</label>
+                  <textarea id="vertexCredentialContent" class="form-input oauth-url" rows="8" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="vertexCredentialFileHint oauthLoginDialogStatus"></textarea>
+                  <div id="vertexCredentialFileHint" class="oauth-field-hint">
+                    <p data-i18n="channels.vertex.fileHint">选择文件自动填入内容，或直接粘贴 JSON。支持 Google 服务账号密钥和 CLIProxyAPI Vertex 凭证文件。提交后清空内容。</p>
+                  </div>
+                </div>
+                <div class="oauth-field">
+                  <label for="vertexLocation" data-i18n="channels.vertex.locationLabel">区域（可选）</label>
+                  <input id="vertexLocation" name="vertex_location" type="text"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    placeholder="us-central1"
+                    aria-describedby="vertexLocationHint oauthLoginDialogStatus">
+                  <p id="vertexLocationHint" class="oauth-field-hint"
+                    data-i18n="channels.vertex.locationHint">填写 global 或区域（如 us-central1），默认 us-central1。仅用于新建渠道的上游 URL。</p>
+                </div>
+              </div>
               <div id="oauthLoginActions" class="oauth-actions">
                 <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
                   data-i18n="common.close">关闭</button>
@@ -437,6 +466,7 @@
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                 <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
                 <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
+                <option value="vertex" data-i18n="channels.oauth.providerVertex">Vertex</option>
               </select>
             </div>
             <div class="oauth-field">
@@ -511,6 +541,7 @@
                   <option value="cursor_oauth">Cursor</option>
                   <option value="zed_oauth">Zed</option>
                   <option value="zai_oauth">Z.ai</option>
+                  <option value="vertex_oauth">Vertex</option>
                 </select>
               </div>
               <div class="oauth-field">

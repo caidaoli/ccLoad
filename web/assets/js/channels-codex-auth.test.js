@@ -38,7 +38,8 @@ const {
   looksLikeCursorCLISessionSecret,
   CURSOR_USER_API_KEYS_URL,
   submitCodeBuddyCredentialFile,
-  loadCodeBuddyCredentialFile,
+  loadCredentialFile,
+  submitVertexCredential,
   submitOAuthCallback
 } = require('./channels-codex-auth.js');
 
@@ -400,22 +401,57 @@ test('CodeBuddy file authorization does not send a request after cancellation', 
 test('CodeBuddy file selection fills editable content without overwriting newer edits', async () => {
   const content = { value: '' };
   const file = { size: 2, text: async () => '{}' };
-  await loadCodeBuddyCredentialFile({ files: [file] }, content);
+  await loadCredentialFile({ files: [file] }, content, 'channels.codebuddy.fileRequired');
   assert.equal(content.value, '{}');
   let finish;
   const slowFile = { size: 2, text: () => new Promise(resolve => { finish = resolve; }) };
   const input = { files: [slowFile] };
-  const loading = loadCodeBuddyCredentialFile(input, content);
+  const loading = loadCredentialFile(input, content, 'channels.codebuddy.fileRequired');
   content.value = '{"auth":{"accessToken":"pasted"}}';
   finish('{}');
   await loading;
   assert.equal(content.value, '{"auth":{"accessToken":"pasted"}}');
-  const cancelled = loadCodeBuddyCredentialFile(input, content);
+  const cancelled = loadCredentialFile(input, content, 'channels.codebuddy.fileRequired');
   input.files = [];
   content.value = '';
   finish('{}');
   await cancelled;
   assert.equal(content.value, '');
+});
+
+test('Vertex import posts the raw key and passes location only when set', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const key = '{\n  "type": "service_account",\n  "project_id": "p",\n  "client_email": "sa@p.iam.gserviceaccount.com"\n}';
+  try {
+    const requests = [];
+    const fetcher = async (url, options) => {
+      requests.push({ url, options });
+      return { channel_name: 'Vertex-sa', created: true };
+    };
+    const content = { value: `  ${key}  ` };
+    const result = await submitVertexCredential(content, ' global ', fetcher);
+    assert.equal(result.created, true);
+    assert.equal(content.value, '');
+    content.value = key;
+    await submitVertexCredential(content, '  ', fetcher);
+    assert.deepEqual(requests.map(request => request.url), [
+      '/admin/vertex/credentials/import?location=global',
+      '/admin/vertex/credentials/import'
+    ]);
+    for (const request of requests) {
+      assert.equal(request.options.method, 'POST');
+      assert.equal(request.options.headers['Content-Type'], 'application/json');
+      assert.equal(request.options.body, key);
+    }
+
+    content.value = '{not json';
+    await assert.rejects(submitVertexCredential(content, '', fetcher), /channels\.vertex\.contentInvalid/);
+    assert.equal(content.value, '', 'a rejected key must not stay on the page');
+    assert.equal(requests.length, 2);
+  } finally {
+    global.window = previousWindow;
+  }
 });
 
 test('Zed login submits the registered installation identity', () => {
@@ -2875,7 +2911,7 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
   try {
     for (const authType of [
       'codebuddy_oauth', 'codex_oauth', 'antigravity_oauth', 'xai_oauth',
-      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth'
+      'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'vertex_oauth'
     ]) {
       elements.get('channelOAuthQuotaPassthrough').checked = true;
       applyChannelAuthEditorMode(authType);
@@ -2985,6 +3021,12 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     applyChannelAuthEditorMode('zai_oauth', zaiOAuthCredential);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(zaiOAuthCredential, null, 2));
+
+    const vertexCredential = { type: 'service_account', project_id: 'vertex-project', client_email: 'sa@vertex-project.iam.gserviceaccount.com' };
+    applyChannelAuthEditorMode('vertex_oauth', vertexCredential);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(vertexCredential, null, 2));
 
     applyChannelAuthEditorMode('api_key');
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);

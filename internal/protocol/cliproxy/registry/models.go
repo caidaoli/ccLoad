@@ -54,6 +54,8 @@ var staticModels modelCatalog
 // providers modelCatalog leaves out of Lookup.
 var allCatalogs [][]*ModelInfo
 
+var catalogsByKey map[string][]*ModelInfo
+
 func init() {
 	if err := json.Unmarshal(modelsJSON, &staticModels); err != nil {
 		panic("decode embedded CLIProxyAPI model catalog: " + err.Error())
@@ -65,6 +67,19 @@ func init() {
 	for _, key := range slices.Sorted(maps.Keys(catalogs)) {
 		allCatalogs = append(allCatalogs, catalogs[key])
 	}
+	catalogsByKey = catalogs
+}
+
+// CatalogModelIDs returns the model IDs one top-level models.json catalog lists, in file order.
+func CatalogModelIDs(catalog string) []string {
+	models := catalogsByKey[catalog]
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		if model != nil && model.ID != "" {
+			ids = append(ids, model.ID)
+		}
+	}
+	return ids
 }
 
 // LookupModelInfo returns immutable model capability data from the embedded catalog.

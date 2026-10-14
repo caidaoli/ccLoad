@@ -1,0 +1,134 @@
+package app
+
+import (
+	"net/http"
+	"net/url"
+	"strings"
+
+	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	cliproxycommon "ccLoad/internal/protocol/cliproxy/common"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+// vertexPublisherPathSuffix marks a channel URL that already points at a Vertex
+// publisher endpoint: a service account project, an express API key, or a relay.
+const vertexPublisherPathSuffix = "/publishers/google"
+
+// usesVertexPublisherLayout reports whether Gemini requests to baseURL use the
+// Vertex publisher layout ({base}/models/{model}:{action}) instead of the
+// Gemini API layout. Exact URLs are sent verbatim and never remapped.
+func usesVertexPublisherLayout(cfg *model.Config, upstreamProtocol protocol.Protocol, baseURL string) bool {
+	if upstreamProtocol != protocol.Gemini || model.HasExactUpstreamURLMarker(baseURL) {
+		return false
+	}
+	if cfg.UsesVertexOAuth() {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	return err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), vertexPublisherPathSuffix)
+}
+
+// buildVertexPublisherURL maps a Gemini API path onto a Vertex publisher base:
+// /v1beta/models/{model}:{action} becomes {base}/models/{model}:{action}.
+// Without alt=sse Vertex streams a JSON array. ccLoad-built streams (translated
+// requests, channel tests) need SSE; a Gemini passthrough keeps the caller's query.
+func buildVertexPublisherURL(baseURL, requestPath, rawQuery string, defaultSSE bool) string {
+	path := requestPath
+	for _, version := range []string{"/v1beta/", "/v1alpha/", "/v1/"} {
+		if rest, ok := strings.CutPrefix(path, version+"models/"); ok {
+			path = "/models/" + rest
+			break
+		}
+	}
+	if defaultSSE && strings.HasSuffix(path, ":streamGenerateContent") {
+		query, _ := url.ParseQuery(rawQuery)
+		if query.Get("alt") == "" {
+			query.Set("alt", "sse")
+			rawQuery = query.Encode()
+		}
+	}
+	return buildUpstreamURL(baseURL, path, rawQuery)
+}
+
+// injectVertexAuthHeaders authenticates with the service account access token.
+// A Gemini API key header must not reach Vertex next to it.
+func injectVertexAuthHeaders(req *http.Request, accessToken string) {
+	req.Header.Del("x-goog-api-key")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+}
+
+// prepareVertexRequestBody adapts a Gemini body to what Vertex requires but the
+// Gemini API tolerates. Only Responses (Codex) clients carry tool call IDs.
+func prepareVertexRequestBody(body []byte, responsesClient bool) []byte {
+	body = normalizeVertexContentRoles(body)
+	if responsesClient {
+		body = stripVertexResponsesToolCallIDs(body)
+	}
+	return body
+}
+
+// normalizeVertexContentRoles fills a missing or invalid content role: the
+// Gemini API defaults it to user, Vertex rejects it ("Please use a valid role:
+// user, model."). Same rule as CLIProxyAPI ConvertGeminiRequestToGemini: a
+// functionResponse turn is user, any other turn alternates starting from user.
+func normalizeVertexContentRoles(body []byte) []byte {
+	contents := gjson.GetBytes(body, "contents")
+	if !contents.IsArray() {
+		return body
+	}
+	type roleFix struct{ path, role string }
+	var fixes []roleFix
+	previous := ""
+	contents.ForEach(func(index, content gjson.Result) bool {
+		role := content.Get("role").String()
+		if role != "user" && role != "model" {
+			role = "user"
+			if previous == "user" && !cliproxycommon.ContentHasGeminiFunctionResponse([]byte(content.Raw)) {
+				role = "model"
+			}
+			fixes = append(fixes, roleFix{path: "contents." + index.String() + ".role", role: role})
+		}
+		previous = role
+		return true
+	})
+	for _, fix := range fixes {
+		if updated, err := sjson.SetBytes(body, fix.path, fix.role); err == nil {
+			body = updated
+		}
+	}
+	return body
+}
+
+// stripVertexResponsesToolCallIDs removes the OpenAI Responses call IDs the
+// Responses-to-Gemini translator keeps on functionCall/functionResponse parts;
+// Vertex rejects them (CLIProxyAPI StripVertexOpenAIResponsesToolCallIDs).
+func stripVertexResponsesToolCallIDs(body []byte) []byte {
+	contents := gjson.GetBytes(body, "contents")
+	if !contents.IsArray() {
+		return body
+	}
+	var paths []string
+	contents.ForEach(func(contentIndex, content gjson.Result) bool {
+		content.Get("parts").ForEach(func(partIndex, part gjson.Result) bool {
+			for _, field := range []string{"functionCall", "functionResponse"} {
+				if part.Get(field + ".id").Exists() {
+					paths = append(paths, "contents."+contentIndex.String()+".parts."+partIndex.String()+"."+field+".id")
+				}
+			}
+			return true
+		})
+		return true
+	})
+	for _, path := range paths {
+		if updated, err := sjson.DeleteBytes(body, path); err == nil {
+			body = updated
+		}
+	}
+	return body
+}

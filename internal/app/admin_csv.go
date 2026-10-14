@@ -23,6 +23,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -1144,6 +1145,12 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 			return "", err
 		}
 		return credential.JSON()
+	case model.AuthTypeVertexOAuth:
+		credential, err := vertexauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	default:
 		return "", fmt.Errorf("unsupported auth_type %q", authType)
 	}
@@ -1371,6 +1378,16 @@ func (s *Server) validateCSVImportOAuthCredential(
 			service.ModelsURL = s.zedService.ModelsURL
 		}
 		if _, err := service.FetchUsage(ctx, credential); err != nil {
+			return "", err
+		}
+		return credential.JSON()
+
+	case model.AuthTypeVertexOAuth:
+		credential, err := vertexauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if _, err := credential.MintAccessToken(ctx, client, time.Now()); err != nil {
 			return "", err
 		}
 		return credential.JSON()

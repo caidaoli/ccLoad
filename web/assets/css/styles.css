@@ -1081,6 +1081,7 @@ html[data-resolved-theme="dark"] ::selection {
   background: radial-gradient(66.67% 66.67% at 87.5% 102.08%, #2ea99d 0%, #6c4dff 100%);
 }
 .channel-provider-avatar[data-auth-type="zed_oauth"] { background: #084ccf; }
+.channel-provider-avatar[data-auth-type="vertex_oauth"] { background: #4285f4; }
 
 /* ===== 首页总览 ===== */
 .overview-header {

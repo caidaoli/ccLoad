@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -81,7 +82,7 @@ func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
 	case "", oauthCredentialProviderAuto:
 		return oauthCredentialProviderAuto, nil
-	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType:
+	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType, codebuddyauth.ChannelType, vertexauth.ChannelType:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported credential provider %q", normalized)
@@ -159,6 +160,8 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 			return codebuddyauth.ChannelType, nil
 		case "claude":
 			return anthropicauth.ChannelType, nil
+		case vertexauth.ChannelType, "service_account":
+			return vertexauth.ChannelType, nil
 		case "", "oauth":
 			// Empty and omitted types use the same field-based inference.
 		default:
@@ -268,6 +271,7 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context) (*oauthCredentialI
 		antigravityauth.ChannelType: 0,
 		xaiauth.ChannelType:         0,
 		anthropicauth.ChannelType:   0,
+		vertexauth.ChannelType:      0,
 	}
 	if priorityIncrement > 0 {
 		configs, listErr := s.store.ListConfigs(c.Request.Context())
@@ -289,6 +293,8 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context) (*oauthCredentialI
 				nextPriorityByProvider[xaiauth.ChannelType] = cfg.Priority
 			case cfg.UsesAnthropicOAuth() && cfg.Priority > nextPriorityByProvider[anthropicauth.ChannelType]:
 				nextPriorityByProvider[anthropicauth.ChannelType] = cfg.Priority
+			case cfg.UsesVertexOAuth() && cfg.Priority > nextPriorityByProvider[vertexauth.ChannelType]:
+				nextPriorityByProvider[vertexauth.ChannelType] = cfg.Priority
 			}
 		}
 		for credentialProvider := range nextPriorityByProvider {
@@ -609,6 +615,28 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		}
 		prepared.ChannelName = baseName
 		prepared.Config = newAnthropicOAuthChannel(prepared.ChannelName, credentialJSON)
+	case vertexauth.ChannelType:
+		credential, err := vertexauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(vertexChannelBaseName(credential))]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = vertexChannelBaseName(credential)
+		prepared.Config = newVertexOAuthChannel(prepared.ChannelName, credentialJSON, credential)
+		if err := s.validateVertexCredential(ctx, prepared.Config, credential); err != nil {
+			prepared.Config = nil
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
 	default:
 		prepared.Result.Status = "failed"
 		prepared.Result.Error = fmt.Sprintf("unsupported credential provider %q", credentialProvider)
@@ -655,6 +683,9 @@ func oauthCredentialProviderLabel(provider string) string {
 	}
 	if provider == anthropicauth.ChannelType {
 		return "Anthropic"
+	}
+	if provider == vertexauth.ChannelType {
+		return "Vertex"
 	}
 	return provider
 }

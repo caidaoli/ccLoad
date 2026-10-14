@@ -16,6 +16,7 @@ let xaiImportStopPromise = null;
 let activeZAIKeyFlow = null;
 let activeCursorImportFlow = null;
 let activeCodeBuddyFileFlow = null;
+let activeVertexImportFlow = null;
 let oauthPagehideBound = false;
 let activeOAuthCredentialCleanup = null;
 let oauthCredentialCleanupModelLoadSequence = 0;
@@ -261,7 +262,7 @@ function applyChannelAuthEditorMode(
   const zaiOAuth = authType === 'zai_oauth';
   const cursorOAuth = authType === 'cursor_oauth';
   const zedOAuth = authType === 'zed_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth;
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
   const oauth = credentialVisible;
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -653,6 +654,7 @@ function syncOAuthProviderFields() {
   const zai = provider === 'zai';
   const cursor = provider === 'cursor';
   const zed = provider === 'zed';
+  const vertex = provider === 'vertex';
   const zaiAPIKey = zai && zaiMethod === 'api_key';
   const cursorAPIKey = cursor;
   const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
@@ -667,6 +669,10 @@ function syncOAuthProviderFields() {
   const cursorAPIKeyInput = document.getElementById('cursorUserAPIKey');
   const zedControls = document.getElementById('zedOAuthControls');
   const zedSystemID = document.getElementById('zedSystemID');
+  const vertexControls = document.getElementById('vertexOAuthControls');
+  const vertexFile = document.getElementById('vertexCredentialFile');
+  const vertexContent = document.getElementById('vertexCredentialContent');
+  const vertexLocation = document.getElementById('vertexLocation');
   const codexControls = document.getElementById('codexOAuthControls');
   const codexPersonalAccessTokenField = document.getElementById('codexPersonalAccessTokenField');
   const codexPersonalAccessTokenInput = document.getElementById('codexPersonalAccessToken');
@@ -680,6 +686,13 @@ function syncOAuthProviderFields() {
   if (cursorControls) cursorControls.hidden = !cursor;
   if (zedControls) zedControls.hidden = !zed;
   if (zedSystemID && !zed) zedSystemID.removeAttribute?.('aria-invalid');
+  if (vertexControls) vertexControls.hidden = !vertex;
+  if (vertexContent) vertexContent.required = vertex;
+  if (!vertex) {
+    if (vertexFile) vertexFile.value = '';
+    if (vertexContent) vertexContent.value = '';
+    if (vertexLocation) vertexLocation.value = '';
+  }
   if (zaiAPIKeyField) zaiAPIKeyField.hidden = !zaiAPIKey;
   if (zaiAPIKeyInput) {
     zaiAPIKeyInput.required = zaiAPIKey;
@@ -693,7 +706,7 @@ function syncOAuthProviderFields() {
   // Let Cursor's custom empty-value handler run so it can open the Dashboard.
   // Keep the input required for assistive technology and other form semantics.
   if (authorizeButton) authorizeButton.formNoValidate = cursorAPIKey;
-  if (sessionFields && (codebuddyFile || xai || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey)) sessionFields.hidden = true;
+  if (sessionFields && (codebuddyFile || xai || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey || vertex)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -710,6 +723,8 @@ function syncOAuthProviderFields() {
       ? 'channels.codebuddy.fileHint'
       : codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
+      : vertex
+      ? 'channels.vertex.description'
       : zed
       ? 'channels.zed.oauthDescription'
       : cursor
@@ -741,6 +756,8 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
     ? (codebuddyInternational ? 'channels.codebuddyInternational.fileSubmit' : 'channels.codebuddy.fileSubmit')
     : provider === 'cursor'
     ? 'channels.cursor.apiKeySubmit'
+    : provider === 'vertex'
+    ? 'channels.vertex.submit'
     : provider === 'zai'
     ? (method === 'api_key' ? 'channels.zai.apiKeySubmit' : 'channels.oauth.startAuthorization')
     : provider === 'xai'
@@ -898,11 +915,11 @@ async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal
   }
 }
 
-async function loadCodeBuddyCredentialFile(input, content) {
+async function loadCredentialFile(input, content, fileRequiredKey) {
   const file = input?.files?.[0];
   if (!file) return;
   if (file.size === 0 || file.size > 1048576) {
-    throw new Error(window.t('channels.codebuddy.fileRequired'));
+    throw new Error(window.t(fileRequiredKey));
   }
   const previous = content.value;
   const body = await file.text();
@@ -923,6 +940,27 @@ async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth,
   input.value = '';
   const provider = codeBuddyOAuthProvider(edition);
   return fetcher(`/admin/${provider}/credentials/import`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
+  });
+}
+
+// submitVertexCredential imports a service account key. The key leaves the
+// page before validation so it never outlives the attempt.
+async function submitVertexCredential(content, location, fetcher = fetchDataWithAuth, signal = undefined) {
+  const body = String(content?.value || '').trim();
+  if (content) content.value = '';
+  if (!body || new TextEncoder().encode(body).length > 1048576) {
+    throw new Error(window.t('channels.vertex.contentRequired'));
+  }
+  try {
+    JSON.parse(body);
+  } catch {
+    throw new Error(window.t('channels.vertex.contentInvalid'));
+  }
+  signal?.throwIfAborted();
+  const normalizedLocation = String(location || '').trim();
+  const query = normalizedLocation ? `?location=${encodeURIComponent(normalizedLocation)}` : '';
+  return fetcher(`/admin/vertex/credentials/import${query}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal
   });
 }
@@ -1217,6 +1255,17 @@ async function stopActiveOAuth(options = {}) {
   if (fileMethod) fileMethod.disabled = false;
   const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   if (codebuddyEditionSelect) codebuddyEditionSelect.disabled = false;
+  const vertexFlow = activeVertexImportFlow;
+  if (vertexFlow) {
+    activeVertexImportFlow = null;
+    vertexFlow.controller.abort();
+    vertexFlow.button.disabled = false;
+    vertexFlow.button.removeAttribute?.('aria-busy');
+  }
+  for (const id of ['vertexCredentialFile', 'vertexCredentialContent', 'vertexLocation']) {
+    const input = document.getElementById(id);
+    if (input) input.value = '';
+  }
   await Promise.all([
     stopActiveCodexOAuth({ closeDialog: false }),
     stopActiveCodexPersonalAccessToken(),
@@ -1608,7 +1657,8 @@ function oauthCredentialCleanupProviderLabel(authType) {
     zai_oauth: 'Z.ai',
     cursor_oauth: 'Cursor',
     zed_oauth: 'Zed',
-    codebuddy_oauth: 'CodeBuddy'
+    codebuddy_oauth: 'CodeBuddy',
+    vertex_oauth: 'Vertex'
   })[authType] || authType;
 }
 
@@ -2630,6 +2680,9 @@ function setupOAuthActions() {
   const zaiMethod = document.getElementById('zaiOAuthMethod');
   const zaiCodingPlanKey = document.getElementById('zaiCodingPlanKey');
   const cursorUserAPIKey = document.getElementById('cursorUserAPIKey');
+  const vertexFile = document.getElementById('vertexCredentialFile');
+  const vertexContent = document.getElementById('vertexCredentialContent');
+  const vertexLocation = document.getElementById('vertexLocation');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
@@ -2688,12 +2741,22 @@ function setupOAuthActions() {
   if (codebuddyFile && codebuddyContent && !codebuddyFile.dataset.bound) {
     codebuddyFile.addEventListener('change', async () => {
       try {
-        await loadCodeBuddyCredentialFile(codebuddyFile, codebuddyContent);
+        await loadCredentialFile(codebuddyFile, codebuddyContent, 'channels.codebuddy.fileRequired');
       } catch (error) {
         setCodexOAuthDialogStatus(error?.message || window.t('channels.codebuddy.fileInvalid'), 'error');
       }
     });
     codebuddyFile.dataset.bound = '1';
+  }
+  if (vertexFile && vertexContent && !vertexFile.dataset.bound) {
+    vertexFile.addEventListener('change', async () => {
+      try {
+        await loadCredentialFile(vertexFile, vertexContent, 'channels.vertex.fileRequired');
+      } catch (error) {
+        setCodexOAuthDialogStatus(error?.message || window.t('channels.vertex.contentInvalid'), 'error');
+      }
+    });
+    vertexFile.dataset.bound = '1';
   }
   if (zaiMethod && !zaiMethod.dataset.bound) {
     zaiMethod.addEventListener('change', syncOAuthProviderFields);
@@ -2703,7 +2766,7 @@ function setupOAuthActions() {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
-        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow) return;
+        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow || activeVertexImportFlow) return;
       providerSelect.disabled = true;
       const codebuddyProvider = providerSelect.value === 'codebuddy' || providerSelect.value === 'codebuddy-international';
       const codebuddyEditionValue = providerSelect.value === 'codebuddy-international'
@@ -2831,6 +2894,35 @@ function setupOAuthActions() {
           if (activeCursorImportFlow === flow) activeCursorImportFlow = null;
           authorizeButton.disabled = false;
           authorizeButton.removeAttribute?.('aria-busy');
+        }
+      } else if (providerSelect.value === 'vertex') {
+        const flow = { controller: new AbortController(), button: authorizeButton };
+        activeVertexImportFlow = flow;
+        authorizeButton.disabled = true;
+        authorizeButton.setAttribute?.('aria-busy', 'true');
+        try {
+          setCodexOAuthDialogStatus(window.t('channels.vertex.submitting'));
+          if (vertexFile) vertexFile.value = '';
+          const result = await submitVertexCredential(vertexContent, vertexLocation?.value, fetchDataWithAuth, flow.controller.signal);
+          if (activeVertexImportFlow !== flow) return;
+          closeOAuthLoginDialogElement();
+          const message = window.t(result?.created ? 'channels.vertex.importCreated' : 'channels.vertex.importUpdated', {
+            channel: result?.channel_name || ''
+          });
+          setCodexAuthStatus(message, 'success');
+          if (window.showSuccess) window.showSuccess(message);
+          await reloadChannelsList();
+        } catch (error) {
+          if (activeVertexImportFlow !== flow) return;
+          const message = error?.message || window.t('channels.vertex.importFailed');
+          setCodexOAuthDialogStatus(message, 'error');
+          if (window.showError) window.showError(message);
+        } finally {
+          if (activeVertexImportFlow === flow) {
+            activeVertexImportFlow = null;
+            authorizeButton.disabled = false;
+            authorizeButton.removeAttribute?.('aria-busy');
+          }
         }
       } else if (providerSelect.value === 'zai' && zaiMethod?.value === 'api_key') {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -3215,7 +3307,8 @@ function setupOAuthActions() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    loadCodeBuddyCredentialFile,
+    loadCredentialFile,
+    submitVertexCredential,
     submitCodeBuddyCredentialFile,
     applyChannelAuthEditorMode,
     batchRefreshSelectedOAuthUsage,
