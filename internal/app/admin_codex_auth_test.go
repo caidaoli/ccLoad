@@ -1835,7 +1835,7 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 	}
 	channel := channels[0]
 	if channel.Name != "Codex-user@example.com" || !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 ||
-		!channel.SupportsModel("gpt-5.5") || !channel.SupportsModel("gpt-image-1.5") || !channel.SupportsModel("gpt-image-2") {
+		!channel.SupportsModel("gpt-6-luna") || !channel.SupportsModel("gpt-image-1.5") || !channel.SupportsModel("gpt-image-2") {
 		t.Fatalf("created channel = %#v", channel)
 	}
 	if len(channel.URLs) != 1 || channel.URLs[0].URL != codexUpstreamURL || !channel.URLs[0].Exact || strings.Contains(channel.OAuthCredential, "code-1") {
@@ -4236,8 +4236,8 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 			if err != nil || !created {
 				t.Fatalf("create channel = (%#v, %v, %v)", channel, created, err)
 			}
-			if !channel.SupportsModel("gpt-5.5") {
-				t.Fatalf("plan %q lost the shared model", tt.plan)
+			if channel.SupportsModel("gpt-5.5") {
+				t.Fatalf("plan %q includes retired model gpt-5.5", tt.plan)
 			}
 			for _, name := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-image-2", "gpt-image-2.5"} {
 				if channel.SupportsModel(name) != tt.paidModelsAllowed {

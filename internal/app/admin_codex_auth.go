@@ -40,7 +40,6 @@ var codexOAuthDefaultModels = []string{
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
-	"gpt-5.5",
 	"codex-auto-review",
 	"gpt-image-1.5",
 	"gpt-image-2",

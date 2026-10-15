@@ -1780,7 +1780,7 @@ for (const testCase of [
 
 test('common models add every selected type and ignore existing names case-insensitively', () => {
   const rows = [
-    { model: 'GPT-5.5', redirect_model: 'custom-upstream-model' }
+    { model: 'GPT-6-LUNA', redirect_model: 'custom-upstream-model' }
   ];
 
   const restore = installCommonModelsGlobals();
@@ -1791,7 +1791,8 @@ test('common models add every selected type and ignore existing names case-insen
     assert.equal(result.hasSupportedTypes, true);
     assert.ok(result.addedCount > 0);
     assert.equal(rows.length, result.addedCount + 1);
-    assert.equal(rows.filter(row => row.model.toLowerCase() === 'gpt-5.5').length, 1);
+    assert.equal(rows.filter(row => row.model.toLowerCase() === 'gpt-6-luna').length, 1);
+    assert.equal(rows.some(row => row.model.toLowerCase() === 'gpt-5.5'), false);
     assert.ok(rows.some(row => row.model.startsWith('claude-')));
     assert.equal(rows[0].redirect_model, 'custom-upstream-model');
   } finally {

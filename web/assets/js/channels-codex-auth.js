@@ -977,7 +977,7 @@ function clearCursorSecret(input) {
   input.removeAttribute?.('aria-invalid');
 }
 
-const CURSOR_USER_API_KEYS_URL = 'https://cursor.com/dashboard?tab=integrations';
+const CURSOR_USER_API_KEYS_URL = 'https://cursor.com/dashboard/api';
 
 function looksLikeCursorCLISessionSecret(secret) {
   const value = String(secret || '').trim();
