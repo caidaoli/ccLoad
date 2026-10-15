@@ -191,6 +191,7 @@ type protocolCapabilityKey struct {
 	// upstreamModel 是重定向后的上游模型（小写基名）。同一 URL 下不同模型可能只开放
 	// 不同协议，共用条目会让交替请求的模型互相覆盖、每次切换都重新探测。
 	upstreamModel string
+	sessionID     string
 }
 
 // protocolCapabilityModel 返回本次渠道尝试的能力缓存模型维度。
@@ -343,4 +344,38 @@ func (c *protocolCapabilityCache) clearChannels(channelIDs ...int64) {
 			delete(c.entries, key)
 		}
 	}
+}
+
+func protocolCapabilitySessionID(reqCtx *proxyRequestContext) string {
+	if reqCtx == nil {
+		return ""
+	}
+	if reqCtx.header != nil {
+		if sid := responsesExecutionSessionID(reqCtx.header); sid != "" {
+			return sid
+		}
+		if sid := strings.TrimSpace(reqCtx.header.Get("X-Claude-Code-Session-Id")); sid != "" {
+			if thread := strings.TrimSpace(reqCtx.header.Get("Thread-Id")); thread != "" {
+				return sid + "\x00thread\x00" + thread
+			}
+			return sid
+		}
+		for _, name := range []string{"x-opencode-session", "x-session-id"} {
+			if sid := strings.TrimSpace(reqCtx.header.Get(name)); sid != "" {
+				return sid
+			}
+		}
+	}
+	if reqCtx.routingSession != nil {
+		if sid := strings.TrimSpace(reqCtx.routingSession.storeKey); sid != "" {
+			return sid
+		}
+	}
+	if sid := strings.TrimSpace(anthropicSessionIDFromRequest(reqCtx.body)); sid != "" {
+		return sid
+	}
+	if h := strings.TrimSpace(reqCtx.tokenHash); h != "" {
+		return "tok:" + h
+	}
+	return ""
 }

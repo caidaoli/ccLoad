@@ -12,6 +12,58 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestProtocolCapabilityCacheIsSessionScoped(t *testing.T) {
+	t.Parallel()
+
+	cache := &protocolCapabilityCache{}
+	base := protocolCapabilityKey{
+		channelID: 21, baseURL: "https://cli-chat-proxy.grok.com/v1",
+		clientProtocol: protocol.OpenAI, requestFamily: protocol.RequestFamilyChatCompletions,
+		upstreamModel: "grok-4.7",
+	}
+	sessionA := base
+	sessionA.sessionID = "sess-a"
+	sessionB := base
+	sessionB.sessionID = "sess-b"
+	cache.set(sessionA, protocol.Codex)
+
+	if got, known := cache.get(sessionA); !known || got != protocol.Codex {
+		t.Fatalf("session A capability=%q known=%v, want codex", got, known)
+	}
+	if _, known := cache.get(sessionB); known {
+		t.Fatal("session B inherited session A's learned protocol")
+	}
+	if _, known := cache.get(base); known {
+		t.Fatal("empty session inherited session A's learned protocol")
+	}
+}
+
+func TestProtocolCapabilitySessionIDFromHeaders(t *testing.T) {
+	t.Parallel()
+	if protocolCapabilitySessionID(nil) != "" {
+		t.Fatal("nil context produced a session id")
+	}
+	reqCtx := &proxyRequestContext{
+		header: http.Header{
+			"X-Claude-Code-Session-Id": []string{"abc"},
+			"Thread-Id":                []string{"t1"},
+		},
+		tokenHash: "deadbeef",
+	}
+	got := protocolCapabilitySessionID(reqCtx)
+	if got != "abc\x00thread\x00t1" {
+		t.Fatalf("session id = %q", got)
+	}
+	reqCtx.header.Del("Thread-Id")
+	if protocolCapabilitySessionID(reqCtx) != "abc" {
+		t.Fatalf("session without thread = %q", protocolCapabilitySessionID(reqCtx))
+	}
+	reqCtx.header.Del("X-Claude-Code-Session-Id")
+	if protocolCapabilitySessionID(reqCtx) != "tok:deadbeef" {
+		t.Fatalf("token fallback = %q", protocolCapabilitySessionID(reqCtx))
+	}
+}
+
 func TestProtocolCapabilityCacheClearChannelsKeepsOtherChannels(t *testing.T) {
 	t.Parallel()
 

@@ -2590,6 +2590,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		// 因此需要先把 body 封装成“稳定引用”，避免取消 goroutine 与包装赋值发生 data race。
 		body := &onceCloseReadCloser{ReadCloser: resp.Body}
 		resp.Body = body
+		if cfg.UsesXAIOAuth() && reqCtx.upstreamProtocol == protocol.Codex {
+			resp.Body = wrapXAIClientToolTypeRewrite(resp.Body)
+		}
 
 		// 正常返回时关闭（Close 幂等，允许与 AfterFunc 并发触发）
 		defer func() { _ = resp.Body.Close() }()
@@ -3482,6 +3485,9 @@ func retryBodyForRejectedRequest(
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
 		return retryBody, strategy, true
 	}
+	if retryBody, strategy, ok := openaiRetryBodyForMaxTokens(upstreamProtocol, plan, res); ok {
+		return retryBody, strategy, true
+	}
 	if retryBody, strategy, ok := responsesRetryBodyForUnknownParameter(upstreamProtocol, plan, res); ok {
 		return retryBody, strategy, true
 	}
@@ -4035,6 +4041,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			channelID: cfg.ID, baseURL: attemptBaseURL,
 			clientProtocol: clientProtocol, requestFamily: requestFamily,
 			upstreamModel: capabilityModel,
+			sessionID:     protocolCapabilitySessionID(reqCtx),
 		}
 		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
 			return nil, nil, fmt.Errorf("invalid URL selector index %d for channel %d", urlEntry.idx, cfg.ID)

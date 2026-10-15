@@ -1110,6 +1110,30 @@ func TestConvertClaudeRequestToOpenAI_StripsPatternPropertiesIncompatibleKeys(t 
 	}
 }
 
+func TestConvertClaudeRequestToOpenAI_GPT5UsesMaxCompletionTokens(t *testing.T) {
+	inputJSON := `{"model":"claude-sonnet-4-5","max_tokens":64000,"messages":[{"role":"user","content":"hi"}]}`
+	out, err := ConvertClaudeRequestToOpenAI("gpt-5.6-sol", []byte(inputJSON), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(out, "max_tokens").Exists() {
+		t.Fatalf("gpt-5.6-sol still has max_tokens: %s", out)
+	}
+	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 64000 {
+		t.Fatalf("max_completion_tokens = %d, body=%s", got, out)
+	}
+	legacy, err := ConvertClaudeRequestToOpenAI("gpt-4o", []byte(inputJSON), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(legacy, "max_completion_tokens").Exists() {
+		t.Fatalf("gpt-4o used max_completion_tokens: %s", legacy)
+	}
+	if got := gjson.GetBytes(legacy, "max_tokens").Int(); got != 64000 {
+		t.Fatalf("gpt-4o max_tokens = %d, body=%s", got, legacy)
+	}
+}
+
 func TestConvertClaudeRequestToOpenAI_ToolResultPreservesFunctionName(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-3.8-flash",

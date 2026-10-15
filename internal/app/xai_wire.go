@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +30,74 @@ func isXAIOAuthResponsesRequest(cfg *model.Config, upstreamProtocol protocol.Pro
 
 func buildXAIResponsesURL(baseURL, rawQuery string) string {
 	return buildUpstreamURL(baseURL, "/responses", rawQuery)
+}
+
+// rewriteXAIResponsesToolTypesForClient maps Grok-native search tools to the
+// OpenAI Responses / Codex enum. Grok emits type x_search; Codex serde only
+// accepts web_search, web_search_2025_08_26, function, mcp, etc.
+func rewriteXAIResponsesToolTypesForClient(raw []byte) []byte {
+	if !bytes.Contains(raw, []byte("x_search")) {
+		return raw
+	}
+	raw = bytes.ReplaceAll(raw, []byte("x_search_call"), []byte("web_search_call"))
+	return bytes.ReplaceAll(raw, []byte("x_search"), []byte("web_search"))
+}
+
+func wrapXAIClientToolTypeRewrite(body io.ReadCloser) io.ReadCloser {
+	if body == nil {
+		return body
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		err := copyXAIResponseRewritingToolTypes(body, pw)
+		_ = body.Close()
+		_ = pw.CloseWithError(err)
+	}()
+	return pr
+}
+
+func copyXAIResponseRewritingToolTypes(src io.Reader, dst io.Writer) error {
+	reader := bufio.NewReaderSize(src, SSEBufferSize)
+	peek, err := reader.Peek(1)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
+		if len(peek) == 0 {
+			return err
+		}
+	}
+	if len(peek) > 0 && peek[0] == '{' {
+		all, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			return readErr
+		}
+		_, writeErr := dst.Write(rewriteXAIResponsesToolTypesForClient(all))
+		return writeErr
+	}
+	var eventBuf bytes.Buffer
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		if len(line) > 0 {
+			eventBuf.Write(line)
+			if !errors.Is(readErr, bufio.ErrBufferFull) && len(bytes.TrimRight(line, "\r\n")) == 0 {
+				if _, writeErr := dst.Write(rewriteXAIResponsesToolTypesForClient(eventBuf.Bytes())); writeErr != nil {
+					return writeErr
+				}
+				eventBuf.Reset()
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr == io.EOF {
+			if eventBuf.Len() > 0 {
+				_, writeErr := dst.Write(rewriteXAIResponsesToolTypesForClient(eventBuf.Bytes()))
+				return writeErr
+			}
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]byte, error) {

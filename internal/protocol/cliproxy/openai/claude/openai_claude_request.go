@@ -21,6 +21,21 @@ import (
 // ConvertClaudeRequestToOpenAI parses and transforms an Anthropic API request into OpenAI Chat Completions API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
+func openaiChatUsesMaxCompletionTokens(modelName string) bool {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	switch {
+	case strings.HasPrefix(name, "gpt-5"):
+		return true
+	case strings.HasPrefix(name, "o1"), strings.HasPrefix(name, "o3"), strings.HasPrefix(name, "o4"):
+		return true
+	default:
+		return false
+	}
+}
+
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, false)
 
@@ -43,9 +58,14 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Model mapping
 	out, _ = sjson.SetBytes(out, "model", modelName)
 
-	// Max tokens
+	// Max tokens. GPT-5 / o-series reject max_tokens and require
+	// max_completion_tokens.
 	if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
-		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+		if openaiChatUsesMaxCompletionTokens(modelName) {
+			out, _ = sjson.SetBytes(out, "max_completion_tokens", maxTokens.Int())
+		} else {
+			out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+		}
 	}
 
 	// Temperature

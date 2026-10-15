@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,6 +216,38 @@ func TestFinalizeXAIResponsesBodyNormalizesReasoningInputItems(t *testing.T) {
 	}
 	if _, exists := second["content"]; !exists {
 		t.Fatalf("non-null reasoning content was removed: %s", got)
+	}
+}
+
+func TestRewriteXAIResponsesToolTypesForClient(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`data: {"type":"response.output_item.added","item":{"type":"x_search_call","id":"s1","status":"in_progress"}}` + "\n\n")
+	got := rewriteXAIResponsesToolTypesForClient(raw)
+	if bytes.Contains(got, []byte("x_search")) {
+		t.Fatalf("x_search survived: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`"type":"web_search_call"`)) {
+		t.Fatalf("web_search_call missing: %s", got)
+	}
+	tools := []byte(`{"tools":[{"type":"x_search"},{"type":"function","name":"lookup"}]}`)
+	got = rewriteXAIResponsesToolTypesForClient(tools)
+	if gjson.GetBytes(got, "tools.0.type").String() != "web_search" {
+		t.Fatalf("tool type = %s", got)
+	}
+}
+
+func TestWrapXAIClientToolTypeRewriteSSE(t *testing.T) {
+	t.Parallel()
+	src := io.NopCloser(bytes.NewReader([]byte("event: response.output_item.added\ndata: {\"type\":\"x_search\"}\n\ndata: [DONE]\n\n")))
+	got, err := io.ReadAll(wrapXAIClientToolTypeRewrite(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(got, []byte("x_search")) {
+		t.Fatalf("x_search survived stream rewrite: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`"type":"web_search"`)) || !bytes.Contains(got, []byte("[DONE]")) {
+		t.Fatalf("rewritten stream = %s", got)
 	}
 }
 
