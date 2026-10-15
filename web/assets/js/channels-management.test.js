@@ -1,8 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { isOpenCodeChannel } = require('./channels-render.js');
 
 const MANAGEMENT_ELEMENT_IDS = [
   'channelManagementGroup',
+  'channelManagementNavItem',
   'channelManagementProfile',
   'channelManagementNotice',
   'channelManagementBaseURLField',
@@ -72,6 +74,7 @@ function installManagementDOM() {
   const dirtyCalls = { count: 0 };
   const channelURLs = [];
   const globals = {
+    isOpenCodeChannel,
     getValidInlineURLConfigs: () => channelURLs,
     document: {
       readyState: 'complete',
@@ -163,6 +166,50 @@ test('管理账户表单按 profile 显示字段矩阵并标注平台限制', ()
     assert.equal(dom.el('channelManagementLoginField').hidden, false);
     assert.equal(dom.el('channelManagementUserIDField').hidden, true);
     assert.equal(dom.el('channelManagementCheckinField').hidden, false);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('OpenCode 官方渠道隐藏管理账户并保留已有账户，普通 API Key 渠道仍可管理', () => {
+  const dom = installManagementDOM();
+  try {
+    const mod = loadManagementModule();
+    const { applyChannelManagementPayload } = require('./channels-modals.js');
+    const saved = {
+      profile: 'new_api', base_url: 'https://panel.example.com', access_token: 'saved-token',
+      user_id: 41, credential_configured: true, user_id_configured: true
+    };
+    for (const urls of [
+      ['https://opencode.ai/zen'],
+      [{ url: 'https://opencode.ai/zen/go' }],
+      [{ url: 'https://opencode.ai/inference/v1/chat/completions', exact: true }]
+    ]) {
+      for (const account of [null, saved]) {
+        mod.resetManagementAccountDraft(account, urls, 'api_key');
+        mod.beginManagementAccountDraft();
+        assert.equal(dom.el('channelManagementGroup').hidden, true);
+        assert.equal(dom.el('channelManagementNavItem').hidden, true);
+        assert.equal(mod.validateManagementAccountDraft(), true);
+        assert.equal(mod.commitManagementAccountDraft(), true);
+        assert.equal(mod.collectManagementAccountForSubmit(), null);
+        const payload = applyChannelManagementPayload({ name: 'arbitrary name', auth_type: 'api_key' });
+        assert.equal(Object.hasOwn(payload, 'management_account'), false, '省略管理账户，不能提交清除配置');
+
+        mod.syncManagementAccountURLs([{ url: 'https://ordinary.example.com' }]);
+        mod.beginManagementAccountDraft();
+        assert.equal(dom.el('channelManagementGroup').hidden, false);
+        assert.equal(dom.el('channelManagementNavItem').hidden, false);
+        assert.deepEqual(mod.collectManagementAccountForSubmit(), account ? {
+          profile: 'new_api', base_url: 'https://panel.example.com', access_token: 'saved-token',
+          user_id: 41, daily_checkin_enabled: false
+        } : null, '切回普通渠道后，原账户草稿仍然完整；未加载账户时不提交清除');
+      }
+    }
+    for (const url of ['https://example.com/zen', 'https://opencode.ai.example/zen', 'https://opencode.ai/zenith']) {
+      mod.resetManagementAccountDraft(null, [{ url }], 'api_key');
+      assert.equal(dom.el('channelManagementGroup').hidden, false);
+    }
   } finally {
     dom.restore();
   }

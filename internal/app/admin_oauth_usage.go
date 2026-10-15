@@ -1475,6 +1475,11 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.GetAuthType() == model.AuthTypeAPIKey {
+			// OpenCode Go quota rides the OAuth usage path and never needs a management account.
+			if isOpenCodeChannel(cfg) {
+				channelIDs = append(channelIDs, cfg.ID)
+				continue
+			}
 			view := s.managementAccountView(cfg)
 			if view != nil && view.CredentialConfigured {
 				channelIDs = append(channelIDs, cfg.ID)

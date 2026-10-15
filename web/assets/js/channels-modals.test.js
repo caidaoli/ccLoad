@@ -17,7 +17,7 @@ const {
   canFetchInlineKeyRate,
   toggleKeyDisabled
 } = require('./channels-keys.js');
-const { applyURLStats } = require('./channels-urls.js');
+const { applyURLStats, normalizeInlineURLConfigs } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '' }) {
@@ -1000,6 +1000,7 @@ function installEditChannelGlobals(channel, {
     },
     normalizeInlineKeyRow,
     channelAuthTypeFilterLabel: value => value,
+    channelAvatarType: value => value.auth_type || 'api_key',
     channels: [],
     editingChannelId: null,
     editingChannelAuthType: 'api_key',
@@ -1490,6 +1491,122 @@ test('quota output refills and submits booleans without leaking the previous cha
       await saveChannel({ preventDefault() {} });
       assert.equal(submitted.at(-1).auth_type, authType);
     }
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+    fixture.restore();
+  }
+});
+
+test('OpenCode chooser resets to Zen, cancels without changes, and creates the selected API Key channel', async () => {
+  const fixture = installEditChannelGlobals({ id: 1, urls: [] });
+  const previous = new Map();
+  const setGlobal = (name, value) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const submitted = [];
+  try {
+    const dialog = fixture.getElement('openCodeChannelDialog');
+    const dialogEvents = {};
+    dialog.open = false;
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; };
+    dialog.addEventListener = (name, handler) => { dialogEvents[name] = handler; };
+    const formEvents = {};
+    fixture.getElement('openCodeChannelForm').addEventListener = (name, handler) => {
+      assert.equal(formEvents[name], undefined, 'reopening must not bind the form twice');
+      formEvents[name] = handler;
+    };
+    const selection = fixture.getElement('openCodeChannelPreset');
+    fixture.getElement('channelForm').reset = () => {};
+    setGlobal('emptyInlineURLConfig', () => ({ url: '', exact: false, protocols: [] }));
+    setGlobal('makeInlineKeyRow', () => normalizeInlineKeyRow({ api_key: '' }));
+    setGlobal('getValidInlineURLConfigs', () => normalizeInlineURLConfigs(global.inlineURLTableData));
+    setGlobal('getValidInlineKeyRows', () => global.inlineKeyTableData.filter(row => row.api_key).map(normalizeInlineKeyRow));
+    setGlobal('fetchAPIWithAuth', async (url, options) => {
+      if (url === '/admin/channels/check-duplicate') return { success: true, data: { duplicates: [] } };
+      submitted.push({ url, method: options.method, body: JSON.parse(options.body) });
+      return { success: false, error: 'captured' };
+    });
+    const {
+      showAddModal, saveChannel, openOpenCodeChannelDialog, closeOpenCodeChannelDialog, continueOpenCodeChannel
+    } = loadChannelsModals();
+    fixture.getElement('channelName').value = 'existing draft';
+    global.editingChannelId = 42;
+    openOpenCodeChannelDialog();
+    assert.equal(dialog.open, true);
+    assert.equal(selection.value, 'opencode_zen');
+    selection.value = 'opencode_anonymous';
+    closeOpenCodeChannelDialog();
+    await continueOpenCodeChannel({ preventDefault() {} });
+    assert.equal(dialog.open, false);
+    assert.equal(fixture.getElement('channelName').value, 'existing draft');
+    assert.equal(global.editingChannelId, 42);
+    assert.equal(submitted.length, 0);
+
+    openOpenCodeChannelDialog();
+    assert.equal(selection.value, 'opencode_zen');
+    selection.value = 'opencode_zen_go';
+    dialog.close(); // Native Escape dismisses without confirming.
+    assert.equal(fixture.getElement('channelName').value, 'existing draft');
+    assert.equal(global.editingChannelId, 42);
+
+    openOpenCodeChannelDialog();
+    dialogEvents.click({ target: dialog });
+    assert.equal(dialog.open, false);
+    assert.equal(fixture.getElement('channelName').value, 'existing draft');
+    assert.equal(global.editingChannelId, 42);
+    assert.equal(submitted.length, 0);
+
+    for (const [preset, name, url, presetKey] of [
+      ['opencode_zen', 'OpenCode-Zen', 'https://opencode.ai/zen', ''],
+      ['opencode_zen_go', 'OpenCode-Zen-Go', 'https://opencode.ai/zen/go', ''],
+      ['opencode_anonymous', 'OpenCode-Anonymous', 'https://opencode.ai/inference', 'public']
+    ]) {
+      openOpenCodeChannelDialog();
+      assert.equal(selection.value, 'opencode_zen');
+      selection.value = preset;
+      let prevented = false;
+      await formEvents.submit({ preventDefault() { prevented = true; } });
+      assert.equal(prevented, true);
+      assert.equal(dialog.open, false);
+      assert.equal(global.editingChannelId, null);
+      assert.equal(fixture.getElement('channelName').value, name);
+      assert.equal(fixture.getElement('protocolTransformModeValue').value, 'auto');
+      assert.deepEqual(global.inlineURLTableData, [{ url, exact: false, protocols: [] }]);
+      assert.deepEqual(global.redirectTableData, []);
+      assert.equal(global.inlineKeyTableData[0].api_key, presetKey);
+
+      const apiKey = presetKey || 'user-api-key';
+      if (!presetKey) global.inlineKeyTableData[0].api_key = apiKey;
+      const requestCount = submitted.length;
+      await saveChannel({ preventDefault() {} });
+      assert.equal(submitted.length, requestCount, 'models must be configured before saving');
+
+      fixture.getElement('channelName').value = `${name} custom`;
+      global.redirectTableData.push({ model: 'user-selected-model', redirect_model: '' });
+      await saveChannel({ preventDefault() {} });
+      const request = submitted.at(-1);
+      assert.equal(request.url, '/admin/channels');
+      assert.equal(request.method, 'POST');
+      assert.equal(request.body.name, `${name} custom`);
+      assert.equal(request.body.auth_type, 'api_key');
+      assert.equal(request.body.protocol_transform_mode, 'auto');
+      assert.equal(request.body.api_key, apiKey);
+      assert.equal(request.body.api_keys[0].api_key, apiKey);
+      assert.deepEqual(request.body.urls, [{ url, exact: false, protocols: [] }]);
+      assert.equal(request.body.models.length, 1);
+      assert.equal(request.body.models[0].model, 'user-selected-model');
+    }
+
+    await showAddModal();
+    assert.equal(fixture.getElement('channelName').value, '');
+    assert.deepEqual(global.inlineURLTableData, [{ url: '', exact: false, protocols: [] }]);
+    assert.equal(global.inlineKeyTableData[0].api_key, '');
+    assert.deepEqual(global.redirectTableData, []);
   } finally {
     for (const [name, descriptor] of previous) {
       if (descriptor) Object.defineProperty(global, name, descriptor);

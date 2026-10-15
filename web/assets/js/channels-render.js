@@ -104,21 +104,39 @@ const OAUTH_USAGE_AUTH_TYPES = [
   'codebuddy_oauth'
 ];
 
-function isOpenCodeGoEndpoint(raw) {
-  const text = String(raw || '').trim().replace(/#$/, '');
-  if (!text) return false;
-  let parsed;
+// Mirrors the backend check on the saved URL. URL() is unsuitable: it drops
+// :443, resolves dot segments and hides empty userinfo before we can see them.
+function isOpenCodeEndpoint(raw, prefix) {
+  const text = String(raw || '').trim().replace(/#$/, '').trim();
+  const match = /^https:\/\/([^/?#]*)([^?#]*)$/i.exec(text);
+  if (!match || match[1].toLowerCase().replace(/:$/, '') !== 'opencode.ai') return false;
+  let segments;
   try {
-    parsed = new URL(text);
+    segments = match[2].split('/').map(segment => decodeURIComponent(segment));
   } catch (_) {
     return false;
   }
-  if (parsed.protocol !== 'https:' || parsed.hostname !== 'opencode.ai' || parsed.port || parsed.username || parsed.password || parsed.hash) {
-    return false;
-  }
-  const path = parsed.pathname || '';
-  if (path.split('/').some(segment => segment === '.' || segment === '..')) return false;
-  return path === '/zen/go' || path.startsWith('/zen/go/');
+  if (segments.some(segment => segment === '.' || segment === '..')) return false;
+  const path = segments.join('/');
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+function isOpenCodeGoEndpoint(raw) {
+  return isOpenCodeEndpoint(raw, '/zen/go');
+}
+
+function isOpenCodeChannel(channel) {
+  if (String(channel?.auth_type || 'api_key').trim().toLowerCase() !== 'api_key') return false;
+  const entries = Array.isArray(channel?.urls) ? channel.urls : [];
+  return entries.some(entry => {
+    const raw = typeof entry === 'string' ? entry : entry?.url;
+    return isOpenCodeEndpoint(raw, '/zen') || isOpenCodeEndpoint(raw, '/inference');
+  });
+}
+
+// 头像按提供商取标志：OpenCode 由官方 URL 识别，认证类型仍是 api_key
+function channelAvatarType(channel) {
+  return isOpenCodeChannel(channel) ? 'opencode' : (channel?.auth_type || 'api_key');
 }
 
 function isOpenCodeGoChannel(channel) {
@@ -1297,7 +1315,7 @@ function buildManagementBalanceRows(channelID, balance) {
 function buildManagementAccountStatusHtml(channel) {
   const account = channel?.management_account;
   const profile = String(account?.profile || '').trim();
-  if (channel?.auth_type !== 'api_key' || !profile || account?.credential_configured !== true) return '';
+  if (channel?.auth_type !== 'api_key' || isOpenCodeChannel(channel) || !profile || account?.credential_configured !== true) return '';
   if (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly()) return '';
 
   // 额度与签到各自读取独立状态:一个 loading 或失败不会禁用另一个。
@@ -1365,7 +1383,7 @@ const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fil
 // 没有额度时：API 渠道给出配置管理账户的入口（只读身份不显示）。
 function buildChannelQuotaHintHtml(channel) {
   const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
-  if (channel?.auth_type !== 'api_key' || readOnly) return '';
+  if (channel?.auth_type !== 'api_key' || readOnly || isOpenCodeChannel(channel)) return '';
   return `<div class="ch-quota-hint"><button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
 }
 
@@ -1458,12 +1476,13 @@ function createChannelCard(channel) {
     })
     .filter(Boolean);
 
+  const avatarType = channelAvatarType(channel);
   const cardData = {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
 		name: channel.name,
-    authType: channel.auth_type || 'api_key',
-    avatarHtml: window.channelAvatarContentHTML(channel.auth_type || 'api_key', channel.name),
+    avatarType,
+    avatarHtml: window.channelAvatarContentHTML(avatarType, channel.name),
 		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier_min, channel.cost_multiplier_max),
     oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),
@@ -1490,8 +1509,10 @@ function createChannelCard(channel) {
 }
 
 async function editChannelManagementAccount(channelId) {
+  if (isOpenCodeChannel(channels.find(channel => channel.id === channelId))) return;
   await editChannel(channelId);
   if (editingChannelId !== channelId) return;
+  if (document.getElementById('channelManagementGroup')?.hidden !== false) return;
   if (typeof revealChannelEditorSection === 'function') revealChannelEditorSection('management');
 }
 
@@ -1798,8 +1819,11 @@ if (typeof module !== 'undefined' && module.exports) {
     buildOAuthUsageStatusHtml,
     toggleOAuthUsageWindows,
     buildManagementAccountStatusHtml,
+    editChannelManagementAccount,
     formatCooldownRecoveryTime,
     isOpenCodeGoChannel,
+    isOpenCodeChannel,
+    channelAvatarType,
     channelShowsOAuthUsage
   };
 }

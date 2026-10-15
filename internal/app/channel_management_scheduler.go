@@ -272,7 +272,7 @@ func (s *Server) runDueManagementCheckins(ctx context.Context, now time.Time) er
 			scanErr = ctx.Err()
 			break
 		}
-		if cfg == nil || cfg.AuthType != model.AuthTypeAPIKey {
+		if !supportsChannelManagement(cfg) {
 			continue
 		}
 		envelope, parseErr := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)
@@ -335,7 +335,7 @@ func (s *Server) claimManagementCheckinDay(
 	// permanently failing store.
 	for attempt := 0; attempt < 2; attempt++ {
 		envelope, err := model.ParseChannelManagementEnvelope(current.OAuthCredential)
-		if err != nil || current.AuthType != model.AuthTypeAPIKey || !isManagementCheckinDue(envelope, now) {
+		if err != nil || !supportsChannelManagement(current) || !isManagementCheckinDue(envelope, now) {
 			return false, nil
 		}
 		next := *envelope
@@ -378,7 +378,7 @@ func (s *Server) runManagementCheckinJob(ctx context.Context, channelID int64) {
 		s.writeManagementCheckinAudit(ctx, cfg, nil, parseErr)
 		return
 	}
-	if cfg.AuthType != model.AuthTypeAPIKey ||
+	if !supportsChannelManagement(cfg) ||
 		(envelope.Profile != model.ChannelManagementProfileNewAPI && envelope.Profile != model.ChannelManagementProfileSub2APIPro) ||
 		!envelope.Settings.DailyCheckinEnabled {
 		s.writeManagementCheckinAudit(ctx, cfg, &channelCheckinResult{Status: newAPICheckinSkippedDisabled}, nil)

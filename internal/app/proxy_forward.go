@@ -242,8 +242,8 @@ func (s *Server) buildProxyRequest(
 	if upstreamProtocol == protocol.SystemOne {
 		upstreamURL = systemOneURL(baseURL)
 	}
-	if isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
-		isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+	if !isOpenCodeAPIKeyEndpoint(cfg, baseURL) && (isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) ||
+		isAnthropicCountTokensRequest(upstreamProtocol, requestPath)) {
 		upstreamURL = buildAnthropicClaudeCodeURL(baseURL, requestPath, upstreamQuery)
 	}
 	if xaiResponsesRequest {
@@ -259,6 +259,10 @@ func (s *Server) buildProxyRequest(
 	vertexWire := usesVertexWire(cfg, upstreamProtocol, baseURL)
 	if vertexWire && !model.HasExactUpstreamURLMarker(baseURL) {
 		upstreamURL = buildVertexPublisherURL(baseURL, requestPath, upstreamQuery, reqCtx != nil && reqCtx.transformPlan.NeedsTransform)
+	}
+	if upstreamProtocol == protocol.Gemini && isOpenCodeAPIKeyEndpoint(cfg, baseURL) && !model.HasExactUpstreamURLMarker(baseURL) {
+		upstreamURL = openCodeGeminiURL(baseURL, requestPath, upstreamQuery,
+			reqCtx != nil && reqCtx.transformPlan.NeedsTransform, reqCtx != nil && reqCtx.openCodeFree)
 	}
 	parsedUpstreamURL, err := url.Parse(upstreamURL)
 	if err != nil {
@@ -335,7 +339,7 @@ func (s *Server) buildProxyRequest(
 		return nil, err
 	}
 
-	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
+	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) && !isOpenCodeAPIKeyEndpoint(cfg, parsedUpstreamURL.String())
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		if err = validateAnthropicLegacySystemRequestForUpstream(body, callerOwnsAnthropicWire, parsedUpstreamURL); err != nil {
 			return nil, err
@@ -397,8 +401,11 @@ func (s *Server) buildProxyRequest(
 	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
 	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx))
 
-	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）
-	ensureCodexSessionHeader(req.Header, codexSessionID)
+	// 5.5 Codex Responses 缓存提示：设置 Session-Id 头（仅客户端未自带时）。
+	// OpenCode 自建会话头；按上游 Key 派生的值会压过按调用方区分的执行身份。
+	if !isOpenCodeAPIKeyEndpoint(cfg, parsedUpstreamURL.String()) {
+		ensureCodexSessionHeader(req.Header, codexSessionID)
+	}
 
 	// 5.6 Codex OAuth 路由提示与 responses-lite 头：由最终 body 派生，早于自定义规则以便
 	// 运维覆盖或删除。WS 客户端的 lite 信号在 client_metadata 里，HTTP 上游只认请求头。
@@ -479,16 +486,17 @@ func (s *Server) buildProxyRequest(
 		isAnyrouterChannel(cfg) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
-	if isOpenCodeChannel(cfg) {
+	if isOpenCodeAPIKeyEndpoint(cfg, req.URL.String()) {
 		executionIdentity := ""
 		if reqCtx != nil {
 			executionIdentity = reqCtx.executionIdentity
 		}
-		ensureOpenCodeSessionHeader(req.Header, hdr, executionIdentity)
+		injectOpenCodeHeaders(req, cfg, upstreamProtocol, apiKey, hdr, executionIdentity)
 	}
-	if anthropicClaudeCodeWire || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
-		// Header rules have the last word on anthropic-beta. Strip fields gated by
-		// absent tokens from the actual wire body, then refresh any legacy CCH.
+	if isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath) || isAnthropicCountTokensRequest(upstreamProtocol, requestPath) {
+		// Header rules and the OpenCode wire have the last word on anthropic-beta.
+		// Strip fields gated by absent tokens from the actual wire body, then
+		// refresh any legacy CCH.
 		body, err = applyFinalAnthropicBetaBodyPolicy(req, body)
 		if err != nil {
 			return nil, err
@@ -525,6 +533,30 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	wireBodyRulesApplied bool,
 	callerBodyIsAnthropic bool,
 ) ([]byte, string, error) {
+	if isOpenCodeInferencePath(upstreamProtocol, requestPath) && target != nil && isOpenCodeAPIKeyEndpoint(cfg, target.String()) {
+		if wireBodyRulesApplied {
+			return body, "", nil
+		}
+		// Same protocol-level normalization as ordinary API-key channels, but no
+		// Claude Code mimicry. It runs before the OpenCode vendor repair so the
+		// repaired thinking history is what reaches the wire.
+		prepared := prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
+		var err error
+		if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+			if prepared, err = normalizeOpenCodeAnthropicMessagesBody(prepared); err != nil {
+				return nil, "", err
+			}
+		}
+		if prepared, err = prepareOpenCodeRequestBody(prepared, upstreamProtocol, requestPath); err != nil {
+			return nil, "", err
+		}
+		prepared = applyBodyRules(headers.Get("Content-Type"), prepared, cfg.BodyRules())
+		// Judge by the routed model, like the transport decision in forwardAttempt.
+		if isOpenCodeFreeRequest(cfg, target.String(), upstreamProtocol, requestPath, requestModel) {
+			prepared, err = prepareOpenCodeFreeBody(prepared, upstreamProtocol)
+		}
+		return prepared, "", err
+	}
 	thinkingOmitStrategy := ""
 	callerBody := sourceBody
 	if len(callerBody) == 0 {
@@ -1306,6 +1338,31 @@ func (s *Server) handleSuccessResponse(
 		}
 		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
 	}
+	if reqCtx.openCodeFree && !reqCtx.isStreaming && responseIsSSE(resp, true) {
+		body, parser, err := collectOpenCodeCompletion(reqCtx.ctx, resp.Body, protocol.Protocol(upstreamProtocol), func(parser *sseUsageParser) {
+			if shouldMarkUpstreamFirstByte(parser) {
+				markFirstStreamResponse(reqCtx, readStats)
+			}
+		})
+		result := &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: hdrClone, FirstByteTime: responseFirstByteSec(reqCtx, readStats), BytesReceived: readStats.totalBytes}
+		populateFWResultFromUsageParser(result, parser)
+		if result.SSEErrorEvent != nil {
+			return result, reqCtx.Duration().Seconds(), nil
+		}
+		if err != nil {
+			if !isClientDisconnectError(err) {
+				result.StreamDiagMsg = err.Error()
+			}
+			return result, reqCtx.Duration().Seconds(), err
+		}
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Del("Content-Length")
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = int64(len(body))
+		hdrClone = resp.Header.Clone()
+	}
 	isResponsesSSE := reqCtx != nil && reqCtx.responsesSSEUpstreamNonStream
 	isSSE := false
 	if isCodexResponses || isResponsesSSE {
@@ -1976,10 +2033,10 @@ func attachFirstByteDetector(
 			return reqCtx.startTime
 		}(),
 		onFirstRead: func() {
-			if (reqCtx.isStreaming || reqCtx.codeBuddyOAuth) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if (reqCtx.isStreaming || reqCtx.codeBuddyOAuth || reqCtx.openCodeFree) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return
 			}
-			if reqCtx.isStreaming || reqCtx.codeBuddyOAuth {
+			if reqCtx.isStreaming || reqCtx.codeBuddyOAuth || reqCtx.openCodeFree {
 				reqCtx.stopFirstByteTimer()
 			}
 			if readStats.firstByteSec == 0 {
@@ -2004,7 +2061,7 @@ func attachFirstByteDetector(
 // Responses 元数据也属于上游已返回数据，可以结束上游首字节计时；但此处
 // 不通知客户端，因为 deferredResponseWriter 可能仍在缓冲，客户端尚未收到任何字节。
 func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats) {
-	if (!reqCtx.isStreaming && !reqCtx.codeBuddyOAuth) || readStats.firstByteSec > 0 {
+	if (!reqCtx.isStreaming && !reqCtx.codeBuddyOAuth && !reqCtx.openCodeFree) || readStats.firstByteSec > 0 {
 		return
 	}
 
@@ -2366,11 +2423,26 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 	}
 	// 1. 创建请求上下文（处理超时）
-	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
+	openCodePath := plan.UpstreamPath
+	if plan.NeedsTransform {
+		switch plan.UpstreamProtocol {
+		case protocol.OpenAI:
+			openCodePath = buildOpenAIChatPath()
+		case protocol.Anthropic:
+			openCodePath = buildAnthropicMessagesPath()
+		case protocol.Codex:
+			openCodePath = buildCodexResponsesPath()
+		case protocol.Gemini:
+			openCodePath = buildGeminiGeneratePath(plan.RequestModel(), plan.Streaming)
+		}
+	}
+	openCodeFree := isOpenCodeFreeRequest(cfg, baseURL, plan.UpstreamProtocol, openCodePath, plan.RequestModel())
+	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree
 	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))
-	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) {
+	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree {
 		reqCtx.isStreaming = plan.Streaming
 	}
+	reqCtx.openCodeFree = openCodeFree
 	reqCtx.transformPlan = plan
 	reqCtx.clientProtocol = plan.ClientProtocol
 	reqCtx.upstreamProtocol = plan.UpstreamProtocol
@@ -3280,21 +3352,11 @@ func (s *Server) forwardAttempt(
 		if errors.Is(err, errAntigravityCreditsUnavailable) {
 			return nil, cooldown.ActionRetryChannel, nil
 		}
-		var zedValidationErr *zedRequestValidationError
-		if errors.As(err, &zedValidationErr) {
+		var validationErr *requestValidationError
+		if errors.As(err, &validationErr) {
 			return &proxyResult{
 				status:     http.StatusBadRequest,
-				body:       []byte(zedValidationErr.Error()),
-				channelID:  &cfg.ID,
-				succeeded:  false,
-				nextAction: cooldown.ActionReturnClient,
-			}, cooldown.ActionReturnClient, nil
-		}
-		var anthropicValidationErr *anthropicRequestValidationError
-		if errors.As(err, &anthropicValidationErr) {
-			return &proxyResult{
-				status:     http.StatusBadRequest,
-				body:       []byte(anthropicValidationErr.Error()),
+				body:       []byte(validationErr.Error()),
 				channelID:  &cfg.ID,
 				succeeded:  false,
 				nextAction: cooldown.ActionReturnClient,
@@ -3362,9 +3424,11 @@ func (s *Server) forwardAttempt(
 		return result, action, nil
 	}
 
-	if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
+	openCodeProtocolUnsupported := !res.ResponseCommitted &&
+		isOpenCodeModelProtocolUnsupported(cfg, baseURL, res.Status, res.Body)
+	if openCodeProtocolUnsupported || (cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
 		!isAntigravityModelNotFound(cfg, res.Status) &&
-		isProtocolEndpointMissing(res) {
+		isProtocolEndpointMissing(res)) {
 		logged := s.logProtocolCapabilityFallback(
 			reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res,
 			fmt.Sprintf("upstream protocol %s rejected request", upstreamProtocol),

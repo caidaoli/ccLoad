@@ -176,6 +176,7 @@ type channelTestRequestPlan struct {
 	upstreamProtocol  string
 	upstreamStreaming bool
 	codeBuddyOAuth    bool
+	openCodeFree      bool
 	apiKey            string
 	xaiOAuth          bool
 	xaiConversationID string
@@ -1726,6 +1727,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		result["client_protocol"] = clientProtocol
 		result["upstream_protocol"] = upstreamProtocol
 		result["actual_model"] = attemptReq.Model
+		markOpenCodeProtocolCapabilityMissing(cfg, selectedURL, result)
 	}()
 
 	start := time.Now()
@@ -1887,6 +1889,39 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		}
 	}
 
+	if requestPlan.openCodeFree && !testReq.Stream && resp.StatusCode >= 200 && resp.StatusCode < 300 && responseIsSSE(resp, true) {
+		collectedResult := map[string]any{"is_streaming": false}
+		body, parser, collectErr := collectOpenCodeCompletion(ctx, resp.Body, protocol.Protocol(requestPlan.upstreamProtocol), func(parser *sseUsageParser) {
+			if testStreamParserHasFirstContent(parser) {
+				markTestFirstStreamContent(requestPlan, collectedResult, start)
+			}
+		})
+		if collectErr != nil {
+			// Same classification as the proxy: an upstream SSE error keeps its
+			// own status; any other cut-short collection is an incomplete stream.
+			collectedResult["success"], collectedResult["status_code"], collectedResult["error"] = false, util.StatusStreamIncomplete, collectErr.Error()
+			populateTestNormalizedUsageAndCost(collectedResult, testReq, requestPlan.requestedServiceTier(), parser)
+			if streamError := parser.GetLastError(); streamError != nil {
+				collectedResult["status_code"] = classifySSEErrorStatus(streamError)
+				var event map[string]any
+				if sonic.Unmarshal(streamError, &event) == nil {
+					if message, raw, matched := extractSSEErrorMessage(event); matched {
+						collectedResult["error"], collectedResult["api_error"] = message, raw
+					}
+				}
+			}
+			if status, message, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, collectErr); ok {
+				collectedResult["status_code"], collectedResult["error"] = status, message
+			}
+			return attachTestDebugData(requestPlan, resp, collectedResult)
+		}
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Del("Content-Length")
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = int64(len(body))
+	}
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")
 	isEventStream := responseIsSSE(resp, requestPlan.upstreamStreaming)
@@ -2179,7 +2214,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
-	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) && !isOpenCodeAPIKeyEndpoint(cfgForBuild, selectedURL) {
 		// name.txt 的轻量请求结构用于正常问答；不注入主循环 billing/system/cache，
 		// 指纹与账号身份仍由共享 wire 层生成，避免模板硬编码版本与身份。
 		requestPlan.requestBody = injectClaudeCodeFallbackTools(requestPlan.requestBody)
@@ -2202,7 +2237,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
 		requestPath = downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	}
-	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) && !isOpenCodeAPIKeyEndpoint(cfgForBuild, selectedURL) {
 		requestPlan.fullURL = buildAnthropicClaudeCodeURL(selectedURL, requestPath, "")
 	}
 	vertexWire := usesVertexWire(cfgForBuild, upstreamProtocolValue, selectedURL)
@@ -2212,6 +2247,15 @@ func (s *Server) buildTestUpstreamRequestPlan(
 			return nil, nil, fmt.Errorf("parse test upstream URL: %w", parseErr)
 		}
 		requestPlan.fullURL = buildVertexPublisherURL(selectedURL, requestPath, testerURL.RawQuery, true)
+	}
+	if upstreamProtocolValue == protocol.Gemini && isOpenCodeAPIKeyEndpoint(cfgForBuild, selectedURL) && !model.HasExactUpstreamURLMarker(selectedURL) {
+		testerURL, parseErr := neturl.Parse(requestPlan.fullURL)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse test upstream URL: %w", parseErr)
+		}
+		free := isOpenCodeFreeRequest(cfgForBuild, selectedURL, upstreamProtocolValue, requestPath, testReq.Model)
+		requestPlan.fullURL = openCodeGeminiURL(selectedURL, requestPath, testerURL.RawQuery, true, free)
+		requestPath = downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	// 与代理链路一致：Anthropic CCH 签名按上游 origin 分流，最终化前必须先有 URL。
@@ -2313,6 +2357,8 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	requestPlan.endpointPath = requestPath
 	requestPlan.codeBuddyOAuth = cfgForBuild.UsesCodeBuddyOAuth()
+	// Same model source as prepareTranslatedUpstreamBody, so body shaping and transport agree.
+	requestPlan.openCodeFree = isOpenCodeFreeRequest(cfgForBuild, requestPlan.fullURL, upstreamProtocolValue, requestPath, testReq.Model)
 	return cfgForBuild, requestPlan, nil
 }
 
@@ -2322,7 +2368,7 @@ func (s *Server) newTestUpstreamRequest(
 	testReq *testutil.TestChannelRequest,
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
-	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth(), s.resolveProtocolTimeouts(protocol.TransformPlan{
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout
@@ -2388,7 +2434,7 @@ func (s *Server) newTestUpstreamRequest(
 	} else if isZAICodingPlanRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
 		injectZAICodingPlanHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
 		wireRebuilt = true
-	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
+	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) && !isOpenCodeAPIKeyEndpoint(cfgForBuild, req.URL.String()) {
 		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody,
 			callerOwnsAnthropicWire, sourceHeaders)
 		wireRebuilt = true
@@ -2416,12 +2462,12 @@ func (s *Server) newTestUpstreamRequest(
 	if requestProtocol == protocol.Anthropic && isAnyrouterChannel(cfgForBuild) {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
-	if isOpenCodeChannel(cfgForBuild) {
+	if isOpenCodeAPIKeyEndpoint(cfgForBuild, req.URL.String()) {
 		executionIdentity := ""
 		if testReq != nil {
 			executionIdentity = testReq.ResolveSessionID()
 		}
-		ensureOpenCodeSessionHeader(req.Header, sourceHeaders, executionIdentity)
+		injectOpenCodeHeaders(req, cfgForBuild, requestProtocol, requestPlan.apiKey, sourceHeaders, executionIdentity)
 	}
 	if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) ||
 		isAnthropicCountTokensRequest(requestProtocol, requestPlan.endpointPath) {
@@ -3107,6 +3153,17 @@ func (s *Server) applyChannelTestCapacityCooldown(
 		Header: headers,
 	})
 	result["antigravity_capacity_cooldown_applied"] = true
+}
+
+// markOpenCodeProtocolCapabilityMissing turns a per-model OpenCode protocol
+// rejection into capability evidence, so /test and /chat both move on to the
+// next protocol without cooling the channel, like the proxy.
+func markOpenCodeProtocolCapabilityMissing(cfg *model.Config, target string, result map[string]any) {
+	status, body, _ := buildTestFailureClassificationInput(result)
+	if isOpenCodeModelProtocolUnsupported(cfg, target, status, body) {
+		result["protocol_capability_missing"] = true
+		result["cooldown_action"] = "protocol_capability_missing_no_cooldown"
+	}
 }
 
 func isChannelTestProtocolEndpointMissing(cfg *model.Config, result map[string]any) bool {

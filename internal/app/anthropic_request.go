@@ -78,7 +78,7 @@ func validateAnthropicLegacySystemMessages(body []byte) error {
 			return true
 		}
 		if strings.EqualFold(strings.TrimSpace(jsonStringValue(message.Get("role"))), "system") {
-			failure = &anthropicRequestValidationError{message: fmt.Sprintf(
+			failure = &requestValidationError{message: fmt.Sprintf(
 				"Anthropic model %q does not support system messages in messages[%d]", modelName, current,
 			)}
 			return false
@@ -87,10 +87,6 @@ func validateAnthropicLegacySystemMessages(body []byte) error {
 	})
 	return failure
 }
-
-type anthropicRequestValidationError struct{ message string }
-
-func (e *anthropicRequestValidationError) Error() string { return e.message }
 
 func countAnthropicCacheControls(body []byte) int {
 	count := 0

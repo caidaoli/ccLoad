@@ -484,6 +484,7 @@ func (s *Server) streamChatWithURLForProtocol(
 		out.result["client_protocol"] = clientProtocol
 		out.result["upstream_protocol"] = upstreamProtocol
 		out.result["actual_model"] = attemptReq.Model
+		markOpenCodeProtocolCapabilityMissing(cfg, selectedURL, out.result)
 	}()
 
 	req, requestPlan, cancel, err := s.buildTestUpstreamRequestForProtocol(

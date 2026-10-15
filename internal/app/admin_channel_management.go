@@ -21,7 +21,7 @@ func (s *Server) rollbackCreatedChannel(ctx context.Context, channelID int64) {
 }
 
 func (s *Server) managementAccountView(cfg *model.Config) *channelManagementView {
-	if s == nil || s.channelManagement == nil || cfg == nil || cfg.AuthType != model.AuthTypeAPIKey ||
+	if s == nil || s.channelManagement == nil || !supportsChannelManagement(cfg) ||
 		strings.TrimSpace(cfg.OAuthCredential) == "" {
 		return nil
 	}
@@ -44,7 +44,7 @@ func (s *Server) requireConfiguredManagementAccount(c *gin.Context) (*model.Conf
 		RespondErrorMsg(c, http.StatusNotFound, "credential_invalid")
 		return nil, false
 	}
-	if cfg.AuthType != model.AuthTypeAPIKey || strings.TrimSpace(cfg.OAuthCredential) == "" {
+	if !supportsChannelManagement(cfg) || strings.TrimSpace(cfg.OAuthCredential) == "" {
 		RespondErrorMsg(c, http.StatusConflict, "credential_invalid")
 		return nil, false
 	}

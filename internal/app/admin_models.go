@@ -1758,8 +1758,22 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 }
 
 func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string, client *http.Client) (*FetchModelsResponse, error) {
-	normalizedProtocol := util.NormalizeProtocol(upstreamProtocol)
-	source := determineSource(upstreamProtocol)
+	official := isOpenCodeOfficialEndpoint(channelURL)
+	anonymous := isOpenCodeAnonymousEndpoint(channelURL)
+	// OpenCode has no System One catalog; its jev-* models sit in the OpenAI one.
+	systemOne := official && util.NormalizeProtocol(upstreamProtocol) == util.ProtocolSystemOne
+	if anonymous {
+		channelURL, apiKey = "https://opencode.ai/zen", "public"
+		if !systemOne {
+			upstreamProtocol = util.ProtocolOpenAI
+		}
+	}
+	fetchProtocol := upstreamProtocol
+	if systemOne {
+		fetchProtocol = util.ProtocolOpenAI
+	}
+	normalizedProtocol := util.NormalizeProtocol(fetchProtocol)
+	source := determineSource(fetchProtocol)
 
 	var (
 		modelNames []string
@@ -1778,7 +1792,7 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
-		fetcher := util.NewModelsFetcher(upstreamProtocol, client)
+		fetcher := util.NewModelsFetcher(fetchProtocol, client)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
 		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey)
@@ -1790,6 +1804,15 @@ func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, api
 		}
 	}
 
+	if official {
+		filtered := modelNames[:0]
+		for _, name := range modelNames {
+			if isOpenCodeSystemOneModel(name) == systemOne && (!anonymous || isOpenCodeFreeModel(name)) {
+				filtered = append(filtered, name)
+			}
+		}
+		modelNames = filtered
+	}
 	// 转换为 ModelEntry 格式，填充 RedirectModel 为 Model（方便前端编辑）
 	models := make([]model.ModelEntry, len(modelNames))
 	for i, name := range modelNames {

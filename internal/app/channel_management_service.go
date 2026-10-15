@@ -229,6 +229,21 @@ func newChannelManagementService(
 	}
 }
 
+// Official OpenCode endpoints have no management account. A stored envelope is
+// kept untouched but ignored, so moving the URL back restores it.
+func supportsChannelManagement(cfg *model.Config) bool {
+	return cfg != nil && cfg.AuthType == model.AuthTypeAPIKey && !hasOpenCodeURL(cfg.URLs)
+}
+
+func hasOpenCodeURL(urls model.ChannelURLs) bool {
+	for _, endpoint := range urls {
+		if isOpenCodeOfficialEndpoint(endpoint.URL) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *channelManagementService) View(cfg *model.Config) (*channelManagementView, error) {
 	if cfg == nil {
 		return nil, errChannelManagementNotConfigured
@@ -248,7 +263,7 @@ func (s *channelManagementService) SaveSettings(
 	cfg *model.Config,
 	input *channelManagementInput,
 ) (*channelManagementView, error) {
-	if s == nil || s.store == nil || cfg == nil || input == nil || cfg.AuthType != model.AuthTypeAPIKey {
+	if s == nil || s.store == nil || input == nil || !supportsChannelManagement(cfg) {
 		return nil, errInvalidManagementRequest
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, s.operationTimeout)
@@ -286,7 +301,7 @@ func (s *channelManagementService) SaveSettings(
 		if err != nil {
 			return nil, err
 		}
-		if current.AuthType != model.AuthTypeAPIKey {
+		if !supportsChannelManagement(current) {
 			return nil, errInvalidManagementRequest
 		}
 	}
@@ -400,7 +415,7 @@ func (s *channelManagementService) loadChannelManagement(
 	if err != nil {
 		return nil, nil, err
 	}
-	if cfg.AuthType != model.AuthTypeAPIKey || strings.TrimSpace(cfg.OAuthCredential) == "" {
+	if !supportsChannelManagement(cfg) || strings.TrimSpace(cfg.OAuthCredential) == "" {
 		return nil, nil, errChannelManagementNotConfigured
 	}
 	envelope, err := model.ParseChannelManagementEnvelope(cfg.OAuthCredential)

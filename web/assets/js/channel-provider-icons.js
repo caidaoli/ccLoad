@@ -1,4 +1,4 @@
-// OAuth 渠道提供商头像标志（24×24，单色部分以 currentColor 填充）
+// 渠道提供商头像标志（24×24，单色部分以 currentColor 填充）；OpenCode 是官方 URL 的 API Key 渠道，键为 opencode
 // 来源：@lobehub/icons-static-svg 1.95.1（MIT，© LobeHub），底色/前景色/缩放对齐 @lobehub/icons 的 Avatar 配置；
 // Codex 渠道使用 OpenAI 标志；Zed 取自 Simple Icons（CC0）；Vertex 为自绘简化标志。彩色图标内的 id 以 ccl-provider- 为前缀，每次渲染替换为唯一前缀：
 // 同 id 时 url(#…) 解析到文档中第一份，若它位于 display:none 的菜单内，渐变/遮罩会失效导致其余图标空白
@@ -12,6 +12,7 @@
     cursor_oauth: '<path fill-rule="evenodd" d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"></path>',
     zai_oauth: '<path fill-rule="evenodd" d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z"></path>',
     zed_oauth: '<path fill-rule="nonzero" d="M2.25 1.5a.75.75 0 0 0-.75.75v16.5H0V2.25A2.25 2.25 0 0 1 2.25 0h20.095c1.002 0 1.504 1.212.795 1.92L10.764 14.298h3.486V12.75h1.5v1.922a1.125 1.125 0 0 1-1.125 1.125H9.264l-2.578 2.578h11.689V9h1.5v9.375a1.5 1.5 0 0 1-1.5 1.5H5.185L2.562 22.5H21.75a.75.75 0 0 0 .75-.75V5.25H24v16.5A2.25 2.25 0 0 1 21.75 24H1.655C.653 24 .151 22.788.86 22.08L13.19 9.75H9.75v1.5h-1.5V9.375A1.125 1.125 0 0 1 9.375 8.25h5.314l2.625-2.625H5.625V15h-1.5V5.625a1.5 1.5 0 0 1 1.5-1.5h13.19L21.438 1.5z"></path>',
+    opencode: '<path fill-rule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"></path>',
     vertex_oauth: '<g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M4 3v7.5l6.5 5.5M20 3v7.5L13.5 16M8 3v5M12 3v8M16 3v5"></path></g><circle cx="12" cy="19.5" r="2.5"></circle>',
   };
 
@@ -24,7 +25,7 @@
     return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${markup.replaceAll('ccl-provider-', prefix)}</svg>`;
   }
 
-  // 渠道头像内容：OAuth 渠道用提供商标志，其余取名称首字母
+  // 渠道头像内容：提供商渠道用标志，其余取名称首字母
   function channelAvatarContentHTML(authType, name) {
     const iconSVG = channelProviderIconSVG(authType);
     if (iconSVG) return iconSVG;

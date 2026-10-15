@@ -11,7 +11,9 @@ const {
   copyChannelModelName,
   buildChannelQuotaHintHtml,
   buildManagementAccountStatusHtml,
+  editChannelManagementAccount,
   isOpenCodeGoChannel,
+  isOpenCodeChannel,
   channelShowsOAuthUsage
 } = require('./channels-render.js');
 
@@ -178,6 +180,26 @@ test('CodeBuddy 额度工具栏提供独立的手动签到状态', () => {
   }
 });
 
+test('OpenCode 渠道按官方 URL 和 API Key 认证识别，与名称无关', () => {
+  for (const url of [
+    'https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference',
+    'https://opencode.ai/zen/v1/responses#', 'https://opencode.ai/zen/go/v1/chat/completions',
+    'https://opencode.ai/inference/v1/chat/completions',
+    'HTTPS://OpenCode.AI/zen', 'https://opencode.ai/%7Aen/go'
+  ]) {
+    assert.equal(isOpenCodeChannel({ name: 'arbitrary name', auth_type: 'api_key', urls: [{ url }] }), true);
+    assert.equal(isOpenCodeChannel({ auth_type: 'codex_oauth', urls: [{ url }] }), false);
+  }
+  for (const url of [
+    'https://example.com/zen', 'https://opencode.ai.example/zen', 'https://opencode.ai/zenith',
+    'https://opencode.ai/inference-extra', 'http://opencode.ai/zen', 'https://user@opencode.ai/zen',
+    'https://opencode.ai:443/zen', 'https://@opencode.ai/zen', 'https://opencode.ai/zen/go/../x',
+    'https://opencode.ai/other/../zen', 'https://opencode.ai/zen/%2E%2E/x', 'https://opencode.ai/zen?x=1'
+  ]) {
+    assert.equal(isOpenCodeChannel({ name: 'OpenCode-Zen', auth_type: 'api_key', urls: [url] }), false);
+  }
+});
+
 test('OpenCode Go API Key 渠道显示额度工具栏', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;
@@ -316,6 +338,12 @@ test('管理账户只对已配置凭据的 API Key 渠道渲染动作，签到�
       auth_type: 'api_key',
       management_account: { profile: 'new_api', credential_configured: false }
     }), '');
+    for (const url of ['https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference']) {
+      assert.equal(buildManagementAccountStatusHtml({
+        id: 3, auth_type: 'api_key', urls: [{ url }],
+        management_account: { profile: 'new_api', credential_configured: true }
+      }), '', 'OpenCode 不展示管理账户动作，即使已有配置');
+    }
 
     const newAPI = buildManagementAccountStatusHtml({
       id: 3,
@@ -607,6 +635,46 @@ test('点击模型标签复制请求模型名，失败时提示手动复制', as
   }
 });
 
+test('管理账户列表动作不会打开 OpenCode 或已隐藏的管理账户分区', async () => {
+  const previous = new Map();
+  const edits = [];
+  const sections = [];
+  const management = { hidden: false };
+  const globals = {
+    channels: [], editingChannelId: null,
+    editChannel: async id => { edits.push(id); global.editingChannelId = id; },
+    revealChannelEditorSection: section => sections.push(section),
+    document: { getElementById: id => id === 'channelManagementGroup' ? management : null }
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  try {
+    for (const url of ['https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference']) {
+      global.channels = [{ id: 9, name: 'arbitrary name', auth_type: 'api_key', urls: [{ url }] }];
+      await editChannelManagementAccount(9);
+    }
+    assert.deepEqual(edits, []);
+    assert.deepEqual(sections, []);
+
+    global.channels = [{ id: 9, name: 'OpenCode-Zen', auth_type: 'api_key', urls: [{ url: 'https://ordinary.example' }] }];
+    await editChannelManagementAccount(9);
+    assert.deepEqual(edits, [9]);
+    assert.deepEqual(sections, ['management']);
+
+    management.hidden = true; // Fresh editor data may differ from the list snapshot.
+    await editChannelManagementAccount(9);
+    assert.deepEqual(edits, [9, 9]);
+    assert.deepEqual(sections, ['management'], '隐藏的分区不能被陈旧列表动作打开');
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('健康度列：最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空；额度列仅 API 渠道提供管理账户入口且只读不显示', () => {
   const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber, readOnly: global.isTokenChannelsReadOnly };
   global.window = { t: key => key, getFirstByteTimingColor: () => 'green', getDurationTimingColor: () => 'green' };
@@ -629,6 +697,9 @@ test('健康度列：最近请求成功显示时间、失败显示错误、499 �
     const action = /data-action="configure-management-account" data-channel-id="9"/;
     assert.match(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key' }), action);
     assert.equal(buildChannelQuotaHintHtml({ id: 9, auth_type: 'codex_oauth' }), '');
+    for (const url of ['https://opencode.ai/zen', 'https://opencode.ai/zen/go', 'https://opencode.ai/inference']) {
+      assert.equal(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key', urls: [{ url }] }), '');
+    }
     readOnly = true;
     assert.equal(buildChannelQuotaHintHtml({ id: 9, auth_type: 'api_key' }), '');
   } finally {

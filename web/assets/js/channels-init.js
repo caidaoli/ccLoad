@@ -165,6 +165,8 @@ function initChannelsPageActions() {
       boundKey: 'channelsPageActionsBound',
       click: {
         'show-add-modal': () => showAddModal(),
+        'open-opencode-channel': () => openOpenCodeChannelDialog(),
+        'close-opencode-channel': () => closeOpenCodeChannelDialog(),
         'show-add-system-one-modal': () => showAddModal('system_one'),
         'retry-load-channels': (button) => {
           button.disabled = true;

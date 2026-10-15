@@ -168,16 +168,16 @@ func validateAnthropicOpus55Request(body []byte, requestModel string) error {
 
 	thinkingType := strings.ToLower(strings.TrimSpace(jsonStringValue(gjson.GetBytes(body, "thinking.type"))))
 	if thinkingType == "disabled" || thinkingType == "enabled" {
-		return &anthropicRequestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
+		return &requestValidationError{message: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort"}
 	}
 	toolChoice := gjson.GetBytes(body, "tool_choice")
 	if strings.EqualFold(strings.TrimSpace(jsonStringValue(toolChoice)), "required") {
-		return &anthropicRequestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
+		return &requestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
 	}
 	choiceType := strings.ToLower(strings.TrimSpace(jsonStringValue(toolChoice.Get("type"))))
 	switch choiceType {
 	case "any", "tool", "function", "custom", "namespace":
-		return &anthropicRequestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
+		return &requestValidationError{message: "claude-opus-5-5 does not support forced tool_choice; use auto or none"}
 	default:
 		return nil
 	}

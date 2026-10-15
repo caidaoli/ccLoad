@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,74 @@ func TestChannelManagementOAuthCreateAndUpdateRejectManagementAccount(t *testing
 	}
 	if strings.Contains(w.Body.String(), managementAccountSecret) || strings.Contains(w.Body.String(), "oauth-access") {
 		t.Fatalf("credential leaked in OAuth rejection: %s", w.Body.String())
+	}
+}
+
+func TestChannelManagementOpenCodeChannelsIgnoreManagementAccount(t *testing.T) {
+	server := newInMemoryServer(t)
+	stored := createManagedChannelThroughHandler(t, server, "opencode-managed")
+	opencodeURLs := []map[string]any{{"url": "https://opencode.ai/zen/go"}}
+
+	create := validManagedChannelPayload("opencode-create-reject")
+	create["urls"] = opencodeURLs
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", create))
+	server.handleCreateChannel(c)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("OpenCode create status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	configs, err := server.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("rejected OpenCode create persisted a channel: configs=%d err=%v", len(configs), err)
+	}
+
+	putChannel := func(payload map[string]any) *httptest.ResponseRecorder {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, fmt.Sprintf("/admin/channels/%d", stored.ID), payload))
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+		server.HandleChannelByID(c)
+		return w
+	}
+	update := validManagedChannelPayload(stored.Name)
+	update["urls"] = opencodeURLs
+	if w := putChannel(update); w.Code != http.StatusConflict {
+		t.Fatalf("OpenCode update with management_account status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	// The guard judges normalized URLs, so a percent-encoded path cannot bypass it.
+	update["urls"] = []map[string]any{{"url": "https://opencode.ai/%7Aen/go"}}
+	if w := putChannel(update); w.Code != http.StatusConflict {
+		t.Fatalf("encoded OpenCode update with management_account status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	update["urls"] = []map[string]any{{"url": "https://opencode.ai/inference"}}
+	if w := putChannel(update); w.Code != http.StatusConflict {
+		t.Fatalf("anonymous OpenCode update with management_account status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if current, err := server.store.GetConfig(context.Background(), stored.ID); err != nil ||
+		len(current.URLs) != len(stored.URLs) || current.URLs[0].URL != stored.URLs[0].URL {
+		t.Fatalf("rejected OpenCode update changed stored URLs: %+v err=%v", current, err)
+	}
+	update["urls"] = opencodeURLs
+	delete(update, "management_account")
+	if w := putChannel(update); w.Code != http.StatusOK {
+		t.Fatalf("OpenCode update without management_account status=%d body=%s", w.Code, w.Body.String())
+	}
+	current, err := server.store.GetConfig(context.Background(), stored.ID)
+	if err != nil || current.OAuthCredential != stored.OAuthCredential {
+		t.Fatalf("OpenCode URL change rewrote stored management envelope: err=%v", err)
+	}
+
+	c, w = newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d", stored.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelByID(c)
+	detail := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if _, ok := detail.Data["management_account"]; ok || w.Code != http.StatusOK {
+		t.Fatalf("OpenCode detail exposed management account: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	c, w = newTestContext(t, newRequest(http.MethodPost, fmt.Sprintf("/admin/channels/%d/management-account/balance", stored.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(stored.ID)}}
+	server.HandleChannelManagementBalance(c)
+	balance := mustParseAPIResponse[any](t, w.Body.Bytes())
+	if w.Code != http.StatusConflict || balance.Error != "credential_invalid" {
+		t.Fatalf("OpenCode balance status=%d body=%s, want 409 credential_invalid", w.Code, w.Body.String())
 	}
 }
 
@@ -530,9 +599,22 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	opencodeGo, err := server.store.CreateConfig(context.Background(), &model.Config{
+		Name: "opencode-go-active", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs:         model.ChannelURLs{{URL: "https://opencode.ai/zen/go"}},
+		ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: opencodeGo.ID, APIKey: "sk-opencode-go",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now()
-	for _, channelID := range []int64{managed.ID, unmanaged.ID, zai.ID, offPage.ID, xai.ID, codex.ID, anthropic.ID} {
+	for _, channelID := range []int64{managed.ID, unmanaged.ID, zai.ID, offPage.ID, xai.ID, codex.ID, anthropic.ID, opencodeGo.ID} {
 		statusCode := http.StatusOK
 		if channelID == zai.ID {
 			statusCode = 499 // 客户端取消也是已经发生的渠道调用。
@@ -546,6 +628,13 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 	}
 	_ = inactive
 	server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == opencodeHost && req.URL.Path == opencodeGoUsagePath {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body:    io.NopCloser(strings.NewReader(`{"usage":{"rolling":{"status":"ok","percent":10,"resetsAt":"2026-10-16T00:00:00Z"}}}`)),
+				Request: req,
+			}, nil
+		}
 		if req.URL.String() != "https://panel.example.com/api/user/self" {
 			t.Fatalf("unexpected active usage request: %s", req.URL.String())
 		}
@@ -553,7 +642,7 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 	})}
 
 	requestBody, err := json.Marshal(oauthUsageBatchRequest{ChannelIDs: []int64{
-		managed.ID, inactive.ID, unmanaged.ID, zai.ID, xai.ID, codex.ID, anthropic.ID,
+		managed.ID, inactive.ID, unmanaged.ID, zai.ID, xai.ID, codex.ID, anthropic.ID, opencodeGo.ID,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -581,8 +670,9 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 			complete = event
 		}
 	}
-	if len(seen) != 2 || seen[managed.ID].Kind != "management" || seen[managed.ID].Status != "succeeded" ||
-		seen[managed.ID].Management == nil || seen[zai.ID].Kind != "oauth" || seen[zai.ID].Status != "failed" {
+	if len(seen) != 3 || seen[managed.ID].Kind != "management" || seen[managed.ID].Status != "succeeded" ||
+		seen[managed.ID].Management == nil || seen[zai.ID].Kind != "oauth" || seen[zai.ID].Status != "failed" ||
+		seen[opencodeGo.ID].Kind != "oauth" || seen[opencodeGo.ID].Status != "succeeded" {
 		t.Fatalf("active usage results=%#v", seen)
 	}
 	for _, skipped := range []int64{inactive.ID, unmanaged.ID, offPage.ID, xai.ID, codex.ID, anthropic.ID} {
@@ -590,7 +680,7 @@ func TestActiveChannelUsageBatchRefreshesTodayOAuthAndManagedAPIChannels(t *test
 			t.Fatalf("ineligible channel %d was refreshed: %#v", skipped, seen[skipped])
 		}
 	}
-	if complete.Total != 2 || complete.Processed != 2 || complete.Succeeded != 1 || complete.Failed != 1 {
+	if complete.Total != 3 || complete.Processed != 3 || complete.Succeeded != 2 || complete.Failed != 1 {
 		t.Fatalf("active usage complete=%#v", complete)
 	}
 }

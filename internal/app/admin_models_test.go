@@ -84,6 +84,100 @@ func TestAdminModels_CodeBuddyLiveCatalog(t *testing.T) {
 	}
 }
 
+// OpenCode lists System One-only jev-* models in its OpenAI catalog; official
+// endpoints split them out by channel kind, and anonymous ones keep free models.
+func TestAdminModels_OpenCodeOfficialDiscoveryCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint, upstream, key, authType string
+		wantModels                              []string
+	}{
+		{
+			name: "anonymous", endpoint: "https://opencode.ai/inference", upstream: "https://opencode.ai/zen/v1/models", key: "public",
+			wantModels: []string{"big-pickle", "kimi-k2.5-free"},
+		},
+		{
+			name: "zen", endpoint: "https://opencode.ai/zen", upstream: "https://opencode.ai/zen/v1/models", key: "personal-key",
+			wantModels: []string{"big-pickle", "gpt-5.4", "kimi-k2.5-free"},
+		},
+		{
+			name: "anonymous system one", endpoint: "https://opencode.ai/inference", upstream: "https://opencode.ai/zen/v1/models", key: "public", authType: model.AuthTypeSystemOne,
+			wantModels: []string{"jev-1.13-free"},
+		},
+		{
+			name: "zen system one", endpoint: "https://opencode.ai/zen", upstream: "https://opencode.ai/zen/v1/models", key: "personal-key", authType: model.AuthTypeSystemOne,
+			wantModels: []string{"jev-1.13", "jev-1.13-free"},
+		},
+		{
+			name: "other host", endpoint: "https://gateway.example/inference", upstream: "https://gateway.example/inference/v1/models", key: "personal-key",
+			wantModels: []string{"big-pickle", "gpt-5.4", "jev-1.13", "jev-1.13-free", "kimi-k2.5-free"},
+		},
+	} {
+		authType, wantProtocol := model.AuthTypeAPIKey, "openai"
+		var protocols []string
+		if tc.authType == model.AuthTypeSystemOne {
+			authType, wantProtocol = tc.authType, util.ProtocolSystemOne
+		} else {
+			protocols = []string{"openai"}
+		}
+		for _, saved := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/saved=%v", tc.name, saved), func(t *testing.T) {
+				server := newInMemoryServer(t)
+				requests := 0
+				server.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if r.URL.String() != tc.upstream || r.Header.Get("Authorization") != "Bearer "+tc.key {
+						t.Errorf("catalog request=%s authorization=%q, want %s with Bearer %s", r.URL, r.Header.Get("Authorization"), tc.upstream, tc.key)
+					}
+					return jsonResponse(r, `{"data":[{"id":"gpt-5.4"},{"id":"jev-1.13"},{"id":"kimi-k2.5-free"},{"id":"jev-1.13-free"},{"id":"big-pickle"}]}`)
+				})}
+				util.SetModelsFetcherHTTPClientForTesting(server.client)
+				t.Cleanup(func() { util.SetModelsFetcherHTTPClientForTesting(sharedTestHTTPClient) })
+				var response *httptest.ResponseRecorder
+				if saved {
+					ctx := context.Background()
+					cfg, err := server.store.CreateConfig(ctx, &model.Config{
+						Name: "OpenCode catalog", AuthType: authType, Enabled: true,
+						URLs:         model.ChannelURLs{{URL: tc.endpoint, Protocols: protocols}},
+						ModelEntries: []model.ModelEntry{{Model: "big-pickle"}},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "personal-key"}}); err != nil {
+						t.Fatal(err)
+					}
+					c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+					server.HandleFetchModels(c)
+					response = w
+				} else {
+					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", map[string]any{
+						"auth_type": authType, "protocol": wantProtocol, "api_keys": []string{"personal-key"},
+						"urls": []map[string]any{{"url": tc.endpoint, "protocols": protocols}},
+					}))
+					server.HandleFetchModelsPreview(c)
+					response = w
+				}
+				result := mustParseAPIResponse[FetchModelsResponse](t, response.Body.Bytes())
+				if response.Code != http.StatusOK || !result.Success || result.Data.Source != "api" || result.Data.Protocol != wantProtocol || requests != 1 {
+					t.Fatalf("catalog status=%d requests=%d response=%s", response.Code, requests, response.Body.String())
+				}
+				names := make([]string, 0, len(result.Data.Models))
+				for _, entry := range result.Data.Models {
+					names = append(names, entry.Model)
+					if entry.RedirectModel != entry.Model {
+						t.Errorf("model redirect=%q, want %q", entry.RedirectModel, entry.Model)
+					}
+				}
+				slices.Sort(names)
+				if !slices.Equal(names, tc.wantModels) {
+					t.Fatalf("catalog models=%v, want %v", names, tc.wantModels)
+				}
+			})
+		}
+	}
+}
+
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,42 @@
+OpenCode tool wire definitions
+
+Upstream: https://github.com/anomalyco/opencode
+Release: v2.0.29
+Commit: 042d0832f5f3a73eaa039a58a7d565776f6d4290
+
+The descriptions and parameter schemas originate in the MIT-licensed official
+OpenCode client. Source definitions were checked directly against:
+https://github.com/anomalyco/opencode/tree/042d0832f5f3a73eaa039a58a7d565776f6d4290/packages/core/src/tool/plugin
+https://github.com/anomalyco/opencode/blob/042d0832f5f3a73eaa039a58a7d565776f6d4290/packages/core/src/codemode/tool.ts
+https://github.com/anomalyco/opencode/blob/042d0832f5f3a73eaa039a58a7d565776f6d4290/packages/schema/src/question.ts
+
+The JSON is a concrete CLI wire snapshot, including runtime-expanded shell and
+subagent descriptions. Snapshot reference: jasonxu114514/opencode2api commit
+25afadd30345faaa9c6f18c45c0c14b176862b89, internal/gateway/opencode_tools.json.
+Local modification: the shell description drops the snapshot host's
+"Commands run on Windows using powershell." sentence.
+No GPL proxy implementation is included; ccLoad's request shaping is independent.
+
+The original OpenCode license follows:
+
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

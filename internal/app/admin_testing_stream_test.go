@@ -21,6 +21,7 @@ import (
 
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 
@@ -2105,6 +2106,130 @@ func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T
 	secondInput := gjson.GetBytes(captured[1].body, "input.0").Raw
 	if firstInput == "" || firstInput != secondInput {
 		t.Fatalf("existing message JSON prefix changed:\nfirst:  %s\nsecond: %s", firstInput, secondInput)
+	}
+}
+
+func TestTestChannelAPI_OpenCodeFreeNonStreamPreservesToolsAndUsage(t *testing.T) {
+	protocols := []struct {
+		name, path, stream, toolPath, argumentsPath string
+	}{
+		{
+			name: "openai", path: "/v1/chat/completions",
+			stream: "data: " + `{"id":"chat-test","object":"chat.completion.chunk","model":"big-pickle","choices":[{"index":0,"delta":{"role":"assistant","content":"answer"}}]}` + "\n\n" +
+				"data: " + `{"id":"chat-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-weather","type":"function","function":{"name":"weather","arguments":"{\"city\":"}}]}}]}` + "\n\n" +
+				"data: " + `{"id":"chat-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+				"data: " + `{"id":"chat-test","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}` + "\n\ndata: [DONE]\n\n",
+			toolPath: "choices.0.message.tool_calls.0.function.name", argumentsPath: "choices.0.message.tool_calls.0.function.arguments",
+		},
+		{
+			name: "codex", path: "/v1/responses",
+			stream:   "event: response.completed\ndata: " + `{"type":"response.completed","response":{"id":"resp-test","object":"response","status":"completed","model":"big-pickle","output":[{"id":"msg-test","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"answer","annotations":[]}]},{"id":"fc-weather","type":"function_call","call_id":"call-weather","name":"weather","arguments":"{\"city\":\"Paris\"}","status":"completed"}],"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}` + "\n\n",
+			toolPath: "output.1.name", argumentsPath: "output.1.arguments",
+		},
+		{
+			name: "anthropic", path: "/v1/messages",
+			stream: "event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","model":"big-pickle","content":[],"usage":{"input_tokens":11,"output_tokens":0}}}` + "\n\n" +
+				"event: content_block_start\ndata: " + `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}` + "\n\n" +
+				"event: content_block_stop\ndata: " + `{"type":"content_block_stop","index":0}` + "\n\n" +
+				"event: content_block_start\ndata: " + `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call-weather","name":"weather","input":{}}}` + "\n\n" +
+				"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}` + "\n\n" +
+				"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}` + "\n\n" +
+				"event: content_block_stop\ndata: " + `{"type":"content_block_stop","index":1}` + "\n\n" +
+				"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":0,"output_tokens":7}}` + "\n\n" +
+				"event: message_stop\ndata: " + `{"type":"message_stop"}` + "\n\n",
+			toolPath: "content.1.name", argumentsPath: "content.1.input",
+		},
+	}
+	for _, endpoint := range []string{"https://opencode.ai/inference", "https://opencode.ai/zen", "https://opencode.ai/zen/go"} {
+		for _, tc := range protocols {
+			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
+				srv := newInMemoryServer(t)
+				requests := 0
+				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if r.URL.String() != endpoint+tc.path {
+						t.Errorf("upstream URL=%s, want %s", r.URL, endpoint+tc.path)
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						return nil, err
+					}
+					if !gjson.GetBytes(body, "stream").Bool() {
+						t.Errorf("OpenCode free request must stream upstream: %s", body)
+					}
+					if endpoint == "https://opencode.ai/inference" {
+						if tc.name == "anthropic" {
+							if r.Header.Get("X-Api-Key") != "public" {
+								t.Errorf("anonymous X-Api-Key=%q, want public", r.Header.Get("X-Api-Key"))
+							}
+						} else if r.Header.Get("Authorization") != "Bearer public" {
+							t.Errorf("anonymous authorization=%q, want Bearer public", r.Header.Get("Authorization"))
+						}
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.stream)), Request: r}, nil
+				})}
+				cfg := &model.Config{
+					ID: 1, Name: "OpenCode", AuthType: model.AuthTypeAPIKey, Enabled: true,
+					URLs:         model.ChannelURLs{{URL: endpoint, Protocols: []string{tc.name}}},
+					ModelEntries: []model.ModelEntry{{Model: "big-pickle"}},
+				}
+				result := srv.testChannelAPI(context.Background(), cfg, "personal-key", &testutil.TestChannelRequest{
+					Model: "big-pickle", ClientProtocol: tc.name, Content: "hello", Stream: false,
+				})
+				if result["success"] != true || result["is_streaming"] != false || result["response_text"] != "answer" || requests != 1 {
+					t.Fatalf("non-stream test result=%#v, requests=%d", result, requests)
+				}
+				body, err := json.Marshal(result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gjson.GetBytes(body, "usage.input_tokens").Int() != 11 || gjson.GetBytes(body, "usage.output_tokens").Int() != 7 {
+					t.Fatalf("aggregated usage=%s", gjson.GetBytes(body, "usage"))
+				}
+				if gjson.GetBytes(body, "api_response."+tc.toolPath).String() != "weather" {
+					t.Fatalf("aggregated tool call=%s", gjson.GetBytes(body, "api_response"))
+				}
+				arguments := gjson.GetBytes(body, "api_response."+tc.argumentsPath)
+				if arguments.Type == gjson.String {
+					arguments = gjson.Parse(arguments.String())
+				}
+				if arguments.Get("city").String() != "Paris" {
+					t.Fatalf("aggregated tool arguments=%s", arguments)
+				}
+			})
+		}
+	}
+}
+
+func TestTestChannelAPI_OpenCodeFreeNonStreamClassifiesFailedSSELikeProxy(t *testing.T) {
+	for _, upstream := range []protocol.Protocol{protocol.OpenAI, protocol.Codex, protocol.Anthropic} {
+		for _, failure := range []string{"truncated", "rate-limit"} {
+			t.Run(string(upstream)+"/"+failure, func(t *testing.T) {
+				prefix, _ := openCodeFreeToolStreamFixture(upstream)
+				wire := prefix
+				wantStatus := util.StatusStreamIncomplete
+				if failure == "rate-limit" {
+					wire += "event: error\ndata: " + `{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"model quota exceeded"}}` + "\n\n"
+					wantStatus = http.StatusTooManyRequests
+				}
+				srv := newInMemoryServer(t)
+				srv.client = &http.Client{Transport: oauthUsageRoundTripper(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire)), Request: r}, nil
+				})}
+				cfg := &model.Config{
+					ID: 1, Name: "OpenCode", AuthType: model.AuthTypeAPIKey, Enabled: true,
+					URLs:         model.ChannelURLs{{URL: "https://opencode.ai/zen", Protocols: []string{string(upstream)}}},
+					ModelEntries: []model.ModelEntry{{Model: "big-pickle"}},
+				}
+				result := srv.testChannelAPI(context.Background(), cfg, "personal-key", &testutil.TestChannelRequest{
+					Model: "big-pickle", ClientProtocol: string(upstream), Content: "hello", Stream: false,
+				})
+				if result["success"] != false || result["status_code"] != wantStatus {
+					t.Fatalf("collection failure status=%v want=%d result=%#v", result["status_code"], wantStatus, result)
+				}
+			})
+		}
 	}
 }
 

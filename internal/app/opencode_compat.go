@@ -1,13 +1,20 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"math/big"
 	"net/http"
 	neturl "net/url"
+	"regexp"
 	"sort"
 	"strings"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
 )
 
 const (
@@ -35,6 +42,44 @@ func isOpenCodeChannel(cfg *model.Config) bool {
 // from a configured channel URL. URL matching is structural: the host is exact
 // and the path must be /zen/go or a descendant such as /zen/go/v1/responses.
 func isOpenCodeEndpoint(raw string) bool {
+	return isOpenCodePath(raw, opencodePath)
+}
+
+// Zen, Go and anonymous share the inference wire; quota and muse compatibility
+// remain Go-only.
+func isOpenCodeZenEndpoint(raw string) bool {
+	return isOpenCodePath(raw, "/zen")
+}
+
+// Anonymous free-tier lane. Since 2026-10-14 Zen rejects free models under
+// /zen with FreeTierError; this path still serves them with the public key.
+func isOpenCodeAnonymousEndpoint(raw string) bool {
+	return isOpenCodePath(raw, "/inference")
+}
+
+func isOpenCodeOfficialEndpoint(raw string) bool {
+	return isOpenCodeZenEndpoint(raw) || isOpenCodeAnonymousEndpoint(raw)
+}
+
+func isOpenCodeAPIKeyEndpoint(cfg *model.Config, raw string) bool {
+	return cfg != nil && model.NormalizeAuthType(cfg.AuthType) == model.AuthTypeAPIKey && isOpenCodeOfficialEndpoint(raw)
+}
+
+// OpenCode exposes different protocols for individual models. A rejected
+// protocol is capability evidence, not a malformed prompt or model outage.
+func isOpenCodeModelProtocolUnsupported(cfg *model.Config, target string, status int, body []byte) bool {
+	if status != http.StatusBadRequest || !isOpenCodeAPIKeyEndpoint(cfg, target) {
+		return false
+	}
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	return sonic.Unmarshal(body, &payload) == nil && payload.Error.Type == "ModelProtocolUnsupported"
+}
+
+func isOpenCodePath(raw, prefix string) bool {
 	raw = strings.TrimSpace(model.StripExactUpstreamURLMarker(raw))
 	if raw == "" {
 		return false
@@ -60,7 +105,7 @@ func isOpenCodeEndpoint(raw string) bool {
 			return false
 		}
 	}
-	return path == opencodePath || strings.HasPrefix(path, opencodePath+"/")
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 // ensureOpenCodeSessionHeader forwards one stable session identifier
@@ -73,6 +118,7 @@ func ensureOpenCodeSessionHeader(dst, src http.Header, executionIdentity string)
 	}
 	for _, name := range []string{
 		opencodeSessionHeader,
+		"x-opencode-session-id",
 		"x-session-id",
 		"x-session-affinity",
 		"x-litellm-session-id",
@@ -140,4 +186,138 @@ func opencodeHeaderValue(headers http.Header, name string) string {
 		}
 	}
 	return ""
+}
+
+// OpenCode validates the descending session layout, including the counter bits.
+var openCodeSessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{9}f[c-f][0-9a-f][0-9A-Za-z]{14}$`)
+
+func openCodeSessionID(signal string) string {
+	if openCodeSessionPattern.MatchString(signal) {
+		return signal
+	}
+	sum := sha256.Sum256([]byte("ses\x00" + signal))
+	// Invert the 36-bit time signal and encode counter 1 as its complement.
+	timeBytes := []byte{^sum[0], ^sum[1], ^sum[2], ^sum[3], (^sum[4] & 0xf0) | 0xf, 0xfe}
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	n := new(big.Int).SetBytes(sum[6:16])
+	base, remainder := big.NewInt(62), new(big.Int)
+	suffix := make([]byte, 14)
+	for i := len(suffix) - 1; i >= 0; i-- {
+		n.DivMod(n, base, remainder)
+		suffix[i] = alphabet[remainder.Int64()]
+	}
+	return "ses_" + hex.EncodeToString(timeBytes) + string(suffix)
+}
+
+// Only the selected official endpoint gets this wire, never another URL in the channel.
+func injectOpenCodeHeaders(req *http.Request, cfg *model.Config, upstream protocol.Protocol, key string, source http.Header, executionIdentity string) {
+	if !isOpenCodeAPIKeyEndpoint(cfg, req.URL.String()) {
+		return
+	}
+	switch upstream {
+	case protocol.OpenAI, protocol.Codex, protocol.Anthropic, protocol.Gemini:
+	default:
+		return
+	}
+	anonymous := isOpenCodeAnonymousEndpoint(req.URL.String())
+	if anonymous {
+		key = "public"
+	}
+	identity := cloneHeaders(req.Header)
+	ensureOpenCodeSessionHeader(identity, source, executionIdentity)
+	session := openCodeSessionID(identity.Get(opencodeSessionHeader))
+	project := opencodeHeaderValue(source, "x-opencode-project")
+	if project == "" {
+		project = "ccload:default-project"
+	}
+	projectHash := sha256.Sum256([]byte("opencode-project\x00" + project))
+	req.Header = make(http.Header)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("User-Agent", "opencode/latest/2.0.29/cli")
+	req.Header.Set("X-Opencode-Client", "cli")
+	for _, name := range []string{opencodeSessionHeader, "x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
+		req.Header.Set(name, session)
+	}
+	req.Header.Set("X-Opencode-Project", hex.EncodeToString(projectHash[:20]))
+	if parent := opencodeHeaderValue(source, "x-parent-session-id"); parent != "" {
+		req.Header.Set("X-Parent-Session-Id", parent)
+	}
+	switch {
+	case upstream == protocol.Anthropic:
+		req.Header.Set("X-Api-Key", key)
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+		req.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+	case upstream == protocol.Gemini && !anonymous:
+		// Keyed Gemini routes read only x-goog-api-key; the anonymous free
+		// gate accepts only the Bearer public credential.
+		req.Header.Set("x-goog-api-key", key)
+	default:
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	applyHeaderRules(req.Header, cfg.HeaderRules())
+	// This obsolete correlation header is explicitly rejected by OpenCode.
+	deleteRawHeader(req.Header, "x-opencode-request")
+}
+
+// big-pickle is the zero-price model without a -free suffix in the official
+// OpenCode catalog (models.opencode.ai, 2026-10-15). Never infer free access
+// from ccLoad's administrator-overridden billing prices.
+func isOpenCodeFreeModel(name string) bool {
+	name = strings.ToLower(model.RoutingModelName(name))
+	return strings.Contains(name, "free") || name == "big-pickle"
+}
+
+// TypeSafe Jev decision models are listed in the OpenAI catalog but answer
+// only POST /v1/systemone; every inference protocol rejects them.
+func isOpenCodeSystemOneModel(name string) bool {
+	return strings.HasPrefix(strings.ToLower(model.RoutingModelName(name)), "jev-")
+}
+
+func isOpenCodeFreeRequest(cfg *model.Config, target string, upstream protocol.Protocol, path, name string) bool {
+	return isOpenCodeAPIKeyEndpoint(cfg, target) && isOpenCodeInferencePath(upstream, path) &&
+		(isOpenCodeAnonymousEndpoint(target) || isOpenCodeFreeModel(name))
+}
+
+// isOpenCodeInferencePath reports the per-protocol inference routes OpenCode
+// serves; Gemini countTokens is not an inference request.
+func isOpenCodeInferencePath(upstream protocol.Protocol, path string) bool {
+	switch protocol.DetectRequestFamily(path) {
+	case protocol.RequestFamilyChatCompletions:
+		return upstream == protocol.OpenAI
+	case protocol.RequestFamilyResponses:
+		return upstream == protocol.Codex
+	case protocol.RequestFamilyMessages:
+		return upstream == protocol.Anthropic
+	case protocol.RequestFamilyGenerateContent:
+		return upstream == protocol.Gemini && !strings.Contains(path, ":countTokens")
+	default:
+		return false
+	}
+}
+
+// openCodeGeminiURL maps a Gemini API path onto OpenCode's route
+// {base}/v1/models/{model}:{action}; OpenCode has no /v1beta prefix. The free
+// gate only accepts the SSE stream action, so free requests always stream and
+// non-stream callers are served by collectOpenCodeCompletion. ccLoad-built
+// streams (translation or free shaping) request SSE explicitly.
+func openCodeGeminiURL(baseURL, requestPath, rawQuery string, defaultSSE, free bool) string {
+	path := requestPath
+	for _, version := range []string{"/v1beta/", "/v1alpha/"} {
+		if rest, ok := strings.CutPrefix(path, version+"models/"); ok {
+			path = "/v1/models/" + rest
+			break
+		}
+	}
+	if head, ok := strings.CutSuffix(path, ":generateContent"); ok && free {
+		path = head + ":streamGenerateContent"
+	}
+	if (defaultSSE || free) && strings.HasSuffix(path, ":streamGenerateContent") {
+		query, _ := neturl.ParseQuery(rawQuery)
+		if query.Get("alt") == "" {
+			query.Set("alt", "sse")
+			rawQuery = query.Encode()
+		}
+	}
+	return buildUpstreamURL(baseURL, path, rawQuery)
 }

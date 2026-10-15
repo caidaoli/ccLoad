@@ -52,6 +52,7 @@ let managementCheckinOperationSequence = 0;
 // ============================================================
 
 let managementAccountAuthType = 'api_key';
+let managementAccountChannelURLs = [];
 let managementAccountSavedProfile = '';
 let managementAccountSavedBaseURL = '';
 let managementAccountUserIDConfigured = false;
@@ -263,12 +264,22 @@ function readManagementAccountForm() {
   };
 }
 
+function canEditManagementAccount() {
+  return managementAccountAuthType === 'api_key' && !isOpenCodeChannel({ urls: managementAccountChannelURLs });
+}
+
+function syncManagementAccountURLs(channelURLs) {
+  managementAccountChannelURLs = Array.isArray(channelURLs) ? channelURLs : [];
+  renderManagementAccountFields(readManagementAccountForm());
+}
+
 function renderManagementAccountFields(draft) {
   const group = managementElement('channelManagementGroup');
   const isAPIKey = managementAccountAuthType === 'api_key';
-  if (group) group.hidden = !isAPIKey;
+  const editable = canEditManagementAccount();
+  if (group) group.hidden = !editable;
   const navItem = managementElement('channelManagementNavItem');
-  if (navItem) navItem.hidden = !isAPIKey;
+  if (navItem) navItem.hidden = !editable;
   if (!isAPIKey) {
     clearManagementAccountErrors();
     return;
@@ -332,6 +343,7 @@ function renderManagementAccountFields(draft) {
 
 function resetManagementAccountDraft(view, channelURLs, authType) {
   managementAccountAuthType = String(authType || 'api_key').trim().toLowerCase() || 'api_key';
+  managementAccountChannelURLs = Array.isArray(channelURLs) ? channelURLs : [];
   const account = managementAccountAuthType === 'api_key' && view ? view : null;
   managementAccountSavedProfile = normalizeManagementProfile(account && account.profile);
   managementAccountSavedBaseURL = String((account && account.base_url) || '').trim();
@@ -368,7 +380,7 @@ function beginManagementAccountDraft() {
 }
 
 function validateManagementAccountDraft() {
-  if (managementAccountAuthType !== 'api_key') {
+  if (!canEditManagementAccount()) {
     clearManagementAccountErrors();
     return true;
   }
@@ -472,7 +484,7 @@ function managementSessionError(draft, fields) {
 }
 
 function validateManagementLoginDraft() {
-  if (managementAccountAuthType !== 'api_key') return false;
+  if (!canEditManagementAccount()) return false;
   const draft = readManagementAccountForm();
   const fields = managementProfileFields(draft.profile);
   const invalidControls = [];
@@ -519,6 +531,7 @@ function commitManagementAccountDraft() {
     syncManagementSaveAction();
     return true;
   }
+  if (!canEditManagementAccount()) return true;
   if (!validateManagementAccountDraft()) return false;
   const draft = readManagementAccountForm();
   const session = matchingManagementPendingSession(draft);
@@ -552,7 +565,7 @@ function completeManagementAccountSave() {
  * New API 需要管理 PAT 查询 Key 分组；Sub2API 只需要面板地址和渠道 Key。
  */
 function getManagementAccountRateConfig() {
-  if (managementAccountAuthType !== 'api_key') return null;
+  if (!canEditManagementAccount()) return null;
   const state = managementAccountState || emptyManagementAccountDraft();
   const profile = normalizeManagementProfile(state.profile);
   if (!MANAGEMENT_RATE_PROFILES.includes(profile)) return null;
@@ -572,10 +585,11 @@ function getManagementAccountRateConfig() {
 }
 
 function collectManagementAccountForSubmit() {
-  if (managementAccountAuthType !== 'api_key') return null;
+  if (!canEditManagementAccount()) return null;
   const state = managementAccountState || emptyManagementAccountDraft();
   const profile = normalizeManagementProfile(state.profile);
-  if (!profile) return { profile: '' };
+  // 只有已保存账户被关闭时才提交清除；编辑器未加载账户（如 OpenCode 改回普通 URL）时保留服务端值。
+  if (!profile) return managementAccountSavedProfile ? { profile: '' } : null;
 
   const fields = MANAGEMENT_PROFILE_FIELDS[profile];
   const payload = { profile, base_url: state.base_url };
@@ -813,6 +827,7 @@ async function runManagementCheckin(channelID, fetcher = fetchDataWithAuth, opti
 
 if (typeof window !== 'undefined') {
   window.resetManagementAccountDraft = resetManagementAccountDraft;
+  window.syncManagementAccountURLs = syncManagementAccountURLs;
   window.beginManagementAccountDraft = beginManagementAccountDraft;
   window.validateManagementAccountDraft = validateManagementAccountDraft;
   window.commitManagementAccountDraft = commitManagementAccountDraft;
@@ -840,6 +855,7 @@ if (typeof module !== 'undefined' && module.exports) {
     readManagementAccountForm,
     renderManagementAccountFields,
     resetManagementAccountDraft,
+    syncManagementAccountURLs,
     beginManagementAccountDraft,
     validateManagementAccountDraft,
     commitManagementAccountDraft,

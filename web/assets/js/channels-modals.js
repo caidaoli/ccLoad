@@ -41,8 +41,9 @@ function renderChannelDrawerIdentity(channel) {
 
   const avatar = document.getElementById('channelDrawerAvatar');
   if (avatar) {
-    avatar.innerHTML = window.channelAvatarContentHTML(authType, channel.name);
-    avatar.dataset.authType = authType;
+    const avatarType = channelAvatarType(channel);
+    avatar.innerHTML = window.channelAvatarContentHTML(avatarType, channel.name);
+    avatar.dataset.authType = avatarType;
   }
 
   const badge = document.getElementById('channelDrawerAuthBadge');
@@ -529,8 +530,45 @@ function resetModalKeyStatusFilter() {
   if (filter) filter.value = 'all';
 }
 
+const openCodeChannelPresets = {
+  opencode_zen: { name: 'OpenCode-Zen', url: 'https://opencode.ai/zen' },
+  opencode_zen_go: { name: 'OpenCode-Zen-Go', url: 'https://opencode.ai/zen/go' },
+  opencode_anonymous: { name: 'OpenCode-Anonymous', url: 'https://opencode.ai/inference', api_key: 'public' }
+};
+
+function openOpenCodeChannelDialog() {
+  const dialog = document.getElementById('openCodeChannelDialog');
+  const form = document.getElementById('openCodeChannelForm');
+  const preset = document.getElementById('openCodeChannelPreset');
+  if (!dialog || !form || !preset) return;
+  if (!dialog.dataset.bound) {
+    form.addEventListener('submit', continueOpenCodeChannel);
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) closeOpenCodeChannelDialog();
+    });
+    dialog.dataset.bound = '1';
+  }
+  preset.value = 'opencode_zen';
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeOpenCodeChannelDialog() {
+  const dialog = document.getElementById('openCodeChannelDialog');
+  if (dialog?.open) dialog.close();
+}
+
+function continueOpenCodeChannel(event) {
+  event.preventDefault();
+  const dialog = document.getElementById('openCodeChannelDialog');
+  const preset = document.getElementById('openCodeChannelPreset')?.value;
+  if (!dialog?.open || !Object.hasOwn(openCodeChannelPresets, preset)) return;
+  closeOpenCodeChannelDialog();
+  return showAddModal('api_key', preset);
+}
+
 // 认证方式由新建入口决定（API Key / System One），创建后不可改；OAuth 渠道由登录或导入创建。
-async function showAddModal(authType = 'api_key') {
+async function showAddModal(authType = 'api_key', channelPreset = '') {
+  const preset = openCodeChannelPresets[channelPreset];
   editingChannelId = null;
   editingChannelAuthType = authType === 'system_one' ? 'system_one' : 'api_key';
   currentChannelKeyCooldowns = [];
@@ -538,6 +576,7 @@ async function showAddModal(authType = 'api_key') {
 
   setChannelModalTitle(editingChannelAuthType === 'system_one' ? 'channels.addSystemOneChannel' : 'channels.addChannel');
   document.getElementById('channelForm').reset();
+  document.getElementById('channelName').value = preset?.name || '';
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = false;
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
@@ -562,12 +601,14 @@ async function showAddModal(authType = 'api_key') {
   syncScheduledCheckModelState();
 
   inlineURLTableData = [emptyInlineURLConfig()];
+  if (preset) inlineURLTableData[0].url = preset.url;
   selectedURLIndices.clear();
   urlStatsMap = {};
   renderInlineURLTable();
   clearChannelDuplicateHint();
 
   inlineKeyTableData = [makeInlineKeyRow()];
+  if (preset?.api_key) inlineKeyTableData[0].api_key = preset.api_key;
   inlineKeyVisible = true;
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
@@ -4110,6 +4151,9 @@ if (typeof module !== 'undefined' && module.exports) {
     editorFinalUpstreamModels,
     saveChannel,
     showAddModal,
+    openOpenCodeChannelDialog,
+    closeOpenCodeChannelDialog,
+    continueOpenCodeChannel,
     testRedirectModel,
     toggleModelDisabledState
   };

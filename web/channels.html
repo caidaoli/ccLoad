@@ -140,6 +140,13 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerVertexDesc">上传服务账号 JSON 密钥</span>
                       </span>
                     </button>
+                    <button data-action="open-opencode-channel" type="button" class="channel-page-menu__item" role="menuitem">
+                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="opencode" data-provider-icon aria-hidden="true"></span>
+                      <span class="channel-page-menu__text">
+                        <span class="channel-page-menu__title">OpenCode</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.menu.openCodeDesc">选择 Zen / Zen Go / 匿名接入</span>
+                      </span>
+                    </button>
                     <button id="addSystemOneChannelBtn" data-action="show-add-system-one-modal" type="button" class="channel-page-menu__item" role="menuitem">
                       <span class="channel-page-menu__icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg></span>
                       <span class="channel-page-menu__text">
@@ -210,6 +217,37 @@
             </div>
           </div>
         </header>
+
+        <dialog id="openCodeChannelDialog" class="oauth-dialog oauth-dialog--compact"
+          aria-labelledby="openCodeChannelDialogTitle" aria-describedby="openCodeChannelDialogDescription">
+          <div class="oauth-dialog-header">
+            <div class="oauth-dialog-heading">
+              <h2 id="openCodeChannelDialogTitle" data-i18n="channels.openCode.dialogTitle">添加 OpenCode 渠道</h2>
+              <p id="openCodeChannelDialogDescription" class="oauth-dialog-description"
+                data-i18n="channels.openCode.dialogDescription">选择接入方式，然后配置 Key 和模型。</p>
+            </div>
+            <button type="button" class="close-btn" data-action="close-opencode-channel"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <form id="openCodeChannelForm" class="oauth-dialog-body">
+            <div class="oauth-field">
+              <label for="openCodeChannelPreset" data-i18n="channels.openCode.connectionLabel">接入方式</label>
+              <select id="openCodeChannelPreset" name="opencode_preset" class="form-input">
+                <option value="opencode_zen" data-i18n="channels.openCode.zen"
+                  data-i18n-description="channels.openCode.zenDesc" data-description="预填 Zen URL，填写 API Key 后获取或配置模型">Zen</option>
+                <option value="opencode_zen_go" data-i18n="channels.openCode.zenGo"
+                  data-i18n-description="channels.openCode.zenGoDesc" data-description="预填 Zen Go URL，填写 API Key 后获取或配置模型">Zen Go</option>
+                <option value="opencode_anonymous" data-i18n="channels.openCode.anonymous"
+                  data-i18n-description="channels.openCode.anonymousDesc" data-description="免费模型免个人 Key，预填 public 后获取或配置模型">匿名</option>
+              </select>
+            </div>
+            <div class="oauth-actions">
+              <button type="button" class="btn btn-secondary" data-action="close-opencode-channel"
+                data-i18n="common.cancel">取消</button>
+              <button type="submit" class="btn btn-primary" data-i18n="channels.openCode.continue">继续</button>
+            </div>
+          </form>
+        </dialog>
 
         <dialog id="oauthLoginDialog" class="oauth-dialog oauth-dialog--compact"
           aria-labelledby="oauthLoginDialogTitle" aria-describedby="oauthLoginDialogDescription">
@@ -2415,7 +2453,7 @@
       <td class="ch-col-name">
         <div class="ch-name-cell">
           <div class="ch-name-head">
-            <span class="ch-name-avatar channel-provider-avatar" data-auth-type="{{authType}}" aria-hidden="true">{{{avatarHtml}}}</span>
+            <span class="ch-name-avatar channel-provider-avatar" data-auth-type="{{avatarType}}" aria-hidden="true">{{{avatarHtml}}}</span>
             <div class="ch-name-text">
               <div class="ch-name-line">
                 <div class="ch-name-main"><strong title="{{name}}">{{name}}</strong>{{{nameMultiplierBadge}}}{{{oauthPlanBadge}}}</div>

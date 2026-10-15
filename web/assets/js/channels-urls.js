@@ -236,6 +236,7 @@ function initInlineURLTableEventDelegation() {
 }
 
 function renderInlineURLTable() {
+  window.syncManagementAccountURLs?.(getValidInlineURLConfigs());
   const tbody = document.getElementById('inlineUrlTableBody');
   if (!tbody) return;
 
@@ -293,6 +294,7 @@ function updateInlineURL(index, value) {
 
   entry.url = nextURL;
 	inlineURLTableData[index] = entry;
+  window.syncManagementAccountURLs?.(getValidInlineURLConfigs());
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }

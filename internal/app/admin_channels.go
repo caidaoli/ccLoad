@@ -777,6 +777,10 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusConflict, "OAuth channels cannot use management_account")
 		return
 	}
+	if req.managementAccountSet && hasOpenCodeURL(req.URLs) {
+		RespondErrorMsg(c, http.StatusConflict, "OpenCode channels cannot use management_account")
+		return
+	}
 	if !model.UsesAPIKeyCredentials(req.AuthType) {
 		RespondErrorMsg(c, http.StatusBadRequest, "OAuth channels must be created by login or credential import")
 		return
@@ -1360,6 +1364,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Judge the normalized URLs: percent-encoded raw paths must not bypass this guard.
+	if req.managementAccountSet && hasOpenCodeURL(req.URLs) {
+		RespondErrorMsg(c, http.StatusConflict, "OpenCode channels cannot use management_account")
 		return
 	}
 	managementChanged := false

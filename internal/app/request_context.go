@@ -29,6 +29,7 @@ type requestContext struct {
 	streamIdleTimeout             time.Duration
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
+	openCodeFree                  bool
 	codeBuddyOAuth                bool
 	antigravityOAuth              bool
 	antigravityReplay             *antigravityReplay

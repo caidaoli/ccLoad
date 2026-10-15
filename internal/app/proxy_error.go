@@ -21,6 +21,12 @@ import (
 
 const cooldownWriteTimeout = 3 * time.Second
 
+// requestValidationError rejects the caller's request before any upstream call.
+// It is returned as 400 and never counts against the channel.
+type requestValidationError struct{ message string }
+
+func (e *requestValidationError) Error() string { return e.message }
+
 var cooldownClearChannelFailCount atomic.Uint64
 var cooldownClearKeyFailCount atomic.Uint64
 var cooldownClearModelFailCount atomic.Uint64

@@ -38,10 +38,6 @@ type zedWirePlan struct {
 	toolIdentities    map[string]cliproxyutil.ResponsesToolIdentity
 }
 
-type zedRequestValidationError struct{ message string }
-
-func (e *zedRequestValidationError) Error() string { return e.message }
-
 // finalizeZedResponsesBodyWithOptions 把标准 Responses body 装配成 Zed envelope。
 // preserveReasoning 由调用方判定：渠道 body 规则显式覆盖 reasoning 时必须保留它，
 // 否则本函数会把转换器凭空填入的默认值当成客户端意图删掉。
@@ -619,13 +615,13 @@ func ensureZedAnthropicMaxTokensExceedsThinkingBudget(body []byte, explicitMaxTo
 	}
 	if explicitMaxTokens {
 		// 调用方自相矛盾时直接拒绝：静默改写别人显式声明的预算比报错更糟。
-		return nil, &zedRequestValidationError{
+		return nil, &requestValidationError{
 			message: fmt.Sprintf("max_tokens must be greater than thinking.budget_tokens (%d <= %d)", maxTokens, budget),
 		}
 	}
 	// 判据必须跟着实际加数走，否则 budget 接近上限时抬高本身就会溢出成负数。
 	if budget > math.MaxInt64-zedAnthropicDefaultMaxTokens {
-		return nil, &zedRequestValidationError{message: "thinking.budget_tokens is too large"}
+		return nil, &requestValidationError{message: "thinking.budget_tokens is too large"}
 	}
 	return setJSONValue(body, "max_tokens", budget+zedAnthropicDefaultMaxTokens), nil
 }
