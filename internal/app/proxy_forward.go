@@ -576,6 +576,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		body = prepareCodeBuddyDefaults(body, sourceBody)
 	}
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
+	if !wireBodyRulesApplied {
+		body = normalizeOpenAIChatMaxTokens(upstreamProtocol, requestPath, body)
+	}
 	// Codex OAuth 的契约归一化会删除上游不接受的字段。这类请求的自定义
 	// 规则必须最后执行，才能真正覆盖内置值。
 	// wireBodyRulesApplied：重试路径的 wire body 已经过规则处理，跳过避免
@@ -620,6 +623,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		}
 		if err != nil {
 			return nil, "", err
+		}
+		if target != nil && isXAIUpstreamHost(target.Hostname()) {
+			body = fillXAIAnthropicToolDescriptions(body)
 		}
 	}
 	body = injectAnyrouterClaudeCodeFallbackTools(cfg, upstreamProtocol, requestPath, headers, callerBody, body)
@@ -1379,7 +1385,7 @@ func (s *Server) handleSuccessResponse(
 		resp.Body = wrapCodexSSEBody(resp.Body)
 	}
 	if reqCtx.xaiResponses {
-		prepareXAIResponsesResponse(resp, reqCtx.isStreaming || isSSE)
+		prepareXAIResponsesResponse(resp, reqCtx.isStreaming || isSSE, reqCtx.xaiTools.declaresXSearch())
 		prepareXAIResponsesToolsResponse(resp, reqCtx.xaiTools, reqCtx.isStreaming || isSSE)
 	}
 	prepareOpenCodeResponsesResponse(resp, reqCtx.openCodeResponses, reqCtx.isStreaming)
@@ -3114,6 +3120,7 @@ func (s *Server) forwardAttempt(
 					nextAction:                cooldown.ActionRetryChannel,
 					proxyLogWritten:           logged,
 					protocolCapabilityMissing: true,
+					requestScopedProtocolMiss: true,
 				}, cooldown.ActionRetryChannel, nil
 			}
 			return &proxyResult{
@@ -3390,6 +3397,7 @@ func (s *Server) forwardAttempt(
 				nextAction:                cooldown.ActionRetryChannel,
 				proxyLogWritten:           logged,
 				protocolCapabilityMissing: true,
+				requestScopedProtocolMiss: true,
 			}, cooldown.ActionRetryChannel, nil
 		}
 		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
@@ -3565,6 +3573,9 @@ func retryBodyForRejectedRequest(
 	res *fwResult,
 ) ([]byte, string, bool) {
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, cfg, target, plan, res); ok {
+		return retryBody, strategy, true
+	}
+	if retryBody, strategy, ok := openAIRetryBodyForMaxTokens(upstreamProtocol, plan, res); ok {
 		return retryBody, strategy, true
 	}
 	if retryBody, strategy, ok := responsesRetryBodyForUnknownParameter(upstreamProtocol, plan, res); ok {
@@ -4187,6 +4198,7 @@ func (s *Server) attemptKeyAcrossURLs(
 		var result *proxyResult
 		var nextAction cooldown.Action
 		stableEndpointUnsupported := true
+		requestScopedMiss := false
 		for protocolIdx, upstreamProtocol := range protocolCandidates {
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
@@ -4200,11 +4212,14 @@ func (s *Server) attemptKeyAcrossURLs(
 				return result, nil, nil
 			}
 			if cfg.AntigravityCredits || result == nil || !result.protocolCapabilityMissing {
-				if learnCapability {
+				// 前一协议只是不适配本次请求时，回退结果不能代表端点能力：
+				// 写入会把同一渠道/模型的其他会话也钉到回退协议上。
+				if learnCapability && !requestScopedMiss {
 					s.protocolCapabilities.set(capabilityKey, upstreamProtocol)
 				}
 				break
 			}
+			requestScopedMiss = requestScopedMiss || result.requestScopedProtocolMiss
 			if !shouldCacheProtocolUnsupported(result.status) {
 				stableEndpointUnsupported = false
 			}

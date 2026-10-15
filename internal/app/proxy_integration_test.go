@@ -10705,6 +10705,48 @@ func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) 
 	}
 }
 
+// 一个请求无法转换到已学协议时可以回退，但回退结果只说明这一个请求，
+// 不能覆盖同一渠道/模型的学习结果。
+func TestProxy_AutomaticProtocolFallback_RequestScopedMissKeepsLearnedProtocol(t *testing.T) {
+	t.Parallel()
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/messages":
+			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		case r.URL.Path == "/v1/responses" && len(paths) > 1:
+			_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"route not found"}}`)
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "request-scoped-miss", protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5.6-sol",
+	}}, map[int]string{0: upstream.URL})
+	request := func(input any) {
+		t.Helper()
+		w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "input": input}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	request("hello")
+	request([]map[string]any{{"type": "compaction", "encrypted_content": "opaque"}})
+	request("hello again")
+
+	// Anthropic 无法表示 compaction，第二个请求回退到 Codex；第三个请求仍先走已学的 Anthropic。
+	want := []string{"/v1/responses", "/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/messages"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("paths=%v, want %v", paths, want)
+	}
+}
+
 func TestProxy_AutomaticProtocolFallback_ResponsesModelNotSupported(t *testing.T) {
 	t.Parallel()
 	var paths []string

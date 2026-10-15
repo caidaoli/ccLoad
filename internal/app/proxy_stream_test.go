@@ -40,7 +40,7 @@ data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_xa
 
 `
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(input))}
-	prepareXAIResponsesResponse(resp, true)
+	prepareXAIResponsesResponse(resp, true, false)
 	defer func() { _ = resp.Body.Close() }()
 	normalized, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestXAIResponsesJSONReasoningContract(t *testing.T) {
 		t.Run(summary, func(t *testing.T) {
 			input := `{"object":"response","output":[{"type":"reasoning","summary":` + summary + `,"content":[{"type":"reasoning_text","text":"fallback"}],"encrypted_content":"cipher"}]}`
 			resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(input))}
-			prepareXAIResponsesResponse(resp, false)
+			prepareXAIResponsesResponse(resp, false, false)
 			defer func() { _ = resp.Body.Close() }()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
@@ -121,6 +121,95 @@ func TestXAIResponsesJSONReasoningContract(t *testing.T) {
 			}
 			if len(item.Get("summary").Array()) != 1 || item.Get("summary.0.type").String() != "summary_text" || item.Get("summary.0.text").String() != want || item.Get("encrypted_content").String() != "cipher" {
 				t.Fatalf("normalized reasoning=%s", body)
+			}
+		})
+	}
+}
+
+func TestXAIResponsesXSearchMapsToWebSearchUnlessDeclared(t *testing.T) {
+	t.Parallel()
+	const stream = `event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"xs_1","type":"x_search_call","status":"in_progress"}}
+
+event: response.x_search_call.completed
+data: {"type":"response.x_search_call.completed","output_index":0,"item_id":"xs_1"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":1,"item_id":"msg_1","delta":"x_search_call"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_xai","status":"completed","tools":[{"type":"x_search","allowed_x_handles":["xai"]}],"output":[{"id":"xs_1","type":"x_search_call","status":"completed"}]}}
+
+`
+	const jsonBody = `{"object":"response","tools":[{"type":"x_search","allowed_x_handles":["xai"]}],"output":[{"id":"xs_1","type":"x_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"x_search_call"}]}]}`
+	tests := []struct {
+		name    string
+		request string
+		mapped  bool
+	}{
+		{name: "web search client", request: `{"tools":[{"type":"web_search"}]}`, mapped: true},
+		{name: "top-level x_search", request: `{"tools":[{"type":"x_search"}]}`},
+		{name: "additional x_search", request: `{"input":[{"type":"additional_tools","tools":[{"type":"x_search"}]}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, plan, err := prepareXAIResponsesToolsRequest([]byte(test.request), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func(body string, streaming bool) string {
+				resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+				prepareXAIResponsesResponse(resp, streaming, plan.declaresXSearch())
+				defer func() { _ = resp.Body.Close() }()
+				got, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(got)
+			}
+
+			gotStream := read(stream, true)
+			if !test.mapped {
+				if gotStream != stream {
+					t.Fatalf("declared x_search stream changed:\n%s", gotStream)
+				}
+				if got := read(jsonBody, false); got != jsonBody {
+					t.Fatalf("declared x_search JSON changed: %s", got)
+				}
+				return
+			}
+			var events []string
+			var payloads []gjson.Result
+			for _, frame := range strings.Split(gotStream, "\n\n") {
+				if frame == "" {
+					continue
+				}
+				event, data := parseSSEEventChunk([]byte(frame))
+				payload := gjson.ParseBytes(data)
+				if event != payload.Get("type").String() {
+					t.Fatalf("event=%q type=%q", event, payload.Get("type").String())
+				}
+				events = append(events, event)
+				payloads = append(payloads, payload)
+			}
+			wantEvents := []string{"response.output_item.added", "response.web_search_call.completed", "response.output_text.delta", "response.completed"}
+			if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
+				t.Fatalf("events=%v, want %v", events, wantEvents)
+			}
+			terminal := payloads[3].Get("response")
+			if payloads[0].Get("item.type").String() != "web_search_call" ||
+				payloads[2].Get("delta").String() != "x_search_call" ||
+				terminal.Get("output.0.type").String() != "web_search_call" ||
+				terminal.Get("tools.0").Raw != `{"type":"web_search"}` {
+				t.Fatalf("x_search stream not mapped:\n%s", gotStream)
+			}
+
+			gotJSON := gjson.Parse(read(jsonBody, false))
+			if gotJSON.Get("output.0.type").String() != "web_search_call" ||
+				gotJSON.Get("output.1.content.0.text").String() != "x_search_call" ||
+				gotJSON.Get("tools.0").Raw != `{"type":"web_search"}` {
+				t.Fatalf("x_search JSON not mapped: %s", gotJSON.Raw)
 			}
 		})
 	}

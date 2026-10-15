@@ -25,6 +25,13 @@ type xaiResponsesToolIdentity struct{ kind, namespace, name string }
 type xaiResponsesToolsPlan struct {
 	names      map[xaiResponsesToolIdentity]string
 	identities map[string]xaiResponsesToolIdentity
+	xSearch    bool
+}
+
+// declaresXSearch 报告客户端是否自己声明了 xAI 原生 x_search。没声明的客户端
+// 只认 OpenAI 的 web_search，响应要映射过去。
+func (p *xaiResponsesToolsPlan) declaresXSearch() bool {
+	return p != nil && p.xSearch
 }
 
 const xaiCustomToolSchema = `{"type":"object","properties":{"input":{"type":"string","description":"The exact raw input for this tool."}},"required":["input"],"additionalProperties":false}`
@@ -61,6 +68,9 @@ func prepareXAIResponsesToolsRequest(body []byte, plan *xaiResponsesToolsPlan) (
 				}
 				collect(tool.Get("tools"), name)
 				continue
+			}
+			if kind == "x_search" {
+				plan.xSearch = true
 			}
 			if kind != "function" && kind != "custom" && kind != "tool_search" {
 				declarations = append(declarations, declaration{raw: tool})

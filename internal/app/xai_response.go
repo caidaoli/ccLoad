@@ -6,18 +6,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/tidwall/gjson"
 )
 
-// prepareXAIResponsesResponse normalizes xAI's Responses reasoning dialect at
-// the provider boundary, before native forwarding or protocol conversion.
-func prepareXAIResponsesResponse(resp *http.Response, streaming bool) {
+// prepareXAIResponsesResponse normalizes xAI's Responses dialect at the
+// provider boundary, before native forwarding or protocol conversion. Unless
+// the client declared x_search itself, xAI's x_search traces become the
+// OpenAI web_search shape the client can parse.
+func prepareXAIResponsesResponse(resp *http.Response, streaming, keepXSearch bool) {
 	if resp == nil || resp.Body == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
 	if !responseIsSSE(resp, streaming) {
-		wrapJSONEventRewrite(resp, nil, normalizeXAIResponsesJSON)
+		wrapJSONEventRewrite(resp, nil, func(body []byte) []byte {
+			return normalizeXAIResponsesJSON(body, keepXSearch)
+		})
 		return
 	}
 	scanner := bufio.NewScanner(wrapCodexSSEBody(resp.Body))
@@ -31,7 +36,7 @@ func prepareXAIResponsesResponse(resp *http.Response, streaming bool) {
 		}
 		return 0, nil, nil
 	})
-	resp.Body = &xaiResponsesReader{ReadCloser: resp.Body, scanner: scanner}
+	resp.Body = &xaiResponsesReader{ReadCloser: resp.Body, scanner: scanner, keepXSearch: keepXSearch}
 	resp.ContentLength = -1
 	resp.Header.Del("Content-Length")
 }
@@ -42,6 +47,7 @@ type xaiResponsesReader struct {
 	pending        []byte
 	sequenceOffset int64
 	summaryParts   map[string]bool
+	keepXSearch    bool
 }
 
 func (r *xaiResponsesReader) Read(dst []byte) (int, error) {
@@ -61,7 +67,7 @@ func (r *xaiResponsesReader) Read(dst []byte) (int, error) {
 			r.pending = frame
 			continue
 		}
-		payloads := [][]byte{normalizeXAIResponsesJSON(data)}
+		payloads := [][]byte{normalizeXAIResponsesJSON(data, r.keepXSearch)}
 		normalizedType := gjson.GetBytes(payloads[0], "type").String()
 		if normalizedType == "response.reasoning_summary_part.added" || normalizedType == "response.reasoning_summary_text.delta" {
 			if r.summaryParts == nil {
@@ -131,7 +137,7 @@ func normalizeXAIResponsesIndex(body []byte) []byte {
 	return body
 }
 
-func normalizeXAIResponsesJSON(body []byte) []byte {
+func normalizeXAIResponsesJSON(body []byte, keepXSearch bool) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
 	}
@@ -196,6 +202,36 @@ func normalizeXAIResponsesJSON(body []byte) []byte {
 	for _, prefix := range []string{"response.output", "output"} {
 		for i := range root.Get(prefix).Array() {
 			normalizeItem(fmt.Sprintf("%s.%d", prefix, i))
+		}
+	}
+	if !keepXSearch {
+		body = mapXAIXSearchToWebSearch(body)
+	}
+	return body
+}
+
+// mapXAIXSearchToWebSearch 按字段改写 x_search 事件、调用项与工具回显。两者
+// 都是服务端执行的搜索调用，只换类型；正文里的同名文本不受影响。
+func mapXAIXSearchToWebSearch(body []byte) []byte {
+	root := gjson.ParseBytes(body)
+	if eventType, ok := strings.CutPrefix(root.Get("type").String(), "response.x_search_call."); ok {
+		body = setJSONValue(body, "type", "response.web_search_call."+eventType)
+	}
+	if root.Get("item.type").String() == "x_search_call" {
+		body = setJSONValue(body, "item.type", "web_search_call")
+	}
+	for _, prefix := range []string{"response.output", "output"} {
+		for i, item := range root.Get(prefix).Array() {
+			if item.Get("type").String() == "x_search_call" {
+				body = setJSONValue(body, fmt.Sprintf("%s.%d.type", prefix, i), "web_search_call")
+			}
+		}
+	}
+	for _, prefix := range []string{"response.tools", "tools"} {
+		for i, tool := range root.Get(prefix).Array() {
+			if tool.Get("type").String() == "x_search" {
+				body = setJSONRaw(body, fmt.Sprintf("%s.%d", prefix, i), `{"type":"web_search"}`)
+			}
 		}
 	}
 	return body

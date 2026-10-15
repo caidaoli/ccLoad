@@ -29,6 +29,28 @@ func buildXAIResponsesURL(baseURL, rawQuery string) string {
 	return buildUpstreamURL(baseURL, "/responses", rawQuery)
 }
 
+func isXAIUpstreamHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "cli-chat-proxy.grok.com" || host == "api.x.ai"
+}
+
+// fillXAIAnthropicToolDescriptions 补齐 xAI Anthropic Messages 端点必填的
+// tools[].description，优先用工具名。官方 Anthropic 的 server tool 拒绝多余
+// 字段，所以只能按 xAI 主机启用。
+func fillXAIAnthropicToolDescriptions(body []byte) []byte {
+	for i, tool := range gjson.GetBytes(body, "tools").Array() {
+		if !tool.IsObject() || tool.Get("description").Exists() {
+			continue
+		}
+		description := strings.TrimSpace(tool.Get("name").String())
+		if description == "" {
+			description = strings.TrimSpace(tool.Get("type").String())
+		}
+		body = setJSONValue(body, "tools."+strconv.Itoa(i)+".description", description)
+	}
+	return body
+}
+
 func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]byte, error) {
 	actualModel = strings.TrimSpace(actualModel)
 	if actualModel == "" {

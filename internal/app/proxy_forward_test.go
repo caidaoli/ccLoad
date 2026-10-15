@@ -3929,6 +3929,43 @@ func TestPrepareTranslatedUpstreamBodyInjectsAnyrouterFallbackTools(t *testing.T
 	}
 }
 
+func TestPrepareTranslatedUpstreamBodyFillsXAIAnthropicToolDescriptions(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"model":"grok-4.5","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"lookup","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"},{"name":"read","description":"Read a file","input_schema":{"type":"object"}}]}`
+	tests := []struct {
+		target string
+		filled bool
+	}{
+		{target: "https://cli-chat-proxy.grok.com/v1/messages", filled: true},
+		{target: "https://api.x.ai/v1/messages", filled: true},
+		{target: anthropicOfficialTestURL.String()},
+		{target: anthropicThirdPartyTestURL.String()},
+	}
+	for _, test := range tests {
+		t.Run(test.target, func(t *testing.T) {
+			t.Parallel()
+			got, _, err := (&Server{}).prepareTranslatedUpstreamBody(
+				&model.Config{}, protocol.Anthropic, "/v1/messages", "",
+				[]byte(body), []byte(body), "sk-key", http.Header{}, false, mustParseTestURL(test.target),
+				false, false,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(got, "tools.2.description").String(); got != "Read a file" {
+				t.Fatalf("existing description = %q", got)
+			}
+			for index, want := range []string{"lookup", "web_search"} {
+				description := gjson.GetBytes(got, fmt.Sprintf("tools.%d.description", index))
+				if test.filled && description.String() != want || !test.filled && description.Exists() {
+					t.Fatalf("tools.%d.description = %s, filled=%v; body = %s", index, description.Raw, test.filled, got)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareTranslatedUpstreamBodyCapsAntigravityOutputUsingRequestModel(t *testing.T) {
 	t.Parallel()
 	const modelName = "claude-opus-4-6-thinking"

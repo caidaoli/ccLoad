@@ -223,8 +223,7 @@ func hasStrongXAIImportMarker(fields map[string]json.RawMessage) bool {
 	if baseURL := readString("base_url"); baseURL != "" {
 		parsed, err := url.Parse(baseURL)
 		if err == nil && parsed.Scheme == "https" && parsed.User == nil {
-			host := strings.ToLower(parsed.Hostname())
-			return host == "cli-chat-proxy.grok.com" || host == "api.x.ai"
+			return isXAIUpstreamHost(parsed.Hostname())
 		}
 	}
 	return false

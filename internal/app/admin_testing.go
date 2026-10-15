@@ -1933,7 +1933,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	wrapCodexSSEResponseBody(resp, protocol.Protocol(requestPlan.upstreamProtocol), isEventStream)
 	if requestPlan.xaiOAuth {
-		prepareXAIResponsesResponse(resp, requestPlan.upstreamStreaming || isEventStream)
+		prepareXAIResponsesResponse(resp, requestPlan.upstreamStreaming || isEventStream, requestPlan.xaiTools.declaresXSearch())
 		prepareXAIResponsesToolsResponse(resp, requestPlan.xaiTools, requestPlan.upstreamStreaming || isEventStream)
 	}
 	prepareOpenCodeResponsesResponse(resp, requestPlan.openCodeResponses, requestPlan.upstreamStreaming)
