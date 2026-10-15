@@ -53,6 +53,28 @@ func TestTimeHelpers(t *testing.T) {
 	}
 }
 
+func TestGetTimeRange_LastMonthAtMonthEnd(t *testing.T) {
+	loc := time.FixedZone("UTC+8", 8*3600)
+	for _, date := range []struct {
+		year, month, day              int
+		wantYear, wantMonth, wantDays int
+	}{
+		{2026, 3, 29, 2026, 2, 28},
+		{2026, 3, 31, 2026, 2, 28},
+		{2024, 3, 31, 2024, 2, 29},
+		{2026, 5, 31, 2026, 4, 30},
+		{2026, 1, 31, 2025, 12, 31},
+	} {
+		now := time.Date(date.year, time.Month(date.month), date.day, 12, 0, 0, 0, loc)
+		start, end := (&PaginationParams{Range: "last_month"}).GetTimeRangeAt(now)
+		wantStart := time.Date(date.wantYear, time.Month(date.wantMonth), 1, 0, 0, 0, 0, loc)
+		wantEnd := time.Date(date.wantYear, time.Month(date.wantMonth), date.wantDays, 23, 59, 59, 999999999, loc)
+		if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+			t.Errorf("now=%v: last_month=%v..%v, want %v..%v", now, start, end, wantStart, wantEnd)
+		}
+	}
+}
+
 func TestRespondErrorWithData(t *testing.T) {
 	t.Parallel()
 

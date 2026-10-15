@@ -158,13 +158,21 @@ func (s *responsesWebsocketSession) requireReplacementReplay() {
 
 // normalizeHTTPRequests keeps ordinary Responses HTTP semantics intact:
 // no previous_response_id starts a replacement response, while a continuation
-// may use native WS only when this process owns the referenced transcript.
+// may replay to another protocol/transport only when this process owns the
+// referenced transcript. The caller keeps the original native HTTP wire body.
 func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
 	replayRequest, incrementalRequest []byte, localContinuation bool, err error,
 ) {
 	websocketPayload, err := sjson.SetBytes(payload, "type", responsesWebsocketRequestCreate)
 	if err != nil {
 		return nil, nil, false, err
+	}
+	if input := gjson.GetBytes(payload, "input"); input.Type == gjson.String {
+		// HTTP accepts a string shorthand; local transcript replay merges items.
+		websocketPayload, err = sjson.SetBytes(websocketPayload, "input", []map[string]string{{"role": "user", "content": input.String()}})
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("normalize HTTP input: %w", err)
+		}
 	}
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
 	if previousID != "" && len(s.lastRequest) == 0 {
@@ -202,6 +210,18 @@ func (s *responsesWebsocketSession) commit(request []byte, result responsesWebso
 	}
 	s.lastResponseID = strings.TrimSpace(result.completedResponseID)
 	s.pendingToolCallIDs = append([]string(nil), result.pendingToolCallIDs...)
+}
+
+func responsesWebsocketTurnFromResponse(response gjson.Result) responsesWebsocketTurnResult {
+	output := []byte("[]")
+	if items := response.Get("output"); items.IsArray() {
+		output = []byte(items.Raw)
+	}
+	return responsesWebsocketTurnResult{
+		completedResponseID: strings.TrimSpace(response.Get("id").String()),
+		completedOutput:     output,
+		pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
+	}
 }
 
 func normalizeInitialResponsesWebsocketRequest(payload []byte, maxBodyBytes int64) ([]byte, error) {

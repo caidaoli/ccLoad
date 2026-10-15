@@ -17,6 +17,9 @@ type Store interface {
 	ListConfigs(ctx context.Context) ([]*model.Config, error)
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
+	CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error)
+	UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error)
+	UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
 	// CompareAndSwapOAuthUsage persists a validated quota sample; costs come from OAuthQuotaCostViews.

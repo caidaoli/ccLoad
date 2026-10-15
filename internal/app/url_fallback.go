@@ -115,6 +115,7 @@ func prioritizeDeclaredProtocolURLs(sorted []sortedURL, configured model.Channel
 
 // orderURLsWithSelector 返回用于故障切换的URL尝试顺序。
 // 当 selector 可用且存在多个URL时，优先用加权随机选首跳，其余URL按排序结果兜底。
+// 单 URL 和多 URL 全禁用时均保留原候选兜底；Antigravity 使用独立的严格过滤路径。
 func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string) []sortedURL {
 	if len(urls) == 0 {
 		return nil

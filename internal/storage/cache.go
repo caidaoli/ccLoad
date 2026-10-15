@@ -21,6 +21,7 @@ type ChannelCache struct {
 	allChannels      []*modelpkg.Config            // 所有渠道
 	systemOneByModel map[string][]*modelpkg.Config // model → System One channels
 	lastUpdate       time.Time
+	generation       uint64
 	mutex            sync.RWMutex
 	refreshMutex     sync.Mutex // 串行化刷新动作，避免数据库 IO 在 mutex 锁内阻塞读者
 	ttl              time.Duration
@@ -165,32 +166,42 @@ func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
 	c.refreshMutex.Lock()
 	defer c.refreshMutex.Unlock()
 
-	// 双重检查：可能已被并发刷新者完成
-	c.mutex.RLock()
-	stale := time.Since(c.lastUpdate) > c.ttl
-	c.mutex.RUnlock()
-	if !stale {
-		return nil
-	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// 双重检查：可能已被并发刷新者完成。
+		c.mutex.RLock()
+		stale := time.Since(c.lastUpdate) > c.ttl
+		generation := c.generation
+		c.mutex.RUnlock()
+		if !stale {
+			return nil
+		}
 
-	return c.refreshCache(ctx)
+		published, err := c.refreshCache(ctx, generation)
+		if err != nil || published {
+			return err
+		}
+		// 加载期间发生失效：重新查询，当前调用也不能返回旧配置。
+	}
 }
 
 // refreshCache 刷新缓存数据
 // 说明：DB 加载与索引构建在 c.mutex 之外完成，仅在指针互换瞬间持写锁。
 // 缓存内部索引共享指针；对外统一返回深拷贝，避免调用方污染缓存。
 // 调用方必须已持有 refreshMutex 以串行化刷新动作。
-func (c *ChannelCache) refreshCache(ctx context.Context) error {
+func (c *ChannelCache) refreshCache(ctx context.Context, generation uint64) (bool, error) {
 	start := time.Now()
 
 	allChannels, err := c.store.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	systemOneChannels, err := c.store.GetEnabledSystemOneChannelsByModel(ctx, "*")
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	byModel := make(map[string][]*modelpkg.Config)
@@ -210,6 +221,10 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 
 	// 原子性更新缓存（整体替换指针，临界区只覆盖赋值瞬间）
 	c.mutex.Lock()
+	if c.generation != generation {
+		c.mutex.Unlock()
+		return false, nil
+	}
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
 	c.systemOneByModel = systemOneByModel
@@ -222,7 +237,7 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 			refreshDuration, len(allChannels), len(byModel))
 	}
 
-	return nil
+	return true, nil
 }
 
 // InvalidateCache 手动失效缓存
@@ -231,6 +246,7 @@ func (c *ChannelCache) InvalidateCache() {
 	defer c.mutex.Unlock()
 
 	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
+	c.generation++
 }
 
 // GetAPIKeysSnapshot 返回缓存中的 Key 指针。调用方只能读取，不能修改 Key 或其切片字段。

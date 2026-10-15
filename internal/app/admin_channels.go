@@ -781,19 +781,6 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "OAuth channels must be created by login or credential import")
 		return
 	}
-	// 创建渠道（不包含API Key）
-	created, err := s.store.CreateConfig(c.Request.Context(), req.ToConfig())
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	if req.managementAccountSet {
-		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), created, req.ManagementAccount); err != nil {
-			s.rollbackCreatedChannel(c.Request.Context(), created.ID)
-			respondChannelManagementError(c, err)
-			return
-		}
-	}
 
 	keyStrategy := strings.TrimSpace(req.KeyStrategy)
 	if keyStrategy == "" {
@@ -805,7 +792,6 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	keysToCreate := make([]*model.APIKey, 0, len(apiKeyEntries))
 	for i, entry := range apiKeyEntries {
 		keysToCreate = append(keysToCreate, &model.APIKey{
-			ChannelID:       created.ID,
 			KeyIndex:        i,
 			APIKey:          entry.APIKey,
 			Note:            entry.Note,
@@ -821,14 +807,19 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 			UpdatedAt:       model.JSONTime{Time: now},
 		})
 	}
-	if len(keysToCreate) > 0 {
-		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), keysToCreate); err != nil {
-			log.Printf("[WARN] 批量创建API Key失败 (channel=%d): %v", created.ID, err)
+	created, err := s.store.CreateConfigWithAPIKeys(c.Request.Context(), req.ToConfig(), keysToCreate)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	defer s.InvalidateChannelListCache()
+	if req.managementAccountSet {
+		if _, err := s.channelManagement.SaveSettings(c.Request.Context(), created, req.ManagementAccount); err != nil {
+			s.rollbackCreatedChannel(c.Request.Context(), created.ID)
+			respondChannelManagementError(c, err)
+			return
 		}
 	}
-
-	// 新增渠道后，失效渠道列表缓存使选择器立即可见
-	s.InvalidateChannelListCache()
 
 	RespondJSON(c, http.StatusCreated, created)
 }
@@ -1472,19 +1463,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	upd, err := s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
-	if err != nil {
-		RespondError(c, http.StatusNotFound, err)
-		return
-	}
-	if existing.UsesXAIOAuth() && s.xaiCredentials != nil {
-		s.xaiCredentials.invalidate(id)
-	}
-
-	// Key或策略变化时更新API Keys
-	if existing.UsesOAuth() {
-		// OAuth 凭证只由登录、导入和刷新链路维护。
-	} else if keyChanged {
+	var apiKeys []*model.APIKey
+	if keyChanged {
 		existingByValue := make(map[string][]*model.APIKey, len(oldKeys))
 		for _, oldKey := range oldKeys {
 			if oldKey != nil {
@@ -1493,15 +1473,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 		nextOccurrence := make(map[string]int, len(existingByValue))
 
-		// Key内容/数量变化：删除旧Key并重建
-		if err := s.store.DeleteAllAPIKeys(c.Request.Context(), id); err != nil {
-			RespondError(c, http.StatusInternalServerError, fmt.Errorf("delete old API keys before rebuild: %w", err))
-			return
-		}
-
 		// 批量创建新的API Keys（优化：单次事务插入替代循环单条插入）
 		now := time.Now()
-		apiKeys := make([]*model.APIKey, 0, len(newKeys))
+		apiKeys = make([]*model.APIKey, 0, len(newKeys))
 		for i, key := range newKeys {
 			var wasDisabled bool
 			occurrence := nextOccurrence[key.APIKey]
@@ -1526,11 +1500,24 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				UpdatedAt:       model.JSONTime{Time: now},
 			})
 		}
-		if err := s.store.CreateAPIKeysBatch(c.Request.Context(), apiKeys); err != nil {
-			RespondError(c, http.StatusInternalServerError, fmt.Errorf("rebuild API keys: %w", err))
-			return
-		}
+	}
+	var upd *model.Config
+	if keyChanged {
+		upd, err = s.store.UpdateConfigWithAPIKeys(c.Request.Context(), id, req.ToConfig(), apiKeys)
 	} else {
+		upd, err = s.store.UpdateConfig(c.Request.Context(), id, req.ToConfig())
+	}
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	// Later metadata/account writes may fail after the channel has committed.
+	defer s.InvalidateChannelListCache()
+	defer s.InvalidateAPIKeysCache(id)
+	if existing.UsesXAIOAuth() && s.xaiCredentials != nil {
+		s.xaiCredentials.invalidate(id)
+	}
+	if !existing.UsesOAuth() && !keyChanged {
 		// Key内容未变化：策略和备注都是独立元数据，不能重建 Key 导致禁用状态丢失。
 		if strategyChanged {
 			if err := s.store.UpdateAPIKeysStrategy(c.Request.Context(), id, keyStrategy); err != nil {
@@ -1580,16 +1567,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		reflect.DeepEqual(before, after)
 	if !priorityOnly {
 		s.clearAllChannelCooldowns(c.Request.Context(), id)
-	} else {
-		s.InvalidateAPIKeysCache(id)
 	}
 	if keyChanged || protocolCapabilityConfigChanged(existing, upd) {
 		// URL、协议声明、转换模式或 Key 等可能已变化，只重新探测本渠道。
 		s.protocolCapabilities.clearChannels(id)
 	}
-
-	// 渠道更新后刷新缓存，确保选择器立即生效
-	s.InvalidateChannelListCache()
 
 	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
 	if s.urlSelector != nil {

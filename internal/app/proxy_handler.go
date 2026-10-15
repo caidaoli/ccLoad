@@ -695,6 +695,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if routingSession != nil {
 		reqCtx.routingSession = routingSession
 	}
+	reqCtx.responsesReplayBody = executionSessionRequestBody
 	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream
 		reqCtx.nativeCodexBody = nativeRequestBody

@@ -282,6 +282,7 @@ type proxyRequestContext struct {
 	sessionAffinity         sessionAffinityTarget      // 请求开始时的会话绑定，channelID=0 表示无
 	nativeCodexWS           *codexUpstreamWebsocketSession
 	nativeCodexBody         []byte
+	responsesReplayBody     []byte // HTTP Responses 的完整 transcript，仅供跨协议转换使用
 }
 
 // countTokens reports the auxiliary count_tokens request: it is never billed,
@@ -891,6 +892,9 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	actualModel = s.resolveFinalUpstreamModel(cfg, selected, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
+	if reqCtx.clientProtocol == protocol.Codex && upstreamProtocol != protocol.Codex && len(reqCtx.responsesReplayBody) > 0 {
+		bodyToSend = reqCtx.responsesReplayBody
+	}
 	requestedModel := reqCtx.requestedModel
 	if requestedModel == "" {
 		requestedModel = reqCtx.originalModel

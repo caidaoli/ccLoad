@@ -10,7 +10,7 @@ import (
 
 // AggregateRangeWithFilter 聚合指定时间范围的指标数据，支持多种筛选条件
 // filter 为 nil 时返回所有数据
-// [FIX] 2025-12: 排除499（客户端取消）避免污染趋势图统计
+// 客户端取消不计次数与耗时，但保留已计费的 token 与成本。
 func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
 	bucketMinutes := int64(bucket / time.Minute)
 	if bucketMinutes < 1 {
@@ -42,7 +42,6 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 	`).
 		Where("logs.minute_bucket >= ?", sinceBucket).
 		Where("logs.minute_bucket <= ?", untilBucket).
-		Where("logs.status_code != 499").
 		Where("logs.channel_id > 0")
 
 	// 渠道名称先解析为 ID；其余条件统一交给 LogFilter（nil 即只统计 proxy），避免不同统计端点口径漂移。

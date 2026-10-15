@@ -87,7 +87,7 @@ func (p *PaginationParams) GetTimeRangeAt(now time.Time) (startTime, endTime tim
 		endTime = now
 	case "last_month":
 		// 上月：上月1号0:00到上月最后一天23:59:59
-		lastMonth := now.AddDate(0, -1, 0)
+		lastMonth := beginningOfMonth(now).AddDate(0, -1, 0)
 		startTime = beginningOfMonth(lastMonth)
 		endTime = endOfMonth(lastMonth)
 	default:

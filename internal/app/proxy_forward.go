@@ -951,7 +951,7 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 	case protocol.Anthropic:
 		return eventType == "message_stop" || ssePayloadType(data) == "message_stop"
 	case protocol.Codex:
-		return eventType == "response.completed" || ssePayloadType(data) == "response.completed"
+		return isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data))
 	case protocol.OpenAI:
 		if bytes.Equal(data, sseDoneMarker) {
 			return true
@@ -1667,6 +1667,10 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	deferredWriter.WriteHeader(resp.StatusCode)
 
 	parser := newSSEUsageParser(upstreamProtocol)
+	// Usage belongs to the upstream; continuation IDs and output belong to the
+	// Responses events actually sent to the client after translation.
+	var translatedTurn responsesWebsocketTurnResult
+	var hasTranslatedTurn bool
 	var translatedComplete bool
 	var codeBuddyDone bool
 	var state any
@@ -1675,6 +1679,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
+			if reqCtx.transformPlan.ClientProtocol == protocol.Codex &&
+				(isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data))) {
+				if response := gjson.GetBytes(data, "response"); response.IsObject() {
+					translatedTurn = responsesWebsocketTurnFromResponse(response)
+					hasTranslatedTurn = true
+				}
+			}
 			if eventType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
 				translatedError = bytes.Clone(data)
 			}
@@ -1878,6 +1889,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		result.SSEErrorEvent = translatedError
 	}
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
+	if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
+		result.ResponsesTurnResult, result.HasResponsesTurnResult = translatedTurn, hasTranslatedTurn
+	}
 	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
 
 	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, resp.Header.Get("Content-Type")); diagMsg != "" {
@@ -2344,6 +2358,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	replayBodyRulesApplied bool,
 	wireAliases upstreamWireAliases,
 ) (*fwResult, float64, error) {
+	if plan.ClientProtocol == protocol.Codex && plan.NeedsTransform &&
+		strings.TrimSpace(gjson.GetBytes(plan.TranslatedBody, "previous_response_id").String()) != "" {
+		return nil, 0, &protocol.RequestTranslationError{
+			From: plan.ClientProtocol, To: plan.UpstreamProtocol,
+			Err: errors.New("previous response is not available for protocol conversion; resend the full conversation input without previous_response_id"),
+		}
+	}
 	// 1. 创建请求上下文（处理超时）
 	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))

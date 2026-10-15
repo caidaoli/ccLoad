@@ -2031,6 +2031,7 @@ window.I18N_LOCALES['en'] = {
   'channels.urlStatusUnknown': 'Unknown',
   'channels.urlStatusDisabled': 'Disabled',
   'channels.urlDisable': 'Disable this URL',
+  'channels.urlDisableFallback': 'Disable this URL. If all URLs are disabled, including a channel with only one URL, they remain fallback candidates. Disable the channel to stop forwarding.',
   'channels.urlEnable': 'Enable this URL',
   // Key Export
   'channels.exportKeys': 'Export',

@@ -535,7 +535,8 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	return result
 }
 
-// DisableURL 手动禁用指定URL，使其不再被选择
+// DisableURL 手动禁用指定 URL；普通渠道仍保留全部禁用时的兜底，
+// 包括只有一个 URL 的渠道。停止整个渠道须使用渠道停用开关。
 func (s *URLSelector) DisableURL(channelID int64, url string) {
 	key := urlKey{channelID: channelID, url: url}
 	s.mu.Lock()

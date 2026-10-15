@@ -2,6 +2,7 @@ package sql_test
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -16,7 +17,8 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	start := now.Add(-2 * time.Minute)
 	end := now.Add(2 * time.Minute)
 
-	// token 1: 1 success(stream) + 1 failure(non-stream) + 1 cancelled(499, should be excluded)
+	// token 1: success(stream) + failure(non-stream) + cancelled(stream/non-stream)
+	//          取消不计次数与耗时，但保留已计费用量。
 	//          + 1 count_tokens（辅助请求，不计入令牌统计）
 	// token 2: 1 success
 	logs := []*model.LogEntry{
@@ -46,17 +48,30 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 			Cost:         0.02,
 		},
 		{
-			Time:          model.JSONTime{Time: now},
-			ChannelID:     1,
-			Model:         "m1",
-			StatusCode:    499,
-			IsStreaming:   true,
-			FirstByteTime: 0.1, // 让 AVG 不受 499 干扰（当前实现未排除 499 的 AVG）
-			Duration:      0.3,
-			AuthTokenID:   1,
-			InputTokens:   0,
-			OutputTokens:  0,
-			Cost:          0,
+			Time:                     model.JSONTime{Time: now},
+			ChannelID:                1,
+			Model:                    "m1",
+			StatusCode:               499,
+			IsStreaming:              true,
+			FirstByteTime:            99,
+			Duration:                 0.3,
+			AuthTokenID:              1,
+			InputTokens:              5,
+			OutputTokens:             7,
+			CacheReadInputTokens:     3,
+			CacheCreationInputTokens: 4,
+			Cost:                     0.125,
+			CostMultiplier:           2,
+		},
+		{
+			Time: model.JSONTime{Time: now}, ChannelID: 1, Model: "m1", StatusCode: 499,
+			AuthTokenID: 1, Duration: 100, InputTokens: 8, OutputTokens: 9,
+			CacheReadInputTokens: 5, CacheCreationInputTokens: 6, Cost: 0.25, CostMultiplier: 2,
+		},
+		{
+			Time: model.JSONTime{Time: now}, ChannelID: 1, Model: "m1", StatusCode: 499,
+			AuthTokenID: 3, IsStreaming: true, FirstByteTime: 99, Duration: 100,
+			InputTokens: 5, Cost: 0.125, CostMultiplier: 2,
 		},
 		{
 			Time:        model.JSONTime{Time: now},
@@ -89,8 +104,8 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAuthTokenStatsInRange failed: %v", err)
 	}
-	if len(stats) != 2 {
-		t.Fatalf("stats len=%d, want 2", len(stats))
+	if len(stats) != 3 {
+		t.Fatalf("stats len=%d, want 3", len(stats))
 	}
 
 	s1 := stats[1]
@@ -103,8 +118,21 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	if s1.StreamCount != 1 || s1.NonStreamCount != 1 {
 		t.Fatalf("token1 stream/nonstream=(%d,%d), want (1,1)", s1.StreamCount, s1.NonStreamCount)
 	}
-	if s1.PromptTokens != 11 || s1.CompletionTokens != 22 {
-		t.Fatalf("token1 tokens=(%d,%d), want (11,22)", s1.PromptTokens, s1.CompletionTokens)
+	if s1.PromptTokens != 24 || s1.CompletionTokens != 38 || s1.CacheReadTokens != 8 || s1.CacheCreationTokens != 10 {
+		t.Fatalf("token1 billable tokens lost: %+v", s1)
+	}
+	if math.Abs(s1.TotalCost-0.405) > 1e-9 || math.Abs(s1.EffectiveCost-0.75) > 1e-9 {
+		t.Fatalf("token1 billable costs lost: %+v", s1)
+	}
+	if s1.StreamAvgTTFB != 0.1 || s1.NonStreamAvgRT != 1.2 {
+		t.Fatalf("cancelled latency affected token1 averages: %+v", s1)
+	}
+	s3 := stats[3]
+	if s3 == nil || s3.SuccessCount != 0 || s3.FailureCount != 0 || s3.StreamCount != 0 || s3.NonStreamCount != 0 || s3.StreamAvgTTFB != 0 || s3.NonStreamAvgRT != 0 {
+		t.Fatalf("cancelled-only token counts/latency=%+v, want zero", s3)
+	}
+	if s3.PromptTokens != 5 || s3.TotalCost != 0.125 || s3.EffectiveCost != 0.25 {
+		t.Fatalf("cancelled-only token usage lost: %+v", s3)
 	}
 
 	// 计算 RPM（覆盖 peak/avg/recent 逻辑）

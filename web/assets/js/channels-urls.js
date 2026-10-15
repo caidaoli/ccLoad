@@ -144,6 +144,12 @@ function createURLRow(index) {
   statusTd.className = 'inline-url-cell-center inline-url-col-status';
   statusTd.setAttribute('data-mobile-label', window.t('common.status'));
   statusTd.innerHTML = formatURLStatus(stat);
+  const disableHint = window.t(
+    typeof editingChannelAuthType !== 'undefined' && editingChannelAuthType === 'antigravity_oauth'
+      ? 'channels.urlDisable'
+      : 'channels.urlDisableFallback'
+  );
+  if (stat && stat.disabled) statusTd.title = disableHint;
 
   const latencyTd = document.createElement('td');
   latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
@@ -162,7 +168,7 @@ function createURLRow(index) {
     // 与同行其他按钮（测试/删除）保持中性灰色风格，状态仅由图标形状与 tooltip 表达
     toggleBtn.className = 'inline-url-toggle-btn';
     toggleBtn.style.cssText = 'width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.2s, border-color 0.2s, background-color 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;';
-    toggleBtn.title = isDisabled ? window.t('channels.urlEnable') : window.t('channels.urlDisable');
+    toggleBtn.title = isDisabled ? `${window.t('channels.urlEnable')} — ${disableHint}` : disableHint;
     toggleBtn.innerHTML = isDisabled
       ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
       : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';

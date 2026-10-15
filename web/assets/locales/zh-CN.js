@@ -2031,6 +2031,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.urlStatusUnknown': '未探测',
   'channels.urlStatusDisabled': '已禁用',
   'channels.urlDisable': '禁用此URL',
+  'channels.urlDisableFallback': '禁用此 URL；全部禁用（含仅一个 URL）时仍会兜底使用。要停止转发，请停用渠道。',
   'channels.urlEnable': '启用此URL',
   // Key导出
   'channels.exportKeys': '导出',

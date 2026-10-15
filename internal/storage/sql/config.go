@@ -172,6 +172,18 @@ func (s *SQLStore) enabledChannelsByModel(ctx context.Context, modelName string,
 
 // CreateConfig 创建新的渠道配置
 func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
+	return s.createConfig(ctx, c, nil)
+}
+
+// CreateConfigWithAPIKeys commits a channel and its credentials together.
+func (s *SQLStore) CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error) {
+	if c == nil || !model.UsesAPIKeyCredentials(c.GetAuthType()) {
+		return nil, errors.New("API key channel is required")
+	}
+	return s.createConfig(ctx, c, keys)
+}
+
+func (s *SQLStore) createConfig(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error) {
 	if c == nil {
 		return nil, errors.New("config cannot be nil")
 	}
@@ -303,6 +315,16 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			}
 		}
 
+		for _, key := range keys {
+			if key == nil {
+				return errors.New("api key cannot be nil")
+			}
+			key.ChannelID = id
+		}
+		if err := s.createAPIKeysBatchTx(ctx, tx, keys); err != nil {
+			return err
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -321,6 +343,15 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 
 // UpdateConfig 更新渠道配置
 func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
+	return s.updateConfig(ctx, id, upd, nil, false)
+}
+
+// UpdateConfigWithAPIKeys atomically replaces the channel and its complete key set.
+func (s *SQLStore) UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error) {
+	return s.updateConfig(ctx, id, upd, keys, true)
+}
+
+func (s *SQLStore) updateConfig(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey, replaceKeys bool) (*model.Config, error) {
 	if upd == nil {
 		return nil, errors.New("update payload cannot be nil")
 	}
@@ -337,6 +368,17 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		}
 		if authType != existing.GetAuthType() {
 			return nil, errors.New("auth_type cannot be changed")
+		}
+	}
+
+	if replaceKeys {
+		if !model.UsesAPIKeyCredentials(existing.GetAuthType()) {
+			return nil, errors.New("OAuth channel API keys are read-only")
+		}
+		for _, key := range keys {
+			if key == nil || key.ChannelID != id {
+				return nil, errors.New("replacement api key must belong to channel")
+			}
 		}
 	}
 
@@ -384,6 +426,15 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 		}
 		if err := s.pruneAPIKeyAllowedModelsTx(ctx, tx, id, upd.ModelEntries, updatedAtUnix); err != nil {
 			return fmt.Errorf("prune API key model scopes: %w", err)
+		}
+
+		if replaceKeys {
+			if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
+				return err
+			}
+			if err := s.createAPIKeysBatchTx(ctx, tx, keys); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -675,6 +726,16 @@ func (s *SQLStore) UpdateModelStateIfSnapshotMatches(
 	scheduledCheckModel string,
 	maxConcurrency *int,
 ) (bool, error) {
+	return s.updateModelStateIfSnapshotMatches(ctx, expected, modelEntries, scheduledCheckModel, maxConcurrency, nil, nil, false)
+}
+
+// UpdateModelStateAndAPIKeyScopesIfSnapshotMatches commits discovery only while
+// both channel model state and the bound key identities and policies still match.
+func (s *SQLStore) UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error) {
+	return s.updateModelStateIfSnapshotMatches(ctx, expected, modelEntries, scheduledCheckModel, nil, keys, scopes, true)
+}
+
+func (s *SQLStore) updateModelStateIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, maxConcurrency *int, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope, checkKeys bool) (bool, error) {
 	if expected == nil || expected.ID <= 0 {
 		return false, errors.New("expected model state is required")
 	}
@@ -726,6 +787,21 @@ func (s *SQLStore) UpdateModelStateIfSnapshotMatches(
 		if !modelEntrySlicesEqual(currentEntries, expected.ModelEntries) {
 			return nil
 		}
+		if checkKeys && !expected.UsesOAuth() {
+			keysMatch, err := s.apiKeyScopesMatchTx(ctx, tx, expected.ID, keys)
+			if err != nil {
+				return err
+			}
+			if !keysMatch {
+				return nil
+			}
+			if len(scopes) > 0 {
+				if err := s.updateAPIKeyModelScopesTx(ctx, tx, expected.ID, scopes); err != nil {
+					return err
+				}
+			}
+		}
+
 		if err := s.saveModelEntriesTx(ctx, tx, expected.ID, modelEntries); err != nil {
 			return fmt.Errorf("save model state: %w", err)
 		}

@@ -14,6 +14,41 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestMetricsRejectsUnboundedBuckets(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, query    string
+		status, points int
+	}{
+		{"at limit", fmt.Sprintf("range=custom&start_time=%d&end_time=%d&bucket_min=1", start.UnixMilli(), start.Add(9999*time.Minute).UnixMilli()), 200, 10000},
+		{"over limit", fmt.Sprintf("range=custom&start_time=%d&end_time=%d&bucket_min=1", start.UnixMilli(), start.Add(10000*time.Minute).UnixMilli()), 400, 0},
+		{"epoch to present", "range=custom&start_time=0&end_time=1767225600000&bucket_min=1", 400, 0},
+		{"extreme start", "range=custom&start_time=-9223372036854775808&end_time=1767225600000&bucket_min=1", 400, 0},
+		{"duration overflow", "bucket_min=153722868", 400, 0},
+		{"integer overflow", "bucket_min=9223372036854775808", 400, 0},
+		{"zero", "bucket_min=0", 400, 0},
+		{"negative", "bucket_min=-1", 400, 0},
+		{"not integer", "bucket_min=1.5", 400, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/metrics?"+tc.query, nil))
+			server.HandleMetrics(c)
+			if w.Code != tc.status {
+				t.Fatalf("status=%d, want %d: %s", w.Code, tc.status, w.Body.String())
+			}
+			response := mustParseAPIResponse[[]model.MetricPoint](t, w.Body.Bytes())
+			if response.Success != (tc.status == http.StatusOK) || len(response.Data) != tc.points {
+				t.Fatalf("success=%t points=%d, want status=%d points=%d", response.Success, len(response.Data), tc.status, tc.points)
+			}
+			if tc.status == http.StatusBadRequest && response.Error == "" {
+				t.Fatal("missing validation error")
+			}
+		})
+	}
+}
+
 func TestStatsHealthTimeline_UsesSecondsForAvgTimes(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

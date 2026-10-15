@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -2157,7 +2158,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, APIKey: "sk-test", KeyIndex: 0}}); err != nil {
 			t.Fatal(err)
 		}
-		interleaved := &modelStateEditStore{Store: store}
+		interleaved := &modelScopeEditStore{Store: store}
 		interleaved.edit = func(ctx context.Context) error {
 			current, err := store.GetConfig(ctx, cfg.ID)
 			if err != nil {
@@ -3925,6 +3926,152 @@ func TestBatchRefreshKeepsDuplicateCredentialRowsIndependent(t *testing.T) {
 			}
 			if adopted != 1 || kept != 1 {
 				t.Fatalf("rows did not keep independent probe results: %+v, %+v", keys[0], keys[1])
+			}
+		})
+	}
+}
+
+type modelScopeEditStore struct {
+	storage.Store
+	edit func(context.Context) error
+}
+
+func (s *modelScopeEditStore) UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, entries []model.ModelEntry, scheduled string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error) {
+	if s.edit != nil {
+		edit := s.edit
+		s.edit = nil
+		if err := edit(ctx); err != nil {
+			return false, err
+		}
+	}
+	return s.Store.UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx, expected, entries, scheduled, keys, scopes)
+}
+
+func TestBatchRefreshModelsRechecksConcurrentKeyPolicyAndIdentity(t *testing.T) {
+	for _, change := range []string{"disable", "reindex", "credential", "manual scope"} {
+		t.Run(change, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				body := `{"data":[{"id":"a"},{"id":"b"}]}`
+				if r.Header.Get("Authorization") == "Bearer second" {
+					body = `{"data":[{"id":"c"}]}`
+				}
+				_, _ = io.WriteString(w, body)
+			}))
+			cfg, err := store.CreateConfig(ctx, &model.Config{Name: "concurrent-policy", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "a"}, {Model: "c"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "first", AllowedModels: []string{"a"}, DetectedModels: []string{"a"}, ModelScopeAuto: true},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "second", AllowedModels: []string{"c"}, DetectedModels: []string{"c"}, ModelScopeAuto: true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server.store = &modelScopeEditStore{Store: store, edit: func(ctx context.Context) error {
+				switch change {
+				case "disable":
+					c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/1/key-disable", map[string]any{"key_index": 0}))
+					c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(cfg.ID)}}
+					(&Server{store: store}).HandleAPIKeyDisable(c)
+					if w.Code != http.StatusOK {
+						return fmt.Errorf("disable status=%d body=%s", w.Code, w.Body.String())
+					}
+				case "reindex":
+					if err := store.DeleteAPIKey(ctx, cfg.ID, 0); err != nil {
+						return err
+					}
+					return store.CompactKeyIndices(ctx, cfg.ID, 0)
+				case "credential":
+					_, err := store.(*sqlstore.SQLStore).ExecContext(ctx, `UPDATE api_keys SET api_key = ? WHERE channel_id = ? AND key_index = 0`, "replacement", cfg.ID)
+					return err
+				case "manual scope":
+					return store.UpdateAPIKeyModelScopes(ctx, cfg.ID, map[int]model.APIKeyModelScope{0: {AllowedModels: []string{"a"}, DetectedModels: []string{"a"}}})
+				}
+				return nil
+			}}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "merge"}))
+			server.HandleBatchRefreshModels(c)
+			response := mustParseAPIResponse[struct {
+				Results []BatchRefreshModelsItem `json:"results"`
+			}](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || !response.Success || len(response.Data.Results) != 1 || response.Data.Results[0].Status != "updated" || response.Data.Results[0].Added != 1 {
+				t.Fatalf("refresh response=%s", w.Body.String())
+			}
+			keys, err := store.GetAPIKeys(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "disable":
+				if !keys[0].Disabled || !slices.Equal(keys[0].AllowedModels, []string{"a", "b"}) {
+					t.Fatalf("lost manual disable or refreshed scope: %+v", keys[0])
+				}
+			case "reindex":
+				if len(keys) != 1 || keys[0].APIKey != "second" || !slices.Equal(keys[0].AllowedModels, []string{"c"}) {
+					t.Fatalf("probe applied to reindexed row: %+v", keys)
+				}
+			case "credential":
+				if keys[0].APIKey != "replacement" || !slices.Equal(keys[0].AllowedModels, []string{"a"}) {
+					t.Fatalf("stale probe applied to replacement credential: %+v", keys[0])
+				}
+			case "manual scope":
+				if keys[0].ModelScopeAuto || !slices.Equal(keys[0].AllowedModels, []string{"a"}) {
+					t.Fatalf("manual policy overwritten: %+v", keys[0])
+				}
+			}
+		})
+	}
+}
+
+func TestBatchRefreshModelsWriteFailureRollsBackModelAndKeyScopes(t *testing.T) {
+	for _, failure := range []string{"scope", "model"} {
+		t.Run(failure, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"data":[{"id":"a"},{"id":"b"}]}`)
+			}))
+			cfg, err := store.CreateConfig(ctx, &model.Config{Name: "atomic-discovery", URLs: model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}}, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "a"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "first", AllowedModels: []string{"a"}, DetectedModels: []string{"a"}, ModelScopeAuto: true}}); err != nil {
+				t.Fatal(err)
+			}
+			trigger := `CREATE TRIGGER reject_scope BEFORE UPDATE OF allowed_models ON api_keys BEGIN SELECT RAISE(FAIL, 'injected scope failure'); END`
+			if failure == "model" {
+				trigger = `CREATE TRIGGER reject_model BEFORE INSERT ON channel_models WHEN NEW.model = 'b' BEGIN SELECT RAISE(FAIL, 'injected model failure'); END`
+			}
+			if _, err := store.(*sqlstore.SQLStore).ExecContext(ctx, trigger); err != nil {
+				t.Fatal(err)
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "merge"}))
+			server.HandleBatchRefreshModels(c)
+			response := mustParseAPIResponse[struct {
+				Results []BatchRefreshModelsItem `json:"results"`
+			}](t, w.Body.Bytes())
+			if w.Code != http.StatusOK || len(response.Data.Results) != 1 || response.Data.Results[0].Status != "failed" || response.Data.Results[0].Error == "" {
+				t.Fatalf("refresh response=%s", w.Body.String())
+			}
+			got, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "a" {
+				t.Fatalf("failed refresh changed channel models: %+v", got.ModelEntries)
+			}
+			key, err := store.GetAPIKey(ctx, cfg.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(key.AllowedModels, []string{"a"}) || !slices.Equal(key.DetectedModels, []string{"a"}) || !key.ModelScopeAuto || key.Disabled {
+				t.Fatalf("failed refresh changed key scope: %+v", key)
 			}
 		})
 	}

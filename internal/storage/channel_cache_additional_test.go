@@ -27,6 +27,113 @@ func (s *blockingAPIKeyStore) GetAPIKeys(ctx context.Context, channelID int64) (
 	return keys, err
 }
 
+type blockingChannelStore struct {
+	storage.Store
+	loaded  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingChannelStore) waitForRelease(ctx context.Context) {
+	s.once.Do(func() {
+		close(s.loaded)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+		}
+	})
+}
+
+func (s *blockingChannelStore) GetEnabledChannelsByModel(ctx context.Context, name string) ([]*model.Config, error) {
+	channels, err := s.Store.GetEnabledChannelsByModel(ctx, name)
+	if len(channels) > 0 {
+		s.waitForRelease(ctx)
+	}
+	return channels, err
+}
+
+func (s *blockingChannelStore) GetEnabledSystemOneChannelsByModel(ctx context.Context, name string) ([]*model.Config, error) {
+	channels, err := s.Store.GetEnabledSystemOneChannelsByModel(ctx, name)
+	if len(channels) > 0 {
+		s.waitForRelease(ctx)
+	}
+	return channels, err
+}
+
+func TestChannelCache_InvalidationRejectsInFlightChannelRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		authType string
+		read     func(context.Context, *storage.ChannelCache) ([]*model.Config, error)
+	}{
+		{"by-model", model.AuthTypeAPIKey, func(ctx context.Context, cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsByModel(ctx, "m1")
+		}},
+		{"all", model.AuthTypeAPIKey, func(ctx context.Context, cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsByModel(ctx, "*")
+		}},
+		{"snapshot-by-model", model.AuthTypeAPIKey, func(ctx context.Context, cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsSnapshotByModel(ctx, "m1")
+		}},
+		{"snapshot-all", model.AuthTypeAPIKey, func(ctx context.Context, cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsSnapshotByModel(ctx, "*")
+		}},
+		{"system-one-snapshot", model.AuthTypeSystemOne, func(ctx context.Context, cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledSystemOneChannelsSnapshotByModel(ctx, "m1")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "channel_generation.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			cfg, err := store.CreateConfig(ctx, &model.Config{
+				Name: "generation-channel", AuthType: tc.authType, Enabled: true,
+				URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, ModelEntries: []model.ModelEntry{{Model: "m1"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocking := &blockingChannelStore{Store: store, loaded: make(chan struct{}), release: make(chan struct{})}
+			cache := storage.NewChannelCache(blocking, time.Minute)
+			type readResult struct {
+				channels []*model.Config
+				err      error
+			}
+			done := make(chan readResult, 1)
+			go func() {
+				channels, err := tc.read(ctx, cache)
+				done <- readResult{channels, err}
+			}()
+			select {
+			case <-blocking.loaded:
+			case <-ctx.Done():
+				t.Fatal("channel query did not reach the blocked snapshot")
+			}
+			_, updateErr := store.UpdateChannelEnabled(ctx, cfg.ID, false)
+			cache.InvalidateCache()
+			close(blocking.release)
+			if updateErr != nil {
+				t.Fatal(updateErr)
+			}
+			select {
+			case result := <-done:
+				if result.err != nil || len(result.channels) != 0 {
+					t.Fatalf("in-flight read = (%+v, %v), want disabled channel excluded", result.channels, result.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("channel refresh did not complete after invalidation")
+			}
+			if channels, err := tc.read(ctx, cache); err != nil || len(channels) != 0 {
+				t.Fatalf("subsequent read = (%+v, %v), want disabled channel excluded", channels, err)
+			}
+		})
+	}
+}
+
 func TestChannelCache_GetConfig(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

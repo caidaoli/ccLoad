@@ -10,12 +10,12 @@ import (
 
 // GetAuthTokenStatsInRange 查询指定时间范围内每个token的统计数据（从logs表聚合）
 // 用于tokens.html页面按时间范围筛选显示（2025-12新增）
-// [FIX] 2025-12: 排除499（客户端取消）避免污染成功率统计
+// 客户端取消不计次数与耗时，但保留已计费的 token 与成本。
 func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
 	sinceMs := startTime.UnixMilli()
 	untilMs := endTime.UnixMilli()
 
-	// 排除499：客户端取消不应计入成功/失败统计
+	// 499 只从次数与耗时聚合中排除，用量与费用仍累加。
 	query := `
 		SELECT
 			auth_token_id,
@@ -27,8 +27,8 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			SUM(cache_creation_input_tokens) AS cache_creation_tokens,
 			SUM(cost) AS total_cost,
 			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost,
-			AVG(CASE WHEN is_streaming = 1 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
-			AVG(CASE WHEN is_streaming = 0 THEN duration ELSE NULL END) AS non_stream_avg_rt,
+			AVG(CASE WHEN is_streaming = 1 AND status_code != 499 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
+			AVG(CASE WHEN is_streaming = 0 AND status_code != 499 THEN duration ELSE NULL END) AS non_stream_avg_rt,
 			SUM(CASE WHEN is_streaming = 1 AND status_code != 499 THEN 1 ELSE 0 END) AS stream_count,
 			SUM(CASE WHEN is_streaming = 0 AND status_code != 499 THEN 1 ELSE 0 END) AS non_stream_count
 		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, nil) + `

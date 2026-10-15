@@ -1110,3 +1110,29 @@ func (h *HybridStore) Close() error {
 	})
 	return err
 }
+
+func (h *HybridStore) CreateConfigWithAPIKeys(ctx context.Context, c *model.Config, keys []*model.APIKey) (*model.Config, error) {
+	created, err := h.sqlite.CreateConfigWithAPIKeys(ctx, c, keys)
+	if err == nil {
+		h.markChannelDirty(created.ID, false)
+	}
+	return created, err
+}
+
+func (h *HybridStore) UpdateConfigWithAPIKeys(ctx context.Context, id int64, upd *model.Config, keys []*model.APIKey) (*model.Config, error) {
+	updated, err := h.sqlite.UpdateConfigWithAPIKeys(ctx, id, upd, keys)
+	if err == nil {
+		h.markChannelDirty(id, false)
+	}
+	return updated, err
+}
+
+func (h *HybridStore) UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx context.Context, expected *model.Config, modelEntries []model.ModelEntry, scheduledCheckModel string, keys []*model.APIKey, scopes map[int]model.APIKeyModelScope) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+	matched, err := h.sqlite.UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx, expected, modelEntries, scheduledCheckModel, keys, scopes)
+	if err == nil && matched {
+		h.markChannelDirty(expected.ID, false)
+	}
+	return matched, err
+}

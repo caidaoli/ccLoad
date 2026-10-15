@@ -521,23 +521,15 @@ func (s *Server) applyFetchedModels(
 			item.Status = "unchanged"
 			return item, false
 		}
-		if configChanged {
-			matched, saveErr := s.store.UpdateModelStateIfSnapshotMatches(
-				ctx, expected, cfg.ModelEntries, cfg.ScheduledCheckModel, nil,
-			)
-			if saveErr != nil {
-				item.Status, item.Error = "failed", "保存模型失败: "+saveErr.Error()
-				return item, false
-			}
-			if !matched {
-				continue
-			}
+		matched, saveErr := s.store.UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(
+			ctx, expected, cfg.ModelEntries, cfg.ScheduledCheckModel, keys, scopeUpdates,
+		)
+		if saveErr != nil {
+			item.Status, item.Error = "failed", "保存模型与 API Key 范围失败: "+saveErr.Error()
+			return item, false
 		}
-		if len(scopeUpdates) > 0 {
-			if err := s.store.UpdateAPIKeyModelScopes(ctx, item.ChannelID, scopeUpdates); err != nil {
-				item.Status, item.Error = "failed", "保存 API Key 模型范围失败: "+err.Error()
-				return item, configChanged
-			}
+		if !matched {
+			continue
 		}
 		item.Status = "updated"
 		return item, true

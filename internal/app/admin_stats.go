@@ -100,21 +100,33 @@ func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (
 	return channels, nil
 }
 
+const maxMetricPoints = 10000
+
 // HandleMetrics 获取聚合指标数据；by_channel=1 时附带逐渠道拆分
 // GET /admin/metrics?range=today&bucket_min=5&by_channel=1&upstream_protocol=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
-	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
-	if bucketMin <= 0 {
-		bucketMin = 5
+	bucketMin, err := strconv.ParseInt(c.DefaultQuery("bucket_min", "5"), 10, 64)
+	bucket, valid := settingDurationFromInt64(bucketMin, time.Minute)
+	if err != nil || !valid || bucket <= 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "bucket_min must be a positive integer within the supported duration range")
+		return
+	}
+	since, until := params.GetTimeRange()
+	// Count the same aligned, inclusive buckets as the storage layer before it
+	// allocates empty points. Unix seconds also cover extreme millisecond inputs
+	// without time.Sub's duration saturation or a duration multiplication overflow.
+	pointCount := (until.Truncate(bucket).Unix()-since.Truncate(bucket).Unix())/int64(bucket/time.Second) + 1
+	if pointCount > maxMetricPoints {
+		RespondErrorMsg(c, http.StatusBadRequest, "metrics query exceeds 10000 time buckets; shorten the range or increase bucket_min")
+		return
 	}
 
 	// 使用统一的筛选参数构建器。
 	lf := BuildLogFilter(c)
 	lf.LogSource = model.LogSourceProxy
 
-	since, until := params.GetTimeRange()
-	pts, err := s.statsCache.AggregateRangeWithFilter(c.Request.Context(), since, until, time.Duration(bucketMin)*time.Minute, &lf)
+	pts, err := s.statsCache.AggregateRangeWithFilter(c.Request.Context(), since, until, bucket, &lf)
 
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)

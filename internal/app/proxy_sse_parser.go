@@ -633,17 +633,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if isSuccessfulResponsesTerminal(payloadType) {
 		responseRaw := gjson.Get(data, "response")
 		if responseRaw.IsObject() {
-			outputRaw := responseRaw.Get("output")
-			output := []byte(outputRaw.Raw)
-			if !outputRaw.IsArray() {
-				output = []byte("[]")
-			}
-			responseID := strings.TrimSpace(responseRaw.Get("id").String())
-			p.responsesTurnResult = responsesWebsocketTurnResult{
-				completedOutput:     output,
-				completedResponseID: responseID,
-				pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
-			}
+			p.responsesTurnResult = responsesWebsocketTurnFromResponse(responseRaw)
 			p.hasResponsesTurn = true
 		}
 	}

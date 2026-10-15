@@ -929,3 +929,49 @@ func TestHybridStoreDecisionMetadataReplicated(t *testing.T) {
 		return err == nil && len(logs) == 1 && logs[0].ReasoningDecision != nil && *logs[0].ReasoningDecision == *metadata
 	})
 }
+
+func TestHybridStore_ChannelAndKeyTransactionsConverge(t *testing.T) {
+	primary := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+	ctx := context.Background()
+	cfg, err := hybrid.CreateConfigWithAPIKeys(ctx, &model.Config{
+		Name: "atomic-keys", URLs: model.ChannelURLs{{URL: "https://example.com"}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "a"}},
+	}, []*model.APIKey{{KeyIndex: 0, APIKey: "old", AllowedModels: []string{"a"}, ModelScopeAuto: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		keys, err := primary.GetAPIKeys(ctx, cfg.ID)
+		return err == nil && len(keys) == 1 && keys[0].APIKey == "old"
+	})
+	cfg.Name = "replaced-keys"
+	cfg, err = hybrid.UpdateConfigWithAPIKeys(ctx, cfg.ID, cfg, []*model.APIKey{{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "new", AllowedModels: []string{"a"}, ModelScopeAuto: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		got, err := primary.GetConfig(ctx, cfg.ID)
+		keys, keyErr := primary.GetAPIKeys(ctx, cfg.ID)
+		return err == nil && keyErr == nil && got.Name == "replaced-keys" && len(keys) == 1 && keys[0].APIKey == "new"
+	})
+	keys, err := hybrid.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched, err := hybrid.UpdateModelStateAndAPIKeyScopesIfSnapshotMatches(ctx, cfg,
+		[]model.ModelEntry{{Model: "a"}, {Model: "b"}}, "", keys,
+		map[int]model.APIKeyModelScope{0: {AllowedModels: []string{"a", "b"}, DetectedModels: []string{"a", "b"}, ModelScopeAuto: true}},
+	)
+	if err != nil || !matched {
+		t.Fatalf("discovery transaction matched=%v err=%v", matched, err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		got, err := primary.GetConfig(ctx, cfg.ID)
+		keys, keyErr := primary.GetAPIKeys(ctx, cfg.ID)
+		return err == nil && keyErr == nil && len(got.ModelEntries) == 2 && len(keys) == 1 &&
+			reflect.DeepEqual(keys[0].AllowedModels, []string{"a", "b"}) && keys[0].ModelScopeAuto
+	})
+}

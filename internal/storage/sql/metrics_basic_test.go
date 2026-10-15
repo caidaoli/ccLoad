@@ -1021,3 +1021,45 @@ func TestAggregateRangeWithFilter_CountsRateLimitedWithinError(t *testing.T) {
 		t.Fatalf("success=%d error=%d rate_limited=%d, want 1/3/2", success, errorCount, rateLimited)
 	}
 }
+
+func TestAggregateRangeWithFilter_PreservesCancelledBillableUsage(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute).Add(10 * time.Second)
+	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: 1, Model: "m1", ClientProtocol: "codex", StatusCode: 499,
+			IsStreaming: true, FirstByteTime: 99, Duration: 100, InputTokens: 100, OutputTokens: 50,
+			CacheReadInputTokens: 30, CacheCreationInputTokens: 20, Cost: 0.125, CostMultiplier: 2, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: 1, Model: "m1", ClientProtocol: "codex", StatusCode: 200,
+			InputTokens: 999, Cost: 99, LogSource: model.LogSourceManualTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statusCancelled := 499
+	for _, filter := range []*model.LogFilter{nil, {ClientProtocol: "codex", StatusCode: &statusCancelled}} {
+		points, err := store.AggregateRangeWithFilter(ctx, now.Add(-time.Minute), now.Add(time.Minute), time.Minute, filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var input, output, cacheRead, cacheCreation int64
+		var cost, effective float64
+		for _, point := range points {
+			input += point.InputTokens
+			output += point.OutputTokens
+			cacheRead += point.CacheReadTokens
+			cacheCreation += point.CacheCreationTokens
+			if point.TotalCost != nil {
+				cost += *point.TotalCost
+			}
+			if point.EffectiveCost != nil {
+				effective += *point.EffectiveCost
+			}
+			if point.Success != 0 || point.Error != 0 || point.RateLimited != 0 || point.AvgFirstByteTimeSeconds != nil || point.AvgDurationSeconds != nil {
+				t.Fatalf("cancelled request counted toward requests/latency: %+v", point)
+			}
+		}
+		if input != 100 || output != 50 || cacheRead != 30 || cacheCreation != 20 || cost != 0.125 || effective != 0.25 {
+			t.Fatalf("cancelled usage lost: input=%d output=%d cache_read=%d cache_creation=%d cost=%v effective=%v", input, output, cacheRead, cacheCreation, cost, effective)
+		}
+	}
+}
