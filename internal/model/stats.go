@@ -94,9 +94,8 @@ type StatsEntry struct {
 	HealthTimeline []HealthPoint `json:"health_timeline,omitempty"` // 固定24个时间点的健康状态
 }
 
-// ClientProtocolStats 按客户端入口协议聚合首页统计。
-type ClientProtocolStats struct {
-	ClientProtocol           string  `json:"client_protocol"`
+// UsageTotals 首页各汇总维度共用的请求、Token 与费用累计（不含 499）。
+type UsageTotals struct {
 	TotalRequests            int     `json:"total_requests"`
 	SuccessRequests          int     `json:"success_requests"`
 	ErrorRequests            int     `json:"error_requests"`
@@ -108,18 +107,54 @@ type ClientProtocolStats struct {
 	EffectiveCost            float64 `json:"effective_cost"`
 }
 
+// Add 累加另一组用量。
+func (u *UsageTotals) Add(other UsageTotals) {
+	u.TotalRequests += other.TotalRequests
+	u.SuccessRequests += other.SuccessRequests
+	u.ErrorRequests += other.ErrorRequests
+	u.TotalInputTokens += other.TotalInputTokens
+	u.TotalOutputTokens += other.TotalOutputTokens
+	u.TotalCacheReadTokens += other.TotalCacheReadTokens
+	u.TotalCacheCreationTokens += other.TotalCacheCreationTokens
+	u.TotalCost += other.TotalCost
+	u.EffectiveCost += other.EffectiveCost
+}
+
+// UsageBreakdownRow 按入口协议×渠道×模型聚合的用量；首页摘要据此派生各维度汇总。
+// 渠道已删除时 ChannelName 与 AuthType 为空。
+type UsageBreakdownRow struct {
+	ClientProtocol string
+	ChannelID      int64
+	ChannelName    string
+	AuthType       string
+	Model          string
+	UsageTotals
+}
+
+// ClientProtocolStats 按客户端入口协议聚合首页统计。
+type ClientProtocolStats struct {
+	ClientProtocol string `json:"client_protocol"`
+	UsageTotals
+}
+
 // AuthTypeStats 按渠道认证类型聚合首页统计。
 type AuthTypeStats struct {
-	AuthType                 string  `json:"auth_type"`
-	TotalRequests            int     `json:"total_requests"`
-	SuccessRequests          int     `json:"success_requests"`
-	ErrorRequests            int     `json:"error_requests"`
-	TotalInputTokens         int64   `json:"total_input_tokens,omitempty"`
-	TotalOutputTokens        int64   `json:"total_output_tokens,omitempty"`
-	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens,omitempty"`
-	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens,omitempty"`
-	TotalCost                float64 `json:"total_cost,omitempty"`
-	EffectiveCost            float64 `json:"effective_cost"`
+	AuthType string `json:"auth_type"`
+	UsageTotals
+}
+
+// ModelUsageStats 按请求模型聚合首页统计。
+type ModelUsageStats struct {
+	Model string `json:"model"`
+	UsageTotals
+}
+
+// ChannelUsageStats 按渠道聚合首页统计。
+type ChannelUsageStats struct {
+	ChannelID   int64  `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	AuthType    string `json:"auth_type,omitempty"`
+	UsageTotals
 }
 
 // RPMStats 包含RPM/QPS相关的统计数据

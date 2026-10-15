@@ -840,15 +840,9 @@ func (h *HybridStore) GetStatsLite(ctx context.Context, startTime, endTime time.
 	})
 }
 
-func (h *HybridStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
-	return readAnalytics(h, "GetClientProtocolStats", func(store *sqlstore.SQLStore) ([]model.ClientProtocolStats, error) {
-		return store.GetClientProtocolStats(ctx, startTime, endTime, filter)
-	})
-}
-
-func (h *HybridStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
-	return readAnalytics(h, "GetAuthTypeStats", func(store *sqlstore.SQLStore) ([]model.AuthTypeStats, error) {
-		return store.GetAuthTypeStats(ctx, startTime, endTime, filter)
+func (h *HybridStore) GetUsageBreakdown(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.UsageBreakdownRow, error) {
+	return readAnalytics(h, "GetUsageBreakdown", func(store *sqlstore.SQLStore) ([]model.UsageBreakdownRow, error) {
+		return store.GetUsageBreakdown(ctx, startTime, endTime, filter)
 	})
 }
 

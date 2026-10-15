@@ -448,7 +448,7 @@ func seedProtocolStatsLogs(b *testing.B, store storage.Store, rows int) (time.Ti
 	return start, end
 }
 
-func BenchmarkClientProtocolStats_SQLite_200k(b *testing.B) {
+func BenchmarkUsageBreakdown_SQLite_200k(b *testing.B) {
 	store := createBenchSQLite(b)
 	start, end := seedProtocolStatsLogs(b, store, 200_000)
 	ctx := context.Background()
@@ -456,8 +456,8 @@ func BenchmarkClientProtocolStats_SQLite_200k(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, err := store.GetClientProtocolStats(ctx, start, end, nil); err != nil {
-			b.Fatalf("GetClientProtocolStats 失败: %v", err)
+		if _, err := store.GetUsageBreakdown(ctx, start, end, nil); err != nil {
+			b.Fatalf("GetUsageBreakdown 失败: %v", err)
 		}
 	}
 }

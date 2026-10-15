@@ -665,73 +665,15 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 	return stats, err
 }
 
-// GetClientProtocolStats 按客户端入口协议聚合首页统计。
-func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
-	baseQuery := `
+// GetUsageBreakdown 按入口协议×渠道×模型聚合用量，并带出渠道名称与认证类型。
+// 首页摘要的各维度汇总都由这一次扫描派生。先在 logs 上聚合再关联 channels：
+// 直接 JOIN 时 MySQL 会从 channels 出发按 channel_id 逐渠道回扫全部历史。
+func (s *SQLStore) GetUsageBreakdown(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.UsageBreakdownRow, error) {
+	aggregateQuery := `
 		SELECT
 			COALESCE(client_protocol, '') AS client_protocol,
-			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
-			SUM(COALESCE(input_tokens, 0)) AS total_input_tokens,
-			SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
-			SUM(COALESCE(cache_read_input_tokens, 0)) AS total_cache_read_tokens,
-			SUM(COALESCE(cache_creation_input_tokens, 0)) AS total_cache_creation_tokens,
-			SUM(COALESCE(cost, 0.0)) AS total_cost,
-			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
-		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, filter)
-
-	qb := NewQueryBuilder(baseQuery).
-		Where("time >= ?", startTime.UnixMilli()).
-		Where("time <= ?", endTime.UnixMilli()).
-		Where("channel_id > 0")
-
-	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
-	if err != nil {
-		return nil, err
-	}
-	if isEmpty {
-		return []model.ClientProtocolStats{}, nil
-	}
-	qb.ApplyFilter(filter)
-
-	query, args := qb.BuildWithSuffix("GROUP BY client_protocol ORDER BY client_protocol ASC")
-	rows, err := s.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	stats := make([]model.ClientProtocolStats, 0)
-	for rows.Next() {
-		var entry model.ClientProtocolStats
-		if err := rows.Scan(
-			&entry.ClientProtocol,
-			&entry.SuccessRequests,
-			&entry.ErrorRequests,
-			&entry.TotalInputTokens,
-			&entry.TotalOutputTokens,
-			&entry.TotalCacheReadTokens,
-			&entry.TotalCacheCreationTokens,
-			&entry.TotalCost,
-			&entry.EffectiveCost,
-		); err != nil {
-			return nil, err
-		}
-		entry.TotalRequests = entry.SuccessRequests + entry.ErrorRequests
-		stats = append(stats, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return stats, nil
-}
-
-// GetAuthTypeStats 按渠道认证类型聚合首页统计。
-// 先在 logs 上按渠道聚合再关联 channels：直接 JOIN 时 MySQL 会从 channels 出发按 channel_id 逐渠道回扫全部历史。
-func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
-	byChannelQuery := `
-		SELECT
 			channel_id,
+			COALESCE(model, '') AS model,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
 			SUM(COALESCE(input_tokens, 0)) AS input_tokens,
@@ -742,7 +684,7 @@ func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time
 			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
 		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, filter)
 
-	qb := NewQueryBuilder(byChannelQuery).
+	qb := NewQueryBuilder(aggregateQuery).
 		Where("time >= ?", startTime.UnixMilli()).
 		Where("time <= ?", endTime.UnixMilli()).
 		Where("channel_id > 0")
@@ -752,56 +694,53 @@ func (s *SQLStore) GetAuthTypeStats(ctx context.Context, startTime, endTime time
 		return nil, err
 	}
 	if isEmpty {
-		return []model.AuthTypeStats{}, nil
+		return []model.UsageBreakdownRow{}, nil
 	}
 	qb.ApplyFilter(filter)
 
-	byChannel, args := qb.BuildWithSuffix("GROUP BY channel_id")
+	aggregate, args := qb.BuildWithSuffix("GROUP BY client_protocol, channel_id, model")
 	query := `
 		SELECT
-			channels.auth_type,
-			SUM(t.success),
-			SUM(t.error),
-			SUM(t.input_tokens),
-			SUM(t.output_tokens),
-			SUM(t.cache_read_tokens),
-			SUM(t.cache_creation_tokens),
-			SUM(t.total_cost),
-			SUM(t.effective_cost)
-		FROM (` + byChannel + `) t
-		INNER JOIN channels ON channels.id = t.channel_id
-		WHERE channels.auth_type <> ''
-		GROUP BY channels.auth_type
-		ORDER BY channels.auth_type ASC`
+			t.client_protocol, t.channel_id, t.model,
+			COALESCE(channels.name, ''), COALESCE(channels.auth_type, ''),
+			t.success, t.error,
+			t.input_tokens, t.output_tokens, t.cache_read_tokens, t.cache_creation_tokens,
+			t.total_cost, t.effective_cost
+		FROM (` + aggregate + `) t
+		LEFT JOIN channels ON channels.id = t.channel_id`
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	stats := make([]model.AuthTypeStats, 0)
+	breakdown := make([]model.UsageBreakdownRow, 0)
 	for rows.Next() {
-		var entry model.AuthTypeStats
+		var row model.UsageBreakdownRow
 		if err := rows.Scan(
-			&entry.AuthType,
-			&entry.SuccessRequests,
-			&entry.ErrorRequests,
-			&entry.TotalInputTokens,
-			&entry.TotalOutputTokens,
-			&entry.TotalCacheReadTokens,
-			&entry.TotalCacheCreationTokens,
-			&entry.TotalCost,
-			&entry.EffectiveCost,
+			&row.ClientProtocol,
+			&row.ChannelID,
+			&row.Model,
+			&row.ChannelName,
+			&row.AuthType,
+			&row.SuccessRequests,
+			&row.ErrorRequests,
+			&row.TotalInputTokens,
+			&row.TotalOutputTokens,
+			&row.TotalCacheReadTokens,
+			&row.TotalCacheCreationTokens,
+			&row.TotalCost,
+			&row.EffectiveCost,
 		); err != nil {
 			return nil, err
 		}
-		entry.TotalRequests = entry.SuccessRequests + entry.ErrorRequests
-		stats = append(stats, entry)
+		row.TotalRequests = row.SuccessRequests + row.ErrorRequests
+		breakdown = append(breakdown, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return stats, nil
+	return breakdown, nil
 }
 
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"log"
 	"net/http"
@@ -233,13 +234,13 @@ func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
 // GET /public/summary?range=today
 // 按客户端入口协议和渠道认证类型分组统计，附带 RPM 与时间跨度。
 //
-// [SECURITY NOTE] 该端点故意设计为公开访问。
+// [SECURITY NOTE] 该端点故意设计为公开访问，不返回模型与渠道明细。
 // 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	s.respondSummary(c, &model.LogFilter{LogSource: model.LogSourceProxy}, true)
 }
 
-// HandleDashboardSummary 返回首页概览所需的协议与认证类型汇总。
+// HandleDashboardSummary 返回首页概览所需的协议、认证类型、模型与渠道汇总。
 // GET /dashboard/summary?range=today
 // 首页不展示 RPM，跳过 RPM 查询；统计范围由 Web 身份强制作用域。
 func (s *Server) HandleDashboardSummary(c *gin.Context) {
@@ -248,7 +249,69 @@ func (s *Server) HandleDashboardSummary(c *gin.Context) {
 	s.respondSummary(c, &filter, false)
 }
 
-func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, includeRPM bool) {
+// usageSummary 由一次入口协议×渠道×模型扫描派生的首页各维度汇总。
+type usageSummary struct {
+	total            model.UsageTotals
+	byClientProtocol map[string]model.ClientProtocolStats
+	byAuthType       map[string]model.AuthTypeStats
+	byModel          []model.ModelUsageStats
+	byChannel        []model.ChannelUsageStats
+}
+
+// summarizeUsage 合并明细行：总请求数覆盖全部入口协议，协议汇总只保留已知协议，
+// 认证类型汇总跳过已删除的渠道，模型汇总跳过空模型名。
+func summarizeUsage(rows []model.UsageBreakdownRow) usageSummary {
+	summary := usageSummary{
+		byClientProtocol: make(map[string]model.ClientProtocolStats),
+		byAuthType:       make(map[string]model.AuthTypeStats),
+		byModel:          make([]model.ModelUsageStats, 0),
+		byChannel:        make([]model.ChannelUsageStats, 0),
+	}
+	modelIndex := make(map[string]int)
+	channelIndex := make(map[int64]int)
+	for _, row := range rows {
+		summary.total.Add(row.UsageTotals)
+
+		if p := protocol.Protocol(row.ClientProtocol); protocol.IsValid(p) || p == protocol.SystemOne {
+			entry := summary.byClientProtocol[row.ClientProtocol]
+			entry.ClientProtocol = row.ClientProtocol
+			entry.Add(row.UsageTotals)
+			summary.byClientProtocol[row.ClientProtocol] = entry
+		}
+		if row.AuthType != "" {
+			entry := summary.byAuthType[row.AuthType]
+			entry.AuthType = row.AuthType
+			entry.Add(row.UsageTotals)
+			summary.byAuthType[row.AuthType] = entry
+		}
+		if row.Model != "" {
+			i, ok := modelIndex[row.Model]
+			if !ok {
+				i = len(summary.byModel)
+				modelIndex[row.Model] = i
+				summary.byModel = append(summary.byModel, model.ModelUsageStats{Model: row.Model})
+			}
+			summary.byModel[i].Add(row.UsageTotals)
+		}
+		i, ok := channelIndex[row.ChannelID]
+		if !ok {
+			i = len(summary.byChannel)
+			channelIndex[row.ChannelID] = i
+			summary.byChannel = append(summary.byChannel, model.ChannelUsageStats{
+				ChannelID:   row.ChannelID,
+				ChannelName: row.ChannelName,
+				AuthType:    row.AuthType,
+			})
+		}
+		summary.byChannel[i].Add(row.UsageTotals)
+	}
+	// 明细行无序（缓存共享、数据库分组顺序不定），按键排序保证输出稳定。
+	slices.SortFunc(summary.byModel, func(a, b model.ModelUsageStats) int { return strings.Compare(a.Model, b.Model) })
+	slices.SortFunc(summary.byChannel, func(a, b model.ChannelUsageStats) int { return cmp.Compare(a.ChannelID, b.ChannelID) })
+	return summary
+}
+
+func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, public bool) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
 
@@ -256,45 +319,26 @@ func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, incl
 	isToday := rangeEndsLive(params.Range)
 	ctx := c.Request.Context()
 
-	// 协议摘要、认证类型摘要与 RPM 相互独立，并行查询。
+	// 用量明细与 RPM 相互独立，并行查询；首页不展示 RPM。
 	var (
-		stats        []model.ClientProtocolStats
-		authStats    []model.AuthTypeStats
-		rpmStats     *model.RPMStats
-		statsErr     error
-		authStatsErr error
-		rpmErr       error
-		wg           sync.WaitGroup
+		rows     []model.UsageBreakdownRow
+		rpmStats *model.RPMStats
+		rowsErr  error
+		rpmErr   error
+		wg       sync.WaitGroup
 	)
-
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		stats, statsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, logFilter)
-	}()
-
-	go func() {
-		defer wg.Done()
-		authStats, authStatsErr = s.statsCache.GetAuthTypeStats(ctx, startTime, endTime, logFilter)
-	}()
-
-	if includeRPM {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	wg.Go(func() {
+		rows, rowsErr = s.statsCache.GetUsageBreakdown(ctx, startTime, endTime, logFilter)
+	})
+	if public {
+		wg.Go(func() {
 			rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, logFilter, isToday)
-		}()
+		})
 	}
-
 	wg.Wait()
 
-	if statsErr != nil {
-		RespondError(c, http.StatusInternalServerError, statsErr)
-		return
-	}
-	if authStatsErr != nil {
-		RespondError(c, http.StatusInternalServerError, authStatsErr)
+	if rowsErr != nil {
+		RespondError(c, http.StatusInternalServerError, rowsErr)
 		return
 	}
 	if rpmErr != nil {
@@ -302,32 +346,15 @@ func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, incl
 		return
 	}
 
-	byClientProtocol := make(map[string]model.ClientProtocolStats)
-	totalSuccess := 0
-	totalError := 0
-
-	for _, stat := range stats {
-		totalSuccess += stat.SuccessRequests
-		totalError += stat.ErrorRequests
-
-		if p := protocol.Protocol(stat.ClientProtocol); protocol.IsValid(p) || p == protocol.SystemOne {
-			byClientProtocol[stat.ClientProtocol] = stat
-		}
-	}
-
-	byAuthType := make(map[string]model.AuthTypeStats, len(authStats))
-	for _, stat := range authStats {
-		byAuthType[stat.AuthType] = stat
-	}
-
+	summary := summarizeUsage(rows)
 	response := gin.H{
-		"total_requests":     totalSuccess + totalError,
-		"success_requests":   totalSuccess,
-		"error_requests":     totalError,
-		"by_client_protocol": byClientProtocol,
-		"by_auth_type":       byAuthType,
+		"total_requests":     summary.total.TotalRequests,
+		"success_requests":   summary.total.SuccessRequests,
+		"error_requests":     summary.total.ErrorRequests,
+		"by_client_protocol": summary.byClientProtocol,
+		"by_auth_type":       summary.byAuthType,
 	}
-	if includeRPM {
+	if public {
 		// 计算时间跨度（秒），用于前端计算RPM和QPS
 		durationSeconds := endTime.Sub(startTime).Seconds()
 		if durationSeconds < 1 {
@@ -337,10 +364,14 @@ func (s *Server) respondSummary(c *gin.Context, logFilter *model.LogFilter, incl
 		response["duration_seconds"] = durationSeconds
 		response["rpm_stats"] = rpmStats
 		response["is_today"] = isToday
+	} else {
+		response["by_model"] = summary.byModel
+		response["by_channel"] = summary.byChannel
 	}
 
 	if hideTokenChannels(c) {
 		delete(response, "by_auth_type")
+		delete(response, "by_channel")
 	}
 	RespondJSON(c, http.StatusOK, response)
 }

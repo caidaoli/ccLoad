@@ -187,6 +187,46 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("HandleDashboardSummary", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
+		c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAdmin})
+
+		server.HandleDashboardSummary(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var data struct {
+			TotalRequests int                       `json:"total_requests"`
+			ByModel       []model.ModelUsageStats   `json:"by_model"`
+			ByChannel     []model.ChannelUsageStats `json:"by_channel"`
+			RPMStats      *model.RPMStats           `json:"rpm_stats"`
+		}
+		mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
+		if data.TotalRequests != 4 || data.RPMStats != nil {
+			t.Fatalf("unexpected dashboard summary: %+v", data)
+		}
+		// 模型与渠道汇总跨入口协议合并（含未知协议），定时检测不计入
+		if len(data.ByModel) != 2 || data.ByModel[0].Model != "jev-latest" || data.ByModel[1].Model != "m1" {
+			t.Fatalf("unexpected by_model: %+v", data.ByModel)
+		}
+		if m1 := data.ByModel[1]; m1.TotalRequests != 3 || m1.SuccessRequests != 2 || m1.ErrorRequests != 1 ||
+			m1.TotalInputTokens != 22 || m1.TotalOutputTokens != 34 {
+			t.Fatalf("unexpected m1 usage: %+v", m1)
+		}
+		if len(data.ByChannel) != 2 {
+			t.Fatalf("unexpected by_channel: %+v", data.ByChannel)
+		}
+		anthUsage, oaiUsage := data.ByChannel[0], data.ByChannel[1]
+		if anthUsage.ChannelID != anth.ID || anthUsage.ChannelName != "anth" || anthUsage.AuthType != model.AuthTypeAPIKey ||
+			anthUsage.TotalRequests != 3 || anthUsage.TotalInputTokens != 19 {
+			t.Fatalf("unexpected anth channel usage: %+v", anthUsage)
+		}
+		if oaiUsage.ChannelID != oai.ID || oaiUsage.TotalRequests != 1 || oaiUsage.ErrorRequests != 1 || oaiUsage.TotalCost != 0.02 {
+			t.Fatalf("unexpected oai channel usage: %+v", oaiUsage)
+		}
+	})
+
 	t.Run("HandleGetProtocols", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/protocols", nil))
 

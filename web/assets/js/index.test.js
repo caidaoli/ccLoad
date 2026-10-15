@@ -87,15 +87,29 @@ test('service health treats empty and malformed metrics as unknown instead of he
   assert.equal(model.state, 'unknown');
 });
 
-test('overview totals take request counts from the summary and sum cost and output tokens across protocols', () => {
+test('overview totals take request counts from the summary and sum cost and tokens across protocols', () => {
   const { buildOverviewTotals } = require('./index.js');
   const totals = buildOverviewTotals({
     total_requests: 251,
     success_requests: 250,
     error_requests: 1,
     by_client_protocol: {
-      gemini: { total_requests: 231, total_cost: 1.75, effective_cost: 0.875, total_output_tokens: 44500 },
-      openai: { total_requests: 20, total_cost: 0.009, total_output_tokens: 673 },
+      gemini: {
+        total_requests: 231,
+        total_cost: 1.75,
+        effective_cost: 0.875,
+        total_input_tokens: 1000,
+        total_output_tokens: 44500,
+        total_cache_read_tokens: 6000
+      },
+      openai: {
+        total_requests: 20,
+        total_cost: 0.009,
+        total_input_tokens: 500,
+        total_output_tokens: 673,
+        total_cache_read_tokens: 2000,
+        total_cache_creation_tokens: 500
+      },
       anthropic: { total_requests: 0, effective_cost: 0 }
     }
   });
@@ -107,11 +121,109 @@ test('overview totals take request counts from the summary and sum cost and outp
   assert.ok(Math.abs(totals.cost - 1.759) < 1e-9);
   // 缺少 effective_cost 的协议按 total_cost 计入
   assert.ok(Math.abs(totals.effectiveCost - 0.884) < 1e-9);
+  assert.equal(totals.inputTokens, 1500);
   assert.equal(totals.outputTokens, 45173);
+  assert.equal(totals.cacheReadTokens, 8000);
+  assert.equal(totals.cacheCreationTokens, 500);
+  // input_tokens 已不含缓存读写，四类相加即总量；缓存率以完整 prompt 为分母
+  assert.equal(totals.promptTokens, 10000);
+  assert.equal(totals.totalTokens, 55173);
+  assert.equal(totals.cacheRate, 0.8);
 
   assert.deepEqual(buildOverviewTotals({}), {
-    requests: 0, success: 0, error: 0, rate: null, cost: 0, effectiveCost: 0, outputTokens: 0
+    requests: 0,
+    success: 0,
+    error: 0,
+    rate: null,
+    cost: 0,
+    effectiveCost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    promptTokens: 0,
+    totalTokens: 0,
+    cacheRate: null
   });
+});
+
+test('overview spark series merges adjacent metric buckets beyond the point budget and keeps each point time range', () => {
+  const { buildSparkSeries } = require('./index.js');
+  const metrics = Array.from({ length: 96 }, (_, index) => ({
+    ts: new Date(Date.UTC(2026, 9, 14) + index * 15 * 60 * 1000).toISOString(),
+    success: 1,
+    error: index % 2,
+    input_tokens: 10,
+    output_tokens: 5,
+    cache_read_tokens: 3,
+    cache_creation_tokens: 2,
+    total_cost: 0.2,
+    effective_cost: index % 2 === 0 ? 0.1 : undefined
+  }));
+
+  const series = buildSparkSeries(metrics, 15);
+
+  assert.equal(series.requests.length, 48);
+  assert.ok(series.requests.every(value => value === 3));
+  assert.ok(series.tokens.every(value => value === 40));
+  // 缺少 effective_cost 的桶按 total_cost 计入
+  assert.ok(series.cost.every(value => Math.abs(value - 0.3) < 1e-9));
+  // 每个点覆盖合并后的两个 15 分钟桶
+  const dayStart = Date.UTC(2026, 9, 14);
+  assert.deepEqual([series.starts[0], series.ends[0]], [dayStart, dayStart + 30 * 60 * 1000]);
+  assert.deepEqual([series.starts[47], series.ends[47]], [dayStart + 47 * 30 * 60 * 1000, dayStart + 24 * 3600 * 1000]);
+
+  // 不足整组的末尾点只覆盖实际包含的桶
+  const uneven = buildSparkSeries(metrics.slice(0, 49), 15);
+  assert.equal(uneven.requests.length, 25);
+  assert.equal(uneven.ends[24] - uneven.starts[24], 15 * 60 * 1000);
+
+  assert.deepEqual(buildSparkSeries(null, 15), { requests: [], tokens: [], cost: [], starts: [], ends: [] });
+  assert.deepEqual(buildSparkSeries([{ success: 2, error: 1 }], 15), {
+    requests: [3], tokens: [0], cost: [0], starts: [null], ends: [null]
+  });
+});
+
+test('usage ranking reads model and channel totals from the summary and ranks the top entries by metric', () => {
+  const { buildSummaryUsageRows, rankUsageRows } = require('./index.js');
+  const { model: models, channel: channels } = buildSummaryUsageRows({
+    by_model: [
+      { model: 'gpt-5.6', total_requests: 30, total_input_tokens: 100, total_output_tokens: 50, total_cache_creation_tokens: 30, total_cost: 1.5 },
+      { model: 'gpt-6', total_requests: 6, total_cache_read_tokens: 400, total_cost: 2, effective_cost: 1 }
+    ],
+    by_channel: [
+      { channel_id: 1, channel_name: 'alpha', auth_type: 'codex_oauth', total_requests: 15, total_input_tokens: 100, total_output_tokens: 50, total_cache_read_tokens: 400, total_cost: 3, effective_cost: 2 },
+      // 已删除的渠道没有名称与认证类型
+      { channel_id: 2, channel_name: '', total_requests: 20, total_cache_creation_tokens: 30, total_cost: 0.5 }
+    ]
+  });
+
+  assert.deepEqual(channels.map(row => [row.key, row.label, row.authType, row.requests, row.tokens, row.cost]), [
+    ['1', 'alpha', 'codex_oauth', 15, 550, 2],
+    ['2', '#2', '', 20, 30, 0.5]
+  ]);
+  assert.deepEqual(models.map(row => [row.key, row.label, row.requests, row.tokens, row.cost]), [
+    ['gpt-5.6', 'gpt-5.6', 30, 180, 1.5],
+    ['gpt-6', 'gpt-6', 6, 400, 1]
+  ]);
+  // 隐藏渠道的会话没有 by_channel
+  assert.deepEqual(buildSummaryUsageRows({ by_model: null }), { model: [], channel: [] });
+
+  assert.deepEqual(rankUsageRows(channels, 'requests').map(row => [row.key, row.share]), [
+    ['2', 20 / 35],
+    ['1', 15 / 35]
+  ]);
+  assert.deepEqual(rankUsageRows(models, 'tokens').map(row => row.key), ['gpt-6', 'gpt-5.6']);
+
+  // 指标为零的行不上榜；前 N 名的占比仍以全部行之和为分母
+  const rows = [
+    { key: 'a', cost: 6 }, { key: 'b', cost: 0 }, { key: 'c', cost: 3 }, { key: 'd', cost: 1 }
+  ];
+  assert.deepEqual(rankUsageRows(rows, 'cost', 2).map(row => [row.key, row.share]), [
+    ['a', 0.6],
+    ['c', 0.3]
+  ]);
+  assert.deepEqual(rankUsageRows([{ key: 'z', cost: 0 }], 'cost'), []);
 });
 
 test('dashboard time range restored from URL/storage falls back to today when invalid', () => {

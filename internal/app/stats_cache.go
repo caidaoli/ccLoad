@@ -144,17 +144,10 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 	})
 }
 
-// GetClientProtocolStats 获取按客户端入口协议聚合的首页统计（带缓存）。
-func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
-	return cachedLoad(sc, buildCacheKey("client_protocol_stats", startTime, endTime, filter), endTime, func() ([]model.ClientProtocolStats, error) {
-		return sc.store.GetClientProtocolStats(ctx, startTime, endTime, filter)
-	})
-}
-
-// GetAuthTypeStats 获取按渠道认证类型聚合的首页统计（带缓存）。
-func (sc *StatsCache) GetAuthTypeStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.AuthTypeStats, error) {
-	return cachedLoad(sc, buildCacheKey("auth_type_stats", startTime, endTime, filter), endTime, func() ([]model.AuthTypeStats, error) {
-		return sc.store.GetAuthTypeStats(ctx, startTime, endTime, filter)
+// GetUsageBreakdown 获取首页摘要所需的入口协议×渠道×模型用量（带缓存）。
+func (sc *StatsCache) GetUsageBreakdown(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.UsageBreakdownRow, error) {
+	return cachedLoad(sc, buildCacheKey("usage_breakdown", startTime, endTime, filter), endTime, func() ([]model.UsageBreakdownRow, error) {
+		return sc.store.GetUsageBreakdown(ctx, startTime, endTime, filter)
 	})
 }
 

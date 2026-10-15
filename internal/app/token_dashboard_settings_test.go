@@ -91,6 +91,7 @@ func TestTokenChannelVisibilityKeepsStatisticsRows(t *testing.T) {
 			{"/dashboard/metrics", server.HandleMetrics},
 			{"/dashboard/stats/filter-options", server.HandleStatsFilterOptions},
 			{"/dashboard/stats", server.HandleStats},
+			{"/dashboard/summary", server.HandleDashboardSummary},
 			{"/dashboard/channels", server.HandleDashboardChannels},
 			{"/dashboard/channels/filter-options", server.HandleDashboardChannelFilterOptions},
 		} {
@@ -158,8 +159,12 @@ func TestTokenChannelVisibilityKeepsStatisticsRows(t *testing.T) {
 			server.HandlePublicSummary(c)
 		}
 		wantTypes := identity.Role != model.WebRoleAPIToken
-		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "by_auth_type") != wantTypes {
-			t.Fatalf("summary role=%s: %d %s", identity.Role, w.Code, w.Body.String())
+		wantChannels := identity.Role == model.WebRoleAdmin
+		wantModels := identity.Role != ""
+		body := w.Body.String()
+		if w.Code != http.StatusOK || strings.Contains(body, "by_auth_type") != wantTypes ||
+			strings.Contains(body, "by_channel") != wantChannels || strings.Contains(body, "by_model") != wantModels {
+			t.Fatalf("summary role=%s: %d %s", identity.Role, w.Code, body)
 		}
 	}
 }
