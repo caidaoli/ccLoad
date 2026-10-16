@@ -139,7 +139,7 @@ jobs:
         env:
           GOLANGCI_LINT_CACHE: ${{ steps.go.outputs.build-cache-path }}/golangci-lint
         with:
-          version: v2.13.0
+          version: v2.15.0
           args: --timeout=10m
           skip-cache: true
 
