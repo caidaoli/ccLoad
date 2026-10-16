@@ -557,13 +557,15 @@ function closeOpenCodeChannelDialog() {
   if (dialog?.open) dialog.close();
 }
 
-function continueOpenCodeChannel(event) {
+async function continueOpenCodeChannel(event) {
   event.preventDefault();
   const dialog = document.getElementById('openCodeChannelDialog');
   const preset = document.getElementById('openCodeChannelPreset')?.value;
   if (!dialog?.open || !Object.hasOwn(openCodeChannelPresets, preset)) return;
   closeOpenCodeChannelDialog();
-  return showAddModal('api_key', preset);
+  await showAddModal('api_key', preset);
+  // 官方模型目录公开，打开即拉取；拉到的模型属于预设初始状态，不算未保存修改。
+  await fetchModelsFromAPI({ markDirty: false });
 }
 
 // 认证方式由新建入口决定（API Key / System One），创建后不可改；OAuth 渠道由登录或导入创建。
@@ -759,8 +761,12 @@ async function editChannel(id) {
   scheduleChannelEditorTableSizingSync();
 }
 
+// 抽屉每次打开或关闭都递增；异步结果据此丢弃已离开的编辑会话。
+let channelEditorSession = 0;
+
 // 抽屉打开时高级分区进入草稿态，导航回到第一个分区。
 function showChannelEditorDrawer() {
+  channelEditorSession++;
   invokeChannelEditorAction('beginAdvancedSettingsDraft');
   document.getElementById('channelModal').classList.add('show');
   const main = document.getElementById('channelEditorMain');
@@ -823,6 +829,7 @@ async function closeModal() {
   if (channelFormDirty && !await window.showConfirm({ message: window.t('channels.unsavedChanges'), danger: true })) {
     return;
   }
+  channelEditorSession++;
   document.getElementById('channelModal').classList.remove('show');
   clearChannelRequiredFieldMarks();
   invokeChannelEditorAction('discardAdvancedSettingsDraft');
@@ -3733,7 +3740,7 @@ async function fetchedKeyModelApplyAccepted(changedCount, isSingleKeyChannel) {
   return window.showConfirm(window.t('channels.applyFetchedKeyModelsConfirm', { count: changedCount }));
 }
 
-async function fetchModelsFromAPI() {
+async function fetchModelsFromAPI({ markDirty = true } = {}) {
   let endpoint;
   let fetchOptions;
   let modelFetchEntries = [];
@@ -3761,8 +3768,12 @@ async function fetchModelsFromAPI() {
     }
 
     if (availableKeys.length === 0) {
-      window.showError(window.t('channels.addAtLeastOneEnabledKey'));
-      return;
+      // OpenCode 官方模型目录无需认证，没有可用 Key 时沿用匿名入口的 public。
+      if (!isOpenCodeChannel({ auth_type: editingChannelAuthType, urls })) {
+        window.showError(window.t('channels.addAtLeastOneEnabledKey'));
+        return;
+      }
+      availableKeys.push('public');
     }
 
     endpoint = '/admin/channels/models/fetch';
@@ -3780,8 +3791,10 @@ async function fetchModelsFromAPI() {
     };
   }
 
+  const session = channelEditorSession;
   try {
     const response = await fetchAPIWithAuth(endpoint, fetchOptions);
+    if (session !== channelEditorSession) return;
     if (!response.success) throw new Error(response.error || window.t('channels.fetchModelsFailed', { error: '' }));
     const data = response.data || {};
     const keyModels = Array.isArray(data.key_models) ? data.key_models : [];
@@ -3809,7 +3822,7 @@ async function fetchModelsFromAPI() {
     updateModelBatchDeleteButton();
 
     renderRedirectTable();
-    if (!areModelRowsEqual(previousRows, redirectTableData)) markChannelFormDirty();
+    if (markDirty && !areModelRowsEqual(previousRows, redirectTableData)) markChannelFormDirty();
 
     if (modelFetchEntries.length > 0) {
       const scopeProposal = proposeFetchedKeyModelScopes(
@@ -3850,6 +3863,7 @@ async function fetchModelsFromAPI() {
     }
 
   } catch (error) {
+    if (session !== channelEditorSession) return;
     console.error('Fetch models failed', error);
 
     window.showError(window.t('channels.fetchModelsFailed', { error: error.message }));
@@ -4151,6 +4165,7 @@ if (typeof module !== 'undefined' && module.exports) {
     editorFinalUpstreamModels,
     saveChannel,
     showAddModal,
+    closeModal,
     openOpenCodeChannelDialog,
     closeOpenCodeChannelDialog,
     continueOpenCodeChannel,

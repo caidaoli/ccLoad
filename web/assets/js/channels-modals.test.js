@@ -18,6 +18,7 @@ const {
   toggleKeyDisabled
 } = require('./channels-keys.js');
 const { applyURLStats, normalizeInlineURLConfigs } = require('./channels-urls.js');
+const { isOpenCodeChannel } = require('./channels-render.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key', proxyURL = '' }) {
@@ -38,6 +39,7 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, 
     editingChannelAuthType: authType,
     selectModelFetchKeyEntries,
     countConfiguredInlineKeys,
+    isOpenCodeChannel,
     fetchAPIWithAuth: onFetch,
     console: { ...console, error: () => {} }
   };
@@ -1526,13 +1528,26 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
     setGlobal('makeInlineKeyRow', () => normalizeInlineKeyRow({ api_key: '' }));
     setGlobal('getValidInlineURLConfigs', () => normalizeInlineURLConfigs(global.inlineURLTableData));
     setGlobal('getValidInlineKeyRows', () => global.inlineKeyTableData.filter(row => row.api_key).map(normalizeInlineKeyRow));
+    setGlobal('getInlineKeyRows', () => global.inlineKeyTableData);
+    setGlobal('selectModelFetchKeyEntries', selectModelFetchKeyEntries);
+    setGlobal('countConfiguredInlineKeys', countConfiguredInlineKeys);
+    setGlobal('isOpenCodeChannel', isOpenCodeChannel);
+    setGlobal('channelFormDirty', false);
+    let dirtyMarks = 0;
+    setGlobal('markChannelFormDirty', () => { dirtyMarks++; });
+    const notifications = [];
+    global.window.showSuccess = message => notifications.push(message);
+    global.window.showWarning = message => notifications.push(message);
+    const fetchedModels = [{ model: 'big-pickle', redirect_model: 'big-pickle' }];
+    let modelsResponse = async () => ({ success: true, data: { models: fetchedModels, source: 'api' } });
     setGlobal('fetchAPIWithAuth', async (url, options) => {
       if (url === '/admin/channels/check-duplicate') return { success: true, data: { duplicates: [] } };
       submitted.push({ url, method: options.method, body: JSON.parse(options.body) });
+      if (url === '/admin/channels/models/fetch') return modelsResponse();
       return { success: false, error: 'captured' };
     });
     const {
-      showAddModal, saveChannel, openOpenCodeChannelDialog, closeOpenCodeChannelDialog, continueOpenCodeChannel
+      showAddModal, saveChannel, closeModal, openOpenCodeChannelDialog, closeOpenCodeChannelDialog, continueOpenCodeChannel
     } = loadChannelsModals();
     fixture.getElement('channelName').value = 'existing draft';
     global.editingChannelId = 42;
@@ -1577,17 +1592,20 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
       assert.equal(fixture.getElement('channelName').value, name);
       assert.equal(fixture.getElement('protocolTransformModeValue').value, 'auto');
       assert.deepEqual(global.inlineURLTableData, [{ url, exact: false, protocols: [] }]);
-      assert.deepEqual(global.redirectTableData, []);
       assert.equal(global.inlineKeyTableData[0].api_key, presetKey);
+
+      // The public catalog is fetched on open, before the user enters a key.
+      const discovery = submitted.at(-1);
+      assert.equal(discovery.url, '/admin/channels/models/fetch');
+      assert.deepEqual(discovery.body.urls, [{ url, exact: false, protocols: [] }]);
+      assert.deepEqual(discovery.body.api_keys, ['public']);
+      assert.equal(discovery.body.auth_type, 'api_key');
+      assert.deepEqual(global.redirectTableData.map(row => row.model), ['big-pickle']);
+      assert.equal(dirtyMarks, 0, 'preset discovery must not count as an unsaved edit');
 
       const apiKey = presetKey || 'user-api-key';
       if (!presetKey) global.inlineKeyTableData[0].api_key = apiKey;
-      const requestCount = submitted.length;
-      await saveChannel({ preventDefault() {} });
-      assert.equal(submitted.length, requestCount, 'models must be configured before saving');
-
       fixture.getElement('channelName').value = `${name} custom`;
-      global.redirectTableData.push({ model: 'user-selected-model', redirect_model: '' });
       await saveChannel({ preventDefault() {} });
       const request = submitted.at(-1);
       assert.equal(request.url, '/admin/channels');
@@ -1598,9 +1616,28 @@ test('OpenCode chooser resets to Zen, cancels without changes, and creates the s
       assert.equal(request.body.api_key, apiKey);
       assert.equal(request.body.api_keys[0].api_key, apiKey);
       assert.deepEqual(request.body.urls, [{ url, exact: false, protocols: [] }]);
-      assert.equal(request.body.models.length, 1);
-      assert.equal(request.body.models[0].model, 'user-selected-model');
+      assert.deepEqual(request.body.models.map(entry => entry.model), ['big-pickle']);
     }
+
+    // A response that outlives its editor session must not leak into the next one.
+    let releaseModels;
+    let modelsRequested;
+    const requested = new Promise(resolve => { modelsRequested = resolve; });
+    modelsResponse = () => {
+      modelsRequested();
+      return new Promise(resolve => {
+        releaseModels = () => resolve({ success: true, data: { models: fetchedModels, source: 'api' } });
+      });
+    };
+    openOpenCodeChannelDialog();
+    const pendingPreset = formEvents.submit({ preventDefault() {} });
+    await requested;
+    closeModal();
+    const notificationCount = notifications.length;
+    releaseModels();
+    await pendingPreset;
+    assert.deepEqual(global.redirectTableData, []);
+    assert.equal(notifications.length, notificationCount);
 
     await showAddModal();
     assert.equal(fixture.getElement('channelName').value, '');
