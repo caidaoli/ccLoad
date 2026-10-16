@@ -45,7 +45,9 @@ func TestUpdateTokenStatsDuringShutdown(t *testing.T) {
 	}()
 	defer func() {
 		close(blockCh)
-		<-shutdownErrCh
+		if err := <-shutdownErrCh; err != nil {
+			t.Errorf("Shutdown failed: %v", err)
+		}
 	}()
 
 	// 等待 Shutdown 开始（Shutdown 会关闭 shutdownCh）
