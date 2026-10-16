@@ -587,23 +587,21 @@
         return MUTED_DASH_HTML;
       }
 
-      const items = [];
-      const pushUsageItem = (variant, label, title, count) => {
-        if (!count || count <= 0) return;
-        items.push(
-          `<span class="token-usage-item token-usage-item--${variant}" title="${title}">` +
+      const usageItem = (variant, label, title, count) => {
+        const hasValue = count > 0;
+        return `<span class="token-usage-item token-usage-item--${variant}${hasValue ? '' : ' token-usage-item--empty'}" title="${title}">` +
             `<span class="token-usage-label">${label}</span>` +
-            `<span class="token-usage-value">${window.formatNumber(count)}</span>` +
-          `</span>`
-        );
+            `<span class="token-usage-value">${hasValue ? window.formatNumber(count) : '-'}</span>` +
+          `</span>`;
       };
 
-      pushUsageItem('input', t('tokens.input'), t('tokens.inputTokens'), token.prompt_tokens_total || 0);
-      pushUsageItem('output', t('tokens.output'), t('tokens.outputTokens'), token.completion_tokens_total || 0);
-      pushUsageItem('cache-read', t('tokens.cacheRead'), t('tokens.cacheReadTokens'), token.cache_read_tokens_total || 0);
-      pushUsageItem('cache-create', t('tokens.cacheCreate'), t('tokens.cacheCreateTokens'), token.cache_creation_tokens_total || 0);
-
-      return `<div class="token-usage-metrics">${items.join('')}</div>`;
+      // 固定四格（行优先）：左列输入/输出，右列缓存读/缓存建；0 值占位，保证各行对齐
+      return '<div class="token-usage-metrics">' +
+        usageItem('input', t('tokens.input'), t('tokens.inputTokens'), token.prompt_tokens_total || 0) +
+        usageItem('cache-read', t('tokens.cacheRead'), t('tokens.cacheReadTokens'), token.cache_read_tokens_total || 0) +
+        usageItem('output', t('tokens.output'), t('tokens.outputTokens'), token.completion_tokens_total || 0) +
+        usageItem('cache-create', t('tokens.cacheCreate'), t('tokens.cacheCreateTokens'), token.cache_creation_tokens_total || 0) +
+        '</div>';
     }
 
     const COST_LIMIT_FIELDS = [

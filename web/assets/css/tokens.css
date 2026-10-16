@@ -241,25 +241,36 @@
   color: var(--error-600);
 }
 
+/* 标签列 + 定宽数值列 ×2；各行标签相同、数值列有最小宽度，右对齐后跨行对齐 */
 .token-usage-metrics {
   display: inline-grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 2px 12px;
-}
-
-.token-usage-item {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  grid-template-columns: max-content minmax(7ch, max-content) max-content minmax(7ch, max-content);
+  gap: 2px 6px;
   font-size: var(--text-xs);
   font-weight: 600;
   white-space: nowrap;
 }
 
+.token-usage-item {
+  display: grid;
+  grid-column: span 2;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+
+.token-usage-item--cache-read,
+.token-usage-item--cache-create {
+  margin-left: 10px;
+}
+
+.token-usage-label {
+  text-align: left;
+}
+
 .token-usage-value {
   color: var(--neutral-900);
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .token-usage-item--input {
@@ -276,6 +287,11 @@
 
 .token-usage-item--cache-create {
   color: var(--warning-700);
+}
+
+.token-usage-item--empty,
+.token-usage-item--empty .token-usage-value {
+  color: var(--neutral-400);
 }
 
 .token-cost .cost-stack {
