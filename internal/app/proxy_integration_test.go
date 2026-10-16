@@ -12414,14 +12414,23 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 	const firstError = `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`
 	const secondError = `{"error":{"message":"still invalid after retry","type":"invalid_request_error","code":"invalid_encrypted_content"}}`
 
-	var attempts atomic.Int32
+	var attempts, backupAttempts atomic.Int32
 
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
-	}, map[int]string{0: "https://codex-upstream.example.com"})
+		{name: "codex-backup", upstreamProtocol: "codex", models: "gpt-5.5", apiKey: "sk-backup"},
+	}, map[int]string{0: "https://codex-upstream.example.com", 1: "https://codex-backup.example.com"})
 
 	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host == "codex-backup.example.com" {
+				backupAttempts.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"id":"resp_backup","object":"response","status":"completed","output":[]}`)),
+				}, nil
+			}
 			body := firstError
 			if attempts.Add(1) == 2 {
 				body = secondError
@@ -12450,6 +12459,184 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 	}
 	if !strings.Contains(w.Body.String(), "still invalid after retry") {
 		t.Fatalf("expected second upstream error body, got %s", w.Body.String())
+	}
+	if got := backupAttempts.Load(); got != 0 {
+		t.Fatalf("backup attempts=%d, want 0: repaired request rejection must not fail over", got)
+	}
+	assertNoProxyCooldowns(t, env)
+}
+
+func TestProxy_RepairRetryNonRequestFailureFailsOver(t *testing.T) {
+	t.Parallel()
+
+	const (
+		maxTokensRejected   = `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}`
+		encryptedRejected   = `{"error":{"message":"The encrypted content could not be verified.","type":"invalid_request_error","code":"invalid_encrypted_content"}}`
+		thinkingRejected    = `{"error":{"message":"unsupported parameter: reasoning","type":"invalid_request_error","param":"reasoning","code":"unsupported_parameter"}}`
+		serviceUnavailable  = `{"error":{"message":"upstream overloaded","type":"server_error"}}`
+		creditBalanceTooLow = `{"error":{"message":"Your credit balance is too low to access the API.","type":"invalid_request_error"}}`
+	)
+	type upstreamReply struct {
+		status int
+		body   string
+	}
+	openAIRequest := map[string]any{
+		"model":      "deepseek-chat",
+		"max_tokens": 64,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	}
+	codexRequest := map[string]any{
+		"model":     "gpt-5.5",
+		"reasoning": map[string]any{"effort": "high"},
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		protocol      string
+		model         string
+		path          string
+		request       map[string]any
+		primary       []upstreamReply
+		backupBody    string
+		wantModelCool bool
+	}{
+		{
+			name:          "max_tokens remap then 503",
+			protocol:      "openai",
+			model:         "deepseek-chat",
+			path:          "/v1/chat/completions",
+			request:       openAIRequest,
+			primary:       []upstreamReply{{http.StatusBadRequest, maxTokensRejected}, {http.StatusServiceUnavailable, serviceUnavailable}},
+			backupBody:    `{"id":"from-backup","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			wantModelCool: true,
+		},
+		{
+			name:     "two codex repairs then 503",
+			protocol: "codex",
+			model:    "gpt-5.5",
+			path:     "/v1/responses",
+			request:  codexRequest,
+			primary: []upstreamReply{
+				{http.StatusBadRequest, encryptedRejected},
+				{http.StatusBadRequest, thinkingRejected},
+				{http.StatusServiceUnavailable, serviceUnavailable},
+			},
+			backupBody:    `{"id":"from-backup","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+			wantModelCool: true,
+		},
+		{
+			name:       "max_tokens remap then key-level 400",
+			protocol:   "openai",
+			model:      "deepseek-chat",
+			path:       "/v1/chat/completions",
+			request:    openAIRequest,
+			primary:    []upstreamReply{{http.StatusBadRequest, maxTokensRejected}, {http.StatusBadRequest, creditBalanceTooLow}},
+			backupBody: `{"id":"from-backup","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var primaryAttempts, backupAttempts atomic.Int32
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "primary", upstreamProtocol: tt.protocol, models: tt.model, apiKey: "sk-primary"},
+				{name: "backup", upstreamProtocol: tt.protocol, models: tt.model, apiKey: "sk-backup"},
+			}, map[int]string{0: "https://primary.example.com", 1: "https://backup.example.com"})
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					reply := upstreamReply{http.StatusOK, tt.backupBody}
+					if r.URL.Host == "backup.example.com" {
+						backupAttempts.Add(1)
+					} else {
+						n := int(primaryAttempts.Add(1))
+						if n > len(tt.primary) {
+							t.Errorf("unexpected primary attempt %d", n)
+							n = len(tt.primary)
+						}
+						reply = tt.primary[n-1]
+					}
+					return &http.Response{
+						StatusCode: reply.status,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(reply.body)),
+					}, nil
+				}),
+			}
+
+			w := doProxyRequest(t, env.engine, tt.path, tt.request, nil)
+
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "from-backup") {
+				t.Fatalf("expected backup response, got %d: %s", w.Code, w.Body.String())
+			}
+			if got := primaryAttempts.Load(); got != int32(len(tt.primary)) {
+				t.Fatalf("primary attempts=%d, want %d", got, len(tt.primary))
+			}
+			if got := backupAttempts.Load(); got != 1 {
+				t.Fatalf("backup attempts=%d, want 1", got)
+			}
+
+			ctx := context.Background()
+			primaryID := proxyTestChannelID(t, env, "primary")
+			models, err := env.store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			_, modelCooled := models[primaryID][tt.model]
+			if modelCooled != tt.wantModelCool {
+				t.Fatalf("primary model cooldown=%v, want %v (all=%v)", modelCooled, tt.wantModelCool, models)
+			}
+			if !tt.wantModelCool {
+				keys, err := env.store.GetAllKeyCooldowns(ctx)
+				if err != nil {
+					t.Fatalf("GetAllKeyCooldowns: %v", err)
+				}
+				if len(keys[primaryID]) == 0 {
+					t.Fatalf("expected key-level cooldown on primary, got %v", keys)
+				}
+			}
+
+		})
+	}
+}
+
+func proxyTestChannelID(t *testing.T, env *proxyTestEnv, name string) int64 {
+	t.Helper()
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigs: %v", err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name == name {
+			return cfg.ID
+		}
+	}
+	t.Fatalf("channel %q not found", name)
+	return 0
+}
+
+func assertNoProxyCooldowns(t *testing.T, env *proxyTestEnv) {
+	t.Helper()
+	ctx := context.Background()
+	models, err := env.store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	keys, err := env.store.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns: %v", err)
+	}
+	channels, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	if len(models) != 0 || len(keys) != 0 || len(channels) != 0 {
+		t.Fatalf("unexpected cooldowns: models=%v keys=%v channels=%v", models, keys, channels)
 	}
 }
 

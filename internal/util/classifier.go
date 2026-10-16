@@ -562,10 +562,7 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 413 必须与 400 同级：否则 auto 协议探测把 Anthropic 400 交给下一个候选后，
 	// 候选网关的 RequestTooLarge 会 ActionReturnClient，客户端直接中断、后面的匹配渠道进不去。
 	if statusCode == 400 || statusCode == http.StatusRequestEntityTooLarge {
-		return HTTPResponseClassification{
-			Level:       ErrorLevelKey,
-			ModelScoped: true,
-		}
+		return requestRejectedClassification
 	}
 
 	// 410 Gone 通常表示资源已永久移除。只有响应明确指向模型退役时才切换渠道并
@@ -827,6 +824,17 @@ func anthropicFastModeCreditsRequired(body []byte) bool {
 	return strings.Contains(message, "fast request rejected") ||
 		(strings.Contains(message, "fast") &&
 			(strings.Contains(message, "usage credits") || strings.Contains(message, "credits are required")))
+}
+
+// requestRejectedClassification 是 400/413 的通用兜底：当前模型/上游拒绝这份请求，
+// 响应体里没有凭证、配额、上下文或连接槽等更具体的信号。
+var requestRejectedClassification = HTTPResponseClassification{Level: ErrorLevelKey, ModelScoped: true}
+
+// IsGenericRequestRejection 判断 400 是否只落到通用兜底分类。Key/凭证终态、
+// 配额、上下文超限等专门分类返回 false，调用方应按正常冷却路径处理。
+func IsGenericRequestRejection(statusCode int, headers map[string][]string, responseBody []byte) bool {
+	return statusCode == http.StatusBadRequest &&
+		ClassifyHTTPResponseWithMeta(statusCode, headers, responseBody) == requestRejectedClassification
 }
 
 // anthropicAccountUnusable 识别 Anthropic 用 400 报告的账号终态：组织被禁用、

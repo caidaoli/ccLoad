@@ -3224,7 +3224,6 @@ func (s *Server) forwardAttempt(
 		reqCtx.debugData = res.DebugData
 	}
 
-	forceReturnClient := false
 	if err == nil && cfg.UsesAntigravityOAuth() && !cfg.AntigravityCredits && res != nil && !res.ResponseCommitted && res.Status == http.StatusTooManyRequests {
 		reason, delay := antigravityLimitDetails(res.Body)
 		if reason == "RATE_LIMIT_EXCEEDED" && delay > 0 && delay < 3*time.Second {
@@ -3247,6 +3246,7 @@ func (s *Server) forwardAttempt(
 	}
 	retryStrategies := make([]string, 0, 2)
 	missingStoredItemRetries := 0
+	bodyRepaired := false
 	// 只有主机名参与官方 Anthropic 判定，解析失败按非官方处理。
 	retryTarget, _ := url.Parse(strings.TrimSpace(baseURL))
 	for !cfg.AntigravityCredits && ctx.Err() == nil {
@@ -3300,6 +3300,7 @@ func (s *Server) forwardAttempt(
 			retryBodyRulesApplied,
 			res.wireAliases,
 		)
+		bodyRepaired = true
 		plan = retryPlan
 		if res != nil && res.DebugData != nil {
 			reqCtx.debugData = res.DebugData
@@ -3310,13 +3311,14 @@ func (s *Server) forwardAttempt(
 			}
 			continue
 		}
-		if upstreamProtocol != protocol.Anthropic {
-			forceReturnClient = true
-		}
 		if err != nil || res == nil {
 			break
 		}
 	}
+	// 只看最后一次修复重试的结果：仍是通用请求拒绝时换渠也只会重放坏请求，直接返回；
+	// 其余结果按正常分类冷却和换渠。Anthropic 修复失败按契约用原请求换渠。
+	forceReturnClient := bodyRepaired && err == nil && upstreamProtocol != protocol.Anthropic &&
+		s.repairedRequestStillRejected(cfg, res)
 	// 请求中的 priority 是 Fast 模式计费下限；上游未回显或错误回显
 	// default/standard 都不能把它降档。resolveBillingServiceTier 仍允许更贵的
 	// ultrafast 以及非 priority 请求的真实终态覆盖请求值。
@@ -3343,8 +3345,6 @@ func (s *Server) forwardAttempt(
 		}
 		// 保留 UpstreamStatus=503 供诊断和自定义规则使用；网关侧按模型容量限流处理。
 		res.Status = http.StatusTooManyRequests
-		// 签名/请求体降级重试只能截止请求语义错误，不能吞掉模型容量重试。
-		forceReturnClient = false
 	}
 
 	if errors.Is(context.Cause(ctx), errOperatorAbort) {
@@ -3468,6 +3468,23 @@ func (s *Server) forwardAttempt(
 		result.antigravityCapacity429 = modelCapacityRateLimited
 	}
 	return result, action, nil
+}
+
+// repairedRequestStillRejected 判断请求体修复后的上游错误是否仍只是通用请求拒绝。
+// 渠道冷却规则命中，或 Key/凭证/配额等专门分类的 400，都不是请求语义问题。
+func (s *Server) repairedRequestStillRejected(cfg *model.Config, res *fwResult) bool {
+	if res == nil || res.Status != http.StatusBadRequest {
+		return false
+	}
+	rules, _ := s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
+	detection := cooldown.EvaluateCooldownDetectionRules(rules, cooldown.DetectionInput{
+		StatusCode: res.Status,
+		ErrorBody:  res.Body,
+	}, time.Now())
+	if detection.Actionable {
+		return false
+	}
+	return util.IsGenericRequestRejection(res.Status, res.Header, res.Body)
 }
 
 func shouldRetryCodexInvalidEncryptedContent(
