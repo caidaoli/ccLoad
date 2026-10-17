@@ -222,6 +222,35 @@ test('usage ranking reads model and channel totals from the summary and ranks th
   assert.deepEqual(rankUsageRows([{ key: 'z', cost: 0 }], 'cost'), []);
 });
 
+test('usage ranking rows link to logs filtered by the same date range', () => {
+  const { buildSummaryUsageRows, buildUsageLogsHref } = require('./index.js');
+  const { model: models, channel: channels } = buildSummaryUsageRows({
+    by_model: [{ model: 'claude-sonnet-4-6', total_requests: 1 }],
+    by_channel: [
+      { channel_id: 1, channel_name: 'alpha & beta', total_requests: 1 },
+      { channel_id: 2, channel_name: '', total_requests: 1 }
+    ]
+  });
+  const customRange = 'range=custom&start_time=1785456000000&end_time=1785542399000';
+  const logsQuery = href => {
+    const url = new URL(href, 'http://localhost');
+    assert.equal(url.pathname, '/web/logs.html');
+    return Object.fromEntries(url.searchParams);
+  };
+
+  assert.deepEqual(logsQuery(buildUsageLogsHref(customRange, models[0].logsFilter)), {
+    range: 'custom', start_time: '1785456000000', end_time: '1785542399000', model: 'claude-sonnet-4-6'
+  });
+  assert.deepEqual(logsQuery(buildUsageLogsHref('range=this_week', channels[0].logsFilter)), {
+    range: 'this_week', channel_name: 'alpha & beta'
+  });
+  assert.deepEqual(logsQuery(buildUsageLogsHref('range=today', { client_protocol: 'codex' })), {
+    range: 'today', client_protocol: 'codex'
+  });
+  // 已删除的渠道无名称可筛，不生成链接
+  assert.equal(buildUsageLogsHref('range=today', channels[1].logsFilter), '');
+});
+
 test('dashboard time range restored from URL/storage falls back to today when invalid', () => {
   const { resolveIndexTimeRange } = require('./index.js');
 

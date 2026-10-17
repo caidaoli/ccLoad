@@ -1,5 +1,7 @@
     // 首页摘要：全局计数与入口协议/认证类型/模型/渠道各维度汇总
     let statsData = { by_client_protocol: {}, by_auth_type: {}, by_model: [], by_channel: [] };
+    // statsData 对应的时间范围查询串，排行跳转日志时沿用，保证日志与所见排行同一区间
+    let statsDateRangeQuery = '';
     let usageRankMetric = 'requests';
     // Token 构成悬停/点击选中的分段（tone，空为未选中）
     let tokenMixActive = '';
@@ -398,17 +400,34 @@
 
     // 摘要的模型/渠道汇总 → 排行行；已删除的渠道没有名称，以 #ID 显示。
     // 隐藏渠道的 API 令牌会话不返回 by_channel，渠道排行为空。
+    // logsFilter 是跳转日志页的精确筛选；已删除的渠道无名称可筛，不提供跳转。
     function buildSummaryUsageRows(summary) {
       const models = Array.isArray(summary && summary.by_model) ? summary.by_model : [];
       const channels = Array.isArray(summary && summary.by_channel) ? summary.by_channel : [];
       return {
-        model: models.map(stat => summaryUsageRow({ key: String(stat.model) }, String(stat.model), stat)),
+        model: models.map(stat => summaryUsageRow(
+          { key: String(stat.model), logsFilter: { model: String(stat.model) } },
+          String(stat.model),
+          stat
+        )),
         channel: channels.map(stat => summaryUsageRow(
-          { key: String(stat.channel_id), authType: stat.auth_type || '' },
+          {
+            key: String(stat.channel_id),
+            authType: stat.auth_type || '',
+            logsFilter: stat.channel_name ? { channel_name: stat.channel_name } : null
+          },
           stat.channel_name || `#${stat.channel_id}`,
           stat
         ))
       };
+    }
+
+    // 日志页链接：时间范围参数在前，筛选参数（model / channel_name / client_protocol）在后
+    function buildUsageLogsHref(dateRangeQuery, logsFilter) {
+      if (!logsFilter) return '';
+      const params = new URLSearchParams(dateRangeQuery || '');
+      for (const [key, value] of Object.entries(logsFilter)) params.set(key, value);
+      return `/web/logs.html?${params.toString()}`;
     }
 
     // 按指标取前 N 名；占比以该维度全部行之和为分母
@@ -433,13 +452,18 @@
         list.innerHTML = `<li class="usage-rank-empty">${escapeHtml(overviewText('index.rank.empty', '暂无数据'))}</li>`;
         return;
       }
-      // 行底色按占比填充
-      list.innerHTML = ranked.map((row, index) => `<li class="usage-rank-item" style="--usage-share:${(row.share * 100).toFixed(1)}%;">
-          <span class="usage-rank-index">${index + 1}</span>
+      // 行底色按占比填充；可筛选的行整行链接到日志页
+      list.innerHTML = ranked.map((row, index) => {
+        const style = `--usage-share:${(row.share * 100).toFixed(1)}%;`;
+        const cells = `<span class="usage-rank-index">${index + 1}</span>
           <span class="usage-rank-name" title="${escapeHtml(row.label)}">${iconOf ? iconOf(row) : ''}<span class="usage-rank-label">${escapeHtml(row.label)}</span></span>
           <span class="usage-rank-value">${escapeHtml(formatUsageMetric(row[usageRankMetric]))}</span>
-          <span class="usage-rank-share">${formatPercent(row.share)}</span>
-        </li>`).join('');
+          <span class="usage-rank-share">${formatPercent(row.share)}</span>`;
+        const href = buildUsageLogsHref(statsDateRangeQuery, row.logsFilter);
+        return href
+          ? `<li><a class="usage-rank-item usage-rank-link" href="${escapeHtml(href)}" style="${style}">${cells}</a></li>`
+          : `<li class="usage-rank-item" style="${style}">${cells}</li>`;
+      }).join('');
     }
 
     function renderUsageRanks() {
@@ -449,7 +473,9 @@
       renderUsageRank('usage-rank-channel', usageRows.channel,
         row => authTypeIconHtml(row.authType, row.label));
       renderUsageRank('usage-rank-protocol',
-        PROTOCOL_USAGE_ROWS.map(row => summaryUsageRow(row, row.label, protocolStats[row.key])),
+        PROTOCOL_USAGE_ROWS.map(row => summaryUsageRow(
+          { ...row, logsFilter: { client_protocol: row.key } }, row.label, protocolStats[row.key]
+        )),
         protocolIconHtml);
       renderUsageRank('usage-rank-auth-type',
         Object.entries(statsData.by_auth_type || {}).map(([authType, stat]) => {
@@ -671,7 +697,10 @@
       dashboardUpdatedAt = new Date();
 
       if (summaryResult.status === 'fulfilled') {
-        statsData = summaryResult.value || statsData;
+        if (summaryResult.value) {
+          statsData = summaryResult.value;
+          statsDateRangeQuery = dateRangeQuery;
+        }
       } else {
         console.error('Failed to load stats:', summaryResult.reason);
         showError(overviewText('index.overview.loadFailed', '无法加载统计数据'));
@@ -767,7 +796,7 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-      module.exports = { buildOverviewTotals, buildSparkSeries, buildSummaryUsageRows, rankUsageRows, resolveIndexTimeRange };
+      module.exports = { buildOverviewTotals, buildSparkSeries, buildSummaryUsageRows, buildUsageLogsHref, rankUsageRows, resolveIndexTimeRange };
     }
 
     // 页面初始化

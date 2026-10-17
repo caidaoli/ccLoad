@@ -1446,6 +1446,17 @@ html[data-resolved-theme="dark"] ::selection {
   font-variant-numeric: tabular-nums;
 }
 
+/* 可跳转日志的行：悬停底色垫在占比填充之下 */
+.usage-rank-link {
+  text-decoration: none;
+  transition: background-color var(--duration-normal);
+}
+
+.usage-rank-link:hover,
+.usage-rank-link:focus-visible {
+  background-color: var(--surface-hover);
+}
+
 .usage-rank-index {
   color: var(--neutral-400);
   font-size: var(--text-xs);
