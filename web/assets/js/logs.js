@@ -1216,7 +1216,7 @@ function renderLogs(data) {
     const logSpeed = calculateLogSpeed(entry);
     const speedDisplay = logSpeed === null
       ? ''
-      : `<span class="token-metric-value" style="color: var(--neutral-700);">${logSpeed.toFixed(1)}</span>`;
+      : `<span class="token-metric-value" style="color: ${window.getSpeedColor(logSpeed)};">${logSpeed.toFixed(1)}</span>`;
 
     // 5. API Key显示(含按钮组)
     let apiKeyDisplay = '';

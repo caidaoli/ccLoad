@@ -1,6 +1,6 @@
     // 常量定义
     const t = window.t;
-    const STATS_TABLE_COLUMNS = 12; // 统计表可见列数：渠道/模型层级列（隐藏渠道时为模型列）+ 11 个指标列
+    const STATS_TABLE_COLUMNS = 11; // 统计表可见列数：渠道/模型层级列（隐藏渠道时为模型列）+ 10 个指标列
     const STATS_CHEVRON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>';
 
     let statsData = null;
@@ -274,8 +274,6 @@
           return (entry.model || '').toLowerCase();
         case 'success':
           return entry.success || 0;
-        case 'error':
-          return entry.error || 0;
         case 'rpm':
           // 使用后端计算的峰值RPM排序
           return entry.peak_rpm || 0;
@@ -352,7 +350,7 @@
         ? buildStatsTimingValue(duration, window.getDurationTimingColor(duration))
         : placeholder);
 
-      return parts.join('');
+      return `<span class="stats-timing-inline">${parts.join('')}</span>`;
     }
 
     function buildCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
@@ -398,14 +396,14 @@
         `${buildHealthIndicator(group.health_timeline, successRate)}</div></div>`;
     }
 
-    // 指标列（成功/失败/耗时/Tok/s/RPM/Token/缓存/费用）的模板字段，渠道行、模型行、合计行共用
+    // 指标列（成功/耗时/Tok/s/RPM/Token/缓存/费用）的模板字段，渠道行、模型行、合计行共用
     function buildStatsMetricFields(entry, rpmHtml, inlineCost) {
       const successRate = entry.total > 0 ? (entry.success / entry.total) * 100 : 0;
       const speed = getStatsEntrySpeed(entry);
       const timingText = buildStatsTimingText(entry.avg_first_byte_time_seconds, entry.avg_duration_seconds);
       const speedText = speed === null
         ? ''
-        : `<span class="stats-value-dynamic" style="--stats-accent:var(--neutral-700);">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
+        : `<span class="stats-value-dynamic" style="--stats-accent:${window.getSpeedColor(speed)};">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
       const inputText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
       const outputText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
       const cacheReadText = entry.total_cache_read_input_tokens
@@ -426,7 +424,6 @@
           formatSuccessRateText(successRate, entry.total || 0),
           getSuccessRateClass(successRate)
         ),
-        errorCount: formatNumber(entry.error || 0),
         rpm: rpmHtml,
         avgFirstByteTime: timingText,
         timingCellClass: emptyClass(timingText),
@@ -445,7 +442,6 @@
         costText,
         costCellClass: emptyClass(costText),
         mobileLabelSuccess: t('common.success'),
-        mobileLabelError: t('common.failed'),
         mobileLabelTiming: t('stats.avgFirstByte'),
         mobileLabelSpeed: t('stats.avgSpeed'),
         mobileLabelRpm: t('stats.rpm'),

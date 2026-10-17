@@ -73,18 +73,20 @@ test('渠道 RPM：峰值取渠道级 channel_peak_rpm 而非各模型峰值之�
   assert.equal(group.recent_rpm, 1);
 });
 
-test('汇总耗时按成功数加权，Tok/s 用总输出除以总生成秒数', () => {
+test('汇总首字/耗时按各自样本数加权，Tok/s 用总输出除以总生成秒数', () => {
   const aggregate = aggregateStatsEntries([
     // 生成秒数 = 5 - 1 = 4，共 3 次成功 → 12 秒
-    { success: 3, total_output_tokens: 300, avg_first_byte_time_seconds: 1, avg_duration_seconds: 5 },
+    { success: 3, total_output_tokens: 300, avg_first_byte_time_seconds: 1, avg_duration_seconds: 5, first_byte_count: 3, duration_count: 3 },
     // 耗时减首字不足 1 秒时退回总耗时 2 秒，共 1 次成功 → 2 秒
-    { success: 1, total_output_tokens: 40, avg_first_byte_time_seconds: 1.5, avg_duration_seconds: 2 },
-    // 无成功请求不参与加权
+    { success: 1, total_output_tokens: 40, avg_first_byte_time_seconds: 1.5, avg_duration_seconds: 2, first_byte_count: 1, duration_count: 1 },
+    // 非流式为主的模型：成功多但首字样本少，不能按成功数稀释首字均值
+    { success: 100, avg_first_byte_time_seconds: 3, avg_duration_seconds: 1, first_byte_count: 2, duration_count: 100 },
+    // 无样本不参与加权
     { success: 0, error: 4, avg_first_byte_time_seconds: 9, avg_duration_seconds: 9 }
   ]);
 
-  assert.equal(aggregate.avg_first_byte_time_seconds, (1 * 3 + 1.5 * 1) / 4);
-  assert.equal(aggregate.avg_duration_seconds, (5 * 3 + 2 * 1) / 4);
+  assert.equal(aggregate.avg_first_byte_time_seconds, (1 * 3 + 1.5 * 1 + 3 * 2) / 6);
+  assert.equal(aggregate.avg_duration_seconds, (5 * 3 + 2 * 1 + 1 * 100) / 104);
   assert.equal(aggregate.aggregate_speed, 340 / 14);
 });
 

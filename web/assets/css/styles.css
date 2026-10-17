@@ -6212,10 +6212,6 @@ a.model-tag.model-link:hover {
   color: var(--success-400);
 }
 
-.stats-header-accent--error {
-  color: var(--error-400);
-}
-
 .stats-header-accent--cache-read {
   color: var(--success-600);
 }
@@ -6362,11 +6358,6 @@ a.model-tag.model-link:hover {
   font-weight: var(--font-semibold);
 }
 
-.error-count {
-  color: var(--error-400);
-  font-weight: var(--font-semibold);
-}
-
 .success-rate {
   font-weight: var(--font-medium);
   color: var(--neutral-800);
@@ -6381,6 +6372,7 @@ a.model-tag.model-link:hover {
 }
 
 .stats-success-inline,
+.stats-timing-inline,
 .stats-rpm-inline {
   display: inline-flex;
   align-items: center;
@@ -7986,16 +7978,13 @@ body:not(.web-hide-channels) .stats-table th[data-column="model"] {
     order: 10;
   }
 
-  .stats-table .stats-col-error {
+  /* 成功与速度都短，成对；首字/耗时两段数值半列放不下，独占一行 */
+  .stats-table .stats-col-speed {
     order: 11;
   }
 
   .stats-table .stats-col-timing {
     order: 12;
-  }
-
-  .stats-table .stats-col-speed {
-    order: 13;
     grid-column: 1 / -1;
   }
 
@@ -8140,7 +8129,6 @@ body:not(.web-hide-channels) .stats-table th[data-column="model"] {
   }
 
   .stats-table .stats-col-success,
-  .stats-table .stats-col-error,
   .stats-table .stats-col-timing,
   .stats-table .stats-col-speed,
   .stats-table .stats-col-rpm,
@@ -8168,7 +8156,6 @@ body:not(.web-hide-channels) .stats-table th[data-column="model"] {
   }
 
   .stats-table .stats-col-success::before,
-  .stats-table .stats-col-error::before,
   .stats-table .stats-col-timing::before,
   .stats-table .stats-col-speed::before,
   .stats-table .stats-col-rpm::before,

@@ -304,6 +304,47 @@ func TestMetrics_TokenSpeedUsesSuccessfulOutputAndEffectiveDuration(t *testing.T
 	}
 }
 
+// 首字/耗时均值只算成功请求，并返回各自样本数供渠道/合计行加权。
+func TestMetrics_TimingAveragesUseSuccessfulSamples(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "timing-channel",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	now := time.Now()
+	logs := []*model.LogEntry{
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, IsStreaming: true, Duration: 4, FirstByteTime: 1, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 2, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 502, IsStreaming: true, Duration: 10, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: cfg.ID, Model: "gpt-4o", StatusCode: 499, IsStreaming: true, Duration: 30, FirstByteTime: 5, LogSource: model.LogSourceProxy},
+	}
+	if err := store.BatchAddLogs(ctx, logs); err != nil {
+		t.Fatalf("BatchAddLogs failed: %v", err)
+	}
+
+	stats, err := store.GetStats(ctx, now.Add(-time.Minute), now.Add(time.Minute), &model.LogFilter{LogSource: model.LogSourceProxy}, false)
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("stats len=%d, want 1", len(stats))
+	}
+	got := stats[0]
+	if got.AvgFirstByteTimeSeconds == nil || *got.AvgFirstByteTimeSeconds != 1 || got.FirstByteSampleCount != 1 {
+		t.Fatalf("first byte avg/samples = %v/%d, want 1/1", got.AvgFirstByteTimeSeconds, got.FirstByteSampleCount)
+	}
+	if got.AvgDurationSeconds == nil || *got.AvgDurationSeconds != 3 || got.DurationSampleCount != 2 {
+		t.Fatalf("duration avg/samples = %v/%d, want 3/2", got.AvgDurationSeconds, got.DurationSampleCount)
+	}
+}
+
 func TestMetrics_UpstreamProtocolFilterUsesPersistedAttemptProtocol(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

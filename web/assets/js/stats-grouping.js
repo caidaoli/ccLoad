@@ -8,7 +8,7 @@
   }
 })(typeof window !== 'undefined' ? window : globalThis, function createStatsGrouping() {
   // 合并多条统计为同结构条目（渠道行、合计行共用）：
-  // 计数/Token/费用直接相加；首字/耗时按成功数加权；Tok/s 用 总输出 / 总生成秒数，
+  // 计数/Token/费用直接相加；首字/耗时按后端返回的各自样本数加权；Tok/s 用 总输出 / 总生成秒数，
   // 生成秒数口径与 calculateTokenSpeed 一致（耗时减首字不足 1 秒时退回总耗时）。
   function aggregateStatsEntries(entries) {
     const aggregate = {
@@ -23,9 +23,9 @@
       effective_cost: 0
     };
     let firstByteWeighted = 0;
-    let firstByteSuccess = 0;
+    let firstByteSamples = 0;
     let durationWeighted = 0;
-    let durationSuccess = 0;
+    let durationSamples = 0;
     let speedOutputTokens = 0;
     let speedGenerationSeconds = 0;
 
@@ -42,19 +42,22 @@
         ? Number(entry.effective_cost) || 0
         : (entry.total_cost || 0);
 
-      const success = Number(entry.success) || 0;
-      if (success <= 0) continue;
-
       const firstByte = Number(entry.avg_first_byte_time_seconds) || 0;
-      const duration = Number(entry.avg_duration_seconds) || 0;
-      if (firstByte > 0) {
-        firstByteWeighted += firstByte * success;
-        firstByteSuccess += success;
+      const firstByteCount = Number(entry.first_byte_count) || 0;
+      if (firstByte > 0 && firstByteCount > 0) {
+        firstByteWeighted += firstByte * firstByteCount;
+        firstByteSamples += firstByteCount;
       }
-      if (duration <= 0) continue;
 
-      durationWeighted += duration * success;
-      durationSuccess += success;
+      const duration = Number(entry.avg_duration_seconds) || 0;
+      const durationCount = Number(entry.duration_count) || 0;
+      if (duration > 0 && durationCount > 0) {
+        durationWeighted += duration * durationCount;
+        durationSamples += durationCount;
+      }
+
+      const success = Number(entry.success) || 0;
+      if (success <= 0 || duration <= 0) continue;
 
       const output = Number(entry.total_output_tokens) || 0;
       if (output > 0) {
@@ -67,8 +70,8 @@
       }
     }
 
-    aggregate.avg_first_byte_time_seconds = firstByteSuccess > 0 ? firstByteWeighted / firstByteSuccess : 0;
-    aggregate.avg_duration_seconds = durationSuccess > 0 ? durationWeighted / durationSuccess : 0;
+    aggregate.avg_first_byte_time_seconds = firstByteSamples > 0 ? firstByteWeighted / firstByteSamples : 0;
+    aggregate.avg_duration_seconds = durationSamples > 0 ? durationWeighted / durationSamples : 0;
     aggregate.aggregate_speed = speedOutputTokens > 0 && speedGenerationSeconds > 0
       ? speedOutputTokens / speedGenerationSeconds
       : null;

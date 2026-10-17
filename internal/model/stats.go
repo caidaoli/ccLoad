@@ -65,7 +65,9 @@ type StatsEntry struct {
 	Error                   int      `json:"error"`
 	Total                   int      `json:"total"`
 	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"` // 流式请求平均上游首块响应体时间(秒)
-	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 平均总耗时(秒)
+	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`        // 成功请求平均总耗时(秒)
+	FirstByteSampleCount    int      `json:"first_byte_count,omitempty"`            // 首字节样本数，渠道/合计行按它加权首字均值
+	DurationSampleCount     int      `json:"duration_count,omitempty"`              // 耗时样本数，渠道/合计行按它加权耗时均值
 	LastSuccessAt           *int64   `json:"last_success_at,omitempty"`             // 最近一次成功请求时间(毫秒)
 	LastSuccessID           *int64   `json:"last_success_id,omitempty"`             // 最近一次成功请求日志ID
 	LastRequestAt           *int64   `json:"last_request_at,omitempty"`             // 最近一次非499请求时间(毫秒)

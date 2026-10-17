@@ -165,17 +165,19 @@ function aggregateChannelStats(statsEntries = []) {
     stats.error += error;
     stats.total += total;
 
+    // 首字/耗时均值按各自样本数加权：首字只来自成功流式请求，按成功数加权会被非流式模型稀释
     const avgFirstByte = Number(entry.avg_first_byte_time_seconds);
-    const weight = success || total || 0;
-    if (Number.isFinite(avgFirstByte) && avgFirstByte > 0 && weight > 0) {
-      stats._firstByteWeightedSum += avgFirstByte * weight;
-      stats._firstByteWeight += weight;
+    const firstByteCount = toSafeNumber(entry.first_byte_count);
+    if (Number.isFinite(avgFirstByte) && avgFirstByte > 0 && firstByteCount > 0) {
+      stats._firstByteWeightedSum += avgFirstByte * firstByteCount;
+      stats._firstByteWeight += firstByteCount;
     }
 
     const avgDuration = Number(entry.avg_duration_seconds);
-    if (Number.isFinite(avgDuration) && avgDuration > 0 && weight > 0) {
-      stats._durationWeightedSum += avgDuration * weight;
-      stats._durationWeight += weight;
+    const durationCount = toSafeNumber(entry.duration_count);
+    if (Number.isFinite(avgDuration) && avgDuration > 0 && durationCount > 0) {
+      stats._durationWeightedSum += avgDuration * durationCount;
+      stats._durationWeight += durationCount;
     }
 
     stats.totalInputTokens += toSafeNumber(entry.total_input_tokens);
