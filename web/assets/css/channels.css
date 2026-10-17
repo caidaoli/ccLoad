@@ -2258,7 +2258,6 @@
     }
 
     .channel-table thead th.ch-col-name,
-    .channel-table thead th.ch-col-models,
     .channel-table thead th.ch-col-quota,
     .channel-table thead th.ch-col-health {
       text-align: left;
@@ -2438,6 +2437,29 @@
       background: rgba(245, 158, 11, 0.16);
     }
 
+    /* 优先级平时显示为纯数字；行悬停、输入聚焦或有未保存改动时才露出输入框，只读时始终是纯数字 */
+    .ch-priority-editor:has(.ch-priority-input:disabled) {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .ch-priority-editor .ch-priority-input:disabled {
+      background: transparent;
+    }
+
+    @media (hover: hover) {
+      .channel-table-row:not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) {
+        border-color: transparent;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .channel-table-row:not(:hover) .ch-priority-editor:not(:focus-within, :has(.is-dirty)) .ch-priority-input {
+        background: transparent;
+      }
+    }
+
     .ch-priority-value {
       margin-left: auto;
       text-align: right;
@@ -2465,13 +2487,6 @@
       color: var(--error-600);
     }
 
-    .ch-col-models {
-      width: 96px;
-      min-width: 96px;
-      max-width: 96px;
-      text-align: left;
-    }
-
     .ch-col-quota {
       width: 340px;
       min-width: 340px;
@@ -2489,7 +2504,6 @@
     }
 
     @media (min-width: 769px) {
-      .channel-table td.ch-col-models,
       .channel-table td.ch-col-quota,
       .channel-table td.ch-col-health {
         padding-inline: 8px;
@@ -2578,6 +2592,7 @@
     }
 
     .ch-oauth-usage {
+      position: relative;
       display: grid;
       gap: 5px;
       width: 100%;
@@ -2624,69 +2639,115 @@
       color: var(--primary-600);
     }
 
-    .ch-oauth-usage__refresh,
-    .ch-oauth-usage__reset-action {
+    /* 签到图标浮在首行文字正中，不占行也不压进度条；margin 居中，避免与按下缩放的 transform 冲突 */
+    .ch-oauth-usage__action {
       appearance: none;
-      justify-self: center;
-      min-height: 24px;
-      padding: 3px 6px;
-      border: 0;
-      border-radius: 4px;
-      background: transparent;
+      position: absolute;
+      top: -3px;
+      inset-inline: 0;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      margin-inline: auto;
+      padding: 0;
+      border: 1px solid var(--surface-border);
+      border-radius: 999px;
+      background: var(--surface-bg-strong);
+      box-shadow: var(--shadow-sm);
       color: var(--primary-600);
-      font: inherit;
-      font-size: 11px;
-      font-weight: 700;
-      line-height: 1.25;
       cursor: pointer;
       transition-property: color, background-color, transform, opacity;
       transition-duration: 120ms;
       transition-timing-function: ease-out;
     }
 
-    /* 抵消文字按钮内边距，让文字与进度条/单元格边缘对齐 */
-    .ch-oauth-usage__toolbar .ch-oauth-usage__refresh,
-    .ch-oauth-usage__credits .ch-oauth-usage__reset-action {
-      margin-inline-end: -6px;
+    :is(.ch-oauth-usage__action, .ch-oauth-usage__loading) .ch-oauth-usage__action-icon {
+      flex: 0 0 auto;
     }
 
-    /* 额度操作只在行悬停/聚焦时出现（opacity 保留占位与键盘可达）；进行中的操作常显，触屏常显 */
+    :is(.ch-oauth-usage__action[aria-busy="true"], .ch-oauth-usage__loading) .ch-oauth-usage__action-icon {
+      animation: spin 1s linear infinite;
+    }
+
+    /* 签到图标只在行悬停/聚焦时出现（opacity 保持键盘可达）；进行中常显，触屏常显 */
     @media (hover: hover) {
-      .channel-table-row:not(:hover):not(:focus-within) :is(.ch-oauth-usage__refresh, .ch-oauth-usage__reset-action):not([aria-busy="true"]) {
+      .channel-table-row:not(:hover):not(:focus-within) .ch-oauth-usage__action:not([aria-busy="true"]) {
         opacity: 0;
       }
     }
 
-    .ch-oauth-usage__toolbar > .ch-cell-empty {
-      margin-inline-end: auto;
-    }
-
-    .ch-oauth-usage__refresh:hover:not(:disabled),
-    .ch-oauth-usage__reset-action:hover:not(:disabled) {
+    .ch-oauth-usage__action:hover:not(:disabled) {
       background: var(--primary-50);
       color: var(--primary-700);
     }
 
-    .ch-oauth-usage__refresh:active:not(:disabled),
-    .ch-oauth-usage__reset-action:active:not(:disabled) {
+    .ch-oauth-usage__action:active:not(:disabled) {
       transform: scale(0.96);
     }
 
-    .ch-oauth-usage__refresh:focus-visible,
-    .ch-oauth-usage__reset-action:focus-visible {
+    .ch-oauth-usage__action:focus-visible,
+    .ch-oauth-usage__trigger:focus-visible {
       outline: 2px solid var(--primary-500);
       outline-offset: 2px;
     }
 
-    .ch-oauth-usage__refresh:disabled,
-    .ch-oauth-usage__reset-action:disabled {
+    .ch-oauth-usage__action:disabled {
       cursor: not-allowed;
       opacity: 0.6;
     }
 
-    .ch-oauth-usage__refresh[aria-busy="true"],
-    .ch-oauth-usage__reset-action[aria-busy="true"] {
+    :is(.ch-oauth-usage__action, .ch-oauth-usage__trigger)[aria-busy="true"] {
       cursor: wait;
+    }
+
+    /* 额度文字即操作入口：保留文字原样，悬停时名称转主色提示可点击 */
+    .ch-oauth-usage__trigger {
+      appearance: none;
+      justify-self: start;
+      max-width: 100%;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 3px;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      cursor: pointer;
+    }
+
+    .ch-oauth-usage__trigger:disabled {
+      cursor: default;
+    }
+
+    .ch-oauth-usage__trigger:hover:not(:disabled) .ch-oauth-usage__label,
+    .ch-oauth-usage__trigger.ch-oauth-usage__credit-count:hover:not(:disabled) {
+      color: var(--primary-600);
+    }
+
+    .ch-oauth-usage__trigger:is(.ch-oauth-usage__error, .ch-cell-empty):hover:not(:disabled) {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .ch-oauth-usage__meta .ch-oauth-usage__trigger {
+      display: flex;
+      flex: 1 1 100%;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .ch-oauth-usage__loading {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--neutral-500);
+      font-size: 11px;
+      line-height: 1.3;
     }
 
     .ch-oauth-usage__window {
@@ -2709,17 +2770,7 @@
       position: relative;
       display: flex;
       flex: 1 1 100%;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px;
       min-width: 0;
-      border-radius: 3px;
-      outline: none;
-    }
-
-    .ch-oauth-usage__summary:focus-visible {
-      outline: 2px solid var(--primary-500);
-      outline-offset: 2px;
     }
 
     .ch-oauth-usage__label {
@@ -2804,7 +2855,7 @@
     }
 
     .ch-oauth-usage__summary:hover .ch-oauth-usage__tooltip,
-    .ch-oauth-usage__summary:focus-visible .ch-oauth-usage__tooltip {
+    .ch-oauth-usage__trigger:focus-visible + .ch-oauth-usage__tooltip {
       opacity: 1;
       pointer-events: auto;
       transform: translateY(0);
@@ -2817,6 +2868,12 @@
 
     .ch-oauth-usage__tooltip-line {
       white-space: nowrap;
+    }
+
+    .ch-oauth-usage__tooltip-hint {
+      padding-top: 4px;
+      border-top: 1px solid var(--surface-border);
+      color: var(--neutral-500);
     }
 
     .ch-oauth-usage__track {
@@ -2899,11 +2956,6 @@
       white-space: nowrap;
     }
 
-    .ch-oauth-usage__reset-action {
-      flex: 0 0 auto;
-      margin-inline-start: auto;
-    }
-
     /* 重置次数行：浅蓝底单行，卡片图标 + 次数 + 灰色明细 + 右侧操作 */
     .ch-oauth-usage__credits--reset .ch-oauth-usage__credits-summary {
       gap: 6px;
@@ -2925,10 +2977,6 @@
 
     .ch-oauth-usage__credits--reset .ch-oauth-usage__credit-expiry::before {
       content: "· ";
-    }
-
-    .ch-oauth-usage__credits--reset .ch-oauth-usage__reset-action {
-      font-size: var(--text-xs);
     }
 
     .ch-oauth-usage__credits .ch-oauth-usage__error {
@@ -3030,9 +3078,9 @@
     }
 
     .ch-col-actions {
-      width: 196px;
-      min-width: 196px;
-      max-width: 196px;
+      width: 182px;
+      min-width: 182px;
+      max-width: 182px;
       position: relative;
       white-space: nowrap;
       text-align: right;
@@ -3155,15 +3203,25 @@
       font-size: 13px;
     }
 
+    /* URL 先占位，剩余宽度给模型标签，「+N」始终可见 */
     .ch-url-line {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      max-width: 100%;
       color: var(--neutral-500);
       font-size: 13px;
       font-weight: 500;
-      max-width: 100%;
+      margin-top: 1px;
+    }
+
+    /* 最宽按 Codex 地址 https://chatgpt.com/backend-api/codex/responses# 留位（约 38ch，留余量防字体差异），再长截断 */
+    .ch-url-text {
+      min-width: 0;
+      max-width: 40ch;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      margin-top: 1px;
     }
 
     .ch-refresh-result-slot {
@@ -3171,53 +3229,73 @@
       max-width: 100%;
     }
 
-    /* 模型列：数量按钮，点击弹出完整模型标签 */
+    /* URL 行末尾的模型标签：flex-basis 为 0 只吃 URL 剩下的宽度，宽度不随标签增减变化；
+       显式最小宽度挡住标签列表的内容宽度，URL 再长也给标签留出 40% */
     .ch-model-picker {
       position: relative;
-      display: inline-block;
-      max-width: 100%;
+      display: flex;
+      align-items: center;
+      flex: 1 1 0;
+      gap: 4px;
+      min-width: 40%;
     }
 
+    .ch-url-text:not(:empty) + .ch-model-picker::before {
+      content: "·";
+      margin-inline: 6px 0;
+      color: var(--neutral-400);
+    }
+
+    /* 单行不换行，溢出的标签由脚本隐藏并计入「+N」 */
+    .ch-model-list {
+      display: flex;
+      flex: 0 1 auto;
+      gap: 4px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .ch-model-picker [hidden] {
+      display: none;
+    }
+
+    /* 第一个标签过长时按列表宽度截断，保证至少露出一个模型名 */
+    .ch-model-list .ch-model-chip {
+      flex: none;
+      padding: 0 6px;
+      font-size: 11.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 「+N」与模型标签同形，透明底、浅色字区分；悬停和展开时与标签悬停同色 */
     .ch-model-toggle {
       appearance: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      max-width: 100%;
-      padding: 4px 10px;
+      flex: none;
+      padding: 0 6px;
       border: 1px solid var(--surface-border);
-      border-radius: 6px;
-      background: var(--surface-bg-muted);
-      color: var(--neutral-700);
-      font-family: inherit;
-      font-size: 12px;
-      font-weight: 500;
-      line-height: 16px;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--neutral-500);
+      font-family: var(--font-family-mono);
+      font-size: 11.5px;
+      line-height: 18px;
       white-space: nowrap;
       cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
     }
 
     .ch-model-toggle:hover,
     .ch-model-toggle[aria-expanded="true"] {
-      border-color: var(--neutral-300);
+      border-color: var(--primary-400);
       background: var(--surface-hover);
-      color: var(--neutral-900);
+      color: var(--primary-600);
     }
 
     .ch-model-toggle:focus-visible {
       outline: 2px solid var(--primary-500);
       outline-offset: 2px;
-    }
-
-    .ch-model-toggle__caret {
-      color: var(--neutral-400);
-      border-top: 4px solid currentColor;
-      border-inline: 3.5px solid transparent;
-      transition: transform 0.15s ease;
-    }
-
-    .ch-model-toggle[aria-expanded="true"] .ch-model-toggle__caret {
-      transform: rotate(180deg);
     }
 
     .ch-model-popover {
@@ -3262,7 +3340,8 @@
       line-height: 18px;
       text-align: left;
       overflow-wrap: anywhere;
-      cursor: copy;
+      /* 悬停光标用操作列同款复制图标，白色描边保证深浅主题下都看得清 */
+      cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='%23fff' stroke-width='4'%3E%3Cpath d='M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5'/%3E%3Crect x='9' y='9' width='11' height='11' rx='2'/%3E%3C/g%3E%3Cg stroke='%23111827' stroke-width='1.8'%3E%3Cpath d='M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5'/%3E%3Crect x='9' y='9' width='11' height='11' rx='2' fill='%23fff'/%3E%3C/g%3E%3C/svg%3E") 2 2, copy;
       transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
     }
 
@@ -3496,6 +3575,12 @@
       padding: 0;
       line-height: 0;
       white-space: nowrap;
+    }
+
+    /* 行内图标按钮平时只留图标，悬停/聚焦才出边框与底色；启用态靠品牌色图标区分 */
+    .channel-table :is(.ch-action-group .btn-icon, .channel-enable-switch):not(:hover, :focus-visible) {
+      border-color: transparent;
+      background: transparent;
     }
 
     .channel-table-selection-toggle {
@@ -5874,11 +5959,6 @@
         grid-column: 1;
       }
 
-      .channel-table .ch-col-models {
-        order: 10;
-        grid-column: 1 / -1;
-      }
-
       .channel-table .ch-col-health {
         order: 12;
         grid-column: 1 / -1;
@@ -5890,9 +5970,9 @@
         flex-wrap: wrap;
       }
 
-      .channel-table .ch-model-popover {
-        left: auto;
-        right: 0;
+      /* 模型按钮位置随 URL 长度浮动，弹层改相对整个名称单元格定位，避免溢出卡片 */
+      .channel-table .ch-model-picker {
+        position: static;
       }
 
       .channel-table .ch-col-actions {
@@ -5924,7 +6004,6 @@
       }
 
       .channel-table .ch-col-priority,
-      .channel-table .ch-col-models,
       .channel-table .ch-col-quota {
         display: flex;
         align-items: center;
@@ -5932,8 +6011,7 @@
         gap: 12px;
       }
 
-      .channel-table .ch-col-priority::before,
-      .channel-table .ch-col-models::before {
+      .channel-table .ch-col-priority::before {
         margin-bottom: 0;
         flex: 0 0 auto;
       }
@@ -6346,7 +6424,23 @@
         flex-wrap: wrap;
       }
 
+      /* URL 可换行，模型标签另起一行按卡片宽度排 */
       .channel-table .ch-url-line {
+        flex-wrap: wrap;
+        align-items: flex-start;
+        row-gap: 4px;
+      }
+
+      .channel-table .ch-model-picker {
+        flex-basis: 100%;
+      }
+
+      .channel-table .ch-url-text:not(:empty) + .ch-model-picker::before {
+        content: none;
+      }
+
+      .channel-table .ch-url-text {
+        max-width: none;
         white-space: normal;
         overflow: visible;
         text-overflow: unset;

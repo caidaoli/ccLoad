@@ -9797,11 +9797,16 @@ html[data-resolved-theme="dark"] .chat-message .chat-patch-number {
 
 .channels-readonly .ch-col-checkbox,
 .channels-readonly .ch-col-actions,
-.channels-readonly .ch-url-line,
+.channels-readonly .ch-url-text,
 .channels-readonly #batchFloatingMenu,
 .channels-readonly #channelAddGroup,
 .channels-readonly #channelImportMenu {
   display: none !important;
+}
+
+/* 只读时 URL 隐藏，模型标签独占 URL 行，不留分隔点 */
+.channels-readonly .ch-model-picker::before {
+  content: none;
 }
 
 /* Channel visibility is supplied by the authenticated Token session. */

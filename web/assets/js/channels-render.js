@@ -17,41 +17,89 @@ function buildPriorityRow(rowClass, valueClass, value) {
 const CHANNEL_PRIORITY_MIN = -99999;
 const CHANNEL_PRIORITY_MAX = 9999999;
 
-function channelModelDisplayGroups(models) {
-  const groups = new Map();
-  (Array.isArray(models) ? models : []).forEach((entry) => {
-    const name = String(entry?.model || entry || '').trim();
-    if (!name) return;
-    let group = groups.get(name);
-    if (!group) {
-      group = { model: name, targets: [] };
-      groups.set(name, group);
-    }
-    const redirect = String(entry?.redirect_model || '').trim();
-    const target = redirect || name;
-    if (!group.targets.includes(target)) group.targets.push(target);
+// 列表只展示客户端请求用的模型名（去重），重定向目标在编辑页查看。
+function channelModelNames(models) {
+  const names = (Array.isArray(models) ? models : [])
+    .map(entry => String(entry?.model || entry || '').trim())
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+// 行内最多预渲染的模型标签数：再宽的列也放不下更多，避免模型很多的渠道每行常驻大量 DOM。
+const CHANNEL_INLINE_MODEL_LIMIT = 12;
+
+function buildChannelModelChipHtml(model) {
+  const name = escapeChannelRefreshText(model);
+  return `<button type="button" class="ch-model-chip" data-model="${name}" title="${name}">${name}</button>`;
+}
+
+// URL 行末尾直接列出模型标签；放不下的由 fitChannelModelLists 按实际宽度收进「+N」，点击弹出被挡住的模型。
+function buildChannelModelListHtml(channelID, models) {
+  const names = channelModelNames(models);
+  if (names.length === 0) return '';
+  const chips = names.slice(0, CHANNEL_INLINE_MODEL_LIMIT).map(buildChannelModelChipHtml).join('');
+  return `<div class="ch-model-picker" data-model-count="${names.length}"><span class="ch-model-list">${chips}</span><button type="button" class="ch-model-toggle" data-channel-id="${channelID}" aria-expanded="false" hidden>+${names.length}</button></div>`;
+}
+
+// 点击标签复制的是客户端请求用的模型名。
+function buildChannelModelPopoverHtml(names) {
+  return `<div class="ch-model-popover">${names.map(buildChannelModelChipHtml).join('')}</div>`;
+}
+
+// 先放出全部标签并按最宽的「+N」预留位置，再按顺序挑放得下的标签：放不下的跳过，后面更短的继续补位；
+// 整批先写后读再写，只触发一次布局。
+function fitChannelModelLists(pickers) {
+  const states = pickers.map(picker => {
+    const list = picker.querySelector('.ch-model-list');
+    const toggle = picker.querySelector('.ch-model-toggle');
+    const chips = [...list.children];
+    const total = Number(picker.dataset.modelCount) || chips.length;
+    chips.forEach(chip => { chip.hidden = false; });
+    toggle.hidden = false;
+    toggle.textContent = `+${total}`;
+    return { list, toggle, chips, total };
   });
-  return [...groups.values()];
+  states.forEach(state => {
+    const room = state.list.getBoundingClientRect().width + 0.5;
+    const gap = parseFloat(getComputedStyle(state.list).columnGap) || 0;
+    let used = -gap;
+    state.shown = state.chips.map(chip => {
+      const next = used + gap + chip.getBoundingClientRect().width;
+      if (next > room) return false;
+      used = next;
+      return true;
+    });
+  });
+  states.forEach(({ toggle, chips, total, shown }) => {
+    chips.forEach((chip, index) => { chip.hidden = !shown[index]; });
+    const visible = shown.filter(Boolean).length;
+    toggle.hidden = visible >= total;
+    toggle.textContent = `+${total - visible}`;
+  });
 }
 
-function formatChannelModelLabel(group) {
-  const targets = group.targets.filter((target) => target !== group.model);
-  return targets.length > 0 ? `${group.model}(${targets.join(', ')})` : group.model;
-}
+let channelModelListObserver = null;
 
-// 模型列只放数量按钮；标签在展开时按渠道数据生成，避免每行常驻全部模型 DOM。
-function buildChannelModelToggleHtml(channelID, models) {
-  const count = channelModelDisplayGroups(models).length;
-  if (count === 0) return '';
-  const label = escapeChannelRefreshText(window.t('channels.table.modelCount', { count }));
-  return `<div class="ch-model-picker"><button type="button" class="ch-model-toggle" data-channel-id="${channelID}" aria-expanded="false">${label}<span class="ch-model-toggle__caret" aria-hidden="true"></span></button></div>`;
-}
-
-// 标签显示重定向目标，点击复制的是客户端请求用的模型名。
-function buildChannelModelPopoverHtml(models) {
-  const chips = channelModelDisplayGroups(models)
-    .map(group => `<button type="button" class="ch-model-chip" data-model="${escapeChannelRefreshText(group.model)}">${escapeChannelRefreshText(formatChannelModelLabel(group))}</button>`);
-  return `<div class="ch-model-popover">${chips.join('')}</div>`;
+// 只在 URL 行宽度变化时重排：表格固定布局下宽度由列宽决定，不受标签增减影响，不会循环触发。
+function observeChannelModelLists(root) {
+  channelModelListObserver?.disconnect();
+  if (typeof ResizeObserver !== 'function') return;
+  const widths = new WeakMap();
+  channelModelListObserver = new ResizeObserver(entries => {
+    const pickers = [];
+    entries.forEach(entry => {
+      const width = entry.contentRect.width;
+      if (widths.get(entry.target) === width) return;
+      widths.set(entry.target, width);
+      pickers.push(entry.target.querySelector('.ch-model-picker'));
+    });
+    if (pickers.length === 0) return;
+    closeChannelModelPopovers();
+    fitChannelModelLists(pickers);
+  });
+  root.querySelectorAll('.ch-model-picker').forEach(picker => {
+    channelModelListObserver.observe(picker.closest('.ch-url-line'));
+  });
 }
 
 function copyChannelModelName(chip) {
@@ -71,6 +119,7 @@ function closeChannelModelPopovers() {
   });
 }
 
+// 弹层只列出行内放不下的模型。
 function toggleChannelModelPopover(btn) {
   const wasOpen = btn.getAttribute('aria-expanded') === 'true';
   closeChannelModelPopovers();
@@ -78,7 +127,8 @@ function toggleChannelModelPopover(btn) {
   const channelID = Number(btn.dataset.channelId);
   const channel = channels.find(item => item.id === channelID);
   if (!channel) return;
-  btn.insertAdjacentHTML('afterend', buildChannelModelPopoverHtml(channel.models));
+  const shown = new Set([...btn.parentElement.querySelectorAll('.ch-model-list > .ch-model-chip:not([hidden])')].map(chip => chip.dataset.model));
+  btn.insertAdjacentHTML('afterend', buildChannelModelPopoverHtml(channelModelNames(channel.models).filter(name => !shown.has(name))));
   btn.setAttribute('aria-expanded', 'true');
 }
 
@@ -613,14 +663,14 @@ function formatOAuthUsagePercent(value) {
 }
 
 // 累计标准成本按美元显示，与渠道日消费同一形状，无需本地化前缀。
-// 一位小数会把不足 $0.05 的非零成本显示成 $0.0，读起来像没用过。
 function formatOAuthCostMicroUSD(microUSD) {
-  return microUSD < 50_000 ? '<$0.1' : `$${(microUSD / 1_000_000).toFixed(1)}`;
+  return `$${(microUSD / 1_000_000).toFixed(1)}`;
 }
 
+// 不足 $0.1 的成本没有参考价值，金额与外推的预估都不显示；预估只在有已用金额时出现。
 function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   const microUSD = Number(standardCostMicroUSD);
-  if (!Number.isFinite(microUSD) || microUSD <= 0) return '';
+  if (!Number.isFinite(microUSD) || microUSD < 100_000) return '';
   return formatOAuthCostMicroUSD(microUSD);
 }
 
@@ -771,11 +821,51 @@ function formatZedUsageNotice(data) {
   }
 }
 
-function buildOAuthUsageRefreshButton(channelID, loading = false, disabled = false) {
-  const text = loading
-    ? window.t('channels.oauth.usageRefreshing')
-    : window.t('channels.oauth.usageRefresh');
-  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+const QUOTA_ACTION_ICONS = {
+  checkin: '<svg class="ch-oauth-usage__action-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="m9 15.5 2 2 4-4"/></svg>',
+  loading: '<svg class="ch-oauth-usage__action-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>'
+};
+
+// 签到是浮在额度区域正中的图标按钮（不占行），文字作为悬停提示与可访问名称；进行中换成转圈图标。
+function buildQuotaActionButton(action, channelID, icon, text, { disabled = false, busy = false } = {}) {
+  const label = escapeChannelRefreshText(text);
+  return `<button type="button" class="ch-oauth-usage__action channel-action-btn" data-action="${action}" data-channel-id="${channelID}"${disabled || busy ? ' disabled' : ''}${busy ? ' aria-busy="true"' : ''} title="${label}" aria-label="${label}">${QUOTA_ACTION_ICONS[busy ? 'loading' : icon]}</button>`;
+}
+
+// 额度文字本身就是操作入口：限额行点击刷新、「可重置 N 次」点击重置，确认框由点击处理弹出。
+function buildQuotaTextTrigger(action, channelID, contentHtml, { className = '', title = '', disabled = false, busy = false, attrs = '' } = {}) {
+  const titleAttr = title ? ` title="${escapeChannelRefreshText(title)}"` : '';
+  return `<button type="button" class="ch-oauth-usage__trigger${className ? ` ${className}` : ''} channel-action-btn" data-action="${action}" data-channel-id="${channelID}"${attrs}${titleAttr}${disabled || busy ? ' disabled' : ''}${busy ? ' aria-busy="true"' : ''}>${contentHtml}</button>`;
+}
+
+// refresh 描述额度单元格的刷新入口：{ action, channelID, disabled }。
+function buildQuotaRefreshTrigger(refresh, contentHtml, { className = '', title = window.t('channels.quotaRefreshHint'), attrs = '' } = {}) {
+  return buildQuotaTextTrigger(refresh.action, refresh.channelID, contentHtml, {
+    className,
+    title,
+    disabled: refresh.disabled,
+    attrs
+  });
+}
+
+// 尚无额度数据时占位符承担刷新入口。
+function buildQuotaRefreshPlaceholder(refresh) {
+  const hint = window.t('channels.quotaRefreshHint');
+  return buildQuotaRefreshTrigger(refresh, '—', {
+    className: 'ch-cell-empty',
+    attrs: ` aria-label="${escapeChannelRefreshText(hint)}"`
+  });
+}
+
+function buildQuotaRefreshErrorHtml(refresh, message) {
+  return buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(message), {
+    className: 'ch-oauth-usage__error',
+    title: `${message}\n${window.t('channels.quotaRefreshHint')}`
+  });
+}
+
+function buildQuotaLoadingHtml(text) {
+  return `<div class="ch-oauth-usage__loading" role="status">${QUOTA_ACTION_ICONS.loading}${escapeChannelRefreshText(text)}</div>`;
 }
 
 function buildCodeBuddyCheckinButton(channelID, state = {}) {
@@ -784,26 +874,33 @@ function buildCodeBuddyCheckinButton(channelID, state = {}) {
   const text = loading
     ? window.t('channels.codebuddy.checkinRunning')
     : window.t('channels.codebuddy.checkin');
-  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="checkin-codebuddy" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+  return buildQuotaActionButton('checkin-codebuddy', channelID, 'checkin', text, { disabled, busy: loading });
 }
 
 // 空单元格占位：额度/运行表现列无内容时保持列对齐。
 const CHANNEL_EMPTY_CELL_HTML = '<span class="ch-cell-empty" aria-hidden="true">—</span>';
 
-function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false, leadingHtml = '') {
-  const checkinLoading = state?.checkin_status === 'loading';
-  const buttons = [buildOAuthUsageRefreshButton(
-    channel.id,
-    usageLoading,
-    checkinLoading || state?.reset_status === 'loading'
-  )];
-  if (channel?.auth_type === 'codebuddy_oauth' && !channel?.codebuddy_enterprise && !channel?.codebuddy_international) {
-    buttons.push(buildCodeBuddyCheckinButton(channel.id, state));
+function buildOAuthUsageCheckinHtml(channel, state = {}) {
+  if (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international) {
+    return '';
   }
-  return `<div class="ch-oauth-usage__toolbar">${leadingHtml}${buttons.join('')}</div>`;
+  return buildCodeBuddyCheckinButton(channel.id, state);
 }
 
 const OAUTH_RESET_CREDIT_ICON = '<svg class="ch-oauth-usage__credit-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.75" stroke="currentColor" stroke-width="1.3"/><path d="M1.75 6.25H14.25M4.5 10H7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+
+function buildResetCreditCountTrigger(action, channelID, count, { disabled = false, busy = false, attrs = '' } = {}) {
+  const text = busy
+    ? window.t('channels.oauth.resettingQuota')
+    : window.t('channels.oauth.resetCredits', { count });
+  return buildQuotaTextTrigger(action, channelID, escapeChannelRefreshText(text), {
+    className: 'ch-oauth-usage__credit-count',
+    title: window.t('channels.oauth.resetQuota'),
+    disabled,
+    busy,
+    attrs
+  });
+}
 
 function buildAnthropicResetCreditsHtml(channelID) {
   const state = typeof getAnthropicResetCreditsState === 'function'
@@ -821,8 +918,6 @@ function buildAnthropicResetCreditsHtml(channelID) {
     (!credit.expires_at || Date.parse(credit.expires_at) > Date.now()));
   const total = credits.reduce((sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0), 0);
   if (total <= 0) return feedback ? `<div class="ch-oauth-usage__credits">${feedback}</div>` : '';
-  const resetLabel = resetting ? 'resettingQuota' : 'resetQuota';
-  const resetButton = `<button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-anthropic-quota" data-channel-id="${channelID}"${loading || resetting ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(window.t(`channels.oauth.${resetLabel}`))}</button>`;
   const expiry = credit => {
     const timestamp = Date.parse(String(credit.expires_at || ''));
     return Number.isFinite(timestamp) ? timestamp : Infinity;
@@ -845,9 +940,8 @@ function buildAnthropicResetCreditsHtml(channelID) {
   return `<div class="ch-oauth-usage__credits ch-oauth-usage__credits--reset" role="status">
     <div class="ch-oauth-usage__credits-summary">
       ${OAUTH_RESET_CREDIT_ICON}
-      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: total }))}</span>
+      ${buildResetCreditCountTrigger('reset-anthropic-quota', channelID, total, { disabled: loading, busy: resetting })}
       <span class="ch-oauth-usage__credit-expiry" title="${escapeChannelRefreshText(details)}">${escapeChannelRefreshText(expiryText)}</span>
-      ${resetButton}
     </div>
     ${status || cooldown ? `<div class="ch-oauth-usage__credits-summary">${[
       status ? escapeChannelRefreshText(window.t(status)) : '',
@@ -882,10 +976,6 @@ function buildCodexResetCreditsHtml(data, state, channelID) {
   const earliest = visibleExpiries[0]?.text || '';
   const resetting = state?.reset_status === 'loading';
   const stale = state?.reset_status === 'stale';
-  const disabled = resetting || stale;
-  const buttonText = resetting
-    ? window.t('channels.oauth.resettingQuota')
-    : window.t('channels.oauth.resetQuota');
   const resetError = String(state?.reset_error || '').trim();
   const expiryText = visibleExpiries.length > 0
     ? window.t('channels.oauth.resetCreditExpires', {
@@ -902,9 +992,12 @@ function buildCodexResetCreditsHtml(data, state, channelID) {
   return `<div class="ch-oauth-usage__credits ch-oauth-usage__credits--reset">
     <div class="ch-oauth-usage__credits-summary">
       ${OAUTH_RESET_CREDIT_ICON}
-      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: availableCount }))}</span>
+      ${buildResetCreditCountTrigger('reset-codex-quota', channelID, availableCount, {
+        disabled: stale,
+        busy: resetting,
+        attrs: ` data-reset-count="${availableCount}" data-reset-expiry="${escapeChannelRefreshText(earliest)}"`
+      })}
       <span class="ch-oauth-usage__credit-expiry" title="${escapedMetaText}">${escapedMetaText}</span>
-      <button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-codex-quota" data-channel-id="${channelID}" data-reset-count="${availableCount}" data-reset-expiry="${escapeChannelRefreshText(earliest)}"${disabled ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(buttonText)}</button>
     </div>
     ${resetError ? `<div class="ch-oauth-usage__error" role="status">${escapeChannelRefreshText(resetError)}</div>` : ''}
   </div>`;
@@ -934,18 +1027,18 @@ function xaiUsageNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function buildXAIUsageInlineRow(label, value) {
+function buildXAIUsageInlineRow(refresh, label, value) {
   return `<div class="ch-oauth-usage__window">
-    <div class="ch-oauth-usage__meta">
-      <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+    <div class="ch-oauth-usage__meta">${buildQuotaRefreshTrigger(refresh, `
+      <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
       <span class="ch-oauth-usage__details">
         <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(value)}</span>
-      </span>
+      </span>`, { title: `${label}\n${window.t('channels.quotaRefreshHint')}` })}
     </div>
   </div>`;
 }
 
-function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostMicroUSD) {
+function buildXAIUsageRow(refresh, label, usedPercent, amount, resetAt, accumulatedCostMicroUSD) {
   const percent = formatXAIUsagePercent(usedPercent);
   const reset = formatXAIUsageReset(resetAt);
   const accumulatedCost = formatOAuthAccumulatedCost(accumulatedCostMicroUSD);
@@ -958,16 +1051,16 @@ function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostMi
       percent: formatOAuthUsagePercent(remaining)
     });
   return `<div class="ch-oauth-usage__window">
-    <div class="ch-oauth-usage__meta">
+    <div class="ch-oauth-usage__meta">${buildQuotaRefreshTrigger(refresh, `
       <span class="ch-oauth-usage__heading">
-        <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+        <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
         ${accumulatedCost ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(accumulatedCost)}</span>` : ''}
       </span>
       <span class="ch-oauth-usage__details">
         <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(window.t('channels.oauth.usageUsed', { percent }))}</span>
         ${amount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(amount)}</span>` : ''}
         ${reset ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(window.t('channels.oauth.usageReset', { time: reset }))}</span>` : ''}
-      </span>
+      </span>`, { title: `${label}\n${window.t('channels.quotaRefreshHint')}` })}
     </div>
     <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100"${numericUsed !== null ? ` aria-valuenow="${remaining}"` : ''}>
       <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
@@ -975,15 +1068,16 @@ function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostMi
   </div>`;
 }
 
-function buildXAIUsageRows(data) {
+function buildXAIUsageRows(data, refresh) {
   const billing = data?.xai_billing || {};
   const rows = [];
   const plan = String(data?.plan_type || data?.subscription_tier || '').trim();
   if (plan) {
-    rows.push(buildXAIUsageInlineRow(window.t('channels.oauth.usagePlan'), plan));
+    rows.push(buildXAIUsageInlineRow(refresh, window.t('channels.oauth.usagePlan'), plan));
   }
   if (billing.weekly_present === true) {
     rows.push(buildXAIUsageRow(
+      refresh,
       window.t('channels.oauth.usageWeekly'),
       billing.weekly_usage_percent,
       '',
@@ -994,6 +1088,7 @@ function buildXAIUsageRows(data) {
   const products = Array.isArray(billing.product_usage) ? billing.product_usage : [];
   for (const product of products) {
     rows.push(buildXAIUsageRow(
+      refresh,
       window.t('channels.oauth.usageProduct', { product: String(product?.product || '') }),
       product?.usage_percent,
       '',
@@ -1005,6 +1100,7 @@ function buildXAIUsageRows(data) {
     const used = xaiUsageNumber(billing.on_demand_used_cents);
     const usedPercent = used !== null ? used * 100 / onDemandCap : null;
     rows.push(buildXAIUsageRow(
+      refresh,
       window.t('channels.oauth.usageOnDemand'),
       usedPercent,
       `${formatXAIUsageMoney(billing.on_demand_used_cents)} / ${formatXAIUsageMoney(billing.on_demand_cap_cents)}`,
@@ -1012,6 +1108,7 @@ function buildXAIUsageRows(data) {
     ));
   } else {
     rows.push(buildXAIUsageInlineRow(
+      refresh,
       window.t('channels.oauth.usageOnDemand'),
       window.t('channels.oauth.usageOnDemandDisabled')
     ));
@@ -1023,6 +1120,7 @@ function buildXAIUsageRows(data) {
     : null;
   if (billing.monthly_present === true) {
     rows.push(buildXAIUsageRow(
+      refresh,
       window.t('channels.oauth.usageMonthlyCredits'),
       monthlyPercent,
       `${formatXAIUsageMoney(billing.included_used_cents)} / ${formatXAIUsageMoney(billing.monthly_limit_cents)}`,
@@ -1046,8 +1144,8 @@ function buildAntigravityCreditsHtml(credits) {
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
 }
 
-// 额度窗口行：左侧名称+金额，右侧主值+时间，悬浮展开明细；percent 为 null 时不画进度条。
-function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null, level = '' }) {
+// 额度窗口行：左侧名称+金额，右侧主值+时间，悬浮展开明细，点击文字刷新；percent 为 null 时不画进度条。
+function buildOAuthUsageWindowHtml({ refresh, tooltipID, label, amount, value, time, detailLines, ariaLabel, percent = null, level = '' }) {
   const id = escapeChannelRefreshText(tooltipID);
   let track = '';
   if (percent !== null) {
@@ -1058,7 +1156,7 @@ function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, deta
   }
   return `<div class="ch-oauth-usage__window">
       <div class="ch-oauth-usage__meta">
-        <span class="ch-oauth-usage__summary" tabindex="0" aria-describedby="${id}">
+        <span class="ch-oauth-usage__summary">${buildQuotaRefreshTrigger(refresh, `
           <span class="ch-oauth-usage__heading">
             <span class="ch-oauth-usage__label">${escapeChannelRefreshText(label)}</span>
             ${amount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(amount)}</span>` : ''}
@@ -1066,9 +1164,10 @@ function buildOAuthUsageWindowHtml({ tooltipID, label, amount, value, time, deta
           <span class="ch-oauth-usage__details">
             ${value ? `<span class="ch-oauth-usage__percent">${escapeChannelRefreshText(value)}</span>` : ''}
             ${time ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(time)}</span>` : ''}
-          </span>
+          </span>`, { title: '', attrs: ` aria-describedby="${id}"` })}
           <span id="${id}" class="ch-oauth-usage__tooltip" role="tooltip">
             ${detailLines.filter(Boolean).map(line => `<span class="ch-oauth-usage__tooltip-line">${escapeChannelRefreshText(line)}</span>`).join('')}
+            <span class="ch-oauth-usage__tooltip-hint">${escapeChannelRefreshText(window.t('channels.quotaRefreshHint'))}</span>
           </span>
         </span>
       </div>
@@ -1080,7 +1179,7 @@ function oauthUsageTooltipID(prefix, channelID, index) {
   return `${prefix}-${String(channelID).replace(/[^a-zA-Z0-9_-]/g, '')}-${index}`;
 }
 
-function buildCodeBuddyCreditsHtml(credits, channelID) {
+function buildCodeBuddyCreditsHtml(credits, refresh) {
   const remain = Number(credits?.remain);
   if (!Number.isFinite(remain)) return '';
   const formatCredits = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -1093,7 +1192,8 @@ function buildCodeBuddyCreditsHtml(credits, channelID) {
     const usageText = window.t('channels.management.usage', { used: formatCredits(used), total: formatCredits(total) });
     const availableText = window.t('channels.management.available', { percent: percentText });
     return buildOAuthUsageWindowHtml({
-      tooltipID: oauthUsageTooltipID('ch-codebuddy-credits-tooltip', channelID, 0),
+      refresh,
+      tooltipID: oauthUsageTooltipID('ch-codebuddy-credits-tooltip', refresh.channelID, 0),
       label,
       amount: `${formatCredits(used)}/${formatCredits(total)}`,
       value: formatCredits(Math.max(0, remain)),
@@ -1105,7 +1205,7 @@ function buildCodeBuddyCreditsHtml(credits, channelID) {
   const text = credits?.unlimited
     ? window.t('channels.codebuddy.unlimitedCredits')
     : window.t('channels.oauth.codeBuddyCredits', { remain: formatCredits(Math.max(0, remain)) });
-  return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${escapeChannelRefreshText(text)}</div></div>`;
+  return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(text))}</div></div>`;
 }
 
 const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
@@ -1148,20 +1248,24 @@ function buildOAuthUsageStatusHtml(channel) {
   }
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
+  const refresh = {
+    action: 'refresh-oauth-usage',
+    channelID: channel.id,
+    disabled: state?.checkin_status === 'loading' || state?.reset_status === 'loading'
+  };
+  const checkinHtml = buildOAuthUsageCheckinHtml(channel, state || {});
+  const anthropicCreditsHtml = channel?.auth_type === 'anthropic_oauth'
+    ? buildAnthropicResetCreditsHtml(channel.id) : '';
   if (!state) {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, {}, false, CHANNEL_EMPTY_CELL_HTML)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
+    return `<div class="ch-oauth-usage">${buildQuotaRefreshPlaceholder(refresh)}${anthropicCreditsHtml}${checkinHtml}</div>`;
   }
   if (state.status === 'loading') {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, state, true)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
+    return `<div class="ch-oauth-usage">${buildQuotaLoadingHtml(window.t('channels.oauth.usageRefreshing'))}${anthropicCreditsHtml}${checkinHtml}</div>`;
   }
   if (state.status === 'error') {
     const fallback = window.t('channels.oauth.usageFailed');
     const message = formatOAuthUsageError(state.error) || fallback;
-    return `<div class="ch-oauth-usage">
-      ${buildOAuthUsageToolbar(channel, state)}
-      ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
-      <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(message)}">${escapeChannelRefreshText(message)}</div>
-    </div>`;
+    return `<div class="ch-oauth-usage">${buildQuotaRefreshErrorHtml(refresh, message)}${anthropicCreditsHtml}${checkinHtml}</div>`;
   }
 
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
@@ -1175,7 +1279,7 @@ function buildOAuthUsageStatusHtml(channel) {
     : isCodex
       ? orderCodexUsageWindows(windows)
       : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data) : isCodeBuddy ? [] : displayedWindows.map((windowInfo, windowIndex) => {
+  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : isCodeBuddy ? [] : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -1209,6 +1313,7 @@ function buildOAuthUsageStatusHtml(channel) {
       resetAt ? window.t('channels.oauth.usageReset', { time: resetAt }) : ''
     ].filter(Boolean);
     return buildOAuthUsageWindowHtml({
+      refresh,
       tooltipID: oauthUsageTooltipID('ch-oauth-usage-tooltip', channel.id, windowIndex),
       label,
       amount: compactAmount,
@@ -1219,6 +1324,10 @@ function buildOAuthUsageStatusHtml(channel) {
       percent: remaining
     });
   });
+  const codeBuddyCreditsHtml = isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, refresh) : '';
+  if (codeBuddyCreditsHtml) rows.push(codeBuddyCreditsHtml);
+  // 每条额度行都是刷新入口；一条都没有时由占位符承担。
+  if (rows.length === 0) rows.push(buildQuotaRefreshPlaceholder(refresh));
   const notice = isCursor
     ? formatCursorUsageNotice(state.data?.display_message)
     : isZed
@@ -1236,16 +1345,15 @@ function buildOAuthUsageStatusHtml(channel) {
     ? String(state.checkin_error || '').trim()
     : '';
   return `<div class="ch-oauth-usage">
-    ${buildOAuthUsageToolbar(channel, state)}
     ${buildOAuthUsageRowsHtml(channel.id, rows)}
-    ${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}
+    ${anthropicCreditsHtml}
     ${isCodex ? (buildCodexResetCreditsHtml(state.data, state, channel.id) || buildCodexPurchasedCreditsHtml(state.data)) : ''}
     ${channel?.auth_type === 'antigravity_oauth' ? buildAntigravityCreditsHtml(state.data?.credits) : ''}
-    ${isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, channel.id) : ''}
     ${codeBuddyCheckinNotice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(codeBuddyCheckinNotice)}</div>` : ''}
     ${codeBuddyCheckinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(codeBuddyCheckinError)}">${escapeChannelRefreshText(codeBuddyCheckinError)}</div>` : ''}
     ${notice ? `<div class="ch-oauth-usage__notice" role="status">${escapeChannelRefreshText(notice)}</div>` : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
+    ${checkinHtml}
   </div>`;
 }
 
@@ -1253,11 +1361,6 @@ const MANAGEMENT_ACCOUNT_CHECKIN_STATUSES = [
   'success', 'already_checked', 'manual_required',
   'unsupported', 'credential_invalid', 'credential_forbidden', 'uncertain', 'skipped_disabled'
 ];
-
-function buildManagementActionButton(action, channelID, labelKey, loadingKey, loading) {
-  const text = loading ? window.t(loadingKey) : window.t(labelKey);
-  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="${action}" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
-}
 
 function formatManagementAmount(value, unit) {
   const amount = Number(value);
@@ -1276,14 +1379,15 @@ function formatManagementCheckinStatus(status) {
 }
 
 // 只有上游同时给出已用、总额和可用百分比才画进度条,缺失用量只展示剩余额度。
-function buildManagementWindowHtml(channelID, index, { label, remaining, used, total, percent, sampledAt }) {
+function buildManagementWindowHtml(refresh, index, { label, remaining, used, total, percent, sampledAt }) {
   const hasAmounts = Boolean(used && total);
   const numericPercent = Number(percent);
   const hasUsage = hasAmounts && Number.isFinite(numericPercent);
   const percentText = hasUsage ? formatOAuthUsagePercent(Math.min(100, Math.max(0, numericPercent))) : '';
   const availableText = hasUsage ? window.t('channels.management.available', { percent: percentText }) : '';
   return buildOAuthUsageWindowHtml({
-    tooltipID: oauthUsageTooltipID('ch-management-tooltip', channelID, index),
+    refresh,
+    tooltipID: oauthUsageTooltipID('ch-management-tooltip', refresh.channelID, index),
     label,
     // 只有余额时金额紧跟名称，右侧只留采样时间。
     amount: hasAmounts ? `${used}/${total}` : remaining,
@@ -1301,14 +1405,14 @@ function buildManagementWindowHtml(channelID, index, { label, remaining, used, t
   });
 }
 
-function buildManagementBalanceRows(channelID, balance) {
+function buildManagementBalanceRows(refresh, balance) {
   const unit = balance?.unit;
   const remaining = formatManagementAmount(balance?.remaining, unit);
   const used = formatManagementAmount(balance?.used, unit);
   const total = formatManagementAmount(balance?.total, unit);
   const rows = [];
   if (remaining || (used && total)) {
-    rows.push(buildManagementWindowHtml(channelID, 0, {
+    rows.push(buildManagementWindowHtml(refresh, 0, {
       label: window.t('channels.management.balance'),
       remaining,
       used,
@@ -1324,7 +1428,7 @@ function buildManagementBalanceRows(channelID, balance) {
     if (!subUsed || !subTotal) return;
     const name = String(entry?.name || '').trim();
     const windowName = String(entry?.window || '').trim();
-    rows.push(buildManagementWindowHtml(channelID, index + 1, {
+    rows.push(buildManagementWindowHtml(refresh, index + 1, {
       label: [name, windowName].filter(Boolean).join(' · ') || window.t('channels.management.subscription'),
       used: subUsed,
       total: subTotal,
@@ -1362,29 +1466,29 @@ function buildManagementAccountStatusHtml(channel) {
     ? window.t('channels.management.reward', { amount: formatManagementAmount(reward, balanceState?.data?.balance?.unit) })
     : '';
 
-  const buttons = [buildManagementActionButton(
-    'refresh-management-balance', channel.id,
-    'channels.management.refreshBalance', 'channels.management.refreshingBalance',
-    balanceState?.status === 'loading'
-  )];
-  if (supportsCheckin) {
-    buttons.push(buildManagementActionButton(
-      'run-management-checkin', channel.id,
-      'channels.management.checkin', 'channels.management.checkinRunning',
-      checkinState?.status === 'loading'
-    ));
-  }
+  const checkinLoading = checkinState?.status === 'loading';
+  const checkinButton = supportsCheckin
+    ? buildQuotaActionButton('run-management-checkin', channel.id, 'checkin',
+      window.t(checkinLoading ? 'channels.management.checkinRunning' : 'channels.management.checkin'),
+      { busy: checkinLoading })
+    : '';
+  const checkedInHtml = checkedInAt
+    ? `<div class="ch-oauth-usage__toolbar"><span class="ch-oauth-usage__reset" role="status">${escapeChannelRefreshText(checkedInAt)}</span></div>`
+    : '';
 
-  if (checkedInAt) {
-    buttons.push(`<span class="ch-oauth-usage__reset" role="status">${escapeChannelRefreshText(checkedInAt)}</span>`);
-  }
-
+  const refresh = { action: 'refresh-management-balance', channelID: channel.id };
   const balanceError = balanceState?.status === 'error' ? String(balanceState.error || '').trim() : '';
   const checkinError = checkinState?.status === 'error' ? String(checkinState.error || '').trim() : '';
   const balanceData = balanceState?.status === 'ready'
     ? balanceState.data?.balance
     : (balanceState ? null : account?.balance);
-  const balanceRows = buildManagementBalanceRows(channel.id, balanceData);
+  // 余额行文字是刷新入口；刷新中、失败或尚无余额时分别由进度文字、错误、占位符代替。
+  const balanceHtml = balanceState?.status === 'loading'
+    ? buildQuotaLoadingHtml(window.t('channels.management.refreshingBalance'))
+    : balanceError
+      ? buildQuotaRefreshErrorHtml(refresh, balanceError)
+      : buildOAuthUsageRowsHtml(channel.id, buildManagementBalanceRows(refresh, balanceData)) ||
+        buildQuotaRefreshPlaceholder(refresh);
 
   const checkinSummary = checkinStatus === 'already_checked'
     || checkinStatus === 'skipped_disabled'
@@ -1392,22 +1496,15 @@ function buildManagementAccountStatusHtml(channel) {
     : [statusText, rewardText].filter(Boolean).join(' · ');
 
   return `<div class="ch-oauth-usage">
-    <div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>
-    ${balanceError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(balanceError)}">${escapeChannelRefreshText(balanceError)}</div>` : ''}
-    ${buildOAuthUsageRowsHtml(channel.id, balanceRows)}
+    ${balanceHtml}
     ${checkinSummary ? `<div class="ch-oauth-usage__credits-summary" role="status">${escapeChannelRefreshText(checkinSummary)}</div>` : ''}
     ${checkinError ? `<div class="ch-oauth-usage__error" role="status" title="${escapeChannelRefreshText(checkinError)}">${escapeChannelRefreshText(checkinError)}</div>` : ''}
+    ${checkedInHtml}
+    ${checkinButton}
   </div>`;
 }
 
 const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
-
-// 没有额度时：API 渠道给出配置管理账户的入口（只读身份不显示），与刷新额度共用工具栏布局。
-function buildChannelQuotaHintHtml(channel) {
-  const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
-  if (channel?.auth_type !== 'api_key' || readOnly || isOpenCodeChannel(channel)) return '';
-  return `<div class="ch-oauth-usage__toolbar">${CHANNEL_EMPTY_CELL_HTML}<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
-}
 
 // 冷却状态以轻量徽标排在健康度列顶部。
 function buildChannelCooldownStatusHtml(channel) {
@@ -1477,10 +1574,9 @@ function createChannelCard(channel) {
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
-  const quotaHtml = buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel)
-    || buildChannelQuotaHintHtml(channel);
+  const quotaHtml = buildOAuthUsageStatusHtml(channel) + buildManagementAccountStatusHtml(channel);
   const healthHtml = buildChannelHealthHtml(channel, stats);
-  const modelsHtml = buildChannelModelToggleHtml(channel.id, channel.models);
+  const modelsHtml = buildChannelModelListHtml(channel.id, channel.models);
 
   // 行class
   const rowClasses = ['channel-table-row'];
@@ -1516,10 +1612,8 @@ function createChannelCard(channel) {
     enabled: channel.enabled,
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
     toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
-    modelsCellClass: modelsHtml ? '' : 'ch-mobile-empty',
     quotaCellClass: quotaHtml ? '' : 'ch-mobile-empty',
     healthCellClass: healthHtml ? '' : 'ch-mobile-empty',
-    mobileLabelModels: window.t('channels.table.models'),
     mobileLabelQuota: window.t('channels.table.quota'),
     mobileLabelHealth: window.t('channels.table.health'),
     mobileLabelPriority: window.t('channels.table.priority'),
@@ -1530,14 +1624,6 @@ function createChannelCard(channel) {
   return card;
 }
 
-async function editChannelManagementAccount(channelId) {
-  if (isOpenCodeChannel(channels.find(channel => channel.id === channelId))) return;
-  await editChannel(channelId);
-  if (editingChannelId !== channelId) return;
-  if (document.getElementById('channelManagementGroup')?.hidden !== false) return;
-  if (typeof revealChannelEditorSection === 'function') revealChannelEditorSection('management');
-}
-
 async function editChannelCoolingKeys(channelId) {
   await editChannel(channelId);
   if (editingChannelId !== channelId) return;
@@ -1545,6 +1631,15 @@ async function editChannelCoolingKeys(channelId) {
   const filter = document.getElementById('keyStatusFilter');
   if (filter) filter.value = 'cooldown';
   filterKeysByStatus('cooldown');
+}
+
+// 额度文字一点即刷新，先确认避免误触。
+function confirmQuotaRefresh(refresh, failedKey) {
+  return window.showConfirm({ message: window.t('channels.quotaRefreshConfirm') }).then(confirmed => {
+    if (confirmed) return refresh();
+  }).catch(error => {
+    if (window.showError) window.showError(error?.message || window.t(failedKey));
+  });
 }
 
 /**
@@ -1655,7 +1750,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'configure-management-account', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1672,14 +1767,9 @@ function initChannelEventDelegation() {
       case 'edit-cooling-keys':
         editChannelCoolingKeys(channelId);
         break;
-      case 'configure-management-account':
-        editChannelManagementAccount(channelId);
-        break;
       case 'refresh-oauth-usage':
         if (typeof refreshOAuthUsage === 'function') {
-          refreshOAuthUsage(channelId).catch(error => {
-            if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
-          });
+          confirmQuotaRefresh(() => refreshOAuthUsage(channelId), 'channels.oauth.usageFailed');
         }
         break;
       case 'reset-anthropic-quota':
@@ -1701,9 +1791,7 @@ function initChannelEventDelegation() {
         break;
       case 'refresh-management-balance':
         if (typeof refreshManagementBalance === 'function') {
-          refreshManagementBalance(channelId).catch(error => {
-            if (window.showError) window.showError(error?.message || window.t('channels.management.balanceFailed'));
-          });
+          confirmQuotaRefresh(() => refreshManagementBalance(channelId), 'channels.management.balanceFailed');
         }
         break;
       case 'run-management-checkin':
@@ -1799,7 +1887,6 @@ function renderChannels(channelsToRender = channels) {
     <tr>
       <th class="ch-col-checkbox"><label id="visibleSelectionToggle" class="channel-selection-toggle channel-table-selection-toggle" data-i18n-title="channels.batchSelectVisible" title="全选"><input id="visibleSelectionCheckbox" type="checkbox" data-change-action="toggle-visible-channels-selection"><span id="visibleSelectionToggleText" data-i18n="channels.batchSelectVisible">全选</span></label></th>
       ${buildChannelSortHeader('name', 'ch-col-name', window.t('channels.table.nameAndUrl'))}
-      <th class="ch-col-models">${window.t('channels.table.models')}</th>
       <th class="ch-col-health">${window.t('channels.table.health')}</th>
       <th class="ch-col-quota">${window.t('channels.table.quota')}</th>
       ${buildChannelSortHeader('priority', 'ch-col-priority', window.t('channels.table.priority'))}
@@ -1818,6 +1905,7 @@ function renderChannels(channelsToRender = channels) {
   if (window.i18n && window.i18n.translatePage) {
     window.i18n.translatePage(el);
   }
+  observeChannelModelLists(el);
 
   // 模板渲染后设置 checkbox 选中态
   el.querySelectorAll('.channel-select-checkbox').forEach(cb => {
@@ -1832,16 +1920,15 @@ function renderChannels(channelsToRender = channels) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    buildChannelModelToggleHtml,
+    buildChannelModelListHtml,
     buildChannelModelPopoverHtml,
     copyChannelModelName,
     buildChannelMetricsHtml,
     buildChannelHealthHtml,
-    buildChannelQuotaHintHtml,
     buildOAuthUsageStatusHtml,
     toggleOAuthUsageWindows,
     buildManagementAccountStatusHtml,
-    editChannelManagementAccount,
+    initChannelEventDelegation,
     formatCooldownRecoveryTime,
     isOpenCodeGoChannel,
     isOpenCodeChannel,
