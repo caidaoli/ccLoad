@@ -2,11 +2,15 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -2224,6 +2228,69 @@ func applyAnthropicFirstPartyTransportHeaders(req *http.Request) {
 		setRawHeader(req.Header, "x-client-request-id", uuid.NewString())
 	}
 	setRawHeader(req.Header, "Connection", "keep-alive")
+}
+
+const (
+	anthropicGzipRequestMinVersion = "2.1.300"
+	// anthropicGzipRequestMinChars 是官方 api 场景的门槛，按 JS 字符串长度（UTF-16 码元）计。
+	anthropicGzipRequestMinChars = 4096
+)
+
+// compressAnthropicFirstPartyBody 对齐 Claude Code 2.1.300+ 的请求体 gzip
+// （CLAUDE_CODE_GZIP_REQUEST_BODIES）：只对直连 api.anthropic.com、不少于 4096 个 JS 字符
+// 的请求体生效，压缩前追加 "\n" 与 0–256 个随机空格/Tab，Content-Encoding: gzip。
+// 以出站 UA 的 claude-cli 版本门控，旧版本 UA 保持明文以免指纹自相矛盾。Bun fetch
+// compress:"gzip" 的头字节（XFL=0、OS=255）与 compress/gzip 默认级别一致。
+// 与 Codex zstd 相同，req 原位替换为压缩字节，调用方保留的明文 body 继续用于调试与重放。
+func compressAnthropicFirstPartyBody(req *http.Request) error {
+	if req == nil || req.Method != http.MethodPost || req.GetBody == nil ||
+		anthropicHeaderValue(req.Header, "Content-Encoding") != "" || !isOfficialAnthropicURL(req.URL) ||
+		!anthropicCLIVersionGTE(anthropicUserAgentVersion(req.Header), anthropicGzipRequestMinVersion) {
+		return nil
+	}
+	reader, err := req.GetBody()
+	if err != nil {
+		return fmt.Errorf("read Anthropic request body for gzip: %w", err)
+	}
+	body, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		return fmt.Errorf("read Anthropic request body for gzip: %w", err)
+	}
+	if jsStringLength(body) < anthropicGzipRequestMinChars {
+		return nil
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	padding := make([]byte, 1+rand.IntN(257))
+	padding[0] = '\n'
+	for i := 1; i < len(padding); i++ {
+		padding[i] = " \t"[rand.IntN(2)]
+	}
+	_, _ = writer.Write(body)
+	_, _ = writer.Write(padding)
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("gzip Anthropic request body: %w", err)
+	}
+	payload := compressed.Bytes()
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Body = io.NopCloser(bytes.NewReader(payload))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(payload)), nil }
+	req.ContentLength = int64(len(payload))
+	return nil
+}
+
+// jsStringLength 返回 UTF-8 文本按 JS String.length（UTF-16 码元）计的长度。
+func jsStringLength(body []byte) int {
+	n := 0
+	for _, r := range string(body) {
+		if r > 0xFFFF {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // anthropicNativeOAuthCredentialBetas 补回 OAuth 凭证本身的 beta（对齐 CPA

@@ -179,6 +179,10 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		release()
 		return nil, errCompress
 	}
+	if errCompress := compressAnthropicFirstPartyBody(req); errCompress != nil {
+		release()
+		return nil, errCompress
+	}
 	reasoningBusinessSending(req.Context(), reasoningBody)
 	resp, err := s.getClientForChannel(cfg).Do(req)
 	if err != nil {
