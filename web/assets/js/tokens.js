@@ -679,7 +679,7 @@
         <button type="button" class="channel-enable-switch ${on ? 'channel-enable-switch--on' : 'channel-enable-switch--off'}"
           role="switch" aria-checked="${on}" data-action="toggle-token-active" data-token-id="${token.id}"
           title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
-          <span class="channel-enable-switch__knob" aria-hidden="true"></span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M12 2v10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
         <span class="token-actions-divider" aria-hidden="true"></span>
       `;

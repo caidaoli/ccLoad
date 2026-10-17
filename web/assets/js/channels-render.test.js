@@ -593,6 +593,27 @@ test('OAuth 额度超过 2 个窗口时折叠其余窗口，展开状态跨重�
   }
 });
 
+test('OAuth 窗口累计与预估成本不足 $0.05 时显示 <$0.1 而不是 $0.0', () => {
+  const saved = { window: global.window, state: global.getOAuthUsageState, readOnly: global.isTokenChannelsReadOnly };
+  global.window = { t: (key, values = {}) => [key, ...Object.values(values)].join('|') };
+  global.isTokenChannelsReadOnly = () => false;
+  const channel = { id: 78, auth_type: 'codex_oauth' };
+  const amountOf = window => {
+    global.getOAuthUsageState = () => ({ status: 'ready', data: { windows: [{ limit_name: 'codex', ...window }] } });
+    return buildOAuthUsageStatusHtml(channel).match(/<span class="ch-oauth-usage__amount">([^<]*)<\/span>/)[1];
+  };
+  try {
+    assert.equal(amountOf({ remaining_percent: 100, standard_cost_microusd: 30_000 }), 'channels.oauth.usageCompactUsed|&lt;$0.1');
+    assert.equal(amountOf({ remaining_percent: 99, standard_cost_microusd: 400 }), 'channels.oauth.usageCompactAmount|&lt;$0.1|&lt;$0.1');
+    assert.equal(amountOf({ remaining_percent: 50, standard_cost_microusd: 50_000 }), 'channels.oauth.usageCompactAmount|$0.1|$0.1');
+    assert.equal(amountOf({ remaining_percent: 41, standard_cost_microusd: 5_697_691 }), 'channels.oauth.usageCompactAmount|$5.7|$9.7');
+  } finally {
+    global.window = saved.window;
+    global.getOAuthUsageState = saved.state;
+    global.isTokenChannelsReadOnly = saved.readOnly;
+  }
+});
+
 test('模型列显示去重后的模型数，弹层列出全部模型及重定向目标并转义', () => {
   const saved = global.window;
   global.window = { t: (key, values = {}) => `${key}:${values.count ?? ''}` };
@@ -677,7 +698,7 @@ test('管理账户列表动作不会打开 OpenCode 或已隐藏的管理账户�
 
 test('健康度列：最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空；额度列仅 API 渠道提供管理账户入口且只读不显示', () => {
   const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber, readOnly: global.isTokenChannelsReadOnly };
-  global.window = { t: key => key, getFirstByteTimingColor: () => 'green', getDurationTimingColor: () => 'green' };
+  global.window = { t: key => key, getFirstByteTimingLevel: () => 'good', getDurationTimingLevel: () => 'good', getSpeedLevel: () => 'good' };
   global.buildCostStackHtml = () => '';
   global.formatMetricNumber = value => String(value || 0);
   let readOnly = false;

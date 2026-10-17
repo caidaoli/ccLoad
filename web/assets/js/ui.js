@@ -1378,20 +1378,44 @@ window.WebAuth = window.WebAuth || {
     return output / tokenDuration;
   }
 
-  function timingColor(seconds, greenThreshold, warningThreshold) {
+  // 耗时分级：good / warn / bad，无效值为空串
+  function timingLevel(seconds, greenThreshold, warningThreshold) {
     const value = Number(seconds);
-    if (!Number.isFinite(value) || value <= 0) return 'var(--neutral-600)';
-    if (value <= greenThreshold) return 'var(--success-600)';
-    if (value <= warningThreshold) return 'var(--warning-600)';
-    return 'var(--error-600)';
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value <= greenThreshold) return 'good';
+    if (value <= warningThreshold) return 'warn';
+    return 'bad';
+  }
+
+  const METRIC_LEVEL_COLORS = { good: 'var(--success-600)', warn: 'var(--warning-600)', bad: 'var(--error-600)' };
+
+  function getFirstByteTimingLevel(seconds) {
+    return timingLevel(seconds, 5, 10);
+  }
+
+  function getDurationTimingLevel(seconds) {
+    return timingLevel(seconds, 30, 60);
   }
 
   function getFirstByteTimingColor(seconds) {
-    return timingColor(seconds, 5, 10);
+    return METRIC_LEVEL_COLORS[getFirstByteTimingLevel(seconds)] || 'var(--neutral-600)';
   }
 
   function getDurationTimingColor(seconds) {
-    return timingColor(seconds, 30, 60);
+    return METRIC_LEVEL_COLORS[getDurationTimingLevel(seconds)] || 'var(--neutral-600)';
+  }
+
+  // 输出速度分级：≥100 tok/s 快，50–100 一般，<50 慢；无效值为空串
+  function getSpeedLevel(tokensPerSecond) {
+    const value = Number(tokensPerSecond);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value >= 100) return 'good';
+    if (value >= 50) return 'warn';
+    return 'bad';
+  }
+
+  function getSpeedColor(tokensPerSecond) {
+    return METRIC_LEVEL_COLORS[getSpeedLevel(tokensPerSecond)] || 'var(--neutral-600)';
   }
 
   /**
@@ -1486,14 +1510,14 @@ window.WebAuth = window.WebAuth || {
    * 构建两行成本显示HTML
    * @param {number} standard - 标准成本
    * @param {number|null|undefined} effective - 倍率后成本
-   * @param {{tone?: 'warning'|'success', decimalPlaces?: number}} options - 样式配置
+   * @param {{tone?: 'warning'|'success'|'neutral', decimalPlaces?: number}} options - 样式配置
    * @returns {string}
    */
   function buildCostStackHtml(standard, effective, options = {}) {
     const info = getCostDisplayInfo(standard, effective);
     if (!(info.standardCost > 0)) return '';
 
-    const tone = options.tone === 'success' ? 'success' : 'warning';
+    const tone = options.tone === 'success' || options.tone === 'neutral' ? options.tone : 'warning';
     const inline = options.inline === true;
     const classes = ['cost-stack', `cost-stack--${tone}`];
     if (info.hasMultiplier) {
@@ -1606,6 +1630,10 @@ window.WebAuth = window.WebAuth || {
   window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
   window.getFirstByteTimingColor = getFirstByteTimingColor;
   window.getDurationTimingColor = getDurationTimingColor;
+  window.getFirstByteTimingLevel = getFirstByteTimingLevel;
+  window.getDurationTimingLevel = getDurationTimingLevel;
+  window.getSpeedLevel = getSpeedLevel;
+  window.getSpeedColor = getSpeedColor;
   window.formatNumber = formatNumber;
   window.formatPercent = formatPercent;
   window.getRpmColor = getRpmColor;

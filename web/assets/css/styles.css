@@ -1082,6 +1082,8 @@ html[data-resolved-theme="dark"] ::selection {
   --provider-icon-scale: 0.75;
   background: radial-gradient(66.67% 66.67% at 87.5% 102.08%, #2ea99d 0%, #6c4dff 100%);
 }
+/* API Key 首字母头像用浅底：列表每行都有，实心蓝块过重；primary-100 在白底上仍有可见边界 */
+.channel-provider-avatar[data-auth-type="api_key"] { background: var(--primary-100); color: var(--primary-700); }
 .channel-provider-avatar[data-auth-type="zed_oauth"] { background: #084ccf; }
 .channel-provider-avatar[data-auth-type="vertex_oauth"] { background: #4285f4; }
 
@@ -5390,49 +5392,54 @@ button.settings-dialog-count[aria-pressed="true"] {
   color: var(--neutral-700);
 }
 
-/* 开关：行内启停按钮与表单复选开关（渠道、令牌、模型测试共用） */
+/* 启停按钮：电源图标，外形与相邻图标按钮一致；启用为按下态（品牌色浅底），禁用为普通灰图标（渠道、令牌、模型测试共用） */
 .channel-enable-switch {
-  position: relative;
   display: inline-flex;
   align-items: center;
-  width: 42px;
-  height: 24px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  border: 1px solid var(--neutral-300);
+  border-radius: 6px;
+  background: var(--surface-bg);
+  color: var(--neutral-500);
+  line-height: 0;
   cursor: pointer;
-  transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .channel-enable-switch:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+  box-shadow: var(--focus-ring);
 }
 
-.channel-enable-switch__knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
-  transition: transform 0.18s ease;
-}
-
+/* 启用是常态，用品牌色；绿色留给额度、成功率等健康语义 */
 .channel-enable-switch--on {
-  background: #22c55e;
-  border-color: #16a34a;
+  color: var(--primary-700);
+  border-color: var(--primary-300);
+  background: var(--primary-50);
 }
 
-.channel-enable-switch--on .channel-enable-switch__knob {
-  transform: translateX(18px);
+.channel-enable-switch--on:hover {
+  border-color: var(--primary-400);
+  background: var(--primary-100);
 }
 
-.channel-enable-switch--off {
-  background: #cbd5e1;
-  border-color: #94a3b8;
+/* 行内操作悬停：边框与图标同变色并铺浅底，删除用红色 */
+.channel-enable-switch--off:hover,
+:is(.ch-action-group, .token-row-actions) .btn-icon:is(:hover, :focus-visible) {
+  color: var(--primary-700);
+  border-color: var(--primary-400);
+  background: var(--primary-50);
+}
+
+/* 去掉 .btn-danger:hover 给实心按钮用的红色投影 */
+:is(.ch-action-group, .token-row-actions) .btn-icon.btn-danger:is(:hover, :focus-visible) {
+  color: var(--error-700);
+  border-color: var(--error-400);
+  background: var(--error-50);
+  box-shadow: none;
 }
 
 .channel-editor-switch {
@@ -6295,6 +6302,10 @@ a.model-tag.model-link:hover {
 
 .cost-stack--success .cost-stack-effective {
   color: var(--success-600);
+}
+
+.cost-stack--neutral .cost-stack-effective {
+  color: var(--neutral-700);
 }
 
 .cell-multiplier-badge {

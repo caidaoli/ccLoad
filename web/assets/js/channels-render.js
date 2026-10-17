@@ -433,8 +433,6 @@ async function saveInlineChannelPriority(input) {
 
 const CHANNEL_METRIC_ICONS = {
   clock: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-  bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>',
-  coin: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5c-.5-1-1.5-1.5-2.5-1.5-1.4 0-2.5.8-2.5 2s1.1 1.6 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2c-1 0-2-.5-2.5-1.5M12 6.5v1.5M12 16v1.5"/></svg>',
   check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5L20 7"/></svg>'
 };
 
@@ -444,11 +442,23 @@ function channelSuccessRateLevel(rate) {
   return 'bad';
 }
 
+// 耗时、速度、成功率按 good / warn / bad 着色；不分级的值（请求数、消耗）保持中性色。
+function channelMetricValueHtml(text, level = '') {
+  const levelClass = level ? ` class="ch-metric__value--${level}"` : '';
+  return `<b${levelClass}>${text}</b>`;
+}
+
+// 左侧行「标签 前值 / 后值」逐段输出，由 CSS subgrid 与另一行共用列宽，使斜杠跨行对齐；只有一个值时省略斜杠。
+function channelMetricPairHtml(kind, title, labelHtml, [lead, trail]) {
+  const tail = trail ? `<span class="ch-metric__sep">/</span>${trail}` : '';
+  return `<span class="ch-metric ch-metric--${kind}" title="${escapeChannelRefreshText(title)}"><span class="ch-metric__label">${labelHtml}</span>${lead}${tail}</span>`;
+}
+
 /**
- * 渠道名下方的指标行：首字/总耗时、速度、成功/失败·成功率、消耗。
- * 统计窗口内没有调用时整行不渲染；omitCalls 用于成功率已单独成条的场景。
+ * 健康度列的指标网格：左侧「首字 x / y」「请求 n次 / 成功率」（图标标出行首），右列速度、消耗（单位自明，不加图标）；缺项时其余项留在原列以保持跨行对齐。
+ * 统计窗口内没有调用时整块不渲染。
  */
-function buildChannelMetricsHtml(stats, { omitCalls = false } = {}) {
+function buildChannelMetricsHtml(stats) {
   if (!stats) return '';
   const successCount = Number.isFinite(Number(stats.success)) ? Number(stats.success) : 0;
   const failureCount = Number.isFinite(Number(stats.error)) ? Number(stats.error) : 0;
@@ -462,20 +472,24 @@ function buildChannelMetricsHtml(stats, { omitCalls = false } = {}) {
   if (avgFirstByte > 0 || avgDuration > 0) {
     const values = [];
     if (avgFirstByte > 0) {
-      values.push(`<b style="color: ${window.getFirstByteTimingColor(avgFirstByte)};">${avgFirstByte.toFixed(2)}${seconds}</b>`);
+      values.push(channelMetricValueHtml(`${avgFirstByte.toFixed(2)}${seconds}`, window.getFirstByteTimingLevel(avgFirstByte)));
     }
     if (avgDuration > 0) {
-      values.push(`<b style="color: ${window.getDurationTimingColor(avgDuration)};">${avgDuration.toFixed(2)}${seconds}</b>`);
+      values.push(channelMetricValueHtml(`${avgDuration.toFixed(2)}${seconds}`, window.getDurationTimingLevel(avgDuration)));
     }
     const label = avgFirstByte > 0 ? window.t('channels.stats.firstByte') : window.t('stats.tooltipDuration');
-    items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.timingTitle'))}">${CHANNEL_METRIC_ICONS.clock}${escapeChannelRefreshText(label)} ${values.join(' / ')}</span>`);
+    items.push(channelMetricPairHtml('timing', window.t('channels.stats.timingTitle'), `${CHANNEL_METRIC_ICONS.clock}${escapeChannelRefreshText(label)}`, values));
   }
   if (Number.isFinite(stats.outputTokensPerSecond) && stats.outputTokensPerSecond > 0) {
-    items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.speed'))}">${CHANNEL_METRIC_ICONS.bolt}<b>${stats.outputTokensPerSecond.toFixed(1)}</b> tok/s</span>`);
+    items.push(`<span class="ch-metric ch-metric--speed" title="${escapeChannelRefreshText(window.t('channels.stats.speed'))}">${channelMetricValueHtml(stats.outputTokensPerSecond.toFixed(1), window.getSpeedLevel(stats.outputTokensPerSecond))} tok/s</span>`);
   }
 
   const rate = successCount / total;
-  if (!omitCalls) items.push(`<span class="ch-metric" title="${escapeChannelRefreshText(window.t('channels.stats.callsTitle'))}">${CHANNEL_METRIC_ICONS.check}<b class="ch-metric__ok">${successCount}</b> / <b class="ch-metric__err">${failureCount}</b> ${escapeChannelRefreshText(window.t('stats.unitTimes'))} · <b class="ch-metric__rate--${channelSuccessRateLevel(rate)}">${(rate * 100).toFixed(1)}%</b></span>`);
+  const callsTitle = window.t('channels.stats.callsTitle', { success: successCount, failure: failureCount });
+  items.push(channelMetricPairHtml('calls', callsTitle, `${CHANNEL_METRIC_ICONS.check}${escapeChannelRefreshText(window.t('channels.stats.requests'))}`, [
+    channelMetricValueHtml(escapeChannelRefreshText(window.t('channels.stats.requestCount', { count: total }))),
+    channelMetricValueHtml(`${(rate * 100).toFixed(1)}%`, channelSuccessRateLevel(rate))
+  ]));
 
   // 缓存行按实际数据显示：协议声明无法判定渠道是否缓存，CodeBuddy 等上游同样声明 openai 且返回缓读。
   const usageLines = [
@@ -489,13 +503,13 @@ function buildChannelMetricsHtml(stats, { omitCalls = false } = {}) {
     usageLines.push(`${window.t('channels.stats.cacheCreate')} ${formatMetricNumber(stats.totalCacheCreationInputTokens)}`);
   }
   const costHtml = buildCostStackHtml(stats.totalCost, stats.effectiveCost, {
-    tone: 'warning',
+    tone: 'neutral',
     decimalPlaces: 2,
     inline: true
   });
   const tokenTotal = (Number(stats.totalInputTokens) || 0) + (Number(stats.totalOutputTokens) || 0);
-  const usageValue = costHtml || `<b>${formatMetricNumber(tokenTotal)}</b> tok`;
-  items.push(`<span class="ch-metric ch-metric--usage" title="${escapeChannelRefreshText(usageLines.join(' · '))}">${CHANNEL_METRIC_ICONS.coin}${usageValue}</span>`);
+  const usageValue = costHtml || `${channelMetricValueHtml(formatMetricNumber(tokenTotal))} tok`;
+  items.push(`<span class="ch-metric ch-metric--usage" title="${escapeChannelRefreshText(usageLines.join(' · '))}">${usageValue}</span>`);
 
   return `<div class="ch-metrics">${items.join('')}</div>`;
 }
@@ -599,10 +613,15 @@ function formatOAuthUsagePercent(value) {
 }
 
 // 累计标准成本按美元显示，与渠道日消费同一形状，无需本地化前缀。
+// 一位小数会把不足 $0.05 的非零成本显示成 $0.0，读起来像没用过。
+function formatOAuthCostMicroUSD(microUSD) {
+  return microUSD < 50_000 ? '<$0.1' : `$${(microUSD / 1_000_000).toFixed(1)}`;
+}
+
 function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   const microUSD = Number(standardCostMicroUSD);
   if (!Number.isFinite(microUSD) || microUSD <= 0) return '';
-  return `$${(microUSD / 1_000_000).toFixed(1)}`;
+  return formatOAuthCostMicroUSD(microUSD);
 }
 
 function formatOAuthEstimatedTotalCost(standardCostMicroUSD, remainingPercent) {
@@ -615,7 +634,7 @@ function formatOAuthEstimatedTotalCost(standardCostMicroUSD, remainingPercent) {
   if (usedRatio <= 0) return '';
   const estimatedMicroUSD = microUSD / usedRatio;
   if (!Number.isFinite(estimatedMicroUSD) || estimatedMicroUSD < 0) return '';
-  return `$${(estimatedMicroUSD / 1_000_000).toFixed(1)}`;
+  return formatOAuthCostMicroUSD(estimatedMicroUSD);
 }
 
 // 累计成本按上游窗口标识（limit_name|kind）取用：同一时长可能对应多个互不相干的窗口。
@@ -768,7 +787,10 @@ function buildCodeBuddyCheckinButton(channelID, state = {}) {
   return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="checkin-codebuddy" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
 }
 
-function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
+// 空单元格占位：额度/运行表现列无内容时保持列对齐。
+const CHANNEL_EMPTY_CELL_HTML = '<span class="ch-cell-empty" aria-hidden="true">—</span>';
+
+function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false, leadingHtml = '') {
   const checkinLoading = state?.checkin_status === 'loading';
   const buttons = [buildOAuthUsageRefreshButton(
     channel.id,
@@ -778,7 +800,7 @@ function buildOAuthUsageToolbar(channel, state = {}, usageLoading = false) {
   if (channel?.auth_type === 'codebuddy_oauth' && !channel?.codebuddy_enterprise && !channel?.codebuddy_international) {
     buttons.push(buildCodeBuddyCheckinButton(channel.id, state));
   }
-  return `<div class="ch-oauth-usage__toolbar">${buttons.join('')}</div>`;
+  return `<div class="ch-oauth-usage__toolbar">${leadingHtml}${buttons.join('')}</div>`;
 }
 
 const OAUTH_RESET_CREDIT_ICON = '<svg class="ch-oauth-usage__credit-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.75" stroke="currentColor" stroke-width="1.3"/><path d="M1.75 6.25H14.25M4.5 10H7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
@@ -1127,7 +1149,7 @@ function buildOAuthUsageStatusHtml(channel) {
   const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
   if (!state) {
-    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, {}, false, CHANNEL_EMPTY_CELL_HTML)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
   }
   if (state.status === 'loading') {
     return `<div class="ch-oauth-usage">${buildOAuthUsageToolbar(channel, state, true)}${channel?.auth_type === 'anthropic_oauth' ? buildAnthropicResetCreditsHtml(channel.id) : ''}</div>`;
@@ -1380,11 +1402,11 @@ function buildManagementAccountStatusHtml(channel) {
 
 const COOLDOWN_CLOCK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 
-// 没有额度时：API 渠道给出配置管理账户的入口（只读身份不显示）。
+// 没有额度时：API 渠道给出配置管理账户的入口（只读身份不显示），与刷新额度共用工具栏布局。
 function buildChannelQuotaHintHtml(channel) {
   const readOnly = typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly();
   if (channel?.auth_type !== 'api_key' || readOnly || isOpenCodeChannel(channel)) return '';
-  return `<div class="ch-quota-hint"><button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
+  return `<div class="ch-oauth-usage__toolbar">${CHANNEL_EMPTY_CELL_HTML}<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="configure-management-account" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.status.configureManagement'))}</button></div>`;
 }
 
 // 冷却状态以轻量徽标排在健康度列顶部。
@@ -1489,8 +1511,8 @@ function createChannelCard(channel) {
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsHtml,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    quotaHtml,
-    healthHtml,
+    quotaHtml: quotaHtml || CHANNEL_EMPTY_CELL_HTML,
+    healthHtml: healthHtml || CHANNEL_EMPTY_CELL_HTML,
     enabled: channel.enabled,
     toggleTitle: channel.enabled ? window.t('channels.toggleDisable') : window.t('channels.toggleEnable'),
     toggleSwitchClass: channel.enabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
