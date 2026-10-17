@@ -330,7 +330,7 @@ func (s *Server) streamCursorChannelChat(
 
 	requestPath := channelTestClientRequestPath(clientProtocol, &attemptReq)
 	if !cursorSupportsRequestFamily(requestPath) {
-		fail(http.StatusBadRequest, "Cursor OAuth 仅支持 Anthropic messages 与 OpenAI chat completions")
+		fail(http.StatusBadRequest, "Cursor OAuth 仅支持 Anthropic messages、OpenAI chat completions/responses 与 Gemini generateContent")
 		return
 	}
 

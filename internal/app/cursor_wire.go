@@ -31,37 +31,12 @@ func (s *Server) tryCursorOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
-	family := protocol.RequestFamilyUnknown
-	if reqCtx != nil {
-		family = protocol.DetectRequestFamily(reqCtx.requestPath)
-	}
 	if reqCtx != nil && !cursorSupportsRequestFamily(reqCtx.requestPath) {
 		return &proxyResult{
 			status: http.StatusBadRequest, channelID: &cfg.ID, succeeded: false,
 			protocolCapabilityMissing: true, nextAction: cooldown.ActionRetryChannel,
-			body: []byte(`{"error":{"message":"Cursor OAuth supports Anthropic messages, OpenAI chat completions, and OpenAI responses","type":"invalid_request_error"}}`),
+			body: []byte(`{"error":{"message":"Cursor OAuth supports Anthropic messages, OpenAI chat completions, OpenAI responses, and Gemini generateContent","type":"invalid_request_error"}}`),
 		}, nil
-	}
-	if family == protocol.RequestFamilyResponses {
-		if s.protocolRegistry == nil {
-			return cursorErrorResult(
-				cfg,
-				http.StatusServiceUnavailable,
-				"protocol registry is unavailable for Cursor responses",
-				cooldown.ActionReturnClient,
-			), nil
-		}
-		translatedBody, err := s.protocolRegistry.TranslateRequest(
-			protocol.Codex,
-			protocol.OpenAI,
-			reqCtx.originalModel,
-			reqCtx.body,
-			reqCtx.isStreaming,
-		)
-		if err != nil {
-			return cursorClientErrorResult(cfg, http.StatusBadRequest, err.Error()), nil
-		}
-		reqCtx.translatedBody = translatedBody
 	}
 	if s.cursorCredentials == nil {
 		return oauthCredentialUnavailableResult(cfg, "Cursor"), nil
@@ -112,6 +87,30 @@ func (s *Server) forwardCursorAgent(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	// The SDK only reads chat-shaped requests. Always translate from the client
+	// body: proxy setup seeds translatedBody with the untranslated request.
+	translatedClient := cursorTranslatedClientProtocol(reqCtx.requestPath)
+	if translatedClient != "" {
+		if s.protocolRegistry == nil {
+			return cursorErrorResult(
+				cfg,
+				http.StatusServiceUnavailable,
+				"protocol registry is unavailable for Cursor "+string(translatedClient)+" requests",
+				cooldown.ActionReturnClient,
+			), nil
+		}
+		translatedBody, err := s.protocolRegistry.TranslateRequest(
+			translatedClient,
+			protocol.OpenAI,
+			reqCtx.originalModel,
+			reqCtx.body,
+			reqCtx.isStreaming,
+		)
+		if err != nil {
+			return cursorClientErrorResult(cfg, http.StatusBadRequest, err.Error()), nil
+		}
+		reqCtx.translatedBody = translatedBody
+	}
 	body := reqCtx.body
 	if len(reqCtx.translatedBody) > 0 {
 		body = reqCtx.translatedBody
@@ -234,8 +233,8 @@ func (s *Server) forwardCursorAgent(
 	msgID := "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	var responseTransformState any
 	var responseTransformErr error
-	if streaming && format == "responses" && s.protocolRegistry != nil {
-		_, responseTransformErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, protocol.Codex,
+	if streaming && translatedClient != "" && s.protocolRegistry != nil {
+		_, responseTransformErr = s.protocolRegistry.TranslateResponseStream(ctx, protocol.OpenAI, translatedClient,
 			modelID, originalResponseBody, body, nil, &responseTransformState)
 	}
 	var out bytes.Buffer
@@ -273,9 +272,9 @@ func (s *Server) forwardCursorAgent(
 		if format == "anthropic" {
 			payload = cursorAnthropicDelta(chunk)
 		}
-		if format == "responses" {
-			responseTransformErr = writeCursorResponsesStream(
-				ctx, s.protocolRegistry, w, modelID, originalResponseBody, body, payload, &responseTransformState,
+		if translatedClient != "" {
+			responseTransformErr = writeCursorTranslatedStream(
+				ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, payload, &responseTransformState,
 			)
 			if responseTransformErr != nil {
 				cancelRun()
@@ -290,7 +289,7 @@ func (s *Server) forwardCursorAgent(
 			return
 		}
 		ensureStream()
-		// Responses translation swallows SSE comments; write the keepalive
+		// Registry translation swallows SSE comments; write the keepalive
 		// directly so clients still see traffic before the first token.
 		_, _ = w.Write(cursorStreamPing(format))
 		flush()
@@ -442,13 +441,13 @@ func (s *Server) forwardCursorAgent(
 				streamedPlain = len(plain)
 			}
 			finish := cursorOpenAIFinish(msgID, modelID, plain, calls, streamedPlain > 0, usage)
-			if format == "responses" {
-				responseTransformErr = writeCursorResponsesStream(
-					ctx, s.protocolRegistry, w, modelID, originalResponseBody, body, finish, &responseTransformState,
+			if translatedClient != "" {
+				responseTransformErr = writeCursorTranslatedStream(
+					ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body, finish, &responseTransformState,
 				)
 				if responseTransformErr == nil {
-					responseTransformErr = writeCursorResponsesStream(
-						ctx, s.protocolRegistry, w, modelID, originalResponseBody, body,
+					responseTransformErr = writeCursorTranslatedStream(
+						ctx, s.protocolRegistry, w, translatedClient, modelID, originalResponseBody, body,
 						[]byte("data: [DONE]\n\n"), &responseTransformState,
 					)
 				}
@@ -469,9 +468,9 @@ func (s *Server) forwardCursorAgent(
 		} else {
 			responseBody = cursorOpenAIMessage(msgID, modelID, plain, calls, usage)
 		}
-		if format == "responses" {
+		if translatedClient != "" {
 			responseBody, responseTransformErr = s.protocolRegistry.TranslateResponseNonStream(
-				ctx, protocol.OpenAI, protocol.Codex, modelID, originalResponseBody, body, responseBody,
+				ctx, protocol.OpenAI, translatedClient, modelID, originalResponseBody, body, responseBody,
 			)
 		}
 		if responseTransformErr != nil {
@@ -885,16 +884,17 @@ func jsonString(value string) string {
 	return string(raw)
 }
 
-func writeCursorResponsesStream(
+func writeCursorTranslatedStream(
 	ctx context.Context,
 	registry *protocol.Registry,
 	w http.ResponseWriter,
+	client protocol.Protocol,
 	modelID string,
 	originalRequest, translatedRequest, raw []byte,
 	state *any,
 ) error {
 	if registry == nil {
-		return errors.New("protocol registry is unavailable for Cursor responses")
+		return errors.New("protocol registry is unavailable for Cursor " + string(client) + " responses")
 	}
 	for len(raw) > 0 {
 		end := bytes.Index(raw, []byte("\n\n"))
@@ -910,7 +910,7 @@ func writeCursorResponsesStream(
 		chunks, err := registry.TranslateResponseStream(
 			ctx,
 			protocol.OpenAI,
-			protocol.Codex,
+			client,
 			modelID,
 			originalRequest,
 			translatedRequest,
@@ -945,5 +945,20 @@ func cursorSupportsRequestFamily(path string) bool {
 	family := protocol.DetectRequestFamily(path)
 	return family == protocol.RequestFamilyMessages ||
 		family == protocol.RequestFamilyChatCompletions ||
-		family == protocol.RequestFamilyResponses
+		cursorTranslatedClientProtocol(path) != ""
+}
+
+// cursorTranslatedClientProtocol names the client protocol that reaches the
+// SDK as OpenAI chat completions through the registry and is rendered back in
+// its own wire format. Gemini countTokens has no Cursor equivalent.
+func cursorTranslatedClientProtocol(path string) protocol.Protocol {
+	switch protocol.DetectRequestFamily(path) {
+	case protocol.RequestFamilyResponses:
+		return protocol.Codex
+	case protocol.RequestFamilyGenerateContent:
+		if !strings.Contains(path, ":countTokens") {
+			return protocol.Gemini
+		}
+	}
+	return ""
 }

@@ -645,7 +645,7 @@ func TestTryCursorOAuthChannelSkipsUnsupportedFamilies(t *testing.T) {
 	srv := &Server{}
 	cfg := &model.Config{ID: 3, AuthType: model.AuthTypeCursorOAuth}
 	result, err := srv.tryCursorOAuthChannel(context.Background(), cfg, &proxyRequestContext{
-		requestPath: "/v1beta/models/test:generateContent",
+		requestPath: "/v1beta/models/test:countTokens",
 	}, httptest.NewRecorder())
 	if err != nil || result == nil || !result.protocolCapabilityMissing {
 		t.Fatalf("result = %+v err = %v", result, err)

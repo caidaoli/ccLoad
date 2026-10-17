@@ -7266,6 +7266,35 @@ func TestAdminTestCursorOAuthUsesSDKBridgeInsteadOfHTTP(t *testing.T) {
 	}
 }
 
+func TestAdminTestCursorOAuthTranslatesGeminiClient(t *testing.T) {
+	t.Parallel()
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			t.Parallel()
+			srv := newInMemoryServer(t)
+			cfg := createCursorOAuthChannelForAdminTest(t, srv, "https://unused.example.com")
+			runner := &fakeCursorRunner{
+				text:  "ok from sdk bridge",
+				usage: &cursorauth.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+			}
+			srv.cursorRunner = runner
+
+			result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "tok", &testutil.TestChannelRequest{
+				Model: "composer-2.5", ClientProtocol: util.ProtocolGemini, Content: "告诉我最新模型", Stream: stream,
+			}, true)
+			if success, _ := result["success"].(bool); !success {
+				t.Fatalf("cursor admin test result=%+v", result)
+			}
+			if runner.model != "composer-2.5" || !strings.Contains(runner.prompt, "告诉我最新模型") {
+				t.Fatalf("SDK model=%q prompt=%q", runner.model, runner.prompt)
+			}
+			if got, _ := result["response_text"].(string); got != "ok from sdk bridge" {
+				t.Fatalf("response_text=%q result=%+v", got, result)
+			}
+		})
+	}
+}
+
 func TestAdminTestCursorOAuthBillsChannelModelPricing(t *testing.T) {
 	t.Parallel()
 	for _, stream := range []bool{false, true} {

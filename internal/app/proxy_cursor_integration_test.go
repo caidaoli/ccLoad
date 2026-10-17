@@ -506,6 +506,113 @@ func TestProxy_CursorOAuthSupportsResponses(t *testing.T) {
 	}
 }
 
+func TestProxy_CursorOAuthSupportsGemini(t *testing.T) {
+	t.Parallel()
+
+	for _, streaming := range []bool{false, true} {
+		name := "non-stream"
+		path := "/v1beta/models/composer-2.5:generateContent"
+		if streaming {
+			name = "stream"
+			path = "/v1beta/models/composer-2.5:streamGenerateContent?alt=sse"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			credentialJSON, err := (&cursorauth.Credential{
+				APIKey: "cursor-user-api-key", AccessToken: "cursor-access-token", Email: "user@example.com",
+			}).JSON()
+			if err != nil {
+				t.Fatalf("encode cursor credential: %v", err)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "cursor-gemini", upstreamProtocol: "openai", models: "composer-2.5",
+				authType: model.AuthTypeCursorOAuth, oauthCredential: credentialJSON,
+			}}, map[int]string{0: "https://unused.invalid"})
+			runner := &fakeCursorRunner{text: "Gemini via Cursor", usage: &cursorauth.Usage{
+				InputTokens: 11, OutputTokens: 7,
+			}}
+			env.server.cursorRunner = runner
+
+			response := doProxyRequest(t, env.engine, path, map[string]any{
+				"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "使用中文回复"}}},
+				"contents": []any{map[string]any{
+					"role": "user", "parts": []any{map[string]any{"text": "最新模型是什么"}},
+				}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("proxy status = %d body = %s", response.Code, response.Body.String())
+			}
+			if runner.model != "composer-2.5" {
+				t.Fatalf("SDK model = %q", runner.model)
+			}
+			if !strings.Contains(runner.prompt, "使用中文回复") || !strings.Contains(runner.prompt, "最新模型是什么") {
+				t.Fatalf("translated prompt lost Gemini contents: %q", runner.prompt)
+			}
+
+			type geminiResponse struct {
+				Candidates []struct {
+					Content struct {
+						Role  string `json:"role"`
+						Parts []struct {
+							Text string `json:"text"`
+						} `json:"parts"`
+					} `json:"content"`
+					FinishReason string `json:"finishReason"`
+				} `json:"candidates"`
+				UsageMetadata *struct {
+					PromptTokenCount     int `json:"promptTokenCount"`
+					CandidatesTokenCount int `json:"candidatesTokenCount"`
+				} `json:"usageMetadata"`
+			}
+			var payloads []geminiResponse
+			if streaming {
+				for _, block := range bytes.Split(response.Body.Bytes(), []byte("\n\n")) {
+					_, data := parseSSEEventChunk(block)
+					if len(data) == 0 {
+						continue
+					}
+					var payload geminiResponse
+					if err := json.Unmarshal(data, &payload); err != nil {
+						t.Fatalf("decode Gemini stream event %q: %v", data, err)
+					}
+					payloads = append(payloads, payload)
+				}
+			} else {
+				var payload geminiResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+					t.Fatalf("decode Gemini body: %v body=%s", err, response.Body.String())
+				}
+				payloads = append(payloads, payload)
+			}
+
+			var text, finish string
+			promptTokens, outputTokens := 0, 0
+			for _, payload := range payloads {
+				for _, candidate := range payload.Candidates {
+					if candidate.Content.Role != "" && candidate.Content.Role != "model" {
+						t.Fatalf("candidate role = %q", candidate.Content.Role)
+					}
+					for _, part := range candidate.Content.Parts {
+						text += part.Text
+					}
+					if candidate.FinishReason != "" {
+						finish = candidate.FinishReason
+					}
+				}
+				if payload.UsageMetadata != nil {
+					promptTokens = payload.UsageMetadata.PromptTokenCount
+					outputTokens = payload.UsageMetadata.CandidatesTokenCount
+				}
+			}
+			if text != "Gemini via Cursor" || finish != "STOP" || promptTokens != 11 || outputTokens != 7 {
+				t.Fatalf("text=%q finish=%q usage=%d/%d body=%s",
+					text, finish, promptTokens, outputTokens, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxy_CursorOAuthResponsesEmitsNativeToolCalls(t *testing.T) {
 	t.Parallel()
 
