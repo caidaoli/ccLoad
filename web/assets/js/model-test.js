@@ -2035,7 +2035,7 @@ function applyTestResultToRow(row, data) {
       : testSpeed.toFixed(1);
     row.querySelector('.input-tokens').textContent = inputTokens;
     row.querySelector('.output-tokens').textContent = outputTokens;
-    row.querySelector('.speed').textContent = speedDisplay;
+    row.querySelector('.speed').innerHTML = `<span style="color: ${window.getSpeedColor(testSpeed)};">${speedDisplay}</span>`;
     row.querySelector('.cache-read').textContent = usage.cache_read_input_tokens || usage.cached_tokens || '-';
     row.querySelector('.cache-create').textContent = usage.cache_creation_input_tokens || '-';
     const costCell = row.querySelector('.cost');
@@ -4682,7 +4682,7 @@ function renderChatBubbleStats(bubble, summary) {
     parts.push(chatStatPart('modelTest.cacheCreate', '缓建', chatStatValue(formatChatStatNumber(summary.cache_create), 'stats-value-primary', '')));
   }
   if (summary.speed != null && summary.speed > 0) {
-    parts.push(chatStatValue(`${summary.speed.toFixed(1)} tok/s`));
+    parts.push(chatStatValue(`${summary.speed.toFixed(1)} tok/s`, 'stats-value-dynamic', `--stats-accent:${window.getSpeedColor(summary.speed)};`));
   }
   if (summary.cost_usd != null && summary.cost_usd > 0) {
     parts.push(chatStatValue(formatCost(summary.cost_usd), 'stats-value-warning', ''));

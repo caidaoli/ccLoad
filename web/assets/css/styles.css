@@ -1792,7 +1792,8 @@ html[data-resolved-theme="dark"] ::selection {
   position: relative;
 }
 
-.time-range-selector {
+.time-range-selector,
+.usage-rank-selector {
   display: inline-flex;
   gap: 0;
   background: var(--surface-bg-strong);
@@ -1810,7 +1811,8 @@ html[data-resolved-theme="dark"] ::selection {
   line-height: 1.5;
 }
 
-.time-range-btn {
+.time-range-btn,
+.usage-rank-selector button {
   padding: 6px 16px;
   border-radius: 6px;
   color: var(--neutral-600);
@@ -1830,12 +1832,14 @@ html[data-resolved-theme="dark"] ::selection {
   white-space: nowrap;
 }
 
-.time-range-btn:hover {
+.time-range-btn:hover,
+.usage-rank-selector button:hover {
   color: var(--neutral-900);
   background: var(--surface-hover);
 }
 
-.time-range-btn.active {
+.time-range-btn.active,
+.usage-rank-selector button.active {
   background: transparent;
   color: #4f46e5;
   font-weight: 500;
@@ -2287,18 +2291,21 @@ html[data-resolved-theme="dark"] ::selection {
     justify-content: flex-start;
   }
 
-  .time-range-selector {
+  .time-range-selector,
+  .usage-rank-selector {
     width: 100%;
     overflow-x: auto;
     white-space: nowrap;
     justify-content: flex-start;
   }
 
-  .time-range-selector::-webkit-scrollbar {
+  .time-range-selector::-webkit-scrollbar,
+  .usage-rank-selector::-webkit-scrollbar {
     display: none;
   }
 
-  .time-range-btn {
+  .time-range-btn,
+  .usage-rank-selector button {
     flex: 0 0 auto;
     padding: 6px 12px;
   }
@@ -9917,11 +9924,13 @@ body.web-hide-channels .chart-card--channel {
 
 /* ===== stats/trend/index 页面修复 ===== */
 /* 趋势类型切换由 div 改为 button：继承字体并提供键盘焦点指示 */
-button.toggle-btn {
+button.toggle-btn,
+.usage-rank-selector button {
   font-family: inherit;
 }
 
-.toggle-btn:focus-visible {
+.toggle-btn:focus-visible,
+.usage-rank-selector button:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }

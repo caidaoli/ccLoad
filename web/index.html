@@ -79,6 +79,38 @@
           </div>
         </section>
 
+        <!-- 用量来源排行 -->
+        <section class="mb-4">
+          <div class="glass-card overview-card">
+            <div class="overview-card-header">
+              <h2 class="overview-card-title" data-i18n="index.rank.title">用量来源</h2>
+              <div class="usage-rank-selector" id="usage-rank-metric" role="group" data-i18n-aria-label="index.rank.metric" aria-label="排行指标">
+                <button type="button" class="active" data-metric="requests" aria-pressed="true" data-i18n="index.rank.requests">请求数</button>
+                <button type="button" data-metric="tokens" aria-pressed="false" data-i18n="index.rank.tokens">Token 用量</button>
+                <button type="button" data-metric="cost" aria-pressed="false" data-i18n="index.rank.cost">费用</button>
+              </div>
+            </div>
+            <div class="usage-rank-grid">
+              <section class="usage-rank" aria-labelledby="usage-rank-model-title">
+                <h3 id="usage-rank-model-title" class="usage-rank-title" data-i18n="index.rank.model">模型</h3>
+                <ol id="usage-rank-model" class="usage-rank-list"></ol>
+              </section>
+              <section class="usage-rank" aria-labelledby="usage-rank-channel-title">
+                <h3 id="usage-rank-channel-title" class="usage-rank-title" data-i18n="index.rank.channel">渠道</h3>
+                <ol id="usage-rank-channel" class="usage-rank-list"></ol>
+              </section>
+              <section class="usage-rank" aria-labelledby="usage-rank-protocol-title">
+                <h3 id="usage-rank-protocol-title" class="usage-rank-title" data-i18n="index.rank.protocol">请求协议</h3>
+                <ol id="usage-rank-protocol" class="usage-rank-list"></ol>
+              </section>
+              <section class="usage-rank" aria-labelledby="usage-rank-auth-type-title">
+                <h3 id="usage-rank-auth-type-title" class="usage-rank-title" data-i18n="index.rank.authType">渠道类型</h3>
+                <ol id="usage-rank-auth-type" class="usage-rank-list"></ol>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <!-- 服务健康监测 -->
         <section class="mb-4">
           <div class="glass-card overview-card service-health-card" aria-labelledby="service-health-title">
@@ -104,38 +136,6 @@
               </div>
             </div>
             <p id="service-health-message" class="service-health-message" role="status" hidden></p>
-          </div>
-        </section>
-
-        <!-- 用量来源排行 -->
-        <section class="mb-4">
-          <div class="glass-card overview-card">
-            <div class="overview-card-header">
-              <h2 class="overview-card-title" data-i18n="index.rank.title">用量来源</h2>
-              <div class="toggle-group" id="usage-rank-metric" role="group" data-i18n-aria-label="index.rank.metric" aria-label="排行指标">
-                <button type="button" class="toggle-btn active" data-metric="requests" aria-pressed="true" data-i18n="index.rank.requests">请求数</button>
-                <button type="button" class="toggle-btn" data-metric="tokens" aria-pressed="false" data-i18n="index.rank.tokens">Token 用量</button>
-                <button type="button" class="toggle-btn" data-metric="cost" aria-pressed="false" data-i18n="index.rank.cost">费用</button>
-              </div>
-            </div>
-            <div class="usage-rank-grid">
-              <section class="usage-rank" aria-labelledby="usage-rank-model-title">
-                <h3 id="usage-rank-model-title" class="usage-rank-title" data-i18n="index.rank.model">模型</h3>
-                <ol id="usage-rank-model" class="usage-rank-list"></ol>
-              </section>
-              <section class="usage-rank" aria-labelledby="usage-rank-channel-title">
-                <h3 id="usage-rank-channel-title" class="usage-rank-title" data-i18n="index.rank.channel">渠道</h3>
-                <ol id="usage-rank-channel" class="usage-rank-list"></ol>
-              </section>
-              <section class="usage-rank" aria-labelledby="usage-rank-protocol-title">
-                <h3 id="usage-rank-protocol-title" class="usage-rank-title" data-i18n="index.rank.protocol">请求协议</h3>
-                <ol id="usage-rank-protocol" class="usage-rank-list"></ol>
-              </section>
-              <section class="usage-rank" aria-labelledby="usage-rank-auth-type-title">
-                <h3 id="usage-rank-auth-type-title" class="usage-rank-title" data-i18n="index.rank.authType">渠道类型</h3>
-                <ol id="usage-rank-auth-type" class="usage-rank-list"></ol>
-              </section>
-            </div>
           </div>
         </section>
 

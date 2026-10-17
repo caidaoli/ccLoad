@@ -489,10 +489,10 @@
       const group = document.getElementById('usage-rank-metric');
       if (!group) return;
       group.addEventListener('click', event => {
-        const button = event.target.closest('.toggle-btn[data-metric]');
+        const button = event.target.closest('button[data-metric]');
         if (!button || button.dataset.metric === usageRankMetric) return;
         usageRankMetric = button.dataset.metric;
-        for (const item of group.querySelectorAll('.toggle-btn[data-metric]')) {
+        for (const item of group.querySelectorAll('button[data-metric]')) {
           const active = item === button;
           item.classList.toggle('active', active);
           item.setAttribute('aria-pressed', String(active));

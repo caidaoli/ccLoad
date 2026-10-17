@@ -1378,23 +1378,24 @@ window.WebAuth = window.WebAuth || {
     return output / tokenDuration;
   }
 
-  // 耗时分级：good / warn / bad，无效值为空串
-  function timingLevel(seconds, greenThreshold, warningThreshold) {
+  // 耗时分级：good / normal / warn / bad，无效值为空串
+  function timingLevel(seconds, greenThreshold, normalThreshold, warningThreshold) {
     const value = Number(seconds);
     if (!Number.isFinite(value) || value <= 0) return '';
     if (value <= greenThreshold) return 'good';
+    if (value <= normalThreshold) return 'normal';
     if (value <= warningThreshold) return 'warn';
     return 'bad';
   }
 
-  const METRIC_LEVEL_COLORS = { good: 'var(--success-600)', warn: 'var(--warning-600)', bad: 'var(--error-600)' };
+  const METRIC_LEVEL_COLORS = { good: 'var(--success-600)', normal: 'var(--neutral-700)', warn: 'var(--warning-600)', bad: 'var(--error-600)' };
 
   function getFirstByteTimingLevel(seconds) {
-    return timingLevel(seconds, 5, 10);
+    return timingLevel(seconds, 2, 5, 10);
   }
 
   function getDurationTimingLevel(seconds) {
-    return timingLevel(seconds, 30, 60);
+    return timingLevel(seconds, 10, 30, 60);
   }
 
   function getFirstByteTimingColor(seconds) {
@@ -1405,12 +1406,13 @@ window.WebAuth = window.WebAuth || {
     return METRIC_LEVEL_COLORS[getDurationTimingLevel(seconds)] || 'var(--neutral-600)';
   }
 
-  // 输出速度分级：≥100 tok/s 快，50–100 一般，<50 慢；无效值为空串
+  // 输出速度分级：≥100 绿色，60–100 橙色，30–60 默认文字色，<30 红色；无效值为空串
   function getSpeedLevel(tokensPerSecond) {
     const value = Number(tokensPerSecond);
     if (!Number.isFinite(value) || value <= 0) return '';
     if (value >= 100) return 'good';
-    if (value >= 50) return 'warn';
+    if (value >= 60) return 'warn';
+    if (value >= 30) return 'normal';
     return 'bad';
   }
 
