@@ -2,10 +2,14 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 )
 
@@ -246,6 +251,88 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 	if err != errBodyTooLarge {
 		t.Errorf("期望errBodyTooLarge错误, 实际: %v", err)
 	}
+}
+
+func TestParseIncomingRequest_DecodesContentEncoding(t *testing.T) {
+	plain := []byte(`{"model":"claude-sonnet-4-6","stream":true,"messages":[]}`)
+	gzipBody := func(data []byte) []byte {
+		var buf bytes.Buffer
+		writer := gzip.NewWriter(&buf)
+		_, _ = writer.Write(data)
+		_ = writer.Close()
+		return buf.Bytes()
+	}
+	zstdBody := func(data []byte) []byte {
+		encoder, err := zstd.NewWriter(nil)
+		if err != nil {
+			t.Fatalf("zstd writer: %v", err)
+		}
+		defer func() { _ = encoder.Close() }()
+		return encoder.EncodeAll(data, nil)
+	}
+	limits := newRequestBodyLimits(1024, 1024)
+	parse := func(body io.Reader, contentEncoding string) (*gin.Context, incomingRequest, error) {
+		req := newRequest(http.MethodPost, "/v1/messages", body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", contentEncoding)
+		c, _ := newTestContext(t, req)
+		incoming, err := parseIncomingRequest(c, limits)
+		return c, incoming, err
+	}
+
+	for _, tc := range []struct {
+		name, encoding string
+		body           []byte
+	}{
+		{name: "gzip", encoding: "gzip", body: gzipBody(plain)},
+		{name: "zstd", encoding: "zstd", body: zstdBody(plain)},
+		{name: "stacked", encoding: "gzip, zstd", body: zstdBody(gzipBody(plain))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, incoming, err := parse(bytes.NewReader(tc.body), tc.encoding)
+			if err != nil {
+				t.Fatalf("parseIncomingRequest: %v", err)
+			}
+			if !bytes.Equal(incoming.body, plain) || incoming.originalModel != "claude-sonnet-4-6" || !incoming.isStreaming {
+				t.Fatalf("incoming = body %q model %q stream %v", incoming.body, incoming.originalModel, incoming.isStreaming)
+			}
+			// 请求体已是明文，编码头不能再随通用请求头转发到上游。
+			if got := c.Request.Header.Get("Content-Encoding"); got != "" {
+				t.Fatalf("Content-Encoding = %q after decoding", got)
+			}
+		})
+	}
+
+	t.Run("unsupported encoding", func(t *testing.T) {
+		_, _, err := parse(bytes.NewReader(plain), "compress")
+		if !errors.Is(err, errUnsupportedContentEncoding) {
+			t.Fatalf("err = %v, want errUnsupportedContentEncoding", err)
+		}
+	})
+	t.Run("corrupt body", func(t *testing.T) {
+		_, _, err := parse(bytes.NewReader(plain), "gzip")
+		if err == nil || errors.Is(err, errUnsupportedContentEncoding) || errors.Is(err, errBodyTooLarge) || errors.Is(err, errBodyReadTimeout) {
+			t.Fatalf("err = %v, want a plain bad-request error", err)
+		}
+	})
+	t.Run("decoded size counts against limit", func(t *testing.T) {
+		bomb := gzipBody(bytes.Repeat([]byte("a"), 64*1024))
+		if len(bomb) > 1024 {
+			t.Fatalf("compressed fixture %d bytes must fit the limit", len(bomb))
+		}
+		_, _, err := parse(bytes.NewReader(bomb), "gzip")
+		if !errors.Is(err, errBodyTooLarge) {
+			t.Fatalf("err = %v, want errBodyTooLarge", err)
+		}
+	})
+	t.Run("read timeout inside decoder", func(t *testing.T) {
+		compressed := gzipBody(plain)
+		body := io.MultiReader(bytes.NewReader(compressed[:len(compressed)/2]), &errorReader{err: os.ErrDeadlineExceeded})
+		_, _, err := parse(body, "gzip")
+		if !errors.Is(err, errBodyReadTimeout) {
+			t.Fatalf("err = %v, want errBodyReadTimeout", err)
+		}
+	})
 }
 
 // TestAcquireConcurrencySlot 测试并发槽位获取

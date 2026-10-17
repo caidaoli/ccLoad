@@ -118,19 +118,34 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
-	// 读取请求体（带上限，防止大包打爆内存）
+	// 读取请求体（带上限，防止大包打爆内存）。压缩请求体先按 Content-Encoding 解码，
+	// 上限约束解码后的字节，解压炸弹与明文超限同样返回 errBodyTooLarge。
 	maxBody := bodyLimits.maxForPath(requestPath)
-	limited := io.LimitReader(c.Request.Body, maxBody+1)
-	all, err := io.ReadAll(limited)
+	contentEncoding := strings.Join(c.Request.Header.Values("Content-Encoding"), ",")
+	body, err := decodeContentEncodingBody(c.Request.Body, contentEncoding)
+	var all []byte
+	if err == nil {
+		all, err = io.ReadAll(io.LimitReader(body, maxBody+1))
+		_ = body.Close()
+	}
 	if err != nil {
 		if isRequestReadTimeout(err) {
 			return incomingRequest{}, fmt.Errorf("%w: %v", errBodyReadTimeout, err)
 		}
+		if errors.Is(err, errUnsupportedContentEncoding) {
+			return incomingRequest{}, err
+		}
 		return incomingRequest{}, fmt.Errorf("failed to read body: %w", err)
 	}
-	_ = c.Request.Body.Close()
 	if int64(len(all)) > maxBody {
 		return incomingRequest{}, errBodyTooLarge
+	}
+	if strings.TrimSpace(contentEncoding) != "" {
+		// 后续只转发明文：残留的编码头会让上游按压缩数据解析，也会让出站压缩
+		// （Codex OAuth zstd、Anthropic 第一方 gzip）误以为调用方已自带编码而跳过。
+		c.Request.Header.Del("Content-Encoding")
+		c.Request.Header.Del("Content-Length")
+		c.Request.ContentLength = int64(len(all))
 	}
 	contentType := c.Request.Header.Get("Content-Type")
 	mediaType, mediaParams, _ := mime.ParseMediaType(contentType)
@@ -452,6 +467,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		case errors.Is(err, errBodyReadTimeout):
 			// 408 而不是 400：请求本身没问题，是客户端没在读取超时内传完。
 			writeLocalProxyError(c, http.StatusRequestTimeout, err.Error())
+		case errors.Is(err, errUnsupportedContentEncoding):
+			writeLocalProxyError(c, http.StatusUnsupportedMediaType, err.Error())
 		default:
 			writeLocalProxyError(c, http.StatusBadRequest, err.Error())
 		}

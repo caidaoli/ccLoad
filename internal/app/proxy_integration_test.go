@@ -40,6 +40,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -7603,6 +7604,56 @@ func TestProxy_GlobalCooldownDetectionRulesFallbackAndChannelOverride(t *testing
 }
 
 // doProxyRequest 发送代理请求并返回响应
+func TestProxy_DecodesCompressedRequestBody(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		if got := r.Header.Get("Content-Encoding"); got != "" {
+			t.Errorf("upstream Content-Encoding = %q, want plaintext forward", got)
+		}
+		if got := gjson.GetBytes(body, "messages.0.content").String(); got != "compressed hi" {
+			t.Errorf("upstream body = %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "compressed-inbound", upstreamProtocol: "openai", models: "gpt-test",
+	}}, map[int]string{0: upstream.URL})
+
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	compressed := encoder.EncodeAll([]byte(`{"model":"gpt-test","messages":[{"role":"user","content":"compressed hi"}]}`), nil)
+	_ = encoder.Close()
+	send := func(contentEncoding string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(compressed))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", contentEncoding)
+		req.Header.Set("Authorization", "Bearer test-api-key")
+		w := httptest.NewRecorder()
+		env.engine.ServeHTTP(w, req)
+		return w
+	}
+
+	if response := send("zstd"); response.Code != http.StatusOK {
+		t.Fatalf("zstd status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := send("compress"); response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported encoding status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
 func doProxyRequest(t testing.TB, engine *gin.Engine, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 

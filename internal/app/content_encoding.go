@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,12 +15,19 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-type anthropicCompositeReadCloser struct {
+var errUnsupportedContentEncoding = errors.New("unsupported content encoding")
+
+// zstdContentEncodingMaxWindow 取 RFC 9659 对 HTTP zstd 内容编码的窗口上限 8MB；
+// klauspost 默认允许 512MB 窗口并开多个解码 goroutine，入站请求体由调用方控制，
+// 不能让一个帧头声明的窗口撑大内存。
+const zstdContentEncodingMaxWindow = 8 << 20
+
+type compositeReadCloser struct {
 	io.Reader
 	closers []func() error
 }
 
-func (c *anthropicCompositeReadCloser) Close() error {
+func (c *compositeReadCloser) Close() error {
 	var firstErr error
 	for _, closeFn := range c.closers {
 		if closeFn == nil {
@@ -40,7 +48,7 @@ func decodeAnthropicResponse(resp *http.Response) error {
 	if strings.TrimSpace(contentEncoding) == "" {
 		return nil
 	}
-	decoded, err := decodeAnthropicResponseBody(resp.Body, contentEncoding)
+	decoded, err := decodeContentEncodingBody(resp.Body, contentEncoding)
 	if err != nil {
 		return err
 	}
@@ -52,9 +60,11 @@ func decodeAnthropicResponse(resp *http.Response) error {
 	return nil
 }
 
-func decodeAnthropicResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
+// decodeContentEncodingBody 按 Content-Encoding 逆序叠加解码器；空值与 identity
+// 原样返回 body。失败时 body 已关闭。
+func decodeContentEncodingBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
 	if body == nil {
-		return nil, fmt.Errorf("anthropic response body is nil")
+		return nil, fmt.Errorf("content-encoded body is nil")
 	}
 	encodings := strings.Split(contentEncoding, ",")
 	reader := io.Reader(body)
@@ -73,12 +83,12 @@ func decodeAnthropicResponseBody(body io.ReadCloser, contentEncoding string) (io
 			decoder, err := gzip.NewReader(reader)
 			if err != nil {
 				cleanup()
-				return nil, fmt.Errorf("decode Anthropic gzip response: %w", err)
+				return nil, fmt.Errorf("decode gzip body: %w", err)
 			}
 			reader = decoder
 			decoderClosers = append(decoderClosers, decoder.Close)
 		case "deflate":
-			decoder, err := newAnthropicDeflateReader(reader)
+			decoder, err := newDeflateReader(reader)
 			if err != nil {
 				cleanup()
 				return nil, err
@@ -88,10 +98,12 @@ func decodeAnthropicResponseBody(body io.ReadCloser, contentEncoding string) (io
 		case "br":
 			reader = brotli.NewReader(reader)
 		case "zstd":
-			decoder, err := zstd.NewReader(reader)
+			decoder, err := zstd.NewReader(reader,
+				zstd.WithDecoderConcurrency(1),
+				zstd.WithDecoderMaxWindow(zstdContentEncodingMaxWindow))
 			if err != nil {
 				cleanup()
-				return nil, fmt.Errorf("decode Anthropic zstd response: %w", err)
+				return nil, fmt.Errorf("decode zstd body: %w", err)
 			}
 			reader = decoder
 			decoderClosers = append(decoderClosers, func() error {
@@ -100,7 +112,7 @@ func decodeAnthropicResponseBody(body io.ReadCloser, contentEncoding string) (io
 			})
 		default:
 			cleanup()
-			return nil, fmt.Errorf("unsupported Anthropic content encoding %q", encoding)
+			return nil, fmt.Errorf("%w %q", errUnsupportedContentEncoding, encoding)
 		}
 	}
 	if len(decoderClosers) == 0 && reader == body {
@@ -111,23 +123,23 @@ func decodeAnthropicResponseBody(body io.ReadCloser, contentEncoding string) (io
 		closers = append(closers, decoderClosers[index])
 	}
 	closers = append(closers, body.Close)
-	return &anthropicCompositeReadCloser{Reader: reader, closers: closers}, nil
+	return &compositeReadCloser{Reader: reader, closers: closers}, nil
 }
 
-func newAnthropicDeflateReader(reader io.Reader) (io.ReadCloser, error) {
+func newDeflateReader(reader io.Reader) (io.ReadCloser, error) {
 	buffered := bufio.NewReader(reader)
 	header, err := buffered.Peek(2)
-	if err == nil && isAnthropicZlibHeader(header) {
+	if err == nil && isZlibHeader(header) {
 		decoder, decodeErr := zlib.NewReader(buffered)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("decode Anthropic zlib response: %w", decodeErr)
+			return nil, fmt.Errorf("decode zlib body: %w", decodeErr)
 		}
 		return decoder, nil
 	}
 	return flate.NewReader(buffered), nil
 }
 
-func isAnthropicZlibHeader(header []byte) bool {
+func isZlibHeader(header []byte) bool {
 	if len(header) < 2 {
 		return false
 	}
