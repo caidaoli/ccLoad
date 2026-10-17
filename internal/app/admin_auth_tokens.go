@@ -128,9 +128,11 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 				t.TotalCostUSD = stat.TotalCost
 				t.EffectiveCostUSD = stat.EffectiveCost
 				t.StreamAvgTTFB = stat.StreamAvgTTFB
-				t.NonStreamAvgRT = stat.NonStreamAvgRT
+				t.AvgDuration = stat.AvgDuration
 				t.StreamCount = stat.StreamCount
-				t.NonStreamCount = stat.NonStreamCount
+				t.DurationCount = stat.DurationCount
+				t.SpeedOutputTokens = stat.SpeedOutputTokens
+				t.SpeedDurationSeconds = stat.SpeedDurationSeconds
 				// RPM统计
 				t.PeakRPM = stat.PeakRPM
 				t.AvgRPM = stat.AvgRPM
@@ -146,9 +148,11 @@ func (s *Server) HandleListAuthTokens(c *gin.Context) {
 				t.TotalCostUSD = 0
 				t.EffectiveCostUSD = 0
 				t.StreamAvgTTFB = 0
-				t.NonStreamAvgRT = 0
+				t.AvgDuration = 0
 				t.StreamCount = 0
-				t.NonStreamCount = 0
+				t.DurationCount = 0
+				t.SpeedOutputTokens = 0
+				t.SpeedDurationSeconds = 0
 				t.PeakRPM = 0
 				t.AvgRPM = 0
 				t.RecentRPM = 0

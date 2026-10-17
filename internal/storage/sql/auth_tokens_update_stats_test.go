@@ -39,7 +39,7 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 		t.Fatalf("create auth token: %v", err)
 	}
 
-	// 失败请求：累加失败次数与平均值；token与费用按调用方传入值累加（已提交流的部分用量）。
+	// 失败请求：累加失败次数，不计耗时均值；token与费用按调用方传入值累加（已提交流的部分用量）。
 	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 2.0, false, 0, 10, 20, 3, 4, 1.0, 0.25, time.Now()); err != nil {
 		t.Fatalf("update token stats (failure): %v", err)
 	}
@@ -58,8 +58,9 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.TotalCostUSD != 1.0 || got.EffectiveCostUSD != 0.25 || got.CostUsedMicroUSD != util.USDToMicroUSD(0.25) {
 		t.Fatalf("unexpected cost after failure: total_cost_usd=%v effective_cost_usd=%v cost_used_microusd=%d", got.TotalCostUSD, got.EffectiveCostUSD, got.CostUsedMicroUSD)
 	}
-	if got.NonStreamCount != 1 || got.NonStreamAvgRT != 2.0 {
-		t.Fatalf("unexpected non-stream stats after failure: count=%d avg=%v", got.NonStreamCount, got.NonStreamAvgRT)
+	if got.DurationCount != 0 || got.AvgDuration != 0 || got.SpeedOutputTokens != 0 || got.SpeedDurationSeconds != 0 {
+		t.Fatalf("failure should not affect duration/speed stats: duration=(%d,%v) speed=(%d,%v)",
+			got.DurationCount, got.AvgDuration, got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
 
 	// 客户端取消：只累加用量与费用，不计成功/失败次数，也不影响耗时统计。
@@ -77,11 +78,12 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.PromptTokensTotal != 20 || got.EffectiveCostUSD != 0.5 || got.CostUsedMicroUSD != 2*util.USDToMicroUSD(0.25) {
 		t.Fatalf("unexpected usage after cancel: prompt=%d effective_cost_usd=%v cost_used_microusd=%d", got.PromptTokensTotal, got.EffectiveCostUSD, got.CostUsedMicroUSD)
 	}
-	if got.NonStreamCount != 1 || got.NonStreamAvgRT != 2.0 {
-		t.Fatalf("unexpected non-stream stats after cancel: count=%d avg=%v", got.NonStreamCount, got.NonStreamAvgRT)
+	if got.DurationCount != 0 || got.AvgDuration != 0 || got.SpeedOutputTokens != 0 || got.SpeedDurationSeconds != 0 {
+		t.Fatalf("cancel should not affect duration/speed stats: duration=(%d,%v) speed=(%d,%v)",
+			got.DurationCount, got.AvgDuration, got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
 
-	// 成功请求：累加成功次数、token与费用；平均值继续更新。
+	// 成功请求：累加成功次数、token与费用，并计入耗时均值。
 	completedAt := time.Now()
 	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 4.0, false, 0, 10, 20, 3, 4, 0.5, 0.25, completedAt); err != nil {
 		t.Fatalf("update token stats (success): %v", err)
@@ -108,8 +110,12 @@ func TestUpdateTokenStats_SingleUpdateSemantics(t *testing.T) {
 	if got.CostUsedMicroUSD != wantUsed {
 		t.Fatalf("unexpected cost_used_microusd after success: %d", got.CostUsedMicroUSD)
 	}
-	if got.NonStreamCount != 2 || got.NonStreamAvgRT != 3.0 {
-		t.Fatalf("unexpected non-stream stats after success: count=%d avg=%v", got.NonStreamCount, got.NonStreamAvgRT)
+	if got.DurationCount != 1 || got.AvgDuration != 4.0 {
+		t.Fatalf("unexpected duration stats after success: count=%d avg=%v", got.DurationCount, got.AvgDuration)
+	}
+	// 非流式请求的生成耗时即总耗时
+	if got.SpeedOutputTokens != 20 || got.SpeedDurationSeconds != 4.0 {
+		t.Fatalf("unexpected speed stats after success: tokens=%d seconds=%v", got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
 	if got.LastUsedAt == nil || *got.LastUsedAt <= 0 {
 		t.Fatalf("expected last_used_at to be set, got=%v", got.LastUsedAt)
@@ -228,8 +234,8 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 		t.Fatalf("create auth token: %v", err)
 	}
 
-	// 第一次流式请求：TTFB = 100ms
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 0, true, 100.0, 10, 20, 0, 0, 0.1, 0.1, time.Now()); err != nil {
+	// 第一次流式请求：首字 1s，耗时 3s
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 3.0, true, 1.0, 10, 20, 0, 0, 0.1, 0.1, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 1): %v", err)
 	}
 
@@ -237,15 +243,16 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get auth token: %v", err)
 	}
-	if got.StreamCount != 1 || got.StreamAvgTTFB != 100.0 {
+	if got.StreamCount != 1 || got.StreamAvgTTFB != 1.0 {
 		t.Fatalf("unexpected stream stats after first request: count=%d avg=%v", got.StreamCount, got.StreamAvgTTFB)
 	}
-	if got.NonStreamCount != 0 {
-		t.Fatalf("non-stream count should remain 0 for streaming request: %d", got.NonStreamCount)
+	// 耗时均值覆盖流式请求
+	if got.DurationCount != 1 || got.AvgDuration != 3.0 {
+		t.Fatalf("unexpected duration stats after streaming request: count=%d avg=%v", got.DurationCount, got.AvgDuration)
 	}
 
-	// 第二次流式请求：TTFB = 200ms，期望平均值 = (100+200)/2 = 150
-	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 0, true, 200.0, 5, 10, 0, 0, 0.05, 0.05, time.Now()); err != nil {
+	// 第二次流式请求：首字 2s、耗时 5s，期望均值 1.5 / 4
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 5.0, true, 2.0, 5, 10, 0, 0, 0.05, 0.05, time.Now()); err != nil {
 		t.Fatalf("update token stats (streaming 2): %v", err)
 	}
 
@@ -253,8 +260,26 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get auth token: %v", err)
 	}
-	if got.StreamCount != 2 || got.StreamAvgTTFB != 150.0 {
-		t.Fatalf("unexpected stream stats after second request: count=%d avg=%v (expected count=2 avg=150)", got.StreamCount, got.StreamAvgTTFB)
+	if got.StreamCount != 2 || got.StreamAvgTTFB != 1.5 || got.DurationCount != 2 || got.AvgDuration != 4.0 {
+		t.Fatalf("unexpected timing after second request: ttfb=(%d,%v) duration=(%d,%v), want (2,1.5) (2,4)",
+			got.StreamCount, got.StreamAvgTTFB, got.DurationCount, got.AvgDuration)
+	}
+	// 流式生成耗时扣除首字：(3-1) + (5-2) = 5s，输出 20 + 10
+	if got.SpeedOutputTokens != 30 || got.SpeedDurationSeconds != 5.0 {
+		t.Fatalf("unexpected speed stats after streaming: tokens=%d seconds=%v, want 30/5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
+	}
+
+	// 已出首字的失败流不计入首字与耗时均值
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsFailure, 60.0, true, 30.0, 0, 0, 0, 0, 0, 0, time.Now()); err != nil {
+		t.Fatalf("update token stats (failed stream): %v", err)
+	}
+	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.StreamCount != 2 || got.StreamAvgTTFB != 1.5 || got.DurationCount != 2 || got.AvgDuration != 4.0 {
+		t.Fatalf("failed stream affected timing: ttfb=(%d,%v) duration=(%d,%v)",
+			got.StreamCount, got.StreamAvgTTFB, got.DurationCount, got.AvgDuration)
 	}
 
 	// 验证累加的 token 数和费用
@@ -263,5 +288,17 @@ func TestUpdateTokenStats_StreamingRequest(t *testing.T) {
 	}
 	if !floatNear(got.TotalCostUSD, 0.15, 1e-9) {
 		t.Fatalf("unexpected total_cost_usd: %v (expected 0.15)", got.TotalCostUSD)
+	}
+
+	// 扣除首字后不足 1 秒时按总耗时计：+1.5s，输出 +6
+	if err := store.UpdateTokenStats(ctx, tokenHash, model.TokenStatsSuccess, 1.5, true, 1.0, 0, 6, 0, 0, 0, 0, time.Now()); err != nil {
+		t.Fatalf("update token stats (short generation): %v", err)
+	}
+	got, err = store.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("get auth token: %v", err)
+	}
+	if got.SpeedOutputTokens != 36 || got.SpeedDurationSeconds != 6.5 {
+		t.Fatalf("unexpected speed stats after short generation: tokens=%d seconds=%v, want 36/6.5", got.SpeedOutputTokens, got.SpeedDurationSeconds)
 	}
 }

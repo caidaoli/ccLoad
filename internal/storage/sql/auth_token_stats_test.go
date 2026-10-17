@@ -17,10 +17,10 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	start := now.Add(-2 * time.Minute)
 	end := now.Add(2 * time.Minute)
 
-	// token 1: success(stream) + failure(non-stream) + cancelled(stream/non-stream)
-	//          取消不计次数与耗时，但保留已计费用量。
+	// token 1: success(stream) + failure(stream, 无首字) + cancelled(stream/non-stream)
+	//          取消不计次数，失败与取消都不计首字和耗时，但保留已计费用量。
 	//          + 1 count_tokens（辅助请求，不计入令牌统计）
-	// token 2: 1 success
+	// token 2: 非流式与流式成功各 1（流式生成耗时扣除首字）
 	logs := []*model.LogEntry{
 		{
 			Time:          model.JSONTime{Time: now},
@@ -40,7 +40,7 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 			ChannelID:    1,
 			Model:        "m1",
 			StatusCode:   500,
-			IsStreaming:  false,
+			IsStreaming:  true,
 			Duration:     1.2,
 			AuthTokenID:  1,
 			InputTokens:  1,
@@ -95,6 +95,10 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 			OutputTokens: 4,
 			Cost:         0.03,
 		},
+		{
+			Time: model.JSONTime{Time: now}, ChannelID: 1, Model: "m1", StatusCode: 200,
+			AuthTokenID: 2, IsStreaming: true, FirstByteTime: 1.0, Duration: 3.0, OutputTokens: 10,
+		},
 	}
 	if err := store.BatchAddLogs(ctx, logs); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
@@ -115,8 +119,8 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	if s1.SuccessCount != 1 || s1.FailureCount != 1 {
 		t.Fatalf("token1 counts=(%d,%d), want (1,1)", s1.SuccessCount, s1.FailureCount)
 	}
-	if s1.StreamCount != 1 || s1.NonStreamCount != 1 {
-		t.Fatalf("token1 stream/nonstream=(%d,%d), want (1,1)", s1.StreamCount, s1.NonStreamCount)
+	if s1.StreamCount != 1 || s1.DurationCount != 1 {
+		t.Fatalf("token1 ttfb/duration samples=(%d,%d), want (1,1)", s1.StreamCount, s1.DurationCount)
 	}
 	if s1.PromptTokens != 24 || s1.CompletionTokens != 38 || s1.CacheReadTokens != 8 || s1.CacheCreationTokens != 10 {
 		t.Fatalf("token1 billable tokens lost: %+v", s1)
@@ -124,11 +128,25 @@ func TestAuthTokenStatsInRange_AndRPM(t *testing.T) {
 	if math.Abs(s1.TotalCost-0.405) > 1e-9 || math.Abs(s1.EffectiveCost-0.75) > 1e-9 {
 		t.Fatalf("token1 billable costs lost: %+v", s1)
 	}
-	if s1.StreamAvgTTFB != 0.1 || s1.NonStreamAvgRT != 1.2 {
-		t.Fatalf("cancelled latency affected token1 averages: %+v", s1)
+	if s1.StreamAvgTTFB != 0.1 || s1.AvgDuration != 0.2 {
+		t.Fatalf("failed/cancelled latency affected token1 averages: %+v", s1)
+	}
+	// 速度只算成功请求；扣除首字后不足 1 秒按总耗时计
+	if s1.SpeedOutputTokens != 20 || math.Abs(s1.SpeedDurationSeconds-0.2) > 1e-9 {
+		t.Fatalf("token1 speed=(%d,%v), want 20 tokens / 0.2s", s1.SpeedOutputTokens, s1.SpeedDurationSeconds)
+	}
+	// 耗时口径覆盖流式与非流式成功请求
+	s2 := stats[2]
+	if s2 == nil || s2.StreamCount != 1 || s2.DurationCount != 2 || math.Abs(s2.AvgDuration-1.7) > 1e-9 {
+		t.Fatalf("token2 timing=%+v, want 1 ttfb sample and 2 duration samples averaging 1.7s", s2)
+	}
+	// 非流式 0.4s + 流式 (3-1)s
+	if s2.SpeedOutputTokens != 14 || math.Abs(s2.SpeedDurationSeconds-2.4) > 1e-9 {
+		t.Fatalf("token2 speed=(%d,%v), want 14 tokens / 2.4s", s2.SpeedOutputTokens, s2.SpeedDurationSeconds)
 	}
 	s3 := stats[3]
-	if s3 == nil || s3.SuccessCount != 0 || s3.FailureCount != 0 || s3.StreamCount != 0 || s3.NonStreamCount != 0 || s3.StreamAvgTTFB != 0 || s3.NonStreamAvgRT != 0 {
+	if s3 == nil || s3.SuccessCount != 0 || s3.FailureCount != 0 || s3.StreamCount != 0 || s3.DurationCount != 0 || s3.StreamAvgTTFB != 0 || s3.AvgDuration != 0 ||
+		s3.SpeedOutputTokens != 0 || s3.SpeedDurationSeconds != 0 {
 		t.Fatalf("cancelled-only token counts/latency=%+v, want zero", s3)
 	}
 	if s3.PromptTokens != 5 || s3.TotalCost != 0.125 || s3.EffectiveCost != 0.25 {

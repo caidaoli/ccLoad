@@ -489,15 +489,17 @@
               <span class="token-status-pill token-status-pill--{{statusClass}}">{{statusText}}</span>
             </div>
             <div class="token-sub-line" title="{{createdTitle}}">
-              <code class="token-mask">{{maskedToken}}</code>
-              <button type="button" class="btn-copy-token token-inline-copy" data-token="{{token}}"
-                data-i18n-title="common.copy" title="复制" data-i18n-aria-label="common.copy" aria-label="复制">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-              </button>
-              <button type="button" class="btn-client-config token-inline-copy" data-token="{{token}}"
-                data-i18n-title="tokens.clientConfig" title="客户端配置" data-i18n-aria-label="tokens.clientConfig" aria-label="客户端配置">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M6 9L9 12L6 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15H17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-              </button>
+              <span class="token-key-group">
+                <code class="token-mask">{{maskedToken}}</code>
+                <button type="button" class="btn-copy-token token-inline-copy" data-token="{{token}}"
+                  data-i18n-title="common.copy" title="复制" data-i18n-aria-label="common.copy" aria-label="复制">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 15H4C2.9 15 2 14.1 2 13V4C2 2.9 2.9 2 4 2H13C14.1 2 15 2.9 15 4V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" class="btn-client-config token-inline-copy" data-token="{{token}}"
+                  data-i18n-title="tokens.clientConfig" title="客户端配置" data-i18n-aria-label="tokens.clientConfig" aria-label="客户端配置">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M6 9L9 12L6 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 15H17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+              </span>
               <span class="token-expiry token-expiry--{{statusClass}}">· {{expiryText}}</span>
             </div>
           </div>
@@ -506,9 +508,10 @@
       <td class="tokens-col-num tokens-col-calls" data-mobile-label="{{mobileLabelCalls}}">{{{callsHtml}}}</td>
       <td class="tokens-col-num tokens-col-rpm" data-mobile-label="{{mobileLabelRpm}}">{{{rpmHtml}}}</td>
       <td class="tokens-col-num tokens-col-token-usage {{tokensCellClass}}" data-mobile-label="{{mobileLabelTokenUsage}}">{{{tokensHtml}}}</td>
+      <td class="tokens-col-num tokens-col-latency {{latencyCellClass}}" data-mobile-label="{{mobileLabelLatency}}">{{{latencyHtml}}}</td>
+      <td class="tokens-col-num tokens-col-speed {{speedCellClass}}" data-mobile-label="{{mobileLabelSpeed}}">{{{speedHtml}}}</td>
       <td class="tokens-col-cost" data-mobile-label="{{mobileLabelCost}}">{{{costHtml}}}</td>
       <td class="tokens-col-num tokens-col-concurrency" data-mobile-label="{{mobileLabelConcurrency}}">{{{concurrencyHtml}}}</td>
-      <td class="tokens-col-num tokens-col-latency {{latencyCellClass}}" data-mobile-label="{{mobileLabelLatency}}">{{{latencyHtml}}}</td>
       <td class="tokens-col-last-used" data-mobile-label="{{mobileLabelLastUsed}}">{{{lastUsedHtml}}}</td>
       <td class="tokens-col-actions mobile-card-no-label">
         <div class="token-row-actions">

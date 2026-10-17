@@ -132,9 +132,13 @@ func DefineAuthTokensTable() *TableBuilder {
 		Column("success_count INT NOT NULL DEFAULT 0").
 		Column("failure_count INT NOT NULL DEFAULT 0").
 		Column("stream_avg_ttfb DOUBLE NOT NULL DEFAULT 0.0").
-		Column("non_stream_avg_rt DOUBLE NOT NULL DEFAULT 0.0").
+		Column("non_stream_avg_rt DOUBLE NOT NULL DEFAULT 0.0"). // 已废弃：不再写入，保留供旧版本回滚读取
 		Column("stream_count INT NOT NULL DEFAULT 0").
-		Column("non_stream_count INT NOT NULL DEFAULT 0").
+		Column("non_stream_count INT NOT NULL DEFAULT 0"). // 已废弃：同 non_stream_avg_rt
+		Column("avg_duration DOUBLE NOT NULL DEFAULT 0.0").
+		Column("duration_count INT NOT NULL DEFAULT 0").
+		Column("speed_output_tokens BIGINT NOT NULL DEFAULT 0").
+		Column("speed_duration DOUBLE NOT NULL DEFAULT 0.0").
 		Column("prompt_tokens_total BIGINT NOT NULL DEFAULT 0").
 		Column("completion_tokens_total BIGINT NOT NULL DEFAULT 0").
 		Column("cache_read_tokens_total BIGINT NOT NULL DEFAULT 0").

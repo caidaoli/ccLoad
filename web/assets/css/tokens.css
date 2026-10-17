@@ -47,15 +47,18 @@
 }
 
 /* ===== 令牌表格 ===== */
+/* 宽度足够时各列单行排开；容器变窄时表头换行、令牌名截断、过期时间换到下一行，避免横向滚动 */
 .tokens-table th,
 .tokens-table td {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-2);
   white-space: nowrap;
   vertical-align: middle;
 }
 
 .tokens-table th {
   font-size: 13px;
+  white-space: normal;
+  word-break: keep-all;
 }
 
 .tokens-table .tokens-col-num {
@@ -63,9 +66,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+.tokens-table .tokens-col-concurrency {
+  text-align: center;
+}
+
 .tokens-table .tokens-col-actions {
   width: 1%;
   text-align: right;
+}
+
+/* 费用列按内容收窄，限额进度条随列宽对齐；表头不换行，作为列宽下限 */
+.tokens-table .tokens-col-cost {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .tokens-no-match-row td {
@@ -105,10 +119,16 @@
   min-width: 0;
 }
 
+/* 单行截断但允许任意处断行：最大宽度仍按整名计算，列被压窄时才出现省略号 */
 .token-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
   max-width: 240px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-all;
   color: var(--neutral-900);
   font-size: 14px;
   font-weight: 600;
@@ -116,11 +136,19 @@
 
 .token-sub-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   margin-top: 4px;
   color: var(--neutral-500);
   font-size: var(--text-xs);
+}
+
+/* 掩码与复制/配置按钮不拆行，列宽不足时只把过期时间换到下一行 */
+.token-key-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .token-mask {
@@ -300,7 +328,6 @@
 }
 
 .token-limit {
-  width: 140px;
   margin-top: 4px;
   color: var(--neutral-500);
   font-size: var(--text-xs);
@@ -356,8 +383,12 @@
 }
 
 .token-last-used {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
   color: var(--neutral-700);
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .token-row-actions {
@@ -1106,23 +1137,18 @@
   }
 
   .token-name {
+    -webkit-line-clamp: none;
+    line-clamp: none;
     max-width: none;
     overflow-wrap: anywhere;
-    white-space: normal;
+    word-break: normal;
   }
 
-  .token-sub-line {
-    flex-wrap: wrap;
-  }
-
-  .token-metric-stack {
+  .token-metric-stack,
+  .token-last-used {
     flex-direction: row;
     align-items: baseline;
     gap: 8px;
-  }
-
-  .token-limit {
-    width: 100%;
   }
 
   .tokens-table .tokens-col-actions {

@@ -28,12 +28,15 @@ type AuthToken struct {
 	IsActive    bool      `json:"is_active"`              // 是否启用
 
 	// 统计字段（2025-11新增）
-	SuccessCount   int64   `json:"success_count"`     // 成功调用次数
-	FailureCount   int64   `json:"failure_count"`     // 失败调用次数
-	StreamAvgTTFB  float64 `json:"stream_avg_ttfb"`   // 流式请求平均首字节时间(秒)
-	NonStreamAvgRT float64 `json:"non_stream_avg_rt"` // 非流式请求平均响应时间(秒)
-	StreamCount    int64   `json:"stream_count"`      // 流式请求计数(用于计算平均值)
-	NonStreamCount int64   `json:"non_stream_count"`  // 非流式请求计数(用于计算平均值)
+	SuccessCount  int64   `json:"success_count"`   // 成功调用次数
+	FailureCount  int64   `json:"failure_count"`   // 失败调用次数
+	StreamAvgTTFB float64 `json:"stream_avg_ttfb"` // 成功流式请求平均首字节时间(秒)
+	AvgDuration   float64 `json:"avg_duration"`    // 成功请求平均耗时(秒)
+	StreamCount   int64   `json:"stream_count"`    // 首字节样本数(用于计算平均值)
+	DurationCount int64   `json:"duration_count"`  // 耗时样本数(用于计算平均值)
+
+	SpeedOutputTokens    int64   `json:"speed_output_tokens"`    // 有输出的成功请求的输出Token，速度 = 它 / SpeedDurationSeconds
+	SpeedDurationSeconds float64 `json:"speed_duration_seconds"` // 同批请求的生成耗时(秒)，流式扣除首字
 
 	// Token成本统计（2025-12新增）
 	PromptTokensTotal        int64   `json:"prompt_tokens_total"`         // 累计输入Token数
@@ -149,18 +152,20 @@ func (t *AuthToken) ChannelRestriction() (ChannelRestriction, error) {
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
 type AuthTokenRangeStats struct {
-	SuccessCount        int64   `json:"success_count"`         // 成功次数
-	FailureCount        int64   `json:"failure_count"`         // 失败次数
-	PromptTokens        int64   `json:"prompt_tokens"`         // 输入Token总数
-	CompletionTokens    int64   `json:"completion_tokens"`     // 输出Token总数
-	CacheReadTokens     int64   `json:"cache_read_tokens"`     // 缓存读Token总数
-	CacheCreationTokens int64   `json:"cache_creation_tokens"` // 缓存写Token总数
-	TotalCost           float64 `json:"total_cost"`            // 标准成本(美元)
-	EffectiveCost       float64 `json:"effective_cost"`        // 倍率后成本(美元)
-	StreamAvgTTFB       float64 `json:"stream_avg_ttfb"`       // 流式请求平均首字节时间
-	NonStreamAvgRT      float64 `json:"non_stream_avg_rt"`     // 非流式请求平均响应时间
-	StreamCount         int64   `json:"stream_count"`          // 流式请求计数
-	NonStreamCount      int64   `json:"non_stream_count"`      // 非流式请求计数
+	SuccessCount         int64   `json:"success_count"`          // 成功次数
+	FailureCount         int64   `json:"failure_count"`          // 失败次数
+	PromptTokens         int64   `json:"prompt_tokens"`          // 输入Token总数
+	CompletionTokens     int64   `json:"completion_tokens"`      // 输出Token总数
+	CacheReadTokens      int64   `json:"cache_read_tokens"`      // 缓存读Token总数
+	CacheCreationTokens  int64   `json:"cache_creation_tokens"`  // 缓存写Token总数
+	TotalCost            float64 `json:"total_cost"`             // 标准成本(美元)
+	EffectiveCost        float64 `json:"effective_cost"`         // 倍率后成本(美元)
+	StreamAvgTTFB        float64 `json:"stream_avg_ttfb"`        // 成功流式请求平均首字节时间
+	AvgDuration          float64 `json:"avg_duration"`           // 成功请求平均耗时
+	StreamCount          int64   `json:"stream_count"`           // 首字节样本数
+	DurationCount        int64   `json:"duration_count"`         // 耗时样本数
+	SpeedOutputTokens    int64   `json:"speed_output_tokens"`    // 输出速度分子：有输出的成功请求的输出Token
+	SpeedDurationSeconds float64 `json:"speed_duration_seconds"` // 输出速度分母：同批请求的生成耗时(秒)
 	// RPM统计（2025-12新增）
 	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）
 	AvgRPM    float64 `json:"avg_rpm"`    // 平均RPM
@@ -344,9 +349,11 @@ type authTokenJSON struct {
 	SuccessCount             int64     `json:"success_count"`
 	FailureCount             int64     `json:"failure_count"`
 	StreamAvgTTFB            float64   `json:"stream_avg_ttfb"`
-	NonStreamAvgRT           float64   `json:"non_stream_avg_rt"`
+	AvgDuration              float64   `json:"avg_duration"`
 	StreamCount              int64     `json:"stream_count"`
-	NonStreamCount           int64     `json:"non_stream_count"`
+	DurationCount            int64     `json:"duration_count"`
+	SpeedOutputTokens        int64     `json:"speed_output_tokens"`
+	SpeedDurationSeconds     float64   `json:"speed_duration_seconds"`
 	PromptTokensTotal        int64     `json:"prompt_tokens_total"`
 	CompletionTokensTotal    int64     `json:"completion_tokens_total"`
 	CacheReadTokensTotal     int64     `json:"cache_read_tokens_total"`
@@ -388,9 +395,11 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		SuccessCount:             t.SuccessCount,
 		FailureCount:             t.FailureCount,
 		StreamAvgTTFB:            t.StreamAvgTTFB,
-		NonStreamAvgRT:           t.NonStreamAvgRT,
+		AvgDuration:              t.AvgDuration,
 		StreamCount:              t.StreamCount,
-		NonStreamCount:           t.NonStreamCount,
+		DurationCount:            t.DurationCount,
+		SpeedOutputTokens:        t.SpeedOutputTokens,
+		SpeedDurationSeconds:     t.SpeedDurationSeconds,
 		PromptTokensTotal:        t.PromptTokensTotal,
 		CompletionTokensTotal:    t.CompletionTokensTotal,
 		CacheReadTokensTotal:     t.CacheReadTokensTotal,

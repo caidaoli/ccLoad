@@ -429,9 +429,10 @@
             <th class="tokens-col-num">${t('tokens.table.callsSuccess')}</th>
             <th class="tokens-col-num" title="${t('tokens.table.rpmTitle')}">${t('tokens.table.rpm')}</th>
             <th class="tokens-col-num">${t('tokens.table.tokenUsage')}</th>
-            <th>${t('tokens.table.costLimit')}</th>
-            <th class="tokens-col-num">${t('tokens.table.concurrency')}</th>
             <th class="tokens-col-num" title="${t('tokens.table.latencyTitle')}">${t('tokens.table.latency')}</th>
+            <th class="tokens-col-num" title="${t('tokens.table.speedTitle')}">${t('tokens.table.speed')}</th>
+            <th class="tokens-col-cost">${t('tokens.table.costLimit')}</th>
+            <th class="tokens-col-num tokens-col-concurrency">${t('tokens.table.concurrency')}</th>
             <th>${t('tokens.table.lastUsed')}</th>
             <th class="tokens-col-actions">${t('tokens.table.actions')}</th>
           </tr>
@@ -440,7 +441,7 @@
 
       const tbody = document.createElement('tbody');
       if (tokens.length === 0) {
-        tbody.innerHTML = `<tr class="tokens-no-match-row"><td colspan="9">${escapeHtml(t('tokens.noMatchingTokens'))}</td></tr>`;
+        tbody.innerHTML = `<tr class="tokens-no-match-row"><td colspan="10">${escapeHtml(t('tokens.noMatchingTokens'))}</td></tr>`;
       } else {
         tokens.forEach((token) => {
           const row = createTokenRow(token);
@@ -472,7 +473,8 @@
         : t('tokens.expiryNever');
       const successCount = token.success_count || 0;
       const failureCount = token.failure_count || 0;
-      const hasLatency = Boolean(token.stream_count || token.non_stream_count);
+      const hasLatency = Boolean(token.stream_count || token.duration_count);
+      const speedHtml = buildSpeedHtml(token);
 
       return TemplateEngine.render('tpl-token-row', {
         id: token.id,
@@ -492,6 +494,8 @@
         concurrencyHtml: `${buildConcurrencyHtml(token.max_concurrency)} / ${buildConcurrencyHtml(token.rpm_limit)}`,
         latencyHtml: buildLatencyHtml(token),
         latencyCellClass: hasLatency ? '' : 'mobile-empty-cell',
+        speedHtml,
+        speedCellClass: speedHtml === MUTED_DASH_HTML ? 'mobile-empty-cell' : '',
         lastUsedHtml: formatLastUsedHtml(token.last_used_at, locale),
         toggleHtml: buildToggleHtml(token),
         mobileLabelCalls: t('tokens.table.callsSuccess'),
@@ -500,6 +504,7 @@
         mobileLabelCost: t('tokens.table.costLimit'),
         mobileLabelConcurrency: t('tokens.table.concurrency'),
         mobileLabelLatency: t('tokens.table.latency'),
+        mobileLabelSpeed: t('tokens.table.speed'),
         mobileLabelLastUsed: t('tokens.table.lastUsed')
       });
     }
@@ -515,7 +520,7 @@
       if (Number.isNaN(usedAt.getTime())) {
         return MUTED_DASH_HTML;
       }
-      return `<span class="token-last-used">${usedAt.toLocaleString(locale, { hour12: false })}</span>`;
+      return `<span class="token-last-used"><span>${usedAt.toLocaleDateString(locale)}</span><span>${usedAt.toLocaleTimeString(locale, { hour12: false })}</span></span>`;
     }
 
     /**
@@ -605,9 +610,9 @@
     }
 
     const COST_LIMIT_FIELDS = [
-      { labelKey: 'tokens.limitShortDaily', limit: 'cost_daily_limit_usd', used: 'cost_daily_used_usd' },
-      { labelKey: 'tokens.limitShortMonthly', limit: 'cost_monthly_limit_usd', used: 'cost_monthly_used_usd' },
-      { labelKey: 'tokens.limitShortTotal', limit: 'cost_limit_usd', used: 'cost_used_usd' }
+      { labelKey: 'tokens.limitShortDaily', titleKey: 'tokens.dailyCostLimitLabel', limit: 'cost_daily_limit_usd', used: 'cost_daily_used_usd' },
+      { labelKey: 'tokens.limitShortMonthly', titleKey: 'tokens.monthlyCostLimitLabel', limit: 'cost_monthly_limit_usd', used: 'cost_monthly_used_usd' },
+      { labelKey: 'tokens.limitShortTotal', titleKey: 'tokens.costLimitLabel', limit: 'cost_limit_usd', used: 'cost_used_usd' }
     ];
 
     function toNonNegativeNumber(value) {
@@ -624,7 +629,7 @@
         const used = toNonNegativeNumber(token[field.used]);
         const ratio = used / limit;
         if (!tightest || ratio > tightest.ratio) {
-          tightest = { labelKey: field.labelKey, limit, used, ratio };
+          tightest = { labelKey: field.labelKey, titleKey: field.titleKey, limit, used, ratio };
         }
       });
       return tightest;
@@ -644,19 +649,21 @@
     function buildCostHtml(token) {
       const totalCost = Number(token.total_cost_usd) || 0;
       const costHtml = totalCost > 0
-        ? `<div class="token-cost">${buildCostStackHtml(totalCost, token.effective_cost_usd, { tone: 'warning' })}</div>`
+        ? `<div class="token-cost">${buildCostStackHtml(totalCost, token.effective_cost_usd, { tone: 'warning', decimalPlaces: 2 })}</div>`
         : MUTED_DASH_HTML;
 
       const limit = getTightestCostLimit(token);
       if (!limit) {
         return `${costHtml}<div class="token-limit token-limit--none">${t('tokens.noCostLimit')}</div>`;
       }
+      // 列宽只容纳一个金额：行内显示上限，已用金额放进悬停提示
+      const title = `${t(limit.titleKey)} ${window.formatCost(limit.used, 2)} / ${window.formatCost(limit.limit, 2)}`;
       return `
         ${costHtml}
-        <div class="token-limit">
+        <div class="token-limit" title="${escapeHtml(title)}">
           <div class="token-limit__text">
             <span class="token-limit__label">${t(limit.labelKey)}</span>
-            <span>${window.formatCost(limit.used, 2)} / ${window.formatCost(limit.limit, 2)}</span>
+            <span>${window.formatCost(limit.limit, 2)}</span>
           </div>
           ${buildProgressHtml(limit.ratio)}
         </div>
@@ -738,15 +745,26 @@
     }
 
     /**
-     * 构建首字/非流耗时HTML
+     * 构建首字/耗时HTML
      */
     function buildLatencyHtml(token) {
-      if (!token.stream_count && !token.non_stream_count) {
+      if (!token.stream_count && !token.duration_count) {
         return MUTED_DASH_HTML;
       }
       const ttfb = buildTimingValueHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
-      const nonStream = buildTimingValueHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
-      return `<span class="token-latency">${ttfb}<span class="token-latency__sep">/</span>${nonStream}</span>`;
+      const duration = buildTimingValueHtml(token.avg_duration, token.duration_count, window.getDurationTimingColor);
+      return `<span class="token-latency">${ttfb}<span class="token-latency__sep">/</span>${duration}</span>`;
+    }
+
+    // 输出速度 = 有输出的成功请求的输出总量 / 生成总耗时，与统计页、渠道页同口径
+    function buildSpeedHtml(token) {
+      const outputTokens = Number(token.speed_output_tokens);
+      const seconds = Number(token.speed_duration_seconds);
+      if (!(outputTokens > 0) || !(seconds > 0)) {
+        return MUTED_DASH_HTML;
+      }
+      const speed = outputTokens / seconds;
+      return `<span class="metric-value" style="color: ${window.getSpeedColor(speed)};">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
     }
 
     async function toggleTokenActive(actionTarget) {

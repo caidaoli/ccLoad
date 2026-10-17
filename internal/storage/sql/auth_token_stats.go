@@ -10,12 +10,12 @@ import (
 
 // GetAuthTokenStatsInRange 查询指定时间范围内每个token的统计数据（从logs表聚合）
 // 用于tokens.html页面按时间范围筛选显示（2025-12新增）
-// 客户端取消不计次数与耗时，但保留已计费的 token 与成本。
+// 客户端取消不计次数，但保留已计费的 token 与成本；首字节、耗时与输出速度只算成功请求，与统计页口径一致。
 func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
 	sinceMs := startTime.UnixMilli()
 	untilMs := endTime.UnixMilli()
 
-	// 499 只从次数与耗时聚合中排除，用量与费用仍累加。
+	// 499 只从次数聚合中排除，用量与费用仍累加。
 	query := `
 		SELECT
 			auth_token_id,
@@ -27,10 +27,12 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 			SUM(cache_creation_input_tokens) AS cache_creation_tokens,
 			SUM(cost) AS total_cost,
 			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost,
-			AVG(CASE WHEN is_streaming = 1 AND status_code != 499 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
-			AVG(CASE WHEN is_streaming = 0 AND status_code != 499 THEN duration ELSE NULL END) AS non_stream_avg_rt,
-			SUM(CASE WHEN is_streaming = 1 AND status_code != 499 THEN 1 ELSE 0 END) AS stream_count,
-			SUM(CASE WHEN is_streaming = 0 AND status_code != 499 THEN 1 ELSE 0 END) AS non_stream_count
+			AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END) AS stream_avg_ttfb,
+			AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END) AS avg_duration,
+			SUM(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS stream_count,
+			SUM(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS duration_count,
+			` + speedOutputTokensSQL + ` AS speed_output_tokens,
+			` + speedDurationSQL + ` AS speed_duration
 		FROM logs` + s.logsRangeIndexHint(logsTimeRangeIndex, nil) + `
 		WHERE time >= ? AND time <= ? AND auth_token_id > 0 AND log_source = 'proxy'
 		GROUP BY auth_token_id
@@ -46,14 +48,16 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 	for rows.Next() {
 		var tokenID int64
 		var stat model.AuthTokenRangeStats
-		var streamAvgTTFB, nonStreamAvgRT sql.NullFloat64
+		var streamAvgTTFB, avgDuration, speedDuration sql.NullFloat64
+		var speedOutputTokens sql.NullInt64
 
 		if err := rows.Scan(&tokenID, &stat.SuccessCount, &stat.FailureCount,
 			&stat.PromptTokens, &stat.CompletionTokens,
 			&stat.CacheReadTokens, &stat.CacheCreationTokens,
 			&stat.TotalCost, &stat.EffectiveCost,
-			&streamAvgTTFB, &nonStreamAvgRT,
-			&stat.StreamCount, &stat.NonStreamCount); err != nil {
+			&streamAvgTTFB, &avgDuration,
+			&stat.StreamCount, &stat.DurationCount,
+			&speedOutputTokens, &speedDuration); err != nil {
 			return nil, err
 		}
 
@@ -61,9 +65,11 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 		if streamAvgTTFB.Valid {
 			stat.StreamAvgTTFB = streamAvgTTFB.Float64
 		}
-		if nonStreamAvgRT.Valid {
-			stat.NonStreamAvgRT = nonStreamAvgRT.Float64
+		if avgDuration.Valid {
+			stat.AvgDuration = avgDuration.Float64
 		}
+		stat.SpeedOutputTokens = speedOutputTokens.Int64
+		stat.SpeedDurationSeconds = speedDuration.Float64
 
 		stats[tokenID] = &stat
 	}

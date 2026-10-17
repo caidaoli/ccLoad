@@ -631,6 +631,34 @@ func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dia
 	}
 }
 
+// ensureAuthTokensPerformanceStats 添加成功请求平均耗时（2026-10 起替代 non_stream_* 字段）与输出速度累计字段。
+// 新字段从零开始累计，不回填：logs 表无 auth_token_id 前导索引，按令牌回填会在启动时扫描全表。
+func ensureAuthTokensPerformanceStats(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	switch dialect {
+	case DialectMySQL:
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "avg_duration", definition: "DOUBLE NOT NULL DEFAULT 0.0"},
+			{name: "duration_count", definition: "INT NOT NULL DEFAULT 0"},
+			{name: "speed_output_tokens", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "speed_duration", definition: "DOUBLE NOT NULL DEFAULT 0.0"},
+		})
+	case DialectPostgres:
+		return ensurePostgresColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "avg_duration", definition: "DOUBLE NOT NULL DEFAULT 0.0"},
+			{name: "duration_count", definition: "INT NOT NULL DEFAULT 0"},
+			{name: "speed_output_tokens", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "speed_duration", definition: "DOUBLE NOT NULL DEFAULT 0.0"},
+		})
+	default:
+		return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+			{name: "avg_duration", definition: "REAL NOT NULL DEFAULT 0.0"},
+			{name: "duration_count", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "speed_output_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "speed_duration", definition: "REAL NOT NULL DEFAULT 0.0"},
+		})
+	}
+}
+
 // ensureAuthTokensRPMLimit adds the token rolling-minute limit.
 func ensureAuthTokensRPMLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	switch dialect {

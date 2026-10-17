@@ -19,7 +19,7 @@ const mysqlDuplicateEntryCode uint16 = 1062
 //nolint:gosec // SQL列清单包含“token”字段名，并非硬编码凭据
 const authTokenSelectColumns = `
 	id, token, description, created_at, expires_at, last_used_at, is_active,
-	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+	success_count, failure_count, stream_avg_ttfb, avg_duration, stream_count, duration_count, speed_output_tokens, speed_duration,
 	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
 	cost_used_microusd, cost_limit_microusd,
 	cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
@@ -95,11 +95,14 @@ const updateTokenStatsQuery = `
 			ELSE stream_avg_ttfb
 		END,
 		stream_count = stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
-		non_stream_avg_rt = CASE
-			WHEN ? = 1 THEN ((non_stream_avg_rt * non_stream_count) + ?) / (non_stream_count + 1)
-			ELSE non_stream_avg_rt
+		avg_duration = CASE
+			WHEN ? = 1 THEN ((avg_duration * duration_count) + ?) / (duration_count + 1)
+			ELSE avg_duration
 		END,
-		non_stream_count = non_stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		duration_count = duration_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+		-- 输出速度累加总量，读取时按 speed_output_tokens / speed_duration 计算
+		speed_output_tokens = speed_output_tokens + ?,
+		speed_duration = speed_duration + ?,
 
 		last_used_at = CASE
 			WHEN last_used_at IS NULL OR last_used_at < ? THEN ?
@@ -132,9 +135,11 @@ func scanAuthToken(scanner interface {
 		&token.SuccessCount,
 		&token.FailureCount,
 		&token.StreamAvgTTFB,
-		&token.NonStreamAvgRT,
+		&token.AvgDuration,
 		&token.StreamCount,
-		&token.NonStreamCount,
+		&token.DurationCount,
+		&token.SpeedOutputTokens,
+		&token.SpeedDurationSeconds,
 		&token.PromptTokensTotal,
 		&token.CompletionTokensTotal,
 		&token.CacheReadTokensTotal,
@@ -240,14 +245,14 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		query := `
 			INSERT INTO auth_tokens (
 				id, token, description, created_at, expires_at, last_used_at, is_active,
-				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+				success_count, failure_count, stream_avg_ttfb, avg_duration, stream_count, duration_count, speed_output_tokens, speed_duration,
 				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
 				cost_used_microusd, cost_limit_microusd,
 				cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
 				cost_monthly_used_microusd, cost_monthly_limit_microusd, cost_monthly_period_start,
 				allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency, rpm_limit
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				token = excluded.token,
 				description = excluded.description,
@@ -258,9 +263,11 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				success_count = excluded.success_count,
 				failure_count = excluded.failure_count,
 				stream_avg_ttfb = excluded.stream_avg_ttfb,
-				non_stream_avg_rt = excluded.non_stream_avg_rt,
+				avg_duration = excluded.avg_duration,
 				stream_count = excluded.stream_count,
-				non_stream_count = excluded.non_stream_count,
+				duration_count = excluded.duration_count,
+				speed_output_tokens = excluded.speed_output_tokens,
+				speed_duration = excluded.speed_duration,
 				prompt_tokens_total = excluded.prompt_tokens_total,
 				completion_tokens_total = excluded.completion_tokens_total,
 				cache_read_tokens_total = excluded.cache_read_tokens_total,
@@ -291,9 +298,11 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.SuccessCount,
 			token.FailureCount,
 			token.StreamAvgTTFB,
-			token.NonStreamAvgRT,
+			token.AvgDuration,
 			token.StreamCount,
-			token.NonStreamCount,
+			token.DurationCount,
+			token.SpeedOutputTokens,
+			token.SpeedDurationSeconds,
 			token.PromptTokensTotal,
 			token.CompletionTokensTotal,
 			token.CacheReadTokensTotal,
@@ -344,14 +353,14 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		_, execErr := s.execTx(ctx, tx, `
 		INSERT INTO auth_tokens (
 			id, token, description, created_at, expires_at, last_used_at, is_active,
-			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+			success_count, failure_count, stream_avg_ttfb, avg_duration, stream_count, duration_count, speed_output_tokens, speed_duration,
 			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
 			cost_used_microusd, cost_limit_microusd,
 			cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
 			cost_monthly_used_microusd, cost_monthly_limit_microusd, cost_monthly_period_start,
 			allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency, rpm_limit
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			token = VALUES(token),
 			description = VALUES(description),
@@ -362,9 +371,11 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			success_count = VALUES(success_count),
 			failure_count = VALUES(failure_count),
 			stream_avg_ttfb = VALUES(stream_avg_ttfb),
-			non_stream_avg_rt = VALUES(non_stream_avg_rt),
+			avg_duration = VALUES(avg_duration),
 			stream_count = VALUES(stream_count),
-			non_stream_count = VALUES(non_stream_count),
+			duration_count = VALUES(duration_count),
+			speed_output_tokens = VALUES(speed_output_tokens),
+			speed_duration = VALUES(speed_duration),
 			prompt_tokens_total = VALUES(prompt_tokens_total),
 			completion_tokens_total = VALUES(completion_tokens_total),
 			cache_read_tokens_total = VALUES(cache_read_tokens_total),
@@ -395,9 +406,11 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.SuccessCount,
 			token.FailureCount,
 			token.StreamAvgTTFB,
-			token.NonStreamAvgRT,
+			token.AvgDuration,
 			token.StreamCount,
-			token.NonStreamCount,
+			token.DurationCount,
+			token.SpeedOutputTokens,
+			token.SpeedDurationSeconds,
 			token.PromptTokensTotal,
 			token.CompletionTokensTotal,
 			token.CacheReadTokensTotal,
@@ -434,7 +447,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 // 的公共字段集合（除自增主键 id）。统计/成本字段以零值初始化，由后续 UpdateTokenStats 累计。
 const (
 	authTokenInsertCommonCols = `token, description, created_at, expires_at, last_used_at, is_active,
-		success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
+		success_count, failure_count, stream_avg_ttfb, avg_duration, stream_count, duration_count,
 		prompt_tokens_total, completion_tokens_total, total_cost_usd, effective_cost_usd, allowed_models, allowed_channel_ids,
 		channel_restriction_mode, cost_used_microusd, cost_limit_microusd,
 		cost_daily_limit_microusd, cost_monthly_limit_microusd, max_concurrency, rpm_limit`
@@ -854,7 +867,7 @@ func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, no
 // 使用事务保证原子性，采用增量计算公式避免扫描历史数据
 // 参数:
 //   - tokenHash: Token的SHA256哈希值
-//   - outcome: 计入成功/失败计数器，取消（499）两者都不计且不更新耗时统计
+//   - outcome: 计入成功/失败计数器，取消（499）两者都不计；首字节、耗时均值与输出速度只累计成功请求，与 logs 聚合口径一致
 //   - duration: 总响应时间(秒)
 //   - isStreaming: 是否为流式请求
 //   - firstByteTime: 流式请求的首字节时间(秒)，非流式时为0
@@ -880,9 +893,14 @@ func (s *SQLStore) UpdateTokenStats(
 	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
 	successFlag := outcome == model.TokenStatsSuccess
 	failureFlag := outcome == model.TokenStatsFailure
-	counted := outcome != model.TokenStatsCanceled
-	streamUpdateFlag := counted && isStreaming && firstByteTime > 0
-	nonStreamUpdateFlag := counted && !isStreaming
+	ttfbUpdateFlag := successFlag && isStreaming && firstByteTime > 0
+	durationUpdateFlag := successFlag && duration > 0
+	var speedOutputTokens int64
+	var speedDuration float64
+	if successFlag && completionTokens > 0 && duration > 0 {
+		speedOutputTokens = completionTokens
+		speedDuration = speedGenerationSeconds(duration, isStreaming, firstByteTime)
+	}
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
 	dayStartMs, monthStartMs := model.AuthTokenCostPeriodStarts(completedAt)
 
@@ -900,10 +918,11 @@ func (s *SQLStore) UpdateTokenStats(
 		dayStartMs, dayStartMs,
 		monthStartMs, costMicroUSD, monthStartMs, costMicroUSD,
 		monthStartMs, monthStartMs,
-		streamUpdateFlag, firstByteTime,
-		streamUpdateFlag,
-		nonStreamUpdateFlag, duration,
-		nonStreamUpdateFlag,
+		ttfbUpdateFlag, firstByteTime,
+		ttfbUpdateFlag,
+		durationUpdateFlag, duration,
+		durationUpdateFlag,
+		speedOutputTokens, speedDuration,
 		completedAt.UnixMilli(), completedAt.UnixMilli(),
 		tokenHash,
 	)

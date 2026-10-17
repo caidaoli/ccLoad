@@ -95,7 +95,7 @@ type foundRowsRows struct {
 func (r *foundRowsRows) Columns() []string {
 	return []string{
 		"id", "token", "description", "created_at", "expires_at", "last_used_at", "is_active",
-		"success_count", "failure_count", "stream_avg_ttfb", "non_stream_avg_rt", "stream_count", "non_stream_count",
+		"success_count", "failure_count", "stream_avg_ttfb", "avg_duration", "stream_count", "duration_count", "speed_output_tokens", "speed_duration",
 		"prompt_tokens_total", "completion_tokens_total", "cache_read_tokens_total", "cache_creation_tokens_total", "total_cost_usd", "effective_cost_usd",
 		"cost_used_microusd", "cost_limit_microusd",
 		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
@@ -133,9 +133,11 @@ func authTokenDriverValues(token *model.AuthToken) []driver.Value {
 		token.SuccessCount,
 		token.FailureCount,
 		token.StreamAvgTTFB,
-		token.NonStreamAvgRT,
+		token.AvgDuration,
 		token.StreamCount,
-		token.NonStreamCount,
+		token.DurationCount,
+		token.SpeedOutputTokens,
+		token.SpeedDurationSeconds,
 		token.PromptTokensTotal,
 		token.CompletionTokensTotal,
 		token.CacheReadTokensTotal,
