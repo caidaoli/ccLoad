@@ -1,18 +1,20 @@
     // 首页摘要：全局计数与入口协议/认证类型/模型/渠道各维度汇总
     let statsData = { by_client_protocol: {}, by_auth_type: {}, by_model: [], by_channel: [] };
     let usageRankMetric = 'requests';
-    // Token 构成当前渲染的汇总与悬停/点击选中的分段（tone，空为未选中）
-    let tokenMixTotals = null;
+    // Token 构成悬停/点击选中的分段（tone，空为未选中）
     let tokenMixActive = '';
     // 迷你趋势当前序列与悬停的数据点（metric:index，空为未悬停）
     let sparkSeries = null;
     let sparkHover = '';
+    // 最近一次渲染的全局指标，Token 构成提示框取其用量
+    let overviewTotals = null;
 
     // 当前选中的时间范围
     let currentTimeRange = 'today';
     let currentCustomTimeRange = null;
     let serviceHealthModel = null;
     let dashboardLoadGeneration = 0;
+    let dashboardUpdatedAt = null;
 
     const SPARK_MAX_POINTS = 48;
     const USAGE_RANK_LIMIT = 5;
@@ -56,26 +58,27 @@
       { key: 'system_one', label: 'System One', icon: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></g>' }
     ]);
 
-    // 渠道认证类型的显示名；图标与渠道管理页共用 channel-provider-icons.js
+    // 渠道认证类型的显示名与渠道管理页筛选一致；图标共用 channel-provider-icons.js
     const AUTH_TYPE_LABEL_KEYS = Object.freeze({
-      api_key: 'index.channels.api',
-      codex_oauth: 'index.channels.codex',
-      antigravity_oauth: 'index.channels.antigravity',
-      codebuddy_oauth: 'index.channels.codebuddy',
-      xai_oauth: 'index.channels.xai',
-      anthropic_oauth: 'index.channels.anthropic',
-      zai_oauth: 'index.channels.zai',
-      cursor_oauth: 'index.channels.cursor',
-      zed_oauth: 'index.channels.zed',
-      vertex_oauth: 'index.channels.vertex'
+      api_key: 'channels.authTypeAPI',
+      codex_oauth: 'channels.authTypeCodex',
+      antigravity_oauth: 'channels.authTypeAntigravity',
+      codebuddy_oauth: 'channels.authTypeCodeBuddy',
+      xai_oauth: 'channels.authTypeXAI',
+      anthropic_oauth: 'channels.authTypeAnthropic',
+      zai_oauth: 'channels.authTypeZAI',
+      system_one: 'channels.authTypeSystemOne',
+      cursor_oauth: 'channels.authTypeCursor',
+      zed_oauth: 'channels.authTypeZed',
+      vertex_oauth: 'channels.authTypeVertex'
     });
 
-    // Token 构成的分段顺序即环形图绘制顺序
+    // Token 构成的分段顺序即横条绘制顺序
     const TOKEN_MIX_PARTS = Object.freeze([
-      { key: 'inputTokens', labelKey: 'index.tokenMix.input', fallback: '未缓存输入', tone: 'input' },
+      { key: 'inputTokens', labelKey: 'index.tokenMix.input', fallback: '输入', tone: 'input' },
+      { key: 'outputTokens', labelKey: 'index.tokenMix.output', fallback: '输出', tone: 'output' },
       { key: 'cacheReadTokens', labelKey: 'index.tokenMix.cacheRead', fallback: '缓存读取', tone: 'cache-read' },
-      { key: 'cacheCreationTokens', labelKey: 'index.tokenMix.cacheWrite', fallback: '缓存写入', tone: 'cache-write' },
-      { key: 'outputTokens', labelKey: 'index.tokenMix.output', fallback: '输出', tone: 'output' }
+      { key: 'cacheCreationTokens', labelKey: 'index.tokenMix.cacheCreation', fallback: '缓存创建', tone: 'cache-write' }
     ]);
 
     function overviewText(key, fallback, params) {
@@ -129,10 +132,9 @@
       return totals;
     }
 
-    function formatOverviewCost(stat) {
-      const total = toNumber(stat && stat.total_cost);
-      return buildCostStackHtml(total, effectiveCostOf(stat), { tone: 'warning', inline: true })
-        || escapeHtml(formatCost(0));
+    // 费用 KPI 不需要三位小数，满 $1 取两位
+    function formatOverviewCost(cost) {
+      return formatCost(cost, cost >= 1 ? 2 : undefined);
     }
 
     // 指标分桶 → 迷你趋势序列；桶数过多时合并相邻桶，保持折线可读。
@@ -141,22 +143,21 @@
       const points = Array.isArray(metrics) ? metrics : [];
       const chunk = Math.max(1, Math.ceil(points.length / SPARK_MAX_POINTS));
       const bucketMs = toNumber(bucketMinutes) * 60 * 1000;
-      const series = { requests: [], tokens: [], cost: [], starts: [], ends: [] };
+      const series = { requests: [], errors: [], cost: [], starts: [], ends: [] };
       for (let start = 0; start < points.length; start += chunk) {
         const group = points.slice(start, start + chunk);
         let requests = 0;
-        let tokens = 0;
+        let errors = 0;
         let cost = 0;
         for (const point of group) {
           if (!point) continue;
           requests += toNumber(point.success) + toNumber(point.error);
-          tokens += toNumber(point.input_tokens) + toNumber(point.output_tokens)
-            + toNumber(point.cache_read_tokens) + toNumber(point.cache_creation_tokens);
+          errors += toNumber(point.error);
           cost += effectiveCostOf(point);
         }
         const startMs = Date.parse(group[0] && group[0].ts);
         series.requests.push(requests);
-        series.tokens.push(tokens);
+        series.errors.push(errors);
         series.cost.push(cost);
         series.starts.push(Number.isFinite(startMs) ? startMs : null);
         series.ends.push(Number.isFinite(startMs) && bucketMs > 0 ? startMs + group.length * bucketMs : null);
@@ -174,6 +175,10 @@
       }));
     }
 
+    function sparkPath(points) {
+      return points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join('');
+    }
+
     function renderSparkline(id, values) {
       const svg = document.getElementById(id);
       if (!svg) return;
@@ -182,12 +187,10 @@
         return;
       }
       if (values.length < 2 || Math.max(0, ...values) <= 0) {
-        svg.innerHTML = '<path class="overview-spark-line" d="M0 31H100"/>';
+        svg.innerHTML = '<path class="overview-spark-line overview-spark-line--flat" d="M0 31H100"/>';
         return;
       }
-      const line = sparkCoords(values)
-        .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-        .join('');
+      const line = sparkPath(sparkCoords(values));
       svg.innerHTML = `<path class="overview-spark-area" d="${line}L100 32L0 32Z"/><path class="overview-spark-line" d="${line}"/>`;
     }
 
@@ -195,7 +198,6 @@
       sparkSeries = series;
       hideSparkTooltip();
       renderSparkline('overview-requests-spark', series && series.requests);
-      renderSparkline('overview-tokens-spark', series && series.tokens);
       renderSparkline('overview-cost-spark', series && series.cost);
     }
 
@@ -227,6 +229,7 @@
       if (hoverKey === sparkHover) return;
       sparkHover = hoverKey;
 
+      const errors = metric === 'requests' ? sparkSeries.errors : null;
       const point = sparkCoords(values)[index];
       const x = rect.left + point.x / 100 * rect.width;
       const y = rect.top + point.y / 32 * rect.height;
@@ -234,6 +237,7 @@
       dot.hidden = false;
       dot.style.left = `${x - containerRect.left}px`;
       dot.style.top = `${y - containerRect.top}px`;
+      const failedCount = errors ? errors[index] : 0;
       dot.style.setProperty('--spark-color', getComputedStyle(svg).getPropertyValue('--spark-color'));
 
       const startMs = sparkSeries.starts[index];
@@ -244,7 +248,13 @@
       timeElement.textContent = hasTime
         ? `${formatter.format(new Date(startMs))} – ${formatter.format(new Date(endMs))}`
         : '';
-      valueElement.textContent = metric === 'cost' ? formatCost(values[index]) : formatNumber(values[index]);
+      const value = values[index];
+      if (metric === 'cost') valueElement.textContent = formatCost(value);
+      else if (failedCount > 0) {
+        const failed = overviewText('index.overview.failedCount', `${failedCount}\u00a0失败`, { count: formatNumber(failedCount) });
+        const rate = failedCount / value;
+        valueElement.textContent = `${formatNumber(value)} · ${failed} (${rate < 0.001 ? '<0.1%' : formatPercent(rate)})`;
+      } else valueElement.textContent = formatNumber(value);
       tooltip.hidden = false;
       placeOverviewTooltip(tooltip, container, { left: x, width: 0, top: y - 4, bottom: y + 4 });
     }
@@ -258,13 +268,6 @@
       }
     }
 
-    function renderRing(id, ratio) {
-      const arc = document.querySelector(`#${id} .overview-ring-value`);
-      if (!arc) return;
-      const percent = Number.isFinite(ratio) ? Math.min(Math.max(ratio, 0), 1) * 100 : 0;
-      arc.setAttribute('stroke-dasharray', `${percent.toFixed(2)} 100`);
-    }
-
     function renderOverviewKpis(totals) {
       document.getElementById('overview-requests').textContent = formatNumber(totals.requests);
       document.getElementById('overview-counts').textContent = overviewText(
@@ -272,85 +275,84 @@
         `${totals.success} 成功 · ${totals.error} 失败`,
         { success: formatNumber(totals.success), error: formatNumber(totals.error) }
       );
-      document.getElementById('overview-rate').textContent = formatPercent(totals.rate);
-      renderRing('overview-rate-ring', totals.rate);
-      document.getElementById('overview-rate-ring').dataset.state = window.ServiceHealth
+      const rateElement = document.getElementById('overview-rate');
+      rateElement.textContent = formatPercent(totals.rate);
+      rateElement.dataset.state = window.ServiceHealth
         ? window.ServiceHealth.classifyRate(totals.rate)
         : 'unknown';
       document.getElementById('overview-tokens').textContent = formatNumber(totals.totalTokens);
       document.getElementById('overview-tokens-detail').textContent = overviewText(
-        'index.overview.tokensDetail',
-        `输入 ${totals.promptTokens} · 输出 ${totals.outputTokens}`,
-        { input: formatNumber(totals.promptTokens), output: formatNumber(totals.outputTokens) }
+        'index.overview.cacheRateDetail',
+        `缓存率\u00a0${formatPercent(totals.cacheRate)}`,
+        { rate: formatPercent(totals.cacheRate) }
       );
-      document.getElementById('overview-cache-rate').textContent = formatPercent(totals.cacheRate);
-      renderRing('overview-cache-ring', totals.cacheRate);
-      document.getElementById('overview-cache-detail').textContent = overviewText(
-        'index.overview.cacheReadDetail',
-        `缓存读取 ${totals.cacheReadTokens}`,
-        { count: formatNumber(totals.cacheReadTokens) }
-      );
-      document.getElementById('overview-cost').innerHTML = formatOverviewCost({
-        total_cost: totals.cost,
-        effective_cost: totals.effectiveCost
-      });
+      // 主值为倍率后的实付费用；有倍率时副行给出原价
+      const cost = getCostDisplayInfo(totals.cost, totals.effectiveCost);
+      document.getElementById('overview-cost').textContent = formatOverviewCost(cost.effectiveCost);
+      document.getElementById('overview-cost-detail').textContent = cost.hasMultiplier
+        ? overviewText(
+          'index.overview.standardCost',
+          `原价\u00a0${formatOverviewCost(cost.standardCost)}`,
+          { cost: formatOverviewCost(cost.standardCost) }
+        )
+        : '';
     }
 
     function tokenMixShare(totals, value) {
       return totals.totalTokens > 0 ? value / totals.totalTokens : 0;
     }
 
+    // 图例只列名称与占比，用量在悬停/点击的提示框里给出
     function renderTokenMix(totals) {
-      const segments = document.getElementById('token-mix-segments');
+      const bar = document.getElementById('token-mix-bar');
       const legend = document.getElementById('token-mix-legend');
-      if (!segments || !legend) return;
-      tokenMixTotals = totals;
-      const arcs = [];
-      let offset = 0;
+      if (!bar || !legend) return;
+      overviewTotals = totals;
+      const segments = [];
       legend.innerHTML = TOKEN_MIX_PARTS.map(part => {
         const value = totals[part.key];
         const share = tokenMixShare(totals, value);
         if (share > 0) {
-          const length = share * 100;
-          arcs.push(`<circle class="token-mix-segment token-mix-segment--${part.tone}" data-part="${part.tone}" cx="21" cy="21" r="16" pathLength="100" stroke-dasharray="${length.toFixed(3)} ${(100 - length).toFixed(3)}" stroke-dashoffset="${(-offset).toFixed(3)}"/>`);
-          offset += length;
+          segments.push(`<span class="token-mix-segment token-mix-segment--${part.tone}" data-part="${part.tone}" style="flex:${share.toFixed(4)} 1 0;"></span>`);
         }
         return `<li class="token-mix-item" data-part="${part.tone}">
           <span class="token-mix-dot token-mix-dot--${part.tone}" aria-hidden="true"></span>
           <span class="token-mix-label">${escapeHtml(overviewText(part.labelKey, part.fallback))}</span>
-          <span class="token-mix-value">${formatNumber(value)}</span>
           <span class="token-mix-share">${formatPercent(share)}</span>
         </li>`;
       }).join('');
-      segments.innerHTML = arcs.join('');
-      renderTokenMixCenter();
+      bar.innerHTML = segments.join('');
+      renderTokenMixActive();
     }
 
-    // 环心默认显示总用量；选中分段时改为该分段的占比、名称与用量，其余分段与图例淡化
-    function renderTokenMixCenter() {
+    // 选中分段时横条与图例同时高亮该分段，其余淡化
+    function renderTokenMixActive() {
       const container = document.getElementById('token-mix');
-      const total = document.getElementById('token-mix-total');
-      const caption = document.getElementById('token-mix-caption');
-      const detail = document.getElementById('token-mix-detail');
-      if (!container || !total || !caption || !detail || !tokenMixTotals) return;
-      const part = TOKEN_MIX_PARTS.find(item => item.tone === tokenMixActive);
-      container.toggleAttribute('data-active', Boolean(part));
+      if (!container) return;
+      container.toggleAttribute('data-active', Boolean(tokenMixActive));
       for (const element of container.querySelectorAll('[data-part]')) {
         element.classList.toggle('is-active', element.dataset.part === tokenMixActive);
       }
-      detail.hidden = !part;
-      if (!part) {
-        total.textContent = formatNumber(tokenMixTotals.totalTokens);
-        caption.textContent = overviewText('index.tokenMix.total', '总用量');
-        return;
-      }
-      const value = tokenMixTotals[part.key];
-      total.textContent = formatPercent(tokenMixShare(tokenMixTotals, value));
-      caption.textContent = overviewText(part.labelKey, part.fallback);
-      detail.textContent = formatNumber(value);
     }
 
-    // 悬停或点击（触屏）色块/图例行选中分段，移出卡片恢复总用量
+    // 选中分段的名称、用量与占比，复用迷你趋势的提示框
+    function showTokenMixTooltip(target) {
+      const part = TOKEN_MIX_PARTS.find(item => item.tone === target.dataset.part);
+      const container = target.closest('.overview-kpis');
+      const tooltip = document.getElementById('overview-spark-tooltip');
+      const timeElement = document.getElementById('overview-spark-tooltip-time');
+      const valueElement = document.getElementById('overview-spark-tooltip-value');
+      if (!part || !overviewTotals || !container || !tooltip || !timeElement || !valueElement) return;
+      hideSparkTooltip();
+      const value = overviewTotals[part.key];
+      timeElement.hidden = false;
+      timeElement.textContent = overviewText(part.labelKey, part.fallback);
+      valueElement.textContent = `${formatNumber(value)} · ${formatPercent(tokenMixShare(overviewTotals, value))}`;
+      tooltip.hidden = false;
+      placeOverviewTooltip(tooltip, container, target.getBoundingClientRect());
+    }
+
+    // 悬停或点击（触屏）色块/图例行选中分段，移出横条与图例取消选中
     function bindTokenMix() {
       const container = document.getElementById('token-mix');
       if (!container) return;
@@ -359,13 +361,16 @@
         const next = target ? target.dataset.part : '';
         if (next === tokenMixActive) return;
         tokenMixActive = next;
-        renderTokenMixCenter();
+        renderTokenMixActive();
+        if (target) showTokenMixTooltip(target);
+        else hideSparkTooltip();
       };
       container.addEventListener('mouseover', selectPart);
       container.addEventListener('click', selectPart);
       container.addEventListener('mouseleave', () => {
         tokenMixActive = '';
-        renderTokenMixCenter();
+        renderTokenMixActive();
+        hideSparkTooltip();
       });
     }
 
@@ -373,11 +378,11 @@
       return `<span class="usage-avatar usage-avatar--${row.key}" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">${row.icon}</svg></span>`;
     }
 
+    // 无提供商标志时显示名称首字母，统一用中性底色
     function authTypeIconHtml(authType, label) {
-      const content = typeof window.channelAvatarContentHTML === 'function'
-        ? window.channelAvatarContentHTML(authType, label)
-        : escapeHtml(label.charAt(0));
-      return `<span class="usage-avatar channel-provider-avatar" data-auth-type="${escapeHtml(authType)}" aria-hidden="true">${content}</span>`;
+      const icon = typeof window.channelProviderIconSVG === 'function' ? window.channelProviderIconSVG(authType) : '';
+      const content = icon || escapeHtml((label.trim().charAt(0) || '?').toUpperCase());
+      return `<span class="usage-avatar channel-provider-avatar${icon ? '' : ' usage-avatar--letter'}" data-auth-type="${escapeHtml(authType)}" aria-hidden="true">${content}</span>`;
     }
 
     function summaryUsageRow(row, label, stat) {
@@ -428,11 +433,12 @@
         list.innerHTML = `<li class="usage-rank-empty">${escapeHtml(overviewText('index.rank.empty', '暂无数据'))}</li>`;
         return;
       }
-      list.innerHTML = ranked.map((row, index) => `<li class="usage-rank-item">
+      // 行底色按占比填充
+      list.innerHTML = ranked.map((row, index) => `<li class="usage-rank-item" style="--usage-share:${(row.share * 100).toFixed(1)}%;">
           <span class="usage-rank-index">${index + 1}</span>
           <span class="usage-rank-name" title="${escapeHtml(row.label)}">${iconOf ? iconOf(row) : ''}<span class="usage-rank-label">${escapeHtml(row.label)}</span></span>
           <span class="usage-rank-value">${escapeHtml(formatUsageMetric(row[usageRankMetric]))}</span>
-          <span class="usage-rank-share" style="--usage-share:${(row.share * 100).toFixed(1)}%;">${formatPercent(row.share)}</span>
+          <span class="usage-rank-share">${formatPercent(row.share)}</span>
         </li>`).join('');
     }
 
@@ -577,16 +583,15 @@
 
     function renderServiceHealth(model) {
       const grid = document.getElementById('service-health-grid');
-      const rateElement = document.getElementById('service-health-rate');
       const message = document.getElementById('service-health-message');
-      if (!grid || !rateElement || !message || !model) return;
+      if (!grid || !message || !model) return;
 
       hideServiceHealthTooltip();
       const timeFormatter = serviceHealthTimeFormatter();
       const fragment = document.createDocumentFragment();
       for (const [index, point] of model.points.entries()) {
         const cell = document.createElement('span');
-        cell.className = `service-health-cell ${point.state}`;
+        cell.className = `service-health-cell ${point.state}${point.pending ? ' pending' : ''}`;
         cell.setAttribute('aria-hidden', 'true');
         cell.dataset.index = String(index);
         fragment.appendChild(cell);
@@ -602,10 +607,6 @@
       const hasData = model.rate !== null;
       const rate = formatPercent(model.rate);
       const period = serviceHealthPeriodText();
-      rateElement.textContent = rate;
-      rateElement.dataset.state = model.state;
-      const periodElement = document.getElementById('service-health-period');
-      if (periodElement) periodElement.textContent = period;
       grid.setAttribute('aria-label', hasData
         ? overviewText(
           'index.health.summary',
@@ -618,18 +619,12 @@
           }
         )
         : overviewText('index.health.noData', `${period}暂无请求数据`, { period }));
-      const countsElement = document.getElementById('service-health-counts');
-      if (countsElement) {
-        const successFailed = hasData
-          ? overviewText(
-            'index.overview.successFailed',
-            `${model.success} 成功 · ${model.error} 失败`,
-            { success: formatNumber(model.success), error: formatNumber(model.error) }
-          )
+      // 请求卡副行在成功/失败后补限流次数（取自分桶数据）
+      const rateDetail = document.getElementById('overview-rate-detail');
+      if (rateDetail) {
+        rateDetail.textContent = model.rateLimited > 0
+          ? ` · ${overviewText('index.overview.rateLimited', `限流\u00a0${model.rateLimited}`, { count: formatNumber(model.rateLimited) })}`
           : '';
-        countsElement.textContent = hasData && model.rateLimited > 0
-          ? `${successFailed} · ${serviceHealthRateLimitedText(model.rateLimited)}`
-          : successFailed;
       }
       message.hidden = true;
       message.textContent = '';
@@ -637,11 +632,8 @@
 
     function renderServiceHealthUnavailable() {
       const message = document.getElementById('service-health-message');
-      const rateElement = document.getElementById('service-health-rate');
-      if (rateElement) {
-        rateElement.textContent = '--';
-        rateElement.dataset.state = 'unknown';
-      }
+      const rateDetail = document.getElementById('overview-rate-detail');
+      if (rateDetail) rateDetail.textContent = '';
       if (message) {
         message.hidden = false;
         message.textContent = overviewText(
@@ -676,6 +668,7 @@
       ]);
 
       if (generation !== dashboardLoadGeneration) return;
+      dashboardUpdatedAt = new Date();
 
       if (summaryResult.status === 'fulfilled') {
         statsData = summaryResult.value || statsData;
@@ -699,8 +692,22 @@
         renderServiceHealthUnavailable();
       }
 
+      renderUpdatedAt();
       if (refreshButton) refreshButton.setAttribute('aria-busy', 'false');
       if (grid) grid.setAttribute('aria-busy', 'false');
+    }
+
+    // 页头显示最近一次加载完成的时刻，自动刷新时可确认数据新鲜度
+    function renderUpdatedAt() {
+      const element = document.getElementById('overview-updated');
+      if (!element) return;
+      const time = new Intl.DateTimeFormat(serviceHealthLocale(), {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23'
+      }).format(dashboardUpdatedAt);
+      element.textContent = overviewText('index.overview.updatedAt', `${time} 更新`, { time });
     }
 
     // 更新统计显示
@@ -793,6 +800,7 @@
         window.i18n.onLocaleChange(() => {
           updateStatsDisplay();
           if (serviceHealthModel) renderServiceHealth(serviceHealthModel);
+          if (dashboardUpdatedAt) renderUpdatedAt();
         });
       }
 

@@ -153,10 +153,6 @@ test('overview spark series merges adjacent metric buckets beyond the point budg
     ts: new Date(Date.UTC(2026, 9, 14) + index * 15 * 60 * 1000).toISOString(),
     success: 1,
     error: index % 2,
-    input_tokens: 10,
-    output_tokens: 5,
-    cache_read_tokens: 3,
-    cache_creation_tokens: 2,
     total_cost: 0.2,
     effective_cost: index % 2 === 0 ? 0.1 : undefined
   }));
@@ -165,7 +161,7 @@ test('overview spark series merges adjacent metric buckets beyond the point budg
 
   assert.equal(series.requests.length, 48);
   assert.ok(series.requests.every(value => value === 3));
-  assert.ok(series.tokens.every(value => value === 40));
+  assert.ok(series.errors.every(value => value === 1));
   // 缺少 effective_cost 的桶按 total_cost 计入
   assert.ok(series.cost.every(value => Math.abs(value - 0.3) < 1e-9));
   // 每个点覆盖合并后的两个 15 分钟桶
@@ -178,9 +174,9 @@ test('overview spark series merges adjacent metric buckets beyond the point budg
   assert.equal(uneven.requests.length, 25);
   assert.equal(uneven.ends[24] - uneven.starts[24], 15 * 60 * 1000);
 
-  assert.deepEqual(buildSparkSeries(null, 15), { requests: [], tokens: [], cost: [], starts: [], ends: [] });
+  assert.deepEqual(buildSparkSeries(null, 15), { requests: [], errors: [], cost: [], starts: [], ends: [] });
   assert.deepEqual(buildSparkSeries([{ success: 2, error: 1 }], 15), {
-    requests: [3], tokens: [0], cost: [0], starts: [null], ends: [null]
+    requests: [3], errors: [1], cost: [0], starts: [null], ends: [null]
   });
 });
 
