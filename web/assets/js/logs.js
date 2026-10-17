@@ -54,6 +54,10 @@ const LOG_COLUMNS = [
   { key: 'message',     cls: 'logs-col-message',     i18n: 'logs.colMessage' },
 ];
 
+// 窄桌面放不下全部列，这些列默认隐藏；列设置里的显式选择优先
+const LOGS_NARROW_HIDDEN_COLUMNS = new Set(['ip', 'tokenDesc']);
+const logsNarrowDesktopQuery = window.matchMedia?.('(min-width: 769px) and (max-width: 1439px)');
+
 let colVisibility = {};
 let colStyleEl = null;
 
@@ -71,7 +75,7 @@ function loadColVisibility() {
 function saveColVisibility() {
   const toSave = {};
   for (const col of LOG_COLUMNS) {
-    if (colVisibility[col.key] === false) toSave[col.key] = false;
+    if (typeof colVisibility[col.key] === 'boolean') toSave[col.key] = colVisibility[col.key];
   }
   if (Object.keys(toSave).length === 0) {
     localStorage.removeItem(LOGS_COL_STORAGE_KEY);
@@ -80,8 +84,12 @@ function saveColVisibility() {
   }
 }
 
+function defaultColVisible(key) {
+  return !(logsNarrowDesktopQuery?.matches && LOGS_NARROW_HIDDEN_COLUMNS.has(key));
+}
+
 function isColVisible(key) {
-  return colVisibility[key] !== false;
+  return colVisibility[key] ?? defaultColVisible(key);
 }
 
 function applyColVisibility() {
@@ -114,7 +122,12 @@ function renderColToggleMenu() {
       e.preventDefault();
       e.stopPropagation();
       const newVisible = !isColVisible(col.key);
-      colVisibility[col.key] = newVisible;
+      // 只记住与当前宽度默认值不同的选择，切回默认即恢复自动
+      if (newVisible === defaultColVisible(col.key)) {
+        delete colVisibility[col.key];
+      } else {
+        colVisibility[col.key] = newVisible;
+      }
       item.dataset.visible = String(newVisible);
       saveColVisibility();
       applyColVisibility();
@@ -329,8 +342,9 @@ function buildChannelTrigger(channelId, channelName, baseURL = '') {
     return '<span style="color: var(--neutral-500);">-</span>';
   }
 
-  const channelTooltip = baseURL ? ` title="${escapeHtml(baseURL)}"` : '';
-  return `<button type="button" class="channel-link" data-channel-id="${channelId}"${channelTooltip}>${escapeHtml(channelName)}</button>`;
+  // 桌面表格里渠道名可能被省略，提示里放全名
+  const tooltip = [channelName, baseURL].filter(Boolean).map(escapeHtml).join('&#10;');
+  return `<button type="button" class="channel-link" data-channel-id="${channelId}" title="${tooltip}">${escapeHtml(channelName)}</button>`;
 }
 
 function buildActiveRequestChannelDisplay(req) {
@@ -461,7 +475,9 @@ function buildThinkingEffortBadge(thinkingEffort, reasoningTokens, clientEffort 
   if (effort) titleParts.push(escapeHtml(t('logs.titleThinkingEffort', { effort: effortText })));
   if (tokens > 0) titleParts.push(escapeHtml(t('logs.titleReasoningTokens', { tokens })));
   const title = titleParts.join('&#10;');
-  return `<sup class="thinking-effort-badge" title="${title}">${escapeHtml(text)}</sup>`;
+  // 角标是粗体，粗体 → 的字形与重定向箭头不同；箭头单独取消加粗以保持一致
+  const html = escapeHtml(text).replace('→', '<span class="thinking-effort-arrow">→</span>');
+  return `<sup class="thinking-effort-badge" title="${title}">${html}</sup>`;
 }
 
 // 判断两个模型名是否只是前缀/后缀写法不同，此类差异不算模型重定向：
@@ -514,7 +530,7 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningToken
   return `<span class="model-display">
       <span class="${classes.join(' ')}"${title}>
         <span class="model-text">${escapeHtml(model)}</span>
-        ${redirected ? `<span class="model-actual"><span class="model-actual-arrow" aria-hidden="true">↳</span><span class="model-text">${escapeHtml(actualModel)}</span></span>` : ''}
+        ${redirected ? `<span class="model-actual"><span aria-hidden="true">→</span><span class="model-text">${escapeHtml(actualModel)}</span></span>` : ''}
       </span>
       ${badgeHtml}
     </span>`;
@@ -1933,6 +1949,10 @@ window.initPageBootstrap({
   run: async () => {
   initLogsPageActions();
   applyColVisibility();
+  logsNarrowDesktopQuery?.addEventListener('change', () => {
+    applyColVisibility();
+    renderColToggleMenu();
+  });
   document.addEventListener('click', closeColMenuOnClickOutside);
 
   // 优先从 URL 读取，其次从 localStorage 恢复，默认 all
@@ -2906,7 +2926,7 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay, buildCacheCreationDisplay };
+  module.exports = { isPrefixOrSuffixVariant, buildLogModelDisplay, buildCacheCreationDisplay, applyColVisibility, renderColToggleMenu };
 }
 
 if (typeof window !== 'undefined') {

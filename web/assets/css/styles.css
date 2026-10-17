@@ -1086,7 +1086,7 @@ html[data-resolved-theme="dark"] ::selection {
 .channel-provider-avatar[data-auth-type="vertex_oauth"] { background: #4285f4; }
 
 /* ===== 首页总览 ===== */
-/* 页头：标题与更新时间在左，时间范围与刷新在右 */
+/* 页头：标题与更新时间在左，时间范围在右 */
 .overview-header {
   display: flex;
   flex-wrap: wrap;
@@ -1122,30 +1122,6 @@ html[data-resolved-theme="dark"] ::selection {
   min-width: 0;
 }
 
-.overview-refresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-lg);
-  background: var(--surface-bg-strong);
-  color: var(--neutral-700);
-  cursor: pointer;
-  transition: background var(--duration-normal), color var(--duration-normal);
-}
-
-.overview-refresh:hover {
-  background: var(--surface-hover);
-  color: var(--neutral-900);
-}
-
-.overview-refresh[aria-busy="true"] svg {
-  animation: spin 1s linear infinite;
-}
-
 .overview-kpis {
   position: relative;
   display: grid;
@@ -1153,11 +1129,11 @@ html[data-resolved-theme="dark"] ::selection {
   gap: var(--space-4);
 }
 
-/* 迷你趋势贴卡片底边铺满，由卡片圆角裁切 */
+/* 迷你趋势收在内边距内，与 Token 卡的构成条同一边线、同一底部留白 */
 .overview-kpi {
   display: flex;
   flex-direction: column;
-  padding: var(--space-5) var(--space-5) 0;
+  padding: var(--space-5);
 }
 
 .overview-kpi-label {
@@ -1224,9 +1200,9 @@ html[data-resolved-theme="dark"] ::selection {
 .overview-spark {
   display: block;
   flex: 1 0 44px;
-  width: calc(100% + 2 * var(--space-5));
+  width: 100%;
   min-height: 44px;
-  margin: var(--space-3) calc(-1 * var(--space-5)) 0;
+  margin-top: var(--space-3);
   cursor: crosshair;
 }
 
@@ -1275,32 +1251,7 @@ html[data-resolved-theme="dark"] ::selection {
   padding: var(--space-5) var(--space-6);
 }
 
-.overview-card-title {
-  margin: 0 0 var(--space-4);
-  color: var(--neutral-900);
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  line-height: var(--leading-tight);
-}
-
-.overview-card-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-}
-
-.overview-card-header .overview-card-title {
-  margin: 0;
-}
-
 /* Token 卡底部的构成：分段横条 + 两列图例 */
-.overview-kpi--tokens {
-  padding-bottom: var(--space-4);
-}
-
 .token-mix {
   display: flex;
   flex-direction: column;
@@ -1519,16 +1470,11 @@ html[data-resolved-theme="dark"] ::selection {
   }
 
   .overview-header .time-range-container {
-    order: 3;
     width: 100%;
   }
 
   .overview-kpi {
-    padding: var(--space-4) var(--space-4) 0;
-  }
-
-  .overview-kpi--tokens {
-    padding-bottom: var(--space-4);
+    padding: var(--space-4);
   }
 
   .overview-kpi-value {
@@ -1541,9 +1487,7 @@ html[data-resolved-theme="dark"] ::selection {
 
   .overview-spark {
     flex-basis: 36px;
-    width: calc(100% + 2 * var(--space-4));
     min-height: 36px;
-    margin-inline: calc(-1 * var(--space-4));
   }
 
   .overview-card {
@@ -1561,8 +1505,10 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 /* 悬停提示需越出卡片边界，不能裁剪 */
+/* 底部是一行小字说明，收窄底部内边距，使说明到底边与到格子等距 */
 .service-health-card {
   overflow: visible;
+  padding-bottom: var(--space-3);
 }
 
 .service-health-plot {
@@ -1695,6 +1641,15 @@ html[data-resolved-theme="dark"] ::selection {
   color: var(--neutral-600);
 }
 
+/* 格子下方的居中小字说明，兼作区块名称 */
+.service-health-caption {
+  margin: var(--space-3) 0 0;
+  color: var(--neutral-500);
+  font-size: var(--text-xs);
+  line-height: 1;
+  text-align: center;
+}
+
 .service-health-message {
   margin: var(--space-3) 0 0;
   color: var(--neutral-600);
@@ -1792,8 +1747,7 @@ html[data-resolved-theme="dark"] ::selection {
   position: relative;
 }
 
-.time-range-selector,
-.usage-rank-selector {
+.time-range-selector {
   display: inline-flex;
   gap: 0;
   background: var(--surface-bg-strong);
@@ -1801,6 +1755,11 @@ html[data-resolved-theme="dark"] ::selection {
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   max-width: 100%;
+}
+
+/* 深色背景上阴影不可见，改用与卡片同色的细描边（box-shadow 描边不占布局） */
+html[data-resolved-theme="dark"] .time-range-selector {
+  box-shadow: 0 0 0 1px var(--glass-border);
 }
 
 /* JS 渲染按钮前按按钮行高占位，避免首屏高度跳变 */
@@ -1811,8 +1770,7 @@ html[data-resolved-theme="dark"] ::selection {
   line-height: 1.5;
 }
 
-.time-range-btn,
-.usage-rank-selector button {
+.time-range-btn {
   padding: 6px 16px;
   border-radius: 6px;
   color: var(--neutral-600);
@@ -1832,17 +1790,47 @@ html[data-resolved-theme="dark"] ::selection {
   white-space: nowrap;
 }
 
-.time-range-btn:hover,
-.usage-rank-selector button:hover {
+.time-range-btn:hover {
   color: var(--neutral-900);
   background: var(--surface-hover);
 }
 
-.time-range-btn.active,
-.usage-rank-selector button.active {
+.time-range-btn.active {
   background: transparent;
   color: #4f46e5;
   font-weight: 500;
+}
+
+/* 排行指标切换：卡片顶部下划线 tab，只作用于本卡片，与页头胶囊式的时间范围区分 */
+.usage-rank-selector {
+  display: flex;
+  gap: var(--space-6);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.usage-rank-selector button {
+  margin-bottom: -1px;
+  padding: 0 0 var(--space-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--neutral-500);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.usage-rank-selector button:hover {
+  color: var(--neutral-900);
+}
+
+.usage-rank-selector button.active {
+  border-bottom-color: #4f46e5;
+  color: #4f46e5;
+  font-weight: var(--font-medium);
 }
 
 .filter-custom-range-host {
@@ -2291,21 +2279,18 @@ html[data-resolved-theme="dark"] ::selection {
     justify-content: flex-start;
   }
 
-  .time-range-selector,
-  .usage-rank-selector {
+  .time-range-selector {
     width: 100%;
     overflow-x: auto;
     white-space: nowrap;
     justify-content: flex-start;
   }
 
-  .time-range-selector::-webkit-scrollbar,
-  .usage-rank-selector::-webkit-scrollbar {
+  .time-range-selector::-webkit-scrollbar {
     display: none;
   }
 
-  .time-range-btn,
-  .usage-rank-selector button {
+  .time-range-btn {
     flex: 0 0 auto;
     padding: 6px 12px;
   }

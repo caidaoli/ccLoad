@@ -115,7 +115,6 @@ window.I18N_LOCALES['en'] = {
   'index.customRange.startTime': 'Start time',
   'index.customRange.endTime': 'End time',
   'index.overview.title': 'Overview',
-  'index.overview.refresh': 'Refresh',
   'index.overview.updatedAt': 'Updated {time}',
   'index.overview.loadFailed': 'Failed to load statistics',
   'index.overview.totalRequests': 'Total Requests',

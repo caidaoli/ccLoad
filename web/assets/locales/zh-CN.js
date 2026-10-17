@@ -115,7 +115,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.customRange.startTime': '开始时间',
   'index.customRange.endTime': '结束时间',
   'index.overview.title': '概览',
-  'index.overview.refresh': '刷新',
   'index.overview.updatedAt': '{time} 更新',
   'index.overview.loadFailed': '无法加载统计数据',
   'index.overview.totalRequests': '请求总数',

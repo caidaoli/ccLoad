@@ -416,7 +416,7 @@ test('reasoning logs show a level change on the model badge and the judgment in 
         reasoning_decision: {status: 'decided', suggested_effort: 'xhigh', confidence: 0.554, duration_ms: 12, cost_unknown: true}},
       {time: Date.now(), model: 'judge', status_code: 504, duration: 0, log_source: 'proxy', client_protocol: 'system_one',
         reasoning_decision: {status: 'fallback', reason: 'timeout'}}]}, ({tbody}) => {
-      const badges = [...tbody.innerHTML.matchAll(/<sup[^>]*>([^<]*)<\/sup>/g)].map(match => match[1]);
+      const badges = [...tbody.innerHTML.matchAll(/<sup[^>]*>(.*?)<\/sup>/g)].map(match => match[1].replace(/<[^>]+>/g, ''));
       assert.deepEqual(badges, ['xhigh→low 72', 'high', 'max→xhigh', 'medium']);
       assert.doesNotMatch(tbody.innerHTML, /logs\.reasoning\.changed/);
       assert.match(tbody.innerHTML, /logs.reasoning.judged xhigh(logs.reasoning.confidence 0.55)?/);
@@ -432,4 +432,78 @@ test('unknown decision cost does not replace known business request cost', async
     assert.doesNotMatch(tbody.innerHTML, /logs.costUnknown/);
     assert.match(tbody.innerHTML, /0.25/);
   });
+});
+
+test('narrow desktop hides IP and token columns by default while explicit choices persist', () => {
+  const previousGlobals = new Map();
+  const setGlobal = (key, value) => {
+    if (!previousGlobals.has(key)) previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const noop = () => {};
+  const storage = new Map();
+  const loadPage = (narrow) => {
+    const styles = [];
+    const menuItems = [];
+    const element = () => {
+      const listeners = {};
+      return {
+        dataset: {},
+        addEventListener: (type, handler) => { listeners[type] = handler; },
+        click: () => listeners.click({ preventDefault: noop, stopPropagation: noop })
+      };
+    };
+    const list = { set innerHTML(_) { menuItems.length = 0; }, appendChild: item => menuItems.push(item) };
+    setGlobal('window', {
+      t: key => key,
+      initPageBootstrap: noop,
+      addEventListener: noop,
+      matchMedia: query => ({ matches: narrow && query.includes('max-width: 1439px'), addEventListener: noop })
+    });
+    setGlobal('document', {
+      addEventListener: noop,
+      getElementById: id => id === 'colToggleList' ? list : null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: element,
+      head: { appendChild: style => styles.push(style) }
+    });
+    setGlobal('localStorage', {
+      getItem: key => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key)
+    });
+    delete require.cache[require.resolve('./logs.js')];
+    const logs = require('./logs.js');
+    logs.applyColVisibility();
+    logs.renderColToggleMenu();
+    const hiddenColumns = () => [...styles[0].textContent.matchAll(/\.logs-table \.logs-col-([\w-]+) \{ display: none !important; \}/g)].map(m => m[1]);
+    const toggle = key => menuItems.find(item => item.dataset.colKey === key).click();
+    return { hiddenColumns, toggle };
+  };
+
+  try {
+    let page = loadPage(true);
+    assert.deepEqual(page.hiddenColumns(), ['ip', 'token-desc']);
+
+    page.toggle('ip');
+    assert.deepEqual(page.hiddenColumns(), ['token-desc']);
+    assert.deepEqual(JSON.parse(storage.get('ccload_logs_columns')), { ip: true });
+
+    page.toggle('ip');
+    assert.deepEqual(page.hiddenColumns(), ['ip', 'token-desc']);
+    assert.equal(storage.has('ccload_logs_columns'), false);
+
+    storage.set('ccload_logs_columns', JSON.stringify({ ip: true, cost: false }));
+    page = loadPage(true);
+    assert.deepEqual(page.hiddenColumns(), ['token-desc', 'cost']);
+    page = loadPage(false);
+    assert.deepEqual(page.hiddenColumns(), ['cost']);
+  } finally {
+    delete require.cache[require.resolve('./logs.js')];
+    for (const [key, descriptor] of previousGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
 });

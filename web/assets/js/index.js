@@ -679,8 +679,6 @@
       const generation = ++dashboardLoadGeneration;
       const dateRangeQuery = buildCurrentDateRangeQuery();
       const grid = document.getElementById('service-health-grid');
-      const refreshButton = document.getElementById('overview-refresh');
-      if (refreshButton) refreshButton.setAttribute('aria-busy', 'true');
       if (grid) grid.setAttribute('aria-busy', 'true');
 
       const healthRequest = window.ServiceHealth
@@ -722,7 +720,6 @@
       }
 
       renderUpdatedAt();
-      if (refreshButton) refreshButton.setAttribute('aria-busy', 'false');
       if (grid) grid.setAttribute('aria-busy', 'false');
     }
 
@@ -823,7 +820,6 @@
 
       // 摘要（含排行）与服务健康检测共用同一日期范围快照。
       loadDashboard();
-      document.getElementById('overview-refresh')?.addEventListener('click', loadDashboard);
 
       if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
         window.i18n.onLocaleChange(() => {

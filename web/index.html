@@ -29,7 +29,7 @@
     <!-- 主内容区域 -->
     <main class="main-content index-main-content">
       <div class="content-area">
-        <!-- 页头：标题与更新时间在左，时间范围与刷新在右；窄屏时间范围换到第二行 -->
+        <!-- 页头：标题与更新时间在左，时间范围在右；窄屏时间范围换到第二行 -->
         <header class="overview-header mb-4">
           <div class="overview-heading">
             <h1 class="overview-title" data-i18n="index.overview.title">概览</h1>
@@ -38,9 +38,6 @@
           <div class="time-range-container">
             <div id="index-time-range" class="time-range-selector"></div>
           </div>
-          <button type="button" id="overview-refresh" class="overview-refresh" data-i18n-title="index.overview.refresh" title="刷新" data-i18n-aria-label="index.overview.refresh" aria-label="刷新">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-          </button>
         </header>
 
         <!-- 全局指标：迷你趋势取自服务健康同一份分桶数据；Token 卡底部为构成横条 -->
@@ -79,16 +76,13 @@
           </div>
         </section>
 
-        <!-- 用量来源排行 -->
-        <section class="mb-4">
+        <!-- 用量来源排行：不设可见标题，卡片顶部 tab 切换排行指标 -->
+        <section class="mb-4" data-i18n-aria-label="index.rank.title" aria-label="用量来源">
           <div class="glass-card overview-card">
-            <div class="overview-card-header">
-              <h2 class="overview-card-title" data-i18n="index.rank.title">用量来源</h2>
-              <div class="usage-rank-selector" id="usage-rank-metric" role="group" data-i18n-aria-label="index.rank.metric" aria-label="排行指标">
-                <button type="button" class="active" data-metric="requests" aria-pressed="true" data-i18n="index.rank.requests">请求数</button>
-                <button type="button" data-metric="tokens" aria-pressed="false" data-i18n="index.rank.tokens">Token 用量</button>
-                <button type="button" data-metric="cost" aria-pressed="false" data-i18n="index.rank.cost">费用</button>
-              </div>
+            <div class="usage-rank-selector" id="usage-rank-metric" role="group" data-i18n-aria-label="index.rank.metric" aria-label="排行指标">
+              <button type="button" class="active" data-metric="requests" aria-pressed="true" data-i18n="index.rank.requests">请求数</button>
+              <button type="button" data-metric="tokens" aria-pressed="false" data-i18n="index.rank.tokens">Token 用量</button>
+              <button type="button" data-metric="cost" aria-pressed="false" data-i18n="index.rank.cost">费用</button>
             </div>
             <div class="usage-rank-grid">
               <section class="usage-rank" aria-labelledby="usage-rank-model-title">
@@ -111,10 +105,9 @@
           </div>
         </section>
 
-        <!-- 服务健康监测 -->
-        <section class="mb-4">
-          <div class="glass-card overview-card service-health-card" aria-labelledby="service-health-title">
-            <h2 id="service-health-title" class="overview-card-title" data-i18n="index.health.title">服务健康监测</h2>
+        <!-- 服务健康监测：名称作为格子下方的居中说明 -->
+        <section class="mb-4" aria-labelledby="service-health-title">
+          <div class="glass-card overview-card service-health-card">
             <div class="service-health-plot">
               <div
                 id="service-health-grid"
@@ -135,6 +128,7 @@
                 </div>
               </div>
             </div>
+            <p id="service-health-title" class="service-health-caption" data-i18n="index.health.title">服务健康监测</p>
             <p id="service-health-message" class="service-health-message" role="status" hidden></p>
           </div>
         </section>
