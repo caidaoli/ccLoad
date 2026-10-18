@@ -40,33 +40,37 @@
           </div>
         </header>
 
-        <!-- 全局指标：迷你趋势取自服务健康同一份分桶数据；Token 卡底部为构成横条 -->
+        <!-- 全局指标：迷你趋势取自服务健康同一份分桶数据；Token 卡为构成图例，横条压底与迷你趋势底线对齐 -->
         <section class="overview-kpis mb-4">
           <div class="glass-card overview-kpi">
             <div class="overview-kpi-label" data-i18n="index.overview.totalRequests">请求总数</div>
             <div class="overview-kpi-value-row">
               <div class="overview-kpi-value" id="overview-requests">0</div>
+              <div class="overview-kpi-sub"><span id="overview-counts"></span><span id="overview-rate-detail"></span></div>
               <div class="overview-kpi-rate">
                 <span data-i18n="index.overview.successRate">成功率</span>
                 <strong id="overview-rate" data-state="unknown">--</strong>
               </div>
             </div>
-            <div class="overview-kpi-sub"><span id="overview-counts"></span><span id="overview-rate-detail"></span></div>
             <svg id="overview-requests-spark" class="overview-spark overview-spark--requests" data-metric="requests" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true"></svg>
           </div>
           <div class="glass-card overview-kpi overview-kpi--tokens">
             <div class="overview-kpi-label" data-i18n="index.overview.totalTokens">Token 用量</div>
-            <div class="overview-kpi-value" id="overview-tokens">0</div>
-            <div class="overview-kpi-sub" id="overview-tokens-detail"></div>
+            <div class="overview-kpi-value-row">
+              <div class="overview-kpi-value" id="overview-tokens">0</div>
+              <div class="overview-kpi-sub" id="overview-tokens-detail"></div>
+            </div>
             <div id="token-mix" class="token-mix">
-              <div id="token-mix-bar" class="token-mix-bar" aria-hidden="true"></div>
               <ul id="token-mix-legend" class="token-mix-legend"></ul>
+              <div id="token-mix-bar" class="token-mix-bar" aria-hidden="true"></div>
             </div>
           </div>
           <div class="glass-card overview-kpi">
             <div class="overview-kpi-label" data-i18n="index.overview.totalCost">总费用</div>
-            <div class="overview-kpi-value" id="overview-cost">$0</div>
-            <div class="overview-kpi-sub" id="overview-cost-detail"></div>
+            <div class="overview-kpi-value-row">
+              <div class="overview-kpi-value" id="overview-cost">$0</div>
+              <div class="overview-kpi-sub" id="overview-cost-detail"></div>
+            </div>
             <svg id="overview-cost-spark" class="overview-spark overview-spark--cost" data-metric="cost" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true"></svg>
           </div>
           <span id="overview-spark-dot" class="overview-spark-dot" aria-hidden="true" hidden></span>

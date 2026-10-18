@@ -120,7 +120,6 @@ window.I18N_LOCALES['en'] = {
   'index.overview.totalRequests': 'Total Requests',
   'index.overview.successRate': 'Success Rate',
   'index.overview.totalCost': 'Total Cost',
-  'index.overview.successFailed': '{success}\u00a0succeeded · {error}\u00a0failed',
   'index.overview.failedCount': '{count}\u00a0failed',
   'index.overview.rateLimited': '{count}\u00a0rate-limited',
   'index.overview.cacheRateDetail': 'Cache hit rate\u00a0{rate}',

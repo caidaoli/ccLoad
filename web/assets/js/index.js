@@ -8,8 +8,6 @@
     // 迷你趋势当前序列与悬停的数据点（metric:index，空为未悬停）
     let sparkSeries = null;
     let sparkHover = '';
-    // 最近一次渲染的全局指标，Token 构成提示框取其用量
-    let overviewTotals = null;
 
     // 当前选中的时间范围
     let currentTimeRange = 'today';
@@ -18,7 +16,7 @@
     let dashboardLoadGeneration = 0;
     let dashboardUpdatedAt = null;
 
-    const SPARK_MAX_POINTS = 48;
+    const SPARK_MAX_POINTS = 96;
     const USAGE_RANK_LIMIT = 5;
 
     // 时间范围同步到 URL（range/start_time/end_time）与 localStorage，刷新/分享后保持一致
@@ -177,8 +175,29 @@
       }));
     }
 
+    // 单调三次曲线（同 d3.curveMonotoneX）：经过每个数据点，段内不越过两端值，峰值不被抬高、零值不下穿
     function sparkPath(points) {
-      return points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join('');
+      const slopes = points.slice(1).map((point, index) => (point.y - points[index].y) / (point.x - points[index].x));
+      const tangents = points.map((point, index) => {
+        if (index === 0) return slopes[0];
+        if (index === points.length - 1) return slopes[index - 1];
+        const prev = slopes[index - 1];
+        const next = slopes[index];
+        if (prev * next <= 0) return 0;
+        const h0 = point.x - points[index - 1].x;
+        const h1 = points[index + 1].x - point.x;
+        const weighted = (prev * h1 + next * h0) / (h0 + h1);
+        return Math.sign(prev) * Math.min(2 * Math.abs(prev), 2 * Math.abs(next), Math.abs(weighted));
+      });
+      const coord = (x, y) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+      let path = `M${coord(points[0].x, points[0].y)}`;
+      for (let index = 1; index < points.length; index++) {
+        const from = points[index - 1];
+        const to = points[index];
+        const third = (to.x - from.x) / 3;
+        path += `C${coord(from.x + third, from.y + tangents[index - 1] * third)} ${coord(to.x - third, to.y - tangents[index] * third)} ${coord(to.x, to.y)}`;
+      }
+      return path;
     }
 
     function renderSparkline(id, values) {
@@ -273,9 +292,9 @@
     function renderOverviewKpis(totals) {
       document.getElementById('overview-requests').textContent = formatNumber(totals.requests);
       document.getElementById('overview-counts').textContent = overviewText(
-        'index.overview.successFailed',
-        `${totals.success} 成功 · ${totals.error} 失败`,
-        { success: formatNumber(totals.success), error: formatNumber(totals.error) }
+        'index.overview.failedCount',
+        `${totals.error}\u00a0失败`,
+        { count: formatNumber(totals.error) }
       );
       const rateElement = document.getElementById('overview-rate');
       rateElement.textContent = formatPercent(totals.rate);
@@ -304,12 +323,11 @@
       return totals.totalTokens > 0 ? value / totals.totalTokens : 0;
     }
 
-    // 图例只列名称与占比，用量在悬停/点击的提示框里给出
+    // 图例每行列出名称、用量与占比
     function renderTokenMix(totals) {
       const bar = document.getElementById('token-mix-bar');
       const legend = document.getElementById('token-mix-legend');
       if (!bar || !legend) return;
-      overviewTotals = totals;
       const segments = [];
       legend.innerHTML = TOKEN_MIX_PARTS.map(part => {
         const value = totals[part.key];
@@ -320,6 +338,7 @@
         return `<li class="token-mix-item" data-part="${part.tone}">
           <span class="token-mix-dot token-mix-dot--${part.tone}" aria-hidden="true"></span>
           <span class="token-mix-label">${escapeHtml(overviewText(part.labelKey, part.fallback))}</span>
+          <span class="token-mix-value">${formatNumber(value)}</span>
           <span class="token-mix-share">${formatPercent(share)}</span>
         </li>`;
       }).join('');
@@ -337,23 +356,6 @@
       }
     }
 
-    // 选中分段的名称、用量与占比，复用迷你趋势的提示框
-    function showTokenMixTooltip(target) {
-      const part = TOKEN_MIX_PARTS.find(item => item.tone === target.dataset.part);
-      const container = target.closest('.overview-kpis');
-      const tooltip = document.getElementById('overview-spark-tooltip');
-      const timeElement = document.getElementById('overview-spark-tooltip-time');
-      const valueElement = document.getElementById('overview-spark-tooltip-value');
-      if (!part || !overviewTotals || !container || !tooltip || !timeElement || !valueElement) return;
-      hideSparkTooltip();
-      const value = overviewTotals[part.key];
-      timeElement.hidden = false;
-      timeElement.textContent = overviewText(part.labelKey, part.fallback);
-      valueElement.textContent = `${formatNumber(value)} · ${formatPercent(tokenMixShare(overviewTotals, value))}`;
-      tooltip.hidden = false;
-      placeOverviewTooltip(tooltip, container, target.getBoundingClientRect());
-    }
-
     // 悬停或点击（触屏）色块/图例行选中分段，移出横条与图例取消选中
     function bindTokenMix() {
       const container = document.getElementById('token-mix');
@@ -364,15 +366,12 @@
         if (next === tokenMixActive) return;
         tokenMixActive = next;
         renderTokenMixActive();
-        if (target) showTokenMixTooltip(target);
-        else hideSparkTooltip();
       };
       container.addEventListener('mouseover', selectPart);
       container.addEventListener('click', selectPart);
       container.addEventListener('mouseleave', () => {
         tokenMixActive = '';
         renderTokenMixActive();
-        hideSparkTooltip();
       });
     }
 
@@ -645,7 +644,7 @@
           }
         )
         : overviewText('index.health.noData', `${period}暂无请求数据`, { period }));
-      // 请求卡副行在成功/失败后补限流次数（取自分桶数据）
+      // 请求卡在失败次数后补限流次数（取自分桶数据）
       const rateDetail = document.getElementById('overview-rate-detail');
       if (rateDetail) {
         rateDetail.textContent = model.rateLimited > 0

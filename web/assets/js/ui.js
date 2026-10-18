@@ -1562,13 +1562,20 @@ window.WebAuth = window.WebAuth || {
     return `<sup class="cell-multiplier-badge">${text}</sup>`;
   }
 
-  // 格式化数字显示（通用：K/M缩写）
+  const COMPACT_NUMBER_UNITS = ['K', 'M', 'B'];
+
+  // 格式化数字显示（通用：K/M/B缩写）；一位小数舍入后满 1000 进到下一单位，不出现 1000.0K
   function formatNumber(num) {
     const n = Number(num);
     if (!Number.isFinite(n)) return '0';
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-    return n.toString();
+    if (n < 1000) return n.toString();
+    let unitIndex = 0;
+    let text = (n / 1000).toFixed(1);
+    while (Number(text) >= 1000 && unitIndex < COMPACT_NUMBER_UNITS.length - 1) {
+      unitIndex++;
+      text = (n / 1000 ** (unitIndex + 1)).toFixed(1);
+    }
+    return text + COMPACT_NUMBER_UNITS[unitIndex];
   }
 
   /**

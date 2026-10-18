@@ -346,7 +346,8 @@ test('token channel visibility also controls actual model text and hover', async
   }
 });
 
-test('small request costs keep significant digits instead of rounding to $0.000', () => {
+// 在最小浏览器桩环境中加载 ui.js，把挂到 window 上的格式化函数交给 fn 断言
+function withUiFormatters(fn) {
   const previousGlobals = new Map();
   const setGlobal = (key, value) => {
     previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
@@ -385,15 +386,7 @@ test('small request costs keep significant digits instead of rounding to $0.000'
   try {
     delete require.cache[require.resolve('./ui.js')];
     require('./ui.js');
-    const { formatCost } = global.window;
-
-    assert.equal(formatCost(0.0002), '$0.0002');
-    assert.equal(formatCost(0.00012345), '$0.00012');
-    assert.equal(formatCost(0.005), '$0.005');
-    assert.equal(formatCost(0.0000004), '<$0.000001');
-    assert.equal(formatCost(1.23456), '$1.235');
-    assert.equal(formatCost(0), '$0');
-    assert.equal(formatCost(0.0002, 2), '$0.00');
+    fn(global.window);
   } finally {
     delete require.cache[require.resolve('./ui.js')];
     for (const [key, descriptor] of previousGlobals) {
@@ -401,6 +394,31 @@ test('small request costs keep significant digits instead of rounding to $0.000'
       else Object.defineProperty(global, key, descriptor);
     }
   }
+}
+
+test('small request costs keep significant digits instead of rounding to $0.000', () => {
+  withUiFormatters(({ formatCost }) => {
+    assert.equal(formatCost(0.0002), '$0.0002');
+    assert.equal(formatCost(0.00012345), '$0.00012');
+    assert.equal(formatCost(0.005), '$0.005');
+    assert.equal(formatCost(0.0000004), '<$0.000001');
+    assert.equal(formatCost(1.23456), '$1.235');
+    assert.equal(formatCost(0), '$0');
+    assert.equal(formatCost(0.0002, 2), '$0.00');
+  });
+});
+
+test('compact numbers carry into the next unit instead of showing 1000.0K', () => {
+  withUiFormatters(({ formatNumber }) => {
+    assert.equal(formatNumber(999), '999');
+    assert.equal(formatNumber(999949), '999.9K');
+    assert.equal(formatNumber(999999), '1.0M');
+    assert.equal(formatNumber(43900000), '43.9M');
+    assert.equal(formatNumber(999999999), '1.0B');
+    assert.equal(formatNumber(1532200000), '1.5B');
+    assert.equal(formatNumber(2500000000000), '2500.0B');
+    assert.equal(formatNumber('abc'), '0');
+  });
 });
 
 test('reasoning logs show a level change on the model badge and the judgment in the message', async () => {

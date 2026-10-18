@@ -1153,7 +1153,7 @@ html[data-resolved-theme="dark"] ::selection {
   white-space: nowrap;
 }
 
-/* 请求卡：总数右侧并排成功率 */
+/* 大数字右侧并排成功率与副信息，卡片放不下时换到下一行 */
 .overview-kpi-value-row {
   display: flex;
   flex-wrap: wrap;
@@ -1184,10 +1184,8 @@ html[data-resolved-theme="dark"] ::selection {
 .overview-kpi-rate strong[data-state="warning"] { color: var(--warning-600); }
 .overview-kpi-rate strong[data-state="critical"] { color: var(--error-600); }
 
-/* 副行为空时也占一行，各卡底部图形保持同一起点 */
 .overview-kpi-sub {
-  min-height: 1.25rem;
-  margin-top: var(--space-1);
+  min-width: 0;
   overflow: hidden;
   color: var(--neutral-500);
   font-size: var(--text-sm);
@@ -1251,12 +1249,13 @@ html[data-resolved-theme="dark"] ::selection {
   padding: var(--space-5) var(--space-6);
 }
 
-/* Token 卡底部的构成：分段横条 + 两列图例 */
+/* Token 卡底部的构成：图例 + 压底的分段横条；图例列数按卡片宽度而非视口决定 */
 .token-mix {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   margin-top: var(--space-3);
+  container-type: inline-size;
 }
 
 .token-mix-bar {
@@ -1277,17 +1276,30 @@ html[data-resolved-theme="dark"] ::selection {
 
 .token-mix-legend {
   display: grid;
-  /* 两列时按列填充：输入/输出一列、缓存读取/缓存创建一列 */
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(2, auto);
-  grid-auto-flow: column;
   gap: var(--space-1) var(--space-4);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* 一行：色点、名称、占比；占比紧跟名称，不与相邻列混淆 */
+/* 每项约需 200px 才能完整显示名称、用量与占比，放不下两项时单列；
+   两列时按列填充：输入/输出一列、缓存读取/缓存创建一列 */
+@container (min-width: 26rem) {
+  .token-mix-legend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, auto);
+    grid-auto-flow: column;
+  }
+}
+
+@container (min-width: 52rem) {
+  .token-mix-legend {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-rows: auto;
+  }
+}
+
+/* 一行：色点、名称、用量、占比；数值紧跟名称，不与相邻列混淆 */
 .token-mix-item {
   display: flex;
   align-items: center;
@@ -1314,10 +1326,16 @@ html[data-resolved-theme="dark"] ::selection {
   white-space: nowrap;
 }
 
-.token-mix-share {
+.token-mix-value {
   flex: none;
   color: var(--neutral-900);
   font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.token-mix-share {
+  flex: none;
+  color: var(--neutral-500);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1445,7 +1463,7 @@ html[data-resolved-theme="dark"] ::selection {
   font-size: var(--text-sm);
 }
 
-/* 两列时请求、费用并排，Token 卡独占底行，图例展开成四列 */
+/* 两列时请求、费用并排，Token 卡独占底行 */
 @media (max-width: 1024px) {
   .overview-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1454,11 +1472,6 @@ html[data-resolved-theme="dark"] ::selection {
   .overview-kpi--tokens {
     grid-column: 1 / -1;
     order: 1;
-  }
-
-  .token-mix-legend {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: auto;
   }
 }
 
@@ -1492,11 +1505,6 @@ html[data-resolved-theme="dark"] ::selection {
 
   .overview-card {
     padding: var(--space-4);
-  }
-
-  .token-mix-legend {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(2, auto);
   }
 
   .usage-rank-grid {

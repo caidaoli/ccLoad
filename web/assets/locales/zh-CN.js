@@ -120,7 +120,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.overview.totalRequests': '请求总数',
   'index.overview.successRate': '成功率',
   'index.overview.totalCost': '总费用',
-  'index.overview.successFailed': '{success}\u00a0成功 · {error}\u00a0失败',
   'index.overview.failedCount': '{count}\u00a0失败',
   'index.overview.rateLimited': '限流\u00a0{count}',
   'index.overview.cacheRateDetail': '缓存率\u00a0{rate}',

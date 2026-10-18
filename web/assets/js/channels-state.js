@@ -142,18 +142,12 @@ function humanizeMS(ms) {
   return window.t('common.timeS', { s });
 }
 
+// 沿用全局 K/M/B 缩写，整单位省略 .0
 function formatMetricNumber(value) {
   if (value === null || value === undefined) return '--';
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
-  return formatCompactNumber(num);
-}
-
-function formatCompactNumber(num) {
-  const abs = Math.abs(num);
-  if (abs >= 1_000_000) return (num / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (abs >= 1_000) return (num / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
-  return num.toString();
+  return window.formatNumber(num).replace(/\.0(?=[KMB]$)/, '');
 }
 
 function formatTimestampForFilename() {

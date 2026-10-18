@@ -149,7 +149,7 @@ test('overview totals take request counts from the summary and sum cost and toke
 
 test('overview spark series merges adjacent metric buckets beyond the point budget and keeps each point time range', () => {
   const { buildSparkSeries } = require('./index.js');
-  const metrics = Array.from({ length: 96 }, (_, index) => ({
+  const metrics = Array.from({ length: 192 }, (_, index) => ({
     ts: new Date(Date.UTC(2026, 9, 14) + index * 15 * 60 * 1000).toISOString(),
     success: 1,
     error: index % 2,
@@ -159,7 +159,7 @@ test('overview spark series merges adjacent metric buckets beyond the point budg
 
   const series = buildSparkSeries(metrics, 15);
 
-  assert.equal(series.requests.length, 48);
+  assert.equal(series.requests.length, 96);
   assert.ok(series.requests.every(value => value === 3));
   assert.ok(series.errors.every(value => value === 1));
   // 缺少 effective_cost 的桶按 total_cost 计入
@@ -167,12 +167,12 @@ test('overview spark series merges adjacent metric buckets beyond the point budg
   // 每个点覆盖合并后的两个 15 分钟桶
   const dayStart = Date.UTC(2026, 9, 14);
   assert.deepEqual([series.starts[0], series.ends[0]], [dayStart, dayStart + 30 * 60 * 1000]);
-  assert.deepEqual([series.starts[47], series.ends[47]], [dayStart + 47 * 30 * 60 * 1000, dayStart + 24 * 3600 * 1000]);
+  assert.deepEqual([series.starts[95], series.ends[95]], [dayStart + 95 * 30 * 60 * 1000, dayStart + 48 * 3600 * 1000]);
 
   // 不足整组的末尾点只覆盖实际包含的桶
-  const uneven = buildSparkSeries(metrics.slice(0, 49), 15);
-  assert.equal(uneven.requests.length, 25);
-  assert.equal(uneven.ends[24] - uneven.starts[24], 15 * 60 * 1000);
+  const uneven = buildSparkSeries(metrics.slice(0, 97), 15);
+  assert.equal(uneven.requests.length, 49);
+  assert.equal(uneven.ends[48] - uneven.starts[48], 15 * 60 * 1000);
 
   assert.deepEqual(buildSparkSeries(null, 15), { requests: [], errors: [], cost: [], starts: [], ends: [] });
   assert.deepEqual(buildSparkSeries([{ success: 2, error: 1 }], 15), {
