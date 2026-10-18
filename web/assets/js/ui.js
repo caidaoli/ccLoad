@@ -1391,7 +1391,7 @@ window.WebAuth = window.WebAuth || {
   const METRIC_LEVEL_COLORS = { good: 'var(--success-600)', normal: 'var(--neutral-700)', warn: 'var(--warning-600)', bad: 'var(--error-600)' };
 
   function getFirstByteTimingLevel(seconds) {
-    return timingLevel(seconds, 2, 5, 10);
+    return timingLevel(seconds, 3, 6, 10);
   }
 
   function getDurationTimingLevel(seconds) {
