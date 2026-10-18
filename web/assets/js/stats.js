@@ -354,12 +354,9 @@
     }
 
     function buildCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
-      const i = Number(inputTokens) || 0;
-      const r = Number(cacheReadTokens) || 0;
-      const c = Number(cacheCreationTokens) || 0;
-      const denom = i + r + c;
-      if (denom <= 0 || r <= 0) return '';
-      return `<span class="stats-value-success">${window.formatPercent(r / denom)}</span>`;
+      const rate = window.calculateCacheHitRate(inputTokens, cacheReadTokens, cacheCreationTokens);
+      if (rate === null) return '';
+      return `<span class="stats-value-dynamic" style="--stats-accent:${window.getCacheHitRateColor(rate)};">${window.formatPercent(rate)}</span>`;
     }
 
     function buildStatsModelLink(entry, className) {
@@ -404,12 +401,11 @@
       const speedText = speed === null
         ? ''
         : `<span class="stats-value-dynamic" style="--stats-accent:${window.getSpeedColor(speed)};">${speed >= 100 ? speed.toFixed(0) : speed.toFixed(1)}</span>`;
+      const tokenText = (value, type) => (value ? `<span class="token-type--${type}">${formatNumber(value)}</span>` : '');
       const inputText = entry.total_input_tokens ? formatNumber(entry.total_input_tokens) : '';
       const outputText = entry.total_output_tokens ? formatNumber(entry.total_output_tokens) : '';
-      const cacheReadText = entry.total_cache_read_input_tokens
-        ? `<span class="stats-value-success">${formatNumber(entry.total_cache_read_input_tokens)}</span>` : '';
-      const cacheCreateText = entry.total_cache_creation_input_tokens
-        ? `<span class="stats-value-primary">${formatNumber(entry.total_cache_creation_input_tokens)}</span>` : '';
+      const cacheReadText = tokenText(entry.total_cache_read_input_tokens, 'cache-read');
+      const cacheCreateText = tokenText(entry.total_cache_creation_input_tokens, 'cache-create');
       const cacheUtilText = buildCacheUtilRate(
         entry.total_input_tokens,
         entry.total_cache_read_input_tokens,
@@ -422,7 +418,7 @@
         successDisplay: buildSuccessDisplay(
           formatNumber(entry.success || 0),
           formatSuccessRateText(successRate, entry.total || 0),
-          getSuccessRateClass(successRate)
+          window.getSuccessRateColor(successRate / 100)
         ),
         rpm: rpmHtml,
         avgFirstByteTime: timingText,
@@ -596,19 +592,12 @@
       return window.formatPercent(successRate / 100);
     }
 
-    function getSuccessRateClass(successRate) {
-      let successRateClass = 'success-rate';
-      if (successRate >= 95) successRateClass += ' high';
-      else if (successRate < 80) successRateClass += ' low';
-      return successRateClass;
-    }
-
-    function buildSuccessDisplay(successCountText, successRateText, successRateClass) {
+    function buildSuccessDisplay(successCountText, successRateText, successRateColor) {
       if (!successRateText) {
         return `<span class="success-count">${successCountText}</span>`;
       }
 
-      return `<span class="stats-success-inline"><span class="success-count">${successCountText}</span><span class="stats-success-separator">/</span><span class="${successRateClass}">${successRateText}</span></span>`;
+      return `<span class="stats-success-inline"><span class="success-count">${successCountText}</span><span class="stats-success-separator">/</span><span class="success-rate stats-value-dynamic" style="--stats-accent:${successRateColor};">${successRateText}</span></span>`;
     }
 
     function applyFilter() {
@@ -838,83 +827,24 @@
       }
     }
 
-    // 格式化 RPM（每分钟请求数）带颜色
-    function formatRpm(rpm) {
-      if (rpm < 0.01) return '';
-      const color = getRpmColor(rpm);
-      const text = rpm >= 1000 ? (rpm / 1000).toFixed(1) + 'K' : rpm >= 1 ? rpm.toFixed(1) : rpm.toFixed(2);
-      return `<span class="stats-rpm-value" style="--stats-rpm-color:${color};">${text}</span>`;
-    }
-
     // 格式化全局RPM（峰值/平均/最近），固定格式，0显示为-
     function formatGlobalRpm(stats, showRecent) {
       if (!stats) return '-/-' + (showRecent ? '/-' : '');
-
-      const formatVal = (v) => {
-        const text = (v || 0).toFixed(1);
-        return text === '0.0' ? '-' : text;
-      };
-      const peakText = formatVal(stats.peak_rpm);
-      const avgText = formatVal(stats.avg_rpm);
-
-      const parts = [
-        {
-          text: peakText,
-          color: peakText !== '-' ? getRpmColor(stats.peak_rpm) : 'inherit'
-        },
-        {
-          text: avgText,
-          color: avgText !== '-' ? getRpmColor(stats.avg_rpm) : 'inherit'
-        }
-      ];
-
-      if (showRecent) {
-        const recentText = formatVal(stats.recent_rpm);
-        parts.push({
-          text: recentText,
-          color: recentText !== '-' ? getRpmColor(stats.recent_rpm) : 'inherit'
-        });
-      }
-
-      return buildCompactRpmDisplay(parts);
+      return formatEntryRpm(stats, showRecent);
     }
 
     // 格式化每行的RPM（峰值/平均/最近），固定格式，0显示为-
+    // 只有峰值反映渠道吞吐、按越高越好分档；平均值被所选时间范围稀释，最近值只是瞬时快照，保持中性色
     function formatEntryRpm(entry, showRecent) {
-      const formatVal = (v) => {
+      const values = [entry.peak_rpm, entry.avg_rpm];
+      if (showRecent) values.push(entry.recent_rpm);
+
+      const html = values.map((v, index) => {
         const text = (v || 0).toFixed(1);
-        return text === '0.0' ? '-' : text;
-      };
-
-      const peakText = formatVal(entry.peak_rpm);
-      const avgText = formatVal(entry.avg_rpm);
-
-      const parts = [
-        {
-          text: peakText,
-          color: peakText !== '-' ? getRpmColor(entry.peak_rpm) : 'inherit'
-        },
-        {
-          text: avgText,
-          color: avgText !== '-' ? getRpmColor(entry.avg_rpm) : 'inherit'
-        }
-      ];
-
-      if (showRecent) {
-        const recentText = formatVal(entry.recent_rpm);
-        parts.push({
-          text: recentText,
-          color: recentText !== '-' ? getRpmColor(entry.recent_rpm) : 'inherit'
-        });
-      }
-
-      return buildCompactRpmDisplay(parts);
-    }
-
-    function buildCompactRpmDisplay(parts) {
-      const html = parts.map((part, index) => {
         const separator = index === 0 ? '' : '<span class="stats-rpm-separator">/</span>';
-        return `${separator}<span class="stats-rpm-value" style="--stats-rpm-color:${part.color};">${part.text}</span>`;
+        if (text === '0.0') return `${separator}<span class="stats-rpm-value">-</span>`;
+        const style = index === 0 ? ` style="--stats-rpm-color:${window.getRpmColor(v)};"` : '';
+        return `${separator}<span class="stats-rpm-value"${style}>${text}</span>`;
       }).join('');
 
       return `<span class="stats-rpm-inline">${html}</span>`;
@@ -975,11 +905,9 @@ ${t('stats.tooltipCost')}: ${formatCost(point.cost)}`;
         blocks[i] = `<span class="health-block ${className}" title="${escapeHtml(title)}"></span>`;
       }
 
-      // 构建完整 HTML - 成功率颜色：>=95%绿色, >=80%橙色, <80%红色
+      // 构建完整 HTML - 成功率数字按统一四档着色
       const ratePercent = window.formatPercent(currentRate);
-      const rateColor = currentRate >= 0.95 ? 'var(--success-600)' :
-                        currentRate >= 0.80 ? 'var(--warning-600)' : 'var(--error-600)';
-      return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="--health-rate-color:${rateColor};">${ratePercent}</span></div>`;
+      return `<div class="health-indicator"><span class="health-track">${blocks.join('')}</span><span class="health-rate" style="--health-rate-color:${window.getSuccessRateColor(currentRate)};">${ratePercent}</span></div>`;
     }
 
     // 注销功能（已由 ui.js 的 onLogout 统一处理）

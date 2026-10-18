@@ -240,33 +240,9 @@
   font-weight: 600;
 }
 
-.success-rate-high {
-  color: var(--success-600);
-}
-
-.success-rate-medium {
-  color: var(--warning-600);
-}
-
-.success-rate-low {
-  color: var(--error-600);
-}
-
 .token-rpm {
   font-weight: 500;
   white-space: nowrap;
-}
-
-.token-rpm--low {
-  color: var(--success-600);
-}
-
-.token-rpm--medium {
-  color: var(--warning-600);
-}
-
-.token-rpm--high {
-  color: var(--error-600);
 }
 
 /* 标签列 + 定宽数值列 ×2；各行标签相同、数值列有最小宽度，右对齐后跨行对齐 */
@@ -284,6 +260,7 @@
   grid-column: span 2;
   grid-template-columns: subgrid;
   align-items: center;
+  color: var(--neutral-500);
 }
 
 .token-usage-item--cache-read,
@@ -299,22 +276,6 @@
   color: var(--neutral-900);
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-
-.token-usage-item--input {
-  color: var(--primary-700);
-}
-
-.token-usage-item--output {
-  color: var(--info-700);
-}
-
-.token-usage-item--cache-read {
-  color: var(--success-700);
-}
-
-.token-usage-item--cache-create {
-  color: var(--warning-700);
 }
 
 .token-usage-item--empty,

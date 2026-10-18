@@ -533,15 +533,11 @@
       }
 
       const ratio = successCount / totalCount;
-      let rateClass = 'success-rate-low';
-      if (ratio >= 0.95) rateClass = 'success-rate-high';
-      else if (ratio >= 0.8) rateClass = 'success-rate-medium';
-
       const title = `${t('tokens.successCall')}: ${successCount.toLocaleString()} · ${t('tokens.failedCall')}: ${failureCount.toLocaleString()}`;
       return `
         <div class="token-metric-stack" title="${escapeHtml(title)}">
           <span class="metric-value">${totalCount.toLocaleString()}</span>
-          <span class="token-success-rate ${rateClass}">${window.formatPercent(ratio)}</span>
+          <span class="token-success-rate" style="color: ${window.getSuccessRateColor(ratio)};">${window.formatPercent(ratio)}</span>
         </div>
       `;
     }
@@ -569,12 +565,7 @@
       const avgText = formatRpm(avgRPM);
       const recentText = isToday ? formatRpm(recentRPM) : '-';
 
-      // 低流量绿色，中等橙色，高流量红色
-      let rpmClass = 'token-rpm token-rpm--high';
-      if (peakRPM < 10) rpmClass = 'token-rpm token-rpm--low';
-      else if (peakRPM < 100) rpmClass = 'token-rpm token-rpm--medium';
-
-      return `<span class="${rpmClass}">${peakText}/${avgText}/${recentText}</span>`;
+      return `<span class="token-rpm">${peakText}/${avgText}/${recentText}</span>`;
     }
 
     function hasTokenUsage(token) {
@@ -594,8 +585,10 @@
 
       const usageItem = (variant, label, title, count) => {
         const hasValue = count > 0;
+        // 缓存读/建标签用类型色，输入/输出保持默认色
+        const labelClass = hasValue && variant.startsWith('cache-') ? ` token-type--${variant}` : '';
         return `<span class="token-usage-item token-usage-item--${variant}${hasValue ? '' : ' token-usage-item--empty'}" title="${title}">` +
-            `<span class="token-usage-label">${label}</span>` +
+            `<span class="token-usage-label${labelClass}">${label}</span>` +
             `<span class="token-usage-value">${hasValue ? window.formatNumber(count) : '-'}</span>` +
           `</span>`;
       };

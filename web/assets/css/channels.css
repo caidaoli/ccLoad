@@ -2892,14 +2892,13 @@
     }
 
     .ch-oauth-usage__fill--high {
-      background: var(--success-400);
+      background: var(--success-500);
     }
 
-    .ch-oauth-usage__fill--medium {
-      background: var(--warning-400);
+    .ch-oauth-usage__fill--low {
+      background: var(--warning-500);
     }
 
-    .ch-oauth-usage__fill--low,
     .ch-oauth-usage__fill--empty {
       background: var(--error-500);
     }

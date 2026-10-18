@@ -154,7 +154,7 @@ function createURLRow(index) {
   const latencyTd = document.createElement('td');
   latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
   latencyTd.setAttribute('data-mobile-label', window.t('stats.latency'));
-  latencyTd.textContent = formatURLLatency(stat);
+  latencyTd.innerHTML = formatURLLatency(stat);
 
   const requestsTd = document.createElement('td');
   requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
@@ -540,20 +540,22 @@ function formatURLStatus(stat) {
     + `${window.t('channels.urlStatusNormal')}</span>`;
 }
 
+// 延迟是首字节时间的 EWMA，按首字四档着色
 function formatURLLatency(stat) {
   if (!stat || stat.latency_ms < 0) return '--';
   const ms = Math.round(stat.latency_ms);
-  if (ms < 1000) return ms + 'ms';
-  return (ms / 1000).toFixed(1) + 's';
+  const text = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+  return `<span style="color: ${window.getFirstByteTimingColor(ms / 1000)};">${text}</span>`;
 }
 
+// 请求数是量值保持中性色，失败数非零时标红
 function formatURLRequests(stat) {
   if (!stat) return '--';
   const s = stat.requests || 0;
   const f = stat.failures || 0;
   if (s === 0 && f === 0) return '--';
-  if (f === 0) return `<span style="color: var(--success-600);">${s}</span>`;
-  return `<span style="color: var(--success-600);">${s}</span><span style="color: var(--neutral-300); margin: 0 2px;">/</span><span style="color: var(--error-600);">${f}</span>`;
+  if (f === 0) return String(s);
+  return `${s}<span style="color: var(--neutral-300); margin: 0 2px;">/</span><span style="color: var(--error-600);">${f}</span>`;
 }
 
 function updateURLStatsHeader() {

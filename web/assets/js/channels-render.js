@@ -486,13 +486,7 @@ const CHANNEL_METRIC_ICONS = {
   check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 5 5L20 7"/></svg>'
 };
 
-function channelSuccessRateLevel(rate) {
-  if (rate >= 0.95) return 'good';
-  if (rate >= 0.8) return 'warn';
-  return 'bad';
-}
-
-// 耗时、速度、成功率按 good / warn / bad 着色；不分级的值（请求数、消耗）保持中性色。
+// 耗时、速度、成功率按 ui.js 统一四档着色（normal 即默认文字色）；不分级的值（请求数、消耗）保持中性色。
 function channelMetricValueHtml(text, level = '') {
   const levelClass = level ? ` class="ch-metric__value--${level}"` : '';
   return `<b${levelClass}>${text}</b>`;
@@ -538,7 +532,7 @@ function buildChannelMetricsHtml(stats) {
   const callsTitle = window.t('channels.stats.callsTitle', { success: successCount, failure: failureCount });
   items.push(channelMetricPairHtml('calls', callsTitle, `${CHANNEL_METRIC_ICONS.check}${escapeChannelRefreshText(window.t('channels.stats.requests'))}`, [
     channelMetricValueHtml(escapeChannelRefreshText(window.t('channels.stats.requestCount', { count: total }))),
-    channelMetricValueHtml(`${(rate * 100).toFixed(1)}%`, channelSuccessRateLevel(rate))
+    channelMetricValueHtml(`${(rate * 100).toFixed(1)}%`, window.getSuccessRateLevel(rate))
   ]));
 
   // 缓存行按实际数据显示：协议声明无法判定渠道是否缓存，CodeBuddy 等上游同样声明 openai 且返回缓读。
@@ -784,9 +778,9 @@ function formatOAuthUsageError(value) {
   return description || code || raw;
 }
 
+// 剩余额度分级，与令牌限额进度条一致：剩余 ≤20% 告急，用尽为空
 function oauthUsageLevel(remainingPercent) {
-  if (remainingPercent >= 70) return 'high';
-  if (remainingPercent >= 30) return 'medium';
+  if (remainingPercent > 20) return 'high';
   if (remainingPercent > 0) return 'low';
   return 'empty';
 }

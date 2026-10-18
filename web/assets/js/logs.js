@@ -1114,12 +1114,9 @@ function getTableColspan() {
 }
 
 function formatCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
-  const i = Number(inputTokens) || 0;
-  const r = Number(cacheReadTokens) || 0;
-  const c = Number(cacheCreationTokens) || 0;
-  const denom = i + r + c;
-  if (denom <= 0 || r <= 0) return '';
-  return `<span class="token-metric-value" style="color: var(--success-600);">${window.formatPercent(r / denom)}</span>`;
+  const rate = window.calculateCacheHitRate(inputTokens, cacheReadTokens, cacheCreationTokens);
+  if (rate === null) return '';
+  return `<span class="token-metric-value" style="color: ${window.getCacheHitRateColor(rate)};">${window.formatPercent(rate)}</span>`;
 }
 
 // buildCacheCreationDisplay 渲染缓存建列，分桶角标按实际数据判定。
@@ -1140,7 +1137,7 @@ function buildCacheCreationDisplay(entry) {
   } else if (cache5m > 0 && cache1h > 0) {
     badge = ' <sup style="color: var(--primary-500); font-size: 0.75em; font-weight: 600;">5m</sup><sup style="color: var(--warning-600); font-size: 0.75em; font-weight: 600;">+1h</sup>';
   }
-  return `<span class="token-metric-value" style="color: var(--primary-600);" title="${total.toLocaleString()}">${window.formatNumber(total)}${badge}</span>`;
+  return `<span class="token-metric-value token-type--cache-create" title="${total.toLocaleString()}">${window.formatNumber(total)}${badge}</span>`;
 }
 
 // 状态码配色唯一入口：2xx 成功；429 限流与 499 客户端取消属可预期的告警；
@@ -1261,13 +1258,13 @@ function renderLogs(data) {
     }
 
     // 6. Token统计显示(0值为空)：与其他页面一致用 K/M 缩写，精确值放 title
-    const tokenValue = (value, color) => {
+    const tokenValue = (value, type) => {
       if (value === undefined || value === null || value === 0) return '';
-      return `<span class="token-metric-value" style="color: ${color};" title="${value.toLocaleString()}">${window.formatNumber(value)}</span>`;
+      return `<span class="token-metric-value${type ? ` token-type--${type}` : ''}" title="${value.toLocaleString()}">${window.formatNumber(value)}</span>`;
     };
-    const inputTokensDisplay = tokenValue(entry.input_tokens, 'var(--neutral-700)');
-    const outputTokensDisplay = tokenValue(entry.output_tokens, 'var(--neutral-700)');
-    const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'var(--success-600)');
+    const inputTokensDisplay = tokenValue(entry.input_tokens);
+    const outputTokensDisplay = tokenValue(entry.output_tokens);
+    const cacheReadDisplay = tokenValue(entry.cache_read_input_tokens, 'cache-read');
 
     // 缓存建列
     const cacheCreationDisplay = buildCacheCreationDisplay(entry);

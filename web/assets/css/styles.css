@@ -1045,7 +1045,7 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 /* 底色、前景色与标志缩放对齐 @lobehub/icons Avatar（AVATAR_BACKGROUND / AVATAR_COLOR / AVATAR_ICON_MULTIPLE） */
-/* 渠道头像（列表 / 抽屉 / 添加菜单共用）：API Key 渠道显示名称首字母 */
+/* 渠道头像（列表 / 抽屉 / 添加菜单 / 统计 / 概览共用）：默认主色实底白字，API Key 渠道显示名称首字母，类型图标为钥匙 */
 .channel-provider-avatar {
   background: var(--primary-600);
   color: #fff;
@@ -1062,6 +1062,7 @@ html[data-resolved-theme="dark"] ::selection {
   box-shadow: inset 0 0 0 1px var(--neutral-300);
 }
 
+.channel-provider-avatar[data-auth-type="codex_oauth"],
 .channel-provider-avatar[data-auth-type="xai_oauth"],
 .channel-provider-avatar[data-auth-type="cursor_oauth"],
 .channel-provider-avatar[data-auth-type="zai_oauth"],
@@ -1071,8 +1072,7 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 .channel-provider-avatar[data-auth-type="xai_oauth"] { --provider-icon-scale: 0.65; }
-/* Codex 不用 lobehub 的白底渐变，按厂商取 OpenAI 绿，与首页请求协议行一致 */
-.channel-provider-avatar[data-auth-type="codex_oauth"] { --provider-icon-scale: 0.7; background: #10a37f; }
+.channel-provider-avatar[data-auth-type="codex_oauth"] { --provider-icon-scale: 0.65; }
 .channel-provider-avatar[data-auth-type="anthropic_oauth"] { --provider-icon-scale: 0.75; background: #d97757; }
 .channel-provider-avatar[data-auth-type="antigravity_oauth"] { --provider-icon-scale: 0.75; }
 .channel-provider-avatar[data-auth-type="opencode"] { --provider-icon-scale: 0.75; }
@@ -1080,8 +1080,9 @@ html[data-resolved-theme="dark"] ::selection {
   --provider-icon-scale: 0.75;
   background: radial-gradient(66.67% 66.67% at 87.5% 102.08%, #2ea99d 0%, #6c4dff 100%);
 }
-/* API Key 首字母头像用浅底：列表每行都有，实心蓝块过重；primary-100 在白底上仍有可见边界 */
-.channel-provider-avatar[data-auth-type="api_key"] { background: var(--primary-100); color: var(--primary-700); }
+/* 线条图标留白多于实心品牌标志，略放大 */
+.channel-provider-avatar[data-auth-type="api_key"] { --provider-icon-scale: 0.65; }
+.channel-provider-avatar[data-auth-type="system_one"] { --provider-icon-scale: 0.65; background: #7c3aed; }
 .channel-provider-avatar[data-auth-type="zed_oauth"] { background: #084ccf; }
 .channel-provider-avatar[data-auth-type="vertex_oauth"] { background: #4285f4; }
 
@@ -1181,8 +1182,9 @@ html[data-resolved-theme="dark"] ::selection {
   font-variant-numeric: tabular-nums;
 }
 
-.overview-kpi-rate strong[data-state="warning"] { color: var(--warning-600); }
-.overview-kpi-rate strong[data-state="critical"] { color: var(--error-600); }
+.overview-kpi-rate strong[data-state="good"] { color: var(--success-600); }
+.overview-kpi-rate strong[data-state="warn"] { color: var(--warning-600); }
+.overview-kpi-rate strong[data-state="bad"] { color: var(--error-600); }
 
 .overview-kpi-sub {
   min-width: 0;
@@ -1348,6 +1350,10 @@ html[data-resolved-theme="dark"] ::selection {
 .token-mix-segment--output,
 .token-mix-dot--output { --token-color: #8b5cf6; }
 
+/* 缓存 Token 文字色（统计/日志/令牌/测试页共用；输入/输出保持默认色）：色相同上方 Token 构成，取 -700 文字档，深色主题随之提亮 */
+.token-type--cache-read { color: var(--success-700); }
+.token-type--cache-create { color: var(--warning-700); }
+
 /* 悬停/点击选中分段：其余色块与图例淡化 */
 .token-mix[data-active] .token-mix-segment:not(.is-active),
 .token-mix[data-active] .token-mix-item:not(.is-active) { opacity: 0.35; }
@@ -1366,11 +1372,9 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 .usage-avatar--anthropic { background: #d97757; }
-.usage-avatar--codex,
 .usage-avatar--openai { background: #10a37f; }
 .usage-avatar--gemini,
 .usage-avatar--gemma { background: #4285f4; }
-.usage-avatar--system_one { background: #7c3aed; }
 
 /* 模型品牌底色取自 lobehub Avatar 配置；Gemma 的浅色渐变衬不出白标，按厂商取 Google 蓝 */
 .usage-avatar--meta { background: linear-gradient(45deg, #007ff8, #0668e1, #007ff8); }
@@ -6093,22 +6097,6 @@ a.model-tag.model-link:hover {
   margin-left: var(--space-2);
 }
 
-.stats-header-accent--success {
-  color: var(--success-400);
-}
-
-.stats-header-accent--cache-read {
-  color: var(--success-600);
-}
-
-.stats-header-accent--cache-create {
-  color: var(--primary-600);
-}
-
-.stats-header-accent--cost {
-  color: var(--warning-600);
-}
-
 .stats-table .stats-col-timing {
   text-align: center;
 }
@@ -6138,14 +6126,6 @@ a.model-tag.model-link:hover {
 
 .stats-value-muted {
   color: var(--neutral-500);
-}
-
-.stats-value-success {
-  color: var(--success-600);
-}
-
-.stats-value-primary {
-  color: var(--primary-600);
 }
 
 .stats-value-warning {
@@ -6239,21 +6219,11 @@ a.model-tag.model-link:hover {
 }
 
 .success-count {
-  color: var(--success-400);
   font-weight: var(--font-semibold);
 }
 
 .success-rate {
   font-weight: var(--font-medium);
-  color: var(--neutral-800);
-}
-
-.success-rate.high {
-  color: var(--success-400);
-}
-
-.success-rate.low {
-  color: var(--error-400);
 }
 
 .stats-success-inline,

@@ -226,6 +226,8 @@ async function withLoadedLogsPage(options, assertions) {
     },
     readFilterControlValues: () => ({ range: 'today', clientProtocol: '', authToken: '' }),
     getDurationTimingColor: () => '',
+    calculateCacheHitRate: () => null,
+    getCacheHitRateColor: () => '',
     isAPITokenRole: () => isTokenRole,
     shouldHideChannels: () => isTokenRole && !showChannels
   });
@@ -418,6 +420,22 @@ test('compact numbers carry into the next unit instead of showing 1000.0K', () =
     assert.equal(formatNumber(1532200000), '1.5B');
     assert.equal(formatNumber(2500000000000), '2500.0B');
     assert.equal(formatNumber('abc'), '0');
+  });
+});
+
+test('quality metrics share one good → normal → warn → bad scale', () => {
+  withUiFormatters(({ getFirstByteTimingLevel, getDurationTimingLevel, getSpeedLevel, getSuccessRateLevel, getCacheHitRateLevel, calculateCacheHitRate }) => {
+    const levels = (fn, values) => values.map(value => fn(value));
+    const scale = ['good', 'normal', 'warn', 'bad'];
+    assert.deepEqual(levels(getFirstByteTimingLevel, [3, 6, 10, 10.01]), scale);
+    assert.deepEqual(levels(getDurationTimingLevel, [10, 30, 60, 60.01]), scale);
+    assert.deepEqual(levels(getSpeedLevel, [100, 50, 20, 19.9]), scale);
+    assert.deepEqual(levels(getSuccessRateLevel, [0.99, 0.95, 0.8, 0]), scale);
+    assert.deepEqual(levels(getCacheHitRateLevel, [0.95, 0.9, 0.85, 0.849]), scale);
+    assert.equal(calculateCacheHitRate(10, 85, 5), 0.85);
+    assert.equal(calculateCacheHitRate(100, 0, 20), null);
+    assert.deepEqual(levels(getSpeedLevel, [0, null, 'abc']), ['', '', '']);
+    assert.deepEqual(levels(getSuccessRateLevel, [null, undefined, -1]), ['', '', '']);
   });
 });
 

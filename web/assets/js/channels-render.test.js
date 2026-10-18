@@ -667,7 +667,7 @@ test('点击模型标签复制请求模型名，失败时提示手动复制', as
 
 test('健康度列：最近请求成功显示时间、失败显示错误、499 不显示，无冷却无调用时为空', () => {
   const saved = { window: global.window, cost: global.buildCostStackHtml, metric: global.formatMetricNumber };
-  global.window = { t: key => key, getFirstByteTimingLevel: () => 'good', getDurationTimingLevel: () => 'good', getSpeedLevel: () => 'good' };
+  global.window = { t: key => key, getFirstByteTimingLevel: () => 'good', getDurationTimingLevel: () => 'good', getSpeedLevel: () => 'good', getSuccessRateLevel: () => 'good' };
   global.buildCostStackHtml = () => '';
   global.formatMetricNumber = value => String(value || 0);
   try {

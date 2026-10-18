@@ -139,7 +139,6 @@
     BUCKET_MINUTES,
     buildRequest,
     buildModel,
-    classifyRate,
     rangeEndMs
   };
 });

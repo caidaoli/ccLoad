@@ -4676,10 +4676,10 @@ function renderChatBubbleStats(bubble, summary) {
     parts.push(chatStatPart('common.output', '输出', chatStatValue(formatChatStatNumber(summary.output_tokens))));
   }
   if (summary.cache_read != null && summary.cache_read > 0) {
-    parts.push(chatStatPart('modelTest.cacheRead', '缓读', chatStatValue(formatChatStatNumber(summary.cache_read), 'stats-value-success', '')));
+    parts.push(chatStatPart('modelTest.cacheRead', '缓读', chatStatValue(formatChatStatNumber(summary.cache_read), 'token-type--cache-read', '')));
   }
   if (summary.cache_create != null && summary.cache_create > 0) {
-    parts.push(chatStatPart('modelTest.cacheCreate', '缓建', chatStatValue(formatChatStatNumber(summary.cache_create), 'stats-value-primary', '')));
+    parts.push(chatStatPart('modelTest.cacheCreate', '缓建', chatStatValue(formatChatStatNumber(summary.cache_create), 'token-type--cache-create', '')));
   }
   if (summary.speed != null && summary.speed > 0) {
     parts.push(chatStatValue(`${summary.speed.toFixed(1)} tok/s`, 'stats-value-dynamic', `--stats-accent:${window.getSpeedColor(summary.speed)};`));

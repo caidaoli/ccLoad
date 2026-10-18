@@ -1378,7 +1378,17 @@ window.WebAuth = window.WebAuth || {
     return output / tokenDuration;
   }
 
-  // 耗时分级：good / normal / warn / bad，无效值为空串
+  // 缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存建）；无缓存读时返回 null
+  function calculateCacheHitRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
+    const read = Number(cacheReadTokens) || 0;
+    const total = (Number(inputTokens) || 0) + read + (Number(cacheCreationTokens) || 0);
+    if (total <= 0 || read <= 0) return null;
+    return read / total;
+  }
+
+  // 质量指标（耗时、速度、成功率、缓存命中率、RPM）统一四档 good / normal / warn / bad → 绿 / 默认文字色 / 橙 / 红，无效值为空串。
+  // 请求数、Token 数等量值不分档，保持中性色。
+  // 耗时分级：越小越好
   function timingLevel(seconds, greenThreshold, normalThreshold, warningThreshold) {
     const value = Number(seconds);
     if (!Number.isFinite(value) || value <= 0) return '';
@@ -1398,26 +1408,68 @@ window.WebAuth = window.WebAuth || {
     return timingLevel(seconds, 10, 30, 60);
   }
 
+  function metricLevelColor(level) {
+    return METRIC_LEVEL_COLORS[level] || 'var(--neutral-600)';
+  }
+
   function getFirstByteTimingColor(seconds) {
-    return METRIC_LEVEL_COLORS[getFirstByteTimingLevel(seconds)] || 'var(--neutral-600)';
+    return metricLevelColor(getFirstByteTimingLevel(seconds));
   }
 
   function getDurationTimingColor(seconds) {
-    return METRIC_LEVEL_COLORS[getDurationTimingLevel(seconds)] || 'var(--neutral-600)';
+    return metricLevelColor(getDurationTimingLevel(seconds));
   }
 
-  // 输出速度分级：≥100 绿色，60–100 橙色，30–60 默认文字色，<30 红色；无效值为空串
-  function getSpeedLevel(tokensPerSecond) {
-    const value = Number(tokensPerSecond);
-    if (!Number.isFinite(value) || value <= 0) return '';
-    if (value >= 100) return 'good';
-    if (value >= 60) return 'warn';
-    if (value >= 30) return 'normal';
+  // 正值分级：越大越好，≤0 视为无数据
+  function positiveLevel(value, greenThreshold, normalThreshold, warningThreshold) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    if (n >= greenThreshold) return 'good';
+    if (n >= normalThreshold) return 'normal';
+    if (n >= warningThreshold) return 'warn';
     return 'bad';
   }
 
+  // 输出速度分级（tok/s）：≥100 / 50–100 / 20–50 / <20
+  function getSpeedLevel(tokensPerSecond) {
+    return positiveLevel(tokensPerSecond, 100, 50, 20);
+  }
+
   function getSpeedColor(tokensPerSecond) {
-    return METRIC_LEVEL_COLORS[getSpeedLevel(tokensPerSecond)] || 'var(--neutral-600)';
+    return metricLevelColor(getSpeedLevel(tokensPerSecond));
+  }
+
+  // RPM 分级（看渠道吞吐）：≥20 / 10–20 / 5–10 / <5
+  function getRpmColor(rpm) {
+    return metricLevelColor(positiveLevel(rpm, 20, 10, 5));
+  }
+
+  // 比例分级（0~1）：越大越好
+  function ratioLevel(ratio, greenThreshold, normalThreshold, warningThreshold) {
+    const value = Number(ratio);
+    if (ratio === null || ratio === undefined || !Number.isFinite(value) || value < 0) return '';
+    if (value >= greenThreshold) return 'good';
+    if (value >= normalThreshold) return 'normal';
+    if (value >= warningThreshold) return 'warn';
+    return 'bad';
+  }
+
+  // 成功率：≥99% / 95–99% / 80–95% / <80%
+  function getSuccessRateLevel(ratio) {
+    return ratioLevel(ratio, 0.99, 0.95, 0.8);
+  }
+
+  function getSuccessRateColor(ratio) {
+    return metricLevelColor(getSuccessRateLevel(ratio));
+  }
+
+  // 缓存命中率：≥95% / 90–95% / 85–90% / <85%
+  function getCacheHitRateLevel(ratio) {
+    return ratioLevel(ratio, 0.95, 0.9, 0.85);
+  }
+
+  function getCacheHitRateColor(ratio) {
+    return metricLevelColor(getCacheHitRateLevel(ratio));
   }
 
   /**
@@ -1589,15 +1641,6 @@ window.WebAuth = window.WebAuth || {
     return `${(n * 100).toFixed(1)}%`;
   }
 
-  // RPM 颜色：低流量绿色，中等橙色，高流量红色
-  function getRpmColor(rpm) {
-    const n = Number(rpm);
-    if (!Number.isFinite(n)) return 'var(--neutral-600)';
-    if (n < 10) return 'var(--success-600)';
-    if (n < 100) return 'var(--warning-600)';
-    return 'var(--error-600)';
-  }
-
   /**
    * HTML转义（防XSS）
    * @param {string} str - 需要转义的字符串
@@ -1632,6 +1675,7 @@ window.WebAuth = window.WebAuth || {
   window.fillAuthTokenSelect = fillAuthTokenSelect;
   window.initAuthTokenFilter = initAuthTokenFilter;
   window.calculateTokenSpeed = calculateTokenSpeed;
+  window.calculateCacheHitRate = calculateCacheHitRate;
   window.formatCost = formatCost;
   window.formatCostPair = formatCostPair;
   window.getCostDisplayInfo = getCostDisplayInfo;
@@ -1643,9 +1687,13 @@ window.WebAuth = window.WebAuth || {
   window.getDurationTimingLevel = getDurationTimingLevel;
   window.getSpeedLevel = getSpeedLevel;
   window.getSpeedColor = getSpeedColor;
+  window.getRpmColor = getRpmColor;
+  window.getSuccessRateLevel = getSuccessRateLevel;
+  window.getSuccessRateColor = getSuccessRateColor;
+  window.getCacheHitRateLevel = getCacheHitRateLevel;
+  window.getCacheHitRateColor = getCacheHitRateColor;
   window.formatNumber = formatNumber;
   window.formatPercent = formatPercent;
-  window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;
   window.toggleResponse = toggleResponse;
 
