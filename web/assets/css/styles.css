@@ -1062,7 +1062,6 @@ html[data-resolved-theme="dark"] ::selection {
   box-shadow: inset 0 0 0 1px var(--neutral-300);
 }
 
-.channel-provider-avatar[data-auth-type="codex_oauth"],
 .channel-provider-avatar[data-auth-type="xai_oauth"],
 .channel-provider-avatar[data-auth-type="cursor_oauth"],
 .channel-provider-avatar[data-auth-type="zai_oauth"],
@@ -1072,7 +1071,8 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 .channel-provider-avatar[data-auth-type="xai_oauth"] { --provider-icon-scale: 0.65; }
-.channel-provider-avatar[data-auth-type="codex_oauth"] { --provider-icon-scale: 0.65; }
+/* Codex 不用 lobehub 的白底渐变，按厂商取 OpenAI 绿，与首页请求协议行一致 */
+.channel-provider-avatar[data-auth-type="codex_oauth"] { --provider-icon-scale: 0.7; background: #10a37f; }
 .channel-provider-avatar[data-auth-type="anthropic_oauth"] { --provider-icon-scale: 0.75; background: #d97757; }
 .channel-provider-avatar[data-auth-type="antigravity_oauth"] { --provider-icon-scale: 0.75; }
 .channel-provider-avatar[data-auth-type="opencode"] { --provider-icon-scale: 0.75; }
@@ -1368,8 +1368,23 @@ html[data-resolved-theme="dark"] ::selection {
 .usage-avatar--anthropic { background: #d97757; }
 .usage-avatar--codex,
 .usage-avatar--openai { background: #10a37f; }
-.usage-avatar--gemini { background: #4285f4; }
+.usage-avatar--gemini,
+.usage-avatar--gemma { background: #4285f4; }
 .usage-avatar--system_one { background: #7c3aed; }
+
+/* 模型品牌底色取自 lobehub Avatar 配置；Gemma 的浅色渐变衬不出白标，按厂商取 Google 蓝 */
+.usage-avatar--meta { background: linear-gradient(45deg, #007ff8, #0668e1, #007ff8); }
+.usage-avatar--moonshot { background: #16191e; }
+.usage-avatar--qwen { background: #615ced; }
+.usage-avatar--minimax { background: linear-gradient(to right, #e2167e, #fe603c); }
+.usage-avatar--hunyuan { background: #0053e0; }
+.usage-avatar--deepseek { background: #4d6bfe; }
+.usage-avatar--grok,
+.usage-avatar--mimo { background: #000; }
+/* 黑底同 Z.ai 等渠道头像加内描边，深色主题下不与卡片融为一体 */
+.usage-avatar--moonshot,
+.usage-avatar--grok,
+.usage-avatar--mimo { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
 
 /* 无提供商标志的首字母头像统一中性底色 */
 .usage-avatar.usage-avatar--letter {
