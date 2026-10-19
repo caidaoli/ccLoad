@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -41,6 +42,21 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return nil, errors.New("OAuth credential is unavailable")
 	}
 	switch {
+	case cfg.UsesQoderOAuth():
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// Qoder exposes an absolute credit balance, not token windows, so
+		// persist the safe snapshot without standard-cost reconciliation.
+		return &oauthUsageCredentialState{
+			provider: qoderauth.ChannelType, authType: model.AuthTypeQoderOAuth,
+			oauthUsage: json.RawMessage(credential.OAuthUsage),
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = string(usage)
+				return credential.JSON()
+			},
+		}, nil
 	case cfg.UsesCodeBuddyOAuth():
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

@@ -696,6 +696,8 @@ type ChannelWithCooldown struct {
 	XAIEmail                      string                 `json:"xai_email,omitempty"`
 	XAISubscriptionTier           string                 `json:"xai_subscription_tier,omitempty"`
 	XAIEntitlementStatus          string                 `json:"xai_entitlement_status,omitempty"`
+	QoderRegion                   string                 `json:"qoder_region,omitempty"`
+	QoderAutoCheckin              bool                   `json:"qoder_auto_checkin,omitempty"`
 	CodeBuddyEnterprise           bool                   `json:"codebuddy_enterprise,omitempty"`
 	CodeBuddyInternational        bool                   `json:"codebuddy_international,omitempty"`
 	KeyStrategy                   string                 `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段

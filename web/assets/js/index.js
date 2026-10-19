@@ -84,6 +84,7 @@
       api_key: 'channels.authTypeAPI',
       codex_oauth: 'channels.authTypeCodex',
       antigravity_oauth: 'channels.authTypeAntigravity',
+      qoder_oauth: 'channels.authTypeQoder',
       codebuddy_oauth: 'channels.authTypeCodeBuddy',
       xai_oauth: 'channels.authTypeXAI',
       anthropic_oauth: 'channels.authTypeAnthropic',

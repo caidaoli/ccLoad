@@ -25,6 +25,7 @@ const (
 	AuthTypeCursorOAuth      = "cursor_oauth"
 	AuthTypeZedOAuth         = "zed_oauth"
 	AuthTypeCodeBuddyOAuth   = "codebuddy_oauth"
+	AuthTypeQoderOAuth       = "qoder_oauth"
 	// AuthTypeVertexOAuth authenticates Vertex AI with a Google service account.
 	AuthTypeVertexOAuth = "vertex_oauth"
 	// AuthTypeSystemOne is a decision-only channel authenticated by API keys.
@@ -61,6 +62,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeCursorOAuth
 	case AuthTypeZedOAuth:
 		return AuthTypeZedOAuth
+	case AuthTypeQoderOAuth:
+		return AuthTypeQoderOAuth
 	case AuthTypeCodeBuddyOAuth:
 		return AuthTypeCodeBuddyOAuth
 	case AuthTypeVertexOAuth:
@@ -102,6 +105,11 @@ func CountsTowardQuotaWindows(authType string, cost float64, codexHasCredits boo
 	normalized := NormalizeAuthType(authType)
 	return TracksQuotaCost(normalized) && cost > 0 &&
 		(!codexHasCredits || normalized != AuthTypeCodexOAuth)
+}
+
+// UsesQoderOAuth reports whether this channel uses Qoder credentials.
+func (c *Config) UsesQoderOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeQoderOAuth
 }
 
 // UsesCodeBuddyOAuth reports whether this channel uses CodeBuddy credentials.

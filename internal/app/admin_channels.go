@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -516,6 +517,8 @@ func applyProtocolProbeRetrySummary(channel *ChannelWithCooldown, summary protoc
 }
 
 type channelOAuthMetadata struct {
+	qoderRegion             string
+	qoderAutoCheckin        bool
 	planType                string
 	subscriptionActiveUntil *time.Time
 	anthropicPlanType       string
@@ -533,7 +536,8 @@ type channelOAuthMetadata struct {
 // channelView 投影列表与详情共有的 OAuth 字段；CodeBuddy 标志仅由列表添加。
 func (metadata channelOAuthMetadata) channelView(cfg *model.Config) ChannelWithCooldown {
 	return ChannelWithCooldown{
-		Config:                       cfg,
+		Config:      cfg,
+		QoderRegion: metadata.qoderRegion, QoderAutoCheckin: metadata.qoderAutoCheckin,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AnthropicPlanType:            metadata.anthropicPlanType,
@@ -619,6 +623,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
+	}
+	if cfg.UsesQoderOAuth() {
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), qoderauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage, qoderRegion: credential.Region, qoderAutoCheckin: credential.AutoCheckin}
 	}
 	if cfg.UsesCodeBuddyOAuth() {
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
@@ -941,6 +953,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 // oauthSyntheticKeyFields 解析 OAuth 渠道凭证，返回合成 Key 行所需的原始凭证值与备注。
 func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err error) {
 	switch {
+	case cfg.UsesQoderOAuth():
+		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.AccessToken, "Qoder OAuth AT", nil
 	case cfg.UsesCodeBuddyOAuth():
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

@@ -1338,6 +1338,12 @@ func (s *Server) handleSuccessResponse(
 	// the first chunk arrives.
 	isCodexResponses := reqCtx != nil && (protocol.Protocol(upstreamProtocol) == protocol.Codex ||
 		reqCtx.transformPlan.UpstreamProtocol == protocol.Codex)
+	if reqCtx.qoderOAuth {
+		if !reqCtx.isStreaming {
+			return s.handleQoderNonStream(reqCtx, resp, hdrClone, w, readStats)
+		}
+		return finishStreaming(s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer))
+	}
 	if reqCtx.codeBuddyOAuth {
 		if !responseIsSSE(resp, true) {
 			return &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: hdrClone},
@@ -2453,9 +2459,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 	}
 	openCodeFree := isOpenCodeFreeRequest(cfg, baseURL, plan.UpstreamProtocol, openCodePath, plan.RequestModel())
-	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree
+	upstreamStreaming := isStreamingRequest(plan.UpstreamPath, plan.TranslatedBody) || isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || isQoderChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree
 	reqCtx := newRequestContextForStreaming(ctx, upstreamStreaming, s.resolveProtocolTimeouts(plan))
-	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree {
+	if isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol) || isQoderChatRequest(cfg, plan.UpstreamProtocol) || openCodeFree {
 		reqCtx.isStreaming = plan.Streaming
 	}
 	reqCtx.openCodeFree = openCodeFree
@@ -2536,6 +2542,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
 	}
+	reqCtx.qoderOAuth = isQoderChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx.codeBuddyOAuth = isCodeBuddyChatRequest(cfg, plan.UpstreamProtocol)
 	reqCtx.responsesSSEUpstreamNonStream = !plan.Streaming &&
 		(isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
@@ -4456,6 +4463,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	}
 	if cfg.UsesCodexOAuth() {
 		return s.tryCodexOAuthChannel(ctx, cfg, reqCtx, w)
+	}
+	if cfg.UsesQoderOAuth() {
+		return s.tryQoderOAuthChannel(ctx, cfg, reqCtx, w)
 	}
 	if cfg.UsesCodeBuddyOAuth() {
 		return s.tryCodeBuddyOAuthChannel(ctx, cfg, reqCtx, w)

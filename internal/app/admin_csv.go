@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/util"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
@@ -1097,6 +1098,12 @@ func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime str
 
 func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	switch authType {
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodeBuddyOAuth:
 		credential, err := codebuddyauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1216,6 +1223,25 @@ func (s *Server) validateCSVImportOAuthCredential(
 ) (string, error) {
 	client := s.getClientForChannel(existing)
 	switch imported.GetAuthType() {
+	case model.AuthTypeQoderOAuth:
+		credential, err := qoderauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := qoderauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !qoderIdentityMatches(current, credential) {
+			return "", errors.New("qoder imported account does not match existing channel")
+		}
+		service := *s.qoderService
+		service.Client = client
+		credential, err = service.CompleteIdentity(ctx, credential)
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeCodeBuddyOAuth:
 		credential, err := codebuddyauth.ParseCredential([]byte(imported.OAuthCredential))
 		if err != nil {

@@ -16,6 +16,7 @@ let xaiImportStopPromise = null;
 let activeZAIKeyFlow = null;
 let activeCursorImportFlow = null;
 let activeCodeBuddyFileFlow = null;
+let activeQoderImportFlow = null;
 let activeVertexImportFlow = null;
 let oauthPagehideBound = false;
 let activeOAuthCredentialCleanup = null;
@@ -38,6 +39,7 @@ const oauthUsageLastOperationByChannelID = new Map();
 let oauthUsageOperationSequence = 0;
 const activeChannelUsageAutoRefreshPendingIDs = new Set();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
+  qoder: Object.freeze({ provider: 'qoder', label: 'Qoder', i18n: 'channels.qoder', callbackPlaceholder: '', pollOnly: true }),
   codebuddy: Object.freeze({
     provider: 'codebuddy', label: 'CodeBuddy', i18n: 'channels.codebuddy',
     callbackPlaceholder: '', pollOnly: true
@@ -262,7 +264,7 @@ function applyChannelAuthEditorMode(
   const zaiOAuth = authType === 'zai_oauth';
   const cursorOAuth = authType === 'cursor_oauth';
   const zedOAuth = authType === 'zed_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || authType === 'qoder_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
   const oauth = credentialVisible;
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -322,7 +324,7 @@ function applyChannelAuthEditorMode(
   if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {
     credentialRefreshButton.hidden = !oauthCredentialRefreshTarget(authType) || Boolean(
-      codexPersonalAccessToken || (authType === 'codebuddy_oauth' && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
+      codexPersonalAccessToken || (authType === 'qoder_oauth' && !credential?.refresh_token && !credential?.pat) || (authType === 'codebuddy_oauth' && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
     );
   }
   currentOAuthCredentialAuthType = authType;
@@ -559,6 +561,11 @@ function openOAuthLoginDialog(trigger = null, provider = 'codex') {
   callbackURL.removeAttribute?.('aria-invalid');
   resetXAIOAuthDialog();
   resetCodexPersonalAccessTokenDialog();
+  for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field) { field.disabled = false; field.value = id === 'qoderOAuthRegion' ? 'cn' : 'oauth'; }
+  }
+  clearQoderSecrets();
   syncOAuthProviderFields();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
@@ -572,6 +579,11 @@ function closeOAuthLoginDialogElement() {
   if (dialog?.open) dialog.close();
   resetXAIOAuthDialog();
   resetCodexPersonalAccessTokenDialog();
+  for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field) { field.disabled = false; field.value = id === 'qoderOAuthRegion' ? 'cn' : 'oauth'; }
+  }
+  clearQoderSecrets();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
   trigger?.focus?.();
@@ -625,6 +637,7 @@ function clearCodexPersonalAccessToken(input = document.getElementById('codexPer
 
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
+  syncQoderOAuthFields(provider);
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod')?.value || 'oauth';
   const codebuddyProvider = provider === 'codebuddy' || provider === 'codebuddy-international';
   const codebuddyFile = codebuddyProvider && codebuddyMethod === 'file';
@@ -719,7 +732,9 @@ function syncOAuthProviderFields() {
     if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
   }
   if (description) {
-    const descriptionKey = codebuddyFile
+    const descriptionKey = provider === 'qoder'
+      ? 'channels.qoder.description'
+      : codebuddyFile
       ? 'channels.codebuddy.fileHint'
       : codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
@@ -743,7 +758,7 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : 'oauth'));
+    const method = provider === 'qoder' ? document.getElementById('qoderOAuthMethod')?.value : codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : 'oauth'));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
@@ -752,7 +767,9 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
   if (!button) return;
   const codebuddyInternational = provider === 'codebuddy-international' ||
     (provider === 'codebuddy' && codeBuddyEdition() === 'international');
-  const key = (provider === 'codebuddy' || codebuddyInternational) && method === 'file'
+  const key = provider === 'qoder' && method !== 'oauth'
+    ? 'channels.qoder.import'
+    : (provider === 'codebuddy' || codebuddyInternational) && method === 'file'
     ? (codebuddyInternational ? 'channels.codebuddyInternational.fileSubmit' : 'channels.codebuddy.fileSubmit')
     : provider === 'cursor'
     ? 'channels.cursor.apiKeySubmit'
@@ -823,6 +840,12 @@ function showOAuthSession(session, provider = 'codex') {
     codebuddyEditionSelect.disabled = true;
   }
   providerSelect.disabled = true;
+  if (config.provider === 'qoder') {
+    for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
+      const field = document.getElementById(id);
+      if (field) field.disabled = true;
+    }
+  }
   if (loginActions) loginActions.hidden = true;
   else if (authorizeButton) authorizeButton.hidden = true;
   sessionFields.hidden = false;
@@ -924,6 +947,180 @@ async function loadCredentialFile(input, content, fileRequiredKey) {
   const previous = content.value;
   const body = await file.text();
   if (input.files?.[0] === file && content.value === previous) content.value = body;
+}
+
+function clearQoderSecrets() {
+  for (const id of ['qoderPAT', 'qoderCredentialContent']) {
+    const field = document.getElementById(id);
+    if (field) field.value = '';
+  }
+}
+
+function syncQoderOAuthFields(provider) {
+  const selected = provider === 'qoder';
+  const method = document.getElementById('qoderOAuthMethod')?.value || 'oauth';
+  const controls = document.getElementById('qoderOAuthControls');
+  if (controls) controls.hidden = !selected;
+  for (const [kind, fieldID, inputID] of [['pat', 'qoderPATField', 'qoderPAT'], ['json', 'qoderJSONField', 'qoderCredentialContent']]) {
+    const enabled = selected && method === kind;
+    const field = document.getElementById(fieldID);
+    const input = document.getElementById(inputID);
+    if (field) field.hidden = !enabled;
+    if (input) { input.required = enabled; if (!enabled) input.value = ''; }
+  }
+  if (selected && method !== 'oauth') {
+    const session = document.getElementById('oauthSessionFields');
+    if (session) session.hidden = true;
+  }
+  const international = selected && document.getElementById('qoderOAuthRegion')?.value === 'global';
+  const umid = document.getElementById('qoderUMIDControls');
+  if (umid) umid.hidden = !international;
+  if (international) void loadQoderUMIDStatus().catch(() => {});
+}
+
+// Consume the secret before awaiting the request, including rejected imports.
+async function submitQoderCredential(region, method, input, fetcher = fetchDataWithAuth, signal = undefined) {
+  const secret = String(input?.value || '').trim();
+  if (input) input.value = '';
+  if (!['cn', 'global'].includes(region)) throw new Error(window.t('channels.qoder.invalidRegion'));
+  if (!secret || new TextEncoder().encode(secret).length > 1048576) throw new Error(window.t('channels.qoder.contentRequired'));
+  const payload = { region };
+  if (method === 'pat') {
+    payload.pat = secret;
+  } else if (method === 'json') {
+    let credential;
+    try { credential = JSON.parse(secret); } catch { throw new Error(window.t('channels.qoder.invalidJSON')); }
+    if (!credential || typeof credential !== 'object' || Array.isArray(credential) || credential.type !== 'qoder' || credential.region !== region) {
+      throw new Error(window.t('channels.qoder.invalidJSON'));
+    }
+    payload.credential = credential;
+  } else {
+    throw new Error(window.t('channels.qoder.invalidMethod'));
+  }
+  signal?.throwIfAborted();
+  return fetcher('/admin/qoder/credentials/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal
+  });
+}
+
+async function importQoderFromDialog(button) {
+  const region = document.getElementById('qoderOAuthRegion');
+  const method = document.getElementById('qoderOAuthMethod');
+  const input = document.getElementById(method?.value === 'pat' ? 'qoderPAT' : 'qoderCredentialContent');
+  const flow = { controller: new AbortController(), button };
+  activeQoderImportFlow = flow;
+  button.disabled = true;
+  if (region) region.disabled = true;
+  if (method) method.disabled = true;
+  try {
+    setCodexOAuthDialogStatus(window.t('channels.qoder.importing'));
+    await submitQoderCredential(region?.value, method?.value, input, fetchDataWithAuth, flow.controller.signal);
+    if (activeQoderImportFlow !== flow) return;
+    closeOAuthLoginDialogElement();
+    setCodexAuthStatus(window.t('channels.qoder.oauthComplete'), 'success');
+    await reloadChannelsList();
+  } catch (error) {
+    if (activeQoderImportFlow === flow) setCodexOAuthDialogStatus(error?.message || window.t('channels.qoder.oauthFailed'), 'error');
+  } finally {
+    if (activeQoderImportFlow === flow) {
+      activeQoderImportFlow = null;
+      button.disabled = false;
+      if (region) region.disabled = false;
+      if (method) method.disabled = false;
+    }
+  }
+}
+
+async function loadQoderUMIDStatus(fetcher = fetchDataWithAuth) {
+  const label = document.getElementById('qoderUMIDStatus');
+  const button = document.getElementById('qoderUMIDInstall');
+  try {
+    const status = await fetcher('/admin/qoder/umid');
+    if (label) label.textContent = window.t(status?.available ? 'channels.qoder.componentAvailable' : 'channels.qoder.componentMissing');
+    if (button) button.disabled = Boolean(status?.available || !status?.install_supported);
+    return status;
+  } catch (error) {
+    if (label) label.textContent = error?.message || window.t('channels.qoder.componentFailed');
+    if (button) button.disabled = true;
+    throw error;
+  }
+}
+
+async function installQoderUMID(button, fetcher = fetchDataWithAuth) {
+  if (button) button.disabled = true;
+  const label = document.getElementById('qoderUMIDStatus');
+  if (label) label.textContent = window.t('channels.qoder.installing');
+  try {
+    const status = await fetcher('/admin/qoder/umid/install', { method: 'POST' });
+    if (!status?.available) throw new Error(window.t('channels.qoder.componentFailed'));
+    if (label) label.textContent = window.t('channels.qoder.componentAvailable');
+    if (window.showSuccess) window.showSuccess(window.t('channels.qoder.componentAvailable'));
+    return status;
+  } catch (error) {
+    if (label) label.textContent = error?.message || window.t('channels.qoder.componentFailed');
+    if (button) button.disabled = false;
+    throw error;
+  }
+}
+
+function setupQoderOAuthActions() {
+  for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field && !field.dataset.bound) {
+      field.addEventListener('change', syncOAuthProviderFields);
+      field.dataset.bound = '1';
+    }
+  }
+  const button = document.getElementById('qoderUMIDInstall');
+  if (button && !button.dataset.bound) {
+    button.addEventListener('click', () => installQoderUMID(button).catch(error => {
+      setCodexOAuthDialogStatus(error?.message || window.t('channels.qoder.componentFailed'), 'error');
+    }));
+    button.dataset.bound = '1';
+  }
+}
+
+async function checkInQoder(channelID, fetcher = fetchDataWithAuth) {
+  const id = Number(channelID);
+  if (!Number.isInteger(id) || id <= 0) throw new Error('A saved Qoder channel is required');
+  const persisted = typeof channels !== 'undefined' && Array.isArray(channels) ? channels.find(channel => Number(channel.id) === id)?.oauth_usage : null;
+  const previous = getOAuthUsageState(id) || (persisted ? { status: 'ready', data: persisted } : null);
+  const operationID = ++oauthUsageOperationSequence;
+  oauthUsageOperationByChannelID.set(id, operationID);
+  oauthUsageLastOperationByChannelID.set(id, operationID);
+  oauthUsageStateByChannelID.set(id, { ...previous, status: previous?.data ? 'ready' : 'idle', checkin_status: 'loading', checkin_error: '' });
+  rerenderOAuthUsage();
+  try {
+    const result = await fetcher(`/admin/channels/${id}/qoder-checkin`, { method: 'POST' });
+    if (!['claimed', 'already_claimed', 'unavailable', 'missing_component'].includes(result?.status)) throw new Error(window.t('channels.qoder.checkinFailed'));
+    if (oauthUsageOperationByChannelID.get(id) !== operationID) return result;
+    oauthUsageOperationByChannelID.delete(id);
+    const data = result.usage && Array.isArray(result.usage.windows) ? result.usage : previous?.data;
+    oauthUsageStateByChannelID.set(id, { status: data ? 'ready' : 'idle', data, checkin_status: 'ready', checkin_result: result.status, checkin_message: window.t(`channels.qoder.${result.status}`) });
+    rerenderOAuthUsage();
+    return result;
+  } catch (error) {
+    if (oauthUsageOperationByChannelID.get(id) === operationID) {
+      oauthUsageOperationByChannelID.delete(id);
+      oauthUsageStateByChannelID.set(id, { ...previous, status: previous?.data ? 'ready' : 'error', error: error?.message, checkin_status: 'error', checkin_error: error?.message || window.t('channels.qoder.checkinFailed') });
+      rerenderOAuthUsage();
+    }
+    throw error;
+  }
+}
+
+async function setQoderAutoCheckin(channelID, enabled, fetcher = fetchDataWithAuth) {
+  const id = Number(channelID);
+  if (!Number.isInteger(id) || id <= 0 || typeof enabled !== 'boolean') throw new Error('A saved Qoder channel and enabled flag are required');
+  const result = await fetcher(`/admin/channels/${id}/qoder-checkin/settings`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled })
+  });
+  if (typeof channels !== 'undefined' && Array.isArray(channels)) {
+    const channel = channels.find(item => Number(item.id) === id);
+    if (channel) channel.qoder_auto_checkin = enabled;
+  }
+  rerenderOAuthUsage();
+  return result;
 }
 
 async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined, edition = 'codebuddy') {
@@ -1148,6 +1345,9 @@ async function startOAuth(provider, button) {
     if (button) button.disabled = true;
     setCodexAuthStatus(window.t(`${config.i18n}.oauthStarting`));
     let startOptions = { method: 'POST' };
+    if (config.provider === 'qoder') {
+      startOptions = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region: document.getElementById('qoderOAuthRegion')?.value }) };
+    }
     if (config.provider === 'zed') {
       const systemIDInput = document.getElementById('zedSystemID');
       try {
@@ -1240,6 +1440,16 @@ async function stopActiveXAIImport(options = {}) {
 }
 
 async function stopActiveOAuth(options = {}) {
+  if (activeQoderImportFlow) {
+    activeQoderImportFlow.controller.abort();
+    activeQoderImportFlow.button.disabled = false;
+    activeQoderImportFlow = null;
+  }
+  clearQoderSecrets();
+  for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field) field.disabled = false;
+  }
   const fileFlow = activeCodeBuddyFileFlow;
   if (fileFlow) {
     activeCodeBuddyFileFlow = null;
@@ -1657,6 +1867,7 @@ function oauthCredentialCleanupProviderLabel(authType) {
     zai_oauth: 'Z.ai',
     cursor_oauth: 'Cursor',
     zed_oauth: 'Zed',
+    qoder_oauth: 'Qoder',
     codebuddy_oauth: 'CodeBuddy',
     vertex_oauth: 'Vertex'
   })[authType] || authType;
@@ -2061,6 +2272,8 @@ async function cancelOAuthCredentialCleanup(
 
 function oauthCredentialRefreshTarget(authType) {
   switch (authType) {
+    case 'qoder_oauth':
+      return { resource: 'qoder-credential', label: 'Qoder', i18n: 'channels.qoder', keyNote: 'Qoder OAuth AT' };
     case 'codebuddy_oauth':
       return { resource: 'codebuddy-credential', label: 'CodeBuddy', i18n: 'channels.codebuddy', keyNote: 'CodeBuddy OAuth AT' };
     case 'antigravity_oauth':
@@ -2600,7 +2813,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
     if (typeof channelShowsOAuthUsage === 'function') {
       return channelShowsOAuthUsage(channel);
     }
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth', 'qoder_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -2673,6 +2886,7 @@ function setupOAuthActions() {
   const codexPersonalAccessToken = document.getElementById('codexPersonalAccessToken');
   const xaiMethod = document.getElementById('xaiOAuthMethod');
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
+  setupQoderOAuthActions();
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod');
   const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   const codebuddyFile = document.getElementById('codebuddyCredentialFile');
@@ -2766,12 +2980,14 @@ function setupOAuthActions() {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
-        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow || activeVertexImportFlow) return;
+        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow || activeVertexImportFlow || activeQoderImportFlow) return;
       providerSelect.disabled = true;
       const codebuddyProvider = providerSelect.value === 'codebuddy' || providerSelect.value === 'codebuddy-international';
       const codebuddyEditionValue = providerSelect.value === 'codebuddy-international'
         ? 'international' : codeBuddyEdition();
-      if (codebuddyProvider && codebuddyMethod?.value === 'file') {
+      if (providerSelect.value === 'qoder' && document.getElementById('qoderOAuthMethod')?.value !== 'oauth') {
+        await importQoderFromDialog(authorizeButton);
+      } else if (codebuddyProvider && codebuddyMethod?.value === 'file') {
         const flow = { controller: new AbortController(), button: authorizeButton };
         activeCodeBuddyFileFlow = flow;
         codebuddyMethod.disabled = true;
@@ -3307,6 +3523,10 @@ function setupOAuthActions() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    submitQoderCredential,
+    checkInQoder,
+    setQoderAutoCheckin,
+    loadQoderUMIDStatus,
     loadCredentialFile,
     submitVertexCredential,
     submitCodeBuddyCredentialFile,

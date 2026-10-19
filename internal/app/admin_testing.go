@@ -26,6 +26,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -1003,6 +1004,21 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return runtimeCfg, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
 		}
 		return runtimeCfg, selection, true, nil
+	case cfg.UsesQoderOAuth():
+		var credential *qoderauth.Credential
+		var err error
+		if mode == oauthCredentialUseCurrent {
+			credential, err = qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
+		} else {
+			credential, err = s.qoderCredentials.credential(ctx, cfg, mode == oauthCredentialForceRefresh, rejectedAccessToken)
+		}
+		if err != nil {
+			return nil, selection, true, err
+		}
+		runtime := cfg.Clone()
+		runtime.OAuthCredential, _ = credential.JSON()
+		selection.requestCredential = credential.AccessToken
+		return runtime, selection, true, nil
 	case cfg.UsesCodeBuddyOAuth():
 		var credential *codebuddyauth.Credential
 		var err error
@@ -1968,6 +1984,18 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 
 	if isEventStream {
+		if cfg.UsesQoderOAuth() && !testReq.Stream {
+			body, _, collectErr := collectChatCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
+				if testStreamParserHasFirstContent(parser) {
+					markTestFirstStreamContent(requestPlan, result, start)
+				}
+			}, nil, "Qoder")
+			if collectErr != nil {
+				result["success"], result["error"] = false, collectErr.Error()
+				return attachTestDebugData(requestPlan, resp, result)
+			}
+			return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, "application/json", start, body, result))
+		}
 		if cfg.UsesCodeBuddyOAuth() && !testReq.Stream {
 			body, _, collectErr := collectCodeBuddyCompletion(ctx, resp.Body, func(parser *sseUsageParser) {
 				if testStreamParserHasFirstContent(parser) {
@@ -2368,7 +2396,7 @@ func (s *Server) newTestUpstreamRequest(
 	testReq *testutil.TestChannelRequest,
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
-	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream || cfgForBuild.UsesCodeBuddyOAuth() || cfgForBuild.UsesQoderOAuth() || requestPlan.openCodeFree, s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout

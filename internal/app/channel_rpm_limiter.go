@@ -175,6 +175,17 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		return nil, err
 	}
 	reasoningBody := reasoningHTTPRequestBody(req)
+	if cfg.UsesQoderOAuth() {
+		signed, wireErr := s.prepareQoderWire(cfg, req)
+		if wireErr != nil {
+			release()
+			return nil, wireErr
+		}
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		req = signed
+	}
 	if errCompress := compressCodexOAuthResponsesBody(cfg, req); errCompress != nil {
 		release()
 		return nil, errCompress
@@ -192,6 +203,13 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if resp == nil || resp.Body == nil {
 		release()
 		return resp, nil
+	}
+	if cfg.UsesQoderOAuth() {
+		if normalizeErr := normalizeQoderResponse(resp); normalizeErr != nil {
+			_ = resp.Body.Close()
+			release()
+			return nil, normalizeErr
+		}
 	}
 	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
 	return resp, nil

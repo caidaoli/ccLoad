@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
 	"ccLoad/internal/zedauth"
@@ -205,6 +206,7 @@ type oauthUsageSummary struct {
 	// CodeBuddyCredits is the absolute remaining balance returned by the
 	// billing meter. CodeBuddy does not expose a percentage window like the
 	// other OAuth providers, so retain the provider-native value.
+	QoderCredits     *qoderauth.Usage  `json:"qoder_credits,omitempty"`
 	CodeBuddyCredits *codeBuddyCredits `json:"codebuddy_credits,omitempty"`
 	// Partial means omitted windows were not observed, rather than retired.
 	Partial               bool                    `json:"-"`
@@ -1487,7 +1489,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
-			cfg.UsesCodeBuddyOAuth() ||
+			cfg.UsesCodeBuddyOAuth() || cfg.UsesQoderOAuth() ||
 			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
@@ -1919,6 +1921,8 @@ func oauthQuotaLedgerFollowsSample(quotaUsage *oauthcost.Usage, key string, samp
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
+	case cfg.UsesQoderOAuth():
+		return s.requestQoderUsage(ctx, cfg)
 	case cfg.UsesCodeBuddyOAuth():
 		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
 			return nil, errCodeBuddyUsageManagerUnavailable

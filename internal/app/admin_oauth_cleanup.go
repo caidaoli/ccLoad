@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/testutil"
 
 	"github.com/bytedance/sonic"
@@ -443,7 +444,7 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth,
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth,
 		model.AuthTypeVertexOAuth:
 		return authType
 	default:
@@ -898,6 +899,13 @@ type oauthTokenEndpointFailure interface {
 }
 
 func oauthRefreshTokenRejected(err error) bool {
+	if errors.Is(err, qoderauth.ErrCannotRefresh) {
+		return true
+	}
+	var qoderErr *qoderauth.HTTPError
+	if errors.As(err, &qoderErr) && qoderErr.StatusCode == 401 {
+		return true
+	}
 	if errors.Is(err, codebuddyauth.ErrCannotRefresh) {
 		return true
 	}

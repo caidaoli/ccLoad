@@ -151,7 +151,8 @@ const OAUTH_USAGE_AUTH_TYPES = [
   'zai_oauth',
   'cursor_oauth',
   'zed_oauth',
-  'codebuddy_oauth'
+  'codebuddy_oauth',
+  'qoder_oauth'
 ];
 
 // Mirrors the backend check on the saved URL. URL() is unsuitable: it drops
@@ -875,6 +876,18 @@ function buildCodeBuddyCheckinButton(channelID, state = {}) {
 const CHANNEL_EMPTY_CELL_HTML = '<span class="ch-cell-empty" aria-hidden="true">—</span>';
 
 function buildOAuthUsageCheckinHtml(channel, state = {}) {
+  if (channel?.auth_type === 'qoder_oauth') {
+    const loading = state.checkin_status === 'loading';
+    const manual = buildQuotaActionButton('checkin-qoder', channel.id, 'checkin', window.t('channels.qoder.checkin'), { busy: loading, disabled: loading });
+    const auto = window.t(channel.qoder_auto_checkin ? 'channels.qoder.autoEnabled' : 'channels.qoder.autoDisabled');
+    const settings = `<button type="button" class="ch-oauth-usage__trigger channel-action-btn" data-action="toggle-qoder-checkin" data-channel-id="${channel.id}" data-enabled="${!channel.qoder_auto_checkin}" aria-pressed="${Boolean(channel.qoder_auto_checkin)}" title="${escapeChannelRefreshText(window.t('channels.qoder.checkinHint'))}">${escapeChannelRefreshText(auto)}</button>`;
+    const message = state.checkin_status === 'error' ? state.checkin_error : state.checkin_message;
+    const notice = message ? `<div role="status">${escapeChannelRefreshText(message)}</div>` : '';
+    const install = state.checkin_result === 'missing_component' ? `<button type="button" class="ch-oauth-usage__trigger channel-action-btn" data-action="install-qoder-umid" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.qoder.install'))}</button>` : '';
+    const edition = window.t(channel.qoder_region === 'global' ? 'channels.qoder.global' : 'channels.qoder.cn');
+    return `<span>${escapeChannelRefreshText(edition)}</span>${manual}${settings}${notice}${install}`;
+  }
+
   if (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international) {
     return '';
   }
@@ -1202,6 +1215,25 @@ function buildCodeBuddyCreditsHtml(credits, refresh) {
   return `<div class="ch-oauth-usage__credits"><div class="ch-oauth-usage__credits-summary">${buildQuotaRefreshTrigger(refresh, escapeChannelRefreshText(text))}</div></div>`;
 }
 
+function buildQoderUsageRows(credits, refresh) {
+  if (!credits || !Number.isFinite(credits.remaining)) return [];
+  const format = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const label = ['Qoder', credits.plan, credits.unit].filter(Boolean).join(' · ');
+  const percent = credits.total > 0 ? credits.remaining / credits.total * 100 : null;
+  const buckets = Array.isArray(credits.buckets) ? credits.buckets : [];
+  const details = buckets.filter(bucket => Number.isFinite(bucket.remaining)).map(bucket => `${bucket.kind}: ${format(bucket.remaining)} ${bucket.unit || credits.unit || ''}`);
+  return [buildOAuthUsageWindowHtml({
+    refresh,
+    tooltipID: oauthUsageTooltipID('ch-qoder-credits-tooltip', refresh.channelID, 0),
+    label,
+    amount: Number.isFinite(credits.used) && credits.total > 0 ? `${format(credits.used)}/${format(credits.total)}` : '',
+    value: format(credits.remaining),
+    detailLines: [label, ...details],
+    ariaLabel: label,
+    percent
+  })];
+}
+
 const OAUTH_USAGE_VISIBLE_WINDOWS = 2;
 // 展开状态跨重渲染保留：列表在刷新额度、筛选后整体重建。
 const expandedOAuthUsageChannels = new Set();
@@ -1267,13 +1299,14 @@ function buildOAuthUsageStatusHtml(channel) {
   const isCodex = channel?.auth_type === 'codex_oauth';
   const isCursor = channel?.auth_type === 'cursor_oauth' || state.data?.provider === 'cursor';
   const isZed = channel?.auth_type === 'zed_oauth' || state.data?.provider === 'zed';
+  const isQoder = channel?.auth_type === 'qoder_oauth' || state.data?.provider === 'qoder';
   const isCodeBuddy = channel?.auth_type === 'codebuddy_oauth' || state.data?.provider === 'codebuddy';
   const displayedWindows = isCursor
     ? orderCursorUsageWindows(windows)
     : isCodex
       ? orderCodexUsageWindows(windows)
       : windows;
-  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : isCodeBuddy ? [] : displayedWindows.map((windowInfo, windowIndex) => {
+  const rows = isXAI ? buildXAIUsageRows(state.data, refresh) : (isCodeBuddy || isQoder) ? [] : displayedWindows.map((windowInfo, windowIndex) => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const percentWithSymbol = `${percent}%`;
@@ -1318,6 +1351,7 @@ function buildOAuthUsageStatusHtml(channel) {
       percent: remaining
     });
   });
+  if (isQoder) rows.push(...buildQoderUsageRows(state.data?.qoder_credits, refresh));
   const codeBuddyCreditsHtml = isCodeBuddy ? buildCodeBuddyCreditsHtml(state.data?.codebuddy_credits, refresh) : '';
   if (codeBuddyCreditsHtml) rows.push(codeBuddyCreditsHtml);
   // 每条额度行都是刷新入口；一条都没有时由占位符承担。
@@ -1744,7 +1778,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-qoder', 'toggle-qoder-checkin', 'install-qoder-umid', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1770,6 +1804,20 @@ function initChannelEventDelegation() {
         if (typeof confirmAnthropicQuotaReset === 'function') {
           confirmAnthropicQuotaReset(channelId).catch(() => {});
         }
+        break;
+      case 'checkin-qoder':
+        checkInQoder(channelId).then(result => {
+          if (['claimed', 'already_claimed'].includes(result?.status) && window.showSuccess) window.showSuccess(window.t(`channels.qoder.${result.status}`));
+        }).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.checkinFailed')); });
+        break;
+      case 'toggle-qoder-checkin':
+        btn.disabled = true;
+        setQoderAutoCheckin(channelId, enabled).catch(error => {
+          if (window.showError) window.showError(error?.message || window.t('channels.qoder.settingsFailed'));
+        }).finally(() => { btn.disabled = false; });
+        break;
+      case 'install-qoder-umid':
+        installQoderUMID(btn).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.componentFailed')); });
         break;
       case 'checkin-codebuddy':
         if (typeof checkInCodeBuddy === 'function') {

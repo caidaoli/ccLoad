@@ -12,6 +12,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/vertexauth"
 	"ccLoad/internal/xaiauth"
 	"ccLoad/internal/zaiauth"
@@ -111,6 +112,12 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	} else if cfg.UsesCursorOAuth() {
 		_, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesQoderOAuth() {
+		if _, parseErr := qoderauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}

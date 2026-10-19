@@ -2818,9 +2818,10 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
     { id: 61, auth_type: 'codex_oauth' },
     { id: 62, auth_type: 'api_key' },
     { id: 63, auth_type: 'antigravity_oauth' },
-    { id: 64, auth_type: 'anthropic_oauth' }
+    { id: 64, auth_type: 'anthropic_oauth' },
+    { id: 65, auth_type: 'qoder_oauth' }
   ]);
-  setGlobal('getSelectedChannelIDs', () => [61, 62, 63, 64]);
+  setGlobal('getSelectedChannelIDs', () => [61, 62, 63, 64, 65]);
   setGlobal('filterChannels', () => {});
   setGlobal('loadChannels', async () => {});
   setGlobal('updateBatchChannelSelectionUI', () => {});
@@ -2829,32 +2830,33 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
     const summary = await batchRefreshSelectedOAuthUsage(async (url, options) => {
       requested.push({ url, options });
       return oauthUsageBatchSSE([
-        { event: 'start', processed: 0, total: 3, succeeded: 0, failed: 0 },
+        { event: 'start', processed: 0, total: 4, succeeded: 0, failed: 0 },
         {
-          event: 'progress', processed: 1, total: 3, succeeded: 1, failed: 0,
+          event: 'progress', processed: 1, total: 4, succeeded: 1, failed: 0,
           result: { channel_id: 61, status: 'succeeded', usage: { windows: [] } }
         },
         {
-          event: 'progress', processed: 2, total: 3, succeeded: 2, failed: 0,
+          event: 'progress', processed: 2, total: 4, succeeded: 2, failed: 0,
           result: { channel_id: 63, status: 'succeeded', usage: { windows: [] } }
         },
         {
-          event: 'progress', processed: 3, total: 3, succeeded: 3, failed: 0,
+          event: 'progress', processed: 3, total: 4, succeeded: 3, failed: 0,
           result: { channel_id: 64, status: 'succeeded', usage: { windows: [] } }
         },
-        { event: 'complete', processed: 3, total: 3, succeeded: 3, failed: 0 }
+        { event: 'progress', processed: 4, total: 4, succeeded: 4, failed: 0, result: { channel_id: 65, status: 'succeeded', usage: { provider: 'qoder', windows: [], qoder_credits: { remaining: 5 } } } },
+        { event: 'complete', processed: 4, total: 4, succeeded: 4, failed: 0 }
       ]);
     });
 
     assert.equal(requested.length, 1);
     assert.equal(requested[0].url, '/admin/channels/oauth-usage/batch/stream');
-    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [61, 63, 64] });
-    assert.deepEqual(summary, { total: 4, succeeded: 3, failed: 0, skipped: 1 });
+    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [61, 63, 64, 65] });
+    assert.deepEqual(summary, { total: 5, succeeded: 4, failed: 0, skipped: 1 });
     assert.deepEqual(notices, [{
       type: 'success',
       message: {
         key: 'channels.batchOAuthUsageSummary',
-        params: { total: 4, succeeded: 3, failed: 0, skipped: 1 }
+        params: { total: 5, succeeded: 4, failed: 0, skipped: 1 }
       }
     }]);
     assert.equal(button.disabled, false);
@@ -3051,5 +3053,187 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(rowToggleButton.disabled, false);
   } finally {
     global.document = previousDocument;
+  }
+});
+
+test('Qoder PAT import sends the selected edition and clears secrets before network failures', async () => {
+  const { submitQoderCredential } = require('./channels-codex-auth.js');
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const input = { value: ' personal-secret ' };
+  try {
+    await assert.rejects(submitQoderCredential('global', 'pat', input, async (url, options) => {
+      assert.equal(url, '/admin/qoder/credentials/import');
+      assert.equal(options.method, 'POST');
+      assert.equal(input.value, '');
+      assert.deepEqual(JSON.parse(options.body), { region: 'global', pat: 'personal-secret' });
+      throw new Error('network unavailable');
+    }), /network unavailable/);
+    assert.equal(input.value, '');
+  } finally { global.window = previousWindow; }
+});
+
+test('Qoder JSON import validates the edition and preserves the private envelope', async () => {
+  const { submitQoderCredential } = require('./channels-codex-auth.js');
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  let calls = 0;
+  const credential = { type: 'qoder', region: 'cn', access_token: 'dt-secret', refresh_token: 'drt-secret', machine_id: 'machine' };
+  const fetcher = async (url, options) => {
+    calls++;
+    assert.equal(url, '/admin/qoder/credentials/import');
+    assert.deepEqual(JSON.parse(options.body), { region: 'cn', credential });
+    return { channel_id: 7 };
+  };
+  try {
+    assert.deepEqual(await submitQoderCredential('cn', 'json', { value: JSON.stringify(credential) }, fetcher), { channel_id: 7 });
+    for (const raw of ['null', '[]', '{', JSON.stringify({ ...credential, region: 'global' }), JSON.stringify({ ...credential, type: 'codex' })]) {
+      const input = { value: raw };
+      await assert.rejects(submitQoderCredential('cn', 'json', input, fetcher), /invalidJSON/);
+      assert.equal(input.value, '');
+    }
+    await assert.rejects(submitQoderCredential('', 'pat', { value: 'secret' }, fetcher), /invalidRegion/);
+    assert.equal(calls, 1);
+  } finally { global.window = previousWindow; }
+});
+
+test('Qoder OAuth polling, cancellation and refresh target their own API resources', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  try {
+    const status = await pollOAuthStatus('qoder', 'state/a', {
+      fetchStatus: async url => {
+        assert.equal(url, '/admin/qoder/oauth/status?state=state%2Fa');
+        return { status: 'complete', channel_id: 8 };
+      }, delay: async () => {}
+    });
+    assert.equal(status.channel_id, 8);
+    await cancelOAuth('qoder', 'state/a', async (url, options) => {
+      assert.equal(url, '/admin/qoder/oauth/cancel');
+      assert.deepEqual(JSON.parse(options.body), { state: 'state/a' });
+    });
+    await refreshOAuthCredential(8, async (url, options) => {
+      assert.equal(url, '/admin/channels/8/qoder-credential/refresh');
+      assert.equal(options.method, 'POST');
+    }, 'qoder_oauth');
+  } finally { global.window = previousWindow; }
+});
+
+test('Qoder unavailable check-in preserves quota and never becomes a claimed state', async () => {
+  const { checkInQoder } = require('./channels-codex-auth.js');
+  const previousWindow = global.window;
+  const previousChannels = global.channels;
+  global.window = { t: key => key };
+  const usage = { provider: 'qoder', windows: [], qoder_credits: { remaining: 12.5 } };
+  global.channels = [{ id: 9182, auth_type: 'qoder_oauth', oauth_usage: usage }];
+  try {
+    for (const status of ['missing_component', 'unavailable', 'already_claimed', 'claimed']) {
+      const result = await checkInQoder(9182, async (url, options) => {
+        assert.equal(url, '/admin/channels/9182/qoder-checkin');
+        assert.equal(options.method, 'POST');
+        return { status };
+      });
+      assert.equal(result.status, status);
+      const state = getOAuthUsageState(9182);
+      assert.equal(state.checkin_result, status);
+      assert.equal(state.checkin_message, `channels.qoder.${status}`);
+      assert.deepEqual(state.data, usage);
+    }
+    await assert.rejects(checkInQoder(9182, async () => ({ status: 'success' })), /checkinFailed/);
+    assert.deepEqual(getOAuthUsageState(9182).data, usage);
+    assert.equal(getOAuthUsageState(9182).checkin_status, 'error');
+  } finally { global.window = previousWindow; global.channels = previousChannels; }
+});
+
+test('Qoder auto-check-in setting persists explicit booleans and preserves state on failure', async () => {
+  const { setQoderAutoCheckin } = require('./channels-codex-auth.js');
+  const previousChannels = global.channels;
+  global.channels = [{ id: 9183, auth_type: 'qoder_oauth', qoder_auto_checkin: false }];
+  try {
+    await setQoderAutoCheckin(9183, true, async (url, options) => {
+      assert.equal(url, '/admin/channels/9183/qoder-checkin/settings');
+      assert.deepEqual(JSON.parse(options.body), { enabled: true });
+      return { enabled: true };
+    });
+    assert.equal(global.channels[0].qoder_auto_checkin, true);
+    await assert.rejects(setQoderAutoCheckin(9183, false, async () => { throw new Error('save failed'); }), /save failed/);
+    assert.equal(global.channels[0].qoder_auto_checkin, true);
+    await assert.rejects(setQoderAutoCheckin(9183, 'false', async () => assert.fail('invalid setting reached network')));
+  } finally { global.channels = previousChannels; }
+});
+
+test('Qoder component status consumes only the management status endpoint', async () => {
+  const { loadQoderUMIDStatus } = require('./channels-codex-auth.js');
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const label = { textContent: '' };
+  const button = { disabled: false };
+  global.window = { t: key => key };
+  global.document = { getElementById: id => id === 'qoderUMIDStatus' ? label : button };
+  try {
+    const status = await loadQoderUMIDStatus(async url => {
+      assert.equal(url, '/admin/qoder/umid');
+      return { available: false, install_supported: false, platform: 'darwin/arm64' };
+    });
+    assert.equal(status.available, false);
+    assert.equal(button.disabled, true);
+    assert.equal(label.textContent, 'channels.qoder.componentMissing');
+    await loadQoderUMIDStatus(async () => ({ available: true, install_supported: true }));
+    assert.equal(label.textContent, 'channels.qoder.componentAvailable');
+    assert.equal(button.disabled, true);
+  } finally { global.document = previousDocument; global.window = previousWindow; }
+});
+
+test('Qoder browser login submits the chosen edition and completes through the existing dialog', async () => {
+  const makeTarget = values => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+    ...values
+  });
+  const form = makeTarget({});
+  const dialog = makeTarget({ open: true, close() { this.open = false; } });
+  const fields = new Map([
+    ['oauthLoginForm', form], ['oauthLoginDialog', dialog],
+    ['oauthProviderSelect', makeTarget({ value: 'qoder' })],
+    ['oauthAuthorizeButton', makeTarget({ disabled: false })],
+    ['oauthSessionFields', makeTarget({ hidden: true })],
+    ['oauthAuthorizationURL', makeTarget({ value: '' })],
+    ['oauthOpenLink', makeTarget({})], ['oauthCallbackURL', makeTarget({ value: '' })],
+    ['qoderOAuthRegion', makeTarget({ value: 'global' })],
+    ['qoderOAuthMethod', makeTarget({ value: 'oauth' })]
+  ]);
+  const previous = new Map();
+  const install = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  install('window', { t: key => key });
+  install('document', { getElementById: id => fields.get(id) || null, querySelectorAll: () => [] });
+  let reloads = 0;
+  install('reloadChannelsList', async () => { reloads++; });
+  const requests = [];
+  install('fetchDataWithAuth', async (url, options) => {
+    requests.push(url);
+    if (url === '/admin/qoder/oauth/start') {
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(JSON.parse(options.body), { region: 'global' });
+      return { state: 'qoder-state', url: 'https://qoder.com/device/selectAccounts?challenge=public', status: 'pending' };
+    }
+    assert.equal(url, '/admin/qoder/oauth/status?state=qoder-state');
+    return { status: 'complete', channel_id: 9185 };
+  });
+  try {
+    setupOAuthActions();
+    await form.listeners.submit({ preventDefault() {} });
+    assert.deepEqual(requests, ['/admin/qoder/oauth/start', '/admin/qoder/oauth/status?state=qoder-state']);
+    assert.equal(reloads, 1);
+    assert.equal(dialog.open, false);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
   }
 });

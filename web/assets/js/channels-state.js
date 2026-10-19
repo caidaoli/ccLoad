@@ -56,6 +56,7 @@ function getChannelAuthTypeOptions() {
     { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
     { value: 'anthropic_oauth', label: window.t('channels.authTypeAnthropic') },
     { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
+    { value: 'qoder_oauth', label: window.t('channels.authTypeQoder') },
     { value: 'codebuddy_oauth', label: window.t('channels.authTypeCodeBuddy') },
     { value: 'xai_oauth', label: window.t('channels.authTypeXAI') },
     { value: 'cursor_oauth', label: window.t('channels.authTypeCursor') },

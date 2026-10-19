@@ -1,0 +1,454 @@
+package qoderumid
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// The subprocess is this test executable, never a downloaded component or shell.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && (os.Args[1] == "4" || os.Args[1] == "3") {
+		switch os.Getenv("CCLOAD_UMID_FIXTURE") {
+		case "account":
+			var payload struct {
+				Account string `json:"account"`
+			}
+			if json.NewDecoder(os.Stdin).Decode(&payload) != nil {
+				os.Exit(2)
+			}
+			value, _ := json.Marshal(map[string]string{"machineToken": payload.Account, "machineCode": "code", "machineType": "4"})
+			fmt.Println(string(value))
+		case "block":
+			if marker := os.Getenv("CCLOAD_UMID_MARKER"); marker != "" {
+				_ = os.WriteFile(marker, []byte("started"), 0600)
+			}
+			time.Sleep(time.Hour)
+		case "large":
+			_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), maxOutput+1))
+		case "invalid":
+			fmt.Println(`{"machineToken":"secret\r\nInjected: yes","machineCode":"code","machineType":"4"}`)
+		case "missing":
+			fmt.Println(`{"machineToken":"secret"}`)
+		case "failure":
+			os.Exit(1)
+		default:
+			fmt.Println(`{"machineToken":"token","machineCode":"code","machineType":"4"}`)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func response(body []byte) *http.Response {
+	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}
+}
+
+func testManager(t *testing.T) *Manager {
+	t.Helper()
+	m := NewManager(t.TempDir(), nil)
+	m.goos = "linux"
+	m.arch = "amd64"
+	m.home = t.TempDir()
+	return m
+}
+
+func fixtureELF(arch string) []byte {
+	data := make([]byte, 64)
+	copy(data, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
+	binary.LittleEndian.PutUint16(data[16:18], 2)
+	machine := uint16(62)
+	if arch == "arm64" {
+		machine = 183
+	}
+	binary.LittleEndian.PutUint16(data[18:20], machine)
+	binary.LittleEndian.PutUint32(data[20:24], 1)
+	binary.LittleEndian.PutUint16(data[52:54], 64)
+	return data
+}
+func fixtureArchive(t *testing.T, name string, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+func fixturePackage(t *testing.T, arch string) ([]byte, []byte) {
+	t.Helper()
+	data := fixtureELF(arch)
+	archive := fixtureArchive(t, bundleEntry, []byte(`const fixture="`+base64.StdEncoding.EncodeToString(data)+`";`))
+	return archive, data
+}
+func packageClient(archive []byte, integrity string, calls *atomic.Int32) *http.Client {
+	return &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if req.URL.String() == metadataURL {
+			body, _ := json.Marshal(map[string]any{"version": "test", "dist": map[string]string{"tarball": "https://registry.npmjs.org/@qoder-ai/qodercli/-/qodercli-test.tgz", "integrity": integrity}})
+			return response(body), nil
+		}
+		return response(archive), nil
+	})}
+}
+func checksum(data []byte) string {
+	sum := sha512.Sum512(data)
+	return "sha512-" + base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func TestEnsureInstallsOfficialComponentConcurrently(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		t.Run(arch, func(t *testing.T) {
+			archive, binary := fixturePackage(t, arch)
+			var calls atomic.Int32
+			m := testManager(t)
+			m.arch = arch
+			m.client = packageClient(archive, checksum(archive), &calls)
+			var wg sync.WaitGroup
+			for range 20 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if err := m.Ensure(context.Background()); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			wg.Wait()
+			if calls.Load() != 2 {
+				t.Fatalf("requests=%d, want metadata+archive", calls.Load())
+			}
+			installed, err := os.ReadFile(m.installedPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(installed, binary) {
+				t.Fatal("installed bytes differ")
+			}
+			status := m.Status()
+			if !status.Available || status.Source != "data" || !status.InstallSupported {
+				t.Fatalf("status=%+v", status)
+			}
+			if err = m.Install(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 2 {
+				t.Fatal("existing component was downloaded again")
+			}
+			entries, err := os.ReadDir(filepath.Dir(m.installedPath()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatal("staging file was leaked")
+			}
+		})
+	}
+}
+
+func TestEnsureRejectsUntrustedOrInvalidPackage(t *testing.T) {
+	good, _ := fixturePackage(t, "amd64")
+	wrongArch, _ := fixturePackage(t, "arm64")
+	unsafe := fixtureArchive(t, "../runtime-info", []byte("x"))
+	for _, tt := range []struct {
+		name      string
+		archive   []byte
+		integrity string
+	}{
+		{"missing integrity", good, ""}, {"unsupported digest", good, "sha1-abc"}, {"malformed digest", good, "sha512-bad"},
+		{"checksum mismatch", good, checksum([]byte("changed"))}, {"wrong architecture", wrongArch, checksum(wrongArch)},
+		{"path traversal", unsafe, checksum(unsafe)}, {"invalid archive", []byte("x"), checksum([]byte("x"))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			m := testManager(t)
+			m.client = packageClient(tt.archive, tt.integrity, &calls)
+			if err := m.Ensure(context.Background()); err == nil {
+				t.Fatal("invalid package accepted")
+			}
+			if m.Status().Available {
+				t.Fatal("invalid component published")
+			}
+			if _, err := os.Stat(m.installedPath()); !os.IsNotExist(err) {
+				t.Fatalf("component exists: %v", err)
+			}
+			encoded, _ := json.Marshal(m.Status())
+			if bytes.Contains(encoded, []byte(m.dataDir)) {
+				t.Fatal("status leaks data directory")
+			}
+		})
+	}
+}
+
+func TestUnsupportedPlatformAndRegion(t *testing.T) {
+	m := testManager(t)
+	m.arch = "386"
+	if m.Status().InstallSupported {
+		t.Fatal("386 claims automatic installation")
+	}
+	if err := m.Ensure(context.Background()); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("error=%v", err)
+	}
+	for _, region := range []string{"cn", "china"} {
+		headers, err := m.Headers(context.Background(), region, "uid")
+		if err != nil || len(headers) != 0 {
+			t.Fatalf("headers=%v error=%v", headers, err)
+		}
+	}
+	if _, err := m.Headers(context.Background(), "unknown", "uid"); err == nil {
+		t.Fatal("unknown region accepted")
+	}
+}
+
+func TestInstallCancellationAndRetry(t *testing.T) {
+	archive, _ := fixturePackage(t, "amd64")
+	var calls atomic.Int32
+	m := testManager(t)
+	started := make(chan struct{})
+	m.client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		close(started)
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- m.Ensure(ctx) }()
+	<-started
+	waiting, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	if err := m.Ensure(waiting); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait error=%v", err)
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("install error=%v", err)
+	}
+	m.client = packageClient(archive, checksum(archive), &calls)
+	if err := m.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m.Status().Error != "" {
+		t.Fatal("successful retry retained stale error")
+	}
+}
+
+func fakeComponent(t *testing.T, m *Manager) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Dir(m.installedPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Link(exe, m.installedPath()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHeadersCacheAndIdentityValidation(t *testing.T) {
+	m := testManager(t)
+	fakeComponent(t, m)
+	t.Setenv("CCLOAD_UMID_FIXTURE", "valid")
+	headers, err := m.Headers(context.Background(), "global", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers.Get("Cosy-MachineToken") != "token" || headers.Get("Cosy-MachineCode") != "code" || headers.Get("Cosy-MachineType") != "4" {
+		t.Fatalf("headers=%v", headers)
+	}
+	headers.Set("Cosy-MachineToken", "mutated")
+	t.Setenv("CCLOAD_UMID_FIXTURE", "invalid")
+	cached, err := m.Headers(context.Background(), "global", "first")
+	if err != nil || cached.Get("Cosy-MachineToken") != "token" {
+		t.Fatalf("cache=%v error=%v", cached, err)
+	}
+	if _, err = m.Headers(context.Background(), "global", "second"); err == nil {
+		t.Fatal("different UID reused cached identity or accepted header injection")
+	}
+	for _, mode := range []string{"large", "missing", "failure"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("CCLOAD_UMID_FIXTURE", mode)
+			if _, err := m.Headers(context.Background(), "global", mode); err == nil {
+				t.Fatal("invalid component output accepted")
+			}
+		})
+	}
+}
+
+func TestComponentCancellationAndTimeout(t *testing.T) {
+	for _, mode := range []string{"cancel", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			m := testManager(t)
+			fakeComponent(t, m)
+			t.Setenv("CCLOAD_UMID_FIXTURE", "block")
+			marker := filepath.Join(t.TempDir(), "started")
+			t.Setenv("CCLOAD_UMID_MARKER", marker)
+			if mode == "timeout" {
+				m.processTimeout = 100 * time.Millisecond
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started := time.Now()
+			result := make(chan error, 1)
+			go func() { _, err := m.Headers(ctx, "global", "uid"); result <- err }()
+			if mode == "cancel" {
+				deadline := time.After(3 * time.Second)
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+			wait:
+				for {
+					select {
+					case <-deadline:
+						t.Fatal("fixture did not start")
+					case <-ticker.C:
+						if _, err := os.Stat(marker); err == nil {
+							break wait
+						}
+					}
+				}
+				cancel()
+			}
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Fatal("blocking child was not canceled")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("component cancellation did not kill child")
+			}
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("component cancellation took too long")
+			}
+		})
+	}
+}
+
+func TestDownloadURLAndSizeContracts(t *testing.T) {
+	for _, raw := range []string{"http://registry.npmjs.org/@qoder-ai/qodercli/latest", "https://evil.example/@qoder-ai/qodercli/latest", "https://registry.npmjs.org/@qoder-ai/other/-/package.tgz", "https://registry.npmjs.org/@qoder-ai/qodercli/latest?token=secret"} {
+		m := testManager(t)
+		if _, err := m.download(context.Background(), raw, 10); err == nil {
+			t.Fatalf("URL accepted: %s", raw)
+		}
+	}
+	m := testManager(t)
+	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		r := response([]byte("elevenbytes"))
+		r.ContentLength = -1
+		return r, nil
+	})}
+	if _, err := m.download(context.Background(), metadataURL, 10); err == nil {
+		t.Fatal("oversized streaming response accepted")
+	}
+	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		r := response(nil)
+		r.StatusCode = 302
+		r.Header.Set("Location", "https://evil.example/package.tgz")
+		return r, nil
+	})}
+	if _, err := m.download(context.Background(), metadataURL, 10); err == nil {
+		t.Fatal("external registry redirect accepted")
+	}
+}
+
+func TestWaitingInstallerCancellationDoesNotCancelLeader(t *testing.T) {
+	archive, _ := fixturePackage(t, "amd64")
+	var calls atomic.Int32
+	base := packageClient(archive, checksum(archive), &calls)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	m := testManager(t)
+	m.client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == metadataURL {
+			close(started)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		return base.Transport.RoundTrip(r)
+	})}
+	leader := make(chan error, 1)
+	go func() { leader <- m.Ensure(context.Background()) }()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := m.Ensure(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting installer error=%v", err)
+	}
+	close(release)
+	if err := <-leader; err != nil {
+		t.Fatal(err)
+	}
+	if !m.Status().Available || calls.Load() != 2 {
+		t.Fatal("waiting caller disrupted shared installation")
+	}
+}
+
+func TestDiscoversOfficialClientAndCLI(t *testing.T) {
+	for _, source := range []string{"app", "cli"} {
+		t.Run(source, func(t *testing.T) {
+			m := testManager(t)
+			m.goos = "darwin"
+			var target string
+			if source == "app" {
+				target = filepath.Join(m.home, "Applications", "Qoder.app", "Contents", "Resources", "umid", "runtime-info")
+			} else {
+				target = filepath.Join(m.home, ".qoder", ".bin", "umid-darwin-arm64-fixture", "runtime-info")
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Link(exe, target); err != nil {
+				t.Fatal(err)
+			}
+			status := m.Status()
+			if !status.Available || status.Source != source || status.InstallSupported {
+				t.Fatalf("status=%+v", status)
+			}
+			t.Setenv("CCLOAD_UMID_FIXTURE", "account")
+			headers, err := m.Headers(context.Background(), "global", "fixture-account")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if headers.Get("Cosy-MachineToken") != "fixture-account" {
+				t.Fatalf("account stdin was not passed: %v", headers)
+			}
+		})
+	}
+}

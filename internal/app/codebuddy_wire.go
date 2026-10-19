@@ -388,11 +388,15 @@ func collectChatCompletion(ctx context.Context, reader io.Reader, onEvent func(*
 }
 
 func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Response, headers http.Header, w http.ResponseWriter, stats *streamReadStats) (*fwResult, float64, error) {
-	body, parser, err := collectCodeBuddyCompletion(reqCtx.ctx, resp.Body, func(parser *sseUsageParser) {
+	return s.handleChatNonStream(reqCtx, resp, headers, w, stats, normalizeCodeBuddySSEEvent, "CodeBuddy")
+}
+
+func (s *Server) handleChatNonStream(reqCtx *requestContext, resp *http.Response, headers http.Header, w http.ResponseWriter, stats *streamReadStats, normalize func([]byte) []byte, provider string) (*fwResult, float64, error) {
+	body, parser, err := collectChatCompletion(reqCtx.ctx, resp.Body, func(parser *sseUsageParser) {
 		if shouldMarkUpstreamFirstByte(parser) {
 			markFirstStreamResponse(reqCtx, stats)
 		}
-	})
+	}, normalize, provider)
 	result := &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: headers, FirstByteTime: responseFirstByteSec(reqCtx, stats), BytesReceived: stats.totalBytes}
 	populateFWResultFromUsageParser(result, parser)
 	if result.SSEErrorEvent != nil {
@@ -415,7 +419,7 @@ func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Res
 	headers.Set("Content-Type", "application/json")
 	headers.Del("Content-Length")
 	headers.Del("Content-Encoding")
-	disableResponseWriteTimeout(w, "CodeBuddy非流式")
+	disableResponseWriteTimeout(w, provider+"非流式")
 	filterAndWriteResponseHeaders(w, headers)
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
