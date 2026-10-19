@@ -215,7 +215,6 @@ body {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
   text-decoration: none;
   color: var(--color-text-primary);
   transition: opacity var(--duration-fast);
@@ -232,10 +231,13 @@ body {
   filter: drop-shadow(0 4px 10px rgba(59, 130, 246, 0.2));
 }
 
+/* 与管理后台顶栏同构（按 40/36 放大）：viewBox 只框字母，副标题溢出到下外边距里，两行整体与图标垂直居中 */
 .www-logo-wordmark {
   display: block;
   width: 147px;
-  height: 40px;
+  height: 27px;
+  margin-bottom: 13px;
+  overflow: visible;
 }
 
 html[data-resolved-theme="dark"] .www-logo-wordmark {
@@ -376,9 +378,12 @@ html[data-resolved-theme="dark"] .www-logo-wordmark {
     height: 28px;
   }
 
+  /* 窄屏只留字母：overflow 裁掉框外副标题 */
   .www-logo-wordmark {
     width: 103px;
-    height: 28px;
+    height: 19px;
+    margin-bottom: 0;
+    overflow: hidden;
   }
 
   .www-icon-button {

@@ -247,7 +247,7 @@ function renderNav(page, alternate, t, stars) {
     <div class="www-nav-container">
       <a href="./" class="www-nav-logo" aria-label="ccLoad">
         <img class="www-logo-icon" src="brand-mark.svg" alt="" width="36" height="36">
-        <svg class="www-logo-wordmark" viewBox="0 0 132 36" aria-hidden="true"><use href="brand-wordmark.svg#brand-wordmark" width="132" height="36"></use></svg>
+        <svg class="www-logo-wordmark" viewBox="0 0 132 24" aria-hidden="true"><use href="brand-wordmark.svg#brand-wordmark" width="132" height="36"></use></svg>
       </a>
       <ul class="www-nav-menu" id="www-nav-menu">
 ${items}
