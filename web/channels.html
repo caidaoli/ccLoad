@@ -106,7 +106,7 @@
                       </span>
                     </button>
                     <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="qoder">
-                      <span class="channel-page-menu__icon channel-provider-avatar" aria-hidden="true">Q</span>
+                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="qoder_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title">Qoder</span>
                         <span class="channel-page-menu__desc" data-i18n="channels.qoder.description">国内版 / 国际版，浏览器登录、PAT 或凭证 JSON</span>
@@ -282,7 +282,7 @@
                     data-i18n-description="channels.oauth.providerAntigravityDesc" data-description="浏览器 OAuth 登录">Antigravity</option>
                   <option value="codebuddy" data-i18n="channels.oauth.providerCodeBuddy" data-icon-auth-type="codebuddy_oauth"
                     data-i18n-description="channels.oauth.providerCodeBuddyDesc" data-description="国内版 / 国际版，浏览器 OAuth 或认证文件">CodeBuddy</option>
-                  <option value="qoder" data-i18n-description="channels.qoder.description" data-description="国内版 / 国际版，浏览器登录、PAT 或凭证 JSON">Qoder</option>
+                  <option value="qoder" data-icon-auth-type="qoder_oauth" data-i18n-description="channels.qoder.description" data-description="国内版 / 国际版，浏览器登录、PAT 或凭证 JSON">Qoder</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI" data-icon-auth-type="xai_oauth"
                     data-i18n-description="channels.oauth.providerXAIDesc" data-description="刷新令牌、SSO Cookie 或手动授权">xAI</option>
                   <option value="cursor" data-i18n="channels.oauth.providerCursor" data-icon-auth-type="cursor_oauth"
@@ -295,7 +295,7 @@
                     data-i18n-description="channels.oauth.providerVertexDesc" data-description="上传服务账号 JSON 密钥">Vertex</option>
                 </select>
               </div>
-              <div id="codexOAuthControls">
+              <div id="codexOAuthControls" class="oauth-provider-controls">
                 <div class="oauth-field">
                   <label for="codexOAuthMethod" data-i18n="channels.codex.methodLabel">Codex 授权方式</label>
                   <select id="codexOAuthMethod" name="codex_oauth_method" class="form-input">
@@ -313,7 +313,7 @@
                     data-i18n="channels.codex.personalAccessTokenHint">输入以 at- 开头的令牌。提交后输入会立即清除；令牌到期或被撤销后需要重新授权。</p>
                 </div>
               </div>
-              <div id="xaiOAuthControls" hidden>
+              <div id="xaiOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>
                   <select id="xaiOAuthMethod" name="xai_oauth_method" class="form-input">
@@ -351,18 +351,18 @@
                   </div>
                 </div>
               </div>
-              <div id="qoderOAuthControls" hidden>
+              <div id="qoderOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="qoderOAuthRegion" data-i18n="channels.qoder.region">Qoder 地区</label>
                   <select id="qoderOAuthRegion" class="form-input">
-                    <option value="cn" data-i18n="channels.qoder.cn">中国版</option>
+                    <option value="cn" data-i18n="channels.qoder.cn">国内版</option>
                     <option value="global" data-i18n="channels.qoder.global">国际版</option>
                   </select>
                 </div>
                 <div class="oauth-field">
                   <label for="qoderOAuthMethod" data-i18n="channels.qoder.method">授权方式</label>
                   <select id="qoderOAuthMethod" class="form-input">
-                    <option value="oauth" data-i18n="channels.oauth.startAuthorization">浏览器授权</option>
+                    <option value="oauth" data-i18n="channels.qoder.methodBrowser">浏览器授权</option>
                     <option value="pat">Personal Access Token (PAT)</option>
                     <option value="json" data-i18n="channels.qoder.json">凭证 JSON</option>
                   </select>
@@ -376,13 +376,14 @@
                   <textarea id="qoderCredentialContent" class="form-input oauth-url" rows="7" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="qoderCredentialHint"></textarea>
                   <p id="qoderCredentialHint" class="oauth-field-hint" data-i18n="channels.qoder.jsonHint">粘贴 ccLoad Qoder 凭证 JSON，region 必须与所选地区一致；提交后清空。</p>
                 </div>
-                <p class="oauth-field-hint" data-i18n="channels.qoder.checkinHint">中国版签到不需要组件。国际版自动签到在 Linux / macOS 自动下载官方组件；Windows 复用已安装的 Qoder 或 qodercli 组件。缺少组件不影响推理。</p>
-                <div id="qoderUMIDControls" hidden>
-                  <p id="qoderUMIDStatus" role="status"></p>
-                  <button id="qoderUMIDInstall" type="button" class="btn btn-secondary" data-i18n="channels.qoder.install">安装官方签到组件</button>
+                <p class="oauth-field-hint" data-i18n="channels.qoder.checkinHint">国内版签到不需要组件。国际版自动签到在 Linux / macOS 自动下载官方组件；Windows 复用已安装的 Qoder 或 qodercli 组件。缺少组件不影响推理。</p>
+                <div id="qoderUMIDControls" class="oauth-field" hidden>
+                  <p id="qoderUMIDStatus" class="oauth-field-hint" role="status"></p>
+                  <progress id="qoderUMIDProgress" aria-labelledby="qoderUMIDStatus" hidden></progress>
+                  <button id="qoderUMIDInstall" type="button" class="btn btn-secondary" data-i18n="channels.qoder.install" hidden>安装官方签到组件</button>
                 </div>
               </div>
-              <div id="codebuddyOAuthControls" hidden>
+              <div id="codebuddyOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="codebuddyOAuthEdition" data-i18n="channels.codebuddy.editionLabel">CodeBuddy 版本</label>
                   <select id="codebuddyOAuthEdition" name="codebuddy_edition" class="form-input">
@@ -407,7 +408,7 @@
                   </div>
                 </div>
               </div>
-              <div id="zaiOAuthControls" hidden>
+              <div id="zaiOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="zaiOAuthMethod" data-i18n="channels.zai.methodLabel">Z.ai 授权方式</label>
                   <select id="zaiOAuthMethod" name="zai_oauth_method" class="form-input">
@@ -424,7 +425,7 @@
                     data-i18n="channels.zai.apiKeyHint">提交后输入会立即从页面清除。ccLoad 只把它保存在渠道凭证中。</p>
                 </div>
               </div>
-              <div id="cursorOAuthControls" hidden>
+              <div id="cursorOAuthControls" class="oauth-provider-controls" hidden>
                 <div id="cursorAPIKeyField" class="oauth-field" hidden>
                   <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
                   <input id="cursorUserAPIKey" name="cursor_user_api_key" type="text"
@@ -439,7 +440,7 @@
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
                 </div>
               </div>
-              <div id="zedOAuthControls" hidden>
+              <div id="zedOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="zedSystemID" data-i18n="channels.zed.systemIDLabel">Zed system ID（可选；试用需要）</label>
                   <input id="zedSystemID" name="zed_system_id" type="text"
@@ -450,7 +451,7 @@
                     data-i18n="channels.zed.systemIDHint">本机运行 ccLoad 时会自动读取 Zed。没有该值时仍可尝试登录，但 Zed 试用权限可能不可用；远程或容器部署可填写本机 Zed 数据库中的 system_id。</p>
                 </div>
               </div>
-              <div id="vertexOAuthControls" hidden>
+              <div id="vertexOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="vertexCredentialFile" data-i18n="channels.vertex.fileLabel">服务账号密钥文件</label>
                   <input id="vertexCredentialFile" type="file" class="form-input" accept=".json,application/json" aria-describedby="vertexCredentialFileHint">

@@ -1,6 +1,6 @@
 # Qoder 渠道
 
-在渠道页添加 Qoder，选择中国版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录，模型名为上游显示名去掉空白后的小写形式（如 `Qwen 3.8 Flash` → `qwen3.8flash`），转发时按名称不区分大小写匹配目录；模型调用支持现有协议转换、流式/非流式和工具调用。
+在渠道页添加 Qoder，选择国内版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录，模型名为上游显示名去掉空白后的小写形式（如 `Qwen 3.8 Flash` → `qwen3.8flash`），转发时按名称不区分大小写匹配目录；模型调用支持现有协议转换、流式/非流式和工具调用。
 
 凭据 JSON 使用 `type: "qoder"`、`region: "cn"` 或 `"global"`、`access_token`、`refresh_token`、`user_id`、`machine_id`、`expires_at`（Unix 秒）；不要把登录凭据放入公共日志或仓库。
 
@@ -8,7 +8,7 @@
 
 渠道卡片提供余额刷新和手动领取。已启用的 Qoder 渠道始终自动签到，无开关：按 UTC+8 每日10点的活动窗口领取，服务启动约1分钟后补扫，之后每15分钟检查尚未完成的账号。奖励金额、有效性和资格由上游活动决定，不保证所有套餐都可领。credits 是 Qoder 原生额度单位，不等同美元/token计费。
 
-中国版无需额外组件。国际版签到需要官方 UMID 设备组件；模型调用、登录和额度查询不依赖它。缺少组件时，Linux 与 macOS（amd64/arm64）自动从官方 npm registry 下载并验证 qodercli 包，然后提取本机组件；也可在管理页面手动安装重试。
+国内版无需额外组件。国际版签到需要官方 UMID 设备组件；模型调用、登录和额度查询不依赖它。缺少组件时，Linux 与 macOS（amd64/arm64）自动从官方 npm registry 下载并验证 qodercli 包，然后提取本机组件；也可在管理页面手动安装重试。
 
 组件保存在工作目录的 `data/qoder-umid/runtime-info`；Docker 用户应持久化 `/app/data`。官方镜像提供所需 glibc/C++ 运行库。自建 Linux 环境需要 glibc、libstdc++ 和 libgcc，纯 musl 环境不保证可用。Windows 使用已安装的 Qoder 或 qodercli 自带组件，缺少时页面给出提示。
 

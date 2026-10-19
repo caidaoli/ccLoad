@@ -407,7 +407,7 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.zaiService = zaiauth.NewService(s.client)
-	s.qoderUMID = qoderumid.NewManager("data", s.client)
+	s.qoderUMID = qoderumid.NewManager(s.baseCtx, "data", s.client)
 	s.qoderService = qoderauth.NewService(s.client)
 	s.qoderService.RiskHeaders = func(ctx context.Context, credential *qoderauth.Credential) (http.Header, error) {
 		return s.qoderUMID.Headers(ctx, credential.Region, credential.UserID)

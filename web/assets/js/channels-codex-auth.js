@@ -1031,36 +1031,129 @@ async function importQoderFromDialog(button) {
   }
 }
 
-async function loadQoderUMIDStatus(fetcher = fetchDataWithAuth) {
+const QODER_UMID_POLL_INTERVAL_MS = 500;
+let qoderUMIDInstalling = false;
+let qoderUMIDWatching = false;
+// Bumped on every render; a status requested before a newer render is stale.
+let qoderUMIDRenderVersion = 0;
+
+function qoderUMIDDownloadProgress(status) {
+  const progress = status?.progress;
+  return progress?.phase === 'download' && progress.total > 0 ? progress : null;
+}
+
+function qoderUMIDStatusText(status, installing) {
+  if (!installing) {
+    if (status?.available) return window.t('channels.qoder.componentAvailable');
+    if (status?.install_supported && status?.error) return window.t('channels.qoder.installFailed', { error: status.error });
+    return window.t('channels.qoder.componentMissing');
+  }
+  const download = qoderUMIDDownloadProgress(status);
+  if (download) {
+    const downloaded = download.downloaded || 0;
+    const megabytes = bytes => (bytes / 1048576).toFixed(1);
+    return window.t('channels.qoder.installDownloading', {
+      downloaded: megabytes(downloaded),
+      total: megabytes(download.total),
+      percent: Math.floor(downloaded / download.total * 100)
+    });
+  }
+  return window.t(status?.progress?.phase === 'verify' ? 'channels.qoder.installVerifying' : 'channels.qoder.installing');
+}
+
+// The install button appears only when installing can help, and stays disabled while one runs.
+// A message replaces the status text when the status itself could not be loaded.
+function renderQoderUMIDStatus(status, message = '') {
+  qoderUMIDRenderVersion++;
+  const installing = qoderUMIDInstalling || Boolean(status?.installing);
   const label = document.getElementById('qoderUMIDStatus');
+  if (label) label.textContent = message || qoderUMIDStatusText(status, installing);
+  const bar = document.getElementById('qoderUMIDProgress');
+  if (bar) {
+    bar.hidden = !installing;
+    const download = qoderUMIDDownloadProgress(status);
+    // Without a value the bar stays indeterminate until the download size is known.
+    if (download) {
+      bar.max = download.total;
+      bar.value = download.downloaded || 0;
+    } else {
+      bar.removeAttribute('value');
+    }
+  }
   const button = document.getElementById('qoderUMIDInstall');
-  try {
-    const status = await fetcher('/admin/qoder/umid');
-    if (label) label.textContent = window.t(status?.available ? 'channels.qoder.componentAvailable' : 'channels.qoder.componentMissing');
-    if (button) button.disabled = Boolean(status?.available || !status?.install_supported);
-    return status;
-  } catch (error) {
-    if (label) label.textContent = error?.message || window.t('channels.qoder.componentFailed');
-    if (button) button.disabled = true;
-    throw error;
+  if (button) {
+    button.hidden = !installing && (Boolean(status?.available) || !status?.install_supported);
+    button.disabled = installing;
   }
 }
 
-async function installQoderUMID(button, fetcher = fetchDataWithAuth) {
-  if (button) button.disabled = true;
-  const label = document.getElementById('qoderUMIDStatus');
-  if (label) label.textContent = window.t('channels.qoder.installing');
+function qoderUMIDControlsVisible() {
+  const controls = document.getElementById('qoderUMIDControls');
+  return Boolean(controls && !controls.hidden && controls.closest('dialog')?.open);
+}
+
+async function loadQoderUMIDStatus(fetcher = fetchDataWithAuth, wait = codexOAuthDelay) {
+  const version = qoderUMIDRenderVersion;
+  let status;
   try {
-    const status = await fetcher('/admin/qoder/umid/install', { method: 'POST' });
-    if (!status?.available) throw new Error(window.t('channels.qoder.componentFailed'));
-    if (label) label.textContent = window.t('channels.qoder.componentAvailable');
-    if (window.showSuccess) window.showSuccess(window.t('channels.qoder.componentAvailable'));
-    return status;
+    status = await fetcher('/admin/qoder/umid');
   } catch (error) {
-    if (label) label.textContent = error?.message || window.t('channels.qoder.componentFailed');
-    if (button) button.disabled = false;
+    if (version === qoderUMIDRenderVersion && !qoderUMIDInstalling) {
+      renderQoderUMIDStatus(null, error?.message || window.t('channels.qoder.componentFailed'));
+    }
     throw error;
   }
+  if (version === qoderUMIDRenderVersion) renderQoderUMIDStatus(status);
+  if (status?.installing && !qoderUMIDInstalling) void watchQoderUMIDInstall(fetcher, wait);
+  return status;
+}
+
+// Polls until the server finishes installing; resolves null once nobody is waiting for the result.
+async function pollQoderUMIDInstall(fetcher, wait, active) {
+  for (;;) {
+    await wait(QODER_UMID_POLL_INTERVAL_MS);
+    if (!active()) return null;
+    const status = await fetcher('/admin/qoder/umid');
+    renderQoderUMIDStatus(status);
+    if (!status?.installing) return status;
+  }
+}
+
+// Follows an installation started elsewhere (such as automatic check-in) while the dialog shows it.
+async function watchQoderUMIDInstall(fetcher, wait) {
+  if (qoderUMIDWatching) return;
+  qoderUMIDWatching = true;
+  try {
+    await pollQoderUMIDInstall(fetcher, wait, () => !qoderUMIDInstalling && qoderUMIDControlsVisible());
+  } catch (error) {
+    if (!qoderUMIDInstalling) renderQoderUMIDStatus(null, error?.message || window.t('channels.qoder.componentFailed'));
+  } finally {
+    qoderUMIDWatching = false;
+  }
+}
+
+// The server installs in the background; this waits for the result while active() holds,
+// and resolves null when abandoned (for example, the dialog closed).
+async function installQoderUMID(fetcher = fetchDataWithAuth, wait = codexOAuthDelay, active = () => true) {
+  if (qoderUMIDInstalling) return null;
+  qoderUMIDInstalling = true;
+  renderQoderUMIDStatus({ install_supported: true, installing: true });
+  let status;
+  try {
+    status = await fetcher('/admin/qoder/umid/install', { method: 'POST' });
+    renderQoderUMIDStatus(status);
+    if (status?.installing) status = await pollQoderUMIDInstall(fetcher, wait, active);
+  } catch (error) {
+    qoderUMIDInstalling = false;
+    renderQoderUMIDStatus({ install_supported: true }, error?.message || window.t('channels.qoder.componentFailed'));
+    throw error;
+  }
+  qoderUMIDInstalling = false;
+  if (!status) return null;
+  renderQoderUMIDStatus(status);
+  if (!status.available) throw new Error(qoderUMIDStatusText(status, false));
+  if (window.showSuccess) window.showSuccess(window.t('channels.qoder.componentAvailable'));
+  return status;
 }
 
 function setupQoderOAuthActions() {
@@ -1073,7 +1166,7 @@ function setupQoderOAuthActions() {
   }
   const button = document.getElementById('qoderUMIDInstall');
   if (button && !button.dataset.bound) {
-    button.addEventListener('click', () => installQoderUMID(button).catch(error => {
+    button.addEventListener('click', () => installQoderUMID(fetchDataWithAuth, codexOAuthDelay, qoderUMIDControlsVisible).catch(error => {
       setCodexOAuthDialogStatus(error?.message || window.t('channels.qoder.componentFailed'), 'error');
     }));
     button.dataset.bound = '1';
@@ -3512,6 +3605,7 @@ if (typeof module !== 'undefined' && module.exports) {
     submitQoderCredential,
     checkInQoder,
     loadQoderUMIDStatus,
+    installQoderUMID,
     loadCredentialFile,
     submitVertexCredential,
     submitCodeBuddyCredentialFile,

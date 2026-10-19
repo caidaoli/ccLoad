@@ -65,7 +65,7 @@ func response(body []byte) *http.Response {
 
 func testManager(t *testing.T) *Manager {
 	t.Helper()
-	m := NewManager(t.TempDir(), nil)
+	m := NewManager(t.Context(), t.TempDir(), nil)
 	m.goos = "linux"
 	m.arch = "amd64"
 	m.home = t.TempDir()
@@ -191,10 +191,8 @@ func TestEnsureInstallsOfficialComponentConcurrently(t *testing.T) {
 			if !status.Available || status.Source != "data" || !status.InstallSupported {
 				t.Fatalf("status=%+v", status)
 			}
-			if err = m.Install(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if calls.Load() != 2 {
+			m.Install()
+			if m.Status().Installing || calls.Load() != 2 {
 				t.Fatal("existing component was downloaded again")
 			}
 			entries, err := os.ReadDir(filepath.Dir(m.installedPath()))
@@ -268,6 +266,9 @@ func TestInstallCancellationAndRetry(t *testing.T) {
 	archive, _ := fixturePackage(t, "amd64")
 	var calls atomic.Int32
 	m := testManager(t)
+	lifetime, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+	m.ctx = lifetime
 	started := make(chan struct{})
 	m.client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		close(started)
@@ -275,25 +276,88 @@ func TestInstallCancellationAndRetry(t *testing.T) {
 		return nil, r.Context().Err()
 	})}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- m.Ensure(ctx) }()
 	<-started
-	waiting, cancelWait := context.WithCancel(context.Background())
-	cancelWait()
-	if err := m.Ensure(waiting); !errors.Is(err, context.Canceled) {
-		t.Fatalf("wait error=%v", err)
-	}
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatalf("install error=%v", err)
+		t.Fatalf("wait error=%v", err)
 	}
+	if !m.Status().Installing {
+		t.Fatal("canceling the only waiter aborted the installation")
+	}
+	shutdown()
+	waitInstalled(t, m)
+	if status := m.Status(); status.Error == "" || status.Available {
+		t.Fatalf("shutdown status=%+v", status)
+	}
+	m.ctx = t.Context()
 	m.client = packageClient(archive, checksum(archive), &calls)
-	if err := m.Install(context.Background()); err != nil {
+	if err := m.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if m.Status().Error != "" {
 		t.Fatal("successful retry retained stale error")
+	}
+}
+
+func waitInstalled(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for m.Status().Installing {
+		if time.Now().After(deadline) {
+			t.Fatal("installation did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+type gatedReader struct {
+	gate <-chan struct{}
+	io.Reader
+}
+
+func (g gatedReader) Read(p []byte) (int, error) {
+	<-g.gate
+	return g.Reader.Read(p)
+}
+
+func TestStatusReportsInstallProgress(t *testing.T) {
+	archive, _ := fixturePackage(t, "amd64")
+	half := len(archive) / 2
+	gate := make(chan struct{})
+	var calls atomic.Int32
+	metadata := packageClient(archive, checksum(archive), &calls)
+	m := testManager(t)
+	m.client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == metadataURL {
+			return metadata.Transport.RoundTrip(r)
+		}
+		body := io.MultiReader(bytes.NewReader(archive[:half]), gatedReader{gate, bytes.NewReader(archive[half:])})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(body), ContentLength: int64(len(archive))}, nil
+	})}
+	if status := m.Status(); status.Installing || status.Progress != nil {
+		t.Fatalf("idle status=%+v", status)
+	}
+	m.Install()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status := m.Status()
+		if p := status.Progress; status.Installing && p != nil && p.Phase == PhaseDownload && p.Downloaded == int64(half) {
+			if p.Total != int64(len(archive)) || status.Available {
+				t.Fatalf("download status=%+v progress=%+v", status, *p)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("download progress not reported: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	waitInstalled(t, m)
+	if status := m.Status(); !status.Available || status.Installing || status.Progress != nil {
+		t.Fatalf("installed status=%+v", status)
 	}
 }
 
@@ -392,7 +456,7 @@ func TestComponentCancellationAndTimeout(t *testing.T) {
 func TestDownloadURLAndSizeContracts(t *testing.T) {
 	for _, raw := range []string{"http://registry.npmjs.org/@qoder-ai/qodercli/latest", "https://evil.example/@qoder-ai/qodercli/latest", "https://registry.npmjs.org/@qoder-ai/other/-/package.tgz", "https://registry.npmjs.org/@qoder-ai/qodercli/latest?token=secret"} {
 		m := testManager(t)
-		if _, err := m.download(context.Background(), raw, 10); err == nil {
+		if _, err := m.download(context.Background(), raw, 10, nil); err == nil {
 			t.Fatalf("URL accepted: %s", raw)
 		}
 	}
@@ -402,7 +466,7 @@ func TestDownloadURLAndSizeContracts(t *testing.T) {
 		r.ContentLength = -1
 		return r, nil
 	})}
-	if _, err := m.download(context.Background(), metadataURL, 10); err == nil {
+	if _, err := m.download(context.Background(), metadataURL, 10, nil); err == nil {
 		t.Fatal("oversized streaming response accepted")
 	}
 	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
@@ -411,7 +475,7 @@ func TestDownloadURLAndSizeContracts(t *testing.T) {
 		r.Header.Set("Location", "https://evil.example/package.tgz")
 		return r, nil
 	})}
-	if _, err := m.download(context.Background(), metadataURL, 10); err == nil {
+	if _, err := m.download(context.Background(), metadataURL, 10, nil); err == nil {
 		t.Fatal("external registry redirect accepted")
 	}
 }

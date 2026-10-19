@@ -7,11 +7,11 @@
 ## Qoder
 
 - `qoder_oauth` 渠道使用显式 `region=cn|global`，支持 PKCE 网页授权、PAT 换取令牌和 canonical JSON 导入。凭据含 `user_id`、`machine_id`，地区与用户共同标识账号；重新授权保留模型配置与签到记录。令牌临期刷新、401 后单次刷新及 CAS 使用现有 OAuth 生命周期。
-- Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。中国版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表；公开模型名取 `display_name` 去空白后小写，推理时按名称不区分大小写或原生 key 精确匹配目录。
+- Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。国内版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表；公开模型名取 `display_name` 去空白后小写，推理时按名称不区分大小写或原生 key 精确匹配目录。
 - 上游始终返回 SSE；信封内的业务状态先归一为 OpenAI 错误，认证/额度/排队分别映射 401/429/503；HTTP 非2xx也按相同业务码分类。文本、工具、思考和 usage 归一后进入已有转换器。非流式通过共享 Chat SSE 聚合器处理。缺少终态的 EOF 不得标记成功；输出后不得自动重放。
 - 额度通过 `/api/v2/quota/usage` 查询，credits 保持原单位，写入 `oauth_usage` 安全快照，不进入 token 窗口成本账本。
 - 签到使用 campaign 列表与 claim 接口，区分新领取、已领取、无活动和缺组件；未知奖励不伪造默认金额。国际版需要官方 UMID，国内版不需要。已启用渠道始终自动签到（无开关），首个调度 tick（启动约1分钟后）补扫，之后每15分钟扫描，成功/已领取按 UTC+8 10:00 活动窗口去重；失败或无活动保留后续扫描机会。
-- `internal/qoderumid` 发现现有 Qoder/CLI 组件；国际版签到缺组件时，Linux/macOS amd64/arm64 从官方 npm registry 下载 qodercli 包、校验 SHA-512、提取匹配平台与架构的 ELF/Mach-O 并原子安装到 `data/qoder-umid/runtime-info`。Windows 组件需配套 DLL，只复用官方安装组件，不自动下载。执行有超时、输出上限和取消传播；不在推理请求中下载安装。容器依赖 glibc、libstdc++6 和 libgcc-s1。
+- `internal/qoderumid` 发现现有 Qoder/CLI 组件；国际版签到缺组件时，Linux/macOS amd64/arm64 从官方 npm registry 下载 qodercli 包、校验 SHA-512、提取匹配平台与架构的 ELF/Mach-O 并原子安装到 `data/qoder-umid/runtime-info`。Windows 组件需配套 DLL，只复用官方安装组件，不自动下载。执行有超时、输出上限和取消传播；不在推理请求中下载安装。安装跟随服务生命周期在后台运行（自带 3 分钟超时），并发调用共享同一次下载，调用方取消等待不会中断安装；`POST /admin/qoder/umid/install` 只触发安装并立即返回当前状态，`GET /admin/qoder/umid` 在安装期间返回 `installing` 与 `progress`（`metadata`/`download`/`verify` 阶段及包体字节数，缺 Content-Length 时 `total` 为 0）。管理页靠轮询显示进度和结果，弹窗关闭即停止轮询；组件就绪或平台不支持时不显示安装按钮。容器依赖 glibc、libstdc++6 和 libgcc-s1。
 - 参考事实与独立实现说明见 `internal/qoderauth/UPSTREAM.md`；不导入 agent2api 的受限代码或改变 CLIProxyAPI 快照。
 
 ## CodeBuddy

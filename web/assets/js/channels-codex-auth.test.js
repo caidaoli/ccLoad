@@ -3145,25 +3145,159 @@ test('Qoder unavailable check-in preserves quota and never becomes a claimed sta
   } finally { global.window = previousWindow; global.channels = previousChannels; }
 });
 
-test('Qoder component status consumes only the management status endpoint', async () => {
+function qoderUMIDElements() {
+  return {
+    qoderUMIDStatus: { textContent: '' },
+    qoderUMIDProgress: { hidden: true, max: 1, removeAttribute(name) { delete this[name]; } },
+    qoderUMIDInstall: { hidden: true, disabled: false }
+  };
+}
+
+const flushQoderUMID = () => new Promise(resolve => setImmediate(resolve));
+
+const qoderUMIDText = (key, params) => (params ? `${key} ${JSON.stringify(params)}` : key);
+
+test('Qoder component status offers installation only when it can help', async () => {
   const { loadQoderUMIDStatus } = require('./channels-codex-auth.js');
   const previousDocument = global.document;
   const previousWindow = global.window;
-  const label = { textContent: '' };
-  const button = { disabled: false };
-  global.window = { t: key => key };
-  global.document = { getElementById: id => id === 'qoderUMIDStatus' ? label : button };
+  const elements = qoderUMIDElements();
+  const { qoderUMIDStatus: label, qoderUMIDInstall: button } = elements;
+  global.window = { t: qoderUMIDText };
+  global.document = { getElementById: id => elements[id] || null };
   try {
     const status = await loadQoderUMIDStatus(async url => {
       assert.equal(url, '/admin/qoder/umid');
-      return { available: false, install_supported: false, platform: 'darwin/arm64' };
+      return { available: false, install_supported: false, platform: 'windows/amd64', error: 'unsupported Qoder UMID platform' };
     });
     assert.equal(status.available, false);
-    assert.equal(button.disabled, true);
     assert.equal(label.textContent, 'channels.qoder.componentMissing');
+    assert.equal(button.hidden, true);
+    await loadQoderUMIDStatus(async () => ({ available: false, install_supported: true }));
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, false);
+    await loadQoderUMIDStatus(async () => ({ available: false, install_supported: true, error: 'registry failed' }));
+    assert.equal(label.textContent, 'channels.qoder.installFailed {"error":"registry failed"}');
+    assert.equal(button.hidden, false);
     await loadQoderUMIDStatus(async () => ({ available: true, install_supported: true }));
     assert.equal(label.textContent, 'channels.qoder.componentAvailable');
+    assert.equal(button.hidden, true);
+    await assert.rejects(loadQoderUMIDStatus(async () => { throw new Error('offline'); }), /offline/);
+    assert.equal(label.textContent, 'offline');
+    assert.equal(button.hidden, true);
+  } finally { global.document = previousDocument; global.window = previousWindow; }
+});
+
+test('Qoder component status follows another installation only while the dialog shows it', async () => {
+  const { loadQoderUMIDStatus } = require('./channels-codex-auth.js');
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const dialog = { open: true };
+  const elements = { ...qoderUMIDElements(), qoderUMIDControls: { hidden: false, closest: () => dialog } };
+  const { qoderUMIDStatus: label, qoderUMIDInstall: button } = elements;
+  global.window = { t: qoderUMIDText };
+  global.document = { getElementById: id => elements[id] || null };
+  try {
+    let polls = 0;
+    const fetcher = async () => { polls++; return { installing: true, install_supported: true, progress: { phase: 'verify' } }; };
+    let releasePoll;
+    const wait = () => new Promise(resolve => { releasePoll = resolve; });
+    await loadQoderUMIDStatus(fetcher, wait);
+    assert.equal(label.textContent, 'channels.qoder.installVerifying');
     assert.equal(button.disabled, true);
+    releasePoll();
+    await flushQoderUMID();
+    assert.equal(polls, 2);
+
+    dialog.open = false;
+    releasePoll();
+    await flushQoderUMID();
+    assert.equal(polls, 2, 'closed dialog stops polling');
+
+    dialog.open = true;
+    let server = { installing: true, install_supported: true };
+    await loadQoderUMIDStatus(async () => server, wait);
+    server = { available: true, install_supported: true };
+    releasePoll();
+    await flushQoderUMID();
+    assert.equal(label.textContent, 'channels.qoder.componentAvailable');
+    assert.equal(button.hidden, true);
+  } finally { global.document = previousDocument; global.window = previousWindow; }
+});
+
+test('Qoder component install returns immediately, reports progress and ignores repeated clicks', async () => {
+  const { installQoderUMID } = require('./channels-codex-auth.js');
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const elements = qoderUMIDElements();
+  const { qoderUMIDStatus: label, qoderUMIDProgress: bar, qoderUMIDInstall: button } = elements;
+  const successes = [];
+  global.window = { t: qoderUMIDText, showSuccess: message => successes.push(message) };
+  global.document = { getElementById: id => elements[id] || null };
+  try {
+    let acceptInstall;
+    let posts = 0;
+    let server = { installing: true, install_supported: true, progress: { phase: 'download', downloaded: 1048576, total: 4194304 } };
+    const fetcher = async (url, options) => {
+      if (options?.method === 'POST') {
+        assert.equal(url, '/admin/qoder/umid/install');
+        posts++;
+        return new Promise(resolve => { acceptInstall = resolve; });
+      }
+      assert.equal(url, '/admin/qoder/umid');
+      return server;
+    };
+    let releasePoll;
+    const wait = () => new Promise(resolve => { releasePoll = resolve; });
+
+    const install = installQoderUMID(fetcher, wait);
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, true);
+    assert.equal(bar.hidden, false);
+    assert.equal('value' in bar, false, 'progress stays indeterminate before the size is known');
+    assert.equal(label.textContent, 'channels.qoder.installing');
+    assert.equal(await installQoderUMID(fetcher, wait), null);
+    assert.equal(posts, 1);
+
+    acceptInstall({ installing: true, install_supported: true, progress: { phase: 'metadata' } });
+    await flushQoderUMID();
+    releasePoll();
+    await flushQoderUMID();
+    assert.equal(bar.max, 4194304);
+    assert.equal(bar.value, 1048576);
+    assert.equal(label.textContent, 'channels.qoder.installDownloading {"downloaded":"1.0","total":"4.0","percent":25}');
+    assert.equal(button.disabled, true);
+
+    server = { available: true, install_supported: true, installing: false };
+    releasePoll();
+    assert.equal(await install, server);
+    assert.deepEqual(successes, ['channels.qoder.componentAvailable']);
+    assert.equal(label.textContent, 'channels.qoder.componentAvailable');
+    assert.equal(bar.hidden, true);
+    assert.equal(button.hidden, true);
+
+    const failing = async (url, options) => (options?.method === 'POST'
+      ? { installing: true, install_supported: true }
+      : { available: false, install_supported: true, error: 'registry failed' });
+    await assert.rejects(installQoderUMID(failing, flushQoderUMID), /channels\.qoder\.installFailed .*registry failed/);
+    assert.equal(label.textContent, 'channels.qoder.installFailed {"error":"registry failed"}');
+    assert.equal(bar.hidden, true);
+    assert.equal(button.hidden, false);
+    assert.equal(button.disabled, false);
+
+    let polled = false;
+    const abandoned = async (url, options) => {
+      if (options?.method !== 'POST') polled = true;
+      return { installing: true, install_supported: true };
+    };
+    assert.equal(await installQoderUMID(abandoned, flushQoderUMID, () => false), null);
+    assert.equal(polled, false, 'closing the dialog stops waiting for the result');
+
+    await assert.rejects(installQoderUMID(async () => { throw new Error('offline'); }, flushQoderUMID), /offline/);
+    assert.equal(label.textContent, 'offline');
+    assert.equal(button.hidden, false, 'a failed request can be retried');
+    assert.equal(button.disabled, false);
+    assert.equal(successes.length, 1);
   } finally { global.document = previousDocument; global.window = previousWindow; }
 });
 

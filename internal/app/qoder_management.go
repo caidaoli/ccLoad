@@ -157,14 +157,10 @@ func (s *Server) HandleQoderCheckin(c *gin.Context) {
 // HandleQoderUMIDStatus reports optional international check-in component availability.
 func (s *Server) HandleQoderUMIDStatus(c *gin.Context) { RespondJSON(c, 200, s.qoderUMID.Status()) }
 
-// HandleInstallQoderUMID installs the verified official component on supported hosts.
+// HandleInstallQoderUMID starts installing the verified official component without tying it to this
+// request; clients poll the status endpoint for progress and the result.
 func (s *Server) HandleInstallQoderUMID(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
-	defer cancel()
-	if err := s.qoderUMID.Install(ctx); err != nil {
-		RespondError(c, 502, err)
-		return
-	}
+	s.qoderUMID.Install()
 	RespondJSON(c, 200, s.qoderUMID.Status())
 }
 

@@ -1215,7 +1215,7 @@ function buildCodeBuddyCreditsHtml(credits, refresh) {
 function buildQoderUsageRows(credits, refresh) {
   if (!credits || !Number.isFinite(credits.remaining)) return [];
   const format = value => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  const label = ['Qoder', credits.plan, credits.unit].filter(Boolean).join(' · ');
+  const label = [credits.plan, credits.unit].filter(Boolean).join(' · ') || 'Qoder';
   const percent = credits.total > 0 ? credits.remaining / credits.total * 100 : null;
   const buckets = Array.isArray(credits.buckets) ? credits.buckets : [];
   const details = buckets.filter(bucket => Number.isFinite(bucket.remaining)).map(bucket => `${bucket.kind}: ${format(bucket.remaining)} ${bucket.unit || credits.unit || ''}`);
@@ -1808,7 +1808,7 @@ function initChannelEventDelegation() {
         }).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.checkinFailed')); });
         break;
       case 'install-qoder-umid':
-        installQoderUMID(btn).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.componentFailed')); });
+        installQoderUMID().catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.componentFailed')); });
         break;
       case 'checkin-codebuddy':
         if (typeof checkInCodeBuddy === 'function') {

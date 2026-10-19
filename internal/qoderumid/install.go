@@ -34,7 +34,7 @@ const (
 	bundleEntry = "package/bundle/qodercli.js"
 )
 
-func (m *Manager) install(parent context.Context) error {
+func (m *Manager) install(parent context.Context, report func(Progress)) error {
 	if !m.supported() {
 		return fmt.Errorf("automatic Qoder UMID installation is unsupported on %s/%s; install the official Qoder client or qodercli", m.goos, m.arch)
 	}
@@ -43,7 +43,7 @@ func (m *Manager) install(parent context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 	defer cancel()
-	metadata, err := m.download(ctx, metadataURL, maxMetadata)
+	metadata, err := m.download(ctx, metadataURL, maxMetadata, nil)
 	if err != nil {
 		return fmt.Errorf("qoder UMID metadata: %w", err)
 	}
@@ -64,10 +64,13 @@ func (m *Manager) install(parent context.Context) error {
 	if !officialURL(pkg.Dist.Tarball) {
 		return errors.New("qodercli tarball must use the official npm registry")
 	}
-	archive, err := m.download(ctx, pkg.Dist.Tarball, maxArchive)
+	archive, err := m.download(ctx, pkg.Dist.Tarball, maxArchive, func(downloaded, total int64) {
+		report(Progress{Phase: PhaseDownload, Downloaded: downloaded, Total: total})
+	})
 	if err != nil {
 		return fmt.Errorf("qoder UMID package: %w", err)
 	}
+	report(Progress{Phase: PhaseVerify})
 	digest := sha512.Sum512(archive)
 	if subtle.ConstantTimeCompare(digest[:], expected) != 1 {
 		return errors.New("qodercli package SHA-512 integrity mismatch")
@@ -144,7 +147,9 @@ func officialURL(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.Host == "registry.npmjs.org" && u.User == nil && u.Fragment == "" && u.RawQuery == "" && (u.Path == "/@qoder-ai/qodercli/latest" || strings.HasPrefix(u.Path, "/@qoder-ai/qodercli/-/qodercli-"))
 }
 
-func (m *Manager) download(ctx context.Context, raw string, limit int64) ([]byte, error) {
+// download reads one official registry response; report, when set, receives cumulative bytes and the
+// declared length (zero when unknown).
+func (m *Manager) download(ctx context.Context, raw string, limit int64, report func(downloaded, total int64)) ([]byte, error) {
 	// The metadata URL uses an escaped slash; URL.Path is already unescaped here.
 	if !officialURL(raw) {
 		return nil, errors.New("only the official qodercli npm registry is allowed")
@@ -178,7 +183,13 @@ func (m *Manager) download(ctx context.Context, raw string, limit int64) ([]byte
 	if response.ContentLength > limit {
 		return nil, errors.New("official qodercli response exceeds size limit")
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	reader := io.LimitReader(response.Body, limit+1)
+	if report != nil {
+		total := max(response.ContentLength, 0)
+		report(0, total)
+		reader = &progressReader{Reader: reader, report: func(read int64) { report(read, total) }}
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, errors.New("cannot read official qodercli registry response")
 	}
@@ -186,6 +197,21 @@ func (m *Manager) download(ctx context.Context, raw string, limit int64) ([]byte
 		return nil, errors.New("official qodercli response exceeds size limit")
 	}
 	return body, nil
+}
+
+type progressReader struct {
+	io.Reader
+	read   int64
+	report func(int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.Reader.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		p.report(p.read)
+	}
+	return n, err
 }
 
 func readBundle(archive []byte) ([]byte, error) {

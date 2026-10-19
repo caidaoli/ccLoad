@@ -28,12 +28,30 @@ type Status struct {
 	InstallSupported bool   `json:"install_supported"`
 	Platform         string `json:"platform"`
 	Error            string `json:"error,omitempty"`
+	Installing       bool   `json:"installing"`
+	// Progress is set only while an installation is running.
+	Progress *Progress `json:"progress,omitempty"`
+}
+
+// Install phases reported by Progress.Phase.
+const (
+	PhaseMetadata = "metadata"
+	PhaseDownload = "download"
+	PhaseVerify   = "verify"
+)
+
+// Progress describes the running installation. Total is zero when the registry omits Content-Length.
+type Progress struct {
+	Phase      string `json:"phase"`
+	Downloaded int64  `json:"downloaded,omitempty"`
+	Total      int64  `json:"total,omitempty"`
 }
 
 type component struct{ path, source string }
 type installation struct {
-	done chan struct{}
-	err  error
+	done     chan struct{}
+	err      error
+	progress Progress // guarded by Manager.mu
 }
 
 type identityKey struct{ region, uid string }
@@ -45,6 +63,7 @@ type identity struct {
 // Manager stores downloaded components below the gateway's persistent data directory.
 // One Manager should be shared by all Qoder accounts.
 type Manager struct {
+	ctx              context.Context // installation lifetime, independent of any request
 	dataDir          string
 	client           *http.Client
 	goos, arch, home string
@@ -57,12 +76,13 @@ type Manager struct {
 }
 
 // NewManager creates a component manager using the persistent gateway data directory.
-func NewManager(dataDir string, client *http.Client) *Manager {
+// Installations run until ctx is canceled (server shutdown) or their own timeout expires.
+func NewManager(ctx context.Context, dataDir string, client *http.Client) *Manager {
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Minute}
 	}
 	home, _ := os.UserHomeDir()
-	return &Manager{dataDir: dataDir, client: client, goos: runtime.GOOS, arch: runtime.GOARCH, home: home, processTimeout: 25 * time.Second, cache: make(map[identityKey]identity), runGate: make(chan struct{}, 1)}
+	return &Manager{ctx: ctx, dataDir: dataDir, client: client, goos: runtime.GOOS, arch: runtime.GOARCH, home: home, processTimeout: 25 * time.Second, cache: make(map[identityKey]identity), runGate: make(chan struct{}, 1)}
 }
 
 func (m *Manager) supported() bool {
@@ -77,50 +97,69 @@ func (m *Manager) Status() Status {
 	c := m.discover("global")
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return Status{Available: c.path != "", Source: c.source, InstallSupported: m.supported(), Platform: m.goos + "/" + m.arch, Error: m.lastError}
+	status := Status{Available: c.path != "", Source: c.source, InstallSupported: m.supported(), Platform: m.goos + "/" + m.arch, Error: m.lastError}
+	if pending := m.installing; pending != nil {
+		progress := pending.progress
+		status.Installing, status.Progress = true, &progress
+	}
+	return status
 }
 
-// Ensure reuses an existing official component or downloads one on supported Linux / macOS hosts.
-// Concurrent callers share installation and can independently cancel their wait.
+// Ensure reuses an existing official component or waits for the shared installation on Linux / macOS.
+// The installation runs on the manager lifetime, so canceling one caller's wait never aborts it.
 func (m *Manager) Ensure(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if m.discover("global").path != "" {
+	pending := m.start()
+	if pending == nil {
 		return nil
 	}
-	m.mu.Lock()
-	if pending := m.installing; pending != nil {
-		m.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-pending.done:
-		}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-pending.done:
 		return pending.err
 	}
-	if m.discover("global").path != "" {
-		m.mu.Unlock()
-		return nil
-	}
-	pending := &installation{done: make(chan struct{})}
-	m.installing = pending
-	m.mu.Unlock()
-	err := m.install(ctx)
-	m.mu.Lock()
-	pending.err = err
-	m.lastError = ""
-	if err != nil {
-		m.lastError = err.Error()
-	}
-	m.installing = nil
-	close(pending.done)
-	m.mu.Unlock()
-	return err
 }
 
-// Install explicitly retries a missing component; a working installation is preserved.
-func (m *Manager) Install(ctx context.Context) error { return m.Ensure(ctx) }
+// Install starts the shared installation in the background; Status reports its progress and result.
+// A working component is preserved.
+func (m *Manager) Install() { m.start() }
+
+// start returns the running installation, launching one when the component is missing; nil means available.
+func (m *Manager) start() *installation {
+	if m.discover("global").path != "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.installing != nil {
+		return m.installing
+	}
+	if m.discover("global").path != "" {
+		return nil
+	}
+	pending := &installation{done: make(chan struct{}), progress: Progress{Phase: PhaseMetadata}}
+	m.installing = pending
+	go func() {
+		err := m.install(m.ctx, func(progress Progress) {
+			m.mu.Lock()
+			pending.progress = progress
+			m.mu.Unlock()
+		})
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		pending.err = err
+		m.lastError = ""
+		if err != nil {
+			m.lastError = err.Error()
+		}
+		m.installing = nil
+		close(pending.done)
+	}()
+	return pending
+}
 
 // Headers returns the official component's three machine identity headers.
 // China-region requests do not require a component. Identity caching is isolated by region and UID.

@@ -4,7 +4,7 @@
 
 凭证使用 ccLoad canonical JSON：`type=qoder`，显式 `region=cn|global`；`expires_at` 以 Unix 秒存储，导入时接受毫秒整数并归一化。令牌、PAT、机器身份和 PKCE verifier 均留在后端。
 
-两地区的门户分别为 `qoder.com.cn` / `qoder.com`，控制面分别为 `openapi.qoder.com.cn` / `openapi.qoder.sh`。设备 PKCE 使用 `/device/selectAccounts` 及 `/api/v1/deviceToken/poll`，PAT 使用 `/api/v1/jobToken/exchange`。刷新按设备/作业令牌分流到 `/api/v1/deviceToken/refresh` / `/api/v1/jobToken/refresh`，只发送 JSON `refresh_token`，不携带旧 Bearer。国际作业令牌 `jt-` 推理使用 `api2.qoder.sh`，设备令牌使用 `api3.qoder.sh`；中国版统一使用 `gateway.qoder.com.cn`。
+两地区的门户分别为 `qoder.com.cn` / `qoder.com`，控制面分别为 `openapi.qoder.com.cn` / `openapi.qoder.sh`。设备 PKCE 使用 `/device/selectAccounts` 及 `/api/v1/deviceToken/poll`，PAT 使用 `/api/v1/jobToken/exchange`。刷新按设备/作业令牌分流到 `/api/v1/deviceToken/refresh` / `/api/v1/jobToken/refresh`，只发送 JSON `refresh_token`，不携带旧 Bearer。国际作业令牌 `jt-` 推理使用 `api2.qoder.sh`，设备令牌使用 `api3.qoder.sh`；国内版统一使用 `gateway.qoder.com.cn`。
 
 额度来自 `/api/v2/quota/usage` 的 `userQuota`、`addOnQuota`、`orgResourcePackage`；组织包 `available=false` 不计入，组织总额读取 `cap`（没有时读取 `total`）。各桶单位必须一致。套餐标签来自可选的 `/api/v2/user/plan`，查询失败不掩盖已成功取得的额度。
 
