@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1775,6 +1776,69 @@ func TestClassifyAnthropicRateLimitUsesUnifiedReset(t *testing.T) {
 	}
 	if got.ModelCooldownReason != "anthropic_unified_reset" {
 		t.Fatalf("ModelCooldownReason=%q, want anthropic_unified_reset", got.ModelCooldownReason)
+	}
+}
+
+// 明确的每分钟限流不受统一 reset 拉长；措辞不完整或任一窗口被拒时仍按窗口冷却。
+func TestClassifyAnthropicPerMinuteRateLimitIgnoresUnifiedReset(t *testing.T) {
+	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	unifiedReset := now.Add(4 * time.Hour)
+	body := func(errorType, message string) []byte {
+		raw, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]string{"type": errorType, "message": message}})
+		return raw
+	}
+	const rpm = "This request would exceed the requests per minute rate limit. Please try again later."
+	headers := func(extra map[string]string) map[string][]string {
+		h := map[string][]string{
+			"Anthropic-Ratelimit-Unified-Reset": {strconv.FormatInt(unifiedReset.Unix(), 10)},
+			"Retry-After":                       {"30"},
+		}
+		for k, v := range extra {
+			h[k] = []string{v}
+		}
+		return h
+	}
+
+	tests := []struct {
+		name           string
+		headers        map[string][]string
+		body           []byte
+		wantUnified    bool
+		wantCredential bool
+	}{
+		{name: "requests per minute", headers: headers(nil), body: body("rate_limit_error", rpm)},
+		{name: "input tokens per minute with allowed status", headers: headers(map[string]string{"Anthropic-Ratelimit-Unified-Status": "allowed"}),
+			body: body("rate_limit_error", "  THIS REQUEST WOULD EXCEED THE INPUT TOKENS PER MINUTE RATE LIMIT. PLEASE TRY AGAIN LATER. ")},
+		{name: "output tokens per minute with allowed windows", headers: headers(map[string]string{"Anthropic-Ratelimit-Unified-7d_oi-Status": "allowed_warning"}),
+			body: body("rate_limit_error", "This request would exceed the output tokens per minute rate limit. Please try again later.")},
+		{name: "unknown wording", headers: headers(nil), body: body("rate_limit_error", "rate limit exceeded"), wantUnified: true},
+		{name: "per-minute mixed with quota exhaustion", headers: headers(nil),
+			body: body("rate_limit_error", rpm+" Your weekly usage limit has also been reached."), wantUnified: true},
+		{name: "other error type", headers: headers(nil), body: body("overloaded_error", rpm), wantUnified: true},
+		{name: "overage window rejected", headers: headers(map[string]string{"Anthropic-Ratelimit-Unified-Overage-Status": "rejected"}),
+			body: body("rate_limit_error", rpm), wantUnified: true},
+		{name: "shared window rejected", headers: headers(map[string]string{"Anthropic-Ratelimit-Unified-Status": "rejected"}),
+			body: body("rate_limit_error", rpm), wantCredential: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, tt.headers, tt.body, now)
+			switch {
+			case tt.wantCredential:
+				if !got.CredentialScoped || !got.KeyCooldownUntil.Equal(unifiedReset) {
+					t.Fatalf("classification=%+v, want credential cooldown until %s", got, unifiedReset)
+				}
+			case tt.wantUnified:
+				if !got.HasModelCooldownUntil || !got.ModelCooldownUntil.Equal(unifiedReset) || !got.PreventKeyFallback {
+					t.Fatalf("classification=%+v, want unified reset cooldown until %s", got, unifiedReset)
+				}
+			default:
+				if !got.ModelScoped || got.HasModelCooldownUntil || got.PreventKeyFallback || got.CredentialScoped {
+					t.Fatalf("classification=%+v, want ordinary model-scoped 429 backoff", got)
+				}
+			}
+		})
 	}
 }
 

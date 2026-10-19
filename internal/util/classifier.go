@@ -536,6 +536,11 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			Level:       level,
 			ModelScoped: true,
 		}
+		// 每分钟限流与订阅窗口无关：统一 reset 是代表窗口的重置时间，按它冷却会把
+		// 几十秒的限流拉长到数小时并锁住同渠道的其他 Key，此时走普通 429 退避。
+		if anthropicPerMinuteRateLimit(headers, responseBody) {
+			return classification
+		}
 		if until, ok := parseAnthropicRateLimitReset(headers, now); ok {
 			classification.PreventKeyFallback = true
 			classification.ModelCooldownUntil = until
@@ -735,6 +740,36 @@ func anthropicRateLimitDeadline(headers map[string][]string, name, value string,
 		}
 	}
 	return until, true
+}
+
+// anthropicPerMinuteRateLimit 识别不涉及配额窗口的 Anthropic 每分钟限流（RPM/ITPM/OTPM）。
+// 只认完整的官方措辞：子串匹配会误伤否定说法或与配额耗尽并存的提示；
+// 任一窗口状态为 rejected 时以窗口语义为准。
+func anthropicPerMinuteRateLimit(headers map[string][]string, body []byte) bool {
+	var payload struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.Error.Type != "rate_limit_error" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(payload.Error.Message)) {
+	case "this request would exceed the requests per minute rate limit. please try again later.",
+		"this request would exceed the input tokens per minute rate limit. please try again later.",
+		"this request would exceed the output tokens per minute rate limit. please try again later.":
+	default:
+		return false
+	}
+	for _, window := range []string{"", "5h-", "7d-", "7d_oi-", "Overage-"} {
+		for _, status := range headerValuesFold(headers, "Anthropic-Ratelimit-Unified-"+window+"Status") {
+			if strings.EqualFold(strings.TrimSpace(status), "rejected") {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // anthropicUnifiedWindowRejected 判断 Anthropic 是否明确拒绝了共享 5h/7d 订阅窗口。

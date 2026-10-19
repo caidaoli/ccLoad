@@ -29,7 +29,7 @@
 - **Anyrouter Responses 元数据兼容**:上游协议为 Codex、请求属于 Responses 且渠道名称包含 `anyrouter`（忽略大小写）时，转发前仅删除 `input[*].internal_chat_message_metadata_passthrough.content_item_kinds`，保留正文及其他元数据；仅 URL 包含 anyrouter 不触发此规则。
 
 - Key 级(401/403;400 且错误信息含组织已禁用 `organization has been disabled`、余额耗尽 `credit balance`、需身份验证 `identity verification is required`)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却。OAuth 渠道没有独立 Key(`KeyIndex == NoKeyIndex`,凭证就是渠道),Key 级故障直接改为渠道冷却并切渠道;401 例外,先由 OAuth 凭证层强制刷新重试
-- **Anthropic 429 分流**(`util/classifier.go`):响应头明确拒绝共享 5h/7d 订阅窗口 → `CredentialScoped` Key 级冷却(OAuth 即渠道冷却),reset 取自响应头,禁止同渠道 Key 回退;fast 模式缺少 usage credits → 客户端错误,不冷却;其余 429 按模型级。仅 overage 被拒(含 overage claim 且 5h/7d 状态都缺失、利用率缺失或未满)不算共享窗口被拒。reset 超过 7d+1h,或 overage claim 下统一 reset 等于 `Overage-Reset`,都是计费周期边界,不作冷却截止时间,退回指数退避
+- **Anthropic 429 分流**(`util/classifier.go`):响应头明确拒绝共享 5h/7d 订阅窗口 → `CredentialScoped` Key 级冷却(OAuth 即渠道冷却),reset 取自响应头,禁止同渠道 Key 回退;fast 模式缺少 usage credits → 客户端错误,不冷却;其余 429 按模型级。仅 overage 被拒(含 overage claim 且 5h/7d 状态都缺失、利用率缺失或未满)不算共享窗口被拒。reset 超过 7d+1h,或 overage claim 下统一 reset 等于 `Overage-Reset`,都是计费周期边界,不作冷却截止时间,退回指数退避。响应体恰为官方 RPM/ITPM/OTPM 每分钟限流原文(`error.type=rate_limit_error`,忽略大小写与首尾空白,不做子串匹配)且没有任何窗口状态为 rejected 时,同样不用统一 reset,按普通 429 退避且允许换 Key
 - **xAI 免费额度耗尽**：`subscription:free-usage-exhausted` / included free usage 错误只有明确提供模型字段或 `for model <name>` 时才冷却该模型；未指向模型的共享额度按 `CredentialScoped` 冷却凭证（OAuth 即渠道）。HTTP 与 SSE 错误采用同一规则，优先保留结构化 reset，缺失时沿用 24 小时滚动窗口上限。
 - 模型级(`model_cooldown`,上游 HTTP 400/413/499/5xx/520/524/429,597 服务类 SSE 错误及模型不可用 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用,410 明确模型退役)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
