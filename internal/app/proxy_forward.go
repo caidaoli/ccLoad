@@ -1021,9 +1021,9 @@ var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 // 客户端会一直等不到终止事件。上游语义既然已判完整，就必须给下游一个完整的终止序列。
 //
 // Gemini 线协议没有 [DONE]，但 CLIProxyAPI executor 会在 EOF 补喂一次；
-// gemini→Responses 转换器在 finishReason 后等 usage 或 [DONE] 才发终态，
-// 末帧不带 usageMetadata 时同样要靠这里收尾。只补 Responses：gemini→Claude
-// 在 [DONE] 上不保留 finishReason，补喂会把 MAX_TOKENS 截断报成 end_turn。
+// gemini→{Responses,Claude} 转换器在 finishReason 后等 usage 或 [DONE] 才发终态，
+// 末帧不带 usageMetadata、或只回 promptFeedback.blockReason 时同样要靠这里收尾。
+// 转换器在 [DONE] 上沿用已记下的 finishReason，MAX_TOKENS 不会被改报成 end_turn。
 //
 // 补的是 [DONE] 而不是手搓终止帧：open content block、stop_reason、usage 都在
 // 转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
@@ -1031,14 +1031,19 @@ func needsSynthesizedStreamTerminator(upstream, client protocol.Protocol, upstre
 	if !committed || !upstreamComplete || translatedComplete {
 		return false
 	}
-	switch upstream {
-	case protocol.OpenAI:
-		return client != upstream
-	case protocol.Gemini:
-		return client == protocol.Codex
-	default:
-		return false
+	return (upstream == protocol.OpenAI || upstream == protocol.Gemini) && client != upstream
+}
+
+// translatedStreamTruncationDiagnostics 拦截转换流的干净 EOF 截断。
+// Claude 客户端靠 message_stop、Responses 客户端靠 response.completed 判完成；
+// 上游与转换输出都没有终态就 EOF，客户端拿到的是半截回复（Claude Code 会当成完成）。
+// 其他客户端协议能容忍缺省的终止标记，与同协议直通一样只按传输错误判定。
+func translatedStreamTruncationDiagnostics(client protocol.Protocol, readStats *streamReadStats, upstreamProtocol, contentType string) string {
+	if readStats == nil || readStats.totalBytes == 0 || (client != protocol.Anthropic && client != protocol.Codex) {
+		return ""
 	}
+	return fmt.Sprintf("[WARN] 转换流不完整: 正常EOF但上游与转换输出均无终态 | 客户端=%s | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | %s",
+		client, readStats.totalBytes, readStats.readCount, upstreamProtocol, contentType, streamTimingDiagnostics(readStats))
 }
 
 // parseSSEEventChunk 在 []byte 视图上解析 SSE 事件块，避免 string(chunk) 与 []byte(data) 来回拷贝。
@@ -1957,7 +1962,12 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	}
 	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
 
-	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, resp.Header.Get("Content-Type")); diagMsg != "" {
+	contentType := resp.Header.Get("Content-Type")
+	diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, contentType)
+	if diagMsg == "" && streamErr == nil && !streamComplete {
+		diagMsg = translatedStreamTruncationDiagnostics(reqCtx.transformPlan.ClientProtocol, readStats, upstreamProtocol, contentType)
+	}
+	if diagMsg != "" {
 		result.StreamDiagMsg = diagMsg
 		log.Print(diagMsg)
 	} else if streamComplete && streamErr != nil {

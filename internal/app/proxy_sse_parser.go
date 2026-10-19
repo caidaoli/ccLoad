@@ -861,6 +861,9 @@ func gjsonOpenAIStreamComplete(data string) bool {
 }
 
 func gjsonGeminiStreamComplete(data string) bool {
+	if strings.TrimSpace(gjson.Get(data, "promptFeedback.blockReason").String()) != "" {
+		return true
+	}
 	candidates := gjson.Get(data, "candidates")
 	if !candidates.IsArray() {
 		return false
@@ -924,8 +927,14 @@ func openAIStreamPayloadComplete(payload map[string]any) bool {
 }
 
 // geminiStreamPayloadComplete 判断 Gemini 流分片是否给出终态。
-// Gemini SSE 没有 [DONE]，非空 finishReason 是唯一的完成信号。
+// Gemini SSE 没有 [DONE]：非空 finishReason 是正常完成信号；提示词被拦截时
+// 只回 promptFeedback.blockReason、不带 candidates，同样是终态。
 func geminiStreamPayloadComplete(payload map[string]any) bool {
+	if feedback, _ := payload["promptFeedback"].(map[string]any); feedback != nil {
+		if reason, _ := feedback["blockReason"].(string); strings.TrimSpace(reason) != "" {
+			return true
+		}
+	}
 	candidates, _ := payload["candidates"].([]any)
 	for _, item := range candidates {
 		candidate, _ := item.(map[string]any)

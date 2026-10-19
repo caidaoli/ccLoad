@@ -12914,6 +12914,131 @@ func TestProxy_Success_Streaming_AnthropicMessageStopWithoutEOF(t *testing.T) {
 	}
 }
 
+// 跨协议转换流在上游与转换输出都没有终态时干净 EOF：Claude/Responses 客户端
+// 拿到的是半截回复，必须判 599 并冷却；Gemini 的 promptFeedback.blockReason
+// 与不带 usage 的 finishReason 是合法终态，客户端要收到完整终止序列。
+func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
+	t.Parallel()
+
+	const (
+		openAIPartial    = `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}` + "\n\n"
+		openAIFinished   = `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}` + "\n\n"
+		geminiPartial    = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]}}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
+		geminiBlocked    = `data: {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
+		geminiMaxNoUsage = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]},"finishReason":"MAX_TOKENS"}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
+	)
+	messagesBody := func(modelName string) map[string]any {
+		return map[string]any{
+			"model": modelName, "max_tokens": 64, "stream": true,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}
+	}
+	responsesBody := func(modelName string) map[string]any {
+		return map[string]any{
+			"model": modelName, "stream": true,
+			"input": []map[string]any{{
+				"type": "message", "role": "user",
+				"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+			}},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		upstream     string
+		path         string
+		sse          string
+		wantComplete bool
+		wantTerminal string
+		wantStop     string
+	}{
+		{name: "openai to messages truncated", upstream: util.ProtocolOpenAI, path: "/v1/messages", sse: openAIPartial},
+		{name: "gemini to messages truncated", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiPartial},
+		{name: "openai to responses truncated", upstream: util.ProtocolOpenAI, path: "/v1/responses", sse: openAIPartial},
+		{name: "gemini to responses truncated", upstream: util.ProtocolGemini, path: "/v1/responses", sse: geminiPartial},
+		{name: "openai finish_reason without DONE", upstream: util.ProtocolOpenAI, path: "/v1/messages", sse: openAIFinished, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "end_turn"},
+		{name: "gemini blockReason only", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: message_stop"},
+		{name: "gemini MAX_TOKENS without usage", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiMaxNoUsage, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "max_tokens"},
+		{name: "gemini blockReason to responses", upstream: util.ProtocolGemini, path: "/v1/responses", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: response.completed"},
+	}
+
+	for i, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			modelName := fmt.Sprintf("trunc-model-%d", i)
+			if testCase.upstream == util.ProtocolGemini {
+				modelName = fmt.Sprintf("gemini-trunc-%d", i)
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "trunc-" + testCase.upstream, upstreamProtocol: testCase.upstream, models: modelName, apiKey: "sk-trunc",
+			}}, map[int]string{0: "https://trunc-upstream.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(testCase.sse)),
+				}, nil
+			})}
+
+			requestBody := messagesBody(modelName)
+			if testCase.path == "/v1/responses" {
+				requestBody = responsesBody(modelName)
+			}
+			response := doProxyRequest(t, env.engine, testCase.path, requestBody, nil)
+			body := response.Body.String()
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, body)
+			}
+
+			entry := waitForProxyLog(t, env, modelName)
+			cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+			if err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			var cooled bool
+			for _, models := range cooldowns {
+				if until, ok := models[modelName]; ok && until.After(time.Now()) {
+					cooled = true
+				}
+			}
+
+			if !testCase.wantComplete {
+				if entry.StatusCode != util.StatusStreamIncomplete || !cooled {
+					t.Fatalf("log status=%d cooled=%v message=%s, want %d with model cooldown",
+						entry.StatusCode, cooled, entry.Message, util.StatusStreamIncomplete)
+				}
+				if strings.Contains(body, "message_stop") || strings.Contains(body, "response.completed") {
+					t.Fatalf("truncated stream got a success terminal: %s", body)
+				}
+				if testCase.path == "/v1/messages" &&
+					(!strings.Contains(body, "event: error") || !strings.Contains(body, "upstream stream interrupted before completion")) {
+					t.Fatalf("Claude client did not receive an error event: %s", body)
+				}
+				return
+			}
+
+			if entry.StatusCode != http.StatusOK || cooled {
+				t.Fatalf("log status=%d cooled=%v message=%s, want 200 without cooldown", entry.StatusCode, cooled, entry.Message)
+			}
+			if !strings.Contains(body, testCase.wantTerminal) || strings.Contains(body, "event: error") {
+				t.Fatalf("complete stream lacks %q or carries an error: %s", testCase.wantTerminal, body)
+			}
+			if testCase.wantStop != "" {
+				var stopReason string
+				for _, frame := range strings.Split(body, "\n\n") {
+					_, data := parseSSEEventChunk([]byte(frame))
+					if gjson.GetBytes(data, "type").String() == "message_delta" {
+						stopReason = gjson.GetBytes(data, "delta.stop_reason").String()
+					}
+				}
+				if stopReason != testCase.wantStop {
+					t.Fatalf("stop_reason=%q, want %q; body=%s", stopReason, testCase.wantStop, body)
+				}
+			}
+		})
+	}
+}
+
 func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
 	t.Parallel()
 
