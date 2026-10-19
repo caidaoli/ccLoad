@@ -22,6 +22,7 @@ Tag 形状固定：
 
 ## 版本规则
 
+- 只改 `www/` 的提交和待提交改动不参与版本计算与提交计数：介绍站由 `make www-release` 独立部署，不进二进制和镜像。同时改了 `www/` 和其他路径的提交照常计入；最近版本之后只有 `www/` 改动时停止发布。
 - Beta 必须锁定最近稳定版 `vX.Y.S` 的主版本 `X` 和次版本 `Y`，禁止因 `feat` 或 breaking change 生成 `vX.(Y+1).0-beta.N` 或 `v(X+1).0.0-beta.N`。
 - 最近稳定版之后没有有效 Beta 时，发布 `vX.Y.(S+1)-beta.1`。
 - 已有 `vX.Y.P-beta.N` 时，只检查该 Beta Tag 之后的新提交：

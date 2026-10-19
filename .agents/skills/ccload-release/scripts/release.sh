@@ -97,6 +97,9 @@ find_workflow_run() {
   printf '%s\n' "$run_id"
 }
 
+# www/ 是独立部署的介绍站（make www-release），不进二进制和镜像；只改 www/ 的提交与待提交改动不参与版本计算
+release_pathspec=(. ':(exclude)www')
+
 derive_release_plan() {
   local pending_message=$1
   local pending_subject=${pending_message%%$'\n'*}
@@ -162,15 +165,16 @@ EOF
     commit_range=HEAD
   fi
 
-  commit_count=$(git rev-list --count "$commit_range")
-  subjects=$(git log "$commit_range" --format='%s')
-  messages=$(git log "$commit_range" --format='%s%n%b')
-  if [[ -n "$pending_message" ]]; then
+  commit_count=$(git rev-list --count --full-history "$commit_range" -- "${release_pathspec[@]}")
+  subjects=$(git log --full-history "$commit_range" --format='%s' -- "${release_pathspec[@]}")
+  messages=$(git log --full-history "$commit_range" --format='%s%n%b' -- "${release_pathspec[@]}")
+  if [[ -n "$pending_message" ]] && \
+     [[ -n "$(git status --porcelain --untracked-files=all -- "${release_pathspec[@]}")" ]]; then
     commit_count=$((commit_count + 1))
     subjects=$(printf '%s\n%s' "$pending_subject" "$subjects")
     messages=$(printf '%s\n%s' "$pending_message" "$messages")
   fi
-  [[ "$commit_count" -gt 0 ]] || fail "no commits exist after ${release_base_tag:-repository start}"
+  [[ "$commit_count" -gt 0 ]] || fail "no commits outside www/ exist after ${release_base_tag:-repository start}"
 
   if printf '%s\n' "$messages" | grep -Eq '(^|[[:space:]])BREAKING([ -]CHANGE)?:' || \
      printf '%s\n' "$subjects" | grep -Eq '^[[:alnum:]_-]+(\([^)]*\))?!:'; then
@@ -233,6 +237,7 @@ self_test() {
   local dry_run_output publish_output published_head published_tag_target remote_ahead_error
   local ci_failure_output ci_failure_head
   local small_beta_output large_beta_output collision_beta_output stable_output stable_publish_output invalid_beta_error
+  local www_stable_output
   local stable_commit stable_tree orphan_beta_commit invalid_beta_commit stable_published_head stable_tag_target
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   self_test_root=$(mktemp -d "${TMPDIR:-/tmp}/ccload-release.XXXXXX")
@@ -409,6 +414,19 @@ EOF
   [[ "$remote_ahead_error" == *'origin/master is ahead of local master'* ]] || \
     fail "dry-run reported the wrong remote-ahead error"
   assert_equal "$published_head" "$(git -C "$work_dir" rev-parse HEAD)" 'remote-ahead local HEAD'
+
+  git -C "$work_dir" pull --ff-only >/dev/null 2>&1
+  mkdir -p "$work_dir/www"
+  printf 'site\n' >"$work_dir/www/index.html"
+  git -C "$work_dir" add www/index.html
+  git -C "$work_dir" commit -m 'feat(www): site-only change' >/dev/null
+  printf 'pending site change\n' >>"$work_dir/www/index.html"
+  www_stable_output=$(cd "$work_dir" && "$script_path" stable --dry-run \
+    --commit-message 'feat(www): pending site change')
+  [[ "$www_stable_output" == *'commits:         1'* ]] || \
+    fail "stable release counted www-only commits"
+  [[ "$www_stable_output" == *'target tag:      v1.1.1'* ]] || \
+    fail "www-only feat commits raised the stable version beyond a patch"
 
   rm -rf -- "$self_test_root"
   self_test_root=
