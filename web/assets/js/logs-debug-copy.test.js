@@ -431,7 +431,7 @@ test('quality metrics share one good → normal → warn → bad scale', () => {
     assert.deepEqual(levels(getDurationTimingLevel, [10, 30, 60, 60.01]), scale);
     assert.deepEqual(levels(getSpeedLevel, [100, 50, 20, 19.9]), scale);
     assert.deepEqual(levels(getSuccessRateLevel, [0.99, 0.95, 0.8, 0]), scale);
-    assert.deepEqual(levels(getCacheHitRateLevel, [0.95, 0.9, 0.85, 0.849]), scale);
+    assert.deepEqual(levels(getCacheHitRateLevel, [0.85, 0.7, 0.5, 0.499]), scale);
     assert.equal(calculateCacheHitRate(10, 85, 5), 0.85);
     assert.equal(calculateCacheHitRate(100, 0, 20), null);
     assert.deepEqual(levels(getSpeedLevel, [0, null, 'abc']), ['', '', '']);

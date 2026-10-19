@@ -1463,9 +1463,9 @@ window.WebAuth = window.WebAuth || {
     return metricLevelColor(getSuccessRateLevel(ratio));
   }
 
-  // 缓存命中率：≥95% / 90–95% / 85–90% / <85%
+  // 缓存命中率：≥85% / 70–85% / 50–70% / <50%
   function getCacheHitRateLevel(ratio) {
-    return ratioLevel(ratio, 0.95, 0.9, 0.85);
+    return ratioLevel(ratio, 0.85, 0.7, 0.5);
   }
 
   function getCacheHitRateColor(ratio) {
