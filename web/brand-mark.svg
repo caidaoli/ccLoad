@@ -1,9 +1,9 @@
 <svg width="88" height="60" viewBox="8 6 88 60" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="brand-gradient" x1="0" y1="0" x2="0.82" y2="1">
-      <stop offset="0" stop-color="#1d9bf0"/>
-      <stop offset="0.55" stop-color="#367df4"/>
-      <stop offset="1" stop-color="#7c3aed"/>
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="0.55" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#2563eb"/>
     </linearGradient>
     <mask id="brand-c-mask">
       <rect width="112" height="72" fill="#000"/>

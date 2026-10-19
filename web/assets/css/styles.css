@@ -533,11 +533,11 @@ html[data-resolved-theme="dark"] ::selection {
 .brand-wordmark {
   display: block;
   width: 132px;
-  height: 36px;
+  height: 26px;
   color: color-mix(in srgb, var(--topbar-fg) 88%, #071b35);
 }
 
-/* 活动请求指示器：速度线、流动圆点与角标 */
+/* 活动请求指示器：速度线、流动圆点与角标；圆点数量随并发数增减（ui.js 切换 hidden） */
 .brand-icon-wrap {
   position: relative;
   display: inline-flex;
@@ -603,22 +603,52 @@ html[data-resolved-theme="dark"] ::selection {
   right: -4px;
   width: 3px;
   height: 3px;
+  margin-top: -1.5px;
   border-radius: 50%;
   background: #60a5fa;
   box-shadow: 0 0 5px rgba(59, 130, 246, 0.65);
   opacity: 0;
 }
 
+/* 轨道按图标高度百分比落在 C 的空心范围内，窄屏无需另配；
+   延迟为正且按位反转排列：新显示的圆点从右侧起步依次汇入，任意前 n 颗在周期内均匀分布 */
 .brand-flow-dots i:nth-child(1) {
-  top: 11px;
+  top: 50%;
 }
 
 .brand-flow-dots i:nth-child(2) {
-  top: 17px;
+  top: 34%;
+  animation-delay: 0.9s;
 }
 
 .brand-flow-dots i:nth-child(3) {
-  top: 23px;
+  top: 66%;
+  animation-delay: 0.45s;
+}
+
+.brand-flow-dots i:nth-child(4) {
+  top: 42%;
+  animation-delay: 1.35s;
+}
+
+.brand-flow-dots i:nth-child(5) {
+  top: 58%;
+  animation-delay: 0.225s;
+}
+
+.brand-flow-dots i:nth-child(6) {
+  top: 28%;
+  animation-delay: 1.125s;
+}
+
+.brand-flow-dots i:nth-child(7) {
+  top: 72%;
+  animation-delay: 0.675s;
+}
+
+.brand-flow-dots i:nth-child(8) {
+  top: 46%;
+  animation-delay: 1.575s;
 }
 
 .brand-icon-wrap.is-active .brand-speed-lines i {
@@ -642,35 +672,31 @@ html[data-resolved-theme="dark"] ::selection {
 }
 
 .brand-icon-wrap.is-active .brand-flow-dots i {
-  animation: brand-dot-flow 1.8s linear infinite;
+  animation-name: brand-dot-flow;
+  animation-duration: 1.8s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
 }
 
-.brand-icon-wrap.is-active .brand-flow-dots i:nth-child(2) {
-  animation-delay: -0.6s;
-}
-
-.brand-icon-wrap.is-active .brand-flow-dots i:nth-child(3) {
-  animation-delay: -1.2s;
-}
-
+/* 角标落在 C 开口外侧的空白处；外圈取顶栏底色，暗色下不出白环 */
 .brand-badge {
   position: absolute;
-  top: -10px;
-  right: 0;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #fb923c, #f97316);
+  top: -8px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ea580c;
   color: #fff;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
   display: none;
   align-items: center;
   justify-content: center;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 2px var(--glass-bg);
 }
 
 .brand-icon-wrap.is-active .brand-badge {
@@ -2236,7 +2262,7 @@ html[data-resolved-theme="dark"] .time-range-selector {
 
   .brand-wordmark {
     width: 103px;
-    height: 28px;
+    height: 20px;
   }
 
   .brand-speed-lines i:nth-child(1) {
@@ -2257,18 +2283,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
 
   .brand-speed-lines i:nth-child(5) {
     top: 21px;
-  }
-
-  .brand-flow-dots i:nth-child(1) {
-    top: 7px;
-  }
-
-  .brand-flow-dots i:nth-child(2) {
-    top: 12px;
-  }
-
-  .brand-flow-dots i:nth-child(3) {
-    top: 17px;
   }
 
   .topnav-link {
@@ -6638,7 +6652,6 @@ body.trend-page .chart-info {
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
-  margin-bottom: var(--space-4);
 }
 
 .brand-logo {
@@ -6659,12 +6672,8 @@ body.trend-page .chart-info {
   color: var(--neutral-900);
 }
 
-.brand-subtitle {
-  color: var(--neutral-600);
-  font-size: var(--text-sm);
-  margin: 0;
-  font-weight: var(--font-medium);
-  letter-spacing: 0.01em;
+html[data-resolved-theme="dark"] .login-brand-wordmark {
+  --brand-tagline-color: #94a3b8;
 }
 
 .login-form-container {

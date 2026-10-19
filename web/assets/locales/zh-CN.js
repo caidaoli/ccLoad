@@ -69,7 +69,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.api_token_login_enabled': '允许 API Token 登录网页 （保存后重启生效）',
   'settings.desc.api_token_show_channels': 'API Token 登录时显示渠道名和实际模型名（默认禁用，保存后重启生效）',
   'login.title': '登录 - ccLoad',
-  'login.brandSubtitle': '智能API代理管理系统',
   'login.adminLogin': '管理员登录',
   'login.passwordHint': '请输入您的管理密码以访问系统',
   'login.adminTab': '管理员密码',

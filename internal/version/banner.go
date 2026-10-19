@@ -34,7 +34,7 @@ func PrintBanner() {
 
 	if isTTY {
 		fmt.Fprintf(os.Stderr, "%s%s%s", colorCyan, banner, colorReset)
-		fmt.Fprintf(os.Stderr, "  %sAPI Load Balancer & Proxy%s\n\n", colorYellow, colorReset)
+		fmt.Fprintf(os.Stderr, "  %sSelf-hosted AI Gateway%s\n\n", colorYellow, colorReset)
 		fmt.Fprintf(os.Stderr, "%-14s %s%s%s\n", "Version:", colorGreen, Version, colorReset)
 		fmt.Fprintf(os.Stderr, "%-14s %s%s%s\n", "Commit:", colorGreen, Commit, colorReset)
 		fmt.Fprintf(os.Stderr, "%-14s %s%s%s\n", "Build Time:", colorGreen, BuildTime, colorReset)
@@ -42,7 +42,7 @@ func PrintBanner() {
 		fmt.Fprintf(os.Stderr, "%-14s %s%s%s\n\n", "Repo:", colorBlue, repoURL, colorReset)
 	} else {
 		fmt.Fprint(os.Stderr, banner)
-		fmt.Fprintf(os.Stderr, "  API Load Balancer & Proxy\n\n")
+		fmt.Fprintf(os.Stderr, "  Self-hosted AI Gateway\n\n")
 		fmt.Fprintf(os.Stderr, "%-14s %s\n", "Version:", Version)
 		fmt.Fprintf(os.Stderr, "%-14s %s\n", "Commit:", Commit)
 		fmt.Fprintf(os.Stderr, "%-14s %s\n", "Build Time:", BuildTime)

@@ -69,7 +69,6 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.api_token_login_enabled': 'Allow API Token web login (restart required after saving)',
   'settings.desc.api_token_show_channels': 'Show channel names and actual model names for API Token sessions (disabled by default; restart required after saving)',
   'login.title': 'Login - ccLoad',
-  'login.brandSubtitle': 'Intelligent API Proxy Management System',
   'login.adminLogin': 'Admin Login',
   'login.passwordHint': 'Enter your admin password to access the system',
   'login.adminTab': 'Admin Password',

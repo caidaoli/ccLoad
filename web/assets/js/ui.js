@@ -393,6 +393,7 @@ window.WebAuth = window.WebAuth || {
   let _activeTimer = null;
   let _activeWrap = null;        // .brand-icon-wrap 元素
   let _activeBadge = null;       // .brand-badge 元素
+  let _activeDots = [];          // .brand-flow-dots 下的圆点
   let _faviconBase = null;       // 预加载的 favicon 底图 Image
   let _origFaviconLinks = null;  // 页面初始 favicon 集合快照（用于完整恢复）
   let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon
@@ -402,6 +403,30 @@ window.WebAuth = window.WebAuth || {
   let _activeCount = 0;
   let _activePulseTimer = null;
   let _faviconPulseOn = false;
+
+  // 流动圆点随并发数增多：1 个请求 3 颗，每多 1 个加 1 颗，封顶 BRAND_FLOW_DOTS_MAX
+  const BRAND_FLOW_DOTS_MAX = 8;
+
+  function brandFlowDotCount(count) {
+    return Math.min(BRAND_FLOW_DOTS_MAX, count + 2);
+  }
+
+  function syncBrandFlowDots(count) {
+    const visible = brandFlowDotCount(count);
+    _activeDots.forEach((dot, i) => {
+      const keep = i < visible;
+      // 并发减少时多出的圆点跑完当前一趟（周期末尾已透明）再隐藏，避免半路消失；闲置时无动画，直接隐藏
+      if (keep || count <= 0) {
+        dot.onanimationiteration = null;
+        dot.hidden = !keep;
+      } else if (!dot.hidden) {
+        dot.onanimationiteration = () => {
+          dot.onanimationiteration = null;
+          dot.hidden = true;
+        };
+      }
+    });
+  }
 
   function brandBadgeLabel(count) {
     return count > 999 ? '999+' : String(count);
@@ -511,7 +536,7 @@ window.WebAuth = window.WebAuth || {
     ctx.beginPath(); ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff'; ctx.fill();
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = pulseOn ? '#fb923c' : '#f97316'; ctx.fill();
+    ctx.fillStyle = pulseOn ? '#f97316' : '#ea580c'; ctx.fill();
 
     // 字号按位数两档自适应（1~9 单字符 / 9+ 双字符）
     const fs = text.length >= 2 ? 14 : 18;
@@ -561,6 +586,7 @@ window.WebAuth = window.WebAuth || {
     if (_activeWrap) {
       _activeWrap.classList.toggle('is-active', count > 0);
       if (_activeBadge) _activeBadge.textContent = brandBadgeLabel(count);
+      syncBrandFlowDots(count);
     }
     // 标签页 favicon 角标（仅在数量变化时重绘，省 toDataURL 开销）
     if (count !== _lastBadgeCount) {
@@ -626,24 +652,19 @@ window.WebAuth = window.WebAuth || {
   }
 
   // 顶栏 Logo 内联渲染：外部 SVG（img / use href）每次切页都要重新取文件解析，
-  // 顶栏先出现、Logo 后补上，表现为切页时 Logo 闪动。图形与 /web/brand-*.svg 保持一致。
+  // 顶栏先出现、Logo 后补上，表现为切页时 Logo 闪动。图形与 /web/brand-*.svg 保持一致；
+  // 顶栏字标不带副标题，取 brand-wordmark.svg 前三条 path，viewBox 截到字标高度 0 0 132 26。
   const BRAND_MARK_SVG = '<defs><linearGradient id="topbar-brand-gradient" x1="0" y1="0" x2="0.82" y2="1">'
-    + '<stop offset="0" stop-color="#1d9bf0"/><stop offset="0.55" stop-color="#367df4"/><stop offset="1" stop-color="#7c3aed"/>'
+    + '<stop offset="0" stop-color="#60a5fa"/><stop offset="0.55" stop-color="#3b82f6"/><stop offset="1" stop-color="#2563eb"/>'
     + '</linearGradient><mask id="topbar-brand-c-mask"><rect width="112" height="72" fill="#000"/>'
     + '<circle cx="49" cy="36" r="30" fill="#fff"/><circle cx="49" cy="36" r="16" fill="#000"/><path d="M52 36 90 4v64Z" fill="#000"/>'
     + '</mask></defs>'
     + '<rect x="19" y="6" width="60" height="60" fill="url(#topbar-brand-gradient)" mask="url(#topbar-brand-c-mask)"/>'
     + '<path fill="url(#topbar-brand-gradient)" fill-rule="evenodd" d="M59.4 36c4-4 8-8 12-11 8-4 16 2 16 11s-8 15-16 11c-4-3-8-7-12-11Zm17-4a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/>';
 
-  const BRAND_WORDMARK_SVG = '<defs><linearGradient id="topbar-wordmark-gradient" x1="0" y1="0" x2="1" y2="1">'
-    + '<stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient></defs>'
-    + '<g font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="30" font-style="italic" font-weight="900">'
-    + '<text x="4" y="24.5" fill="currentColor" textLength="34" lengthAdjust="spacingAndGlyphs">cc</text>'
-    + '<text x="40" y="24.5" fill="#2563eb" textLength="17" lengthAdjust="spacingAndGlyphs">L</text>'
-    + '<circle cx="68.5" cy="16" r="8.5" fill="url(#topbar-wordmark-gradient)"/>'
-    + '<path d="M70.7 3.2 64 15.4h3.9L66 28.8l8-14.7h-4.2Z" fill="#fbbf24" transform="rotate(34.6 68.5 16)"/>'
-    + '<text x="80" y="24.5" fill="#2563eb" textLength="46" lengthAdjust="spacingAndGlyphs">ad</text></g>'
-    + '<text x="0" y="35" fill="#2563eb" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" font-weight="700" transform="translate(6.5 0) scale(.867 1)">API Load Balancer &amp; Proxy</text>';
+  const BRAND_WORDMARK_SVG = '<path fill="currentColor" d="M19.58 17.42 25.11 18.07Q24.26 19.84 22.92 21.13Q21.57 22.43 19.76 23.15Q17.94 23.87 15.38 23.87Q12.9 23.87 11.35 23.4Q9.8 22.94 8.84 21.91Q7.87 20.88 7.49 19.49Q7.11 18.09 7.6 15.79Q8.11 13.39 9.27 11.8Q10.12 10.62 11.36 9.69Q12.6 8.76 13.79 8.31Q15.69 7.59 18.41 7.59Q22.22 7.59 23.93 8.95Q25.64 10.32 25.89 12.94L20.12 13.69Q20.07 12.69 19.48 12.18Q18.89 11.68 17.72 11.68Q16.24 11.68 15.1 12.74Q13.96 13.8 13.5 15.96Q13.09 17.88 13.79 18.87Q14.49 19.87 15.89 19.87Q17.06 19.87 17.99 19.27Q18.92 18.67 19.58 17.42ZM38.99 17.42 44.52 18.07Q43.67 19.84 42.33 21.13Q40.98 22.43 39.17 23.15Q37.35 23.87 34.79 23.87Q32.31 23.87 30.76 23.4Q29.21 22.94 28.25 21.91Q27.28 20.88 26.9 19.49Q26.52 18.09 27.01 15.79Q27.52 13.39 28.68 11.8Q29.53 10.62 30.77 9.69Q32.01 8.76 33.2 8.31Q35.1 7.59 37.82 7.59Q41.63 7.59 43.34 8.95Q45.05 10.32 45.3 12.94L39.53 13.69Q39.48 12.69 38.89 12.18Q38.3 11.68 37.13 11.68Q35.65 11.68 34.51 12.74Q33.37 13.8 32.91 15.96Q32.5 17.88 33.2 18.87Q33.9 19.87 35.3 19.87Q36.47 19.87 37.4 19.27Q38.33 18.67 38.99 17.42Z"/>'
+    + '<path fill="#2563eb" d="M50.46 2.03H57.1L53.66 18.21H64.01L62.89 23.5H45.9ZM91.99 12.98 86.42 12.38Q87.06 10.89 87.85 10.03Q88.64 9.17 89.92 8.54Q90.83 8.09 92.32 7.84Q93.81 7.59 95.48 7.59Q98.16 7.59 99.72 7.89Q101.29 8.19 102.17 9.14Q102.79 9.8 102.97 11.01Q103.15 12.22 102.92 13.32L101.46 20.19Q101.23 21.29 101.23 21.91Q101.24 22.53 101.5 23.5H95.91Q95.7 22.9 95.66 22.58Q95.63 22.27 95.67 21.6Q94.26 22.72 93 23.21Q91.28 23.85 89.18 23.85Q86.4 23.85 85.23 22.56Q84.06 21.27 84.46 19.38Q84.84 17.61 86.12 16.47Q87.41 15.33 90.32 14.77Q93.82 14.1 94.87 13.82Q95.93 13.55 97.13 13.11Q97.37 12.02 97.01 11.58Q96.65 11.14 95.5 11.14Q94.04 11.14 93.21 11.61Q92.56 11.97 91.99 12.98ZM96.5 16.12Q95.17 16.56 93.77 16.89Q91.85 17.38 91.27 17.85Q90.66 18.33 90.53 18.94Q90.38 19.65 90.78 20.09Q91.18 20.54 92.13 20.54Q93.12 20.54 94.08 20.06Q95.04 19.57 95.55 18.88Q96.06 18.18 96.29 17.07ZM124.67 2.03 120.11 23.5H114.53L115.02 21.2Q113.53 22.67 112.46 23.18Q111.02 23.85 109.44 23.85Q106.26 23.85 105.1 21.43Q103.94 19.02 104.67 15.56Q105.49 11.69 107.78 9.64Q110.07 7.59 112.93 7.59Q114.32 7.59 115.36 8.06Q116.39 8.53 117.07 9.47L118.65 2.03ZM115.79 15.68Q116.18 13.85 115.6 12.95Q115.01 12.04 113.83 12.04Q112.79 12.04 111.9 12.91Q111.01 13.77 110.58 15.81Q110.18 17.71 110.71 18.6Q111.25 19.49 112.32 19.49Q113.46 19.49 114.41 18.59Q115.36 17.7 115.79 15.68Z"/>'
+    + '<path fill="#2563eb" fill-rule="evenodd" d="M65.82 15.77Q66.58 12.21 69.47 9.9Q72.37 7.59 76.45 7.59Q81.13 7.59 82.94 10.3Q84.39 12.48 83.71 15.68Q82.95 19.27 80.08 21.56Q77.22 23.85 73.01 23.85Q69.26 23.85 67.35 21.95Q65.01 19.59 65.82 15.77ZM76.01 9.87L69.79 17.02L73.49 17.02L73.52 21.58L79.74 14.42L76.04 14.42Z"/>';
 
   function createInlineBrandSVG(className, viewBox, markup) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -659,13 +680,12 @@ window.WebAuth = window.WebAuth || {
 
     // 图标与字标独立复用；活动动画层只属于图标
     const iconImg = createInlineBrandSVG('brand-mark', '8 6 88 60', BRAND_MARK_SVG);
-    const wordmark = createInlineBrandSVG('brand-wordmark', '0 0 132 36', BRAND_WORDMARK_SVG);
+    const wordmark = createInlineBrandSVG('brand-wordmark', '0 0 132 26', BRAND_WORDMARK_SVG);
     const speedLines = h('span', { class: 'brand-speed-lines', 'aria-hidden': 'true' }, [
       h('i'), h('i'), h('i'), h('i'), h('i')
     ]);
-    const flowDots = h('span', { class: 'brand-flow-dots', 'aria-hidden': 'true' }, [
-      h('i'), h('i'), h('i')
-    ]);
+    _activeDots = Array.from({ length: BRAND_FLOW_DOTS_MAX }, () => h('i'));
+    const flowDots = h('span', { class: 'brand-flow-dots', 'aria-hidden': 'true' }, _activeDots);
     _activeBadge = h('span', { class: 'brand-badge' }, '0');
     _activeWrap = h('span', { class: 'brand-icon-wrap' }, [speedLines, iconImg, flowDots, _activeBadge]);
 
@@ -676,7 +696,7 @@ window.WebAuth = window.WebAuth || {
         target: '_blank',
         rel: 'noopener noreferrer',
         title: t('nav.githubRepo'),
-        'aria-label': 'ccLoad — API Load Balancer & Proxy'
+        'aria-label': 'ccLoad — Self-hosted AI Gateway'
       }, [
         _activeWrap,
         wordmark

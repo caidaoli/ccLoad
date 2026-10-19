@@ -34,7 +34,7 @@
   --www-nav-height: 76px;
   --www-section-padding: 5.5rem 2rem;
   --www-card-hover-lift: translateY(-3px);
-  --www-brand-gradient: linear-gradient(135deg, #1d9bf0 0%, #367df4 55%, #7c3aed 100%);
+  --www-brand-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   --www-terminal-bg: #0b1220;
   --www-terminal-header: #111a2e;
   --www-terminal-fg: #dbe4f3;
@@ -236,6 +236,10 @@ body {
   display: block;
   width: 147px;
   height: 40px;
+}
+
+html[data-resolved-theme="dark"] .www-logo-wordmark {
+  --brand-tagline-color: #94a3b8;
 }
 
 /* 菜单收在一枚胶囊里，当前页为浅色药丸 */
@@ -1346,7 +1350,7 @@ body {
   font-family: inherit;
   font-size: 0.875rem;
   font-weight: 700;
-  box-shadow: 0 10px 24px -10px rgba(54, 125, 244, 0.7);
+  box-shadow: 0 10px 24px -10px rgba(59, 130, 246, 0.7);
 }
 
 /* 两侧连线 */
@@ -2921,7 +2925,7 @@ html[data-resolved-theme="dark"] .www-deploy-icon {
   background:
     linear-gradient(var(--www-card-bg), var(--www-card-bg)) padding-box,
     var(--www-brand-gradient) border-box;
-  box-shadow: 0 20px 40px -20px rgba(54, 125, 244, 0.45);
+  box-shadow: 0 20px 40px -20px rgba(59, 130, 246, 0.45);
 }
 
 .www-flow-col h3 {
