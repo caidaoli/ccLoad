@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -102,7 +103,8 @@ func (s *Server) prepareQoderWire(cfg *model.Config, req *http.Request) (*http.R
 	}
 	name := gjson.GetBytes(body, "model").String()
 	for _, item := range catalog {
-		if item.ID == name || item.Key == name {
+		// Catalog IDs are unique case-insensitively; channels may still store mixed-case names.
+		if strings.EqualFold(item.ID, name) || item.Key == name {
 			service := *s.qoderService
 			service.Client = s.getClientForChannel(cfg)
 			signed, buildErr := service.BuildChatRequest(req.Context(), c, body, item)

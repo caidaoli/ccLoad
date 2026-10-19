@@ -62,7 +62,7 @@ func TestFetchModelsUsesSignedCatalogAndNativeKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 || models[0].ID != "Qwen3.8Flash" || models[0].Key != "qfmodel" || !models[0].SupportsReasoning || !models[0].SupportsImages || len(models[0].Efforts) != 3 {
+	if len(models) != 2 || models[0].ID != "qwen3.8flash" || models[0].Key != "qfmodel" || !models[0].SupportsReasoning || !models[0].SupportsImages || len(models[0].Efforts) != 3 {
 		t.Fatalf("invalid catalog: %+v", models)
 	}
 }

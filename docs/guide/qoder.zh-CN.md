@@ -1,6 +1,6 @@
 # Qoder 渠道
 
-在渠道页添加 Qoder，选择中国版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录；模型调用支持现有协议转换、流式/非流式和工具调用。
+在渠道页添加 Qoder，选择中国版或国际版，通过网页登录、PAT 或凭据 JSON 导入。地区必须与账号一致。导入时自动读取模型目录，模型名为上游显示名去掉空白后的小写形式（如 `Qwen 3.8 Flash` → `qwen3.8flash`），转发时按名称不区分大小写匹配目录；模型调用支持现有协议转换、流式/非流式和工具调用。
 
 凭据 JSON 使用 `type: "qoder"`、`region: "cn"` 或 `"global"`、`access_token`、`refresh_token`、`user_id`、`machine_id`、`expires_at`（Unix 秒）；不要把登录凭据放入公共日志或仓库。
 

@@ -196,10 +196,10 @@ func (s *Service) FetchModels(ctx context.Context, c *Credential) ([]Model, erro
 			return nil, fmt.Errorf("qoder model entry: %w", err)
 		}
 		id := cosyModelID(entry.Name)
-		if id == "" || strings.TrimSpace(entry.Key) == "" || seen[strings.ToLower(id)] {
+		if id == "" || strings.TrimSpace(entry.Key) == "" || seen[id] {
 			continue
 		}
-		seen[strings.ToLower(id)] = true
+		seen[id] = true
 		model := Model{ID: id, Key: entry.Key, Config: raw, SupportsReasoning: entry.Reasoning || len(entry.Thinking.Enabled.Efforts) > 0, SupportsImages: entry.Images}
 		for effort := range entry.Thinking.Enabled.Efforts {
 			model.Efforts = append(model.Efforts, effort)

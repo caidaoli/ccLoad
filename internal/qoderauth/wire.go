@@ -379,11 +379,12 @@ func cosySign(req *http.Request, c *Credential, body []byte) error {
 	return nil
 }
 
+// cosyModelID derives the public model name: display name without whitespace, lowercased.
 func cosyModelID(display string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return -1
 		}
-		return r
+		return unicode.ToLower(r)
 	}, display)
 }

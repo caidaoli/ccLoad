@@ -105,7 +105,7 @@ func TestQoderImportReauthorizesByRegionAndUser(t *testing.T) {
 		t.Fatalf("configs=%d err=%v", len(configs), err)
 	}
 	for _, cfg := range configs {
-		if cfg.AuthType != model.AuthTypeQoderOAuth || !cfg.Enabled || cfg.ProtocolTransformMode != model.ProtocolTransformModeLocal || len(cfg.URLs) != 1 || !cfg.URLs[0].Exact || !cfg.SupportsModel("QwenTest") {
+		if cfg.AuthType != model.AuthTypeQoderOAuth || !cfg.Enabled || cfg.ProtocolTransformMode != model.ProtocolTransformModeLocal || len(cfg.URLs) != 1 || !cfg.URLs[0].Exact || !cfg.SupportsModel("qwentest") {
 			t.Fatalf("invalid Qoder channel: %+v", cfg)
 		}
 	}
@@ -277,6 +277,7 @@ func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			credential := qoderIntegrationCredential(t, "cn", "dt-proxy-secret")
+			// The stored mixed-case name must still resolve against the lowercase catalog ID "qwentest".
 			env := setupProxyTestEnv(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai"}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"})
 			var chatCalls atomic.Int32
 			qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
