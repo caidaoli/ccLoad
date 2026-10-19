@@ -6,11 +6,11 @@
 
 ## 签到和额度
 
-渠道卡片提供余额刷新、手动领取以及自动签到开关。自动签到默认关闭；启用后按 UTC+8 每日10点的活动窗口领取，启动补扫，每15分钟检查尚未完成的账号。奖励金额、有效性和资格由上游活动决定，不保证所有套餐都可领。credits 是 Qoder 原生额度单位，不等同美元/token计费。
+渠道卡片提供余额刷新和手动领取。已启用的 Qoder 渠道始终自动签到，无开关：按 UTC+8 每日10点的活动窗口领取，服务启动约1分钟后补扫，之后每15分钟检查尚未完成的账号。奖励金额、有效性和资格由上游活动决定，不保证所有套餐都可领。credits 是 Qoder 原生额度单位，不等同美元/token计费。
 
-中国版无需额外组件。国际版签到需要官方 UMID 设备组件；模型调用、登录和额度查询不依赖它。缺少组件时，Linux amd64/arm64 自动从官方 npm registry 下载并验证 qodercli 包，然后提取本机组件；也可在管理页面手动安装重试。
+中国版无需额外组件。国际版签到需要官方 UMID 设备组件；模型调用、登录和额度查询不依赖它。缺少组件时，Linux 与 macOS（amd64/arm64）自动从官方 npm registry 下载并验证 qodercli 包，然后提取本机组件；也可在管理页面手动安装重试。
 
-组件保存在工作目录的 `data/qoder-umid/runtime-info`；Docker 用户应持久化 `/app/data`。官方镜像提供所需 glibc/C++ 运行库。自建 Linux 环境需要 glibc、libstdc++ 和 libgcc，纯 musl 环境不保证可用。Windows/macOS 使用已安装的 Qoder 或 qodercli 自带组件，缺少时页面给出提示。
+组件保存在工作目录的 `data/qoder-umid/runtime-info`；Docker 用户应持久化 `/app/data`。官方镜像提供所需 glibc/C++ 运行库。自建 Linux 环境需要 glibc、libstdc++ 和 libgcc，纯 musl 环境不保证可用。Windows 使用已安装的 Qoder 或 qodercli 自带组件，缺少时页面给出提示。
 
 安装或执行失败不影响推理；自动签到保留重试机会，缺组件或无活动不会显示为领取成功。下载校验失败不会执行下载物，不会回退到未校验镜像。
 

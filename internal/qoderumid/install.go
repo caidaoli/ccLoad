@@ -8,7 +8,9 @@ import (
 	"crypto/sha512"
 	"crypto/subtle"
 	"debug/elf"
+	"debug/macho"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,7 +76,7 @@ func (m *Manager) install(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	binary, err := extractBinary(bundle, m.arch)
+	payload, err := extractBinary(bundle, m.goos, m.arch)
 	if err != nil {
 		return err
 	}
@@ -90,7 +92,7 @@ func (m *Manager) install(parent context.Context) error {
 		return errors.New("cannot stage Qoder UMID component")
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
-	if _, err = file.Write(binary); err != nil {
+	if _, err = file.Write(payload); err != nil {
 		_ = file.Close()
 		return errors.New("cannot write Qoder UMID component")
 	}
@@ -102,11 +104,11 @@ func (m *Manager) install(parent context.Context) error {
 		return errors.New("cannot close Qoder UMID component")
 	}
 	// Validate the staged file as well, before granting execute permission or publishing it.
-	staged, err := elf.Open(file.Name())
+	staged, err := os.Open(file.Name())
 	if err != nil {
-		return errors.New("staged Qoder UMID component is not ELF")
+		return errors.New("cannot reopen staged Qoder UMID component")
 	}
-	err = validateELF(staged, m.arch)
+	err = validateExecutable(staged, m.goos, m.arch)
 	closeErr := staged.Close()
 	if err != nil {
 		return err
@@ -240,11 +242,17 @@ func readBundle(archive []byte) ([]byte, error) {
 	return bundle, nil
 }
 
-func extractBinary(bundle []byte, arch string) ([]byte, error) {
+// extractBinary finds this platform's runtime-info among the base64 string literals
+// qodercli embeds for every platform: ELF on Linux, Mach-O on macOS.
+func extractBinary(bundle []byte, goos, arch string) ([]byte, error) {
 	if arch != "amd64" && arch != "arm64" {
-		return nil, errors.New("unsupported Qoder UMID ELF architecture")
+		return nil, errors.New("unsupported Qoder UMID architecture")
 	}
+	// Base64 of the ELF64 little-endian and Mach-O 64 magics.
 	prefix := []byte("f0VMRgIB")
+	if goos == "darwin" {
+		prefix = []byte("z/rt/g")
+	}
 	for offset := 0; offset < len(bundle); {
 		index := bytes.Index(bundle[offset:], prefix)
 		if index < 0 {
@@ -270,40 +278,61 @@ func extractBinary(bundle []byte, arch string) ([]byte, error) {
 			continue
 		}
 		head, err := base64.StdEncoding.Strict().DecodeString(string(encoded[:88]))
-		if err != nil || len(head) < 20 {
-			continue
-		}
-		machine := elf.Machine(uint16(head[18]) | uint16(head[19])<<8)
-		expected := elf.EM_X86_64
-		if arch == "arm64" {
-			expected = elf.EM_AARCH64
-		}
-		if machine != expected {
+		if err != nil || !headMatches(head, goos, arch) {
 			continue
 		}
 		decoded, err := base64.StdEncoding.Strict().DecodeString(string(encoded))
 		if err != nil || len(decoded) > maxBinary {
 			continue
 		}
-		parsed, err := elf.NewFile(bytes.NewReader(decoded))
-		if err != nil {
-			continue
-		}
-		err = validateELF(parsed, arch)
-		_ = parsed.Close()
-		if err == nil {
+		if validateExecutable(bytes.NewReader(decoded), goos, arch) == nil {
 			return decoded, nil
 		}
 	}
-	return nil, errors.New("official qodercli bundle has no valid UMID ELF for this architecture")
+	return nil, errors.New("official qodercli bundle has no valid UMID component for this platform")
 }
 
-func validateELF(file *elf.File, arch string) error {
-	machine := elf.EM_X86_64
-	if arch == "arm64" {
-		machine = elf.EM_AARCH64
+func headMatches(head []byte, goos, arch string) bool {
+	if goos == "darwin" {
+		return len(head) >= 8 && macho.Cpu(binary.LittleEndian.Uint32(head[4:8])) == machoCPU(arch)
 	}
-	if (arch != "amd64" && arch != "arm64") || file.Class != elf.ELFCLASS64 || file.Data != elf.ELFDATA2LSB || file.Machine != machine || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
+	return len(head) >= 20 && elf.Machine(binary.LittleEndian.Uint16(head[18:20])) == elfMachine(arch)
+}
+
+func elfMachine(arch string) elf.Machine {
+	if arch == "arm64" {
+		return elf.EM_AARCH64
+	}
+	return elf.EM_X86_64
+}
+
+func machoCPU(arch string) macho.Cpu {
+	if arch == "arm64" {
+		return macho.CpuArm64
+	}
+	return macho.CpuAmd64
+}
+
+// validateExecutable parses the whole executable header for this platform.
+func validateExecutable(r io.ReaderAt, goos, arch string) error {
+	if arch != "amd64" && arch != "arm64" {
+		return errors.New("unsupported Qoder UMID architecture")
+	}
+	if goos == "darwin" {
+		file, err := macho.NewFile(r)
+		if err != nil {
+			return errors.New("qoder UMID component is not Mach-O")
+		}
+		if file.Magic != macho.Magic64 || file.Cpu != machoCPU(arch) || file.Type != macho.TypeExec {
+			return errors.New("qoder UMID Mach-O does not match this platform")
+		}
+		return nil
+	}
+	file, err := elf.NewFile(r)
+	if err != nil {
+		return errors.New("qoder UMID component is not ELF")
+	}
+	if file.Class != elf.ELFCLASS64 || file.Data != elf.ELFDATA2LSB || file.Machine != elfMachine(arch) || (file.Type != elf.ET_EXEC && file.Type != elf.ET_DYN) {
 		return errors.New("qoder UMID ELF does not match this platform")
 	}
 	return nil

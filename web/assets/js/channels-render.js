@@ -879,13 +879,10 @@ function buildOAuthUsageCheckinHtml(channel, state = {}) {
   if (channel?.auth_type === 'qoder_oauth') {
     const loading = state.checkin_status === 'loading';
     const manual = buildQuotaActionButton('checkin-qoder', channel.id, 'checkin', window.t('channels.qoder.checkin'), { busy: loading, disabled: loading });
-    const auto = window.t(channel.qoder_auto_checkin ? 'channels.qoder.autoEnabled' : 'channels.qoder.autoDisabled');
-    const settings = `<button type="button" class="ch-oauth-usage__trigger channel-action-btn" data-action="toggle-qoder-checkin" data-channel-id="${channel.id}" data-enabled="${!channel.qoder_auto_checkin}" aria-pressed="${Boolean(channel.qoder_auto_checkin)}" title="${escapeChannelRefreshText(window.t('channels.qoder.checkinHint'))}">${escapeChannelRefreshText(auto)}</button>`;
     const message = state.checkin_status === 'error' ? state.checkin_error : state.checkin_message;
     const notice = message ? `<div role="status">${escapeChannelRefreshText(message)}</div>` : '';
     const install = state.checkin_result === 'missing_component' ? `<button type="button" class="ch-oauth-usage__trigger channel-action-btn" data-action="install-qoder-umid" data-channel-id="${channel.id}">${escapeChannelRefreshText(window.t('channels.qoder.install'))}</button>` : '';
-    const edition = window.t(channel.qoder_region === 'global' ? 'channels.qoder.global' : 'channels.qoder.cn');
-    return `<span>${escapeChannelRefreshText(edition)}</span>${manual}${settings}${notice}${install}`;
+    return `${manual}${notice}${install}`;
   }
 
   if (channel?.auth_type !== 'codebuddy_oauth' || channel?.codebuddy_enterprise || channel?.codebuddy_international) {
@@ -1778,7 +1775,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-qoder', 'toggle-qoder-checkin', 'install-qoder-umid', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-anthropic-quota', 'checkin-codebuddy', 'checkin-qoder', 'install-qoder-umid', 'reset-codex-quota', 'refresh-management-balance', 'run-management-checkin', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1809,12 +1806,6 @@ function initChannelEventDelegation() {
         checkInQoder(channelId).then(result => {
           if (['claimed', 'already_claimed'].includes(result?.status) && window.showSuccess) window.showSuccess(window.t(`channels.qoder.${result.status}`));
         }).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.checkinFailed')); });
-        break;
-      case 'toggle-qoder-checkin':
-        btn.disabled = true;
-        setQoderAutoCheckin(channelId, enabled).catch(error => {
-          if (window.showError) window.showError(error?.message || window.t('channels.qoder.settingsFailed'));
-        }).finally(() => { btn.disabled = false; });
         break;
       case 'install-qoder-umid':
         installQoderUMID(btn).catch(error => { if (window.showError) window.showError(error?.message || window.t('channels.qoder.componentFailed')); });

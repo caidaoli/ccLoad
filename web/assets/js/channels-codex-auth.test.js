@@ -3145,23 +3145,6 @@ test('Qoder unavailable check-in preserves quota and never becomes a claimed sta
   } finally { global.window = previousWindow; global.channels = previousChannels; }
 });
 
-test('Qoder auto-check-in setting persists explicit booleans and preserves state on failure', async () => {
-  const { setQoderAutoCheckin } = require('./channels-codex-auth.js');
-  const previousChannels = global.channels;
-  global.channels = [{ id: 9183, auth_type: 'qoder_oauth', qoder_auto_checkin: false }];
-  try {
-    await setQoderAutoCheckin(9183, true, async (url, options) => {
-      assert.equal(url, '/admin/channels/9183/qoder-checkin/settings');
-      assert.deepEqual(JSON.parse(options.body), { enabled: true });
-      return { enabled: true };
-    });
-    assert.equal(global.channels[0].qoder_auto_checkin, true);
-    await assert.rejects(setQoderAutoCheckin(9183, false, async () => { throw new Error('save failed'); }), /save failed/);
-    assert.equal(global.channels[0].qoder_auto_checkin, true);
-    await assert.rejects(setQoderAutoCheckin(9183, 'false', async () => assert.fail('invalid setting reached network')));
-  } finally { global.channels = previousChannels; }
-});
-
 test('Qoder component status consumes only the management status endpoint', async () => {
   const { loadQoderUMIDStatus } = require('./channels-codex-auth.js');
   const previousDocument = global.document;

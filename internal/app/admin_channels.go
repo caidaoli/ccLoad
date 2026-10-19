@@ -517,8 +517,6 @@ func applyProtocolProbeRetrySummary(channel *ChannelWithCooldown, summary protoc
 }
 
 type channelOAuthMetadata struct {
-	qoderRegion             string
-	qoderAutoCheckin        bool
 	planType                string
 	subscriptionActiveUntil *time.Time
 	anthropicPlanType       string
@@ -536,8 +534,7 @@ type channelOAuthMetadata struct {
 // channelView 投影列表与详情共有的 OAuth 字段；CodeBuddy 标志仅由列表添加。
 func (metadata channelOAuthMetadata) channelView(cfg *model.Config) ChannelWithCooldown {
 	return ChannelWithCooldown{
-		Config:      cfg,
-		QoderRegion: metadata.qoderRegion, QoderAutoCheckin: metadata.qoderAutoCheckin,
+		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AnthropicPlanType:            metadata.anthropicPlanType,
@@ -630,7 +627,7 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), qoderauth.ChannelType)
-		return channelOAuthMetadata{oauthUsage: usage, qoderRegion: credential.Region, qoderAutoCheckin: credential.AutoCheckin}
+		return channelOAuthMetadata{oauthUsage: usage}
 	}
 	if cfg.UsesCodeBuddyOAuth() {
 		credential, err := codebuddyauth.ParseCredential([]byte(cfg.OAuthCredential))

@@ -104,11 +104,37 @@ func fixtureArchive(t *testing.T, name string, data []byte) []byte {
 	}
 	return buf.Bytes()
 }
+func fixtureMachO(arch string) []byte {
+	data := make([]byte, 64)
+	binary.LittleEndian.PutUint32(data[0:4], 0xfeedfacf)
+	cpu := uint32(0x01000007)
+	if arch == "arm64" {
+		cpu = 0x0100000c
+	}
+	binary.LittleEndian.PutUint32(data[4:8], cpu)
+	binary.LittleEndian.PutUint32(data[12:16], 2)
+	return data
+}
+func fixtureBinary(goos, arch string) []byte {
+	if goos == "darwin" {
+		return fixtureMachO(arch)
+	}
+	return fixtureELF(arch)
+}
+
+// fixtureBundle embeds payloads the way qodercli.js does: one base64 string literal each.
+func fixtureBundle(t *testing.T, binaries ...[]byte) []byte {
+	t.Helper()
+	var bundle strings.Builder
+	for i, data := range binaries {
+		fmt.Fprintf(&bundle, "const fixture%d=%q;", i, base64.StdEncoding.EncodeToString(data))
+	}
+	return fixtureArchive(t, bundleEntry, []byte(bundle.String()))
+}
 func fixturePackage(t *testing.T, arch string) ([]byte, []byte) {
 	t.Helper()
 	data := fixtureELF(arch)
-	archive := fixtureArchive(t, bundleEntry, []byte(`const fixture="`+base64.StdEncoding.EncodeToString(data)+`";`))
-	return archive, data
+	return fixtureBundle(t, data), data
 }
 func packageClient(archive []byte, integrity string, calls *atomic.Int32) *http.Client {
 	return &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
@@ -126,12 +152,19 @@ func checksum(data []byte) string {
 }
 
 func TestEnsureInstallsOfficialComponentConcurrently(t *testing.T) {
-	for _, arch := range []string{"amd64", "arm64"} {
-		t.Run(arch, func(t *testing.T) {
-			archive, binary := fixturePackage(t, arch)
+	platforms := [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}}
+	var binaries [][]byte
+	for _, platform := range platforms {
+		binaries = append(binaries, fixtureBinary(platform[0], platform[1]))
+	}
+	// Like the official bundle, one package carries every platform's payload.
+	archive := fixtureBundle(t, binaries...)
+	for i, platform := range platforms {
+		t.Run(platform[0]+"/"+platform[1], func(t *testing.T) {
+			binary := binaries[i]
 			var calls atomic.Int32
 			m := testManager(t)
-			m.arch = arch
+			m.goos, m.arch = platform[0], platform[1]
 			m.client = packageClient(archive, checksum(archive), &calls)
 			var wg sync.WaitGroup
 			for range 20 {
@@ -178,6 +211,7 @@ func TestEnsureInstallsOfficialComponentConcurrently(t *testing.T) {
 func TestEnsureRejectsUntrustedOrInvalidPackage(t *testing.T) {
 	good, _ := fixturePackage(t, "amd64")
 	wrongArch, _ := fixturePackage(t, "arm64")
+	wrongOS := fixtureBundle(t, fixtureMachO("amd64"))
 	unsafe := fixtureArchive(t, "../runtime-info", []byte("x"))
 	for _, tt := range []struct {
 		name      string
@@ -186,6 +220,7 @@ func TestEnsureRejectsUntrustedOrInvalidPackage(t *testing.T) {
 	}{
 		{"missing integrity", good, ""}, {"unsupported digest", good, "sha1-abc"}, {"malformed digest", good, "sha512-bad"},
 		{"checksum mismatch", good, checksum([]byte("changed"))}, {"wrong architecture", wrongArch, checksum(wrongArch)},
+		{"wrong operating system", wrongOS, checksum(wrongOS)},
 		{"path traversal", unsafe, checksum(unsafe)}, {"invalid archive", []byte("x"), checksum([]byte("x"))},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -438,7 +473,7 @@ func TestDiscoversOfficialClientAndCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := m.Status()
-			if !status.Available || status.Source != source || status.InstallSupported {
+			if !status.Available || status.Source != source || !status.InstallSupported {
 				t.Fatalf("status=%+v", status)
 			}
 			t.Setenv("CCLOAD_UMID_FIXTURE", "account")

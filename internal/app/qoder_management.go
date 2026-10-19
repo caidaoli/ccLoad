@@ -48,7 +48,7 @@ func (s *Server) updateQoderCredential(ctx context.Context, id int64, identity *
 		if err != nil {
 			return err
 		}
-		if identity != nil && !qoderIdentityMatches(identity, credential) {
+		if !qoderIdentityMatches(identity, credential) {
 			return errors.New("qoder account changed")
 		}
 		update(credential)
@@ -67,27 +67,6 @@ func (s *Server) updateQoderCredential(ctx context.Context, id int64, identity *
 		}
 	}
 	return errors.New("qoder credential changed concurrently; retry")
-}
-
-// HandleQoderCheckinSettings explicitly enables or disables daily activity claims.
-func (s *Server) HandleQoderCheckinSettings(c *gin.Context) {
-	id, err := ParseInt64Param(c, "id")
-	if err != nil {
-		RespondError(c, 400, err)
-		return
-	}
-	var input struct {
-		Enabled *bool `json:"enabled"`
-	}
-	if c.ShouldBindJSON(&input) != nil || input.Enabled == nil {
-		RespondErrorMsg(c, 400, "enabled is required")
-		return
-	}
-	if err = s.updateQoderCredential(c.Request.Context(), id, nil, func(v *qoderauth.Credential) { v.AutoCheckin = *input.Enabled }); err != nil {
-		RespondError(c, 409, err)
-		return
-	}
-	RespondJSON(c, 200, gin.H{"enabled": *input.Enabled})
 }
 
 type qoderCheckinResponse struct {
@@ -227,7 +206,7 @@ func (s *Server) runDueQoderCheckins(ctx context.Context) {
 			continue
 		}
 		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if err != nil || !credential.AutoCheckin || credential.LastCheckinAt >= window.Unix() {
+		if err != nil || credential.LastCheckinAt >= window.Unix() {
 			continue
 		}
 		select {

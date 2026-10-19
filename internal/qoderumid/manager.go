@@ -66,7 +66,7 @@ func NewManager(dataDir string, client *http.Client) *Manager {
 }
 
 func (m *Manager) supported() bool {
-	return m.goos == "linux" && (m.arch == "amd64" || m.arch == "arm64")
+	return (m.goos == "linux" || m.goos == "darwin") && (m.arch == "amd64" || m.arch == "arm64")
 }
 func (m *Manager) installedPath() string {
 	return filepath.Join(m.dataDir, "qoder-umid", "runtime-info")
@@ -80,7 +80,7 @@ func (m *Manager) Status() Status {
 	return Status{Available: c.path != "", Source: c.source, InstallSupported: m.supported(), Platform: m.goos + "/" + m.arch, Error: m.lastError}
 }
 
-// Ensure reuses an existing official component or downloads one on supported Linux hosts.
+// Ensure reuses an existing official component or downloads one on supported Linux / macOS hosts.
 // Concurrent callers share installation and can independently cancel their wait.
 func (m *Manager) Ensure(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

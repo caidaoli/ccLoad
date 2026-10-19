@@ -113,7 +113,7 @@ func TestExchangePATAndIdentity(t *testing.T) {
 func TestRefreshTokenFamiliesAndIdentity(t *testing.T) {
 	for _, family := range []string{"device", "job"} {
 		t.Run(family, func(t *testing.T) {
-			c := &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: "user", MachineID: "machine", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, AutoCheckin: true, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
+			c := &Credential{Region: "cn", AccessToken: "dt-old", RefreshToken: "drt-old", UserID: "user", MachineID: "machine", ExpiresAt: 1, OAuthUsage: `{"remaining":9}`, LastCheckinAt: 12, LastCheckinCampaign: "campaign"}
 			path := "/api/v1/deviceToken/refresh"
 			token := "dt-new"
 			refresh := "drt-new"

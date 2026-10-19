@@ -1857,7 +1857,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/qoder/credentials/import", s.HandleImportQoderCredential)
 		admin.POST("/channels/:id/qoder-credential/refresh", s.HandleRefreshQoderCredential)
 		admin.POST("/channels/:id/qoder-checkin", s.HandleQoderCheckin)
-		admin.POST("/channels/:id/qoder-checkin/settings", s.HandleQoderCheckinSettings)
 		admin.GET("/qoder/umid", s.HandleQoderUMIDStatus)
 		admin.POST("/qoder/umid/install", s.HandleInstallQoderUMID)
 		admin.POST("/codebuddy/oauth/start", s.HandleStartCodeBuddyOAuth)

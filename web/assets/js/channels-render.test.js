@@ -754,12 +754,11 @@ test('Qoder quota keeps accessible progress and escapes plan and bucket data', (
     }
   } });
   try {
-    const channel = { id: 9184, auth_type: 'qoder_oauth', qoder_region: 'global', qoder_auto_checkin: true };
+    const channel = { id: 9184, auth_type: 'qoder_oauth' };
     assert.equal(channelShowsOAuthUsage(channel), true);
     const html = buildOAuthUsageStatusHtml(channel);
     assert.match(html, /role="progressbar"/);
     assert.match(html, /aria-valuenow="75"/);
-    assert.match(html, /aria-pressed="true"/);
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.doesNotMatch(html, /<img|<script/);

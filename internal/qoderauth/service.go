@@ -212,7 +212,7 @@ func (s *Service) Refresh(ctx context.Context, credential *Credential) (*Credent
 			return nil, errors.New("qoder refreshed token owner does not match credential")
 		}
 		fresh.MachineID, fresh.OAuthUsage = c.MachineID, c.OAuthUsage
-		fresh.AutoCheckin, fresh.LastCheckinCampaign = c.AutoCheckin, c.LastCheckinCampaign
+		fresh.LastCheckinCampaign = c.LastCheckinCampaign
 		fresh.LastCheckinAt = c.LastCheckinAt
 		if fresh.MachineID == "" {
 			fresh.MachineID, err = authRandom(32)

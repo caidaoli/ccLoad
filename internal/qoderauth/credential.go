@@ -32,7 +32,6 @@ type Credential struct {
 	Email               string `json:"email,omitempty"`
 	ExpiresAt           int64  `json:"expires_at,omitempty"`
 	OAuthUsage          string `json:"oauth_usage,omitempty"`
-	AutoCheckin         bool   `json:"auto_checkin,omitempty"`
 	LastCheckinAt       int64  `json:"last_checkin_at,omitempty"`
 	LastCheckinCampaign string `json:"last_checkin_campaign,omitempty"`
 }

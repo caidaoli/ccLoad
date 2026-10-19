@@ -38,8 +38,9 @@ func (s *Server) managementCheckinLoop() {
 	// local check-in windows. Initialize the current slot without replaying it
 	// on every server restart; the next slot transition performs the check-in.
 	codeBuddySlot := codeBuddyCheckinSlot(time.Now())
-	s.runDueQoderCheckins(ctx)
-	qoderLastScan := time.Now()
+	// Qoder check-in is always on; its catch-up runs on the first tick rather
+	// than during boot, so startup never races channel setup.
+	qoderLastScan := time.Now().Add(-15 * time.Minute)
 
 	ticker := time.NewTicker(channelManagementScheduleInterval)
 	defer ticker.Stop()

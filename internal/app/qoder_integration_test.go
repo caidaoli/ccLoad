@@ -211,33 +211,37 @@ func TestQoderRefreshConcurrentReauthorizationWins(t *testing.T) {
 	}
 }
 
-func TestQoderCheckinSettingsPersistWithoutExposingSecrets(t *testing.T) {
+func TestQoderScheduledCheckinClaimsOncePerWindowWithoutOptIn(t *testing.T) {
 	s := newInMemoryServer(t)
-	credential := qoderIntegrationCredential(t, "cn", "dt-checkin-secret")
-	cfg, err := s.store.CreateConfig(context.Background(), newQoderChannel("checkin", qoderIntegrationJSON(t, credential)))
+	credential := qoderIntegrationCredential(t, "cn", "dt-scheduled-checkin")
+	cfg, err := s.store.CreateConfig(context.Background(), newQoderChannel("scheduled-checkin", qoderIntegrationJSON(t, credential)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, enabled := range []bool{true, false} {
-		c, w := qoderIntegrationContext(t, "POST", "/admin/channels/checkin/settings", map[string]bool{"enabled": enabled}, cfg.ID)
-		s.HandleQoderCheckinSettings(c)
-		if w.Code != 200 {
-			t.Fatalf("settings status=%d body=%s", w.Code, w.Body.String())
+	var claims atomic.Int32
+	qoderIntegrationClient(s, func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/me/campaigns"):
+			return qoderIntegrationResponse(r, 200, `{"campaigns":[{"campaignId":"daily","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE"}]}`), nil
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/me/campaigns/daily/claim"):
+			claims.Add(1)
+			return qoderIntegrationResponse(r, 200, `{"status":"CLAIMED"}`), nil
 		}
-		qoderIntegrationNoSecrets(t, w.Body.String(), credential.AccessToken, credential.RefreshToken, credential.MachineID)
-		current, err := s.store.GetConfig(context.Background(), cfg.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stored, err := qoderauth.ParseCredential([]byte(current.OAuthCredential))
-		if err != nil || stored.AutoCheckin != enabled || stored.AccessToken != credential.AccessToken {
-			t.Fatalf("settings persistence: %+v %v", stored, err)
-		}
+		return qoderIntegrationResponse(r, 404, `{}`), nil
+	})
+	for range 2 {
+		s.runDueQoderCheckins(context.Background())
 	}
-	c, w := qoderIntegrationContext(t, "POST", "/admin/channels/checkin/settings", map[string]any{}, cfg.ID)
-	s.HandleQoderCheckinSettings(c)
-	if w.Code != 400 {
-		t.Fatalf("missing enabled status=%d", w.Code)
+	if claims.Load() != 1 {
+		t.Fatalf("scheduled claims=%d, want one per window", claims.Load())
+	}
+	stored, err := s.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := qoderauth.ParseCredential([]byte(stored.OAuthCredential))
+	if err != nil || persisted.LastCheckinCampaign != "daily" || persisted.LastCheckinAt < qoderCheckinWindow(time.Now()).Unix() {
+		t.Fatalf("scheduled check-in not persisted: %+v %v", persisted, err)
 	}
 }
 
@@ -505,11 +509,6 @@ func TestQoderRefreshPreservesConcurrentMetadataAndRotatedTokens(t *testing.T) {
 		failure <- err
 	}()
 	<-started
-	c, w := qoderIntegrationContext(t, "POST", "/admin/channels/checkin/settings", map[string]bool{"enabled": true}, cfg.ID)
-	s.HandleQoderCheckinSettings(c)
-	if w.Code != 200 {
-		t.Fatalf("settings status=%d body=%s", w.Code, w.Body.String())
-	}
 	if err := s.updateQoderCredential(context.Background(), cfg.ID, credential, func(c *qoderauth.Credential) {
 		c.OAuthUsage = `{"remaining":42}`
 		c.LastCheckinAt = 1770000000
@@ -531,7 +530,7 @@ func TestQoderRefreshPreservesConcurrentMetadataAndRotatedTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, value := range []*qoderauth.Credential{returned, stored} {
-		if value.AccessToken != "dt-metadata-new" || value.RefreshToken != "rotated-metadata-refresh" || value.ExpiresAt != 1900000000 || !value.AutoCheckin || value.OAuthUsage != `{"remaining":42}` || value.LastCheckinAt != 1770000000 || value.LastCheckinCampaign != "metadata-campaign" {
+		if value.AccessToken != "dt-metadata-new" || value.RefreshToken != "rotated-metadata-refresh" || value.ExpiresAt != 1900000000 || value.OAuthUsage != `{"remaining":42}` || value.LastCheckinAt != 1770000000 || value.LastCheckinCampaign != "metadata-campaign" {
 			t.Fatalf("refresh lost rotated tokens or concurrent metadata: %+v", value)
 		}
 	}
@@ -557,7 +556,7 @@ func TestQoderTerminalRefreshDisablesOnlyRejectedCredential(t *testing.T) {
 				t.Fatal("terminal refresh did not fail")
 			}
 			// A metadata write after the failure must still allow disabling this token.
-			if err = s.updateQoderCredential(context.Background(), cfg.ID, credential, func(c *qoderauth.Credential) { c.AutoCheckin = true; c.OAuthUsage = `{"remaining":19}` }); err != nil {
+			if err = s.updateQoderCredential(context.Background(), cfg.ID, credential, func(c *qoderauth.Credential) { c.OAuthUsage = `{"remaining":19}` }); err != nil {
 				t.Fatal(err)
 			}
 			if reauthorize {
@@ -595,7 +594,6 @@ func TestQoderTerminalRefreshDisablesOnlyRejectedCredential(t *testing.T) {
 func TestQoderRefreshRetriesCASAfterMetadataWrite(t *testing.T) {
 	credential := qoderIntegrationCredential(t, "cn", "dt-cas-original")
 	metadata := *credential
-	metadata.AutoCheckin = true
 	metadata.OAuthUsage = `{"remaining":73}`
 	metadata.LastCheckinCampaign = "cas-campaign"
 	winner := &concurrentOAuthWinnerStore{authType: model.AuthTypeQoderOAuth, winnerJSON: qoderIntegrationJSON(t, &metadata)}
@@ -622,7 +620,7 @@ func TestQoderRefreshRetriesCASAfterMetadataWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, value := range []*qoderauth.Credential{fresh, stored} {
-		if value.AccessToken != "dt-cas-rotated" || value.RefreshToken != "cas-rotated-refresh" || !value.AutoCheckin || value.OAuthUsage != metadata.OAuthUsage || value.LastCheckinCampaign != metadata.LastCheckinCampaign {
+		if value.AccessToken != "dt-cas-rotated" || value.RefreshToken != "cas-rotated-refresh" || value.OAuthUsage != metadata.OAuthUsage || value.LastCheckinCampaign != metadata.LastCheckinCampaign {
 			t.Fatalf("CAS conflict lost tokens or latest metadata: %+v", value)
 		}
 	}

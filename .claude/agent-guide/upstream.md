@@ -10,8 +10,8 @@
 - Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。中国版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表。
 - 上游始终返回 SSE；信封内的业务状态先归一为 OpenAI 错误，认证/额度/排队分别映射 401/429/503；HTTP 非2xx也按相同业务码分类。文本、工具、思考和 usage 归一后进入已有转换器。非流式通过共享 Chat SSE 聚合器处理。缺少终态的 EOF 不得标记成功；输出后不得自动重放。
 - 额度通过 `/api/v2/quota/usage` 查询，credits 保持原单位，写入 `oauth_usage` 安全快照，不进入 token 窗口成本账本。
-- 签到使用 campaign 列表与 claim 接口，区分新领取、已领取、无活动和缺组件；未知奖励不伪造默认金额。国际版需要官方 UMID，国内版不需要。自动签到默认关闭，开启后启动补扫并每15分钟扫描，成功/已领取按 UTC+8 10:00 活动窗口去重；失败或无活动保留后续扫描机会。
-- `internal/qoderumid` 发现现有 Qoder/CLI 组件；国际版签到缺组件时，Linux amd64/arm64 从官方 npm registry 下载 qodercli 包、校验 SHA-512、提取匹配架构 ELF 并原子安装到 `data/qoder-umid/runtime-info`。Windows/macOS 复用官方安装组件，不承诺自动下载。执行有超时、输出上限和取消传播；不在推理请求中下载安装。容器依赖 glibc、libstdc++6 和 libgcc-s1。
+- 签到使用 campaign 列表与 claim 接口，区分新领取、已领取、无活动和缺组件；未知奖励不伪造默认金额。国际版需要官方 UMID，国内版不需要。已启用渠道始终自动签到（无开关），首个调度 tick（启动约1分钟后）补扫，之后每15分钟扫描，成功/已领取按 UTC+8 10:00 活动窗口去重；失败或无活动保留后续扫描机会。
+- `internal/qoderumid` 发现现有 Qoder/CLI 组件；国际版签到缺组件时，Linux/macOS amd64/arm64 从官方 npm registry 下载 qodercli 包、校验 SHA-512、提取匹配平台与架构的 ELF/Mach-O 并原子安装到 `data/qoder-umid/runtime-info`。Windows 组件需配套 DLL，只复用官方安装组件，不自动下载。执行有超时、输出上限和取消传播；不在推理请求中下载安装。容器依赖 glibc、libstdc++6 和 libgcc-s1。
 - 参考事实与独立实现说明见 `internal/qoderauth/UPSTREAM.md`；不导入 agent2api 的受限代码或改变 CLIProxyAPI 快照。
 
 ## CodeBuddy

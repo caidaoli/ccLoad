@@ -1109,20 +1109,6 @@ async function checkInQoder(channelID, fetcher = fetchDataWithAuth) {
   }
 }
 
-async function setQoderAutoCheckin(channelID, enabled, fetcher = fetchDataWithAuth) {
-  const id = Number(channelID);
-  if (!Number.isInteger(id) || id <= 0 || typeof enabled !== 'boolean') throw new Error('A saved Qoder channel and enabled flag are required');
-  const result = await fetcher(`/admin/channels/${id}/qoder-checkin/settings`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled })
-  });
-  if (typeof channels !== 'undefined' && Array.isArray(channels)) {
-    const channel = channels.find(item => Number(item.id) === id);
-    if (channel) channel.qoder_auto_checkin = enabled;
-  }
-  rerenderOAuthUsage();
-  return result;
-}
-
 async function submitCodeBuddyCredentialFile(input, fetcher = fetchDataWithAuth, signal = undefined, edition = 'codebuddy') {
   const body = String(input?.value || '').trim();
   if (!body || new TextEncoder().encode(body).length > 1048576) {
@@ -3525,7 +3511,6 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     submitQoderCredential,
     checkInQoder,
-    setQoderAutoCheckin,
     loadQoderUMIDStatus,
     loadCredentialFile,
     submitVertexCredential,

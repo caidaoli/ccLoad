@@ -70,7 +70,6 @@ func (s *Server) commitQoderCredential(ctx context.Context, credential *qoderaut
 		if parseErr != nil || !qoderIdentityMatches(stored, credential) {
 			continue
 		}
-		credential.AutoCheckin = stored.AutoCheckin
 		credential.LastCheckinAt = stored.LastCheckinAt
 		credential.LastCheckinCampaign = stored.LastCheckinCampaign
 		credential.OAuthUsage = stored.OAuthUsage
