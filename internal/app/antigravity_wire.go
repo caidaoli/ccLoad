@@ -656,49 +656,23 @@ func consolidateAntigravityGenerationConfigParents(request []byte) []byte {
 	return deleteJSONPath(request, "generation_config")
 }
 
+var (
+	antigravityParameterSchemaKeys = []string{"parameters", "parametersJsonSchema", "parameters_json_schema"}
+	antigravityResponseSchemaKeys  = []string{"response", "responseJsonSchema", "response_json_schema"}
+)
+
 func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 	useAntigravitySchema := strings.Contains(strings.ToLower(modelName), "claude") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3-pro") ||
 		strings.Contains(strings.ToLower(modelName), "gemini-3.1-pro")
-	parameterKeys := []string{"parameters", "parametersJsonSchema", "parameters_json_schema"}
-	responseKeys := []string{"response", "responseJsonSchema", "response_json_schema"}
 	generationConfigKeys := []string{"generationConfig", "generation_config"}
 	generationSchemaKeys := []string{"responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"}
 
-	tools := gjson.GetBytes(request, "tools")
-	if tools.IsArray() {
-		for ti, tool := range tools.Array() {
-			if !tool.IsObject() {
-				continue
-			}
-			for _, key := range []string{"functionDeclarations", "function_declarations"} {
-				declarations := tool.Get(key)
-				if !declarations.IsArray() {
-					continue
-				}
-				for di, declaration := range declarations.Array() {
-					if !declaration.IsObject() {
-						continue
-					}
-					declPath := fmt.Sprintf("tools.%d.%s.%d", ti, key, di)
-					paramPaths := make([]string, 0, len(parameterKeys))
-					for _, paramKey := range parameterKeys {
-						paramPaths = append(paramPaths, declPath+"."+paramKey)
-					}
-					if _, paramRaw, found := firstAntigravityJSONObject(request, paramPaths); found {
-						cleaned := cleanAntigravitySchemaRaw(paramRaw, useAntigravitySchema, false)
-						request = consolidateAntigravitySchemaAliases(request, declPath+".parameters", paramPaths, cleaned)
-					}
-					responsePaths := make([]string, 0, len(responseKeys))
-					for _, schemaKey := range responseKeys {
-						responsePaths = append(responsePaths, declPath+"."+schemaKey)
-					}
-					if _, responseRaw, found := firstAntigravityJSONObject(request, responsePaths); found {
-						cleaned := cleanAntigravitySchemaRaw(responseRaw, useAntigravitySchema, false)
-						request = consolidateAntigravitySchemaAliases(request, declPath+".response", responsePaths, cleaned)
-					}
-				}
-			}
+	// 工具 schema 只在 tools 子文档上改写、最后整体写回一次：逐声明对整份请求
+	// set/delete 会把长对话 contents 复制「声明数×别名数」次。
+	if tools := gjson.GetBytes(request, "tools"); tools.IsArray() {
+		if normalized := normalizeAntigravityToolSchemas(tools.Raw, useAntigravitySchema); normalized != tools.Raw {
+			request = setJSONRaw(request, "tools", normalized)
 		}
 	}
 
@@ -713,6 +687,37 @@ func normalizeAntigravitySchemas(request []byte, modelName string) []byte {
 		request = consolidateAntigravitySchemaAliases(request, "generationConfig.responseSchema", generationSchemaPaths, cleaned)
 	}
 	return consolidateAntigravityGenerationConfigParents(request)
+}
+
+func normalizeAntigravityToolSchemas(tools string, useAntigravitySchema bool) string {
+	out := []byte(tools)
+	for ti, tool := range gjson.Parse(tools).Array() {
+		if !tool.IsObject() {
+			continue
+		}
+		for _, key := range []string{"functionDeclarations", "function_declarations"} {
+			declarations := tool.Get(key)
+			if !declarations.IsArray() {
+				continue
+			}
+			for di, declaration := range declarations.Array() {
+				if !declaration.IsObject() {
+					continue
+				}
+				normalized := []byte(declaration.Raw)
+				for _, aliases := range [][]string{antigravityParameterSchemaKeys, antigravityResponseSchemaKeys} {
+					if _, schemaRaw, found := firstAntigravityJSONObject(normalized, aliases); found {
+						cleaned := cleanAntigravitySchemaRaw(schemaRaw, useAntigravitySchema, false)
+						normalized = consolidateAntigravitySchemaAliases(normalized, aliases[0], aliases, cleaned)
+					}
+				}
+				if string(normalized) != declaration.Raw {
+					out = setJSONRaw(out, fmt.Sprintf("%d.%s.%d", ti, key, di), string(normalized))
+				}
+			}
+		}
+	}
+	return string(out)
 }
 
 func cleanAntigravitySchemaRaw(raw string, antigravity, response bool) string {
