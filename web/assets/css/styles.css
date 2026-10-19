@@ -515,7 +515,6 @@ html[data-resolved-theme="dark"] ::selection {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
   text-decoration: none;
 }
 
@@ -530,11 +529,19 @@ html[data-resolved-theme="dark"] ::selection {
   filter: drop-shadow(0 4px 10px rgba(59, 130, 246, 0.2));
 }
 
+/* viewBox 只框字母；副标题溢出到下外边距里显示，外边距让两行整体与图标垂直居中 */
 .brand-wordmark {
   display: block;
   width: 132px;
-  height: 26px;
+  height: 24px;
+  margin-bottom: 12px;
+  overflow: visible;
   color: color-mix(in srgb, var(--topbar-fg) 88%, #071b35);
+}
+
+html[data-resolved-theme="dark"] .brand-wordmark,
+html[data-resolved-theme="dark"] .login-brand-wordmark {
+  --brand-tagline-color: #94a3b8;
 }
 
 /* 活动请求指示器：速度线、流动圆点与角标；圆点数量随并发数增减（ui.js 切换 hidden） */
@@ -2251,7 +2258,6 @@ html[data-resolved-theme="dark"] .time-range-selector {
 
   .brand {
     min-width: 0;
-    gap: 4px;
     max-width: 100%;
   }
 
@@ -2260,9 +2266,16 @@ html[data-resolved-theme="dark"] .time-range-selector {
     height: 28px;
   }
 
+  /* 窄屏只留字母；overflow 回到 hidden，flex 最小宽度才是 0，字标可随顶栏收缩 */
   .brand-wordmark {
     width: 103px;
-    height: 20px;
+    height: 19px;
+    margin-bottom: 0;
+    overflow: hidden;
+  }
+
+  .brand-wordmark text {
+    display: none;
   }
 
   .brand-speed-lines i:nth-child(1) {
@@ -6670,10 +6683,6 @@ body.trend-page .chart-info {
   width: 176px;
   height: auto;
   color: var(--neutral-900);
-}
-
-html[data-resolved-theme="dark"] .login-brand-wordmark {
-  --brand-tagline-color: #94a3b8;
 }
 
 .login-form-container {
