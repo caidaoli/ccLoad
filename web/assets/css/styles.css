@@ -7629,10 +7629,6 @@ body:not(.web-hide-channels) .stats-table th[data-column="model"] {
   color: var(--neutral-500);
 }
 
-.stats-tree-meta-sep {
-  color: var(--neutral-300);
-}
-
 /* 渠道行倍率跟在元信息后面，不再作为单元格角标 */
 .stats-tree-meta .cell-multiplier-badge {
   position: static;

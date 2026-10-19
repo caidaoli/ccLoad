@@ -1011,7 +1011,6 @@ window.I18N_LOCALES['en'] = {
   'stats.channelId': 'Channel#',
   'stats.channelName': 'Name',
   'stats.channelModel': 'Channel / Model',
-  'stats.modelCount': 'Models: {count}',
   'stats.toggleChannelModels': 'Expand or collapse models of {name}',
   'stats.expandAllChannels': 'Expand all',
   'stats.collapseAllChannels': 'Collapse all',

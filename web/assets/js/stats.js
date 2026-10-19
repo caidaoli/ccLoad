@@ -373,23 +373,19 @@
       return `<span class="stats-model-cell">${modelLink}${buildCornerMultiplierBadge(entry.cost_multiplier_min, entry.cost_multiplier_max)}</span>`;
     }
 
-    // 渠道行首列：折叠按钮 + 头像 + 名称/ID/模型数/倍率 + 渠道健康条；单模型渠道同样展开子行，结构统一
+    // 渠道行首列：折叠按钮 + 头像 + 名称/倍率 + 渠道健康条；单模型渠道同样展开子行，结构统一
     function buildStatsChannelCell(group, collapsed) {
       const name = group.channel_name || '';
       const authType = group.channel_auth_type || 'api_key';
       const toggle = `<button type="button" class="stats-tree-toggle" aria-expanded="${!collapsed}" aria-label="${escapeHtml(t('stats.toggleChannelModels', { name }))}">${STATS_CHEVRON_SVG}</button>`;
-      const metaParts = [];
-      if (group.channel_id) metaParts.push(`ID ${group.channel_id}`);
-      metaParts.push(escapeHtml(t('stats.modelCount', { count: group.models.length })));
-      const meta = metaParts.join('<span class="stats-tree-meta-sep">·</span>') +
-        buildCornerMultiplierBadge(group.cost_multiplier_min, group.cost_multiplier_max);
+      const multiplier = buildCornerMultiplierBadge(group.cost_multiplier_min, group.cost_multiplier_max);
       const successRate = group.total > 0 ? group.success / group.total : 0;
 
       return `<div class="stats-tree">${toggle}` +
         `<span class="stats-channel-avatar channel-provider-avatar" data-auth-type="${escapeHtml(authType)}" aria-hidden="true">${window.channelAvatarContentHTML(authType, name)}</span>` +
         '<div class="stats-tree-body"><div class="stats-tree-title">' +
         `<a href="#" class="config-name channel-link" data-channel-name="${escapeHtml(name)}" title="${escapeHtml(t('stats.viewChannelLogsTitle'))}">${escapeHtml(name)}</a>` +
-        `<span class="stats-tree-meta">${meta}</span></div>` +
+        `${multiplier ? `<span class="stats-tree-meta">${multiplier}</span>` : ''}</div>` +
         `${buildHealthIndicator(group.health_timeline, successRate)}</div></div>`;
     }
 

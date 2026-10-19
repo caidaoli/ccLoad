@@ -1011,7 +1011,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'stats.channelId': '渠道ID',
   'stats.channelName': '渠道名',
   'stats.channelModel': '渠道 / 模型',
-  'stats.modelCount': '{count} 个模型',
   'stats.toggleChannelModels': '展开或折叠 {name} 的模型',
   'stats.expandAllChannels': '全部展开',
   'stats.collapseAllChannels': '全部收起',
