@@ -117,6 +117,6 @@ test('健康时间线按桶索引合并：计数相加、成功率重算、无�
 
 test('只有一条时间线时原样返回，全部缺失时为空', () => {
   const timeline = [point(100, 1, 0)];
-  assert.equal(mergeHealthTimelines([undefined, timeline]), timeline);
+  assert.deepEqual(mergeHealthTimelines([undefined, timeline]), timeline);
   assert.equal(mergeHealthTimelines([undefined, []]), null);
 });

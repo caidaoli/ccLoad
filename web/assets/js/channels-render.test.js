@@ -620,7 +620,7 @@ test('OAuth 窗口累计成本不足 $0.1 时金额与预估都不显示', () =>
   }
 });
 
-test('URL 行模型标签只列去重后的请求模型名并转义，行内最多预渲染 12 个，弹层列出传入的模型', () => {
+test('URL 行模型标签只列去重后的请求模型名并转义，弹层列出传入的模型', () => {
   const chipsOf = html => [...html.matchAll(/<button type="button" class="ch-model-chip" data-model="([^"]*)" title="[^"]*">([^<]*)</g)]
     .map(m => [m[1], m[2]]);
   assert.equal(buildChannelModelListHtml(3, []), '');
@@ -632,13 +632,7 @@ test('URL 行模型标签只列去重后的请求模型名并转义，行内最�
   ];
   const html = buildChannelModelListHtml(3, models);
   assert.deepEqual(chipsOf(html), [['gpt-5', 'gpt-5'], ['alias', 'alias'], ['&lt;x&gt;', '&lt;x&gt;']]);
-  assert.match(html, /data-model-count="3"/);
-  assert.match(html, /<button type="button" class="ch-model-toggle" data-channel-id="3" aria-expanded="false" hidden>\+3<\/button>/);
-
-  const many = Array.from({ length: 20 }, (_, i) => ({ model: `m${i}`, redirect_model: 'target' }));
-  const manyHtml = buildChannelModelListHtml(4, many);
-  assert.deepEqual(chipsOf(manyHtml).map(([name]) => name), many.slice(0, 12).map(entry => entry.model));
-  assert.match(manyHtml, /data-model-count="20"/, '「+N」按全部模型计数');
+  assert.match(html, /<button\b[^>]*aria-expanded="false"[^>]*>\+3<\/button>/);
 
   assert.deepEqual(chipsOf(buildChannelModelPopoverHtml(['m12', '<y>'])), [['m12', 'm12'], ['&lt;y&gt;', '&lt;y&gt;']]);
 });

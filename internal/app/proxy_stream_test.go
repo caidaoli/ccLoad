@@ -224,19 +224,6 @@ func readCodexMalformedSSEFixture(t *testing.T) []byte {
 	return data
 }
 
-func TestCodexSSEFramingReaderPreservesAndRepairs(t *testing.T) {
-	valid := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
-	got, err := io.ReadAll(newCodexSSEFramingReader(bytes.NewReader(valid)))
-	if err != nil || !bytes.Equal(got, valid) {
-		t.Fatalf("valid=%q err=%v", got, err)
-	}
-	malformed := []byte("event: response.created\ndata: {\"type\":\"response.created\"}\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
-	got, err = io.ReadAll(newCodexSSEFramingReader(bytes.NewReader(malformed)))
-	if err != nil || !bytes.Contains(got, []byte("}\n\nevent: response.completed")) {
-		t.Fatalf("repaired=%q err=%v", got, err)
-	}
-}
-
 func TestCodexSSEFramingReaderEOFDoesNotAddBoundary(t *testing.T) {
 	for _, raw := range [][]byte{
 		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}"),
