@@ -287,7 +287,7 @@
                     data-i18n-description="channels.oauth.providerVertexDesc" data-description="上传服务账号 JSON 密钥">Vertex</option>
                 </select>
               </div>
-              <div id="codexOAuthControls">
+              <div id="codexOAuthControls" class="oauth-provider-controls">
                 <div class="oauth-field">
                   <label for="codexOAuthMethod" data-i18n="channels.codex.methodLabel">Codex 授权方式</label>
                   <select id="codexOAuthMethod" name="codex_oauth_method" class="form-input">
@@ -305,7 +305,7 @@
                     data-i18n="channels.codex.personalAccessTokenHint">输入以 at- 开头的令牌。提交后输入会立即清除；令牌到期或被撤销后需要重新授权。</p>
                 </div>
               </div>
-              <div id="xaiOAuthControls" hidden>
+              <div id="xaiOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>
                   <select id="xaiOAuthMethod" name="xai_oauth_method" class="form-input">
@@ -343,7 +343,7 @@
                   </div>
                 </div>
               </div>
-              <div id="codebuddyOAuthControls" hidden>
+              <div id="codebuddyOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="codebuddyOAuthEdition" data-i18n="channels.codebuddy.editionLabel">CodeBuddy 版本</label>
                   <select id="codebuddyOAuthEdition" name="codebuddy_edition" class="form-input">
@@ -368,7 +368,7 @@
                   </div>
                 </div>
               </div>
-              <div id="zaiOAuthControls" hidden>
+              <div id="zaiOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="zaiOAuthMethod" data-i18n="channels.zai.methodLabel">Z.ai 授权方式</label>
                   <select id="zaiOAuthMethod" name="zai_oauth_method" class="form-input">
@@ -385,7 +385,7 @@
                     data-i18n="channels.zai.apiKeyHint">提交后输入会立即从页面清除。ccLoad 只把它保存在渠道凭证中。</p>
                 </div>
               </div>
-              <div id="cursorOAuthControls" hidden>
+              <div id="cursorOAuthControls" class="oauth-provider-controls" hidden>
                 <div id="cursorAPIKeyField" class="oauth-field" hidden>
                   <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
                   <input id="cursorUserAPIKey" name="cursor_user_api_key" type="text"
@@ -400,7 +400,7 @@
                     data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
                 </div>
               </div>
-              <div id="zedOAuthControls" hidden>
+              <div id="zedOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="zedSystemID" data-i18n="channels.zed.systemIDLabel">Zed system ID（可选；试用需要）</label>
                   <input id="zedSystemID" name="zed_system_id" type="text"
@@ -411,7 +411,7 @@
                     data-i18n="channels.zed.systemIDHint">本机运行 ccLoad 时会自动读取 Zed。没有该值时仍可尝试登录，但 Zed 试用权限可能不可用；远程或容器部署可填写本机 Zed 数据库中的 system_id。</p>
                 </div>
               </div>
-              <div id="vertexOAuthControls" hidden>
+              <div id="vertexOAuthControls" class="oauth-provider-controls" hidden>
                 <div class="oauth-field">
                   <label for="vertexCredentialFile" data-i18n="channels.vertex.fileLabel">服务账号密钥文件</label>
                   <input id="vertexCredentialFile" type="file" class="form-input" accept=".json,application/json" aria-describedby="vertexCredentialFileHint">

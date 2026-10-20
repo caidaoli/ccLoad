@@ -182,7 +182,8 @@
 
     .oauth-dialog-body,
     .oauth-session-fields,
-    .oauth-dialog-section {
+    .oauth-dialog-section,
+    .oauth-provider-controls {
       display: grid;
       gap: var(--space-4);
       margin: 0;
@@ -192,7 +193,8 @@
       padding: var(--space-5) var(--space-6) var(--space-6);
     }
 
-    .oauth-session-fields[hidden] {
+    .oauth-session-fields[hidden],
+    .oauth-provider-controls[hidden] {
       display: none;
     }
 
