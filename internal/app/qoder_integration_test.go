@@ -4,11 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +23,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/qoderauth"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 )
@@ -359,6 +365,132 @@ func TestQoderProxyStreamAndNonStreamKeepToolsAndUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQoderSystemSensitiveWordsOnWire(t *testing.T) {
+	const messagesJSON = `[
+		{"role":"system","content":"Claude API unchanged"},
+		{"role":"developer","content":"cLaUdE api unchanged"},
+		{"role":"system","content":[{"type":"text","text":"CLAUDE API"},{"type":"text","text":"ordinary policy"}]},
+		{"role":"developer","content":[{"type":"text","text":"claude Api"},{"type":"text","text":"ordinary instruction"}]},
+		{"role":"user","content":"Claude API"},
+		{"role":"assistant","content":"Claude API","tool_calls":[{"id":"call-1","type":"function","function":{"name":"Claude_API","arguments":"{\"text\":\"Claude API\"}"}}]},
+		{"role":"tool","tool_call_id":"call-1","content":"Claude API"},
+		{"role":"user","content":[{"type":"text","text":"cLaUdE api"}]}
+	]`
+	const toolsJSON = `[{"type":"function","function":{"name":"Claude_API","description":"Claude API","parameters":{"type":"object","properties":{"text":{"type":"string","description":"Claude API","enum":["Claude API"]}}}}}]`
+	for _, path := range []string{"proxy", "admin"} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/enabled=%v", path, enabled), func(t *testing.T) {
+				words := `[]`
+				if enabled {
+					words = `["Claude","API"]`
+				}
+				credential := qoderIntegrationCredential(t, "cn", "dt-sensitive-word-test")
+				rules := &model.CustomRequestRules{Body: []model.CustomBodyRule{
+					{Action: model.RuleActionOverride, Path: "messages", Value: json.RawMessage(messagesJSON)},
+					{Action: model.RuleActionOverride, Path: "tools", Value: json.RawMessage(toolsJSON)},
+				}}
+				env := setupProxyTestEnvWithSettings(t, []testChannel{{name: "qoder", authType: model.AuthTypeQoderOAuth, oauthCredential: qoderIntegrationJSON(t, credential), models: "QwenTest", upstreamProtocol: "openai", customRequestRules: rules}}, map[int]string{0: "https://gateway.qoder.com.cn/v1/chat/completions"}, map[string]string{"antigravity_sensitive_words": words})
+				var chatCalls atomic.Int32
+				qoderIntegrationClient(env.server, func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/algo/api/v2/model/list" {
+						return qoderIntegrationResponse(r, 200, `{"chat":[{"key":"native-key","display_name":"Qwen Test"}]}`), nil
+					}
+					chatCalls.Add(1)
+					decoded := qoderIntegrationDecodeSignedRequest(t, r)
+					var actual struct {
+						Messages []map[string]any `json:"messages"`
+						Tools    []map[string]any `json:"tools"`
+					}
+					mustUnmarshalJSON(t, decoded, &actual)
+					var wantMessages, wantTools []map[string]any
+					mustUnmarshalJSON(t, []byte(messagesJSON), &wantMessages)
+					mustUnmarshalJSON(t, []byte(toolsJSON), &wantTools)
+					// Native Qoder wire flattens text blocks and represents developer messages as system.
+					wantMessages[1]["role"] = "system"
+					wantMessages[2]["content"] = "CLAUDE API\nordinary policy"
+					wantMessages[3]["role"] = "system"
+					wantMessages[3]["content"] = "claude Api\nordinary instruction"
+					wantMessages[7]["content"] = "cLaUdE api"
+					if enabled {
+						wantMessages[0]["content"] = "C\u200blaude A\u200bPI unchanged"
+						wantMessages[1]["content"] = "c\u200bLaUdE a\u200bpi unchanged"
+						wantMessages[2]["content"] = "C\u200bLAUDE A\u200bPI\nordinary policy"
+						wantMessages[3]["content"] = "c\u200blaude A\u200bpi\nordinary instruction"
+					}
+					if !reflect.DeepEqual(actual.Messages, wantMessages) {
+						t.Errorf("wire messages = %+v, want %+v", actual.Messages, wantMessages)
+					}
+					if !reflect.DeepEqual(actual.Tools, wantTools) {
+						t.Errorf("wire tools = %+v, want %+v", actual.Tools, wantTools)
+					}
+					response := qoderIntegrationResponse(r, http.StatusOK, qoderIntegrationEvent(map[string]any{"id": "chat-sensitive", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "ok"}, "finish_reason": "stop"}}})+"data: {\"statusCodeValue\":200,\"body\":\"[DONE]\"}\n\n")
+					response.Header.Set("Content-Type", "text/event-stream")
+					return response, nil
+				})
+				if path == "proxy" {
+					response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "QwenTest", "messages": []any{map[string]any{"role": "user", "content": "test"}}}, nil)
+					if response.Code != http.StatusOK {
+						t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+					}
+				} else {
+					configs, err := env.store.ListConfigs(context.Background())
+					if err != nil || len(configs) != 1 {
+						t.Fatalf("configs=%d err=%v", len(configs), err)
+					}
+					result := env.server.testChannelAPI(context.Background(), configs[0], credential.AccessToken, &testutil.TestChannelRequest{Model: "QwenTest", ClientProtocol: "openai", Content: "test"})
+					if result["success"] != true {
+						t.Fatalf("channel test failed: %+v", result)
+					}
+				}
+				if chatCalls.Load() != 1 {
+					t.Fatalf("chat requests=%d, want one", chatCalls.Load())
+				}
+			})
+		}
+	}
+}
+
+func qoderIntegrationDecodeSignedRequest(t *testing.T, req *http.Request) []byte {
+	t.Helper()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer COSY."), ".")
+	if len(parts) != 2 {
+		t.Fatalf("invalid COSY authorization: %q", req.Header.Get("Authorization"))
+	}
+	path := strings.TrimPrefix(req.URL.Path, "/algo")
+	signature := md5.Sum([]byte(parts[0] + "\n" + req.Header.Get("Cosy-Key") + "\n" + req.Header.Get("Cosy-Date") + "\n" + string(body) + "\n" + path))
+	if parts[1] != hex.EncodeToString(signature[:]) || req.Header.Get("Cosy-Sigpath") != path {
+		t.Error("COSY signature does not cover the actual HTTP body and path")
+	}
+	bodyHash := md5.Sum(body)
+	if req.Header.Get("Cosy-Bodyhash") != hex.EncodeToString(bodyHash[:]) || req.Header.Get("Cosy-Bodylength") != strconv.Itoa(len(body)) {
+		t.Error("COSY body digest/length do not match the actual HTTP body")
+	}
+	const alphabet = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!"
+	const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	mapped := make([]byte, len(body))
+	for i, b := range body {
+		if b == '$' {
+			mapped[i] = '='
+		} else if index := strings.IndexByte(alphabet, b); index >= 0 {
+			mapped[i] = standard[index]
+		} else {
+			t.Fatalf("invalid Qoder encoding byte: %q", b)
+		}
+	}
+	n := len(mapped) / 3
+	standardBody := append(bytes.Clone(mapped[len(mapped)-n:]), mapped[n:len(mapped)-n]...)
+	standardBody = append(standardBody, mapped[:n]...)
+	decoded, err := base64.StdEncoding.DecodeString(string(standardBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func TestQoderProxyRefreshesNativeUnauthorizedOnce(t *testing.T) {

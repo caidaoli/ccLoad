@@ -1647,7 +1647,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.gemini_first_byte_timeout': 'Gemini流式请求首个有效内容超时(秒,0=使用全局首字超时)',
   'settings.desc.gemini_non_stream_timeout': 'Gemini非流式请求超时(秒,0=使用全局非流超时)',
   'settings.desc.model_fuzzy_match': '模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)',
-  'settings.desc.antigravity_sensitive_words': '在 Antigravity systemInstruction 和 CodeBuddy system/developer 消息文本中插入零宽字符替换的敏感词 JSON 数组（修改后重启生效）',
+  'settings.desc.antigravity_sensitive_words': '在 Antigravity systemInstruction 和 CodeBuddy/Qoder system/developer 消息文本中插入零宽字符替换的敏感词 JSON 数组（修改后重启生效）',
   'settings.desc.channel_test_content': '渠道测试默认内容，多个内容用竖线（|）分隔，不能为空',
   'settings.desc.model_catalog_sync_interval_hours': '从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表',
   'settings.desc.model_custom_pricing': '自定义模型价格覆盖（Token 价格单位为美元/百万 Token；保存后立即生效）',

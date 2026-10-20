@@ -4,6 +4,8 @@
 
 凭据 JSON 使用 `type: "qoder"`、`region: "cn"` 或 `"global"`、`access_token`、`refresh_token`、`user_id`、`machine_id`、`expires_at`（Unix 秒）；不要把登录凭据放入公共日志或仓库。
 
+系统设置中的 `antigravity_sensitive_words` 同样适用于 Qoder：在 system/developer 提示词的匹配词中插入零宽字符，不改写用户/助手文本、工具声明、参数或结果。设置为 `[]` 可禁用，修改后重启生效。
+
 ## 签到和额度
 
 渠道卡片提供余额刷新和手动领取。已启用的 Qoder 渠道始终自动签到，无开关：按 UTC+8 每日10点的活动窗口领取，服务启动约1分钟后补扫，之后每15分钟检查尚未完成的账号。奖励金额、有效性和资格由上游活动决定，不保证所有套餐都可领。credits 是 Qoder 原生额度单位，不等同美元/token计费。

@@ -8,6 +8,7 @@
 
 - `qoder_oauth` 渠道使用显式 `region=cn|global`，支持 PKCE 网页授权、PAT 换取令牌和 canonical JSON 导入。凭据含 `user_id`、`machine_id`，地区与用户共同标识账号；重新授权保留模型配置与签到记录。令牌临期刷新、401 后单次刷新及 CAS 使用现有 OAuth 生命周期。
 - Qoder 对 Registry 暴露逻辑 OpenAI Chat；`internal/qoderauth` 在实际发送前构造专属信封、编码请求体并生成 COSY 签名，签名后不再改变请求体。`qoder_wire.go` 接线复用统一路由/冷却。国内版推理在 gateway.qoder.com.cn；国际版作业令牌 jt- 走 api2.qoder.sh，其余走 api3.qoder.sh。国际模型目录始终在 api3，不能跟随作业令牌改到 api2。目录按渠道/地区/用户缓存一小时，不使用猜测的静态模型表；公开模型名取 `display_name` 去空白后小写，推理时按名称不区分大小写或原生 key 精确匹配目录。
+- Qoder 复用系统设置 `antigravity_sensitive_words`，仅对 `system` / `developer` 消息字符串或 text 内容块插入零宽字符，不改写用户/助手文本、工具声明、工具参数或工具结果。空数组禁用，修改后重启生效；正常代理与管理测试均在最终请求编码和 COSY 签名前处理。
 - 上游始终返回 SSE；信封内的业务状态先归一为 OpenAI 错误，认证/额度/排队分别映射 401/429/503；HTTP 非2xx也按相同业务码分类。文本、工具、思考和 usage 归一后进入已有转换器。非流式通过共享 Chat SSE 聚合器处理。缺少终态的 EOF 不得标记成功；输出后不得自动重放。
 - 额度通过 `/api/v2/quota/usage` 查询，credits 保持原单位，写入 `oauth_usage` 安全快照，不进入 token 窗口成本账本。
 - 签到使用 campaign 列表与 claim 接口，区分新领取、已领取、无活动和缺组件；未知奖励不伪造默认金额。国际版需要官方 UMID，国内版不需要。已启用渠道始终自动签到（无开关），首个调度 tick（启动约1分钟后）补扫，之后每15分钟扫描，成功/已领取按 UTC+8 10:00 活动窗口去重；失败或无活动保留后续扫描机会。
