@@ -63,7 +63,7 @@ const (
 	// DefaultChannelTestContent 渠道测试与定时检测使用的默认内容。
 	DefaultChannelTestContent = "sonnet 4.0的发布日期是什么"
 
-	// DefaultAntigravitySensitiveWordsJSON Antigravity、CodeBuddy 和 Qoder 系统指令默认敏感词。
+	// DefaultAntigravitySensitiveWordsJSON Antigravity、CodeBuddy、Qoder 和 Accio 系统指令默认敏感词。
 	DefaultAntigravitySensitiveWordsJSON = `["API","proxy","Claude","Anthropic"]`
 )
 

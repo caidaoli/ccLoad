@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -621,6 +622,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
 		return channelOAuthMetadata{oauthUsage: usage}
 	}
+	if cfg.UsesAccioOAuth() {
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage([]byte(credential.OAuthUsage), accioauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if cfg.UsesQoderOAuth() {
 		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
@@ -950,6 +959,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 // oauthSyntheticKeyFields 解析 OAuth 渠道凭证，返回合成 Key 行所需的原始凭证值与备注。
 func oauthSyntheticKeyFields(cfg *model.Config) (accessToken, note string, err error) {
 	switch {
+	case cfg.UsesAccioOAuth():
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return "", "", err
+		}
+		return credential.AccessToken, "Accio OAuth AT", nil
 	case cfg.UsesQoderOAuth():
 		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

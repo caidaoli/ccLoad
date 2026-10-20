@@ -105,6 +105,13 @@
                         <span class="channel-page-menu__desc" data-i18n="channels.oauth.providerCodeBuddyDesc">国内版 / 国际版，浏览器 OAuth 或认证文件</span>
                       </span>
                     </button>
+                    <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="accio">
+                      <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="accio_oauth" data-provider-icon aria-hidden="true"></span>
+                      <span class="channel-page-menu__text">
+                        <span class="channel-page-menu__title">Accio</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.accio.description">国内版 / 国际版，浏览器授权或导入凭据 JSON</span>
+                      </span>
+                    </button>
                     <button type="button" class="channel-page-menu__item" role="menuitem" data-oauth-provider="qoder">
                       <span class="channel-page-menu__icon channel-provider-avatar" data-auth-type="qoder_oauth" data-provider-icon aria-hidden="true"></span>
                       <span class="channel-page-menu__text">
@@ -181,7 +188,7 @@
                       <span class="channel-page-menu__icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></span>
                       <span class="channel-page-menu__text">
                         <span class="channel-page-menu__title" data-i18n="channels.menu.importCredentials">导入 OAuth 凭证文件</span>
-                        <span class="channel-page-menu__desc" data-i18n="channels.menu.importCredentialsDesc">Codex / Anthropic / Antigravity / CodeBuddy / Qoder / xAI / Vertex 凭证 JSON 或压缩包，自动识别提供商并按优先级递增创建渠道</span>
+                        <span class="channel-page-menu__desc" data-i18n="channels.menu.importCredentialsDesc">Codex / Anthropic / Antigravity / Accio / CodeBuddy / Qoder / xAI / Vertex 凭证 JSON 或压缩包，自动识别提供商并按优先级递增创建渠道</span>
                       </span>
                     </button>
                   </div>
@@ -282,6 +289,7 @@
                     data-i18n-description="channels.oauth.providerAntigravityDesc" data-description="浏览器 OAuth 登录">Antigravity</option>
                   <option value="codebuddy" data-i18n="channels.oauth.providerCodeBuddy" data-icon-auth-type="codebuddy_oauth"
                     data-i18n-description="channels.oauth.providerCodeBuddyDesc" data-description="国内版 / 国际版，浏览器 OAuth 或认证文件">CodeBuddy</option>
+                  <option value="accio" data-icon-auth-type="accio_oauth" data-i18n-description="channels.accio.description">Accio</option>
                   <option value="qoder" data-icon-auth-type="qoder_oauth" data-i18n-description="channels.qoder.description" data-description="国内版 / 国际版，浏览器登录、PAT 或凭证 JSON">Qoder</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI" data-icon-auth-type="xai_oauth"
                     data-i18n-description="channels.oauth.providerXAIDesc" data-description="刷新令牌、SSO Cookie 或手动授权">xAI</option>
@@ -349,6 +357,30 @@
                       data-i18n="channels.oauth.progressErrorsTitle">失败详情</strong>
                     <ul id="xaiCredentialImportErrorList"></ul>
                   </div>
+                </div>
+              </div>
+              <div id="accioOAuthControls" class="oauth-provider-controls" hidden>
+                <div class="oauth-field">
+                  <label for="accioOAuthRegion" data-i18n="channels.accio.region">Accio 地区</label>
+                  <select id="accioOAuthRegion" class="form-input">
+                    <option value="" data-i18n="channels.accio.selectRegion">请选择地区</option>
+                    <option value="cn" data-i18n="channels.accio.cn">国内版</option>
+                    <option value="global" data-i18n="channels.accio.global">国际版</option>
+                  </select>
+                </div>
+                <div class="oauth-field">
+                  <label for="accioOAuthMethod" data-i18n="channels.accio.method">登录方式</label>
+                  <select id="accioOAuthMethod" class="form-input">
+                    <option value="oauth" data-i18n="channels.accio.methodBrowser">浏览器授权</option>
+                    <option value="json" data-i18n="channels.accio.json">凭据 JSON</option>
+                  </select>
+                </div>
+                <div id="accioCredentialField" class="oauth-field" hidden>
+                  <label for="accioCredentialFile" data-i18n="channels.accio.file">凭据文件</label>
+                  <input id="accioCredentialFile" type="file" class="form-input" accept=".json,application/json" aria-describedby="accioCredentialHint">
+                  <label for="accioCredentialContent" data-i18n="channels.accio.json">凭据 JSON</label>
+                  <textarea id="accioCredentialContent" class="form-input oauth-url" rows="7" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="accioCredentialHint oauthLoginDialogStatus"></textarea>
+                  <p id="accioCredentialHint" class="oauth-field-hint" data-i18n="channels.accio.jsonHint">选择文件或粘贴官方 / ccLoad 凭据 JSON，并明确选择地区。提交后清空。</p>
                 </div>
               </div>
               <div id="qoderOAuthControls" class="oauth-provider-controls" hidden>
@@ -539,6 +571,7 @@
               <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">认证类型</label>
               <select id="oauthImportProviderSelect" name="oauth_import_provider" class="form-input">
                 <option value="auto" data-i18n="channels.oauth.providerAuto">自动判断</option>
+                <option value="accio">Accio</option>
                 <option value="qoder">Qoder</option>
                 <option value="codebuddy" data-i18n="channels.oauth.providerCodeBuddy">CodeBuddy</option>
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
@@ -615,6 +648,7 @@
                   <option value="codex_oauth">Codex</option>
                   <option value="anthropic_oauth">Anthropic</option>
                   <option value="antigravity_oauth">Antigravity</option>
+                  <option value="accio_oauth">Accio</option>
                   <option value="qoder_oauth">Qoder</option>
                   <option value="codebuddy_oauth">CodeBuddy</option>
                   <option value="xai_oauth">xAI</option>

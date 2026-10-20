@@ -17,6 +17,7 @@ let activeZAIKeyFlow = null;
 let activeCursorImportFlow = null;
 let activeCodeBuddyFileFlow = null;
 let activeQoderImportFlow = null;
+let activeAccioImportFlow = null;
 let activeVertexImportFlow = null;
 let oauthPagehideBound = false;
 let activeOAuthCredentialCleanup = null;
@@ -39,6 +40,7 @@ const oauthUsageLastOperationByChannelID = new Map();
 let oauthUsageOperationSequence = 0;
 const activeChannelUsageAutoRefreshPendingIDs = new Set();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
+  accio: Object.freeze({ provider: 'accio', label: 'Accio', i18n: 'channels.accio', callbackPlaceholder: 'http://localhost:PORT/auth/callback-accio?code=...&state=...', pollOnly: false }),
   qoder: Object.freeze({ provider: 'qoder', label: 'Qoder', i18n: 'channels.qoder', callbackPlaceholder: '', pollOnly: true }),
   codebuddy: Object.freeze({
     provider: 'codebuddy', label: 'CodeBuddy', i18n: 'channels.codebuddy',
@@ -264,7 +266,7 @@ function applyChannelAuthEditorMode(
   const zaiOAuth = authType === 'zai_oauth';
   const cursorOAuth = authType === 'cursor_oauth';
   const zedOAuth = authType === 'zed_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || authType === 'qoder_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || authType === 'codebuddy_oauth' || authType === 'qoder_oauth' || authType === 'accio_oauth' || xaiOAuth || anthropicOAuth || zaiOAuth || cursorOAuth || zedOAuth || authType === 'vertex_oauth';
   const oauth = credentialVisible;
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -324,7 +326,7 @@ function applyChannelAuthEditorMode(
   if (credentialViewSwitch) credentialViewSwitch.hidden = !codexOAuth;
   if (credentialRefreshButton) {
     credentialRefreshButton.hidden = !oauthCredentialRefreshTarget(authType) || Boolean(
-      codexPersonalAccessToken || (authType === 'qoder_oauth' && !credential?.refresh_token && !credential?.pat) || (authType === 'codebuddy_oauth' && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
+      codexPersonalAccessToken || (authType === 'qoder_oauth' && !credential?.refresh_token && !credential?.pat) || (['codebuddy_oauth', 'accio_oauth'].includes(authType) && !credential?.refresh_token) || (zaiOAuth && !String(credential?.access_token || '').trim())
     );
   }
   currentOAuthCredentialAuthType = authType;
@@ -566,6 +568,7 @@ function openOAuthLoginDialog(trigger = null, provider = 'codex') {
     if (field) { field.disabled = false; field.value = id === 'qoderOAuthRegion' ? 'cn' : 'oauth'; }
   }
   clearQoderSecrets();
+  resetAccioDialog();
   syncOAuthProviderFields();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
@@ -577,6 +580,7 @@ function openOAuthLoginDialog(trigger = null, provider = 'codex') {
 function closeOAuthLoginDialogElement() {
   const dialog = document.getElementById('oauthLoginDialog');
   if (dialog?.open) dialog.close();
+  if (document.getElementById('oauthProviderSelect')?.value === 'accio') clearAccioOAuthSession();
   resetXAIOAuthDialog();
   resetCodexPersonalAccessTokenDialog();
   for (const id of ['qoderOAuthRegion', 'qoderOAuthMethod']) {
@@ -584,6 +588,7 @@ function closeOAuthLoginDialogElement() {
     if (field) { field.disabled = false; field.value = id === 'qoderOAuthRegion' ? 'cn' : 'oauth'; }
   }
   clearQoderSecrets();
+  resetAccioDialog();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
   trigger?.focus?.();
@@ -638,6 +643,18 @@ function clearCodexPersonalAccessToken(input = document.getElementById('codexPer
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
   syncQoderOAuthFields(provider);
+  const accio = provider === 'accio';
+  const accioControls = document.getElementById('accioOAuthControls');
+  const accioRegion = document.getElementById('accioOAuthRegion');
+  const accioJSON = accio && document.getElementById('accioOAuthMethod')?.value === 'json';
+  const accioCredentialField = document.getElementById('accioCredentialField');
+  const accioContent = document.getElementById('accioCredentialContent');
+  if (accioControls) accioControls.hidden = !accio;
+  if (accioRegion) accioRegion.required = accio;
+  if (accioCredentialField) accioCredentialField.hidden = !accioJSON;
+  if (accioContent) accioContent.required = accioJSON;
+  if (!accioJSON) clearAccioSecrets();
+  if (!accio) resetAccioDialog();
   const codebuddyMethod = document.getElementById('codebuddyOAuthMethod')?.value || 'oauth';
   const codebuddyProvider = provider === 'codebuddy' || provider === 'codebuddy-international';
   const codebuddyFile = codebuddyProvider && codebuddyMethod === 'file';
@@ -719,7 +736,7 @@ function syncOAuthProviderFields() {
   // Let Cursor's custom empty-value handler run so it can open the Dashboard.
   // Keep the input required for assistive technology and other form semantics.
   if (authorizeButton) authorizeButton.formNoValidate = cursorAPIKey;
-  if (sessionFields && (codebuddyFile || xai || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey || vertex)) sessionFields.hidden = true;
+  if (sessionFields && (accioJSON || codebuddyFile || xai || codexPersonalAccessToken || zaiAPIKey || cursorAPIKey || vertex)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -732,7 +749,9 @@ function syncOAuthProviderFields() {
     if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
   }
   if (description) {
-    const descriptionKey = provider === 'qoder'
+    const descriptionKey = accio
+      ? 'channels.accio.description'
+      : provider === 'qoder'
       ? 'channels.qoder.description'
       : codebuddyFile
       ? 'channels.codebuddy.fileHint'
@@ -758,7 +777,7 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = provider === 'qoder' ? document.getElementById('qoderOAuthMethod')?.value : codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : 'oauth'));
+    const method = accio ? document.getElementById('accioOAuthMethod')?.value : provider === 'qoder' ? document.getElementById('qoderOAuthMethod')?.value : codebuddyProvider ? codebuddyMethod : codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : 'oauth'));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
@@ -767,7 +786,9 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
   if (!button) return;
   const codebuddyInternational = provider === 'codebuddy-international' ||
     (provider === 'codebuddy' && codeBuddyEdition() === 'international');
-  const key = provider === 'qoder' && method !== 'oauth'
+  const key = provider === 'accio' && method === 'json'
+    ? 'channels.accio.import'
+    : provider === 'qoder' && method !== 'oauth'
     ? 'channels.qoder.import'
     : (provider === 'codebuddy' || codebuddyInternational) && method === 'file'
     ? (codebuddyInternational ? 'channels.codebuddyInternational.fileSubmit' : 'channels.codebuddy.fileSubmit')
@@ -947,6 +968,86 @@ async function loadCredentialFile(input, content, fileRequiredKey) {
   const previous = content.value;
   const body = await file.text();
   if (input.files?.[0] === file && content.value === previous) content.value = body;
+}
+
+function clearAccioSecrets() {
+  for (const id of ['accioCredentialFile', 'accioCredentialContent']) {
+    const field = document.getElementById(id);
+    if (field) { field.value = ''; field.removeAttribute?.('aria-invalid'); }
+  }
+}
+
+function clearAccioOAuthSession() {
+  for (const id of ['oauthAuthorizationURL', 'oauthCallbackURL']) {
+    const field = document.getElementById(id);
+    if (field) field.value = '';
+  }
+  document.getElementById('oauthOpenLink')?.removeAttribute?.('href');
+  const session = document.getElementById('oauthSessionFields');
+  const actions = document.getElementById('oauthLoginActions');
+  if (session) session.hidden = true;
+  if (actions) actions.hidden = false;
+}
+
+function resetAccioDialog() {
+  clearAccioSecrets();
+  for (const id of ['accioCredentialFile', 'accioOAuthRegion', 'accioOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field) { field.value = id === 'accioOAuthMethod' ? 'oauth' : ''; field.disabled = false; }
+  }
+}
+
+async function submitAccioCredential(region, input, fetcher = fetchDataWithAuth, signal = undefined) {
+  const secret = String(input?.value || '').trim();
+  if (input) input.value = '';
+  if (!['cn', 'global'].includes(region)) throw new Error(window.t('channels.accio.invalidRegion'));
+  if (!secret || new TextEncoder().encode(secret).length > 1048576) throw new Error(window.t('channels.accio.contentRequired'));
+  let credential;
+  try { credential = JSON.parse(secret); } catch { throw new Error(window.t('channels.accio.invalidJSON')); }
+  if (!credential || typeof credential !== 'object' || Array.isArray(credential) ||
+      (credential.type !== undefined && credential.type !== 'accio') ||
+      (credential.region !== undefined && credential.region !== region)) {
+    throw new Error(window.t('channels.accio.invalidJSON'));
+  }
+  signal?.throwIfAborted();
+  return fetcher('/admin/accio/credentials/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region, credential }), signal
+  });
+}
+
+async function importAccioFromDialog(button) {
+  const region = document.getElementById('accioOAuthRegion');
+  const method = document.getElementById('accioOAuthMethod');
+  const input = document.getElementById('accioCredentialContent');
+  const file = document.getElementById('accioCredentialFile');
+  const provider = document.getElementById('oauthProviderSelect');
+  const flow = { controller: new AbortController(), button };
+  activeAccioImportFlow = flow;
+  button.disabled = true;
+  button.setAttribute?.('aria-busy', 'true');
+  if (region) region.disabled = true;
+  if (method) method.disabled = true;
+  if (file) { file.disabled = true; file.value = ''; }
+  try {
+    setCodexOAuthDialogStatus(window.t('channels.accio.importing'));
+    await submitAccioCredential(region?.value, input, fetchDataWithAuth, flow.controller.signal);
+    if (activeAccioImportFlow !== flow) return;
+    closeOAuthLoginDialogElement();
+    setCodexAuthStatus(window.t('channels.accio.oauthComplete'), 'success');
+    await reloadChannelsList();
+  } catch (error) {
+    if (activeAccioImportFlow === flow) setCodexOAuthDialogStatus(error?.message || window.t('channels.accio.oauthFailed'), 'error');
+  } finally {
+    if (activeAccioImportFlow === flow) {
+      activeAccioImportFlow = null;
+      button.disabled = false;
+      button.removeAttribute?.('aria-busy');
+      if (region) region.disabled = false;
+      if (method) method.disabled = false;
+      if (file) file.disabled = false;
+      if (provider) provider.disabled = false;
+    }
+  }
 }
 
 function clearQoderSecrets() {
@@ -1424,6 +1525,15 @@ async function startOAuth(provider, button) {
     if (button) button.disabled = true;
     setCodexAuthStatus(window.t(`${config.i18n}.oauthStarting`));
     let startOptions = { method: 'POST' };
+    if (config.provider === 'accio') {
+      const region = document.getElementById('accioOAuthRegion')?.value;
+      if (!['cn', 'global'].includes(region)) throw new Error(window.t('channels.accio.invalidRegion'));
+      startOptions = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region }) };
+      for (const id of ['accioOAuthRegion', 'accioOAuthMethod']) {
+        const field = document.getElementById(id);
+        if (field) field.disabled = true;
+      }
+    }
     if (config.provider === 'qoder') {
       startOptions = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region: document.getElementById('qoderOAuthRegion')?.value }) };
     }
@@ -1472,6 +1582,12 @@ async function startOAuth(provider, button) {
     if (activeCodexOAuthFlow === flow) {
       activeCodexOAuthFlow = null;
       if (button) button.disabled = false;
+      if (config.provider === 'accio') {
+        for (const id of ['accioOAuthRegion', 'accioOAuthMethod']) {
+          const field = document.getElementById(id);
+          if (field) field.disabled = false;
+        }
+      }
     }
   }
 }
@@ -1519,6 +1635,13 @@ async function stopActiveXAIImport(options = {}) {
 }
 
 async function stopActiveOAuth(options = {}) {
+  if (activeAccioImportFlow) {
+    activeAccioImportFlow.controller.abort();
+    activeAccioImportFlow.button.disabled = false;
+    activeAccioImportFlow.button.removeAttribute?.('aria-busy');
+    activeAccioImportFlow = null;
+  }
+  clearAccioSecrets();
   if (activeQoderImportFlow) {
     activeQoderImportFlow.controller.abort();
     activeQoderImportFlow.button.disabled = false;
@@ -1562,6 +1685,10 @@ async function stopActiveOAuth(options = {}) {
     stopActiveZAIKeyImport(),
     stopActiveCursorImport()
   ]);
+  for (const id of ['accioCredentialFile', 'accioOAuthRegion', 'accioOAuthMethod']) {
+    const field = document.getElementById(id);
+    if (field) field.disabled = false;
+  }
   if (options.closeDialog !== false) {
     closeOAuthLoginDialogElement();
     setCodexAuthStatus('');
@@ -1946,6 +2073,7 @@ function oauthCredentialCleanupProviderLabel(authType) {
     zai_oauth: 'Z.ai',
     cursor_oauth: 'Cursor',
     zed_oauth: 'Zed',
+    accio_oauth: 'Accio',
     qoder_oauth: 'Qoder',
     codebuddy_oauth: 'CodeBuddy',
     vertex_oauth: 'Vertex'
@@ -2351,6 +2479,8 @@ async function cancelOAuthCredentialCleanup(
 
 function oauthCredentialRefreshTarget(authType) {
   switch (authType) {
+    case 'accio_oauth':
+      return { resource: 'accio-credential', label: 'Accio', i18n: 'channels.accio', keyNote: 'Accio OAuth AT' };
     case 'qoder_oauth':
       return { resource: 'qoder-credential', label: 'Qoder', i18n: 'channels.qoder', keyNote: 'Qoder OAuth AT' };
     case 'codebuddy_oauth':
@@ -2892,7 +3022,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
     if (typeof channelShowsOAuthUsage === 'function') {
       return channelShowsOAuthUsage(channel);
     }
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth', 'qoder_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth', 'cursor_oauth', 'zed_oauth', 'codebuddy_oauth', 'qoder_oauth', 'accio_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -2970,6 +3100,8 @@ function setupOAuthActions() {
   const codebuddyEditionSelect = document.getElementById('codebuddyOAuthEdition');
   const codebuddyFile = document.getElementById('codebuddyCredentialFile');
   const codebuddyContent = document.getElementById('codebuddyCredentialContent');
+  const accioFile = document.getElementById('accioCredentialFile');
+  const accioContent = document.getElementById('accioCredentialContent');
   const zaiMethod = document.getElementById('zaiOAuthMethod');
   const zaiCodingPlanKey = document.getElementById('zaiCodingPlanKey');
   const cursorUserAPIKey = document.getElementById('cursorUserAPIKey');
@@ -3012,7 +3144,19 @@ function setupOAuthActions() {
     addMenu.dataset.oauthBound = '1';
   }
   if (providerSelect && typeof providerSelect.addEventListener === 'function' && !providerSelect.dataset?.oauthBound) {
-    providerSelect.addEventListener('change', syncOAuthProviderFields);
+    providerSelect.addEventListener('change', async () => {
+      if (activeCodexOAuthFlow?.provider === 'accio' || activeAccioImportFlow) {
+        try {
+          await stopActiveOAuth({ closeDialog: false });
+          clearAccioOAuthSession();
+          providerSelect.disabled = false;
+        } catch (error) {
+          setCodexOAuthDialogStatus(error?.message || window.t('channels.accio.oauthCancelFailed'), 'error');
+          return;
+        }
+      }
+      syncOAuthProviderFields();
+    });
     if (providerSelect.dataset) providerSelect.dataset.oauthBound = '1';
   }
   if (xaiMethod && !xaiMethod.dataset.bound) {
@@ -3041,6 +3185,36 @@ function setupOAuthActions() {
     });
     codebuddyFile.dataset.bound = '1';
   }
+  if (accioFile && accioContent && !accioFile.dataset.bound) {
+    accioFile.addEventListener('change', async () => {
+      try {
+        await loadCredentialFile(accioFile, accioContent, 'channels.accio.contentRequired');
+      } catch (error) {
+        setCodexOAuthDialogStatus(error?.message || window.t('channels.accio.invalidJSON'), 'error');
+      }
+    });
+    accioFile.dataset.bound = '1';
+  }
+  for (const id of ['accioOAuthMethod', 'accioOAuthRegion']) {
+    const field = document.getElementById(id);
+    if (!field || field.dataset.bound) continue;
+    field.addEventListener('change', async () => {
+      try {
+        if (activeCodexOAuthFlow?.provider === 'accio' || activeAccioImportFlow) {
+          await stopActiveOAuth({ closeDialog: false });
+        }
+        clearAccioSecrets();
+        clearAccioOAuthSession();
+        if (providerSelect) providerSelect.disabled = false;
+        setCodexAuthStatus('');
+        setCodexOAuthDialogStatus('');
+        syncOAuthProviderFields();
+      } catch (error) {
+        setCodexOAuthDialogStatus(error?.message || window.t('channels.accio.oauthCancelFailed'), 'error');
+      }
+    });
+    field.dataset.bound = '1';
+  }
   if (vertexFile && vertexContent && !vertexFile.dataset.bound) {
     vertexFile.addEventListener('change', async () => {
       try {
@@ -3059,12 +3233,14 @@ function setupOAuthActions() {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
-        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow || activeVertexImportFlow || activeQoderImportFlow) return;
+        activeZAIKeyFlow || activeCursorImportFlow || activeCodeBuddyFileFlow || activeVertexImportFlow || activeQoderImportFlow || activeAccioImportFlow) return;
       providerSelect.disabled = true;
       const codebuddyProvider = providerSelect.value === 'codebuddy' || providerSelect.value === 'codebuddy-international';
       const codebuddyEditionValue = providerSelect.value === 'codebuddy-international'
         ? 'international' : codeBuddyEdition();
-      if (providerSelect.value === 'qoder' && document.getElementById('qoderOAuthMethod')?.value !== 'oauth') {
+      if (providerSelect.value === 'accio' && document.getElementById('accioOAuthMethod')?.value === 'json') {
+        await importAccioFromDialog(authorizeButton);
+      } else if (providerSelect.value === 'qoder' && document.getElementById('qoderOAuthMethod')?.value !== 'oauth') {
         await importQoderFromDialog(authorizeButton);
       } else if (codebuddyProvider && codebuddyMethod?.value === 'file') {
         const flow = { controller: new AbortController(), button: authorizeButton };
@@ -3602,6 +3778,7 @@ function setupOAuthActions() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    submitAccioCredential,
     submitQoderCredential,
     checkInQoder,
     loadQoderUMIDStatus,

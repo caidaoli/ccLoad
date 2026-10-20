@@ -17,7 +17,6 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type qoderModelCatalog struct {
@@ -99,31 +98,9 @@ func (s *Server) prepareQoderWire(cfg *model.Config, req *http.Request) (*http.R
 		return nil, err
 	}
 	// Apply the shared system-prompt word list before encoding and COSY signing.
-	if matcher := s.antigravityPromptMatcher; matcher != nil {
-		for index, message := range gjson.GetBytes(body, "messages").Array() {
-			role := message.Get("role").String()
-			if role != "system" && role != "developer" {
-				continue
-			}
-			content := message.Get("content")
-			path := fmt.Sprintf("messages.%d.content", index)
-			if content.Type == gjson.String {
-				body, err = sjson.SetBytes(body, path, obfuscateAntigravityText(content.String(), matcher))
-			} else if content.IsArray() {
-				for partIndex, part := range content.Array() {
-					if part.Get("type").String() != "text" || part.Get("text").Type != gjson.String {
-						continue
-					}
-					body, err = sjson.SetBytes(body, fmt.Sprintf("%s.%d.text", path, partIndex), obfuscateAntigravityText(part.Get("text").String(), matcher))
-					if err != nil {
-						break
-					}
-				}
-			}
-			if err != nil {
-				return nil, &protocol.RequestTranslationError{Err: err}
-			}
-		}
+	body, err = obfuscateChatSystemMessages(body, s.antigravityPromptMatcher)
+	if err != nil {
+		return nil, &protocol.RequestTranslationError{Err: err}
 	}
 	catalog, err := s.qoderCatalog(req.Context(), cfg, c, false)
 	if err != nil {

@@ -176,6 +176,10 @@ test('selecting the xAI auth type keeps the filter and reloads with it', () => {
     assert.equal(global.filters.authType, 'xai_oauth');
     assert.equal(loadedAuthType, 'xai_oauth');
     assert.equal(global.channelsCurrentPage, 1);
+
+    authCombobox.onSelect('accio_oauth');
+    assert.equal(global.filters.authType, 'accio_oauth');
+    assert.equal(loadedAuthType, 'accio_oauth');
   } finally {
     delete require.cache[require.resolve('./channels-filters.js')];
     for (const [key, descriptor] of previousGlobals) {

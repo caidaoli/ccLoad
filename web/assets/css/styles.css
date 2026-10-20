@@ -1111,6 +1111,12 @@ html[data-resolved-theme="dark"] .login-brand-wordmark {
 .channel-provider-avatar[data-auth-type="antigravity_oauth"] { --provider-icon-scale: 0.75; }
 .channel-provider-avatar[data-auth-type="opencode"] { --provider-icon-scale: 0.75; }
 .channel-provider-avatar[data-auth-type="qoder_oauth"] { --provider-icon-scale: 0.7; }
+/* Accio 官网彩色标志包含黑色主体，明暗主题均保持白底。 */
+.channel-provider-avatar[data-auth-type="accio_oauth"] {
+  --provider-icon-scale: 0.75;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
 .channel-provider-avatar[data-auth-type="codebuddy_oauth"] {
   --provider-icon-scale: 0.75;
   background: radial-gradient(66.67% 66.67% at 87.5% 102.08%, #2ea99d 0%, #6c4dff 100%);

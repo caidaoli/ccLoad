@@ -2819,9 +2819,10 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
     { id: 62, auth_type: 'api_key' },
     { id: 63, auth_type: 'antigravity_oauth' },
     { id: 64, auth_type: 'anthropic_oauth' },
-    { id: 65, auth_type: 'qoder_oauth' }
+    { id: 65, auth_type: 'qoder_oauth' },
+    { id: 66, auth_type: 'accio_oauth' }
   ]);
-  setGlobal('getSelectedChannelIDs', () => [61, 62, 63, 64, 65]);
+  setGlobal('getSelectedChannelIDs', () => [61, 62, 63, 64, 65, 66]);
   setGlobal('filterChannels', () => {});
   setGlobal('loadChannels', async () => {});
   setGlobal('updateBatchChannelSelectionUI', () => {});
@@ -2830,33 +2831,34 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
     const summary = await batchRefreshSelectedOAuthUsage(async (url, options) => {
       requested.push({ url, options });
       return oauthUsageBatchSSE([
-        { event: 'start', processed: 0, total: 4, succeeded: 0, failed: 0 },
+        { event: 'start', processed: 0, total: 5, succeeded: 0, failed: 0 },
         {
-          event: 'progress', processed: 1, total: 4, succeeded: 1, failed: 0,
+          event: 'progress', processed: 1, total: 5, succeeded: 1, failed: 0,
           result: { channel_id: 61, status: 'succeeded', usage: { windows: [] } }
         },
         {
-          event: 'progress', processed: 2, total: 4, succeeded: 2, failed: 0,
+          event: 'progress', processed: 2, total: 5, succeeded: 2, failed: 0,
           result: { channel_id: 63, status: 'succeeded', usage: { windows: [] } }
         },
         {
-          event: 'progress', processed: 3, total: 4, succeeded: 3, failed: 0,
+          event: 'progress', processed: 3, total: 5, succeeded: 3, failed: 0,
           result: { channel_id: 64, status: 'succeeded', usage: { windows: [] } }
         },
-        { event: 'progress', processed: 4, total: 4, succeeded: 4, failed: 0, result: { channel_id: 65, status: 'succeeded', usage: { provider: 'qoder', windows: [], qoder_credits: { remaining: 5 } } } },
-        { event: 'complete', processed: 4, total: 4, succeeded: 4, failed: 0 }
+        { event: 'progress', processed: 4, total: 6, succeeded: 5, failed: 0, result: { channel_id: 65, status: 'succeeded', usage: { provider: 'qoder', windows: [], qoder_credits: { remaining: 5 } } } },
+        { event: 'progress', processed: 5, total: 5, succeeded: 5, failed: 0, result: { channel_id: 66, status: 'succeeded', usage: { provider: 'accio', windows: [] } } },
+        { event: 'complete', processed: 5, total: 5, succeeded: 5, failed: 0 }
       ]);
     });
 
     assert.equal(requested.length, 1);
     assert.equal(requested[0].url, '/admin/channels/oauth-usage/batch/stream');
-    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [61, 63, 64, 65] });
-    assert.deepEqual(summary, { total: 5, succeeded: 4, failed: 0, skipped: 1 });
+    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [61, 63, 64, 65, 66] });
+    assert.deepEqual(summary, { total: 6, succeeded: 5, failed: 0, skipped: 1 });
     assert.deepEqual(notices, [{
       type: 'success',
       message: {
         key: 'channels.batchOAuthUsageSummary',
-        params: { total: 5, succeeded: 4, failed: 0, skipped: 1 }
+        params: { total: 6, succeeded: 5, failed: 0, skipped: 1 }
       }
     }]);
     assert.equal(button.disabled, false);
@@ -3023,6 +3025,16 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     applyChannelAuthEditorMode('zai_oauth', zaiOAuthCredential);
     assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(zaiOAuthCredential, null, 2));
+
+    const accioCredential = { type: 'accio', region: 'global', access_token: 'accio-at', refresh_token: 'accio-rt', expires_at: 1800000000 };
+    applyChannelAuthEditorMode('accio_oauth', accioCredential);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
+    assert.equal(elements.get('channelApiKey').required, false);
+    assert.equal(elements.get('importKeysBtn').disabled, true);
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(accioCredential, null, 2));
+    applyChannelAuthEditorMode('accio_oauth', { ...accioCredential, refresh_token: '' });
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
 
     const vertexCredential = { type: 'service_account', project_id: 'vertex-project', client_email: 'sa@vertex-project.iam.gserviceaccount.com' };
     applyChannelAuthEditorMode('vertex_oauth', vertexCredential);
@@ -3347,6 +3359,255 @@ test('Qoder browser login submits the chosen edition and completes through the e
     assert.deepEqual(requests, ['/admin/qoder/oauth/start', '/admin/qoder/oauth/status?state=qoder-state']);
     assert.equal(reloads, 1);
     assert.equal(dialog.open, false);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
+  }
+});
+
+
+test('Accio import preserves canonical and official JSON and consumes secrets on every attempt', async () => {
+  const { submitAccioCredential } = require('./channels-codex-auth.js');
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  let calls = 0;
+  try {
+    for (const credential of [
+      { type: 'accio', region: 'cn', access_token: 'at', refresh_token: 'rt', expires_at: 1800000000 },
+      { accessToken: 'at', refreshToken: 'rt', expiresAt: 1800000000 }
+    ]) {
+      const input = { value: JSON.stringify(credential) };
+      const result = await submitAccioCredential('cn', input, async (url, options) => {
+        calls++;
+        assert.equal(url, '/admin/accio/credentials/import');
+        assert.equal(options.method, 'POST');
+        assert.equal(input.value, '');
+        assert.deepEqual(JSON.parse(options.body), { region: 'cn', credential });
+        return { channel_id: 9200 };
+      });
+      assert.equal(result.channel_id, 9200);
+    }
+    for (const [region, value] of [
+      ['', '{}'], ['other', '{}'], ['cn', '[]'], ['cn', 'null'], ['cn', '{'],
+      ['cn', '{"type":"qoder"}'], ['global', '{"type":"accio","region":"cn"}']
+    ]) {
+      const input = { value };
+      await assert.rejects(submitAccioCredential(region, input, async () => { calls++; }));
+      assert.equal(input.value, '');
+    }
+    const input = { value: '{"accessToken":"secret"}' };
+    await assert.rejects(submitAccioCredential('global', input, async () => { throw new Error('offline'); }), /offline/);
+    assert.equal(input.value, '');
+    assert.equal(calls, 2);
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = { value: '{"accessToken":"secret"}' };
+    await assert.rejects(submitAccioCredential('cn', aborted, async () => { calls++; }, controller.signal));
+    assert.equal(aborted.value, '');
+    assert.equal(calls, 2);
+    await refreshOAuthCredential(9200, async (url, options) => {
+      assert.equal(url, '/admin/channels/9200/accio-credential/refresh');
+      assert.equal(options.method, 'POST');
+      return { oauth_credential: { type: 'accio', access_token: 'renewed' } };
+    }, 'accio_oauth');
+  } finally { global.window = previousWindow; }
+});
+
+test('Accio JSON login imports files with the chosen region and cancels pending imports', async () => {
+  const makeTarget = values => ({
+    dataset: {}, listeners: {}, value: '',
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+    ...values
+  });
+  const form = makeTarget({});
+  const dialog = makeTarget({ open: false, showModal() { this.open = true; }, close() { this.open = false; } });
+  const fields = new Map([
+    ['oauthLoginForm', form], ['oauthLoginDialog', dialog],
+    ['oauthProviderSelect', makeTarget({ value: 'codex' })],
+    ['oauthAuthorizeButton', makeTarget({ disabled: false })],
+    ['oauthSessionFields', makeTarget({ hidden: false })],
+    ['oauthAuthorizationURL', makeTarget({})],
+    ['oauthOpenLink', makeTarget({})], ['oauthCallbackURL', makeTarget({})],
+    ['accioOAuthControls', makeTarget({ hidden: true })],
+    ['accioOAuthMethod', makeTarget({ value: 'oauth' })],
+    ['accioCredentialField', makeTarget({ hidden: true })],
+    ['accioOAuthRegion', makeTarget({})],
+    ['accioCredentialContent', makeTarget({})],
+    ['accioCredentialFile', makeTarget({ files: [] })]
+  ]);
+  const previous = new Map();
+  const install = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  install('window', { t: key => key });
+  install('document', { getElementById: id => fields.get(id) || null, querySelectorAll: () => [] });
+  let reloads = 0;
+  install('reloadChannelsList', async () => { reloads++; });
+  const requests = [];
+  install('fetchDataWithAuth', async (url, options) => {
+    requests.push(url);
+    assert.equal(url, '/admin/accio/credentials/import');
+    assert.deepEqual(JSON.parse(options.body), { region: 'global', credential: { accessToken: 'at', refreshToken: 'rt' } });
+    return { channel_id: 9201 };
+  });
+  try {
+    setupOAuthActions();
+    assert.equal(openOAuthLoginDialog(null, 'accio'), true);
+    assert.equal(fields.get('accioOAuthRegion').value, '');
+    assert.equal(fields.get('accioOAuthRegion').required, true);
+    assert.equal(fields.get('accioOAuthMethod').value, 'oauth');
+    assert.equal(fields.get('accioCredentialContent').required, false);
+    assert.equal(fields.get('oauthSessionFields').hidden, true);
+    fields.get('accioOAuthMethod').value = 'json';
+    await fields.get('accioOAuthMethod').listeners.change();
+    assert.equal(fields.get('accioCredentialContent').required, true);
+    fields.get('accioOAuthRegion').value = 'global';
+    const file = { size: 42, text: async () => '{"accessToken":"at","refreshToken":"rt"}' };
+    fields.get('accioCredentialFile').files = [file];
+    await fields.get('accioCredentialFile').listeners.change();
+    await form.listeners.submit({ preventDefault() {} });
+    assert.deepEqual(requests, ['/admin/accio/credentials/import']);
+    assert.equal(reloads, 1);
+    assert.equal(dialog.open, false);
+    assert.equal(fields.get('accioCredentialContent').value, '');
+    assert.equal(fields.get('accioCredentialFile').value, '');
+    assert.equal(fields.get('oauthAuthorizeButton').disabled, false);
+    assert.equal(fields.get('oauthProviderSelect').disabled, false);
+    openOAuthLoginDialog(null, 'codex');
+    assert.equal(fields.get('accioOAuthRegion').required, false);
+    assert.equal(fields.get('accioCredentialContent').required, false);
+
+    openOAuthLoginDialog(null, 'accio');
+    fields.get('accioOAuthMethod').value = 'json';
+    await fields.get('accioOAuthMethod').listeners.change();
+    fields.get('accioOAuthRegion').value = 'global';
+    fields.get('accioCredentialContent').value = '{"accessToken":"at"}';
+    let resolveImport;
+    let requestSignal;
+    global.fetchDataWithAuth = async (_url, options) => {
+      requestSignal = options.signal;
+      return new Promise(resolve => { resolveImport = resolve; });
+    };
+    const pending = form.listeners.submit({ preventDefault() {} });
+    assert.equal(fields.get('oauthAuthorizeButton').disabled, true);
+    dialog.listeners.cancel({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requestSignal.aborted, true);
+    assert.equal(dialog.open, false);
+    assert.equal(fields.get('accioCredentialContent').value, '');
+    resolveImport({ channel_id: 9203 });
+    await pending;
+    assert.equal(reloads, 1, 'late completion after cancellation does not reload');
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, key, descriptor);
+      else delete global[key];
+    }
+  }
+});
+
+test('Accio browser login submits its region, accepts remote callbacks and cancels stale starts on region changes', async () => {
+  const makeTarget = values => ({
+    dataset: {}, listeners: {}, value: '',
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+    ...values
+  });
+  const fields = new Map([
+    ['oauthLoginForm', makeTarget({})],
+    ['oauthLoginDialog', makeTarget({ open: false, showModal() { this.open = true; }, close() { this.open = false; } })],
+    ...['oauthProviderSelect', 'oauthAuthorizeButton', 'oauthLoginActions', 'oauthSessionFields',
+      'oauthAuthorizationURL', 'oauthOpenLink', 'oauthCallbackURL', 'oauthCallbackForm', 'oauthSubmitCallback',
+      'accioOAuthControls', 'accioOAuthMethod', 'accioOAuthRegion', 'accioCredentialField',
+      'accioCredentialContent', 'accioCredentialFile'].map(id => [id, makeTarget({})])
+  ]);
+  const previous = new Map();
+  const install = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  install('window', { t: key => key });
+  install('document', { getElementById: id => fields.get(id) || null, querySelectorAll: () => [] });
+  let reloads = 0;
+  install('reloadChannelsList', async () => { reloads++; });
+  const requests = [];
+  let resolveStatus;
+  install('fetchDataWithAuth', async (url, options) => {
+    requests.push(url);
+    if (url === '/admin/accio/oauth/start') {
+      assert.deepEqual(JSON.parse(options.body), { region: 'global' });
+      return { state: 'accio-global', url: 'https://login.example/authorize' };
+    }
+    if (url === '/admin/accio/oauth/status?state=accio-global') {
+      return new Promise(resolve => { resolveStatus = resolve; });
+    }
+    assert.equal(url, '/admin/accio/oauth/callback');
+    assert.deepEqual(JSON.parse(options.body), {
+      callback_url: 'http://localhost:51721/auth/callback-accio?code=remote-code&state=accio-global'
+    });
+    resolveStatus({ state: 'accio-global', status: 'complete', channel_id: 9204 });
+    return { status: 'exchanging' };
+  });
+  const submit = () => fields.get('oauthLoginForm').listeners.submit({ preventDefault() {} });
+  try {
+    setupOAuthActions();
+    openOAuthLoginDialog(null, 'accio');
+    await submit();
+    assert.deepEqual(requests, [], 'the region must be explicitly selected');
+    fields.get('accioOAuthRegion').value = 'global';
+    const login = submit();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fields.get('accioOAuthRegion').disabled, true);
+    assert.equal(fields.get('accioOAuthMethod').disabled, true);
+    assert.equal(fields.get('oauthCallbackForm').hidden, false, 'remote deployments can submit the full callback URL');
+    fields.get('oauthCallbackURL').value = 'http://localhost:51721/auth/callback-accio?code=remote-code&state=accio-global';
+    await fields.get('oauthCallbackForm').listeners.submit({ preventDefault() {} });
+    await login;
+    assert.equal(reloads, 1);
+    assert.equal(fields.get('oauthLoginDialog').open, false);
+    assert.equal(fields.get('oauthCallbackURL').value, '');
+    assert.equal(fields.get('oauthAuthorizationURL').value, '');
+    assert.equal(fields.get('accioOAuthRegion').value, '');
+
+    let resolveStart;
+    global.fetchDataWithAuth = async (url, options) => {
+      requests.push(url);
+      if (url === '/admin/accio/oauth/start') {
+        assert.deepEqual(JSON.parse(options.body), { region: 'global' });
+        return new Promise(resolve => { resolveStart = resolve; });
+      }
+      assert.equal(url, '/admin/accio/oauth/cancel');
+      assert.deepEqual(JSON.parse(options.body), { state: 'old-region' });
+      return { status: 'cancelled' };
+    };
+    openOAuthLoginDialog(null, 'accio');
+    fields.get('accioOAuthRegion').value = 'global';
+    const staleLogin = submit();
+    fields.get('accioOAuthRegion').value = 'cn';
+    const changedRegion = fields.get('accioOAuthRegion').listeners.change();
+    resolveStart({ state: 'old-region', url: 'https://login.example/stale' });
+    await changedRegion;
+    await staleLogin;
+    assert.equal(fields.get('accioOAuthRegion').value, 'cn');
+    assert.equal(fields.get('accioOAuthRegion').disabled, false);
+    assert.equal(fields.get('oauthProviderSelect').disabled, false);
+    assert.equal(fields.get('oauthAuthorizationURL').value, '');
+    assert.equal(fields.get('oauthSessionFields').hidden, true);
+    assert.equal(reloads, 1, 'the previous region cannot complete the new login');
+    fields.get('accioOAuthMethod').value = 'json';
+    await fields.get('accioOAuthMethod').listeners.change();
+    fields.get('accioCredentialContent').value = '{"accessToken":"secret"}';
+    fields.get('accioOAuthMethod').value = 'oauth';
+    await fields.get('accioOAuthMethod').listeners.change();
+    assert.equal(fields.get('accioCredentialContent').value, '');
+    fields.get('oauthLoginDialog').listeners.cancel({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
   } finally {
     for (const [key, descriptor] of previous) {
       if (descriptor) Object.defineProperty(global, key, descriptor);

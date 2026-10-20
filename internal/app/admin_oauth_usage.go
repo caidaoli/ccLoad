@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -206,6 +207,7 @@ type oauthUsageSummary struct {
 	// CodeBuddyCredits is the absolute remaining balance returned by the
 	// billing meter. CodeBuddy does not expose a percentage window like the
 	// other OAuth providers, so retain the provider-native value.
+	AccioUsage       *accioauth.Usage  `json:"accio_usage,omitempty"`
 	QoderCredits     *qoderauth.Usage  `json:"qoder_credits,omitempty"`
 	CodeBuddyCredits *codeBuddyCredits `json:"codebuddy_credits,omitempty"`
 	// Partial means omitted windows were not observed, rather than retired.
@@ -1489,7 +1491,7 @@ func (s *Server) activeChannelUsageIDs(ctx context.Context, requestedIDs []int64
 			continue
 		}
 		if cfg.UsesAntigravityOAuth() || cfg.UsesZAIOAuth() ||
-			cfg.UsesCodeBuddyOAuth() || cfg.UsesQoderOAuth() ||
+			cfg.UsesCodeBuddyOAuth() || cfg.UsesQoderOAuth() || cfg.UsesAccioOAuth() ||
 			cfg.UsesCursorOAuth() || cfg.UsesZedOAuth() {
 			channelIDs = append(channelIDs, cfg.ID)
 		}
@@ -1921,6 +1923,8 @@ func oauthQuotaLedgerFollowsSample(quotaUsage *oauthcost.Usage, key string, samp
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
+	case cfg.UsesAccioOAuth():
+		return s.requestAccioUsage(ctx, cfg)
 	case cfg.UsesQoderOAuth():
 		return s.requestQoderUsage(ctx, cfg)
 	case cfg.UsesCodeBuddyOAuth():

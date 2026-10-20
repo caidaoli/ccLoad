@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -107,6 +108,10 @@ type Server struct {
 	zaiService                    *zaiauth.Service
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	accioService                  *accioauth.Service
+	accioOAuth                    *codexOAuthManager
+	accioCredentials              *accioCredentialManager
+	accioModels                   sync.Map
 	qoderService                  *qoderauth.Service
 	qoderCredentials              *qoderCredentialManager
 	qoderOAuth                    *qoderOAuthManager
@@ -408,6 +413,9 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 	})
 	s.zaiService = zaiauth.NewService(s.client)
 	s.qoderUMID = qoderumid.NewManager(s.baseCtx, "data", s.client)
+	s.accioService = accioauth.NewService(s.client)
+	s.accioOAuth = newAccioOAuthManager(s)
+	s.accioCredentials = &accioCredentialManager{server: s}
 	s.qoderService = qoderauth.NewService(s.client)
 	s.qoderService.RiskHeaders = func(ctx context.Context, credential *qoderauth.Credential) (http.Header, error) {
 		return s.qoderUMID.Headers(ctx, credential.Region, credential.UserID)
@@ -1402,6 +1410,10 @@ func otherOAuthCredentialPoolScope(cfg *model.Config) string {
 			if credential.UserID != "" {
 				identity = fmt.Sprintf("user:%q:system:%q", credential.UserID, credential.SystemID)
 			}
+		case model.AuthTypeAccioOAuth:
+			if credential.UserID != "" {
+				identity = fmt.Sprintf("region:%q:user:%q", credential.Region, credential.UserID)
+			}
 		case model.AuthTypeQoderOAuth:
 			if credential.UserID != "" {
 				identity = fmt.Sprintf("region:%q:user:%q:machine:%q", credential.Region, credential.UserID, credential.MachineID)
@@ -1854,6 +1866,12 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/qoder/oauth/start", s.HandleStartQoderOAuth)
 		admin.GET("/qoder/oauth/status", s.HandleQoderOAuthStatus)
 		admin.POST("/qoder/oauth/cancel", s.HandleCancelQoderOAuth)
+		admin.POST("/accio/credentials/import", s.HandleImportAccioCredential)
+		admin.POST("/accio/oauth/start", s.HandleStartAccioOAuth)
+		admin.GET("/accio/oauth/status", s.HandleAccioOAuthStatus)
+		admin.POST("/accio/oauth/cancel", s.HandleCancelAccioOAuth)
+		admin.POST("/accio/oauth/callback", s.HandleSubmitAccioOAuthCallback)
+		admin.POST("/channels/:id/accio-credential/refresh", s.HandleRefreshAccioCredential)
 		admin.POST("/qoder/credentials/import", s.HandleImportQoderCredential)
 		admin.POST("/channels/:id/qoder-credential/refresh", s.HandleRefreshQoderCredential)
 		admin.POST("/channels/:id/qoder-checkin", s.HandleQoderCheckin)
@@ -2138,6 +2156,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.zedOAuth != nil {
 		s.zedOAuth.close()
+	}
+	if s.accioOAuth != nil {
+		s.accioOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

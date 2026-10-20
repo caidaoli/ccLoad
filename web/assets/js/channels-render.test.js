@@ -766,3 +766,31 @@ test('Qoder quota keeps accessible progress and escapes plan and bucket data', (
     assert.equal(buildOAuthUsageStatusHtml(channel), '');
   } finally { global.window = previousWindow; global.getOAuthUsageState = previousUsage; global.isTokenChannelsReadOnly = previousReadOnly; }
 });
+
+test('Accio standard quota exposes remaining percentage with accessible progress', () => {
+  const previousWindow = global.window;
+  const previousUsage = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = { t: (key, values = {}) => `${key} ${Object.values(values).join(' ')}`.trim() };
+  global.isTokenChannelsReadOnly = () => false;
+  global.getOAuthUsageState = () => ({ status: 'ready', data: {
+    provider: 'accio', plan_type: 'Pro', windows: [{
+      kind: 'accio', limit_name: 'Accio', used_percent: 25, remaining_percent: 75,
+      reset_at: '2027-01-01T00:00:00Z', limit_window_seconds: 0
+    }]
+  } });
+  try {
+    const channel = { id: 9202, auth_type: 'accio_oauth' };
+    assert.equal(channelShowsOAuthUsage(channel), true);
+    const html = buildOAuthUsageStatusHtml(channel);
+    assert.match(html, /role="progressbar"/);
+    assert.match(html, /aria-valuenow="75"/);
+    assert.match(html, /aria-label="[^"]*Accio[^"]*75/);
+    global.isTokenChannelsReadOnly = () => true;
+    assert.equal(buildOAuthUsageStatusHtml(channel), '');
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousUsage;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});

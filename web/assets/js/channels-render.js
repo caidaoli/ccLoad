@@ -152,7 +152,8 @@ const OAUTH_USAGE_AUTH_TYPES = [
   'cursor_oauth',
   'zed_oauth',
   'codebuddy_oauth',
-  'qoder_oauth'
+  'qoder_oauth',
+  'accio_oauth'
 ];
 
 // Mirrors the backend check on the saved URL. URL() is unsuitable: it drops

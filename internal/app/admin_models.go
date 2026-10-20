@@ -921,6 +921,9 @@ func (s *Server) fetchModelsForChannel(
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
+	if cfg.UsesAccioOAuth() {
+		return sortOAuthFetchModels(s.fetchAccioOAuthModels(ctx, cfg, overrideProtocol))
+	}
 	if cfg.UsesQoderOAuth() {
 		return sortOAuthFetchModels(s.fetchQoderOAuthModels(ctx, cfg, overrideProtocol))
 	}

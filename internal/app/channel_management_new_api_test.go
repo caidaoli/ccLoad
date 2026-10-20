@@ -446,12 +446,22 @@ func TestChannelManagementServiceNewAPIRefreshBalancePersistsSnapshot(t *testing
 
 func TestChannelManagementServiceNewAPICheckinCASConflictMergesWithoutReplaying(t *testing.T) {
 	t.Parallel()
-	server := newInMemoryServer(t)
-	cfg := createChannelManagementTestConfig(t, server.store, "new-api-checkin-cas")
+	// This service test owns its store; a full server would start a real-time
+	// scheduler that can claim the enabled check-in while CAS is under test.
+	store, err := storage.CreateSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	cfg := createChannelManagementTestConfig(t, store, "new-api-checkin-cas")
 	seed := newAPITestEnvelope(new(int64(42)))
 	seed.Settings.DailyCheckinEnabled = true
 	seed.Settings.DailyCheckinTime = "09:30"
-	cfg = seedChannelManagementTestEnvelope(t, server.store, cfg, seed)
+	cfg = seedChannelManagementTestEnvelope(t, store, cfg, seed)
 
 	steps := []newAPIStep{
 		{
@@ -473,7 +483,7 @@ func TestChannelManagementServiceNewAPICheckinCASConflictMergesWithoutReplaying(
 		},
 	}
 	script := &newAPIScript{t: t, steps: steps}
-	conflicts := &newAPIManagementConflictStore{Store: server.store}
+	conflicts := &newAPIManagementConflictStore{Store: store}
 	service := newChannelManagementService(conflicts, func(*model.Config) *http.Client {
 		return &http.Client{Transport: script}
 	})
@@ -499,7 +509,7 @@ func TestChannelManagementServiceNewAPICheckinCASConflictMergesWithoutReplaying(
 		t.Fatalf("CAS replayed upstream requests: %#v", requests)
 	}
 
-	stored, err := server.store.GetConfig(context.Background(), cfg.ID)
+	stored, err := store.GetConfig(context.Background(), cfg.ID)
 	if err != nil {
 		t.Fatalf("GetConfig: %v", err)
 	}

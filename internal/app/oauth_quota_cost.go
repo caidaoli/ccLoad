@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -42,6 +43,20 @@ func parseOAuthUsageCredentialState(cfg *model.Config) (*oauthUsageCredentialSta
 		return nil, errors.New("OAuth credential is unavailable")
 	}
 	switch {
+	case cfg.UsesAccioOAuth():
+		credential, err := accioauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		// Accio percentages are provider quota snapshots, not USD cost windows.
+		return &oauthUsageCredentialState{
+			provider: accioauth.ChannelType, authType: model.AuthTypeAccioOAuth,
+			oauthUsage: json.RawMessage(credential.OAuthUsage),
+			encode: func(usage json.RawMessage, _ *oauthcost.Usage) (string, error) {
+				credential.OAuthUsage = string(usage)
+				return credential.JSON()
+			},
+		}, nil
 	case cfg.UsesQoderOAuth():
 		credential, err := qoderauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {

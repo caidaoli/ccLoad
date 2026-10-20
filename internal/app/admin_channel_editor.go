@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -112,6 +113,12 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	} else if cfg.UsesCursorOAuth() {
 		_, parseErr := cursorauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesAccioOAuth() {
+		if _, parseErr := accioauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
 		}

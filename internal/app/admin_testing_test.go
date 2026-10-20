@@ -41,6 +41,94 @@ import (
 
 const antigravityCapacityBodyForAdminTest = `{"error":{"code":503,"message":"No capacity available for model gemini-3-flash on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"gemini-3-flash"}}]}}`
 
+func TestAdminTestAccioCapturesNativeWire(t *testing.T) {
+	t.Parallel()
+	for _, debugEnabled := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			for _, networkFailure := range []bool{false, true} {
+				t.Run(fmt.Sprintf("debug=%v/stream=%v/networkFailure=%v", debugEnabled, stream, networkFailure), func(t *testing.T) {
+					t.Parallel()
+					srv := newInMemoryServerWithSettings(t, map[string]string{"debug_log_enabled": strconv.FormatBool(debugEnabled)})
+					cfg := newAccioChannel("Accio", accioTestCredential(t, "global", "native-access-secret"))
+					cfg.ModelEntries = []model.ModelEntry{{Model: "accio-test"}}
+					cfg.CustomRequestRules = &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "utdid", Value: "native-device-secret"}}}
+					var wireURL string
+					var wireHeaders http.Header
+					var wireBody map[string]any
+					accioTestClient(srv, func(req *http.Request) (*http.Response, error) {
+						switch req.URL.Path {
+						case "/api/llm/config":
+							return accioTestResponse(req, http.StatusOK, accioTestCatalog), nil
+						case "/api/adk/llm/generateContent":
+							wireURL, wireHeaders = req.URL.String(), req.Header.Clone()
+							if err := json.NewDecoder(req.Body).Decode(&wireBody); err != nil {
+								t.Fatal(err)
+							}
+							if networkFailure {
+								return nil, errors.New("connection reset by peer")
+							}
+							return accioTestResponse(req, http.StatusOK, accioTestCompletion), nil
+						default:
+							t.Fatalf("unexpected upstream path %s", req.URL.Path)
+							return nil, errors.New("unexpected upstream path")
+						}
+					})
+					result := srv.testChannelAPI(context.Background(), cfg, "native-access-secret", &testutil.TestChannelRequest{
+						Model: "accio-test", ClientProtocol: "openai", Content: "hello", Stream: stream,
+						Headers: map[string]string{"utDID": "client-device-secret"},
+					})
+					if result["success"] != !networkFailure {
+						t.Fatalf("success=%v error=%v", result["success"], result["error"])
+					}
+					if wireURL == "" || result["upstream_request_url"] != wireURL {
+						t.Fatalf("diagnostic URL=%v, want native URL=%s", result["upstream_request_url"], wireURL)
+					}
+					headers, _ := result["upstream_request_headers"].(map[string]string)
+					wantHeaders := flattenHeader(wireHeaders)
+					wantHeaders["Utdid"] = "******"
+					if !reflect.DeepEqual(headers, wantHeaders) || headers["User-Agent"] != "undici" || headers["Authorization"] != "" || wireHeaders.Get("utdid") == "" || wireHeaders.Get("utdid") == "******" {
+						t.Fatal("diagnostic headers differ from the native request beyond device redaction")
+					}
+					if wireBody["token"] != "native-access-secret" {
+						t.Fatal("diagnostic capture changed the actual authentication token")
+					}
+					body, _ := result["upstream_request_body"].(string)
+					var diagnosticBody map[string]any
+					if err := json.Unmarshal([]byte(body), &diagnosticBody); err != nil {
+						t.Fatal(err)
+					}
+					if diagnosticBody["token"] != "******" {
+						t.Fatal("native authentication token was not redacted")
+					}
+					wireBody["token"] = "******"
+					if !reflect.DeepEqual(diagnosticBody, wireBody) {
+						t.Fatal("diagnostic body differs from the native request beyond redaction")
+					}
+					debug, _ := result["debug_data"].(*model.DebugLogEntry)
+					if debugEnabled {
+						if debug == nil || debug.ReqURL != wireURL || string(debug.ReqBody) != body || !debug.ProtocolTransformed || !gjson.GetBytes(debug.OriginalReqBody, "messages").Exists() {
+							t.Fatal("debug log did not capture native wire and original client request")
+						}
+						var debugHeaders map[string]string
+						if err := json.Unmarshal([]byte(debug.ReqHeaders), &debugHeaders); err != nil || !reflect.DeepEqual(debugHeaders, headers) {
+							t.Fatal("debug log headers differ from the native request")
+						}
+					} else if debug != nil {
+						t.Fatal("debug logging enabled unexpectedly")
+					}
+					encoded, err := json.Marshal(result)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(encoded), "native-access-secret") || strings.Contains(string(encoded), "refresh-secret") || strings.Contains(string(encoded), "client-device-secret") || strings.Contains(string(encoded), wireHeaders.Get("utdid")) {
+						t.Fatal("credential leaked in diagnostics")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCodeBuddySystemSensitiveWordsOnWire(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {

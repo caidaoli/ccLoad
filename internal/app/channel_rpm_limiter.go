@@ -175,6 +175,18 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 		return nil, err
 	}
 	reasoningBody := reasoningHTTPRequestBody(req)
+	if cfg.UsesAccioOAuth() {
+		signed, wireErr := s.prepareAccioWire(cfg, req)
+		if wireErr != nil {
+			release()
+			return nil, wireErr
+		}
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		req = signed
+		captureAccioWireRequest(req)
+	}
 	if cfg.UsesQoderOAuth() {
 		signed, wireErr := s.prepareQoderWire(cfg, req)
 		if wireErr != nil {
@@ -203,6 +215,14 @@ func (s *Server) doReservedUpstreamRequest(cfg *model.Config, req *http.Request,
 	if resp == nil || resp.Body == nil {
 		release()
 		return resp, nil
+	}
+	if cfg.UsesAccioOAuth() {
+		modelName, _ := req.Context().Value(accioModelContextKey{}).(string)
+		if normalizeErr := normalizeAccioResponse(resp, modelName); normalizeErr != nil {
+			_ = resp.Body.Close()
+			release()
+			return nil, normalizeErr
+		}
 	}
 	if cfg.UsesQoderOAuth() {
 		if normalizeErr := normalizeQoderResponse(resp); normalizeErr != nil {

@@ -271,6 +271,7 @@ type RequestValidator interface {
 // isSensitiveHeader 判断是否为需要脱敏的认证类请求头
 func isSensitiveHeader(key string) bool {
 	return strings.EqualFold(key, "Authorization") ||
+		strings.EqualFold(key, "utdid") ||
 		strings.EqualFold(key, "X-Refresh-Token") ||
 		strings.EqualFold(key, "X-Api-Key") ||
 		strings.EqualFold(key, "Api-Key") ||

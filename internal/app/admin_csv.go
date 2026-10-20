@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codebuddyauth"
@@ -1098,6 +1099,12 @@ func exportChannelManagementCheckin(cfg *model.Config) (enabled, checkinTime str
 
 func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 	switch authType {
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeQoderOAuth:
 		credential, err := qoderauth.ParseCredential([]byte(raw))
 		if err != nil {
@@ -1223,6 +1230,25 @@ func (s *Server) validateCSVImportOAuthCredential(
 ) (string, error) {
 	client := s.getClientForChannel(existing)
 	switch imported.GetAuthType() {
+	case model.AuthTypeAccioOAuth:
+		credential, err := accioauth.ParseCredential([]byte(imported.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		current, err := accioauth.ParseCredential([]byte(existing.OAuthCredential))
+		if err != nil {
+			return "", err
+		}
+		if !accioIdentityMatches(current, credential) {
+			return "", errors.New("accio imported account does not match existing channel")
+		}
+		service := *s.accioService
+		service.Client = client
+		credential, err = validateAccioImport(ctx, &service, credential)
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
 	case model.AuthTypeQoderOAuth:
 		credential, err := qoderauth.ParseCredential([]byte(imported.OAuthCredential))
 		if err != nil {

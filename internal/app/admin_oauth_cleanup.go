@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/accioauth"
 	"ccLoad/internal/codebuddyauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -444,7 +445,7 @@ func normalizeOAuthCredentialCleanupAuthType(value string) string {
 	switch authType {
 	case model.AuthTypeCodexOAuth, model.AuthTypeAntigravityOAuth,
 		model.AuthTypeXAIOAuth, model.AuthTypeAnthropicOAuth,
-		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth,
+		model.AuthTypeZAIOAuth, model.AuthTypeCursorOAuth, model.AuthTypeZedOAuth, model.AuthTypeCodeBuddyOAuth, model.AuthTypeQoderOAuth, model.AuthTypeAccioOAuth,
 		model.AuthTypeVertexOAuth:
 		return authType
 	default:
@@ -899,6 +900,14 @@ type oauthTokenEndpointFailure interface {
 }
 
 func oauthRefreshTokenRejected(err error) bool {
+	if errors.Is(err, accioauth.ErrCannotRefresh) {
+		return true
+	}
+	var accioErr *accioauth.HTTPError
+	if errors.As(err, &accioErr) && accioErr.StatusCode == 401 {
+		return true
+	}
+
 	if errors.Is(err, qoderauth.ErrCannotRefresh) {
 		return true
 	}
@@ -1015,7 +1024,7 @@ func oauthCredentialTestAccessToken(
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
 	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth(), persisted.UsesCursorOAuth(), persisted.UsesZedOAuth(),
-		persisted.UsesVertexOAuth():
+		persisted.UsesVertexOAuth(), persisted.UsesAccioOAuth():
 		return selection.requestCredential
 	}
 	return ""
@@ -1026,6 +1035,8 @@ func oauthCredentialCleanupProtocol(cfg *model.Config) string {
 		return string(protocol.Anthropic)
 	}
 	switch {
+	case cfg.UsesAccioOAuth():
+		return string(protocol.OpenAI)
 	case cfg.UsesCodexOAuth(), cfg.UsesXAIOAuth(), cfg.UsesZedOAuth():
 		return string(protocol.Codex)
 	case cfg.UsesAntigravityOAuth(), cfg.UsesVertexOAuth():
