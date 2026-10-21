@@ -1628,7 +1628,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.health_score_update_interval': '成功率缓存更新间隔（秒，至少为 1）',
   'settings.desc.health_min_confident_sample': '置信样本量阈值（至少为 1；达到此值时惩罚全额生效）',
   'settings.desc.enable_ttfb_score': '启用渠道首字相对延迟惩罚(需同时开启「启用健康度排序」)',
-  'settings.desc.ttfb_penalty_weight': '首字惩罚权重（不能小于 0；相对中位慢 1 倍时全置信惩罚）',
+  'settings.desc.ttfb_penalty_weight': '首字惩罚权重（不能小于 0；相对全局健康统计中位数慢 1 倍时全置信惩罚）',
   'settings.desc.ttfb_max_slow_ratio': '首字相对慢速比（s-1）上限，不能小于 0',
   'settings.desc.ttfb_min_confident_sample': '首字置信样本量阈值（至少为 1）',
   'settings.desc.cooldown_fallback_enabled': '所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)',

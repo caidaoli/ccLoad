@@ -106,8 +106,8 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `health_score_update_interval` | `30` | 成功率缓存更新间隔（秒） |
 | `health_min_confident_sample` | `20` | 置信样本量阈值（样本量达到此值时惩罚全额生效） |
 | `enable_ttfb_score` | `false` | 启用渠道首字相对延迟惩罚，需同时开启 `enable_health_score` |
-| `ttfb_penalty_weight` | `20` | 首字惩罚权重（平均首字为候选中位数 2 倍且满置信度时的惩罚值） |
-| `ttfb_max_slow_ratio` | `2` | 首字相对慢速比上限（`平均首字 / 候选中位首字 - 1`） |
+| `ttfb_penalty_weight` | `20` | 首字惩罚权重（平均首字为全局健康统计中位数 2 倍且满置信度时的惩罚值） |
+| `ttfb_max_slow_ratio` | `2` | 首字相对慢速比上限（`平均首字 / 全局健康统计中位首字 - 1`） |
 | `ttfb_min_confident_sample` | `10` | 首字置信样本量阈值 |
 | `channel_test_content` | `sonnet 4.0的发布日期是什么` | 渠道手动测试与定时检测的默认内容；多个内容用竖线 `\|` 分隔，每次测试取其中一个；不能为空 |
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
@@ -147,14 +147,16 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 失败置信度 = min(1.0, 样本量 / health_min_confident_sample)
 失败惩罚 = 失败率 × success_rate_penalty_weight × 失败置信度
 
-相对慢速比 = clamp(平均首字 / 当前候选渠道首字中位数 - 1, 0, ttfb_max_slow_ratio)
+相对慢速比 = clamp(平均首字 / 全局健康统计渠道首字中位数 - 1, 0, ttfb_max_slow_ratio)
 首字置信度 = min(1.0, 首字样本量 / ttfb_min_confident_sample)
 首字惩罚 = 相对慢速比 × ttfb_penalty_weight × 首字置信度
 
 有效优先级 = 基础优先级 - 失败惩罚 - 首字惩罚
 ```
 
-**置信度因子**用于避免新渠道或低流量渠道因少量样本被全额惩罚。首字排序只统计成功请求，并与当前候选渠道的首字中位数比较；达到或快于中位数的渠道不受首字惩罚，少于两个候选渠道有有效首字数据时不启用该项惩罚。
+**置信度因子**用于避免新渠道或低流量渠道因少量样本被全额惩罚。首字排序只统计成功请求，以健康统计时间窗口内全部渠道的有效平均首字时间中位数为统一基准。统计与基准随健康缓存一起刷新；渠道列表、选路预演和真实 HTTP/WS 选路使用同一评分口径，筛选模型、令牌、列表或冷却渠道不会改变分数。达到或快于中位数的渠道不受首字惩罚，全局少于两个渠道有有效首字数据时不启用该项惩罚，无样本渠道不惩罚。
+
+普通会话粘性只在最高有效优先级档内生效。已绑定的 Responses 执行会话仍优先复用原渠道，以保留上游连接与续接状态；渠道不可用时按既有故障切换规则处理。动态分数表示健康排序，不覆盖这些执行会话约束。
 
 **仅成功率惩罚示例**（`enable_ttfb_score=false`，`success_rate_penalty_weight = 100`，`health_min_confident_sample = 20`）：
 

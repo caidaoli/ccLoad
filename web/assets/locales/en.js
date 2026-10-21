@@ -1628,7 +1628,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.health_score_update_interval': 'Success rate cache update interval (seconds; 1 or greater)',
   'settings.desc.health_min_confident_sample': 'Confidence sample threshold (1 or greater; penalty fully applied when sample count reaches this)',
   'settings.desc.enable_ttfb_score': 'Enable relative first-byte latency penalty (requires "Enable health score" to be on)',
-  'settings.desc.ttfb_penalty_weight': 'TTFB penalty weight (0 or greater; full-confidence penalty when 2× candidate median)',
+  'settings.desc.ttfb_penalty_weight': 'TTFB penalty weight (0 or greater; full-confidence penalty when 2× global health-statistics median)',
   'settings.desc.ttfb_max_slow_ratio': 'Max relative TTFB slowness ratio (s-1; 0 or greater)',
   'settings.desc.ttfb_min_confident_sample': 'TTFB confidence sample threshold (1 or greater)',
   'settings.desc.cooldown_fallback_enabled': 'Use best cooldown channel as fallback when all channels in cooldown (otherwise reject request)',

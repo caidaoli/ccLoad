@@ -41,7 +41,6 @@ func TestMedianFloat64(t *testing.T) {
 
 func TestCalculateEffectivePriority_TTFBPenalty(t *testing.T) {
 	t.Parallel()
-	s := &Server{}
 	cfg := modelpkg.HealthScoreConfig{
 		Enabled:                  true,
 		SuccessRatePenaltyWeight: 100,
@@ -58,28 +57,28 @@ func TestCalculateEffectivePriority_TTFBPenalty(t *testing.T) {
 		SuccessRate: 1, SampleCount: 100,
 		AvgFirstByteSeconds: 1.0, FirstByteSampleCount: 20,
 	}
-	got := s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got := calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 100 {
 		t.Fatalf("equal median: got %v want 100", got)
 	}
 
 	// 2x median, full confidence → penalty 20
 	stats.AvgFirstByteSeconds = 2.0
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 80 {
 		t.Fatalf("2x median: got %v want 80", got)
 	}
 
 	// 4x median capped at (s-1)=2 → penalty 40
 	stats.AvgFirstByteSeconds = 4.0
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 60 {
 		t.Fatalf("4x median capped: got %v want 60", got)
 	}
 
 	// Faster than median → no reward
 	stats.AvgFirstByteSeconds = 0.5
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 100 {
 		t.Fatalf("faster: got %v want 100", got)
 	}
@@ -87,7 +86,7 @@ func TestCalculateEffectivePriority_TTFBPenalty(t *testing.T) {
 	// Low sample halves confidence (5/10)
 	stats.AvgFirstByteSeconds = 2.0
 	stats.FirstByteSampleCount = 5
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 90 {
 		t.Fatalf("half confidence: got %v want 90", got)
 	}
@@ -95,7 +94,7 @@ func TestCalculateEffectivePriority_TTFBPenalty(t *testing.T) {
 	// Disabled ttfb
 	cfg.EnableTTFBScore = false
 	stats.FirstByteSampleCount = 20
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 100 {
 		t.Fatalf("disabled: got %v want 100", got)
 	}
@@ -106,14 +105,14 @@ func TestCalculateEffectivePriority_TTFBPenalty(t *testing.T) {
 	stats.SampleCount = 20
 	stats.AvgFirstByteSeconds = 2.0
 	// fail: 0.2*100*1=20, ttfb:20 → 100-20-20=60
-	got = s.calculateEffectivePriority(ch, stats, cfg, 1.0)
+	got = calculateEffectivePriority(ch, stats, cfg, 1.0)
 	if got != 60 {
 		t.Fatalf("fail+ttfb: got %v want 60", got)
 	}
 
 	// medianTTFB=0 disables relative penalty
 	stats.SuccessRate = 1
-	got = s.calculateEffectivePriority(ch, stats, cfg, 0)
+	got = calculateEffectivePriority(ch, stats, cfg, 0)
 	if got != 100 {
 		t.Fatalf("no median: got %v want 100", got)
 	}

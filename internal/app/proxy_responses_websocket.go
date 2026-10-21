@@ -625,7 +625,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	sessionAffinityKey := codexSessionAffinityKey(tokenHashString, c.Request.Header)
 	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
 	if hasSessionAffinity {
-		candidates = preferSessionAffinityChannel(candidates, sessionAffinity.channelID)
+		candidates = s.preferSessionAffinityChannel(candidates, sessionAffinity.channelID)
 	}
 	if channelID, ok := executionSession.routeChannelSnapshot(); ok {
 		candidates = prioritizePinnedChannel(candidates, channelID)

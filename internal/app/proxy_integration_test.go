@@ -17263,6 +17263,96 @@ func TestProxy_InterruptedCommittedStreamBillsPartialUsage(t *testing.T) {
 	}
 }
 
+func TestProxy_SessionAffinityRespectsEffectivePriority(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{"anthropic", "codex"} {
+		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				name         string
+				health       bool
+				aSuccessRate float64
+				bSuccessRate float64
+				want         string
+			}{
+				{name: "lower_effective_priority", health: true, aSuccessRate: 1, bSuccessRate: 0.8, want: "a"},
+				// A=179.99、B=179.96 属同一有效分档，粘性仍可保留较低有效分的 B。
+				{name: "same_effective_bucket", health: true, aSuccessRate: 0.9999, bSuccessRate: 0.8996, want: "b"},
+				{name: "health_disabled", aSuccessRate: 1, bSuccessRate: 0.8, want: "b"},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					served := make(chan string, 8)
+					upstreams := make(map[int]string, 2)
+					channels := make([]testChannel, 0, 2)
+					for i, name := range []string{"a", "b"} {
+						upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							served <- name
+							if protocol == "anthropic" {
+								w.Header().Set("Content-Type", "application/json")
+								_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+								return
+							}
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+						}))
+						defer upstream.Close()
+						upstreams[i] = upstream.URL
+						channels = append(channels, testChannel{name: name, upstreamProtocol: protocol, models: "test-model", priority: 180 + i*10})
+					}
+					env := setupProxyTestEnv(t, channels, upstreams)
+					healthCfg := model.DefaultHealthScoreConfig()
+					healthCfg.Enabled = tt.health
+					env.server.healthCache = &HealthCache{config: healthCfg}
+					path, sessionHeader := "/v1/messages", "X-Claude-Code-Session-Id"
+					body := map[string]any{
+						"model": "test-model", "max_tokens": 16,
+						"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+					}
+					if protocol == "codex" {
+						path, sessionHeader = "/v1/responses", "Session-Id"
+						body = map[string]any{"model": "test-model", "stream": true, "input": "hi"}
+					}
+					headers := map[string]string{sessionHeader: uuid.NewString()}
+					send := func() string {
+						t.Helper()
+						response := doProxyRequest(t, env.engine, path, body, headers)
+						if response.Code != http.StatusOK {
+							t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+						}
+						select {
+						case name := <-served:
+							return name
+						default:
+							t.Fatal("request succeeded without reaching an upstream")
+							return ""
+						}
+					}
+					if got := send(); got != "b" {
+						t.Fatalf("initial session served by %s, want b", got)
+					}
+					configs, err := env.store.ListConfigs(context.Background())
+					if err != nil {
+						t.Fatalf("ListConfigs: %v", err)
+					}
+					stats := make(map[int64]model.ChannelHealthStats, len(configs))
+					for _, cfg := range configs {
+						successRate := tt.aSuccessRate
+						if cfg.Name == "b" {
+							successRate = tt.bSuccessRate
+						}
+						stats[cfg.ID] = model.ChannelHealthStats{SuccessRate: successRate, SampleCount: 20}
+					}
+					env.server.healthCache.snapshot.Store(newChannelHealthSnapshot(stats))
+					if got := send(); got != tt.want {
+						t.Fatalf("session served by %s after health changed, want %s", got, tt.want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestProxy_AnthropicSessionAffinity(t *testing.T) {
 	t.Parallel()
 	names := []string{"primary", "peer-a", "peer-b"}

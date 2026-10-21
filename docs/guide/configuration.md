@@ -104,7 +104,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `health_score_update_interval` | `30` | Success rate cache update interval (seconds) |
 | `health_min_confident_sample` | `20` | Confidence sample threshold (full penalty at this sample size) |
 | `enable_ttfb_score` | `false` | Enable relative first-byte latency penalty; requires `enable_health_score` |
-| `ttfb_penalty_weight` | `20` | TTFB penalty when average first-byte latency is 2× the candidate median at full confidence |
+| `ttfb_penalty_weight` | `20` | TTFB penalty when average first-byte latency is 2× the global health-statistics median at full confidence |
 | `ttfb_max_slow_ratio` | `2` | Upper bound for relative TTFB slowness (`avg_ttfb / median_ttfb - 1`) |
 | `ttfb_min_confident_sample` | `10` | TTFB confidence sample threshold |
 | `channel_test_content` | `sonnet 4.0的发布日期是什么` | Default prompt for manual channel tests and scheduled checks; separate multiple contents with `\|` to have one picked per test. Cannot be empty |
@@ -145,14 +145,16 @@ When `enable_health_score` is enabled, ccLoad calculates an effective priority f
 failure_confidence = min(1.0, sample_count / health_min_confident_sample)
 failure_penalty = failure_rate × success_rate_penalty_weight × failure_confidence
 
-relative_slowness = clamp(avg_ttfb / candidate_median_ttfb - 1, 0, ttfb_max_slow_ratio)
+relative_slowness = clamp(avg_ttfb / global_median_ttfb - 1, 0, ttfb_max_slow_ratio)
 ttfb_confidence = min(1.0, ttfb_sample_count / ttfb_min_confident_sample)
 ttfb_penalty = relative_slowness × ttfb_penalty_weight × ttfb_confidence
 
 effective_priority = base_priority - failure_penalty - ttfb_penalty
 ```
 
-**Confidence factors** prevent new or low-traffic channels from receiving a full penalty from a few samples. TTFB scoring compares successful first-byte samples against the median of the current candidate channels. Channels at or faster than the median receive no TTFB penalty, and scoring is skipped when fewer than two candidates have valid TTFB data.
+**Confidence factors** prevent new or low-traffic channels from receiving a full penalty from a few samples. TTFB scoring uses the median of valid per-channel average first-byte times across the entire health-statistics window. Statistics and the baseline refresh together. The channel list, route preview, and actual HTTP/WS routing use the same scoring basis; model, token, list, and cooldown filters do not recalculate scores. Channels at or faster than the median receive no TTFB penalty. The penalty is skipped when fewer than two channels globally have valid TTFB data, and channels without samples are not penalized.
+
+Ordinary session affinity applies only within the highest effective-priority tier. Bound Responses execution sessions still prefer their original channel to preserve upstream connections and continuation state; unavailable channels follow the existing failover rules. Health scores determine health ordering without overriding these execution-session constraints.
 
 **Success-rate-only example** (`enable_ttfb_score=false`, `success_rate_penalty_weight = 100`, `health_min_confident_sample = 20`):
 

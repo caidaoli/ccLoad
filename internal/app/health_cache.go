@@ -16,9 +16,8 @@ type HealthCache struct {
 	store  storage.Store
 	config model.HealthScoreConfig
 
-	// 健康统计缓存：使用原子指针实现无锁快照替换
-	// 读取时直接Load，更新时用新map整体替换，避免遍历删除的并发问题
-	healthStats atomic.Pointer[map[int64]model.ChannelHealthStats]
+	// 统计与全局首字基准一起发布，列表筛选和路由候选不能改变渠道分数。
+	snapshot atomic.Pointer[channelHealthSnapshot]
 
 	// 控制
 	stopCh chan struct{}
@@ -26,6 +25,38 @@ type HealthCache struct {
 
 	// shutdown标志
 	isShuttingDown *atomic.Bool
+}
+
+type channelHealthSnapshot struct {
+	stats      map[int64]model.ChannelHealthStats
+	medianTTFB float64
+}
+
+func newChannelHealthSnapshot(stats map[int64]model.ChannelHealthStats) *channelHealthSnapshot {
+	samples := make([]float64, 0, len(stats))
+	for _, st := range stats {
+		if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
+			samples = append(samples, st.AvgFirstByteSeconds)
+		}
+	}
+	return &channelHealthSnapshot{stats: stats, medianTTFB: medianFloat64(samples)}
+}
+
+func (snapshot *channelHealthSnapshot) healthStats(channelID int64) model.ChannelHealthStats {
+	if snapshot != nil {
+		if stats, ok := snapshot.stats[channelID]; ok {
+			return stats
+		}
+	}
+	return model.ChannelHealthStats{SuccessRate: 1.0} // 新渠道默认成功率100%，不惩罚
+}
+
+func (snapshot *channelHealthSnapshot) effectivePriority(ch *model.Config, cfg model.HealthScoreConfig) float64 {
+	medianTTFB := 0.0
+	if snapshot != nil {
+		medianTTFB = snapshot.medianTTFB
+	}
+	return calculateEffectivePriority(ch, snapshot.healthStats(ch.ID), cfg, medianTTFB)
 }
 
 // NewHealthCache 创建健康度缓存
@@ -37,9 +68,6 @@ func NewHealthCache(store storage.Store, config model.HealthScoreConfig, shutdow
 		wg:             wg,
 		isShuttingDown: isShuttingDown,
 	}
-	// 初始化空map
-	emptyMap := make(map[int64]model.ChannelHealthStats)
-	h.healthStats.Store(&emptyMap)
 	return h
 }
 
@@ -94,19 +122,12 @@ func (h *HealthCache) update() {
 	}
 
 	// 原子替换：用新快照整体替换旧数据，避免遍历删除的并发问题
-	h.healthStats.Store(&stats)
+	h.snapshot.Store(newChannelHealthSnapshot(stats))
 }
 
 // GetHealthStats 获取渠道健康统计，不存在返回默认值（新渠道不惩罚）
 func (h *HealthCache) GetHealthStats(channelID int64) model.ChannelHealthStats {
-	stats := h.healthStats.Load()
-	if stats == nil {
-		return model.ChannelHealthStats{SuccessRate: 1.0, SampleCount: 0}
-	}
-	if v, ok := (*stats)[channelID]; ok {
-		return v
-	}
-	return model.ChannelHealthStats{SuccessRate: 1.0, SampleCount: 0} // 新渠道默认成功率100%
+	return h.snapshot.Load().healthStats(channelID)
 }
 
 // Config 返回健康度配置

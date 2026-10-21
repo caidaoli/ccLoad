@@ -101,9 +101,10 @@ func codexSessionAffinityKey(tokenHash string, headers http.Header) string {
 	return tokenHash + "\x00codex\x00" + sessionID
 }
 
-// preferSessionAffinityChannel 仅在绑定渠道仍属候选中最高配置优先级时置顶：
+// preferSessionAffinityChannel 仅在绑定渠道仍属候选中最高优先级档时置顶：
+// 健康评分开启时按有效分的 0.1 档比较，否则按配置优先级比较。
 // 粘性只替代同层轮询，更高优先级渠道恢复后会话随之迁移，主备意图优先于缓存命中。
-func preferSessionAffinityChannel(cands []*model.Config, channelID int64) []*model.Config {
+func (s *Server) preferSessionAffinityChannel(cands []*model.Config, channelID int64) []*model.Config {
 	var bound *model.Config
 	for _, cfg := range cands {
 		if cfg != nil && cfg.ID == channelID {
@@ -114,8 +115,23 @@ func preferSessionAffinityChannel(cands []*model.Config, channelID int64) []*mod
 	if bound == nil {
 		return cands
 	}
+	healthCfg := model.HealthScoreConfig{}
+	var snapshot *channelHealthSnapshot
+	if s.healthCache != nil {
+		healthCfg = s.healthCache.Config()
+		if healthCfg.Enabled {
+			snapshot = s.healthCache.snapshot.Load()
+		}
+	}
+	priorityGroup := func(cfg *model.Config) int64 {
+		if healthCfg.Enabled {
+			return effPriorityBucket(snapshot.effectivePriority(cfg, healthCfg))
+		}
+		return int64(cfg.Priority)
+	}
+	boundGroup := priorityGroup(bound)
 	for _, cfg := range cands {
-		if cfg != nil && cfg.Priority > bound.Priority {
+		if cfg != nil && priorityGroup(cfg) > boundGroup {
 			return cands
 		}
 	}

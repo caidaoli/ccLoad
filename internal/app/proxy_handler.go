@@ -678,7 +678,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
 	if hasSessionAffinity {
-		cands = preferSessionAffinityChannel(cands, sessionAffinity.channelID)
+		cands = s.preferSessionAffinityChannel(cands, sessionAffinity.channelID)
 	}
 	// 执行会话已钉住的渠道（在用的上游 WS 或 RetryOtherKeys 首选渠道）优先于会话粘性。
 	if routingSession != nil {

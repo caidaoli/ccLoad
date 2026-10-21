@@ -79,28 +79,16 @@ func (s *Server) sortChannelsByHealthInternal(
 	return result
 }
 
-// scoreChannelsByHealth uses the candidate set for the relative TTFB median.
+// scoreChannelsByHealth uses one global health snapshot, independent of the candidate set.
 func (s *Server) scoreChannelsByHealth(channels []*modelpkg.Config) []channelWithScore {
 	cfg := s.healthCache.Config()
-
-	// Preload stats and compute candidate median TTFB for relative penalty.
-	statsByID := make(map[int64]modelpkg.ChannelHealthStats, len(channels))
-	ttfbSamples := make([]float64, 0, len(channels))
-	for _, ch := range channels {
-		st := s.healthCache.GetHealthStats(ch.ID)
-		statsByID[ch.ID] = st
-		if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
-			ttfbSamples = append(ttfbSamples, st.AvgFirstByteSeconds)
-		}
-	}
-	medianTTFB := medianFloat64(ttfbSamples)
+	snapshot := s.healthCache.snapshot.Load()
 
 	scored := make([]channelWithScore, len(channels))
 	for i, ch := range channels {
-		stats := statsByID[ch.ID]
 		scored[i] = channelWithScore{
 			config:      ch,
-			effPriority: s.calculateEffectivePriority(ch, stats, cfg, medianTTFB),
+			effPriority: snapshot.effectivePriority(ch, cfg),
 		}
 	}
 
@@ -109,8 +97,8 @@ func (s *Server) scoreChannelsByHealth(channels []*modelpkg.Config) []channelWit
 
 // calculateEffectivePriority 计算渠道的有效优先级
 // P_eff = Priority - Penalty_fail - Penalty_ttfb
-// 越大越优先。medianTTFB 为当前候选集有效首字中位数（秒），<=0 表示不启用相对首字惩罚。
-func (s *Server) calculateEffectivePriority(
+// 越大越优先。medianTTFB 为健康统计窗口内全局渠道首字中位数（秒），<=0 表示不启用相对首字惩罚。
+func calculateEffectivePriority(
 	ch *modelpkg.Config,
 	stats modelpkg.ChannelHealthStats,
 	cfg modelpkg.HealthScoreConfig,
@@ -157,9 +145,7 @@ func (s *Server) calculateEffectivePriority(
 	return basePriority - penaltyFail - penaltyTTFB
 }
 
-// medianFloat64 returns the median of values. Empty input returns 0.
-// Requires at least 2 values for relative scoring callers; this helper itself
-// still returns a median for a single value.
+// medianFloat64 returns the median, or 0 when fewer than two channels have samples.
 func medianFloat64(values []float64) float64 {
 	n := len(values)
 	if n == 0 {

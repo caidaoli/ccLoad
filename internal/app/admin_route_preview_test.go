@@ -292,7 +292,7 @@ func TestRoutePreview_AvailableKeysRespectEnabledRowsAndScopes(t *testing.T) {
 	}
 }
 
-func TestRoutePreview_HealthScoresUseFinalCandidateMedian(t *testing.T) {
+func TestRoutePreview_HealthScoresKeepGlobalMedianAfterCooldownFilter(t *testing.T) {
 	server := newInMemoryServer(t)
 	fast := addPreviewChannel(t, server, &model.Config{Name: "fast", Priority: 50}, &model.APIKey{})
 	slow := addPreviewChannel(t, server, &model.Config{Name: "slow", Priority: 50}, &model.APIKey{})
@@ -303,19 +303,172 @@ func TestRoutePreview_HealthScoresUseFinalCandidateMedian(t *testing.T) {
 	server.InvalidateChannelListCache()
 	server.healthCache = &HealthCache{config: model.HealthScoreConfig{Enabled: true, EnableTTFBScore: true, TTFBPenaltyWeight: 8, TTFBMaxSlowRatio: 2}}
 	stats := map[int64]model.ChannelHealthStats{
-		fast.ID:     {SuccessRate: 1, AvgFirstByteSeconds: 1, FirstByteSampleCount: 10},
-		slow.ID:     {SuccessRate: 1, AvgFirstByteSeconds: 3, FirstByteSampleCount: 10},
-		excluded.ID: {SuccessRate: 1, AvgFirstByteSeconds: 100, FirstByteSampleCount: 10},
+		fast.ID:     {SuccessRate: 1, AvgFirstByteSeconds: 2, FirstByteSampleCount: 10},
+		slow.ID:     {SuccessRate: 1, AvgFirstByteSeconds: 8, FirstByteSampleCount: 10},
+		excluded.ID: {SuccessRate: 1, AvgFirstByteSeconds: 2, FirstByteSampleCount: 10},
 	}
-	server.healthCache.healthStats.Store(&stats)
+	server.healthCache.snapshot.Store(newChannelHealthSnapshot(stats))
 	result := previewRoute(t, server, map[string]any{"client_protocol": "openai", "model": "test-model"})
-	if len(result.Candidates) != 2 || result.Candidates[0].ID != fast.ID || result.Candidates[0].EffectivePriority != 50 || result.Candidates[1].ID != slow.ID || result.Candidates[1].EffectivePriority != 46 {
+	if len(result.Candidates) != 2 || result.Candidates[0].ID != fast.ID || result.Candidates[0].EffectivePriority != 50 || result.Candidates[1].ID != slow.ID || result.Candidates[1].EffectivePriority != 34 {
 		t.Fatalf("scores=%+v", result.Candidates)
 	}
 	for _, candidate := range result.Candidates {
 		if candidate.SameTierRotation {
 			t.Fatalf("different health tiers marked same: %+v", candidate)
 		}
+	}
+}
+
+func TestRoutePreview_HealthPrioritiesMatchFilteredListsAndProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		healthEnabled bool
+		ttfbEnabled   bool
+		validSamples  bool
+		websocket     bool
+		wantSlow      float64
+		wantSelected  string
+	}{
+		{name: "health-on", healthEnabled: true, ttfbEnabled: true, validSamples: true, wantSlow: 170, wantSelected: "fresh"},
+		{name: "health-on-websocket", healthEnabled: true, ttfbEnabled: true, validSamples: true, websocket: true, wantSlow: 170, wantSelected: "fresh"},
+		{name: "health-off", ttfbEnabled: true, validSamples: true, wantSlow: 190, wantSelected: "slow"},
+		{name: "ttfb-off", healthEnabled: true, validSamples: true, wantSlow: 190, wantSelected: "slow"},
+		{name: "no-valid-ttfb", healthEnabled: true, ttfbEnabled: true, wantSlow: 190, wantSelected: "slow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientProtocol := "openai"
+			if tc.websocket {
+				clientProtocol = "codex"
+			}
+			var slowRequests, freshRequests atomic.Int64
+			upstreamHandler := func(requests *atomic.Int64) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if tc.websocket {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-health\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\ndata: [DONE]\n\n")
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"chat-test","object":"chat.completion","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+				})
+			}
+			slowUpstream := newTestHTTPServer(t, upstreamHandler(&slowRequests))
+			defer slowUpstream.Close()
+			freshUpstream := newTestHTTPServer(t, upstreamHandler(&freshRequests))
+			defer freshUpstream.Close()
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "slow", upstreamProtocol: clientProtocol, models: "test-model", priority: 190},
+				{name: "fresh", upstreamProtocol: clientProtocol, models: "test-model", priority: 180},
+				{name: "fast-one", upstreamProtocol: clientProtocol, models: "other-model", priority: 50},
+				{name: "fast-two", upstreamProtocol: clientProtocol, models: "other-model", priority: 50},
+			}, map[int]string{0: slowUpstream.URL, 1: freshUpstream.URL, 2: slowUpstream.URL, 3: slowUpstream.URL})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			stats := make(map[int64]model.ChannelHealthStats)
+			for _, cfg := range configs {
+				if cfg.Name == "fresh" {
+					continue // New channels have no samples and retain their configured priority.
+				}
+				sample := model.ChannelHealthStats{SuccessRate: 1, AvgFirstByteSeconds: 2, FirstByteSampleCount: 10}
+				if cfg.Name == "slow" {
+					sample.AvgFirstByteSeconds = 8
+				}
+				if !tc.validSamples {
+					if cfg.Name == "slow" {
+						sample.FirstByteSampleCount = 0
+					} else {
+						sample.AvgFirstByteSeconds = 0
+					}
+				}
+				stats[cfg.ID] = sample
+			}
+			env.server.healthCache = &HealthCache{config: model.HealthScoreConfig{Enabled: tc.healthEnabled, EnableTTFBScore: tc.ttfbEnabled, TTFBPenaltyWeight: 10, TTFBMaxSlowRatio: 2}}
+			env.server.healthCache.snapshot.Store(newChannelHealthSnapshot(stats))
+			preview := previewRoute(t, env.server, map[string]any{"client_protocol": clientProtocol, "model": "test-model"})
+			if len(preview.Candidates) != 2 || preview.Candidates[0].Name != tc.wantSelected {
+				t.Fatalf("preview=%+v want first=%s", preview.Candidates, tc.wantSelected)
+			}
+			wantScores := map[string]float64{"slow": tc.wantSlow, "fresh": 180}
+			for _, candidate := range preview.Candidates {
+				if candidate.EffectivePriority != wantScores[candidate.Name] || candidate.PriorityGroup != wantScores[candidate.Name] {
+					t.Fatalf("preview candidate=%+v want score=%v", candidate, wantScores[candidate.Name])
+				}
+			}
+			for _, listCase := range []struct {
+				query     string
+				wantCount int
+				wantFirst string
+			}{
+				{query: "", wantCount: 4, wantFirst: tc.wantSelected},
+				{query: "model=test-model", wantCount: 2, wantFirst: tc.wantSelected},
+				{query: "channel_name=slow", wantCount: 1, wantFirst: "slow"},
+				{query: "model=test-model&limit=1&offset=0", wantCount: 1, wantFirst: tc.wantSelected},
+			} {
+				c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?"+listCase.query, nil))
+				env.server.handleListChannels(c)
+				if w.Code != http.StatusOK {
+					t.Fatalf("query=%s status=%d body=%s", listCase.query, w.Code, w.Body.String())
+				}
+				response := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+				if len(response.Data) != listCase.wantCount || response.Data[0].Name != listCase.wantFirst {
+					t.Fatalf("query=%s channels=%+v want count=%d first=%s", listCase.query, response.Data, listCase.wantCount, listCase.wantFirst)
+				}
+				for _, channel := range response.Data {
+					want, relevant := wantScores[channel.Name]
+					if !relevant {
+						continue
+					}
+					if tc.healthEnabled {
+						if channel.EffectivePriority == nil || *channel.EffectivePriority != want {
+							t.Fatalf("query=%s channel=%s effective priority=%v want=%v", listCase.query, channel.Name, channel.EffectivePriority, want)
+						}
+					} else if channel.EffectivePriority != nil || float64(channel.Priority) != want {
+						t.Fatalf("health disabled: query=%s channel=%+v", listCase.query, channel)
+					}
+				}
+			}
+			if slowRequests.Load()+freshRequests.Load() != 0 {
+				t.Fatal("list or preview called upstream")
+			}
+			if tc.websocket {
+				conn := dialResponsesWebsocket(t, env.engine)
+				if err := conn.WriteJSON(map[string]any{"type": "response.create", "model": "test-model", "input": []any{map[string]any{"role": "user", "content": "hello"}}}); err != nil {
+					t.Fatal(err)
+				}
+				readWebsocketUntilType(t, conn, "response.completed")
+			} else {
+				response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{"model": "test-model", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, nil)
+				if response.Code != http.StatusOK {
+					t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			wantSlowRequests, wantFreshRequests := int64(1), int64(0)
+			if tc.wantSelected == "fresh" {
+				wantSlowRequests, wantFreshRequests = 0, 1
+			}
+			if slowRequests.Load() != wantSlowRequests || freshRequests.Load() != wantFreshRequests {
+				t.Fatalf("upstream calls slow=%d fresh=%d want slow=%d fresh=%d", slowRequests.Load(), freshRequests.Load(), wantSlowRequests, wantFreshRequests)
+			}
+			if tc.name == "health-on" {
+				until := time.Now().Add(time.Minute)
+				for _, cfg := range configs {
+					if cfg.Name != "slow" && cfg.Name != "fresh" {
+						continue
+					}
+					if err := env.store.SetChannelCooldown(context.Background(), cfg.ID, until); err != nil {
+						t.Fatal(err)
+					}
+				}
+				env.server.InvalidateChannelListCache()
+				fallback := previewRoute(t, env.server, map[string]any{"client_protocol": clientProtocol, "model": "test-model"})
+				if len(fallback.Candidates) != 1 || fallback.Candidates[0].Name != "fresh" || !fallback.Candidates[0].CooldownFallback || fallback.Candidates[0].EffectivePriority != 180 {
+					t.Fatalf("equal-recovery cooldown fallback=%+v want fresh at 180", fallback.Candidates)
+				}
+			}
+		})
 	}
 }
 
@@ -372,7 +525,7 @@ func TestRoutePreview_PriorityGroupMatchesHealthRotationTier(t *testing.T) {
 	second := addPreviewChannel(t, server, &model.Config{Name: "9.09", Priority: 10}, &model.APIKey{})
 	server.healthCache = &HealthCache{config: model.HealthScoreConfig{Enabled: true, SuccessRatePenaltyWeight: 10, MinConfidentSample: 1}}
 	stats := map[int64]model.ChannelHealthStats{first.ID: {SuccessRate: 0.901, SampleCount: 1}, second.ID: {SuccessRate: 0.909, SampleCount: 1}}
-	server.healthCache.healthStats.Store(&stats)
+	server.healthCache.snapshot.Store(newChannelHealthSnapshot(stats))
 	result := previewRoute(t, server, map[string]any{"client_protocol": "openai", "model": "test-model"})
 	if len(result.Candidates) != 2 {
 		t.Fatalf("candidates=%+v", result.Candidates)

@@ -1065,7 +1065,7 @@ func TestSortChannelsByHealth_WeightedByKeyCount(t *testing.T) {
 		channelBalancer: NewSmoothWeightedRR(),
 	}
 	empty := make(map[int64]model.ChannelHealthStats)
-	server.healthCache.healthStats.Store(&empty)
+	server.healthCache.snapshot.Store(newChannelHealthSnapshot(empty))
 
 	iterations := 1000
 	firstPositionCount := make(map[string]int)
@@ -1113,7 +1113,7 @@ func TestSortChannelsByHealth_WeightedByEffectiveKeyCount(t *testing.T) {
 		channelBalancer: NewSmoothWeightedRR(),
 	}
 	empty := make(map[int64]model.ChannelHealthStats)
-	server.healthCache.healthStats.Store(&empty)
+	server.healthCache.snapshot.Store(newChannelHealthSnapshot(empty))
 
 	now := time.Now()
 	// 模拟channel-A的8个key处于冷却中

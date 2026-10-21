@@ -311,8 +311,10 @@ func (s *Server) pickBestChannelWhenAllCooled(
 
 	healthEnabled := s.healthCache != nil && s.healthCache.Config().Enabled
 	healthCfg := modelpkg.HealthScoreConfig{}
+	var healthSnapshot *channelHealthSnapshot
 	if healthEnabled {
 		healthCfg = s.healthCache.Config()
+		healthSnapshot = s.healthCache.snapshot.Load()
 	}
 
 	// 计算渠道的恢复时间
@@ -356,21 +358,9 @@ func (s *Server) pickBestChannelWhenAllCooled(
 		return nil, 0
 	}
 
-	// 计算有效优先级（含候选集首字中位）
-	medianTTFB := 0.0
-	if healthEnabled {
-		samples := make([]float64, 0, len(valid))
-		for _, ch := range valid {
-			st := s.healthCache.GetHealthStats(ch.ID)
-			if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
-				samples = append(samples, st.AvgFirstByteSeconds)
-			}
-		}
-		medianTTFB = medianFloat64(samples)
-	}
 	getEffPriority := func(ch *modelpkg.Config) float64 {
 		if healthEnabled {
-			return s.calculateEffectivePriority(ch, s.healthCache.GetHealthStats(ch.ID), healthCfg, medianTTFB)
+			return healthSnapshot.effectivePriority(ch, healthCfg)
 		}
 		return float64(ch.Priority)
 	}
