@@ -3486,7 +3486,7 @@ func TestProxy_AntigravityRateLimitRetryBoundary(t *testing.T) {
 
 func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
 	t.Parallel()
-	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
+	const discoveredUserAgent = "antigravity/hub/9.8.7 (aidev_client; os_type=darwin; arch=arm64)"
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
 			t.Errorf("Antigravity URL = %s?%s", r.URL.Path, r.URL.RawQuery)
@@ -4283,6 +4283,7 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 	t.Parallel()
 	textFrame := `data: {"response":{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3-flash"}}` + "\n\n"
 	quotaFrame := `data: {"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}` + "\n\n"
+	unauthenticatedFrame := `data: {"error":{"code":401,"message":"Request had invalid authentication credentials","status":"UNAUTHENTICATED"}}` + "\n\n"
 	// 后端在已发帧后追加多行裸 JSON 错误且不补空行。
 	trailingError := "{\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"backend unavailable\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}"
 	multilineData := "data: {\"response\":{\"responseId\":\"r1\",\n" +
@@ -4300,6 +4301,8 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 	}{
 		{name: "first-frame-error-fails-over", stream: quotaFrame, wantClient: http.StatusOK, wantLog: http.StatusTooManyRequests, wantText: "fallback", wantFallback: true},
 		{name: "mid-stream-error", stream: textFrame + quotaFrame, wantClient: http.StatusOK, wantLog: http.StatusTooManyRequests, wantText: "partial"},
+		// 已提交流里的 401 帧不能触发强制刷新后在同一 writer 上重放请求。
+		{name: "mid-stream-unauthenticated", stream: textFrame + unauthenticatedFrame, wantClient: http.StatusOK, wantLog: http.StatusUnauthorized, wantText: "partial"},
 		{name: "trailing-bare-json-error", stream: textFrame + trailingError, wantClient: http.StatusOK, wantLog: http.StatusServiceUnavailable, wantText: "partial"},
 		{name: "multiline-data", stream: multilineData, wantClient: http.StatusOK, wantLog: http.StatusOK, wantText: "joined"},
 		// 终态已送达后的后端错误不能把完整流改判为失败，也不能在终态后补 error 事件。
@@ -4312,7 +4315,9 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(adapter.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
+				var primaryHits atomic.Int64
 				primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					primaryHits.Add(1)
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = io.WriteString(w, tc.stream)
 				}))
@@ -4343,6 +4348,21 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 				}
 				if got := fallbackHits.Load() > 0; got != tc.wantFallback {
 					t.Fatalf("fallback hit=%v, want %v", got, tc.wantFallback)
+				}
+				if got := primaryHits.Load(); got != 1 {
+					t.Fatalf("primary hits=%d, want 1", got)
+				}
+				// 已提交流里的 401 不是凭证拒绝：不能刷新重放，也不能施加凭证失效冷却。
+				if tc.wantLog == http.StatusUnauthorized {
+					cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+					if err != nil {
+						t.Fatalf("GetAllChannelCooldowns: %v", err)
+					}
+					for channelID, until := range cooldowns {
+						if time.Until(until) > rejectedOAuthCredentialCooldown/2 {
+							t.Fatalf("channel %d got the rejected-credential cooldown until %s", channelID, until)
+						}
+					}
 				}
 
 				var texts []string

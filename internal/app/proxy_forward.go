@@ -4794,7 +4794,7 @@ func (s *Server) tryCodexOAuthChannel(
 		runtimeCfg.CodexAccountFedRAMP = credential.AccountFedRAMP
 		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
-		return result != nil && result.status == http.StatusUnauthorized
+		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})
 }
 
@@ -4842,7 +4842,7 @@ func (s *Server) tryAnthropicOAuthChannel(
 		}
 		return cfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
-		return result != nil && result.status == http.StatusUnauthorized
+		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})
 }
 
@@ -4960,7 +4960,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 		runtimeCfg.OAuthCredential, _ = credential.JSON()
 		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
-		return result != nil && result.status == http.StatusUnauthorized
+		return result != nil && !result.succeeded && result.status == http.StatusUnauthorized
 	})
 }
 
