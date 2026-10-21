@@ -695,13 +695,14 @@ var basePricing = map[string]ModelPricing{
 
 	// ========== MiniMax 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax
-	"minimax-01":     {InputPrice: 0.20, OutputPrice: 1.10},
-	"minimax-m1":     {InputPrice: 0.40, OutputPrice: 2.20},
-	"minimax-m2":     {InputPrice: 0.255, OutputPrice: 1.00, CacheReadPrice: 0.03, HasCacheReadPrice: true},
-	"minimax-m2-her": {InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.03, HasCacheReadPrice: true},
-	"minimax-m2.1":   {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
-	"minimax-m2.5":   {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
-	"minimax-m2.7":   {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
+	"minimax-01":         {InputPrice: 0.20, OutputPrice: 1.10},
+	"minimax-m1":         {InputPrice: 0.40, OutputPrice: 2.20},
+	"minimax-m2":         {InputPrice: 0.255, OutputPrice: 1.00, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2-her":     {InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2.1":       {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
+	"minimax-m2.5":       {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
+	"minimax-m2.7":       {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
+	"minimax-m3.1-flash": {InputPrice: 0.15, OutputPrice: 0.60, CacheReadPrice: 0.015, HasCacheReadPrice: true},
 	"minimax-m3": {
 		InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.06, HasCacheReadPrice: true,
 		InputPriceHigh: 0.60, OutputPriceHigh: 2.40, CacheReadPriceHigh: 0.12,
