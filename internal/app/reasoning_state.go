@@ -262,6 +262,10 @@ func (s *Server) prepareReasoningTurn(ctx context.Context, r *proxyRequestContex
 	if !s.reasoningTarget(r) {
 		return
 	}
+	if r.clientProtocol == protocol.Codex && responsesCompactionRequested(r.requestPath, original) {
+		r.reasoning = &reasoningTurn{state: &reasoningState{}, metadata: model.ReasoningDecision{Status: "skipped", Reason: "compaction"}}
+		return
+	}
 	// Codex prewarms with generate:false and no user input: there is nothing to
 	// judge, and it must not touch the session's level or pending downgrade.
 	if gjson.GetBytes(original, "generate").Type == gjson.False {

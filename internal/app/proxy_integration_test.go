@@ -533,7 +533,7 @@ func TestProxy_CodeBuddyWireAndCompletion(t *testing.T) {
 					path = "/v1/responses"
 					delete(body, "messages")
 					body["input"] = []any{
-						map[string]any{"type": "compaction", "encrypted_content": "opaque"},
+						map[string]any{"type": "compaction", "encrypted_content": "ccload-compact-v1:" + base64.RawURLEncoding.EncodeToString([]byte(`{"summary":"previous work"}`))},
 						map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hi"}}},
 					}
 				case "gemini":
@@ -10977,6 +10977,32 @@ func TestProxy_LocalMode_SkipsUnrepresentableTransformsAndRetriesNextProtocol(t 
 	}
 	if !slices.Equal(paths, []string{"/v1/responses"}) {
 		t.Fatalf("paths=%v, want native Codex after local Anthropic transform rejection", paths)
+	}
+}
+
+func TestProxy_LocalModeRejectsForeignCompaction(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"openai", "anthropic", "gemini"} {
+		t.Run(target, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("foreign compaction must not be dropped and sent as an incomplete conversation")
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "foreign-compaction", upstreamProtocol: target, models: "gpt-test",
+				protocolTransformMode: model.ProtocolTransformModeLocal,
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "gpt-test",
+				"input": []any{
+					map[string]any{"type": "compaction", "encrypted_content": "foreign-opaque-history"},
+					map[string]any{"role": "user", "content": "continue"},
+				},
+			}, nil)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("foreign compaction status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

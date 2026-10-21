@@ -203,6 +203,13 @@ func (s *responsesWebsocketSession) commit(request []byte, result responsesWebso
 		return
 	}
 	s.lastRequest = bytes.Clone(request)
+	items := gjson.ParseBytes(result.completedOutput).Array()
+	if !result.interrupted && len(items) == 1 && items[0].Get("type").String() == "compaction" &&
+		strings.HasPrefix(items[0].Get("encrypted_content").String(), responsesCompactionPrefix) {
+		// The capsule replaces the summarized history. Keeping the old input
+		// would replay its trigger and compact again on every continuation.
+		s.lastRequest, _ = sjson.SetRawBytes(s.lastRequest, "input", []byte("[]"))
+	}
 	if len(result.completedOutput) == 0 {
 		s.lastResponseOutput = []byte("[]")
 	} else {

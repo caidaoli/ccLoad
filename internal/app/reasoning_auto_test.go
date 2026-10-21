@@ -1356,6 +1356,11 @@ func TestReasoningAutoIgnoresResponsesSubresources(t *testing.T) {
 		map[string]any{"role": "user", "content": "long history"},
 	}}, map[string]string{"Session-Id": "compact"})
 	assertReasoningAutoEfforts(t, [][]byte{<-requests}, "")
+	reasoningAutoRequest(t, env, "/v1/responses", map[string]any{"model": "gpt-5.6-sol", "input": []any{
+		map[string]any{"role": "user", "content": "long history"},
+		map[string]any{"type": "compaction_trigger"},
+	}}, map[string]string{"Session-Id": "compact"})
+	assertReasoningAutoEfforts(t, [][]byte{<-requests}, "")
 	if got := len(judge.snapshot()); got != 0 {
 		t.Fatalf("compaction called the decision model: calls=%d", got)
 	}

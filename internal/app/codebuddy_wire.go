@@ -388,11 +388,22 @@ func collectChatCompletion(ctx context.Context, reader io.Reader, onEvent func(*
 }
 
 func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Response, headers http.Header, w http.ResponseWriter, stats *streamReadStats) (*fwResult, float64, error) {
-	body, parser, err := collectCodeBuddyCompletion(reqCtx.ctx, resp.Body, func(parser *sseUsageParser) {
+	normalize := normalizeCodeBuddySSEEvent
+	summaryFinished := false
+	if reqCtx.responsesCompaction != nil {
+		normalize = func(raw []byte) []byte {
+			normalized := normalizeCodeBuddySSEEvent(raw)
+			if responsesCompactionSummaryComplete(protocol.OpenAI, sseEventData(normalized)) {
+				summaryFinished = true
+			}
+			return normalized
+		}
+	}
+	body, parser, err := collectChatCompletion(reqCtx.ctx, resp.Body, func(parser *sseUsageParser) {
 		if shouldMarkUpstreamFirstByte(parser) {
 			markFirstStreamResponse(reqCtx, stats)
 		}
-	})
+	}, normalize, "CodeBuddy")
 	result := &fwResult{Status: resp.StatusCode, UpstreamStatus: resp.StatusCode, Header: headers, FirstByteTime: responseFirstByteSec(reqCtx, stats), BytesReceived: stats.totalBytes}
 	populateFWResultFromUsageParser(result, parser)
 	if result.SSEErrorEvent != nil {
@@ -403,6 +414,22 @@ func (s *Server) handleCodeBuddyNonStream(reqCtx *requestContext, resp *http.Res
 			result.StreamDiagMsg = err.Error()
 		}
 		return result, reqCtx.Duration().Seconds(), err
+	}
+	if reqCtx.responsesCompaction != nil {
+		// The ordinary collector permits [DONE] without a finish_reason. A
+		// context capsule must only be produced after an actual successful stop.
+		if !parser.IsStreamComplete() || !summaryFinished {
+			result.StreamDiagMsg = "CodeBuddy compaction summary ended without a successful stop"
+			return result, reqCtx.Duration().Seconds(), errors.New(result.StreamDiagMsg)
+		}
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.Header = headers.Clone()
+		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = int64(len(body))
+		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, resp.Header, w, string(protocol.OpenAI), stats)
 	}
 	plan := reqCtx.transformPlan
 	if plan.NeedsTransform {

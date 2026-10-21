@@ -29,6 +29,7 @@ type requestContext struct {
 	streamIdleTimeout             time.Duration
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
+	responsesCompaction           *responsesCompactionRequest
 	openCodeFree                  bool
 	codeBuddyOAuth                bool
 	antigravityOAuth              bool
@@ -48,6 +49,13 @@ type requestContext struct {
 	firstByteTimedOut             atomic.Bool
 	streamTimedOut                atomic.Bool
 	streamIdleTimedOut            atomic.Bool
+}
+
+// The summary uses a non-streaming upstream request; the client keeps its
+// original Responses transport and endpoint contract.
+type responsesCompactionRequest struct {
+	stream          bool
+	compactEndpoint bool
 }
 
 // newRequestContextForStreaming 创建请求上下文（处理超时控制）

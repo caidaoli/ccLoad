@@ -1469,7 +1469,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) {
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.responsesCompaction != nil) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -1671,6 +1671,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.CodexHasCredits = parser.GetCodexHasCredits()
 
+	if reqCtx.responsesCompaction != nil && !responsesCompactionSummaryComplete(protocol.Protocol(upstreamProtocol), responseBody) {
+		result.Body = []byte("compaction summary did not finish successfully")
+		return result, reqCtx.Duration().Seconds(), fmt.Errorf("%w: %s", util.ErrUpstreamInvalidResponse, result.Body)
+	}
+
 	var translatedBody []byte
 	if reqCtx.antigravityOAuth {
 		translatedBody, err = translateAntigravityResponseNonStream(
@@ -1697,12 +1702,31 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), err
 	}
 
+	if reqCtx.responsesCompaction != nil {
+		translatedBody, err = buildResponsesCompactionResponse(translatedBody, reqCtx.responsesCompaction.compactEndpoint)
+		if err != nil {
+			result.Body = []byte(err.Error())
+			return result, reqCtx.Duration().Seconds(), fmt.Errorf("%w: %w", util.ErrUpstreamInvalidResponse, err)
+		}
+		result.ResponsesTurnResult = responsesWebsocketTurnFromResponse(gjson.ParseBytes(translatedBody))
+		result.HasResponsesTurnResult = true
+	}
+
 	reqCtx.antigravityReplay.captureJSON(translatedBody)
 
 	translatedHeader := resp.Header.Clone()
 	translatedHeader.Set("Content-Type", "application/json")
 	translatedHeader.Del("Content-Encoding")
 	translatedHeader.Del("Content-Length")
+
+	if reqCtx.responsesCompaction != nil && reqCtx.responsesCompaction.stream {
+		chunks, err := responsesCompactionStream(translatedBody)
+		if err != nil {
+			return result, reqCtx.Duration().Seconds(), err
+		}
+		translatedHeader.Set("Content-Type", "text/event-stream")
+		translatedBody = bytes.Join(chunks, nil)
+	}
 
 	disableResponseWriteTimeout(w, "非流式")
 
@@ -1711,7 +1735,13 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	headerErr := responseHeaderWriteError(w)
 	committed := headerErr == nil
 	if committed {
-		_, _ = w.Write(translatedBody)
+		_, writeErr := w.Write(translatedBody)
+		if reqCtx.responsesCompaction != nil {
+			headerErr = writeErr
+			if reqCtx.responsesCompaction.stream && headerErr == nil {
+				headerErr = http.NewResponseController(w).Flush()
+			}
+		}
 	}
 
 	result.ResponseCommitted = committed
@@ -2431,6 +2461,53 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	replayBodyRulesApplied bool,
 	wireAliases upstreamWireAliases,
 ) (*fwResult, float64, error) {
+	clientBody := plan.OriginalBody
+	var compaction *responsesCompactionRequest
+	if plan.ClientProtocol == protocol.Codex {
+		expanded, err := expandResponsesCompaction(plan.TranslatedBody)
+		if err != nil {
+			return nil, 0, &protocol.RequestTranslationError{From: plan.ClientProtocol, To: plan.UpstreamProtocol, Err: err}
+		}
+		plan.TranslatedBody = expanded
+		if plan.NeedsTransform {
+			for _, item := range gjson.GetBytes(expanded, "input").Array() {
+				if typ := item.Get("type").String(); typ == "compaction" || typ == "compaction_summary" {
+					return nil, 0, &protocol.RequestTranslationError{
+						From: plan.ClientProtocol, To: plan.UpstreamProtocol,
+						Err: errors.New("cannot restore foreign compaction history for protocol conversion; use its original Responses provider or resend the full conversation"),
+					}
+				}
+			}
+		}
+		if native != nil {
+			incremental, err := expandResponsesCompaction(native.incrementalBody)
+			if err != nil {
+				return nil, 0, &protocol.RequestTranslationError{From: plan.ClientProtocol, To: plan.UpstreamProtocol, Err: err}
+			}
+			copyAttempt := *native
+			copyAttempt.incrementalBody = incremental
+			native = &copyAttempt
+		}
+		if plan.NeedsTransform && responsesCompactionRequested(plan.OriginalPath, clientBody) {
+			compaction = &responsesCompactionRequest{
+				stream:          plan.Streaming,
+				compactEndpoint: strings.HasSuffix(strings.TrimRight(plan.OriginalPath, "/"), "/responses/compact"),
+			}
+			summarySource := plan.TranslatedBody
+			if translatedRequestOverride != nil {
+				// An in-place retry already has a finalized summary wire body.
+				summarySource = clientBody
+			}
+			summary, err := prepareResponsesCompactionSummary(summarySource)
+			if err != nil {
+				return nil, 0, &protocol.RequestTranslationError{From: plan.ClientProtocol, To: plan.UpstreamProtocol, Err: err}
+			}
+			plan.OriginalBody = summary
+			plan.TranslatedBody = summary
+			plan.Streaming = false
+			plan.UpstreamPath = buildCodexResponsesPath()
+		}
+	}
 	if plan.ClientProtocol == protocol.Codex && plan.NeedsTransform &&
 		strings.TrimSpace(gjson.GetBytes(plan.TranslatedBody, "previous_response_id").String()) != "" {
 		return nil, 0, &protocol.RequestTranslationError{
@@ -2459,10 +2536,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		reqCtx.isStreaming = plan.Streaming
 	}
 	reqCtx.openCodeFree = openCodeFree
+	reqCtx.responsesCompaction = compaction
 	reqCtx.transformPlan = plan
 	reqCtx.clientProtocol = plan.ClientProtocol
 	reqCtx.upstreamProtocol = plan.UpstreamProtocol
-	reqCtx.originalBody = plan.OriginalBody
+	reqCtx.originalBody = clientBody
 	reqCtx.translatedBody = plan.TranslatedBody
 	reqCtx.originalModel = plan.ResponseModel()
 	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
@@ -3193,6 +3271,12 @@ func (s *Server) forwardAttempt(
 			succeeded:  false,
 			nextAction: cooldown.ActionRetryChannel,
 		}, cooldown.ActionRetryChannel, nil
+	}
+	if plan.ClientProtocol == protocol.Codex && plan.NeedsTransform &&
+		responsesCompactionRequested(plan.OriginalPath, plan.OriginalBody) {
+		// Keep the complete, replayable source for in-place wire repair retries;
+		// the client's original body may contain only previous_response_id.
+		plan.OriginalBody = bodyToSend
 	}
 	var nativeAttempt *nativeCodexWebsocketAttempt
 	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && !cfg.UsesZedOAuth() && upstreamProtocol == protocol.Codex &&

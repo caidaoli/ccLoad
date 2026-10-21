@@ -1954,6 +1954,104 @@ func TestResponsesCompactEndpointStaysOnHTTP(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketOpenAICompactionRoundTrip(t *testing.T) {
+	t.Parallel()
+	requests := make(chan []byte, 2)
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- body
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("openai compact path=%q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"summary from openai\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4,\"total_tokens\":15}}")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-continued\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-continued\",\"choices\":[{\"delta\":{\"content\":\"continued\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-continued\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "openai-ws-compact", upstreamProtocol: "openai", models: "gpt-test", apiKey: "test-key", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set compact websocket deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "stream": true,
+		"tools":       []any{map[string]any{"type": "function", "name": "unused", "parameters": map[string]any{"type": "object"}}},
+		"tool_choice": "auto",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "prior websocket history"},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "websocket tool result"},
+			map[string]any{"type": "compaction_trigger"},
+		},
+	}); err != nil {
+		t.Fatalf("write websocket compaction request: %v", err)
+	}
+	var types []string
+	var capsule string
+	previousResponseID := ""
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("read websocket compaction response: %v", err)
+		}
+		eventType, _ := event["type"].(string)
+		types = append(types, eventType)
+		if eventType == "response.output_item.done" {
+			item, _ := event["item"].(map[string]any)
+			if item["type"] == "compaction" {
+				capsule, _ = item["encrypted_content"].(string)
+			}
+		}
+		if eventType == "response.completed" {
+			response, _ := event["response"].(map[string]any)
+			previousResponseID, _ = response["id"].(string)
+			break
+		}
+		if eventType == "error" {
+			t.Fatalf("websocket compaction error: %#v", event)
+		}
+	}
+	wantTypes := "response.created,response.in_progress,response.output_item.added,response.output_item.done,response.completed"
+	if strings.Join(types, ",") != wantTypes || !strings.HasPrefix(capsule, "ccload-compact-v1:") || previousResponseID == "" {
+		t.Fatalf("websocket compaction events=%v capsule=%q previous_response_id=%q", types, capsule, previousResponseID)
+	}
+	first := <-requests
+	if gjson.GetBytes(first, "stream").Bool() || gjson.GetBytes(first, "tools").Exists() ||
+		gjson.GetBytes(first, "tool_choice").Exists() || !bytes.Contains(first, []byte("websocket tool result")) {
+		t.Fatalf("unexpected OpenAI summary request: %s", first)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": previousResponseID,
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "continue websocket session"},
+		},
+	}); err != nil {
+		t.Fatalf("write websocket continuation: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	second := <-requests
+	if calls.Load() != 2 || !gjson.GetBytes(second, "stream").Bool() ||
+		!bytes.Contains(second, []byte("summary from openai")) ||
+		bytes.Contains(second, []byte("ccload-compact-v1:")) ||
+		bytes.Contains(second, []byte("prior websocket history")) ||
+		bytes.Contains(second, []byte("compaction_trigger")) {
+		t.Fatalf("continuation did not expand compacted websocket history: calls=%d body=%s", calls.Load(), second)
+	}
+}
+
 func TestBuildCodexWebsocketRequestBodySanitizesInputItemIDs(t *testing.T) {
 	t.Parallel()
 	longReasoningID := "rs_" + strings.Repeat("r", 64)

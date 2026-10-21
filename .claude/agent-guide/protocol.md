@@ -8,6 +8,8 @@
 - `builtin/cliproxy_adapter.go` 只处理 ccLoad 通用边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只允许放从 CLIProxyAPI 同步的纯转换核心和 allowlist provider adapter,实际已导入状态以 `protocol/cliproxy/UPSTREAM.md` 为准
 - 不要把上游 auth/config/routing/cache service/plugin/executor/network 代码搬进来,也不要改成运行时 Go module 依赖;来源 commit、provider allowlist、许可证和同步步骤以 `protocol/cliproxy/UPSTREAM.md` 与仓库 Skill 为准
 - `RequestTranslationError` 表示本地转换无法表示该请求:按协议能力缺失处理,不冷却,继续探测其他协议或渠道,没有候选能表示时以 HTTP 400 结束;不要把它伪装成上游故障
+- **Responses 跨协议压缩**由 app 的 `responses_compaction.go` 与转发层执行，不属于同步转换核心：`/responses/compact` 或 input 中的 `compaction_trigger` 转 OpenAI Chat/Anthropic/Gemini 时，先用完整历史生成非流摘要，再返回单个 `compaction` 条目；HTTP 流与 WebSocket 使用标准 Responses 事件。摘要请求删除工具声明、强制工具选择与输出格式约束，工具历史转文本，不能丢弃未知压缩密文；缺少完整历史、摘要为空、截断或没有源协议成功终态时不得报告成功。原生 Responses 压缩仍透传。
+- ccLoad 自有压缩条目的 `encrypted_content` 使用 `ccload-compact-v1:` 加 base64url JSON 摘要，仅是可跨重启恢复的传输封装，**不是加密或认证**。发送前只解包此格式为普通 user 上下文，包括切换到原生 Responses 渠道；不提升为 system/developer 指令。代理跨协议转发遇到其他来源的 `compaction`/`compaction_summary` 按能力不足处理，继续尝试原生渠道，不沿用底层 Chat 转换器静默丢弃密文的行为。来源参考 CLIProxyAPI `f0f13cfda531da02a077748512f78a07679efd08` 的摘要执行流程及 sub2api `42bc7f6cffe24bcb471608e48e66b4a0afa1f882` 的原生压缩入口区分；本次不更新转换核心快照。
 - 转换核心丢弃无法发送的内容块后,若某个 user turn 不再有可发送内容(`common.UserTurnDrops` → `UnsupportedPartError`),必须返回错误并由 Registry 包装为 `RequestTranslationError`,不得静默发出空回合;同回合仍有实际文本或附件时只丢弃该块。ccLoad 保留远程 URL、`file_id`、`file_url` 等可透传引用,只有既无字节也无引用的块才算无法发送
 - Registry 边界测试定义 ccLoad 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
 - Anthropic 转 Responses 的原生 JSON 与 SSE 都把 `max_tokens` 映射为 `incomplete`;流式 output item 在下一个内容块或 message stop 时确定最终状态,不得在得知截断原因前报告完成
