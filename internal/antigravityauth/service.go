@@ -24,19 +24,30 @@ const (
 	DefaultAuthorizationURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	DefaultTokenURL         = "https://oauth2.googleapis.com/token"
 	DefaultUserInfoURL      = "https://www.googleapis.com/oauth2/v2/userinfo?alt=json"
-	DefaultAPIBaseURL       = "https://cloudcode-pa.googleapis.com"
 	DefaultDailyAPIBaseURL  = "https://daily-cloudcode-pa.googleapis.com"
 	DefaultClientID         = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	DefaultClientSecret     = "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"
 	DefaultRedirectURI      = "http://localhost:51121/oauth-callback"
-	DefaultUserAgent        = "antigravity/hub/2.9.1 darwin/arm64"
 	DefaultManifestURL      = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 	defaultRequestTimeout   = 30 * time.Second
 	maxResponseBytes        = 1 << 20
 	maxManifestBytes        = 4096
 	apiVersion              = "v1internal"
-	antigravityHubPlatform  = "darwin/arm64"
+	antigravityHubPlatform  = "os_type=darwin; arch=arm64"
+	// fallbackHubVersion is reported until the Hub manifest is fetched. Cloud
+	// Code rejects newer models for clients below 2.23.0.
+	fallbackHubVersion = "2.24.0"
 )
+
+// Changelists belong to specific Hub releases; keep the fallback release listed.
+// Unknown releases report their manifest version without claiming another CL.
+var hubChangelists = map[string]string{
+	"2.23.0": "998057262",
+	"2.24.0": "1000335682",
+}
+
+// DefaultUserAgent is the Hub User-Agent used before the manifest is fetched.
+var DefaultUserAgent = hubUserAgent(fallbackHubVersion)
 
 var defaultScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -92,7 +103,6 @@ type Service struct {
 	AuthorizationURL    string
 	TokenURL            string
 	UserInfoURL         string
-	APIBaseURL          string
 	DailyAPIBaseURL     string
 	ClientID            string
 	ClientSecret        string
@@ -142,7 +152,7 @@ func NewService(client *http.Client) *Service {
 	}
 	return &Service{
 		Client: client, AuthorizationURL: DefaultAuthorizationURL, TokenURL: DefaultTokenURL,
-		UserInfoURL: DefaultUserInfoURL, APIBaseURL: DefaultAPIBaseURL, DailyAPIBaseURL: DefaultDailyAPIBaseURL,
+		UserInfoURL: DefaultUserInfoURL, DailyAPIBaseURL: DefaultDailyAPIBaseURL,
 		ClientID: DefaultClientID, ClientSecret: DefaultClientSecret, RedirectURI: DefaultRedirectURI,
 		UserAgent: DefaultUserAgent, ManifestURL: DefaultManifestURL, Sleep: sleepContext, OnboardPollAttempts: 5,
 	}
@@ -186,8 +196,16 @@ func (s *Service) RefreshUserAgent(ctx context.Context) error {
 	if !validVersion(version) {
 		return fmt.Errorf("antigravity manifest returned invalid version %q", version)
 	}
-	s.UserAgent = fmt.Sprintf("antigravity/hub/%s %s", version, antigravityHubPlatform)
+	s.UserAgent = hubUserAgent(version)
 	return nil
+}
+
+func hubUserAgent(version string) string {
+	metadata := "aidev_client; " + antigravityHubPlatform
+	if changelist := hubChangelists[version]; changelist != "" {
+		metadata += "; cl=" + changelist
+	}
+	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
 }
 
 // RequestUserAgent returns the discovered User-Agent or the production fallback.
@@ -196,6 +214,20 @@ func (s *Service) RequestUserAgent() string {
 		return DefaultUserAgent
 	}
 	return strings.TrimSpace(s.UserAgent)
+}
+
+// hubVersion reports the client version carried by the request User-Agent, as
+// onboarding metadata must agree with it.
+func (s *Service) hubVersion() string {
+	rest, ok := strings.CutPrefix(s.RequestUserAgent(), "antigravity/hub/")
+	if !ok {
+		return fallbackHubVersion
+	}
+	version, _, _ := strings.Cut(rest, " ")
+	if !validVersion(version) {
+		return fallbackHubVersion
+	}
+	return version
 }
 
 func validVersion(version string) bool {
@@ -350,26 +382,37 @@ func (s *Service) completeCredentialMetadata(ctx context.Context, credential *Cr
 		}
 		credential.Email = email
 	}
-	{
-		projectID, err := s.FetchProjectID(ctx, credential.AccessToken)
-		if err != nil {
-			return err
-		}
-		credential.ProjectID = projectID
+	sampledAt := time.Now().UTC()
+	body, err := s.loadCodeAssist(ctx, credential.AccessToken)
+	if err != nil {
+		return err
 	}
-	if credential.ProjectID == "" {
+	projectID, err := s.projectIDFromCodeAssist(ctx, credential.AccessToken, body)
+	if err != nil {
+		return err
+	}
+	if projectID == "" {
 		return errors.New("project discovery: Antigravity returned an empty project_id")
 	}
-	paidTier, credits, err := s.FetchSubscription(ctx, credential.AccessToken)
+	credential.ProjectID = projectID
+	paidTier, credits, err := parseSubscription(body, sampledAt)
 	if err != nil {
-		if AccessTokenRejected(err) {
-			return err
-		}
 		return nil // Subscription metadata is optional; preserve the previous value.
 	}
 	credential.PaidTier = paidTier
 	credential.Credits = credits
 	return nil
+}
+
+// loadCodeAssist targets the daily endpoint for both project discovery and
+// subscription metadata, matching the Hub client.
+func (s *Service) loadCodeAssist(ctx context.Context, accessToken string) ([]byte, error) {
+	request := map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}}
+	body, err := s.doJSON(ctx, http.MethodPost, strings.TrimRight(s.DailyAPIBaseURL, "/")+"/"+apiVersion+":loadCodeAssist", accessToken, request, false)
+	if err != nil {
+		return nil, fmt.Errorf("load Antigravity Code Assist: %w", err)
+	}
+	return body, nil
 }
 
 // FetchPaidTier returns the current paid subscription tier from the daily
@@ -384,11 +427,14 @@ func (s *Service) FetchPaidTier(ctx context.Context, accessToken string) (*PaidT
 // amounts remain unknown and cannot authorize spending credits.
 func (s *Service) FetchSubscription(ctx context.Context, accessToken string) (*PaidTier, *Credits, error) {
 	sampledAt := time.Now().UTC()
-	request := map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}}
-	body, err := s.doJSON(ctx, http.MethodPost, strings.TrimRight(s.DailyAPIBaseURL, "/")+"/"+apiVersion+":loadCodeAssist", accessToken, request, false)
+	body, err := s.loadCodeAssist(ctx, accessToken)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load Antigravity paid tier: %w", err)
+		return nil, nil, err
 	}
+	return parseSubscription(body, sampledAt)
+}
+
+func parseSubscription(body []byte, sampledAt time.Time) (*PaidTier, *Credits, error) {
 	var response struct {
 		PaidTier *PaidTier `json:"paidTier"`
 	}
@@ -462,11 +508,14 @@ func (s *Service) FetchUserInfo(ctx context.Context, accessToken string) (string
 
 // FetchProjectID resolves the Cloud Code companion project, onboarding when required.
 func (s *Service) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
-	request := map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}}
-	body, err := s.doJSON(ctx, http.MethodPost, strings.TrimRight(s.APIBaseURL, "/")+"/"+apiVersion+":loadCodeAssist", accessToken, request, false)
+	body, err := s.loadCodeAssist(ctx, accessToken)
 	if err != nil {
-		return "", fmt.Errorf("load Antigravity Code Assist: %w", err)
+		return "", err
 	}
+	return s.projectIDFromCodeAssist(ctx, accessToken, body)
+}
+
+func (s *Service) projectIDFromCodeAssist(ctx context.Context, accessToken string, body []byte) (string, error) {
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		return "", fmt.Errorf("decode Antigravity Code Assist: %w", err)
@@ -533,7 +582,7 @@ func (s *Service) onboardUser(ctx context.Context, accessToken, tierID string) (
 	request := map[string]any{
 		"tier_id": tierID,
 		"metadata": map[string]string{
-			"ide_type": "ANTIGRAVITY", "ide_version": "2.2.1", "ide_name": "antigravity",
+			"ide_type": "ANTIGRAVITY", "ide_version": s.hubVersion(), "ide_name": "antigravity",
 		},
 	}
 	endpoint := strings.TrimRight(s.DailyAPIBaseURL, "/") + "/" + apiVersion + ":onboardUser"
@@ -625,10 +674,12 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	userAgent := s.RequestUserAgent()
 	if onboard {
+		req.Header.Set("Accept", "*/*")
 		userAgent += " google-api-nodejs-client/10.3.0"
 		req.Header.Set("X-Goog-Api-Client", "gl-node/22.21.1")
 	}
@@ -659,9 +710,9 @@ func (s *Service) validate() error {
 		return errors.New("oauth: Antigravity service is unavailable")
 	}
 	if strings.TrimSpace(s.AuthorizationURL) == "" || strings.TrimSpace(s.TokenURL) == "" ||
-		strings.TrimSpace(s.UserInfoURL) == "" || strings.TrimSpace(s.APIBaseURL) == "" ||
-		strings.TrimSpace(s.DailyAPIBaseURL) == "" || strings.TrimSpace(s.ClientID) == "" ||
-		strings.TrimSpace(s.ClientSecret) == "" || strings.TrimSpace(s.RedirectURI) == "" {
+		strings.TrimSpace(s.UserInfoURL) == "" || strings.TrimSpace(s.DailyAPIBaseURL) == "" ||
+		strings.TrimSpace(s.ClientID) == "" || strings.TrimSpace(s.ClientSecret) == "" ||
+		strings.TrimSpace(s.RedirectURI) == "" {
 		return errors.New("oauth: Antigravity service configuration is incomplete")
 	}
 	if s.Sleep == nil {

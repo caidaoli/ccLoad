@@ -710,7 +710,6 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 	service := antigravityauth.NewService(server.Client())
 	service.TokenURL = server.URL + "/token"
 	service.UserInfoURL = server.URL + "/userinfo"
-	service.APIBaseURL = server.URL
 	service.DailyAPIBaseURL = server.URL
 	return service
 }
@@ -1870,7 +1869,6 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	service.AuthorizationURL = "https://accounts.example.test/authorize"
 	service.TokenURL = oauthServer.URL + "/token"
 	service.UserInfoURL = oauthServer.URL + "/userinfo"
-	service.APIBaseURL = oauthServer.URL
 	service.DailyAPIBaseURL = oauthServer.URL
 	manager := newAntigravityOAuthManager(service, store, nil)
 	manager.listenAddr = "127.0.0.1:0"
@@ -5424,7 +5422,6 @@ func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T)
 	})}
 	service := antigravityauth.NewService(client)
 	service.TokenURL = "https://oauth.test/token"
-	service.APIBaseURL = "https://api.test"
 	service.DailyAPIBaseURL = "https://api.test"
 	manager := newAntigravityCredentialManager(service, store, nil, nil)
 
@@ -5574,7 +5571,6 @@ func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *
 			})}
 			service := antigravityauth.NewService(client)
 			service.TokenURL = "https://oauth.test/token"
-			service.APIBaseURL = "https://api.test"
 			service.DailyAPIBaseURL = "https://api.test"
 			manager := newAntigravityCredentialManager(service, store, nil, nil)
 
@@ -7949,7 +7945,8 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	t.Parallel()
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
+	const discoveredUserAgent = "antigravity/hub/9.8.7 (aidev_client; os_type=darwin; arch=arm64)"
+	const quotaURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 	credential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-gravity-quota-secret", RefreshToken: "rt-gravity-quota-secret",
 		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), Email: "quota@example.com", ProjectID: "forward-bonus-fjkxm",
@@ -7983,7 +7980,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 				t.Errorf("loadCodeAssist User-Agent = %q", got)
 			}
 			responseBody = `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"25.5","minimumCreditAmountForUsage":"1"}]}}`
-		case antigravityUsageURL:
+		case quotaURL:
 			if got := request.Header.Get("User-Agent"); got != discoveredUserAgent {
 				t.Errorf("quota User-Agent = %q", got)
 			}
@@ -8043,7 +8040,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	if credits := response.Data.Credits; !credits.Available() || *credits.Balance != 25.5 || !credits.Fresh(time.Now()) {
 		t.Fatalf("missing credits snapshot: %+v", credits)
 	}
-	if len(requestURLs) != 2 || requestURLs[0] != antigravityauth.DefaultDailyAPIBaseURL+"/v1internal:loadCodeAssist" || requestURLs[1] != antigravityUsageURL {
+	if len(requestURLs) != 2 || requestURLs[0] != antigravityauth.DefaultDailyAPIBaseURL+"/v1internal:loadCodeAssist" || requestURLs[1] != quotaURL {
 		t.Fatalf("Antigravity usage request order = %v", requestURLs)
 	}
 	persisted, err := store.GetConfig(context.Background(), channel.ID)
@@ -8070,6 +8067,69 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	}
 	if windows[2].LimitName != "Claude and GPT models" || windows[2].Kind != "3p-weekly" || windows[2].RemainingPercent != 90 {
 		t.Fatalf("third-party weekly window = %#v", windows[2])
+	}
+}
+
+func TestHandleOAuthUsageAntigravityQuotaFollowsChannelEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name          string
+		configuredURL string
+		overrideURL   string
+		wantQuotaURL  string
+		wantLoadURL   string
+	}{
+		{
+			name: "legacy production URL uses daily", configuredURL: antigravityProdBaseURL,
+			wantQuotaURL: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+			wantLoadURL:  "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+		},
+		{
+			name: "custom channel URL", configuredURL: "https://gravity-relay.example.test/",
+			wantQuotaURL: "https://gravity-relay.example.test/v1internal:retrieveUserQuotaSummary",
+			wantLoadURL:  "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+		},
+		{
+			name: "global URL overrides channel URL", configuredURL: antigravityDailyBaseURL,
+			overrideURL:  "https://gravity-global.example.test",
+			wantQuotaURL: "https://gravity-global.example.test/v1internal:retrieveUserQuotaSummary",
+			wantLoadURL:  "https://gravity-global.example.test/v1internal:loadCodeAssist",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newInMemoryServerWithSettings(t, map[string]string{config.AntigravityURLSettingKey: tt.overrideURL})
+			var quotaURLs, loadURLs []string
+			server.antigravityClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				body := `{}`
+				if strings.HasSuffix(req.URL.Path, ":retrieveUserQuotaSummary") {
+					quotaURLs = append(quotaURLs, req.URL.String())
+					body = `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h","window":"5h","resetTime":"2026-08-06T17:07:55Z","remainingFraction":0.5}]}]}`
+				}
+				if strings.HasSuffix(req.URL.Path, ":loadCodeAssist") {
+					loadURLs = append(loadURLs, req.URL.String())
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(body)), Request: req,
+				}, nil
+			})}
+			cfg := createAntigravityOAuthChannelForAdminTest(t, server, tt.configuredURL)
+			channelID := fmt.Sprintf("%d", cfg.ID)
+			c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/"+channelID+"/oauth-usage", nil))
+			c.Params = gin.Params{{Key: "id", Value: channelID}}
+			server.HandleOAuthUsage(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+			}
+			if !reflect.DeepEqual(quotaURLs, []string{tt.wantQuotaURL}) {
+				t.Fatalf("quota URLs = %v, want %s", quotaURLs, tt.wantQuotaURL)
+			}
+			if !reflect.DeepEqual(loadURLs, []string{tt.wantLoadURL}) {
+				t.Fatalf("loadCodeAssist URLs = %v, want %s", loadURLs, tt.wantLoadURL)
+			}
+		})
 	}
 }
 

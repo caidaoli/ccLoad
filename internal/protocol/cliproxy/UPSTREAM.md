@@ -243,7 +243,8 @@ or detached text carriers within caller/session/account/model/origin/protocol
 boundaries, commits only complete successful responses, and invalidates the scope
 on signature rejection. Explicit carriers remain authoritative. No upstream
 runtime cache or executor is imported, and signature-400 history-stripping retries
-are removed. The Hub UA fallback is `2.9.1` in the app auth service.
+are removed. The app auth service follows the upstream `02e9e852` Hub UA contract: release
+changelists for known versions and a `2.24.0` fallback.
 
 ## Provider adapter snapshot
 

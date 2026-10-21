@@ -24,19 +24,20 @@ func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
 		if got := r.Header.Get("Cache-Control"); got != "no-cache" {
 			t.Errorf("manifest Cache-Control = %q", got)
 		}
-		_, _ = w.Write([]byte("version: 2.9.3\nfiles: []\n"))
+		_, _ = w.Write([]byte("version: 2.25.0\nfiles: []\n"))
 	}))
 	defer server.Close()
 
 	service := NewService(server.Client())
-	if service.RequestUserAgent() != "antigravity/hub/2.9.1 darwin/arm64" {
+	if service.RequestUserAgent() != "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)" {
 		t.Fatalf("fallback User-Agent = %q", service.RequestUserAgent())
 	}
 	service.ManifestURL = server.URL + "/latest-arm64-mac.yml"
 	if err := service.RefreshUserAgent(context.Background()); err != nil {
 		t.Fatalf("RefreshUserAgent: %v", err)
 	}
-	if got := service.RequestUserAgent(); got != "antigravity/hub/2.9.3 darwin/arm64" {
+	// A release without a known changelist must not claim another build's CL.
+	if got := service.RequestUserAgent(); got != "antigravity/hub/2.25.0 (aidev_client; os_type=darwin; arch=arm64)" {
 		t.Fatalf("discovered User-Agent = %q", got)
 	}
 }
@@ -117,9 +118,15 @@ func TestServiceAuthorizationExchangeAndRefreshContracts(t *testing.T) {
 			_, _ = fmt.Fprintf(w, `{"access_token":"at-%d","refresh_token":"rt-%d","expires_in":3600}`, len(grants), len(grants))
 		case "/userinfo":
 			assertBearer(t, r, "at-1")
+			if r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "" {
+				t.Errorf("userinfo headers = %v", r.Header)
+			}
 			_, _ = w.Write([]byte(`{"email":"user@example.com"}`))
 		case "/v1internal:loadCodeAssist":
 			assertBearer(t, r, "at-1")
+			if r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "application/json" {
+				t.Errorf("loadCodeAssist headers = %v", r.Header)
+			}
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode loadCodeAssist: %v", err)
@@ -168,6 +175,7 @@ func TestServiceAuthorizationExchangeAndRefreshContracts(t *testing.T) {
 }
 
 func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
+	const hubUA = "antigravity/hub/2.25.0 (aidev_client; os_type=darwin; arch=arm64)"
 	var onboardCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -176,14 +184,16 @@ func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
 		case "/v1internal:onboardUser":
 			onboardCalls++
 			var request struct {
-				TierID string `json:"tier_id"`
+				TierID   string            `json:"tier_id"`
+				Metadata map[string]string `json:"metadata"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatalf("decode onboardUser request: %v", err)
 			}
-			if request.TierID != "current-tier" || r.Header.Get("X-Goog-Api-Client") != "gl-node/22.21.1" ||
-				!strings.Contains(r.Header.Get("User-Agent"), "google-api-nodejs-client/10.3.0") {
-				t.Fatalf("onboardUser contract: tier=%q headers=%v", request.TierID, r.Header)
+			if request.TierID != "current-tier" || request.Metadata["ide_version"] != "2.25.0" ||
+				r.Header.Get("Accept") != "*/*" || r.Header.Get("X-Goog-Api-Client") != "gl-node/22.21.1" ||
+				r.Header.Get("User-Agent") != hubUA+" google-api-nodejs-client/10.3.0" {
+				t.Fatalf("onboardUser contract: request=%+v headers=%v", request, r.Header)
 			}
 			if onboardCalls == 1 {
 				_, _ = w.Write([]byte(`{"done":false}`))
@@ -196,6 +206,7 @@ func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
 	}))
 	defer server.Close()
 	service := testService(server)
+	service.UserAgent = hubUA
 	service.Sleep = func(context.Context, time.Duration) error { return nil }
 	projectID, err := service.FetchProjectID(context.Background(), "at")
 	if err != nil || projectID != "project-onboard" || onboardCalls != 2 {
@@ -204,13 +215,11 @@ func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
 }
 
 func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
-	var refreshCalls int
+	var refreshCalls, loadCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/userinfo":
 			_, _ = io.WriteString(w, `{"email":"user@example.com"}`)
-		case "/v1internal:loadCodeAssist":
-			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project-1"}`)
 		case "/token":
 			refreshCalls++
 			if err := r.ParseForm(); err != nil {
@@ -221,6 +230,7 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt-rotated","expires_in":3600}`))
 		case "/daily/v1internal:loadCodeAssist":
+			loadCalls++
 			assertBearer(t, r, "at-refreshed")
 			if got := r.Header.Get("User-Agent"); got != DefaultUserAgent {
 				t.Errorf("User-Agent = %q", got)
@@ -232,7 +242,7 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 			if body["metadata"]["ideType"] != "ANTIGRAVITY" {
 				t.Fatalf("loadCodeAssist body = %#v", body)
 			}
-			_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","description":"not persisted"}}`))
+			_, _ = w.Write([]byte(`{"cloudaicompanionProject":"project-1","paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","description":"not persisted"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -251,6 +261,10 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 	if refreshCalls != 1 || credential.AccessToken != "at-refreshed" || credential.RefreshToken != "rt-rotated" {
 		t.Fatalf("refreshed credential = %#v, refresh calls = %d", credential, refreshCalls)
 	}
+	// Project discovery and subscription metadata share one daily loadCodeAssist.
+	if loadCalls != 1 || credential.ProjectID != "project-1" {
+		t.Fatalf("project = %q, loadCodeAssist calls = %d", credential.ProjectID, loadCalls)
+	}
 	if credential.PaidTier == nil || credential.PaidTier.ID != "g1-pro-tier" ||
 		credential.PaidTier.DisplayName() != "Google AI Pro" {
 		t.Fatalf("paid tier = %#v", credential.PaidTier)
@@ -263,8 +277,6 @@ func TestServiceCompleteCredentialRefreshesRejectedAccessToken(t *testing.T) {
 		switch r.URL.Path {
 		case "/userinfo":
 			_, _ = io.WriteString(w, `{"email":"user@example.com"}`)
-		case "/v1internal:loadCodeAssist":
-			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"project-1"}`)
 		case "/token":
 			refreshCalls++
 			_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt-rotated","expires_in":3600}`))
@@ -274,7 +286,7 @@ func TestServiceCompleteCredentialRefreshesRejectedAccessToken(t *testing.T) {
 				return
 			}
 			assertBearer(t, r, "at-refreshed")
-			_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`))
+			_, _ = w.Write([]byte(`{"cloudaicompanionProject":"project-1","paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -343,7 +355,6 @@ func testService(server *httptest.Server) *Service {
 	service.AuthorizationURL = "https://accounts.example.test/authorize"
 	service.TokenURL = server.URL + "/token"
 	service.UserInfoURL = server.URL + "/userinfo"
-	service.APIBaseURL = server.URL
 	service.DailyAPIBaseURL = server.URL
 	service.ClientID = "client-test"
 	service.ClientSecret = "secret-test"

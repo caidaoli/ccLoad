@@ -359,6 +359,10 @@ func newServer(store storage.Store, logBatchTimeout time.Duration) *Server {
 		s.InvalidateChannelListCache()
 	})
 	s.antigravityService = antigravityauth.NewService(s.antigravityClient)
+	// ANTIGRAVITY_URL 重启生效；非空时 Cloud Code 元数据请求与数据请求同源。
+	if baseURL := strings.TrimSpace(configService.GetString(config.AntigravityURLSettingKey, "")); baseURL != "" {
+		s.antigravityService.DailyAPIBaseURL = baseURL
+	}
 	s.antigravityPromptMatcher = loadAntigravityPromptMatcher(configService)
 	s.antigravityCredentials = newAntigravityCredentialManager(s.antigravityService, store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()

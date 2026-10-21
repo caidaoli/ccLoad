@@ -35,7 +35,7 @@ const (
 	codexResetCreditConsumeURL = codexResetCreditsURL + "/consume"
 	codexUsageUserAgent        = codexUserAgent
 	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
-	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+	antigravityUsagePath       = "/v1internal:retrieveUserQuotaSummary"
 	oauthUsageTimeout          = 30 * time.Second
 	oauthUsageBatchWorkers     = 8
 	maxOAuthUsageBatchChannels = 1000
@@ -857,6 +857,7 @@ func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToke
 func requestAntigravityUsage(
 	ctx context.Context,
 	client *http.Client,
+	baseURL string,
 	credential *antigravityauth.Credential,
 	userAgent string,
 ) (*oauthUsageSummary, error) {
@@ -869,7 +870,8 @@ func requestAntigravityUsage(
 	if err != nil {
 		return nil, errors.New("usage: Antigravity request is unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, antigravityUsageURL, bytes.NewReader(requestBody))
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + antigravityUsagePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, errors.New("usage: Antigravity request is unavailable")
 	}
@@ -1917,7 +1919,7 @@ func oauthQuotaLedgerFollowsSample(quotaUsage *oauthcost.Usage, key string, samp
 }
 
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
-	cfg = s.withOAuthBaseURLOverride(cfg)
+	cfg = s.withOAuthBaseURLOverride(withAntigravityDefaultFallbackURLs(cfg))
 	switch {
 	case cfg.UsesCodeBuddyOAuth():
 		if s.codeBuddyCredentials == nil || s.codeBuddyService == nil {
@@ -1972,7 +1974,11 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		if err != nil && (credential == nil || credential.ProjectID == "" || credential.AccessToken == "" || errors.As(err, &refreshErr)) {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Antigravity credential refresh failed")
 		}
-		summary, usageErr := requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential, s.antigravityUserAgent())
+		baseURL := antigravityDailyBaseURL
+		if len(cfg.URLs) > 0 {
+			baseURL = cfg.URLs[0].URL
+		}
+		summary, usageErr := requestAntigravityUsage(ctx, s.getClientForChannel(cfg), baseURL, credential, s.antigravityUserAgent())
 		if summary != nil && err != nil {
 			summary.Warnings = append(summary.Warnings, "Antigravity subscription refresh failed")
 		}
