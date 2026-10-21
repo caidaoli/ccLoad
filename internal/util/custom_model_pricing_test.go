@@ -74,6 +74,32 @@ func TestParseCustomModelPricingNormalizesAndValidates(t *testing.T) {
 	}
 }
 
+func TestMiniMaxFlashCustomPricingJSON(t *testing.T) {
+	t.Cleanup(func() { _ = util.InstallCustomModelPricing(nil) })
+	input, output, cached := 2.0, 3.0, 0.0
+	data, err := json.Marshal(map[string]util.CustomModelPrice{
+		"MiniMax-M3.1-Flash": {InputPrice: &input, OutputPrice: &output, CacheReadPrice: &cached},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := util.InstallCustomModelPricingJSON(string(data)); err != nil {
+		t.Fatal(err)
+	}
+	if got := util.CalculateCostDetailed("MiniMax-M3.1-Flash", 1_000_000, 1_000_000, 1_000_000, 0, 0); math.Abs(got-5) > 1e-12 {
+		t.Fatalf("serialized custom Flash price = %v, want 5", got)
+	}
+	if system, ok := util.LookupSystemModelPricing("MiniMax-M3.1-Flash"); !ok || system.InputPrice != 0.15 || system.OutputPrice != 0.60 || system.CacheReadPrice != 0.015 {
+		t.Fatalf("system Flash price changed: %+v, found=%v", system, ok)
+	}
+	if err := util.InstallCustomModelPricingJSON("{}"); err != nil {
+		t.Fatal(err)
+	}
+	if got := util.CalculateCostDetailed("MiniMax-M3.1-Flash", 1_000_000, 1_000_000, 1_000_000, 0, 0); math.Abs(got-0.765) > 1e-12 {
+		t.Fatalf("restored Flash price = %v, want 0.765", got)
+	}
+}
+
 func TestCustomModelPricingLimits(t *testing.T) {
 	tooLarge := `{"model":{"input_price":` + strings.Repeat("1", util.MaxCustomModelPricingJSONBytes) + `}}`
 	if _, err := util.ParseCustomModelPricing(tooLarge); err == nil {
