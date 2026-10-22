@@ -702,6 +702,10 @@ var basePricing = map[string]ModelPricing{
 	"minimax-m2.1":   {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
 	"minimax-m2.5":   {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
 	"minimax-m2.7":   {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
+	// 来源: https://platform.minimax.io/docs/pricing/overview.md
+	"minimax-m3.1-flash": {
+		InputPrice: 0.15, OutputPrice: 0.60, CacheReadPrice: 0.015, HasCacheReadPrice: true,
+	},
 	"minimax-m3": {
 		InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.06, HasCacheReadPrice: true,
 		InputPriceHigh: 0.60, OutputPriceHigh: 2.40, CacheReadPriceHigh: 0.12,

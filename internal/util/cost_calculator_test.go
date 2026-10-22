@@ -1613,6 +1613,7 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 		{"minimax-m1", 0.40, 2.20},
 		{"minimax-m2", 0.255, 1.00},
 		{"minimax-m2.1", 0.29, 0.95},
+		{"minimax-m3.1-flash", 0.15, 0.60},
 	}
 
 	for _, tc := range testCases {
@@ -1628,6 +1629,13 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 	expected := 0.255 + 1.00
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("minimax-m2 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+
+	// Flash 的上下文窗口虽与 M3 相同，但不使用 M3 的长上下文加价。
+	flashCost := CalculateCostDetailed("MiniMax-M3.1-Flash-20261001", 1_000_000, 1_000_000, 1_000_000, 0, 0)
+	flashExpected := 0.15 + 0.60 + 0.015
+	if !floatEquals(flashCost, flashExpected, 0.000001) {
+		t.Errorf("MiniMax-M3.1-Flash 模糊匹配: 成本 = %.6f, 期望 %.6f", flashCost, flashExpected)
 	}
 
 	m3Tests := []struct {
