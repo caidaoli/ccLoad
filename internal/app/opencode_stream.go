@@ -91,8 +91,9 @@ func collectOpenCodeMessagesCompletion(ctx context.Context, reader io.Reader, on
 	if err != nil {
 		return nil, parser, err
 	}
-	if !stopped {
-		return nil, parser, errors.New("OpenCode stream ended without message_stop")
+	// message_delta.stop_reason 已是终态，message_stop 只是收尾。
+	if !parser.IsStreamComplete() {
+		return nil, parser, errors.New("OpenCode stream ended without stop_reason")
 	}
 	body, err := translatorcommon.NormalizeAnthropicResponse(transcript.Bytes())
 	if err != nil {

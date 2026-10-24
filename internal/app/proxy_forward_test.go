@@ -1347,6 +1347,32 @@ func TestHandleSuccessResponse_StreamDiagMsg_AnthropicMissingMessageStop(t *test
 	}
 }
 
+// Anthropic 的语义终态是 message_delta.stop_reason：之后断流不算截断；
+// 随后的 message_stop 仍要原样透传，不能读到 stop_reason 就停止读取。
+func TestHandleSuccessResponse_AnthropicStopReasonIsTerminal(t *testing.T) {
+	const (
+		delta     = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
+		nullDelta = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+		stop      = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	)
+	for _, tt := range []struct {
+		name     string
+		body     string
+		wantDiag bool
+	}{
+		{name: "stop_reason without message_stop", body: delta},
+		{name: "stop_reason then message_stop", body: delta + stop},
+		{name: "null stop_reason", body: nullDelta, wantDiag: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, got := runHandleSuccessResponse(t, tt.body, http.Header{"Content-Type": []string{"text/event-stream"}}, true, "anthropic")
+			if (res.StreamDiagMsg != "") != tt.wantDiag || got != tt.body {
+				t.Fatalf("StreamDiagMsg=%q body=%q, want diag=%v and passthrough %q", res.StreamDiagMsg, got, tt.wantDiag, tt.body)
+			}
+		})
+	}
+}
+
 // TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage 测试非anthropic渠道无usage不设置诊断
 func TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage(t *testing.T) {
 	// 非anthropic渠道流式响应无usage是正常的

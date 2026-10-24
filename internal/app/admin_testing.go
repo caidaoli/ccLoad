@@ -2629,7 +2629,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			if requestPlan.codeBuddyOAuth {
 				return codeBuddyDone
 			}
-			return upstreamParser.IsStreamComplete() && translatedComplete
+			return upstreamParser.IsStreamEnded() && translatedComplete
 		},
 	)
 	if streamErr != nil {

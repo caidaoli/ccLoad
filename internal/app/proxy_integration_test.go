@@ -4376,7 +4376,9 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 						t.Fatalf("invalid SSE JSON payload: %q", data)
 					}
 					if gjson.GetBytes(data, "error").Exists() || gjson.GetBytes(data, "response").Exists() {
-						if event != "error" {
+						// 只允许客户端协议内补写的错误帧：Claude 是 error 事件，OpenAI Chat 是
+						// upstream_stream_interrupted 数据帧；Gemini 原样的后端错误帧不得外泄。
+						if event != "error" && gjson.GetBytes(data, "error.code").String() != "upstream_stream_interrupted" {
 							t.Fatalf("backend frame leaked to client: %s", data)
 						}
 						errorEvents++
@@ -4389,7 +4391,7 @@ func TestProxy_AntigravityStreamErrorFrames(t *testing.T) {
 				if strings.Join(texts, "") != tc.wantText {
 					t.Fatalf("stream text=%q, want %q: %s", texts, tc.wantText, response.Body.String())
 				}
-				wantErrorEvent := adapter.name == "Claude" && tc.wantLog != http.StatusOK && !tc.wantFallback
+				wantErrorEvent := tc.wantLog != http.StatusOK && !tc.wantFallback
 				if (errorEvents > 0) != wantErrorEvent {
 					t.Fatalf("error events=%d, want present=%v: %s", errorEvents, wantErrorEvent, response.Body.String())
 				}
@@ -12960,9 +12962,10 @@ func TestProxy_Success_Streaming_AnthropicMessageStopWithoutEOF(t *testing.T) {
 	}
 }
 
-// 跨协议转换流在上游与转换输出都没有终态时干净 EOF：Claude/Responses 客户端
-// 拿到的是半截回复，必须判 599 并冷却；Gemini 的 promptFeedback.blockReason
-// 与不带 usage 的 finishReason 是合法终态，客户端要收到完整终止序列。
+// 跨协议转换流在上游与转换输出都没有终态时干净 EOF：Claude/Responses/OpenAI Chat 客户端
+// 拿到的是半截回复，必须判 599 并冷却；Gemini 的 promptFeedback.blockReason、
+// 不带 usage 的 finishReason 与 Anthropic 不带 message_stop 的 stop_reason 是合法终态，
+// 客户端要收到完整终止序列。
 func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -12972,6 +12975,12 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 		geminiPartial    = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]}}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
 		geminiBlocked    = `data: {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5},"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
 		geminiMaxNoUsage = `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]},"finishReason":"MAX_TOKENS"}],"modelVersion":"gemini-2.5-pro","responseId":"g1"}` + "\n\n"
+		anthropicPartial = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-trunc\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n"
+		anthropicStopped = anthropicPartial +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
 	)
 	messagesBody := func(modelName string) map[string]any {
 		return map[string]any{
@@ -12988,6 +12997,12 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 			}},
 		}
 	}
+	chatBody := func(modelName string) map[string]any {
+		return map[string]any{
+			"model": modelName, "stream": true,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}
+	}
 
 	tests := []struct {
 		name         string
@@ -13002,10 +13017,15 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 		{name: "gemini to messages truncated", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiPartial},
 		{name: "openai to responses truncated", upstream: util.ProtocolOpenAI, path: "/v1/responses", sse: openAIPartial},
 		{name: "gemini to responses truncated", upstream: util.ProtocolGemini, path: "/v1/responses", sse: geminiPartial},
+		{name: "gemini to chat truncated", upstream: util.ProtocolGemini, path: "/v1/chat/completions", sse: geminiPartial},
+		{name: "anthropic to chat truncated", upstream: util.ProtocolAnthropic, path: "/v1/chat/completions", sse: anthropicPartial},
 		{name: "openai finish_reason without DONE", upstream: util.ProtocolOpenAI, path: "/v1/messages", sse: openAIFinished, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "end_turn"},
 		{name: "gemini blockReason only", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: message_stop"},
 		{name: "gemini MAX_TOKENS without usage", upstream: util.ProtocolGemini, path: "/v1/messages", sse: geminiMaxNoUsage, wantComplete: true, wantTerminal: "event: message_stop", wantStop: "max_tokens"},
 		{name: "gemini blockReason to responses", upstream: util.ProtocolGemini, path: "/v1/responses", sse: geminiBlocked, wantComplete: true, wantTerminal: "event: response.completed"},
+		{name: "gemini MAX_TOKENS to chat", upstream: util.ProtocolGemini, path: "/v1/chat/completions", sse: geminiMaxNoUsage, wantComplete: true, wantTerminal: `"finish_reason":"length"`},
+		{name: "anthropic stop_reason without message_stop to responses", upstream: util.ProtocolAnthropic, path: "/v1/responses", sse: anthropicStopped, wantComplete: true, wantTerminal: "event: response.completed"},
+		{name: "anthropic stop_reason without message_stop to chat", upstream: util.ProtocolAnthropic, path: "/v1/chat/completions", sse: anthropicStopped, wantComplete: true, wantTerminal: `"finish_reason":"stop"`},
 	}
 
 	for i, testCase := range tests {
@@ -13027,8 +13047,11 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 			})}
 
 			requestBody := messagesBody(modelName)
-			if testCase.path == "/v1/responses" {
+			switch testCase.path {
+			case "/v1/responses":
 				requestBody = responsesBody(modelName)
+			case "/v1/chat/completions":
+				requestBody = chatBody(modelName)
 			}
 			response := doProxyRequest(t, env.engine, testCase.path, requestBody, nil)
 			body := response.Body.String()
@@ -13053,15 +13076,18 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 					t.Fatalf("log status=%d cooled=%v message=%s, want %d with model cooldown",
 						entry.StatusCode, cooled, entry.Message, util.StatusStreamIncomplete)
 				}
-				if strings.Contains(body, "message_stop") || strings.Contains(body, "response.completed") {
+				if strings.Contains(body, "message_stop") || strings.Contains(body, "response.completed") || strings.Contains(body, "[DONE]") {
 					t.Fatalf("truncated stream got a success terminal: %s", body)
 				}
 				if testCase.path == "/v1/messages" &&
 					(!strings.Contains(body, "event: error") || !strings.Contains(body, "upstream stream interrupted before completion")) {
 					t.Fatalf("Claude client did not receive an error event: %s", body)
 				}
-				if testCase.path == "/v1/responses" {
+				switch testCase.path {
+				case "/v1/responses":
 					assertResponsesStreamEndsFailed(t, body, "upstream stream interrupted before completion")
+				case "/v1/chat/completions":
+					assertOpenAIStreamEndsWithError(t, body, "upstream stream interrupted before completion")
 				}
 				return
 			}
@@ -13069,7 +13095,7 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 			if entry.StatusCode != http.StatusOK || cooled {
 				t.Fatalf("log status=%d cooled=%v message=%s, want 200 without cooldown", entry.StatusCode, cooled, entry.Message)
 			}
-			if !strings.Contains(body, testCase.wantTerminal) || strings.Contains(body, "event: error") {
+			if !strings.Contains(body, testCase.wantTerminal) || strings.Contains(body, "event: error") || strings.Contains(body, "upstream_stream_interrupted") {
 				t.Fatalf("complete stream lacks %q or carries an error: %s", testCase.wantTerminal, body)
 			}
 			if testCase.wantStop != "" {
@@ -13115,31 +13141,59 @@ func assertResponsesStreamEndsFailed(t *testing.T, body, wantMessage string) {
 	}
 }
 
-// 上游在已向 Responses 客户端输出后发 error 事件：转换器不产出终态，
-// 客户端必须收到带上游原因的 response.failed，而不是静默结束的半截流。
-func TestProxy_TranslatedResponsesStreamUpstreamErrorAfterOutputEndsFailed(t *testing.T) {
+// assertOpenAIStreamEndsWithError 断言 OpenAI Chat 流以唯一的错误数据帧收尾且没有 [DONE]。
+func assertOpenAIStreamEndsWithError(t *testing.T, body, wantMessage string) {
+	t.Helper()
+	frames := strings.Split(strings.TrimSpace(body), "\n\n")
+	errorFrames := 0
+	for _, frame := range frames {
+		if _, data := parseSSEEventChunk([]byte(frame)); gjson.GetBytes(data, "error").Exists() {
+			errorFrames++
+		}
+	}
+	_, last := parseSSEEventChunk([]byte(frames[len(frames)-1]))
+	if strings.Contains(body, "[DONE]") || errorFrames != 1 ||
+		gjson.GetBytes(last, "error.message").String() != wantMessage {
+		t.Fatalf("OpenAI Chat stream did not end with exactly one error frame: %s", body)
+	}
+}
+
+// 上游在已向客户端输出后发 error 事件：Responses 转换器不产出终态，须补写带上游原因的
+// response.failed；OpenAI Chat 转换器自带错误帧，不得再叠一帧。
+func TestProxy_TranslatedStreamUpstreamErrorAfterOutputEndsWithClientError(t *testing.T) {
 	t.Parallel()
 	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-err\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n" +
 		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "responses-upstream-error", upstreamProtocol: util.ProtocolAnthropic, models: "claude-err", apiKey: "sk-err",
-	}}, map[int]string{0: "https://responses-upstream-error.example.com"})
-	env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       io.NopCloser(strings.NewReader(sse)),
-		}, nil
-	})}
-	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "claude-err", "stream": true, "input": []any{map[string]any{"role": "user", "content": "hi"}},
-	}, nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	for _, tc := range []struct {
+		path   string
+		body   map[string]any
+		assert func(*testing.T, string, string)
+	}{
+		{path: "/v1/responses", body: map[string]any{"input": []any{map[string]any{"role": "user", "content": "hi"}}}, assert: assertResponsesStreamEndsFailed},
+		{path: "/v1/chat/completions", body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}, assert: assertOpenAIStreamEndsWithError},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "upstream-error-after-output", upstreamProtocol: util.ProtocolAnthropic, models: "claude-err", apiKey: "sk-err",
+			}}, map[int]string{0: "https://upstream-error-after-output.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(sse)),
+				}, nil
+			})}
+			tc.body["model"], tc.body["stream"] = "claude-err", true
+			response := doProxyRequest(t, env.engine, tc.path, tc.body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			tc.assert(t, response.Body.String(), "Overloaded")
+		})
 	}
-	assertResponsesStreamEndsFailed(t, response.Body.String(), "Overloaded")
 }
 
 func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {

@@ -853,7 +853,7 @@ func streamAndParseResponse(
 					return err
 				}
 				offset = end
-				if parser.IsStreamComplete() {
+				if parser.IsStreamEnded() {
 					return &stopStreamAfterWriteError{writeBytes: offset}
 				}
 			}
@@ -910,7 +910,7 @@ func isClientDisconnectError(err error) bool {
 
 // buildStreamDiagnostics 生成流诊断消息
 // 触发条件：流传输错误且未检测到流完成语义（原始结束标志或已转译终态）；
-// Anthropic 上游即使干净 EOF，缺少 message_stop 也算不完整。
+// Anthropic 上游即使干净 EOF，没有 stop_reason/message_stop 也算不完整。
 // streamComplete: 是否已确认流完成（比 hasUsage 更可靠，因为不是所有请求都有 usage）
 func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, upstreamProtocol string, contentType string) string {
 	if readStats == nil {
@@ -932,12 +932,12 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 			streamTimingDiagnostics(readStats))
 	}
 
-	// Anthropic 流必以 message_stop 收尾：干净 EOF 却没有终止事件，说明上游半路断了。
+	// Anthropic 流必有 stop_reason/message_stop：干净 EOF 却两者都没有，说明上游半路断了。
 	// 其他协议存在合法省略终止标记的上游，只按传输错误判定。
 	if streamErr == nil && !streamComplete && bytesRead > 0 &&
 		upstreamProtocol == string(protocol.Anthropic) &&
 		strings.Contains(strings.ToLower(contentType), "text/event-stream") {
-		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但缺少message_stop | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | %s",
+		return fmt.Sprintf("[WARN] 流响应不完整: 正常EOF但缺少stop_reason/message_stop | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | %s",
 			bytesRead, readCount, upstreamProtocol, contentType, streamTimingDiagnostics(readStats))
 	}
 
@@ -1013,7 +1013,10 @@ func translatedStreamChunkCompletes(clientProtocol protocol.Protocol, chunk []by
 // sseSynthesizedDoneEvent 是网关补喂给转换器的流终止哨兵。
 var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 
-// needsSynthesizedStreamTerminator 判断跨协议转换是否要补一个终止序列。
+// sseSynthesizedMessageStopEvent 是 Anthropic 上游给了 stop_reason 却没发 message_stop 时补喂的收尾事件。
+var sseSynthesizedMessageStopEvent = []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+
+// synthesizedStreamTerminator 返回跨协议转换要补喂给转换器的终止事件，不需要补时返回 nil。
 //
 // OpenAI Chat Completions 的终止哨兵是 [DONE]，openai→{anthropic,codex,gemini}
 // 三个转换器都只在收到它时才吐出终止事件（Anthropic 的 message_delta+message_stop、
@@ -1025,21 +1028,32 @@ var sseSynthesizedDoneEvent = []byte("data: [DONE]\n\n")
 // 末帧不带 usageMetadata、或只回 promptFeedback.blockReason 时同样要靠这里收尾。
 // 转换器在 [DONE] 上沿用已记下的 finishReason，MAX_TOKENS 不会被改报成 end_turn。
 //
-// 补的是 [DONE] 而不是手搓终止帧：open content block、stop_reason、usage 都在
-// 转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
-func needsSynthesizedStreamTerminator(upstream, client protocol.Protocol, upstreamComplete, translatedComplete, committed bool) bool {
-	if !committed || !upstreamComplete || translatedComplete {
-		return false
+// Anthropic 的语义终态是 message_delta.stop_reason，claude→Responses 转换器却只在
+// message_stop 上发 response.completed；上游在两者之间断流时补喂 message_stop。
+//
+// 补的是协议自身的终止事件而不是手搓客户端终止帧：open content block、stop_reason、
+// usage 都在转换器的内部状态里，只有它自己收得干净。同协议直通不补，避免改动透传字节。
+func synthesizedStreamTerminator(upstream, client protocol.Protocol, upstreamComplete, translatedComplete, committed bool) []byte {
+	if !committed || !upstreamComplete || translatedComplete || client == upstream {
+		return nil
 	}
-	return (upstream == protocol.OpenAI || upstream == protocol.Gemini) && client != upstream
+	switch upstream {
+	case protocol.OpenAI, protocol.Gemini:
+		return sseSynthesizedDoneEvent
+	case protocol.Anthropic:
+		return sseSynthesizedMessageStopEvent
+	default:
+		return nil
+	}
 }
 
 // translatedStreamTruncationDiagnostics 拦截转换流的干净 EOF 截断。
-// Claude 客户端靠 message_stop、Responses 客户端靠 response.completed 判完成；
-// 上游与转换输出都没有终态就 EOF，客户端拿到的是半截回复（Claude Code 会当成完成）。
-// 其他客户端协议能容忍缺省的终止标记，与同协议直通一样只按传输错误判定。
+// Claude 客户端靠 message_stop、Responses 客户端靠 response.completed、OpenAI Chat 客户端靠
+// finish_reason 或 [DONE] 判完成；上游与转换输出都没有终态就 EOF，客户端拿到的是半截回复
+// （Claude Code 与 OpenAI SDK 会当成完成）。转换器拿到上游终态就会输出客户端终态，
+// 两边都缺才判截断。Gemini 客户端与同协议直通一样只按传输错误判定。
 func translatedStreamTruncationDiagnostics(client protocol.Protocol, readStats *streamReadStats, upstreamProtocol, contentType string) string {
-	if readStats == nil || readStats.totalBytes == 0 || (client != protocol.Anthropic && client != protocol.Codex) {
+	if readStats == nil || readStats.totalBytes == 0 || (client != protocol.Anthropic && client != protocol.Codex && client != protocol.OpenAI) {
 		return ""
 	}
 	return fmt.Sprintf("[WARN] 转换流不完整: 正常EOF但上游与转换输出均无终态 | 客户端=%s | 已读取=%d字节(分%d次) | 渠道=%s | Content-Type=%s | %s",
@@ -1590,7 +1604,7 @@ func (s *Server) handleSuccessResponse(
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
 		} else if streamComplete && streamErr != nil {
-			// [FIX] 流式请求：检测到流结束标志（[DONE]/message_stop）说明数据完整
+			// [FIX] 流式请求：上游已给出语义终态（见 sseUsageParser.streamComplete）说明数据完整
 			// 所有收尾阶段的错误都应忽略，包括：
 			// - http2 流关闭（正常结束信号）
 			// - context.Canceled（客户端在传输完成后取消，不应标记为499）
@@ -1921,21 +1935,22 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			}
 			terminalProtocol := reqCtx.transformPlan.UpstreamProtocol == protocol.Codex ||
 				reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
-			return terminalProtocol && parser.IsStreamComplete() && translatedComplete
+			return terminalProtocol && parser.IsStreamEnded() && translatedComplete
 		},
 	)
 
-	// 上游已给出语义终态（如 finish_reason）时先补发终止事件，转换器据此完成收尾；
+	// 上游已给出语义终态（如 finish_reason、stop_reason）时先补发终止事件，转换器据此完成收尾；
 	// 之后的 Finalize 只拦截真正缺少终态的截断流。
 	// 上游已报错时不替转换器伪造正常终态。
-	if protocol.ResponseToolInputError(state) == nil && parser.GetLastError() == nil && needsSynthesizedStreamTerminator(
+	terminator := synthesizedStreamTerminator(
 		reqCtx.transformPlan.UpstreamProtocol,
 		reqCtx.transformPlan.ClientProtocol,
 		parser.IsStreamComplete(),
 		translatedComplete,
 		deferredWriter.Committed(),
-	) {
-		chunks, doneErr := translateEvent(sseSynthesizedDoneEvent)
+	)
+	if terminator != nil && protocol.ResponseToolInputError(state) == nil && parser.GetLastError() == nil {
+		chunks, doneErr := translateEvent(terminator)
 		if writeErr := writeSSEChunks(deferredWriter, chunks); writeErr != nil && streamErr == nil {
 			streamErr = writeErr
 		} else if doneErr != nil {
@@ -1992,9 +2007,10 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
 		result.ResponsesTurnResult, result.HasResponsesTurnResult = translatedTurn, hasTranslatedTurn
-		if result.ResponseCommitted && !translatedComplete && translatedError == nil {
-			result.UnterminatedResponsesStream = &responsesCursor
-		}
+	}
+	if (reqCtx.transformPlan.ClientProtocol == protocol.Codex || reqCtx.transformPlan.ClientProtocol == protocol.OpenAI) &&
+		result.ResponseCommitted && !translatedComplete && translatedError == nil {
+		result.UnterminatedTranslatedStream = &responsesCursor
 	}
 	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
 
@@ -3095,19 +3111,25 @@ func (s *Server) handleCommittedAwareProxyError(
 			deferChannelCooldown, false, false,
 		)
 	}
-	// 上游断流时客户端只看到半截流：没有终态也没有错误，Claude Code 与 Responses SDK
+	// 上游断流时客户端只看到半截流：没有终态也没有错误，Claude Code 与 OpenAI SDK
 	// 会把残缺回复当成完成。补一条协议内的错误终态让客户端报错并自行重试。
 	// Anthropic：上游已经发过 error 事件的不重复补；Antigravity 转换器不转发后端错误帧，按未发过处理。
-	// Responses：只补转换输出里没有终态与错误的流；WebSocket 回合改由 close 1011 通知客户端重放，
-	// 补终态会让客户端把回合当作失败结束。
+	// Responses/OpenAI Chat：只补转换输出里没有终态与错误的流；Responses WebSocket 回合改由
+	// close 1011 通知客户端重放，补终态会让客户端把回合当作失败结束。
 	if reqCtx.isStreaming && ctx.Err() == nil && w != nil {
 		message := committedStreamFailureMessage(res.SSEErrorEvent)
-		if reqCtx.clientProtocol == protocol.Anthropic {
+		switch {
+		case reqCtx.clientProtocol == protocol.Anthropic:
 			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() {
 				writeAnthropicStreamErrorEvent(w, message)
 			}
-		} else if _, isWebsocket := w.(*responsesWebsocketBridgeWriter); res.UnterminatedResponsesStream != nil && !isWebsocket {
-			writeResponsesStreamFailedEvent(w, *res.UnterminatedResponsesStream, message)
+		case res.UnterminatedTranslatedStream == nil:
+		case reqCtx.clientProtocol == protocol.OpenAI:
+			writeOpenAIStreamErrorEvent(w, message)
+		case reqCtx.clientProtocol == protocol.Codex:
+			if _, isWebsocket := w.(*responsesWebsocketBridgeWriter); !isWebsocket {
+				writeResponsesStreamFailedEvent(w, *res.UnterminatedTranslatedStream, message)
+			}
 		}
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)

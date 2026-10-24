@@ -143,6 +143,19 @@ func writeResponsesStreamFailedEvent(w http.ResponseWriter, cursor responsesStre
 	}
 }
 
+// writeOpenAIStreamErrorEvent 在已提交的 OpenAI Chat SSE 流末尾追加错误帧；
+// OpenAI SDK 读到带 error 字段的数据帧会抛错。不补 [DONE]，它表示正常结束。
+func writeOpenAIStreamErrorEvent(w http.ResponseWriter, message string) {
+	payload := []byte(`{"error":{"message":"","type":"server_error","code":"upstream_stream_interrupted","param":null}}`)
+	payload, _ = sjson.SetBytes(payload, "error.message", message)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // committedStreamFailureMessage 是已提交流补写错误事件时的提示：上游给过错误事件就用它的原因。
 func committedStreamFailureMessage(sseErrorEvent []byte) string {
 	if len(sseErrorEvent) == 0 {
@@ -268,8 +281,9 @@ type fwResult struct {
 
 	ResponsesTurnResult    responsesWebsocketTurnResult
 	HasResponsesTurnResult bool
-	// UnterminatedResponsesStream 非空表示发给 Responses 客户端的转换流既没有终态也没有错误事件。
-	UnterminatedResponsesStream *responsesStreamCursor
+	// UnterminatedTranslatedStream 非空表示发给 Responses/OpenAI Chat 客户端的转换流既没有终态
+	// 也没有错误事件；Responses 补写终态时沿用其中的 response id 与 sequence_number。
+	UnterminatedTranslatedStream *responsesStreamCursor
 }
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
