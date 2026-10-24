@@ -794,7 +794,7 @@ func completeImportedCodexCredential(
 		return validated, nil
 	}
 
-	needsRefresh, err := credential.NeedsRefresh(time.Now(), codexCredentialRefreshLead)
+	needsRefresh, err := credential.NeedsRefresh(time.Now(), codexCredentialExpirySkew)
 	if err != nil {
 		return nil, err
 	}

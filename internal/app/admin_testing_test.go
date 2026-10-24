@@ -510,7 +510,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 
 	createChannel := func(name, endpoint string, models []model.ModelEntry, scheduledModel string) *model.Config {
 		t.Helper()
-		expiresAt := time.Now().UTC().Add(24 * time.Hour)
+		expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 		if strings.Contains(name, "expired") {
 			expiresAt = time.Now().UTC().Add(-time.Hour)
 		}

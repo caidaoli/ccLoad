@@ -437,7 +437,7 @@ func TestRunScheduledChannelChecks_CodexOAuthWithoutAPIKeys(t *testing.T) {
 			srv := newInMemoryServer(t)
 			srv.codexCredentials.service.TokenURL = upstream.URL + "/oauth/token"
 			ctx := context.Background()
-			expires := time.Now().Add(time.Hour)
+			expires := time.Now().Add(7 * 24 * time.Hour)
 			if tc.expired {
 				expires = time.Now().Add(-time.Hour)
 			}

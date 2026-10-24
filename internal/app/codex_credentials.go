@@ -20,10 +20,20 @@ import (
 )
 
 const (
-	codexCredentialRefreshLead = 5 * time.Minute
-	codexVersion               = codexauth.DefaultClientVersion
-	codexOriginator            = codexauth.DefaultOriginator
-	codexUserAgent             = codexauth.DefaultUserAgent
+	// codexCredentialRefreshLead refreshes a day early: Codex access tokens can be
+	// invalidated before their nominal expiry, and a failed early refresh still
+	// leaves a usable token (CLIProxyAPI uses 24h, raised to 96h in feb63984).
+	codexCredentialRefreshLead = 24 * time.Hour
+	// codexCredentialRefreshRetryBackoff spaces early refresh retries after a
+	// failure; without it every request inside the lead would hit the token
+	// endpoint. Refreshes forced by a 401 are not limited.
+	codexCredentialRefreshRetryBackoff = 5 * time.Minute
+	// codexCredentialExpirySkew treats a token this close to expiry as unusable
+	// when validating an import; early refresh is left to request time.
+	codexCredentialExpirySkew = 5 * time.Minute
+	codexVersion              = codexauth.DefaultClientVersion
+	codexOriginator           = codexauth.DefaultOriginator
+	codexUserAgent            = codexauth.DefaultUserAgent
 )
 
 // codexHTTPForwardHeaders are the request-scoped headers native Codex sends on
@@ -59,6 +69,15 @@ type codexCredentialManager struct {
 	now              func() time.Time
 	passiveLocks     [64]sync.Mutex
 	passiveSamples   map[int64]map[string]time.Time
+	// refreshBackoff holds, per channel, the access token whose early refresh
+	// failed or returned a token still inside the lead, and when it may be
+	// retried. Guarded by mu.
+	refreshBackoff map[int64]codexRefreshBackoff
+}
+
+type codexRefreshBackoff struct {
+	accessToken string
+	until       time.Time
 }
 
 // codexCredentialRefreshError keeps the exact persisted credential snapshot
@@ -158,7 +177,7 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	if err != nil {
 		return nil, err
 	}
-	if !forceRefresh && !needsRefresh {
+	if !forceRefresh && (!needsRefresh || m.earlyRefreshBackingOff(cfg.ID, credential)) {
 		return cloneCodexCredential(credential), nil
 	}
 	forcedAccessToken := credential.AccessToken
@@ -204,12 +223,21 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 					return cloneCodexCredential(winner), nil
 				}
 			}
+			m.backOffEarlyRefresh(currentCfg.ID, current.AccessToken)
 			return nil, newCodexCredentialRefreshError(
 				currentCfg,
 				fmt.Errorf("refresh Codex credential for channel %d: %w", currentCfg.ID, refreshErr),
 			)
 		}
-		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
+		persisted, persistErr := m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
+		// A token issued with less life than the lead would otherwise be
+		// refreshed again on every request.
+		if persistErr == nil {
+			if due, dueErr := persisted.NeedsRefresh(m.now(), codexCredentialRefreshLead); dueErr == nil && due {
+				m.backOffEarlyRefresh(currentCfg.ID, persisted.AccessToken)
+			}
+		}
+		return persisted, persistErr
 	})
 	var result singleflight.Result
 	if ctx == nil {
@@ -285,6 +313,31 @@ func (m *codexCredentialManager) persistRefreshResult(
 	}
 }
 
+// earlyRefreshBackingOff reports whether a still-valid access token should be
+// served without retrying a recent early refresh that failed or produced a
+// token still inside the lead. Expired tokens always retry.
+func (m *codexCredentialManager) earlyRefreshBackingOff(channelID int64, credential *codexauth.Credential) bool {
+	now := m.now()
+	if expiresAt, err := credential.Expiry(); err != nil || !expiresAt.After(now) {
+		return false
+	}
+	m.mu.RLock()
+	backoff, ok := m.refreshBackoff[channelID]
+	m.mu.RUnlock()
+	return ok && backoff.accessToken == credential.AccessToken && now.Before(backoff.until)
+}
+
+func (m *codexCredentialManager) backOffEarlyRefresh(channelID int64, accessToken string) {
+	m.mu.Lock()
+	if m.refreshBackoff == nil {
+		m.refreshBackoff = make(map[int64]codexRefreshBackoff)
+	}
+	m.refreshBackoff[channelID] = codexRefreshBackoff{
+		accessToken: accessToken, until: m.now().Add(codexCredentialRefreshRetryBackoff),
+	}
+	m.mu.Unlock()
+}
+
 func (m *codexCredentialManager) cache(channelID int64, credential *codexauth.Credential) {
 	m.mu.Lock()
 	m.entries[channelID] = cloneCodexCredential(credential)
@@ -319,6 +372,7 @@ func (m *codexCredentialManager) invalidate(channelID int64) {
 	m.mu.Lock()
 	delete(m.entries, channelID)
 	delete(m.passiveSamples, channelID)
+	delete(m.refreshBackoff, channelID)
 	m.mu.Unlock()
 }
 

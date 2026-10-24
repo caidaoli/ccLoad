@@ -4585,6 +4585,48 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	}
 }
 
+func TestCodexEarlyRefreshFailureBacksOffWhileTokenIsValid(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+	store := newCodexAuthTestStore(t)
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+		Expired: start.Add(2 * time.Minute).Format(time.RFC3339), AccountID: "account-backoff", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
+	}
+	var refreshCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		refreshCount.Add(1)
+		http.Error(w, `{"error":"temporarily_unavailable"}`, http.StatusServiceUnavailable)
+	}))
+	defer tokenServer.Close()
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+	now := start
+	manager.now = func() time.Time { return now }
+
+	got, err := manager.credential(context.Background(), channel, false)
+	if err == nil || got == nil || got.AccessToken != "at-old" || refreshCount.Load() != 1 {
+		t.Fatalf("first early refresh: credential=%#v err=%v refreshes=%d", got, err, refreshCount.Load())
+	}
+	now = start.Add(time.Minute)
+	got, err = manager.credential(context.Background(), channel, false)
+	if err != nil || got == nil || got.AccessToken != "at-old" || refreshCount.Load() != 1 {
+		t.Fatalf("backing off: credential=%#v err=%v refreshes=%d, want old token without refresh", got, err, refreshCount.Load())
+	}
+	if _, err = manager.credentialAfterUnauthorized(context.Background(), channel, "at-old"); err == nil || refreshCount.Load() != 2 {
+		t.Fatalf("401 refresh: err=%v refreshes=%d, want forced refresh despite backoff", err, refreshCount.Load())
+	}
+	now = start.Add(3 * time.Minute)
+	if _, err = manager.credential(context.Background(), channel, false); err == nil || refreshCount.Load() != 3 {
+		t.Fatalf("expired token: err=%v refreshes=%d, want refresh despite backoff", err, refreshCount.Load())
+	}
+}
+
 func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 	t.Parallel()
 	baseStore := newCodexAuthTestStore(t)
@@ -5156,7 +5198,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 		store := newCodexAuthTestStore(t)
 		initial := &codexauth.Credential{
 			Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
-			Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reload", PlanType: "plus",
+			Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reload", PlanType: "plus",
 		}
 		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
 		if err != nil {
@@ -5780,7 +5822,7 @@ func TestHandleOAuthUsageReconcilesCostsAfterWindowChange(t *testing.T) {
 			oldSample.SampledAt = start.Add(-time.Minute)
 			credential := &codexauth.Credential{
 				Type: "codex", AccessToken: "quota-window", RefreshToken: "quota-window-refresh",
-				Expired: now.Add(time.Hour).Format(time.RFC3339), AccountID: "quota-window-account",
+				Expired: now.Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "quota-window-account",
 				QuotaCostUsage: oauthcost.Reconcile(nil, []oauthcost.Sample{oldSample}, oldSample.SampledAt),
 			}
 			channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
@@ -5849,7 +5891,7 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-quota-secret", RefreshToken: "rt-quota-secret",
-		Expired:        time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		Expired:        time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339),
 		AccountID:      "account-quota",
 		PlanType:       "plus",
 		AccountFedRAMP: true,
@@ -6717,7 +6759,7 @@ func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavaila
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-reset-fallback", RefreshToken: "rt-reset-fallback",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset-fallback",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reset-fallback",
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
 	if err != nil {
@@ -6766,7 +6808,7 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-reset-secret", RefreshToken: "rt-reset-secret",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reset",
 		QuotaCostUsage: &oauthcost.Usage{
 			Windows: []*oauthcost.Window{
 				{
@@ -6892,7 +6934,7 @@ func TestHandleResetCodexQuotaRejectsConcurrentConsume(t *testing.T) {
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-reset-concurrent", RefreshToken: "rt-reset-concurrent",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset-concurrent",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-reset-concurrent",
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
 	if err != nil {
@@ -6971,7 +7013,7 @@ func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResu
 			Type:         codexauth.ChannelType,
 			AccessToken:  fmt.Sprintf("at-batch-quota-%d", index),
 			RefreshToken: fmt.Sprintf("rt-batch-quota-%d", index),
-			Expired:      time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			Expired:      time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339),
 			AccountID:    fmt.Sprintf("account-batch-quota-%d", index),
 			PlanType:     "plus",
 		}
@@ -7104,7 +7146,7 @@ func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testin
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-quota-race", RefreshToken: "rt-quota-race",
-		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-quota-race",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-quota-race",
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
 	if err != nil {

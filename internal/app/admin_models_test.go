@@ -1548,7 +1548,7 @@ func TestAdminModels_CodexManifestRefreshBoundaries(t *testing.T) {
 			defer cleanup()
 			ctx := context.Background()
 			credential := &codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "old-access", RefreshToken: "refresh", AccountID: "account",
-				PlanType: "pro", Expired: time.Now().Add(time.Hour).Format(time.RFC3339)}
+				PlanType: "pro", Expired: time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)}
 			payload, err := credential.JSON()
 			if err != nil {
 				t.Fatal(err)
@@ -1679,7 +1679,7 @@ func TestAdminModels_CodexManifestPreservesConcurrentReauthorization(t *testing.
 	defer cleanup()
 	ctx := context.Background()
 	credential := &codexauth.Credential{Type: codexauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "account",
-		PlanType: "pro", Expired: time.Now().Add(time.Hour).Format(time.RFC3339)}
+		PlanType: "pro", Expired: time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)}
 	payload, err := credential.JSON()
 	if err != nil {
 		t.Fatal(err)
