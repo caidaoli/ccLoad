@@ -17856,6 +17856,70 @@ func TestProxy_CodexSessionAffinityScopesTurnState(t *testing.T) {
 	}
 }
 
+// guardian 审批子代理没有自己的绑定时沿用父线程的账号；普通子代理仍独立轮询。
+func TestProxy_CodexGuardianInheritsParentThreadAffinity(t *testing.T) {
+	t.Parallel()
+	names := []string{"account-a", "account-b"}
+	hits := make(chan string, 64)
+	upstreams := make(map[int]string, len(names))
+	channels := make([]testChannel, 0, len(names))
+	for index, name := range names {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits <- name
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-`+name+`","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		}))
+		defer upstream.Close()
+		upstreams[index] = upstream.URL
+		channels = append(channels, testChannel{
+			name: name, upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+			authType:        model.AuthTypeCodexOAuth,
+			oauthCredential: codexProxyTestCredential(t, "at-"+name, "rt-"+name, name),
+		})
+	}
+	env := setupProxyTestEnv(t, channels, upstreams)
+	send := func(headers map[string]string) string {
+		t.Helper()
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": true, "input": "hi",
+		}, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		select {
+		case name := <-hits:
+			return name
+		default:
+			t.Fatal("request succeeded without reaching an upstream")
+			return ""
+		}
+	}
+
+	// 父线程是子代理线程：Thread-Id 与 Session-Id 不同，guardian 只知道父线程 ID。
+	rootSession, parentThread := uuid.NewString(), uuid.NewString()
+	bound := send(map[string]string{"Session-Id": rootSession, "Thread-Id": parentThread})
+	reviewer := func(subagent string) map[string]string {
+		return map[string]string{
+			"Session-Id":               "guardian:" + parentThread,
+			"Thread-Id":                uuid.NewString(),
+			"X-OpenAI-Subagent":        subagent,
+			"X-Codex-Parent-Thread-Id": parentThread,
+		}
+	}
+	for range 4 {
+		if got := send(reviewer("guardian")); got != bound {
+			t.Fatalf("guardian review hit %s, want parent thread account %s", got, bound)
+		}
+	}
+	spread := map[string]bool{}
+	for range 4 {
+		spread[send(reviewer("collab_spawn"))] = true
+	}
+	if !spread["account-a"] || !spread["account-b"] {
+		t.Fatalf("ordinary subagents hit %v, want rotation across both accounts", spread)
+	}
+}
+
 func TestProxy_AnthropicSessionAffinityPinsKey(t *testing.T) {
 	t.Parallel()
 	servedKeys := make(chan string, 16)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,18 +88,48 @@ func anthropicSessionAffinityKey(tokenHash string, headers http.Header, body []b
 	return tokenHash + "\x00" + sessionID
 }
 
-// codexSessionAffinityKey 按令牌隔离 Codex 会话，沿用执行会话的 Session-Id/Thread-Id
-// 契约；body 里的 prompt_cache_key 只是缓存路由提示，不作会话标识。键带协议段，
-// 与 Anthropic 会话键不相交。
+// codexSessionAffinityKey 按令牌隔离 Codex 线程：要求有 Session-Id，键取 Thread-Id
+// （全局唯一，主/子代理各自独立），缺省时取 Session-Id（根线程两者相同）。按线程而非
+// Session-Id+Thread-Id 组键，guardian 才能只凭父线程 ID 找到父线程的绑定。body 里的
+// prompt_cache_key 只是缓存路由提示，不作会话标识。键带协议段，与 Anthropic 会话键不相交。
 func codexSessionAffinityKey(tokenHash string, headers http.Header) string {
-	if tokenHash == "" {
-		return ""
-	}
-	sessionID := responsesExecutionSessionID(headers)
+	sessionID := strings.TrimSpace(headers.Get("Session-Id"))
 	if sessionID == "" {
 		return ""
 	}
-	return tokenHash + "\x00codex\x00" + sessionID
+	threadID := strings.TrimSpace(headers.Get("Thread-Id"))
+	if threadID == "" {
+		threadID = sessionID
+	}
+	return codexThreadAffinityKey(tokenHash, threadID)
+}
+
+func codexThreadAffinityKey(tokenHash, threadID string) string {
+	if tokenHash == "" {
+		return ""
+	}
+	return tokenHash + "\x00codex\x00" + threadID
+}
+
+// lookupCodexSessionAffinity 返回 Codex 请求的绑定键与请求开始时的绑定。guardian 审批
+// 子代理（X-OpenAI-Subagent: guardian）审查父线程的计划动作，审查模型与父线程不同；
+// 自身还没有绑定时沿用 X-Codex-Parent-Thread-Id 所指父线程的渠道与 Key，复用同一账号的
+// prompt cache（对齐 CLIProxyAPI 2f6f2924）。只读父绑定、不为其续期，成功后只写自己的键；
+// 普通子代理仍独立选路。
+func (s *Server) lookupCodexSessionAffinity(tokenHash string, headers http.Header, now time.Time) (string, sessionAffinityTarget, bool) {
+	key := codexSessionAffinityKey(tokenHash, headers)
+	if target, ok := s.sessionAffinity.lookup(key, now); ok {
+		return key, target, true
+	}
+	if key == "" || !strings.EqualFold(strings.TrimSpace(headers.Get("X-OpenAI-Subagent")), "guardian") {
+		return key, sessionAffinityTarget{}, false
+	}
+	parentThreadID := strings.TrimSpace(headers.Get("X-Codex-Parent-Thread-Id"))
+	if parentThreadID == "" {
+		return key, sessionAffinityTarget{}, false
+	}
+	target, ok := s.sessionAffinity.lookup(codexThreadAffinityKey(tokenHash, parentThreadID), now)
+	return key, target, ok
 }
 
 // preferSessionAffinityChannel 仅在绑定渠道仍属候选中最高优先级档时置顶：

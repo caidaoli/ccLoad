@@ -622,8 +622,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if len(candidates) == 0 {
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
-	sessionAffinityKey := codexSessionAffinityKey(tokenHashString, c.Request.Header)
-	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
+	sessionAffinityKey, sessionAffinity, hasSessionAffinity := s.lookupCodexSessionAffinity(tokenHashString, c.Request.Header, time.Now())
 	if hasSessionAffinity {
 		candidates = s.preferSessionAffinityChannel(candidates, sessionAffinity.channelID)
 	}

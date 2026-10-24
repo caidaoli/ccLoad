@@ -670,13 +670,15 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 	var sessionAffinityKey string
+	var sessionAffinity sessionAffinityTarget
+	var hasSessionAffinity bool
 	switch {
 	case clientProtocol == protocol.Anthropic && requestFamily == protocol.RequestFamilyMessages:
 		sessionAffinityKey = anthropicSessionAffinityKey(tokenHashStr, c.Request.Header, all)
+		sessionAffinity, hasSessionAffinity = s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
 	case clientProtocol == protocol.Codex && requestFamily == protocol.RequestFamilyResponses:
-		sessionAffinityKey = codexSessionAffinityKey(tokenHashStr, c.Request.Header)
+		sessionAffinityKey, sessionAffinity, hasSessionAffinity = s.lookupCodexSessionAffinity(tokenHashStr, c.Request.Header, time.Now())
 	}
-	sessionAffinity, hasSessionAffinity := s.sessionAffinity.lookup(sessionAffinityKey, time.Now())
 	if hasSessionAffinity {
 		cands = s.preferSessionAffinityChannel(cands, sessionAffinity.channelID)
 	}
