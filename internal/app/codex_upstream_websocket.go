@@ -738,6 +738,8 @@ func isCodexWebsocketSemanticEvent(eventType string) bool {
 	// 省掉后未解析出 type 的 WS 帧会被当成语义输出。
 	// keepalive 与 ping 同为保活帧，必须在首个语义输出前保持可重连，
 	// 与 SSE 路径的 isHeartbeatEvent 判定对齐。
+	// 空骨架条目不像 SSE 解析器那样延后（isResponsesPreOutputEvent）：已写入管道的帧
+	// 不会随重连撤回，重放会让下游看到两份条目宣告。
 	return eventType != "" && !isResponsesMetadataEvent(eventType) && !isHeartbeatEventType(eventType)
 }
 

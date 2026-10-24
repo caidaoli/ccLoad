@@ -723,19 +723,24 @@ func TestZedApplyPatchResponsePropagatesInvalidInputAndEOF(t *testing.T) {
 }
 
 // OpenAI Chat 客户端经 Zed（上游协议为 Codex）：声明 apply_patch 不得把正常结束的
-// 文本流判失败，补丁调用在 EOF 截断时才失败。
+// 文本流判失败，补丁调用在 EOF 截断时才失败。补丁调用之前没有任何输出时只是空骨架，
+// 失败以未提交的 SSE 错误交给 forwardAttempt 切换渠道。
 func TestZedApplyPatchOpenAIChatClientTerminal(t *testing.T) {
 	const start = `{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`
+	const textStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+	const textDelta = `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`
 	for _, tt := range []struct {
-		name      string
-		events    []string
-		wantError bool
+		name            string
+		events          []string
+		wantError       bool
+		wantUncommitted bool
 	}{
-		{name: "stream_ended without message_stop", events: []string{start,
-			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
-			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		{name: "stream_ended without message_stop", events: []string{start, textStart, textDelta,
 			`{"status":"stream_ended"}`}},
-		{name: "patch truncated at EOF", wantError: true, events: []string{start,
+		{name: "patch truncated at EOF", wantError: true, events: []string{start, textStart, textDelta,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"c1","name":"apply_patch","input":{}}}`}},
+		{name: "patch skeleton truncated before output", wantUncommitted: true, events: []string{start,
 			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"apply_patch","input":{}}}`}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -762,9 +767,12 @@ func TestZedApplyPatchOpenAIChatClientTerminal(t *testing.T) {
 			if (err != nil) != tt.wantError || result == nil {
 				t.Fatalf("error=%v result=%#v, want error=%v", err, result, tt.wantError)
 			}
-			if tt.wantError {
+			if tt.wantError || tt.wantUncommitted {
 				if gjson.GetBytes(result.SSEErrorEvent, "response.error.code").String() != "invalid_tool_arguments" {
 					t.Fatalf("failure was lost from result: %#v", result)
+				}
+				if tt.wantUncommitted && (result.ResponseCommitted || rec.Body.Len() != 0) {
+					t.Fatalf("committed=%v response=%q, want nothing sent before failover", result.ResponseCommitted, rec.Body.String())
 				}
 				return
 			}

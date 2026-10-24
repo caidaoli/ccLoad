@@ -1896,8 +1896,9 @@ func TestSSEUsageParser_SpeedInMessageUsage(t *testing.T) {
 }
 
 // TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput 验证 Responses 元数据事件
-// （response.created/queued/in_progress）不设 hasStreamOutput，确保后续 error 到来时
-// deferredWriter 仍可阻止 commit 并允许切换渠道重试。语义事件仍正常标记。
+// （response.created/queued/in_progress/metadata）与内容仍为空的条目/片段骨架不设
+// hasStreamOutput，确保后续 error 到来时 deferredWriter 仍可阻止 commit 并允许切换渠道
+// 重试。语义事件、已有内容的骨架与服务端工具条目仍正常标记。
 func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1905,22 +1906,49 @@ func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T)
 		payloadType   string
 		wantStreamOut bool
 		wantMetadata  bool
+		payload       string
 	}{
-		{"response.created", "response.created", false, true},
-		{"response.queued", "response.queued", false, true},
-		{"response.in_progress", "response.in_progress", false, true},
-		{"codex.rate_limits", "codex.rate_limits", false, true},
-		{"codex.response.metadata", "codex.response.metadata", false, true},
-		{"response.output_item.added", "response.output_item.added", true, false},
-		{"response.output_text.delta", "response.output_text.delta", true, false},
-		{"response.content_part.added", "response.content_part.added", true, false},
-		{"message_start", "message_start", true, false},
+		{"response.created", "response.created", false, true, ""},
+		{"response.queued", "response.queued", false, true, ""},
+		{"response.in_progress", "response.in_progress", false, true, ""},
+		{"codex.rate_limits", "codex.rate_limits", false, true, ""},
+		{"codex.response.metadata", "codex.response.metadata", false, true, ""},
+		{"response.metadata", "response.metadata", false, true,
+			`{"type":"response.metadata","response_id":"resp_1","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`},
+		{"empty reasoning item", "response.output_item.added", false, true,
+			`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`},
+		{"empty message item", "response.output_item.added", false, true,
+			`{"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[]}}`},
+		{"empty function_call item", "response.output_item.added", false, true,
+			`{"type":"response.output_item.added","item":{"type":"function_call","name":"shell","arguments":""}}`},
+		{"empty custom_tool_call item", "response.output_item.added", false, true,
+			`{"type":"response.output_item.added","item":{"type":"custom_tool_call","name":"apply_patch","input":""}}`},
+		{"empty output_text part", "response.content_part.added", false, true,
+			`{"type":"response.content_part.added","part":{"type":"output_text","text":""}}`},
+		{"empty summary part", "response.reasoning_summary_part.added", false, true,
+			`{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}`},
+		{"web_search_call item", "response.output_item.added", true, false,
+			`{"type":"response.output_item.added","item":{"type":"web_search_call","status":"in_progress"}}`},
+		{"encrypted reasoning item", "response.output_item.added", true, false,
+			`{"type":"response.output_item.added","item":{"type":"reasoning","summary":[],"encrypted_content":"gAAA"}}`},
+		{"message item with text", "response.output_item.added", true, false,
+			`{"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}`},
+		{"audio part", "response.content_part.added", true, false,
+			`{"type":"response.content_part.added","part":{"type":"output_audio"}}`},
+		{"response.output_item.added", "response.output_item.added", true, false, ""},
+		{"response.output_text.delta", "response.output_text.delta", true, false, ""},
+		{"response.content_part.added", "response.content_part.added", true, false, ""},
+		{"message_start", "message_start", true, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			parser := newSSEUsageParser("codex")
-			data := `data: {"type":"` + tt.payloadType + `"}` + "\n\n"
+			payload := tt.payload
+			if payload == "" {
+				payload = `{"type":"` + tt.payloadType + `"}`
+			}
+			data := "data: " + payload + "\n\n"
 			if err := parser.Feed([]byte(data)); err != nil {
 				t.Fatalf("Feed failed: %v", err)
 			}

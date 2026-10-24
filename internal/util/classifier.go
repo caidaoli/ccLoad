@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -592,8 +593,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	// 不设固定冷却时长（无法预判质询持续时间），也不设置 ModelScoped（切模型无效）。
 	// 必须排在响应体关键字匹配之前：质询页 HTML 匹配不上任何渠道级特征，
 	// 否则会落到默认的 Key 级，OAuth 渠道下更是既不写 Key 冷却也不写渠道冷却。
+	// 1010 浏览器签名封禁同理，只是边缘返回的是纯文本或 JSON 而非 HTML。
 	if statusCode == http.StatusForbidden || statusCode == http.StatusServiceUnavailable {
-		if isCloudflareChallengeResponse(firstHeaderValueFold(headers, "cf-mitigated"), responseBody) {
+		if isCloudflareChallengeResponse(firstHeaderValueFold(headers, "cf-mitigated"), responseBody) ||
+			(statusCode == http.StatusForbidden && isCloudflareBotBlockResponse(responseBody)) {
 			return HTTPResponseClassification{
 				Level:                 ErrorLevelChannel,
 				PreventKeyFallback:    true,
@@ -1506,6 +1509,57 @@ func isCloudflareChallengeResponse(cfMitigated string, responseBody []byte) bool
 		return true
 	}
 	return isCloudflareBlockPage(responseBody)
+}
+
+// isCloudflareBotBlockResponse 识别 Cloudflare 1010（browser_signature_banned）边缘拦截
+// （对齐 sub2api e0fa4b94f）：纯文本 `error code: 1010`，或 JSON 中 cloudflare_error=true
+// 且 code/error_code 为 1010，或 error_name=browser_signature_banned。普通 JSON 里的
+// code 1010 与正文提到 1010 都不算，避免把上游业务错误误判为边缘拦截。
+func isCloudflareBotBlockResponse(responseBody []byte) bool {
+	var payload any
+	if json.Unmarshal(responseBody, &payload) == nil {
+		return containsCloudflareBotBlock(payload)
+	}
+	return strings.Contains(strings.ToLower(string(responseBody)), "error code: 1010")
+}
+
+func containsCloudflareBotBlock(value any) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		cloudflareError := false
+		for key, child := range node {
+			if is, ok := child.(bool); ok && is && strings.EqualFold(key, "cloudflare_error") {
+				cloudflareError = true
+			}
+		}
+		for key, child := range node {
+			if name, ok := child.(string); ok && strings.EqualFold(key, "error_name") &&
+				strings.EqualFold(strings.TrimSpace(name), "browser_signature_banned") {
+				return true
+			}
+			if cloudflareError && (strings.EqualFold(key, "code") || strings.EqualFold(key, "error_code")) &&
+				isCloudflareBotBlockCode(child) {
+				return true
+			}
+			if containsCloudflareBotBlock(child) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(node, containsCloudflareBotBlock)
+	}
+	return false
+}
+
+func isCloudflareBotBlockCode(value any) bool {
+	switch code := value.(type) {
+	case float64:
+		return code == 1010
+	case string:
+		return strings.TrimSpace(code) == "1010"
+	default:
+		return false
+	}
 }
 
 func isProtocolConversionNotImplemented(responseBody []byte) bool {

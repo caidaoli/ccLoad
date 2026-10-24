@@ -13060,6 +13060,9 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 					(!strings.Contains(body, "event: error") || !strings.Contains(body, "upstream stream interrupted before completion")) {
 					t.Fatalf("Claude client did not receive an error event: %s", body)
 				}
+				if testCase.path == "/v1/responses" {
+					assertResponsesStreamEndsFailed(t, body, "upstream stream interrupted before completion")
+				}
 				return
 			}
 
@@ -13083,6 +13086,60 @@ func TestProxy_TranslatedStreamCleanEOFRequiresTerminal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// assertResponsesStreamEndsFailed 断言 Responses 流以补写的 response.failed 收尾，
+// 且沿用流内 response id、紧接最后一个 sequence_number。
+func assertResponsesStreamEndsFailed(t *testing.T, body, wantMessage string) {
+	t.Helper()
+	frames := strings.Split(strings.TrimSpace(body), "\n\n")
+	var responseID string
+	lastSequence := int64(-1)
+	for _, frame := range frames[:len(frames)-1] {
+		_, data := parseSSEEventChunk([]byte(frame))
+		if id := gjson.GetBytes(data, "response.id").String(); responseID == "" {
+			responseID = id
+		}
+		if seq := gjson.GetBytes(data, "sequence_number"); seq.Exists() {
+			lastSequence = seq.Int()
+		}
+	}
+	eventType, failed := parseSSEEventChunk([]byte(frames[len(frames)-1]))
+	if eventType != "response.failed" || gjson.GetBytes(failed, "type").String() != "response.failed" ||
+		responseID == "" || gjson.GetBytes(failed, "response.id").String() != responseID ||
+		gjson.GetBytes(failed, "sequence_number").Int() != lastSequence+1 ||
+		gjson.GetBytes(failed, "response.status").String() != "failed" ||
+		gjson.GetBytes(failed, "response.error.code").String() != "upstream_stream_interrupted" ||
+		gjson.GetBytes(failed, "response.error.message").String() != wantMessage {
+		t.Fatalf("Responses stream did not end with a continuous response.failed (id=%q last_seq=%d): %s", responseID, lastSequence, body)
+	}
+}
+
+// 上游在已向 Responses 客户端输出后发 error 事件：转换器不产出终态，
+// 客户端必须收到带上游原因的 response.failed，而不是静默结束的半截流。
+func TestProxy_TranslatedResponsesStreamUpstreamErrorAfterOutputEndsFailed(t *testing.T) {
+	t.Parallel()
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-err\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n" +
+		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-upstream-error", upstreamProtocol: util.ProtocolAnthropic, models: "claude-err", apiKey: "sk-err",
+	}}, map[int]string{0: "https://responses-upstream-error.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	})}
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "claude-err", "stream": true, "input": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertResponsesStreamEndsFailed(t, response.Body.String(), "Overloaded")
 }
 
 func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
@@ -15859,6 +15916,68 @@ func TestProxy_ResponsesKeepaliveThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 	if strings.Contains(body, "resp-ch1-created") || strings.Contains(body, "server_is_overloaded") {
 		t.Fatalf("expected first channel metadata/keepalive/error not to leak to client, body: %s", body)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("upstream calls first=%d second=%d, want 1/1", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+// Codex 上游会在过载拒绝前先发 response.metadata（提示审核标记）和内容为空的条目/片段骨架
+// （CLIProxyAPI #6856、sub2api e068c3d02）。它们都不是模型输出，不能提交响应，否则随后的
+// server_is_overloaded 会原样漏给客户端而不是切渠道。
+func TestProxy_ResponsesMetadataSkeletonThenOverload_RetriesNextChannel(t *testing.T) {
+	t.Parallel()
+
+	var firstCalls atomic.Int32
+	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, frame := range []string{
+			`{"type":"response.created","response":{"id":"resp-ch1-created","status":"in_progress"}}`,
+			`{"type":"response.in_progress","response":{"id":"resp-ch1-created","status":"in_progress"}}`,
+			`{"type":"response.metadata","response_id":"resp-ch1-created","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{}}}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_ch1","type":"reasoning","summary":[]}}`,
+			`{"type":"response.reasoning_summary_part.added","item_id":"rs_ch1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`,
+			`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null}}`,
+		} {
+			_, _ = fmt.Fprint(w, "event: "+gjson.Get(frame, "type").String()+"\ndata: "+frame+"\n\n")
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer upstream1.Close()
+
+	var secondCalls atomic.Int32
+	upstream2 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-ch2","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream2.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "ch1-skeleton-then-overloaded", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1", priority: 100},
+		{name: "ch2-ok", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-2", priority: 50},
+	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-test",
+		"stream": true,
+		"input":  "hi",
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retrying next channel, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "resp-ch2") {
+		t.Fatalf("expected completed response from second channel, got: %s", body)
+	}
+	if strings.Contains(body, "resp-ch1-created") || strings.Contains(body, "rs_ch1") || strings.Contains(body, "server_is_overloaded") {
+		t.Fatalf("expected first channel metadata/skeleton/error not to leak to client, body: %s", body)
 	}
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("upstream calls first=%d second=%d, want 1/1", firstCalls.Load(), secondCalls.Load())

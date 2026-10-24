@@ -2510,6 +2510,51 @@ func TestResponsesWebsocketClientRetryAfterInterruptedTextStream(t *testing.T) {
 	}
 }
 
+// 转换流在 WebSocket 回合里截断时不补 response.failed：那会被客户端当成回合的
+// 最终失败，必须仍走 upstream_stream_interrupted + close 1011 让客户端重放。
+func TestResponsesWebsocketTranslatedTruncationInterruptsWithoutFailedTerminal(t *testing.T) {
+	t.Parallel()
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}`+"\n\n")
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "translated-ws-truncation", upstreamProtocol: "openai", models: "gpt-test",
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "translated-ws-truncation")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "hi"}},
+	}); err != nil {
+		t.Fatalf("write turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.output_text.delta")
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("read interruption event: %v", err)
+		}
+		if event["type"] == "response.output_text.delta" {
+			continue
+		}
+		errorObject, _ := event["error"].(map[string]any)
+		if event["type"] != "error" || errorObject["code"] != "upstream_stream_interrupted" {
+			t.Fatalf("truncated translated turn event=%#v, want upstream_stream_interrupted error", event)
+		}
+		break
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("close error=%v, want websocket 1011", errClose)
+	}
+}
+
 // TestResponsesWebsocketClientRetryAfterUpstreamErrorEvent locks down turn
 // termination for a bare upstream `error` event that carries no upstream HTTP
 // status (HTTP 200 + SSE error body, e.g. server_is_overloaded). Such an event

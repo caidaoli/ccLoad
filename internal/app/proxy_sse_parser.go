@@ -598,11 +598,10 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
-	// Responses 元数据事件不构成语义输出：客户端可以在这些事件后重新开始回合，
-	// 与原生 WS 路径的 isCodexWebsocketSemanticEvent 判定对齐。event: 行与
-	// JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的内容
-	// 事件才标记为有流输出，以便 deferredWriter 在 error 到来前不会过早 commit。
-	if isResponsesMetadataEvent(payloadType) || isResponsesMetadataEvent(eventType) {
+	// Responses 元数据与空骨架事件不构成语义输出：客户端可以在这些事件后重新开始回合。
+	// event: 行与 JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的
+	// 内容事件才标记为有流输出，以便 deferredWriter 在 error 到来前不会过早 commit。
+	if isResponsesPreOutputEvent(payloadType, data) || isResponsesPreOutputEvent(eventType, data) {
 		p.hasResponsesMetadata = true
 	} else {
 		p.hasStreamOutput = true
@@ -723,12 +722,68 @@ func (p *sseUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult,
 
 // isResponsesMetadataEvent 判断 Responses 流事件是否只是元数据（非语义输出）。
 // response.created/queued/in_progress 不算语义输出，出现 error 时仍可切换渠道重试。
+// response.metadata 只携带提示审核标记，上游会把它插在 in_progress 与
+// server_is_overloaded 之间（CLIProxyAPI #6856、sub2api e068c3d02）。
 // 空字符串不是元数据：Chat Completions 没有 type，必须算有流输出。
 func isResponsesMetadataEvent(payloadType string) bool {
 	switch payloadType {
 	case "response.created", "response.queued", "response.in_progress",
-		"codex.rate_limits", "codex.response.metadata":
+		"codex.rate_limits", "codex.response.metadata", "response.metadata":
 		return true
+	default:
+		return false
+	}
+}
+
+// isResponsesPreOutputEvent 判断 Responses 流事件是否尚无可观察输出：元数据，或只宣告
+// 条目/片段而内容仍为空的骨架（对齐 CLIProxyAPI isCodexBootstrapBufferableEvent）。
+// 上游会在过载拒绝前先发这些空骨架，按输出提交会把随后的拒绝漏给客户端。
+// 清单刻意封闭：web_search_call 等服务端工具宣告时已在执行，换渠道重放会重复副作用，
+// 未识别的条目与片段类型一律按已输出处理。
+func isResponsesPreOutputEvent(eventType, data string) bool {
+	switch eventType {
+	case "response.output_item.added":
+		return isResponsesEmptyOutputItem(gjson.Get(data, "item"))
+	case "response.content_part.added", "response.reasoning_summary_part.added":
+		return isResponsesEmptyPart(gjson.Get(data, "part"))
+	default:
+		return isResponsesMetadataEvent(eventType)
+	}
+}
+
+func isResponsesEmptyOutputItem(item gjson.Result) bool {
+	switch item.Get("type").String() {
+	case "message":
+		return isResponsesEmptyParts(item.Get("content"))
+	case "reasoning":
+		return item.Get("encrypted_content").String() == "" &&
+			isResponsesEmptyParts(item.Get("summary")) && isResponsesEmptyParts(item.Get("content"))
+	case "function_call":
+		return item.Get("arguments").String() == ""
+	case "custom_tool_call":
+		return item.Get("input").String() == ""
+	default:
+		return false
+	}
+}
+
+func isResponsesEmptyParts(parts gjson.Result) bool {
+	for _, part := range parts.Array() {
+		if !isResponsesEmptyPart(part) {
+			return false
+		}
+	}
+	return true
+}
+
+// isResponsesEmptyPart 只认已知的文本片段：其他类型可能把内容放在这里看不到的字段
+// （如 output_audio 的 audio），按已输出处理。
+func isResponsesEmptyPart(part gjson.Result) bool {
+	switch part.Get("type").String() {
+	case "output_text", "summary_text", "text", "reasoning_text":
+		return part.Get("text").String() == ""
+	case "refusal":
+		return part.Get("refusal").String() == ""
 	default:
 		return false
 	}
@@ -884,12 +939,7 @@ func observedServiceTierFromEvent(eventType, payloadType string, event map[strin
 	if !terminal && (eventType != "" || payloadType != "") {
 		// Responses 的 typed delta 一律忽略，避免读取请求回显；没有 type
 		// 的自定义 Chat 事件仍可读取 service_tier。
-		if payloadType != "" {
-			return ""
-		}
-		switch eventType {
-		case "response.created", "response.queued", "response.in_progress",
-			"codex.rate_limits", "codex.response.metadata":
+		if payloadType != "" || isResponsesMetadataEvent(eventType) {
 			return ""
 		}
 	}

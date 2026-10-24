@@ -1769,6 +1769,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	// Responses events actually sent to the client after translation.
 	var translatedTurn responsesWebsocketTurnResult
 	var hasTranslatedTurn bool
+	var responsesCursor responsesStreamCursor
 	var translatedComplete bool
 	var codeBuddyDone bool
 	var state any
@@ -1777,11 +1778,13 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	recordTranslatedOutput := func(chunks [][]byte) {
 		for _, chunk := range chunks {
 			eventType, data := parseSSEEventChunk(chunk)
-			if reqCtx.transformPlan.ClientProtocol == protocol.Codex &&
-				(isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data))) {
-				if response := gjson.GetBytes(data, "response"); response.IsObject() {
-					translatedTurn = responsesWebsocketTurnFromResponse(response)
-					hasTranslatedTurn = true
+			if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
+				responsesCursor.observe(data)
+				if isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(ssePayloadType(data)) {
+					if response := gjson.GetBytes(data, "response"); response.IsObject() {
+						translatedTurn = responsesWebsocketTurnFromResponse(response)
+						hasTranslatedTurn = true
+					}
 				}
 			}
 			if eventType == "response.failed" || eventType == "error" || isErrorPayload(string(data)) {
@@ -1989,6 +1992,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	if reqCtx.transformPlan.ClientProtocol == protocol.Codex {
 		result.ResponsesTurnResult, result.HasResponsesTurnResult = translatedTurn, hasTranslatedTurn
+		if result.ResponseCommitted && !translatedComplete && translatedError == nil {
+			result.UnterminatedResponsesStream = &responsesCursor
+		}
 	}
 	streamComplete := translationErr == nil && toolInputErr == nil && (parser.IsStreamComplete() || translatedComplete)
 
@@ -3089,18 +3095,19 @@ func (s *Server) handleCommittedAwareProxyError(
 			deferChannelCooldown, false, false,
 		)
 	}
-	// 上游断流时 Anthropic 客户端只看到半截流：没有 message_stop 也没有 error，
-	// Claude Code 会把残缺回复当成完成。补一条 error 事件让客户端报错并自行重试；
-	// 上游已经发过 error 事件的不重复补。Antigravity 转换器不转发后端错误帧，按未发过处理。
-	if reqCtx.isStreaming && reqCtx.clientProtocol == protocol.Anthropic && ctx.Err() == nil && w != nil {
-		if len(res.SSEErrorEvent) == 0 {
-			writeAnthropicStreamErrorEvent(w, "upstream stream interrupted before completion")
-		} else if cfg.UsesAntigravityOAuth() {
-			message := gjson.GetBytes(res.SSEErrorEvent, "error.message").String()
-			if message == "" {
-				message = "upstream stream failed before completion"
+	// 上游断流时客户端只看到半截流：没有终态也没有错误，Claude Code 与 Responses SDK
+	// 会把残缺回复当成完成。补一条协议内的错误终态让客户端报错并自行重试。
+	// Anthropic：上游已经发过 error 事件的不重复补；Antigravity 转换器不转发后端错误帧，按未发过处理。
+	// Responses：只补转换输出里没有终态与错误的流；WebSocket 回合改由 close 1011 通知客户端重放，
+	// 补终态会让客户端把回合当作失败结束。
+	if reqCtx.isStreaming && ctx.Err() == nil && w != nil {
+		message := committedStreamFailureMessage(res.SSEErrorEvent)
+		if reqCtx.clientProtocol == protocol.Anthropic {
+			if len(res.SSEErrorEvent) == 0 || cfg.UsesAntigravityOAuth() {
+				writeAnthropicStreamErrorEvent(w, message)
 			}
-			writeAnthropicStreamErrorEvent(w, message)
+		} else if _, isWebsocket := w.(*responsesWebsocketBridgeWriter); res.UnterminatedResponsesStream != nil && !isWebsocket {
+			writeResponsesStreamFailedEvent(w, *res.UnterminatedResponsesStream, message)
 		}
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
